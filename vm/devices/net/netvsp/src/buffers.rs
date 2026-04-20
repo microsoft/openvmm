@@ -40,6 +40,28 @@ struct RxBufferWriteOverflow {
     total_size: usize,
 }
 
+/// Validates that `offset + len` does not overflow `usize` and
+/// `[offset, offset + len)` fits within `total_size`.
+fn check_rx_write_bounds(
+    offset: usize,
+    len: usize,
+    total_size: usize,
+) -> Result<(), RxBufferWriteOverflow> {
+    let end = offset.checked_add(len).ok_or(RxBufferWriteOverflow {
+        offset,
+        len,
+        total_size,
+    })?;
+    if end > total_size {
+        return Err(RxBufferWriteOverflow {
+            offset,
+            len,
+            total_size,
+        });
+    }
+    Ok(())
+}
+
 /// A type providing access to the netvsp receive buffer.
 pub struct GuestBuffers {
     mem: GuestMemory,
@@ -100,19 +122,7 @@ impl GuestBuffers {
                 len: buf.len(),
                 total_size: usize::MAX,
             })?;
-        // Check for arithmetic overflow.
-        let end = offset.checked_add(buf.len()).ok_or(RxBufferWriteOverflow {
-            offset,
-            len: buf.len(),
-            total_size,
-        })?;
-        if end > total_size {
-            return Err(RxBufferWriteOverflow {
-                offset,
-                len: buf.len(),
-                total_size,
-            });
-        }
+        check_rx_write_bounds(offset, buf.len(), total_size)?;
         while !buf.is_empty() {
             let len = (PAGE_SIZE - offset % PAGE_SIZE).min(buf.len());
             let (this, next) = buf.split_at(len);
@@ -273,6 +283,7 @@ impl BufferAccess for BufferPool {
 
 #[cfg(test)]
 mod tests {
+    use crate::buffers::check_rx_write_bounds;
     use crate::buffers::compute_buffer_segments;
     use net_backend::RxBufferSegment;
 
@@ -296,5 +307,23 @@ mod tests {
             compute_buffer_segments(&mut v, &gpns, range);
             check(&v, data);
         }
+    }
+
+    #[test]
+    fn test_check_rx_write_bounds() {
+        // Empty write at the end is fine.
+        check_rx_write_bounds(0x1000, 0, 0x1000).unwrap();
+        // Write that exactly fills the buffer is fine.
+        check_rx_write_bounds(0, 0x1000, 0x1000).unwrap();
+        // Write entirely inside the buffer is fine.
+        check_rx_write_bounds(0x100, 0x200, 0x1000).unwrap();
+        // Write that runs one byte past the end is rejected.
+        check_rx_write_bounds(0x1000, 1, 0x1000).unwrap_err();
+        check_rx_write_bounds(0xfff, 2, 0x1000).unwrap_err();
+        // Offset already past the end is rejected.
+        check_rx_write_bounds(0x2000, 0, 0x1000).unwrap_err();
+        // Length that overflows usize when added to offset is rejected.
+        check_rx_write_bounds(usize::MAX, 1, usize::MAX).unwrap_err();
+        check_rx_write_bounds(1, usize::MAX, usize::MAX).unwrap_err();
     }
 }
