@@ -177,11 +177,11 @@ pub struct Lints;
 
 impl FmtPass for Lints {
     fn run(self, ctx: FmtCtx) -> anyhow::Result<()> {
-        // Walk tree once to discover all Cargo.toml files and non-Rust,
-        // non-manifest files.
+        // Walk tree once to discover all Cargo.toml files and all other files
+        // (including .rs). This avoids a second walk per-crate later.
         let mut workspace_dirs = Vec::new();
         let mut all_crate_dirs = Vec::new();
-        let mut all_other_files = Vec::new();
+        let mut all_files = Vec::new();
         for entry in ignore::Walk::new(&ctx.ctx.root) {
             let entry = entry?;
             if entry.file_name() == "Cargo.toml" {
@@ -195,10 +195,8 @@ impl FmtPass for Lints {
                     // that is not itself a workspace root).
                     all_crate_dirs.push(entry.path().parent().unwrap().to_owned());
                 }
-            } else if entry.file_type().is_some_and(|ft| ft.is_file())
-                && entry.path().extension().and_then(|e| e.to_str()) != Some("rs")
-            {
-                all_other_files.push(entry.into_path());
+            } else if entry.file_type().is_some_and(|ft| ft.is_file()) {
+                all_files.push(entry.into_path());
             }
         }
 
@@ -224,16 +222,26 @@ impl FmtPass for Lints {
                 })
                 .collect();
 
-            // Non-crate files belonging to this workspace.
-            let mut non_crate_files: Vec<_> = all_other_files
+            // All files belonging to this workspace (under workspace_dir,
+            // not under any nested workspace).
+            let workspace_files: Vec<_> = all_files
                 .iter()
                 .filter(|f| {
                     f.starts_with(workspace_dir)
                         && !nested_workspace_dirs
                             .iter()
                             .any(|nested| f.starts_with(*nested))
+                })
+                .collect();
+
+            // Non-crate files: files not under any crate dir, excluding .rs files.
+            let mut non_crate_files: Vec<_> = workspace_files
+                .iter()
+                .filter(|f| {
+                    f.extension().and_then(|e| e.to_str()) != Some("rs")
                         && !crate_dirs.iter().any(|crate_dir| f.starts_with(crate_dir))
                 })
+                .copied()
                 .collect();
 
             // If only_diffed, filter crate dirs and non-crate files.
@@ -251,7 +259,13 @@ impl FmtPass for Lints {
                 });
             }
 
-            any_failed |= lint_workspace(workspace_dir, &crate_dirs, &non_crate_files, &ctx)?;
+            any_failed |= lint_workspace(
+                workspace_dir,
+                &crate_dirs,
+                &non_crate_files,
+                &workspace_files,
+                &ctx,
+            )?;
         }
 
         if any_failed {
@@ -262,11 +276,12 @@ impl FmtPass for Lints {
     }
 }
 
-/// Run a fresh set of lints over a single workspace and its member crates.
+/// Run a fresh set of lints over a single workspace and its member crates..
 fn lint_workspace(
     workspace_dir: &Path,
     crate_dirs: &[&PathBuf],
     non_crate_files: &[&PathBuf],
+    all_files: &[&PathBuf],
     ctx: &FmtCtx,
 ) -> anyhow::Result<bool> {
     let lint_ctx = LintCtx {
@@ -318,29 +333,14 @@ fn lint_workspace(
             .filter(|other| *other != crate_dir && other.starts_with(crate_dir))
             .collect();
 
-        // Walk all files in the crate directory.
-        for entry in ignore::Walk::new(crate_dir) {
-            let entry = entry?;
-            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-                continue;
-            }
-            let path = entry.into_path();
-
-            // Skip Cargo.toml—already handled via enter_crate/exit_crate.
-            if path == manifest_path {
-                continue;
-            }
-
-            // Skip files that belong to a nested crate.
-            if nested_crate_dirs
-                .iter()
-                .any(|nested| path.starts_with(nested))
-            {
-                continue;
-            }
-
+        // Use pre-collected file paths instead of walking the crate
+        // directory again, avoiding redundant filesystem traversals.
+        for path in all_files.iter().filter(|f| {
+            f.starts_with(crate_dir)
+                && !nested_crate_dirs.iter().any(|nested| f.starts_with(nested))
+        }) {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            let Some(mut file) = Lintable::<String>::from_file(&path, ctx, workspace_dir)? else {
+            let Some(mut file) = Lintable::<String>::from_file(path, ctx, workspace_dir)? else {
                 // Skip binary files
                 continue;
             };
