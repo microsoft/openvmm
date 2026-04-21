@@ -50,7 +50,7 @@ impl Drop for HclVpciBusControl {
 
 impl std::fmt::Display for HclVpciBusControl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.bus_instance_id.data1)
+        write!(f, "{}", self.bus_instance_id)
     }
 }
 

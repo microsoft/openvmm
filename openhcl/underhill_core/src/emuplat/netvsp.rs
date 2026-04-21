@@ -649,9 +649,9 @@ impl HclNetworkVFManagerWorker {
 
     /// Offers the visible VTL0 VF to the guest.
     ///
-    /// Assumes the caller has already rejected shutdown-time requests. On
-    /// return, `guest_state.offered_to_guest` is true only if the offer RPC
-    /// succeeds; otherwise the worker state is left unchanged.
+    /// Assumes the worker is not in shutdown.
+    /// On return, `guest_state.offered_to_guest` is true only if the offer
+    /// RPC succeeds; otherwise the worker state is left unchanged.
     async fn add_vtl0_vf(&mut self) {
         let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
         if !self.guest_state.is_offered_to_guest().await
@@ -691,6 +691,7 @@ impl HclNetworkVFManagerWorker {
 
     /// Applies a hide or unhide request for the VTL0 VF.
     ///
+    /// Assumes the worker is not in shutdown.
     /// `vtl2_device_state` is passed explicitly because visibility changes are
     /// applied immediately only while the VTL2 device is present. If the device
     /// is missing or reconfiguring, the new bus state is staged on `self` and
@@ -745,6 +746,7 @@ impl HclNetworkVFManagerWorker {
 
     /// Revoke the VTL0 VF with a timeout in case VTL0 doesn't respond.
     ///
+    /// Assumes the worker is not in shutdown.
     /// Takes an HclVpciBusControl pulled from `self.vtl0_bus_control` and
     /// revokes with a `MAX_WAIT_TIMEOUT` cancel context; empirical evidence
     /// shows that the vast majority of devices either revoke well within that
@@ -752,7 +754,7 @@ impl HclNetworkVFManagerWorker {
     async fn revoke_vtl0_vf(&self, bus_control: &HclVpciBusControl) -> anyhow::Result<()> {
         let mut ctx = mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
         ctx.until_cancelled(bus_control.revoke_device().instrument(
-            tracing::info_span!("revoking vtl0 vf", vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control), vtl0_vfid = %bus_control),
+            tracing::info_span!("revoking vtl0 vf", vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control), vtl0_bus = %bus_control),
         ))
         .await
         .unwrap_or_else(|cr| Err(anyhow!("vtl0 revoke timed out: {cr}")))
@@ -948,7 +950,7 @@ impl HclNetworkVFManagerWorker {
         vtl2_device_present
     }
 
-    async fn save_state(&mut self, rpc: Rpc<(), VfManagerSaveResult>) {
+    async fn save_mana_device_state(&mut self, rpc: Rpc<(), VfManagerSaveResult>) {
         assert!(self.is_shutdown_active);
         drop(self.messages.take().unwrap());
         let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
@@ -1132,6 +1134,7 @@ impl HclNetworkVFManagerWorker {
 
     /// Handles VTL2 device removal from the vPCI bus.
     ///
+    /// This function is assumed to not be running during shutdown.
     /// This always clears the guest-visible VTL0 identity, tears down the VTL2
     /// device, and cancels any outstanding reconfiguration retry. On return,
     /// `vtl2_device_state` is `Missing` and the host has been told the device is
@@ -1143,7 +1146,7 @@ impl HclNetworkVFManagerWorker {
     ) {
         *self.guest_state.vtl0_vfid.lock().await = None;
         if self.guest_state.is_offered_to_guest().await {
-            tracing::warn!(
+            tracing::info!(
                 vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control),
                 vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control),
                 "VTL0 VF being removed as a result of VTL2 VF revoke."
@@ -1265,15 +1268,12 @@ impl HclNetworkVFManagerWorker {
                         self.guest_state_notifications.push(send_update);
                         self.guest_state.clone()
                     })
-                    .instrument(tracing::info_span!(
-                        "add guest vf manager command",
-                        vtl2_vfid
-                    ))
+                    .instrument(tracing::info_span!("add guest vf manager", vtl2_vfid))
                     .await;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::PacketCapture(rpc)) => {
                     rpc.handle_failable(async |params| self.handle_packet_capture(params).await)
-                        .instrument(tracing::info_span!("packet capture command", vtl2_vfid))
+                        .instrument(tracing::info_span!("packet capture", vtl2_vfid))
                         .await
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::AddVtl0VF) => {
@@ -1318,11 +1318,8 @@ impl HclNetworkVFManagerWorker {
                         .await;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::SaveState(rpc)) => {
-                    self.save_state(rpc)
-                        .instrument(tracing::info_span!(
-                            "handling save state before exiting",
-                            vtl2_vfid
-                        ))
+                    self.save_mana_device_state(rpc)
+                        .instrument(tracing::info_span!("save mana state", vtl2_vfid))
                         .await;
                     // Exit worker thread.
                     return;
@@ -1335,7 +1332,7 @@ impl HclNetworkVFManagerWorker {
                         vtl2_vfid,
                         vtl0_vfid,
                         remove_vtl0_vf,
-                        "starting VTL2 device shutdown"
+                        "beginning VTL2 device shutdown"
                     );
                     if remove_vtl0_vf {
                         self.remove_vtl0_vf()
@@ -1349,12 +1346,16 @@ impl HclNetworkVFManagerWorker {
                     self.is_shutdown_active = true;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::ShutdownComplete(rpc)) => {
+                    tracing::info!(vtl2_vfid, "shutting down VTL2 device");
                     assert!(self.is_shutdown_active);
                     drop(self.messages.take().unwrap());
                     rpc.handle(async |keep_vf_alive| {
                         self.shutdown_vtl2_device(keep_vf_alive).await;
                     })
-                    .instrument(tracing::info_span!("shutting down VTL2 device", vtl2_vfid))
+                    .instrument(tracing::info_span!(
+                        "completing VTL2 device shutdown",
+                        vtl2_vfid
+                    ))
                     .await;
                     // Exit worker thread.
                     return;
@@ -1416,7 +1417,7 @@ impl HclNetworkVFManagerWorker {
                 }
                 NextWorkItem::ManaDeviceRemoved => {
                     if self.is_shutdown_active {
-                        tracing::warning!(vtl2_vfid, "MANA device removal during shutdown");
+                        tracing::warn!(vtl2_vfid, "MANA device removal during shutdown");
                         continue;
                     }
                     self.mana_device_removed(&mut vtl2_device_state, &mut vf_reconfig_backoff)
