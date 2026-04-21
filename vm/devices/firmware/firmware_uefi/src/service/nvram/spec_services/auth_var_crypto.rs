@@ -153,7 +153,7 @@ mod pkcs7_details {
         let content_info = ContentInfo {
             content_type: PKCS_7_SIGNED_DATA_OID,
             content: ContextSpecific {
-                tag_number: TagNumber::new(0),
+                tag_number: TagNumber(0),
                 value: AnyRef::try_from(content)?,
                 tag_mode: TagMode::Explicit,
             },
