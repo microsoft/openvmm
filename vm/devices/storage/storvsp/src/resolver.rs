@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Resolver for a SCSI controller.
+//! Resolvers for storvsp SCSI and IDE accelerator devices.
 
 use super::StorageDevice;
 use crate::ScsiController;
@@ -19,6 +19,7 @@ use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiControllerRequest;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
+use storvsp_resources::StorvspIdeDeviceHandle;
 use thiserror::Error;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
@@ -144,5 +145,53 @@ async fn handle_requests(
                 anyhow::Ok(())
             }),
         }
+    }
+}
+
+/// The resolver for [`StorvspIdeDeviceHandle`].
+pub struct StorvspIdeResolver;
+
+declare_static_async_resolver! {
+    StorvspIdeResolver,
+    (VmbusDeviceHandleKind, StorvspIdeDeviceHandle),
+}
+
+/// An error returned by [`StorvspIdeResolver`].
+#[derive(Debug, Error)]
+pub enum IdeError {
+    #[error("failed to resolve IDE disk at channel {0} device {1}")]
+    ResolveDisk(u8, u8, #[source] ResolveError),
+}
+
+#[async_trait]
+impl AsyncResolveResource<VmbusDeviceHandleKind, StorvspIdeDeviceHandle> for StorvspIdeResolver {
+    type Output = ResolvedVmbusDevice;
+    type Error = IdeError;
+
+    async fn resolve(
+        &self,
+        resolver: &ResourceResolver,
+        resource: StorvspIdeDeviceHandle,
+        input: ResolveVmbusDeviceHandleParams<'_>,
+    ) -> Result<Self::Output, Self::Error> {
+        let disk = resolver
+            .resolve(
+                resource.disk,
+                ResolveScsiDeviceHandleParams {
+                    driver_source: input.driver_source,
+                },
+            )
+            .await
+            .map_err(|e| IdeError::ResolveDisk(resource.channel_id, resource.device_id, e))?;
+
+        let device = StorageDevice::build_ide(
+            input.driver_source,
+            resource.channel_id,
+            resource.device_id,
+            ScsiControllerDisk::new(disk.0),
+            resource.io_queue_depth.unwrap_or(256),
+        );
+
+        Ok(device.into())
     }
 }
