@@ -45,14 +45,14 @@ impl Pkcs7SignedData {
     }
 
     /// Encode this PKCS#7 object as DER bytes.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     pub fn to_der(&self) -> Result<Vec<u8>, Pkcs7Error> {
         self.0.to_der()
     }
 
     /// Creates a PKCS#7 signed-data object by signing `data` with the given
     /// certificate and key pair.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     pub fn sign(
         cert: &super::x509::X509Certificate,
         key_pair: &super::rsa::RsaKeyPair,
