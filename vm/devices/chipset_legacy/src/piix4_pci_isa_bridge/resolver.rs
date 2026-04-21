@@ -57,8 +57,9 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, Piix4PciIsaBridgeDeviceHandle
             power_request.power_request(PowerRequest::Reset);
         });
 
-        let set_a20_signal =
-            Box::new(move |active| tracing::info!(active, "setting stubbed A20 signal"));
+        let set_a20_signal = Box::new(move |active| {
+            tracelimit::info_ratelimited!(active, "setting stubbed A20 signal")
+        });
 
         Ok(PciIsaBridge::new(reset, set_a20_signal).into())
     }
