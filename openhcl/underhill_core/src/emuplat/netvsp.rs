@@ -954,7 +954,7 @@ impl HclNetworkVFManagerWorker {
 
     /// Creates a stored state package to restore guest connectivity later
     ///
-    /// Assumes the worker is not in shutdown.
+    /// Assumes the worker is in shutdown.
     /// This code will capture the state of the MANA device to simplify
     /// re-initialization for the guest; on failure, it attempts to set
     /// the MANA device to recover gracefully.
