@@ -369,11 +369,14 @@ impl Pkcs7SignedDataInner {
 
         // FALSE from CertVerifyCertificateChainPolicy indicates a
         // function-level error (e.g., invalid parameters), not a policy
-        // violation. This is unexpected.
-        assert!(
-            policy_result.as_bool(),
-            "CertVerifyCertificateChainPolicy failed"
-        );
+        // violation. Surface it as an internal error rather than panicking,
+        // since this code processes potentially untrusted signature material.
+        if !policy_result.as_bool() {
+            return Err(err(
+                windows_result::Error::from_thread(),
+                "verify certificate chain policy",
+            ));
+        }
 
         if policy_status.dwError != 0 {
             return Ok(false);

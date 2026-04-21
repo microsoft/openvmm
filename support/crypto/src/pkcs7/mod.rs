@@ -65,7 +65,15 @@ impl Pkcs7SignedData {
     ///
     /// Consumes the store, since the backend may need to finalize it.
     ///
-    /// The `uefi_mode` flag weakens verification behavior to match UEFI's requirements.
+    /// When `uefi_mode` is `true`, verification is weakened to match UEFI
+    /// signed-variable semantics: the certificate time-validity check is
+    /// skipped (certs may be expired), key-usage / extended-key-usage
+    /// restrictions are ignored, revocation is not consulted, and any
+    /// certificate in the trust store (including intermediates) is treated
+    /// as a trust anchor. The cryptographic signature itself is still
+    /// verified, and the signer must still chain up to a cert in the
+    /// supplied store. This matches how OpenSSL is configured for UEFI
+    /// auth-var verification.
     ///
     /// Returns `Ok(true)` when verification succeeds and `Ok(false)` when the
     /// signature check fails.
