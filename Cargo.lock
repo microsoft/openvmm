@@ -8733,6 +8733,7 @@ dependencies = [
  "chipset_device",
  "guestmem",
  "inspect",
+ "memory_range",
  "mesh",
  "pal_async",
  "pci_core",
@@ -8761,7 +8762,9 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "bitfield-struct 0.11.0",
+ "headervec",
  "libc",
+ "memory_range",
  "nix 0.30.1",
  "pal_async",
  "tracing",
