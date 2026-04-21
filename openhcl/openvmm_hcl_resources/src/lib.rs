@@ -28,6 +28,7 @@ vm_resource::register_static_resolvers! {
     chipset::ioapic::resolver::GenericIoApicResolver,
     #[cfg(guest_arch = "x86_64")]
     chipset::pm::resolver::HyperVPowerManagementResolver,
+    chipset_resources::cmos_rtc_time_source::SystemTimeClockResolver,
     missing_dev::resolver::MissingDevResolver,
     #[cfg(feature = "tpm")]
     tpm_device::resolver::TpmDeviceResolver,
