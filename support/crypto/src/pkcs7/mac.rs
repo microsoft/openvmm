@@ -72,6 +72,7 @@ unsafe extern "C" {
     fn SecTrustSetAnchorCertificatesOnly(trust: SecTrustRef, only: u8) -> OsStatusCode;
     fn SecTrustEvaluateWithError(trust: SecTrustRef, error: *mut CFErrorRef) -> u8;
     fn SecTrustSetOptions(trust: SecTrustRef, options: u32) -> OsStatusCode;
+    fn SecTrustSetNetworkFetchAllowed(trust: SecTrustRef, allowed: u8) -> OsStatusCode;
 
     fn CMSDecoderCreate(decoder_out: *mut CMSDecoderRef) -> OsStatusCode;
     fn CMSDecoderUpdateMessage(decoder: CMSDecoderRef, msg: *const u8, msg_len: usize) -> OsStatusCode;
@@ -193,6 +194,12 @@ impl Pkcs7SignedDataInner {
         signed_content: &[u8],
         uefi_mode: bool,
     ) -> Result<bool, Pkcs7Error> {
+        // SecPolicyCreateBasicX509 does not enforce EKU constraints, making it
+        // equivalent to OpenSSL's X509Purpose::ANY. To support !uefi_mode with
+        // strict purpose checking, replace it with SecPolicyCreateSSL or a
+        // custom policy via SecPolicyCreateWithProperties.
+        assert!(uefi_mode, "only uefi_mode is currently supported on macOS");
+
         // SAFETY: all CF/Security API calls use valid handles produced by
         // earlier successful calls. RAII wrappers ensure proper cleanup.
         unsafe {
@@ -310,6 +317,15 @@ impl Pkcs7SignedDataInner {
         let status = unsafe { SecTrustSetAnchorCertificatesOnly(trust, 1) };
         if !status.success() {
             return Err(os_err(status, "set anchor certificates only"));
+        }
+
+        // Disable network fetches so that trust evaluation never attempts
+        // OCSP or CRL lookups, matching the other backends which perform
+        // no revocation checking.
+        // SAFETY: trust is a valid SecTrustRef.
+        let status = unsafe { SecTrustSetNetworkFetchAllowed(trust, 0) };
+        if !status.success() {
+            return Err(os_err(status, "disable network fetch"));
         }
 
         if uefi_mode {

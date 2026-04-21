@@ -4,8 +4,8 @@
 //! Backend-agnostic cryptographic primitives.
 //!
 //! This crate abstracts over platform-specific crypto libraries (OpenSSL on
-//! Unix, BCrypt on Windows) so that callers never interact with the underlying
-//! backend directly.
+//! Linux, BCrypt/WinCrypt on Windows, Security.framework on macOS) so that
+//! callers never interact with the underlying backend directly.
 //!
 //! It is explicitly specialized for the needs of the OpenVMM project and is
 //! not suitable for general-purpose use.
