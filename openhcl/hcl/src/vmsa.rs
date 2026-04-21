@@ -7,6 +7,8 @@
 use std::array;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use x86defs::snp::SevEventInjectInfo;
 use x86defs::snp::SevFeatures;
 use x86defs::snp::SevSelector;
@@ -96,6 +98,16 @@ impl<T: DerefMut<Target = SevVmsa>> VmsaWrapper<'_, T> {
             | ((self.set_u64((v >> 64) as u64, offset + 8) as u128) << 64)
     }
 
+    /// Gets an atomic reference to the v_intr_cntrl field.
+    /// # Safety
+    /// v_intr_cntrl must not be accessed by other VPs.
+    unsafe fn v_intr_cntrl_atomic(&mut self) -> &AtomicU64 {
+        // SAFETY: the vintr control field is on the VMSA which is per-VP per-VTL.
+        // As VPs cannot run on multiple processors at the same time there is a
+        // limited need for synchronization on the vintr control field.
+        unsafe { &*(core::ptr::from_ref(&self.vmsa.v_intr_cntrl).cast::<AtomicU64>()) }
+    }
+
     /// Create a new VMSA
     pub fn reset(&mut self, vmsa_reg_prot: bool) {
         *self.vmsa = FromZeros::new_zeroed();
@@ -156,6 +168,15 @@ impl<T: DerefMut<Target = SevVmsa>> VmsaWrapper<'_, T> {
             let val = self.set_u64(*new_v, base + (i * 8));
             self.vmsa.x87_registers[i] = val;
         }
+    }
+
+    /// Atomically test and set the guest busy bit in v_intr_cntrl.
+    pub fn guest_busy_bit_test_and_set(&mut self) -> bool {
+        const VINTR_GUEST_BUSYBIT_MASK: u64 = 1u64 << 63;
+        // SAFETY: v_intr_cntrl is only accessed by this VP.
+        let prev = unsafe { self.v_intr_cntrl_atomic() }
+            .fetch_or(VINTR_GUEST_BUSYBIT_MASK, Ordering::SeqCst);
+        (prev & VINTR_GUEST_BUSYBIT_MASK) != 0
     }
 }
 
