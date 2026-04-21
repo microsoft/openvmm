@@ -22,6 +22,8 @@ use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use chipset_resources::i8042::I8042DeviceHandle;
 use chipset_resources::pic::PicDeviceHandle;
+use chipset_resources::piix4_pci_isa_bridge::PIIX4_PCI_ISA_BRIDGE_BDF;
+use chipset_resources::piix4_pci_isa_bridge::Piix4PciIsaBridgeDeviceHandle;
 use chipset_resources::piix4_uhci::PIIX4_PCI_USB_UHCI_STUB_BDF;
 use chipset_resources::piix4_uhci::Piix4PciUsbUhciStubDeviceHandle;
 use chipset_resources::pit::PitDeviceHandle;
@@ -246,6 +248,7 @@ impl VmManifestBuilder {
                 }
                 result.attach_i8042();
                 result.attach_piix4_pci_usb_uhci_stub();
+                result.attach_piix4_pci_isa_bridge();
                 // This chipset always has a serial port even if not requested.
                 result.attach_serial_16550(
                     self.serial_wait_for_rts,
@@ -268,7 +271,6 @@ impl VmManifestBuilder {
                     with_i440bx_host_pci_bridge: true,
                     with_piix4_cmos_rtc: true,
                     with_piix4_pci_bus: true,
-                    with_piix4_pci_isa_bridge: true,
                     with_piix4_power_management: true,
                     with_underhill_vga_proxy: self.proxy_vga,
                     with_winbond_super_io_and_floppy_stub: self.stub_floppy,
@@ -301,7 +303,6 @@ impl VmManifestBuilder {
                     with_i440bx_host_pci_bridge: false,
                     with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
-                    with_piix4_pci_isa_bridge: false,
                     with_piix4_power_management: false,
                     with_underhill_vga_proxy: false,
                     with_winbond_super_io_and_floppy_stub: false,
@@ -344,7 +345,6 @@ impl VmManifestBuilder {
                     with_i440bx_host_pci_bridge: false,
                     with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
-                    with_piix4_pci_isa_bridge: false,
                     with_piix4_power_management: false,
                     with_underhill_vga_proxy: false,
                     with_winbond_super_io_and_floppy_stub: false,
@@ -443,6 +443,16 @@ impl VmChipsetResult {
             resource: Piix4PciUsbUhciStubDeviceHandle.into_resource(),
             pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
             bdf: PIIX4_PCI_USB_UHCI_STUB_BDF,
+        });
+        self
+    }
+
+    fn attach_piix4_pci_isa_bridge(&mut self) -> &mut Self {
+        self.pci_chipset_devices.push(LegacyPciChipsetDeviceHandle {
+            name: "piix4-pci-isa-bridge".to_string(),
+            resource: Piix4PciIsaBridgeDeviceHandle.into_resource(),
+            pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
+            bdf: PIIX4_PCI_ISA_BRIDGE_BDF,
         });
         self
     }

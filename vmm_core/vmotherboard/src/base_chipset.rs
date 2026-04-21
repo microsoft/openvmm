@@ -230,7 +230,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_i440bx_host_pci_bridge,
             deps_piix4_cmos_rtc,
             deps_piix4_pci_bus,
-            deps_piix4_pci_isa_bridge,
             deps_piix4_power_management,
             deps_underhill_vga_proxy,
             deps_winbond_super_io_and_floppy_stub,
@@ -303,29 +302,6 @@ impl<'a> BaseChipsetBuilder<'a> {
                 None
             }
         };
-
-        if let Some(options::dev::Piix4PciIsaBridgeDeps { attached_to }) = deps_piix4_pci_isa_bridge
-        {
-            // TODO: use PowerRequestHandleKind
-            let reset = {
-                let power = foundation.power_event_handler.clone();
-                Box::new(move || power.on_power_event(PowerEvent::Reset))
-            };
-
-            let set_a20_signal = Box::new(move |active| {
-                tracing::info!(CVM_ALLOWED, active, "setting stubbed A20 signal")
-            });
-
-            builder
-                .arc_mutex_device("piix4-pci-isa-bridge")
-                .on_pci_bus(attached_to)
-                .add(|_| {
-                    chipset_legacy::piix4_pci_isa_bridge::PciIsaBridge::new(
-                        reset.clone(),
-                        set_a20_signal,
-                    )
-                })?;
-        }
 
         let _ = dma;
         #[cfg(feature = "dev_generic_isa_floppy")]
@@ -1153,7 +1129,6 @@ pub mod options {
 
             piix4_cmos_rtc:              dev::Piix4CmosRtcDeps,
             piix4_pci_bus:               dev::Piix4PciBusDeps,
-            piix4_pci_isa_bridge:        dev::Piix4PciIsaBridgeDeps,
             piix4_power_management:      dev::Piix4PowerManagementDeps,
 
             underhill_vga_proxy:         dev::UnderhillVgaProxyDeps,
@@ -1198,12 +1173,6 @@ pub mod options {
                 $(#[$m])*
                 pub struct $root_deps $($rest)*
             };
-        }
-
-        /// PIIX4 PCI-ISA bridge (fixed pci address: 0:7.0)
-        pub struct Piix4PciIsaBridgeDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
         }
 
         /// Hyper-V IDE controller (fixed pci address: 0:7.1)
