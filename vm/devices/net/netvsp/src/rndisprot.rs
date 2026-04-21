@@ -709,8 +709,27 @@ impl TcpLsoInfo {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct EthVlanInfo(pub u32);
+
+impl EthVlanInfo {
+    pub fn priority(self) -> u8 {
+        (self.0 as u8) & 0x3
+    }
+
+    pub fn canonical_format_id(self) -> u8 {
+        (self.0 >> 3) as u8 & 0x1
+    }
+
+    pub fn vlan_id(self) -> u16 {
+        (self.0 >> 4) as u16 & 0xfff
+    }
+}
+
 pub const PPI_TCP_IP_CHECKSUM: u32 = 0;
 pub const PPI_LSO: u32 = 2;
+pub const PPI_VLAN: u32 = 6;
 
 //
 //  Format of Information buffer passed in a SetRequest for the OID

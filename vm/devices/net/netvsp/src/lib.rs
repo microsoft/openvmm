@@ -2602,6 +2602,16 @@ impl<T: RingMem> NetChannel<T> {
                             stats.tx_invalid_lso_packets.increment();
                         }
                     }
+                    rndisprot::PPI_VLAN => {
+                        let n: rndisprot::EthVlanInfo = d.reader(mem).read_plain()?;
+
+                        metadata.flags.set_vlan_enabled(true);
+                        metadata.priority = n.priority();
+                        metadata.canonical_format_id = n.canonical_format_id();
+                        metadata.vlan_id = n.vlan_id();
+                        metadata.l2_len = ETHERNET_VLAN_HEADER_LEN as u8;
+
+                    }
                     _ => {}
                 }
                 ppi = rest;
@@ -3267,6 +3277,7 @@ const MIN_MTU: u32 = DEFAULT_MTU;
 const MAX_MTU: u32 = 9216;
 
 const ETHERNET_HEADER_LEN: u32 = 14;
+const ETHERNET_VLAN_HEADER_LEN: u32 = 18;
 
 impl Adapter {
     fn get_guest_vf_serial_number(&self, vfid: u32) -> u32 {

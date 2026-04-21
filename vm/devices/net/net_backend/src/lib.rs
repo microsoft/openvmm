@@ -400,6 +400,12 @@ pub struct TxMetadata {
     /// Only guaranteed to be set if [`TxFlags::offload_tcp_segmentation`] or
     /// [`TxFlags::offload_udp_segmentation`] is set.
     pub max_segment_size: u16,
+    /// Priority for 802.1Q. Actually a 3-bit value.
+    pub priority: u8,
+    /// This should be 0.
+    pub canonical_format_id: u8,
+    /// The 802.1Q ID for this transmission. Actually a 12-bit value.
+    pub vlan_id: u16,
 }
 
 /// Flags affecting transmit behavior.
@@ -430,8 +436,9 @@ pub struct TxFlags {
     /// Offload UDP segmentation (USO), allowing UDP packets larger than the
     /// MTU. `l2_len`, `l3_len`, and `max_segment_size` must be set.
     pub offload_udp_segmentation: bool,
-    #[bits(1)]
-    _reserved: u8,
+    /// 802.1Q VLAN support is enabled. Expect/use values in `priority`,
+    /// `canonical_format_id`, and `vlan_id`.
+    pub vlan_enabled: bool,
 }
 
 impl Default for TxMetadata {
@@ -445,6 +452,9 @@ impl Default for TxMetadata {
             l3_len: 0,
             l4_len: 0,
             max_segment_size: 0,
+            priority: 0,
+            canonical_format_id: 0,
+            vlan_id: 0
         }
     }
 }
