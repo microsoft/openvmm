@@ -47,17 +47,14 @@ fn check_rx_write_bounds(
     len: usize,
     total_size: usize,
 ) -> Result<(), RxBufferWriteOverflow> {
-    let end = offset.checked_add(len).ok_or(RxBufferWriteOverflow {
+    let rx_overflow_err = || RxBufferWriteOverflow {
         offset,
         len,
         total_size,
-    })?;
+    };
+    let end = offset.checked_add(len).ok_or_else(rx_overflow_err)?;
     if end > total_size {
-        return Err(RxBufferWriteOverflow {
-            offset,
-            len,
-            total_size,
-        });
+        return Err(rx_overflow_err());
     }
     Ok(())
 }
