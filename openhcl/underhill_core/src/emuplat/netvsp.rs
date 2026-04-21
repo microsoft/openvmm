@@ -746,7 +746,7 @@ impl HclNetworkVFManagerWorker {
 
     /// Revoke the VTL0 VF with a timeout in case VTL0 doesn't respond.
     ///
-    /// Assumes the worker is not in shutdown.
+    /// Generally called when not in shutdown, but it's not assumed here.
     /// Takes an HclVpciBusControl pulled from `self.vtl0_bus_control` and
     /// revokes with a `MAX_WAIT_TIMEOUT` cancel context; empirical evidence
     /// shows that the vast majority of devices either revoke well within that
@@ -760,8 +760,9 @@ impl HclNetworkVFManagerWorker {
         .unwrap_or_else(|cr| Err(anyhow!("vtl0 revoke timed out: {cr}")))
     }
 
-    /// Revokes the VTL0 VF from the guest.
+    /// Removes the VTL0 VF from the guest.
     ///
+    /// Generally called when not in shutdown, but it's not assumed here.
     /// The guest-facing offer bit is cleared before the revoke RPC is issued so
     /// duplicate removals become no-ops. On return,
     /// `guest_state.offered_to_guest` is always false even if the RPC fails or
@@ -789,6 +790,7 @@ impl HclNetworkVFManagerWorker {
 
     /// Updates which VTL0 VF, if any, is associated with this worker.
     ///
+    /// Assumes the worker is not in shutdown.
     /// When `vtl2_device_state` is `Present`, the guest-visible VF id and
     /// arrival/removal notifications are updated immediately. Otherwise the bus
     /// change is recorded on `self.vtl0_bus_control` and the guest-facing state
@@ -950,6 +952,12 @@ impl HclNetworkVFManagerWorker {
         vtl2_device_present
     }
 
+    /// Creates a stored state package to restore guest connectivity later
+    ///
+    /// Assumes the worker is not in shutdown.
+    /// This code will capture the state of the MANA device to simplify
+    /// re-initialization for the guest; on failure, it attempts to set
+    /// the MANA device to recover gracefully.
     async fn save_mana_device_state(&mut self, rpc: Rpc<(), VfManagerSaveResult>) {
         assert!(self.is_shutdown_active);
         drop(self.messages.take().unwrap());
@@ -1053,6 +1061,7 @@ impl HclNetworkVFManagerWorker {
 
     /// Attempts to restart the VTL2 device while the worker is reconfiguring the VF.
     ///
+    /// Assumes the worker is not in shutdown.
     /// On success, returns `Ok(None)` and sets device state to `Present` when the device has
     /// started up. If retries have run out, sets device state to `Missing` and returns an
     /// error; otherwise, `Ok(Some(backoff))` with updated retry timing.
@@ -1392,6 +1401,7 @@ impl HclNetworkVFManagerWorker {
                     };
 
                     if self.is_shutdown_active {
+                        tracing::warn!(vtl2_vfid, "VF reconfiguration restart during shutdown");
                         vf_reconfig_backoff = None;
                         continue;
                     }
