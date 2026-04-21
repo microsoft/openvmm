@@ -3,9 +3,9 @@
 
 //! X.509 certificate operations.
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod ossl;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use ossl as sys;
 
 use thiserror::Error;

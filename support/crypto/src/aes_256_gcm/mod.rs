@@ -3,9 +3,9 @@
 
 //! AES-256-GCM encryption and decryption.
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod ossl;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use ossl as sys;
 
 #[cfg(windows)]

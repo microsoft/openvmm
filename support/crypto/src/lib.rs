@@ -14,39 +14,39 @@
 // TODO: Rustcrypto backend for ease of use
 // TODO: Windows backends
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod aes_256_cbc;
+#[cfg(any(windows, target_os = "linux"))]
 pub mod aes_256_gcm;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod aes_key_wrap;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod hmac_sha_256;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod kdf;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod pkcs7;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod rsa;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod sha_256;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod x509;
+#[cfg(any(windows, target_os = "linux"))]
 pub mod xts_aes_256;
 
 pub(crate) mod win;
 
-use thiserror::Error;
-
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.
-#[cfg(unix)]
-#[derive(Clone, Debug, Error)]
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, thiserror::Error)]
 #[error("openssl error during {1}")]
 pub struct BackendError(#[source] openssl::error::ErrorStack, &'static str);
 
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.
 #[cfg(windows)]
-#[derive(Clone, Debug, Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 #[error("bcrypt error during {1}")]
 pub struct BackendError(#[source] windows_result::Error, &'static str);
