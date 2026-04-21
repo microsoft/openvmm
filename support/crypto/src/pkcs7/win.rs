@@ -333,21 +333,28 @@ impl Pkcs7SignedDataInner {
         policy_para.cbSize = size_of::<CERT_CHAIN_POLICY_PARA>() as u32;
 
         if uefi_mode {
-            // UEFI mode flags, chosen to match the OpenSSL backend's
-            // `NO_CHECK_TIME | PARTIAL_CHAIN` + `X509Purpose::ANY` + no
-            // revocation behavior:
+            // See `Pkcs7SignedData::verify` for the semantics of `uefi_mode`.
             //
-            // - Ignore time validity (certs may be expired)
-            // - Ignore wrong usage (any purpose)
-            // - Ignore all revocation unknowns
+            // 1. Partial chain: already provided by `hExclusiveRoot` on the
+            //    chain engine above -- any cert in the caller's trust store
+            //    is treated as a trust anchor, including intermediates.
             //
-            // `PARTIAL_CHAIN` is already provided by `hExclusiveRoot` on the
-            // chain engine: any cert in the caller's trust store is treated as
-            // a trust anchor, including intermediates. Do NOT also set
-            // `CERT_CHAIN_POLICY_ALLOW_UNKNOWN_CA_FLAG` here, because that
-            // would mask the legitimate "no matching trust anchor" error when
-            // the trust store lacks an appropriate cert, causing untrusted
-            // signatures to be accepted.
+            //    Do NOT also set `CERT_CHAIN_POLICY_ALLOW_UNKNOWN_CA_FLAG`
+            //    here: that would mask the legitimate "no matching trust
+            //    anchor" error when the trust store lacks an appropriate
+            //    cert, causing untrusted signatures to be accepted.
+            //
+            // 2. Ignore time validity: `IGNORE_ALL_NOT_TIME_VALID_FLAGS`
+            //    covers the signer, intermediates, and root
+            //
+            // 3. Any key-usage / EKU: `IGNORE_WRONG_USAGE_FLAG` accepts
+            //    certs regardless of their EKU / key-usage extensions.
+            //
+            // `IGNORE_ALL_REV_UNKNOWN_FLAGS` is also set so as to not
+            // perform revocation checking. In practice CryptoAPI is not
+            // asked to fetch revocation info here (`chain_flags = 0`),
+            // but the flag makes the intent explicit and is harmless if
+            // a provider does supply one.
             policy_para.dwFlags = CERT_CHAIN_POLICY_IGNORE_ALL_NOT_TIME_VALID_FLAGS
                 | CERT_CHAIN_POLICY_IGNORE_WRONG_USAGE_FLAG
                 | CERT_CHAIN_POLICY_IGNORE_ALL_REV_UNKNOWN_FLAGS;
