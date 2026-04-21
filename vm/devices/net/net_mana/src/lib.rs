@@ -17,6 +17,7 @@ use gdma_defs::Sge;
 use gdma_defs::WqeHeader;
 use gdma_defs::bnic::CQE_RX_OKAY;
 use gdma_defs::bnic::CQE_TX_GDMA_ERR;
+use gdma_defs::bnic::CQE_TX_INVALID_ETH_TYPE;
 use gdma_defs::bnic::CQE_TX_INVALID_OOB;
 use gdma_defs::bnic::CQE_TX_OKAY;
 use gdma_defs::bnic::MANA_LONG_PKT_FMT;
@@ -1088,10 +1089,16 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         self.stats.tx_errors.increment();
                         self.trace_tx(tracing::Level::WARN, cqe.params, tx_oob, done.len());
                     }
+                    CQE_TX_INVALID_ETH_TYPE => {
+                        // The hardware rejected the packet due to an unsupported EtherType.
+                        // Non-fatal: only the individual packet is dropped, the queue continues.
+                        self.stats.tx_errors.increment();
+                        self.trace_tx(tracing::Level::WARN, cqe.params, tx_oob, done.len());
+                    }
                     ty => {
                         tracelimit::error_ratelimited!(
                             ty,
-                            vendor_error = tx_oob.cqe_hdr.vendor_err(),
+                            vendor_err = tx_oob.cqe_hdr.vendor_err(),
                             "tx completion error"
                         );
                         self.stats.tx_errors.increment();
