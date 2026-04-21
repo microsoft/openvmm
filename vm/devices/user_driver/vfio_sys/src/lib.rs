@@ -34,6 +34,12 @@ use vfio_bindings::bindings::vfio::vfio_region_info;
 use vfio_bindings::bindings::vfio::vfio_region_info_cap_sparse_mmap;
 use vfio_bindings::bindings::vfio::vfio_region_sparse_mmap_area;
 
+/// Returns the host page size.
+pub fn host_page_size() -> u64 {
+    // SAFETY: sysconf(_SC_PAGESIZE) is always safe and always succeeds on Linux.
+    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 }
+}
+
 mod ioctl {
     use nix::request_code_none;
     use std::os::raw::c_char;
@@ -521,8 +527,7 @@ impl Device {
             let actual_tail = buf.head.argsz as usize - size_of::<vfio_region_info>();
             // SAFETY: The kernel initialized the tail bytes via the ioctl.
             unsafe { buf.set_tail_len(actual_tail.min(tail_len)) };
-            let areas = parse_sparse_mmap_caps(&buf);
-            if !areas.is_empty() {
+            if let Some(areas) = parse_sparse_mmap_caps(&buf) {
                 return Ok(areas);
             }
         }
@@ -670,7 +675,10 @@ impl Device {
 
 /// Walk the VFIO capability chain in a region info buffer and extract sparse
 /// mmap areas from any `VFIO_REGION_INFO_CAP_SPARSE_MMAP` capability.
-fn parse_sparse_mmap_caps(buf: &HeaderVec<vfio_region_info, u8, 0>) -> Vec<MemoryRange> {
+///
+/// Returns `Some(areas)` if the sparse mmap capability is present (even if
+/// empty), or `None` if it is absent.
+fn parse_sparse_mmap_caps(buf: &HeaderVec<vfio_region_info, u8, 0>) -> Option<Vec<MemoryRange>> {
     let mut offset = buf.head.cap_offset as usize;
 
     // SAFETY: HeaderVec guarantees head + tail are contiguous.
@@ -709,19 +717,20 @@ fn parse_sparse_mmap_caps(buf: &HeaderVec<vfio_region_info, u8, 0>) -> Vec<Memor
             }
             // SAFETY: Bounds checked; flexible array immediately follows the fixed fields.
             let areas = unsafe { cap.areas.as_slice(n) };
-            return areas
-                .iter()
-                .filter(|a| a.size > 0)
-                .map(|a| MemoryRange::new(a.offset..a.offset + a.size))
-                .collect();
+            return Some(
+                areas
+                    .iter()
+                    .filter(|a| a.size > 0)
+                    .map(|a| MemoryRange::new(a.offset..a.offset + a.size))
+                    .collect(),
+            );
         }
 
         offset = header.next as usize;
     }
 
-    // No sparse mmap cap found — return empty (caller should check mmap flag
-    // separately if needed).
-    Vec::new()
+    // No sparse mmap cap found.
+    None
 }
 
 impl AsRef<File> for Device {

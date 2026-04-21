@@ -7,10 +7,10 @@
 //! and BAR MMIO accesses to a physical device opened via Linux VFIO. The device
 //! appears as a standard PCIe endpoint to the guest. MSI-X table and PBA
 //! accesses are intercepted and handled by a software emulator; all other BAR
-//! MMIO regions are mapped directly into guest GPA space when a `MemoryMapper`
-//! is available, allowing the guest to access device registers without VM
-//! exits. If direct mapping is unavailable or fails for a BAR region, accesses
-//! fall back to trap-and-emulate via pread/pwrite on the VFIO device fd.
+//! MMIO regions are mapped directly into guest GPA space via a `MemoryMapper`,
+//! allowing the guest to access device registers without VM exits. A
+//! `MemoryMapper` is required for VFIO device assignment; mapping failures are
+//! fatal.
 
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
@@ -266,7 +266,9 @@ impl VfioAssignedPciDevice {
             });
 
             bar_mmio_controls[i] = Some(register_mmio.new_io_region(&format!("bar{i}"), info.size));
-            bar_mmap_areas[i] = vfio_device.region_mmap_areas(i as u32).unwrap_or_default();
+            bar_mmap_areas[i] = vfio_device
+                .region_mmap_areas(i as u32)
+                .with_context(|| format!("failed to query VFIO mmap areas for BAR {i}"))?;
         }
 
         // Discover MSI-X capability from physical device config space.
@@ -586,10 +588,7 @@ fn subtract_msix_regions(bar_mmap_areas: &mut [Vec<MemoryRange>; 6], msix: &Msix
 }
 
 fn page_size() -> u64 {
-    // Use a constant 4K page size. This is correct for x86_64 and aarch64
-    // (base page size). If we ever need the actual runtime page size, it
-    // can be obtained from vfio_sys or pal.
-    4096
+    vfio_sys::host_page_size()
 }
 
 /// Walk the PCI capabilities list to find an MSI-X capability. If found,
