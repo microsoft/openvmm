@@ -20,6 +20,7 @@ mod nvme_manager;
 mod options;
 mod reference_time;
 mod servicing;
+#[cfg(feature = "storvsc-usermode")]
 mod storvsc_manager;
 mod threadpool_vm_task_backend;
 mod vmbus_relay_unit;

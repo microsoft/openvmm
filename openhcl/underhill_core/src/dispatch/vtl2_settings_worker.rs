@@ -5,7 +5,9 @@
 
 use super::LoadedVm;
 use crate::nvme_manager::manager::NvmeDiskConfig;
+#[cfg(feature = "storvsc-usermode")]
 use crate::storvsc_manager::StorvscDiskBounceConfig;
+#[cfg(feature = "storvsc-usermode")]
 use crate::storvsc_manager::StorvscDiskConfig;
 use crate::worker::NicConfig;
 use anyhow::Context;
@@ -1029,6 +1031,9 @@ async fn make_disk_type_from_physical_device(
 
     // If storvsc usermode is enabled, route VScsi devices through StorvscDiskResolver
     // instead of the kernel path. Early return -- no need to wait for kernel device.
+    // storvsc_usermode field is always present but only actionable with feature.
+    let _ = storage_context.use_storvsc_usermode;
+    #[cfg(feature = "storvsc-usermode")]
     if storage_context.use_storvsc_usermode
         && matches!(
             single_device.device_type,
@@ -1242,17 +1247,17 @@ async fn make_ide_disk_config(
         // VScsi controller, the IDE direct (port I/O) path needs a bounce
         // wrapper because IDE CommandBuffer uses fake GPNs. The IDE accel
         // (storvsp VMBus) path gets the normal GPA-direct disk.
-        let ide_direct = if storage_context.use_storvsc_usermode {
+        #[cfg(feature = "storvsc-usermode")]
+        let ide_direct_disk_type = if storage_context.use_storvsc_usermode {
             match &disk.physical_devices {
                 PhysicalDevices::Single { device }
                     if device.device_type == underhill_config::DeviceType::VScsi =>
                 {
-                    let lun = u8::try_from(device.sub_device_path).ok();
-                    lun.map(|lun| {
-                        Resource::new(StorvscDiskBounceConfig {
+                    u8::try_from(device.sub_device_path).ok().map(|lun| {
+                        Box::new(Resource::new(StorvscDiskBounceConfig {
                             instance_guid: device.vmbus_instance_id,
                             lun,
-                        })
+                        }))
                     })
                 }
                 _ => None,
@@ -1260,13 +1265,15 @@ async fn make_ide_disk_config(
         } else {
             None
         };
+        #[cfg(not(feature = "storvsc-usermode"))]
+        let ide_direct_disk_type: Option<Box<Resource<DiskHandleKind>>> = None;
 
         Ok((
             IdeDeviceConfig {
                 path: ide_path_from_config(disk)?,
                 guest_media: GuestMedia::Disk {
                     disk_type: disk_type.unwrap(),
-                    ide_direct_disk_type: ide_direct.map(Box::new),
+                    ide_direct_disk_type,
                     read_only: false,
                     disk_parameters: Some(make_disk_config_inner(
                         disk.location,

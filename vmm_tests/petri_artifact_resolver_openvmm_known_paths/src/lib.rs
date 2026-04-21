@@ -80,6 +80,7 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == openhcl_igvm::LATEST_CVM_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Cvm),
             _ if id == openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::LinuxDirect),
             _ if id == openhcl_igvm::LATEST_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
+            _ if id == openhcl_igvm::LATEST_STORVSC_USERMODE_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::StorvscUsermode),
             _ if id == openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel),
 
             _ if id == openhcl_igvm::LATEST_RELEASE_STANDARD_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2511, OpenhclFlavor::Standard),
@@ -235,6 +236,7 @@ enum OpenhclFlavor {
     StandardDevKernel,
     Cvm,
     LinuxDirect,
+    StorvscUsermode,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -561,6 +563,14 @@ fn openhcl_bin_path(
             MissingCommand::XFlowey {
                 description: "OpenHCL IGVM file",
                 xflowey_args: &["build-igvm", "x64-test-linux-direct"],
+            },
+        ),
+        (MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::StorvscUsermode) => (
+            "flowey-out/artifacts/build-igvm/debug/x64-storvsc",
+            "openhcl-x64-storvsc.bin",
+            MissingCommand::XFlowey {
+                description: "OpenHCL IGVM file",
+                xflowey_args: &["build-igvm", "x64-storvsc-usermode"],
             },
         ),
         (MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::Standard) => (

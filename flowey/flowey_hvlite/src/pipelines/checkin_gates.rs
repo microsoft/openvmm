@@ -769,6 +769,7 @@ impl IntoPipeline for CheckinGatesCli {
                     OpenhclIgvmRecipe::X64Devkern,
                     OpenhclIgvmRecipe::X64TestLinuxDirect,
                     OpenhclIgvmRecipe::X64TestLinuxDirectDevkern,
+                    OpenhclIgvmRecipe::X64StorvscUsermode,
                     OpenhclIgvmRecipe::X64Cvm,
                 ],
                 CommonArch::Aarch64 => {
@@ -1415,6 +1416,7 @@ impl IntoPipeline for CheckinGatesCli {
                         igvm_files: [
                             OpenhclIgvmRecipe::X64,
                             OpenhclIgvmRecipe::X64TestLinuxDirect,
+                            OpenhclIgvmRecipe::X64StorvscUsermode,
                             OpenhclIgvmRecipe::X64Cvm,
                         ]
                         .into_iter()

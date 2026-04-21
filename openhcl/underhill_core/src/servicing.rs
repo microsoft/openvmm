@@ -53,6 +53,7 @@ mod state {
         pub nvme_state: crate::nvme_manager::save_restore::NvmeManagerSavedState,
     }
 
+    #[cfg(feature = "storvsc-usermode")]
     #[derive(Protobuf)]
     #[mesh(package = "underhill")]
     pub struct StorvscSavedState {
@@ -101,6 +102,7 @@ mod state {
         #[mesh(10003)]
         pub mana_state: Option<Vec<ManaSavedState>>,
         /// StorVSC saved state.
+        #[cfg(feature = "storvsc-usermode")]
         #[mesh(10004)]
         pub storvsc_state: Option<StorvscSavedState>,
     }
@@ -223,6 +225,7 @@ pub mod transposed {
         pub nvme_state: Option<Option<NvmeSavedState>>,
         pub dma_manager_state: Option<Option<OpenhclDmaManagerState>>,
         pub vmbus_client: Option<Option<vmbus_client::SavedState>>,
+        #[cfg(feature = "storvsc-usermode")]
         pub storvsc_state: Option<Option<StorvscSavedState>>,
     }
 
@@ -258,6 +261,7 @@ pub mod transposed {
                     mana_state,
                     dma_manager_state,
                     vmbus_client,
+                    #[cfg(feature = "storvsc-usermode")]
                     storvsc_state,
                 } = state;
 
@@ -277,6 +281,7 @@ pub mod transposed {
                     mana_state,
                     dma_manager_state: Some(dma_manager_state),
                     vmbus_client: Some(vmbus_client),
+                    #[cfg(feature = "storvsc-usermode")]
                     storvsc_state: Some(storvsc_state),
                 }
             } else {

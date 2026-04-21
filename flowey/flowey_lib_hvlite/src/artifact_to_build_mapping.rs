@@ -142,6 +142,7 @@ impl ResolvedArtifactSelections {
             | "petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64"
             | "petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_CVM_X64"
             | "petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64"
+            | "petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STORVSC_USERMODE_X64"
             | "petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64"
             | "petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64" =>
             {
