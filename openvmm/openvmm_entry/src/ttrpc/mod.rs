@@ -618,7 +618,7 @@ impl VmService {
             if !devices_config.scsi_disks.is_empty() {
                 let mut devices = Vec::new();
                 for disk in devices_config.scsi_disks {
-                    devices.push(make_disk_config(disk)?);
+                    devices.push(make_disk_config(disk).await?);
                 }
                 let (send, recv) = mesh::channel();
                 config.vmbus_devices.push((
@@ -815,13 +815,15 @@ impl VmService {
                     if disk.controller != 0 {
                         anyhow::bail!("controller must be 0");
                     }
-                    let config = make_disk_config(disk)?;
-                    let recv = vm
-                        .scsi_rpc
-                        .as_ref()
-                        .context("no scsi controller")?
-                        .call_failable(ScsiControllerRequest::AddDevice, config);
-                    Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
+                    let scsi_rpc = vm.scsi_rpc.as_ref().context("no scsi controller")?.clone();
+                    Ok(async move {
+                        let config = make_disk_config(disk).await?;
+                        scsi_rpc
+                            .call_failable(ScsiControllerRequest::AddDevice, config)
+                            .await
+                            .map_err(anyhow::Error::from)
+                    }
+                    .boxed())
                 } else if request.r#type == vmservice::ModifyType::Remove as i32 {
                     let recv = vm
                         .scsi_rpc
@@ -902,7 +904,7 @@ fn parse_nic_config(
     Ok((DeviceVtl::Vtl0, cfg.into_resource()))
 }
 
-fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDeviceAndPath> {
+async fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDeviceAndPath> {
     Ok(ScsiDeviceAndPath {
         path: storvsp_resources::ScsiPath {
             path: 0,
@@ -917,6 +919,7 @@ fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDeviceAndPa
                     direct: false,
                 },
             )
+            .await
             .with_context(|| format!("failed to open {}", disk.host_path))?,
             read_only: disk.read_only,
             parameters: Default::default(),

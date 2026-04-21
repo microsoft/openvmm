@@ -101,13 +101,16 @@ fn run(
     let drop_guard = DeleteFileOnDrop(result_disk.clone());
     std::fs::copy(source_disk, &result_disk)?;
     tracing::info!("Copied source disk successfully.");
-    let result_disk = openvmm_helpers::disk::open_disk_type(
-        &result_disk,
-        openvmm_helpers::disk::OpenDiskOptions {
-            read_only: false,
-            direct: false,
-        },
-    )?;
+    let result_disk = DefaultPool::run_with(async |_driver| {
+        openvmm_helpers::disk::open_disk_type(
+            &result_disk,
+            openvmm_helpers::disk::OpenDiskOptions {
+                read_only: false,
+                direct: false,
+            },
+        )
+        .await
+    })?;
 
     DefaultPool::run_with(async move |driver| {
         let (vm, agent) = PetriVmBuilder::new(
