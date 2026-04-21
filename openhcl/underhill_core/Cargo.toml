@@ -23,7 +23,6 @@ vpci = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 vmotherboard = { workspace = true, features = [
-    "encryption",
     "dev_underhill_vga_proxy",
     "dev_winbond_super_io_and_floppy_stub",
 ] }

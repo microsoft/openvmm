@@ -3,7 +3,8 @@
 
 //! Cryptographic operations to validate authenticated variables
 
-#![cfg(feature = "auth-var-verify-crypto")]
+// Only available with crypto-supported backends
+#![cfg(any(windows, target_os = "linux"))]
 
 use super::ParsedAuthVar;
 use thiserror::Error;

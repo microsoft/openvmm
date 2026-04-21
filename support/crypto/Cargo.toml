@@ -14,7 +14,6 @@ vendored = ["openssl/vendored"]
 
 [dependencies]
 thiserror.workspace = true
-tracing.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 openssl_kdf.workspace = true
