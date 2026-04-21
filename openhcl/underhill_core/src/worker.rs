@@ -62,6 +62,8 @@ use anyhow::Context;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
+use chipset_resources::CmosRtcTimeSourceHandleKind;
+use chipset_resources::ResolvedCmosRtcTimeSource;
 use closeable_mutex::CloseableMutex;
 use cvm_tracing::CVM_ALLOWED;
 use debug_ptr::DebugPtr;
@@ -148,6 +150,8 @@ use virt_mshv_vtl::UhPartitionNewParams;
 use virt_mshv_vtl::UhProtoPartition;
 use vm_loader::initial_regs::initial_regs;
 use vm_resource::IntoResource;
+use vm_resource::PlatformResource;
+use vm_resource::ResolveResource;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
@@ -193,6 +197,23 @@ use zerocopy::FromZeros;
 pub(crate) const PM_BASE: u16 = 0x400;
 pub(crate) const SYSTEM_IRQ_ACPI: u32 = 9;
 pub(crate) const WDAT_PORT: u16 = 0x30;
+
+struct UnderhillCmosRtcTimeSourceResolver {
+    time_source: ArcMutexUnderhillLocalClock,
+}
+
+impl ResolveResource<CmosRtcTimeSourceHandleKind, PlatformResource>
+    for UnderhillCmosRtcTimeSourceResolver
+{
+    type Output = ResolvedCmosRtcTimeSource;
+    type Error = std::convert::Infallible;
+
+    fn resolve(&self, _resource: PlatformResource, (): ()) -> Result<Self::Output, Self::Error> {
+        Ok(ResolvedCmosRtcTimeSource(Box::new(
+            self.time_source.new_linked_clock(),
+        )))
+    }
+}
 
 pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new("UnderhillWorker");
 
@@ -2286,7 +2307,6 @@ async fn new_underhill_vm(
         Some(n) => n.to_ne_bytes(),
     };
 
-    // TODO: move to instantiate via a resource.
     let rtc_time_source = ArcMutexUnderhillLocalClock(Arc::new(Mutex::new(
         UnderhillLocalClock::new(
             get_client.clone(),
@@ -2302,6 +2322,10 @@ async fn new_underhill_vm(
         .await
         .context("failed to initialize UnderhillLocalClock emuplat")?,
     )));
+
+    resolver.add_resolver(UnderhillCmosRtcTimeSourceResolver {
+        time_source: rtc_time_source.new_linked_clock(),
+    });
 
     let mut serial_inputs = [None, None, None, None];
 
@@ -2802,7 +2826,7 @@ async fn new_underhill_vm(
 
     #[cfg(guest_arch = "x86_64")]
     let deps_piix4_cmos_rtc = chipset.with_piix4_cmos_rtc.then(|| dev::Piix4CmosRtcDeps {
-        time_source: Box::new(rtc_time_source.new_linked_clock()),
+        time_source: PlatformResource.into_resource(),
         initial_cmos: Some(firmware_pcat::default_cmos_values(&mem_layout)),
         enlightened_interrupts: true, // As advertised by the PCAT BIOS.
     });
@@ -2866,7 +2890,7 @@ async fn new_underhill_vm(
         .with_generic_cmos_rtc
         .then(|| dev::GenericCmosRtcDeps {
             irq: 8,
-            time_source: Box::new(rtc_time_source.new_linked_clock()),
+            time_source: PlatformResource.into_resource(),
             century_reg_idx: 0x32,
             initial_cmos: None,
         });

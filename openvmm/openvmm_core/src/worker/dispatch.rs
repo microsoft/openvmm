@@ -11,6 +11,7 @@ use anyhow::Context;
 use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
+use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
@@ -99,6 +100,7 @@ use virtio::VirtioMmioDevice;
 use virtio::VirtioPciDevice;
 use virtio::resolve::VirtioResolveInput;
 use vm_loader::initial_regs::initial_regs;
+use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
@@ -1419,14 +1421,12 @@ impl InitializedVm {
         };
 
         let deps_generic_cmos_rtc = (cfg.chipset.with_generic_cmos_rtc).then(|| {
-            // TODO: persist SystemTimeClock time across reboots.
-            // TODO: move to instantiate via a resource.
-            let time_source = Box::new(local_clock::SystemTimeClock::new(
-                LocalClockDelta::from_millis(cfg.rtc_delta_milliseconds),
-            ));
             dev::GenericCmosRtcDeps {
                 irq: 8,
-                time_source,
+                time_source: SystemTimeClockHandle {
+                    delta_milliseconds: cfg.rtc_delta_milliseconds,
+                }
+                .into_resource(),
                 century_reg_idx: 0x32, // TODO: automatically sync with FADT
                 initial_cmos: initial_rtc_cmos,
             }
@@ -1569,13 +1569,11 @@ impl InitializedVm {
         });
 
         let deps_piix4_cmos_rtc = (cfg.chipset.with_piix4_cmos_rtc).then(|| {
-            // TODO: persist SystemTimeClock time across reboots.
-            // TODO: move to instantiate via a resource.
-            let time_source = Box::new(local_clock::SystemTimeClock::new(
-                LocalClockDelta::from_millis(cfg.rtc_delta_milliseconds),
-            ));
             dev::Piix4CmosRtcDeps {
-                time_source,
+                time_source: SystemTimeClockHandle {
+                    delta_milliseconds: cfg.rtc_delta_milliseconds,
+                }
+                .into_resource(),
                 initial_cmos: initial_rtc_cmos,
                 enlightened_interrupts: true, // As advertised by the PCAT BIOS.
             }
