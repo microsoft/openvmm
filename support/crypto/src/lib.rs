@@ -38,8 +38,8 @@ pub mod x509;
 #[cfg(any(windows, target_os = "linux"))]
 pub mod xts_aes_256;
 
-pub(crate) mod win;
 pub(crate) mod mac;
+pub(crate) mod win;
 
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.

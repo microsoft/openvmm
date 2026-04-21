@@ -62,7 +62,12 @@ impl fmt::Display for OsStatusCode {
         let mut buf = vec![0u8; buf_size as usize];
         // SAFETY: cf_str is valid, buf is large enough.
         let ok = unsafe {
-            CFStringGetCString(cf_str, buf.as_mut_ptr(), buf_size, K_CF_STRING_ENCODING_UTF8)
+            CFStringGetCString(
+                cf_str,
+                buf.as_mut_ptr(),
+                buf_size,
+                K_CF_STRING_ENCODING_UTF8,
+            )
         };
         // SAFETY: cf_str is a non-null CFStringRef we must release.
         unsafe { CFRelease(cf_str) };

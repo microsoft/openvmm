@@ -75,7 +75,11 @@ unsafe extern "C" {
     fn SecTrustSetNetworkFetchAllowed(trust: SecTrustRef, allowed: u8) -> OsStatusCode;
 
     fn CMSDecoderCreate(decoder_out: *mut CMSDecoderRef) -> OsStatusCode;
-    fn CMSDecoderUpdateMessage(decoder: CMSDecoderRef, msg: *const u8, msg_len: usize) -> OsStatusCode;
+    fn CMSDecoderUpdateMessage(
+        decoder: CMSDecoderRef,
+        msg: *const u8,
+        msg_len: usize,
+    ) -> OsStatusCode;
     fn CMSDecoderSetDetachedContent(decoder: CMSDecoderRef, content: CFDataRef) -> OsStatusCode;
     fn CMSDecoderFinalizeMessage(decoder: CMSDecoderRef) -> OsStatusCode;
     fn CMSDecoderGetNumSigners(decoder: CMSDecoderRef, num_signers: *mut usize) -> OsStatusCode;
