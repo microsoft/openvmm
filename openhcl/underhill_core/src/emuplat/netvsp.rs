@@ -1416,7 +1416,7 @@ impl HclNetworkVFManagerWorker {
                 }
                 NextWorkItem::ManaDeviceRemoved => {
                     if self.is_shutdown_active {
-                        tracing::info!(vtl2_vfid, "MANA device removal during shutdown");
+                        tracing::warning!(vtl2_vfid, "MANA device removal during shutdown");
                         continue;
                     }
                     self.mana_device_removed(&mut vtl2_device_state, &mut vf_reconfig_backoff)
