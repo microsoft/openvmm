@@ -53,40 +53,30 @@ impl LayerAttach for AutoCacheSqliteDiskLayer {
 
         // Try to open an existing cache file.
         if path.fs_err_try_exists()? {
-            match SqliteDiskLayer::new(&path, self.read_only, None) {
-                Ok(layer) => {
-                    if layer.sector_count() != metadata.sector_count {
-                        anyhow::bail!(
-                            "cache layer has different sector count: {} vs {}",
-                            layer.sector_count(),
-                            metadata.sector_count
-                        );
-                    }
-                    return Ok(layer);
-                }
-                Err(e) if self.read_only => {
-                    return Err(e).context("failed to open cache file in read-only mode");
-                }
-                Err(e) => {
-                    // The cache file exists but is corrupt (e.g., from a
-                    // previous interrupted format). Delete it and re-create.
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = &*e,
-                        "corrupt cache file, removing and re-creating"
-                    );
-                    remove_sqlite_file(&path);
-                }
+            let layer = SqliteDiskLayer::new(&path, self.read_only, None)
+                .context("failed to open existing cache file")?;
+            if layer.sector_count() != metadata.sector_count {
+                anyhow::bail!(
+                    "cache layer has different sector count: {} vs {}",
+                    layer.sector_count(),
+                    metadata.sector_count
+                );
             }
-        } else if self.read_only {
+            return Ok(layer);
+        }
+
+        if self.read_only {
             anyhow::bail!("cache file does not exist and cannot be created in read-only mode");
         }
 
-        // Create the cache file atomically: format into a temp file, then
-        // hard-link into place. If a concurrent process wins the link, we
-        // discard our temp file and open the winner's file instead.
+        // Create the cache file atomically: format into a temp file inside
+        // a temp directory, then hard-link the db file into the canonical
+        // path. The temp directory cleans up the db and its WAL/SHM sidecar
+        // files automatically when dropped.
         fs_err::create_dir_all(path.parent().unwrap())?;
-        let temp_path = path.with_file_name(format!("cache.dbhd.tmp.{}", std::process::id()));
+        let temp_dir = tempfile::tempdir_in(path.parent().unwrap())
+            .context("failed to create temp directory for cache")?;
+        let temp_db = temp_dir.path().join("cache.dbhd");
 
         let format_params = FormatParams {
             logically_read_only: true,
@@ -94,27 +84,19 @@ impl LayerAttach for AutoCacheSqliteDiskLayer {
             sector_size: metadata.sector_size,
         };
 
-        // Format the new cache file at the temp path, then close before linking.
-        drop(SqliteDiskLayer::new(
-            &temp_path,
-            false,
-            Some(format_params),
-        )?);
+        // Format the new cache file, then close before linking.
+        drop(SqliteDiskLayer::new(&temp_db, false, Some(format_params))?);
 
         // hard_link fails if the target already exists, which is how we
         // detect a concurrent creator.
-        match fs_err::hard_link(&temp_path, &path) {
+        match fs_err::hard_link(&temp_db, &path) {
             Ok(()) => {
-                // We won the race. Remove the temp entry (the hard link is
-                // the canonical path now).
-                remove_sqlite_file(&temp_path);
+                // We won the race. temp_dir drops and cleans up.
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Another process created the cache file first.
-                remove_sqlite_file(&temp_path);
             }
             Err(e) => {
-                remove_sqlite_file(&temp_path);
                 return Err(e).context("failed to link cache file into place");
             }
         }
@@ -129,12 +111,4 @@ impl LayerAttach for AutoCacheSqliteDiskLayer {
         }
         Ok(layer)
     }
-}
-
-/// Remove a SQLite database file and its WAL/SHM sidecar files.
-fn remove_sqlite_file(path: &std::path::Path) {
-    let _ = fs_err::remove_file(path);
-    let name = path.file_name().unwrap().to_str().unwrap();
-    let _ = fs_err::remove_file(path.with_file_name(format!("{name}-wal")));
-    let _ = fs_err::remove_file(path.with_file_name(format!("{name}-shm")));
 }

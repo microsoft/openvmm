@@ -1661,6 +1661,7 @@ dependencies = [
  "scsi_buffers",
  "serde",
  "serde_json",
+ "tempfile",
  "tracing",
  "vm_resource",
 ]
