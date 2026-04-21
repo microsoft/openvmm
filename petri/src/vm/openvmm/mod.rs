@@ -300,21 +300,25 @@ async fn petri_disk_to_openvmm(disk: &Disk) -> anyhow::Result<Resource<DiskHandl
         .into_resource(),
         Disk::Differencing(DiskPath::Local(path)) => memdiff_disk(path).await?,
         Disk::Differencing(DiskPath::Remote { url }) => memdiff_remote_disk(url)?,
-        Disk::Persistent(path) => open_disk_type(
-            path.as_ref(),
-            OpenDiskOptions {
-                read_only: false,
-                direct: false,
-            },
-        )
-        .await?,
-        Disk::Temporary(path) => open_disk_type(
-            path.as_ref(),
-            OpenDiskOptions {
-                read_only: false,
-                direct: false,
-            },
-        )
-        .await?,
+        Disk::Persistent(path) => {
+            open_disk_type(
+                path.as_ref(),
+                OpenDiskOptions {
+                    read_only: false,
+                    direct: false,
+                },
+            )
+            .await?
+        }
+        Disk::Temporary(path) => {
+            open_disk_type(
+                path.as_ref(),
+                OpenDiskOptions {
+                    read_only: false,
+                    direct: false,
+                },
+            )
+            .await?
+        }
     })
 }

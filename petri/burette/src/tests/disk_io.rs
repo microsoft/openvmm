@@ -175,6 +175,7 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
                 // Build the disk resource before entering the closure (which
                 // can't propagate errors).
                 let disk = make_disk_resource(&data_disk_path, disk_size_bytes)
+                    .await
                     .context("failed to create data disk resource")?;
                 builder = builder.modify_backend(move |b| {
                     b.with_nic()
@@ -337,7 +338,7 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
 }
 
 /// Create a disk resource from either a file path or a RAM-backed disk.
-fn make_disk_resource(
+async fn make_disk_resource(
     path: &Option<PathBuf>,
     size_bytes: u64,
 ) -> anyhow::Result<vm_resource::Resource<vm_resource::kind::DiskHandleKind>> {
@@ -349,6 +350,7 @@ fn make_disk_resource(
                 direct: false,
             },
         )
+        .await
         .with_context(|| format!("failed to open data disk at {}", p.display())),
         None => {
             use disk_backend_resources::LayeredDiskHandle;

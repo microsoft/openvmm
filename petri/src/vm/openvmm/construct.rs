@@ -209,37 +209,35 @@ impl PetriVmConfigOpenVmm {
         let (mut vmbus_devices, vpci_devices) =
             vmbus_storage_controllers_to_openvmm(&vmbus_storage_controllers).await?;
 
-        let pcie_devices = pcie_nvme_drives
-            .into_iter()
-            .map(
-                |PcieNvmeDrive {
-                     port_name,
-                     nsid,
-                     drive: Drive { disk, .. },
-                 }| {
-                    let disk = disk.ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "missing disk for PCIe NVMe drive on port '{port_name}' (nsid {nsid})"
-                        )
-                    })?;
-                    petri_disk_to_openvmm(&disk).map(|disk| PcieDeviceConfig {
-                        port_name,
-                        resource: NvmeControllerHandle {
-                            subsystem_id: guid::guid!("a1b2c3d4-e5f6-7890-abcd-ef0123456789"),
-                            max_io_queues: 64,
-                            msix_count: 64,
-                            namespaces: vec![NamespaceDefinition {
-                                nsid,
-                                read_only: false,
-                                disk,
-                            }],
-                            requests: None,
-                        }
-                        .into_resource(),
-                    })
-                },
-            )
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut pcie_devices = Vec::new();
+        for PcieNvmeDrive {
+            port_name,
+            nsid,
+            drive: Drive { disk, .. },
+        } in pcie_nvme_drives
+        {
+            let disk = disk.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing disk for PCIe NVMe drive on port '{port_name}' (nsid {nsid})"
+                )
+            })?;
+            let disk = petri_disk_to_openvmm(&disk).await?;
+            pcie_devices.push(PcieDeviceConfig {
+                port_name,
+                resource: NvmeControllerHandle {
+                    subsystem_id: guid::guid!("a1b2c3d4-e5f6-7890-abcd-ef0123456789"),
+                    max_io_queues: 64,
+                    msix_count: 64,
+                    namespaces: vec![NamespaceDefinition {
+                        nsid,
+                        read_only: false,
+                        disk,
+                    }],
+                    requests: None,
+                }
+                .into_resource(),
+            });
+        }
 
         let (firmware_event_send, firmware_event_recv) = mesh::mpsc_channel();
 
@@ -1262,7 +1260,7 @@ async fn vmbus_storage_controllers_to_openvmm(
                         instance_id: drive_id,
                         resource: VirtioPciDeviceHandle(
                             VirtioBlkHandle {
-                                disk: petri_disk_to_openvmm(disk)?,
+                                disk: petri_disk_to_openvmm(disk).await?,
                                 read_only: false,
                             }
                             .into_resource(),

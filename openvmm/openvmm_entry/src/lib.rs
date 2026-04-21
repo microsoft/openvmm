@@ -507,15 +507,16 @@ async fn vm_config_from_command_line(
         if underhill.is_some() {
             anyhow::bail!("underhill not supported with virtio-blk");
         }
-        storage.add(
-            vtl,
-            None,
-            storage_builder::DiskLocation::VirtioBlk(pcie_port.clone()),
-            kind,
-            is_dvd,
-            read_only,
-        )
-        .await?;
+        storage
+            .add(
+                vtl,
+                None,
+                storage_builder::DiskLocation::VirtioBlk(pcie_port.clone()),
+                kind,
+                is_dvd,
+                read_only,
+            )
+            .await?;
     }
 
     let mut floppy_disks = Vec::new();
