@@ -10,8 +10,8 @@
 //! It is explicitly specialized for the needs of the OpenVMM project and is
 //! not suitable for general-purpose use.
 
-// UNSAFETY: calling BCrypt APIs
-#![cfg_attr(windows, expect(unsafe_code))]
+// UNSAFETY: calling BCrypt APIs on Windows, Security.framework APIs on macOS.
+#![cfg_attr(any(windows, target_os = "macos"), expect(unsafe_code))]
 
 // TODO: Symcrypt somehow
 // TODO: Rustcrypto backend for ease of use
@@ -27,7 +27,7 @@ pub mod aes_key_wrap;
 pub mod hmac_sha_256;
 #[cfg(target_os = "linux")]
 pub mod kdf;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod pkcs7;
 #[cfg(target_os = "linux")]
 pub mod rsa;
@@ -39,6 +39,7 @@ pub mod x509;
 pub mod xts_aes_256;
 
 pub(crate) mod win;
+pub(crate) mod mac;
 
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.
@@ -53,3 +54,6 @@ pub struct BackendError(#[source] openssl::error::ErrorStack, &'static str);
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("windows crypto error during {1}")]
 pub struct BackendError(#[source] windows_result::Error, &'static str);
+
+#[cfg(target_os = "macos")]
+pub use mac::BackendError;

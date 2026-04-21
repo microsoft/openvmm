@@ -13,6 +13,11 @@ mod win;
 #[cfg(windows)]
 use win as sys;
 
+#[cfg(target_os = "macos")]
+mod mac;
+#[cfg(target_os = "macos")]
+use mac as sys;
+
 use thiserror::Error;
 
 /// A parsed PKCS#7 signedData object.
