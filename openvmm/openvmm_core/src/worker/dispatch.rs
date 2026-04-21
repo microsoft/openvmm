@@ -81,7 +81,6 @@ use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
-use scsidisk::SimpleScsiDisk;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
 use serial_16550_resources::ComPort;
 use state_unit::SavedStateUnit;
@@ -91,7 +90,6 @@ use std::fs::File;
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
-use storvsp::ScsiControllerDisk;
 use virt::ProtoPartition;
 use virt::VpIndex;
 use virtio::PciInterruptModel;
@@ -134,7 +132,6 @@ use vmm_core::partition_unit::PartitionUnitParams;
 use vmm_core::partition_unit::block_on_vp;
 use vmm_core::vmbus_unit::ChannelUnit;
 use vmm_core::vmbus_unit::VmbusServerHandle;
-use vmm_core::vmbus_unit::offer_channel_unit;
 use vmm_core::vmbus_unit::offer_vmbus_device_handle_unit;
 use vmm_core_defs::HaltReason;
 use vmotherboard::BaseChipsetBuilder;
@@ -1318,7 +1315,6 @@ impl InitializedVm {
         let mut pci_legacy_interrupts = Vec::new();
 
         let mut ide_drives = [[None, None], [None, None]];
-        let mut storvsp_ide_disks = Vec::new();
         if cfg.chipset.with_hyperv_ide {
             pci_legacy_interrupts.push(((7, None), 14));
             pci_legacy_interrupts.push(((7, None), 15));
@@ -1343,20 +1339,14 @@ impl InitializedVm {
                     GuestMedia::Disk {
                         disk_type,
                         read_only,
-                        disk_parameters,
+                        disk_parameters: _,
                     } => {
                         let disk =
                             open_simple_disk(&resolver, disk_type, read_only, &driver_source)
                                 .await
                                 .context("failed to open IDE disk")?;
 
-                        // Only disks get accelerator channels. DVDs dont.
-                        let scsi_disk = ScsiControllerDisk::new(Arc::new(SimpleScsiDisk::new(
-                            disk.clone(),
-                            disk_parameters.unwrap_or_default(),
-                        )));
-                        storvsp_ide_disks.push((path, scsi_disk));
-                        ide::DriveMedia::hard_disk(disk.clone())
+                        ide::DriveMedia::hard_disk(disk)
                     }
                 };
 
@@ -1708,7 +1698,7 @@ impl InitializedVm {
             }
         };
 
-        let mut scsi_devices = Vec::new();
+        let scsi_devices = Vec::new();
         let mut vtl0_hvsock_relay = None;
         #[cfg(windows)]
         let mut vmbus_proxy = None;
@@ -1955,28 +1945,6 @@ impl InitializedVm {
 
         // Synthetic devices
         {
-            // Arbitrary default
-            const DEFAULT_IO_QUEUE_DEPTH: u32 = 256;
-            if let Some(vmbus) = &vmbus_server {
-                for (path, scsi_disk) in storvsp_ide_disks {
-                    scsi_devices.push(
-                        offer_channel_unit(
-                            &driver_source.simple(),
-                            &state_units,
-                            vmbus,
-                            storvsp::StorageDevice::build_ide(
-                                &driver_source,
-                                path.channel,
-                                path.drive,
-                                scsi_disk,
-                                DEFAULT_IO_QUEUE_DEPTH,
-                            ),
-                        )
-                        .await?,
-                    );
-                }
-            }
-
             #[cfg(windows)]
             for nic_config in cfg.kernel_vmnics {
                 let mut nic = vmswitch::kernel::KernelVmNic::new(

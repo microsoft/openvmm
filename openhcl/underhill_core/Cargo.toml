@@ -83,7 +83,6 @@ scsidisk.workspace = true
 scsidisk_resources.workspace = true
 serial_16550_resources.workspace = true
 storage_string.workspace = true
-storvsp.workspace = true
 storvsp_resources.workspace = true
 tpm_protocol.workspace = true
 tpm_resources.workspace = true
