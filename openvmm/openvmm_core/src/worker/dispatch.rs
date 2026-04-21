@@ -1207,7 +1207,7 @@ impl InitializedVm {
                             pcie_host_bridges: &Vec::new(),
                             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                                 with_ioapic: cfg.chipset.with_generic_ioapic,
-                                with_pic: cfg.chipset.with_generic_pic,
+                                with_pic: cfg.chipset_capabilities.with_pic,
                                 with_pit: cfg.chipset_capabilities.with_pit,
                                 with_psp: cfg.chipset.with_generic_psp,
                                 pm_base: PM_BASE,
@@ -1525,8 +1525,6 @@ impl InitializedVm {
                 pio_data: pci_bus::standard_x86_io_ports::DATA_START,
             });
 
-        let deps_generic_pic = (cfg.chipset.with_generic_pic).then_some(dev::GenericPicDeps {});
-
         let deps_generic_psp = (cfg.chipset.with_generic_psp).then_some(dev::GenericPspDeps {});
 
         let deps_hyperv_framebuffer =
@@ -1607,7 +1605,6 @@ impl InitializedVm {
                 deps_generic_isa_dma,
                 deps_generic_isa_floppy,
                 deps_generic_pci_bus,
-                deps_generic_pic,
                 deps_generic_psp,
                 deps_hyperv_firmware_pcat,
                 deps_hyperv_firmware_uefi,
@@ -1708,7 +1705,7 @@ impl InitializedVm {
                 // Avoid an ISA interrupt to avoid conflicts and to avoid needing to
                 // configure the line as level-triggered in the MADT (necessary for
                 // Linux when the PIC is missing).
-                if cfg.chipset.with_generic_pic {
+                if cfg.chipset_capabilities.with_pic {
                     Some(PCI_LEGACY_INTA_IRQ)
                 } else {
                     Some(PCI_INTA_IRQ)
@@ -2149,7 +2146,7 @@ impl InitializedVm {
         let virtio_mmio_irq = {
             const VIRTIO_MMIO_IOAPIC_IRQ: u32 = 17;
             const VIRTIO_MMIO_PIC_IRQ: u32 = 5;
-            if cfg.chipset.with_generic_pic {
+            if cfg.chipset_capabilities.with_pic {
                 VIRTIO_MMIO_PIC_IRQ
             } else {
                 VIRTIO_MMIO_IOAPIC_IRQ
@@ -2368,7 +2365,7 @@ impl LoadedVmInner {
             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                 with_ioapic: self.chipset_cfg.with_generic_ioapic,
                 with_psp: self.chipset_cfg.with_generic_psp,
-                with_pic: self.chipset_cfg.with_generic_pic,
+                with_pic: self.chipset_capabilities.with_pic,
                 with_pit: self.chipset_capabilities.with_pit,
                 pm_base: PM_BASE,
                 acpi_irq: SYSTEM_IRQ_ACPI,
