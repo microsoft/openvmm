@@ -329,8 +329,6 @@ enum HvcallRepInput<'a, T> {
 }
 
 pub(crate) mod ioctls {
-    #![allow(non_camel_case_types)]
-
     use crate::protocol;
     use hvdef::hypercall::HvRegisterAssoc;
     use nix::ioctl_none;
