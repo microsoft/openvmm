@@ -76,7 +76,7 @@ macro_rules! open_enum {
         }
         impl ::core::fmt::Debug for $name {
             fn fmt(&self, fmt: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
-                #![allow(unreachable_patterns)]
+                //#[allow(unreachable_patterns)]
                 let s = match *self {
                     $( Self::$variant => stringify!($variant), )*
                     _ => {

@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(dead_code)]
-
 use bitfield_struct::bitfield;
 use guid::Guid;
 use open_enum::open_enum;
@@ -78,6 +76,7 @@ pub struct VersionResponse {
     pub status: VersionStatus,
 }
 
+#[expect(dead_code)]
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GetFileInfoRequest {
@@ -117,6 +116,7 @@ pub struct ReadFileResponse {
     // Followed by the data.
 }
 
+#[expect(dead_code)]
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadFileRdmaRequest {
@@ -127,6 +127,7 @@ pub struct ReadFileRdmaRequest {
     // Followed by a UTF-16 file path.
 }
 
+#[expect(dead_code)]
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadFileRdmaResponse {
