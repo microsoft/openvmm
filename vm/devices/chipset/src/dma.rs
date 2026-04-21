@@ -29,11 +29,20 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use open_enum::open_enum;
 use std::ops::RangeInclusive;
+use vm_resource::CanResolveTo;
+use vm_resource::kind::IsaDmaControllerHandleKind;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::isa_dma_channel::IsaDmaBuffer;
 use vmcore::isa_dma_channel::IsaDmaDirection;
 
 pub mod resolver;
+
+/// A resolved ISA DMA controller resource.
+pub struct ResolvedIsaDmaController(pub DmaController);
+
+impl CanResolveTo<ResolvedIsaDmaController> for IsaDmaControllerHandleKind {
+    type Input<'a> = ();
+}
 
 // Skip registering page port 0x80 so that the PCAT BIOS can handle
 // it for debugging purposes.
@@ -211,10 +220,6 @@ impl ChangeDeviceState for DmaController {
 
 impl ChipsetDevice for DmaController {
     fn supports_pio(&mut self) -> Option<&mut dyn PortIoIntercept> {
-        Some(self)
-    }
-
-    fn supports_isa_dma_controller(&mut self) -> Option<&mut dyn IsaDmaController> {
         Some(self)
     }
 }
