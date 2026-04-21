@@ -14,7 +14,6 @@ use chipset::*;
 use chipset_device::ChipsetDevice;
 use chipset_device::interrupt::LineInterruptTarget;
 use chipset_device_resources::ConfigureChipsetDevice;
-use chipset_device_resources::ErasedChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
@@ -31,8 +30,9 @@ use state_unit::StateUnits;
 use std::fmt::Debug;
 use std::sync::Arc;
 use thiserror::Error;
-use vm_resource::ResourceId;
+use vm_resource::Resource;
 use vm_resource::ResourceResolver;
+use vm_resource::kind::IsaDmaControllerHandleKind;
 use vmcore::vm_task::VmTaskDriverSource;
 
 /// Errors which may occur during base chipset construction
@@ -49,6 +49,8 @@ pub enum BaseChipsetBuilderError {
     FeatureGatedDevice(&'static str),
     #[error("no valid ISA DMA controller for floppy")]
     NoDmaForFloppy,
+    #[error("failed to resolve ISA DMA controller")]
+    ResolveIsaDma(#[source] vm_resource::ResolveError),
 }
 
 /// A grab-bag of device-specific interfaces that may need to be wired up into
@@ -80,6 +82,7 @@ pub struct BaseChipsetBuilder<'a> {
     devices: options::BaseChipsetDevices,
     device_handles: Vec<ChipsetDeviceHandle>,
     pci_device_handles: Vec<LegacyPciChipsetDeviceHandle>,
+    isa_dma_handle: Option<Resource<IsaDmaControllerHandleKind>>,
     expected_manifest: Option<options::BaseChipsetManifest>,
     fallback_mmio_device: Option<Arc<CloseableMutex<dyn ChipsetDevice>>>,
     flags: BaseChipsetBuilderFlags,
@@ -101,6 +104,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             devices,
             device_handles: Vec::new(),
             pci_device_handles: Vec::new(),
+            isa_dma_handle: None,
             expected_manifest: None,
             fallback_mmio_device: None,
             flags: BaseChipsetBuilderFlags {
@@ -149,6 +153,15 @@ impl<'a> BaseChipsetBuilder<'a> {
         self
     }
 
+    /// Sets the ISA DMA controller handle to be resolved and instantiated.
+    pub fn with_isa_dma_handle(
+        mut self,
+        handle: Option<Resource<IsaDmaControllerHandleKind>>,
+    ) -> Self {
+        self.isa_dma_handle = handle;
+        self
+    }
+
     /// Emit "missing device" traces when accessing unknown port IO addresses.
     ///
     /// Disabled by default.
@@ -190,6 +203,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             devices,
             device_handles,
             pci_device_handles,
+            isa_dma_handle,
             expected_manifest,
             fallback_mmio_device,
             flags,
@@ -294,11 +308,23 @@ impl<'a> BaseChipsetBuilder<'a> {
                 })?;
         }
 
-        let mut dma: Option<Arc<CloseableMutex<ErasedChipsetDevice>>> = None;
+        let dma: Option<Arc<CloseableMutex<dma::DmaController>>> =
+            if let Some(dma_handle) = isa_dma_handle {
+                let resolved = resolver
+                    .resolve(dma_handle, ())
+                    .await
+                    .map_err(BaseChipsetBuilderError::ResolveIsaDma)?;
+                let dev = builder
+                    .arc_mutex_device::<dma::DmaController>("dma")
+                    .add(|_services| resolved.0)?;
+                Some(dev)
+            } else {
+                None
+            };
+
         for device in device_handles {
-            let resource_id = device.resource.id().to_owned();
             let ChipsetDeviceHandle { name, resource } = device;
-            let dev = builder
+            builder
                 .arc_mutex_device(name.as_ref())
                 .try_add_async(async |services| {
                     resolver
@@ -320,22 +346,6 @@ impl<'a> BaseChipsetBuilder<'a> {
                         .map(|device| device.0)
                 })
                 .await?;
-
-            match resource_id.as_str() {
-                id if id == chipset_resources::isa_dma::GenericIsaDmaDeviceHandle::ID => {
-                    if dma.is_some() {
-                        tracelimit::warn_ratelimited!(
-                            "multiple GenericIsaDmaDeviceHandle entries found; ignoring duplicate handle"
-                        );
-                    } else {
-                        dma = Some(dev);
-                    }
-                }
-                _ => {
-                    // Non-ISA handles are added for their builder-side effects;
-                    // we only retain the ISA DMA handle for floppy wiring.
-                }
-            }
         }
 
         let _ = dma;
@@ -964,58 +974,29 @@ mod weak_mutex_pci {
 
 pub struct ArcMutexIsaDmaChannel {
     channel_num: u8,
-    dma: Arc<CloseableMutex<ErasedChipsetDevice>>,
+    dma: Arc<CloseableMutex<dma::DmaController>>,
 }
 
 impl ArcMutexIsaDmaChannel {
-    pub fn new(dma: Arc<CloseableMutex<ErasedChipsetDevice>>, channel_num: u8) -> Self {
+    pub fn new(dma: Arc<CloseableMutex<dma::DmaController>>, channel_num: u8) -> Self {
         Self { dma, channel_num }
     }
 }
 
 impl vmcore::isa_dma_channel::IsaDmaChannel for ArcMutexIsaDmaChannel {
     fn check_transfer_size(&mut self) -> u16 {
-        let mut dma = self.dma.lock();
-        let Some(ctrl): Option<&mut dyn chipset_device::isa_dma::IsaDmaController> =
-            dma.supports_isa_dma_controller()
-        else {
-            tracelimit::error_ratelimited!("ISA DMA device does not support IsaDmaController");
-            return 0;
-        };
-        ctrl.check_transfer_size(self.channel_num as usize)
+        self.dma.lock().check_transfer_size(self.channel_num.into())
     }
 
     fn request(
         &mut self,
         direction: vmcore::isa_dma_channel::IsaDmaDirection,
     ) -> Option<vmcore::isa_dma_channel::IsaDmaBuffer> {
-        let mut dma = self.dma.lock();
-        let ctrl: &mut dyn chipset_device::isa_dma::IsaDmaController =
-            dma.supports_isa_dma_controller()?;
-        let direction = match direction {
-            vmcore::isa_dma_channel::IsaDmaDirection::Write => {
-                chipset_device::isa_dma::IsaDmaTransferDirection::Write
-            }
-            vmcore::isa_dma_channel::IsaDmaDirection::Read => {
-                chipset_device::isa_dma::IsaDmaTransferDirection::Read
-            }
-        };
-        ctrl.request(self.channel_num as usize, direction).map(
-            |chipset_device::isa_dma::IsaDmaTransferBuffer { address, size }| {
-                vmcore::isa_dma_channel::IsaDmaBuffer { address, size }
-            },
-        )
+        self.dma.lock().request(self.channel_num.into(), direction)
     }
 
     fn complete(&mut self) {
-        let mut dma = self.dma.lock();
-        let Some(ctrl): Option<&mut dyn chipset_device::isa_dma::IsaDmaController> =
-            dma.supports_isa_dma_controller()
-        else {
-            tracelimit::error_ratelimited!("ISA DMA device does not support IsaDmaController");
-            return;
-        };
-        ctrl.complete(self.channel_num as usize)
+        self.dma.lock().complete(self.channel_num.into())
     }
 }
 

@@ -39,6 +39,7 @@ use thiserror::Error;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::IsaDmaControllerHandleKind;
 use vm_resource::kind::SerialBackendHandle;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::LegacyPciChipsetDeviceHandle;
@@ -97,6 +98,8 @@ pub struct VmChipsetResult {
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
     /// The list of legacy PCI chipset devices with explicit placement metadata.
     pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
+    /// Optional ISA DMA controller resource handle.
+    pub isa_dma_controller: Option<Resource<IsaDmaControllerHandleKind>>,
     /// Derived chipset capabilities needed by firmware and table generation.
     pub capabilities: VmChipsetCapabilities,
 }
@@ -226,6 +229,7 @@ impl VmManifestBuilder {
             chipset_devices: Vec::new(),
             pci_chipset_devices: Vec::new(),
             chipset: BaseChipsetManifest::empty(),
+            isa_dma_controller: None,
             capabilities: VmChipsetCapabilities {
                 with_ioapic: false,
                 with_pic: false,
@@ -398,10 +402,7 @@ impl VmChipsetResult {
     }
 
     fn attach_generic_isa_dma(&mut self) -> &mut Self {
-        self.chipset_devices.push(ChipsetDeviceHandle {
-            name: "dma".to_owned(),
-            resource: GenericIsaDmaDeviceHandle.into_resource(),
-        });
+        self.isa_dma_controller = Some(GenericIsaDmaDeviceHandle.into_resource());
         self.capabilities.with_generic_isa_dma = true;
         self
     }

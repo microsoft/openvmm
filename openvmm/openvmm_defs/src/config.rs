@@ -54,6 +54,7 @@ pub struct Config {
     pub vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
     pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
+    pub isa_dma_controller: Option<Resource<vm_resource::kind::IsaDmaControllerHandleKind>>,
     pub chipset_capabilities: VmChipsetCapabilities,
     pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.

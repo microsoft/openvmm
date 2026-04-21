@@ -68,12 +68,6 @@ pub trait ChipsetDevice: 'static + Send /* see DEVNOTE before adding bounds */ {
     fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
         None
     }
-
-    /// Optionally returns a trait object for ISA DMA controller access.
-    #[inline(always)]
-    fn supports_isa_dma_controller(&mut self) -> Option<&mut dyn isa_dma::IsaDmaController> {
-        None
-    }
 }
 
 /// Shared by `mmio` and `pio`

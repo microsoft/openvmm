@@ -894,6 +894,7 @@ async fn vm_config_from_command_line(
         chipset,
         mut chipset_devices,
         pci_chipset_devices,
+        isa_dma_controller,
         capabilities,
     } = chipset
         .build()
@@ -1636,6 +1637,7 @@ async fn vm_config_from_command_line(
         vmbus_devices,
         chipset_devices,
         pci_chipset_devices,
+        isa_dma_controller,
         chipset_capabilities: capabilities,
         #[cfg(windows)]
         vpci_resources,

@@ -4,31 +4,32 @@
 //! Resource resolver for the ISA DMA chipset device.
 
 use super::DmaController;
-use chipset_device_resources::ResolveChipsetDeviceHandleParams;
-use chipset_device_resources::ResolvedChipsetDevice;
+use super::ResolvedIsaDmaController;
 use chipset_resources::isa_dma::GenericIsaDmaDeviceHandle;
 use std::convert::Infallible;
 use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
-use vm_resource::kind::ChipsetDeviceHandleKind;
+use vm_resource::kind::IsaDmaControllerHandleKind;
 
 /// A resolver for the ISA DMA chipset device.
 pub struct GenericIsaDmaResolver;
 
 declare_static_resolver! {
     GenericIsaDmaResolver,
-    (ChipsetDeviceHandleKind, GenericIsaDmaDeviceHandle),
+    (IsaDmaControllerHandleKind, GenericIsaDmaDeviceHandle),
 }
 
-impl ResolveResource<ChipsetDeviceHandleKind, GenericIsaDmaDeviceHandle> for GenericIsaDmaResolver {
-    type Output = ResolvedChipsetDevice;
+impl ResolveResource<IsaDmaControllerHandleKind, GenericIsaDmaDeviceHandle>
+    for GenericIsaDmaResolver
+{
+    type Output = ResolvedIsaDmaController;
     type Error = Infallible;
 
     fn resolve(
         &self,
         _resource: GenericIsaDmaDeviceHandle,
-        _input: ResolveChipsetDeviceHandleParams<'_>,
+        _input: (),
     ) -> Result<Self::Output, Self::Error> {
-        Ok(DmaController::new().into())
+        Ok(ResolvedIsaDmaController(DmaController::new()))
     }
 }

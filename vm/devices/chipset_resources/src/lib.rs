@@ -34,13 +34,13 @@ pub mod isa_dma {
 
     use mesh::MeshPayload;
     use vm_resource::ResourceId;
-    use vm_resource::kind::ChipsetDeviceHandleKind;
+    use vm_resource::kind::IsaDmaControllerHandleKind;
 
     /// A handle to a generic dual 8237 ISA DMA controller.
     #[derive(MeshPayload)]
     pub struct GenericIsaDmaDeviceHandle;
 
-    impl ResourceId<ChipsetDeviceHandleKind> for GenericIsaDmaDeviceHandle {
+    impl ResourceId<IsaDmaControllerHandleKind> for GenericIsaDmaDeviceHandle {
         const ID: &'static str = "genericIsaDma";
     }
 }
