@@ -57,7 +57,7 @@ If you ran `cargo xflowey restore-packages`, the firmware is at:
 
 ```text
 .packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd        # x64
-.packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_VS2022/FV/MSVM.fd # aarch64
+.packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV/MSVM.fd # aarch64
 ```
 
 If you used `cargo xflowey vmm-tests-run --build-only --dir <out>`, the firmware
