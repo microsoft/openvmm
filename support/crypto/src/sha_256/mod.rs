@@ -3,9 +3,9 @@
 
 //! SHA-256 hashing.
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod ossl;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use ossl as sys;
 
 /// Compute the SHA-256 hash of `data`.

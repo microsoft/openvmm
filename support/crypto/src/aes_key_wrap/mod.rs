@@ -3,9 +3,9 @@
 
 //! AES key wrap with padding (RFC 5649).
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod ossl;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use ossl as sys;
 
 use thiserror::Error;

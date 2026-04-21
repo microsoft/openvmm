@@ -3,7 +3,9 @@
 
 //! PKCS#7 signed data verification.
 
+#[cfg(target_os = "linux")]
 mod ossl;
+#[cfg(target_os = "linux")]
 use ossl as sys;
 
 use thiserror::Error;

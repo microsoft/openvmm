@@ -160,14 +160,12 @@ impl SimpleFlowNode for Node {
                     exclude.push("xtask_fuzz".into());
                 }
 
-                // packages requiring openssl-sys won't cross compile for macos
+                // packages requiring crypto won't cross compile for macos
                 if matches!(
                     target.operating_system,
                     target_lexicon::OperatingSystem::Darwin(_)
                 ) {
-                    exclude.extend(
-                        ["openssl_kdf", "vmgs_lib", "disk_crypt", "crypto"].map(|x| x.into()),
-                    );
+                    exclude.extend(["openssl_kdf", "vmgs_lib", "disk_crypt"].map(|x| x.into()));
                 }
 
                 Ok(Some(exclude))
