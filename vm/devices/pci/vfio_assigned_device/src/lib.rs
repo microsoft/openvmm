@@ -578,6 +578,21 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             self.msix_disable();
         }
 
+        // Quiesce the physical device by clearing Bus Master Enable,
+        // Memory Space Enable, and I/O Space Enable in the Command
+        // register. VFIO passes these bits through to real hardware (only
+        // INTx Disable is virtualized), so this actually stops the device
+        // from mastering DMA and from decoding MMIO/PIO on the physical
+        // bus. Without this, a device that lacks VFIO_DEVICE_RESET support
+        // would continue mastering the bus after a VM reset.
+        let command = cfg_space::Command::from_bits(
+            self.read_phys_config(HeaderType00::STATUS_COMMAND.0) as u16,
+        )
+        .with_pio_enabled(false)
+        .with_mmio_enabled(false)
+        .with_bus_master(false);
+        self.write_phys_config(HeaderType00::STATUS_COMMAND.0, command.into_bits().into());
+
         // Destructure to ensure every field is explicitly considered for reset.
         let Self {
             pci_id,
