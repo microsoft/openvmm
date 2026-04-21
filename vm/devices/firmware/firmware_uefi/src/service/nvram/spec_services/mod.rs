@@ -92,9 +92,10 @@ pub enum AuthError {
 
     #[error("could not verify auth var")]
     CryptoError,
-    #[cfg(feature = "auth-var-verify-crypto")]
+
+    #[cfg(any(windows, target_os = "linux"))]
     #[error("error in crypto payload format")]
-    CryptoFormat(#[from] auth_var_crypto::FormatError),
+    CryptoFormat(#[source] auth_var_crypto::FormatError),
 }
 
 /// `SetVariable` validation is incredibly tricky, since there are a _lot_ of
@@ -135,7 +136,7 @@ impl SupportedAttrs {
 
 /// Helper struct to collect various properties of a parsed authenticated var
 #[derive(Debug, Clone, Copy)]
-#[cfg_attr(not(feature = "auth-var-verify-crypto"), expect(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), expect(dead_code))]
 pub struct ParsedAuthVar<'a> {
     pub name: &'a Ucs2LeSlice,
     pub vendor: Guid,
@@ -1296,7 +1297,8 @@ impl<S: VmmNvramStorage> NvramSpecServices<S> {
         res
     }
 
-    #[cfg(not(feature = "auth-var-verify-crypto"))]
+    // Can't authenticate variables without crypto support
+    #[cfg(not(any(windows, target_os = "linux")))]
     async fn authenticate_var(
         &mut self,
         // NOTE: Due to a compiler limitation with async fn, 'static bound was removed here
@@ -1305,18 +1307,16 @@ impl<S: VmmNvramStorage> NvramSpecServices<S> {
         _: ParsedAuthVar<'_>,
     ) -> Result<(), (EfiStatus, Option<NvramError>)> {
         tracing::warn!(
-            "compiled without 'auth-var-verify-crypto' - unconditionally failing auth var validation!"
+            "compiled for a platform without crypto support - unconditionally failing auth var validation!"
         );
         Err((EfiStatus::SECURITY_VIOLATION, None))
     }
 
     /// Authenticate the given variable against the signatures stored in the
     /// specified EFI_SIGNATURE_LIST
-    #[cfg(feature = "auth-var-verify-crypto")]
+    #[cfg(any(windows, target_os = "linux"))]
     async fn authenticate_var(
         &mut self,
-        // NOTE: Due to a compiler limitation with async fn, 'static bound was removed here
-        // https://github.com/rust-lang/rust/issues/63033#issuecomment-521234696
         (key_var_name, key_var_vendor): (Guid, &Ucs2LeSlice),
         auth_var: ParsedAuthVar<'_>,
     ) -> Result<(), (EfiStatus, Option<NvramError>)> {

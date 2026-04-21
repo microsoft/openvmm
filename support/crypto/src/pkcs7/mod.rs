@@ -8,6 +8,11 @@ mod ossl;
 #[cfg(target_os = "linux")]
 use ossl as sys;
 
+#[cfg(windows)]
+mod win;
+#[cfg(windows)]
+use win as sys;
+
 use thiserror::Error;
 
 /// A parsed PKCS#7 signedData object.
@@ -40,12 +45,14 @@ impl Pkcs7SignedData {
     }
 
     /// Encode this PKCS#7 object as DER bytes.
+    #[cfg(target_os = "linux")]
     pub fn to_der(&self) -> Result<Vec<u8>, Pkcs7Error> {
         self.0.to_der()
     }
 
     /// Creates a PKCS#7 signed-data object by signing `data` with the given
     /// certificate and key pair.
+    #[cfg(target_os = "linux")]
     pub fn sign(
         cert: &super::x509::X509Certificate,
         key_pair: &super::rsa::RsaKeyPair,
@@ -58,12 +65,37 @@ impl Pkcs7SignedData {
     ///
     /// Consumes the store, since the backend may need to finalize it.
     ///
-    /// The `uefi_mode` flag weakens verification behavior to match UEFI's requirements.
-    ///
     /// Returns `Ok(true)` when verification succeeds and `Ok(false)` when the
-    /// signature check fails.
+    /// signature check fails. `Err` is reserved for internal backend failures
+    /// (e.g. allocation, malformed inputs that the backend cannot parse); all
+    /// signature/chain/policy failures map to `Ok(false)` so that callers
+    /// processing untrusted signed data do not have to distinguish them.
+    ///
+    /// No certificate revocation checking is performed.
+    ///
+    /// # `uefi_mode`
+    ///
+    /// When `false`, verification uses the backend's default PKI rules: the
+    /// signer must chain up to a root certificate in `store`, all certs in
+    /// the chain must be currently time-valid, and the chain must be valid
+    /// for the default purpose.
+    ///
+    /// When `true`, the following relaxations are applied so that PKCS#7
+    /// signatures can be verified against the certificates found in a UEFI
+    /// `EFI_SIGNATURE_LIST` (`db`/`dbx`/`KEK`/`PK`):
+    ///
+    /// 1. **Partial chains are accepted.** Any certificate in `store` is
+    ///    treated as a trust anchor, not just self-signed roots. UEFI
+    ///    signature lists typically contain leaf or intermediate certs with
+    ///    no full chain available to the verifier.
+    /// 2. **Certificate time validity is ignored.** Expired certificates are
+    ///    accepted. UEFI signing certs in the wild are often long expired
+    ///    and existing firmware implementations accept them.
+    /// 3. **Any key-usage / extended-key-usage is accepted.** UEFI signature
+    ///    list certs are not marked with the usages that a general-purpose
+    ///    PKI verifier expects for the default purpose.
     pub fn verify(
-        &self,
+        self,
         store: Pkcs7CertStore,
         signed_content: &[u8],
         uefi_mode: bool,

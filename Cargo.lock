@@ -1023,7 +1023,6 @@ dependencies = [
  "openssl",
  "openssl_kdf",
  "thiserror 2.0.16",
- "tracing",
  "wchar",
  "windows 0.62.0",
  "windows-result 0.4.0",

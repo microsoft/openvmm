@@ -160,7 +160,7 @@ impl SimpleFlowNode for Node {
                     exclude.push("xtask_fuzz".into());
                 }
 
-                // packages requiring crypto won't cross compile for macos
+                // packages requiring crypto support won't cross compile for macos
                 if matches!(
                     target.operating_system,
                     target_lexicon::OperatingSystem::Darwin(_)

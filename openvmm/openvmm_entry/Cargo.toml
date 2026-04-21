@@ -11,8 +11,6 @@ default = ["ttrpc", "grpc"]
 
 vendored_crypto = ["crypto/vendored"]
 
-encryption = ["vmotherboard/encryption"]
-
 unstable_whp = ["virt_whp/unstable_whp", "whp/unstable_whp"]
 
 grpc = ["mesh_rpc/grpc"]
