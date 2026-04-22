@@ -44,9 +44,6 @@ tracing-subscriber.workspace = true
 ucs2.workspace = true
 resource_dll_parser = { workspace = true, optional = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-crypto = { workspace = true, optional = true, features = ["openssl"] }
-
 [dev-dependencies]
 tempfile.workspace = true
 
@@ -54,5 +51,5 @@ tempfile.workspace = true
 workspace = true
 
 [package.metadata.xtask.unused-deps]
-# keep the crypto dep so we can specify the vendored and openssl features
+# keep the crypto dep so we can specify the vendored feature
 ignored = ["crypto"]

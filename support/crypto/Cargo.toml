@@ -31,6 +31,11 @@ windows = { workspace = true, features = ["Win32_Foundation","Win32_Security_Cry
 windows-result.workspace = true
 zerocopy.workspace = true
 
+# Default to OpenSSL on Linux since there is no native backend available
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl_kdf.workspace = true
+openssl.workspace = true
+
 [dev-dependencies]
 hex.workspace = true
 

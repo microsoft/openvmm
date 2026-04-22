@@ -17,12 +17,9 @@ futures.workspace = true
 vmgs_format.workspace = true
 vmgs = { workspace = true, features = ["encryption"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-crypto = { workspace = true, features = ["openssl"] }
-
 [lints]
 workspace = true
 
 [package.metadata.xtask.unused-deps]
-# keep the crypto dep so we can specify the vendored and openssl features
+# keep the crypto dep so we can specify the vendored feature
 ignored = ["crypto"]
