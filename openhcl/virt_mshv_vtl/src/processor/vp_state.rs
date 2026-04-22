@@ -15,7 +15,7 @@ pub struct UhVpStateAccess<'a, 'b, T: Backing> {
 
 impl<'a, 'p, T: Backing> UhVpStateAccess<'a, 'p, T> {
     pub(crate) fn new(vp: &'a mut UhProcessor<'p, T>, vtl: GuestVtl) -> Self {
-        Self { vp, vtl, }
+        Self { vp, vtl }
     }
 }
 
@@ -25,23 +25,10 @@ pub enum Error {
     SetRegisters(#[source] SetRegError),
     #[error("failed to get registers")]
     GetRegisters(#[source] GetRegError),
-    #[error("the value for setting efer {0} is invalid, {1}")]
-    SetEfer(u64, &'static str),
+    #[error("the value for setting {1} ({0}) is invalid: {2}")]
+    InvalidValue(u64, &'static str, &'static str),
     #[error("'{0}' state is not implemented yet")]
     Unimplemented(&'static str),
     #[error("failed to set apic base MSR")]
     InvalidApicBase(#[source] virt_support_apic::InvalidApicBase),
-    // #[error("failed to set registers")]
-    // SetRegistersR(#[source] SetRegError),
-    // #[error("failed to get registers")]
-    // GetRegistersR(#[source] GetRegError),
 }
-
-// /// temp - just to get round some error compatibilities
-// #[derive(Debug, Error)]
-// pub enum RegError {
-//     #[error("failed to set registers")]
-//     SetRegisters(#[source] SetRegError),
-//     #[error("failed to get registers")]
-//     GetRegisters(#[source] GetRegError),
-// }

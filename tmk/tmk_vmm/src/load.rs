@@ -9,35 +9,30 @@ use guestmem::GuestMemory;
 use hvdef::Vtl;
 use loader::importer::GuestArch;
 use loader::importer::ImageLoad;
+#[cfg(guest_arch = "x86_64")]
 use loader::importer::X86Register;
 use object::Endianness;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSegment as _;
 use std::fmt::Debug;
+#[cfg(guest_arch = "aarch64")]
+use std::os::unix::fs::FileExt;
 use std::sync::Arc;
 use virt::VpIndex;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
+#[cfg(guest_arch = "aarch64")]
 use vm_topology::processor::aarch64::Aarch64Topology;
+#[cfg(guest_arch = "x86_64")]
 use vm_topology::processor::x86::X86Topology;
 use zerocopy::FromBytes as _;
+#[cfg(guest_arch = "x86_64")]
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
-// use nix::{
-//     sys::{
-//         mman::{MapFlags, ProtFlags, mmap},
-//         statfs::statfs,
-//     },
-//     unistd::{ftruncate, mkstemp, unlink},
-// };
-use std::{
-    os::unix::{fs::FileExt},
-};
-
 /// Loads a TMK, returning the initial registers for the BSP.
-#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
+#[cfg(guest_arch = "x86_64")]
 pub fn load_x86(
     memory_layout: &MemoryLayout,
     guest_memory: &GuestMemory,
@@ -47,7 +42,7 @@ pub fn load_x86(
     test: &TestInfo,
 ) -> anyhow::Result<Arc<virt::x86::X86InitialRegs>> {
     let mut loader = vm_loader::Loader::new(guest_memory.clone(), memory_layout, Vtl::Vtl0);
-    let load_info = load_common(None,&mut loader, tmk, test)?;
+    let load_info = load_common(None, &mut loader, tmk, test)?;
 
     let page_table_base = load_info.next_available_address;
     let mut page_table_work_buffer: Vec<page_table::x64::PageTable> =
@@ -99,9 +94,8 @@ pub fn load_x86(
     Ok(regs)
 }
 
-#[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
+#[cfg(guest_arch = "aarch64")]
 pub fn load_aarch64(
-    offset: Option<u64>,
     memory_layout: &MemoryLayout,
     guest_memory: &GuestMemory,
     processor_topology: &ProcessorTopology<Aarch64Topology>,
@@ -110,7 +104,7 @@ pub fn load_aarch64(
     test: &TestInfo,
 ) -> anyhow::Result<Arc<virt::aarch64::Aarch64InitialRegs>> {
     let mut loader = vm_loader::Loader::new(guest_memory.clone(), memory_layout, Vtl::Vtl0);
-    let load_info = load_common(offset, &mut loader, tmk, test)?;
+    let load_info = load_common(Some(memory_layout.ram()[0].range.start()), &mut loader, tmk, test)?;
 
     let mut import_reg = |reg| {
         loader
@@ -171,6 +165,7 @@ fn load_common<R: Debug + GuestArch>(
 struct LoadInfo {
     entrypoint: u64,
     param: u64,
+    #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
     next_available_address: u64,
 }
 
@@ -255,6 +250,7 @@ pub fn enumerate_tests(tmk: &File) -> anyhow::Result<Vec<TestInfo>> {
 ///    address space. An invalid address may still produce a result, but it will be
 ///    for an unrelated page.
 /// 3. Reading `/proc/self/pagemap` typically requires `CAP_SYS_ADMIN` privileges.
+#[cfg(guest_arch = "aarch64")]
 #[allow(unsafe_code)]
 pub unsafe fn virt_to_phys(vaddr: u64) -> Result<u64, String> {
     // Constants based on the kernel's pagemap documentation.
@@ -270,7 +266,6 @@ pub unsafe fn virt_to_phys(vaddr: u64) -> Result<u64, String> {
     if page_size == 0 {
         return Err("Could not determine system page size".to_string());
     }
-    // dbg!(page_size);
 
     // Open the pagemap file for the current process.
     let pagemap_file = std::fs::File::open("/proc/self/pagemap").map_err(|e| {
@@ -281,7 +276,6 @@ pub unsafe fn virt_to_phys(vaddr: u64) -> Result<u64, String> {
     // Virtual Page Number = Virtual Address / Page Size
     // Offset = Virtual Page Number * Entry Size
     let offset = (vaddr / page_size) * PAGEMAP_ENTRY_SIZE;
-    // dbg!(offset);
 
     let mut entry_bytes = [0u8; 8];
     // Use `read_exact_at` to perform an atomic seek-and-read. This is safer than
@@ -289,7 +283,6 @@ pub unsafe fn virt_to_phys(vaddr: u64) -> Result<u64, String> {
     pagemap_file
         .read_exact_at(&mut entry_bytes, offset)
         .map_err(|e| format!("Failed to read from /proc/self/pagemap at offset {offset}: {e}"))?;
-    // dbg!(entry_bytes);
 
     let pagemap_entry = u64::from_ne_bytes(entry_bytes);
 

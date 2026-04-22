@@ -14,7 +14,6 @@ cfg_if::cfg_if!(
         mod cvm_cpuid;
         pub use processor::snp::SnpBacked;
         pub use processor::tdx::TdxBacked;
-        use crate::processor::HardwareIsolatedBacking;
         pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
         use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use bitvec::prelude::BitArray;
@@ -34,13 +33,13 @@ cfg_if::cfg_if!(
         use virt::X86Partition;
         use virt_support_apic::LocalApicSet;
     } else if #[cfg(guest_arch = "aarch64")] {
+        use aarch64defs::Vendor;
         pub use crate::processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
+        use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
+        use hcl::ioctl::cca::RsiRealmConfig;
         pub use processor::cca::CcaBacked;
         use processor::cca::CcaBackedShared;
-        use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
-        use aarch64defs::Vendor;
-        use hcl::ioctl::cca::Addresses;
-        use hcl::ioctl::cca::RsiRealmConfig;
+        use safe_intrinsics::read_cntfrq_el0;
     }
 );
 
@@ -48,7 +47,7 @@ mod processor;
 use hv1_emulator::hv::ProcessorVtlHv;
 pub use processor::Backing;
 pub use processor::UhProcessor;
-use safe_intrinsics::read_cntfrq_el0;
+
 use hcl::GuestVtl;
 use anyhow::Context as AnyhowContext;
 use bitfield_struct::bitfield;
@@ -239,7 +238,7 @@ struct UhPartitionInner {
     crash_notification_send: mesh::Sender<VtlCrash>,
     monitor_page: MonitorPage,
     #[inspect(skip)]
-    allocated_monitor_page: Mutex<Option<user_driver::memory::MemoryBlock>>,
+    allocated_monitor_page: Mutex<Option<MemoryBlock>>,
     software_devices: Option<ApicSoftwareDevices>,
     #[inspect(skip)]
     vmtime: VmTimeSource,
@@ -254,7 +253,6 @@ struct UhPartitionInner {
     #[inspect(hex, with = "|x| inspect::iter_by_index(x.read().into_inner())")]
     device_vector_table: RwLock<IrrBitmap>,
     vmbus_relay: bool,
-    addresses: Addresses,
     synic_ports: virt::synic::SynicPortMap,
 }
 
@@ -299,7 +297,6 @@ impl BackingShared {
                 partition_params,
                 backing_shared_params,
             )?),
-            #[cfg(not(guest_arch = "x86_64"))]
             _ => unreachable!(),
         })
     }
@@ -312,7 +309,6 @@ impl BackingShared {
             | BackingShared::Tdx(TdxBackedShared { cvm, .. }) => Some(cvm),
             #[cfg(guest_arch = "aarch64")]
             BackingShared::Cca(CcaBackedShared { cvm, .. }) => Some(cvm),
-
         }
     }
 
@@ -371,7 +367,7 @@ impl From<EnterMode> for hcl::protocol::EnterMode {
     }
 }
 
-// #[cfg(guest_arch = "x86_64")]
+#[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
 struct GuestVsmVpState {
     /// The pending event that VTL 1 wants to inject into VTL 0. Injected on
@@ -381,7 +377,7 @@ struct GuestVsmVpState {
     reg_intercept: SecureRegisterInterceptState,
 }
 
-// #[cfg(guest_arch = "x86_64")]
+#[cfg(guest_arch = "x86_64")]
 impl GuestVsmVpState {
     fn new() -> Self {
         GuestVsmVpState {
@@ -396,7 +392,7 @@ impl GuestVsmVpState {
 struct UhCvmVpState {
     // Allocation handle for direct overlays
     #[inspect(debug)]
-    direct_overlay_handle: Option<user_driver::memory::MemoryBlock>,
+    direct_overlay_handle: Option<MemoryBlock>,
     /// Used in VTL 2 exit code to determine which VTL to exit to.
     exit_vtl: GuestVtl,
     /// Hypervisor enlightenment emulator state.
@@ -404,7 +400,7 @@ struct UhCvmVpState {
     /// LAPIC state.
     #[cfg(guest_arch = "x86_64")]
     lapics: VtlArray<LapicState, 2>,
-    
+
     /// Guest VSM state for this vp. Some when VTL 1 is enabled.
     #[cfg(guest_arch = "x86_64")]
     vtl1: Option<GuestVsmVpState>,
@@ -414,23 +410,19 @@ impl UhCvmVpState {
     /// Creates a new CVM VP state.
     pub(crate) fn new(
         cvm_partition: &UhCvmPartitionState,
-        _inner: &UhPartitionInner,
+        #[cfg_attr(guest_arch = "aarch64", allow(unused_variables))]
+        inner: &UhPartitionInner,
         vp_info: &TargetVpInfo,
         overlay_pages_required: usize,
     ) -> Result<Self, Error> {
-
         let mut direct_overlay_handle: Option<MemoryBlock> = None;
         if let Some(sdmac) = &cvm_partition.shared_dma_client {
-            direct_overlay_handle = Some(sdmac
-            .allocate_dma_buffer(overlay_pages_required * HV_PAGE_SIZE as usize)
-            // .allocate_dma_buffer(HV_PAGE_SIZE_USIZE as usize)
-            .map_err(Error::AllocateSharedVisOverlay)?);
+            direct_overlay_handle = Some(
+                sdmac
+                    .allocate_dma_buffer(overlay_pages_required * HV_PAGE_SIZE as usize)
+                    .map_err(Error::AllocateSharedVisOverlay)?,
+            );
         }
-        // let direct_overlay_handle = cvm_partition
-        //     .shared_dma_client
-        //     // .allocate_dma_buffer(overlay_pages_required * HV_PAGE_SIZE as usize)
-        //     .allocate_dma_buffer(HV_PAGE_SIZE_USIZE as usize)
-        //     .map_err(Error::AllocateSharedVisOverlay)?;
 
         #[cfg(guest_arch = "x86_64")]
         let lapics = VtlArray::from_fn(|vtl| {
@@ -713,7 +705,6 @@ impl UhProcessorBox {
         driver: &impl Driver,
         control: Option<&'a mut IdleControl>,
     ) -> Result<UhProcessor<'a, T>, Error> {
-
         if let Some(control) = &control {
             let vp_index = self.vp_info.base.vp_index;
 
@@ -830,11 +821,13 @@ struct WakeReason {
 
 impl WakeReason {
     // Convenient constants.
-    const _EXTINT: Self = Self::new().with_extint(true);
+    #[cfg(guest_arch = "x86_64")]
+    const EXTINT: Self = Self::new().with_extint(true);
     const MESSAGE_QUEUES: Self = Self::new().with_message_queues(true);
     #[cfg(guest_arch = "x86_64")]
     const HV_START_ENABLE_VP_VTL: Self = Self::new().with_hv_start_enable_vtl_vp(true); // StartVp/EnableVpVtl handling
-    const _INTCON: Self = Self::new().with_intcon(true);
+    #[cfg(guest_arch = "x86_64")]
+    const INTCON: Self = Self::new().with_intcon(true);
     #[cfg(guest_arch = "x86_64")]
     const UPDATE_PROXY_IRR_FILTER: Self = Self::new().with_update_proxy_irr_filter(true);
 }
@@ -872,10 +865,10 @@ impl UhPartition {
             | BackingShared::Tdx(TdxBackedShared { cvm, .. }) => {
                 revoke(&mut *cvm.guest_vsm.write())?;
             }
+            #[cfg(guest_arch = "aarch64")]
             BackingShared::Cca(CcaBackedShared { cvm, .. }) => {
                 revoke(&mut *cvm.guest_vsm.write())?;
             }
-
         };
 
         Ok(())
@@ -909,10 +902,10 @@ impl virt::Partition for UhPartition {
             .request_msi(vtl.try_into().expect("higher vtl not configured"), request)
     }
 
+    #[cfg(guest_arch = "aarch64")]
     fn request_msi(&self, _vtl: Vtl, _request: MsiRequest) {
         todo!()
     }
-
 
     fn request_yield(&self, _vp_index: VpIndex) {
         unimplemented!()
@@ -1417,7 +1410,6 @@ impl UhPartitionInner {
     fn request_msi(&self, _vtl: GuestVtl, _request: MsiRequest) {
         todo!();
     }
-
 }
 
 impl IoApicRouting for UhPartitionInner {
@@ -1668,8 +1660,6 @@ pub struct UhProtoPartition<'a> {
     cpuid: virt::CpuidLeafSet,
     #[cfg(guest_arch = "aarch64")]
     realm_config: RsiRealmConfig,
-    #[allow(dead_code)]
-    addresses: Addresses,
 }
 
 impl<'a> UhProtoPartition<'a> {
@@ -1742,12 +1732,12 @@ impl<'a> UhProtoPartition<'a> {
             .map_err(Error::GetReg)?;
         
         let guest_vsm_available = {
-                let privs = hcl
-                    .get_privileges_and_features_info()
-                    .map_err(Error::GetReg)?;
+            let privs = hcl
+                .get_privileges_and_features_info()
+                .map_err(Error::GetReg)?;
 
-                Self::check_guest_vsm_support(Some(privs), &hcl)?
-            };
+            Self::check_guest_vsm_support(Some(privs), &hcl)?
+        };
 
         #[cfg(guest_arch = "x86_64")]
         let cpuid = match params.isolation {
@@ -1776,8 +1766,9 @@ impl<'a> UhProtoPartition<'a> {
             }
             .build()
             .map_err(Error::CvmCpuid)?,
-            IsolationType::Cca | IsolationType::Vbs | IsolationType::None => None,
-
+            IsolationType::Cca | IsolationType::Vbs | IsolationType::None => {
+                virt::CpuidLeafSet::new(Vec::new())
+            }
         };
 
         Ok(UhProtoPartition {
@@ -1790,8 +1781,6 @@ impl<'a> UhProtoPartition<'a> {
             cpuid,
             #[cfg(guest_arch = "aarch64")]
             realm_config,
-            #[cfg(guest_arch = "aarch64")]
-            addresses: Addresses::default(),
         })
     }
 
@@ -1811,10 +1800,7 @@ impl<'a> UhProtoPartition<'a> {
     pub async fn build(
         self,
         late_params: UhLateParams<'_>,
-        addrs: Addresses,
-        
     ) -> Result<(UhPartition, Vec<UhProcessorBox>), Error> {
-        
         let Self {
             mut hcl,
             params,
@@ -1823,13 +1809,11 @@ impl<'a> UhProtoPartition<'a> {
             create_partition_available: _,
             #[cfg(guest_arch = "x86_64")]
             cpuid,
-            #[cfg_attr(guest_arch = "aarch64", allow(unused_variables))]
-            realm_config,
-            addresses: _,
+            #[cfg(guest_arch = "aarch64")]
+            realm_config: _,
         } = self;
         let isolation = params.isolation;
         let is_hardware_isolated = isolation.is_hardware_isolated();
-
 
         // Intercept Debug Exceptions
         // On TDX because all OpenHCL TDs today have the debug policy bit set,
@@ -1999,7 +1983,6 @@ impl<'a> UhProtoPartition<'a> {
             .expect("registering synic intercept cannot fail");
         }
 
-        //#[cfg(guest_arch = "x86_64")]
         let cvm_state = if is_hardware_isolated {
             let vsm_caps = hcl.get_vsm_capabilities().map_err(Error::GetReg)?;
             let proxy_interrupt_redirect_available =
@@ -2015,7 +1998,6 @@ impl<'a> UhProtoPartition<'a> {
         } else {
             None
         };
-
 
         #[cfg(guest_arch = "x86_64")]
         let lower_vtl_timer_virt_available =
@@ -2063,7 +2045,6 @@ impl<'a> UhProtoPartition<'a> {
             device_vector_table: RwLock::new(IrrBitmap::new(Default::default())),
             intercept_debug_exceptions: params.intercept_debug_exceptions,
             vmbus_relay: late_params.vmbus_relay,
-            addresses: addrs,
             synic_ports: Default::default(),
         });
 
@@ -2210,6 +2191,7 @@ impl UhPartitionInner {
                     &mut TdxBacked::tlb_flush_lock_access(None, self, tdx_backed_shared),
                 )
                 .map_err(|e| anyhow::anyhow!(e)),
+            #[cfg(guest_arch = "aarch64")]
             BackingShared::Cca(cca_backed_shared) => cca_backed_shared
                 .cvm
                 .isolated_memory_protector
@@ -2219,27 +2201,7 @@ impl UhPartitionInner {
                     GpnSource::Dma,
                     HvMapGpaFlags::new(),
                     Some(new_perms),
-                    &mut CcaBacked::tlb_flush_lock_access(
-                        None,
-                        self,
-                        cca_backed_shared,
-                    ),
-                )
-                .map_err(|e| anyhow::anyhow!(e)),
-            BackingShared::Cca(cca_backed_shared) => cca_backed_shared
-                .cvm
-                .isolated_memory_protector
-                .register_overlay_page(
-                    vtl,
-                    gpn,
-                    GpnSource::Dma,
-                    HvMapGpaFlags::new(),
-                    Some(new_perms),
-                    &mut CcaBacked::tlb_flush_lock_access(
-                        None,
-                        self,
-                        cca_backed_shared,
-                    ),
+                    &mut CcaBacked::tlb_flush_lock_access(None, self, cca_backed_shared),
                 )
                 .map_err(|e| anyhow::anyhow!(e)),
             BackingShared::Hypervisor(_) => {
@@ -2277,17 +2239,14 @@ impl UhPartitionInner {
                 let _ = (vtl, gpn);
                 unreachable!()
             }
+            #[cfg(guest_arch = "aarch64")]
             BackingShared::Cca(cca_backed_shared) => cca_backed_shared
                 .cvm
                 .isolated_memory_protector
                 .unregister_overlay_page(
                     vtl,
                     gpn,
-                    &mut CcaBacked::tlb_flush_lock_access(
-                        None,
-                        self,
-                        cca_backed_shared,
-                    )
+                    &mut CcaBacked::tlb_flush_lock_access(None, self, cca_backed_shared),
                 )
                 .map_err(|e| anyhow::anyhow!(e)),
         }
@@ -2297,8 +2256,10 @@ impl UhPartitionInner {
 impl UhProtoPartition<'_> {
     /// Whether Guest VSM is available to the guest. If so, for hardware CVMs,
     /// it is safe to expose Guest VSM support via cpuid.
-    fn check_guest_vsm_support(privs: Option<HvPartitionPrivilege>, hcl: &Hcl) -> Result<bool, Error> {
-
+    fn check_guest_vsm_support(
+        privs: Option<HvPartitionPrivilege>,
+        hcl: &Hcl,
+    ) -> Result<bool, Error> {
         if let Some(p) = privs {
             if !p.access_vsm() {
                 return Ok(false);
@@ -2311,7 +2272,6 @@ impl UhProtoPartition<'_> {
         Ok(guest_vsm_config.maximum_vtl() >= u8::from(GuestVtl::Vtl1))
     }
 
-    // #[cfg(guest_arch = "x86_64")]
     /// Constructs partition-wide CVM state.
     fn construct_cvm_state(
         params: &UhPartitionNewParams<'_>,
@@ -2334,7 +2294,7 @@ impl UhProtoPartition<'_> {
             .collect();
         let tlb_locked_vps =
             VtlArray::from_fn(|_| BitVec::repeat(false, vp_count).into_boxed_bitslice());
-        
+
         #[cfg(guest_arch = "x86_64")]
         let lapic = VtlArray::from_fn(|_| {
             LocalApicSet::builder()
@@ -2485,6 +2445,7 @@ fn get_tsc_frequency(isolation: IsolationType) -> Result<u64, Error> {
     let hv_frequency = msr
         .read_msr(hvdef::HV_X64_MSR_TSC_FREQUENCY)
         .map_err(Error::ReadTscFrequency)?;
+    #[cfg(guest_arch = "aarch64")]
     let hv_frequency = read_cntfrq_el0();
 
     // Get the hardware-advertised frequency and validate that the
@@ -2529,7 +2490,6 @@ fn get_tsc_frequency(isolation: IsolationType) -> Result<u64, Error> {
             // CCA currently does not provide the frequency.
             None
         }
-
     };
 
     if let Some((hw_frequency, allowed_error)) = hw_info {

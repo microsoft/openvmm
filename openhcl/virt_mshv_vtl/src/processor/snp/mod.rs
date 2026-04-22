@@ -534,7 +534,13 @@ impl BackingPrivate for SnpBacked {
 
         // Configure the synic direct overlays.
         // So far, only VTL 0 is using these (for VMBus).
-        let pfns = &this.backing.cvm.direct_overlay_handle.pfns();
+        let pfns = this
+            .backing
+            .cvm
+            .direct_overlay_handle
+            .as_ref()
+            .expect("SNP direct overlays require a DMA allocation")
+            .pfns();
         let values: &[(HvX64RegisterName, u64); 3] = &[
             (
                 HvX64RegisterName::Sipp,
@@ -1126,7 +1132,12 @@ impl UhProcessor<'_, SnpBacked> {
                 let ghcb_pfn = ghcb_msr.pfn();
 
                 let ghcb_overlay =
-                    self.backing.cvm.direct_overlay_handle.pfns()[UhDirectOverlay::Ghcb as usize];
+                    self.backing
+                        .cvm
+                        .direct_overlay_handle
+                        .as_ref()
+                        .expect("SNP GHCB overlay requires a DMA allocation")
+                        .pfns()[UhDirectOverlay::Ghcb as usize];
 
                 // TODO SNP: Should allow arbitrary page to be used for GHCB
                 if ghcb_pfn != ghcb_overlay {

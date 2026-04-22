@@ -50,6 +50,7 @@ pub fn store_fence() {
 /// system timer in Hz. This is used to determine the frequency of the
 /// system timer for the current execution level (EL0).
 #[inline]
+#[cfg(target_arch = "aarch64")]
 pub fn read_cntfrq_el0() -> u64 {
     let freq: u64;
     // SAFETY: no safety requirements, just reading an EL0 sysreg
