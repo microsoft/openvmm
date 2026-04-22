@@ -4569,3 +4569,85 @@ async fn stop_during_failed_enable_resets_config_pci(_driver: DefaultDriver) {
         PciTestTransport::new(Box::new(PartialFailTestDevice::new(1, 0)), &_driver, 1);
     verify_stop_during_failed_enable_resets_config(&mut transport).await;
 }
+
+/// An indirect descriptor with zero byte length must be rejected.
+#[async_test]
+async fn verify_indirect_zero_length_rejected(driver: DefaultDriver) {
+    let queue_size: u16 = 4;
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, queue_size, true);
+    let event = Event::new();
+    let queue_event = PolledWait::new(&driver, event.clone()).unwrap();
+    let mut queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        Interrupt::from_fn(|| {}),
+        queue_event,
+        None,
+    )
+    .unwrap();
+
+    let desc_index = 0u16;
+    let desc_base = guest.get_queue_descriptor(0, desc_index);
+    // Set INDIRECT flag.
+    test_mem.modify_memory_map(
+        desc_base + 12,
+        &u16::from(DescriptorFlags::new().with_indirect(true)).to_le_bytes(),
+        false,
+    );
+    // Set length to 0.
+    test_mem.modify_memory_map(desc_base + 8, &0u32.to_le_bytes(), false);
+    // Point to a valid address.
+    let buffer_addr = guest.get_queue_descriptor_backing_memory_address(0);
+    test_mem.modify_memory_map(desc_base, &buffer_addr.to_le_bytes(), false);
+
+    guest.queue_available_desc(0, desc_index);
+
+    let result = queue.try_next();
+    assert!(
+        result.is_err(),
+        "Zero-length indirect table must be rejected"
+    );
+}
+
+/// An indirect descriptor with a byte length that is not a multiple of 16
+/// must be rejected.
+#[async_test]
+async fn verify_indirect_misaligned_length_rejected(driver: DefaultDriver) {
+    let queue_size: u16 = 4;
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, queue_size, true);
+    let event = Event::new();
+    let queue_event = PolledWait::new(&driver, event.clone()).unwrap();
+    let mut queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        Interrupt::from_fn(|| {}),
+        queue_event,
+        None,
+    )
+    .unwrap();
+
+    let desc_index = 0u16;
+    let desc_base = guest.get_queue_descriptor(0, desc_index);
+    // Set INDIRECT flag.
+    test_mem.modify_memory_map(
+        desc_base + 12,
+        &u16::from(DescriptorFlags::new().with_indirect(true)).to_le_bytes(),
+        false,
+    );
+    // Set length to 17 (not a multiple of 16).
+    test_mem.modify_memory_map(desc_base + 8, &17u32.to_le_bytes(), false);
+    let buffer_addr = guest.get_queue_descriptor_backing_memory_address(0);
+    test_mem.modify_memory_map(desc_base, &buffer_addr.to_le_bytes(), false);
+
+    guest.queue_available_desc(0, desc_index);
+
+    let result = queue.try_next();
+    assert!(
+        result.is_err(),
+        "Misaligned indirect table must be rejected"
+    );
+}
