@@ -43,7 +43,6 @@ use user_driver::interrupt::DeviceInterruptSource;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
-use user_driver::page_allocator::PageAllocationError;
 use user_driver::page_allocator::PageAllocator;
 use user_driver::page_allocator::ScopedPages;
 use zerocopy::FromZeros;
