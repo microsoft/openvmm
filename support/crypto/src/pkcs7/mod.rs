@@ -3,7 +3,7 @@
 
 //! PKCS#7 signed data verification.
 
-#![cfg(any(openssl, windows, target_os = "macos"))]
+#![cfg(any(openssl, all(native, windows), all(native, target_os = "macos")))]
 
 #[cfg(openssl)]
 mod ossl;

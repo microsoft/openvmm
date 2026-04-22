@@ -3,7 +3,7 @@
 
 //! AES-256-GCM encryption and decryption.
 
-#![cfg(any(openssl, windows))]
+#![cfg(any(openssl, all(native, windows)))]
 
 #[cfg(openssl)]
 mod ossl;

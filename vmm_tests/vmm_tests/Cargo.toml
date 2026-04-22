@@ -64,5 +64,16 @@ serde_json = { workspace = true, features = ["std"] }
 pipette_client.workspace = true
 serde = { workspace = true, features = ["std"] }
 
+# TEMP: vmm_tests really shouldn't need to pull in crypto
+crypto = { workspace = true, features = ["vendored"] }
+
+# TEMP: vmm_tests really shouldn't need to pull in crypto
+[target.'cfg(target_os = "linux")'.dependencies]
+crypto = { workspace = true, features = ["openssl"] }
+
 [lints]
 workspace = true
+
+[package.metadata.xtask.unused-deps]
+# keep the crypto dep so we can specify the vendored and openssl features
+ignored = ["crypto"]

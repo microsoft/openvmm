@@ -124,5 +124,5 @@ build_rs_guest_arch.workspace = true
 workspace = true
 
 [package.metadata.xtask.unused-deps]
-# keep the crypto dep so we can specify the vendored feature
+# keep the crypto dep so we can specify the vendored and openssl features
 ignored = ["crypto"]

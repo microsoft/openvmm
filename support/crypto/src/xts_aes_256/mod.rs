@@ -3,7 +3,7 @@
 
 //! XTS-AES-256 encryption and decryption.
 
-#![cfg(any(windows, openssl))]
+#![cfg(any(openssl, all(native, windows)))]
 
 #[cfg(openssl)]
 mod ossl;

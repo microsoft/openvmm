@@ -10011,6 +10011,7 @@ name = "vmm_tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "crypto",
  "disk_backend_resources",
  "disk_vhd1",
  "futures",
