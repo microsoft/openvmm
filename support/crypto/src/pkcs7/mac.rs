@@ -198,12 +198,6 @@ impl Pkcs7SignedDataInner {
         signed_content: &[u8],
         uefi_mode: bool,
     ) -> Result<bool, Pkcs7Error> {
-        // SecPolicyCreateBasicX509 does not enforce EKU constraints, making it
-        // equivalent to OpenSSL's X509Purpose::ANY. To support !uefi_mode with
-        // strict purpose checking, replace it with SecPolicyCreateSSL or a
-        // custom policy via SecPolicyCreateWithProperties.
-        assert!(uefi_mode, "only uefi_mode is currently supported on macOS");
-
         // SAFETY: all CF/Security API calls use valid handles produced by
         // earlier successful calls. RAII wrappers ensure proper cleanup.
         unsafe {
