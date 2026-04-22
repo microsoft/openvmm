@@ -888,10 +888,10 @@ impl Issuer {
         data: &[u8],
     ) -> Result<spec::Completion, RequestError> {
         let mem = self.alloc.alloc_bytes(data.len()).await.map_err(|e| {
-            tracing::info!(
+            tracelimit::warn_ratelimited!(
                 requested_pages = e.requested,
                 max_pages = e.available,
-                "Insufficient memory"
+                "Insufficient memory to complete issue in request"
             );
             RequestError::TooLarge
         })?;
@@ -916,10 +916,10 @@ impl Issuer {
         data: &mut [u8],
     ) -> Result<spec::Completion, RequestError> {
         let mem = self.alloc.alloc_bytes(data.len()).await.map_err(|e| {
-            tracing::info!(
+            tracelimit::warn_ratelimited!(
                 requested_pages = e.requested,
                 max_pages = e.available,
-                "Insufficient memory"
+                "Insufficient memory to complete issue out request"
             );
             RequestError::TooLarge
         })?;
