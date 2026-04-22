@@ -892,7 +892,7 @@ impl Issuer {
             .alloc
             .alloc_bytes(data.len())
             .await
-            .unwrap_or(return Err(RequestError::InsufficientMemory));
+            .ok_or(RequestError::InsufficientMemory)?;
 
         mem.write(data);
         assert_eq!(
@@ -917,7 +917,7 @@ impl Issuer {
             .alloc
             .alloc_bytes(data.len())
             .await
-            .unwrap_or(return Err(RequestError::InsufficientMemory));
+            .ok_or(RequestError::InsufficientMemory)?;
 
         let prp = self
             .make_prp(0, (0..mem.page_count()).map(|i| mem.physical_address(i)))
