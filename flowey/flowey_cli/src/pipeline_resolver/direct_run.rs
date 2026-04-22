@@ -88,6 +88,7 @@ fn direct_run_do_work(
     for idx in order {
         let ResolvedPipelineJob {
             ref root_nodes,
+            ref root_configs,
             ref patches,
             ref label,
             platform,
@@ -172,22 +173,26 @@ fn direct_run_do_work(
         let nodes = {
             let mut resolved_local_steps = Vec::new();
 
-            let (mut output_graph, _, err_unreachable_nodes) =
-                crate::flow_resolver::stage1_dag::stage1_dag(
-                    FlowBackend::Local,
-                    runtime_platform,
-                    arch,
-                    patches.clone(),
-                    root_nodes
-                        .clone()
-                        .into_iter()
-                        .map(|(node, requests)| (node, (true, requests)))
-                        .collect(),
-                    external_read_vars.clone(),
-                    Some(VAR_DB_SEEDVAR_FLOWEY_PERSISTENT_STORAGE_DIR.into()),
-                )?;
+            let crate::flow_resolver::stage1_dag::Stage1DagOutput {
+                mut output_graph,
+                found_unreachable_nodes,
+                ..
+            } = crate::flow_resolver::stage1_dag::stage1_dag(
+                FlowBackend::Local,
+                runtime_platform,
+                arch,
+                patches.clone(),
+                root_nodes
+                    .clone()
+                    .into_iter()
+                    .map(|(node, requests)| (node, (true, requests)))
+                    .collect(),
+                root_configs.clone(),
+                external_read_vars.clone(),
+                Some(VAR_DB_SEEDVAR_FLOWEY_PERSISTENT_STORAGE_DIR.into()),
+            )?;
 
-            if err_unreachable_nodes.is_some() {
+            if found_unreachable_nodes {
                 anyhow::bail!("detected unreachable nodes")
             }
 

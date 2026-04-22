@@ -120,7 +120,7 @@ function Get-DefaultRasd {
         [string] $ResourceSubType
     )
 
-    $allocCap = Get-CimInstance -Namespace "root/virtualization/v2" -ClassName "Msvm_AllocationCapabilities" | Where-Object { $_.ResourceSubType -eq $ResourceSubType }
+    $allocCap = Get-CimInstance -Namespace $ROOT_HYPER_V_NAMESPACE -ClassName "Msvm_AllocationCapabilities" | Where-Object { $_.ResourceSubType -eq $ResourceSubType }
     $allocCap | Get-CimAssociatedInstance -ResultClassName "CIM_ResourceAllocationSettingData" -Association "Msvm_SettingsDefineCapabilities" | Where-Object { $_.InstanceId.EndsWith("Default") }
 }
 
@@ -139,7 +139,7 @@ function Get-VmRasd
         return $rasds | Where-Object { $_.ResourceSubType -eq $ResourceSubType }
     } else {
         return $rasds
-    }       
+    }
 }
 
 function Get-VmSasd
@@ -156,6 +156,385 @@ function Get-VmSasd
 # Hyper-V Configuration Cmdlets
 #
 
+# this function is optimized for performance and does minimal input validation
+function New-CustomVM
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string] $VMName,
+
+        [ValidateSet(1, 2)]
+        [int] $Generation = 2,
+
+        [bool] $GuestStateIsolationEnabled = $false,
+
+        [uint16] $GuestStateIsolationType = 0,
+
+        [uint16] $GuestStateIsolationMode = 0,
+
+        [Nullable[uint16]] $GuestStateLifetime = $null,
+
+        [string] $GuestStateFilePath = $null,
+
+        [bool] $VMBusMessageRedirection = $false,
+
+        [string] $FirmwareFile = $null,
+
+        [string] $FirmwareParameters = $null,
+
+        [switch] $IncreaseVtl2Memory,
+
+        [Nullable[bool]] $DefaultBootAlwaysAttempt,
+
+        [bool] $SecureBootEnabled = $false,
+
+        [string] $SecureBootTemplateId = $null,
+
+        [Nullable[uint64]] $ManagementVtlFeatureFlags = $null,
+
+        [Nullable[uint16]] $GuestStateEncryptionPolicy = $null,
+
+        [Nullable[uint64]] $Memory = 4GB,
+
+        [Nullable[uint64]] $VpCount = 2,
+
+        [Nullable[uint16]] $ApicMode = $null,
+
+        [Nullable[uint64]] $HwThreadsPerCore = $null,
+
+        [Nullable[uint64]] $MaxProcessorsPerNumaNode = $null,
+
+        # must be a hashtable with format:
+        # ScsiControllers => {
+        #     Vsid => {
+        #         Vtl,
+        #         Drives => {
+        #             Lun => {
+        #                 DiskPath,
+        #                 Dvd
+        #             },
+        #             ...
+        #         }
+        #     },
+        #     ...
+        # }
+        [hashtable] $ScsiControllers = $null,
+
+        # must be a hashtable with format:
+        # IdeControllers => {
+        #     ControllerNumber => {
+        #         Lun => {
+        #             DiskPath,
+        #             Dvd
+        #         },
+        #         ...
+        #     },
+        #     ...
+        # }
+        [hashtable] $IdeControllers = $null,
+
+        [string] $ImcHive = $null,
+
+        [bool] $Com1 = $false,
+
+        [bool] $Com3 = $false,
+
+        [bool] $TpmEnabled = $false,
+
+        [string] $ManagementVtlSettings = $null
+    )
+
+    $vmms = Get-Vmms
+
+    if (-not $vmms) { throw "Failed to get the Msvm_VirtualSystemManagementService object" }
+
+    $vssdClass = Get-CimClass -Namespace $ROOT_HYPER_V_NAMESPACE -ClassName "Msvm_VirtualSystemSettingData"
+
+    $vssdProperties = @{
+        ElementName                = $VMName
+        VirtualSystemSubType       = "Microsoft:Hyper-V:SubType:$Generation"
+        GuestStateIsolationEnabled = $GuestStateIsolationEnabled
+        GuestStateIsolationType    = $GuestStateIsolationType
+        GuestStateIsolationMode    = $GuestStateIsolationMode
+        VMBusMessageRedirection    = $VMBusMessageRedirection
+        SecureBootEnabled          = $SecureBootEnabled
+        VirtualNumaEnabled         = $false
+        UserSnapshotType           = 2 #disable
+    }
+
+    if ($GuestStateFilePath) {
+        $vssdProperties["GuestStateDataRoot"] = Split-Path -Path $GuestStateFilePath -Parent
+        $vssdProperties["GuestStateFile"] = Split-Path -Path $GuestStateFilePath -Leaf
+    }
+
+    if ($GuestStateLifetime -ne $null) {
+        $vssdProperties["GuestStateLifetime"] = $GuestStateLifetime
+    }
+
+    if ($DefaultBootAlwaysAttempt -ne $null) {
+        $vssdProperties["DefaultBootAlwaysAttempt"] = $DefaultBootAlwaysAttempt
+    }
+
+    if ($ManagementVtlFeatureFlags -ne $null) {
+        $vssdProperties["ManagementVtlFeatureFlags"] = $ManagementVtlFeatureFlags
+    }
+
+    if ($GuestStateEncryptionPolicy -ne $null) {
+        $vssdProperties["GuestStateEncryptionPolicy"] = $GuestStateEncryptionPolicy
+    }
+
+    if ($FirmwareFile) {
+        # Enable OpenHCL by feature
+        $vssdProperties["GuestFeatureSet"] = 0x00000201
+        # Set the OpenHCL image file path
+        $vssdProperties["FirmwareFile"] = $FirmwareFile
+    }
+
+    if ($FirmwareParameters) {
+        $vssdProperties["FirmwareParameters"] = [System.Text.Encoding]::UTF8.GetBytes($FirmwareParameters)
+    }
+
+    if ($IncreaseVtl2Memory) {
+        # Configure VM for auto placement mode
+        $vssdProperties["Vtl2AddressSpaceConfigurationMode"] = 1
+        # 1GB of OpenHCL address space
+        $vssdProperties["Vtl2AddressRangeSize"] = 1024
+        # 512 MB of OpenHCL MMIO space. So total OpenHCL ram = Vtl2AddressRangeSize - Vtl2MmioAddressRangeSize.
+        $vssdProperties["Vtl2MmioAddressRangeSize"] = 512
+    }
+
+    if ($SecureBootTemplateId) {
+        $vssdProperties["SecureBootTemplateId"] = $SecureBootTemplateId
+    }
+
+    $vssd = Get-CimClass -Namespace $ROOT_HYPER_V_NAMESPACE -ClassName "Msvm_VirtualSystemSettingData" | New-CimInstance -ClientOnly -Property $vssdProperties
+
+    if (-not $vssd) { throw "Unable to create the Msvm_VirtualSystemSettingData object" }
+
+    $msd = Get-CimClass -Namespace $ROOT_HYPER_V_NAMESPACE -ClassName "Msvm_MemorySettingData" | New-CimInstance -ClientOnly -Property @{
+        VirtualQuantity      = $Memory / (1024 * 1024)
+        DynamicMemoryEnabled = $false
+    }
+
+    if (-not $msd) { throw "Unable to create the Msvm_MemorySettingData object" }
+
+    $psdProperties = @{ VirtualQuantity = $VpCount }
+    if ($ApicMode -ne $null) {
+        $psdProperties["ApicMode"] = $ApicMode
+    }
+    if ($HwThreadsPerCore -ne $null) {
+        $psdProperties["HwThreadsPerCore"] = $HwThreadsPerCore
+    }
+    if ($MaxProcessorsPerNumaNode -ne $null) {
+        $psdProperties["MaxProcessorsPerNumaNode"] = $MaxProcessorsPerNumaNode
+    }
+
+    $psd = Get-CimClass -Namespace $ROOT_HYPER_V_NAMESPACE -ClassName "Msvm_ProcessorSettingData" | New-CimInstance -ClientOnly -Property $psdProperties
+
+    if (-not $psd) { throw "Unable to create the Msvm_ProcessorSettingData object" }
+
+    $resourceSettings = @(
+        ($msd | ConvertTo-CimEmbeddedString),
+        ($psd | ConvertTo-CimEmbeddedString)
+    )
+
+    if ($ScsiControllers) {
+        foreach ($controller in $ScsiControllers.GetEnumerator()) {
+            $vsid = $controller.Name
+            $targetVtl = $controller.Value["Vtl"]
+            $template = Get-DefaultRasd $SCSI_CONTROLLER_TYPE
+            $resourceSettings += Copy-CimInstanceWithNewProperties $template @{
+                "VirtualSystemIdentifiers" = @("{$vsid}");
+                "TargetVtl" = $targetVtl
+            } | ConvertTo-CimEmbeddedString
+        }
+    }
+
+    $vm = ($vmms | Invoke-CimMethod -Name "DefineSystem" -Arguments @{
+        "SystemSettings"   = ($vssd | ConvertTo-CimEmbeddedString);
+        "ResourceSettings" = $resourceSettings
+    } | Trace-CimMethodExecution -MethodName "DefineSystem" -CimInstance $vmms)
+
+    $resourceSettings = @()
+
+    $vmid = $vm.ResultingSystem.Name
+    $vssd = $vm.ResultingSystem | Get-CimAssociatedInstance -ResultClass "Msvm_VirtualSystemSettingData" -Association "Msvm_SettingsDefineState"
+
+    if ($ScsiControllers -or $IdeControllers) {
+        if ($ScsiControllers) {
+            $controllersWmi = $vssd | Get-CimAssociatedInstance -ResultClassName "Msvm_ResourceAllocationSettingData" | Where-Object {
+                $_.ResourceSubType -eq $SCSI_CONTROLLER_TYPE
+            }
+            foreach ($controller in $ScsiControllers.GetEnumerator()) {
+                $vsid = $controller.Name
+                $controllerWmi = $controllersWmi | Where-Object { $_.VirtualSystemIdentifiers[0] -eq "{$vsid}" }
+                $controllerPath = $controllerWmi | Get-CimInstancePath
+                $drives = $controller.Value["Drives"]
+
+                $resourceSettings += Convert-DriveResource -Drives $drives -ControllerPath $controllerPath
+            }
+        }
+
+        if ($IdeControllers) {
+            $controllersWmi = $vssd | Get-CimAssociatedInstance -ResultClassName "Msvm_ResourceAllocationSettingData" | Where-Object {
+                $_.ResourceSubType -eq $IDE_CONTROLLER_TYPE
+            }
+            foreach ($controller in $IdeControllers.GetEnumerator()) {
+                $controllerNumber = $controller.Name
+                $controllerWmi = $controllersWmi | Where-Object { $_.Address -eq $controllerNumber }
+                $controllerPath = $controllerWmi | Get-CimInstancePath
+
+                $resourceSettings += Convert-DriveResource -Drives $controller.Value -ControllerPath $controllerPath
+            }
+        }
+
+        $vmms | Invoke-CimMethod -Name "AddResourceSettings" -Arguments @{
+            "AffectedConfiguration" = $vssd;
+            "ResourceSettings" = $resourceSettings
+        } | Trace-CimMethodExecution -MethodName "AddResourceSettings" -CimInstance $vmms | Out-Null
+    }
+
+    if ($Com1 -or $Com3) {
+        $serialPorts = $vssd | Get-CimAssociatedInstance -ResultClassName "Msvm_SerialPortSettingData"
+        $resourceSettings = @()
+
+        if ($Com1) {
+            $serialPorts[0].Connection = @("\\.\pipe\$vmid-1")
+            $resourceSettings += $serialPorts[0] | ConvertTo-CimEmbeddedString
+        }
+        if ($Com3) {
+            $serialPorts[2].Connection = @("\\.\pipe\$vmid-3")
+            $resourceSettings += $serialPorts[2] | ConvertTo-CimEmbeddedString
+        }
+
+        $vmms | Invoke-CimMethod -Name "ModifyResourceSettings" -Arguments @{
+            "ResourceSettings" = $resourceSettings 
+        } | Trace-CimMethodExecution -MethodName "ModifyResourceSettings" -CimInstance $vmms | Out-Null
+    }
+
+    if ($ImcHive) {
+        $imcData = Convert-ImcData -ImcHive $ImcHive
+
+        $vmms | Invoke-CimMethod -name "SetInitialMachineConfigurationData" -Arguments @{
+            "TargetSystem" = $vm.ResultingSystem;
+            "ImcData" = $imcData
+        } | Trace-CimMethodExecution -MethodName "SetInitialMachineConfigurationData" -CimInstance $vmms | Out-Null
+    }
+
+    $ssd = $vssd | Get-CimAssociatedInstance -ResultClassName "Msvm_SecuritySettingData"
+    $ssd = Copy-CimInstanceWithNewProperties $ssd @{
+        "TpmEnabled" = $TpmEnabled
+    }
+
+    $ss = $vm.ResultingSystem | Get-CimAssociatedInstance -ResultClassName "Msvm_SecurityService"
+    $ss | Invoke-CimMethod -name "ModifySecuritySettings" -Arguments @{
+        "SecuritySettingData" = $ssd | ConvertTo-CimEmbeddedString;
+    } | Trace-CimMethodExecution -MethodName "ModifySecuritySettings" -CimInstance $ss | Out-Null
+
+
+    if (@(1, 2, 3) -contains $GuestStateIsolationType) {
+        $mouse = $vssd | Get-CimAssociatedInstance -ResultClassName "Msvm_ResourceAllocationSettingData" | Where-Object {
+            $_.ResourceSubType -eq "Microsoft:Hyper-V:Synthetic Mouse"
+        }
+        $keyboard = $vssd | Get-CimAssociatedInstance -ResultClassName "Msvm_ResourceAllocationSettingData" | Where-Object {
+            $_.ResourceSubType -eq "Microsoft:Hyper-V:Synthetic Keyboard"
+        }
+        $display = $vssd | Get-CimAssociatedInstance -ResultClassName "Msvm_SyntheticDisplayControllerSettingData"
+
+        $vmms | Invoke-CimMethod -Name "RemoveResourceSettings" -Arguments @{
+            "ResourceSettings" = [Microsoft.Management.Infrastructure.CimInstance[]] @($mouse, $keyboard, $display)
+        } | Trace-CimMethodExecution -MethodName "RemoveResourceSettings" -CimInstance $vmms | Out-Null
+    }
+
+    if ($ManagementVtlSettings) {
+        Set-Vtl2Settings -VmId $vmid -Namespace "Base" -SettingsFile $ManagementVtlSettings
+    }
+
+    $vm.ResultingSystem.Name
+}
+
+function Convert-DriveResource
+{
+    param (
+        [hashtable] $Drives,
+        [string] $ControllerPath
+    )
+
+    $resourceSettings = @()
+
+    foreach ($drive in $Drives.GetEnumerator()) {
+        $lun = $drive.Name
+        $drivePath = $ControllerPath.Substring(0, $ControllerPath.Length - 1) + "\\$lun\\D`""
+        $dvd = $drive.Value["Dvd"]
+        $diskPath = $drive.Value["DiskPath"]
+
+        if ($dvd) {
+            $driveType = $DVD_DRIVE_TYPE
+            $diskType = $DVD_DISK_TYPE
+        } else {
+            $driveType = $HARD_DRIVE_TYPE
+            $diskType = $HARD_DISK_TYPE
+        }
+
+        $driveTemplate = Get-DefaultRasd $driveType
+        $resourceSettings += Copy-CimInstanceWithNewProperties $driveTemplate @{
+            "AddressOnParent" = $lun;
+            "Parent" = $ControllerPath
+        } | ConvertTo-CimEmbeddedString
+
+        if ($diskPath) {
+            $diskTemplate = Get-DefaultRasd $diskType
+            $resourceSettings += Copy-CimInstanceWithNewProperties $diskTemplate @{
+                "Parent" = $drivePath;
+                "HostResource" = @($diskPath)
+            } | ConvertTo-CimEmbeddedString
+        }
+    }
+
+    $resourceSettings
+}
+
+function Convert-ImcData
+{
+    Param (
+        [string] $ImcHive
+    )
+
+    $imcHiveData = Get-Content -Encoding Byte $ImcHive
+    $length = [System.BitConverter]::GetBytes([int32]$imcHiveData.Length + 4)
+    if ([System.BitConverter]::IsLittleEndian)
+    {
+        [System.Array]::Reverse($length);
+    }
+    $imcData = $length + $imcHiveData
+
+    [byte[]] $imcData
+}
+
+function Convert-Vtl2Settings {
+    Param (
+        [string] $SettingsFile
+    )
+
+    $settingsContent = Get-Content -Raw -Path $SettingsFile
+
+    $bytes = [system.Text.Encoding]::UTF8.GetBytes($settingsContent)
+
+    # The input is a byte buffer with the size prepended.
+    # Size is a uint32 in network byte order (i.e. Big Endian)
+    # Size includes the size itself and the payload.
+
+    $header = [System.BitConverter]::GetBytes([uint32]($bytes.Length + 4))
+    if ([System.BitConverter]::IsLittleEndian) {
+        [System.Array]::Reverse($header)
+    }
+    $bytes = $header + $bytes
+
+    $bytes
+}
+
 function Set-InitialMachineConfiguration
 {
     [CmdletBinding()]
@@ -169,18 +548,12 @@ function Set-InitialMachineConfiguration
 
     $msvmComputerSystem = Get-MsvmComputerSystem $Vm
 
-    $imcHiveData = Get-Content -Encoding Byte $ImcHive
-    $length = [System.BitConverter]::GetBytes([int32]$imcHiveData.Length + 4)
-    if ([System.BitConverter]::IsLittleEndian)
-    {
-        [System.Array]::Reverse($length);
-    }
-    $imcData = $length + $imcHiveData
+    $imcData = Convert-ImcData -ImcHive $ImcHive
 
     $vmms = Get-Vmms
     $vmms | Invoke-CimMethod -name "SetInitialMachineConfigurationData" -Arguments @{
         "TargetSystem" = $msvmComputerSystem;
-        "ImcData" = [byte[]]$imcData
+        "ImcData" = $imcData
     } | Trace-CimMethodExecution -MethodName "SetInitialMachineConfigurationData" -CimInstance $vmms
 }
 
@@ -746,18 +1119,7 @@ function Set-Vtl2Settings {
     $p2 = [Microsoft.Management.Infrastructure.CimMethodParameter]::Create("Namespace", $Namespace, [Microsoft.Management.Infrastructure.cimtype]::String, [Microsoft.Management.Infrastructure.CimFlags]::In)
 
     # Parameter - Settings
-    # The input is a byte buffer with the size prepended.
-    # Size is a uint32 in network byte order (i.e. Big Endian)
-    # Size includes the size itself and the payload.
-
-    $bytes = [system.Text.Encoding]::UTF8.GetBytes($settingsContent)
-
-    $header = [System.BitConverter]::GetBytes([uint32]($bytes.Length + 4))
-    if ([System.BitConverter]::IsLittleEndian) {
-        [System.Array]::Reverse($header)
-    }
-    $bytes = $header + $bytes
-
+    $bytes = Convert-Vtl2Settings -SettingsFile $SettingsFile
     $p3 = [Microsoft.Management.Infrastructure.CimMethodParameter]::Create("Settings", $bytes, [Microsoft.Management.Infrastructure.cimtype]::UInt8Array, [Microsoft.Management.Infrastructure.CimFlags]::In)
 
     $result = $guestManagement | Invoke-CimMethod -MethodName GetManagementVtlSettings -Arguments @{"VmId" = $VmId.ToString(); "Namespace" = $Namespace } |

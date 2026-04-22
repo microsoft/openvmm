@@ -4,6 +4,7 @@
 //! A local-only job that supports the `cargo xflowey build-igvm` CLI
 
 use flowey::node::prelude::*;
+use std::collections::BTreeSet;
 
 use crate::build_openhcl_boot::OpenhclBootOutput;
 use crate::build_openhcl_igvm_from_recipe::IgvmManifestPath;
@@ -17,8 +18,8 @@ use crate::build_openvmm_hcl::MaxTraceLevel;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_openvmm_hcl::OpenvmmHclFeature;
 use crate::build_openvmm_hcl::OpenvmmHclOutput;
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonArch;
+use crate::common::CommonTriple;
 use crate::run_igvmfilegen::IgvmOutput;
 
 #[derive(Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -38,6 +39,7 @@ pub struct Customizations {
     pub override_openvmm_hcl_feature: Vec<String>,
     pub override_max_trace_level: Option<MaxTraceLevel>,
     pub with_debuginfo: bool,
+    pub with_mi_secure: bool,
     pub with_perf_tools: bool,
     pub with_sidecar: bool,
 }
@@ -93,6 +95,7 @@ impl SimpleFlowNode for Node {
             override_openvmm_hcl_feature,
             override_max_trace_level,
             with_debuginfo,
+            with_mi_secure,
             with_perf_tools,
             with_sidecar,
             custom_extra_rootfs,
@@ -177,6 +180,10 @@ impl SimpleFlowNode for Node {
                     .collect()
             }
 
+            if with_mi_secure {
+                openvmm_hcl_features.insert(OpenvmmHclFeature::MiSecure);
+            }
+
             if let Some(arch) = override_arch {
                 *target = match arch {
                     CommonArch::X86_64 => CommonTriple::X86_64_LINUX_MUSL,
@@ -227,6 +234,7 @@ impl SimpleFlowNode for Node {
             release_cfg,
             recipe: OpenhclIgvmRecipe::LocalOnlyCustom(recipe_details),
             custom_target: None,
+            extra_features: BTreeSet::new(),
             built_openvmm_hcl: write_built_openvmm_hcl,
             built_openhcl_boot: write_built_openhcl_boot,
             built_openhcl_igvm: write_built_openhcl_igvm,

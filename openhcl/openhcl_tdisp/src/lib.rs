@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 //! This module provides resources and traits for a TDISP client device
 //! interface for OpenHCL devices.
 //!

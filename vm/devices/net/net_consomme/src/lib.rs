@@ -216,6 +216,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             tcp: true,
             udp: true,
             tso: true,
+            uso: true,
         }
     }
 }
@@ -346,7 +347,11 @@ impl net_backend::Queue for ConsommeQueue {
                 tso: meta
                     .flags
                     .offload_tcp_segmentation()
-                    .then_some(meta.max_tcp_segment_size),
+                    .then_some(meta.max_segment_size),
+                gso: meta
+                    .flags
+                    .offload_udp_segmentation()
+                    .then_some(meta.max_segment_size),
             };
 
             let mut buf = vec![0; meta.len as usize];
@@ -378,6 +383,7 @@ impl net_backend::Queue for ConsommeQueue {
                     | consomme::DropReason::Io(_)
                     | consomme::DropReason::BadTcpState(_)
                     | consomme::DropReason::FragmentedPacket
+                    | consomme::DropReason::IpLengthMismatch
                     | consomme::DropReason::MalformedPacket => self.stats.tx_errors.increment(),
                     consomme::DropReason::PortNotBound => unreachable!(),
                 }

@@ -7,9 +7,8 @@
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
+use crate::common::CommonArch;
 use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
-use crate::download_uefi_mu_msvm::MuMsvmArch;
-use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -68,6 +67,9 @@ flowey_request! {
         pub release_igvm_files: Option<ReadVar<crate::download_release_igvm_files_from_gh::ReleaseOutput>>,
         /// Use paths relative to `test_content_dir` for environment variables
         pub use_relative_paths: bool,
+        /// Disable lazy remote artifact fetching (set PETRI_REMOTE_ARTIFACTS=0).
+        /// Should be true in CI where all images are pre-downloaded.
+        pub disable_remote_artifacts: bool,
     }
 }
 
@@ -104,38 +106,28 @@ impl SimpleFlowNode for Node {
             get_env,
             release_igvm_files,
             use_relative_paths,
+            disable_remote_artifacts,
         } = request;
 
-        let openvmm_deps_arch = match vmm_tests_target.architecture {
-            target_lexicon::Architecture::X86_64 => OpenvmmDepsArch::X86_64,
-            target_lexicon::Architecture::Aarch64(_) => OpenvmmDepsArch::Aarch64,
-            arch => anyhow::bail!("unsupported arch {arch}"),
-        };
+        let arch = CommonArch::from_architecture(vmm_tests_target.architecture)?;
 
         let test_linux_initrd = ctx.reqv(|v| {
             crate::resolve_openvmm_deps::Request::Get(
                 crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestInitrd,
-                openvmm_deps_arch,
+                arch,
                 v,
             )
         });
         let test_linux_kernel = ctx.reqv(|v| {
             crate::resolve_openvmm_deps::Request::Get(
                 crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestKernel,
-                openvmm_deps_arch,
+                arch,
                 v,
             )
         });
 
-        let mu_msvm_arch = match vmm_tests_target.architecture {
-            target_lexicon::Architecture::X86_64 => MuMsvmArch::X86_64,
-            target_lexicon::Architecture::Aarch64(_) => MuMsvmArch::Aarch64,
-            arch => anyhow::bail!("unsupported arch {arch}"),
-        };
-        let uefi = ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
-            arch: mu_msvm_arch,
-            msvm_fd: v,
-        });
+        let uefi =
+            ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v });
 
         ctx.emit_rust_step("setting up vmm_tests env", |ctx| {
             let test_content_dir = test_content_dir.claim(ctx);
@@ -256,6 +248,10 @@ impl SimpleFlowNode for Node {
                         "VMM_TEST_IMAGES".into(),
                         make_portable_path(disk_image_dir)?,
                     );
+                }
+
+                if disable_remote_artifacts {
+                    env.insert("PETRI_REMOTE_ARTIFACTS".into(), "0".into());
                 }
 
                 if let Some(openvmm) = openvmm {
@@ -419,9 +415,9 @@ impl SimpleFlowNode for Node {
                     }
                 }
 
-                let (arch_dir, kernel_file_name) = match openvmm_deps_arch {
-                    OpenvmmDepsArch::X86_64 => ("x64", "vmlinux"),
-                    OpenvmmDepsArch::Aarch64 => ("aarch64", "Image"),
+                let (arch_dir, kernel_file_name) = match arch {
+                    CommonArch::X86_64 => ("x64", "vmlinux"),
+                    CommonArch::Aarch64 => ("aarch64", "Image"),
                 };
                 fs_err::create_dir_all(test_content_dir.join(arch_dir))?;
                 fs_err::copy(
@@ -433,23 +429,14 @@ impl SimpleFlowNode for Node {
                     test_content_dir.join(arch_dir).join(kernel_file_name),
                 )?;
 
-                let uefi_dir = test_content_dir
-                    .join(format!(
-                        "hyperv.uefi.mscoreuefi.{}.RELEASE",
-                        match mu_msvm_arch {
-                            MuMsvmArch::Aarch64 => "AARCH64",
-                            MuMsvmArch::X86_64 => "x64",
-                        }
-                    ))
-                    .join(format!(
-                        "Msvm{}",
-                        match mu_msvm_arch {
-                            MuMsvmArch::Aarch64 => "AARCH64",
-                            MuMsvmArch::X86_64 => "X64",
-                        }
-                    ))
-                    .join("RELEASE_VS2022")
-                    .join("FV");
+                let uefi_dir = test_content_dir.join(match arch {
+                    CommonArch::Aarch64 => {
+                        "hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV"
+                    }
+                    CommonArch::X86_64 => {
+                        "hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV"
+                    }
+                });
                 fs_err::create_dir_all(&uefi_dir)?;
                 fs_err::copy(uefi, uefi_dir.join("MSVM.fd"))?;
 

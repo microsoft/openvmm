@@ -248,6 +248,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base16ct"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd307490d624467aa6f74b0eabb77633d1f758a7b25f12bceb0b22e08d9726f6"
+
+[[package]]
 name = "base64"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -344,11 +350,11 @@ dependencies = [
 
 [[package]]
 name = "block-buffer"
-version = "0.10.4"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
+checksum = "cdd35008169921d80bc60d3d0ab416eecb028c4cd653352907921d95084790be"
 dependencies = [
- "generic-array",
+ "hybrid-array",
 ]
 
 [[package]]
@@ -416,10 +422,16 @@ dependencies = [
  "build_rs_git_info",
  "clap",
  "disk_backend_resources",
+ "fs-err",
  "futures",
  "guid",
  "jiff",
  "libc",
+ "mesh",
+ "mesh_process",
+ "net_backend_resources",
+ "net_tap",
+ "netvsp_resources",
  "openvmm_defs",
  "openvmm_helpers",
  "pal_async",
@@ -640,8 +652,11 @@ dependencies = [
 name = "chipset_legacy"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "chipset",
  "chipset_device",
+ "chipset_device_resources",
+ "chipset_resources",
  "floppy",
  "floppy_pcat_stub",
  "guestmem",
@@ -653,9 +668,11 @@ dependencies = [
  "pal_async",
  "pci_bus",
  "pci_core",
+ "power_resources",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
+ "vm_resource",
  "vmcore",
 ]
 
@@ -781,6 +798,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmov"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f88a43d011fc4a6876cb7344703e297c71dda42494fee094d5f7c76bf13f746"
+
+[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -847,9 +870,15 @@ dependencies = [
 
 [[package]]
 name = "const-oid"
-version = "0.9.6"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+
+[[package]]
+name = "constant_time_eq"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
 
 [[package]]
 name = "cordyceps"
@@ -878,10 +907,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
-name = "cpufeatures"
-version = "0.2.17"
+name = "cpubits"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
+checksum = "5ef0c543070d296ea414df2dd7625d1b24866ce206709d8a4a424f28377f5861"
+
+[[package]]
+name = "cpufeatures"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
 dependencies = [
  "libc",
 ]
@@ -1004,7 +1039,9 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 name = "crypto"
 version = "0.0.0"
 dependencies = [
+ "hex",
  "openssl",
+ "openssl_kdf",
  "thiserror 2.0.16",
  "wchar",
  "windows 0.62.0",
@@ -1013,13 +1050,37 @@ dependencies = [
 ]
 
 [[package]]
-name = "crypto-common"
-version = "0.1.6"
+name = "crypto-bigint"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bfb12502f3fc46cca1bb51ac28df9d618d813cdc3d2f25b9fe775a34af26bb3"
+checksum = "42a0d26b245348befa0c121944541476763dcc46ede886c88f9d12e1697d27c3"
 dependencies = [
- "generic-array",
- "typenum",
+ "cpubits",
+ "ctutils",
+ "num-traits",
+ "rand_core",
+ "serdect",
+ "zeroize",
+]
+
+[[package]]
+name = "crypto-common"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77727bb15fa921304124b128af125e7e3b968275d1b108b379190264f4423710"
+dependencies = [
+ "hybrid-array",
+]
+
+[[package]]
+name = "crypto-primes"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21f41f23de7d24cdbda7f0c4d9c0351f99a4ceb258ef30e5c1927af8987ffe5a"
+dependencies = [
+ "crypto-bigint",
+ "libm",
+ "rand_core",
 ]
 
 [[package]]
@@ -1030,6 +1091,15 @@ checksum = "46f93780a459b7d656ef7f071fe699c4d3d2cb201c4b24d085b6ddc505276e73"
 dependencies = [
  "nix 0.30.1",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "ctutils"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
+dependencies = [
+ "cmov",
 ]
 
 [[package]]
@@ -1128,9 +1198,9 @@ dependencies = [
 
 [[package]]
 name = "der"
-version = "0.7.10"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
+checksum = "71fd89660b2dc699704064e59e9dba0147b903e85319429e131620d022be411b"
 dependencies = [
  "const-oid",
  "der_derive",
@@ -1140,9 +1210,9 @@ dependencies = [
 
 [[package]]
 name = "der_derive"
-version = "0.7.3"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8034092389675178f570469e6c3b0465d3d30b4505c294a6550db47f3c17ad18"
+checksum = "59600e2c2d636fde9b65e99cc6445ac770c63d3628195ff39932b8d6d7409903"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1262,9 +1332,9 @@ checksum = "ab03c107fafeb3ee9f5925686dbb7a73bc76e3932abb0d2b365cb64b169cf04c"
 
 [[package]]
 name = "digest"
-version = "0.10.7"
+version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
+checksum = "4850db49bf08e663084f7fb5c87d202ef91a3907271aff24a94eb97ff039153c"
 dependencies = [
  "block-buffer",
  "const-oid",
@@ -1349,6 +1419,7 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "blocking",
  "disk_backend",
+ "disk_backend_resources",
  "event-listener",
  "fs-err",
  "futures",
@@ -1357,7 +1428,6 @@ dependencies = [
  "inspect",
  "io-uring",
  "libc",
- "mesh",
  "nix 0.30.1",
  "nvme_common",
  "nvme_spec",
@@ -1593,6 +1663,7 @@ dependencies = [
  "scsi_buffers",
  "serde",
  "serde_json",
+ "tempfile",
  "tracing",
  "vm_resource",
 ]
@@ -1902,6 +1973,7 @@ dependencies = [
  "async-trait",
  "bitfield-struct 0.11.0",
  "chipset_device",
+ "crypto",
  "der",
  "firmware_uefi_custom_vars",
  "generation_id",
@@ -1913,7 +1985,6 @@ dependencies = [
  "local_clock",
  "mesh",
  "open_enum",
- "openssl",
  "pal_async",
  "test_with_tracing",
  "thiserror 2.0.16",
@@ -2060,6 +2131,7 @@ dependencies = [
  "flowey_lib_hvlite",
  "log",
  "serde",
+ "serde_json",
  "target-lexicon",
  "vmm_test_images",
 ]
@@ -2086,10 +2158,12 @@ dependencies = [
 name = "flowey_lib_hvlite"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "crossterm",
  "flowey",
  "flowey_lib_common",
  "igvmfilegen_config",
+ "log",
  "powershell_builder",
  "serde",
  "serde_json",
@@ -2208,7 +2282,7 @@ dependencies = [
  "diatomic-waker",
  "futures-core",
  "pin-project-lite",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -2334,11 +2408,11 @@ name = "fuzz_firmware_uefi"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "crypto",
  "firmware_uefi",
  "guestmem",
  "guid",
  "libfuzzer-sys",
- "openssl",
  "ucs2 0.0.0",
  "uefi_nvram_specvars",
  "xtask_fuzz",
@@ -2610,16 +2684,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "generic-array"
-version = "0.14.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
-dependencies = [
- "typenum",
- "version_check",
-]
-
-[[package]]
 name = "get_helpers"
 version = "0.0.0"
 dependencies = [
@@ -2690,9 +2754,9 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "globset"
-version = "0.4.16"
+version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54a1028dfc5f5df5da8a56a73e6c153c9a9708ec57232470703592a3f18e49f5"
+checksum = "52dfc19153a48bde0cbd630453615c8151bce3a5adfac7a0aebfbf0a1e1f57e3"
 dependencies = [
  "aho-corasick",
  "bstr",
@@ -2716,18 +2780,18 @@ dependencies = [
 
 [[package]]
 name = "grep-matcher"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47a3141a10a43acfedc7c98a60a834d7ba00dfe7bec9071cbfc19b55b292ac02"
+checksum = "36d7b71093325ab22d780b40d7df3066ae4aebb518ba719d38c697a8228a8023"
 dependencies = [
  "memchr",
 ]
 
 [[package]]
 name = "grep-regex"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9edd147c7e3296e7a26bd3a81345ce849557d5a8e48ed88f736074e760f91f7e"
+checksum = "0ce0c256c3ad82bcc07b812c15a45ec1d398122e8e15124f96695234db7112ef"
 dependencies = [
  "bstr",
  "grep-matcher",
@@ -2738,9 +2802,9 @@ dependencies = [
 
 [[package]]
 name = "grep-searcher"
-version = "0.1.14"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9b6c14b3fc2e0a107d6604d3231dec0509e691e62447104bc385a46a7892cda"
+checksum = "ac63295322dc48ebb20a25348147905d816318888e64f531bfc2a2bc0577dc34"
 dependencies = [
  "bstr",
  "encoding_rs",
@@ -3192,6 +3256,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hybrid-array"
+version = "0.4.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3944cf8cf766b40e2a1a333ee5e9b563f854d5fa49d6a8ca2764e97c6eddb214"
+dependencies = [
+ "typenum",
+]
+
+[[package]]
 name = "hybrid_vsock"
 version = "0.0.0"
 dependencies = [
@@ -3610,9 +3683,9 @@ dependencies = [
 
 [[package]]
 name = "io-uring"
-version = "0.7.10"
+version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "046fa2d4d00aea763528b4950358d0ead425372445dc8ff86312b3c69ff7727b"
+checksum = "fdd7bddefd0a8833b88a4b68f90dae22c7450d11b354198baee3874fd811b344"
 dependencies = [
  "bitflags 2.9.3",
  "cfg-if",
@@ -3755,15 +3828,12 @@ name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
-dependencies = [
- "spin 0.9.8",
-]
 
 [[package]]
 name = "libc"
-version = "0.2.182"
+version = "0.2.184"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
+checksum = "48f5d2a454e16a5ea0f4ced81bd44e4cfc7bd3a507b61887c99fd3538b28e4af"
 
 [[package]]
 name = "libfuzzer-sys"
@@ -4053,15 +4123,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mcr_resources"
-version = "0.0.0"
-dependencies = [
- "guid",
- "mesh",
- "vm_resource",
-]
-
-[[package]]
 name = "mem_profile_tracing"
 version = "0.0.0"
 dependencies = [
@@ -4099,9 +4160,9 @@ checksum = "32a282da65faaf38286cf3be983213fcf1d2e2a58700e808f83f4ea9a4804bc0"
 
 [[package]]
 name = "memmap2"
-version = "0.9.8"
+version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "843a98750cd611cc2965a8213b53b43e715f13c37a9e096c6408e69990961db7"
+checksum = "714098028fe011992e1c3962653c96b2d578c4b4bce9036e15ff220319b1e0e3"
 dependencies = [
  "libc",
 ]
@@ -4214,6 +4275,8 @@ dependencies = [
  "pal",
  "pal_async",
  "slab",
+ "tempfile",
+ "test_with_tracing",
  "tracing",
  "unicycle",
 ]
@@ -4238,9 +4301,11 @@ dependencies = [
 name = "mesh_remote"
 version = "0.0.0"
 dependencies = [
+ "constant_time_eq",
  "event-listener",
  "futures",
  "futures-concurrency",
+ "getrandom 0.3.3",
  "libc",
  "mesh_channel",
  "mesh_node",
@@ -4428,9 +4493,9 @@ dependencies = [
 
 [[package]]
 name = "mshv-bindings"
-version = "0.6.0"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "805cf329582f770f62cc612716a04c14815276ae266b6298375a672d3c5a5184"
+checksum = "a94fc3871dd23738188e5bc76a1d1a5930ebcaf9308c560a7274aa62b1770594"
 dependencies = [
  "libc",
  "num_enum",
@@ -4442,9 +4507,9 @@ dependencies = [
 
 [[package]]
 name = "mshv-ioctls"
-version = "0.6.0"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aefaab4c067cf5226a917227640d835327b25b71a8d465f815f74f490344e10a"
+checksum = "1339723fe3a26baf4041459de20ad923e89d312c3bb25dbf9f60738c22a47f5e"
 dependencies = [
  "libc",
  "mshv-bindings",
@@ -4700,7 +4765,7 @@ dependencies = [
 name = "nostd_spin_channel"
 version = "0.0.0"
 dependencies = [
- "spin 0.10.0",
+ "spin",
  "thiserror 2.0.16",
 ]
 
@@ -4723,49 +4788,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "num-bigint-dig"
-version = "0.8.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e661dda6640fad38e827a6d4a310ff4763082116fe217f279885c97f511bb0b7"
-dependencies = [
- "lazy_static",
- "libm",
- "num-integer",
- "num-iter",
- "num-traits",
- "rand",
- "smallvec",
- "zeroize",
-]
-
-[[package]]
-name = "num-integer"
-version = "0.1.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7969661fd2958a5cb096e56c8e1ad0444ac2bbcd0061bd28660485a44879858f"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
-name = "num-iter"
-version = "0.1.45"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1429034a0490724d0075ebb2bc9e875d6503c3cf69e235a8941aa757d83ef5bf"
-dependencies = [
- "autocfg",
- "num-integer",
- "num-traits",
-]
-
-[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
- "libm",
 ]
 
 [[package]]
@@ -5164,6 +5192,7 @@ dependencies = [
 name = "opentmk"
 version = "0.0.0"
 dependencies = [
+ "acpi_spec",
  "bitfield-struct 0.11.0",
  "cfg-if",
  "hvdef",
@@ -5174,7 +5203,7 @@ dependencies = [
  "nostd_spin_channel",
  "serde",
  "serde_json",
- "spin 0.10.0",
+ "spin",
  "thiserror 2.0.16",
  "uefi",
  "x86_64",
@@ -5204,6 +5233,7 @@ dependencies = [
  "chipset_device_resources",
  "chipset_device_worker",
  "chipset_legacy",
+ "chipset_resources",
  "closeable_mutex",
  "crc32fast",
  "debug_ptr",
@@ -5256,6 +5286,8 @@ dependencies = [
  "tracing",
  "uefi_nvram_storage",
  "uefi_specs",
+ "vfio_assigned_device",
+ "vfio_assigned_device_resources",
  "virt",
  "virt_whp",
  "virtio",
@@ -5318,6 +5350,7 @@ dependencies = [
  "clap",
  "clap_dyn_complete",
  "console_relay",
+ "crypto",
  "debug_worker_defs",
  "diag_client",
  "dirs",
@@ -5340,23 +5373,21 @@ dependencies = [
  "input_core",
  "inspect",
  "inspect_proto",
- "mcr_resources",
  "memory_range",
  "mesh",
  "mesh_process",
  "mesh_rpc",
  "mesh_worker",
  "net_backend_resources",
+ "net_tap",
  "netvsp_resources",
  "nvme_resources",
- "openssl",
  "openvmm_defs",
  "openvmm_helpers",
  "openvmm_pcat_locator",
  "openvmm_ttrpc_vmservice",
  "pal",
  "pal_async",
- "parking_lot",
  "pcie_remote_resources",
  "prost",
  "rustyline",
@@ -5378,9 +5409,9 @@ dependencies = [
  "uidevices_resources",
  "unicycle",
  "unix_socket",
+ "vfio_assigned_device_resources",
  "video_core",
  "virt_whp",
- "virtio",
  "virtio_resources",
  "vm_manifest_builder",
  "vm_resource",
@@ -5416,6 +5447,7 @@ version = "0.0.0"
 dependencies = [
  "build_rs_guest_arch",
  "chipset",
+ "chipset_legacy",
  "debug_worker",
  "disk_striped",
  "hyperv_ic",
@@ -5448,6 +5480,7 @@ dependencies = [
  "fs-err",
  "get_resources",
  "hypervisor_resources",
+ "libc",
  "mesh",
  "openvmm_defs",
  "sparse_mmap",
@@ -5462,6 +5495,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "build_rs_guest_arch",
+ "fs-err",
  "hypervisor_resources",
  "openvmm_core",
  "virt_hvf",
@@ -5488,8 +5522,10 @@ version = "0.0.0"
 dependencies = [
  "build_rs_guest_arch",
  "chipset",
+ "chipset_legacy",
  "debug_worker",
  "disk_blob",
+ "disk_blockdevice",
  "disk_crypt",
  "disk_delay",
  "disk_file",
@@ -5643,6 +5679,7 @@ dependencies = [
  "futures",
  "getrandom 0.3.3",
  "headervec",
+ "io-uring",
  "libc",
  "loan_cell",
  "once_cell",
@@ -5801,12 +5838,14 @@ dependencies = [
 name = "pci_core"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "bitfield-struct 0.11.0",
  "chipset_device",
  "guestmem",
  "inspect",
  "mesh",
  "open_enum",
+ "pal_event",
  "parking_lot",
  "thiserror 2.0.16",
  "tracelimit",
@@ -5835,6 +5874,7 @@ dependencies = [
  "chipset_device",
  "inspect",
  "memory_range",
+ "mesh",
  "pal_async",
  "parking_lot",
  "pci_bus",
@@ -5856,9 +5896,9 @@ dependencies = [
 
 [[package]]
 name = "pem-rfc7468"
-version = "0.7.0"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
+checksum = "a6305423e0e7738146434843d1694d621cce767262b2a86910beab705e4493d9"
 dependencies = [
  "base64ct",
 ]
@@ -5891,6 +5931,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bitfield-struct 0.11.0",
  "blocking",
  "chipset_device_worker_defs",
  "chipset_resources",
@@ -6113,20 +6154,19 @@ dependencies = [
 
 [[package]]
 name = "pkcs1"
-version = "0.7.5"
+version = "0.8.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8ffb9f10fa047879315e6625af03c164b16962a5368d724ed16323b68ace47f"
+checksum = "986d2e952779af96ea048f160fd9194e1751b4faea78bcf3ceb456efe008088e"
 dependencies = [
  "der",
- "pkcs8",
  "spki",
 ]
 
 [[package]]
 name = "pkcs8"
-version = "0.10.2"
+version = "0.11.0-rc.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
+checksum = "12922b6296c06eb741b02d7b5161e3aaa22864af38dfa025a1a3ba3f68c84577"
 dependencies = [
  "der",
  "spki",
@@ -6202,15 +6242,6 @@ version = "0.0.0"
 dependencies = [
  "guid",
  "jiff",
-]
-
-[[package]]
-name = "ppv-lite86"
-version = "0.2.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
-dependencies = [
- "zerocopy",
 ]
 
 [[package]]
@@ -6393,33 +6424,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "rand"
-version = "0.8.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
-dependencies = [
- "rand_chacha",
- "rand_core",
-]
-
-[[package]]
-name = "rand_chacha"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
-dependencies = [
- "ppv-lite86",
- "rand_core",
-]
-
-[[package]]
 name = "rand_core"
-version = "0.6.4"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
-dependencies = [
- "getrandom 0.2.16",
-]
+checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "range_map_vec"
@@ -6469,9 +6477,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.11.2"
+version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23d7fd106d8c02486a8d64e778353d1cffe08ce79ac2e82f540c86d0facf6912"
+checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -6481,9 +6489,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.10"
+version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b9458fa0bfeeac22b5ca447c63aaf45f28439a709ccd244698632f9aa6394d6"
+checksum = "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -6528,21 +6536,19 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rsa"
-version = "0.9.10"
+version = "0.10.0-rc.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8573f03f5883dcaebdfcf4725caa1ecb9c15b2ef50c43a07b816e06799bb12d"
+checksum = "87ed3e93fc7e473e464b9726f4759659e72bc8665e4b8ea227547024f416d905"
 dependencies = [
  "const-oid",
+ "crypto-bigint",
+ "crypto-primes",
  "digest",
- "num-bigint-dig",
- "num-integer",
- "num-traits",
  "pkcs1",
  "pkcs8",
  "rand_core",
  "signature",
  "spki",
- "subtle",
  "zeroize",
 ]
 
@@ -6909,6 +6915,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serdect"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9af4a3e75ebd5599b30d4de5768e00b5095d518a79fefc3ecbaf77e665d1ec06"
+dependencies = [
+ "base16ct",
+ "serde",
+]
+
+[[package]]
 name = "serial_16550"
 version = "0.0.0"
 dependencies = [
@@ -7047,9 +7063,9 @@ dependencies = [
 
 [[package]]
 name = "sha2"
-version = "0.10.9"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
 dependencies = [
  "cfg-if",
  "cpufeatures",
@@ -7149,9 +7165,9 @@ dependencies = [
 
 [[package]]
 name = "signature"
-version = "2.2.0"
+version = "3.0.0-rc.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
+checksum = "7f1880df446116126965eeec169136b2e0251dba37c6223bcc819569550edea3"
 dependencies = [
  "digest",
  "rand_core",
@@ -7231,12 +7247,6 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.9.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
-
-[[package]]
-name = "spin"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
@@ -7255,9 +7265,9 @@ dependencies = [
 
 [[package]]
 name = "spki"
-version = "0.7.3"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
+checksum = "1d9efca8738c78ee9484207732f728b1ef517bbb1833d6fc0879ca898a522f6f"
 dependencies = [
  "base64ct",
  "der",
@@ -7442,12 +7452,6 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
-
-[[package]]
-name = "subtle"
-version = "2.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "syn"
@@ -8237,6 +8241,8 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "base64-serde",
+ "constant_time_eq",
+ "crypto",
  "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
@@ -8247,8 +8253,6 @@ dependencies = [
  "guid",
  "mesh",
  "openhcl_attestation_protocol",
- "openssl",
- "openssl_kdf",
  "pal_async",
  "serde",
  "serde_json",
@@ -8301,6 +8305,7 @@ dependencies = [
  "chipset_device_worker_defs",
  "chipset_legacy",
  "closeable_mutex",
+ "crypto",
  "cvm_tracing",
  "debug_ptr",
  "debug_worker_defs",
@@ -8347,7 +8352,6 @@ dependencies = [
  "loader_defs",
  "local_clock",
  "mana_driver",
- "mcr_resources",
  "mem_profile_tracing",
  "memory_range",
  "mesh",
@@ -8685,16 +8689,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
-name = "version_check"
-version = "0.9.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
 name = "vfio-bindings"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7adc40b84dd8c9c8838758ea7611413a30a0f6c8c31aa865a6c13ac0ed089990"
+
+[[package]]
+name = "vfio_assigned_device"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chipset_device",
+ "guestmem",
+ "inspect",
+ "memory_range",
+ "mesh",
+ "pal_async",
+ "pci_core",
+ "pci_resources",
+ "tracelimit",
+ "tracing",
+ "vfio-bindings",
+ "vfio_assigned_device_resources",
+ "vfio_sys",
+ "virt",
+ "vm_resource",
+ "vmcore",
+]
+
+[[package]]
+name = "vfio_assigned_device_resources"
+version = "0.0.0"
+dependencies = [
+ "mesh",
+ "vm_resource",
+]
 
 [[package]]
 name = "vfio_sys"
@@ -8702,7 +8732,9 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "bitfield-struct 0.11.0",
+ "headervec",
  "libc",
+ "memory_range",
  "nix 0.30.1",
  "pal_async",
  "tracing",
@@ -8911,9 +8943,10 @@ name = "virt_mshv"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "arrayvec",
  "build_rs_guest_arch",
+ "fs-err",
  "guestmem",
+ "headervec",
  "hv1_emulator",
  "hv1_hypercall",
  "hvdef",
@@ -8926,12 +8959,12 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "signal-hook",
- "static_assertions",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
  "virt",
  "virt_support_x86emu",
+ "vm_topology",
  "vmcore",
  "x86defs",
  "x86emu",
@@ -9114,7 +9147,6 @@ dependencies = [
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
- "tracing",
  "virtio_resources",
  "virtio_spec",
  "vm_resource",
@@ -9749,6 +9781,7 @@ dependencies = [
  "inspect",
  "jiff",
  "linkme",
+ "loan_cell",
  "mesh",
  "pal_async",
  "pal_event",
@@ -9827,6 +9860,7 @@ dependencies = [
 name = "vmgs_lib"
 version = "0.0.0"
 dependencies = [
+ "crypto",
  "disk_backend",
  "disk_vhd1",
  "futures",
@@ -9850,6 +9884,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "crypto",
  "disk_backend",
  "disk_vhd1",
  "fs-err",
@@ -9955,6 +9990,7 @@ name = "vmm_test_images"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "petri_artifacts_core",
  "petri_artifacts_vmm_test",
  "serde",
 ]
@@ -10099,6 +10135,7 @@ dependencies = [
 name = "vnc"
 version = "0.0.0"
 dependencies = [
+ "flate2",
  "futures",
  "pal_async",
  "socket2",
@@ -10118,6 +10155,7 @@ dependencies = [
  "mesh",
  "mesh_worker",
  "pal_async",
+ "socket2",
  "tracing",
  "tracing_helpers",
  "vmsocket",
@@ -10943,7 +10981,6 @@ dependencies = [
  "ignore",
  "log",
  "object 0.37.3",
- "rayon",
  "serde",
  "serde_json",
  "toml_edit",

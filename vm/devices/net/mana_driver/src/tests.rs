@@ -232,11 +232,34 @@ async fn test_gdma_reconfig_vf(driver: DefaultDriver) {
         "vf_reconfiguration_pending should be false"
     );
 
+    // Get the device ID while HWC is still alive (needed for deregister later).
+    let dev_id = gdma
+        .list_devices()
+        .await
+        .unwrap()
+        .iter()
+        .copied()
+        .find(|dev_id| dev_id.ty == GdmaDevType::GDMA_DEVICE_MANA)
+        .unwrap();
+
     // Trigger the reconfig event (EQE 135).
     gdma.generate_reconfig_vf_event().await.unwrap();
-    gdma.process_all_eqs();
+
     assert!(
         gdma.get_vf_reconfiguration_pending(),
         "vf_reconfiguration_pending should be true after reconfig event"
+    );
+
+    // Deregister should fail immediately because vf_reconfiguration_pending is set.
+    let deregister_result = gdma.deregister_device(dev_id).await;
+    let err = deregister_result.expect_err("deregister_device should fail after EQE 135");
+    let err_msg = format!("{err:#}");
+    assert!(
+        err_msg.contains("VF reconfiguration pending"),
+        "unexpected error: {err_msg}"
+    );
+    assert!(
+        gdma.get_vf_reconfiguration_pending(),
+        "vf_reconfiguration_pending should remain true after deregister_device"
     );
 }

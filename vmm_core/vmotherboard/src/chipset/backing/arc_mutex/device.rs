@@ -25,6 +25,8 @@ pub(crate) enum AddDeviceErrorKind {
 
     #[error("no pci bus address provided")]
     NoPciBusAddress,
+    #[error("no pci bus specified; call on_pci_bus(...) when adding this PCI device")]
+    NoPciBusSpecified,
     #[error("error finalizing device")]
     Finalize(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
@@ -191,7 +193,8 @@ where
                             );
                             override_bdf
                         }
-                        (None, Some(bdf)) | (Some(bdf), None) => bdf,
+                        (Some(override_bdf), None) => override_bdf,
+                        (None, Some(suggested_bdf)) => suggested_bdf,
                         (None, None) => {
                             return Err(
                                 AddDeviceErrorKind::NoPciBusAddress.with_dev_name(self.dev_name)
@@ -199,12 +202,12 @@ where
                         }
                     };
 
-                    let bus_id = match self.pci_bus_id.take() {
-                        Some(bus_id) => bus_id,
-                        None => panic!(
-                            "wiring error: did not invoke `on_pci_bus` for `{}`",
-                            self.dev_name
-                        ),
+                    let bus_id = if let Some(bus_id) = self.pci_bus_id.take() {
+                        bus_id
+                    } else {
+                        return Err(
+                            AddDeviceErrorKind::NoPciBusSpecified.with_dev_name(self.dev_name)
+                        );
                     };
 
                     self.services.register_static_pci(bus_id, bdf);

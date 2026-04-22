@@ -3,11 +3,9 @@
 
 //! Ensure the OpenVMM repo is `clippy` clean.
 
-use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonPlatform;
-use crate::run_cargo_build::common::CommonProfile;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonArch;
+use crate::common::CommonProfile;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoBuildProfile;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
@@ -49,18 +47,10 @@ impl SimpleFlowNode for Node {
         let flowey_platform = ctx.platform();
         let flowey_arch = ctx.arch();
 
-        let (boot_target, uefi_target, sysroot_arch) = match target.architecture {
-            target_lexicon::Architecture::X86_64 => (
-                "x86_64-unknown-none",
-                "x86_64-unknown-uefi",
-                OpenvmmSysrootArch::X64,
-            ),
-            target_lexicon::Architecture::Aarch64(_) => (
-                "aarch64-unknown-linux-musl",
-                "aarch64-unknown-uefi",
-                OpenvmmSysrootArch::Aarch64,
-            ),
-            arch => anyhow::bail!("unsupported arch {arch}"),
+        let sysroot_arch = CommonArch::from_architecture(target.architecture)?;
+        let (boot_target, uefi_target) = match sysroot_arch {
+            CommonArch::X86_64 => ("x86_64-unknown-none", "x86_64-unknown-uefi"),
+            CommonArch::Aarch64 => ("aarch64-unknown-linux-musl", "aarch64-unknown-uefi"),
         };
 
         let mut pre_build_deps = Vec::new();
@@ -124,17 +114,8 @@ impl SimpleFlowNode for Node {
         }
 
         let xtask_target = CommonTriple::Common {
-            arch: match flowey_arch {
-                FlowArch::X86_64 => CommonArch::X86_64,
-                FlowArch::Aarch64 => CommonArch::Aarch64,
-                arch => anyhow::bail!("unsupported arch {arch}"),
-            },
-            platform: match flowey_platform {
-                FlowPlatform::Windows => CommonPlatform::WindowsMsvc,
-                FlowPlatform::Linux(_) => CommonPlatform::LinuxGnu,
-                FlowPlatform::MacOs => CommonPlatform::MacOs,
-                platform => anyhow::bail!("unsupported platform {platform}"),
-            },
+            arch: flowey_arch.try_into()?,
+            platform: flowey_platform.try_into()?,
         };
 
         let xtask = ctx.reqv(|v| crate::build_xtask::Request {
@@ -179,14 +160,12 @@ impl SimpleFlowNode for Node {
                     exclude.push("xtask_fuzz".into());
                 }
 
-                // packages requiring openssl-sys won't cross compile for macos
+                // packages requiring crypto support won't cross compile for macos
                 if matches!(
                     target.operating_system,
                     target_lexicon::OperatingSystem::Darwin(_)
                 ) {
-                    exclude.extend(
-                        ["openssl_kdf", "vmgs_lib", "disk_crypt", "crypto"].map(|x| x.into()),
-                    );
+                    exclude.extend(["openssl_kdf", "vmgs_lib", "disk_crypt"].map(|x| x.into()));
                 }
 
                 Ok(Some(exclude))

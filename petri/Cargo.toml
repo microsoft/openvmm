@@ -65,6 +65,7 @@ sparse_mmap.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
+bitfield-struct.workspace = true
 blocking.workspace = true
 clap.workspace = true
 fatfs = { workspace = true, features = ["std", "alloc"] }

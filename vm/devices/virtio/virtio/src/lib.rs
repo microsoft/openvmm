@@ -3,6 +3,7 @@
 
 //! Core virtio device infrastructure
 
+#![cfg_attr(not(test), forbid(unsafe_code))]
 #![expect(missing_docs)]
 
 mod common;

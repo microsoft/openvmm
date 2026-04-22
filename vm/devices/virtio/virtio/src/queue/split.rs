@@ -61,7 +61,7 @@ impl SplitQueueGetWork {
             queue_size: params.size,
             last_avail_index: initial_avail_index,
             cached_avail_index: initial_avail_index,
-            use_ring_event_index: features.bank0().ring_event_idx(),
+            use_ring_event_index: features.ring_event_idx(),
         })
     }
 
@@ -169,9 +169,12 @@ impl SplitQueueGetWork {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
+#[inspect(extra = "Self::inspect_extra")]
 pub(crate) struct SplitQueueCompleteWork {
+    #[inspect(skip)]
     queue_avail: GuestMemory,
+    #[inspect(skip)]
     queue_used: GuestMemory,
     queue_size: u16,
     last_used_index: u16,
@@ -179,6 +182,14 @@ pub(crate) struct SplitQueueCompleteWork {
 }
 
 impl SplitQueueCompleteWork {
+    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
+        if self.use_ring_event_index {
+            resp.field("used_event", self.get_used_event().ok());
+        } else {
+            resp.field("available_flags", self.get_available_flags().ok());
+        }
+    }
+
     pub fn new(
         features: VirtioDeviceFeatures,
         mem: GuestMemory,
@@ -208,7 +219,7 @@ impl SplitQueueCompleteWork {
             queue_used,
             queue_size: params.size,
             last_used_index: initial_used_index,
-            use_ring_event_index: features.bank0().ring_event_idx(),
+            use_ring_event_index: features.ring_event_idx(),
         })
     }
 

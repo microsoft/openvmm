@@ -26,7 +26,6 @@ heck.workspace = true
 ignore.workspace = true
 log.workspace = true
 object = { workspace = true, features = ["read_core", "elf", "std"] }
-rayon.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"]}
 toml_edit = { workspace = true, features = ["serde"] }

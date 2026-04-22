@@ -78,7 +78,12 @@ use x86defs::cpuid::Vendor;
 pub use aarch64::WHP_PMU_GSIV;
 
 #[derive(Debug)]
-pub struct Whp;
+pub struct Whp {
+    /// Use the user-mode APIC emulator instead of the in-hypervisor one.
+    pub user_mode_apic: bool,
+    /// Use the hypervisor's in-built enlightenment support if available.
+    pub offload_enlightenments: bool,
+}
 
 #[derive(Inspect)]
 #[inspect(transparent)]
@@ -88,10 +93,12 @@ pub struct WhpPartition {
     with_vtl0: Arc<WhpPartitionAndVtl>,
     #[inspect(skip)]
     with_vtl2: Option<Arc<WhpPartitionAndVtl>>,
+    #[inspect(skip)]
+    synic_ports: Arc<virt::synic::SynicPorts<WhpPartitionInner>>,
 }
 
 #[derive(Inspect)]
-pub struct WhpPartitionInner {
+struct WhpPartitionInner {
     vtl0: VtlPartition,
     vtl2: Option<VtlPartition>,
     #[inspect(skip)]
@@ -114,6 +121,7 @@ pub struct WhpPartitionInner {
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
     gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
+    synic_ports: virt::synic::SynicPortMap,
 }
 
 #[derive(Inspect)]
@@ -540,18 +548,12 @@ impl virt::Partition for WhpPartition {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn as_signal_msi(
-        self: &Arc<Self>,
-        minimum_vtl: Vtl,
-    ) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
+    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
         Some(self.with_vtl(minimum_vtl).clone())
     }
 
     #[cfg(guest_arch = "aarch64")]
-    fn as_signal_msi(
-        self: &Arc<Self>,
-        minimum_vtl: Vtl,
-    ) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
+    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
         let v2m = self.inner.gic_v2m.as_ref()?;
         let irqcon = self.with_vtl(minimum_vtl).clone() as Arc<dyn virt::irqcon::ControlGic>;
         Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
@@ -674,7 +676,10 @@ impl virt::BindProcessor for WhpProcessorBinder {
                     .for_op("set mpidr")?;
                 vp.vp
                     .whp(vtl)
-                    .set_register(whp::Register64::GicrBaseGpa, vp_info.gicr)
+                    .set_register(
+                        whp::Register64::GicrBaseGpa,
+                        vp_info.gicr.expect("WHP always uses GICv3"),
+                    )
                     .for_op("set GICR base")?;
             }
         }
@@ -733,8 +738,12 @@ pub enum Error {
     InvalidApicBase(#[source] virt_support_apic::InvalidApicBase),
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[error("WHP does not support GICv2; only GICv3 is supported")]
+    GicV2NotSupported,
     #[error("failed to compute topology cpuid")]
     TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
+    #[error("{0} is not supported on this architecture")]
+    UnsupportedParameter(&'static str),
 }
 
 trait WhpResultExt<T> {
@@ -755,27 +764,49 @@ impl virt::Hypervisor for Whp {
     type Partition = WhpPartition;
     type Error = Error;
 
+    fn platform_info(&self) -> virt::PlatformInfo {
+        #[cfg(guest_arch = "x86_64")]
+        {
+            virt::PlatformInfo {}
+        }
+        #[cfg(guest_arch = "aarch64")]
+        {
+            virt::PlatformInfo {
+                platform_gsiv: Some(WHP_PMU_GSIV),
+                supports_gic_v3: true,
+            }
+        }
+    }
+
     fn new_partition<'a>(
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<WhpProtoPartition<'a>, Error> {
-        let vtl0 = VtlPartition::new(&config, Vtl::Vtl0)?;
+        let user_mode_apic = self.user_mode_apic;
+        let offload_enlightenments = self.offload_enlightenments;
+        let vtl0 = VtlPartition::new(&config, Vtl::Vtl0, user_mode_apic, offload_enlightenments)?;
         let vtl2 = if config
             .hv_config
             .as_ref()
             .is_some_and(|cfg| cfg.vtl2.is_some())
         {
-            Some(VtlPartition::new(&config, Vtl::Vtl2)?)
+            Some(VtlPartition::new(
+                &config,
+                Vtl::Vtl2,
+                user_mode_apic,
+                offload_enlightenments,
+            )?)
         } else {
             None
         };
 
-        Ok(WhpProtoPartition { vtl0, vtl2, config })
-    }
-
-    #[cfg(guest_arch = "aarch64")]
-    fn platform_gsiv(&self) -> Option<u32> {
-        Some(WHP_PMU_GSIV)
+        Ok(WhpProtoPartition {
+            vtl0,
+            vtl2,
+            config,
+            user_mode_apic,
+            offload_enlightenments,
+        })
     }
 }
 
@@ -789,6 +820,8 @@ pub struct WhpProtoPartition<'a> {
     vtl0: VtlPartition,
     vtl2: Option<VtlPartition>,
     config: ProtoPartitionConfig<'a>,
+    user_mode_apic: bool,
+    offload_enlightenments: bool,
 }
 
 impl ProtoPartition for WhpProtoPartition<'_> {
@@ -815,11 +848,24 @@ impl ProtoPartition for WhpProtoPartition<'_> {
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        #[cfg(guest_arch = "aarch64")]
+        {
+            use vm_topology::processor::aarch64::GicVersion;
+            if matches!(
+                self.config.processor_topology.gic_version(),
+                GicVersion::V2 { .. }
+            ) {
+                return Err(Error::GicV2NotSupported);
+            }
+        }
+
         let inner = Arc::new(WhpPartitionInner::new(
             config,
             &self.config,
             self.vtl0,
             self.vtl2,
+            self.user_mode_apic,
+            self.offload_enlightenments,
         )?);
 
         let with_vtl0 = Arc::new(WhpPartitionAndVtl {
@@ -833,10 +879,13 @@ impl ProtoPartition for WhpProtoPartition<'_> {
             })
         });
 
+        let synic_ports = Arc::new(virt::synic::SynicPorts::new(inner.clone()));
+
         let partition = WhpPartition {
             inner,
             with_vtl0,
             with_vtl2,
+            synic_ports,
         };
         partition.validate_is_reset(Vtl::Vtl0);
         if partition.inner.vtl2.is_some() {
@@ -904,7 +953,12 @@ impl WhpPartitionInner {
         proto_config: &ProtoPartitionConfig<'_>,
         vtl0: VtlPartition,
         vtl2: Option<VtlPartition>,
+        user_mode_apic: bool,
+        offload_enlightenments: bool,
     ) -> Result<Self, Error> {
+        // These are validated by VtlPartition::new and only consumed on x86_64.
+        let _ = (user_mode_apic, offload_enlightenments);
+
         // FUTURE: register cpuid results with the hypervisor, and register
         // appropriate per-VP results where necessary (or tell the hypervisor
         // the AMD topology information so that it can provide per-VP results
@@ -928,8 +982,8 @@ impl WhpPartitionInner {
             );
 
             // Add in the synthetic hv leaves if necessary.
-            if let Some(hv_config) = &proto_config.hv_config {
-                if !hv_config.offload_enlightenments || proto_config.user_mode_apic {
+            if proto_config.hv_config.is_some() {
+                if !offload_enlightenments || user_mode_apic {
                     let enlightenments = hvdef::HvEnlightenmentInformation::new()
                         .with_deprecate_auto_eoi(true)
                         .with_use_relaxed_timing(true)
@@ -1091,6 +1145,7 @@ impl WhpPartitionInner {
             isolation: proto_config.isolation,
             #[cfg(guest_arch = "aarch64")]
             gic_v2m: proto_config.processor_topology.gic_v2m(),
+            synic_ports: Default::default(),
         };
 
         Ok(inner)
@@ -1183,16 +1238,31 @@ impl VmTimeReferenceTimeSource {
 }
 
 impl VtlPartition {
-    fn new(config: &ProtoPartitionConfig<'_>, vtl: Vtl) -> Result<Self, Error> {
+    fn new(
+        config: &ProtoPartitionConfig<'_>,
+        vtl: Vtl,
+        user_mode_apic: bool,
+        offload_enlightenments: bool,
+    ) -> Result<Self, Error> {
+        #[cfg(not(guest_arch = "x86_64"))]
+        {
+            if user_mode_apic {
+                return Err(Error::UnsupportedParameter("user_mode_apic"));
+            }
+            if !offload_enlightenments {
+                return Err(Error::UnsupportedParameter("no_enlightenments"));
+            }
+        }
+
         let mut hypervisor_enlightened = false;
 
         let mut extended_exits = whp::abi::WHV_EXTENDED_VM_EXITS(0);
 
-        let user_mode_apic = config.user_mode_apic
+        let user_mode_apic = user_mode_apic
             || config
                 .hv_config
                 .as_ref()
-                .is_some_and(|cfg| !cfg.offload_enlightenments);
+                .is_some_and(|_| !offload_enlightenments);
 
         #[cfg(guest_arch = "x86_64")]
         let lapic = if user_mode_apic {
@@ -1308,7 +1378,7 @@ impl VtlPartition {
 
             let supported_synth_features = whp::capabilities::synthetic_processor_features()
                 .for_op("get synth processor features")?;
-            if hv_config.offload_enlightenments
+            if offload_enlightenments
                 && !user_mode_apic
                 && supported_synth_features
                     .bank0
@@ -1623,6 +1693,10 @@ impl virt::Hv1 for WhpPartition {
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         Some(self)
+    }
+
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic_ports.clone()
     }
 }
 

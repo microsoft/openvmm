@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use self::bnic_defs::CQE_RX_TRUNCATED;
 use self::bnic_defs::CQE_TX_GDMA_ERR;
 use self::bnic_defs::CQE_TX_OKAY;
 use self::bnic_defs::MANA_CQE_COMPLETION;
@@ -85,7 +86,11 @@ impl BufferAccess for GuestBuffers {
     fn write_data(&mut self, id: RxId, mut data: &[u8]) {
         let mut addrs = self.rx_packets[id.0 as usize].segments.iter();
         while !data.is_empty() {
-            let addr = addrs.next().expect("packet too large");
+            let Some(addr) = addrs.next() else {
+                // Packet exceeds buffer capacity; will be reported as
+                // CQE_RX_TRUNCATED by write_header.
+                break;
+            };
             let len = data.len().min(addr.len as usize);
             let (this, next) = data.split_at(len);
             if let Err(err) = self.gm.write_at(addr.gpa, this) {
@@ -135,9 +140,16 @@ impl BufferAccess for GuestBuffers {
         }
 
         let packet = &mut self.rx_packets[id.0 as usize];
+
+        let cqe_type = if metadata.len > packet.len as usize {
+            CQE_RX_TRUNCATED
+        } else {
+            CQE_RX_OKAY
+        };
+
         packet.oob = ManaRxcompOob {
             cqe_hdr: ManaCqeHeader::new()
-                .with_cqe_type(CQE_RX_OKAY)
+                .with_cqe_type(cqe_type)
                 .with_client_type(MANA_CQE_COMPLETION),
             rx_wqe_offset: packet.wqe_offset,
             flags,
@@ -173,8 +185,8 @@ impl InspectMut for Vport {
             .field_mut("endpoint", self.endpoint.as_mut())
             .field("tx_wq", self.queue_cfg.tx.map(|(wq, _cq)| wq))
             .field("tx_cq", self.queue_cfg.tx.map(|(_wq, cq)| cq))
-            .field("rx_wq", self.queue_cfg.tx.map(|(wq, _cq)| wq))
-            .field("rx_cq", self.queue_cfg.tx.map(|(_wq, cq)| cq))
+            .field("rx_wq", self.queue_cfg.rx.map(|(wq, _cq)| wq))
+            .field("rx_cq", self.queue_cfg.rx.map(|(_wq, cq)| cq))
             .merge(&mut self.task);
     }
 }
@@ -535,14 +547,14 @@ impl TxRxTask {
             l2_len: 14,
             l3_len: oob.s_oob.trans_off().clamp(14, 255) - 14,
             l4_len: 0,
-            max_tcp_segment_size: 0,
+            max_segment_size: 0,
         };
 
         if sqe.header.params.client_oob_in_sgl() {
             meta.l4_len =
                 sge0.size
                     .saturating_sub(meta.l2_len as u32 + meta.l3_len as u32) as u8;
-            meta.max_tcp_segment_size = sqe.header.params.gd_client_unit_data();
+            meta.max_segment_size = sqe.header.params.gd_client_unit_data();
             meta.flags.set_offload_tcp_segmentation(true);
         }
 

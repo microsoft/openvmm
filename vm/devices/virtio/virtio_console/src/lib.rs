@@ -67,7 +67,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 pub struct VirtioConsoleDevice {
     driver: VmTaskDriver,
     config: VirtioConsoleConfig,
-    #[inspect(skip)]
+    #[inspect(mut)]
     worker: TaskControl<ConsoleWorker, ConsoleWorkerState>,
 }
 
@@ -85,13 +85,10 @@ impl VirtioConsoleDevice {
 impl VirtioDevice for VirtioConsoleDevice {
     fn traits(&self) -> DeviceTraits {
         let features = VirtioDeviceFeatures::new()
-            .with_bank0(
-                virtio::spec::VirtioDeviceFeaturesBank0::new()
-                    .with_device_specific(1 << VIRTIO_CONSOLE_F_SIZE)
-                    .with_ring_event_idx(true)
-                    .with_ring_indirect_desc(true),
-            )
-            .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true));
+            .with_device_specific_low(1 << VIRTIO_CONSOLE_F_SIZE)
+            .with_ring_event_idx(true)
+            .with_ring_indirect_desc(true)
+            .with_ring_packed(true);
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::CONSOLE,
             device_features: features,
@@ -118,7 +115,7 @@ impl VirtioDevice for VirtioConsoleDevice {
     ) -> anyhow::Result<()> {
         let guest_memory = resources.guest_memory.clone();
         let queue = VirtioQueue::new(
-            features.clone(),
+            *features,
             resources.params,
             resources.guest_memory,
             resources.notify,
@@ -279,7 +276,8 @@ impl ConsoleWorker {
                     };
                     loop {
                         let work = transmitq.peek().await.map_err(WorkerError::Virtio)?;
-                        work.consume().complete(0);
+                        let work = work.consume();
+                        transmitq.complete(work, 0);
                         *partial_transmit = 0;
                     }
                 };
@@ -308,7 +306,8 @@ impl ConsoleWorker {
                             // Guest posted a zero-length buffer; complete it
                             // immediately without calling poll_read (which
                             // would return Ok(0) and look like a disconnect).
-                            work.consume().complete(0);
+                            let work = work.consume();
+                            receiveq.complete(work, 0);
                             continue 'rx;
                         }
                         let n = BUF_SIZE.min(writeable_len);
@@ -321,15 +320,15 @@ impl ConsoleWorker {
                                 break 'rx Ok(false);
                             }
                             Ok(n) => {
-                                let mut work = work.consume();
+                                let work = work.consume();
                                 if let Err(err) = work.write(mem, &buf[..n]) {
                                     tracelimit::error_ratelimited!(
                                         error = &err as &dyn std::error::Error,
                                         "failed to write to guest receive buffer"
                                     );
-                                    work.complete(0);
+                                    receiveq.complete(work, 0);
                                 } else {
-                                    work.complete(n as u32);
+                                    receiveq.complete(work, n as u32);
                                 }
                             }
                             Err(_) => {
@@ -375,7 +374,8 @@ impl ConsoleWorker {
                             }
                         }
                         *partial_transmit = 0;
-                        work.consume().complete(0);
+                        let work = work.consume();
+                        transmitq.complete(work, 0);
                     }
                 };
 

@@ -3,7 +3,7 @@
 
 //! Splits debug info from a binary into a separate file using `objcopy`
 
-use crate::run_cargo_build::common::CommonArch;
+use crate::common::CommonArch;
 use flowey::node::prelude::*;
 
 flowey_request! {

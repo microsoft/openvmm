@@ -24,29 +24,42 @@
 # https://nexte.st/docs/configuration/?h=hierar#hierarchical-configuration
 
 [[profile.default.overrides]]
-# use fuzzy-matching for the package() to allow out-of-tree tests to use the
-# same profile
 filter = 'package(~vmm_tests) and test(very_heavy)'
-# Mark very heavy tests as extra very heavy, as they include up to 32 vps.
-# However most of these vps should spend most of their time idle.
+# Extra heavy tests have even more VPs. Internal runners fail when 32vp tests
+# are not run one at a time.
 threads-required = 32
 
 [[profile.default.overrides]]
-# use fuzzy-matching for the package() to allow out-of-tree tests to use the
-# same profile
 filter = 'package(~vmm_tests) and test(heavy) and not (test(very_heavy))'
-# Mark heavy tests as extra heavy, as they include up to 16 vps.
-# However most of these vps should spend most of their time idle.
-threads-required = 8
+# Require more threads for heavy tests with more VPs to avoid unreliability
+# due to contention on the physical cores.
+threads-required = 4
 
 [[profile.default.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
 filter = 'package(~vmm_tests)'
-# Mark VMM tests as heavy and requiring more threads due to their memory and CPU
-# usage. For local dev runs, you may need to manually restrict the number of
+# Limit the amount of simultaneous tests by requiring two threads per test.
+# This is mostly to avoid running out of memory. Our test runners have 32 cores
+# and 128GB of memory, and most tests use 4GB, so total memory usage should be
+# about 4GB * (32 cores / (2 threads/test)) = 64GB < 128GB.
+# For local dev runs, you may need to manually restrict the number of
 # threads running via the -j cli arg.
-threads-required = 3
+threads-required = 2
+
+# Profile for AI agent runs. Minimizes output noise: only prints slow, failing,
+# and flaky tests. Agents should use: cargo nextest run -p <pkg> --profile agent
+[profile.agent]
+# Only show slow and failing tests during the run (hide PASS lines).
+status-level = "slow"
+# Show failures and flaky tests in the final summary.
+final-status-level = "flaky"
+# Mark tests slow after 5s, kill after 30s (6 periods).
+slow-timeout = { period = "5s", terminate-after = 6 }
+# Print failure output immediately so humans watching can see it.
+failure-output = "immediate"
+# Don't fail fast--let the agent see all failures at once.
+fail-fast = false
 
 # Profile for CI runs.
 [profile.ci]

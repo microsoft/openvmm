@@ -26,6 +26,10 @@ smallbox.workspace = true
 socket2 = { workspace = true, features = ["all"] }
 tempfile = { workspace = true, optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring.workspace = true
+once_cell.workspace = true
+
 [target.'cfg(unix)'.dependencies]
 cfg-if.workspace = true
 libc = { workspace = true, features = ["extra_traits"] }

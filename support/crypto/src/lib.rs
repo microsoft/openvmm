@@ -4,40 +4,56 @@
 //! Backend-agnostic cryptographic primitives.
 //!
 //! This crate abstracts over platform-specific crypto libraries (OpenSSL on
-//! Unix, BCrypt on Windows) so that callers never interact with the underlying
-//! backend directly.
+//! Linux, BCrypt/WinCrypt on Windows, Security.framework on macOS) so that
+//! callers never interact with the underlying backend directly.
+//!
+//! It is explicitly specialized for the needs of the OpenVMM project and is
+//! not suitable for general-purpose use.
 
-// UNSAFETY: calling BCrypt APIs
-#![cfg_attr(windows, expect(unsafe_code))]
+// UNSAFETY: calling BCrypt APIs on Windows, Security.framework APIs on macOS.
+#![cfg_attr(any(windows, target_os = "macos"), expect(unsafe_code))]
 
 // TODO: Symcrypt somehow
 // TODO: Rustcrypto backend for ease of use
+// TODO: Windows backends
 
-// pub mod aes_256_cbc;
+#[cfg(target_os = "linux")]
+pub mod aes_256_cbc;
+#[cfg(any(windows, target_os = "linux"))]
 pub mod aes_256_gcm;
-// pub mod aes_key_wrap;
-// pub mod hmac_sha_256;
-// pub mod kdf;
-// pub mod pkcs7;
-// pub mod rsa;
-// pub mod sha_256;
-// pub mod x509;
+#[cfg(target_os = "linux")]
+pub mod aes_key_wrap;
+#[cfg(target_os = "linux")]
+pub mod hmac_sha_256;
+#[cfg(target_os = "linux")]
+pub mod kdf;
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+pub mod pkcs7;
+#[cfg(target_os = "linux")]
+pub mod rsa;
+#[cfg(target_os = "linux")]
+pub mod sha_256;
+#[cfg(target_os = "linux")]
+pub mod x509;
+#[cfg(any(windows, target_os = "linux"))]
 pub mod xts_aes_256;
 
+pub(crate) mod mac;
 pub(crate) mod win;
-
-use thiserror::Error;
 
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.
-#[cfg(unix)]
-#[derive(Clone, Debug, Error)]
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, thiserror::Error)]
 #[error("openssl error during {1}")]
 pub struct BackendError(#[source] openssl::error::ErrorStack, &'static str);
 
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.
 #[cfg(windows)]
-#[derive(Clone, Debug, Error)]
-#[error("bcrypt error during {1}")]
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("windows crypto error during {1}")]
 pub struct BackendError(#[source] windows_result::Error, &'static str);
+
+#[cfg(target_os = "macos")]
+pub use mac::BackendError;
