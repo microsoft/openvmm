@@ -229,7 +229,7 @@ async fn openhcl_linux_vtl2_ram_self_allocate(
     // tree and parse it ourselves again, but this requires refactoring some
     // crates to make `bootloader_fdt_parser` available outside the underhill
     // tree.
-    let vtl2_allowable_difference_kb = 29000;
+    let vtl2_allowable_difference_kb = 32000;
     let vtl2_expected_mem_kb = vtl2_ram_size / 1024;
     let vtl2_diff = (vtl2_mem_kb as i64 - vtl2_expected_mem_kb as i64).unsigned_abs();
     tracing::info!(
