@@ -308,19 +308,18 @@ impl<'a> BaseChipsetBuilder<'a> {
                 })?;
         }
 
-        let dma: Option<Arc<CloseableMutex<dma::DmaController>>> =
-            if let Some(dma_handle) = isa_dma_handle {
-                let resolved = resolver
-                    .resolve(dma_handle, ())
-                    .await
-                    .map_err(BaseChipsetBuilderError::ResolveIsaDma)?;
-                let dev = builder
-                    .arc_mutex_device::<dma::DmaController>("dma")
-                    .add(|_services| resolved.0)?;
-                Some(dev)
-            } else {
-                None
-            };
+        let dma = if let Some(dma_handle) = isa_dma_handle {
+            let resolved = resolver
+                .resolve(dma_handle, ())
+                .await
+                .map_err(BaseChipsetBuilderError::ResolveIsaDma)?;
+            let dev = builder
+                .arc_mutex_device::<dma::DmaController>("dma")
+                .add(|_services| resolved.0)?;
+            Some(dev)
+        } else {
+            None
+        };
 
         for device in device_handles {
             let ChipsetDeviceHandle { name, resource } = device;
