@@ -151,8 +151,6 @@ pub struct ProtoPartitionConfig<'a> {
     pub hv_config: Option<HvConfig>,
     /// VM time access.
     pub vmtime: &'a VmTimeSource,
-    /// Use the user-mode APIC emulator, if supported.
-    pub user_mode_apic: bool,
     /// Isolation type for this partition.
     pub isolation: IsolationType,
 }
@@ -257,8 +255,6 @@ pub struct Vtl2Config {
 /// Hypervisor configuration.
 #[derive(Debug)]
 pub struct HvConfig {
-    /// Use the hypervisor's in-built enlightenment support if available.
-    pub offload_enlightenments: bool,
     /// Allow device assignment on the partition.
     pub allow_device_assignment: bool,
     /// Enable VTL2 support if set. Additional options are described by
