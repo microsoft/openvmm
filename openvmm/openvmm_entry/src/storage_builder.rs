@@ -212,7 +212,7 @@ impl StorageBuilder {
 
                 // Hard disks also get a storvsp IDE accelerator channel.
                 if !is_dvd {
-                    let storvsp_disk = disk_open(kind, read_only)?;
+                    let storvsp_disk = disk_open(kind, read_only).await?;
                     self.storvsp_ide_handles.push((
                         DeviceVtl::Vtl0,
                         StorvspIdeDeviceHandle {

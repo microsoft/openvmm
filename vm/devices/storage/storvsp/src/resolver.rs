@@ -159,6 +159,10 @@ declare_static_async_resolver! {
 /// An error returned by [`StorvspIdeResolver`].
 #[derive(Debug, Error)]
 pub enum IdeError {
+    #[error("invalid IDE channel {0} (must be 0 or 1)")]
+    InvalidChannel(u8),
+    #[error("invalid IDE device {0} (must be 0 or 1)")]
+    InvalidDevice(u8),
     #[error("failed to resolve IDE disk at channel {0} device {1}")]
     ResolveDisk(u8, u8, #[source] ResolveError),
 }
@@ -174,6 +178,13 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, StorvspIdeDeviceHandle> for Sto
         resource: StorvspIdeDeviceHandle,
         input: ResolveVmbusDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        if resource.channel_id > 1 {
+            return Err(IdeError::InvalidChannel(resource.channel_id));
+        }
+        if resource.device_id > 1 {
+            return Err(IdeError::InvalidDevice(resource.device_id));
+        }
+
         let disk = resolver
             .resolve(
                 resource.disk,
