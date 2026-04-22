@@ -458,7 +458,7 @@ impl Default for TxMetadata {
             max_segment_size: 0,
             priority: 0,
             canonical_format_id: 0,
-            vlan_id: 0
+            vlan_id: 0,
         }
     }
 }
