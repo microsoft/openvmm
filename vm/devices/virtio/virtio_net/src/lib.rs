@@ -1348,7 +1348,29 @@ impl Worker {
 
     fn complete_tx_packet(&mut self, id: TxId) -> Result<(), WorkerError> {
         let state = &mut self.active_state;
-        let tx_packet = state.pending_tx_packets[id.0 as usize].take().unwrap();
+        let idx = id.0 as usize;
+        let pending_len = state.pending_tx_packets.len();
+
+        let Some(slot) = state.pending_tx_packets.get_mut(idx) else {
+            tracelimit::error_ratelimited!(
+                tx_id = id.0,
+                tx_index = idx,
+                pending_tx_packets_len = pending_len,
+                "unexpected tx completion for out-of-range packet"
+            );
+            return Ok(());
+        };
+
+        let Some(tx_packet) = slot.take() else {
+            tracelimit::error_ratelimited!(
+                tx_id = id.0,
+                tx_index = idx,
+                pending_tx_packets_len = pending_len,
+                "unexpected tx completion for already-completed packet"
+            );
+            return Ok(());
+        };
+
         self.virtio_state.tx_queue.complete(tx_packet.work, 0);
         self.active_state.stats.tx_packets.increment();
         Ok(())
