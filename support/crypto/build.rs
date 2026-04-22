@@ -6,6 +6,8 @@
 fn main() {
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_OPENSSL");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_SYMCRYPT");
+    println!("cargo::rerun-if-env-changed=CARGO_CFG_TARGET_OS");
+
     println!("cargo::rustc-check-cfg=cfg(native)");
     println!("cargo::rustc-check-cfg=cfg(openssl)");
     println!("cargo::rustc-check-cfg=cfg(symcrypt)");
