@@ -1096,6 +1096,7 @@ impl InitializedVm {
         let halt_vps = Arc::new(halt_vps);
 
         resolver.add_resolver(vmm_core::platform_resolvers::HaltResolver(halt_vps.clone()));
+        #[cfg(guest_arch = "x86_64")]
         resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
             partition.clone().ioapic_routing(),
         ));

@@ -141,6 +141,7 @@ use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::vfio::VfioDmaClients;
 use virt::Partition;
 use virt::VpIndex;
+#[cfg(guest_arch = "x86_64")]
 use virt::X86Partition;
 use virt::state::HvRegisterState;
 use virt_mshv_vtl::UhPartition;
@@ -2207,6 +2208,7 @@ async fn new_underhill_vm(
     let halt_vps = Arc::new(halt_vps);
 
     resolver.add_resolver(vmm_core::platform_resolvers::HaltResolver(halt_vps.clone()));
+    #[cfg(guest_arch = "x86_64")]
     resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
         partition.ioapic_routing(),
     ));
