@@ -155,7 +155,9 @@ use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
 use watchdog_core::resources::StaticWatchdogPlatformResolver;
 
+#[cfg(guest_arch = "x86_64")]
 const PM_BASE: u16 = 0x400;
+#[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
 
 /// Creates a thread to run low-performance devices on.

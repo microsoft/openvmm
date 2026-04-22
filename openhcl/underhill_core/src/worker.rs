@@ -192,7 +192,9 @@ use watchdog_core::platform::WatchdogPlatform;
 use watchdog_core::resources::StaticWatchdogPlatformResolver;
 use zerocopy::FromZeros;
 
+#[cfg(guest_arch = "x86_64")]
 pub(crate) const PM_BASE: u16 = 0x400;
+#[cfg(guest_arch = "x86_64")]
 pub(crate) const SYSTEM_IRQ_ACPI: u32 = 9;
 
 pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new("UnderhillWorker");
