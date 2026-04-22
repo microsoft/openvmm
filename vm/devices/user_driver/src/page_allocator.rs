@@ -59,7 +59,7 @@ impl PageAllocator {
         if self.max < n + 1 {
             return Err(PageAllocationError {
                 requested: n,
-                max: self.max,
+                max: self.max - 1,
             });
         }
         let mut core = loop {
