@@ -21,6 +21,9 @@ on:
     - reopened
     - ready_for_review
     - labeled
+    paths-ignore:
+    - Guide/**
+    - petri/logview/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

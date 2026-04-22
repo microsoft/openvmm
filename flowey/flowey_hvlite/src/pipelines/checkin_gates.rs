@@ -75,21 +75,15 @@ impl IntoPipeline for CheckinGatesCli {
             let branches = vec!["main".into(), "release/*".into()];
 
             // Paths that don't affect the Rust build or tests. Changes
-            // to only these paths will not trigger the CI pipeline on push.
-            //
-            // NOTE: The PR pipeline intentionally does NOT use paths-ignore,
-            // because the "openvmm checkin gates" job is a required status
-            // check. If the workflow is skipped due to path filters, the
-            // gate is never reported and the PR is blocked. The CI pipeline
-            // can still use paths-ignore since it has no required checks.
-            let ci_paths_ignore = vec!["Guide/**".into(), "petri/logview/**".into()];
+            // to only these paths will not trigger the checkin-gates pipeline.
+            let paths_ignore = vec!["Guide/**".into(), "petri/logview/**".into()];
 
             match config {
                 PipelineConfig::Ci => {
                     pipeline
                         .gh_set_ci_triggers(GhCiTriggers {
                             branches,
-                            paths_ignore: ci_paths_ignore.clone(),
+                            paths_ignore: paths_ignore.clone(),
                             ..Default::default()
                         })
                         .gh_set_name("OpenVMM CI");
@@ -98,12 +92,13 @@ impl IntoPipeline for CheckinGatesCli {
                     pipeline
                         .gh_set_pr_triggers(GhPrTriggers {
                             branches,
+                            paths_ignore: paths_ignore.clone(),
                             ..GhPrTriggers::new_draftable()
                         })
                         .gh_set_name("OpenVMM PR")
                         .ado_set_pr_triggers(AdoPrTriggers {
                             branches: vec!["main".into(), "release/*".into(), "embargo/*".into()],
-                            exclude_paths: ci_paths_ignore.clone(),
+                            exclude_paths: paths_ignore.clone(),
                             ..Default::default()
                         });
                 }
@@ -111,6 +106,7 @@ impl IntoPipeline for CheckinGatesCli {
                     // This workflow is triggered when a specific label is present on a PR.
                     let mut triggers = GhPrTriggers::new_draftable();
                     triggers.branches = branches;
+                    triggers.paths_ignore = paths_ignore.clone();
                     triggers.types.push("labeled".into());
                     pipeline
                         .gh_set_pr_triggers(triggers)
