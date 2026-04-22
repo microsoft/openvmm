@@ -440,7 +440,7 @@ impl Namespace {
                     * size_of::<nvm::RegisteredControllerExtended>();
 
             if len > data.len() {
-                tracing::info!(
+                tracelimit::info_ratelimited!(
                     required_len = len,
                     current_len = data.len(),
                     "reservation report buffer was too small, resizing"
