@@ -31,7 +31,7 @@ pub struct PageAllocator {
 #[derive(Debug)]
 pub struct PageAllocationError {
     pub requested: usize,
-    pub available: usize,
+    pub max: usize,
 }
 
 impl std::fmt::Debug for PageAllocator {
@@ -59,7 +59,7 @@ impl PageAllocator {
         if self.max < n + 1 {
             return Err(PageAllocationError {
                 requested: n,
-                available: self.max,
+                max: self.max,
             });
         }
         let mut core = loop {

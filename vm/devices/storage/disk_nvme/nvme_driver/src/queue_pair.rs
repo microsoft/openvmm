@@ -890,7 +890,7 @@ impl Issuer {
         let mem = self.alloc.alloc_bytes(data.len()).await.map_err(|e| {
             tracelimit::warn_ratelimited!(
                 requested_pages = e.requested,
-                max_pages = e.available,
+                max_pages = e.max,
                 "Insufficient memory to complete issue in request"
             );
             RequestError::TooLarge
@@ -918,7 +918,7 @@ impl Issuer {
         let mem = self.alloc.alloc_bytes(data.len()).await.map_err(|e| {
             tracelimit::warn_ratelimited!(
                 requested_pages = e.requested,
-                max_pages = e.available,
+                max_pages = e.max,
                 "Insufficient memory to complete issue out request"
             );
             RequestError::TooLarge
