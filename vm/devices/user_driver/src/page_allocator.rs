@@ -27,6 +27,13 @@ pub struct PageAllocator {
     max: usize,
 }
 
+/// An error allocating pages from the page allocator.
+#[derive(Debug)]
+pub struct PageAllocationError {
+    pub requested: usize,
+    pub available: usize,
+}
+
 impl std::fmt::Debug for PageAllocator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PageAllocator").finish()
@@ -46,16 +53,14 @@ impl PageAllocator {
         }
     }
 
-    pub async fn alloc_pages(&self, n: usize) -> Option<ScopedPages<'_>> {
+    pub async fn alloc_pages(&self, n: usize) -> Result<ScopedPages<'_>, PageAllocationError> {
         // A single page must be left over for the PRP list, so one request may
         // not use all pages.
         if self.max < n + 1 {
-            tracing::warn!(
-                requested_pages = n,
-                max_available = self.max,
-                "insufficient memory to allocate requested number of pages"
-            );
-            return None;
+            return Err(PageAllocationError {
+                requested: n,
+                available: self.max,
+            });
         }
         let mut core = loop {
             let listener = {
@@ -81,10 +86,10 @@ impl PageAllocator {
                 }
             })
             .collect();
-        Some(ScopedPages { alloc: self, pages })
+        Ok(ScopedPages { alloc: self, pages })
     }
 
-    pub async fn alloc_bytes(&self, n: usize) -> Option<ScopedPages<'_>> {
+    pub async fn alloc_bytes(&self, n: usize) -> Result<ScopedPages<'_>, PageAllocationError> {
         self.alloc_pages(n.div_ceil(PAGE_SIZE)).await
     }
 }

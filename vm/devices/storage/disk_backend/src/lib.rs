@@ -117,9 +117,6 @@ pub enum DiskError {
     /// The request failed because eject is not supported.
     #[error("unsupported eject")]
     UnsupportedEject,
-    /// The request failed because there was insufficient memory to complete the request.
-    #[error("insufficient memory to complete the request")]
-    InsufficientMemory,
 }
 
 /// Failure details for [`DiskError::MediumError`].

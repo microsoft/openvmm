@@ -43,6 +43,7 @@ use user_driver::interrupt::DeviceInterruptSource;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
+use user_driver::page_allocator::PageAllocationError;
 use user_driver::page_allocator::PageAllocator;
 use user_driver::page_allocator::ScopedPages;
 use zerocopy::FromZeros;
@@ -670,8 +671,6 @@ pub enum RequestError {
     Memory(#[source] GuestMemoryError),
     #[error("i/o too large for double buffering")]
     TooLarge,
-    #[error("insufficient memory to complete the request")]
-    InsufficientMemory,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -812,7 +811,7 @@ impl Issuer {
                 self.alloc
                     .alloc_bytes(mem.len())
                     .await
-                    .ok_or(RequestError::TooLarge)?,
+                    .map_err(|_| RequestError::TooLarge)?,
             );
 
             if opcode.transfer_host_to_controller() {
@@ -888,11 +887,14 @@ impl Issuer {
         mut command: spec::Command,
         data: &[u8],
     ) -> Result<spec::Completion, RequestError> {
-        let mem = self
-            .alloc
-            .alloc_bytes(data.len())
-            .await
-            .ok_or(RequestError::InsufficientMemory)?;
+        let mem = self.alloc.alloc_bytes(data.len()).await.map_err(|e| {
+            tracing::info!(
+                requested_pages = e.requested,
+                max_pages = e.available,
+                "Insufficient memory"
+            );
+            RequestError::TooLarge
+        })?;
 
         mem.write(data);
         assert_eq!(
@@ -913,11 +915,14 @@ impl Issuer {
         mut command: spec::Command,
         data: &mut [u8],
     ) -> Result<spec::Completion, RequestError> {
-        let mem = self
-            .alloc
-            .alloc_bytes(data.len())
-            .await
-            .ok_or(RequestError::InsufficientMemory)?;
+        let mem = self.alloc.alloc_bytes(data.len()).await.map_err(|e| {
+            tracing::info!(
+                requested_pages = e.requested,
+                max_pages = e.available,
+                "Insufficient memory"
+            );
+            RequestError::TooLarge
+        })?;
 
         let prp = self
             .make_prp(0, (0..mem.page_count()).map(|i| mem.physical_address(i)))
