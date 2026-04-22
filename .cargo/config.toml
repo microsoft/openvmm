@@ -51,7 +51,7 @@ AARCH64_OPENVMM_UEFI_FIRMWARE = { value = ".packages/hyperv.uefi.mscoreuefi.AARC
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = [
   # Set up delayloads.
-  "-C", "link-args=dloadhelper.lib /delayload:ws2_32.dll /delayload:virtdisk.dll /delayload:user32.dll /delayload:winhvplatform.dll",
+  "-C", "link-args=dloadhelper.lib /delayload:ws2_32.dll /delayload:virtdisk.dll /delayload:user32.dll /delayload:winhvplatform.dll /delayload:bcrypt.dll /delayload:crypt32.dll",
   # Set up the CRT: use ucrtbase.dll but statically link the VC runtime.
   "-C", "link-args=/nodefaultlib onecore_apiset.lib ucrt.lib libvcruntime.lib libcmt.lib",
   # Enable CFG
