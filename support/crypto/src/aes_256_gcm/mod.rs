@@ -3,14 +3,16 @@
 
 //! AES-256-GCM encryption and decryption.
 
-#[cfg(target_os = "linux")]
+#![cfg(any(openssl, windows))]
+
+#[cfg(openssl)]
 mod ossl;
-#[cfg(target_os = "linux")]
+#[cfg(openssl)]
 use ossl as sys;
 
-#[cfg(windows)]
+#[cfg(all(native, windows))]
 mod win;
-#[cfg(windows)]
+#[cfg(all(native, windows))]
 use win as sys;
 
 use thiserror::Error;

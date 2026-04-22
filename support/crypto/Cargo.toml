@@ -10,14 +10,20 @@ rust-version.workspace = true
 # If the chosen backend supports it, vendor it.
 # If the chosen backend is natively available, this feature is a no-op.
 # If the chosen backend is not natively available and can't be vendored, this will trigger a compile error.
-vendored = ["openssl/vendored"]
+vendored = ["openssl?/vendored"]
+
+# Use OpenSSL instead of any native backend.
+openssl = ["dep:openssl", "dep:openssl_kdf"]
+
+# Use Symcrypt instead of any native backend.
+# TODO: Wire up vendoring with symcrypt
+symcrypt = []
 
 [dependencies]
-thiserror.workspace = true
+openssl_kdf = { workspace = true, optional = true }
+openssl = { workspace = true, optional = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-openssl_kdf.workspace = true
-openssl.workspace = true
+thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 wchar.workspace = true

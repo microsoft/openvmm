@@ -3,9 +3,11 @@
 
 //! AES-256-CBC encryption and decryption (no padding).
 
-#[cfg(target_os = "linux")]
+#![cfg(openssl)]
+
+#[cfg(openssl)]
 mod ossl;
-#[cfg(target_os = "linux")]
+#[cfg(openssl)]
 use ossl as sys;
 
 use thiserror::Error;
