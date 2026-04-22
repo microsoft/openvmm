@@ -2,16 +2,27 @@
 // Licensed under the MIT License.
 
 //! Support for running a VM's VPs.
+
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
 use crate::HypervisorOpt;
 // use std::{io, os::unix::io::AsRawFd, ptr};
 use crate::Options;
 use crate::load;
 use anyhow::Context as _;
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+use core::ops::Range;
 use futures::StreamExt as _;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
-use hcl::ioctl::cca::Addresses;
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+use memory_range::MemoryRange;
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+use nix::sys::mman::{MapFlags, ProtFlags, mmap};
 use pal_async::DefaultDriver;
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+use std::fs::OpenOptions;
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use virt::PartitionCapabilities;
 use virt::Processor;
@@ -20,45 +31,25 @@ use virt::VpIndex;
 use virt::io::CpuIo;
 use virt::vp::AccessVpState as _;
 use vm_topology::memory::MemoryLayout;
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+use vm_topology::memory::MemoryRangeWithNode;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
 use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmcore::vmtime::VmTimeSource;
 use zerocopy::TryFromBytes as _;
-use std::fs::OpenOptions;
-use vm_topology::memory::MemoryRangeWithNode;
-use memory_range::MemoryRange;
-use core::ops::Range;
-use std::num::NonZeroUsize;
-use nix::{
-    sys::{
-        mman::{MapFlags, ProtFlags, mmap},
-        // statfs::statfs,
-    },
-    // unistd::{ftruncate, mkstemp, unlink},
-};
 
 //temp
 // use crate::mapped_page::MappedPage;
 
 pub const COMMAND_ADDRESS: u64 = 0xffff_0000;
 
-pub struct Mmemory {
-    pub startpa: u64,
-    pub endpa: u64,
-}
-
 pub struct CommonState {
     pub driver: DefaultDriver,
     pub opts: Options,
     pub processor_topology: ProcessorTopology,
     pub memory_layout: MemoryLayout,
-    pub shared_memory_layout: MemoryLayout,
-    pub offset_memory: Option<u64>,
-    pub mmemory: Option<Mmemory>,
-    pub addresses: Option<Addresses>,
-    
 }
 
 pub struct RunContext<'a> {
@@ -102,17 +93,19 @@ impl CommonState {
 
         let ram_size = 0x400000;
         
-        let mut memory_layout = MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
-        let mut shared_memory_layout = MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
-        let mut mmemory = None;
-        let mut offset_memory  = None;
+        #[cfg_attr(guest_arch = "x86_64", allow(unused_mut))]
+        let mut memory_layout =
+            MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
 
+        #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
         let hv = opts.hv.expect("hv must have an finalized value");
-        let addresses = match hv {
+        #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+        match hv {
             #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
-            HypervisorOpt::Cca => { 
+            HypervisorOpt::Cca => {
                 let map_size = ram_size;
-                let non_zero_size =NonZeroUsize::new(map_size as usize).expect("Size was already checked to be non-zero");
+                let non_zero_size = NonZeroUsize::new(map_size as usize)
+                    .expect("Size was already checked to be non-zero");
                 let file = OpenOptions::new().read(true).write(true).open("/dev/zero")?;
                 #[allow(unsafe_code)]
                 let addr = unsafe {
@@ -129,84 +122,37 @@ impl CommonState {
 
                 #[allow(unsafe_code)]
                 unsafe {
-                        std::ptr::write_bytes(addr.as_ptr() as *mut u8, 0, map_size as usize);
-                    }
+                    std::ptr::write_bytes(addr.as_ptr() as *mut u8, 0, map_size as usize);
+                }
 
                 #[allow(unsafe_code)]
                 let pa = unsafe { load::virt_to_phys(addr.as_ptr() as u64) }
-                        .map_err(anyhow::Error::msg)
-                        .context("failed to get page physical address")?;
+                    .map_err(anyhow::Error::msg)
+                    .context("failed to get page physical address")?;
 
                 const PAGE: u64 = 4096;
                 const ALIGN: u64 = PAGE * 8;
 
-                let raw_start = pa;
-                let raw_end = pa + map_size/2;
-
-                let start = (raw_start + ALIGN - 1) & !(ALIGN - 1);
-                let end   = raw_end & !(ALIGN - 1);
+                let start = (pa + ALIGN - 1) & !(ALIGN - 1);
+                let end = (pa + map_size / 2) & !(ALIGN - 1);
 
                 memory_layout = MemoryLayout::new_from_ranges(
-                        &[MemoryRangeWithNode {
-                            range: MemoryRange::new(Range {
-                                start,
-                                end,
-                            }),
-                            vnode: 0,
-                        }],
-                        &[],
-                    )
-                    .context("bad memory layout")?;
-
-                offset_memory = Some(start);
-
-                mmemory = Some(Mmemory {
-                        startpa: start,
-                        endpa: end,
-                    });
-                
-                let aligned = ((addr.as_ptr() as u64) + ALIGN - 1) & !(ALIGN - 1);
-                let shared_virtual_address_start = aligned + map_size / 2;
-                let shared_virtual_address_start_command = aligned + map_size / 2 + 8;
-
-                #[allow(unsafe_code)]
-                let shared_address_start = unsafe { load::virt_to_phys(shared_virtual_address_start) }
-                        .map_err(anyhow::Error::msg)
-                        .context("failed to get page physical address")?;
-
-                shared_memory_layout = MemoryLayout::new_from_ranges(
-                        &[MemoryRangeWithNode {
-                            range: MemoryRange::new(Range {
-                                start: shared_address_start,
-                                end: shared_address_start + map_size/2,
-                            }),
-                            vnode: 0,
-                        }],
-                        &[],
-                    )
-                    .context("bad memory layout")?;
-
-                let shared_address_start_command = start;
-
-                Some (Addresses {
-                    shared_address_start,
-                    shared_virtual_address_start,
-                    shared_address_start_command,
-                    shared_virtual_address_start_command,
-                } )
+                    &[MemoryRangeWithNode {
+                        range: MemoryRange::new(Range { start, end }),
+                        vnode: 0,
+                    }],
+                    &[],
+                )
+                .context("bad memory layout")?;
             }
-            _ => { None }
-        };
+            _ => {}
+        }
 
         Ok(Self {
             driver,
             opts,
             processor_topology,
             memory_layout,
-            shared_memory_layout,
-            offset_memory,
-            mmemory,
-            addresses,
         })
     }
 
@@ -294,7 +240,6 @@ impl RunContext<'_> {
 
         // Load the TMK.
         let tmk = fs_err::File::open(&self.state.opts.tmk).context("failed to open tmk")?;
-
         let regs = {
             #[cfg(guest_arch = "x86_64")]
             {
@@ -310,7 +255,6 @@ impl RunContext<'_> {
             #[cfg(guest_arch = "aarch64")]
             {
                 load::load_aarch64(
-                    self.state.offset_memory,
                     &self.state.memory_layout,
                     guest_memory,
                     &self.state.processor_topology,

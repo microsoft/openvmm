@@ -3,9 +3,6 @@
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 
- use crate::Inspect;
-#[cfg(guest_arch = "aarch64")]
-use crate::ioctl::register::SetRegError;
 use super::Hcl;
 use super::HclVp;
 use super::MshvVtl;
@@ -18,6 +15,8 @@ use crate::ioctl::ioctls::mshv_realm_config;
 use crate::ioctl::ioctls::mshv_rsi_set_mem_perm;
 use crate::ioctl::ioctls::mshv_rsi_sysreg_write;
 use crate::ioctl::ioctls::{hcl_realm_config, hcl_rsi_set_mem_perm, hcl_rsi_sysreg_write};
+use crate::ioctl::SetRegError;
+use crate::mapped_page::MappedPage;
 use crate::protocol::RSI_PLANE_ENTER_FLAGS_TRAP_SIMD;
 use crate::protocol::RSI_PLANE_GIC_NUM_LRS;
 use crate::protocol::RSI_PLANE_NR_GPRS;
@@ -28,11 +27,7 @@ use aarch64defs::SystemReg;
 use hvdef::HvArm64RegisterName;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
-// use rsi::{RsiCall, RsiInput, RsiOutput, RsiReturnCode};
 use sidecar_client::SidecarVp;
-
-use crate::mapped_page::MappedPage;
-use crate::ioctl::register;
 use std::fs::OpenOptions;
 use std::io;
 
@@ -85,7 +80,6 @@ pub fn virt_to_phys(vaddr: u64) -> Result<u64, String> {
     if page_size == 0 {
         return Err("Could not determine system page size".to_string());
     }
-    // dbg!(page_size);
 
     // Open the pagemap file for the current process.
     let pagemap_file = std::fs::File::open("/proc/self/pagemap").map_err(|e| {
@@ -96,7 +90,6 @@ pub fn virt_to_phys(vaddr: u64) -> Result<u64, String> {
     // Virtual Page Number = Virtual Address / Page Size
     // Offset = Virtual Page Number * Entry Size
     let offset = (vaddr / page_size) * PAGEMAP_ENTRY_SIZE;
-    // dbg!(offset);
 
     let mut entry_bytes = [0u8; 8];
     // Use `read_exact_at` to perform an atomic seek-and-read. This is safer than
@@ -104,7 +97,6 @@ pub fn virt_to_phys(vaddr: u64) -> Result<u64, String> {
     pagemap_file
         .read_exact_at(&mut entry_bytes, offset)
         .map_err(|e| format!("Failed to read from /proc/self/pagemap at offset {offset}: {e}"))?;
-    // dbg!(entry_bytes);
 
     let pagemap_entry = u64::from_ne_bytes(entry_bytes);
 
@@ -196,7 +188,7 @@ impl ProcessorRunner<'_, Cca> {
         vtl: GuestVtl,
         name: SystemReg,
         value: u64,
-    ) -> Result<(), register::SetRegError> {
+    ) -> Result<(), SetRegError> {
         self.hcl
             .rsi_sysreg_write(vtl, u32::from(name.0) as u64, value)
     }
@@ -229,19 +221,6 @@ impl ProcessorRunner<'_, Cca> {
         // SPSR_EL2_MODE_EL1h | SPSR_EL2_nRW_AARCH64 | SPSR_EL2_F_BIT | SPSR_EL2_I_BIT | SPSR_EL2_A_BIT | SPSR_EL2_D_BIT
         self.cca_rsi_plane_entry().pstate = 0x3c5;
     }
-
-    // pub fn read_translation_registers(&self) -> TranslationRegisters {
-    //     let cpsr = rsi_plane_sysreg_read()
-    //     TranslationRegisters {
-    //         cpsr: cpsr.into(),
-    //         sctlr: sctlr.into(),
-    //         tcr: tcr.into(),
-    //         ttbr0,
-    //         ttbr1,
-    //         syndrome,
-    //         encryption_mode: virt_support_aarch64emu::translate::EncryptionMode::None,
-    //     }
-    // }
 }
 
 // CCA: NOTE this implementation is lifted from the aarch64 VBS implementation
@@ -376,9 +355,8 @@ impl<'a> super::BackingPrivate<'a> for Cca {
 /// * num_aux_planes indicates how many low-privilege planes exist
 /// * gicv3_vtr shows part of the GICv3 configuration for the
 ///     realm (needed for GIC virtualisation)
-// TODO: CCA: make this Rust-native
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct RsiRealmConfig {
     ipa_width: u64,
     hash_algo: u64,
@@ -402,20 +380,6 @@ impl From<mshv_realm_config> for RsiRealmConfig {
             gicv3_vtr: value.gicv3_vtr,
         }
     }
-}
-
-/// Used to know which address to write in plane 1 and read from in plane 0
-/// And which address to write to the command address of clean exit of plane 1
-#[derive(Debug, Clone, Copy, Inspect, Default)]
-pub struct Addresses {
-    /// shared_address_start - GPA
-    pub shared_address_start: u64,
-    /// shared_virtual_address_start - GVA
-    pub shared_virtual_address_start: u64,
-    /// shared_address_start_command - GPA
-    pub shared_address_start_command: u64,
-    /// shared_virtual_address_start_command - GVA
-    pub shared_virtual_address_start_command: u64,
 }
 
 impl MshvVtl {
@@ -480,19 +444,21 @@ impl MshvVtl {
 
 impl Hcl {
     /// Gets Realm config
-    #[cfg(guest_arch = "aarch64")]
     pub fn get_realm_config(&self) -> Result<RsiRealmConfig, Error> {
         self.mshv_vtl.get_realm_config()
     }
 
     /// sets system registers through rsi calls
-    #[cfg(guest_arch = "aarch64")]
-    pub fn rsi_sysreg_write(&self, vtl: GuestVtl, sysreg: u64, value: u64) -> Result<(), SetRegError> {
+    pub fn rsi_sysreg_write(
+        &self,
+        vtl: GuestVtl,
+        sysreg: u64,
+        value: u64,
+    ) -> Result<(), SetRegError> {
         self.mshv_vtl.rsi_sysreg_write(vtl, sysreg, value)
     }
 
     /// setting memory permissions
-    #[cfg(guest_arch = "aarch64")]
     pub fn rsi_set_mem_perm(
         &self,
         vtl: GuestVtl,
@@ -502,4 +468,3 @@ impl Hcl {
         self.mshv_vtl.rsi_set_mem_perm(vtl, base_addr, top_addr)
     }
 }
-

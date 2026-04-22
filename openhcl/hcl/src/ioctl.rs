@@ -356,7 +356,6 @@ pub(crate) mod ioctls {
     const MSHV_VTL_ADD_VTL0_MEMORY: u16 = 0x21;
     const MSHV_VTL_SET_POLL_FILE: u16 = 0x25;
     const MSHV_CREATE_VTL: u16 = 0x1D;
-    const MSHV_CHECK_EXTENSION: u16 = 0x00;
     const MSHV_VTL_PVALIDATE: u16 = 0x28;
     const MSHV_VTL_RMPADJUST: u16 = 0x29;
     const MSHV_VTL_TDCALL: u16 = 0x32;
@@ -640,16 +639,30 @@ pub(crate) mod ioctls {
     pub const HCL_CAP_REGISTER_PAGE: u32 = 1;
     pub const HCL_CAP_VTL_RETURN_ACTION: u32 = 2;
     pub const HCL_CAP_DR6_SHARED: u32 = 3;
-    // #[cfg(guest_arch = "x86_64")]
-    pub const HCL_CAP_LOWER_VTL_TIMER_VIRT: u32 = 4;
 
-    ioctl_write_ptr!(
-        /// Check for the presence of an extension capability.
-        hcl_check_extension,
-        MSHV_IOCTL,
-        MSHV_CHECK_EXTENSION,
-        u32
-    );
+    #[cfg(guest_arch = "x86_64")]
+    pub(crate) mod x64_extensions {
+        use super::MSHV_IOCTL;
+        use nix::ioctl_write_ptr;
+        use std::os::fd::RawFd;
+        use std::os::raw::c_int;
+
+        const MSHV_CHECK_EXTENSION: u16 = 0x00;
+
+        pub(crate) const HCL_CAP_LOWER_VTL_TIMER_VIRT: u32 = 4;
+
+        ioctl_write_ptr!(
+            /// Check for the presence of an extension capability.
+            hcl_check_extension_ioctl,
+            MSHV_IOCTL,
+            MSHV_CHECK_EXTENSION,
+            u32
+        );
+
+        pub(crate) unsafe fn hcl_check_extension(fd: RawFd, cap: &u32) -> nix::Result<c_int> {
+            unsafe { hcl_check_extension_ioctl(fd, cap) }
+        }
+    }
 
     ioctl_read!(mshv_create_vtl, MSHV_IOCTL, MSHV_CREATE_VTL, u8);
 
@@ -748,13 +761,19 @@ impl Mshv {
 
     fn check_extension(&self, cap: u32) -> Result<bool, Error> {
         #[cfg(guest_arch = "aarch64")]
-        return Ok(false);
-        // SAFETY: calling IOCTL as documented, with no special requirements.
-        let supported = unsafe {
-            hcl_check_extension(self.file.as_raw_fd(), &cap)
-                .map_err(|e| Error::CheckExtensions(cap, e))?
-        };
-        Ok(supported != 0)
+        {
+            let _ = cap;
+            Ok(false)
+        }
+        #[cfg(guest_arch = "x86_64")]
+        {
+            // SAFETY: calling IOCTL as documented, with no special requirements.
+            let supported = unsafe {
+                x64_extensions::hcl_check_extension(self.file.as_raw_fd(), &cap)
+                    .map_err(Error::CheckExtensions)?
+            };
+            Ok(supported != 0)
+        }
     }
 
     /// Opens an mshv_vtl device file.
@@ -1420,6 +1439,7 @@ pub struct Hcl {
     supports_vtl_ret_action: bool,
     supports_register_page: bool,
     dr6_shared: bool,
+    #[cfg(guest_arch = "x86_64")]
     supports_lower_vtl_timer_virt: bool,
     isolation: IsolationType,
     snp_register_bitmap: [u8; 64],
@@ -1491,7 +1511,6 @@ enum BackingState {
         vtl0_apic_page: MappedPage<VmxApicPage>,
         vtl1_apic_page: MemoryBlock,
     },
-    ///???
     Cca {
         // TODO: CCA: add vGIC backing here
     }
@@ -1872,7 +1891,9 @@ impl Hcl {
         let supports_register_page = mshv_fd.check_extension(HCL_CAP_REGISTER_PAGE)?;
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
 
-        let supports_lower_vtl_timer_virt = mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
+        #[cfg(guest_arch = "x86_64")]
+        let supports_lower_vtl_timer_virt =
+            mshv_fd.check_extension(x64_extensions::HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
 
         #[cfg(guest_arch = "x86_64")]
         tracing::debug!(
@@ -1909,6 +1930,7 @@ impl Hcl {
             supports_vtl_ret_action,
             supports_register_page,
             dr6_shared,
+            #[cfg(guest_arch = "x86_64")]
             supports_lower_vtl_timer_virt,
             isolation,
             snp_register_bitmap,
@@ -2687,5 +2709,4 @@ impl Hcl {
 
         Ok(())
     }
-
 }

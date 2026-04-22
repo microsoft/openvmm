@@ -14,7 +14,6 @@ cfg_if::cfg_if! {
         pub mod snp;
         pub mod tdx;
 
-        use crate::TlbFlushLockAccess;
         use crate::VtlCrash;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
@@ -421,7 +420,6 @@ impl InterceptMessageType {
 }
 
 /// Trait for processor backings that have hardware isolation support.
-// #[cfg(guest_arch = "x86_64")]
 #[allow(dead_code)]
 pub(crate) trait HardwareIsolatedBacking: Backing {
     /// Gets CVM specific VP state.
@@ -828,16 +826,9 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
             // Quiesce RCU before running the VP to avoid having to synchronize with
             // this CPU during memory protection updates.
             minircu::global().quiesce();
+
             T::run_vp(self, dev, &mut stop).await?;
             self.kernel_returns += 1;
-
-            let addr = self.partition.addresses.shared_virtual_address_start;
-            println!("Reading from virtual addr after plane exit: {}", addr);
-            #[allow(unsafe_code)]
-            let value = unsafe {
-                core::ptr::read_volatile(addr as *const u64)
-            };
-            println!("value = {:#x}", value);
         }
     }
 

@@ -1125,6 +1125,8 @@ impl BackingPrivate for TdxBacked {
         let flush_page = shared
             .cvm
             .private_dma_client
+            .as_ref()
+            .expect("TDX TLB flush pages require a private DMA client")
             .allocate_dma_buffer(HV_PAGE_SIZE as usize)
             .map_err(crate::Error::AllocateTlbFlushPage)?;
 
@@ -1203,7 +1205,13 @@ impl BackingPrivate for TdxBacked {
     fn init(this: &mut UhProcessor<'_, Self>) {
         // Configure the synic direct overlays.
         // So far, only VTL 0 is using these (for VMBus).
-        let pfns = &this.backing.cvm.direct_overlay_handle.pfns();
+        let pfns = this
+            .backing
+            .cvm
+            .direct_overlay_handle
+            .as_ref()
+            .expect("TDX direct overlays require a DMA allocation")
+            .pfns();
         let reg = |gpn| {
             u64::from(
                 HvSynicSimpSiefp::new()

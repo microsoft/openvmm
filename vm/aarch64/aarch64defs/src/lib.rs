@@ -5,7 +5,6 @@
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
-// #![no_std]
 
 pub mod gic;
 pub mod smccc;
@@ -17,8 +16,6 @@ use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
-
-use std::println;
 
 /// Aarch64 SPSR_EL2 register when in 64-bit mode. Usually called CPSR by
 /// hypervisors.
@@ -423,30 +420,9 @@ impl IssSystem {
     }
 }
 
-// #[bitfield(u32)]
-// #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
-// pub struct SystemRegEncoding {
-//     #[bits(5)]
-//     _rsvd: u32,
-//     #[bits(3)]
-//     pub op2: u8,
-//     #[bits(4)]
-//     pub crm: u8,
-//     #[bits(4)]
-//     pub crn: u8,
-//     #[bits(3)]
-//     pub op1: u8,
-//     #[bits(2)]
-//     pub op0: u8,
-//     #[bits(11)]
-//     _rsvd2: u32,
-// }
-
 #[bitfield(u32)]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SystemRegEncoding {
-    // #[bits(5)]
-    // _rsvd: u32,
     #[bits(3)]
     pub op2: u8,
     #[bits(4)]
