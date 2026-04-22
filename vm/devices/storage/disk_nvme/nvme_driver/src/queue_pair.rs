@@ -668,7 +668,7 @@ pub enum RequestError {
     Nvme(#[source] NvmeError),
     #[error("memory error")]
     Memory(#[source] GuestMemoryError),
-    #[error("i/o too large for double buffering")]
+    #[error("data request too large for double buffering")]
     TooLarge,
 }
 
