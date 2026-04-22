@@ -190,7 +190,9 @@ use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
 use zerocopy::FromZeros;
 
+#[cfg(guest_arch = "x86_64")]
 pub(crate) const PM_BASE: u16 = 0x400;
+#[cfg(guest_arch = "x86_64")]
 pub(crate) const SYSTEM_IRQ_ACPI: u32 = 9;
 pub(crate) const WDAT_PORT: u16 = 0x30;
 

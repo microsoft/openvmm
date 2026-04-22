@@ -152,7 +152,9 @@ use watchdog_core::platform::BaseWatchdogPlatform;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
 
+#[cfg(guest_arch = "x86_64")]
 const PM_BASE: u16 = 0x400;
+#[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
 
 const WDAT_PORT: u16 = 0x30;
