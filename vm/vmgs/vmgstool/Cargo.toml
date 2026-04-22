@@ -10,7 +10,7 @@ rust-version.workspace = true
 [features]
 default = []
 
-encryption = ["vmgs/encryption", "crypto/vendored", "crypto/openssl"]
+encryption = ["vmgs/encryption", "crypto/vendored"]
 
 test_helpers = ["vmgs/test_helpers", "getrandom", "dep:resource_dll_parser"]
 
@@ -43,6 +43,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 ucs2.workspace = true
 resource_dll_parser = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+crypto = { workspace = true, optional = true, features = ["openssl"] }
 
 [dev-dependencies]
 tempfile.workspace = true

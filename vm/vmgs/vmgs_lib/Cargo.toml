@@ -10,12 +10,15 @@ rust-version.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-crypto = { workspace = true, features = ["vendored", "openssl"] }
+crypto = { workspace = true, features = ["vendored"] }
 disk_backend.workspace = true
 disk_vhd1.workspace = true
 futures.workspace = true
 vmgs_format.workspace = true
 vmgs = { workspace = true, features = ["encryption"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+crypto = { workspace = true, features = ["openssl"] }
 
 [lints]
 workspace = true
