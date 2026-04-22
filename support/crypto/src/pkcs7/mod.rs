@@ -3,19 +3,21 @@
 
 //! PKCS#7 signed data verification.
 
-#[cfg(target_os = "linux")]
+#![cfg(any(openssl, all(native, windows), all(native, target_os = "macos")))]
+
+#[cfg(openssl)]
 mod ossl;
-#[cfg(target_os = "linux")]
+#[cfg(openssl)]
 use ossl as sys;
 
-#[cfg(windows)]
+#[cfg(all(native, windows))]
 mod win;
-#[cfg(windows)]
+#[cfg(all(native, windows))]
 use win as sys;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(native, target_os = "macos"))]
 mod mac;
-#[cfg(target_os = "macos")]
+#[cfg(all(native, target_os = "macos"))]
 use mac as sys;
 
 use thiserror::Error;
@@ -50,14 +52,14 @@ impl Pkcs7SignedData {
     }
 
     /// Encode this PKCS#7 object as DER bytes.
-    #[cfg(target_os = "linux")]
+    #[cfg(openssl)]
     pub fn to_der(&self) -> Result<Vec<u8>, Pkcs7Error> {
         self.0.to_der()
     }
 
     /// Creates a PKCS#7 signed-data object by signing `data` with the given
     /// certificate and key pair.
-    #[cfg(target_os = "linux")]
+    #[cfg(openssl)]
     pub fn sign(
         cert: &super::x509::X509Certificate,
         key_pair: &super::rsa::RsaKeyPair,

@@ -11,31 +11,17 @@
 //! not suitable for general-purpose use.
 
 // UNSAFETY: calling BCrypt APIs on Windows, Security.framework APIs on macOS.
-#![cfg_attr(any(windows, target_os = "macos"), expect(unsafe_code))]
+#![allow(unsafe_code)]
 
-// TODO: Symcrypt somehow
-// TODO: Rustcrypto backend for ease of use
-// TODO: Windows backends
-
-#[cfg(target_os = "linux")]
 pub mod aes_256_cbc;
-#[cfg(any(windows, target_os = "linux"))]
 pub mod aes_256_gcm;
-#[cfg(target_os = "linux")]
 pub mod aes_key_wrap;
-#[cfg(target_os = "linux")]
 pub mod hmac_sha_256;
-#[cfg(target_os = "linux")]
 pub mod kdf;
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod pkcs7;
-#[cfg(target_os = "linux")]
 pub mod rsa;
-#[cfg(target_os = "linux")]
 pub mod sha_256;
-#[cfg(target_os = "linux")]
 pub mod x509;
-#[cfg(any(windows, target_os = "linux"))]
 pub mod xts_aes_256;
 
 pub(crate) mod mac;
@@ -43,17 +29,17 @@ pub(crate) mod win;
 
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.
-#[cfg(target_os = "linux")]
+#[cfg(openssl)]
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("openssl error during {1}")]
 pub struct BackendError(#[source] openssl::error::ErrorStack, &'static str);
 
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.
-#[cfg(windows)]
+#[cfg(all(native, windows))]
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("windows crypto error during {1}")]
 pub struct BackendError(#[source] windows_result::Error, &'static str);
 
-#[cfg(target_os = "macos")]
+#[cfg(all(native, target_os = "macos"))]
 pub use mac::BackendError;
