@@ -50,6 +50,11 @@ impl PageAllocator {
         // A single page must be left over for the PRP list, so one request may
         // not use all pages.
         if self.max < n + 1 {
+            tracing::warn!(
+                requested_pages = n,
+                max_available = self.max,
+                "insufficient memory to allocate requested number of pages"
+            );
             return None;
         }
         let mut core = loop {
