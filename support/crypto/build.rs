@@ -12,7 +12,7 @@ fn main() {
 
     let openssl = std::env::var_os("CARGO_FEATURE_OPENSSL").is_some();
     let symcrypt = std::env::var_os("CARGO_FEATURE_SYMCRYPT").is_some();
-    let linux = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux");
+    let linux = std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "linux";
 
     // Output a single config flag to indicate which backend should be used.
     match (openssl, symcrypt) {
