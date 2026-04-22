@@ -3,9 +3,6 @@
 
 //! Cryptographic operations to validate authenticated variables
 
-// Only available with crypto-supported backends
-#![cfg(any(windows, target_os = "linux"))]
-
 use super::ParsedAuthVar;
 use thiserror::Error;
 use uefi_nvram_specvars::signature_list;

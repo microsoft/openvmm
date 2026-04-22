@@ -4,14 +4,14 @@
 //! Backend-agnostic cryptographic primitives.
 //!
 //! This crate abstracts over platform-specific crypto libraries (OpenSSL on
-//! Unix, BCrypt on Windows) so that callers never interact with the underlying
-//! backend directly.
+//! Linux, BCrypt/WinCrypt on Windows, Security.framework on macOS) so that
+//! callers never interact with the underlying backend directly.
 //!
 //! It is explicitly specialized for the needs of the OpenVMM project and is
 //! not suitable for general-purpose use.
 
-// UNSAFETY: calling BCrypt APIs
-#![cfg_attr(windows, expect(unsafe_code))]
+// UNSAFETY: calling BCrypt APIs on Windows, Security.framework APIs on macOS.
+#![cfg_attr(any(windows, target_os = "macos"), expect(unsafe_code))]
 
 // TODO: Symcrypt somehow
 // TODO: Rustcrypto backend for ease of use
@@ -27,7 +27,7 @@ pub mod aes_key_wrap;
 pub mod hmac_sha_256;
 #[cfg(target_os = "linux")]
 pub mod kdf;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod pkcs7;
 #[cfg(target_os = "linux")]
 pub mod rsa;
@@ -38,6 +38,7 @@ pub mod x509;
 #[cfg(any(windows, target_os = "linux"))]
 pub mod xts_aes_256;
 
+pub(crate) mod mac;
 pub(crate) mod win;
 
 /// An error that occurred in the crypto backend, with a description of the
@@ -53,3 +54,6 @@ pub struct BackendError(#[source] openssl::error::ErrorStack, &'static str);
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("windows crypto error during {1}")]
 pub struct BackendError(#[source] windows_result::Error, &'static str);
+
+#[cfg(target_os = "macos")]
+pub use mac::BackendError;
