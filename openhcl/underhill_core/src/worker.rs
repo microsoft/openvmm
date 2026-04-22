@@ -2772,7 +2772,7 @@ async fn new_underhill_vm(
                 let is_hard_disk = matches!(disk_cfg.guest_media, GuestMedia::Disk { .. });
                 let (emulator_cfg, storvsp_cfg) = if is_hard_disk {
                     let serialized = mesh::resource::SerializedMessage::from_message(disk_cfg);
-                    assert!(
+                    anyhow::ensure!(
                         serialized.resources.is_empty(),
                         "IDE disk configs from VTL2 settings must not contain OS resources"
                     );
