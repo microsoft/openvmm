@@ -670,6 +670,8 @@ pub enum RequestError {
     Memory(#[source] GuestMemoryError),
     #[error("i/o too large for double buffering")]
     TooLarge,
+    #[error("insufficient memory to complete the request")]
+    InsufficientMemory,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -890,7 +892,7 @@ impl Issuer {
             .alloc
             .alloc_bytes(data.len())
             .await
-            .expect("pool cap is >= 1 page");
+            .unwrap_or(return Err(RequestError::InsufficientMemory));
 
         mem.write(data);
         assert_eq!(
@@ -915,7 +917,7 @@ impl Issuer {
             .alloc
             .alloc_bytes(data.len())
             .await
-            .expect("pool capacity is sufficient");
+            .unwrap_or(return Err(RequestError::InsufficientMemory));
 
         let prp = self
             .make_prp(0, (0..mem.page_count()).map(|i| mem.physical_address(i)))
