@@ -105,6 +105,16 @@ impl Pkcs7SignedData {
         signed_content: &[u8],
         uefi_mode: bool,
     ) -> Result<bool, Pkcs7Error> {
+        // Our only caller of this method today, uefi, always wants 'uefi_mode'.
+        // set to true. Behavior of our current backends is known to be subtly
+        // different when uefi_mode is false. If a caller ever needs support for
+        // uefi_mode = false, the backend implementation will need to be updated
+        // to handle the stricter PKI rules.
+        //
+        // Specifically known is that the handling of the x509 purpose (EKU)
+        // constraints has different defaults on different backends, but there
+        // may be other subtle differences as well.
+        assert!(uefi_mode, "only uefi_mode is currently supported");
         self.0.verify(store.0, signed_content, uefi_mode)
     }
 }
