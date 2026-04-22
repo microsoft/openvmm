@@ -136,6 +136,7 @@
     - [VMBus Relay and Device Interception](./reference/architecture/openhcl/vmbus.md)
     - [Storage Translation](./reference/architecture/openhcl/storage_translation.md)
     - [Storage Configuration Model](./reference/architecture/openhcl/storage_configuration.md)
+    - [Usermode StorVSC Architecture](./reference/architecture/openhcl/storvsc_architecture.md)
     - [Boot Flow](./reference/architecture/openhcl/boot.md)
     - [Sidecar](./reference/architecture/openhcl/sidecar.md)
     - [CPU Scheduling](./reference/architecture/openhcl/cpu_scheduling.md)
