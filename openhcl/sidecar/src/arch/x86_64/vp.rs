@@ -332,12 +332,17 @@ fn run_vp_once(command_page: &mut CommandPage, register_page_mapped: bool) -> Re
 
             // Sync guest GP/XMM from the register page; cpu_context
             // values are stale (VTL2 round-tripped on re-entry).
+            // Preserve index 4 (CR2 in CpuContextX64, RSP in register page).
             if register_page_mapped {
                 // SAFETY: the register page is mapped and not concurrently modified.
                 let reg = unsafe { &*addr_space::register_page() };
-                let xmm = reg.xmm.as_bytes().as_chunks::<16>().0;
-                command_page.cpu_context.gps = reg.gp_registers;
-                command_page.cpu_context.fx_state.xmm[..xmm.len()].copy_from_slice(xmm);
+                if reg.is_valid != 0 {
+                    let xmm = reg.xmm.as_bytes().as_chunks::<16>().0;
+                    let cr2 = command_page.cpu_context.gps[CpuContextX64::CR2];
+                    command_page.cpu_context.gps = reg.gp_registers;
+                    command_page.cpu_context.gps[CpuContextX64::CR2] = cr2;
+                    command_page.cpu_context.fx_state.xmm[..xmm.len()].copy_from_slice(xmm);
+                }
             }
             Ok(true)
         }
