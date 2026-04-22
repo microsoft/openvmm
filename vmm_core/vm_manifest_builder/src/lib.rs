@@ -38,7 +38,6 @@ use serial_pl011_resources::SerialPl011DeviceHandle;
 use std::iter::zip;
 use thiserror::Error;
 use vm_resource::IntoResource;
-use vm_resource::PlatformResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::kind::SerialBackendHandle;
@@ -469,7 +468,6 @@ impl VmChipsetResult {
             name: "guest-watchdog".to_owned(),
             resource: HyperVGuestWatchdogDeviceHandle {
                 port_base: DEFAULT_WDAT_PORT_BASE,
-                platform: PlatformResource.into_resource(),
             }
             .into_resource(),
         });

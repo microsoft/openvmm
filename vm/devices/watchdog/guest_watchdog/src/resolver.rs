@@ -10,6 +10,8 @@ use chipset_device_resources::ResolvedChipsetDevice;
 use chipset_resources::hyperv_guest_watchdog::HyperVGuestWatchdogDeviceHandle;
 use thiserror::Error;
 use vm_resource::AsyncResolveResource;
+use vm_resource::IntoResource;
+use vm_resource::PlatformResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
@@ -49,7 +51,7 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, HyperVGuestWatchdogDeviceHand
         pio_static_wdat_port.map(resource.port_base);
 
         let watchdog_platform = resolver
-            .resolve::<WatchdogPlatformHandleKind, _>(resource.platform, ())
+            .resolve::<WatchdogPlatformHandleKind, _>(PlatformResource.into_resource(), ())
             .await
             .map_err(ResolveGuestWatchdogError::ResolvePlatform)?
             .into_inner();
