@@ -11,7 +11,7 @@
 //! not suitable for general-purpose use.
 
 // UNSAFETY: calling BCrypt APIs on Windows, Security.framework APIs on macOS.
-#![cfg_attr(any(windows, target_os = "macos"), expect(unsafe_code))]
+#![allow(unsafe_code)]
 
 pub mod aes_256_cbc;
 pub mod aes_256_gcm;

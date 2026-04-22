@@ -68,7 +68,7 @@ serde = { workspace = true, features = ["std"] }
 crypto = { workspace = true, features = ["vendored"] }
 
 # TEMP: vmm_tests really shouldn't need to pull in crypto
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(target_os = "linux")'.dev-dependencies]
 crypto = { workspace = true, features = ["openssl"] }
 
 [lints]
