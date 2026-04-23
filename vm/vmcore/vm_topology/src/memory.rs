@@ -4,6 +4,7 @@
 //! Tools to the compute guest memory layout.
 
 use memory_range::MemoryRange;
+use memory_range::subtract_ranges;
 use thiserror::Error;
 
 const PAGE_SIZE: u64 = 4096;
@@ -205,43 +206,44 @@ impl MemoryLayout {
         combined_gaps.sort();
         validate_ranges(&combined_gaps)?;
 
-        // Walk contiguous address chunks (between gaps), distributing RAM
-        // across NUMA nodes by filling each node's budget in order.
+        let available = subtract_ranges(
+            [MemoryRange::new(0..MemoryRange::MAX_ADDRESS)],
+            combined_gaps,
+        );
+
+        // Distribute RAM across NUMA nodes, filling available ranges in order.
         let mut ram = Vec::new();
         let mut remaining = ram_size;
-        let mut remaining_gaps = combined_gaps.iter().cloned();
-        let mut last_end = 0;
-
         let mut node_idx = 0;
         let mut node_remaining = numa_mem_sizes[0];
 
-        while remaining > 0 {
-            let (chunk_size, next_end) = if let Some(gap) = remaining_gaps.next() {
-                (remaining.min(gap.start() - last_end), gap.end())
-            } else {
-                (remaining, 0)
-            };
+        for range in available {
+            let range_size = remaining.min(range.len());
+            let mut offset = 0;
 
-            // Distribute this chunk across nodes.
-            let mut chunk_offset = 0;
-            while chunk_offset < chunk_size {
-                let piece = (chunk_size - chunk_offset).min(node_remaining);
-                assert!(piece > 0, "node budget exhausted before all RAM placed");
-                let start = last_end + chunk_offset;
+            while offset < range_size {
+                if node_remaining == 0 {
+                    node_idx += 1;
+                    node_remaining = *numa_mem_sizes
+                        .get(node_idx)
+                        .expect("node budget exhausted before all RAM placed");
+                }
+
+                let piece = (range_size - offset).min(node_remaining);
+                let start = range.start() + offset;
                 ram.push(MemoryRangeWithNode {
                     range: MemoryRange::new(start..start + piece),
                     vnode: node_idx as u32,
                 });
-                chunk_offset += piece;
+                offset += piece;
                 node_remaining -= piece;
-                if node_remaining == 0 && node_idx + 1 < numa_mem_sizes.len() {
-                    node_idx += 1;
-                    node_remaining = numa_mem_sizes[node_idx];
-                }
             }
 
-            remaining -= chunk_size;
-            last_end = next_end;
+            remaining -= range_size;
+
+            if remaining == 0 {
+                break;
+            }
         }
 
         Self::build(
