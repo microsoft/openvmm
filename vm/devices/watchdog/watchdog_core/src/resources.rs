@@ -5,7 +5,6 @@
 
 use crate::platform::WatchdogPlatform;
 use parking_lot::Mutex;
-use std::sync::Arc;
 use thiserror::Error;
 use vm_resource::CanResolveTo;
 use vm_resource::PlatformResource;
@@ -41,11 +40,11 @@ pub enum ResolveWatchdogPlatformError {
 }
 
 /// A static platform resolver that serves a pre-built watchdog platform.
-pub struct StaticWatchdogPlatformResolver(Arc<Mutex<Option<Box<dyn WatchdogPlatform>>>>);
+pub struct StaticWatchdogPlatformResolver(Mutex<Option<Box<dyn WatchdogPlatform>>>);
 
 impl StaticWatchdogPlatformResolver {
     pub fn new(platform: Box<dyn WatchdogPlatform>) -> Self {
-        Self(Arc::new(Mutex::new(Some(platform))))
+        Self(Mutex::new(Some(platform)))
     }
 }
 
