@@ -41,9 +41,22 @@ pub struct ConsommeEndpoint {
     endpoint_state: Arc<Mutex<Option<EndpointState>>>,
 }
 
+/// Configuration for a port to forward from the host to the guest.
+pub struct PortForwardConfig {
+    /// The protocol to forward.
+    pub protocol: IpProtocol,
+    /// The host IP address to bind, or `None` for all interfaces.
+    pub address: Option<IpAddr>,
+    /// The port traffic is forwarded to on the guest.
+    pub guest_port: u16,
+    /// The host port to bind, or `None` for any available port.
+    pub host_port: u16,
+}
+
 struct EndpointState {
     consomme: Consomme,
     recv: Option<mesh::Receiver<ConsommeMessage>>,
+    port_forwards: Vec<PortForwardConfig>,
 }
 
 impl ConsommeEndpoint {
@@ -52,6 +65,18 @@ impl ConsommeEndpoint {
             endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
                 consomme: Consomme::new(state),
                 recv: None,
+                port_forwards: Vec::new(),
+            }))),
+        }
+    }
+
+    /// Creates a new endpoint with ports to forward once the queue starts.
+    pub fn new_with_ports(state: ConsommeParams, ports: Vec<PortForwardConfig>) -> Self {
+        Self {
+            endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
+                consomme: Consomme::new(state),
+                recv: None,
+                port_forwards: ports,
             }))),
         }
     }
@@ -64,6 +89,7 @@ impl ConsommeEndpoint {
                 endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
                     consomme,
                     recv: Some(recv),
+                    port_forwards: Vec::new(),
                 }))),
             },
             ConsommeControl { send },
@@ -100,20 +126,15 @@ pub enum ConsommeMessageError {
 /// Callback to modify network state dynamically.
 pub type ConsommeParamsUpdateFn = Box<dyn Fn(&mut ConsommeParams) + Send>;
 
+#[derive(Debug)]
 pub enum IpProtocol {
     Tcp,
     Udp,
 }
 
-struct MessageBindPort {
-    protocol: IpProtocol,
-    address: Option<IpAddr>,
-    port: u16,
-}
-
 enum ConsommeMessage {
-    BindPort(Rpc<MessageBindPort, Result<(), consomme::DropReason>>),
-    UnbindPort(Rpc<MessageBindPort, Result<(), consomme::DropReason>>),
+    BindPort(Rpc<PortForwardConfig, Result<u16, consomme::DropReason>>),
+    UnbindPort(Rpc<PortForwardConfig, Result<(), consomme::DropReason>>),
     UpdateState(Rpc<ConsommeParamsUpdateFn, ()>),
 }
 
@@ -125,18 +146,21 @@ impl ConsommeControl {
         ip_addr: Option<IpAddr>,
         port: u16,
     ) -> Result<(), ConsommeMessageError> {
-        self.send
+        let _ = self
+            .send
             .call(
                 ConsommeMessage::BindPort,
-                MessageBindPort {
+                PortForwardConfig {
                     protocol,
                     address: ip_addr,
-                    port,
+                    guest_port: port,
+                    host_port: port,
                 },
             )
             .await
             .map_err(ConsommeMessageError::Mesh)?
-            .map_err(ConsommeMessageError::Network)
+            .map_err(ConsommeMessageError::Network)?;
+        Ok(())
     }
 
     /// Unbinds a port previously reserved with bind_port()
@@ -148,10 +172,11 @@ impl ConsommeControl {
         self.send
             .call(
                 ConsommeMessage::UnbindPort,
-                MessageBindPort {
+                PortForwardConfig {
                     protocol,
                     address: None,
-                    port,
+                    guest_port: port,
+                    host_port: 0,
                 },
             )
             .await
@@ -197,7 +222,26 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             stats: Default::default(),
             driver: config.driver,
         });
-        queue.with_consomme_no_pool(|c| c.refresh_driver());
+        let port_forwards =
+            std::mem::take(&mut queue.endpoint_state.as_mut().unwrap().port_forwards);
+        queue.with_consomme_no_pool(|c| {
+            c.refresh_driver();
+            for fwd in port_forwards {
+                let result = match fwd.protocol {
+                    IpProtocol::Tcp => c.bind_tcp_port(fwd.address, fwd.guest_port, fwd.host_port),
+                    IpProtocol::Udp => c.bind_udp_port(fwd.address, fwd.guest_port, fwd.host_port),
+                };
+                if let Err(err) = result {
+                    tracing::error!(
+                        protocol = ?fwd.protocol,
+                        guest_port = fwd.guest_port,
+                        host_port = fwd.host_port,
+                        error = &err as &dyn std::error::Error,
+                        "failed to bind port"
+                    );
+                }
+            }
+        });
         queues.push(queue);
         Ok(())
     }
@@ -314,14 +358,22 @@ fn process_message(
     match message {
         ConsommeMessage::BindPort(rpc) => {
             rpc.handle_sync(|bind_message| match bind_message.protocol {
-                IpProtocol::Tcp => consomme.bind_tcp_port(bind_message.address, bind_message.port),
-                IpProtocol::Udp => consomme.bind_udp_port(bind_message.address, bind_message.port),
+                IpProtocol::Tcp => consomme.bind_tcp_port(
+                    bind_message.address,
+                    bind_message.guest_port,
+                    bind_message.host_port,
+                ),
+                IpProtocol::Udp => consomme.bind_udp_port(
+                    bind_message.address,
+                    bind_message.guest_port,
+                    bind_message.host_port,
+                ),
             });
         }
         ConsommeMessage::UnbindPort(rpc) => {
             rpc.handle_sync(|bind_message| match bind_message.protocol {
-                IpProtocol::Tcp => consomme.unbind_tcp_port(bind_message.port),
-                IpProtocol::Udp => consomme.unbind_udp_port(bind_message.port),
+                IpProtocol::Tcp => consomme.unbind_tcp_port(bind_message.guest_port),
+                IpProtocol::Udp => consomme.unbind_udp_port(bind_message.guest_port),
             });
         }
         ConsommeMessage::UpdateState(rpc) => {
@@ -385,7 +437,8 @@ impl net_backend::Queue for ConsommeQueue {
                     | consomme::DropReason::FragmentedPacket
                     | consomme::DropReason::IpLengthMismatch
                     | consomme::DropReason::MalformedPacket => self.stats.tx_errors.increment(),
-                    consomme::DropReason::PortNotBound => unreachable!(),
+                    consomme::DropReason::PortNotBound
+                    | consomme::DropReason::PortAlreadyBound(_) => unreachable!(),
                 }
             }
 

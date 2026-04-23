@@ -304,7 +304,7 @@ impl<T: Client> Access<'_, T> {
             }
         };
 
-        let conn = self.get_or_insert(guest_addr, Some(frame.src_addr))?;
+        let conn = self.get_or_insert(guest_addr, None, Some(frame.src_addr))?;
         let socket = conn.socket.as_ref().unwrap().get();
         if conn.gso_size != checksum.gso {
             platform::set_udp_gso_size(socket, checksum.gso.unwrap_or(0))
@@ -332,6 +332,7 @@ impl<T: Client> Access<'_, T> {
     fn get_or_insert(
         &mut self,
         guest_addr: SocketAddr,
+        host_port: Option<u16>,
         guest_mac: Option<EthernetAddress>,
     ) -> Result<&mut UdpConnection, DropReason> {
         let entry = self.inner.udp.connections.entry(guest_addr);
@@ -339,12 +340,16 @@ impl<T: Client> Access<'_, T> {
             hash_map::Entry::Occupied(conn) => Ok(conn.into_mut()),
             hash_map::Entry::Vacant(e) => {
                 let bind_addr: SocketAddr = match guest_addr {
-                    SocketAddr::V4(_) => {
-                        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))
-                    }
-                    SocketAddr::V6(_) => {
-                        SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0))
-                    }
+                    SocketAddr::V4(_) => SocketAddr::V4(SocketAddrV4::new(
+                        Ipv4Addr::UNSPECIFIED,
+                        host_port.unwrap_or(0),
+                    )),
+                    SocketAddr::V6(_) => SocketAddr::V6(SocketAddrV6::new(
+                        Ipv6Addr::UNSPECIFIED,
+                        host_port.unwrap_or(0),
+                        0,
+                        0,
+                    )),
                 };
 
                 let socket = UdpSocket::bind(bind_addr).map_err(DropReason::Io)?;
@@ -408,14 +413,23 @@ impl<T: Client> Access<'_, T> {
 
     /// Binds to the specified host IP and port for forwarding inbound UDP
     /// packets to the guest.
-    pub fn bind_udp_port(&mut self, ip_addr: Option<IpAddr>, port: u16) -> Result<(), DropReason> {
+    pub fn bind_udp_port(
+        &mut self,
+        ip_addr: Option<IpAddr>,
+        guest_port: u16,
+        host_port: u16,
+    ) -> Result<u16, DropReason> {
         let guest_addr = match ip_addr {
-            Some(IpAddr::V4(ip)) => SocketAddr::V4(SocketAddrV4::new(ip, port)),
-            Some(IpAddr::V6(ip)) => SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0)),
-            None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
+            Some(IpAddr::V4(ip)) => SocketAddr::V4(SocketAddrV4::new(ip, guest_port)),
+            Some(IpAddr::V6(ip)) => SocketAddr::V6(SocketAddrV6::new(ip, guest_port, 0, 0)),
+            None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, guest_port)),
         };
-        let _ = self.get_or_insert(guest_addr, None)?;
-        Ok(())
+        let conn = self.get_or_insert(guest_addr, Some(host_port), None)?;
+        let host_port = conn
+            .socket
+            .as_ref()
+            .map_or(0, |s| s.get().local_addr().map_or(0, |addr| addr.port()));
+        Ok(host_port)
     }
 
     /// Unbinds from the specified host port for both IPv4 and IPv6.

@@ -389,6 +389,9 @@ pub enum DropReason {
     /// Specified port is not bound.
     #[error("port is not bound")]
     PortNotBound,
+    /// The specified port is already bound.
+    #[error("port {0} is already bound")]
+    PortAlreadyBound(u16),
     /// The DHCPv6 message type is unsupported.
     #[error("unsupported dhcpv6 message type {0:?}")]
     UnsupportedDhcpv6(dhcpv6::MessageType),

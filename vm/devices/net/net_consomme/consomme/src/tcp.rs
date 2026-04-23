@@ -438,16 +438,21 @@ impl<T: Client> Access<'_, T> {
     }
 
     /// Binds to the specified host IP and port for listening for incoming
-    /// connections.
-    pub fn bind_tcp_port(&mut self, ip_addr: Option<IpAddr>, port: u16) -> Result<(), DropReason> {
+    /// connections. The returned value is the actual port number that was bound.
+    pub fn bind_tcp_port(
+        &mut self,
+        ip_addr: Option<IpAddr>,
+        guest_port: u16,
+        host_port: u16,
+    ) -> Result<u16, DropReason> {
         let ip_addr = match ip_addr {
-            Some(IpAddr::V4(ip)) => SocketAddr::V4(SocketAddrV4::new(ip, port)),
-            Some(IpAddr::V6(ip)) => SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0)),
-            None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
+            Some(IpAddr::V4(ip)) => SocketAddr::V4(SocketAddrV4::new(ip, host_port)),
+            Some(IpAddr::V6(ip)) => SocketAddr::V6(SocketAddrV6::new(ip, host_port, 0, 0)),
+            None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, host_port)),
         };
-        match self.inner.tcp.listeners.entry(port) {
+        let listener = match self.inner.tcp.listeners.entry(guest_port) {
             hash_map::Entry::Occupied(_) => {
-                tracing::warn!(port, "Duplicate TCP bind for port");
+                return Err(DropReason::PortAlreadyBound(guest_port));
             }
             hash_map::Entry::Vacant(e) => {
                 let ft = match ip_addr {
@@ -467,10 +472,12 @@ impl<T: Client> Access<'_, T> {
                 };
 
                 let listener = TcpListener::new(&mut sender)?;
-                e.insert(listener);
+                e.insert(listener)
             }
-        }
-        Ok(())
+        };
+        let local_addr = listener.socket.get().local_addr().map_err(DropReason::Io)?;
+        let host_port = local_addr.as_socket().map_or(0, |addr| addr.port());
+        Ok(host_port)
     }
 
     /// Unbinds from the specified host port.

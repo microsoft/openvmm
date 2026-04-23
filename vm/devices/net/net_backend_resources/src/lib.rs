@@ -31,11 +31,35 @@ pub mod consomme {
     use vm_resource::ResourceId;
     use vm_resource::kind::NetEndpointHandleKind;
 
+    /// Protocol for host port forwarding.
+    #[derive(Clone, Debug, MeshPayload)]
+    pub enum HostPortProtocol {
+        /// TCP protocol.
+        Tcp,
+        /// UDP protocol.
+        Udp,
+    }
+
+    /// Configuration for forwarding a host port into the guest.
+    #[derive(Clone, Debug, MeshPayload)]
+    pub struct HostPortConfig {
+        /// The protocol to forward.
+        pub protocol: HostPortProtocol,
+        /// The host IP address to bind to, or `None` to bind to all interfaces.
+        pub host_address: Option<String>,
+        /// The host port to listen on.
+        pub host_port: u16,
+        /// The guest port to forward to.
+        pub guest_port: u16,
+    }
+
     /// Handle to a Consomme network endpoint.
     #[derive(MeshPayload)]
     pub struct ConsommeHandle {
         /// The CIDR of the network to use.
         pub cidr: Option<String>,
+        /// Ports to forward from the host into the guest.
+        pub ports: Vec<HostPortConfig>,
     }
 
     impl ResourceId<NetEndpointHandleKind> for ConsommeHandle {
