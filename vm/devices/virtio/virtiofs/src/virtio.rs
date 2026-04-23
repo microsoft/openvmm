@@ -201,6 +201,14 @@ impl VirtioDevice for VirtioFsDevice {
     }
 
     async fn reset(&mut self) {
+        // Stop all workers before clearing them to ensure in-flight requests
+        // (e.g. FUSE_DESTROY) are fully processed and replied to. Without this,
+        // the guest driver's shutdown callback hangs waiting for a reply.
+        for worker in &mut self.workers {
+            if worker.has_state() {
+                worker.stop().await;
+            }
+        }
         self.workers.clear();
         if let Some(region) = &self.shared_memory_region {
             if let Err(e) = region.unmap(0, self.shmem_size as usize) {
