@@ -12,9 +12,9 @@ use super::Error;
 use super::VcpuFdExt;
 use crate::ErrorInner;
 use crate::MshvPartition;
+use hvdef::HvPartitionPropertyCode;
 use hvdef::HvX64RegisterName;
 use hvdef::hypercall::HvRegisterAssoc;
-use mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_REFERENCE_TIME;
 use virt::state::HvRegisterState;
 use virt::x86::vm;
 use virt::x86::vm::AccessVmState;
@@ -84,7 +84,7 @@ impl AccessVmState for &'_ MshvPartition {
         let ref_time = self
             .inner
             .vmfd
-            .get_partition_property(hv_partition_property_code_HV_PARTITION_PROPERTY_REFERENCE_TIME)
+            .get_partition_property(HvPartitionPropertyCode::ReferenceTime.0)
             .map_err(|e| ErrorInner::GetPartitionProperty(e.into()))?;
         Ok(vm::ReferenceTime { value: ref_time })
     }
@@ -92,10 +92,7 @@ impl AccessVmState for &'_ MshvPartition {
     fn set_reftime(&mut self, value: &vm::ReferenceTime) -> Result<(), Self::Error> {
         self.inner
             .vmfd
-            .set_partition_property(
-                hv_partition_property_code_HV_PARTITION_PROPERTY_REFERENCE_TIME,
-                value.value,
-            )
+            .set_partition_property(HvPartitionPropertyCode::ReferenceTime.0, value.value)
             .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
         Ok(())
     }
