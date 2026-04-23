@@ -60,7 +60,7 @@ pub struct Options {
     /// TODO: This is informational topology only. Backing pages are not pinned
     /// to any host topology, nor coordinated with CPUs. This should change once
     /// we implement real numa support.
-    #[clap(long, value_name = "SIZES", value_parser = parse_numa_memory, conflicts_with = "memory")]
+    #[clap(long, value_name = "SIZES", value_parser = parse_memory, value_delimiter = ',', conflicts_with = "memory")]
     pub numa_memory: Option<Vec<u64>>,
 
     /// use shared memory segment
@@ -984,10 +984,6 @@ fn parse_memory(s: &str) -> anyhow::Result<u64> {
         }()
         .with_context(|| format!("invalid memory size '{0}'", s))
     }
-}
-
-fn parse_numa_memory(s: &str) -> anyhow::Result<Vec<u64>> {
-    s.split(',').map(|part| parse_memory(part.trim())).collect()
 }
 
 /// Parse a number from a string that could be prefixed with 0x to indicate hex.
