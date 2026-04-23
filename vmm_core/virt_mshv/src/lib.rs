@@ -362,6 +362,11 @@ pub struct MshvProtoPartition<'a> {
 impl MshvProtoPartition<'_> {
     /// Build partition capabilities from partition properties instead of
     /// CPUID. Used when CPUID queries are not available.
+    ///
+    /// Some capabilities (CET, SGX, tsc_aux, vtom, per-feature xsave
+    /// geometry) require CPUID to determine and have no partition property
+    /// equivalents. They default to false/disabled here. This limits save/restore
+    /// fidelity.
     fn caps_from_properties(&self) -> Result<virt::x86::X86PartitionCapabilities, Error> {
         use virt::x86::X86PartitionCapabilities;
         use virt::x86::XsaveCapabilities;
@@ -519,7 +524,12 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                     },
                 )
                 .map_err(ErrorInner::Capabilities)?,
-                Err(_) => self.caps_from_properties()?,
+                Err(_) => {
+                    tracing::warn!(
+                        "failed to query CPUID, falling back to partition properties, some features may be unavailable"
+                    );
+                    self.caps_from_properties()?
+                }
             };
             caps.xsaves_state_bv_broken = true;
             caps.can_freeze_time = true;
