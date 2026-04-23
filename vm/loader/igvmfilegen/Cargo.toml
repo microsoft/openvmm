@@ -23,6 +23,7 @@ fs-err.workspace = true
 hex = { workspace = true, features = ["serde"] }
 igvm.workspace = true
 igvm_defs.workspace = true
+open_enum.workspace = true
 range_map_vec.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
@@ -31,6 +32,9 @@ thiserror.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing.workspace = true
 zerocopy.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

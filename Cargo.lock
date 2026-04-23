@@ -3523,8 +3523,7 @@ dependencies = [
 [[package]]
 name = "igvm"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67578b05ebcdfa1aa0fe13f77a13bdd7d87036128898a327f1bf8e7356cf09cd"
+source = "git+https://github.com/chris-oo/igvm?branch=corim-header#e96caf193935761d6c1df7a1570f51b183e2b6dd"
 dependencies = [
  "bitfield-struct 0.10.1",
  "crc32fast",
@@ -3541,8 +3540,7 @@ dependencies = [
 [[package]]
 name = "igvm_defs"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eedd8c64460676101062f9f2ecdeb52d8f43e622da6a6c5bf5158f4ef08b0906"
+source = "git+https://github.com/chris-oo/igvm?branch=corim-header#e96caf193935761d6c1df7a1570f51b183e2b6dd"
 dependencies = [
  "bitfield-struct 0.10.1",
  "open-enum",
@@ -3565,10 +3563,12 @@ dependencies = [
  "loader",
  "loader_defs",
  "memory_range",
+ "open_enum",
  "range_map_vec",
  "serde",
  "serde_json",
  "sha2",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "tracing-subscriber",
@@ -4771,9 +4771,9 @@ dependencies = [
 
 [[package]]
 name = "ntapi"
-version = "0.4.3"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3b335231dfd352ffb0f8017f3b6027a4917f7df785ea2143d8af2adc66980ae"
+checksum = "e8a3895c6391c39d7fe7ebc444a87eb2991b2a0bc718fdabd071eec617fc68e4"
 dependencies = [
  "winapi",
 ]
