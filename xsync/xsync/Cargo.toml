@@ -13,13 +13,13 @@ cargo-lock.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 dunce.workspace = true
 fs-err.workspace = true
-log.workspace = true
+log = { workspace = true, features = ["std"] }
 pathdiff.workspace = true
 semver.workspace = true
 serde = { workspace = true, features = ["std"] }
 toml_edit = { workspace = true, features = ["serde"] }
 
-ci_logger.workspace = true
+
 
 [lints]
 workspace = true
