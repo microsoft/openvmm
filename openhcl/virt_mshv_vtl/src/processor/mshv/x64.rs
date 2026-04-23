@@ -707,14 +707,13 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "io_port");
 
-        assert_eq!(
-            message.rax,
-            self.vp.runner.cpu_context().gps_no_rsp[protocol::RAX]
-        );
-
+        // Sync RAX from the intercept message. For sidecar VPs, cpu_context
+        // may be stale if the register page was unavailable or invalid.
+        let rax = message.rax;
         let interruption_pending = message.header.execution_state.interruption_pending();
 
         if message.access_info.string_op() || message.access_info.rep_prefix() {
+            self.vp.runner.cpu_context_mut().gps_no_rsp[protocol::RAX] = rax;
             let cache = self.vp.emulation_cache(self.intercepted_vtl);
             self.vp
                 .emulate(dev, interruption_pending, self.intercepted_vtl, cache)
@@ -722,10 +721,13 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         } else {
             let next_rip = next_rip(&message.header);
             let access_size = message.access_info.access_size();
+            let is_write = message.header.intercept_access_type == HvInterceptAccessType::WRITE;
+            let port = message.port_number;
+            self.vp.runner.cpu_context_mut().gps_no_rsp[protocol::RAX] = rax;
             virt_support_x86emu::emulate::emulate_io(
                 self.vp.vp_index(),
-                message.header.intercept_access_type == HvInterceptAccessType::WRITE,
-                message.port_number,
+                is_write,
+                port,
                 &mut self.vp.runner.cpu_context_mut().gps_no_rsp[protocol::RAX],
                 access_size,
                 dev,

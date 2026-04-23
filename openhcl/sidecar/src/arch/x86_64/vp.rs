@@ -259,7 +259,7 @@ fn run_vp(globals: &mut VpGlobals, command_page: &mut CommandPage, cpu_status: &
 
     let mut intercept = false;
     while cpu_status.load(Relaxed) != CpuStatus::STOP.0 {
-        match run_vp_once(command_page, globals.register_page_mapped) {
+        match run_vp_once(command_page) {
             Ok(true) => {
                 intercept = true;
                 break;
@@ -276,7 +276,7 @@ fn run_vp(globals: &mut VpGlobals, command_page: &mut CommandPage, cpu_status: &
     .unwrap(); // PANIC: will not panic, since sizeof(RunVpResponse) is 1, whereas the buffer is statically declared as 16 bytes long.
 }
 
-fn run_vp_once(command_page: &mut CommandPage, register_page_mapped: bool) -> Result<bool, ()> {
+fn run_vp_once(command_page: &mut CommandPage) -> Result<bool, ()> {
     let cpu_context = &mut command_page.cpu_context;
     // Write rax and rcx to the VP assist page.
     //
@@ -329,21 +329,6 @@ fn run_vp_once(command_page: &mut CommandPage, register_page_mapped: bool) -> Re
             let intercept_message =
                 unsafe { &*addr_of!((*addr_space::assist_page()).intercept_message) };
             command_page.intercept_message = *intercept_message;
-
-            // Sync guest GP/XMM from the register page; cpu_context
-            // values are stale (VTL2 round-tripped on re-entry).
-            // Preserve index 4 (CR2 in CpuContextX64, RSP in register page).
-            if register_page_mapped {
-                // SAFETY: the register page is mapped and not concurrently modified.
-                let reg = unsafe { &*addr_space::register_page() };
-                if reg.is_valid != 0 {
-                    let xmm = reg.xmm.as_bytes().as_chunks::<16>().0;
-                    let cr2 = command_page.cpu_context.gps[CpuContextX64::CR2];
-                    command_page.cpu_context.gps = reg.gp_registers;
-                    command_page.cpu_context.gps[CpuContextX64::CR2] = cr2;
-                    command_page.cpu_context.fx_state.xmm[..xmm.len()].copy_from_slice(xmm);
-                }
-            }
             Ok(true)
         }
         entry_reason => {
