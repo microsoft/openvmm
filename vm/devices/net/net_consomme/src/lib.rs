@@ -578,7 +578,7 @@ fn parse_rx_header_lengths(data: &[u8], checksum: &ChecksumState) -> (L3Protocol
             let l4_start = l2_len as usize + l3_len as usize;
             // Derive TCP header length from data offset field if TCP
             let l4_len = if checksum.tcp && data.len() >= l4_start + 20 {
-                let data_offset = (data[l4_start + 12] >> 4) as u8 * 4;
+                let data_offset = (data[l4_start + 12] >> 4) * 4;
                 data_offset.max(20)
             } else {
                 0
@@ -589,7 +589,7 @@ fn parse_rx_header_lengths(data: &[u8], checksum: &ChecksumState) -> (L3Protocol
             let l3_len: u16 = 40; // Base IPv6 header; extension headers not handled
             let l4_start = l2_len as usize + l3_len as usize;
             let l4_len = if checksum.tcp && data.len() >= l4_start + 20 {
-                let data_offset = (data[l4_start + 12] >> 4) as u8 * 4;
+                let data_offset = (data[l4_start + 12] >> 4) * 4;
                 data_offset.max(20)
             } else {
                 0
