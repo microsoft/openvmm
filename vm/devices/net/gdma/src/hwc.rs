@@ -226,6 +226,19 @@ impl HwControl {
                 .read_plain()
                 .context("reading request message header")?;
 
+            if hdr.req.msg_size as u64 > PAGE_SIZE64 {
+                anyhow::bail!(
+                    "request message size {} exceeds page size {PAGE_SIZE64}",
+                    hdr.req.msg_size
+                );
+            }
+            if hdr.resp.msg_size as u64 > PAGE_SIZE64 {
+                anyhow::bail!(
+                    "response message size {} exceeds page size {PAGE_SIZE64}",
+                    hdr.resp.msg_size
+                );
+            }
+
             let mut read = MemoryRead::limit(read, hdr.req.msg_size as usize);
             read.skip(size_of_val(&hdr))
                 .context("message size too small")?;
