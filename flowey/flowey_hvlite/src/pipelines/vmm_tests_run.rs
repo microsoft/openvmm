@@ -127,7 +127,7 @@ impl IntoPipeline for VmmTestsRunCli {
         log::info!("Step 1: Discovering required artifacts...");
         let repo_root = crate::repo_root();
         let (artifacts_json, test_names, test_binary) =
-            discover_artifacts(&repo_root, &target_str, &filter, release)
+            discover_artifacts(&repo_root, &target_str, &filter, release, build_only)
                 .context("during artifact discovery")?;
 
         // 4. Resolve to build selections
@@ -230,6 +230,7 @@ fn discover_artifacts(
     target: &str,
     filter: &str,
     release: bool,
+    ignore_host_requirements: bool,
 ) -> anyhow::Result<(String, Vec<String>, PathBuf)> {
     // Check that cargo-nextest is available
     let nextest_check = Command::new("cargo")
@@ -266,6 +267,12 @@ fn discover_artifacts(
     ]);
     if release {
         cmd.arg("--release");
+    }
+    // When using build-only mode, we need to enumerate tests that could be
+    // run on any system so that we build all necessary dependencies. By default
+    // petri marks incompatible tests as ignored.
+    if ignore_host_requirements {
+        cmd.args(["--run-ignored", "all"]);
     }
     let nextest_output = cmd.output().context("failed to run cargo nextest list")?;
     anyhow::ensure!(nextest_output.status.success(), "cargo nextest list failed",);
