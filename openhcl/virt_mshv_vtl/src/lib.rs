@@ -380,6 +380,7 @@ struct UhCvmVpState {
     /// Hypervisor enlightenment emulator state.
     hv: VtlArray<ProcessorVtlHv, 2>,
     /// LAPIC state.
+    #[inspect(safe)]
     lapics: VtlArray<LapicState, 2>,
     /// Guest VSM state for this vp. Some when VTL 1 is enabled.
     vtl1: Option<GuestVsmVpState>,

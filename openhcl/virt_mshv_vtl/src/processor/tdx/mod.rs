@@ -516,7 +516,7 @@ pub struct TdxBacked {
     #[inspect(skip)]
     flush_page: user_driver::memory::MemoryBlock,
 
-    #[inspect(flatten)]
+    #[inspect(flatten, safe)]
     cvm: UhCvmVpState,
 
     /// Per-processor state for [`TdxTscDeadlineService`].
