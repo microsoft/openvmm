@@ -377,7 +377,7 @@ impl MshvProtoPartition<'_> {
             HvProcessorVendor::AMD => Vendor::AMD,
             HvProcessorVendor::INTEL => Vendor::INTEL,
             HvProcessorVendor::HYGON => Vendor::HYGON,
-            _ => Vendor::INTEL,
+            v => return Err(ErrorInner::UnsupportedProcessorVendor(v).into()),
         };
 
         let xsave_states = self
@@ -1342,6 +1342,8 @@ enum ErrorInner {
     Capabilities(#[source] virt::PartitionCapabilitiesError),
     #[error("too many virtual processors: {0}")]
     TooManyVps(u32),
+    #[error("unsupported processor vendor: {0:?}")]
+    UnsupportedProcessorVendor(HvProcessorVendor),
     #[error("failed to create virtual device")]
     NewDevice(#[source] virt::x86::apic_software_device::DeviceIdInUse),
 }

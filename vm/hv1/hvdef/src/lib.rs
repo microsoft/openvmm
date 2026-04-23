@@ -524,7 +524,7 @@ open_enum! {
 }
 
 open_enum! {
-    /// Processor vendor as returned by `HvPartitionPropertyProcessorVendor`.
+    /// Processor vendor as returned by [`HvPartitionPropertyCode::ProcessorVendor`].
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvProcessorVendor: u32 {
         AMD    = 0x0000,
