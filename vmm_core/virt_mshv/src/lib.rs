@@ -20,6 +20,8 @@ use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvMessageType;
+use hvdef::HvPartitionPropertyCode;
+use hvdef::HvProcessorVendor;
 use hvdef::HvX64RegisterName;
 use hvdef::HvX64RegisterPage;
 use hvdef::Vtl;
@@ -65,7 +67,6 @@ use virt::irqcon::MsiRequest;
 use virt::state::StateElement as _;
 use virt::x86::apic_software_device::ApicSoftwareDevice;
 use virt::x86::apic_software_device::ApicSoftwareDevices;
-use virt::x86::max_physical_address_size_from_cpuid;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::EmulatorSupport;
@@ -239,7 +240,7 @@ impl virt::Hypervisor for LinuxMshv {
                 .with_retarget_device_interrupt(true);
 
             vmfd.set_partition_property(
-                mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
+                HvPartitionPropertyCode::SyntheticProcFeatures.0,
                 u64::from(synthetic_features),
             )
             .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
@@ -252,7 +253,7 @@ impl virt::Hypervisor for LinuxMshv {
         // generate the correct topology CPUID leaves (01h, 04h, 0Bh, 1Fh,
         // AMD 80000008h/1Dh/1Eh) automatically.
         vmfd.set_partition_property(
-            mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_PROCESSORS_PER_SOCKET,
+            HvPartitionPropertyCode::ProcessorsPerSocket.0,
             config.processor_topology.reserved_vps_per_socket() as u64,
         )
         .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
@@ -358,17 +359,98 @@ pub struct MshvProtoPartition<'a> {
     bsp: VcpuFd,
 }
 
+impl MshvProtoPartition<'_> {
+    /// Build partition capabilities from partition properties instead of
+    /// CPUID. Used when CPUID queries are not available.
+    fn caps_from_properties(&self) -> Result<virt::x86::X86PartitionCapabilities, Error> {
+        use virt::x86::X86PartitionCapabilities;
+        use virt::x86::XsaveCapabilities;
+        use x86defs::cpuid::Vendor;
+        use x86defs::xsave::XSAVE_VARIABLE_OFFSET;
+
+        let vendor_id = self
+            .vmfd
+            .get_partition_property(HvPartitionPropertyCode::ProcessorVendor.0)
+            .map_err(|e| ErrorInner::GetPartitionProperty(e.into()))?;
+
+        let vendor = match HvProcessorVendor(vendor_id as u32) {
+            HvProcessorVendor::AMD => Vendor::AMD,
+            HvProcessorVendor::INTEL => Vendor::INTEL,
+            HvProcessorVendor::HYGON => Vendor::HYGON,
+            _ => Vendor::INTEL,
+        };
+
+        let xsave_states = self
+            .vmfd
+            .get_partition_property(HvPartitionPropertyCode::XsaveStates.0)
+            .map_err(|e| ErrorInner::GetPartitionProperty(e.into()))?;
+
+        let max_xsave_data_size = self
+            .vmfd
+            .get_partition_property(HvPartitionPropertyCode::MaxXsaveDataSize.0)
+            .map_err(|e| ErrorInner::GetPartitionProperty(e.into()))?;
+
+        // Read the BSP's RDX register, which the hypervisor initializes
+        // to the CPUID version/stepping value at partition creation.
+        let reset_rdx = {
+            let mut assoc = [HvRegisterAssoc::from((HvX64RegisterName::Rdx, 0u64))];
+            self.bsp
+                .get_hvdef_regs(&mut assoc)
+                .map_err(ErrorInner::Register)?;
+            assoc[0].value.as_u64()
+        };
+
+        let x2apic = matches!(
+            self.config.processor_topology.apic_mode(),
+            vm_topology::processor::x86::ApicMode::X2ApicSupported
+                | vm_topology::processor::x86::ApicMode::X2ApicEnabled
+        );
+        let x2apic_enabled = matches!(
+            self.config.processor_topology.apic_mode(),
+            vm_topology::processor::x86::ApicMode::X2ApicEnabled
+        );
+
+        Ok(X86PartitionCapabilities {
+            vendor,
+            hv1: self.config.hv_config.is_some(),
+            hv1_reference_tsc_page: self.config.hv_config.is_some(),
+            xsave: XsaveCapabilities {
+                // XsaveStates returns user | supervisor features combined.
+                // We don't know which are supervisor, so put everything in
+                // features. This is sufficient since virt_mshv never does
+                // standard<->compact conversion.
+                features: xsave_states,
+                supervisor_features: 0,
+                standard_len: XSAVE_VARIABLE_OFFSET as u32,
+                compact_len: max_xsave_data_size as u32,
+                feature_info: [Default::default(); 63],
+            },
+            x2apic,
+            x2apic_enabled,
+            reset_rdx,
+            cet: false,
+            cet_ss: false,
+            sgx: false,
+            tsc_aux: false,
+            vtom: None,
+            physical_address_width: self.max_physical_address_size(),
+            can_freeze_time: false,
+            xsaves_state_bv_broken: false,
+            dr6_tsx_broken: false,
+            nxe_forced_on: false,
+        })
+    }
+}
+
 impl ProtoPartition for MshvProtoPartition<'_> {
     type Partition = MshvPartition;
     type ProcessorBinder = MshvProcessorBinder;
     type Error = Error;
 
     fn max_physical_address_size(&self) -> u8 {
-        max_physical_address_size_from_cpuid(&|eax, ecx| {
-            self.bsp
-                .get_cpuid_values(eax, ecx, 0, 0)
-                .expect("cpuid should not fail")
-        })
+        self.vmfd
+            .get_partition_property(HvPartitionPropertyCode::PhysicalAddressWidth.0)
+            .expect("failed to get physical address width") as u8
     }
 
     fn build(
@@ -421,17 +503,24 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 .map_err(|e| ErrorInner::RegisterCpuid(e.into()))?;
         }
 
-        // Get caps via cpuid
+        // Build partition capabilities. Try querying via CPUID first; if
+        // the hypervisor doesn't support CPUID queries (e.g. in some
+        // hierarchical virtualization environments), fall back to
+        // constructing capabilities from partition properties.
         let caps = {
-            let mut caps = virt::PartitionCapabilities::from_cpuid(
-                self.config.processor_topology,
-                &mut |function, index| {
-                    self.bsp
-                        .get_cpuid_values(function, index, 0, 0)
-                        .expect("cpuid should not fail")
-                },
-            )
-            .map_err(ErrorInner::Capabilities)?;
+            let mut caps = match self.bsp.get_cpuid_values(0, 0, 0, 0) {
+                Ok(_) => virt::PartitionCapabilities::from_cpuid(
+                    self.config.processor_topology,
+                    &mut |function, index| {
+                        self.bsp
+                            .get_cpuid_values(function, index, 0, 0)
+                            .map_err(KernelError::from)
+                            .expect("cpuid should not fail")
+                    },
+                )
+                .map_err(ErrorInner::Capabilities)?,
+                Err(_) => self.caps_from_properties()?,
+            };
             caps.xsaves_state_bv_broken = true;
             caps.can_freeze_time = true;
             caps
@@ -659,9 +748,7 @@ impl GetReferenceTime for MshvPartitionInner {
         // deadlocking when VPs are running.
         let ref_time = self
             .vmfd
-            .get_partition_property(
-                mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_REFERENCE_TIME,
-            )
+            .get_partition_property(HvPartitionPropertyCode::ReferenceTime.0)
             .unwrap();
         ReferenceTimeResult {
             ref_time,
@@ -681,10 +768,7 @@ impl MshvPartitionInner {
         let mut frozen = self.time_frozen.lock();
         if !*frozen {
             self.vmfd
-                .set_partition_property(
-                    mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_TIME_FREEZE,
-                    1,
-                )
+                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
                 .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
             *frozen = true;
         }
@@ -697,10 +781,7 @@ impl MshvPartitionInner {
         let mut frozen = self.time_frozen.lock();
         if *frozen {
             self.vmfd
-                .set_partition_property(
-                    mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_TIME_FREEZE,
-                    0,
-                )
+                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 0)
                 .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
             *frozen = false;
         }
