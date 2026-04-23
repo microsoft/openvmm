@@ -125,7 +125,7 @@ impl VfioDevice {
         vfio_sys::print_relevant_params();
 
         let driver = driver_source.simple();
-        let retry = vfio_sys::VfioRetry::new(&driver);
+        let retry = vfio_sys::VfioRetry::new(&driver, pci_id);
 
         let is_not_found = |e: &anyhow::Error| {
             e.chain().any(|cause| {

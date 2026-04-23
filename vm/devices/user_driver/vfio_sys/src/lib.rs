@@ -203,6 +203,7 @@ impl Group {
 /// Retry wrapper for VFIO operations that may transiently fail
 pub struct VfioRetry<'a> {
     driver: &'a dyn Driver,
+    device_id: &'a str,
     sleep_duration: Duration,
     max_retries: u32,
 }
@@ -211,9 +212,10 @@ impl<'a> VfioRetry<'a> {
     const SLEEP_DURATION: Duration = Duration::from_millis(250);
     const MAX_RETRIES: u32 = 1;
 
-    pub fn new(driver: &'a dyn Driver) -> Self {
+    pub fn new(driver: &'a dyn Driver, device_id: &'a str) -> Self {
         Self {
             driver,
+            device_id,
             sleep_duration: Self::SLEEP_DURATION,
             max_retries: Self::MAX_RETRIES,
         }
@@ -240,6 +242,7 @@ impl<'a> VfioRetry<'a> {
                     }
                     attempt += 1;
                     tracelimit::warn_ratelimited!(
+                        device_id = self.device_id,
                         operation = context,
                         attempt,
                         "retrying after transient error: {err}"
