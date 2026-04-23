@@ -54,12 +54,12 @@ pub struct Options {
     pub memory: u64,
 
     /// per-NUMA-node guest RAM sizes (comma-separated, e.g. "2G,2G").
-    /// Distributes memory across vNUMA nodes for ACPI SRAT / FDT reporting.
-    /// Mutually exclusive with --memory.
+    /// Distributes memory across vNUMA nodes reported to the guest. Mutually
+    /// exclusive with --memory.
     ///
-    /// TODO: This is informational topology only — backing pages are not pinned
-    /// to host NUMA nodes. This should change once we implement real numa
-    /// support.
+    /// TODO: This is informational topology only. Backing pages are not pinned
+    /// to any host topology, nor coordinated with CPUs. This should change once
+    /// we implement real numa support.
     #[clap(long, value_name = "SIZES", value_parser = parse_numa_memory, conflicts_with = "memory")]
     pub numa_memory: Option<Vec<u64>>,
 
