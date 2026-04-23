@@ -1288,9 +1288,7 @@ impl VmbusDevice for Nic {
     }
 
     fn max_subchannels(&self) -> u16 {
-        // max_queues includes the primary channel, therefore max_subchannels is one less.
-        // max_queues is clamped to min 1 in NicBuilder.
-        self.adapter.max_queues.saturating_sub(1)
+        self.adapter.max_queues
     }
 
     fn install(&mut self, resources: DeviceResources) {
