@@ -549,6 +549,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             bsp_vcpufd: self.bsp,
             memory: Default::default(),
             gm: config.guest_memory.clone(),
+            mem_layout: config.mem_layout.clone(),
             vps: self.vps,
             irq_routes: Default::default(),
             gsi_states: Mutex::new(Box::new([irqfd::GsiState::Unallocated; irqfd::NUM_GSIS])),
@@ -599,6 +600,7 @@ struct MshvPartitionInner {
     #[inspect(skip)]
     memory: Mutex<MshvMemoryRangeState>,
     gm: GuestMemory,
+    mem_layout: vm_topology::memory::MemoryLayout,
     #[inspect(skip)]
     vps: Vec<MshvVpInner>,
     irq_routes: virt::irqcon::IrqRoutes,
@@ -1243,19 +1245,12 @@ impl EmulatorSupport for MshvEmulationState<'_> {
             .unwrap();
     }
 
-    fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
+    fn is_gpa_mapped(&self, gpa: u64, _write: bool) -> bool {
         self.partition
-            .memory
-            .lock()
-            .ranges
+            .mem_layout
+            .ram()
             .iter()
-            .flatten()
-            .any(|range| {
-                (range.guest_pfn..range.guest_pfn + range.size).contains(&gpa)
-                    && (!write
-                        || range.flags & set_bits!(u8, MSHV_SET_MEM_BIT_WRITABLE)
-                            == set_bits!(u8, MSHV_SET_MEM_BIT_WRITABLE))
-            })
+            .any(|r| r.range.contains_addr(gpa))
     }
 
     fn lapic_base_address(&self) -> Option<u64> {
