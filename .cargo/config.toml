@@ -46,12 +46,12 @@ AARCH64_OPENVMM_LINUX_DIRECT_INITRD = { value = ".packages/underhill-deps-privat
 # Streamline the OpenVMM `cargo run` experience by setting a sane-default for
 # what UEFI firmware to use (i.e: use the Microsoft MSVM firmware)
 X86_64_OPENVMM_UEFI_FIRMWARE = { value = ".packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd", relative = true }
-AARCH64_OPENVMM_UEFI_FIRMWARE = { value = ".packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_VS2022/FV/MSVM.fd", relative = true }
+AARCH64_OPENVMM_UEFI_FIRMWARE = { value = ".packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV/MSVM.fd", relative = true }
 
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = [
   # Set up delayloads.
-  "-C", "link-args=dloadhelper.lib /delayload:ws2_32.dll /delayload:virtdisk.dll /delayload:user32.dll /delayload:winhvplatform.dll",
+  "-C", "link-args=dloadhelper.lib /delayload:ws2_32.dll /delayload:virtdisk.dll /delayload:user32.dll /delayload:winhvplatform.dll /delayload:bcrypt.dll /delayload:crypt32.dll",
   # Set up the CRT: use ucrtbase.dll but statically link the VC runtime.
   "-C", "link-args=/nodefaultlib onecore_apiset.lib ucrt.lib libvcruntime.lib libcmt.lib",
   # Enable CFG

@@ -3,9 +3,11 @@
 
 //! SHA-256 hashing.
 
-#[cfg(target_os = "linux")]
+#![cfg(openssl)]
+
+#[cfg(openssl)]
 mod ossl;
-#[cfg(target_os = "linux")]
+#[cfg(openssl)]
 use ossl as sys;
 
 /// Compute the SHA-256 hash of `data`.

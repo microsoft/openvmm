@@ -429,23 +429,14 @@ impl SimpleFlowNode for Node {
                     test_content_dir.join(arch_dir).join(kernel_file_name),
                 )?;
 
-                let uefi_dir = test_content_dir
-                    .join(format!(
-                        "hyperv.uefi.mscoreuefi.{}.RELEASE",
-                        match arch {
-                            CommonArch::Aarch64 => "AARCH64",
-                            CommonArch::X86_64 => "x64",
-                        }
-                    ))
-                    .join(format!(
-                        "Msvm{}",
-                        match arch {
-                            CommonArch::Aarch64 => "AARCH64",
-                            CommonArch::X86_64 => "X64",
-                        }
-                    ))
-                    .join("RELEASE_VS2022")
-                    .join("FV");
+                let uefi_dir = test_content_dir.join(match arch {
+                    CommonArch::Aarch64 => {
+                        "hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV"
+                    }
+                    CommonArch::X86_64 => {
+                        "hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV"
+                    }
+                });
                 fs_err::create_dir_all(&uefi_dir)?;
                 fs_err::copy(uefi, uefi_dir.join("MSVM.fd"))?;
 

@@ -3,6 +3,8 @@
 
 //! PIIX4 - PCI to ISA Bridge
 
+pub mod resolver;
+
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -331,7 +333,7 @@ impl PciConfigSpace for PciIsaBridge {
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
-        Some((0, 7, 0)) // as per PIIX4 spec
+        Some(chipset_resources::piix4_pci_isa_bridge::PIIX4_PCI_ISA_BRIDGE_BDF)
     }
 }
 

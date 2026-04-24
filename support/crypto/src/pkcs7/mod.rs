@@ -3,15 +3,22 @@
 
 //! PKCS#7 signed data verification.
 
-#[cfg(target_os = "linux")]
+#![cfg(any(openssl, all(native, windows), all(native, target_os = "macos")))]
+
+#[cfg(openssl)]
 mod ossl;
-#[cfg(target_os = "linux")]
+#[cfg(openssl)]
 use ossl as sys;
 
-#[cfg(windows)]
+#[cfg(all(native, windows))]
 mod win;
-#[cfg(windows)]
+#[cfg(all(native, windows))]
 use win as sys;
+
+#[cfg(all(native, target_os = "macos"))]
+mod mac;
+#[cfg(all(native, target_os = "macos"))]
+use mac as sys;
 
 use thiserror::Error;
 
@@ -45,14 +52,14 @@ impl Pkcs7SignedData {
     }
 
     /// Encode this PKCS#7 object as DER bytes.
-    #[cfg(target_os = "linux")]
+    #[cfg(openssl)]
     pub fn to_der(&self) -> Result<Vec<u8>, Pkcs7Error> {
         self.0.to_der()
     }
 
     /// Creates a PKCS#7 signed-data object by signing `data` with the given
     /// certificate and key pair.
-    #[cfg(target_os = "linux")]
+    #[cfg(openssl)]
     pub fn sign(
         cert: &super::x509::X509Certificate,
         key_pair: &super::rsa::RsaKeyPair,
@@ -100,6 +107,16 @@ impl Pkcs7SignedData {
         signed_content: &[u8],
         uefi_mode: bool,
     ) -> Result<bool, Pkcs7Error> {
+        // Our only caller of this method today, uefi, always wants 'uefi_mode'.
+        // set to true. Behavior of our current backends is known to be subtly
+        // different when uefi_mode is false. If a caller ever needs support for
+        // uefi_mode = false, the backend implementation will need to be updated
+        // to handle the stricter PKI rules.
+        //
+        // Specifically known is that the handling of the x509 purpose (EKU)
+        // constraints has different defaults on different backends, but there
+        // may be other subtle differences as well.
+        assert!(uefi_mode, "only uefi_mode is currently supported");
         self.0.verify(store.0, signed_content, uefi_mode)
     }
 }
