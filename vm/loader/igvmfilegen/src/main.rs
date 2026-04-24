@@ -18,7 +18,6 @@ use clap::Parser;
 use file_loader::IgvmLoaderRegister;
 use file_loader::IgvmVtlLoader;
 use igvm::IgvmFile;
-use igvm_defs::IGVM_FIXED_HEADER;
 use igvm_defs::SnpPolicy;
 use igvm_defs::TdxPolicy;
 use igvmfilegen_config::Config;
@@ -44,19 +43,10 @@ use std::io::Write;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
-use zerocopy::FromBytes;
-use zerocopy::IntoBytes;
 
 #[derive(Parser)]
 #[clap(name = "igvmfilegen", about = "Tool to generate IGVM files")]
 enum Options {
-    /// Dumps the contents of an IGVM file in a human-readable format
-    // TODO: Move into its own tool.
-    Dump {
-        /// Dump file path
-        #[clap(short, long = "filepath")]
-        file_path: PathBuf,
-    },
     /// Build an IGVM file according to a manifest
     Manifest {
         /// Config manifest file path
@@ -92,18 +82,6 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     match opts {
-        Options::Dump { file_path } => {
-            let image = fs_err::read(file_path).context("reading input file")?;
-            let fixed_header = IGVM_FIXED_HEADER::read_from_prefix(image.as_bytes())
-                .expect("Invalid fixed header")
-                .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-
-            let igvm_data = IgvmFile::new_from_binary(&image, None).expect("should be valid");
-            println!("Total file size: {} bytes\n", fixed_header.total_file_size);
-            println!("{:#X?}", fixed_header);
-            println!("{}", igvm_data);
-            Ok(())
-        }
         Options::Manifest {
             manifest,
             resources,

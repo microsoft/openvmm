@@ -52,6 +52,7 @@ members = [
   "vm/devices/get/test_igvm_agent_rpc_server",
   "vm/devices/tpm/tpm_guest_tests",
   "vm/loader/igvmfilegen",
+  "vm/loader/igvminspect",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
   # opentmk
