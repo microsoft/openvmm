@@ -8701,6 +8701,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chipset_device",
+ "guestmem",
  "inspect",
  "membacking",
  "memory_range",
