@@ -461,3 +461,286 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     }
     Ok(())
 }
+
+/// Test that unauthenticated deletion of PK and KEK is rejected by the firmware.
+/// With secure boot enabled, PK and KEK are authenticated variables. An unsigned
+/// delete (e.g. `rm` via efivarfs) must fail, leaving the variables intact and
+/// SetupMode unchanged.
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+)]
+async fn secure_boot_pk_kek_unauthenticated_delete_rejected<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config.with_secure_boot().run().await?;
+    let shell = agent.unix_shell();
+
+    const EFI_GLOBAL_VARIABLE_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
+
+    let pk_path = format!("/sys/firmware/efi/efivars/PK-{}", EFI_GLOBAL_VARIABLE_GUID);
+    let kek_path = format!("/sys/firmware/efi/efivars/KEK-{}", EFI_GLOBAL_VARIABLE_GUID);
+    let setup_mode_path = format!(
+        "/sys/firmware/efi/efivars/SetupMode-{}",
+        EFI_GLOBAL_VARIABLE_GUID
+    );
+
+    // Verify initial state: PK and KEK exist, SetupMode is 0
+    let pk_exists = cmd!(shell, "sudo")
+        .args(["test", "-f", &pk_path])
+        .output()
+        .await?;
+    assert!(pk_exists.status.success(), "PK should exist initially");
+
+    let kek_exists = cmd!(shell, "sudo")
+        .args(["test", "-f", &kek_path])
+        .output()
+        .await?;
+    assert!(kek_exists.status.success(), "KEK should exist initially");
+
+    let setup_mode = cmd!(shell, "sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!("od -An -t u1 {} | tail -c 2", setup_mode_path),
+        ])
+        .output()
+        .await?;
+    let sm = String::from_utf8_lossy(&setup_mode.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(sm, "0", "SetupMode should be 0 (secure boot active)");
+
+    // Attempt to delete PK without authentication — should fail
+    cmd!(shell, "sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!("chattr -i {} 2>/dev/null || true", pk_path),
+        ])
+        .run()
+        .await?;
+    let pk_delete = cmd!(shell, "sudo")
+        .args(["rm", "-f", &pk_path])
+        .output()
+        .await?;
+
+    // Verify PK still exists after failed delete attempt
+    let pk_still_exists = cmd!(shell, "sudo")
+        .args(["test", "-f", &pk_path])
+        .output()
+        .await?;
+    assert!(
+        pk_still_exists.status.success(),
+        "PK should still exist after unauthenticated delete attempt (rm exit status: {})",
+        pk_delete.status,
+    );
+
+    // Attempt to delete KEK without authentication — should fail
+    cmd!(shell, "sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!("chattr -i {} 2>/dev/null || true", kek_path),
+        ])
+        .run()
+        .await?;
+    let kek_delete = cmd!(shell, "sudo")
+        .args(["rm", "-f", &kek_path])
+        .output()
+        .await?;
+
+    // Verify KEK still exists after failed delete attempt
+    let kek_still_exists = cmd!(shell, "sudo")
+        .args(["test", "-f", &kek_path])
+        .output()
+        .await?;
+    assert!(
+        kek_still_exists.status.success(),
+        "KEK should still exist after unauthenticated delete attempt (rm exit status: {})",
+        kek_delete.status,
+    );
+
+    // Verify SetupMode is still 0 — the failed deletes should not change it
+    let setup_mode_after = cmd!(shell, "sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!("od -An -t u1 {} | tail -c 2", setup_mode_path),
+        ])
+        .output()
+        .await?;
+    let sm_after = String::from_utf8_lossy(&setup_mode_after.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(
+        sm_after, "0",
+        "SetupMode should still be 0 after failed delete attempts"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot with a virtio-blk device served by the openvmm_vhost binary over
+/// a vhost-user Unix socket.  Verifies the full stack: guest driver →
+/// virtio transport → frontend protocol → socket → backend protocol →
+/// virtio-blk device → disk file.
+#[cfg(target_os = "linux")]
+#[openvmm_test(
+    linux_direct_x64[OPENVMM_VHOST_NATIVE],
+    linux_direct_aarch64[OPENVMM_VHOST_NATIVE],
+)]
+async fn vhost_user_blk_device<T>(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    extra_deps: (petri::ResolvedArtifact<T>,),
+    driver: pal_async::DefaultDriver,
+) -> anyhow::Result<()> {
+    use openvmm_defs::config::VirtioBus;
+    use pal_async::pipe::PolledPipe;
+    use pal_async::task::Spawn;
+    use virtio_resources::vhost_user::VhostUserBlkHandle;
+    use vm_resource::IntoResource;
+
+    let (openvmm_vhost_artifact,) = extra_deps;
+    let openvmm_vhost_path = openvmm_vhost_artifact.get();
+
+    let log_file = config.log_source().log_file("openvmm_vhost")?;
+
+    // Create a temporary directory for the socket and disk file.
+    let tmp_dir = tempfile::tempdir().context("create temp dir")?;
+    let socket_path = tmp_dir.path().join("vhost.sock");
+    let disk_path = tmp_dir.path().join("test.raw");
+
+    // Create a small raw disk file (8 MiB).
+    let disk_size: u64 = 8 * 1024 * 1024;
+    {
+        let f = std::fs::File::create(&disk_path).context("create disk file")?;
+        f.set_len(disk_size).context("set disk length")?;
+    }
+
+    // Spawn the openvmm_vhost backend process. Pipe stderr so we can
+    // forward it to the petri log system.
+    let (stderr_read, stderr_write) = pal::pipe_pair()?;
+    let backend_child = std::process::Command::new(openvmm_vhost_path)
+        .arg("--socket")
+        .arg(&socket_path)
+        .arg("blk")
+        .arg("--disk")
+        .arg(&disk_path)
+        .env("RUST_LOG", "debug")
+        .stdout(stderr_write.try_clone()?)
+        .stderr(stderr_write)
+        .spawn()
+        .context("spawn openvmm_vhost")?;
+
+    // Guard that kills the backend if the test exits early.
+    struct ChildGuard(Option<std::process::Child>);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    let mut backend_guard = ChildGuard(Some(backend_child));
+
+    // Forward backend stderr to a petri log file.
+    let _log_task = driver.spawn(
+        "openvmm_vhost stderr",
+        petri::log_task(
+            log_file,
+            PolledPipe::new(&driver, stderr_read)?,
+            "openvmm_vhost",
+        ),
+    );
+
+    // Wait for the socket to appear (the server creates it on listen).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !socket_path.exists() {
+        if std::time::Instant::now() > deadline {
+            if let Some(status) = backend_guard.0.as_mut().unwrap().try_wait()? {
+                anyhow::bail!("openvmm_vhost exited early with status: {status}");
+            }
+            anyhow::bail!(
+                "timed out waiting for vhost-user socket at {}",
+                socket_path.display()
+            );
+        }
+        pal_async::timer::PolledTimer::new(&driver)
+            .sleep(std::time::Duration::from_millis(50))
+            .await;
+    }
+
+    // Connect to the backend and build the VM config.
+    let stream =
+        unix_socket::UnixStream::connect(&socket_path).context("connect to vhost-user socket")?;
+
+    let vhost_resource = VhostUserBlkHandle {
+        socket: stream.into(),
+        num_queues: None,
+        queue_size: None,
+    }
+    .into_resource();
+
+    let (vm, agent) = config
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                c.virtio_devices.push((VirtioBus::Mmio, vhost_resource));
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // Verify the virtio-blk device appears as /dev/vda.
+    let vda_size = cmd!(sh, "cat /sys/block/vda/size")
+        .read()
+        .await
+        .context("virtio-blk device /dev/vda not found")?;
+    let vda_sectors: u64 = vda_size.trim().parse().context("parse vda size")?;
+    let expected_sectors = disk_size / 512;
+    assert_eq!(
+        vda_sectors, expected_sectors,
+        "unexpected disk size in sectors"
+    );
+
+    // Write data and read it back.
+    cmd!(
+        sh,
+        "sh -c 'echo hello_vhost_user | dd of=/dev/vda bs=512 count=1 conv=notrunc 2>/dev/null'"
+    )
+    .read()
+    .await
+    .context("write to vhost-user-blk device")?;
+    let readback = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/vda bs=512 count=1 2>/dev/null | head -c 16'"
+    )
+    .read()
+    .await
+    .context("read from vhost-user-blk device")?;
+    assert!(
+        readback.starts_with("hello_vhost_user"),
+        "read back data mismatch: {readback}"
+    );
+
+    // Clean shutdown.
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    // The backend serves one connection and exits. Take the child out
+    // of the guard so we can wait for clean exit.
+    let mut backend_child = backend_guard.0.take().unwrap();
+    let status = backend_child.wait().context("wait for openvmm_vhost")?;
+    assert!(
+        status.success(),
+        "openvmm_vhost exited with non-zero status: {status}"
+    );
+
+    Ok(())
+}
