@@ -381,7 +381,7 @@ async fn storvsp_hyperv<T: PetriVmmBackend>(
     Ok(())
 }
 
-/// Test a Linux VM with an NVMe emulator-backed disk assigned to VTL2,
+/// Test a Linux VM with an NVMe emulator-backed disk assigned to VTL2.
 #[cfg(windows)]
 #[vmm_test(unstable_hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn storvsp_nvme_hyperv<T: PetriVmmBackend>(
