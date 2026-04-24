@@ -185,6 +185,7 @@ fn init(
         enable_logging,
         node_count,
         ref nodes,
+        ref initial_state,
     } = params;
 
     ENABLE_LOG.store(enable_logging, Relaxed);
@@ -205,7 +206,7 @@ fn init(
         // SAFETY: no concurrent accessors.
         let idt = unsafe { &mut *addr_of_mut!(IDT) };
 
-        let offset = exc_pf as usize as u64;
+        let offset = exc_pf as *const () as u64;
         idt[Exception::PAGE_FAULT.0 as usize] = IdtEntry64 {
             offset_low: offset as u16,
             selector: 2 * 8,
@@ -215,7 +216,7 @@ fn init(
             reserved: 0,
         };
 
-        let offset = exc_gpf as usize as u64;
+        let offset = exc_gpf as *const () as u64;
         idt[Exception::GENERAL_PROTECTION_FAULT.0 as usize] = IdtEntry64 {
             offset_low: offset as u16,
             selector: 2 * 8,
@@ -225,7 +226,7 @@ fn init(
             reserved: 0,
         };
 
-        let offset = irq_entry as usize as u64;
+        let offset = irq_entry as *const () as u64;
         idt[IRQ as usize] = IdtEntry64 {
             offset_low: offset as u16,
             selector: 2 * 8,
@@ -318,9 +319,32 @@ fn init(
             *response_vector = 0.into();
             *needs_attention = 0.into();
             reserved.fill(0);
+            // Default: base VP -> REMOVED (kernel starts it), other VPs -> RUN,
+            // beyond vp_count -> REMOVED.
             cpu_status[0] = CpuStatus::REMOVED.0.into();
             cpu_status[1..vp_count as usize].fill_with(|| CpuStatus::RUN.0.into());
             cpu_status[vp_count as usize..].fill_with(|| CpuStatus::REMOVED.0.into());
+
+            // Apply per-CPU overrides from openhcl_boot when restoring from
+            // servicing with outstanding IO. CPUs marked false in
+            // sidecar_starts_cpu are set to REMOVED so the kernel starts them
+            // directly for immediate interrupt handling.
+            if initial_state.per_cpu_state_specified {
+                log!(
+                    "node {node_index}: applying per-cpu overrides, base_vp={base_vp}, vp_count={vp_count}"
+                );
+                let overrides = &initial_state.sidecar_starts_cpu
+                    [base_vp as usize..(base_vp + vp_count) as usize];
+                for (i, &should_start) in overrides.iter().enumerate() {
+                    cpu_status[i] = if should_start {
+                        CpuStatus::RUN.0.into()
+                    } else {
+                        let vp = base_vp + i as u32;
+                        log!("node {node_index}: VP {vp} (idx {i}) -> REMOVED");
+                        CpuStatus::REMOVED.0.into()
+                    };
+                }
+            }
         }
 
         node_init.push(NodeInit {
@@ -374,15 +398,24 @@ fn start_aps(node_init: &[NodeInit], mapper: &mut temporary_map::Mapper) {
             if node_cpu_index >= node.node.vp_count {
                 break;
             }
+
+            // Read this VP's status from the node's control page.
+            // The mapping is scoped so the mapper is free for start().
+            let is_removed = {
+                // SAFETY: control page was initialized; no concurrent mutation yet.
+                let control = unsafe { mapper.map::<ControlPage>(node.node.control_page_pa) };
+                control.cpu_status[node_cpu_index as usize].load(Relaxed) == CpuStatus::REMOVED.0
+            };
+
+            let vp = node.node.base_vp + node_cpu_index;
+            if is_removed {
+                log!("start_aps: skipping VP {vp} (idx {node_cpu_index}): REMOVED");
+                continue;
+            }
+
             match node.node.start(mapper, node_cpu_index) {
                 Ok(()) => {}
-                Err(err) => {
-                    panic!(
-                        "failed to start VP {}: {}",
-                        node.node.base_vp + node_cpu_index,
-                        err
-                    );
-                }
+                Err(err) => panic!("failed to start VP {vp}: {err}"),
             }
         }
     }
@@ -512,7 +545,7 @@ impl NodeDefinition {
             pad: [0; 3],
         };
         let context = hvdef::hypercall::InitialVpContextX64 {
-            rip: ap_init as usize as u64,
+            rip: ap_init as *const () as u64,
             rsp: addr_space::stack().end() - 8, // start unaligned to match calling convention
             rflags: x86defs::RFlags::at_reset().into(),
             cs,

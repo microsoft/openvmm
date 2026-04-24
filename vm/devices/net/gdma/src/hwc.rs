@@ -10,6 +10,7 @@ use anyhow::anyhow;
 use gdma_defs::GDMA_EQE_HWC_INIT_DATA;
 use gdma_defs::GDMA_EQE_HWC_INIT_DONE;
 use gdma_defs::GDMA_EQE_HWC_INIT_EQ_ID_DB;
+use gdma_defs::GDMA_EQE_HWC_RECONFIG_VF;
 use gdma_defs::GDMA_EQE_TEST_EVENT;
 use gdma_defs::GdmaChangeMsixVectorIndexForEq;
 use gdma_defs::GdmaCreateDmaRegionReq;
@@ -225,6 +226,19 @@ impl HwControl {
                 .read_plain()
                 .context("reading request message header")?;
 
+            if hdr.req.msg_size as u64 > PAGE_SIZE64 {
+                anyhow::bail!(
+                    "request message size {} exceeds page size {PAGE_SIZE64}",
+                    hdr.req.msg_size
+                );
+            }
+            if hdr.resp.msg_size as u64 > PAGE_SIZE64 {
+                anyhow::bail!(
+                    "response message size {} exceeds page size {PAGE_SIZE64}",
+                    hdr.resp.msg_size
+                );
+            }
+
             let mut read = MemoryRead::limit(read, hdr.req.msg_size as usize);
             read.skip(size_of_val(&hdr))
                 .context("message size too small")?;
@@ -302,10 +316,42 @@ impl HwControl {
 
                 0
             }
+            GdmaRequestType::GDMA_GENERATE_RECONFIG_VF_EVENT => {
+                let req: GdmaGenerateTestEventReq = read
+                    .read_plain()
+                    .context("reading test vf reconfig request")?;
+                self.state
+                    .queues
+                    .post_eq(req.queue_index, GDMA_EQE_HWC_RECONFIG_VF, &[]);
+                0
+            }
             GdmaRequestType::GDMA_VERIFY_VF_DRIVER_VERSION => {
                 let req: GdmaVerifyVerReq = read
                     .read_plain()
                     .context("reading verify vf driver request")?;
+
+                let drv_name = core::ffi::CStr::from_bytes_until_nul(&req.os_ver_str1)
+                    .ok()
+                    .and_then(|c| c.to_str().ok())
+                    .unwrap_or("<invalid>");
+                let drv_commit = core::ffi::CStr::from_bytes_until_nul(&req.os_ver_str2)
+                    .ok()
+                    .and_then(|c| c.to_str().ok())
+                    .unwrap_or("<invalid>");
+                tracing::info!(
+                    drv_name,
+                    drv_commit,
+                    os_type = format_args!("{:#x}", req.os_type),
+                    os_ver_major = req.os_ver_major,
+                    os_ver_minor = req.os_ver_minor,
+                    os_ver_build = req.os_ver_build,
+                    os_ver_platform = req.os_ver_platform,
+                    cap_flags1 = format_args!("{:#x}", req.gd_drv_cap_flags1),
+                    protocol_ver_min = req.protocol_ver_min,
+                    protocol_ver_max = req.protocol_ver_max,
+                    "vf driver version",
+                );
+
                 let resp = GdmaVerifyVerResp {
                     gdma_protocol_ver: req.protocol_ver_min,
                     pf_cap_flags1: 0,

@@ -43,7 +43,7 @@ use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
-use pci_core::msi::RegisterMsi;
+use pci_core::msi::MsiTarget;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -117,6 +117,8 @@ enum SmcError {
     UnsupportedRequest(SmcMessageType),
 }
 
+pub use bnic::BnicConfig;
+
 pub struct VportConfig {
     pub mac_address: MacAddress,
     pub endpoint: Box<dyn Endpoint>,
@@ -126,11 +128,29 @@ impl GdmaDevice {
     pub fn new(
         driver_source: &VmTaskDriverSource,
         gm: GuestMemory,
-        register_msi: &mut dyn RegisterMsi,
+        msi_target: &MsiTarget,
         vports: Vec<VportConfig>,
         mmio_registration: &mut dyn RegisterMmioIntercept,
     ) -> Self {
-        let (msix, msix_capability) = MsixEmulator::new(4, 64, register_msi);
+        Self::new_with_config(
+            driver_source,
+            gm,
+            msi_target,
+            vports,
+            mmio_registration,
+            BnicConfig::default(),
+        )
+    }
+
+    pub fn new_with_config(
+        driver_source: &VmTaskDriverSource,
+        gm: GuestMemory,
+        msi_target: &MsiTarget,
+        vports: Vec<VportConfig>,
+        mmio_registration: &mut dyn RegisterMmioIntercept,
+        bnic_config: BnicConfig,
+    ) -> Self {
+        let (msix, msix_capability) = MsixEmulator::new(4, 64, msi_target);
 
         let hardware_ids = HardwareIds {
             vendor_id: gdma_defs::VENDOR_ID,
@@ -181,7 +201,7 @@ impl GdmaDevice {
             queues,
             destroying_hwc: false,
             hwc: TaskControl::new(Devices {
-                bnic: bnic::BasicNic::new(vports),
+                bnic: bnic::BasicNic::new(vports, bnic_config),
             }),
         }
     }
@@ -359,9 +379,7 @@ impl ChangeDeviceState for GdmaDevice {
 
     async fn stop(&mut self) {}
 
-    async fn reset(&mut self) {
-        todo!()
-    }
+    async fn reset(&mut self) {}
 }
 
 impl ChipsetDevice for GdmaDevice {
@@ -375,10 +393,11 @@ impl ChipsetDevice for GdmaDevice {
 }
 
 impl SaveRestore for GdmaDevice {
+    // This device should be constructed with `omit_saved_state`.
     type SavedState = SavedStateNotSupported;
 
     fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-        todo!()
+        Err(SaveError::NotSupported)
     }
 
     fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {

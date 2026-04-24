@@ -90,7 +90,7 @@ impl NvmeManager {
         let task = driver.spawn("nvme-manager", async move {
             // Restore saved data (if present) before async worker thread runs.
             if let Some(s) = saved_state.as_ref() {
-                if let Err(e) = NvmeManager::restore(&mut worker, s)
+                if let Err(e) = NvmeManager::restore(&mut worker, s, save_restore_supported)
                     .instrument(tracing::info_span!("nvme_manager_restore"))
                     .await
                 {
@@ -145,9 +145,10 @@ impl NvmeManager {
     async fn restore(
         worker: &mut NvmeManagerWorker,
         saved_state: &NvmeSavedState,
+        save_restore_supported: bool,
     ) -> anyhow::Result<()> {
         worker
-            .restore(&saved_state.nvme_state)
+            .restore(&saved_state.nvme_state, save_restore_supported)
             .instrument(tracing::info_span!("nvme_manager_worker_restore"))
             .await?;
 
@@ -158,7 +159,7 @@ impl NvmeManager {
 enum Request {
     Inspect(inspect::Deferred),
     ForceLoadDriver(inspect::DeferredUpdate),
-    GetNamespace(Rpc<(String, u32), anyhow::Result<Arc<nvme_driver::Namespace>>>),
+    GetNamespace(Rpc<(String, u32), anyhow::Result<nvme_driver::NamespaceHandle>>),
     Save(Rpc<(), anyhow::Result<NvmeManagerSavedState>>),
     Shutdown {
         span: tracing::Span,
@@ -176,7 +177,7 @@ impl NvmeManagerClient {
         &self,
         pci_id: String,
         nsid: u32,
-    ) -> anyhow::Result<Arc<nvme_driver::Namespace>> {
+    ) -> anyhow::Result<nvme_driver::NamespaceHandle> {
         self.sender
             .call(Request::GetNamespace, (pci_id.clone(), nsid))
             .instrument(tracing::info_span!(
@@ -381,7 +382,7 @@ impl NvmeManagerWorker {
         pci_id: String,
         nsid: u32,
         context: NvmeWorkerContext,
-    ) -> anyhow::Result<Arc<nvme_driver::Namespace>> {
+    ) -> anyhow::Result<nvme_driver::NamespaceHandle> {
         // If the driver is already created, use it.
         let mut client: Option<NvmeDriverManagerClient> = None;
         {
@@ -439,7 +440,11 @@ impl NvmeManagerWorker {
     }
 
     /// Restore NVMe manager and device states from the buffer after servicing.
-    pub async fn restore(&mut self, saved_state: &NvmeManagerSavedState) -> anyhow::Result<()> {
+    pub async fn restore(
+        &mut self,
+        saved_state: &NvmeManagerSavedState,
+        save_restore_supported: bool,
+    ) -> anyhow::Result<()> {
         let mut restored_devices: HashMap<String, NvmeDriverManager> = HashMap::new();
 
         for disk in &saved_state.nvme_disks {
@@ -451,7 +456,7 @@ impl NvmeManagerWorker {
                     &self.context.driver_source,
                     &pci_id,
                     saved_state.cpu_count,
-                    true, // save_restore_supported is always `true` when restoring.
+                    save_restore_supported,
                     Some(&disk.driver_state),
                 )
                 .await?;
@@ -552,7 +557,6 @@ mod tests {
     use futures::future::join_all;
     use inspect::Inspect;
     use inspect::InspectionBuilder;
-    use nvme_driver::Namespace;
     use nvme_driver::save_restore::NvmeDriverSavedState;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
@@ -636,7 +640,7 @@ mod tests {
         async fn namespace(
             &mut self,
             _nsid: u32,
-        ) -> Result<Arc<Namespace>, nvme_driver::NamespaceError> {
+        ) -> Result<nvme_driver::NamespaceHandle, nvme_driver::NamespaceError> {
             // Record start time for concurrency analysis
             {
                 let mut start_times = self.namespace_start_times.write();

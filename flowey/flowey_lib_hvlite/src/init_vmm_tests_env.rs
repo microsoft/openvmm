@@ -5,10 +5,10 @@
 //! require to run.
 
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
+use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
-use crate::download_openvmm_deps::OpenvmmDepsArch;
+use crate::common::CommonArch;
 use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
-use crate::download_uefi_mu_msvm::MuMsvmArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -27,6 +27,8 @@ flowey_request! {
 
         /// Register an openvmm binary
         pub register_openvmm: Option<ReadVar<crate::build_openvmm::OpenvmmOutput>>,
+        /// Register an openvmm_vhost binary (Linux only)
+        pub register_openvmm_vhost: Option<ReadVar<crate::build_openvmm_vhost::OpenvmmVhostOutput>>,
         /// Register a windows pipette binary
         pub register_pipette_windows: Option<ReadVar<crate::build_pipette::PipetteOutput>>,
         /// Register a linux-musl pipette binary
@@ -55,6 +57,8 @@ flowey_request! {
         pub register_tpm_guest_tests_windows: Option<ReadVar<TpmGuestTestsOutput>>,
         /// Register a Linux tpm_guest_tests binary
         pub register_tpm_guest_tests_linux: Option<ReadVar<TpmGuestTestsOutput>>,
+        /// Register a Windows test_igvm_agent_rpc_server binary
+        pub register_test_igvm_agent_rpc_server: Option<ReadVar<TestIgvmAgentRpcServerOutput>>,
 
         /// Get the path to the folder containing various logs emitted VMM tests.
         pub get_test_log_path: Option<WriteVar<PathBuf>>,
@@ -63,6 +67,9 @@ flowey_request! {
         pub release_igvm_files: Option<ReadVar<crate::download_release_igvm_files_from_gh::ReleaseOutput>>,
         /// Use paths relative to `test_content_dir` for environment variables
         pub use_relative_paths: bool,
+        /// Disable lazy remote artifact fetching (set PETRI_REMOTE_ARTIFACTS=0).
+        /// Should be true in CI where all images are pre-downloaded.
+        pub disable_remote_artifacts: bool,
     }
 }
 
@@ -72,7 +79,7 @@ impl SimpleFlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
     }
@@ -82,6 +89,7 @@ impl SimpleFlowNode for Node {
             test_content_dir,
             vmm_tests_target,
             register_openvmm,
+            register_openvmm_vhost,
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,
@@ -91,42 +99,42 @@ impl SimpleFlowNode for Node {
             register_vmgstool,
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
+            register_test_igvm_agent_rpc_server,
             disk_images_dir,
             register_openhcl_igvm_files,
             get_test_log_path,
             get_env,
             release_igvm_files,
             use_relative_paths,
+            disable_remote_artifacts,
         } = request;
 
-        let openvmm_deps_arch = match vmm_tests_target.architecture {
-            target_lexicon::Architecture::X86_64 => OpenvmmDepsArch::X86_64,
-            target_lexicon::Architecture::Aarch64(_) => OpenvmmDepsArch::Aarch64,
-            arch => anyhow::bail!("unsupported arch {arch}"),
-        };
+        let arch = CommonArch::from_architecture(vmm_tests_target.architecture)?;
 
         let test_linux_initrd = ctx.reqv(|v| {
-            crate::download_openvmm_deps::Request::GetLinuxTestInitrd(openvmm_deps_arch, v)
+            crate::resolve_openvmm_deps::Request::Get(
+                crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestInitrd,
+                arch,
+                v,
+            )
         });
         let test_linux_kernel = ctx.reqv(|v| {
-            crate::download_openvmm_deps::Request::GetLinuxTestKernel(openvmm_deps_arch, v)
+            crate::resolve_openvmm_deps::Request::Get(
+                crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestKernel,
+                arch,
+                v,
+            )
         });
 
-        let mu_msvm_arch = match vmm_tests_target.architecture {
-            target_lexicon::Architecture::X86_64 => MuMsvmArch::X86_64,
-            target_lexicon::Architecture::Aarch64(_) => MuMsvmArch::Aarch64,
-            arch => anyhow::bail!("unsupported arch {arch}"),
-        };
-        let uefi = ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
-            arch: mu_msvm_arch,
-            msvm_fd: v,
-        });
+        let uefi =
+            ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v });
 
         ctx.emit_rust_step("setting up vmm_tests env", |ctx| {
             let test_content_dir = test_content_dir.claim(ctx);
             let get_env = get_env.claim(ctx);
             let get_test_log_path = get_test_log_path.claim(ctx);
             let openvmm = register_openvmm.claim(ctx);
+            let openvmm_vhost = register_openvmm_vhost.claim(ctx);
             let pipette_win = register_pipette_windows.claim(ctx);
             let pipette_linux = register_pipette_linux_musl.claim(ctx);
             let guest_test_uefi = register_guest_test_uefi.claim(ctx);
@@ -134,6 +142,7 @@ impl SimpleFlowNode for Node {
             let tmk_vmm = register_tmk_vmm.claim(ctx);
             let tmk_vmm_linux_musl = register_tmk_vmm_linux_musl.claim(ctx);
             let vmgstool = register_vmgstool.claim(ctx);
+            let test_igvm_agent_rpc_server = register_test_igvm_agent_rpc_server.claim(ctx);
             let tpm_guest_tests_windows = register_tpm_guest_tests_windows.claim(ctx);
             let tpm_guest_tests_linux = register_tpm_guest_tests_linux.claim(ctx);
             let disk_image_dir = disk_images_dir.claim(ctx);
@@ -158,18 +167,36 @@ impl SimpleFlowNode for Node {
                     );
 
                 let working_dir_ref = test_content_dir.as_path();
+                let disk_image_dir = disk_image_dir.map(|v| rt.read(v));
+
                 let working_dir_win = windows_via_wsl2.then(|| {
-                    flowey_lib_common::_util::wslpath::linux_to_win(working_dir_ref)
+                    flowey_lib_common::_util::wslpath::linux_to_win(rt, working_dir_ref)
                         .display()
                         .to_string()
                 });
-                let maybe_convert_path = |path: &Path| -> anyhow::Result<String> {
-                    let path = if windows_via_wsl2 {
-                        flowey_lib_common::_util::wslpath::linux_to_win(path)
+
+                // Convert a path via wslpath if running under WSL2,
+                // otherwise just make it absolute.
+                let wsl_convert_path = |path: &Path| -> anyhow::Result<PathBuf> {
+                    if windows_via_wsl2 {
+                        Ok(flowey_lib_common::_util::wslpath::linux_to_win(rt, path))
                     } else {
                         path.absolute()
-                            .with_context(|| format!("invalid path {}", path.display()))?
-                    };
+                            .with_context(|| format!("invalid path {}", path.display()))
+                    }
+                };
+
+                // Eagerly convert all known paths.
+                let converted_content_dir = wsl_convert_path(&test_content_dir)?;
+                let test_log_dir = test_content_dir.join("test_results");
+                let converted_log_dir = wsl_convert_path(&test_log_dir)?;
+                let converted_disk_image_dir = disk_image_dir
+                    .as_ref()
+                    .map(|p| wsl_convert_path(p))
+                    .transpose()?;
+
+                // Make a converted path relative if requested.
+                let make_portable_path = |path: PathBuf| -> anyhow::Result<String> {
                     let path = if use_relative_paths {
                         if windows_via_wsl2 {
                             let working_dir_trimmed =
@@ -204,24 +231,27 @@ impl SimpleFlowNode for Node {
 
                 env.insert(
                     "VMM_TESTS_CONTENT_DIR".into(),
-                    maybe_convert_path(&test_content_dir)?,
+                    make_portable_path(converted_content_dir)?,
                 );
 
                 // use a subdir for test logs
-                let test_log_dir = test_content_dir.join("test_results");
                 if !test_log_dir.exists() {
                     fs_err::create_dir(&test_log_dir)?
                 };
                 env.insert(
                     "TEST_OUTPUT_PATH".into(),
-                    maybe_convert_path(&test_log_dir)?,
+                    make_portable_path(converted_log_dir)?,
                 );
 
-                if let Some(disk_image_dir) = disk_image_dir {
+                if let Some(disk_image_dir) = converted_disk_image_dir {
                     env.insert(
                         "VMM_TEST_IMAGES".into(),
-                        maybe_convert_path(&rt.read(disk_image_dir))?,
+                        make_portable_path(disk_image_dir)?,
                     );
+                }
+
+                if disable_remote_artifacts {
+                    env.insert("PETRI_REMOTE_ARTIFACTS".into(), "0".into());
                 }
 
                 if let Some(openvmm) = openvmm {
@@ -236,6 +266,14 @@ impl SimpleFlowNode for Node {
                             dst.make_executable()?;
                         }
                     }
+                }
+
+                if let Some(openvmm_vhost) = openvmm_vhost {
+                    let crate::build_openvmm_vhost::OpenvmmVhostOutput { bin, dbg: _ } =
+                        rt.read(openvmm_vhost);
+                    let dst = test_content_dir.join("openvmm_vhost");
+                    fs_err::copy(bin, &dst)?;
+                    dst.make_executable()?;
                 }
 
                 if let Some(pipette_win) = pipette_win {
@@ -329,6 +367,12 @@ impl SimpleFlowNode for Node {
                     dst.make_executable()?;
                 }
 
+                if let Some(test_igvm_agent_rpc_server) = test_igvm_agent_rpc_server {
+                    let TestIgvmAgentRpcServerOutput { exe, .. } =
+                        rt.read(test_igvm_agent_rpc_server);
+                    fs_err::copy(exe, test_content_dir.join("test_igvm_agent_rpc_server.exe"))?;
+                }
+
                 if let Some(openhcl_igvm_files) = openhcl_igvm_files {
                     for (recipe, openhcl_igvm) in rt.read(openhcl_igvm_files) {
                         let crate::run_igvmfilegen::IgvmOutput { igvm_bin, .. } = openhcl_igvm;
@@ -371,9 +415,9 @@ impl SimpleFlowNode for Node {
                     }
                 }
 
-                let (arch_dir, kernel_file_name) = match openvmm_deps_arch {
-                    OpenvmmDepsArch::X86_64 => ("x64", "vmlinux"),
-                    OpenvmmDepsArch::Aarch64 => ("aarch64", "Image"),
+                let (arch_dir, kernel_file_name) = match arch {
+                    CommonArch::X86_64 => ("x64", "vmlinux"),
+                    CommonArch::Aarch64 => ("aarch64", "Image"),
                 };
                 fs_err::create_dir_all(test_content_dir.join(arch_dir))?;
                 fs_err::copy(
@@ -385,23 +429,14 @@ impl SimpleFlowNode for Node {
                     test_content_dir.join(arch_dir).join(kernel_file_name),
                 )?;
 
-                let uefi_dir = test_content_dir
-                    .join(format!(
-                        "hyperv.uefi.mscoreuefi.{}.RELEASE",
-                        match mu_msvm_arch {
-                            MuMsvmArch::Aarch64 => "AARCH64",
-                            MuMsvmArch::X86_64 => "x64",
-                        }
-                    ))
-                    .join(format!(
-                        "Msvm{}",
-                        match mu_msvm_arch {
-                            MuMsvmArch::Aarch64 => "AARCH64",
-                            MuMsvmArch::X86_64 => "X64",
-                        }
-                    ))
-                    .join("RELEASE_VS2022")
-                    .join("FV");
+                let uefi_dir = test_content_dir.join(match arch {
+                    CommonArch::Aarch64 => {
+                        "hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV"
+                    }
+                    CommonArch::X86_64 => {
+                        "hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV"
+                    }
+                });
                 fs_err::create_dir_all(&uefi_dir)?;
                 fs_err::copy(uefi, uefi_dir.join("MSVM.fd"))?;
 

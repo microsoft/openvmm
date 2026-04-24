@@ -109,9 +109,9 @@ async fn do_main(driver: DefaultDriver) -> anyhow::Result<()> {
         state
             .for_each_test(async |state, test| match hv {
                 #[cfg(target_os = "linux")]
-                HypervisorOpt::Kvm => state.run_host_vmm(virt_kvm::Kvm, test).await,
+                HypervisorOpt::Kvm => state.run_host_vmm(virt_kvm::Kvm::new()?, test).await,
                 #[cfg(all(target_os = "linux", guest_arch = "x86_64"))]
-                HypervisorOpt::Mshv => state.run_host_vmm(virt_mshv::LinuxMshv, test).await,
+                HypervisorOpt::Mshv => state.run_host_vmm(virt_mshv::LinuxMshv::new()?, test).await,
                 #[cfg(target_os = "linux")]
                 HypervisorOpt::MshvVtl => {
                     state
@@ -119,7 +119,17 @@ async fn do_main(driver: DefaultDriver) -> anyhow::Result<()> {
                         .await
                 }
                 #[cfg(windows)]
-                HypervisorOpt::Whp => state.run_host_vmm(virt_whp::Whp, test).await,
+                HypervisorOpt::Whp => {
+                    state
+                        .run_host_vmm(
+                            virt_whp::Whp {
+                                user_mode_apic: state.state.opts.disable_offloads,
+                                offload_enlightenments: !state.state.opts.disable_offloads,
+                            },
+                            test,
+                        )
+                        .await
+                }
                 #[cfg(target_os = "macos")]
                 HypervisorOpt::Hvf => state.run_host_vmm(virt_hvf::HvfHypervisor, test).await,
             })
@@ -130,28 +140,30 @@ async fn do_main(driver: DefaultDriver) -> anyhow::Result<()> {
 fn choose_hypervisor() -> anyhow::Result<HypervisorOpt> {
     #[cfg(all(target_os = "linux", guest_arch = "x86_64"))]
     {
-        if virt::Hypervisor::is_available(&virt_mshv::LinuxMshv)? {
+        if virt_mshv::is_available()? {
             return Ok(HypervisorOpt::Mshv);
         }
     }
     #[cfg(target_os = "linux")]
     {
-        if virt::Hypervisor::is_available(&virt_kvm::Kvm)? {
+        if virt_kvm::is_available()? {
             return Ok(HypervisorOpt::Kvm);
         }
     }
     #[cfg(windows)]
     {
-        if virt::Hypervisor::is_available(&virt_whp::Whp)? {
+        if virt_whp::is_available()? {
             return Ok(HypervisorOpt::Whp);
         }
     }
     #[cfg(target_os = "macos")]
     {
-        if virt::Hypervisor::is_available(&virt_hvf::HvfHypervisor)? {
-            return Ok(HypervisorOpt::Hvf);
-        }
+        return Ok(HypervisorOpt::Hvf);
     }
 
-    anyhow::bail!("no hypervisor available");
+    #[expect(clippy::allow_attributes)]
+    #[allow(unreachable_code, reason = "unreachable on some targets")]
+    {
+        anyhow::bail!("no hypervisor available");
+    }
 }

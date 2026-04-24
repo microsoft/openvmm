@@ -9,11 +9,7 @@ rust-version.workspace = true
 [features]
 default = ["ttrpc", "grpc"]
 
-# Enable locally compiling and statically linking a copy of OpenSSL.
-# The build process requires a C compiler, perl, and make.
-openssl-vendored = ["openssl/vendored"]
-
-encryption = ["vmotherboard/encryption"]
+vendored_crypto = ["crypto/vendored"]
 
 unstable_whp = ["virt_whp/unstable_whp", "whp/unstable_whp"]
 
@@ -22,15 +18,16 @@ ttrpc = []
 
 [dependencies]
 chipset_resources.workspace = true
+chipset_device_worker_defs.workspace = true
 debug_worker_defs.workspace = true
 vmotherboard.workspace = true
 diag_client.workspace = true
-hvlite_defs.workspace = true
-hvlite_helpers.workspace = true
+openvmm_defs.workspace = true
+openvmm_helpers.workspace = true
 vmm_core_defs.workspace = true
 vnc_worker_defs.workspace = true
-hvlite_pcat_locator.workspace = true
-hvlite_ttrpc_vmservice.workspace = true
+openvmm_pcat_locator.workspace = true
+openvmm_ttrpc_vmservice.workspace = true
 disk_backend_resources.workspace = true
 disk_crypt_resources.workspace = true
 firmware_uefi_custom_vars.workspace = true
@@ -43,10 +40,12 @@ get_resources.workspace = true
 hyperv_ic_resources.workspace = true
 ide_resources.workspace = true
 input_core.workspace = true
+memory_range.workspace = true
 net_backend_resources.workspace = true
 netvsp_resources.workspace = true
 nvme_resources.workspace = true
 scsidisk_resources.workspace = true
+vfio_assigned_device_resources.workspace = true
 serial_core.workspace = true
 serial_16550_resources.workspace = true
 serial_socket.workspace = true
@@ -64,10 +63,11 @@ vmgs_resources.workspace = true
 vm_manifest_builder.workspace = true
 vm_resource.workspace = true
 vtl2_settings_proto.workspace = true
-mcr_resources.workspace = true
+pcie_remote_resources.workspace = true
 
 clap_dyn_complete.workspace = true
 console_relay.workspace = true
+crypto = { workspace = true, optional = true }
 guid.workspace = true
 inspect.workspace = true
 inspect_proto.workspace = true
@@ -84,16 +84,12 @@ tracelimit.workspace = true
 tracing_helpers.workspace = true
 
 anyhow.workspace = true
-awaitgroup.workspace = true
 clap = { workspace = true, features = ["derive", "string"] }
 dirs.workspace = true
 fs-err.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 getrandom.workspace = true
-openssl = { optional = true, workspace = true }
-macaddr.workspace = true
-parking_lot.workspace = true
 prost.workspace = true
 rustyline = { workspace = true, features = ["derive"] }
 shell-words.workspace = true
@@ -103,6 +99,9 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 unicycle.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+net_tap.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 vmswitch.workspace = true
 virt_whp.workspace = true
@@ -111,22 +110,11 @@ whp.workspace = true
 
 win_etw_tracing.workspace = true
 
-[target.'cfg(windows)'.dependencies.winapi]
-features = [
-  "consoleapi",
-  "handleapi",
-  "memoryapi",
-  "namedpipeapi",
-  "processenv",
-  "realtimeapiset",
-  "synchapi",
-  "winbase",
-  "wincon",
-  "winnls",
-  "winnt",
-  "winsock2",
-]
+[target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
+features = [
+  "Win32_Foundation",
+]
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true
@@ -135,5 +123,5 @@ build_rs_guest_arch.workspace = true
 workspace = true
 
 [package.metadata.xtask.unused-deps]
-# keep the ossl dep so we can specify the vendored feature
-ignored = ["openssl"]
+# keep the crypto dep so we can specify the vendored feature
+ignored = ["crypto"]

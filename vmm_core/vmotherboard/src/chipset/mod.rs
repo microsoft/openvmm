@@ -83,73 +83,41 @@ impl Chipset {
             );
             self.debug_event_handler.on_debug_break(Some(vp));
         }
-        let r = match result {
-            IoResult::Ok => Ok(()),
+        match result {
+            IoResult::Ok => {}
             IoResult::Defer(mut token) => match &mut io_type {
                 IoType::Read(bytes) => {
-                    let r = poll_fn(|cx| token.poll_read(cx, bytes)).await;
-                    match r {
-                        Ok(Ok(())) => {}
-                        Ok(Err(err)) => {
-                            self.handle_io_error(err, &lookup, kind, address, len, &mut io_type);
-                        }
-                        Err(_) => bytes.fill(!0),
+                    if let Err(err) = poll_fn(|cx| token.poll_read(cx, bytes)).await {
+                        self.handle_io_error(err, &lookup, kind, address, len, &mut io_type);
                     }
-                    r.map(|_| ())
                 }
                 IoType::Write(_) => {
-                    let r = poll_fn(|cx| token.poll_write(cx)).await;
-                    match r {
-                        Ok(Ok(())) => {}
-                        Ok(Err(err)) => {
-                            self.handle_io_error(err, &lookup, kind, address, len, &mut io_type);
-                        }
-                        Err(_) => {}
+                    if let Err(err) = poll_fn(|cx| token.poll_write(cx)).await {
+                        self.handle_io_error(err, &lookup, kind, address, len, &mut io_type);
                     }
-                    r.map(|_| ())
                 }
             },
             IoResult::Err(err) => {
                 self.handle_io_error(err, &lookup, kind, address, len, &mut io_type);
-                Ok(())
             }
         };
 
-        match r {
-            Ok(()) => {
-                if let Some(range_name) = &lookup.trace {
-                    // Don't lower the tracing level or the whole thing is
-                    // useless.
-                    tracing::info!(
-                        device = &*lookup.dev_name,
-                        range_name = range_name.as_ref(),
-                        ?kind,
-                        address,
-                        direction = if matches!(io_type, IoType::Read(_)) {
-                            "read"
-                        } else {
-                            "write"
-                        },
-                        data = format_args!("{:02x?}", io_type.bytes()),
-                        "device io"
-                    );
-                }
-            }
-            Err(err) => {
-                tracelimit::error_ratelimited!(
-                    CVM_CONFIDENTIAL,
-                    device = &*lookup.dev_name,
-                    ?kind,
-                    address,
-                    direction = if matches!(io_type, IoType::Read(_)) {
-                        "read"
-                    } else {
-                        "write"
-                    },
-                    error = &err as &dyn std::error::Error,
-                    "deferred io failed"
-                );
-            }
+        if let Some(range_name) = &lookup.trace {
+            // Don't lower the tracing level or the whole thing is
+            // useless.
+            tracing::info!(
+                device = &*lookup.dev_name,
+                range_name = range_name.as_ref(),
+                ?kind,
+                address,
+                direction = if matches!(io_type, IoType::Read(_)) {
+                    "read"
+                } else {
+                    "write"
+                },
+                data = format_args!("{:02x?}", io_type.bytes()),
+                "device io"
+            );
         }
     }
 
@@ -166,6 +134,7 @@ impl Chipset {
             IoError::InvalidRegister => "register not present",
             IoError::InvalidAccessSize => "invalid access size",
             IoError::UnalignedAccess => "unaligned access",
+            IoError::NoResponse => "device didn't respond",
         };
         match io_type {
             IoType::Read(bytes) => {

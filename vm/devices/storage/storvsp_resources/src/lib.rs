@@ -1,7 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Resource definitions for storvsp.
+//! Resource definitions for the StorVSP SCSI controller.
+//!
+//! [`ScsiControllerHandle`] configures the controller with its initial devices,
+//! instance ID, and queue depth. [`ScsiControllerRequest`] enables runtime
+//! device add/remove.
 
 #![forbid(unsafe_code)]
 

@@ -66,7 +66,7 @@ pub struct InvalidMemoryRange {
 
 impl MemoryRange {
     /// The maximum address that can be represented by a `MemoryRange`.
-    pub const MAX_ADDRESS: u64 = u64::MAX & !(PAGE_SIZE - 1);
+    pub const MAX_ADDRESS: u64 = !(PAGE_SIZE - 1);
 
     /// Returns a new range for the given guest address range.
     ///
@@ -109,10 +109,20 @@ impl MemoryRange {
     /// Panics if the start is after the end or if the end address is in the
     /// last page of the 64-bit space.
     pub fn bounding(range: Range<u64>) -> Self {
+        Self::bounding_aligned(range, PAGE_SIZE)
+    }
+
+    /// Returns the smallest range with the specified alignment that contains
+    /// the given address range.
+    ///
+    /// Panics if the start is after the end or if the aligned end address
+    /// would overflow.
+    pub fn bounding_aligned(range: Range<u64>, alignment: u64) -> Self {
         assert!(range.start <= range.end);
-        assert!(range.end < u64::MAX - PAGE_SIZE);
-        let start = range.start & !(PAGE_SIZE - 1);
-        let end = (range.end + (PAGE_SIZE - 1)) & !(PAGE_SIZE - 1);
+        assert!(alignment.is_power_of_two());
+        assert!(range.end <= u64::MAX - (alignment - 1));
+        let start = range.start & !(alignment - 1);
+        let end = (range.end + (alignment - 1)) & !(alignment - 1);
         Self::new(start..end)
     }
 

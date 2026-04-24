@@ -9,37 +9,48 @@
 use crate::cache::CacheHit;
 use flowey::node::prelude::*;
 
+flowey_config! {
+    /// Config for the download_gh_cli node.
+    pub struct Config {
+        /// Version of `gh` to download (e.g: 2.52.0)
+        pub version: Option<String>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Version of `gh` to download (e.g: 2.52.0)
-        Version(String),
         /// Get a path to downloaded `gh`
         Get(WriteVar<PathBuf>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::install_dist_pkg::Node>();
         ctx.import::<crate::cache::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut version = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut install_reqs = Vec::new();
 
         for req in requests {
             match req {
-                Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::Get(v) => install_reqs.push(v),
             }
         }
 
-        let version = version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
+        let version = config
+            .version
+            .ok_or(anyhow::anyhow!("missing config: version"))?;
         let install_reqs = install_reqs;
 
         // -- end of req processing -- //
@@ -87,19 +98,18 @@ impl FlowNode for Node {
                 let path_to_gh = if let Some(cached) = cached {
                     cached
                 } else {
-                    let sh = xshell::Shell::new()?;
                     match rt.platform() {
                         FlowPlatform::Windows => {
-                            xshell::cmd!(sh, "curl --fail -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_windows_{gh_arch}.zip -o gh.zip").run()?;
-                            xshell::cmd!(sh, "tar -xf gh.zip").run()?;
+                            flowey::shell_cmd!(rt, "curl --fail -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_windows_{gh_arch}.zip -o gh.zip").run()?;
+                            flowey::shell_cmd!(rt, "tar -xf gh.zip").run()?;
                         },
                         FlowPlatform::Linux(_) => {
-                            xshell::cmd!(sh, "curl --fail -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_linux_{gh_arch}.tar.gz -o gh.tar.gz").run()?;
-                            xshell::cmd!(sh, "tar -xf gh.tar.gz --strip-components=1").run()?;
+                            flowey::shell_cmd!(rt, "curl --fail -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_linux_{gh_arch}.tar.gz -o gh.tar.gz").run()?;
+                            flowey::shell_cmd!(rt, "tar -xf gh.tar.gz --strip-components=1").run()?;
                         },
                         FlowPlatform::MacOs => {
-                            xshell::cmd!(sh, "curl --fail -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_macOS_{gh_arch}.zip -o gh.zip").run()?;
-                            xshell::cmd!(sh, "tar -xf gh.zip --strip-components=1").run()?;
+                            flowey::shell_cmd!(rt, "curl --fail -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_macOS_{gh_arch}.zip -o gh.zip").run()?;
+                            flowey::shell_cmd!(rt, "tar -xf gh.zip --strip-components=1").run()?;
                         }
                         platform => anyhow::bail!("unsupported platform {platform}"),
                     };

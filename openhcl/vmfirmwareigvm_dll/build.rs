@@ -97,7 +97,7 @@ fn main() {
         .parse::<u16>()
         .expect("UH_REVISION must be a u16");
 
-    // workaround for the fact that hvlite's root-level `.cargo/config.toml`
+    // workaround for the fact that openvmm's root-level `.cargo/config.toml`
     // currently sets a bunch of extraneous linker flags via
     //
     // [target.'cfg(all(windows, target_env = "msvc"))']

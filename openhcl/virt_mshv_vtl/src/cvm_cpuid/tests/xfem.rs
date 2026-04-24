@@ -51,6 +51,7 @@ fn extended_state_enumeration_wrong_page() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
+        secure_avic: false,
     }
     .build()
     .unwrap();
@@ -168,6 +169,7 @@ fn real_xfem() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
+        secure_avic: false,
     }
     .build()
     .unwrap();
@@ -341,6 +343,7 @@ fn run_fake_xfem_test(
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
+        secure_avic: false,
     }
     .build()
     .unwrap();
@@ -634,7 +637,7 @@ fn xfem_xss_mask() {
             CpuidResult {
                 eax: 0,
                 ebx: 0,
-                ecx: 0x1a405fe6,
+                ecx: 0x1A4000A4,
                 edx: 0
             }
         );
@@ -718,7 +721,7 @@ fn xfem_masked_out() {
             CpuidResult {
                 eax: 0,
                 ebx: 0,
-                ecx: 0x1a405f66,
+                ecx: 0x1A400024,
                 edx: 0
             }
         );
@@ -948,6 +951,7 @@ fn xfem_bounds() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
+        secure_avic: false,
     }
     .build()
     .unwrap();
@@ -1044,6 +1048,7 @@ fn xfem_missing_subleaf0() {
             cpuid_pages: pages.as_slice().as_bytes(),
             access_vsm: false,
             vtom: 0x80000000,
+            secure_avic: false,
         }
         .build(),
         Err(CpuidResultsError::MissingRequiredResult(
@@ -1094,6 +1099,7 @@ fn xfem_missing_subleaf1() {
             cpuid_pages: pages.as_slice().as_bytes(),
             access_vsm: false,
             vtom: 0x80000000,
+            secure_avic: false,
         }
         .build(),
         Err(CpuidResultsError::MissingRequiredResult(
@@ -1158,6 +1164,7 @@ fn xfem_missing_additional_subleaf() {
             cpuid_pages: pages.as_slice().as_bytes(),
             access_vsm: false,
             vtom: 0x80000000,
+            secure_avic: false,
         }
         .build(),
         Err(CpuidResultsError::MissingRequiredResult(
@@ -1165,4 +1172,104 @@ fn xfem_missing_additional_subleaf() {
             Some(2)
         ))
     ));
+}
+
+/// Check that any features that rely on xsave support are not advertised
+/// without xsave support
+#[test]
+fn xfem_missing_support() {
+    let mut pages = vec![HvPspCpuidPage::new_zeroed(), HvPspCpuidPage::new_zeroed()];
+    pages[0].cpuid_leaf_info[0] = HvPspCpuidLeaf {
+        eax_in: CpuidFunction::ExtendedFeatures.0,
+        ecx_in: 0,
+        xfem_in: 0,
+        xss_in: 0,
+        eax_out: 0,
+        ebx_out: 0,
+        ecx_out: 0xffffffff,
+        edx_out: 0,
+        reserved_z: 0,
+    };
+    pages[0].count += 1;
+
+    pages[1].cpuid_leaf_info[0] = HvPspCpuidLeaf {
+        eax_in: CpuidFunction::ExtendedStateEnumeration.0,
+        ecx_in: 0x0,
+        xfem_in: 0x0,
+        xss_in: 0x0,
+        eax_out: 0x0,
+        ebx_out: 0x0,
+        ecx_out: 0x0,
+        edx_out: 0x0,
+        reserved_z: 0x0,
+    };
+    pages[1].count += 1;
+
+    pages[1].cpuid_leaf_info[1] = HvPspCpuidLeaf {
+        eax_in: CpuidFunction::ExtendedStateEnumeration.0,
+        ecx_in: 0x1,
+        xfem_in: 0x0,
+        xss_in: 0x0,
+        eax_out: 0x0,
+        ebx_out: 0x0,
+        ecx_out: 0x0,
+        edx_out: 0x0,
+        reserved_z: 0x0,
+    };
+    pages[1].count += 1;
+
+    fill_required_leaves(&mut pages, Some(&[CpuidFunction::ExtendedStateEnumeration]));
+
+    // Just a sanity check that the test populated version and features with
+    // features advertised as available
+    for leaf in pages[0].cpuid_leaf_info {
+        if leaf.eax_in == CpuidFunction::VersionAndFeatures.0 {
+            assert_eq!(leaf.ecx_out, 0xffffffff);
+        }
+    }
+
+    let cpuid = CpuidResultsIsolationType::Snp {
+        cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
+        secure_avic: false,
+    }
+    .build()
+    .unwrap();
+
+    let version_and_features_clear = cpuid::VersionAndFeaturesEcx::new()
+        .with_avx(true)
+        .with_fma(true);
+
+    let extended_features_0_clear = CpuidResult {
+        eax: 0,
+        ebx: cpuid::ExtendedFeatureSubleaf0Ebx::new()
+            .with_avx2(true)
+            .with_avx512f(true)
+            .with_avx512dq(true)
+            .with_avx512cd(true)
+            .with_avx512bw(true)
+            .with_avx512vl(true)
+            .with_avx512_ifma(true)
+            .into(),
+        ecx: cpuid::ExtendedFeatureSubleaf0Ecx::new()
+            .with_avx512_vbmi(true)
+            .with_avx512_vbmi2(true)
+            .with_avx512_vnni(true)
+            .with_avx512_bitalg(true)
+            .with_avx512_vpopcntdq(true)
+            .into(),
+        edx: cpuid::ExtendedFeatureSubleaf0Edx::new()
+            .with_avx512_vp2_intersect(true)
+            .with_avx512_fp16(true)
+            .into(),
+    };
+
+    let result = cpuid_result(&cpuid, CpuidFunction::VersionAndFeatures, 0);
+    assert_eq!(result.ecx & u32::from(version_and_features_clear), 0);
+
+    let result = cpuid_result(&cpuid, CpuidFunction::ExtendedFeatures, 0);
+    assert_eq!(result.ebx & extended_features_0_clear.ebx, 0);
+    assert_eq!(result.ecx & extended_features_0_clear.ecx, 0);
+    assert_eq!(result.edx & extended_features_0_clear.edx, 0);
 }

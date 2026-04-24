@@ -3,8 +3,8 @@
 
 //! Build `vmgstool` binaries
 
-use crate::run_cargo_build::common::CommonProfile;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonProfile;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
@@ -60,9 +60,15 @@ impl SimpleFlowNode for Node {
         let mut pre_build_deps = Vec::new();
 
         if with_crypto {
+            let ssl_pkgs = match ctx.platform() {
+                FlowPlatform::Linux(
+                    FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::AzureLinux,
+                ) => vec!["openssl-devel".into(), "perl".into()],
+                _ => vec!["libssl-dev".into()],
+            };
             pre_build_deps.push(ctx.reqv(|v| {
                 flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: vec!["libssl-dev".into()],
+                    package_names: ssl_pkgs,
                     done: v,
                 }
             }));
@@ -70,11 +76,7 @@ impl SimpleFlowNode for Node {
 
         let mut features = Vec::new();
         if with_crypto {
-            match target.as_triple().operating_system {
-                target_lexicon::OperatingSystem::Windows => features.push("encryption_win".into()),
-                target_lexicon::OperatingSystem::Linux => features.push("encryption_ossl".into()),
-                _ => unreachable!(),
-            };
+            features.push("encryption".into());
         }
         if with_test_helpers {
             features.push("test_helpers".into());

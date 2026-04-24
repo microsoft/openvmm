@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Structures and definitions used between the underhill kernel and HvLite.
+//! Structures and definitions used between the underhill kernel and VMM.
 
 #![expect(non_camel_case_types, missing_docs)]
 
@@ -69,7 +69,9 @@ pub struct hcl_pfn_range_t {
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct hcl_cpu_context_x64 {
-    pub gps: [u64; 16],
+    // These are in the canonical order, _except_ it doesn't contain
+    // RSP--CR2 is stored where RSP would normally be.
+    pub gps_no_rsp: [u64; 16],
     pub fx_state: x86defs::xsave::Fxsave,
     pub reserved: [u8; 384],
 }
@@ -259,6 +261,20 @@ pub struct tdx_vp_state {
     pub flags: tdx_vp_state_flags,
 }
 
+/// L2 TSC deadline state for current VP.
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct tdx_l2_tsc_deadline_state {
+    /// Timer deadline value in absolute virtual TSC units for this processor.
+    pub deadline: u64,
+    /// Controls whether the TSC deadline should be updated.
+    ///
+    /// When set to 1, the `mshv_vtl` driver will issue a `TDG.VP.WR` call to
+    /// update the TSC deadline during the next entry into lower VTL.
+    pub update_deadline: u8,
+    pub pad: [u8; 7],
+}
+
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct tdx_vp_context {
@@ -268,7 +284,8 @@ pub struct tdx_vp_context {
     pub pad2: [u8; 32],
     pub entry_rcx: x86defs::tdx::TdxVmFlags,
     pub gpr_list: x86defs::tdx::TdxL2EnterGuestState,
-    pub pad3: [u8; 96],
+    pub l2_tsc_deadline: tdx_l2_tsc_deadline_state,
+    pub pad3: [u8; 80],
     pub fx_state: x86defs::xsave::Fxsave,
     pub pad4: [u8; 16],
 }

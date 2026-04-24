@@ -17,9 +17,16 @@ permissions:
 
 jobs:
   upload-logs:
+    # Only attempt upload if the workflow run could have actually produced some artifacts
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' ||
+        github.event.workflow_run.conclusion == 'failure' ||
+        github.event.workflow_run.conclusion == 'timed_out'
+      }}
     runs-on: ubuntu-latest
     env:
-      BASE_URL: https://openvmmghtestresults.blob.core.windows.net/results
+      BASE_URL: https://openvmmghtestresults.blob.core.windows.net
 
     steps:
       - name: Free Disk Space (Ubuntu)
@@ -54,9 +61,11 @@ jobs:
             -D results
           test_count=$(find results -name petri.jsonl | wc -l)
           PASS_COUNT=$(find results -name petri.passed | wc -l)
+          FAIL_UNSTABLE_COUNT=$(find results -name petri.failed_unstable | wc -l)
           FAIL_COUNT=$((test_count - PASS_COUNT))
           echo "FAIL_COUNT=$FAIL_COUNT" >> "$GITHUB_ENV"
           echo "PASS_COUNT=$PASS_COUNT" >> "$GITHUB_ENV"
+          echo "FAIL_UNSTABLE_COUNT=$FAIL_UNSTABLE_COUNT" >> "$GITHUB_ENV"
           echo "SOURCE_BRANCH=$head_branch" >> "$GITHUB_ENV"
         env:
           event: ${{ github.event.workflow_run.event }}
@@ -74,7 +83,7 @@ jobs:
       - name: Upload to Azure Blob Storage
         run: |
           az storage blob upload-batch \
-            --destination "$BASE_URL" \
+            --destination "$BASE_URL/results" \
             --destination-path "$run_id" \
             --source results \
             --auth-mode login
@@ -82,13 +91,41 @@ jobs:
           # Store a metadata blob in a separate portion of the hierarchy so that
           # it can be cheaply queried.
           az storage blob upload \
-            --blob-url "$BASE_URL/runs/$run_id" \
+            --blob-url "$BASE_URL/results/runs/$run_id" \
             --file /dev/null \
             --metadata \
               "petrifailed=$FAIL_COUNT" \
               "petripassed=$PASS_COUNT" \
               "ghbranch=$SOURCE_BRANCH" \
               "ghpr=$SOURCE_PR" \
+            --auth-mode login
+        env:
+          run_id: ${{ github.event.workflow_run.id }}
+
+      - name: Upload to memory validation results to Azure Blob Storage
+        run: |
+          # ignore this job for builds that we don't run memory validation on to keep
+          # storage account clean
+          if ! find results -path '*/*memory_validation*/petri.jsonl' | grep -q .; then
+            exit 0
+          fi
+
+          az storage blob upload-batch \
+            --destination "$BASE_URL/memoryvalidation" \
+            --destination-path "$run_id" \
+            --source results \
+            --pattern '*/*memory_validation*/petri.jsonl' \
+            --auth-mode login
+
+          # Store the PR number in the storage account as well to associate memory validation
+          # results with their code changes. We want to include PR events as well to collect
+          # results from architectures that can't have their meminfo queried for release builds
+          az storage blob upload \
+            --blob-url "$BASE_URL/memoryvalidation/runs/$run_id" \
+            --file /dev/null \
+            --metadata \
+              "ghpr=$SOURCE_PR" \
+              "ghbranch=$SOURCE_BRANCH" \
             --auth-mode login
         env:
           run_id: ${{ github.event.workflow_run.id }}
@@ -100,7 +137,7 @@ jobs:
             -R "$repo" \
             "$SOURCE_PR" \
             -F - <<EOF
-          [At least one Petri test failed.](https://openvmm.dev/test-results/#/runs/$run_id)
+          [$FAIL_COUNT Petri tests failed ($FAIL_UNSTABLE_COUNT unstable)](https://openvmm.dev/test-results/#/runs/$run_id)
           EOF
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

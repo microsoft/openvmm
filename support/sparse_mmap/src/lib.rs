@@ -217,7 +217,7 @@ mod tests {
         mapping.alloc(0x6 * page_size, 0x1 * page_size).unwrap();
         mapping.alloc(0x4 * page_size, 0x3 * page_size).unwrap();
 
-        let shmem = alloc_shared_memory(0x4 * page_size).unwrap();
+        let shmem = alloc_shared_memory(0x4 * page_size, "test").unwrap();
         mapping
             .map_file(0x5 * page_size, 0x4 * page_size, &shmem, 0, true)
             .unwrap();
@@ -232,5 +232,116 @@ mod tests {
             .unwrap();
 
         drop(mapping);
+    }
+
+    #[test]
+    fn test_decommit_zeros_pages() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(4 * page_size).unwrap();
+
+        // Allocate and write a pattern.
+        mapping.alloc(0, 4 * page_size).unwrap();
+        let pattern = vec![0xABu8; page_size];
+        mapping.write_at(0, &pattern).unwrap();
+        mapping.write_at(page_size, &pattern).unwrap();
+
+        // Verify data is present.
+        let mut buf = vec![0u8; page_size];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, pattern);
+
+        // Decommit the first page.
+        mapping.decommit(0, page_size).unwrap();
+
+        // Read it back — should be zeros (on Linux, kernel gives zero pages;
+        // on Windows, the page is decommitted so we skip this read there).
+        #[cfg(unix)]
+        {
+            let mut buf = vec![0xFFu8; page_size];
+            mapping.read_at(0, &mut buf).unwrap();
+            assert!(
+                buf.iter().all(|&b| b == 0),
+                "decommitted page should be zeros"
+            );
+        }
+
+        // Second page should still have its data.
+        let mut buf2 = vec![0u8; page_size];
+        mapping.read_at(page_size, &mut buf2).unwrap();
+        assert_eq!(buf2, pattern);
+    }
+
+    #[test]
+    fn test_commit_after_decommit() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(4 * page_size).unwrap();
+
+        // Allocate and write data.
+        mapping.alloc(0, 4 * page_size).unwrap();
+        let pattern = vec![0xCDu8; page_size];
+        mapping.write_at(0, &pattern).unwrap();
+
+        // Decommit then recommit.
+        mapping.decommit(0, page_size).unwrap();
+        mapping.commit(0, page_size).unwrap();
+
+        // After recommit, the page should be accessible and zeroed.
+        let mut buf = vec![0xFFu8; page_size];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert!(
+            buf.iter().all(|&b| b == 0),
+            "recommitted page should be zeros"
+        );
+    }
+
+    #[test]
+    fn test_commit_idempotent() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(4 * page_size).unwrap();
+
+        // Allocate (commit) pages.
+        mapping.alloc(0, 4 * page_size).unwrap();
+
+        // Commit the same range again — should be a no-op, no error.
+        mapping.commit(0, 4 * page_size).unwrap();
+        mapping.commit(0, page_size).unwrap();
+        mapping.commit(page_size, page_size).unwrap();
+
+        // Write and read to verify pages still work.
+        let pattern = vec![0xEFu8; page_size];
+        mapping.write_at(0, &pattern).unwrap();
+        let mut buf = vec![0u8; page_size];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, pattern);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_madvise_hugepage() {
+        let page_size = SparseMapping::page_size();
+        let size = 2 * 1024 * 1024;
+        let mapping = SparseMapping::new(size).unwrap();
+        mapping.alloc(0, size).unwrap();
+
+        mapping.madvise_hugepage(0, size).unwrap();
+
+        // Memory should still work after the madvise.
+        let pattern = vec![0xABu8; page_size];
+        mapping.write_at(0, &pattern).unwrap();
+        let mut buf = vec![0u8; page_size];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, pattern);
+
+        // Decommit should still zero pages with THP enabled.
+        mapping.decommit(0, page_size).unwrap();
+        #[cfg(unix)]
+        {
+            let mut buf = vec![0xFFu8; page_size];
+            mapping.read_at(0, &mut buf).unwrap();
+            assert!(
+                buf.iter().all(|&b| b == 0),
+                "decommitted page should be zeros even with THP"
+            );
+        }
     }
 }

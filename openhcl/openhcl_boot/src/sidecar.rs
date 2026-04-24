@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::boot_logger::log;
 use crate::cmdline::SidecarOptions;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_NUMA_NODES;
@@ -27,6 +26,8 @@ const _: () = assert!(
 );
 
 pub struct SidecarConfig<'a> {
+    pub num_cpus: usize,
+    pub per_cpu_state: &'a sidecar_defs::PerCpuState,
     pub node_params: &'a [SidecarNodeParams],
     pub nodes: &'a [SidecarNodeOutput],
     pub start_reftime: u64,
@@ -45,14 +46,28 @@ pub struct SidecarKernelCommandLine<'a>(&'a SidecarConfig<'a>);
 
 impl core::fmt::Display for SidecarKernelCommandLine<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // Add something like boot_cpus=0,4,8,12 to the command line so that
-        // Linux boots with the base VP of each sidecar node. Other CPUs will
-        // be brought up by the sidecar kernel.
+        // Generate boot_cpus= parameter listing CPUs that Linux should start
+        // directly (all others will be managed by sidecar).
+        // When per-CPU overrides are active (servicing restore with outstanding IO),
+        // list every CPU that sidecar should NOT start.
+        // Otherwise, list just the base VP of each sidecar node (default behavior).
         f.write_str("boot_cpus=")?;
         let mut comma = "";
-        for node in self.0.node_params {
-            write!(f, "{}{}", comma, node.base_vp)?;
-            comma = ",";
+        if self.0.per_cpu_state.per_cpu_state_specified {
+            for (i, &starts) in self.0.per_cpu_state.sidecar_starts_cpu[..self.0.num_cpus]
+                .iter()
+                .enumerate()
+            {
+                if !starts {
+                    write!(f, "{comma}{i}")?;
+                    comma = ",";
+                }
+            }
+        } else {
+            for node in self.0.node_params {
+                write!(f, "{comma}{}", node.base_vp)?;
+                comma = ",";
+            }
         }
         Ok(())
     }
@@ -70,17 +85,17 @@ pub fn start_sidecar<'a>(
     }
 
     if p.sidecar_size == 0 {
-        log!("sidecar: not present in image");
+        log::info!("sidecar: not present in image");
         return None;
     }
 
     match partition_info.boot_options.sidecar {
         SidecarOptions::DisabledCommandLine => {
-            log!("sidecar: disabled via command line");
+            log::info!("sidecar: disabled via command line");
             return None;
         }
         SidecarOptions::DisabledServicing => {
-            log!("sidecar: disabled because this is a servicing restore");
+            log::info!("sidecar: disabled because this is a servicing restore");
             return None;
         }
         SidecarOptions::Enabled { enable_logging, .. } => {
@@ -98,7 +113,7 @@ pub fn start_sidecar<'a>(
         .unwrap();
 
     if max_vnode >= MAX_NUMA_NODES as u32 {
-        log!("sidecar: NUMA node {max_vnode} too large");
+        log::warn!("sidecar: NUMA node {max_vnode} too large");
         return None;
     }
 
@@ -109,7 +124,7 @@ pub fn start_sidecar<'a>(
     .x2_apic()
     {
         // Currently, sidecar needs x2apic to communicate with the kernel
-        log!("sidecar: x2apic not available; not using sidecar");
+        log::warn!("sidecar: x2apic not available; not using sidecar");
         return None;
     }
 
@@ -125,7 +140,7 @@ pub fn start_sidecar<'a>(
             })
     };
     if cpus_by_node().all(|cpus_by_node| cpus_by_node.len() == 1) {
-        log!("sidecar: all NUMA nodes have one CPU");
+        log::info!("sidecar: all NUMA nodes have one CPU");
         return None;
     }
     let node_count = cpus_by_node().count();
@@ -137,6 +152,7 @@ pub fn start_sidecar<'a>(
             enable_logging: _,
             node_count,
             nodes,
+            initial_state,
         } = sidecar_params;
 
         *hypercall_page = 0;
@@ -147,6 +163,7 @@ pub fn start_sidecar<'a>(
 
         let mut base_vp = 0;
         total_ram = 0;
+        *initial_state = partition_info.sidecar_cpu_overrides.clone();
         for (cpus, node) in cpus_by_node().zip(nodes) {
             let required_ram = sidecar_defs::required_memory(cpus.len() as u32) as u64;
             // Take some VTL2 RAM for sidecar use. Try to use the same NUMA node
@@ -169,14 +186,14 @@ pub fn start_sidecar<'a>(
                         AllocationPolicy::LowMemory,
                     ) {
                         Some(mem) => {
-                            log!(
+                            log::warn!(
                                 "sidecar: unable to allocate memory for sidecar node on node {local_vnode}, falling back to node {}",
                                 mem.vnode
                             );
                             mem
                         }
                         None => {
-                            log!("sidecar: not enough memory for sidecar");
+                            log::warn!("sidecar: not enough memory for sidecar");
                             return None;
                         }
                     }
@@ -189,6 +206,17 @@ pub fn start_sidecar<'a>(
                 base_vp,
                 vp_count: cpus.len() as u32,
             };
+            if initial_state.per_cpu_state_specified {
+                // If per-CPU state is specified, make sure to explicitly state that
+                // sidecar should not start the base vp of this node.
+                // The code that set per_cpu_state_specified should have already ensured that
+                // the array is large enough for any `base_vp` we might have here.
+                initial_state.sidecar_starts_cpu[base_vp as usize] = false;
+                log::info!(
+                    "sidecar: per_cpu_state_specified=true, marking base_vp={} as kernel-started",
+                    base_vp
+                );
+            }
             base_vp += cpus.len() as u32;
             *node_count += 1;
             total_ram += required_ram;
@@ -200,7 +228,7 @@ pub fn start_sidecar<'a>(
         unsafe { core::mem::transmute(p.sidecar_entry_address) };
 
     let boot_start_reftime = minimal_rt::reftime::reference_time();
-    log!(
+    log::info!(
         "sidecar starting, {} nodes, {} cpus, {:#x} total bytes",
         node_count,
         partition_info.cpus.len(),
@@ -217,9 +245,11 @@ pub fn start_sidecar<'a>(
 
     let SidecarOutput { nodes, error: _ } = sidecar_output;
     Some(SidecarConfig {
+        num_cpus: partition_info.cpus.len(),
         start_reftime: boot_start_reftime,
         end_reftime: boot_end_reftime,
         node_params: &sidecar_params.nodes[..node_count],
         nodes: &nodes[..node_count],
+        per_cpu_state: &sidecar_params.initial_state,
     })
 }

@@ -3,15 +3,15 @@
 
 use crate::OpenHclServicingFlags;
 use get_resources::ged::GuestServicingFlags;
-use hvlite_defs::config::Config;
-use hvlite_defs::rpc::PulseSaveRestoreError;
-use hvlite_defs::rpc::VmRpc;
-use hvlite_defs::worker::VM_WORKER;
-use hvlite_defs::worker::VmWorkerParameters;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerHandle;
 use mesh_worker::WorkerHost;
+use openvmm_defs::config::Config;
+use openvmm_defs::rpc::PulseSaveRestoreError;
+use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::VM_WORKER;
+use openvmm_defs::worker::VmWorkerParameters;
 use vmm_core_defs::HaltReason;
 
 pub(crate) struct Worker {
@@ -23,14 +23,16 @@ impl Worker {
     pub(crate) async fn launch(
         host: &WorkerHost,
         cfg: Config,
+        shared_memory: Option<openvmm_defs::worker::SharedMemoryFd>,
     ) -> anyhow::Result<(Self, mesh::Receiver<HaltReason>)> {
         let (vm_rpc, rpc_recv) = mesh::channel();
         let (notify_send, notify_recv) = mesh::channel();
 
         let params = VmWorkerParameters {
-            hypervisor: None,
+            hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
             cfg,
             saved_state: None,
+            shared_memory,
             rpc: rpc_recv,
             notify: notify_send,
         };
@@ -45,8 +47,17 @@ impl Worker {
         ))
     }
 
+    pub(crate) async fn pause(&self) -> Result<bool, RpcError> {
+        self.rpc.call(VmRpc::Pause, ()).await
+    }
+
     pub(crate) async fn resume(&self) -> Result<bool, RpcError> {
         self.rpc.call(VmRpc::Resume, ()).await
+    }
+
+    pub(crate) async fn save(&self) -> anyhow::Result<mesh::payload::message::ProtobufMessage> {
+        let msg = self.rpc.call_failable(VmRpc::Save, ()).await?;
+        Ok(msg)
     }
 
     pub(crate) async fn reset(&self) -> anyhow::Result<()> {
@@ -64,7 +75,7 @@ impl Worker {
         flags: OpenHclServicingFlags,
         file: std::fs::File,
     ) -> anyhow::Result<()> {
-        hvlite_helpers::underhill::save_underhill(
+        openvmm_helpers::underhill::save_underhill(
             &self.rpc,
             send,
             GuestServicingFlags {
@@ -80,12 +91,30 @@ impl Worker {
         &self,
         send: &mesh::Sender<get_resources::ged::GuestEmulationRequest>,
     ) -> anyhow::Result<()> {
-        hvlite_helpers::underhill::restore_underhill(&self.rpc, send).await
+        openvmm_helpers::underhill::restore_underhill(&self.rpc, send).await
     }
 
     pub(crate) async fn update_command_line(&self, command_line: &str) -> anyhow::Result<()> {
         self.rpc
             .call_failable(VmRpc::UpdateCliParams, command_line.to_string())
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn add_pcie_device(
+        &self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn remove_pcie_device(&self, port_name: String) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::RemovePcieDevice, port_name)
             .await?;
         Ok(())
     }

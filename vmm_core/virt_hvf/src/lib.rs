@@ -69,8 +69,6 @@ use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
 use vmcore::vmtime::VmTimeAccess;
 
-const PPI_VTIMER: u32 = 20;
-
 const HV_ARM64_HVC_SMCCC_IDENTIFIER: u32 = (1 << 30) | (6 << 24) | 1;
 
 #[derive(Debug)]
@@ -94,8 +92,11 @@ impl virt::Hypervisor for HvfHypervisor {
     type Partition = HvfPartition;
     type Error = Error;
 
-    fn is_available(&self) -> Result<bool, Self::Error> {
-        Ok(true)
+    fn platform_info(&self) -> virt::PlatformInfo {
+        virt::PlatformInfo {
+            platform_gsiv: None,
+            supports_gic_v3: true,
+        }
     }
 
     fn new_partition<'a>(
@@ -119,6 +120,19 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
         self,
         config: virt::PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        use vm_topology::processor::aarch64::GicVersion;
+
+        let gic_redistributors_base = match self.config.processor_topology.gic_version() {
+            GicVersion::V3 {
+                redistributors_base,
+            } => redistributors_base,
+            GicVersion::V2 { .. } => {
+                return Err(
+                    anyhow::anyhow!("HVF does not support GICv2; only GICv3 is supported").into(),
+                );
+            }
+        };
+
         // SAFETY: no safety requirements.
         unsafe { abi::hv_vm_create(null_mut()) }.chk()?;
 
@@ -133,8 +147,8 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
         let mut gicd = gic::Distributor::new(
             self.config.processor_topology.gic_distributor_base(),
             MemoryRange::new(
-                self.config.processor_topology.gic_redistributors_base()
-                    ..self.config.processor_topology.gic_redistributors_base()
+                gic_redistributors_base
+                    ..gic_redistributors_base
                         + aarch64defs::GIC_REDISTRIBUTOR_SIZE
                             * self.config.processor_topology.vp_count() as u64,
             ),
@@ -148,7 +162,11 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
             .collect::<Vec<_>>();
 
         let inner = Arc::new(HvfPartitionInner {
-            caps: Aarch64PartitionCapabilities {},
+            caps: Aarch64PartitionCapabilities {
+                // Apple Silicon does not support aarch32.
+                supports_aarch32_el0: false,
+            },
+            virt_timer_ppi: self.config.processor_topology.virt_timer_ppi(),
             vps: self
                 .config
                 .processor_topology
@@ -167,6 +185,7 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
             vmtime: self.config.vmtime.access("hvf"),
             hv1,
             mappings: Default::default(),
+            synic_ports: Default::default(),
         });
 
         let mut vps = Vec::new();
@@ -187,12 +206,18 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
                         .config
                         .vmtime
                         .access(format!("vp{}", vp.base.vp_index.index())),
-                    gicr_range: vp.gicr..vp.gicr + aarch64defs::GIC_REDISTRIBUTOR_SIZE,
+                    gicr_range: {
+                        // Guaranteed to be Some since we validated GICv3 above.
+                        let gicr = vp.gicr.unwrap();
+                        gicr..gicr + aarch64defs::GIC_REDISTRIBUTOR_SIZE
+                    },
                 }),
             });
         }
 
-        let partition = HvfPartition { inner };
+        let synic_ports = Arc::new(virt::synic::SynicPorts::new(inner.clone()));
+
+        let partition = HvfPartition { inner, synic_ports };
         Ok((partition, vps))
     }
 
@@ -206,6 +231,8 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
 #[inspect(transparent)]
 pub struct HvfPartition {
     inner: Arc<HvfPartitionInner>,
+    #[inspect(skip)]
+    synic_ports: Arc<virt::synic::SynicPorts<HvfPartitionInner>>,
 }
 
 impl Drop for HvfPartitionInner {
@@ -259,6 +286,10 @@ impl virt::Hv1 for HvfPartition {
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         Some(self)
     }
+
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic_ports.clone()
+    }
 }
 
 impl virt::DeviceBuilder for HvfPartition {
@@ -288,9 +319,13 @@ impl virt::irqcon::ControlGic for HvfPartitionInner {
     }
 }
 
-impl virt::Synic for HvfPartition {
+impl virt::synic::Synic for HvfPartitionInner {
+    fn port_map(&self) -> &virt::synic::SynicPortMap {
+        &self.synic_ports
+    }
+
     fn post_message(&self, _vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        if let Some(vp) = self.inner.vps.get(vp.index() as usize) {
+        if let Some(vp) = self.vps.get(vp.index() as usize) {
             if vp
                 .message_queues
                 .enqueue_message(sint, &HvMessage::new(HvMessageType(typ), 0, payload))
@@ -301,14 +336,14 @@ impl virt::Synic for HvfPartition {
     }
 
     fn new_guest_event_port(
-        &self,
+        self: Arc<Self>,
         _vtl: Vtl,
         vp: u32,
         sint: u8,
         flag: u16,
     ) -> Box<dyn GuestEventPort> {
         Box::new(HvfEventPort {
-            partition: Arc::downgrade(&self.inner),
+            partition: Arc::downgrade(&self),
             params: Arc::new(RwLock::new(HvfEventPortParams {
                 vp: VpIndex::new(vp),
                 sint,
@@ -441,6 +476,7 @@ impl AccessVmState for HvfPartitionStateAccess<'_> {
 #[derive(Inspect)]
 struct HvfPartitionInner {
     caps: Aarch64PartitionCapabilities,
+    virt_timer_ppi: u32,
     #[inspect(skip)]
     vps: Vec<HvfVpInner>,
     gicd: gic::Distributor,
@@ -449,6 +485,7 @@ struct HvfPartitionInner {
     hv1: HvfHv1State,
     #[inspect(with = "|x| inspect::adhoc(|req| inspect::iter_by_index(&*x.lock()).inspect(req))")]
     mappings: Mutex<Vec<MemoryRange>>,
+    synic_ports: virt::synic::SynicPortMap,
 }
 
 #[derive(Inspect)]
@@ -701,9 +738,9 @@ impl Drop for HvfVcpu {
 }
 
 impl HvfProcessor<'_> {
-    fn hypercall(&mut self, dev: &impl CpuIo, smccc: bool) {
+    fn hypercall(&mut self, _dev: &impl CpuIo, smccc: bool) {
         let guest_memory = &self.partition.guest_memory;
-        let handler = HvfHypercallHandler::new(self, dev);
+        let handler = HvfHypercallHandler::new(self);
         HvfHypercallHandler::DISPATCHER.dispatch(
             guest_memory,
             hv1_hypercall::Arm64RegisterIo::new(handler, true, smccc),
@@ -916,7 +953,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                             self.vmtime.now().wrapping_add(Duration::from_millis(2)),
                         );
                         ready!(self.vmtime.poll_timeout(cx));
-                        self.gicr.raise(PPI_VTIMER);
+                        self.gicr.raise(self.partition.virt_timer_ppi);
                         continue;
                     }
 
@@ -925,7 +962,10 @@ impl<'p> Processor for HvfProcessor<'p> {
             })
             .await?;
 
-            if !self.gicr.is_pending_or_active(PPI_VTIMER) {
+            if !self
+                .gicr
+                .is_pending_or_active(self.partition.virt_timer_ppi)
+            {
                 // SAFETY: no requirements.
                 unsafe {
                     abi::hv_vcpu_set_vtimer_mask(self.vcpu.vcpu, false)
@@ -1126,7 +1166,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                     }
                 }
                 abi::HvExitReason::VTIMER_ACTIVATED => {
-                    self.gicr.raise(PPI_VTIMER);
+                    self.gicr.raise(self.partition.virt_timer_ppi);
                 }
                 reason => {
                     return Err(dev.fatal_error(

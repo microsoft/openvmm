@@ -3,11 +3,9 @@
 
 //! Ensure the OpenVMM repo is `clippy` clean.
 
-use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonPlatform;
-use crate::run_cargo_build::common::CommonProfile;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonArch;
+use crate::common::CommonProfile;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoBuildProfile;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
@@ -49,18 +47,10 @@ impl SimpleFlowNode for Node {
         let flowey_platform = ctx.platform();
         let flowey_arch = ctx.arch();
 
-        let (boot_target, uefi_target, sysroot_arch) = match target.architecture {
-            target_lexicon::Architecture::X86_64 => (
-                "x86_64-unknown-none",
-                "x86_64-unknown-uefi",
-                OpenvmmSysrootArch::X64,
-            ),
-            target_lexicon::Architecture::Aarch64(_) => (
-                "aarch64-unknown-linux-musl",
-                "aarch64-unknown-uefi",
-                OpenvmmSysrootArch::Aarch64,
-            ),
-            arch => anyhow::bail!("unsupported arch {arch}"),
+        let sysroot_arch = CommonArch::from_architecture(target.architecture)?;
+        let (boot_target, uefi_target) = match sysroot_arch {
+            CommonArch::X86_64 => ("x86_64-unknown-none", "x86_64-unknown-uefi"),
+            CommonArch::Aarch64 => ("aarch64-unknown-linux-musl", "aarch64-unknown-uefi"),
         };
 
         let mut pre_build_deps = Vec::new();
@@ -93,12 +83,18 @@ impl SimpleFlowNode for Node {
             );
         }
 
-        pre_build_deps.push(
-            ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
-                package_names: vec!["libssl-dev".into(), "build-essential".into()],
-                done: v,
-            }),
-        );
+        // TODO: install build tools for other platforms
+        if matches!(
+            ctx.platform(),
+            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
+        ) {
+            pre_build_deps.push(ctx.reqv(|v| {
+                flowey_lib_common::install_dist_pkg::Request::Install {
+                    package_names: vec!["libssl-dev".into(), "build-essential".into()],
+                    done: v,
+                }
+            }));
+        }
 
         pre_build_deps.push(ctx.reqv(crate::install_openvmm_rust_build_essential::Request));
 
@@ -118,17 +114,8 @@ impl SimpleFlowNode for Node {
         }
 
         let xtask_target = CommonTriple::Common {
-            arch: match flowey_arch {
-                FlowArch::X86_64 => CommonArch::X86_64,
-                FlowArch::Aarch64 => CommonArch::Aarch64,
-                arch => anyhow::bail!("unsupported arch {arch}"),
-            },
-            platform: match flowey_platform {
-                FlowPlatform::Windows => CommonPlatform::WindowsMsvc,
-                FlowPlatform::Linux(_) => CommonPlatform::LinuxGnu,
-                FlowPlatform::MacOs => CommonPlatform::MacOs,
-                platform => anyhow::bail!("unsupported platform {platform}"),
-            },
+            arch: flowey_arch.try_into()?,
+            platform: flowey_platform.try_into()?,
         };
 
         let xtask = ctx.reqv(|v| crate::build_xtask::Request {
@@ -161,9 +148,9 @@ impl SimpleFlowNode for Node {
                         crate::build_xtask::XtaskOutput::WindowsBin { exe, pdb: _ } => exe,
                     };
 
-                    let sh = xshell::Shell::new()?;
-                    sh.change_dir(repo_path);
-                    let output = xshell::cmd!(sh, "{xtask_bin} fuzz list --crates").output()?;
+                    rt.sh.change_dir(repo_path);
+                    let output =
+                        flowey::shell_cmd!(rt, "{xtask_bin} fuzz list --crates").output()?;
                     let output = String::from_utf8(output.stdout)?;
 
                     let fuzz_crates = output.trim().split('\n').map(|s| s.to_owned());
@@ -173,14 +160,12 @@ impl SimpleFlowNode for Node {
                     exclude.push("xtask_fuzz".into());
                 }
 
-                // packages requiring openssl-sys won't cross compile for macos
+                // packages requiring crypto support won't cross compile for macos
                 if matches!(
                     target.operating_system,
                     target_lexicon::OperatingSystem::Darwin(_)
                 ) {
-                    exclude.extend(
-                        ["openssl_kdf", "vmgs_lib", "block_crypto", "disk_crypt"].map(|x| x.into()),
-                    );
+                    exclude.extend(["openssl_kdf", "vmgs_lib", "disk_crypt"].map(|x| x.into()));
                 }
 
                 Ok(Some(exclude))

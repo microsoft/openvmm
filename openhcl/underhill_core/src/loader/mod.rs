@@ -25,6 +25,7 @@ use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
 use vm_topology::processor::ProcessorTopology;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
+use vmotherboard::options::VmChipsetCapabilities;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
@@ -80,6 +81,9 @@ pub enum Error {
     #[cfg(guest_arch = "x86_64")]
     #[error("acpi tables require at least two mmio ranges")]
     UnsupportedMmio,
+    #[cfg(guest_arch = "aarch64")]
+    #[error("expected GICv3 topology")]
+    ExpectedGicV3,
 }
 
 pub const PV_CONFIG_BASE_PAGE: u64 = if cfg!(guest_arch = "x86_64") {
@@ -104,6 +108,7 @@ pub fn load(
     processor_topology: &ProcessorTopology,
     vtl0_memory_map: &[(MemoryRangeWithNode, MemoryMapEntryType)],
     runtime_params: &RuntimeParameters,
+    chipset_capabilities: VmChipsetCapabilities,
     load_kind: LoadKind,
     vtl0_info: vtl0_config::MeasuredVtl0Info,
     platform_config: &DevicePlatformSettings,
@@ -128,6 +133,7 @@ pub fn load(
                 processor_topology,
                 vtl0_memory_map,
                 runtime_params,
+                chipset_capabilities,
                 platform_config,
                 caps,
                 isolated,
@@ -181,6 +187,7 @@ pub fn load(
                 mem_layout,
                 processor_topology,
                 platform_config,
+                chipset_capabilities,
                 kernel_range: *kernel_range,
                 kernel_entrypoint: *kernel_entrypoint,
                 initrd: *initrd,
@@ -228,6 +235,7 @@ struct LoadLinuxParams<'a> {
     mem_layout: &'a MemoryLayout,
     processor_topology: &'a ProcessorTopology,
     platform_config: &'a DevicePlatformSettings,
+    chipset_capabilities: VmChipsetCapabilities,
     /// The region of memory used by the kernel.
     kernel_range: MemoryRange,
     /// The entrypoint of the kernel.
@@ -252,6 +260,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         mem_layout,
         processor_topology,
         platform_config,
+        chipset_capabilities,
         kernel_range,
         kernel_entrypoint,
         initrd,
@@ -268,12 +277,14 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         mem_layout,
         cache_topology: None,
         pcie_host_bridges: &vec![],
-        with_ioapic: true, // underhill always runs with ioapic
-        with_pic: false,
-        with_pit: false,
-        with_psp: platform_config.general.psp_enabled,
-        pm_base: crate::worker::PM_BASE,
-        acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+        arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+            with_ioapic: true, // openhcl always runs with ioapic
+            with_pic: chipset_capabilities.with_pic,
+            with_pit: chipset_capabilities.with_pit,
+            with_psp: platform_config.general.psp_enabled,
+            pm_base: crate::worker::PM_BASE,
+            acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+        },
     };
 
     if mem_layout.mmio().len() < 2 {
@@ -306,7 +317,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
 
         dsdt.add_mmio_module(mem_layout.mmio()[0], mem_layout.mmio()[1]);
         // TODO: change this once PCI is running in underhill
-        dsdt.add_vmbus(false);
+        dsdt.add_vmbus(false, None);
         dsdt.add_rtc();
     });
     let acpi_len = acpi_tables.tables.len() + 0x1000;
@@ -409,6 +420,7 @@ pub fn write_uefi_config(
     processor_topology: &ProcessorTopology,
     vtl0_memory_map: &[(MemoryRangeWithNode, MemoryMapEntryType)],
     igvm_parameters: &RuntimeParameters,
+    chipset_capabilities: VmChipsetCapabilities,
     platform_config: &DevicePlatformSettings,
     caps: &virt::PartitionCapabilities,
     isolated: bool,
@@ -428,6 +440,9 @@ pub fn write_uefi_config(
     // We will generate these tables unless trusted tables are passed via DevicePlatformSettings
     let mut build_madt = true;
     let mut build_srat = true;
+
+    #[cfg(not(guest_arch = "x86_64"))]
+    let _ = chipset_capabilities;
 
     // ACPI tables that come from the DevicePlatformSettings
     // We can only trust these tables from the host if this is not an isolated VM
@@ -462,12 +477,21 @@ pub fn write_uefi_config(
             mem_layout,
             cache_topology: None,
             pcie_host_bridges: &vec![],
-            with_ioapic: cfg!(guest_arch = "x86_64"), // OpenHCL always runs with ioapic on x64
-            with_pic: false,                          // uefi never runs with pic or pit
-            with_pit: false,
-            with_psp: platform_config.general.psp_enabled,
-            pm_base: crate::worker::PM_BASE,
-            acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+            #[cfg(guest_arch = "x86_64")]
+            arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+                with_ioapic: true,
+                with_pic: chipset_capabilities.with_pic,
+                with_pit: chipset_capabilities.with_pit,
+                with_psp: platform_config.general.psp_enabled,
+                pm_base: crate::worker::PM_BASE,
+                acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+            },
+            #[cfg(guest_arch = "aarch64")]
+            arch: vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {
+                // Not used for MADT/SRAT generation; only matters for FADT.
+                hypervisor_vendor_identity: 0,
+                virt_timer_ppi: processor_topology.virt_timer_ppi(),
+            },
         };
 
         // Build the ACPI tables as specified.
@@ -659,6 +683,7 @@ pub fn write_uefi_config(
 
         flags.set_cxl_memory_enabled(platform_config.general.cxl_memory_enabled);
         flags.set_default_boot_always_attempt(platform_config.general.default_boot_always_attempt);
+        flags.set_hv_sint_enabled(platform_config.general.hv_sint_enabled);
 
         // Some settings do not depend on host config
 
@@ -673,9 +698,18 @@ pub fn write_uefi_config(
 
     #[cfg(guest_arch = "aarch64")]
     {
+        use vm_topology::processor::arch::GicVersion;
+
+        let GicVersion::V3 {
+            redistributors_base,
+        } = processor_topology.gic_version()
+        else {
+            return Err(Error::ExpectedGicV3);
+        };
+
         cfg.add(&config::Gic {
             gic_distributor_base: processor_topology.gic_distributor_base(),
-            gic_redistributors_base: processor_topology.gic_redistributors_base(),
+            gic_redistributors_base: redistributors_base,
         });
     }
 

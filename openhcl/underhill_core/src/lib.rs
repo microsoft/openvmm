@@ -318,7 +318,6 @@ async fn launch_workers(
         emulated_serial_wait_for_rts: opt.serial_wait_for_rts,
         force_load_vtl0_image: opt.force_load_vtl0_image,
         nvme_vfio: opt.nvme_vfio,
-        mcr: opt.mcr,
         halt_on_guest_halt: opt.halt_on_guest_halt,
         no_sidecar_hotplug: opt.no_sidecar_hotplug,
         gdbstub: opt.gdbstub,
@@ -335,6 +334,9 @@ async fn launch_workers(
         attempt_ak_cert_callback: opt.attempt_ak_cert_callback,
         enable_vpci_relay: opt.enable_vpci_relay,
         disable_proxy_redirect: opt.disable_proxy_redirect,
+        disable_lower_vtl_timer_virt: opt.disable_lower_vtl_timer_virt,
+        config_timeout_in_seconds: opt.config_timeout_in_seconds,
+        servicing_timeout_dump_collection_in_ms: opt.servicing_timeout_dump_collection_in_ms,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =
@@ -447,6 +449,7 @@ enum ControlState {
 #[derive(MeshPayload)]
 pub enum ControlRequest {
     FlushLogs(Rpc<CancelContext, Result<(), CancelReason>>),
+    MakeWorker(Rpc<String, Result<WorkerHost, RemoteError>>),
 }
 
 async fn run_control(
@@ -488,6 +491,8 @@ async fn run_control(
     }
 
     let mut restart_rpc = None;
+    #[cfg(feature = "mem-profile-tracing")]
+    let mut profiler = mem_profile_tracing::HeapProfiler::new();
     loop {
         let event = {
             let mut stream = (
@@ -624,6 +629,26 @@ async fn run_control(
 
                         workers.vm_rpc.send(UhVmRpc::PacketCapture(rpc));
                     }
+                    #[cfg(feature = "mem-profile-tracing")]
+                    diag_server::DiagRequest::MemoryProfileTrace(rpc) => {
+                        rpc.handle_failable(async |pid| {
+                            if pid == std::process::id() as i32 {
+                                anyhow::Ok(profiler.capture_and_restart())
+                            } else {
+                                let Some(workers) = &mut workers else {
+                                    anyhow::bail!("workers have not been started yet");
+                                };
+
+                                let result = workers
+                                    .vm_rpc
+                                    .call(UhVmRpc::MemoryProfileTrace, pid)
+                                    .await
+                                    .context("failed to get memory profile from worker process")?;
+                                Ok(result?)
+                            }
+                        })
+                        .await
+                    }
                     diag_server::DiagRequest::Resume(rpc) => {
                         let Some(workers) = &mut workers else {
                             rpc.complete(Err(RemoteError::new(anyhow::anyhow!(
@@ -750,6 +775,12 @@ async fn run_control(
                         tracing::info!(CVM_ALLOWED, "flushing logs");
                         ctx.until_cancelled(tracing.flush()).await?;
                         Ok(())
+                    })
+                    .await
+                }
+                ControlRequest::MakeWorker(rpc) => {
+                    rpc.handle_failable(async |name| {
+                        launch_mesh_host(mesh, &name, Some(tracing.tracer())).await
                     })
                     .await
                 }

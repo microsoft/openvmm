@@ -1,13 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use flowey::node::prelude::RustRuntimeServices;
 use std::path::Path;
 use std::path::PathBuf;
 
-pub fn win_to_linux(path: impl AsRef<Path>) -> PathBuf {
-    let sh = xshell::Shell::new().unwrap();
+pub fn win_to_linux(rt: &RustRuntimeServices<'_>, path: impl AsRef<Path>) -> PathBuf {
     let path = path.as_ref();
-    xshell::cmd!(sh, "wslpath {path}")
+    flowey::shell_cmd!(rt, "wslpath {path}")
         .quiet()
         .ignore_status()
         .read()
@@ -15,10 +15,9 @@ pub fn win_to_linux(path: impl AsRef<Path>) -> PathBuf {
         .into()
 }
 
-pub fn linux_to_win(path: impl AsRef<Path>) -> PathBuf {
-    let sh = xshell::Shell::new().unwrap();
+pub fn linux_to_win(rt: &RustRuntimeServices<'_>, path: impl AsRef<Path>) -> PathBuf {
     let path = path.as_ref();
-    xshell::cmd!(sh, "wslpath -aw {path}")
+    flowey::shell_cmd!(rt, "wslpath -aw {path}")
         .quiet()
         .ignore_status()
         .read()

@@ -27,7 +27,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.91.1 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -37,7 +37,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.91.1
+        ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -45,12 +45,12 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.91.1
+        ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -102,7 +102,7 @@ jobs:
         flowey v 0 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -133,11 +133,11 @@ jobs:
     - name: check if openvmm needs to be cloned
       run: |-
         flowey e 0 flowey_lib_common::git_checkout 0
-        flowey v 0 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46 write-to-env github floweyvar1
-        flowey v 0 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
+        flowey v 0 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:489:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:490:46 write-to-env github floweyvar1
+        flowey v 0 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:490:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -168,7 +168,7 @@ jobs:
       run: flowey e 0 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish guide
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: guide
         path: ${{ runner.temp }}/publish_artifacts/guide/
@@ -185,7 +185,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.91.1 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -195,7 +195,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.91.1
+        ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -203,12 +203,12 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.91.1
+        ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -253,11 +253,11 @@ jobs:
     - name: check if openvmm needs to be cloned
       run: |-
         flowey.exe e 1 flowey_lib_common::git_checkout 0
-        flowey.exe v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46 write-to-env github floweyvar1
-        flowey.exe v 1 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
+        flowey.exe v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:489:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:490:46 write-to-env github floweyvar1
+        flowey.exe v 1 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:490:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -285,7 +285,7 @@ jobs:
         flowey.exe v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -300,7 +300,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey.exe e 1 flowey_lib_common::download_protoc 0
+        flowey.exe e 1 flowey_lib_common::resolve_protoc 0
         flowey.exe e 1 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -327,7 +327,7 @@ jobs:
       run: flowey.exe e 1 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish x64-windows-rustdoc
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-rustdoc
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-rustdoc/
@@ -344,7 +344,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.91.1 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -354,7 +354,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.91.1
+        ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -362,12 +362,12 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.91.1
+        ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -412,11 +412,11 @@ jobs:
     - name: check if openvmm needs to be cloned
       run: |-
         flowey e 2 flowey_lib_common::git_checkout 0
-        flowey v 2 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46 write-to-env github floweyvar1
-        flowey v 2 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
+        flowey v 2 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:489:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:490:46 write-to-env github floweyvar1
+        flowey v 2 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:490:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -444,7 +444,7 @@ jobs:
         flowey v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -465,7 +465,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey e 2 flowey_lib_common::download_protoc 0
+        flowey e 2 flowey_lib_common::resolve_protoc 0
         flowey e 2 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -492,7 +492,7 @@ jobs:
       run: flowey e 2 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish x64-linux-rustdoc
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-linux-rustdoc
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-rustdoc/
@@ -501,7 +501,7 @@ jobs:
       run: rm $AgentTempDirNormal/bootstrapped-flowey/job2.json
       shell: bash
     - name: 🌼🥾 Publish bootstrapped flowey
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: _internal-flowey-bootstrap-x86_64-linux-uid-1
         path: ${{ runner.temp }}/bootstrapped-flowey
@@ -519,7 +519,7 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-1,guide,x64-linux-rustdoc,x64-windows-rustdoc}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -544,17 +544,25 @@ jobs:
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-rustdoc" | flowey v 3 'artifact_use_from_x64-linux-rustdoc' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-windows-rustdoc" | flowey v 3 'artifact_use_from_x64-windows-rustdoc' --is-raw-string update
       shell: bash
-    - name: check if openvmm needs to be cloned
+    - name: 🦀 flowey rust steps
       run: |-
         flowey e 3 flowey_core::pipeline::artifact::resolve 1
         flowey e 3 flowey_core::pipeline::artifact::resolve 2
         flowey e 3 flowey_core::pipeline::artifact::resolve 0
+      shell: bash
+    - id: flowey_lib_common__install_nodejs__0
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24.x
+      name: Install nodejs
+    - name: check if openvmm needs to be cloned
+      run: |-
         flowey e 3 flowey_lib_common::git_checkout 0
-        flowey v 3 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46 write-to-env github floweyvar2
-        flowey v 3 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
+        flowey v 3 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:489:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:490:46 write-to-env github floweyvar2
+        flowey v 3 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:490:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -569,11 +577,6 @@ jobs:
         flowey e 3 flowey_lib_common::git_checkout 3
         flowey e 3 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
-    - id: flowey_lib_common__install_nodejs__0
-      uses: actions/setup-node@v4
-      with:
-        node-version: 18.x
-      name: Install nodejs
     - name: build test-results website
       run: flowey e 3 flowey_lib_hvlite::_jobs::build_test_results_website 0
       shell: bash
@@ -581,10 +584,10 @@ jobs:
       run: |-
         flowey e 3 flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages 0
         flowey e 3 flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages 1
-        flowey v 3 'flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages:3:flowey_lib_hvlite/src/_jobs/consolidate_and_publish_gh_pages.rs:122:39' --is-raw-string write-to-env github floweyvar1
+        flowey v 3 'flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages:2:flowey_lib_hvlite/src/_jobs/consolidate_and_publish_gh_pages.rs:106:39' --is-raw-string write-to-env github floweyvar1
       shell: bash
     - id: flowey_lib_hvlite___jobs__consolidate_and_publish_gh_pages__2
-      uses: actions/upload-pages-artifact@v3
+      uses: actions/upload-pages-artifact@v4
       with:
         path: ${{ env.floweyvar1 }}
       name: Upload pages artifact

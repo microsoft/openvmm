@@ -49,7 +49,7 @@ pub const IOCTL_VMBUS_PROXY_TL_CONNECT_REQUEST: u32 = VMBUS_PROXY_IOCTL(0xc);
 pub const IOCTL_VMBUS_PROXY_RESTORE_CHANNEL: u32 = VMBUS_PROXY_IOCTL(0xd);
 pub const IOCTL_VMBUS_PROXY_REVOKE_UNCLAIMED_CHANNELS: u32 = VMBUS_PROXY_IOCTL(0xe);
 pub const IOCTL_VMBUS_PROXY_RESTORE_SET_INTERRUPT: u32 = VMBUS_PROXY_IOCTL(0xf);
-pub const IOCTL_VMBUS_PROXY_GET_NUMA_MAP: u32 = VMBUS_PROXY_IOCTL(0x14);
+pub const IOCTL_VMBUS_PROXY_DETACH: u32 = VMBUS_PROXY_IOCTL(0x10);
 
 #[repr(C)]
 #[derive(Copy, Clone, zerocopy::IntoBytes)]
@@ -185,7 +185,7 @@ pub struct VMBUS_PROXY_RELEASE_CHANNEL_INPUT {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, zerocopy::IntoBytes, zerocopy::Immutable)]
 pub struct VMBUS_PROXY_RUN_CHANNEL_INPUT {
     pub ProxyId: u64,
 }
@@ -209,7 +209,7 @@ pub struct VMBUS_PROXY_TL_CONNECT_REQUEST_INPUT {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
-pub struct VMBUS_PROXY_GET_NUMA_MAP_OUTPUT {
-    pub VpCount: u32,
+#[derive(Copy, Clone, zerocopy::IntoBytes, zerocopy::Immutable)]
+pub struct VMBUS_PROXY_DETACH_INPUT {
+    pub DetachChannels: bool,
 }

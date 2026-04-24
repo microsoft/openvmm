@@ -15,11 +15,13 @@ PS> wsl --install
 This should install WSL2 using the default Ubuntu linux distribution.
 You can check that the installation completed successfully by running the
 following command in a Powershell window.
+
 ```powershell
 PS> wsl -l -v
   NAME            STATE           VERSION
 * Ubuntu          Running         2
 ```
+
 Once that command has completed, you will need to open WSL to complete the
 installation and set your password. You can open WSL by typing `wsl` or `bash`
 into Command Prompt or Powershell, or by opening the "Ubuntu" Windows Terminal
@@ -29,6 +31,12 @@ profile that should have been created.
 If you intend to cross-compile OpenVMM for Windows, please ensure you are
 running a recent version of Windows 11. Windows 10 is no longer supported as a
 development platform, due to needed WHP APIs.
+
+For the best OpenHCL development experience, we recommend **Windows 11 26H1**
+(Insider Canary channel, build 28000+) if available for your device — this
+enables COM3 serial output for kernel logs and matches the CI runners. See
+[Debugging OpenHCL](../../reference/openhcl/debugging.md#recommended-host-os-for-openhcl-development)
+for details.
 ```
 
 All subsequent commands on this page must be run within WSL2.
@@ -68,9 +76,27 @@ clone from Linux! It will result in serious performance issues, and may break
 certain functionality (e.g: cross-compiling Windows binaries).
 
 ```bash
-$ cd ~/src/
-$ git clone https://github.com/microsoft/openvmm.git
+cd ~/src/
+git clone https://github.com/microsoft/openvmm.git
 ```
+
+## Automatic Dependency Installation
+
+When building OpenHCL, you can pass `--install-missing-deps` to have
+the build system automatically install any missing dependencies
+(e.g., .NET SDK, cross-compilation toolchains, system packages):
+
+```bash
+cargo xflowey build-igvm x64 --install-missing-deps
+```
+
+```admonish warning
+This flag may install packages and toolchains globally on your system
+(e.g., via `apt install` or `rustup toolchain add`).
+```
+
+This is the easiest way to get a working build environment without
+manually tracking down each dependency.
 
 ## Next Steps
 

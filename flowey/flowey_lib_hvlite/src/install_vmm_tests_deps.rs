@@ -16,7 +16,7 @@ const WHP_TESTS_REQUIRED_FEATURES: [&str; 1] = ["HypervisorPlatform"];
 
 const VIRT_REG_PATH: &str = r#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\Virtualization"#;
 
-#[derive(Serialize, Deserialize, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum VmmTestsDepSelections {
     Windows {
         hyperv: bool,
@@ -26,10 +26,23 @@ pub enum VmmTestsDepSelections {
     Linux,
 }
 
+flowey_config! {
+    /// Config for the install_vmm_tests_deps node.
+    pub struct Config {
+        /// Specify the necessary dependencies
+        pub selections: Option<VmmTestsDepSelections>,
+        /// Automatically install dependencies (requires admin privileges).
+        ///
+        /// When false, assume all dependencies are already present and skip
+        /// checks that require admin privileges (e.g., DISM.exe).
+        ///
+        /// Must be set to true/false when running locally.
+        pub auto_install: Option<bool>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Specify the necessary dependencies
-        Select(VmmTestsDepSelections),
         /// Install the dependencies
         Install(WriteVar<SideEffect>),
         /// Generate a list of commands that would install the dependencies
@@ -37,30 +50,40 @@ flowey_request! {
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(_ctx: &mut ImportCtx<'_>) {}
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut selections = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut installed = Vec::new();
         let mut write_commands = Vec::new();
         for req in requests {
             match req {
-                Request::Select(v) => same_across_all_reqs("Select", &mut selections, v)?,
                 Request::Install(v) => installed.push(v),
                 Request::GetCommands(v) => write_commands.push(v),
             }
         }
-        let selections = selections.ok_or(anyhow::anyhow!("Missing essential request: Select"))?;
+
         let installed = installed;
         let write_commands = write_commands;
+
+        // Return if no requests specified
         if installed.is_empty() && write_commands.is_empty() {
             return Ok(());
         }
+
+        let selections = config
+            .selections
+            .ok_or(anyhow::anyhow!("missing config: selections"))?;
+        let auto_install = config.auto_install;
         let installing = !installed.is_empty();
 
         match selections {
@@ -74,7 +97,6 @@ impl FlowNode for Node {
                     let write_commands = write_commands.claim(ctx);
 
                     move |rt| {
-                        let sh = xshell::Shell::new()?;
                         let mut commands = Vec::new();
 
                         if !matches!(rt.platform(), FlowPlatform::Windows)
@@ -82,6 +104,15 @@ impl FlowNode for Node {
                         {
                             anyhow::bail!("Must be on Windows or WSL2 to install Windows deps.")
                         }
+
+                        // Resolve auto_install for local backend
+                        let auto_install = match rt.backend() {
+                            FlowBackend::Local => auto_install.ok_or_else(|| {
+                                anyhow::anyhow!("Missing essential request: AutoInstall")
+                            })?,
+                            // CI backends always auto-install
+                            FlowBackend::Ado | FlowBackend::Github => true,
+                        };
 
                         // TODO: add these features and reg keys to the initial CI image
 
@@ -94,9 +125,9 @@ impl FlowNode for Node {
                             features_to_enable.append(&mut WHP_TESTS_REQUIRED_FEATURES.into());
                         }
 
-                        // Check if features are already enabled
-                        if installing && !features_to_enable.is_empty() {
-                            let features = xshell::cmd!(sh, "DISM.exe /Online /Get-Features").output()?;
+                        // Check if features are already enabled (requires admin, so skip if not auto_install)
+                        if installing && auto_install && !features_to_enable.is_empty() {
+                            let features = flowey::shell_cmd!(rt, "DISM.exe /Online /Get-Features").output()?;
                             assert!(features.status.success());
                             let features = String::from_utf8_lossy(&features.stdout).to_string();
                             let mut feature = None;
@@ -118,10 +149,14 @@ impl FlowNode for Node {
                                     }
                                 }
                             }
+                        } else if installing && !auto_install && !features_to_enable.is_empty() {
+                            // Not auto-installing, assume features are already present
+                            log::info!("Skipping Windows feature check (requires admin). Assuming features are already enabled.");
+                            features_to_enable.clear();
                         }
 
                         // Prompt before enabling when running locally
-                        if installing && !features_to_enable.is_empty() && matches!(rt.backend(), FlowBackend::Local) {
+                        if installing && auto_install && !features_to_enable.is_empty() && matches!(rt.backend(), FlowBackend::Local) {
                             let mut features_to_install_string = String::new();
                             for feature in features_to_enable.iter() {
                                 features_to_install_string.push_str(feature);
@@ -146,8 +181,8 @@ Otherwise, press `ctrl-c` to cancel the run.
 
                         // Install the features
                         for feature in features_to_enable {
-                            if installing {
-                                xshell::cmd!(sh, "DISM.exe /Online /NoRestart /Enable-Feature /All /FeatureName:{feature}").run()?;
+                            if installing && auto_install {
+                                flowey::shell_cmd!(rt, "DISM.exe /Online /NoRestart /Enable-Feature /All /FeatureName:{feature}").run()?;
                             }
                             commands.push(format!("DISM.exe /Online /NoRestart /Enable-Feature /All /FeatureName:{feature}"));
                         }
@@ -165,9 +200,9 @@ Otherwise, press `ctrl-c` to cancel the run.
                             }
                         }
 
-                        // Check if reg keys are set
-                        if installing && !reg_keys_to_set.is_empty() {
-                            let output = xshell::cmd!(sh, "reg.exe query {VIRT_REG_PATH}").output()?;
+                        // Check if reg keys are set (skip if not auto_install, assume already set)
+                        if installing && auto_install && !reg_keys_to_set.is_empty() {
+                            let output = flowey::shell_cmd!(rt, "reg.exe query {VIRT_REG_PATH}").output()?;
                             if output.status.success() {
                                 let output = String::from_utf8_lossy(&output.stdout).to_string();
                                 for line in output.lines() {
@@ -181,10 +216,14 @@ Otherwise, press `ctrl-c` to cancel the run.
                                     }
                                 }
                             }
+                        } else if installing && !auto_install && !reg_keys_to_set.is_empty() {
+                            // Not auto-installing, assume reg keys are already set
+                            log::info!("Skipping registry key check. Assuming keys are already set.");
+                            reg_keys_to_set.clear();
                         }
 
                         // Prompt before changing registry when running locally
-                        if installing && !reg_keys_to_set.is_empty() && matches!(rt.backend(), FlowBackend::Local) {
+                        if installing && auto_install && !reg_keys_to_set.is_empty() && matches!(rt.backend(), FlowBackend::Local) {
                             let mut reg_keys_to_set_string = String::new();
                             for feature in reg_keys_to_set.iter() {
                                 reg_keys_to_set_string.push_str(feature);
@@ -209,8 +248,8 @@ Otherwise, press `ctrl-c` to cancel the run.
                         for v in reg_keys_to_set {
                             // TODO: figure out why reg.exe is not found if I
                             // render the command as a string first and share
-                            if installing {
-                                xshell::cmd!(sh, "reg.exe add {VIRT_REG_PATH} /v {v} /t REG_DWORD /d 1 /f").run()?;
+                            if installing && auto_install {
+                                flowey::shell_cmd!(rt, "reg.exe add {VIRT_REG_PATH} /v {v} /t REG_DWORD /d 1 /f").run()?;
                             }
                             commands.push(format!("reg.exe add \"{VIRT_REG_PATH}\" /v {v} /t REG_DWORD /d 1 /f"));
                         }

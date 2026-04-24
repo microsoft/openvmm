@@ -7,12 +7,13 @@
 
 use flowey::node::prelude::*;
 use std::collections::BTreeSet;
+use std::io::IsTerminal;
 use vmm_test_images::KnownTestArtifacts;
 
 const STORAGE_ACCOUNT: &str = "hvlitetestvhds";
 const CONTAINER: &str = "vhds";
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CustomDiskPolicy {
     /// Allow swapping in non-standard disk image variants
     Loose,
@@ -21,16 +22,22 @@ pub enum CustomDiskPolicy {
     Strict,
 }
 
-flowey_request! {
-    pub enum Request {
+flowey_config! {
+    /// Config for the download_openvmm_vmm_tests_artifacts node.
+    pub struct Config {
         /// Local only: if true, skips interactive prompt that warns user about
         /// downloading many gigabytes of disk images.
-        LocalOnlySkipDownloadPrompt(bool),
+        pub skip_prompt: Option<bool>,
         /// Local only: set policy when detecting a non-standard cached disk image
-        LocalOnlyCustomDiskPolicy(CustomDiskPolicy),
+        pub custom_disk_policy: Option<CustomDiskPolicy>,
         /// Specify a custom cache directory. By default, VHDs are cloned
         /// into a job-local temp directory.
-        CustomCacheDir(PathBuf),
+        pub custom_cache_dir: Option<PathBuf>,
+    }
+}
+
+flowey_request! {
+    pub enum Request {
         /// Download test artifacts into the download folder
         Download(Vec<KnownTestArtifacts>),
         /// Get path to folder containing all downloaded artifacts
@@ -38,34 +45,27 @@ flowey_request! {
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut skip_prompt = None;
-        let mut custom_disk_policy = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut test_artifacts = BTreeSet::<_>::new();
-        let mut custom_cache_dir = None;
         let mut get_download_folder = Vec::new();
 
         for req in requests {
             match req {
-                Request::LocalOnlySkipDownloadPrompt(v) => {
-                    same_across_all_reqs("LocalOnlySkipDownloadPrompt", &mut skip_prompt, v)?
-                }
-                Request::LocalOnlyCustomDiskPolicy(v) => {
-                    same_across_all_reqs("LocalOnlyCustomDiskPolicy", &mut custom_disk_policy, v)?
-                }
-                Request::CustomCacheDir(v) => {
-                    same_across_all_reqs("CustomCacheDir", &mut custom_cache_dir, v)?
-                }
                 Request::Download(v) => v.into_iter().for_each(|v| {
                     test_artifacts.insert(v);
                 }),
@@ -74,13 +74,15 @@ impl FlowNode for Node {
         }
 
         let skip_prompt = if matches!(ctx.backend(), FlowBackend::Local) {
-            skip_prompt.unwrap_or(false)
+            config.skip_prompt.unwrap_or(false)
         } else {
-            if skip_prompt.is_some() {
-                anyhow::bail!("set `LocalOnlySkipDownloadPrompt` on non-local backend")
+            if config.skip_prompt.is_some() {
+                anyhow::bail!("set `skip_prompt` config on non-local backend")
             }
             true
         };
+        let custom_disk_policy = config.custom_disk_policy;
+        let custom_cache_dir = config.custom_cache_dir;
 
         let persistent_dir = ctx.persistent_dir();
 
@@ -150,12 +152,10 @@ Detected inconsistencies between expected and cached VMM test images.
 
   If you are trying to use the same disks used in CI, then this is not expected,
   and your cached disks are corrupt / out-of-date and need to be re-downloaded.
-  Please tweak your CLI invocation / pipeline such that
-  `LocalOnlyCustomDiskPolicy` is set to `CustomDiskPolicy::Strict`.
+  Please set the `custom_disk_policy` config to `CustomDiskPolicy::Strict`.
 
   If you manually modified or replaced disks and you would like to keep them,
-  please tweak your CLI invocation / pipeline such that
-  `LocalOnlyCustomDiskPolicy` is set to `CustomDiskPolicy::Loose`.
+  please set the `custom_disk_policy` config to `CustomDiskPolicy::Loose`.
 ================================================================================
 "#
                         );
@@ -221,14 +221,42 @@ If running locally, you can re-run with `--help` for info on how to:
 - tweak the selected download folder (e.g: download images to an external HDD)
 - skip this warning prompt in the future
 
-If you're OK with starting the download, please press <enter>.
-Otherwise, press `ctrl-c` to cancel the run.
+If you're OK with starting the download, please press just <enter>.
+Otherwise, press anything else with <enter> to cancel the run.
 ================================================================================
 "#
                         );
                         log::warn!("{}", msg.trim());
-                        if !skip_prompt {
-                            let _ = std::io::stdin().read_line(&mut String::new());
+
+                        // If this is not an interactive terminal, just allow the download to proceed
+                        let is_terminal = std::io::stdin().is_terminal();
+
+                        if !skip_prompt && is_terminal {
+                            // Only display the prompt for 30s before timing out
+                            let result = crossterm::event::poll(std::time::Duration::from_secs(30));
+                            match result {
+                                Ok(true) => {
+                                    if let crossterm::event::Event::Key(key_event) =
+                                        crossterm::event::read().unwrap()
+                                    {
+                                        if key_event.code == crossterm::event::KeyCode::Enter {
+                                            // proceed with download
+                                        } else {
+                                            anyhow::bail!("user cancelled the run");
+                                        }
+                                    } else {
+                                        anyhow::bail!(
+                                            "unexpected event while waiting for user input"
+                                        );
+                                    }
+                                }
+                                Ok(false) => {
+                                    anyhow::bail!("timed out waiting for user input");
+                                }
+                                Err(e) => {
+                                    anyhow::bail!("error while waiting for user input: {e}");
+                                }
+                            }
                         }
                     }
                 }
@@ -288,14 +316,12 @@ enum AzCopyAuthMethod {
 fn download_blobs_from_azure(
     // pass dummy _rt to ensure no-one accidentally calls this at graph
     // resolution time
-    _rt: &mut RustRuntimeServices<'_>,
+    rt: &mut RustRuntimeServices<'_>,
     azcopy_bin: &PathBuf,
     azcopy_auth_method: Option<AzCopyAuthMethod>,
     files_to_download: Vec<(String, u64)>,
     output_folder: &Path,
 ) -> anyhow::Result<()> {
-    let sh = xshell::Shell::new()?;
-
     //
     // Use azcopy to download the files
     //
@@ -314,7 +340,7 @@ fn download_blobs_from_azure(
     });
 
     if let Some(auth_method) = auth_method {
-        sh.set_var("AZCOPY_AUTO_LOGIN_TYPE", auth_method);
+        rt.sh.set_var("AZCOPY_AUTO_LOGIN_TYPE", auth_method);
     }
     // instead of using return codes to signal success/failure,
     // azcopy forces you to parse execution logs in order to find
@@ -323,13 +349,15 @@ fn download_blobs_from_azure(
     // thanks azcopy. very cool.
     //
     // <https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azcopy-configure#review-the-logs-for-errors>
-    sh.set_var("AZCOPY_JOB_PLAN_LOCATION", sh.current_dir());
-    sh.set_var("AZCOPY_LOG_LOCATION", sh.current_dir());
+    let current_dir = rt.sh.current_dir();
+    rt.sh
+        .set_var("AZCOPY_JOB_PLAN_LOCATION", current_dir.clone());
+    rt.sh.set_var("AZCOPY_LOG_LOCATION", current_dir.clone());
 
     // setting `--overwrite true` since we do our own pre-download
     // filtering
-    let result = xshell::cmd!(
-        sh,
+    let result = flowey::shell_cmd!(
+        rt,
         "{azcopy_bin} copy
             {url}
             {output_folder}
@@ -341,17 +369,17 @@ fn download_blobs_from_azure(
     .run();
 
     if result.is_err() {
-        xshell::cmd!(
-            sh,
+        flowey::shell_cmd!(
+            rt,
             "df -h --output=source,fstype,size,used,avail,pcent,target -x tmpfs -x devtmpfs"
         )
         .run()?;
-        let dir_contents = sh.read_dir(sh.current_dir())?;
+        let dir_contents = rt.sh.read_dir(current_dir)?;
         for log in dir_contents
             .iter()
             .filter(|p| p.extension() == Some("log".as_ref()))
         {
-            println!("{}:\n{}\n", log.display(), sh.read_file(log)?);
+            println!("{}:\n{}\n", log.display(), rt.sh.read_file(log)?);
         }
         return result.context("failed to download VMM test disk images");
     }

@@ -19,7 +19,6 @@ use framebuffer::View;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use get_resources::ged::FirmwareEvent;
-use hvlite_defs::rpc::PulseSaveRestoreError;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::CancelContext;
 use mesh::Receiver;
@@ -27,6 +26,7 @@ use mesh::RecvError;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh_process::Mesh;
+use openvmm_defs::rpc::PulseSaveRestoreError;
 use pal_async::socket::PolledSocket;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
@@ -164,6 +164,31 @@ impl PetriVmRuntime for PetriVmOpenVmm {
     async fn reset(&mut self) -> anyhow::Result<()> {
         Self::reset(self).await
     }
+
+    async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()> {
+        Self::set_vtl2_settings(self, settings).await
+    }
+
+    async fn set_vmbus_drive(
+        &mut self,
+        _disk: &crate::Drive,
+        _controller_id: &guid::Guid,
+        _controller_location: u32,
+    ) -> anyhow::Result<()> {
+        todo!("openvmm set vmbus drive")
+    }
+
+    async fn add_pcie_device(
+        &mut self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        Self::add_pcie_device(self, port_name, resource).await
+    }
+
+    async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
+        Self::remove_pcie_device(self, port_name).await
+    }
 }
 
 pub(super) struct PetriVmInner {
@@ -171,6 +196,11 @@ pub(super) struct PetriVmInner {
     pub(super) mesh: Mesh,
     pub(super) worker: Arc<Worker>,
     pub(super) framebuffer_view: Option<View>,
+    /// Whether CIDATA has already been mounted inside the guest.
+    /// Used to skip re-mounting after save/restore (where guest state is
+    /// preserved) while still mounting after a full reset/reboot.
+    pub(super) cidata_mounted: bool,
+    pub(super) pid: i32,
 }
 
 struct PetriVmHaltReceiver {
@@ -209,6 +239,11 @@ impl PetriVmOpenVmm {
             .vtl2_vsock_path
             .as_deref()
             .context("VM is not configured with OpenHCL")
+    }
+
+    /// Get the PID of the openvmm child process.
+    pub fn pid(&self) -> i32 {
+        self.inner.pid
     }
 
     petri_vm_fn!(
@@ -251,6 +286,22 @@ impl PetriVmOpenVmm {
             command_line: &str
         ) -> anyhow::Result<()>
     );
+
+    petri_vm_fn!(
+        /// Hot-add a PCIe device to a named port at runtime.
+        pub async fn add_pcie_device(
+            &mut self,
+            port_name: String,
+            resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>
+        ) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Hot-remove a PCIe device from a named port at runtime.
+        pub async fn remove_pcie_device(
+            &mut self,
+            port_name: String
+        ) -> anyhow::Result<()>
+    );
     petri_vm_fn!(
         /// Resets the hardware state of the VM, simulating a power cycle.
         pub async fn reset(&mut self) -> anyhow::Result<()>
@@ -260,12 +311,29 @@ impl PetriVmOpenVmm {
         pub async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>
     );
     petri_vm_fn!(
-        /// Modifies OpenHCL VTL2 settings.
-        pub async fn modify_vtl2_settings(&mut self, f: impl FnOnce(&mut Vtl2Settings)) -> anyhow::Result<()>
+        /// Set the OpenHCL VTL2 settings.
+        pub async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()>
     );
 
-    petri_vm_fn!(pub(crate) async fn resume(&mut self) -> anyhow::Result<()>);
-    petri_vm_fn!(pub(crate) async fn verify_save_restore(&mut self) -> anyhow::Result<()>);
+    petri_vm_fn!(
+        /// Pause the VM. Call [`resume`](Self::resume) to continue execution.
+        pub async fn pause(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Save the VM's device and processor state, returning the serialized
+        /// bytes. The VM should be paused before calling this.
+        pub async fn save_state(&mut self) -> anyhow::Result<Vec<u8>>
+    );
+    petri_vm_fn!(
+        /// Resume a paused VM.
+        pub async fn resume(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Perform a pulse save/restore cycle: pause the VM, save all state,
+        /// reset, restore, and resume. Useful for verifying that device state
+        /// survives a save/restore round-trip.
+        pub async fn verify_save_restore(&mut self) -> anyhow::Result<()>
+    );
     petri_vm_fn!(pub(crate) async fn launch_linux_direct_pipette(&mut self) -> anyhow::Result<()>);
 
     /// Wrap the provided future in a race with the worker process's halt
@@ -422,6 +490,18 @@ impl PetriVmInner {
         self.worker.update_command_line(command_line).await
     }
 
+    async fn add_pcie_device(
+        &mut self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.worker.add_pcie_device(port_name, resource).await
+    }
+
+    async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
+        self.worker.remove_pcie_device(port_name).await
+    }
+
     async fn restore_openhcl(&self) -> anyhow::Result<()> {
         let ged_send = self
             .resources
@@ -432,12 +512,7 @@ impl PetriVmInner {
         self.worker.restore_openhcl(ged_send).await
     }
 
-    async fn modify_vtl2_settings(
-        &mut self,
-        f: impl FnOnce(&mut Vtl2Settings),
-    ) -> anyhow::Result<()> {
-        f(self.resources.vtl2_settings.as_mut().unwrap());
-
+    async fn set_vtl2_settings(&self, settings: &Vtl2Settings) -> anyhow::Result<()> {
         let ged_send = self
             .resources
             .ged_send
@@ -447,7 +522,7 @@ impl PetriVmInner {
         ged_send
             .call_failable(
                 get_resources::ged::GuestEmulationRequest::ModifyVtl2Settings,
-                prost::Message::encode_to_vec(self.resources.vtl2_settings.as_ref().unwrap()),
+                prost::Message::encode_to_vec(settings),
             )
             .await?;
 
@@ -457,16 +532,16 @@ impl PetriVmInner {
     async fn reset(&mut self) -> anyhow::Result<()> {
         tracing::info!("Resetting VM");
         self.worker.reset().await?;
-        // On linux direct pipette won't auto start, start it over serial
+        // Guest state is lost on reset, so CIDATA needs to be remounted.
+        self.cidata_mounted = false;
+        // On linux direct, pipette won't auto-start unless it is the init
+        // process. When it isn't, restart it over serial. (When pipette runs
+        // as PID 1 via rdinit=/pipette, linux_direct_serial_agent is None, so
+        // this block is skipped and pipette restarts automatically on reboot.)
         if let Some(agent) = self.resources.linux_direct_serial_agent.as_mut() {
             agent.reset();
 
-            if self
-                .resources
-                .agent_image
-                .as_ref()
-                .is_some_and(|x| x.contains_pipette())
-            {
+            if self.resources.properties.using_vtl0_pipette {
                 self.launch_linux_direct_pipette().await?;
             }
         }
@@ -495,9 +570,49 @@ impl PetriVmInner {
             &self.resources.output_dir,
         )
         .await
-        .context("failed to connect to pipette");
+        .context("failed to connect to pipette")?;
         tracing::info!(set_high_vtl, "completed pipette handshake");
-        client
+
+        // When pipette runs as PID 1 init and a CIDATA agent disk is
+        // attached, mount it so test files are available at /cidata.
+        // Skip if already mounted (e.g. reconnecting after save/restore
+        // where guest state is preserved).
+        if !set_high_vtl
+            && self.resources.properties.uses_pipette_as_init
+            && self.resources.properties.has_agent_disk
+            && !self.cidata_mounted
+        {
+            tracing::info!("mounting CIDATA agent disk via pipette");
+            client
+                .unix_shell()
+                .cmd("mkdir")
+                .arg("-p")
+                .arg("/cidata")
+                .run()
+                .await
+                .context("failed to create /cidata mount point")?;
+            client
+                .unix_shell()
+                .cmd("mount")
+                .arg("LABEL=cidata")
+                .arg("/cidata")
+                .run()
+                .await
+                .context("failed to mount CIDATA disk")?;
+            self.cidata_mounted = true;
+        }
+
+        Ok(client)
+    }
+
+    async fn pause(&self) -> anyhow::Result<()> {
+        self.worker.pause().await?;
+        Ok(())
+    }
+
+    async fn save_state(&self) -> anyhow::Result<Vec<u8>> {
+        let state_msg = self.worker.save().await?;
+        Ok(mesh::payload::encode(state_msg))
     }
 
     async fn resume(&self) -> anyhow::Result<()> {

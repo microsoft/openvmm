@@ -52,6 +52,8 @@ use zerocopy::IntoBytes;
 pub struct OpenVmbusSerialGuestConfig {
     /// The open UIO device file.
     pub uio_device: File,
+    /// Only allow guest to host traffic
+    pub tx_only: bool,
 }
 
 impl ResourceId<SerialBackendHandle> for OpenVmbusSerialGuestConfig {
@@ -79,9 +81,12 @@ mod user_pipe {
     impl OpenVmbusSerialGuestConfig {
         /// Opens the UIO device for the specified instance GUID and returns the
         /// configuration resource.
-        pub fn open(instance_id: &Guid) -> anyhow::Result<Self> {
+        pub fn open(instance_id: &Guid, tx_only: bool) -> anyhow::Result<Self> {
             let uio_device = vmbus_user_channel::open_uio_device(instance_id)?;
-            Ok(Self { uio_device })
+            Ok(Self {
+                uio_device,
+                tx_only,
+            })
         }
     }
 
@@ -106,7 +111,7 @@ mod user_pipe {
             let pipe = vmbus_user_channel::message_pipe(input.driver.as_ref(), rsrc.uio_device)
                 .context("failed to open vmbus serial")?;
 
-            let driver = VmbusSerialDriver::new(pipe)
+            let driver = VmbusSerialDriver::new(pipe, rsrc.tx_only)
                 .await
                 .context("failed to create serial transport")?;
 
@@ -132,6 +137,7 @@ pub struct VmbusSerialDriver {
     failed: bool,
     connected: bool,
     stats: SerialStats,
+    tx_only: bool,
 }
 
 #[derive(Inspect, Debug, Default)]
@@ -187,6 +193,7 @@ impl VmbusSerialDriver {
     /// Connects to `pipe` and returns a new serial device instance.
     pub async fn new(
         pipe: impl 'static + AsyncRecv + AsyncSend + Send + Unpin + InspectMut,
+        tx_only: bool,
     ) -> Result<Self, Error> {
         let mut this = Self {
             pipe: Box::new(pipe),
@@ -199,6 +206,7 @@ impl VmbusSerialDriver {
             failed: false,
             connected: false,
             stats: Default::default(),
+            tx_only,
         };
         this.negotiate().await?;
         Ok(this)
@@ -276,6 +284,8 @@ impl VmbusSerialDriver {
             && self.rx_avail
             && !self.rx_in_flight
         {
+            assert!(!self.tx_only);
+
             let request = protocol::Header::new_host_request(HostRequests::GET_RX_DATA);
             if let Poll::Ready(r) =
                 Pin::new(self.pipe.as_mut()).poll_send(cx, &[IoSlice::new(request.as_bytes())])
@@ -312,6 +322,8 @@ impl VmbusSerialDriver {
         if let Some(req) = header.host_response() {
             match req {
                 HostRequests::GET_RX_DATA => {
+                    assert!(!self.tx_only);
+
                     let response = protocol::RxDataResponse::read_from_prefix(buf)
                         .map_err(|_| ErrorInner::TruncatedMessage)?
                         .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
@@ -335,7 +347,12 @@ impl VmbusSerialDriver {
             }
         } else if let Some(notif) = header.guest_notification() {
             match notif {
-                GuestNotifications::RX_DATA_AVAILABLE => self.rx_avail = true,
+                GuestNotifications::RX_DATA_AVAILABLE => {
+                    // This notification is ignored in TX only mode.
+                    if !self.tx_only {
+                        self.rx_avail = true
+                    }
+                }
                 GuestNotifications::SET_MODEM_STATUS => {
                     let status = protocol::SetModumStatusMessage::read_from_prefix(buf)
                         .map_err(|_| ErrorInner::TruncatedMessage)?
@@ -392,6 +409,9 @@ impl AsyncRead for VmbusSerialDriver {
             self.rx_waker = Some(cx.waker().clone());
             ready!(self.poll_outer(cx))?;
         }
+
+        assert!(!self.tx_only);
+
         let n = buf.len().min(self.rx_buffer.len());
         for (s, d) in self.rx_buffer.drain(..n).zip(buf) {
             *d = s;
@@ -445,6 +465,7 @@ mod tests {
     use crate::ErrorInner;
     use crate::VmbusSerialDriver;
     use futures::AsyncWriteExt;
+    use futures::FutureExt;
     use futures::io::AsyncReadExt;
     use futures::join;
     use pal_async::DefaultDriver;
@@ -492,7 +513,7 @@ mod tests {
             host_vmbus.send(version_response.as_bytes()).await.unwrap();
         });
 
-        let res = VmbusSerialDriver::new(guest_vmbus).await;
+        let res = VmbusSerialDriver::new(guest_vmbus, false).await;
         match res {
             Err(crate::Error(ErrorInner::VersionNotAccepted)) => {}
             Err(e) => panic!("Wrong error type returned {e:?}"),
@@ -505,6 +526,7 @@ mod tests {
     /// Creates a new host guest transport pair ready to send data.
     async fn new_transport_pair(
         driver: &DefaultDriver,
+        tx_only: bool,
     ) -> (PolledSocket<UnixStream>, VmbusSerialDriver) {
         let (host_vmbus, guest_vmbus) = vmbus_async::pipe::connected_message_pipes(4096);
 
@@ -526,14 +548,14 @@ mod tests {
             .detach();
 
         // Create the guest serial transport
-        let guest_transport = VmbusSerialDriver::new(guest_vmbus).await.unwrap();
+        let guest_transport = VmbusSerialDriver::new(guest_vmbus, tx_only).await.unwrap();
 
         (host_io, guest_transport)
     }
 
     #[async_test]
     async fn test_basic_read_write(driver: DefaultDriver) {
-        let (mut host_io, mut guest_io) = new_transport_pair(&driver).await;
+        let (mut host_io, mut guest_io) = new_transport_pair(&driver, false).await;
 
         let data = vec![1, 2, 3, 4, 5];
         let data2 = vec![5, 4, 3, 2, 1];
@@ -549,7 +571,7 @@ mod tests {
 
     #[async_test]
     async fn test_large_read_write(driver: DefaultDriver) {
-        let (host_io, guest_io) = new_transport_pair(&driver).await;
+        let (host_io, guest_io) = new_transport_pair(&driver, false).await;
 
         let (mut host_read, mut host_write) = host_io.split();
         let (mut guest_read, mut guest_write) = guest_io.split();
@@ -594,7 +616,7 @@ mod tests {
 
     #[async_test]
     async fn test_large_duplex_concurrent_io(driver: DefaultDriver) {
-        let (host_io, guest_io) = new_transport_pair(&driver).await;
+        let (host_io, guest_io) = new_transport_pair(&driver, false).await;
 
         let (mut host_read, mut host_write) = host_io.split();
         let (mut guest_read, mut guest_write) = guest_io.split();
@@ -645,5 +667,26 @@ mod tests {
         };
 
         join!(host_write, host_read, guest_write, guest_read);
+    }
+
+    #[async_test]
+    async fn test_read_write_tx_only(driver: DefaultDriver) {
+        let (mut host_io, mut guest_io) = new_transport_pair(&driver, true).await;
+
+        let data = vec![1, 2, 3, 4, 5];
+        let data2 = vec![5, 4, 3, 2, 1];
+        host_io.write_all(&data).await.unwrap();
+        guest_io.write_all(&data2).await.unwrap();
+
+        let mut data_recv = vec![0; 5];
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(matches!(
+            guest_io.read(&mut data_recv).poll_unpin(&mut cx),
+            std::task::Poll::Pending
+        ));
+
+        let mut data_recv2 = vec![0; 5];
+        host_io.read_exact(&mut data_recv2).await.unwrap();
+        assert_eq!(data2, data_recv2);
     }
 }

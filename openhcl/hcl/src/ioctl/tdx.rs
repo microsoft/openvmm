@@ -11,6 +11,7 @@ use super::ProcessorRunner;
 use super::hcl_tdcall;
 use super::mshv_tdcall;
 use crate::GuestVtl;
+use crate::protocol::tdx_l2_tsc_deadline_state;
 use crate::protocol::tdx_tdg_vp_enter_exit_info;
 use crate::protocol::tdx_vp_context;
 use crate::protocol::tdx_vp_state;
@@ -39,12 +40,12 @@ use x86defs::tdx::TdxGp;
 use x86defs::tdx::TdxL2Ctls;
 use x86defs::tdx::TdxL2EnterGuestState;
 use x86defs::tdx::TdxVmFlags;
-use x86defs::vmx::ApicPage;
 use x86defs::vmx::VmcsField;
+use x86defs::vmx::VmxApicPage;
 
 /// Runner backing for TDX partitions.
 pub struct Tdx<'a> {
-    apic_pages: VtlArray<&'a UnsafeCell<ApicPage>, 2>,
+    apic_pages: VtlArray<&'a UnsafeCell<VmxApicPage>, 2>,
 }
 
 impl MshvVtl {
@@ -108,11 +109,13 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     }
 
     /// Gets a reference to the TDX enter guest state's GP list.
+    /// These are in canonical x86_64 order.
     pub fn tdx_enter_guest_gps(&self) -> &[u64; 16] {
         &self.tdx_enter_guest_state().gps
     }
 
     /// Gets a mutable reference to the TDX enter guest state's GP list.
+    /// These are in canonical x86_64 order.
     pub fn tdx_enter_guest_gps_mut(&mut self) -> &mut [u64; 16] {
         &mut self.tdx_enter_guest_state_mut().gps
     }
@@ -123,14 +126,14 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     }
 
     /// Gets a reference to the tdx APIC page for the given VTL.
-    pub fn tdx_apic_page(&self, vtl: GuestVtl) -> &ApicPage {
+    pub fn tdx_apic_page(&self, vtl: GuestVtl) -> &VmxApicPage {
         // SAFETY: the APIC pages will not be concurrently accessed by the processor
         // while this VP is in VTL2.
         unsafe { &*self.state.apic_pages[vtl].get() }
     }
 
     /// Gets a mutable reference to the tdx APIC page for the given VTL.
-    pub fn tdx_apic_page_mut(&mut self, vtl: GuestVtl) -> &mut ApicPage {
+    pub fn tdx_apic_page_mut(&mut self, vtl: GuestVtl) -> &mut VmxApicPage {
         // SAFETY: the APIC pages will not be concurrently accessed by the processor
         // while this VP is in VTL2.
         unsafe { &mut *self.state.apic_pages[vtl].get() }
@@ -169,6 +172,16 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     /// Gets a mutable reference to the TDX VP entry flags.
     fn tdx_vp_entry_flags_mut(&mut self) -> &mut TdxVmFlags {
         &mut self.tdx_vp_context_mut().entry_rcx
+    }
+
+    /// Gets a reference to the TDX L2 TSC deadline state.
+    pub fn tdx_l2_tsc_deadline_state(&self) -> &tdx_l2_tsc_deadline_state {
+        &self.tdx_vp_context().l2_tsc_deadline
+    }
+
+    /// Gets a mutable reference to the TDX L2 TSC deadline state.
+    pub fn tdx_l2_tsc_deadline_state_mut(&mut self) -> &mut tdx_l2_tsc_deadline_state {
+        &mut self.tdx_vp_context_mut().l2_tsc_deadline
     }
 
     /// Reads the private registers from the kernel's shared run page into
@@ -477,8 +490,8 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
         _vtl: GuestVtl,
         _name: HvRegisterName,
         _value: HvRegisterValue,
-    ) -> Result<bool, super::Error> {
-        Ok(false)
+    ) -> bool {
+        false
     }
 
     fn must_flush_regs_on(_runner: &ProcessorRunner<'a, Self>, _name: HvRegisterName) -> bool {
@@ -489,8 +502,8 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
         _runner: &ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         _name: HvRegisterName,
-    ) -> Result<Option<HvRegisterValue>, super::Error> {
-        Ok(None)
+    ) -> Option<HvRegisterValue> {
+        None
     }
 
     fn flush_register_page(_runner: &mut ProcessorRunner<'a, Self>) {}

@@ -6,7 +6,7 @@ name = "net_tap"
 edition.workspace = true
 rust-version.workspace = true
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 net_backend.workspace = true
 net_backend_resources.workspace = true
 linux_net_bindings.workspace = true
@@ -18,11 +18,24 @@ pal_async.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
+bitfield-struct.workspace = true
 futures.workspace = true
 libc.workspace = true
+open_enum.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+zerocopy.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+guestmem.workspace = true
+libtest-mimic.workspace = true
+net_backend.workspace = true
+pal_async.workspace = true
+
+[[test]]
+name = "tap_tests"
+harness = false
 
 [lints]
 workspace = true

@@ -3,8 +3,8 @@
 
 //! Build `guest_test_uefi` images and binaries
 
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonProfile;
+use crate::common::CommonArch;
+use crate::common::CommonProfile;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 use std::collections::BTreeMap;
@@ -92,15 +92,15 @@ impl FlowNode for Node {
                     };
 
                     // package it up into an img using the xtask
-                    let sh = xshell::Shell::new()?;
-                    let img_path = sh.current_dir().join("guest_test_uefi.img");
+                    let img_path = rt.sh.current_dir().join("guest_test_uefi.img");
                     let arch_arg = match arch {
                         CommonArch::X86_64 => "bootx64",
                         CommonArch::Aarch64 => "bootaa64",
                     };
-                    sh.change_dir(rt.read(openvmm_repo_path));
-                    xshell::cmd!(
-                        sh,
+                    let path = rt.read(openvmm_repo_path);
+                    rt.sh.change_dir(path);
+                    flowey::shell_cmd!(
+                        rt,
                         "cargo xtask guest-test uefi --output {img_path} --{arch_arg} {efi}"
                     )
                     .run()?;

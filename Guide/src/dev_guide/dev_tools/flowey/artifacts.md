@@ -7,7 +7,7 @@ Artifacts enable typed data transfer between jobs with automatic dependency mana
 **Typed artifacts (recommended)** provide type-safe artifact handling by defining
 a custom type that implements the `Artifact` trait:
 
-```rust
+```rust,ignore
 #[derive(Serialize, Deserialize)]
 struct MyArtifact {
     #[serde(rename = "output.bin")]
@@ -23,7 +23,7 @@ let (pub_artifact, use_artifact) = pipeline.new_typed_artifact("my-files");
 
 **Untyped artifacts** provide simple directory-based artifacts for simpler cases:
 
-```rust
+```rust,ignore
 let (pub_artifact, use_artifact) = pipeline.new_artifact("my-files");
 ```
 
@@ -31,7 +31,7 @@ For detailed examples of defining and using artifacts, see the [Artifact trait d
 
 Both `pipeline.new_typed_artifact("name")` and `pipeline.new_artifact("name")` return a tuple of handles: `(pub_artifact, use_artifact)`. When defining a job you convert them with the job context:
 
-```rust
+```rust,ignore
 // In a producing job:
 let artifact_out = ctx.publish_artifact(pub_artifact);
 // artifact_out : WriteVar<MyArtifact>   (typed)

@@ -6,6 +6,12 @@
 //! At this time - `petri` supports testing OpenVMM, OpenHCL,
 //! and Hyper-V based VMs.
 
+// TODO: Remove this dependency by adding a frontend worker that handles
+// hypervisor auto-detection in the spawned openvmm process instead of
+// requiring probes to be registered in the petri process.
+extern crate openvmm_hypervisors as _;
+
+mod cpio;
 pub mod disk_image;
 mod linux_direct_serial_agent;
 // TODO: Add docs and maybe a trait interface for this, or maybe this can
@@ -20,10 +26,13 @@ mod worker;
 
 pub use petri_artifacts_core::ArtifactHandle;
 pub use petri_artifacts_core::ArtifactResolver;
+pub use petri_artifacts_core::ArtifactSource;
 pub use petri_artifacts_core::AsArtifactHandle;
 pub use petri_artifacts_core::ErasedArtifactHandle;
+pub use petri_artifacts_core::RemoteAccess;
 pub use petri_artifacts_core::ResolveTestArtifact;
 pub use petri_artifacts_core::ResolvedArtifact;
+pub use petri_artifacts_core::ResolvedArtifactSource;
 pub use petri_artifacts_core::ResolvedOptionalArtifact;
 pub use petri_artifacts_core::TestArtifactRequirements;
 pub use petri_artifacts_core::TestArtifacts;
@@ -66,9 +75,6 @@ pub enum CommandError {
     /// command exited with non-zero status
     #[error("command exited with non-zero status ({0}): {1}")]
     Command(std::process::ExitStatus, String),
-    /// command output is not utf-8
-    #[error("command output is not utf-8")]
-    Utf8(#[from] std::string::FromUtf8Error),
 }
 
 /// Run a command on the host and return the output
@@ -97,5 +103,5 @@ pub async fn run_host_cmd(mut cmd: Command) -> Result<String, CommandError> {
         return Err(CommandError::Command(output.status, stderr_str));
     }
 
-    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    Ok(stdout_str.trim().to_owned())
 }

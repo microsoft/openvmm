@@ -23,20 +23,23 @@ use xtask_fuzz::fuzz_target;
 pub enum FuzzDriveMedia {
     HardDrive,
     OpticalDrive,
+    OpticalDriveEmpty,
 }
 
 impl FuzzDriveMedia {
     fn reify(self) -> DriveMedia {
-        // we don't  care about drive contents for fuzzing
         match self {
             FuzzDriveMedia::HardDrive => {
-                DriveMedia::hard_disk(disklayer_ram::ram_disk(0x100000 * 4, false).unwrap())
+                DriveMedia::hard_disk(disklayer_ram::ram_disk(64 * 512, false).unwrap())
             }
             FuzzDriveMedia::OpticalDrive => {
                 DriveMedia::optical_disk(Arc::new(AtapiScsiDisk::new(Arc::new(
-                    SimpleScsiDvd::new(Some(disklayer_ram::ram_disk(0x100000 * 4, false).unwrap())),
+                    SimpleScsiDvd::new(Some(disklayer_ram::ram_disk(64 * 512, false).unwrap())),
                 ))))
             }
+            FuzzDriveMedia::OpticalDriveEmpty => DriveMedia::optical_disk(Arc::new(
+                AtapiScsiDisk::new(Arc::new(SimpleScsiDvd::new(None))),
+            )),
         }
     }
 }

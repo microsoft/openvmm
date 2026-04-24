@@ -104,7 +104,7 @@ pub mod resources {
     use vm_resource::kind::NonVolatileStoreKind;
 
     impl CanResolveTo<ResolvedNonVolatileStore> for NonVolatileStoreKind {
-        type Input<'a> = ();
+        type Input<'a> = &'a ();
     }
 
     /// The output from resolving a [`NonVolatileStoreKind`].
@@ -141,7 +141,7 @@ pub mod resources {
         fn resolve(
             &self,
             EphemeralNonVolatileStoreHandle: EphemeralNonVolatileStoreHandle,
-            _input: (),
+            _input: &(),
         ) -> Result<Self::Output, Infallible> {
             Ok(EphemeralNonVolatileStore::default().into())
         }

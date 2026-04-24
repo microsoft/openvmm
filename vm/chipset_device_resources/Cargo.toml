@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 chipset_device.workspace = true
 guestmem.workspace = true
+tdisp.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
 

@@ -6,13 +6,13 @@
 use anyhow::Context;
 use futures::StreamExt;
 use petri::MemoryConfig;
+use petri::OpenvmmLogConfig;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
 use petri::openvmm::OpenVmmPetriBackend;
 use vmm_test_macros::openvmm_test;
-use vmm_test_macros::openvmm_test_no_agent;
-use vmm_test_macros::vmm_test_no_agent;
+use vmm_test_macros::vmm_test_with;
 
 #[derive(Debug)]
 struct ExpectedNvmeDeviceProperties {
@@ -25,7 +25,7 @@ struct ExpectedNvmeDeviceProperties {
 struct NvmeRelayTestParams {
     openhcl_cmdline: &'static str,
     processor_topology: Option<ProcessorTopology>,
-    vtl2_base_address_type: Option<hvlite_defs::config::Vtl2BaseAddressType>,
+    vtl2_base_address_type: Option<openvmm_defs::config::Vtl2BaseAddressType>,
     expected_props: Option<ExpectedNvmeDeviceProperties>,
 }
 
@@ -51,6 +51,14 @@ async fn nvme_relay_test_core(
     } = params;
 
     let (vm, agent) = config
+        .with_host_log_levels(OpenvmmLogConfig::Custom(
+            [
+                ("OPENVMM_LOG".to_owned(), "debug,vpci=trace".to_owned()),
+                ("OPENVMM_SHOW_SPANS".to_owned(), "true".to_owned()),
+            ]
+            .into(),
+        ))
+        .with_boot_device_type(petri::BootDeviceType::ScsiViaNvme)
         .with_openhcl_command_line(openhcl_cmdline)
         .with_vmbus_redirect(true)
         .with_processor_topology(processor_topology.unwrap_or(ProcessorTopology {
@@ -58,7 +66,7 @@ async fn nvme_relay_test_core(
             ..Default::default()
         }))
         .with_vtl2_base_address_type(vtl2_base_address_type.unwrap_or(
-            hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(512 * 1024 * 1024), // 512MB to be more than what is defined in the dev manifest json
             },
         ))
@@ -168,7 +176,7 @@ async fn nvme_relay_test_core(
 
 /// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     nvme_relay_test_core(config, NvmeRelayTestParams::default()).await
 }
@@ -177,7 +185,7 @@ async fn nvme_relay(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), a
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
 ///
 /// Use the private pool override to test the private pool dma path.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_explicit_private_pool(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
@@ -185,7 +193,7 @@ async fn nvme_relay_explicit_private_pool(
     nvme_relay_test_core(
         config,
         NvmeRelayTestParams {
-            openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
+            openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
             expected_props: Some(ExpectedNvmeDeviceProperties {
                 save_restore_supported: true,
                 qsize: 256, // private pool should allow contiguous allocations.
@@ -203,19 +211,16 @@ async fn nvme_relay_explicit_private_pool(
 /// There _should_ be enough private pool memory for the NVMe driver to
 /// allocate all of its buffers contiguously.
 #[cfg(debug_assertions)]
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_heuristic_debug_16vp_768mb_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
     nvme_relay_test_core(
         config,
         NvmeRelayTestParams {
-            openhcl_cmdline: "",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 16,
-                ..Default::default()
-            }),
-            vtl2_base_address_type: Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            openhcl_cmdline: "OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
+            processor_topology: Some(ProcessorTopology::heavy()),
+            vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(768 * 1024 * 1024),
             }),
             expected_props: Some(ExpectedNvmeDeviceProperties {
@@ -234,19 +239,16 @@ async fn nvme_relay_heuristic_debug_16vp_768mb_heavy(
 /// There _should_ be enough private pool memory for the NVMe driver to
 /// allocate all of its buffers contiguously.
 #[cfg(not(debug_assertions))]
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_heuristic_release_16vp_256mb_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
     nvme_relay_test_core(
         config,
         NvmeRelayTestParams {
-            openhcl_cmdline: "",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 16,
-                ..Default::default()
-            }),
-            vtl2_base_address_type: Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            openhcl_cmdline: "OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
+            processor_topology: Some(ProcessorTopology::heavy()),
+            vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(256 * 1024 * 1024),
             }),
             expected_props: Some(ExpectedNvmeDeviceProperties {
@@ -268,19 +270,16 @@ async fn nvme_relay_heuristic_release_16vp_256mb_heavy(
 /// This test uses 500MB of private pool memory, which does *not* match any
 /// of the heuristics exactly, but there should still be private pool memory.
 #[cfg(not(debug_assertions))]
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_heuristic_release_32vp_500mb_very_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
     nvme_relay_test_core(
         config,
         NvmeRelayTestParams {
-            openhcl_cmdline: "",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 32,
-                ..Default::default()
-            }),
-            vtl2_base_address_type: Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            openhcl_cmdline: "OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
+            processor_topology: Some(ProcessorTopology::very_heavy()),
+            vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(500 * 1024 * 1024),
             }),
             expected_props: Some(ExpectedNvmeDeviceProperties {
@@ -298,7 +297,7 @@ async fn nvme_relay_heuristic_release_32vp_500mb_very_heavy(
 ///
 /// There _should_ be enough private pool memory for the NVMe driver to
 /// allocate all of its buffers contiguously.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_32vp_768mb_very_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
@@ -308,12 +307,9 @@ async fn nvme_relay_32vp_768mb_very_heavy(
             ..Default::default()
         }),
         NvmeRelayTestParams {
-            openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=10240",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 32,
-                ..Default::default()
-            }),
-            vtl2_base_address_type: Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            openhcl_cmdline: "OPENHCL_DISABLE_NVME_KEEP_ALIVE=0 OPENHCL_ENABLE_VTL2_GPA_POOL=10240",
+            processor_topology: Some(ProcessorTopology::very_heavy()),
+            vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(768 * 1024 * 1024),
             }),
             expected_props: Some(ExpectedNvmeDeviceProperties {
@@ -327,12 +323,12 @@ async fn nvme_relay_32vp_768mb_very_heavy(
 }
 
 /// Boot the UEFI firmware, with a VTL2 range automatically configured by
-/// hvlite.
-#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
+/// OpenVMM.
+#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
 async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     let vm = config
         .modify_backend(|b| {
-            b.with_vtl2_relocation_mode(hvlite_defs::config::Vtl2BaseAddressType::MemoryLayout {
+            b.with_vtl2_relocation_mode(openvmm_defs::config::Vtl2BaseAddressType::MemoryLayout {
                 size: None,
             })
         })
@@ -349,7 +345,7 @@ async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<
 ///
 /// TODO: OpenVMM doesn't support multiple numa nodes yet, but when it does, we
 /// should also validate that the kernel gets two different numa nodes.
-#[vmm_test_no_agent(openvmm_openhcl_uefi_x64(none))]
+#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
 async fn no_numa_errors<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {

@@ -7,7 +7,6 @@ extern crate alloc;
 
 use super::PartitionInfo;
 use super::shim_params::ShimParams;
-use crate::boot_logger::log;
 use crate::cmdline::BootCommandLineOptions;
 use crate::cmdline::SidecarOptions;
 use crate::host_params::COMMAND_LINE_SIZE;
@@ -26,6 +25,7 @@ use crate::memory::AllocationType;
 use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
 use alloc::vec::Vec;
+use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use bump_alloc::ALLOCATOR;
 use core::cmp::max;
@@ -69,7 +69,10 @@ pub enum DtError {
     Vtl0Vmbus,
     /// Host provided high MMIO range is insufficient to cover VTL0 and VTL2.
     #[error("host provided high MMIO range is insufficient to cover VTL0 and VTL2")]
-    NotEnoughMmio,
+    NotEnoughVtl0Mmio,
+    /// Host provided MMIO range is insufficient to cover VTL2.
+    #[error("host provided MMIO range is insufficient to cover VTL2")]
+    NotEnoughVtl2Mmio,
 }
 
 /// Allocate VTL2 ram from the partition's memory map.
@@ -209,7 +212,7 @@ fn allocate_vtl2_ram(
             // TODO: Today if a used range is larger than the mem required, we
             // just subtract that numa range to zero. Should we instead subtract
             // from other numa nodes equally for over allocation?
-            log!(
+            log::warn!(
                 "entry {entry:?} is larger than required {mem_req} for vnode {}",
                 entry.vnode
             );
@@ -287,7 +290,7 @@ fn parse_host_vtl2_ram(
             }
         });
 
-        log!(
+        log::info!(
             "host provided vtl2 ram size is {:x}, measured size is {:x}",
             vtl2_size,
             params.memory_size
@@ -311,7 +314,7 @@ fn parse_host_vtl2_ram(
     }
 
     if vtl2_ram.is_empty() {
-        log!("using measured vtl2 ram");
+        log::info!("using measured vtl2 ram");
         vtl2_ram.push(MemoryEntry {
             range: MemoryRange::try_new(
                 params.memory_start_address..(params.memory_start_address + params.memory_size),
@@ -400,7 +403,7 @@ fn topology_from_host_dt(
     options: &BootCommandLineOptions,
     address_space: &mut AddressSpaceManager,
 ) -> Result<PartitionTopology, DtError> {
-    log!("reading topology from host device tree");
+    log::info!("reading topology from host device tree");
 
     let mut vtl2_ram =
         off_stack!(ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>, ArrayVec::new_const());
@@ -430,46 +433,75 @@ fn topology_from_host_dt(
     // guests when it also provides the ram VTL2 should use.
     //
     // For isolated guests, or when VTL2 has been asked to carve out its own
-    // memory, carve out a range from the VTL0 allotment.
+    // memory, first check if the host provided a VTL2 mmio range. If so, the
+    // mmio range must be large enough. Otherwise, choose to carve out a range
+    // from the VTL0 allotment.
     let (vtl0_mmio, vtl2_mmio) = if params.isolation_type != IsolationType::None
         || matches!(
             parsed.memory_allocation_mode,
             MemoryAllocationMode::Vtl2 { .. }
         ) {
-        // Decide the amount of mmio VTL2 should allocate.
-        let mmio_size = max(
-            match parsed.memory_allocation_mode {
-                MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
-                _ => 0,
-            },
-            calculate_default_mmio_size(parsed)?,
-        );
+        // Decide the amount of mmio VTL2 should allocate, which is different
+        // depending on the heuristic used.
+        //
+        // On a newer host where a vtl2 mmio range is provided inside the
+        // vmbus_vtl2 device tree node, use the size provided by the host inside
+        // the openhcl node for memory allocation mode.
+        //
+        // If the host did not provide a vtl2 mmio range, then use the maximum
+        // of the host provided value inside the openhcl node and the calculated
+        // default.
+        let host_provided_size = match parsed.memory_allocation_mode {
+            MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
+            _ => 0,
+        };
+        let vmbus_vtl2 = parsed.vmbus_vtl2.as_ref().ok_or(DtError::Vtl2Vmbus)?;
+        let vmbus_vtl2_mmio_size = vmbus_vtl2.mmio.iter().map(|r| r.len()).sum::<u64>();
+        let mmio_size = if vmbus_vtl2_mmio_size != 0 {
+            host_provided_size
+        } else {
+            max(host_provided_size, calculate_default_mmio_size(parsed)?)
+        };
 
-        log!("allocating vtl2 mmio size {mmio_size:#x} bytes");
+        log::info!("allocating vtl2 mmio size {mmio_size:#x} bytes");
+        log::info!("host provided vtl2 mmio ranges are {vmbus_vtl2_mmio_size:#x} bytes");
 
-        // Decide what mmio vtl2 should use.
-        let mmio = &parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?.mmio;
-        let selected_vtl2_mmio = select_vtl2_mmio_range(mmio, mmio_size)?;
+        let vmbus_vtl0 = parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?;
+        if vmbus_vtl2_mmio_size != 0 {
+            // Verify the host provided mmio is large enough.
+            if vmbus_vtl2_mmio_size < mmio_size {
+                return Err(DtError::NotEnoughVtl2Mmio);
+            }
 
-        // Update vtl0 mmio to exclude vtl2 mmio.
-        let vtl0_mmio = subtract_ranges(mmio.iter().cloned(), [selected_vtl2_mmio])
-            .collect::<ArrayVec<MemoryRange, 2>>();
-        let vtl2_mmio = [selected_vtl2_mmio]
-            .into_iter()
-            .collect::<ArrayVec<MemoryRange, 2>>();
+            log::info!("using host provided vtl2 mmio: {:x?}", vmbus_vtl2.mmio);
+            (vmbus_vtl0.mmio.clone(), vmbus_vtl2.mmio.clone())
+        } else {
+            // Allocate vtl2 mmio from vtl0 mmio.
+            log::info!("no vtl2 mmio provided by host, allocating from vtl0 mmio");
+            let selected_vtl2_mmio = select_vtl2_mmio_range(&vmbus_vtl0.mmio, mmio_size)?;
 
-        // TODO: For now, if we have only a single vtl0_mmio range left,
-        // panic. In the future decide if we want to report this as a start
-        // failure in usermode, change allocation strategy, or something
-        // else.
-        assert_eq!(
-            vtl0_mmio.len(),
-            2,
-            "vtl0 mmio ranges are not 2 {:#x?}",
-            vtl0_mmio
-        );
+            // Update vtl0 mmio to exclude vtl2 mmio.
+            let vtl0_mmio = subtract_ranges(vmbus_vtl0.mmio.iter().cloned(), [selected_vtl2_mmio])
+                .collect::<ArrayVec<MemoryRange, 2>>();
+            let vtl2_mmio = [selected_vtl2_mmio]
+                .into_iter()
+                .collect::<ArrayVec<MemoryRange, 2>>();
 
-        (vtl0_mmio, vtl2_mmio)
+            // TODO: For now, if we have only a single vtl0_mmio range left,
+            // panic. In the future decide if we want to report this as a start
+            // failure in usermode, change allocation strategy, or something
+            // else.
+            assert_eq!(
+                vtl0_mmio.len(),
+                2,
+                "vtl0 mmio ranges are not 2 {:#x?}",
+                vtl0_mmio
+            );
+
+            log::info!("vtl0 mmio: {vtl0_mmio:x?}, vtl2 mmio: {vtl2_mmio:x?}");
+
+            (vtl0_mmio, vtl2_mmio)
+        }
     } else {
         (
             parsed
@@ -495,7 +527,7 @@ fn topology_from_host_dt(
     let vtl2_config_region_reclaim =
         MemoryRange::try_new(reclaim_base..reclaim_end).expect("range is valid");
 
-    log!("reclaim device tree memory {reclaim_base:x}-{reclaim_end:x}");
+    log::info!("reclaim device tree memory {reclaim_base:x}-{reclaim_end:x}");
 
     // Initialize the address space manager with fixed at build time ranges.
     let vtl2_config_region = MemoryRange::new(
@@ -512,7 +544,9 @@ fn topology_from_host_dt(
     let (persisted_state_region, remainder) = params
         .persisted_state
         .split_at_offset(PERSISTED_REGION_SIZE);
-    log!("persisted state region sized to {persisted_state_region:#x?}, remainder {remainder:#x?}");
+    log::info!(
+        "persisted state region sized to {persisted_state_region:#x?}, remainder {remainder:#x?}"
+    );
 
     let mut address_space_builder = AddressSpaceManagerBuilder::new(
         address_space,
@@ -529,11 +563,15 @@ fn topology_from_host_dt(
         .expect("failed to initialize address space manager");
 
     if params.isolation_type == IsolationType::None {
+        let enable_vtl2_gpa_pool = options.enable_vtl2_gpa_pool;
+        let device_dma_page_count = parsed.device_dma_page_count;
+        let vp_count = parsed.cpu_count();
+        let mem_size = vtl2_ram.iter().map(|e| e.range.len()).sum();
         if let Some(vtl2_gpa_pool_size) = pick_private_pool_size(
-            options.enable_vtl2_gpa_pool,
-            parsed.device_dma_page_count,
-            parsed.cpu_count(),
-            vtl2_ram.iter().map(|e| e.range.len()).sum(),
+            enable_vtl2_gpa_pool,
+            device_dma_page_count,
+            vp_count,
+            mem_size,
         ) {
             // Reserve the specified number of pages for the pool. Use the used
             // ranges to figure out which VTL2 memory is free to allocate from.
@@ -545,17 +583,35 @@ fn topology_from_host_dt(
             // usage gets bigger, as otherwise the used_range by the bootshim
             // could overlap the pool range chosen, when servicing to a new
             // image.
+            let vnode = 0;
             match address_space.allocate(
-                Some(0),
+                Some(vnode),
                 pool_size_bytes,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
             ) {
                 Some(pool) => {
-                    log!("allocated VTL2 pool at {:#x?}", pool.range);
+                    log::info!("allocated VTL2 pool at {:#x?}", pool.range);
                 }
                 None => {
-                    panic!("failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes");
+                    // Build a compact string representation of the free ranges
+                    // for diagnostics. Keep the string relatively small, as the
+                    // enlightened panic message can only contain 1 page (4096)
+                    // bytes of output.
+                    let mut free_ranges = off_stack!(ArrayString<2048>, ArrayString::new_const());
+                    for range in address_space.free_ranges(vnode) {
+                        if write!(free_ranges, "[{:#x?}, {:#x?}) ", range.start(), range.end())
+                            .is_err()
+                        {
+                            let _ = write!(free_ranges, "...");
+                            break;
+                        }
+                    }
+                    let highest_numa_node = vtl2_ram.iter().map(|e| e.vnode).max().unwrap_or(0);
+                    panic!(
+                        "failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes (enable_vtl2_gpa_pool={enable_vtl2_gpa_pool:?}, device_dma_page_count={device_dma_page_count:#x?}, vp_count={vp_count}, mem_size={mem_size:#x}), highest_numa_node={highest_numa_node}, free_ranges=[ {}]",
+                        free_ranges.as_str()
+                    );
                 }
             };
         }
@@ -576,7 +632,7 @@ fn topology_from_persisted_state(
     parsed: &ParsedDt,
     address_space: &mut AddressSpaceManager,
 ) -> Result<PersistedPartitionTopology, DtError> {
-    log!("reading topology from persisted state");
+    log::info!("reading topology from persisted state");
 
     // Verify the header describes a protobuf region within the bootshim
     // persisted region. We expect it to live there as today we rely on the
@@ -608,7 +664,7 @@ fn topology_from_persisted_state(
 
     let parsed_protobuf: loader_defs::shim::save_restore::SavedState =
         bump_alloc::with_global_alloc(|| {
-            log!("decoding protobuf of size {}", protobuf_raw.len());
+            log::info!("decoding protobuf of size {}", protobuf_raw.len());
             mesh_protobuf::decode(protobuf_raw).expect("failed to decode protobuf")
         });
 
@@ -618,6 +674,12 @@ fn topology_from_persisted_state(
         cpus_with_mapped_interrupts_no_io,
         cpus_with_outstanding_io,
     } = parsed_protobuf;
+
+    log::info!(
+        "persisted state: cpus_with_mapped_interrupts_no_io={:?}, cpus_with_outstanding_io={:?}",
+        cpus_with_mapped_interrupts_no_io,
+        cpus_with_outstanding_io,
+    );
 
     // FUTURE: should memory allocation mode should persist in saved state and
     // verify the host did not change it?
@@ -693,7 +755,7 @@ fn topology_from_persisted_state(
     let vtl2_config_region_reclaim =
         MemoryRange::try_new(reclaim_base..reclaim_end).expect("range is valid");
 
-    log!("reclaim device tree memory {reclaim_base:x}-{reclaim_end:x}");
+    log::info!("reclaim device tree memory {reclaim_base:x}-{reclaim_end:x}");
 
     let vtl2_config_region = MemoryRange::new(
         params.parameter_region_start
@@ -818,7 +880,7 @@ impl PartitionInfo {
         let dt = params.device_tree();
 
         if dt[0] == 0 {
-            log!("host did not provide a device tree");
+            log::error!("host did not provide a device tree");
             return Err(DtError::NoDeviceTree);
         }
 
@@ -838,36 +900,45 @@ impl PartitionInfo {
         )
         .map_err(|_| DtError::CommandLineSize)?;
 
-        // Depending on policy, write what the host specified in the chosen node.
-        if can_trust_host && command_line.policy == CommandLinePolicy::APPEND_CHOSEN {
-            // Parse in extra options from the host provided command line.
-            options.parse(&parsed.command_line);
-            write!(storage.cmdline, " {}", &parsed.command_line)
-                .map_err(|_| DtError::CommandLineSize)?;
+        match command_line.policy {
+            CommandLinePolicy::STATIC => {
+                // Nothing to do, we already wrote the measured command line.
+            }
+            CommandLinePolicy::APPEND_CHOSEN if can_trust_host => {
+                // Check the host-provided command line for options for ourself,
+                // and pass it along to the kernel.
+                options.parse(&parsed.command_line);
+                write!(storage.cmdline, " {}", &parsed.command_line)
+                    .map_err(|_| DtError::CommandLineSize)?;
+            }
+            CommandLinePolicy::APPEND_CHOSEN if !can_trust_host => {
+                // Nothing to do, we ignore the host provided command line.
+            }
+            _ => unreachable!(),
         }
 
         init_heap(params);
 
         let persisted_state_header = read_persisted_region_header(params);
-        let (topology, has_devices_that_should_disable_sidecar) =
-            if let Some(header) = persisted_state_header {
-                log!("found persisted state header");
-                let persisted_topology =
-                    topology_from_persisted_state(header, params, parsed, address_space)?;
-
-                (
-                    persisted_topology.topology,
-                    !(persisted_topology
-                        .cpus_with_mapped_interrupts_no_io
-                        .is_empty()
-                        && persisted_topology.cpus_with_outstanding_io.is_empty()),
-                )
-            } else {
-                (
-                    topology_from_host_dt(params, parsed, &options, address_space)?,
-                    false,
-                )
-            };
+        log::info!(
+            "read_from_dt: persisted_state_header present={}, sidecar={:?}",
+            persisted_state_header.is_some(),
+            options.sidecar,
+        );
+        let (topology, cpus_with_outstanding_io) = if let Some(header) = persisted_state_header {
+            log::info!("found persisted state header");
+            let persisted_topology =
+                topology_from_persisted_state(header, params, parsed, address_space)?;
+            (
+                persisted_topology.topology,
+                persisted_topology.cpus_with_outstanding_io,
+            )
+        } else {
+            (
+                topology_from_host_dt(params, parsed, &options, address_space)?,
+                Vec::new(),
+            )
+        };
 
         let Self {
             vtl2_ram,
@@ -875,6 +946,7 @@ impl PartitionInfo {
             isolation,
             bsp_reg,
             cpus,
+            sidecar_cpu_overrides,
             vmbus_vtl0,
             vmbus_vtl2,
             cmdline: _,
@@ -888,19 +960,44 @@ impl PartitionInfo {
             boot_options,
         } = storage;
 
-        if let (SidecarOptions::Enabled { cpu_threshold, .. }, true) = (
-            &boot_options.sidecar,
-            has_devices_that_should_disable_sidecar,
-        ) {
-            if cpu_threshold.is_none()
-                || cpu_threshold
-                    .and_then(|threshold| threshold.try_into().ok())
-                    .is_some_and(|threshold| parsed.cpu_count() < threshold)
+        // During servicing restore, selectively exclude CPUs with outstanding IO
+        // from sidecar startup. These CPUs need immediate kernel access to handle
+        // device interrupts. All other CPUs still benefit from sidecar's parallel
+        // startup. Falls back to disabling sidecar entirely if CPU IDs exceed the
+        // per-CPU state array capacity (>400 CPUs).
+        //
+        // Sidecar is automatically disabled when: all NUMA nodes have exactly
+        // one CPU (nothing to parallelize), x2apic is unavailable, the VM is
+        // isolated (CVM), or the sidecar image is not present (sidecar_size == 0).
+        // It is also disabled via command line with OPENHCL_SIDECAR=off. In all
+        // other cases sidecar is active and uses a fan-out pattern to bring up
+        // APs in parallel across NUMA nodes.
+        //
+        // TODO: the `cpu_threshold` field in `SidecarOptions::Enabled` is
+        // not used at present. Based on production performance data, either
+        // remove `cpu_threshold` from `SidecarOptions` in cmdline.rs, or
+        // add a VP-count cutoff here to disable sidecar for small VMs.
+        if let (SidecarOptions::Enabled { .. }, true) =
+            (&boot_options.sidecar, !cpus_with_outstanding_io.is_empty())
+        {
+            let max_cpu_id = *cpus_with_outstanding_io.iter().max().unwrap() as usize;
+            if parsed.cpu_count() <= sidecar_cpu_overrides.sidecar_starts_cpu.len()
+                && max_cpu_id < sidecar_cpu_overrides.sidecar_starts_cpu.len()
             {
-                // If we are in the restore path, disable sidecar for small VMs, as the amortization
-                // benefits don't apply when devices are kept alive; the CPUs need to be powered on anyway
-                // to check for interrupts.
-                log!("disabling sidecar, as we are restoring from persisted state");
+                // Mark specific CPUs as kernel-started instead of sidecar-started.
+                sidecar_cpu_overrides.per_cpu_state_specified = true;
+                for &cpu_id in &cpus_with_outstanding_io {
+                    sidecar_cpu_overrides.sidecar_starts_cpu[cpu_id as usize] = false;
+                }
+                log::info!(
+                    "sidecar: excluding CPUs {:?} due to outstanding IO",
+                    cpus_with_outstanding_io,
+                );
+            } else {
+                // CPU IDs exceed per-cpu array capacity; disable sidecar entirely.
+                log::info!(
+                    "sidecar: disabling, too many CPUs for per-CPU state (max id {max_cpu_id})"
+                );
                 boot_options.sidecar = SidecarOptions::DisabledServicing;
                 options.sidecar = SidecarOptions::DisabledServicing;
             }

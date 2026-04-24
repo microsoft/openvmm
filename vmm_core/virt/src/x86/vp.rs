@@ -966,7 +966,7 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Xsave {
 pub struct Apic {
     #[mesh(1)]
     pub apic_base: u64,
-    #[inspect(with = "ApicRegisters::from")]
+    #[inspect(with = "ApicRegisters::from_array_ref")]
     #[mesh(2)]
     pub registers: [u32; 64],
     #[inspect(iter_by_index)]
@@ -989,8 +989,22 @@ impl Debug for Apic {
     }
 }
 
+impl Apic {
+    pub fn new(apic_base: ApicBase, registers: ApicRegisters, auto_eoi: [u32; 8]) -> Self {
+        Self {
+            apic_base: apic_base.into(),
+            registers: *registers.as_array(),
+            auto_eoi,
+        }
+    }
+
+    pub fn registers(&self) -> &ApicRegisters {
+        ApicRegisters::from_array_ref(&self.registers)
+    }
+}
+
 #[repr(C)]
-#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
 #[inspect(hex)]
 pub struct ApicRegisters {
     #[inspect(skip)]
@@ -1036,15 +1050,96 @@ pub struct ApicRegisters {
 
 const _: () = assert!(size_of::<ApicRegisters>() == 0x100);
 
-impl From<&'_ [u32; 64]> for ApicRegisters {
-    fn from(value: &'_ [u32; 64]) -> Self {
-        Self::read_from_bytes(value.as_bytes()).unwrap()
+impl From<ApicRegisters> for hvdef::HvX64InterruptControllerState {
+    fn from(value: ApicRegisters) -> Self {
+        Self {
+            apic_id: value.id,
+            apic_version: value.version,
+            apic_ldr: value.ldr,
+            apic_dfr: value.dfr,
+            apic_spurious: value.svr,
+            apic_isr: value.isr,
+            apic_tmr: value.tmr,
+            apic_irr: value.irr,
+            apic_esr: value.esr,
+            apic_icr_high: value.icr[1],
+            apic_icr_low: value.icr[0],
+            apic_lvt_timer: value.lvt_timer,
+            apic_lvt_thermal: value.lvt_thermal,
+            apic_lvt_perfmon: value.lvt_pmc,
+            apic_lvt_lint0: value.lvt_lint0,
+            apic_lvt_lint1: value.lvt_lint1,
+            apic_lvt_error: value.lvt_error,
+            apic_lvt_cmci: value.lvt_cmci,
+            apic_error_status: value.esr,
+            apic_initial_count: value.timer_icr,
+            apic_counter_value: value.timer_ccr,
+            apic_divide_configuration: value.timer_dcr,
+            apic_remote_read: value.rrd,
+        }
     }
 }
 
-impl From<ApicRegisters> for [u32; 64] {
-    fn from(value: ApicRegisters) -> Self {
-        Self::read_from_bytes(value.as_bytes()).unwrap()
+impl From<hvdef::HvX64InterruptControllerState> for ApicRegisters {
+    fn from(value: hvdef::HvX64InterruptControllerState) -> Self {
+        let hvdef::HvX64InterruptControllerState {
+            apic_id,
+            apic_version,
+            apic_ldr,
+            apic_dfr,
+            apic_spurious,
+            apic_isr,
+            apic_tmr,
+            apic_irr,
+            apic_esr,
+            apic_icr_high,
+            apic_icr_low,
+            apic_lvt_timer,
+            apic_lvt_thermal,
+            apic_lvt_perfmon,
+            apic_lvt_lint0,
+            apic_lvt_lint1,
+            apic_lvt_error,
+            apic_lvt_cmci,
+            // The unlatched error status is not preserved across save/restore.
+            apic_error_status: _,
+            apic_initial_count,
+            apic_counter_value,
+            apic_divide_configuration,
+            apic_remote_read,
+        } = value;
+        Self {
+            reserved_0: [0; 2],
+            id: apic_id,
+            version: apic_version,
+            reserved_4: [0; 4],
+            tpr: 0,
+            apr: 0,
+            ppr: 0,
+            eoi: 0,
+            rrd: apic_remote_read,
+            ldr: apic_ldr,
+            dfr: apic_dfr,
+            svr: apic_spurious,
+            isr: apic_isr,
+            tmr: apic_tmr,
+            irr: apic_irr,
+            esr: apic_esr,
+            reserved_29: [0; 6],
+            lvt_cmci: apic_lvt_cmci,
+            icr: [apic_icr_low, apic_icr_high],
+            lvt_timer: apic_lvt_timer,
+            lvt_thermal: apic_lvt_thermal,
+            lvt_pmc: apic_lvt_perfmon,
+            lvt_lint0: apic_lvt_lint0,
+            lvt_lint1: apic_lvt_lint1,
+            lvt_error: apic_lvt_error,
+            timer_icr: apic_initial_count,
+            timer_ccr: apic_counter_value,
+            reserved_3a: [0; 4],
+            timer_dcr: apic_divide_configuration,
+            reserved_3f: 0,
+        }
     }
 }
 
@@ -1055,14 +1150,22 @@ struct ApicRegister {
     zero: [u32; 3],
 }
 
-// The IRR bit number corresponding to NMI pending in the Hyper-V exo APIC saved
-// state.
-const HV_IRR_NMI_PENDING_SHIFT: u32 = 2;
+impl ApicRegisters {
+    pub fn as_array(&self) -> &[u32; 64] {
+        zerocopy::transmute_ref!(self)
+    }
 
-impl Apic {
+    pub fn from_array(array: [u32; 64]) -> Self {
+        zerocopy::transmute!(array)
+    }
+
+    pub fn from_array_ref(array: &[u32; 64]) -> &Self {
+        zerocopy::transmute_ref!(array)
+    }
+
     pub fn as_page(&self) -> [u8; 1024] {
         let mut bytes = [0; 1024];
-        self.registers
+        self.as_array()
             .map(|value| ApicRegister {
                 value,
                 zero: [0; 3],
@@ -1073,16 +1176,9 @@ impl Apic {
     }
 
     /// Convert from an APIC page.
-    ///
-    /// N.B. The MS hypervisor's APIC page format includes a non-architectural
-    /// NMI pending bit that should be stripped first.
-    pub fn from_page(apic_base: u64, page: &[u8; 1024]) -> Self {
+    pub fn from_page(page: &[u8; 1024]) -> Self {
         let registers = <[ApicRegister; 64]>::read_from_bytes(page.as_slice()).unwrap();
-        Self {
-            apic_base,
-            registers: registers.map(|reg| reg.value),
-            auto_eoi: [0; 8],
-        }
+        Self::from_array(registers.map(|reg| reg.value))
     }
 }
 
@@ -1123,11 +1219,7 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Apic {
             .with_x2apic(x2apic)
             .with_enable(true);
 
-        Apic {
-            apic_base: apic_base.into(),
-            registers: regs.into(),
-            auto_eoi: [0; 8],
-        }
+        Apic::new(apic_base, regs, [0; 8])
     }
 
     fn can_compare(caps: &X86PartitionCapabilities) -> bool {
@@ -1137,15 +1229,21 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Apic {
     }
 }
 
-/// Sets the non-architectural Hyper-V NMI pending bit in the APIC page.
-pub fn set_hv_apic_nmi_pending(page: &mut [u8], pending: bool) {
-    page[0x200] &= !(1 << HV_IRR_NMI_PENDING_SHIFT);
-    page[0x200] |= (pending as u8) << HV_IRR_NMI_PENDING_SHIFT;
-}
+// The IRR bit number corresponding to NMI pending in the Hyper-V exo APIC saved
+// state.
+const NMI_VECTOR: u32 = 2;
 
-/// Gets the non-architectural Hyper-V NMI pending bit from the APIC page.
-pub fn hv_apic_nmi_pending(page: &[u8]) -> bool {
-    page[0x200] & (1 << HV_IRR_NMI_PENDING_SHIFT) != 0
+impl ApicRegisters {
+    /// Sets the non-architectural Hyper-V NMI pending bit in the APIC page.
+    pub fn set_hv_apic_nmi_pending(&mut self, pending: bool) {
+        self.irr[0] &= !(1 << NMI_VECTOR);
+        self.irr[0] |= (pending as u32) << NMI_VECTOR;
+    }
+
+    /// Gets the non-architectural Hyper-V NMI pending bit from the APIC page.
+    pub fn hv_apic_nmi_pending(&self) -> bool {
+        self.irr[0] & (1 << NMI_VECTOR) != 0
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Protobuf, Inspect)]

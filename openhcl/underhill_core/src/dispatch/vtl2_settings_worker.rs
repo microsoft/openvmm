@@ -11,7 +11,7 @@ use cvm_tracing::CVM_ALLOWED;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend_resources::AutoFormattedDiskHandle;
-use disk_blockdevice::OpenBlockDeviceConfig;
+use disk_backend_resources::BlockDeviceDiskHandle;
 use futures::StreamExt;
 use guest_emulation_transport::api::platform_settings::DevicePlatformSettings;
 use guid::Guid;
@@ -237,6 +237,7 @@ pub struct Vtl2SettingsWorker {
     device_config_send: mesh::Sender<Vtl2ConfigNicRpc>,
     get_client: guest_emulation_transport::GuestEmulationTransportClient,
     interfaces: DeviceInterfaces,
+    modify_timeout_in_seconds: u64,
 }
 
 pub struct DeviceInterfaces {
@@ -251,12 +252,14 @@ impl Vtl2SettingsWorker {
         device_config_send: mesh::Sender<Vtl2ConfigNicRpc>,
         get_client: guest_emulation_transport::GuestEmulationTransportClient,
         interfaces: DeviceInterfaces,
+        modify_timeout_in_seconds: u64,
     ) -> Vtl2SettingsWorker {
         Vtl2SettingsWorker {
             old_settings: initial_settings,
             device_config_send,
             get_client,
             interfaces,
+            modify_timeout_in_seconds,
         }
     }
 
@@ -278,9 +281,8 @@ impl Vtl2SettingsWorker {
         uevent_listener: &UeventListener,
         buf: &[u8],
     ) -> Result<(), Vec<Vtl2SettingsErrorInfo>> {
-        const MODIFY_VTL2_SETTINGS_TIMEOUT_IN_SECONDS: u64 = 5;
-        let mut context = CancelContext::new()
-            .with_timeout(Duration::from_secs(MODIFY_VTL2_SETTINGS_TIMEOUT_IN_SECONDS));
+        let mut context =
+            CancelContext::new().with_timeout(Duration::from_secs(self.modify_timeout_in_seconds));
 
         let old_settings = Vtl2Settings {
             fixed: Default::default(),
@@ -302,7 +304,13 @@ impl Vtl2SettingsWorker {
             underhill_config::schema::ParseError::Validation(err) => err.errors,
         });
 
-        tracing::trace!(CVM_ALLOWED, ?buf, ?vtl2_settings, "VTL2 settings received");
+        tracing::debug!(
+            CVM_ALLOWED,
+            ?buf,
+            ?vtl2_settings,
+            timeout = self.modify_timeout_in_seconds,
+            "VTL2 settings received"
+        );
 
         let vtl2_settings = vtl2_settings?;
 
@@ -1091,7 +1099,7 @@ async fn make_disk_type_from_physical_device(
 
     let disk_path = Path::new("/dev").join(devname);
 
-    let file = disk_blockdevice::open_file_for_block(&disk_path, read_only).map_err(|e| {
+    let file = disk_blockdevice::open_file_for_block(&disk_path, read_only, true).map_err(|e| {
         Error::StorageCannotOpenVtl2Device {
             device_type: single_device.device_type,
             instance_id: controller_instance_id,
@@ -1101,7 +1109,7 @@ async fn make_disk_type_from_physical_device(
         }
     })?;
 
-    Ok(Resource::new(OpenBlockDeviceConfig { file }))
+    Ok(Resource::new(BlockDeviceDiskHandle { file }))
 }
 
 fn make_disk_config_inner(
@@ -1449,6 +1457,7 @@ async fn make_nvme_controller_config(
             namespaces,
             max_io_queues: 64,
             msix_count: 64,
+            requests: None,
         }
         .into_resource(),
     })
@@ -1700,8 +1709,16 @@ pub async fn wait_for_mana(
     let (pci_id, devpath) = vpci_path(instance_id);
 
     // Wait for the device to show up.
-    uevent_listener.wait_for_devpath(&devpath).await?;
-    wait_for_pci_path(&pci_id).await;
+    uevent_listener
+        .wait_for_devpath(&devpath)
+        .instrument(tracing::info_span!(
+            "waiting for device in filesystem",
+            dev_path = devpath.to_str().unwrap_or("unknown path")
+        ))
+        .await?;
+    wait_for_pci_path(&pci_id)
+        .instrument(tracing::info_span!("waiting for device in pci", pci_id))
+        .await;
 
     // Validate the device and vendor.
     let vendor = fs_err::read_to_string(devpath.join("vendor"))?;
@@ -1814,14 +1831,19 @@ impl InitialControllers {
         use_nvme_vfio: bool,
         is_restoring: bool,
         default_io_queue_depth: u32,
+        config_timeout_in_seconds: u64,
     ) -> anyhow::Result<Self> {
-        const VM_CONFIG_TIME_OUT_IN_SECONDS: u64 = 5;
         let mut context =
-            CancelContext::new().with_timeout(Duration::from_secs(VM_CONFIG_TIME_OUT_IN_SECONDS));
+            CancelContext::new().with_timeout(Duration::from_secs(config_timeout_in_seconds));
 
         let vtl2_settings = dps.general.vtl2_settings.as_ref();
 
-        tracing::info!(CVM_ALLOWED, ?vtl2_settings, "Initial VTL2 settings");
+        tracing::info!(
+            CVM_ALLOWED,
+            ?vtl2_settings,
+            config_timeout_in_seconds,
+            "Initial VTL2 settings"
+        );
 
         let fixed = vtl2_settings.map_or_else(Default::default, |s| s.fixed.clone());
         let dynamic = vtl2_settings.map(|s| &s.dynamic);
@@ -1836,6 +1858,10 @@ impl InitialControllers {
                 is_restoring,
                 default_io_queue_depth,
             )
+            .instrument(tracing::info_span!(
+                "setting up storage controllers",
+                use_nvme_vfio
+            ))
             .await?
         } else {
             (None, Vec::new(), Vec::new())

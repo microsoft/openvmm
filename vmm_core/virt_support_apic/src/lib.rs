@@ -1844,11 +1844,7 @@ impl LocalApic {
             timer_dcr: self.timer_dcr,
             reserved_3f: 0,
         };
-        virt::x86::vp::Apic {
-            apic_base: self.apic_base,
-            registers: registers.into(),
-            auto_eoi: self.auto_eoi,
-        }
+        virt::x86::vp::Apic::new(self.apic_base.into(), registers, self.auto_eoi)
     }
 
     /// Restores the APIC register state.
@@ -1857,7 +1853,7 @@ impl LocalApic {
 
         let virt::x86::vp::Apic {
             apic_base,
-            registers,
+            registers: _,
             auto_eoi,
         } = state;
 
@@ -1899,7 +1895,7 @@ impl LocalApic {
             reserved_3a: _,
             timer_dcr,
             reserved_3f: _,
-        } = registers.into();
+        } = *state.registers();
 
         self.id = if self.x2apic_enabled() { id } else { id >> 24 };
         self.version = version;

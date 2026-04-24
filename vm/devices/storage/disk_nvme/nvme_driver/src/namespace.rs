@@ -17,6 +17,7 @@ use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
@@ -41,8 +42,32 @@ pub enum NamespaceError {
     Request(#[source] RequestError),
     #[error("maximum data transfer size too small: 2^{0} pages")]
     MdtsInvalid(u8),
-    #[error("namespace ID {nsid} already exists")]
-    DuplicateRequest { nsid: u32 },
+    #[error("requesting a duplicate namespace: {0}")]
+    Duplicate(u32),
+}
+
+/// A thin Namespace wrapper to revoke cloning permissions on `Arc<Namespace>`.
+/// This type allows the nvme_driver to force system-wide single-ownership
+/// semantics for `Namespace` objects.
+/// Because the end-user can no longer call namespace.clone(), `weak.upgrade()` can
+/// safely be used to determine when a Namespace is no longer in use by the disk.
+#[derive(Debug, Inspect)]
+pub struct NamespaceHandle {
+    namespace: Arc<Namespace>,
+}
+
+impl NamespaceHandle {
+    /// Creates a new handle
+    pub fn new(namespace: Arc<Namespace>) -> Self {
+        Self { namespace }
+    }
+}
+
+impl Deref for NamespaceHandle {
+    type Target = Namespace;
+    fn deref(&self) -> &Self::Target {
+        &self.namespace
+    }
 }
 
 /// An NVMe namespace.
@@ -81,6 +106,13 @@ impl Namespace {
         let identify = identify_namespace(&admin, nsid)
             .await
             .map_err(NamespaceError::Request)?;
+
+        tracing::debug!(
+            "created namespace from identify nsid={}, nsze={}, nsguid={:?}",
+            nsid,
+            identify.nsze,
+            identify.nguid
+        );
 
         Namespace::new_from_identify(
             driver,
@@ -197,7 +229,7 @@ impl Namespace {
         1 << self.block_shift
     }
 
-    fn check_active(&self) -> Result<(), RequestError> {
+    pub fn check_active(&self) -> Result<(), RequestError> {
         if self.state.removed.load(Ordering::Relaxed) {
             // The namespace has been removed. Return invalid namespace even if
             // the namespace has returned to avoid accidentally accessing the
@@ -561,7 +593,7 @@ impl DynamicState {
         mut rescan_event: mesh::Receiver<()>,
     ) {
         loop {
-            tracing::debug!("rescan");
+            tracing::debug!("rescan task started nsid={}", nsid);
 
             // This relies on a mesh channel so notifications will NOT be missed
             // even if the task was not started when the first AEN was processed.
@@ -570,7 +602,7 @@ impl DynamicState {
             // Once the sender is dropped, no more repoll signals can be received so
             // there is no point in continuing.
             if event.is_none() {
-                tracing::debug!("rescan task exiting");
+                tracing::debug!("rescan task exiting nsid={}", nsid);
                 break;
             }
 

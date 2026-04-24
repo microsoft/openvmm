@@ -7,7 +7,7 @@ use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::IsolationType;
 use petri::MemoryConfig;
-use petri::OpenHclLogConfig;
+use petri::OpenvmmLogConfig;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
@@ -383,14 +383,16 @@ async fn idle_test<T: PetriVmmBackend>(
     let arch_str = get_arch_str(isolation_type, machine_arch);
     let vp_count = match vps {
         TestVPCount::SmallVPCount => 2,
-        TestVPCount::LargeVPCount => {
-            if arch_str.contains("x64") {
-                32
-            } else {
-                64
-            }
-        }
+        TestVPCount::LargeVPCount => match (isolation_type, machine_arch) {
+            // These tests run on VMs that only have 32 VPs
+            (None | Some(IsolationType::Vbs), MachineArch::X86_64) => 32,
+            // SNP, TDX, and ARM runners have at least 64 VPs
+            (Some(IsolationType::Snp | IsolationType::Tdx), MachineArch::X86_64)
+            | (None, MachineArch::Aarch64) => 64,
+            _ => unreachable!("invalid isolation configuration"),
+        },
     };
+
     let vm_boot_result = config
         .with_processor_topology({
             ProcessorTopology {
@@ -402,9 +404,10 @@ async fn idle_test<T: PetriVmmBackend>(
             MemoryConfig {
                 startup_bytes: 16 * (1024 * 1024 * 1024),
                 dynamic_memory_range: None,
+                mmio_gaps: petri::MmioConfig::Platform,
             }
         })
-        .with_openhcl_log_levels(OpenHclLogConfig::BuiltInDefault)
+        .with_openhcl_log_levels(OpenvmmLogConfig::BuiltInDefault)
         .run()
         .await;
 
@@ -461,7 +464,7 @@ async fn memory_validation_release_small<T: PetriVmmBackend>(
         WaitPeriodSec::ShortWait,
         driver,
         "release",
-        true,
+        false,
     )
     .await
 }
@@ -487,7 +490,7 @@ async fn memory_validation_debug_small<T: PetriVmmBackend>(
         WaitPeriodSec::ShortWait,
         driver,
         "debug",
-        true,
+        false,
     )
     .await
 }
@@ -509,7 +512,7 @@ async fn memory_validation_release_very_heavy<T: PetriVmmBackend>(
         WaitPeriodSec::LongWait,
         driver,
         "release",
-        true,
+        false,
     )
     .await
 }
@@ -535,7 +538,7 @@ async fn memory_validation_debug_very_heavy<T: PetriVmmBackend>(
         WaitPeriodSec::LongWait,
         driver,
         "debug",
-        true,
+        false,
     )
     .await
 }

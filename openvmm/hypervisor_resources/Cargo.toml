@@ -1,0 +1,16 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "hypervisor_resources"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+linkme.workspace = true
+mesh.workspace = true
+vm_resource.workspace = true
+
+[lints]
+workspace = true

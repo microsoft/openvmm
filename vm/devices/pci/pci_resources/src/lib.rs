@@ -11,10 +11,11 @@ use chipset_device_resources::ResolvedChipsetDevice;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::MemoryMapper;
-use pci_core::msi::RegisterMsi;
+use pci_core::msi::MsiTarget;
 use std::sync::Arc;
 use vm_resource::CanResolveTo;
 use vm_resource::kind::PciDeviceHandleKind;
+use vmcore::irqfd::IrqFd;
 use vmcore::vm_task::VmTaskDriverSource;
 
 impl CanResolveTo<ResolvedPciDevice> for PciDeviceHandleKind {
@@ -33,7 +34,7 @@ impl<T: Into<ResolvedChipsetDevice>> From<T> for ResolvedPciDevice {
 /// Parameters used when resolving a resource with kind [`PciDeviceHandleKind`].
 pub struct ResolvePciDeviceHandleParams<'a> {
     /// The target for MSI interrupts.
-    pub register_msi: &'a mut dyn RegisterMsi,
+    pub msi_target: &'a MsiTarget,
     /// An object with which to register MMIO regions.
     pub register_mmio: &'a mut (dyn RegisterMmioIntercept + Send),
     /// The VM's task driver source.
@@ -44,4 +45,8 @@ pub struct ResolvePciDeviceHandleParams<'a> {
     pub doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
     /// An object with which to register shared memory regions.
     pub shared_mem_mapper: Option<&'a dyn MemoryMapper>,
+    /// irqfd interface for kernel-mediated interrupt delivery. Used by
+    /// device passthrough resolvers (VFIO, vhost-user) for irqfd-based
+    /// MSI injection.
+    pub irqfd: Option<Arc<dyn IrqFd>>,
 }

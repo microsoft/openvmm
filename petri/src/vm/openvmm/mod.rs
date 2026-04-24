@@ -17,45 +17,49 @@ pub use runtime::OpenVmmFramebufferAccess;
 pub use runtime::OpenVmmInspector;
 pub use runtime::PetriVmOpenVmm;
 
-use crate::BootDeviceType;
+use crate::Disk;
+use crate::DiskPath;
 use crate::Firmware;
+use crate::ModifyFn;
 use crate::OpenHclServicingFlags;
-use crate::PetriDiskType;
+use crate::OpenvmmLogConfig;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
+use crate::PetriVmRuntimeConfig;
 use crate::PetriVmgsDisk;
 use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::VmmQuirks;
-use crate::disk_image::AgentImage;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
+use crate::vm::PetriVmProperties;
 use anyhow::Context;
 use async_trait::async_trait;
+use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
+use disk_backend_resources::layer::SqliteAutoCacheDiskLayerHandle;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
-use hvlite_defs::config::Config;
-use hvlite_helpers::disk::open_disk_type;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::Receiver;
 use mesh::Sender;
 use net_backend_resources::mac_address::MacAddress;
+use openvmm_defs::config::Config;
+use openvmm_helpers::disk::OpenDiskOptions;
+use openvmm_helpers::disk::open_disk_type;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
 use petri_artifacts_common::tags::GuestQuirksInner;
 use petri_artifacts_common::tags::MachineArch;
-use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use storvsp_resources::ScsiControllerHandle;
 use tempfile::TempPath;
 use unix_socket::UnixListener;
 use vm_resource::IntoResource;
@@ -63,32 +67,15 @@ use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
 use vmgs_resources::VmgsDisk;
 use vmgs_resources::VmgsResource;
-use vtl2_settings_proto::Vtl2Settings;
-
-/// The instance guid used for all of our SCSI drives.
-pub(crate) const SCSI_INSTANCE: Guid = guid::guid!("27b553e8-8b39-411b-a55f-839971a7884f");
-
-/// The instance guid for the NVMe controller automatically added for boot media
-/// for paravisor storage translation.
-pub(crate) const PARAVISOR_BOOT_NVME_INSTANCE: Guid =
-    guid::guid!("92bc8346-718b-449a-8751-edbf3dcd27e4");
-
-/// The instance guid for the NVMe controller automatically added for boot media.
-pub(crate) const BOOT_NVME_INSTANCE: Guid = guid::guid!("e23a04e2-90f5-4852-bc9d-e7ac691b756c");
 
 /// The instance guid for the MANA nic automatically added when specifying `PetriVmConfigOpenVmm::with_nic`
 const MANA_INSTANCE: Guid = guid::guid!("f9641cf4-d915-4743-a7d8-efa75db7b85a");
-
-/// The namespace ID for the NVMe controller automatically added for boot media.
-pub(crate) const BOOT_NVME_NSID: u32 = 37;
-
-/// The LUN ID for the NVMe controller automatically added for boot media.
-pub(crate) const BOOT_NVME_LUN: u32 = 1;
 
 /// The MAC address used by the NIC assigned with [`PetriVmConfigOpenVmm::with_nic`].
 pub const NIC_MAC_ADDRESS: MacAddress = MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]);
 
 /// OpenVMM Petri Backend
+#[derive(Debug)]
 pub struct OpenVmmPetriBackend {
     openvmm_path: ResolvedArtifact,
 }
@@ -143,13 +130,15 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
     async fn run(
         self,
         config: PetriVmConfig,
-        modify_vmm_config: Option<impl FnOnce(PetriVmConfigOpenVmm) -> PetriVmConfigOpenVmm + Send>,
+        modify_vmm_config: Option<ModifyFn<Self::VmmConfig>>,
         resources: &PetriVmResources,
-    ) -> anyhow::Result<Self::VmRuntime> {
-        let mut config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources)?;
+        properties: PetriVmProperties,
+    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
+        let mut config =
+            PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources, properties).await?;
 
         if let Some(f) = modify_vmm_config {
-            config = f(config);
+            config = f.0(config);
         }
 
         config.run().await
@@ -159,10 +148,13 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
 /// Configuration state for a test VM.
 pub struct PetriVmConfigOpenVmm {
     // Direct configuration related information.
-    firmware: Firmware,
+    runtime_config: PetriVmRuntimeConfig,
     arch: MachineArch,
+    host_log_levels: Option<OpenvmmLogConfig>,
     config: Config,
-    boot_device_type: BootDeviceType,
+
+    // Mesh host
+    mesh: mesh_process::Mesh,
 
     // Runtime resources
     resources: PetriVmResourcesOpenVmm,
@@ -170,10 +162,10 @@ pub struct PetriVmConfigOpenVmm {
     // Logging
     openvmm_log_file: PetriLogFile,
 
-    // Resources that are only used during startup.
-    /// Single VMBus SCSI controller shared for all VTL0 disks added by petri.
-    petri_vtl0_scsi: ScsiControllerHandle,
+    // File-backed guest memory.
+    memory_backing_file: Option<PathBuf>,
 
+    // Resources that are only used during startup.
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
     framebuffer_view: Option<framebuffer::View>,
 }
@@ -190,8 +182,6 @@ struct PetriVmResourcesOpenVmm {
 
     // Externally injected management stuff also needed at runtime.
     driver: DefaultDriver,
-    agent_image: Option<AgentImage>,
-    openhcl_agent_image: Option<AgentImage>,
     openvmm_path: ResolvedArtifact,
     output_dir: PathBuf,
 
@@ -199,49 +189,136 @@ struct PetriVmResourcesOpenVmm {
     vtl2_vsock_path: Option<TempPath>,
     _vmbus_vsock_path: TempPath,
 
-    vtl2_settings: Option<Vtl2Settings>,
+    // properties needed at runtime
+    properties: PetriVmProperties,
 }
 
-impl PetriVmConfigOpenVmm {
-    /// Get the OS that the VM will boot into.
-    pub fn os_flavor(&self) -> OsFlavor {
-        self.firmware.os_flavor()
-    }
-}
-
-fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
-    let disk = open_disk_type(path, true)
-        .with_context(|| format!("failed to open disk: {}", path.display()))?;
+async fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
+    let disk = open_disk_type(
+        path,
+        OpenDiskOptions {
+            read_only: true,
+            direct: false,
+        },
+    )
+    .await
+    .with_context(|| format!("failed to open disk: {}", path.display()))?;
     Ok(LayeredDiskHandle {
         layers: vec![
-            RamDiskLayerHandle { len: None }.into_resource().into(),
+            RamDiskLayerHandle {
+                len: None,
+                sector_size: None,
+            }
+            .into_resource()
+            .into(),
             DiskLayerHandle(disk).into_resource().into(),
         ],
     }
     .into_resource())
 }
 
-fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
-    let convert_disk = |disk: &PetriVmgsDisk| -> anyhow::Result<VmgsDisk> {
-        Ok(VmgsDisk {
-            disk: match &disk.disk {
-                PetriDiskType::Memory => LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                    len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
-                })
-                .into_resource(),
-                PetriDiskType::Differencing(path) => memdiff_disk(path)?,
-                PetriDiskType::Persistent(path) => open_disk_type(path, false)?,
-            },
-            encryption_policy: disk.encryption_policy,
-        })
+fn memdiff_remote_disk(url: &str) -> anyhow::Result<Resource<DiskHandleKind>> {
+    // Strip query parameters and fragments before checking the file extension.
+    let url_path = url.split(['?', '#']).next().unwrap_or(url);
+    let format = if url_path.ends_with(".vhd") || url_path.ends_with(".vmgs") {
+        disk_backend_resources::BlobDiskFormat::FixedVhd1
+    } else {
+        disk_backend_resources::BlobDiskFormat::Flat
     };
 
-    Ok(match vmgs {
-        PetriVmgsResource::Disk(disk) => VmgsResource::Disk(convert_disk(disk)?),
-        PetriVmgsResource::ReprovisionOnFailure(disk) => {
-            VmgsResource::ReprovisionOnFailure(convert_disk(disk)?)
+    let cache_dir = super::petri_disk_cache_dir();
+
+    // For VHD1-formatted blobs, let the auto-cache layer derive the cache key
+    // from the VHD's unique ID (a UUID embedded in the footer). This means the
+    // cache automatically invalidates when the image is replaced with a new one,
+    // even if the filename stays the same. For flat-format blobs (e.g. ISOs),
+    // fall back to the URL filename since there's no embedded ID.
+    let cache_key = match format {
+        disk_backend_resources::BlobDiskFormat::FixedVhd1 => None,
+        disk_backend_resources::BlobDiskFormat::Flat => {
+            Some(url_path.rsplit('/').next().unwrap_or(url_path).to_owned())
         }
-        PetriVmgsResource::Reprovision(disk) => VmgsResource::Reprovision(convert_disk(disk)?),
+    };
+
+    Ok(LayeredDiskHandle {
+        layers: vec![
+            RamDiskLayerHandle {
+                len: None,
+                sector_size: None,
+            }
+            .into_resource()
+            .into(),
+            DiskLayerDescription {
+                read_cache: true,
+                write_through: false,
+                layer: SqliteAutoCacheDiskLayerHandle {
+                    cache_path: cache_dir,
+                    cache_key,
+                }
+                .into_resource(),
+            },
+            DiskLayerHandle(
+                disk_backend_resources::BlobDiskHandle {
+                    url: url.to_owned(),
+                    format,
+                }
+                .into_resource(),
+            )
+            .into_resource()
+            .into(),
+        ],
+    }
+    .into_resource())
+}
+
+async fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
+    async fn convert_disk(disk: &PetriVmgsDisk) -> anyhow::Result<VmgsDisk> {
+        Ok(VmgsDisk {
+            disk: petri_disk_to_openvmm(&disk.disk).await?,
+            encryption_policy: disk.encryption_policy,
+        })
+    }
+
+    Ok(match vmgs {
+        PetriVmgsResource::Disk(disk) => VmgsResource::Disk(convert_disk(disk).await?),
+        PetriVmgsResource::ReprovisionOnFailure(disk) => {
+            VmgsResource::ReprovisionOnFailure(convert_disk(disk).await?)
+        }
+        PetriVmgsResource::Reprovision(disk) => {
+            VmgsResource::Reprovision(convert_disk(disk).await?)
+        }
         PetriVmgsResource::Ephemeral => VmgsResource::Ephemeral,
+    })
+}
+
+async fn petri_disk_to_openvmm(disk: &Disk) -> anyhow::Result<Resource<DiskHandleKind>> {
+    Ok(match disk {
+        Disk::Memory(len) => LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+            len: Some(*len),
+            sector_size: None,
+        })
+        .into_resource(),
+        Disk::Differencing(DiskPath::Local(path)) => memdiff_disk(path).await?,
+        Disk::Differencing(DiskPath::Remote { url }) => memdiff_remote_disk(url)?,
+        Disk::Persistent(path) => {
+            open_disk_type(
+                path.as_ref(),
+                OpenDiskOptions {
+                    read_only: false,
+                    direct: false,
+                },
+            )
+            .await?
+        }
+        Disk::Temporary(path) => {
+            open_disk_type(
+                path.as_ref(),
+                OpenDiskOptions {
+                    read_only: false,
+                    direct: false,
+                },
+            )
+            .await?
+        }
     })
 }

@@ -15,6 +15,7 @@ use super::vp_state;
 use super::vp_state::UhVpStateAccess;
 use crate::BackingShared;
 use crate::GuestVtl;
+use crate::IsolationType;
 use crate::TlbFlushLockAccess;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
@@ -22,6 +23,7 @@ use crate::UhPartitionInner;
 use crate::UhPartitionNewParams;
 use crate::UhProcessor;
 use crate::WakeReason;
+use crate::get_tsc_frequency;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::GuestMemory;
@@ -79,6 +81,7 @@ use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::vmtime::VmTimeAccess;
+use x86defs::ApicRegisterValue;
 use x86defs::RFlags;
 use x86defs::X64_CR0_ET;
 use x86defs::X64_CR0_NE;
@@ -100,8 +103,6 @@ use x86defs::tdx::TdxGp;
 use x86defs::tdx::TdxInstructionInfo;
 use x86defs::tdx::TdxL2Ctls;
 use x86defs::tdx::TdxVpEnterRaxResult;
-use x86defs::vmx::ApicPage;
-use x86defs::vmx::ApicRegister;
 use x86defs::vmx::CR_ACCESS_TYPE_LMSW;
 use x86defs::vmx::CR_ACCESS_TYPE_MOV_TO_CR;
 use x86defs::vmx::CrAccessQualification;
@@ -123,6 +124,7 @@ use x86defs::vmx::SecondaryProcessorControls;
 use x86defs::vmx::VMX_ENTRY_CONTROL_LONG_MODE_GUEST;
 use x86defs::vmx::VMX_FEATURE_CONTROL_LOCKED;
 use x86defs::vmx::VmcsField;
+use x86defs::vmx::VmxApicPage;
 use x86defs::vmx::VmxEptExitQualification;
 use x86defs::vmx::VmxExit;
 use x86defs::vmx::VmxExitBasic;
@@ -373,6 +375,133 @@ impl VirtualRegister {
     }
 }
 
+/// Interface for managing lower VTL timer deadlines via TDX L2-VM TSC Deadline
+/// Timer capability.
+///
+/// This allows VTL2 to set an execution deadline for lower VTLs, in absolute
+/// virtual TSC units. If the lower VTL is running when the deadline time
+/// arrives, it exits to VTL2 with exit reason `VmxExitBasic::TIMER_EXPIRED`.
+/// If the TSC deadline is in the past during entry into lower VTL (i.e., TSC
+/// deadline value is lower than the current virtual TSC value), it will immediately
+/// exit back to VTL2 with exit reason `VmxExitBasic::TIMER_EXPIRED`.
+///
+/// The TSC deadline is set using `TDG.VP.WR` for `TDVPS.TSC_DEADLINE[L2-VM Index]`.
+/// The actual `TDG.VP.WR` call to set the deadline is made by the `mshv_vtl` driver
+///  before entering the lower VTL.
+struct TdxTscDeadlineService {
+    // Fixed-point scale factor to convert 100ns to TSC units.
+    tsc_scale_100ns: u128,
+}
+
+impl TdxTscDeadlineService {
+    /// Convert hypervisor reference time (in 100ns) to TSC units.
+    fn ref_time_to_tsc(&self, ref_time: u64) -> u64 {
+        // Use fixed-point multiplication to calculate:
+        // tsc_ticks = (time_100ns /  10_000_000) * tsc_frequency
+        ((ref_time as u128 * self.tsc_scale_100ns) >> 64) as u64
+    }
+
+    /// Returns true if `ref_time` is before `ref_time_last`.
+    ///
+    /// Note that this uses wrapping arithmetic to handle 64-bit timestamp wraparound
+    ///  and hence this is not transitive: if `a` is before `b`, and `b` is before `c`,
+    /// `a` may still appear after `c` if they are too far apart in the circular space.
+    fn is_before(ref_time: u64, ref_time_last: u64) -> bool {
+        let delta = ref_time.wrapping_sub(ref_time_last);
+        (delta as i64) < 0
+    }
+}
+
+impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineService {
+    fn is_hardware_virtualized(&self) -> bool {
+        true
+    }
+
+    /// Update the virtual timer deadline in the processor's context shared with kernel.
+    /// This deadline will be set by `mshv_vtl` using
+    /// `TDG.VP.WR(TDVPS.TSC_DEADLINE[L2-VM Index])` before entering into lower VTL.
+    fn update_deadline(
+        &self,
+        vp: &mut UhProcessor<'_, TdxBacked>,
+        ref_time_now: u64,
+        ref_time_next: u64,
+    ) {
+        let vp_state = vp
+            .backing
+            .tsc_deadline_state
+            .as_mut()
+            .expect("TdxTscDeadlineService requires tsc_deadline_state");
+
+        // Update needed only if no deadline is set or the new time is earlier.
+        if vp_state
+            .deadline_100ns
+            .is_none_or(|last| Self::is_before(ref_time_next, last))
+        {
+            // Record the new reference time.
+            vp_state.deadline_100ns = Some(ref_time_next);
+
+            let state = vp.runner.tdx_l2_tsc_deadline_state_mut();
+            if vp_state
+                .last_deadline_100ns
+                .is_none_or(|last| last != ref_time_next)
+            {
+                let ref_time_from_now = ref_time_next.saturating_sub(ref_time_now);
+                let tsc_delta = self.ref_time_to_tsc(ref_time_from_now);
+                let deadline = safe_intrinsics::rdtsc().wrapping_add(tsc_delta);
+
+                state.deadline = deadline;
+                state.update_deadline = 1;
+
+                tracing::trace!(
+                    ref_time_from_now,
+                    tsc_delta,
+                    deadline,
+                    "updating deadline for TDX L2-VM TSC deadline timer"
+                );
+            } else {
+                state.update_deadline = 0;
+            }
+        }
+    }
+
+    /// Clears the virtual timer deadline in the processor context.
+    fn clear_deadline(&self, vp: &mut UhProcessor<'_, TdxBacked>) {
+        let vp_state = vp
+            .backing
+            .tsc_deadline_state
+            .as_mut()
+            .expect("TdxTscDeadlineService requires tsc_deadline_state");
+
+        vp_state.deadline_100ns = None;
+
+        let state = vp.runner.tdx_l2_tsc_deadline_state_mut();
+        state.update_deadline = 0;
+    }
+
+    /// Synchronize armed deadline state in the processor context.
+    fn sync_deadline_state(&self, vp: &mut UhProcessor<'_, TdxBacked>) {
+        let vp_state = vp
+            .backing
+            .tsc_deadline_state
+            .as_mut()
+            .expect("TdxTscDeadlineService requires tsc_deadline_state");
+
+        vp_state.last_deadline_100ns = vp_state.deadline_100ns;
+    }
+}
+
+/// Per-VP state for TDX L2-VM TSC deadline timer.
+#[derive(Inspect, Default)]
+struct TdxTscDeadline {
+    /// Next deadline to be armed (in 100ns units).
+    #[inspect(hex)]
+    deadline_100ns: Option<u64>,
+    /// Deadline (in 100ns units) armed by `mshv_vtl` driver during previous entry
+    /// into lower VTL.
+    #[inspect(hex)]
+    last_deadline_100ns: Option<u64>,
+}
+
 /// Backing for TDX partitions.
 #[derive(InspectMut)]
 pub struct TdxBacked {
@@ -389,6 +518,10 @@ pub struct TdxBacked {
 
     #[inspect(flatten)]
     cvm: UhCvmVpState,
+
+    /// Per-processor state for [`TdxTscDeadlineService`].
+    #[inspect(flatten)]
+    tsc_deadline_state: Option<TdxTscDeadline>,
 }
 
 #[derive(InspectMut)]
@@ -458,6 +591,7 @@ struct ExitStats {
     needs_interrupt_reinject: Counter,
     exception: Counter,
     descriptor_table: Counter,
+    timer_expired: Counter,
 }
 
 enum UhDirectOverlay {
@@ -743,6 +877,16 @@ impl HardwareIsolatedBacking for TdxBacked {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         self.untrusted_synic.as_mut()
     }
+
+    fn update_deadline(this: &mut UhProcessor<'_, Self>, ref_time_now: u64, next_ref_time: u64) {
+        this.shared
+            .guest_timer
+            .update_deadline(this, ref_time_now, next_ref_time);
+    }
+
+    fn clear_deadline(this: &mut UhProcessor<'_, Self>) {
+        this.shared.guest_timer.clear_deadline(this);
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
@@ -759,6 +903,9 @@ pub struct TdxBackedShared {
     active_vtl: Vec<AtomicU8>,
     /// CR4 bits that the guest is allowed to set to 1.
     cr4_allowed_bits: u64,
+    /// Accessor for managing lower VTL timer deadlines.
+    #[inspect(skip)]
+    guest_timer: Box<dyn hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked>>,
 }
 
 impl TdxBackedShared {
@@ -779,15 +926,38 @@ impl TdxBackedShared {
         let cr4_allowed_bits =
             (ShadowedRegister::Cr4.guest_owned_mask() | X64_CR4_MCE) & cr4_fixed1;
 
+        let cvm = params.cvm_state.unwrap();
+
+        // Configure timer interface for lower VTLs.
+        let guest_timer: Box<dyn hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked>> =
+            match params.lower_vtl_timer_virt_available {
+                true => {
+                    // Use TDX L2-VM TSC deadline timer service. Calculate scale factor
+                    // for fixed-point conversion from 100ns to TSC units.
+                    let tsc_frequency = get_tsc_frequency(IsolationType::Tdx).unwrap();
+                    const NUM_100NS_IN_SEC: u128 = 10_000_000;
+                    let tsc_scale_100ns = ((tsc_frequency as u128) << 64) / NUM_100NS_IN_SEC;
+
+                    tracing::info!(CVM_ALLOWED, "enabling TDX L2-VM TSC deadline timer service");
+
+                    Box::new(TdxTscDeadlineService { tsc_scale_100ns })
+                }
+                false => {
+                    // Fall back to [`VmTime`] interface.
+                    Box::new(hardware_cvm::VmTimeGuestTimer)
+                }
+            };
+
         Ok(Self {
             untrusted_synic,
             flush_state: VtlArray::from_fn(|_| TdxPartitionFlushState::new()),
-            cvm: params.cvm_state.unwrap(),
+            cvm,
             // VPs start in VTL 2.
             active_vtl: std::iter::repeat_n(2, partition_params.topology.vp_count() as usize)
                 .map(AtomicU8::new)
                 .collect(),
             cr4_allowed_bits,
+            guest_timer,
         })
     }
 
@@ -1010,6 +1180,10 @@ impl BackingPrivate for TdxBacked {
                 params.vp_info,
                 UhDirectOverlay::Count as usize,
             )?,
+            tsc_deadline_state: shared
+                .guest_timer
+                .is_hardware_virtualized()
+                .then(TdxTscDeadline::default),
         })
     }
 
@@ -1576,6 +1750,9 @@ impl UhProcessor<'_, TdxBacked> {
         self.runner
             .read_private_regs(&mut self.backing.vtls[entered_from_vtl].private_regs);
 
+        // Synchronize timer deadline state
+        self.shared.guest_timer.sync_deadline_state(self);
+
         // Kernel offload may have set or cleared the halt/idle states
         if offload_enabled && kernel_known_state {
             let offload_flags = self.runner.offload_flags_mut();
@@ -1935,7 +2112,6 @@ impl UhProcessor<'_, TdxBacked> {
                     let handler = UhHypercallHandler {
                         trusted: !self.cvm_partition().hide_isolation,
                         vp: &mut *self,
-                        bus: dev,
                         intercepted_vtl,
                     };
 
@@ -2179,6 +2355,10 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.vtls[intercepted_vtl]
                     .exit_stats
                     .descriptor_table
+            }
+            VmxExitBasic::TIMER_EXPIRED => {
+                // Loop around to reevaluate pending interrupts.
+                &mut self.backing.vtls[intercepted_vtl].exit_stats.timer_expired
             }
             _ => {
                 return Err(dev.fatal_error(UnknownVmxExit(exit_info.code().vmx_exit()).into()));
@@ -2449,7 +2629,7 @@ impl UhProcessor<'_, TdxBacked> {
         self.backing.vtls[vtl].exception_error_code = 0;
     }
 
-    fn handle_tdvmcall(&mut self, dev: &impl CpuIo, intercepted_vtl: GuestVtl) {
+    fn handle_tdvmcall(&mut self, _dev: &impl CpuIo, intercepted_vtl: GuestVtl) {
         let regs = self.runner.tdx_enter_guest_gps();
         if regs[TdxGp::R10] == 0 {
             // Architectural VMCALL.
@@ -2522,7 +2702,6 @@ impl UhProcessor<'_, TdxBacked> {
             let guest_memory = &self.shared.cvm.shared_memory;
             let handler = UhHypercallHandler {
                 vp: &mut *self,
-                bus: dev,
                 trusted: false,
                 intercepted_vtl,
             };
@@ -3447,7 +3626,7 @@ impl UhProcessor<'_, TdxBacked> {
 
 struct TdxApicClient<'a, T> {
     partition: &'a UhPartitionInner,
-    apic_page: &'a mut ApicPage,
+    apic_page: &'a mut VmxApicPage,
     dev: &'a T,
     vmtime: &'a VmTimeAccess,
     vtl: GuestVtl,
@@ -3483,7 +3662,7 @@ impl<T: CpuIo> ApicClient for TdxApicClient<'_, T> {
     }
 }
 
-fn pull_apic_offload(page: &mut ApicPage) -> ([u32; 8], [u32; 8]) {
+fn pull_apic_offload(page: &mut VmxApicPage) -> ([u32; 8], [u32; 8]) {
     let mut irr = [0; 8];
     let mut isr = [0; 8];
     for (((irr, page_irr), isr), page_isr) in irr
@@ -3498,7 +3677,7 @@ fn pull_apic_offload(page: &mut ApicPage) -> ([u32; 8], [u32; 8]) {
     (irr, isr)
 }
 
-impl<T> hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, T, TdxBacked> {
+impl hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, TdxBacked> {
     fn rip(&mut self) -> u64 {
         self.vp.backing.vtls[self.intercepted_vtl].private_regs.rip
     }
@@ -3508,29 +3687,12 @@ impl<T> hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, T, TdxBac
     }
 
     fn gp(&mut self, n: hv1_hypercall::X64HypercallRegister) -> u64 {
-        let gps = self.vp.runner.tdx_enter_guest_gps();
-        match n {
-            hv1_hypercall::X64HypercallRegister::Rax => gps[TdxGp::RAX],
-            hv1_hypercall::X64HypercallRegister::Rcx => gps[TdxGp::RCX],
-            hv1_hypercall::X64HypercallRegister::Rdx => gps[TdxGp::RDX],
-            hv1_hypercall::X64HypercallRegister::Rbx => gps[TdxGp::RBX],
-            hv1_hypercall::X64HypercallRegister::Rsi => gps[TdxGp::RSI],
-            hv1_hypercall::X64HypercallRegister::Rdi => gps[TdxGp::RDI],
-            hv1_hypercall::X64HypercallRegister::R8 => gps[TdxGp::R8],
-        }
+        self.vp.runner.tdx_enter_guest_gps()[n as usize]
     }
 
     fn set_gp(&mut self, n: hv1_hypercall::X64HypercallRegister, value: u64) {
         let gps = self.vp.runner.tdx_enter_guest_gps_mut();
-        match n {
-            hv1_hypercall::X64HypercallRegister::Rax => gps[TdxGp::RAX] = value,
-            hv1_hypercall::X64HypercallRegister::Rcx => gps[TdxGp::RCX] = value,
-            hv1_hypercall::X64HypercallRegister::Rdx => gps[TdxGp::RDX] = value,
-            hv1_hypercall::X64HypercallRegister::Rbx => gps[TdxGp::RBX] = value,
-            hv1_hypercall::X64HypercallRegister::Rsi => gps[TdxGp::RSI] = value,
-            hv1_hypercall::X64HypercallRegister::Rdi => gps[TdxGp::RDI] = value,
-            hv1_hypercall::X64HypercallRegister::R8 => gps[TdxGp::R8] = value,
-        }
+        gps[n as usize] = value;
     }
 
     // TODO: cleanup xmm to not use same as mshv
@@ -3543,7 +3705,7 @@ impl<T> hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, T, TdxBac
     }
 }
 
-impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
+impl UhHypercallHandler<'_, '_, TdxBacked> {
     const TDX_DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [
@@ -4097,7 +4259,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
 /// Compute the index of the highest vector set in IRR/ISR, or 0
 /// if no vector is set. (Vectors 0-15 are invalid so this is not
 /// ambiguous.)
-fn top_vector(reg: &[ApicRegister; 8]) -> u8 {
+fn top_vector(reg: &[ApicRegisterValue; 8]) -> u8 {
     reg.iter()
         .enumerate()
         .rev()
@@ -4107,15 +4269,15 @@ fn top_vector(reg: &[ApicRegister; 8]) -> u8 {
         .unwrap_or(0)
 }
 
-struct TdHypercall<'a, 'b, T>(UhHypercallHandler<'a, 'b, T, TdxBacked>);
+struct TdHypercall<'a, 'b>(UhHypercallHandler<'a, 'b, TdxBacked>);
 
-impl<'a, 'b, T> AsHandler<UhHypercallHandler<'a, 'b, T, TdxBacked>> for TdHypercall<'a, 'b, T> {
-    fn as_handler(&mut self) -> &mut UhHypercallHandler<'a, 'b, T, TdxBacked> {
+impl<'a, 'b> AsHandler<UhHypercallHandler<'a, 'b, TdxBacked>> for TdHypercall<'a, 'b> {
+    fn as_handler(&mut self) -> &mut UhHypercallHandler<'a, 'b, TdxBacked> {
         &mut self.0
     }
 }
 
-impl<T> HypercallIo for TdHypercall<'_, '_, T> {
+impl HypercallIo for TdHypercall<'_, '_> {
     fn advance_ip(&mut self) {
         self.0.vp.runner.tdx_enter_guest_gps_mut()[TdxGp::R10] = 0;
         self.0.vp.backing.vtls[self.0.intercepted_vtl]
@@ -4185,7 +4347,7 @@ impl<T> HypercallIo for TdHypercall<'_, '_, T> {
     }
 }
 
-impl<T> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, TdxBacked> {
+impl hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, TdxBacked> {
     fn advance_ip(&mut self) {
         let long_mode = self.vp.long_mode(self.intercepted_vtl);
         let mut io = hv1_hypercall::X64RegisterIo::new(self, long_mode);
@@ -4201,7 +4363,7 @@ impl<T> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, TdxBacked>
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_, '_, T, TdxBacked> {
+impl hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_, '_, TdxBacked> {
     fn flush_virtual_address_list(
         &mut self,
         processor_set: ProcessorSet<'_>,
@@ -4217,9 +4379,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_,
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
-    for UhHypercallHandler<'_, '_, T, TdxBacked>
-{
+impl hv1_hypercall::FlushVirtualAddressListEx for UhHypercallHandler<'_, '_, TdxBacked> {
     fn flush_virtual_address_list_ex(
         &mut self,
         processor_set: ProcessorSet<'_>,
@@ -4264,9 +4424,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpace
-    for UhHypercallHandler<'_, '_, T, TdxBacked>
-{
+impl hv1_hypercall::FlushVirtualAddressSpace for UhHypercallHandler<'_, '_, TdxBacked> {
     fn flush_virtual_address_space(
         &mut self,
         processor_set: ProcessorSet<'_>,
@@ -4280,9 +4438,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpace
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
-    for UhHypercallHandler<'_, '_, T, TdxBacked>
-{
+impl hv1_hypercall::FlushVirtualAddressSpaceEx for UhHypercallHandler<'_, '_, TdxBacked> {
     fn flush_virtual_address_space_ex(
         &mut self,
         processor_set: ProcessorSet<'_>,
@@ -4319,7 +4475,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
     }
 }
 
-impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
+impl UhHypercallHandler<'_, '_, TdxBacked> {
     fn add_ranges_to_tlb_flush_list(
         flush_state: &TdxPartitionFlushState,
         gva_ranges: &[HvGvaRange],

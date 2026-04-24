@@ -13,12 +13,14 @@ use std::fmt;
 use thiserror::Error;
 
 use tpm_protocol::TPM_AZURE_AIK_HANDLE;
+use tpm_protocol::TPM_DEFAULT_AKCERT_SIZE;
 use tpm_protocol::TPM_GUEST_SECRET_HANDLE;
 use tpm_protocol::TPM_NV_INDEX_AIK_CERT;
 use tpm_protocol::TPM_NV_INDEX_ATTESTATION_REPORT;
 use tpm_protocol::TPM_NV_INDEX_MITIGATED;
 use tpm_protocol::TPM_RSA_SRK_HANDLE;
 use tpm_protocol::expected_ak_attributes;
+use tpm_protocol::platform_akcert_attributes;
 use tpm_protocol::tpm20proto;
 use tpm_protocol::tpm20proto::AlgIdEnum;
 use tpm_protocol::tpm20proto::CommandCodeEnum;
@@ -770,7 +772,7 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
         match previous_ak_cert {
             AkCertType::None => {
                 if params.create_if_missing {
-                    let size = MAX_NV_INDEX_SIZE;
+                    let size = TPM_DEFAULT_AKCERT_SIZE as u16;
 
                     tracing::info!(
                         nv_index = format!("{:x}", TPM_NV_INDEX_AIK_CERT),
@@ -817,7 +819,7 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
                         MAX_NV_INDEX_SIZE
                     }
                 } else {
-                    MAX_NV_INDEX_SIZE
+                    TPM_DEFAULT_AKCERT_SIZE as u16
                 };
 
                 tracing::info!(
@@ -1700,12 +1702,7 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
 
         // Use password-based authorization and allow owner to read
         let attributes = if auth_handle == TPM20_RH_PLATFORM {
-            TpmaNvBits::new()
-                .with_nv_authread(true)
-                .with_nv_authwrite(true)
-                .with_nv_ownerread(true)
-                .with_nv_platformcreate(true)
-                .with_nv_no_da(true)
+            platform_akcert_attributes()
         } else {
             TpmaNvBits::new()
                 .with_nv_ownerread(true)

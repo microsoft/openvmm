@@ -29,6 +29,19 @@ pub mod artifacts {
     openvmm_native!(OPENVMM_LINUX_AARCH64, "linux", "aarch64");
     openvmm_native!(OPENVMM_MACOS_AARCH64, "macos", "aarch64");
 
+    /// openvmm_vhost "native" executable — the vhost-user backend binary.
+    /// Only available on Linux (vhost-user requires Unix sockets).
+    // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub const OPENVMM_VHOST_NATIVE: petri_artifacts_core::ArtifactHandle<OPENVMM_VHOST_LINUX_X64> =
+        petri_artifacts_core::ArtifactHandle::new();
+    // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    /// openvmm_vhost "native" executable — the vhost-user backend binary.
+    pub const OPENVMM_VHOST_NATIVE: petri_artifacts_core::ArtifactHandle<
+        OPENVMM_VHOST_LINUX_AARCH64,
+    > = petri_artifacts_core::ArtifactHandle::new();
+
     declare_artifacts! {
         /// openvmm windows x86_64 executable
         OPENVMM_WIN_X64,
@@ -40,6 +53,10 @@ pub mod artifacts {
         OPENVMM_LINUX_AARCH64,
         /// openvmm macos aarch64 executable
         OPENVMM_MACOS_AARCH64,
+        /// openvmm_vhost linux x86_64 executable
+        OPENVMM_VHOST_LINUX_X64,
+        /// openvmm_vhost linux aarch64 executable
+        OPENVMM_VHOST_LINUX_AARCH64,
     }
 
     /// Guest-side tools used by the VMM tests.
@@ -51,6 +68,16 @@ pub mod artifacts {
             TPM_GUEST_TESTS_WINDOWS_X64,
             /// Linux x86_64 build of the `tpm_guest_tests` utility.
             TPM_GUEST_TESTS_LINUX_X64,
+        }
+    }
+
+    /// Host-side tools used by the VMM tests.
+    pub mod host_tools {
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// Windows x86_64 build of the `test_igvm_agent_rpc_server` executable.
+            TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64,
         }
     }
 
@@ -137,6 +164,18 @@ pub mod artifacts {
 
         impl IsLoadable for UEFI_FIRMWARE_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
+        }
+    }
+
+    /// Petritools disk images
+    pub mod petritools {
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// Petritools erofs image (x64)
+            PETRITOOLS_EROFS_X64,
+            /// Petritools erofs image (aarch64)
+            PETRITOOLS_EROFS_AARCH64,
         }
     }
 
@@ -280,6 +319,7 @@ pub mod artifacts {
             const FILENAME: &'static str =
                 "WindowsServer-2022-datacenter-core-smalldisk-20348.1906.230803.vhd";
             const SIZE: u64 = 32214352384;
+            const DOWNLOAD_NAME: &'static str = "Gen1WindowsDataCenterCore2022X64Vhd";
         }
 
         declare_artifacts! {
@@ -296,6 +336,7 @@ pub mod artifacts {
             const FILENAME: &'static str =
                 "WindowsServer-2022-datacenter-core-smalldisk-g2-20348.1906.230803.vhd";
             const SIZE: u64 = 32214352384;
+            const DOWNLOAD_NAME: &'static str = "Gen2WindowsDataCenterCore2022X64Vhd";
         }
 
         declare_artifacts! {
@@ -319,6 +360,7 @@ pub mod artifacts {
             const FILENAME: &'static str =
                 "WindowsServer-2025-datacenter-core-smalldisk-g2-26100.3476.250306.vhd";
             const SIZE: u64 = 32214352384;
+            const DOWNLOAD_NAME: &'static str = "Gen2WindowsDataCenterCore2025X64Vhd";
         }
 
         declare_artifacts! {
@@ -341,6 +383,7 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for FREE_BSD_13_2_X64 {
             const FILENAME: &'static str = "FreeBSD-13.2-RELEASE-amd64.vhd";
             const SIZE: u64 = 6477005312;
+            const DOWNLOAD_NAME: &'static str = "FreeBsd13_2X64Vhd";
         }
 
         declare_artifacts! {
@@ -362,6 +405,7 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2404_SERVER_X64 {
             const FILENAME: &'static str = "ubuntu-24.04-server-cloudimg-amd64.vhd";
             const SIZE: u64 = 3758211584;
+            const DOWNLOAD_NAME: &'static str = "Ubuntu2404ServerX64Vhd";
         }
 
         declare_artifacts! {
@@ -383,6 +427,53 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2504_SERVER_X64 {
             const FILENAME: &'static str = "ubuntu-25.04-server-cloudimg-amd64.vhd";
             const SIZE: u64 = 3758211584;
+            const DOWNLOAD_NAME: &'static str = "Ubuntu2504ServerX64Vhd";
+        }
+
+        declare_artifacts! {
+            /// Alpine Linux 3.23.2 x64 UEFI nocloud cloud-init
+            /// NOTE: The image on the alpine website is qcow2 and must be converted to a fixed vhd.
+            ALPINE_3_23_X64
+        }
+
+        impl IsTestVhd for ALPINE_3_23_X64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
+            const ARCH: MachineArch = MachineArch::X86_64;
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    ..Default::default()
+                })
+            }
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for ALPINE_3_23_X64 {
+            const FILENAME: &'static str = "nocloud_alpine-3.23.2-x86_64-uefi-cloudinit-r0.vhd";
+            const SIZE: u64 = 224494080;
+            const DOWNLOAD_NAME: &'static str = "Alpine323X64Vhd";
+        }
+
+        declare_artifacts! {
+            /// Alpine Linux 3.23.2 aarch64 UEFI nocloud cloud-init
+            /// NOTE: The image on the alpine website is qcow2 and must be converted to a fixed vhd.
+            ALPINE_3_23_AARCH64
+        }
+
+        impl IsTestVhd for ALPINE_3_23_AARCH64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
+            const ARCH: MachineArch = MachineArch::Aarch64;
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    ..Default::default()
+                })
+            }
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for ALPINE_3_23_AARCH64 {
+            const FILENAME: &'static str = "nocloud_alpine-3.23.2-aarch64-uefi-cloudinit-r0.vhd";
+            const SIZE: u64 = 258015744;
+            const DOWNLOAD_NAME: &'static str = "Alpine323Aarch64Vhd";
         }
 
         declare_artifacts! {
@@ -404,6 +495,7 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2404_SERVER_AARCH64 {
             const FILENAME: &'static str = "ubuntu-24.04-server-cloudimg-arm64.vhd";
             const SIZE: u64 = 3758211584;
+            const DOWNLOAD_NAME: &'static str = "Ubuntu2404ServerAarch64Vhd";
         }
 
         declare_artifacts! {
@@ -427,6 +519,7 @@ pub mod artifacts {
             const FILENAME: &'static str =
                 "windows11preview-arm64-win11-24h2-ent-26100.3775.250406-1.vhdx";
             const SIZE: u64 = 24398266368;
+            const DOWNLOAD_NAME: &'static str = "Windows11EnterpriseAarch64Vhdx";
         }
 
         // VHDs that are created by pre-preparation automation
@@ -476,6 +569,7 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for FREE_BSD_13_2_X64 {
             const FILENAME: &'static str = "FreeBSD-13.2-RELEASE-amd64-dvd1.iso";
             const SIZE: u64 = 4245487616;
+            const DOWNLOAD_NAME: &'static str = "FreeBsd13_2X64Iso";
         }
     }
 
@@ -493,14 +587,28 @@ pub mod artifacts {
             /// with a persistent VMGS file enabled. This is useful for testing
             /// whether default_boot_always_attempt works to boot other VHDs.
             VMGS_WITH_BOOT_ENTRY,
+            /// VMGS file containing a 16k vTPM blob
+            ///
+            /// This file was created by creating a 16k vTPM blob and loading
+            /// it into file index 3 of a blank VMGS file.
+            VMGS_WITH_16K_TPM,
         }
 
         impl IsHostedOnHvliteAzureBlobStore for VMGS_WITH_BOOT_ENTRY {
             const FILENAME: &'static str = "sample-vmgs.vhd";
             const SIZE: u64 = 4194816;
+            const DOWNLOAD_NAME: &'static str = "VmgsWithBootEntry";
         }
 
         impl IsTestVmgs for VMGS_WITH_BOOT_ENTRY {}
+
+        impl IsHostedOnHvliteAzureBlobStore for VMGS_WITH_16K_TPM {
+            const FILENAME: &'static str = "tpm-16k-vmgs.vhd";
+            const SIZE: u64 = 4194816;
+            const DOWNLOAD_NAME: &'static str = "VmgsWith16kTpm";
+        }
+
+        impl IsTestVmgs for VMGS_WITH_16K_TPM {}
     }
 
     /// TMK-related artifacts
@@ -595,5 +703,7 @@ pub mod tags {
         const FILENAME: &'static str;
         /// Size of the file in bytes
         const SIZE: u64;
+        /// CLI name for `cargo xtask guest-test download-image --artifacts <name>`
+        const DOWNLOAD_NAME: &'static str;
     }
 }

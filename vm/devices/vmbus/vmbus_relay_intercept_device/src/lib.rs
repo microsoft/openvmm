@@ -323,10 +323,11 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
 
         let save_restore = self.device.task_mut().0.supports_save_restore();
         let saved_state = self.saved_state.take();
-        let device_runner = if save_restore.is_some() && saved_state.is_some() {
+        let device_runner = if let Some(save_restore) = save_restore
+            && let Some(saved_state) = saved_state
+        {
             save_restore
-                .unwrap()
-                .restore_open(saved_state.unwrap(), channel)
+                .restore_open(saved_state, channel)
                 .context("device restore_open callback")?
         } else {
             self.device
@@ -365,12 +366,12 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             return;
         };
 
-        if state.vtl_pages.is_some() {
+        if let Some(vtl_pages) = &state.vtl_pages {
             match offer
                 .request_send
                 .call(
                     ChannelRequest::TeardownGpadl,
-                    GpadlId(state.vtl_pages.as_ref().unwrap().pfns()[1] as u32),
+                    GpadlId(vtl_pages.pfns()[1] as u32),
                 )
                 .await
             {
@@ -474,7 +475,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
     ) -> Result<OpenOutput> {
         let open_request = OpenRequest {
             open_data: OpenData {
-                target_vp: 0,
+                target_vp: Some(0),
                 ring_offset: 2,
                 ring_gpadl_id,
                 event_flag: !0,

@@ -124,7 +124,7 @@ impl IgvmAttestRequestHelper {
         let runtime_claims = runtime_claims_to_bytes(&runtime_claims);
 
         let hash_type = IgvmAttestHashType::SHA_256;
-        let hash = crate::crypto::sha_256(runtime_claims.as_bytes());
+        let hash = crypto::sha_256::sha_256(runtime_claims.as_bytes());
         let mut runtime_claims_hash = [0u8; tee_call::REPORT_DATA_SIZE];
         runtime_claims_hash[0..hash.len()].copy_from_slice(&hash);
 
@@ -167,7 +167,7 @@ impl IgvmAttestRequestHelper {
         let runtime_claims = runtime_claims_to_bytes(&runtime_claims);
 
         let hash_type = IgvmAttestHashType::SHA_256;
-        let hash = crate::crypto::sha_256(runtime_claims.as_bytes());
+        let hash = crypto::sha_256::sha_256(runtime_claims.as_bytes());
         let mut runtime_claims_hash = [0u8; tee_call::REPORT_DATA_SIZE];
         runtime_claims_hash[0..hash.len()].copy_from_slice(&hash);
 
@@ -487,12 +487,13 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_no_time() {
-        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":""}"#;
+        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":""}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
             root_cert_thumbprint: String::new(),
             console_enabled: false,
+            interactive_console_enabled: false,
             secure_boot: false,
             tpm_enabled: false,
             tpm_persisted: false,
@@ -508,12 +509,13 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_with_time() {
-        const EXPECTED_JWK: &str = r#"{"current-time":1691103220,"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":""}"#;
+        const EXPECTED_JWK: &str = r#"{"current-time":1691103220,"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":""}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
             root_cert_thumbprint: String::new(),
             console_enabled: false,
+            interactive_console_enabled: false,
             secure_boot: false,
             tpm_enabled: false,
             tpm_persisted: false,

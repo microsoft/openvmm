@@ -69,6 +69,7 @@ impl Request<'_> {
             node: send,
             sensitivity: self.params.root.sensitivity,
             number_format: self.params.number_format,
+            parent_sensitivity: self.params.parent_sensitivity,
         }))
     }
 }
@@ -100,6 +101,7 @@ struct DeferredInner {
     depth: usize,
     node: mesh::OneshotSender<InternalNode>,
     sensitivity: SensitivityLevel,
+    parent_sensitivity: SensitivityLevel,
     number_format: NumberFormat,
 }
 
@@ -129,9 +131,11 @@ impl Deferred {
     ///
     /// If this is not an update request, returns `Err(self)`.
     pub fn update(self) -> Result<DeferredUpdate, Self> {
-        if self.0.value.is_some() && self.0.path.is_empty() {
+        if self.0.path.is_empty()
+            && let Some(value) = self.0.value
+        {
             Ok(DeferredUpdate {
-                value: self.0.value.unwrap(),
+                value,
                 node: self.0.node,
                 number_format: self.0.number_format,
             })
@@ -154,6 +158,7 @@ impl Deferred {
             path_start: 0,
             depth: self.0.depth,
             number_format: self.0.number_format,
+            parent_sensitivity: self.0.parent_sensitivity,
         }
     }
 

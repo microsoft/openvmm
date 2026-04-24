@@ -157,7 +157,7 @@ async fn handle_request(
                 tracing::info!(shutdown_type = ?request.shutdown_type, "shutdown request");
                 // TODO: handle this inline without waiting. Currently we spawn
                 // a task so that the response is sent before the shutdown
-                // starts, since hvlite fails to notice that the connection is
+                // starts, since OpenVMM fails to notice that the connection is
                 // closed if we power off while a response is pending.
                 let mut timer = PolledTimer::new(driver);
                 driver
@@ -198,6 +198,12 @@ async fn handle_request(
                 anyhow::Ok(())
             })
             .await
+        }
+        #[cfg(target_os = "linux")]
+        PipetteRequest::Mount(rpc) => rpc.handle_failable_sync(crate::mount::handle_mount),
+        #[cfg(not(target_os = "linux"))]
+        PipetteRequest::Mount(rpc) => {
+            rpc.handle_failable_sync(|_| anyhow::bail!("mount not supported on this platform"))
         }
     }
 }

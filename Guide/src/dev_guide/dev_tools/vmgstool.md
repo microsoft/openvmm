@@ -63,6 +63,14 @@ variables without parsers:
 
 `vmgstool.exe uefi-nvram dump --filepath <vmgs file path> --keypath <key file path> --truncate`
 
+### Read DLL File to Write IGVMfile to VMGS
+
+Additionally, the VmgsTool contains a tool to read the IGVMfile from a DLL (passed in as a data file)
+and write it to VMGS FileId 8 (GUEST_FIRMWARE). To do this pass one of five resource codes
+(NONCONFIDENTIAL, SNP, TDX, SNP_NO_HCL, TDX_NO_HCL) into the cmdline tool:
+
+`vmgstool.exe test copy-igvmfile --filepath <vmgs file path> --datapath <dll path> --resource-code <code>`
+
 ### Delete Boot Variables to Recover a VM that Fails to Boot
 
 A VM may fail to boot if the disk configuration changes and
@@ -103,8 +111,4 @@ installed.
 
 VmgsTool can be built with `cargo build -p vmgstool` for Windows and Linux.
 To interact with encrypted VMGS files, you will need to compile with the
-appropriate encryption feature.
-
-Windows: `cargo build --features "encryption_win" -p vmgstool`
-
-Linux/WSL2: `cargo build --features "encryption_ossl" -p vmgstool`
+encryption feature: `cargo build --features encryption -p vmgstool`

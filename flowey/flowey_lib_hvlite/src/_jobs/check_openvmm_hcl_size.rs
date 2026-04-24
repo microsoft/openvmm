@@ -9,9 +9,8 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl;
 use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile::OpenvmmHclShip;
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonPlatform;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonArch;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::download_gh_artifact;
 use flowey_lib_common::gh_workflow_id;
@@ -51,17 +50,8 @@ impl SimpleFlowNode for Node {
         } = request;
 
         let xtask_target = CommonTriple::Common {
-            arch: match ctx.arch() {
-                FlowArch::X86_64 => CommonArch::X86_64,
-                FlowArch::Aarch64 => CommonArch::Aarch64,
-                arch => anyhow::bail!("unsupported arch {arch}"),
-            },
-            platform: match ctx.platform() {
-                FlowPlatform::Windows => CommonPlatform::WindowsMsvc,
-                FlowPlatform::Linux(_) => CommonPlatform::LinuxGnu,
-                FlowPlatform::MacOs => CommonPlatform::MacOs,
-                platform => anyhow::bail!("unsupported platform {platform}"),
-            },
+            arch: ctx.arch().try_into()?,
+            platform: ctx.platform().try_into()?,
         };
 
         let xtask = ctx.reqv(|v| crate::build_xtask::Request {
@@ -151,7 +141,7 @@ impl SimpleFlowNode for Node {
             Some(
                 ctx.emit_gh_step(
                     "publish openvmm_hcl for analysis",
-                    "actions/upload-artifact@v4",
+                    "actions/upload-artifact@v7",
                 )
                 .with("name", name)
                 .with("path", dir)
@@ -188,10 +178,10 @@ impl SimpleFlowNode for Node {
                     merge_run.commit, merge_run.id
                 );
 
-                let sh = xshell::Shell::new()?;
-                sh.change_dir(rt.read(openvmm_repo_path));
-                xshell::cmd!(
-                    sh,
+                let path = rt.read(openvmm_repo_path);
+                rt.sh.change_dir(path);
+                flowey::shell_cmd!(
+                    rt,
                     "{xtask} verify-size --original {old_path} --new {new_path}"
                 )
                 .run()?;

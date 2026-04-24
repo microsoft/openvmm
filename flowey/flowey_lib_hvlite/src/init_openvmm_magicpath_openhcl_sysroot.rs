@@ -4,21 +4,15 @@
 //! Ensure the OpenHCL sysroot is extracted into the correct "magic directory"
 //! set by the project-level `[env]` table in `.cargo/config.toml`
 
-use crate::download_openvmm_deps::OpenvmmDepsArch;
+use crate::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 new_flow_node!(struct Node);
 
-#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum OpenvmmSysrootArch {
-    Aarch64,
-    X64,
-}
-
 flowey_request! {
     pub struct Request {
-        pub arch: OpenvmmSysrootArch,
+        pub arch: CommonArch,
         pub path: WriteVar<PathBuf>,
     }
 }
@@ -28,7 +22,7 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::cfg_openvmm_magicpath::Node>();
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -50,11 +44,9 @@ impl FlowNode for Node {
 
         for (arch, out_vars) in sysroot_arch {
             let openhcl_sysroot_tar_gz = ctx.reqv(|v| {
-                crate::download_openvmm_deps::Request::GetOpenhclSysroot(
-                    match arch {
-                        OpenvmmSysrootArch::Aarch64 => OpenvmmDepsArch::Aarch64,
-                        OpenvmmSysrootArch::X64 => OpenvmmDepsArch::X86_64,
-                    },
+                crate::resolve_openvmm_deps::Request::Get(
+                    crate::resolve_openvmm_deps::OpenvmmDepFile::OpenhclSysroot,
+                    arch,
                     v,
                 )
             });
@@ -74,14 +66,13 @@ impl FlowNode for Node {
                         rt.read(openvmm_magicpath)
                             .join("extracted")
                             .join(match arch {
-                                OpenvmmSysrootArch::Aarch64 => "aarch64-sysroot",
-                                OpenvmmSysrootArch::X64 => "x86_64-sysroot",
+                                CommonArch::Aarch64 => "aarch64-sysroot",
+                                CommonArch::X86_64 => "x86_64-sysroot",
                             });
                     fs_err::create_dir_all(&extracted_sysroot_path)?;
 
-                    let sh = xshell::Shell::new()?;
-                    xshell::cmd!(
-                        sh,
+                    flowey::shell_cmd!(
+                        rt,
                         "tar
                                 -xf {openhcl_sysroot_tar_gz}
                                 -C {extracted_sysroot_path}

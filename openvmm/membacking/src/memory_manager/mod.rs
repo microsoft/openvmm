@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Hvlite's memory manager.
+//! OpenVMM's memory manager.
 
 mod device_memory;
 
@@ -28,12 +28,12 @@ use std::thread::JoinHandle;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
 
-/// The HvLite memory manager.
+/// The OpenVMM memory manager.
 #[derive(Debug, Inspect)]
 pub struct GuestMemoryManager {
-    /// Guest RAM allocation.
+    /// Guest RAM allocation. None in private memory mode.
     #[inspect(skip)]
-    guest_ram: Mappable,
+    guest_ram: Option<Mappable>,
 
     #[inspect(skip)]
     ram_regions: Arc<Vec<RamRegion>>,
@@ -89,6 +89,21 @@ pub enum MemoryBuildError {
     /// Memory layout incompatible with x86 legacy support.
     #[error("x86 support requires RAM to start at 0 and contain at least 1MB")]
     InvalidRamForX86,
+    /// Private memory is incompatible with x86 legacy support.
+    #[error("private memory is incompatible with x86 legacy support")]
+    PrivateMemoryWithLegacy,
+    /// Private memory is incompatible with existing memory backing.
+    #[error("private memory is incompatible with existing memory backing")]
+    PrivateMemoryWithExistingBacking,
+    /// Failed to allocate private RAM range.
+    #[error("failed to allocate private RAM range {1}")]
+    PrivateRamAlloc(#[source] std::io::Error, MemoryRange),
+    /// THP requires private memory mode.
+    #[error("transparent huge pages requires private memory mode")]
+    ThpWithoutPrivateMemory,
+    /// THP is only supported on Linux.
+    #[error("transparent huge pages is only supported on Linux")]
+    ThpUnsupportedPlatform,
 }
 
 /// A builder for [`GuestMemoryManager`].
@@ -98,6 +113,8 @@ pub struct GuestMemoryBuilder {
     prefetch_ram: bool,
     pin_mappings: bool,
     x86_legacy_support: bool,
+    private_memory: bool,
+    transparent_hugepages: bool,
 }
 
 impl GuestMemoryBuilder {
@@ -109,6 +126,8 @@ impl GuestMemoryBuilder {
             pin_mappings: false,
             prefetch_ram: false,
             x86_legacy_support: false,
+            private_memory: false,
+            transparent_hugepages: false,
         }
     }
 
@@ -158,24 +177,76 @@ impl GuestMemoryBuilder {
         self
     }
 
+    /// Enables private anonymous memory for guest RAM.
+    ///
+    /// When set, guest RAM is backed by anonymous pages (`mmap
+    /// MAP_ANONYMOUS` on Linux, `VirtualAlloc` on Windows) rather than
+    /// shared file-backed sections. This supports decommit to release
+    /// physical pages back to the host.
+    ///
+    /// This is incompatible with [`x86_legacy_support`](Self::x86_legacy_support)
+    /// and [`existing_backing`](Self::existing_backing).
+    pub fn private_memory(mut self, enable: bool) -> Self {
+        self.private_memory = enable;
+        self
+    }
+
+    /// Enables Transparent Huge Pages for guest RAM.
+    ///
+    /// When set, `madvise(MADV_HUGEPAGE)` is called on private RAM allocations
+    /// to allow khugepaged to collapse 4K pages into 2MB huge pages.
+    /// Requires [`private_memory`](Self::private_memory) and Linux; `build()`
+    /// will return an error if either condition is not met.
+    pub fn transparent_hugepages(mut self, enable: bool) -> Self {
+        self.transparent_hugepages = enable;
+        self
+    }
+
     /// Builds the memory backing, allocating memory if existing memory was not
     /// provided by [`existing_backing`](Self::existing_backing).
     pub async fn build(
         self,
         mem_layout: &MemoryLayout,
     ) -> Result<GuestMemoryManager, MemoryBuildError> {
+        // Validate private memory constraints.
+        if self.private_memory {
+            if self.x86_legacy_support {
+                return Err(MemoryBuildError::PrivateMemoryWithLegacy);
+            }
+            if self.existing_mapping.is_some() {
+                return Err(MemoryBuildError::PrivateMemoryWithExistingBacking);
+            }
+        }
+
+        // Validate THP constraints.
+        if self.transparent_hugepages {
+            if !self.private_memory {
+                return Err(MemoryBuildError::ThpWithoutPrivateMemory);
+            }
+            if !cfg!(target_os = "linux") {
+                return Err(MemoryBuildError::ThpUnsupportedPlatform);
+            }
+        }
+
         let ram_size = mem_layout.ram_size() + mem_layout.vtl2_range().map_or(0, |r| r.len());
 
-        let memory = if let Some(memory) = self.existing_mapping {
-            memory.guest_ram
+        let memory: Option<Mappable> = if self.private_memory {
+            // Private memory mode: no shared file-backed allocation.
+            // RAM will be backed by anonymous pages in the VaMapper's SparseMapping.
+            None
+        } else if let Some(memory) = self.existing_mapping {
+            Some(memory.guest_ram)
         } else {
-            sparse_mmap::alloc_shared_memory(
-                ram_size
-                    .try_into()
-                    .map_err(|_| MemoryBuildError::RamTooLarge(ram_size))?,
+            Some(
+                sparse_mmap::alloc_shared_memory(
+                    ram_size
+                        .try_into()
+                        .map_err(|_| MemoryBuildError::RamTooLarge(ram_size))?,
+                    "guest-ram",
+                )
+                .map_err(MemoryBuildError::AllocationFailed)?
+                .into(),
             )
-            .map_err(MemoryBuildError::AllocationFailed)?
-            .into()
         };
 
         // Spawn a thread to handle memory requests.
@@ -184,7 +255,7 @@ impl GuestMemoryBuilder {
         let (thread, spawner) = DefaultPool::spawn_on_thread("memory_manager");
 
         let max_addr =
-            (mem_layout.end_of_ram_or_mmio()).max(mem_layout.vtl2_range().map_or(0, |r| r.end()));
+            (mem_layout.end_of_layout()).max(mem_layout.vtl2_range().map_or(0, |r| r.end()));
 
         let vtl0_alias_map_offset = if let Some(offset) = self.vtl0_alias_map {
             if max_addr > offset {
@@ -195,7 +266,7 @@ impl GuestMemoryBuilder {
             None
         };
 
-        let mapping_manager = MappingManager::new(&spawner, max_addr);
+        let mapping_manager = MappingManager::new(&spawner, max_addr, self.private_memory);
         let va_mapper = mapping_manager
             .client()
             .new_mapper()
@@ -246,29 +317,67 @@ impl GuestMemoryBuilder {
             );
         }
 
+        // In private memory mode, eagerly commit all RAM ranges with
+        // anonymous memory. alloc_range() handles both Linux (mmap MAP_FIXED)
+        // and Windows (MEM_REPLACE_PLACEHOLDER).
+        if self.private_memory {
+            for range in &ram_ranges {
+                va_mapper
+                    .alloc_range(range.start() as usize, range.len() as usize)
+                    .map_err(|e| MemoryBuildError::PrivateRamAlloc(e, *range))?;
+                va_mapper.set_range_name(
+                    range.start() as usize,
+                    range.len() as usize,
+                    "guest-ram-private",
+                );
+            }
+
+            // Mark private RAM as THP-eligible so khugepaged can collapse
+            // 4K pages into 2MB huge pages.
+            #[cfg(target_os = "linux")]
+            if self.transparent_hugepages {
+                for range in &ram_ranges {
+                    if let Err(e) =
+                        va_mapper.madvise_hugepage(range.start() as usize, range.len() as usize)
+                    {
+                        tracing::warn!(
+                            error = &e as &dyn std::error::Error,
+                            range = %range,
+                            "failed to mark RAM as THP eligible"
+                        );
+                    }
+                }
+            }
+        }
+
         let mut ram_regions = Vec::new();
         let mut start = 0;
         for range in &ram_ranges {
             let region = region_manager
                 .client()
-                .new_region("ram".into(), *range, RAM_PRIORITY)
+                .new_region("ram".into(), *range, RAM_PRIORITY, true)
                 .await
                 .expect("regions cannot overlap yet");
 
-            region
-                .add_mapping(
-                    MemoryRange::new(0..range.len()),
-                    memory.clone(),
-                    start,
-                    true,
-                )
-                .await;
+            if let Some(ref memory) = memory {
+                // File-backed mode: add mapping for this RAM range.
+                region
+                    .add_mapping(
+                        MemoryRange::new(0..range.len()),
+                        memory.clone(),
+                        start,
+                        true,
+                    )
+                    .await;
+            }
+            // In private_memory mode, skip add_mapping — no file-backed RAM.
+            // The SparseMapping VA is already committed via alloc_range() above.
 
             region
                 .map(MapParams {
                     writable: true,
                     executable: true,
-                    prefetch: self.prefetch_ram,
+                    prefetch: self.prefetch_ram && !self.private_memory,
                 })
                 .await;
 
@@ -297,6 +406,13 @@ impl GuestMemoryBuilder {
 #[derive(Debug, MeshPayload)]
 pub struct SharedMemoryBacking {
     guest_ram: Mappable,
+}
+
+impl SharedMemoryBacking {
+    /// Create a SharedMemoryBacking from a mappable handle/fd.
+    pub fn from_mappable(guest_ram: Mappable) -> Self {
+        Self { guest_ram }
+    }
 }
 
 /// A mesh-serializable object for providing access to guest memory.
@@ -354,9 +470,12 @@ impl GuestMemoryManager {
     /// new memory manager with the same memory state. Only one instance of this
     /// type should be managing a given memory backing at a time, though, or the
     /// guest may see unpredictable results.
-    pub fn shared_memory_backing(&self) -> SharedMemoryBacking {
-        let guest_ram = self.guest_ram.clone();
-        SharedMemoryBacking { guest_ram }
+    ///
+    /// Returns `None` in private memory mode, where there is no shared
+    /// file-backed allocation.
+    pub fn shared_memory_backing(&self) -> Option<SharedMemoryBacking> {
+        let guest_ram = self.guest_ram.clone()?;
+        Some(SharedMemoryBacking { guest_ram })
     }
 
     /// Attaches the guest memory to a partition, mapping it to the guest

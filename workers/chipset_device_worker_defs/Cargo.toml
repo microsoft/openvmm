@@ -1,0 +1,15 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "chipset_device_worker_defs"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mesh.workspace = true
+mesh_worker.workspace = true
+vm_resource.workspace = true
+
+[lints]
+workspace = true

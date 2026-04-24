@@ -29,27 +29,32 @@ impl SimpleFlowNode for Node {
 
         let hvlite_repo = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
         let rust_install = ctx.reqv(flowey_lib_common::install_rust::Request::EnsureInstalled);
-        let gh_token = ctx.get_gh_context_var().global().token();
+        let rust_toolchain = ctx.reqv(flowey_lib_common::install_rust::Request::GetRustupToolchain);
+        let gh_token = (ctx.backend() == FlowBackend::Github)
+            .then(|| ctx.get_gh_context_var().global().token());
 
         let test_local = ctx.emit_rust_step(
             "test cargo xflowey build-igvm x64 --install-missing-deps",
             |ctx| {
                 rust_install.claim(ctx);
+                let rust_toolchain = rust_toolchain.claim(ctx);
                 let hvlite_repo = hvlite_repo.claim(ctx);
                 let gh_token = gh_token.claim(ctx);
                 move |rt| {
                     let hvlite_repo = rt.read(hvlite_repo);
                     let gh_token = rt.read(gh_token);
+                    let rust_toolchain = rt.read(rust_toolchain);
                     let base_recipe = non_production_build_igvm_tool_out_name(&base_recipe);
-                    let sh = xshell::Shell::new()?;
-                    sh.change_dir(hvlite_repo);
-                    xshell::cmd!(
-                        sh,
-                        "cargo xflowey build-igvm {base_recipe} --install-missing-deps"
+                    rt.sh.change_dir(hvlite_repo);
+                    let mut cmd = flowey::shell_cmd!(
+                        rt,
+                        "rustup run {rust_toolchain...} cargo xflowey build-igvm {base_recipe} --install-missing-deps"
                     )
-                    .env("I_HAVE_A_GOOD_REASON_TO_RUN_BUILD_IGVM_IN_CI", "true")
-                    .env("GITHUB_TOKEN", gh_token)
-                    .run()?;
+                    .env("I_HAVE_A_GOOD_REASON_TO_RUN_BUILD_IGVM_IN_CI", "true");
+                    if let Some(gh_token) = gh_token {
+                        cmd = cmd.env("GITHUB_TOKEN", gh_token);
+                    }
+                    cmd.run()?;
                     Ok(())
                 }
             },

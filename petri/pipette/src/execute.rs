@@ -3,8 +3,13 @@
 
 //! Handler for the execute request.
 
+// UNSAFETY: Required for libc::chroot() and libc::chdir() in pre_exec on Linux.
+#![cfg_attr(target_os = "linux", expect(unsafe_code))]
+
 use futures::executor::block_on;
 use futures::io::AllowStdIo;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 use std::process::Stdio;
 
 pub fn handle_execute(
@@ -17,6 +22,33 @@ pub fn handle_execute(
     if let Some(dir) = &request.current_dir {
         command.current_dir(dir);
     }
+
+    // If a chroot is requested, set up a pre_exec hook to chroot the child process.
+    if let Some(ref root) = request.chroot {
+        #[cfg(target_os = "linux")]
+        {
+            let root = std::ffi::CString::new(root.as_str())?;
+            // SAFETY: calling libc::chroot and libc::chdir in the child process
+            // before exec. These are async-signal-safe on Linux.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::chroot(root.as_ptr()) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::chdir(c"/".as_ptr()) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = root;
+            anyhow::bail!("chroot is only supported on Linux");
+        }
+    }
+
     if request.clear_env {
         command.env_clear();
     }

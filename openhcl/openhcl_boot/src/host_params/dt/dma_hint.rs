@@ -3,7 +3,6 @@
 
 //! Calculate DMA hint value if not provided by host.
 
-use crate::boot_logger::log;
 use crate::cmdline::Vtl2GpaPoolConfig;
 use crate::cmdline::Vtl2GpaPoolLookupTable;
 use igvm_defs::PAGE_SIZE_4K;
@@ -224,7 +223,7 @@ pub fn vtl2_calculate_dma_hint(
                 "Extrapolated VTL2 DMA hint",
             );
 
-            log!(
+            log::info!(
                 "Extrapolated VTL2 DMA hint: {} pages ({} MiB) for {} VPs and {} MiB VTL2 memory",
                 dma_hint_4k,
                 dma_hint_4k * PAGE_SIZE_4K / ONE_MB,
@@ -232,7 +231,7 @@ pub fn vtl2_calculate_dma_hint(
                 mem_size_mb
             );
         } else {
-            log!(
+            log::info!(
                 "Found exact VTL2 DMA hint: {} pages ({} MiB) for {} VPs and {} MiB VTL2 memory",
                 dma_hint_4k,
                 dma_hint_4k * PAGE_SIZE_4K / ONE_MB,
@@ -256,12 +255,12 @@ pub fn pick_private_pool_size(
     match (cmdline, dt) {
         (Vtl2GpaPoolConfig::Off, _) => {
             // Command line explicitly disabled the pool.
-            log!("vtl2 gpa pool disabled via command line");
+            log::info!("vtl2 gpa pool disabled via command line");
             None
         }
         (Vtl2GpaPoolConfig::Pages(cmd_line_pages), _) => {
             // Command line specified explicit size, use it.
-            log!(
+            log::info!(
                 "vtl2 gpa pool enabled via command line with pages: {}",
                 cmd_line_pages
             );
@@ -270,13 +269,13 @@ pub fn pick_private_pool_size(
         (Vtl2GpaPoolConfig::Heuristics(table), None)
         | (Vtl2GpaPoolConfig::Heuristics(table), Some(0)) => {
             // Nothing more explicit, so use heuristics.
-            log!("vtl2 gpa pool coming from heuristics table: {:?}", table);
+            log::info!("vtl2 gpa pool coming from heuristics table: {:?}", table);
             Some(vtl2_calculate_dma_hint(table, vp_count, mem_size))
         }
         (Vtl2GpaPoolConfig::Heuristics(_), Some(dt_page_count)) => {
             // Command line specified heuristics, and the host specified size via device tree. Use
             // the DT.
-            log!(
+            log::info!(
                 "vtl2 gpa pool enabled via device tree with pages: {}",
                 dt_page_count
             );

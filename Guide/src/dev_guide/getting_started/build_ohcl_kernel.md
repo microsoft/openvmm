@@ -27,7 +27,6 @@ NTFS being non case-sensitive by default as there are few files in the Linux ker
 in their case only. To clone successfully under Windows, need a fix in `ntdll` (merged in `Ni`?),
 and a case-sensitive NTFS partition. Best to start with the default WSL2 if there is no existing working setup.
 
-
 ## Building the kernel locally
 
 The following instructions for building the kernel locally target the Ubuntu distributions.

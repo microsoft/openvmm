@@ -11,6 +11,14 @@ vm_resource::register_static_resolvers! {
     // Chipset devices
     #[cfg(guest_arch = "x86_64")]
     chipset::i8042::resolver::I8042Resolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset_legacy::piix4_uhci::resolver::Piix4PciUsbUhciStubResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset_legacy::piix4_pci_isa_bridge::resolver::Piix4PciIsaBridgeResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset::pit::resolver::PitResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset::pic::resolver::PicResolver,
     missing_dev::resolver::MissingDevResolver,
     #[cfg(feature = "tpm")]
     tpm_device::resolver::TpmDeviceResolver,
@@ -24,6 +32,7 @@ vm_resource::register_static_resolvers! {
 
     // Non-volatile stores
     vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreResolver,
+    vmgs_broker::resolver::VmgsFileResolver,
 
     // Serial ports
     serial_core::disconnected::resolver::DisconnectedSerialBackendResolver,
@@ -45,6 +54,8 @@ vm_resource::register_static_resolvers! {
     #[cfg(feature = "disk_crypt")]
     disk_crypt::resolver::DiskCryptResolver,
     disk_file::FileDiskResolver,
+    #[cfg(target_os = "linux")]
+    disk_blockdevice::resolver::StaticBlockDeviceResolver,
     disk_prwrap::DiskWithReservationsResolver,
     disk_delay::resolver::DelayDiskResolver,
     disk_vhd1::Vhd1Resolver,
@@ -68,12 +79,18 @@ vm_resource::register_static_resolvers! {
     scsidisk::resolver::SimpleScsiResolver,
 
     // Virtio devices
+    virtio_blk::resolver::VirtioBlkResolver,
+    virtio_console::resolver::VirtioConsoleResolver,
     #[cfg(any(windows, target_os = "linux"))]
     virtiofs::resolver::VirtioFsResolver,
     #[cfg(any(windows, target_os = "linux"))]
     virtio_p9::resolver::VirtioPlan9Resolver,
     virtio_net::resolver::VirtioNetResolver,
     virtio_pmem::resolver::VirtioPmemResolver,
+    virtio_rng::resolver::VirtioRngResolver,
+    #[cfg(target_os = "linux")]
+    vhost_user_frontend::resolver::VhostUserFrontendResolver,
+    virtio_vsock::resolver::VirtioVsockResolver,
 
     // Vmbus devices
     guest_crash_device::resolver::GuestCrashDeviceResolver,
@@ -91,9 +108,24 @@ vm_resource::register_static_resolvers! {
 
 // Workers.
 mesh_worker::register_workers! {
-    hvlite_core::VmWorker,
+    openvmm_core::VmWorker,
     vnc_worker::VncWorker<std::net::TcpListener>,
 
     #[cfg(feature = "gdb")]
     debug_worker::DebuggerWorker<std::net::TcpListener>,
+}
+
+// Hypervisor backend resolvers.
+vm_resource::register_static_resolvers! {
+    #[cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native, guest_arch = "x86_64"))]
+    openvmm_hypervisors::mshv::MshvResolver,
+
+    #[cfg(all(target_os = "linux", feature = "virt_kvm", guest_is_native))]
+    openvmm_hypervisors::kvm::KvmResolver,
+
+    #[cfg(all(target_os = "windows", feature = "virt_whp", guest_is_native))]
+    openvmm_hypervisors::whp::WhpResolver,
+
+    #[cfg(all(target_os = "macos", guest_arch = "aarch64", guest_is_native, feature = "virt_hvf"))]
+    openvmm_hypervisors::hvf::HvfResolver,
 }

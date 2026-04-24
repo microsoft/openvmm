@@ -204,7 +204,10 @@ impl<T: SimpleVmbusDevice> SimpleDeviceWrapper<T> {
         &mut self,
         open_request: &OpenRequest,
     ) -> anyhow::Result<RawAsyncChannel<GpadlRingMem>> {
-        self.driver.retarget_vp(open_request.open_data.target_vp);
+        // VMBus doesn't provide a target VP if the channel is not using interrupts. Run on VP 0 in
+        // that case.
+        self.driver
+            .retarget_vp(open_request.open_data.target_vp.unwrap_or_default());
         let channel = gpadl_channel(&self.driver, &self.resources, open_request, 0)?;
         Ok(channel)
     }

@@ -7,9 +7,11 @@ edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(unix)'.dependencies]
+memory_range.workspace = true
 pal_async.workspace = true
 
 anyhow.workspace = true
+headervec.workspace = true
 bitfield-struct.workspace = true
 libc.workspace = true
 nix = { workspace = true, features = ["ioctl"] }

@@ -10,7 +10,7 @@ By the end of this chapter, you will have:
 - Built local copies of both OpenVMM and OpenHCL
 - (optionally) Set up a suggested VSCode-based development environment
 
-### _Aside:_ What is HvLite? Underhill?
+## _Aside:_ What is HvLite? Underhill?
 
 As you explore the OpenVMM repo, you may find references to things called
 **HvLite** and **Underhill**.

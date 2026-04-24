@@ -25,12 +25,14 @@ use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
 use thiserror::Error;
+use x86defs::snp::SevAvicPage;
 use x86defs::snp::SevRmpAdjust;
 use x86defs::snp::SevVmsa;
 
 /// Runner backing for SNP partitions.
 pub struct Snp<'a> {
     vmsa: VtlArray<&'a UnsafeCell<SevVmsa>, 2>,
+    avic_pages: VtlArray<&'a UnsafeCell<SevAvicPage>, 2>,
 }
 
 /// Error returned by failing SNP operations.
@@ -59,8 +61,6 @@ impl MshvVtl {
     /// Execute the pvalidate instruction on the specified memory range.
     ///
     /// The range must not be mapped in the kernel as RAM.
-    //
-    // TODO SNP: figure out a safer model for this here and in the kernel.
     pub fn pvalidate_pages(
         &self,
         range: MemoryRange,
@@ -68,9 +68,9 @@ impl MshvVtl {
         terminate_on_failure: bool,
     ) -> Result<(), SnpPageError> {
         tracing::debug!(%range, validate, terminate_on_failure, "pvalidate");
-        // SAFETY: TODO SNP: we are passing parameters as the kernel requires.
-        // But this isn't really safe because it could be used to unaccept a
-        // VTL2 kernel page. Kernel changes are needed to make this safe.
+        // SAFETY: TODO SNP FUTURE: we are passing parameters as the kernel requires.
+        // For defense in depth it could be useful to prevent usermode from changing
+        // visibility of a VTL2 kernel page in the kernel.
         let ret = unsafe {
             hcl_pvalidate_pages(
                 self.file.as_raw_fd(),
@@ -97,20 +97,14 @@ impl MshvVtl {
     /// Execute the rmpadjust instruction on the specified memory range.
     ///
     /// The range must not be mapped in the kernel as RAM.
-    //
-    // TODO SNP: figure out a safer model for this here and in the kernel.
     pub fn rmpadjust_pages(
         &self,
         range: MemoryRange,
         value: SevRmpAdjust,
         terminate_on_failure: bool,
     ) -> Result<(), SnpPageError> {
-        if value.vmsa() {
-            // TODO SNP: VMSA conversion does not work.
-            return Ok(());
-        }
-
-        #[expect(clippy::undocumented_unsafe_blocks)] // TODO SNP
+        // SAFETY: TODO SNP FUTURE: For defense in depth it could be useful to prevent
+        // usermode from changing permissions of a VTL2 kernel page in the kernel.
         let ret = unsafe {
             hcl_rmpadjust_pages(
                 self.file.as_raw_fd(),
@@ -176,11 +170,21 @@ impl MshvVtl {
 impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
     fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
-        let super::BackingState::Snp { vmsa } = &vp.backing else {
+        let super::BackingState::Snp {
+            vtl0_apic_page,
+            vtl1_apic_page,
+            vmsa,
+        } = &vp.backing
+        else {
             return Err(NoRunner::MismatchedIsolation);
         };
 
+        // SAFETY: The mapping is held for the appropriate lifetime, and the
+        // APIC page is never accessed as any other type, or by any other location.
+        let vtl1_apic_page = unsafe { &*vtl1_apic_page.base().cast() };
+
         Ok(Self {
+            avic_pages: [vtl0_apic_page.as_ref(), vtl1_apic_page].into(),
             vmsa: vmsa.each_ref().map(|mp| mp.as_ref()),
         })
     }
@@ -190,8 +194,8 @@ impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
         _vtl: GuestVtl,
         _name: HvRegisterName,
         _value: HvRegisterValue,
-    ) -> Result<bool, super::Error> {
-        Ok(false)
+    ) -> bool {
+        false
     }
 
     fn must_flush_regs_on(_runner: &ProcessorRunner<'a, Self>, _name: HvRegisterName) -> bool {
@@ -202,8 +206,8 @@ impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
         _runner: &ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         _name: HvRegisterName,
-    ) -> Result<Option<HvRegisterValue>, super::Error> {
-        Ok(None)
+    ) -> Option<HvRegisterValue> {
+        None
     }
 
     fn flush_register_page(_runner: &mut ProcessorRunner<'a, Self>) {}
@@ -241,5 +245,51 @@ impl<'a> ProcessorRunner<'a, Snp<'a>> {
                 VmsaWrapper::new(vmsa, &self.hcl.snp_register_bitmap)
             })
             .into_inner()
+    }
+
+    /// Gets a PFN of the VTL0 secure AVIC page.
+    /// TODO: Maybe there is a better way other than passing `cpu_index` here.
+    pub fn secure_avic_vtl0_pfn(&self, cpu_index: u32) -> u64 {
+        self.hcl.secure_avic_vtl0_pfn(cpu_index)
+    }
+
+    /// Gets a reference to the secure AVIC page for the given VTL.
+    pub fn secure_avic_page(&self, vtl: GuestVtl) -> &SevAvicPage {
+        // SAFETY: the APIC pages will not be concurrently accessed by the processor
+        // while this VP is in VTL2.
+        unsafe { &*self.state.avic_pages[vtl].get() }
+    }
+
+    /// Gets a mutable reference to the secure AVIC page for the given VTL.
+    pub fn secure_avic_page_mut(&mut self, vtl: GuestVtl) -> &mut SevAvicPage {
+        // SAFETY: the AVIC pages will not be concurrently accessed by the processor
+        // while this VP is in VTL2.
+        unsafe { &mut *self.state.avic_pages[vtl].get() }
+    }
+
+    /// Gets a mutable reference to the secure AVIC page for the given VTL.
+    pub fn secure_avic_page_vmsa_mut(
+        &mut self,
+        vtl: GuestVtl,
+    ) -> (&mut SevAvicPage, VmsaWrapper<'_, &mut SevVmsa>) {
+        // SAFETY: the AVIC pages will not be concurrently accessed by the processor
+        // while this VP is in VTL2.
+        let avic_page = unsafe { &mut *self.state.avic_pages[vtl].get() };
+        let vmsa = self.vmsa_mut(vtl);
+
+        (avic_page, vmsa)
+    }
+
+    /// Gets a mutable reference to the secure AVIC page and the proxy_irr_exit field
+    pub fn secure_avic_page_proxy_irr_exit_vtl0_mut(
+        &mut self,
+    ) -> (&mut SevAvicPage, &mut [u32; 8]) {
+        // SAFETY: the AVIC pages will not be concurrently accessed by the processor
+        // while this VP is in VTL2.
+        let avic_page = unsafe { &mut *self.state.avic_pages[GuestVtl::Vtl0].get() };
+        // SAFETY: The `proxy_irr_exit` field of the run page will not be concurrently updated.
+        let proxy_irr_vtl0 = unsafe { &mut (*self.run.get()).proxy_irr_exit };
+
+        (avic_page, proxy_irr_vtl0)
     }
 }

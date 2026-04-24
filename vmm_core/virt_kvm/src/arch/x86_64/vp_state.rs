@@ -22,10 +22,11 @@ pub struct KvmVpStateAccess<'a> {
 }
 
 impl KvmPartitionInner {
+    #[track_caller]
     pub fn vp_state_access(&self, vp_index: VpIndex) -> KvmVpStateAccess<'_> {
         KvmVpStateAccess {
             partition: self,
-            vp_info: self.vp(vp_index).vp_info,
+            vp_info: self.vp(vp_index).unwrap().vp_info,
         }
     }
 }
@@ -373,14 +374,20 @@ impl AccessVpState for KvmVpStateAccess<'_> {
     }
 
     fn apic(&mut self) -> Result<vp::Apic, Self::Error> {
-        let mut apic_base = [0];
-        self.kvm()
-            .get_msrs(&[x86defs::X86X_MSR_APIC_BASE], &mut apic_base)?;
+        let mut apic_base = 0;
+        self.kvm().get_msrs(
+            &[x86defs::X86X_MSR_APIC_BASE],
+            std::slice::from_mut(&mut apic_base),
+        )?;
 
         let mut state = FromZeros::new_zeroed();
         self.kvm().get_lapic(&mut state)?;
 
-        Ok(vp::Apic::from_page(apic_base[0], &state))
+        Ok(vp::Apic::new(
+            apic_base.into(),
+            vp::ApicRegisters::from_page(&state),
+            [0; 8],
+        ))
     }
 
     fn set_apic(&mut self, value: &vp::Apic) -> Result<(), Self::Error> {
@@ -389,7 +396,7 @@ impl AccessVpState for KvmVpStateAccess<'_> {
         self.kvm()
             .set_msrs(&[(x86defs::X86X_MSR_APIC_BASE, value.apic_base)])?;
 
-        self.kvm().set_lapic(&value.as_page())?;
+        self.kvm().set_lapic(&value.registers().as_page())?;
         Ok(())
     }
 
@@ -475,15 +482,15 @@ impl AccessVpState for KvmVpStateAccess<'_> {
     }
 
     fn cet_ss(&mut self) -> Result<vp::CetSs, Self::Error> {
-        // KVM does not appear to support CET_SS and in particular does not have
+        // TODO: KVM does not appear to support CET_SS and in particular does not have
         // an API to get the SSP register yet.
-        unimplemented!()
+        Ok(Default::default())
     }
 
     fn set_cet_ss(&mut self, _value: &vp::CetSs) -> Result<(), Self::Error> {
-        // KVM does not appear to support CET_SS and in particular does not have
+        // TODO: KVM does not appear to support CET_SS and in particular does not have
         // an API to get the SSP register yet.
-        unimplemented!()
+        Ok(())
     }
 
     fn tsc_aux(&mut self) -> Result<vp::TscAux, Self::Error> {

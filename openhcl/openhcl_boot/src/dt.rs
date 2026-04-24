@@ -43,7 +43,9 @@ mod aarch64 {
     // Architecturally, PPIs occupy INTID's in the [16..32) range. In DeviceTree,
     // the type of the interrupt is specified first (PPI) and then the _relative_ INTID:
     // for PPI INTID `27` `[GIC_PPI, 27-16, flags]` goes into the DT description.
-    pub const VMBUS_INTID: u32 = 2; // Note: the hardware INTID will be 16 + 2
+    /// VMBus PPI offset for the DT `interrupts` property.
+    /// Canonical INTID is DEFAULT_VMBUS_PPI (18) in openvmm_defs.
+    pub const VMBUS_PPI_OFFSET: u32 = 2;
     pub const TIMER_INTID: u32 = 4; // Note: the hardware INTID will be 16 + 4
 
     /// The Hyper-V default PMU_GSIV value.
@@ -52,7 +54,7 @@ mod aarch64 {
 
     pub const GIC_PHANDLE: u32 = 1;
     pub const GIC_PPI: u32 = 1;
-    pub const IRQ_TYPE_EDGE_FALLING: u32 = 2;
+    pub const IRQ_TYPE_EDGE_RISING: u32 = 1;
     pub const IRQ_TYPE_LEVEL_LOW: u32 = 8;
     pub const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
 }
@@ -146,7 +148,7 @@ fn write_vmbus<'a, T>(
                 // above specifies.
                 &[
                     aarch64::GIC_PPI,
-                    aarch64::VMBUS_INTID,
+                    aarch64::VMBUS_PPI_OFFSET,
                     interrupt_cell_value.expect("must be set on aarch64"),
                 ],
             )?;
@@ -456,7 +458,7 @@ pub fn write_dt(
         p_interrupt_parent,
         p_interrupts,
         interrupt_cell_value: if cfg!(target_arch = "aarch64") {
-            Some(aarch64::IRQ_TYPE_EDGE_FALLING)
+            Some(aarch64::IRQ_TYPE_EDGE_RISING)
         } else {
             None
         },

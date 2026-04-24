@@ -1,0 +1,16 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "pcie_remote_resources"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vm_resource.workspace = true
+
+mesh.workspace = true
+guid = { workspace = true, features = ["mesh"] }
+
+[lints]
+workspace = true

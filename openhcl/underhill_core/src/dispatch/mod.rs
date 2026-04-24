@@ -83,6 +83,8 @@ pub enum UhVmRpc {
     Save(FailableRpc<(), Vec<u8>>),
     ClearHalt(Rpc<(), bool>), // TODO: remove this, and use DebugRequest::Resume
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
+    #[cfg(feature = "mem-profile-tracing")]
+    MemoryProfileTrace(FailableRpc<i32, Vec<u8>>),
 }
 
 #[async_trait]
@@ -175,7 +177,7 @@ pub(crate) struct LoadedVm {
     )>,
 
     pub vmgs: Option<(
-        vmgs_broker::VmgsThinClient,
+        vmgs_broker::VmgsClient,
         disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
         Task<()>,
     )>,
@@ -197,6 +199,10 @@ pub(crate) struct LoadedVm {
     pub mana_keep_alive: KeepAliveConfig,
     pub test_configuration: Option<TestScenarioConfig>,
     pub dma_manager: OpenhclDmaManager,
+    pub config_timeout_in_seconds: u64,
+    pub servicing_timeout_dump_collection_in_ms: u64,
+    #[cfg(feature = "mem-profile-tracing")]
+    pub profiler: mem_profile_tracing::HeapProfiler,
 }
 
 pub struct LoadedVmState<T> {
@@ -235,6 +241,7 @@ impl LoadedVm {
                 device_config_send,
                 self.get_client.clone(),
                 self.device_interfaces.take().unwrap(),
+                self.config_timeout_in_seconds,
             );
 
             threadpool.spawn("VTL2 settings services", {
@@ -354,6 +361,24 @@ impl LoadedVm {
                         resp.field("vmbus_filter", &self.vmbus_filter);
                         resp.field("vpci_relay", &self.vpci_relay);
                         resp.field("mana_keepalive_mode", &self.mana_keep_alive);
+                        // This could have been `resp.field_mut("nvme_keepalive_mode", &mut self.nvme_keep_alive);`,
+                        // but we want to log when this value is updated.
+                        resp.field_mut_with(
+                            "nvme_keepalive_mode",
+                            |value| -> anyhow::Result<&'static str> {
+                                if let Some(new_value) = value {
+                                    let old_value = self.nvme_keep_alive.as_str();
+                                    self.nvme_keep_alive = new_value.parse()?;
+                                    tracing::info!(
+                                        CVM_ALLOWED,
+                                        old_value,
+                                        new_value = self.nvme_keep_alive.as_str(),
+                                        "nvme_keepalive_mode updated via inspect"
+                                    );
+                                }
+                                Ok(self.nvme_keep_alive.as_str())
+                            },
+                        );
                     }),
                 },
                 Event::Vtl2ConfigNicRpc(message) => {
@@ -399,6 +424,17 @@ impl LoadedVm {
                         })
                         .await
                     }
+                    #[cfg(feature = "mem-profile-tracing")]
+                    UhVmRpc::MemoryProfileTrace(rpc) => {
+                        rpc.handle_failable(async |pid| {
+                            if pid == std::process::id() as i32 {
+                                Ok(self.profiler.capture_and_restart())
+                            } else {
+                                anyhow::bail!("Process with PID {pid} not found");
+                            }
+                        })
+                        .await
+                    }
                 },
                 Event::ServicingRequest(message) => {
                     // Explicitly destructure the message for easier tracking of its changes.
@@ -407,10 +443,34 @@ impl LoadedVm {
                         timeout_hint,
                         capabilities_flags,
                     } = message;
+
+                    // If the host provided timeout hint is >= uint16::max
+                    // seconds, we treat that as a signal from the host that no
+                    // timeout duration was set. We instead limit servicing to
+                    // 200s in that case.
+                    let timeout_hint = if timeout_hint >= Duration::from_secs(u16::MAX as u64) {
+                        tracing::info!(
+                            CVM_ALLOWED,
+                            "host provided UINT16_MAX timeout hint, defaulting to 200s"
+                        );
+                        Duration::from_secs(200)
+                    } else {
+                        timeout_hint
+                    };
+
+                    let servicing_deadline = std::time::Instant::now() + timeout_hint;
+                    tracing::info!(
+                        CVM_ALLOWED,
+                        correlation_id = %correlation_id,
+                        timeout_hint_ms = timeout_hint.as_millis() as u64,
+                        servicing_deadline = ?servicing_deadline,
+                        "received servicing request from host"
+                    );
+
                     match self
                         .handle_servicing_request(
                             correlation_id,
-                            std::time::Instant::now() + timeout_hint,
+                            servicing_deadline,
                             capabilities_flags,
                         )
                         .await
@@ -579,6 +639,44 @@ impl LoadedVm {
         if self.isolation.is_isolated() {
             anyhow::bail!("Servicing is not yet supported for isolated VMs");
         }
+
+        // Start a servicing timeout thread on its own executor in a new thread.
+        // Do this to avoid any tasks that may block the current threadpool
+        // executor, and drop the task when this function returns which will
+        // dismiss the timeout panic.
+        //
+        // This helps catch issues where save may hang, and allows the existing
+        // machinery to send the dump to the host when this process crashes.
+        // Note that we choose to not use a livedump call like the firmware
+        // watchdog handlers, as we expect any hang to be a fatal error for
+        // OpenHCL, whereas the firmware watchdog is a failure inside the guest,
+        // not necessarily inside OpenHCL.
+        let (_servicing_timeout_thread, timeout_driver) =
+            pal_async::DefaultPool::spawn_on_thread("servicing-timeout-executor");
+        let dump_collection_duration =
+            Duration::from_millis(self.servicing_timeout_dump_collection_in_ms);
+        let _servicing_timeout =
+            timeout_driver
+                .clone()
+                .spawn("servicing-timeout-task", async move {
+                    let mut timer = pal_async::timer::PolledTimer::new(&timeout_driver);
+                    // Subtract the configured dump collection duration from the
+                    // host provided timeout hint to allow for time for the dump
+                    // to be sent to the host before termination.
+                    //
+                    // This has a default value of 500ms - see
+                    // `OPENHCL_SERVICING_TIMEOUT_DUMP_COLLECTION_IN_MS`.
+                    let duration = deadline
+                        .checked_duration_since(std::time::Instant::now())
+                        .map(|d| d.saturating_sub(dump_collection_duration))
+                        .unwrap_or(Duration::from_secs(0));
+                    timer.sleep(duration).await;
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        "servicing operation timed out, triggering panic"
+                    );
+                    panic!("servicing operation timed out");
+                });
 
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
@@ -798,6 +896,9 @@ impl LoadedVm {
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
+        // Save the emulation platform state prior to any network settings so that
+        // it can capture any relevant state from the network devices that may be
+        // needed for a successful restore.
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
 
         // Only save dma manager state if we are expected to keep VF devices
@@ -833,7 +934,6 @@ impl LoadedVm {
         };
 
         let units = self.save_units().await.context("state unit save failed")?;
-
         let mana_state = if let Some(network_settings) = &mut self.network_settings
             && mana_keepalive_mode.is_enabled()
         {

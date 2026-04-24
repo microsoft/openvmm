@@ -3,7 +3,6 @@
 
 //! Command line arguments and parsing for openhcl_boot.
 
-use crate::boot_logger::log;
 use underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME;
 
 /// Enable the private VTL2 GPA pool for page allocations.
@@ -123,7 +122,7 @@ impl BootCommandLineOptions {
             confidential_debug: false,
             enable_vtl2_gpa_pool: Vtl2GpaPoolConfig::Heuristics(Vtl2GpaPoolLookupTable::Release), // use the release config by default
             sidecar: SidecarOptions::default(),
-            disable_nvme_keep_alive: false,
+            disable_nvme_keep_alive: true,
         }
     }
 }
@@ -131,6 +130,9 @@ impl BootCommandLineOptions {
 impl BootCommandLineOptions {
     /// Parse arguments from a command line.
     pub fn parse(&mut self, cmdline: &str) {
+        // Workaround for a host side issue: disable NVMe keepalive by default.
+        self.disable_nvme_keep_alive = true;
+
         let mut override_vtl2_gpa_pool: Option<Vtl2GpaPoolConfig> = None;
         for arg in cmdline.split_whitespace() {
             if arg.starts_with(OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME) {
@@ -142,13 +144,13 @@ impl BootCommandLineOptions {
                 if let Some((_, arg)) = arg.split_once('=') {
                     self.enable_vtl2_gpa_pool = Vtl2GpaPoolConfig::from(arg);
                 } else {
-                    log!("WARNING: Missing value for IGVM_VTL2_GPA_POOL_CONFIG argument");
+                    log::warn!("Missing value for IGVM_VTL2_GPA_POOL_CONFIG argument");
                 }
             } else if arg.starts_with(ENABLE_VTL2_GPA_POOL) {
                 if let Some((_, arg)) = arg.split_once('=') {
                     override_vtl2_gpa_pool = Some(Vtl2GpaPoolConfig::from(arg));
                 } else {
-                    log!("WARNING: Missing value for ENABLE_VTL2_GPA_POOL argument");
+                    log::warn!("Missing value for ENABLE_VTL2_GPA_POOL argument");
                 }
             } else if arg.starts_with(SIDECAR) {
                 if let Some((_, arg)) = arg.split_once('=') {
@@ -173,16 +175,16 @@ impl BootCommandLineOptions {
                 }
             } else if arg.starts_with(DISABLE_NVME_KEEP_ALIVE) {
                 let arg = arg.split_once('=').map(|(_, arg)| arg);
-                if arg.is_some_and(|a| a != "0") {
-                    self.disable_nvme_keep_alive = true;
+                if arg.is_some_and(|a| a == "0") {
+                    self.disable_nvme_keep_alive = false;
                 }
             }
         }
 
         if let Some(override_config) = override_vtl2_gpa_pool {
             self.enable_vtl2_gpa_pool = override_config;
-            log!(
-                "INFO: Overriding VTL2 GPA pool config to {:?} from command line",
+            log::info!(
+                "Overriding VTL2 GPA pool config to {:?} from command line",
                 override_config
             );
         }

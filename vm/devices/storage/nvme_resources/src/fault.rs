@@ -43,16 +43,21 @@ pub enum IoQueueFaultBehavior {
     CustomPayload(Vec<u8>),
     /// Panic
     Panic(String),
+    /// Delay. Note: This delay is not asynchronously applied. i.e. Subsequent
+    /// commands will be processed until the delay is over.
+    Delay(Duration),
 }
 
 /// Supported fault behaviour for PCI faults
-#[derive(Clone, MeshPayload)]
+#[derive(MeshPayload)]
 pub enum PciFaultBehavior {
     /// Introduce a delay to the PCI operation. This WILL block the processing
     /// thread for the delay duration.
     Delay(Duration),
     /// Do nothing
     Default,
+    /// Verify that the fault was triggered.
+    Verify(Option<OneshotSender<()>>),
 }
 
 /// A notification to the test confirming namespace change processing.
@@ -87,10 +92,12 @@ pub enum NamespaceChange {
 ///         )
 /// }
 /// ```
-#[derive(MeshPayload, Clone)]
+#[derive(MeshPayload)]
 pub struct PciFaultConfig {
     /// Fault to apply to cc.en() bit during enablement
     pub controller_management_fault_enable: PciFaultBehavior,
+    /// Custom MQES value to return in CAP register reads. 1 based value.
+    pub max_queue_size: Option<u16>,
 }
 
 /// A fault config to trigger spurious namespace change notifications from the controller.
@@ -134,6 +141,7 @@ pub struct PciFaultConfig {
 ///             // Define `NamespaceDefinitions` here
 ///         ],
 ///         fault_config: fault_configuration,
+///         enable_tdisp_tests: false,
 ///     };
 ///
 ///     // Send the namespace change notification and await processing.
@@ -361,6 +369,7 @@ pub struct CommandMatch {
 ///             // Define NamespaceDefinitions here
 ///         ],
 ///         fault_config: fault_configuration,
+///         enable_tdisp_tests: false,
 ///     };
 ///     // Pass the controller handle in to the vm config to create and attach the fault controller. At this point the fault is inactive.
 ///     fault_start_updater.set(true); // Activate the fault injection.
@@ -374,8 +383,9 @@ pub struct FaultConfiguration {
     pub fault_active: Cell<bool>,
     /// Fault to apply to the admin queues
     pub admin_fault: AdminQueueFaultConfig,
-    /// Fault to apply to management layer of the controller
-    pub pci_fault: PciFaultConfig,
+    /// Fault to apply to management layer of the controller. Option because it
+    /// needs to be extracted by the PCI layer during initialization.
+    pub pci_fault: Option<PciFaultConfig>,
     /// Fault for test triggered namespace change notifications
     pub namespace_fault: NamespaceFaultConfig,
     /// Fault to apply to all IO queues
@@ -391,7 +401,7 @@ impl FaultConfiguration {
         Self {
             fault_active: fault_active.clone(),
             admin_fault: AdminQueueFaultConfig::new(),
-            pci_fault: PciFaultConfig::new(),
+            pci_fault: Some(PciFaultConfig::new()),
             namespace_fault: NamespaceFaultConfig::new(mesh::channel().1),
             io_fault: Arc::new(IoQueueFaultConfig::new(fault_active)),
         }
@@ -399,7 +409,7 @@ impl FaultConfiguration {
 
     /// Add a PCI fault configuration to the fault configuration
     pub fn with_pci_fault(mut self, pci_fault: PciFaultConfig) -> Self {
-        self.pci_fault = pci_fault;
+        self.pci_fault = Some(pci_fault);
         self
     }
 
@@ -427,12 +437,19 @@ impl PciFaultConfig {
     pub fn new() -> Self {
         Self {
             controller_management_fault_enable: PciFaultBehavior::Default,
+            max_queue_size: None,
         }
     }
 
     /// Add a cc.en() fault
     pub fn with_cc_enable_fault(mut self, behaviour: PciFaultBehavior) -> Self {
         self.controller_management_fault_enable = behaviour;
+        self
+    }
+
+    /// Add a custom CAP.MQES value to return on register reads
+    pub fn with_max_queue_size(mut self, max_queue_size: u16) -> Self {
+        self.max_queue_size = Some(max_queue_size);
         self
     }
 }

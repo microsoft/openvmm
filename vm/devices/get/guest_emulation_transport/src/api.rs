@@ -86,12 +86,14 @@ pub mod platform_settings {
         pub battery_enabled: bool,
         pub processor_idle_enabled: bool,
         pub tpm_enabled: bool,
+
         pub com1_enabled: bool,
         pub com1_debugger_mode: bool,
         pub com1_vmbus_redirector: bool,
         pub com2_enabled: bool,
         pub com2_debugger_mode: bool,
         pub com2_vmbus_redirector: bool,
+
         pub firmware_debugging_enabled: bool,
         pub hibernation_enabled: bool,
 
@@ -133,6 +135,7 @@ pub mod platform_settings {
         pub guest_state_encryption_policy: GuestStateEncryptionPolicy,
         #[inspect(debug)]
         pub management_vtl_features: ManagementVtlFeatures,
+        pub hv_sint_enabled: bool,
     }
 
     #[derive(Copy, Clone, Debug, Inspect)]
@@ -228,6 +231,33 @@ pub struct Time {
     pub utc: i64,
     /// Time zone (as minutes from UTC)
     pub time_zone: i16,
+}
+
+impl Time {
+    /// Convert this time to a `jiff::Zoned`.
+    pub fn to_jiff(self) -> jiff::Zoned {
+        const NANOS_IN_SECOND: i64 = 1_000_000_000;
+        const NANOS_100_IN_SECOND: i64 = NANOS_IN_SECOND / 100;
+
+        let windows_epoch_unix_seconds = jiff::civil::date(1601, 1, 1)
+            .at(0, 0, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .unwrap()
+            .timestamp();
+
+        let host_time_secs = self.utc / NANOS_100_IN_SECOND;
+        let host_time_nanos = (self.utc % NANOS_100_IN_SECOND) * 100;
+
+        let host_time_utc = jiff::Timestamp::new(
+            windows_epoch_unix_seconds.as_second() + host_time_secs,
+            host_time_nanos as i32,
+        )
+        .unwrap();
+
+        let offset_seconds = -self.time_zone as i32 * 60;
+        let tz = jiff::tz::TimeZone::fixed(jiff::tz::Offset::from_seconds(offset_seconds).unwrap());
+        host_time_utc.to_zoned(tz)
+    }
 }
 
 /// A handle returned by `CreateRamGpaRange`, which can be passed to

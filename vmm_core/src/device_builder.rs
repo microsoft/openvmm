@@ -8,14 +8,15 @@ use chipset_device_resources::ErasedChipsetDevice;
 use closeable_mutex::CloseableMutex;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
-use pci_core::msi::MsiInterruptSet;
-use pci_core::msi::MsiInterruptTarget;
+use pci_core::msi::MsiConnection;
+use pci_core::msi::SignalMsi;
 use std::sync::Arc;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::PciDeviceHandleKind;
 use vmbus_server::Guid;
 use vmbus_server::VmbusServerControl;
+use vmcore::irqfd::IrqFd;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vmotherboard::ArcMutexChipsetDeviceBuilder;
@@ -30,15 +31,10 @@ pub async fn build_vpci_device(
     vmbus: &VmbusServerControl,
     instance_id: Guid,
     resource: Resource<PciDeviceHandleKind>,
-    chipset_builder: &mut ChipsetBuilder<'_>,
+    chipset_builder: &ChipsetBuilder<'_>,
     doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
     mapper: Option<&dyn guestmem::MemoryMapper>,
-    new_virtual_device: impl FnOnce(
-        u64,
-    ) -> anyhow::Result<(
-        Arc<dyn MsiInterruptTarget>,
-        VpciInterruptMapper,
-    )>,
+    new_virtual_device: impl FnOnce(u64) -> anyhow::Result<(Arc<dyn SignalMsi>, VpciInterruptMapper)>,
     vtom: Option<u64>,
 ) -> anyhow::Result<()> {
     let device_name = format!("{}:vpci-{instance_id}", resource.id());
@@ -47,7 +43,7 @@ pub async fn build_vpci_device(
         .arc_mutex_device(device_name)
         .with_external_pci();
 
-    let (device, msi_set) = resolve_and_add_pci_device(
+    let (device, msi_conn) = resolve_and_add_pci_device(
         device_builder,
         driver_source,
         resolver,
@@ -55,6 +51,7 @@ pub async fn build_vpci_device(
         resource,
         doorbell_registration,
         mapper,
+        None,
     )
     .await?;
 
@@ -71,7 +68,7 @@ pub async fn build_vpci_device(
                         instance_id.data3 as u64 & 0xfff8
                     ))?;
 
-                msi_set.connect(msi_controller.as_ref());
+                msi_conn.connect(msi_controller);
 
                 let bus = vpci::bus::VpciBus::new(
                     driver_source,
@@ -95,7 +92,7 @@ pub async fn build_vpci_device(
 /// Resolves a PCI device resource, builds the corresponding device, and attaches
 /// the device at the specified PCIe port.
 pub async fn build_pcie_device(
-    chipset_builder: &mut ChipsetBuilder<'_>,
+    chipset_builder: &ChipsetBuilder<'_>,
     port_name: Arc<str>,
     driver_source: &VmTaskDriverSource,
     resolver: &ResourceResolver,
@@ -103,14 +100,15 @@ pub async fn build_pcie_device(
     resource: Resource<PciDeviceHandleKind>,
     doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
     mapper: Option<&dyn guestmem::MemoryMapper>,
-    interrupt_target: Option<Arc<dyn MsiInterruptTarget>>,
+    interrupt_target: Option<Arc<dyn SignalMsi>>,
+    irqfd: Option<Arc<dyn IrqFd>>,
 ) -> anyhow::Result<()> {
     let dev_name = format!("pcie:{}-{}", port_name, resource.id());
     let device_builder = chipset_builder
         .arc_mutex_device(dev_name)
         .on_pcie_port(vmotherboard::BusId::new(&port_name));
 
-    let (_, msi_set) = resolve_and_add_pci_device(
+    let (_, msi_conn) = resolve_and_add_pci_device(
         device_builder,
         driver_source,
         resolver,
@@ -118,11 +116,12 @@ pub async fn build_pcie_device(
         resource,
         doorbell_registration,
         mapper,
+        irqfd,
     )
     .await?;
 
     if let Some(target) = interrupt_target {
-        msi_set.connect(target.as_ref());
+        msi_conn.connect(target);
     }
 
     Ok(())
@@ -137,8 +136,9 @@ pub async fn resolve_and_add_pci_device(
     resource: Resource<PciDeviceHandleKind>,
     doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
     mapper: Option<&dyn guestmem::MemoryMapper>,
-) -> anyhow::Result<(Arc<CloseableMutex<ErasedChipsetDevice>>, MsiInterruptSet)> {
-    let mut msi_set = MsiInterruptSet::new();
+    irqfd: Option<Arc<dyn IrqFd>>,
+) -> anyhow::Result<(Arc<CloseableMutex<ErasedChipsetDevice>>, MsiConnection)> {
+    let msi_conn = MsiConnection::new();
 
     let device = {
         device_builder
@@ -147,12 +147,13 @@ pub async fn resolve_and_add_pci_device(
                     .resolve(
                         resource,
                         pci_resources::ResolvePciDeviceHandleParams {
-                            register_msi: &mut msi_set,
+                            msi_target: msi_conn.target(),
                             register_mmio: &mut services.register_mmio(),
                             driver_source,
                             guest_memory,
                             doorbell_registration,
                             shared_mem_mapper: mapper,
+                            irqfd,
                         },
                     )
                     .await
@@ -161,5 +162,5 @@ pub async fn resolve_and_add_pci_device(
             .await?
     };
 
-    Ok((device, msi_set))
+    Ok((device, msi_conn))
 }

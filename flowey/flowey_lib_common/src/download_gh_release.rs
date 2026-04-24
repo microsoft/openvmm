@@ -159,8 +159,14 @@ impl Node {
             |_| Ok(std::env::current_dir()?.absolute()?)
         });
 
-        let request_set_hash = {
+        // Build a human-readable cache key from repo names and tags so
+        // that cache entries are identifiable in the CI cache UI.
+        // The hash ensures uniqueness; the descriptive prefix aids debugging.
+        let cache_key = {
+            use std::fmt::Write as _;
+
             let hasher = &mut rustc_hash::FxHasher::default();
+            let mut key = String::from("gh-release-download-");
             for ((repo_owner, repo_name, tag), files) in &download_reqs {
                 std::hash::Hash::hash(repo_owner, hasher);
                 std::hash::Hash::hash(repo_name, hasher);
@@ -168,12 +174,17 @@ impl Node {
                 for file in files.keys() {
                     std::hash::Hash::hash(&file, hasher);
                 }
+                write!(key, "{repo_name}-{tag}_").unwrap();
             }
             let hash = std::hash::Hasher::finish(hasher);
-            format!("{:08x?}", hash)
-        };
 
-        let cache_key = ReadVar::from_static(format!("gh-release-download-{request_set_hash}"));
+            // Actions cache keys are limited to 512 characters total, but
+            // subsequent machinery adds some more stuff to the key. Truncate
+            // generously.
+            key.truncate(256);
+            write!(key, "{:016x}", hash).unwrap();
+            ReadVar::from_static(key)
+        };
         let hitvar = ctx.reqv(|v| {
             crate::cache::Request {
                 label: "gh-release-download".into(),
@@ -222,8 +233,6 @@ fn download_all_reqs(
     cache_dir: &Path,
     gh_cli: Option<ReadVar<PathBuf, VarClaimed>>,
 ) -> anyhow::Result<()> {
-    let sh = xshell::Shell::new()?;
-
     let gh_cli = rt.read(gh_cli);
 
     for ((repo_owner, repo_name, tag), files) in download_reqs {
@@ -231,7 +240,7 @@ fn download_all_reqs(
 
         let out_dir = cache_dir.join(format!("{repo_owner}/{repo_name}/{tag}"));
         fs_err::create_dir_all(&out_dir)?;
-        sh.change_dir(&out_dir);
+        rt.sh.change_dir(&out_dir);
 
         if let Some(gh_cli) = &gh_cli {
             // FUTURE: while the gh cli takes care of doing simultaneous downloads in
@@ -239,15 +248,24 @@ fn download_all_reqs(
             // multiple processes to saturate the network connection in cases where
             // multiple (repo, tag) pairs are being pulled at the same time.
             let patterns = files.keys().flat_map(|k| ["--pattern".into(), k.clone()]);
-            xshell::cmd!(
-                sh,
+            flowey::shell_cmd!(
+                rt,
                 "{gh_cli} release download -R {repo} {tag} {patterns...} --skip-existing"
             )
             .run()?;
         } else {
             // FUTURE: parallelize curl invocations across all download_reqs
             for file in files.keys() {
-                xshell::cmd!(sh, "curl --fail -L https://github.com/{repo_owner}/{repo_name}/releases/download/{tag}/{file} -o {file}").run()?;
+                let mut cmd = flowey::shell_cmd!(
+                    rt,
+                    "curl --fail -L https://github.com/{repo_owner}/{repo_name}/releases/download/{tag}/{file} -o {file}"
+                );
+
+                if matches!(rt.platform(), FlowPlatform::Windows) {
+                    cmd = cmd.arg("--ssl-revoke-best-effort");
+                }
+
+                cmd.run()?;
             }
         }
     }

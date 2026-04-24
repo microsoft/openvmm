@@ -14,7 +14,6 @@ use crate::KvmPartition;
 use crate::KvmPartitionInner;
 use crate::KvmProcessorBinder;
 use crate::KvmRunVpError;
-use crate::gsi;
 use crate::gsi::GsiRouting;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
@@ -37,8 +36,7 @@ use kvm::kvm_ioeventfd_flag_nr_deassign;
 use pal_event::Event;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
-use pci_core::msi::MsiControl;
-use pci_core::msi::MsiInterruptTarget;
+use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
 use std::future::poll_fn;
 use std::io;
@@ -95,7 +93,24 @@ use zerocopy::IntoBytes;
 const MYSTERY_MSRS: &[u32] = &[0x88, 0x89, 0x8a, 0x116, 0x118, 0x119, 0x11a, 0x11b, 0x11e];
 
 #[derive(Debug)]
-pub struct Kvm;
+pub struct Kvm {
+    kvm: kvm::Kvm,
+}
+
+impl Kvm {
+    /// Creates a new KVM hypervisor instance.
+    pub fn new() -> Result<Self, KvmError> {
+        Ok(Self {
+            kvm: kvm::Kvm::new()?,
+        })
+    }
+
+    /// Creates a KVM hypervisor instance from a pre-opened `/dev/kvm` fd.
+    pub fn from_kvm(file: std::fs::File) -> Result<Self, KvmError> {
+        let kvm = kvm::Kvm::from(file);
+        Ok(Self { kvm })
+    }
+}
 
 /// CPUID leaf and flag for GB page support.
 const GB_PAGE_LEAF: u32 = 0x80000001;
@@ -112,6 +127,10 @@ impl virt::Hypervisor for Kvm {
     type Partition = KvmPartition;
     type Error = KvmError;
 
+    fn platform_info(&self) -> virt::PlatformInfo {
+        virt::PlatformInfo {}
+    }
+
     fn new_partition<'a>(
         &mut self,
         config: ProtoPartitionConfig<'a>,
@@ -120,8 +139,8 @@ impl virt::Hypervisor for Kvm {
             return Err(KvmError::IsolationNotSupported);
         }
 
-        let kvm = kvm::Kvm::new()?;
-        let mut cpuid_entries = kvm
+        let mut cpuid_entries = self
+            .kvm
             .supported_cpuid()?
             .into_iter()
             .filter_map(|entry| {
@@ -240,7 +259,7 @@ impl virt::Hypervisor for Kvm {
 
         let cpuid_entries = CpuidLeafSet::new(cpuid_entries);
 
-        let vm = kvm.new_vm()?;
+        let vm = self.kvm.new_vm()?;
         vm.enable_split_irqchip(virt::irqcon::IRQ_LINES as u32)?;
         vm.enable_x2apic_api()?;
         vm.enable_unknown_msr_exits()?;
@@ -250,14 +269,6 @@ impl virt::Hypervisor for Kvm {
             config,
             cpuid: cpuid_entries,
         })
-    }
-
-    fn is_available(&self) -> Result<bool, Self::Error> {
-        match std::fs::metadata("/dev/kvm") {
-            Ok(_) => Ok(true),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(KvmError::AvailableCheck(err)),
-        }
     }
 }
 
@@ -273,20 +284,26 @@ impl ProtoPartition for KvmProtoPartition<'_> {
     type Error = KvmError;
     type ProcessorBinder = KvmProcessorBinder;
 
-    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
-        self.cpuid.result(eax, ecx, &[0; 4])
-    }
-
     fn max_physical_address_size(&self) -> u8 {
-        max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid(eax, ecx))
+        max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid.result(eax, ecx, &[0; 4]))
     }
 
     fn build(
         mut self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        // Build topology leaves using the base cpuid before consuming it.
+        let mut topology_leaves = Vec::new();
+        virt::x86::topology::topology_cpuid(
+            self.config.processor_topology,
+            &|eax, ecx| self.cpuid.result(eax, ecx, &[0; 4]),
+            &mut topology_leaves,
+        )
+        .map_err(KvmError::TopologyCpuid)?;
+
         let mut cpuid = self.cpuid.into_leaves();
         cpuid.extend(config.cpuid);
+        cpuid.extend(topology_leaves);
         let cpuid = CpuidLeafSet::new(cpuid);
 
         let bsp_apic_id = self.config.processor_topology.vp_arch(VpIndex::BSP).apic_id;
@@ -329,6 +346,9 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
             // Convert the CPUID entries and update the APIC ID in CPUID for
             // this VCPU.
+            //
+            // TODO: centralize this code, probably in the topology crate, for
+            // use by other hypervisors.
             let cpuid_entries = cpuid
                 .leaves()
                 .iter()
@@ -357,6 +377,30 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                         }
                         CpuidFunction::V2ExtendedTopologyEnumeration => {
                             entry.edx = vp_info.apic_id;
+                        }
+                        CpuidFunction::ProcessorTopologyDefinition => {
+                            let eax =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEax::from(entry.eax);
+                            entry.eax = eax.with_extended_apic_id(vp_info.apic_id).into();
+                            let ebx =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEbx::from(entry.ebx);
+                            entry.ebx = ebx
+                                .with_compute_unit_id(
+                                    (vp_info.apic_id
+                                        % self.config.processor_topology.reserved_vps_per_socket()
+                                        / (ebx.threads_per_compute_unit() as u32 + 1))
+                                        as u8,
+                                )
+                                .into();
+                            let ecx =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEcx::from(entry.ecx);
+                            entry.ecx = ecx
+                                .with_node_id(
+                                    (vp_info.apic_id
+                                        / self.config.processor_topology.reserved_vps_per_socket())
+                                        as u8,
+                                )
+                                .into();
                         }
                         _ => (),
                     }
@@ -389,7 +433,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         gsi_routing.update_routes(&self.vm);
 
-        let partition = KvmPartitionInner {
+        let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
             memory: Default::default(),
             hv1_enabled: self.config.hv_config.is_some(),
@@ -410,10 +454,13 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             gsi_routing: Mutex::new(gsi_routing),
             caps,
             cpuid,
-        };
+            synic_ports: Default::default(),
+        });
 
         let partition = KvmPartition {
-            inner: Arc::new(partition),
+            synic_ports: Arc::new(virt::synic::SynicPorts::new(partition.clone())),
+            irqfd_state: Arc::new(crate::gsi::KvmIrqFdState::new(partition.clone())),
+            inner: partition,
         };
 
         let vps = self
@@ -431,7 +478,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             .collect::<Vec<_>>();
 
         if cfg!(debug_assertions) {
-            (&partition).check_reset_all(&partition.inner.vp(VpIndex::BSP).vp_info);
+            (&partition).check_reset_all(&partition.inner.bsp().vp_info);
         }
 
         Ok((partition, vps))
@@ -466,14 +513,8 @@ impl ResetPartition for KvmPartition {
     type Error = KvmError;
 
     fn reset(&self) -> Result<(), Self::Error> {
-        for vp in self.inner.vps() {
-            self.inner
-                .vp_state_access(vp.vp_info.base.vp_index)
-                .reset_all(&vp.vp_info)
-                .map_err(Box::new)?;
-        }
         let mut this = self;
-        this.reset_all(&self.inner.vp(VpIndex::BSP).vp_info)
+        this.reset_all(&self.inner.bsp().vp_info)
             .map_err(Box::new)?;
         Ok(())
     }
@@ -491,8 +532,12 @@ impl Partition for KvmPartition {
         Some(self.clone())
     }
 
-    fn msi_interrupt_target(self: &Arc<Self>, _vtl: Vtl) -> Option<Arc<dyn MsiInterruptTarget>> {
-        Some(Arc::new(KvmMsiTarget(self.inner.clone())))
+    fn as_signal_msi(&self, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+        Some(self.inner.clone())
+    }
+
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        Some(self.irqfd_state.clone())
     }
 
     fn caps(&self) -> &virt::PartitionCapabilities {
@@ -501,7 +546,10 @@ impl Partition for KvmPartition {
 
     fn request_yield(&self, vp_index: VpIndex) {
         tracing::trace!(vp_index = vp_index.index(), "request yield");
-        if self.inner.vp(vp_index).needs_yield.request_yield() {
+        let Some(vp) = self.inner.vp(vp_index) else {
+            return;
+        };
+        if vp.needs_yield.request_yield() {
             self.inner.evaluate_vp(vp_index);
         }
     }
@@ -517,12 +565,13 @@ impl virt::X86Partition for KvmPartition {
     }
 
     fn pulse_lint(&self, vp_index: VpIndex, _vtl: Vtl, lint: u8) {
+        let Some(vp) = self.inner.vp(vp_index) else {
+            tracelimit::warn_ratelimited!(?vp_index, "pulse_lint for invalid vp_index");
+            return;
+        };
         if lint == 0 {
             tracing::trace!(vp_index = vp_index.index(), "request interrupt window");
-            self.inner
-                .vp(vp_index)
-                .request_interrupt_window
-                .store(true, Ordering::Relaxed);
+            vp.request_interrupt_window.store(true, Ordering::Relaxed);
             self.inner.evaluate_vp(vp_index);
         } else {
             // TODO
@@ -555,6 +604,10 @@ impl Hv1 for KvmPartition {
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
+    }
+
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic_ports.clone()
     }
 }
 
@@ -712,14 +765,14 @@ impl KvmProcessor<'_> {
     }
 }
 
-struct KvmMsi {
-    address_lo: u32,
-    address_hi: u32,
-    data: u32,
+pub(crate) struct KvmMsi {
+    pub(crate) address_lo: u32,
+    pub(crate) address_hi: u32,
+    pub(crate) data: u32,
 }
 
 impl KvmMsi {
-    fn new(request: MsiRequest) -> Self {
+    pub(crate) fn new(request: MsiRequest) -> Self {
         let request_address = MsiAddress::from(request.address as u32);
         let request_data = MsiData::from(request.data);
 
@@ -903,8 +956,8 @@ impl DoorbellRegistration for KvmPartition {
     }
 }
 
-struct KvmHypercallExit<'a, T> {
-    bus: &'a T,
+struct KvmHypercallExit<'a> {
+    partition: &'a KvmPartitionInner,
     registers: KvmHypercallRegisters,
 }
 
@@ -914,22 +967,20 @@ struct KvmHypercallRegisters {
     result: u64,
 }
 
-impl<T: CpuIo> KvmHypercallExit<'_, T> {
+impl KvmHypercallExit<'_> {
     const DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [hv1_hypercall::HvPostMessage, hv1_hypercall::HvSignalEvent],
     );
 }
 
-impl<'a, T: CpuIo> hv1_hypercall::AsHandler<KvmHypercallExit<'a, T>>
-    for &mut KvmHypercallExit<'a, T>
-{
-    fn as_handler(&mut self) -> &mut KvmHypercallExit<'a, T> {
+impl<'a> hv1_hypercall::AsHandler<KvmHypercallExit<'a>> for &mut KvmHypercallExit<'a> {
+    fn as_handler(&mut self) -> &mut KvmHypercallExit<'a> {
         self
     }
 }
 
-impl<T> hv1_hypercall::HypercallIo for KvmHypercallExit<'_, T> {
+impl hv1_hypercall::HypercallIo for KvmHypercallExit<'_> {
     fn advance_ip(&mut self) {
         // KVM automatically does this.
     }
@@ -986,16 +1037,19 @@ impl<T> hv1_hypercall::HypercallIo for KvmHypercallExit<'_, T> {
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::PostMessage for KvmHypercallExit<'_, T> {
+impl hv1_hypercall::PostMessage for KvmHypercallExit<'_> {
     fn post_message(&mut self, connection_id: u32, message: &[u8]) -> hvdef::HvResult<()> {
-        self.bus
-            .post_synic_message(Vtl::Vtl0, connection_id, false, message)
+        self.partition
+            .synic_ports
+            .handle_post_message(Vtl::Vtl0, connection_id, false, message)
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::SignalEvent for KvmHypercallExit<'_, T> {
+impl hv1_hypercall::SignalEvent for KvmHypercallExit<'_> {
     fn signal_event(&mut self, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
-        self.bus.signal_synic_event(Vtl::Vtl0, connection_id, flag)
+        self.partition
+            .synic_ports
+            .handle_signal_event(Vtl::Vtl0, connection_id, flag)
     }
 }
 
@@ -1161,7 +1215,7 @@ impl Processor for KvmProcessor<'_> {
                     } => {
                         // N.B. this can only be SIGNAL_EVENT or POST_MESSAGE.
                         let mut handler = KvmHypercallExit {
-                            bus: dev,
+                            partition: self.partition,
                             registers: KvmHypercallRegisters {
                                 input,
                                 params,
@@ -1214,35 +1268,48 @@ impl Processor for KvmProcessor<'_> {
 
     fn flush_async_requests(&mut self) {}
 
+    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        self.partition
+            .vp_state_access(self.vpindex)
+            .reset_all(&self.inner.vp_info)
+    }
+
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);
         self.partition.vp_state_access(self.vpindex)
     }
 }
 
-impl virt::Synic for KvmPartition {
-    fn post_message(&self, _vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        let wake = self
-            .inner
-            .vp(vp)
+impl virt::synic::Synic for KvmPartitionInner {
+    fn port_map(&self) -> &virt::synic::SynicPortMap {
+        &self.synic_ports
+    }
+
+    fn post_message(&self, _vtl: Vtl, vp_index: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
+        let Some(vp) = self.vp(vp_index) else {
+            tracelimit::warn_ratelimited!(?vp_index, "post_message for invalid vp_index");
+            return;
+        };
+
+        let wake = vp
             .synic_message_queue
             .enqueue_message(sint, &HvMessage::new(HvMessageType(typ), 0, payload));
 
         if wake {
-            self.inner.evaluate_vp(vp);
+            self.evaluate_vp(vp_index);
         }
     }
 
     fn new_guest_event_port(
-        &self,
+        self: Arc<Self>,
         _vtl: Vtl,
         vp: u32,
         sint: u8,
         flag: u16,
     ) -> Box<dyn GuestEventPort> {
         Box::new(KvmGuestEventPort {
-            partition: Arc::downgrade(&self.inner),
-            gm: self.inner.gm.clone(),
+            partition: Arc::downgrade(&self),
+            gm: self.gm.clone(),
             params: Arc::new(Mutex::new(KvmEventPortParams {
                 vp: VpIndex::new(vp),
                 sint,
@@ -1281,11 +1348,24 @@ impl GuestEventPort for KvmGuestEventPort {
     fn interrupt(&self) -> Interrupt {
         let this = self.clone();
         Interrupt::from_fn(move || {
-            let KvmEventPortParams { vp, sint, flag } = *this.params.lock();
+            let KvmEventPortParams {
+                vp: vp_index,
+                sint,
+                flag,
+            } = *this.params.lock();
             let Some(partition) = this.partition.upgrade() else {
                 return;
             };
-            let siefp = partition.vp(vp).siefp.read();
+            let Some(vp) = partition.vp(vp_index) else {
+                tracelimit::warn_ratelimited!(
+                    ?vp_index,
+                    sint,
+                    flag,
+                    "signal event for invalid vp_index"
+                );
+                return;
+            };
+            let siefp = vp.siefp.read();
             if !siefp.enabled() {
                 return;
             }
@@ -1298,7 +1378,7 @@ impl GuestEventPort for KvmGuestEventPort {
                         drop(siefp);
                         partition
                             .kvm
-                            .irq_line(VMBUS_BASE_GSI + vp.index(), true)
+                            .irq_line(VMBUS_BASE_GSI + vp_index.index(), true)
                             .unwrap();
 
                         break;
@@ -1322,42 +1402,8 @@ impl GuestEventPort for KvmGuestEventPort {
     }
 }
 
-#[derive(Debug)]
-struct GsiMsi {
-    gsi: gsi::GsiRoute,
-}
-
-struct KvmMsiTarget(Arc<KvmPartitionInner>);
-
-impl MsiInterruptTarget for KvmMsiTarget {
-    fn new_interrupt(&self) -> Box<dyn MsiControl> {
-        let event = Event::new();
-        let interrupt = self.0.new_route(Some(event)).expect("BUGBUG");
-        Box::new(GsiMsi { gsi: interrupt })
-    }
-}
-
-impl MsiControl for GsiMsi {
-    fn enable(&mut self, address: u64, data: u32) {
-        let request = MsiRequest { address, data };
-        let KvmMsi {
-            address_lo,
-            address_hi,
-            data,
-        } = KvmMsi::new(request);
-
-        self.gsi.enable(kvm::RoutingEntry::Msi {
-            address_lo,
-            address_hi,
-            data,
-        });
-    }
-
-    fn disable(&mut self) {
-        self.gsi.disable();
-    }
-
-    fn signal(&mut self, _address: u64, _data: u32) {
-        self.gsi.irqfd_event().unwrap().signal()
+impl SignalMsi for KvmPartitionInner {
+    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+        self.request_msi(MsiRequest { address, data });
     }
 }

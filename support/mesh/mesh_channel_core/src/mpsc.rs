@@ -657,7 +657,7 @@ fn trace_channel_error(err: &ChannelError) {
     );
 }
 
-impl<T> futures_core::Stream for Receiver<T> {
+impl<T> futures::stream::Stream for Receiver<T> {
     type Item = T;
 
     fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -672,7 +672,7 @@ impl<T> futures_core::Stream for Receiver<T> {
     }
 }
 
-impl<T> futures_core::FusedStream for Receiver<T> {
+impl<T> futures::stream::FusedStream for Receiver<T> {
     fn is_terminated(&self) -> bool {
         self.0.queue.state().terminated
     }
@@ -916,7 +916,7 @@ mod tests {
     use crate::RecvError;
     use futures::StreamExt;
     use futures::executor::block_on;
-    use futures_core::FusedStream;
+    use futures::stream::FusedStream;
     use mesh_node::local_node::Port;
     use mesh_protobuf::Protobuf;
     use std::cell::Cell;

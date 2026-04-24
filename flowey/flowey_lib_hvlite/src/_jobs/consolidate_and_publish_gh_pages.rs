@@ -43,22 +43,19 @@ impl SimpleFlowNode for Node {
             output,
         } = request;
 
-        let repo = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
-        let logview_new_build =
+        let logview_build =
             ctx.reqv(|v| crate::_jobs::build_test_results_website::Request { path: v });
 
         let consolidated_html = ctx.emit_rust_stepv("generate consolidated gh pages html", |ctx| {
             let rendered_guide = rendered_guide.claim(ctx);
             let rustdoc_windows = rustdoc_windows.claim(ctx);
             let rustdoc_linux = rustdoc_linux.claim(ctx);
-            let repo = repo.claim(ctx);
-            let logview_new_build = logview_new_build.claim(ctx);
+            let logview_build = logview_build.claim(ctx);
             |rt| {
                 let rendered_guide = rt.read(rendered_guide);
                 let rustdoc_windows = rt.read(rustdoc_windows);
                 let rustdoc_linux = rt.read(rustdoc_linux);
-                let repo = rt.read(repo);
-                let logview_new_build = rt.read(logview_new_build);
+                let logview_build = rt.read(logview_build);
 
                 let consolidated_html = std::env::current_dir()?.join("out").absolute()?;
                 fs_err::create_dir(&consolidated_html)?;
@@ -87,23 +84,10 @@ impl SimpleFlowNode for Node {
                     consolidated_html.join("rustdoc/linux"),
                 )?;
 
-                // Old logviewer. Keeping this around while the new one is stabilized.
+                // New logviewer (built in CI).
                 flowey_lib_common::_util::copy_dir_all(
-                    repo.join("petri/logview"),
-                    consolidated_html.join("test-results-old"),
-                )?;
-
-                // New logviewer.
-                flowey_lib_common::_util::copy_dir_all(
-                    repo.join("petri/logview_new/dist"),
+                    logview_build,
                     consolidated_html.join("test-results"),
-                )?;
-
-                // Testing CI changes to minimize disruptions to petri site
-                // availability. Will remove this once CI build changes are in.
-                flowey_lib_common::_util::copy_dir_all(
-                    logview_new_build,
-                    consolidated_html.join("test-results-ci"),
                 )?;
 
                 // as we do not currently have any form of "landing page",
@@ -116,7 +100,7 @@ impl SimpleFlowNode for Node {
 
         let consolidated_html = if matches!(ctx.backend(), FlowBackend::Github) {
             let did_upload = ctx
-                .emit_gh_step("Upload pages artifact", "actions/upload-pages-artifact@v3")
+                .emit_gh_step("Upload pages artifact", "actions/upload-pages-artifact@v4")
                 .with(
                     "path",
                     consolidated_html.map(ctx, |x| x.display().to_string()),

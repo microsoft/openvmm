@@ -37,6 +37,43 @@ To run these examples using a pre-compiled copy of OpenVMM, swap `cargo run
 --` with `/path/to/openvmm`.
 ```
 
+~~~admonish tip title="UEFI firmware required when running outside cargo"
+When running via `cargo run`, environment variables in `.cargo/config.toml`
+automatically point OpenVMM to the `mu_msvm` UEFI firmware (`MSVM.fd`)
+downloaded by `cargo xflowey restore-packages`.
+
+When running the `openvmm` binary directly, these environment variables are
+**not set**, and you will get:
+
+> fatal error: must provide uefi firmware when booting with uefi
+
+To fix this, **explicitly pass the firmware** using `--uefi-firmware`:
+
+```shell
+openvmm --uefi --uefi-firmware path/to/MSVM.fd --disk memdiff:path/to/disk.vhdx
+```
+
+If you ran `cargo xflowey restore-packages`, the firmware is at:
+
+```text
+.packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd        # x64
+.packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV/MSVM.fd # aarch64
+```
+
+If you used `cargo xflowey vmm-tests-run --build-only --dir <out>`, the firmware
+is copied into that output directory under the same relative path.
+
+Alternatively, set the environment variable so you don't need the flag each time:
+
+```shell
+# x64
+export X86_64_OPENVMM_UEFI_FIRMWARE=path/to/MSVM.fd
+
+# aarch64
+export AARCH64_OPENVMM_UEFI_FIRMWARE=path/to/MSVM.fd
+```
+~~~
+
 If you run into any issues, please refer to [Troubleshooting](./troubleshooting.md).
 
 ### _Preface:_ Quitting OpenVMM
@@ -110,6 +147,59 @@ writes the VM makes to the VHD are not persisted between runs. This is very
 useful when iterating on OpenVMM code, since booting the VM becomes repeatable
 and you don't have to worry about shutting down properly. Use `file` instead for
 normal persistent storage.
+
+### OpenHCL, via Linux Direct Boot
+
+This example will boot OpenHCL in Linux direct mode, running a minimal shell
+inside VTL2. This is the same configuration used by the `openhcl_linux_direct_x64`
+integration tests.
+
+First, build the test artifacts from Linux or WSL using `vmm-tests-run --build-only`.
+The IGVM must be built on Linux:
+
+```shell
+cargo xflowey vmm-tests-run --build-only --dir <out> --target windows-x64
+```
+
+```admonish tip
+If you only need the IGVM binary (and already have `openvmm.exe`), you can
+use `cargo xflowey build-igvm` instead — it's faster than building the full
+test suite.
+```
+
+This places `openvmm.exe` and `openhcl-x64-test-linux-direct.bin` in the
+`<out>` directory. Then, on Windows, from the `<out>` directory:
+
+```powershell
+.\openvmm.exe `
+    --hv `
+    --vtl2 `
+    --igvm openhcl-x64-test-linux-direct.bin `
+    -c "panic=-1 reboot=triple UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=rdinit=/bin/sh" `
+    -m 2GB `
+    --vmbus-com1-serial "term,name=VTL0 Linux" `
+    --com3 "term,name=VTL2 OpenHCL" `
+    --vmbus-vtl2-vsock-path $env:temp\ohcldiag-dev
+```
+
+```admonish warning
+The `--vmbus-com1-serial` flag is **required** when using `rdinit=/bin/sh`.
+The shell running as PID 1 needs a controlling terminal (tty) — without one
+it exits immediately, causing a kernel panic and infinite reboot loop.
+
+The `--com3` flag is optional but recommended — it gives you VTL2 (OpenHCL)
+kernel console output for debugging.
+```
+
+For more details on running OpenHCL on OpenVMM, including
+[VMBus relay](../../reference/architecture/openhcl/vmbus.md) and device
+assignment, see [Running OpenHCL: OpenVMM](../openhcl/run/openvmm.md).
+
+### Alpine Linux, via Direct Boot
+
+See the dedicated [Alpine Linux](./alpine.md) guide for a full walkthrough of
+booting Alpine from a cloud disk image using direct boot with PCIe and
+virtio-blk.
 
 ### DOS, via PCAT BIOS
 

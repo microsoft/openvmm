@@ -10,7 +10,6 @@
 use futures::poll;
 use guestmem::GuestMemory;
 use guid::Guid;
-use headervec::HeaderVec;
 use mesh::CancelContext;
 use mesh::MeshPayload;
 use pal::windows::ObjectAttributes;
@@ -20,6 +19,7 @@ use pal_async::windows::overlapped::IoBuf;
 use pal_async::windows::overlapped::IoBufMut;
 use pal_async::windows::overlapped::OverlappedFile;
 use pal_event::Event;
+use std::mem::ManuallyDrop;
 use std::mem::zeroed;
 use std::num::NonZeroU32;
 use std::os::windows::prelude::*;
@@ -30,7 +30,6 @@ use vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use widestring::Utf16Str;
 use widestring::utf16str;
 use windows::Wdk::Storage::FileSystem::NtOpenFile;
-use windows::Win32::Foundation::ERROR_MORE_DATA;
 use windows::Win32::Foundation::ERROR_OPERATION_ABORTED;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Foundation::NTSTATUS;
@@ -82,11 +81,42 @@ impl From<OwnedHandle> for ProxyHandle {
 }
 
 pub struct VmbusProxy {
-    file: OverlappedFile,
-    // NOTE: This must come after `file` so that it is not released until `file`
-    // is closed.
+    file: ManuallyDrop<OverlappedFile>,
     guest_memory: Option<GuestMemory>,
     cancel: CancelContext,
+    drop_send: Option<mesh::OneshotSender<()>>,
+}
+
+impl Drop for VmbusProxy {
+    fn drop(&mut self) {
+        // If a GuestMemory was used, clear it from the kernel before it gets destructed.
+        // N.B. Not all versions of the proxy driver support this operation, in which case this
+        //      will fail with ERROR_INVALID_FUNCTION or ERROR_NOT_SUPPORTED.
+        if self.guest_memory.is_some() {
+            // Since we are not in an async method, issue this ioctl synchronously.
+            if let Err(err) = self.ioctl_sync(
+                proxyioctl::IOCTL_VMBUS_PROXY_DETACH,
+                &proxyioctl::VMBUS_PROXY_DETACH_INPUT {
+                    DetachChannels: false,
+                },
+            ) {
+                tracing::warn!(
+                    err = &err as &dyn std::error::Error,
+                    "failed to clear proxy driver guest memory"
+                );
+            }
+        }
+
+        // SAFETY: VmbusProxy is being dropped so can no longer be used.
+        let file = unsafe { ManuallyDrop::take(&mut self.file) };
+
+        // Extract the inner file to dissociate the I/O completion port. This is required so the
+        // file object can be reused in case of handle brokering.
+        file.into_inner();
+        if let Some(drop_send) = self.drop_send.take() {
+            drop_send.send(());
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -131,14 +161,23 @@ unsafe impl<T> IoBufMut for StaticIoctlBuffer<T> {
 }
 
 impl VmbusProxy {
-    pub fn new(driver: &dyn Driver, handle: ProxyHandle, ctx: CancelContext) -> Result<Self> {
-        // SAFETY: TODO, analyze whether we are guaranteed to follow the safety
-        // contract.
+    /// Creates a new `VmbusProxy` from a [`ProxyHandle`]. When the `VmbusProxy` instance is
+    /// dropped, `drop_send` is signaled. This allows users to wait until all IO is guaranteed to
+    /// be finished and the IO completion port is disassociated.
+    pub fn new(
+        driver: &dyn Driver,
+        handle: ProxyHandle,
+        ctx: CancelContext,
+        drop_send: mesh::OneshotSender<()>,
+    ) -> Result<Self> {
+        // SAFETY: This handle is duplicated and can be shared with other devices, so safety depends
+        // on this being the only user of the handle for overlapped IO.
         let file = unsafe { OverlappedFile::new(driver, handle.0)? };
         Ok(Self {
-            file,
+            file: ManuallyDrop::new(file),
             guest_memory: None,
             cancel: ctx,
+            drop_send: Some(drop_send),
         })
     }
 
@@ -196,6 +235,26 @@ impl VmbusProxy {
         let size = r?;
         assert_eq!(size, output.len(), "ioctl returned unexpected size");
         Ok(output)
+    }
+
+    fn ioctl_sync<T>(&self, code: u32, input: &T) -> Result<()>
+    where
+        T: IntoBytes + zerocopy::Immutable,
+    {
+        // SAFETY: Calling API as documented
+        unsafe {
+            let mut bytes = 0;
+            DeviceIoControl(
+                HANDLE(self.file.get().as_raw_handle()),
+                code,
+                Some(input.as_bytes().as_ptr().cast()),
+                size_of_val(input) as u32,
+                None,
+                0,
+                Some(&mut bytes),
+                None,
+            )
+        }
     }
 
     pub async fn set_memory(&mut self, guest_memory: &GuestMemory) -> Result<()> {
@@ -439,76 +498,8 @@ impl VmbusProxy {
     }
 
     pub fn run_channel(&self, id: u64) -> Result<()> {
-        unsafe {
-            // This is a synchronous operation, so don't use the async IO infrastructure.
-            let input = proxyioctl::VMBUS_PROXY_RUN_CHANNEL_INPUT { ProxyId: id };
-            let mut bytes = 0;
-            DeviceIoControl(
-                HANDLE(self.file.get().as_raw_handle()),
-                proxyioctl::IOCTL_VMBUS_PROXY_RUN_CHANNEL,
-                Some(std::ptr::from_ref(&input).cast()),
-                size_of_val(&input) as u32,
-                None,
-                0,
-                Some(&mut bytes),
-                None,
-            )?;
-        };
-        Ok(())
-    }
-
-    pub fn get_numa_node_map(&self) -> Result<Vec<u8>> {
-        unsafe {
-            // This is a synchronous operation, so don't use the async IO infrastructure.
-            let mut output =
-                HeaderVec::<proxyioctl::VMBUS_PROXY_GET_NUMA_MAP_OUTPUT, u8, 8>::with_capacity(
-                    zeroed::<proxyioctl::VMBUS_PROXY_GET_NUMA_MAP_OUTPUT>(),
-                    8,
-                );
-            let mut bytes = 0;
-            if let Err(e) = DeviceIoControl(
-                HANDLE(self.file.get().as_raw_handle()),
-                proxyioctl::IOCTL_VMBUS_PROXY_GET_NUMA_MAP,
-                None,
-                0,
-                Some(output.as_mut_ptr().cast()),
-                output.total_byte_capacity() as u32,
-                Some(&mut bytes),
-                None,
-            ) {
-                if e.code() == ERROR_MORE_DATA.into() {
-                    // The buffer was too small, resize and try again. The proxy returns the required buffer size
-                    // in VpCount on overflow, so use that.
-                    assert!(
-                        bytes as usize >= size_of::<proxyioctl::VMBUS_PROXY_GET_NUMA_MAP_OUTPUT>()
-                    );
-
-                    let required_len = output.head.VpCount as usize;
-                    output.reserve_tail(required_len - output.tail_capacity());
-                    DeviceIoControl(
-                        HANDLE(self.file.get().as_raw_handle()),
-                        proxyioctl::IOCTL_VMBUS_PROXY_GET_NUMA_MAP,
-                        None,
-                        0,
-                        Some(output.as_mut_ptr().cast()),
-                        output.total_byte_capacity() as u32,
-                        Some(&mut bytes),
-                        None,
-                    )?;
-                } else {
-                    return Err(e);
-                }
-            }
-
-            assert!(
-                bytes as usize
-                    >= size_of::<proxyioctl::VMBUS_PROXY_GET_NUMA_MAP_OUTPUT>()
-                        + output.head.VpCount as usize
-            );
-
-            output.set_tail_len(output.head.VpCount as usize);
-            Ok(output.tail.to_vec())
-        }
+        let input = proxyioctl::VMBUS_PROXY_RUN_CHANNEL_INPUT { ProxyId: id };
+        self.ioctl_sync(proxyioctl::IOCTL_VMBUS_PROXY_RUN_CHANNEL, &input)
     }
 
     /// Adds GPADL ioctl data to a buffer.

@@ -55,12 +55,12 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
         input: ResolveChipsetDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let ppi_store = resolver
-            .resolve(resource.ppi_store, ())
+            .resolve(resource.ppi_store, &())
             .await
             .map_err(ResolveTpmError::ResolvePpiStore)?;
 
         let nvram_store = resolver
-            .resolve(resource.nvram_store, ())
+            .resolve(resource.nvram_store, &())
             .await
             .map_err(ResolveTpmError::ResolveNvramStore)?;
 
@@ -119,6 +119,7 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
             input.encrypted_guest_memory.clone(),
             ppi_store.0,
             nvram_store.0,
+            resource.nvram_size,
             monotonic_timer,
             resource.refresh_tpm_seeds,
             input.is_restoring,

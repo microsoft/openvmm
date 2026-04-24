@@ -24,15 +24,17 @@ rustup target add x86_64-pc-windows-msvc
 
 Additional build tools must be installed as well. If your distro has LLVM 14
 available (Ubuntu 22.04 or newer):
+
 ```bash
 sudo apt install clang-tools-14 lld-14 llvm-dev
 ```
 
-Otherwise, follow the steps at https://apt.llvm.org/ to install a specific
+Otherwise, follow the steps at <https://apt.llvm.org/> to install a specific
 version, by adding the correct apt repos. Note that you must install
 `clang-tools-14` as default `clang-14` uses gcc style arguments, where
 `clang-cl-14` uses msvc style arguments. You can use their helper script as
 well:
+
 ```bash
 wget https://apt.llvm.org/llvm.sh
 chmod +x llvm.sh
@@ -201,7 +203,7 @@ if [[ $1 == "build" || $1 == "run" ]]; then
         ohcl_path="$base_igvm/debug/$recipe"
         ohcl_symbols="openvmm_hcl"
 
-        args+=" --hv --vtl2 --igvm $windows_temp_win\\$ohcl_name --vtl2-vsock-path $uhdiag_path --com3 term"
+        args+=" --hv --vtl2 --igvm $windows_temp_win\\$ohcl_name --vmbus-vtl2-vsock-path $uhdiag_path --com3 term"
 
         echo "Building OpenHCL..."
         (
@@ -300,4 +302,57 @@ else
     exit 1
 
 fi
+```
+
+## Running Windows binaries from WSL2
+
+When you cross-compile to `x86_64-pc-windows-msvc` and run the resulting `.exe`
+from WSL, it runs as a **native Windows process**. This means it sees Windows
+paths (`C:\...`), not Linux paths (`/mnt/c/...`). You must translate paths at the
+command line.
+
+Use `wslpath -w` to convert a WSL path to a Windows path:
+
+```bash
+# Convert a WSL path to a Windows path
+wslpath -w /mnt/c/vhds/server25.vhdx
+# Output: C:\vhds\server25.vhdx
+```
+
+Here is a full working example that launches OpenVMM with a VHDX disk:
+
+```bash
+cargo run --target x86_64-pc-windows-msvc -- \
+  --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/server25.vhdx)" \
+  --uefi \
+  --uefi-firmware "$(wslpath -w .packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd)" \
+  --gfx -p 6 -m 8GB
+```
+
+~~~admonish tip
+If you have the [WSLENV export](#running-windows-openvmm-from-within-wsl)
+active, you can omit `--uefi-firmware` — the `X86_64_OPENVMM_UEFI_FIRMWARE`
+env var (set in `.cargo/config.toml`) is automatically translated to a
+Windows path:
+
+```bash
+export WSLENV=$WSLENV:X86_64_OPENVMM_UEFI_FIRMWARE/p
+cargo run --target x86_64-pc-windows-msvc -- \
+  --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/server25.vhdx)" \
+  --uefi --gfx -p 6 -m 8GB
+```
+~~~
+
+```admonish warning
+A common mistake is passing `/mnt/c/...` paths directly. The Windows binary
+does not understand Linux paths, so you'll get "Access is denied" or "file not
+found" errors.
+```
+
+```admonish tip
+Keep VHDX files on the Windows filesystem (e.g., `C:\vhds\`), not on the WSL
+ext4 volume. The WSL volume is slow for large I/O and has limited size. The
+same performance note from
+[Speeding up Windows OpenVMM launch](#speeding-up-windows-openvmm-launch)
+applies to disk images — large files should live on the Windows side.
 ```

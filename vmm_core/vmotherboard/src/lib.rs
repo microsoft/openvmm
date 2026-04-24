@@ -40,7 +40,7 @@ use vmcore::save_restore::ProtobufSaveRestore;
 /// InspectMut and SaveRestore.
 ///
 /// We don't want to put these bounds on `ChipsetDevice` directly, as that would
-/// tightly couple `ChipsetDevice` devices with HvLite-specific infrastructure,
+/// tightly couple `ChipsetDevice` devices with OpenVMM-specific infrastructure,
 /// making it difficult to share device implementations across VMMs.
 pub trait VmmChipsetDevice:
     ChipsetDevice + InspectMut + ProtobufSaveRestore + ChangeDeviceState
@@ -118,4 +118,32 @@ pub struct ChipsetDeviceHandle {
     pub name: String,
     /// The device resource handle.
     pub resource: Resource<ChipsetDeviceHandleKind>,
+}
+
+/// A handle to instantiate a legacy PCI chipset device with explicit placement.
+///
+/// # Legacy Chipset Only
+///
+/// This handle type is **exclusively for legacy Gen1 PCI chipset devices** that require
+/// historically-fixed PCI bus/device/function placement. Examples include ISA bridge,
+/// PIIX4 IDE, USB UHCI, and similar integrated chipset functions.
+///
+/// **New devices must not use this type.** Externally-facing devices (e.g. passthrough,
+/// Gen2 emulated devices) should use [`ChipsetDeviceHandle`] and implement dynamic PCI
+/// enumeration or appropriate driver recognition patterns.
+///
+/// This type exists to preserve the explicit wiring of legacy Gen1 chipset components
+/// into fixed PCI locations, which guests expect and depend upon for compatibility.
+#[derive(MeshPayload, Debug)]
+pub struct LegacyPciChipsetDeviceHandle {
+    /// The name of the device.
+    pub name: String,
+    /// The device resource handle.
+    pub resource: Resource<ChipsetDeviceHandleKind>,
+    /// The PCI bus name to attach the device to.
+    /// **Must be specified explicitly; derived from chipset architecture, not device discovery.**
+    pub pci_bus_name: String,
+    /// The explicit static PCI bus/device/function tuple.
+    /// **This is part of the legacy chipset's fixed contract; do not make this negotiable.**
+    pub bdf: (u8, u8, u8),
 }

@@ -17,7 +17,9 @@ use futures::FutureExt;
 use gdma_defs::Cqe;
 use gdma_defs::DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE;
 use gdma_defs::DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG;
+use gdma_defs::DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION;
 use gdma_defs::DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT;
+use gdma_defs::DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE;
 use gdma_defs::EqeDataReconfig;
 use gdma_defs::EstablishHwc;
 use gdma_defs::GDMA_EQE_COMPLETION;
@@ -25,6 +27,7 @@ use gdma_defs::GDMA_EQE_HWC_INIT_DATA;
 use gdma_defs::GDMA_EQE_HWC_INIT_DONE;
 use gdma_defs::GDMA_EQE_HWC_INIT_EQ_ID_DB;
 use gdma_defs::GDMA_EQE_HWC_RECONFIG_DATA;
+use gdma_defs::GDMA_EQE_HWC_RECONFIG_VF;
 use gdma_defs::GDMA_EQE_TEST_EVENT;
 use gdma_defs::GDMA_MESSAGE_V1;
 use gdma_defs::GDMA_PAGE_TYPE_4K;
@@ -160,6 +163,7 @@ pub struct GdmaDriver<T: DeviceBacking> {
     hwc_failure: bool,
     db_id: u32,
     state_saved: bool,
+    vf_reconfiguration_pending: bool,
 }
 
 const EQ_PAGE: usize = 0;
@@ -206,7 +210,11 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
 impl<T: DeviceBacking> Drop for GdmaDriver<T> {
     fn drop(&mut self) {
-        tracing::info!(?self.state_saved, ?self.hwc_failure, "dropping gdma driver");
+        tracing::info!(?self.state_saved, ?self.hwc_failure, ?self.vf_reconfiguration_pending, "dropping gdma driver");
+
+        if self.vf_reconfiguration_pending {
+            return;
+        }
 
         // Don't destroy anything if we're saving its state for restoration.
         if self.state_saved {
@@ -490,6 +498,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_failure: false,
             state_saved: false,
             db_id,
+            vf_reconfiguration_pending: false,
         };
 
         this.push_rqe();
@@ -517,6 +526,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
     pub async fn save(&mut self) -> anyhow::Result<GdmaDriverSavedState> {
         if self.hwc_failure {
             anyhow::bail!("cannot save/restore after HWC failure");
+        }
+
+        if self.vf_reconfiguration_pending {
+            anyhow::bail!("cannot save/restore with VF reconfiguration pending");
         }
 
         self.state_saved = true;
@@ -664,6 +677,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_failure: false,
             state_saved: false,
             db_id: db_id as u32,
+            vf_reconfiguration_pending: false,
         };
 
         this.eq.arm();
@@ -678,6 +692,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         interrupt_loss: bool,
         ms_elapsed: u32,
     ) {
+        // Don't report timeout once VF reconfiguration is pending, SoC will not respond.
+        if self.vf_reconfiguration_pending {
+            return;
+        }
         // Perform initial check for ownership, failing without wait if device
         // is not present or owns shmem region
         let data = self
@@ -772,6 +790,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         self.link_toggle.drain(..).collect()
     }
 
+    pub fn get_vf_reconfiguration_pending(&self) -> bool {
+        self.vf_reconfiguration_pending
+    }
+
     pub fn device(&self) -> &T {
         self.device.as_ref().unwrap()
     }
@@ -824,6 +846,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         dev_id: GdmaDevId,
         req: Req,
     ) -> anyhow::Result<(Resp, u32)> {
+        if self.vf_reconfiguration_pending {
+            anyhow::bail!("VF reconfiguration pending");
+        }
         if self.hwc_failure {
             anyhow::bail!("Previous hardware failure");
         }
@@ -853,6 +878,18 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             activity_id = format!("{:#x}", hdr.activity_id),
             "HWC request",
         );
+        // Zero the response page for the expected response size before sending
+        // the request. This ensures that fields added in newer response versions
+        // read as zero when talking to an older socmana that does not populate
+        // them, rather than containing stale data.
+        let expected_resp_size = size_of::<GdmaRespHdr>() + size_of::<Resp>();
+        assert!(
+            expected_resp_size <= PAGE_SIZE,
+            "response size {expected_resp_size} exceeds {PAGE_SIZE}"
+        );
+        self.dma_buffer
+            .write_zeros(RESPONSE_PAGE * PAGE_SIZE, expected_resp_size);
+
         self.dma_buffer.write_obj(REQUEST_PAGE * PAGE_SIZE, &hdr);
         self.dma_buffer
             .write_obj(REQUEST_PAGE * PAGE_SIZE + size_of_val(&hdr), &req);
@@ -1002,6 +1039,11 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                         unknown => tracing::error!(unknown, "unknown reconfig data type"),
                     }
                 }
+                GDMA_EQE_HWC_RECONFIG_VF => {
+                    // No data is supplied for VF reconfiguration events.
+                    tracing::info!("HWC VF reconfiguration event");
+                    self.vf_reconfiguration_pending = true;
+                }
                 ty => tracing::error!(ty, "unknown eq event"),
             }
             self.eq.ack();
@@ -1061,7 +1103,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             let ms_wait = (HWC_INTERRUPT_POLL_WAIT_MIN_MS
                 * 2u32.pow(eqe_wait_result.interrupt_wait_count - 1))
             .min(HWC_INTERRUPT_POLL_WAIT_MAX_MS)
-            .min(self.hwc_timeout_in_ms - eqe_wait_result.elapsed as u32);
+            .min(
+                self.hwc_timeout_in_ms
+                    .saturating_sub(eqe_wait_result.elapsed as u32),
+            );
             let before_wait = std::time::Instant::now();
             eqe_wait_result.last_wait_result = Self::wait_for_hwc_interrupt(
                 self.interrupts[0].as_mut().unwrap(),
@@ -1189,26 +1234,71 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(())
     }
 
+    #[cfg(test)]
+    #[tracing::instrument(skip(self), level = "debug", err)]
+    pub async fn generate_reconfig_vf_event(&mut self) -> anyhow::Result<()> {
+        self.request::<_, ()>(
+            GdmaRequestType::GDMA_GENERATE_RECONFIG_VF_EVENT.0,
+            HWC_DEV_ID,
+            GdmaGenerateTestEventReq {
+                queue_index: self.eq.id(),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
     #[tracing::instrument(skip(self), level = "debug", err)]
     pub async fn verify_vf_driver_version(&mut self) -> anyhow::Result<()> {
+        let ver = &build_info::OPENHCL_VERSION;
+
+        let mut req = GdmaVerifyVerReq {
+            protocol_ver_min: 1,
+            protocol_ver_max: 1,
+            gd_drv_cap_flags1: DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT
+                | DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE
+                | DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG
+                | DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION
+                | DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE,
+            os_type: gdma_defs::OS_TYPE_OHCL,
+            os_ver_major: ver.major(),
+            os_ver_minor: ver.minor(),
+            os_ver_build: ver.build(),
+            os_ver_platform: ver.platform(),
+            ..FromZeros::new_zeroed()
+        };
+
+        // Identify the driver and build to the SOC
+        // str1 = "OpenHCL", str2 = build identity.
+        let name = ver.product_name().as_bytes();
+        let len = name.len().min(req.os_ver_str1.len().saturating_sub(1));
+        req.os_ver_str1[..len].copy_from_slice(&name[..len]);
+
+        let revision = build_info::get().scm_revision().as_bytes();
+        let len = revision.len().min(req.os_ver_str2.len().saturating_sub(1));
+        req.os_ver_str2[..len].copy_from_slice(&revision[..len]);
+
         let resp: GdmaVerifyVerResp = self
             .request(
                 GdmaRequestType::GDMA_VERIFY_VF_DRIVER_VERSION.0,
                 HWC_DEV_ID,
-                GdmaVerifyVerReq {
-                    protocol_ver_min: 1,
-                    protocol_ver_max: 1,
-                    gd_drv_cap_flags1: DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT
-                        | DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE
-                        | DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG,
-                    ..FromZeros::new_zeroed()
-                },
+                req,
             )
             .await?;
 
         if resp.gdma_protocol_ver != 1 {
             anyhow::bail!("invalid protocol version");
         }
+
+        tracing::info!(
+            gdma_protocol_ver = resp.gdma_protocol_ver,
+            pf_cap_flags1 = format_args!("{:#x}", resp.pf_cap_flags1),
+            pf_cap_flags2 = format_args!("{:#x}", resp.pf_cap_flags2),
+            pf_cap_flags3 = format_args!("{:#x}", resp.pf_cap_flags3),
+            pf_cap_flags4 = format_args!("{:#x}", resp.pf_cap_flags4),
+            "GDMA PF capability flags",
+        );
+
         Ok(())
     }
 

@@ -30,10 +30,9 @@ use std::os::windows::prelude::*;
 use std::ptr::NonNull;
 use std::ptr::null;
 use std::ptr::null_mut;
-use winapi::shared::ntdef::LUID;
-use winapi::shared::winerror;
-use winapi::um::winnt::DEVICE_POWER_STATE;
-use winerror::ERROR_BAD_PATHNAME;
+use windows_sys::Win32::Foundation::ERROR_BAD_PATHNAME;
+use windows_sys::Win32::Foundation::LUID;
+use windows_sys::Win32::System::Power::DEVICE_POWER_STATE;
 
 /// Functions to get the WHP platform's capabilities.
 pub mod capabilities {
@@ -1174,13 +1173,13 @@ impl Device<'_> {
     pub fn read_register(
         &self,
         location: abi::WHV_VPCI_DEVICE_REGISTER_SPACE,
-        offset: u16,
+        offset: u64,
         data: &mut [u8],
     ) -> Result<()> {
         let register = abi::WHV_VPCI_DEVICE_REGISTER {
             Location: location,
             SizeInBytes: data.len() as u32,
-            OffsetInBytes: offset.into(),
+            OffsetInBytes: offset,
         };
         unsafe {
             check_hresult(api::WHvReadVpciDeviceRegister(
@@ -1195,13 +1194,13 @@ impl Device<'_> {
     pub fn write_register(
         &self,
         location: abi::WHV_VPCI_DEVICE_REGISTER_SPACE,
-        offset: u16,
+        offset: u64,
         data: &[u8],
     ) -> Result<()> {
         let register = abi::WHV_VPCI_DEVICE_REGISTER {
             Location: location,
             SizeInBytes: data.len() as u32,
-            OffsetInBytes: offset.into(),
+            OffsetInBytes: offset,
         };
         unsafe {
             check_hresult(api::WHvWriteVpciDeviceRegister(
@@ -1496,29 +1495,32 @@ impl<'a> Processor<'a> {
         }
     }
 
-    pub fn get_apic(&self) -> Result<Vec<u8>> {
-        let mut r = Vec::with_capacity(4096);
+    pub fn get_apic(&self) -> Result<[u8; 1024]> {
+        // Only the first 1024 bytes are used but the API requires a full page,
+        // for some unknown reason.
+        let mut r = [[0u8; 1024]; 4];
         unsafe {
             let mut n = 0;
             check_hresult(api::WHvGetVirtualProcessorInterruptControllerState2(
                 self.partition.handle,
                 self.index,
-                r.as_mut_ptr(),
-                r.capacity() as u32,
+                r.as_mut_ptr().cast(),
+                size_of_val(&r) as u32,
                 &mut n,
             ))?;
-            r.set_len(n as usize);
+            assert_eq!(n, size_of_val(&r) as u32);
         }
-        Ok(r)
+        Ok(r[0])
     }
 
-    pub fn set_apic(&self, data: &[u8]) -> Result<()> {
+    pub fn set_apic(&self, data: &[u8; 1024]) -> Result<()> {
+        let r = [*data, [0u8; 1024], [0u8; 1024], [0u8; 1024]];
         unsafe {
             check_hresult(api::WHvSetVirtualProcessorInterruptControllerState2(
                 self.partition.handle,
                 self.index,
-                data.as_ptr(),
-                data.len() as u32,
+                r.as_ptr().cast(),
+                size_of_val(&r) as u32,
             ))
         }
     }
@@ -1875,11 +1877,11 @@ pub fn extract_helper<T: RegisterName>(_: T, value: &abi::WHV_REGISTER_VALUE) ->
 #[macro_export]
 macro_rules! set_registers {
     ($vp:expr, [$(($name:expr, $value:expr)),+ $(,)? ] $(,)? ) => {
+        #[expect(clippy::allow_attributes)]
+        #[allow(unused_parens)]
         {
             let names = [$($crate::RegisterName::as_abi(&($name))),+];
-            #[allow(unused_parens)]
             let values = [$($crate::inject_helper(($name), &($value))),+];
-            #[allow(unused_parens)]
             ($vp).set_registers(&names, &values)
         }
     }
@@ -1893,6 +1895,7 @@ macro_rules! get_registers {
             let mut values = [$($crate::get_registers!(@def $name)),+];
             ($vp).get_registers(&names, &mut values).map(|_| {
                 let mut vs = &values[..];
+                #[expect(clippy::allow_attributes)]
                 #[allow(unused_assignments)]
                 ($({
                     let n = $name;

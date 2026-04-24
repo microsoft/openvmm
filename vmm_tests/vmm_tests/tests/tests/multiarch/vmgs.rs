@@ -16,7 +16,7 @@ use tempfile::TempDir;
 use vmgs_resources::GuestStateEncryptionPolicy;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
-use vmm_test_macros::vmm_test_no_agent;
+use vmm_test_macros::vmm_test_with;
 
 /// Verify that UEFI default boots even if invalid boot entries exist
 /// when `default_boot_always_attempt` is enabled.
@@ -83,7 +83,7 @@ async fn clear_vmgs<T: PetriVmmBackend>(
 ///
 /// This test exists to ensure we are not getting a false positive for
 /// the `default_boot` and `clear_vmgs` test above.
-#[vmm_test_no_agent(
+#[vmm_test_with(noagent(
     openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
@@ -94,7 +94,7 @@ async fn clear_vmgs<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY]
-)]
+))]
 async fn invalid_boot_entries<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
@@ -314,6 +314,36 @@ async fn run_vmgstool_verification(
         .arg(&out_data_path)
         .arg("--fileid")
         .arg("3");
+    if let Some(key_path) = key_path {
+        cmd.arg("--keypath").arg(key_path);
+    }
+    run_host_cmd(cmd).await?;
+
+    let output = std::fs::read(&out_data_path)?;
+    assert_eq!(&contents[..], &output[..]);
+
+    let mut cmd = Command::new(vmgstool_path);
+    cmd.arg("move")
+        .arg("--filepath")
+        .arg(vmgs_path)
+        .arg("--src")
+        .arg("3")
+        .arg("--dst")
+        .arg("17");
+    if let Some(key_path) = key_path {
+        cmd.arg("--keypath").arg(key_path);
+    }
+    run_host_cmd(cmd).await?;
+
+    let out_data_path = temp_dir.path().join("out.bin");
+    let mut cmd = Command::new(vmgstool_path);
+    cmd.arg("dump")
+        .arg("--filepath")
+        .arg(vmgs_path)
+        .arg("--data-path")
+        .arg(&out_data_path)
+        .arg("--fileid")
+        .arg("17");
     if let Some(key_path) = key_path {
         cmd.arg("--keypath").arg(key_path);
     }

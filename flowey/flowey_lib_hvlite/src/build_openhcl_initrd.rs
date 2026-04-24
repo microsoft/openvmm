@@ -3,8 +3,7 @@
 
 //! Wrapper around `update-rootfs.py`
 
-use crate::download_openvmm_deps::OpenvmmDepsArch;
-use crate::run_cargo_build::common::CommonArch;
+use crate::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -20,9 +19,6 @@ pub struct OpenhclInitrdExtraParams {
     pub extra_initrd_layers: Vec<PathBuf>,
     /// additional directories to be included in the initrd
     pub extra_initrd_directories: Vec<PathBuf>,
-    /// Path to custom kernel modules. If not provided, uses modules under the
-    /// kernel package path.
-    pub custom_kernel_modules: Option<PathBuf>,
 }
 
 flowey_request! {
@@ -37,8 +33,12 @@ flowey_request! {
         /// Extra environment variables to set during the run (e.g: to
         /// interpolate paths into `rootfs.config`)
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
-        /// Path to kernel package
+        /// Path to kernel package (for metadata)
         pub kernel_package_root: ReadVar<PathBuf>,
+        /// Path to kernel modules directory
+        pub kernel_modules: ReadVar<PathBuf>,
+        /// Path to kernel build metadata file
+        pub kernel_metadata: ReadVar<PathBuf>,
         /// Path to the openhcl bin to use
         pub bin_openhcl: ReadVar<PathBuf>,
         /// Output path of generated initrd
@@ -52,7 +52,7 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
@@ -62,19 +62,27 @@ impl FlowNode for Node {
         let platform = ctx.platform();
         let python_pkg = match platform {
             FlowPlatform::Linux(linux_distribution) => match linux_distribution {
-                FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => "python3",
+                FlowPlatformLinuxDistro::Fedora
+                | FlowPlatformLinuxDistro::Ubuntu
+                | FlowPlatformLinuxDistro::AzureLinux
+                | FlowPlatformLinuxDistro::Nix => "python3",
                 FlowPlatformLinuxDistro::Arch => "python",
                 FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
             },
             _ => anyhow::bail!("Unsupported platform"),
         };
-        let pydeps =
-            ctx.reqv(
+
+        // Don't install python when using Nix
+        let pydeps = if !matches!(platform, FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)) {
+            Some(ctx.reqv(
                 |side_effect| flowey_lib_common::install_dist_pkg::Request::Install {
                     package_names: [python_pkg].map(Into::into).into(),
                     done: side_effect,
                 },
-            );
+            ))
+        } else {
+            None
+        };
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
@@ -83,6 +91,8 @@ impl FlowNode for Node {
             extra_params,
             rootfs_config,
             kernel_package_root,
+            kernel_modules,
+            kernel_metadata,
             extra_env,
             bin_openhcl,
             initrd,
@@ -92,21 +102,23 @@ impl FlowNode for Node {
             let OpenhclInitrdExtraParams {
                 extra_initrd_layers,
                 extra_initrd_directories,
-                custom_kernel_modules,
             } = extra_params.unwrap_or_default();
-
-            let openvmm_deps_arch = match arch {
-                CommonArch::X86_64 => OpenvmmDepsArch::X86_64,
-                CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
-            };
 
             let interactive_dep = if interactive {
                 ctx.reqv(|v| {
-                    crate::download_openvmm_deps::Request::GetOpenhclCpioDbgrd(openvmm_deps_arch, v)
+                    crate::resolve_openvmm_deps::Request::Get(
+                        crate::resolve_openvmm_deps::OpenvmmDepFile::OpenhclCpioDbgrd,
+                        arch,
+                        v,
+                    )
                 })
             } else {
                 ctx.reqv(|v| {
-                    crate::download_openvmm_deps::Request::GetOpenhclCpioShell(openvmm_deps_arch, v)
+                    crate::resolve_openvmm_deps::Request::Get(
+                        crate::resolve_openvmm_deps::OpenvmmDepFile::OpenhclCpioShell,
+                        arch,
+                        v,
+                    )
                 })
             };
 
@@ -122,6 +134,8 @@ impl FlowNode for Node {
                 let bin_openhcl = bin_openhcl.claim(ctx);
                 let openvmm_repo_path = openvmm_repo_path.clone().claim(ctx);
                 let kernel_package_root = kernel_package_root.claim(ctx);
+                let kernel_modules = kernel_modules.claim(ctx);
+                let kernel_metadata = kernel_metadata.claim(ctx);
                 let initrd = initrd.claim(ctx);
                 move |rt| {
                     let interactive_dep = rt.read(interactive_dep);
@@ -130,10 +144,9 @@ impl FlowNode for Node {
                     let bin_openhcl = rt.read(bin_openhcl);
                     let openvmm_repo_path = rt.read(openvmm_repo_path);
                     let kernel_package_root = rt.read(kernel_package_root);
+                    let kernel_metadata = rt.read(kernel_metadata);
 
-                    let sh = xshell::Shell::new()?;
-
-                    let initrd_path = sh.current_dir().join("openhcl.cpio.gz");
+                    let initrd_path = rt.sh.current_dir().join("openhcl.cpio.gz");
 
                     let initrd_contents = {
                         let mut v = Vec::new();
@@ -159,13 +172,12 @@ impl FlowNode for Node {
                         v
                     };
 
-                    let kernel_modules =
-                        custom_kernel_modules.unwrap_or(kernel_package_root.join("."));
-
                     let rootfs_py_arch = match arch {
                         CommonArch::X86_64 => "x86_64",
                         CommonArch::Aarch64 => "aarch64",
                     };
+
+                    let kernel_modules = rt.read(kernel_modules);
 
                     // FUTURE: to avoid making big changes to update-roots as
                     // part of the initial OSS workstream, stage the
@@ -173,33 +185,36 @@ impl FlowNode for Node {
                     // as the closed-source openhcl-deps.
                     match arch {
                         CommonArch::X86_64 => {
-                            sh.set_var("OPENVMM_DEPS_X64", interactive_dep.parent().unwrap());
+                            rt.sh
+                                .set_var("OPENVMM_DEPS_X64", interactive_dep.parent().unwrap());
                         }
                         CommonArch::Aarch64 => {
-                            sh.set_var("OPENVMM_DEPS_AARCH64", interactive_dep.parent().unwrap());
+                            rt.sh
+                                .set_var("OPENVMM_DEPS_AARCH64", interactive_dep.parent().unwrap());
                         }
                     }
 
                     for (k, v) in extra_env.into_iter().flatten() {
-                        sh.set_var(k, v);
+                        rt.sh.set_var(k, v);
                     }
 
                     // FIXME: update-rootfs.py invokes git to obtain a version
                     // hash to stuff into the initrd.
-                    sh.change_dir(openvmm_repo_path);
+                    rt.sh.change_dir(openvmm_repo_path);
 
                     let rootfs_config = rootfs_config
                         .iter()
                         .flat_map(|x| ["--rootfs-config".as_ref(), x.as_os_str()]);
 
-                    xshell::cmd!(
-                        sh,
+                    flowey::shell_cmd!(
+                        rt,
                         "python3 openhcl/update-rootfs.py
                             {bin_openhcl}
                             {initrd_path}
                             --arch {rootfs_py_arch}
                             --package-root {kernel_package_root}
                             --kernel-modules {kernel_modules}
+                            --kernel-metadata {kernel_metadata}
                             {rootfs_config...}
                             {initrd_contents...}
                         "
