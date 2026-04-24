@@ -612,37 +612,23 @@ impl<S: VmmNvramStorage> NvramSpecServices<S> {
             use uefi_specs::hyperv::nvram::vars as hyperv_vars;
             use uefi_specs::uefi::nvram::vars as spec_vars;
 
-            // In true UEFI spec fashion, there are always exceptions...
-            enum Exception {
-                None,
-                SetupMode,
-                // TODO: add more exception variants as new RO vars are added
-            }
-
             #[rustfmt::skip]
             let read_only_vars = [
                 // UEFI Spec - Table 3-1 Global Variables
                 //
                 // NOTE: Does not implement all of the read-only
                 // variables defined by the UEFI spec in section 3.3
-                (spec_vars::SECURE_BOOT(), Exception::None),
-                (spec_vars::SETUP_MODE(),  Exception::None),
-                (spec_vars::KEK(),         Exception::SetupMode),
-                (spec_vars::PK(),          Exception::SetupMode),
-                (spec_vars::DBDEFAULT(),   Exception::None),
+                spec_vars::SECURE_BOOT(),
+                spec_vars::SETUP_MODE(),
+                spec_vars::DBDEFAULT(),
                 // Hyper-V also uses some read-only vars that aren't specified
                 // in the UEFI spec
-                (hyperv_vars::SECURE_BOOT_ENABLE(),              Exception::None),
-                (hyperv_vars::CURRENT_POLICY(),                  Exception::None),
-                (hyperv_vars::OS_LOADER_INDICATIONS_SUPPORTED(), Exception::None),
+                hyperv_vars::SECURE_BOOT_ENABLE(),
+                hyperv_vars::CURRENT_POLICY(),
+                hyperv_vars::OS_LOADER_INDICATIONS_SUPPORTED(),
             ];
 
-            let is_readonly = read_only_vars.into_iter().any(|(v, exception)| {
-                let skip_check = match exception {
-                    Exception::None => false,
-                    Exception::SetupMode => in_setup_mode,
-                };
-
+            let is_readonly = read_only_vars.into_iter().any(|v| {
                 // NOTE: The HCL and worker process implementations perform a
                 // case-insensitive comparisons here. A better fix would've
                 // been to make all comparisons case _sensitive_, rather than
@@ -657,11 +643,7 @@ impl<S: VmmNvramStorage> NvramSpecServices<S> {
                 // Case-sensitive comparisons has been confirmed correct with
                 // the UEFI team, and as such, it may be worthwhile to backport
                 // this change into the C++ implementation as well.
-                if !skip_check {
-                    v == (in_vendor, name)
-                } else {
-                    false
-                }
+                v == (in_vendor, name)
             });
 
             if is_readonly {
