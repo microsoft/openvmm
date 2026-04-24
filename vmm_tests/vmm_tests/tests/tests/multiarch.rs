@@ -476,90 +476,44 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     Ok(())
 }
 
-/// Test that PK and KEK variables can be updated/deleted by verifying
-/// that they are writeable at runtime.
+/// Test that unauthenticated deletion of PK and KEK is rejected by the firmware.
+/// With secure boot enabled, PK and KEK are authenticated variables. An unsigned
+/// delete (e.g. `rm` via efivarfs) must fail, leaving the variables intact and
+/// SetupMode unchanged.
 #[vmm_test(
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
-async fn secure_boot_pk_kek_writable<T: PetriVmmBackend>(
+async fn secure_boot_pk_kek_unauthenticated_delete_rejected<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let (vm, agent) = config.with_secure_boot().run().await?;
     let shell = agent.unix_shell();
 
-    // EFI Global Variable GUID
     const EFI_GLOBAL_VARIABLE_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
 
-    // Check if the EFI variables exist and inspect their permissions
     let pk_path = format!("/sys/firmware/efi/efivars/PK-{}", EFI_GLOBAL_VARIABLE_GUID);
     let kek_path = format!("/sys/firmware/efi/efivars/KEK-{}", EFI_GLOBAL_VARIABLE_GUID);
-
-    let pk_attrs = cmd!(shell, "sudo")
-        .args([
-            "sh",
-            "-c",
-            &format!("ls -l {} 2>&1 && stat -c '%a' {} 2>&1", pk_path, pk_path),
-        ])
-        .output()
-        .await?;
-
-    let kek_attrs = cmd!(shell, "sudo")
-        .args([
-            "sh",
-            "-c",
-            &format!("ls -l {} 2>&1 && stat -c '%a' {} 2>&1", kek_path, kek_path),
-        ])
-        .output()
-        .await?;
-
-    let pk_info = String::from_utf8_lossy(&pk_attrs.stdout);
-    let kek_info = String::from_utf8_lossy(&kek_attrs.stdout);
-
-    // The file permissions in octal should be 644
-    // (read/write for owner, read for group/others)
-    assert!(
-        pk_info.contains("644") || pk_info.contains("rw-"),
-        "PK should be writable at runtime. File info: {}",
-        pk_info
-    );
-    assert!(
-        kek_info.contains("644") || kek_info.contains("rw-"),
-        "KEK should be writable at runtime. File info: {}",
-        kek_info
-    );
-
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-    Ok(())
-}
-
-/// Test that deleting PK puts the system into Setup Mode.
-/// When PK is deleted, the system enters Setup Mode (SetupMode=1), allowing reconfiguration
-/// of secure boot variables without authentication.
-#[vmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
-)]
-async fn secure_boot_pk_delete_enters_setup_mode<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-) -> anyhow::Result<()> {
-    let (vm, agent) = config.with_secure_boot().run().await?;
-    let shell = agent.unix_shell();
-
-    // EFI Global Variable GUID
-    const EFI_GLOBAL_VARIABLE_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
-
-    let pk_path = format!("/sys/firmware/efi/efivars/PK-{}", EFI_GLOBAL_VARIABLE_GUID);
     let setup_mode_path = format!(
         "/sys/firmware/efi/efivars/SetupMode-{}",
         EFI_GLOBAL_VARIABLE_GUID
     );
 
-    // Check initial state: SetupMode should be disabled (0)
-    let setup_mode_before = cmd!(shell, "sudo")
+    // Verify initial state: PK and KEK exist, SetupMode is 0
+    let pk_exists = cmd!(shell, "sudo")
+        .args(["test", "-f", &pk_path])
+        .output()
+        .await?;
+    assert!(pk_exists.status.success(), "PK should exist initially");
+
+    let kek_exists = cmd!(shell, "sudo")
+        .args(["test", "-f", &kek_path])
+        .output()
+        .await?;
+    assert!(kek_exists.status.success(), "KEK should exist initially");
+
+    let setup_mode = cmd!(shell, "sudo")
         .args([
             "sh",
             "-c",
@@ -567,18 +521,12 @@ async fn secure_boot_pk_delete_enters_setup_mode<T: PetriVmmBackend>(
         ])
         .output()
         .await?;
-
-    let sm_before = String::from_utf8_lossy(&setup_mode_before.stdout)
+    let sm = String::from_utf8_lossy(&setup_mode.stdout)
         .trim()
         .to_string();
+    assert_eq!(sm, "0", "SetupMode should be 0 (secure boot active)");
 
-    assert_eq!(
-        sm_before, "0",
-        "SetupMode should be disabled (0) before deleting PK, got: {}",
-        sm_before
-    );
-
-    // Remove immutable flag if set, then delete PK
+    // Attempt to delete PK without authentication — should fail
     cmd!(shell, "sudo")
         .args([
             "sh",
@@ -587,34 +535,48 @@ async fn secure_boot_pk_delete_enters_setup_mode<T: PetriVmmBackend>(
         ])
         .run()
         .await?;
-
-    let delete_result = cmd!(shell, "sudo")
+    let pk_delete = cmd!(shell, "sudo")
         .args(["rm", "-f", &pk_path])
         .output()
         .await?;
 
-    assert!(
-        delete_result.status.success(),
-        "Failed to delete PK: {}",
-        String::from_utf8_lossy(&delete_result.stderr)
-    );
-
-    // Verify PK is deleted - use ls which returns success even if file doesn't exist with || true
-    let pk_check = cmd!(shell, "sh")
-        .args([
-            "-c",
-            &format!("ls {} 2>/dev/null || echo 'file_not_found'", pk_path),
-        ])
+    // Verify PK still exists after failed delete attempt
+    let pk_still_exists = cmd!(shell, "sudo")
+        .args(["test", "-f", &pk_path])
         .output()
         .await?;
-    let pk_check_out = String::from_utf8_lossy(&pk_check.stdout);
     assert!(
-        pk_check_out.contains("file_not_found") || pk_check_out.contains("No such file"),
-        "PK should be deleted but still exists: {}",
-        pk_check_out
+        pk_still_exists.status.success(),
+        "PK should still exist after unauthenticated delete attempt (rm exit status: {})",
+        pk_delete.status,
     );
 
-    // Check state after deletion: SetupMode should be enabled (1)
+    // Attempt to delete KEK without authentication — should fail
+    cmd!(shell, "sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!("chattr -i {} 2>/dev/null || true", kek_path),
+        ])
+        .run()
+        .await?;
+    let kek_delete = cmd!(shell, "sudo")
+        .args(["rm", "-f", &kek_path])
+        .output()
+        .await?;
+
+    // Verify KEK still exists after failed delete attempt
+    let kek_still_exists = cmd!(shell, "sudo")
+        .args(["test", "-f", &kek_path])
+        .output()
+        .await?;
+    assert!(
+        kek_still_exists.status.success(),
+        "KEK should still exist after unauthenticated delete attempt (rm exit status: {})",
+        kek_delete.status,
+    );
+
+    // Verify SetupMode is still 0 — the failed deletes should not change it
     let setup_mode_after = cmd!(shell, "sudo")
         .args([
             "sh",
@@ -623,21 +585,19 @@ async fn secure_boot_pk_delete_enters_setup_mode<T: PetriVmmBackend>(
         ])
         .output()
         .await?;
-
     let sm_after = String::from_utf8_lossy(&setup_mode_after.stdout)
         .trim()
         .to_string();
-
     assert_eq!(
-        sm_after, "1",
-        "SetupMode should be enabled (1) after deleting PK, got: {}",
-        sm_after
+        sm_after, "0",
+        "SetupMode should still be 0 after failed delete attempts"
     );
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
 /// Boot with a virtio-blk device served by the openvmm_vhost binary over
 /// a vhost-user Unix socket.  Verifies the full stack: guest driver →
 /// virtio transport → frontend protocol → socket → backend protocol →
