@@ -83,7 +83,9 @@ pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_avail
 
     *logger = match (isolation_type, com3_serial_available) {
         #[cfg(target_arch = "x86_64")]
-        (IsolationType::None, true) => Logger::Serial(Serial::init(InstrIoAccess)),
+        (IsolationType::None | IsolationType::Snp, true) => {
+            Logger::Serial(Serial::init(InstrIoAccess))
+        }
         #[cfg(target_arch = "aarch64")]
         (IsolationType::None, true) => Logger::Serial(Serial::init()),
         #[cfg(target_arch = "x86_64")]
