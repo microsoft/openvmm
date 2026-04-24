@@ -840,6 +840,10 @@ pub const GIC_REDISTRIBUTOR_FRAME_SIZE: u64 = 0x1_0000;
 pub const GIC_SGI_FRAME_SIZE: u64 = 0x1_0000;
 pub const GIC_REDISTRIBUTOR_SIZE: u64 = GIC_REDISTRIBUTOR_FRAME_SIZE + GIC_SGI_FRAME_SIZE;
 
+// GICv2 sizes.
+pub const GIC_V2_DISTRIBUTOR_SIZE: u64 = 0x1000;
+pub const GIC_V2_CPU_INTERFACE_SIZE: u64 = 0x2000;
+
 open_enum! {
     pub enum SystemReset2Code: u32 {
         WARM_RESET = 0,

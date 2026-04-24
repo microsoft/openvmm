@@ -153,15 +153,29 @@ impl<B: DnsBackend> DnsResolver<B> {
 
     /// Validate and submit a DNS query received over UDP.
     ///
-    /// The response will be delivered through [`Self::poll_udp_response`].
-    pub fn submit_udp_query(&mut self, request: &DnsRequest<'_>) -> Result<(), DropReason> {
+    /// Returns `Ok(None)` when the query was accepted and the response will
+    /// arrive via [`Self::poll_udp_response`].  Returns `Ok(Some(response))`
+    /// with a synthetic SERVFAIL when the pending-request limit has been
+    /// reached — the caller should emit this packet immediately rather than
+    /// queuing it, to avoid unbounded memory growth under sustained load.
+    pub fn submit_udp_query(
+        &mut self,
+        request: &DnsRequest<'_>,
+    ) -> Result<Option<DnsResponse>, DropReason> {
         if request.dns_query.len() <= DNS_HEADER_SIZE {
             return Err(DropReason::Packet(smoltcp::wire::Error));
         }
 
         let sender = self.udp_receiver.sender();
-        self.submit_query(request, sender);
-        Ok(())
+        if !self.submit_query(request, sender) {
+            // Rate-limited: return a SERVFAIL directly so the caller can
+            // emit it immediately without going through the async channel.
+            return Ok(Some(DnsResponse {
+                flow: request.flow.clone(),
+                response_data: build_servfail_response(request.dns_query),
+            }));
+        }
+        Ok(None)
     }
 
     /// Poll for the next completed UDP DNS response.
@@ -245,9 +259,27 @@ pub(crate) fn build_servfail_response(query: &[u8]) -> Vec<u8> {
     // ANCOUNT = 0, NSCOUNT = 0, ARCOUNT = 0
     response.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
 
-    // Copy the question section if present
-    if query.len() > DNS_HEADER_SIZE {
-        response.extend_from_slice(&query[DNS_HEADER_SIZE..]);
+    // Copy only the question section (QNAME + QTYPE + QCLASS per question),
+    // omitting any additional/authority records (e.g. EDNS OPT) that would be
+    // inconsistent with the zeroed ARCOUNT.
+    let qdcount = u16::from_be_bytes([query[4], query[5]]) as usize;
+    let mut offset = DNS_HEADER_SIZE;
+    for _ in 0..qdcount {
+        // Skip QNAME (sequence of labels terminated by a zero-length label)
+        while offset < query.len() {
+            let label_len = query[offset] as usize;
+            offset += 1;
+            if label_len == 0 {
+                break;
+            }
+            offset += label_len;
+        }
+        // Skip QTYPE (2 bytes) + QCLASS (2 bytes)
+        offset += 4;
+    }
+    let question_end = offset.min(query.len());
+    if question_end > DNS_HEADER_SIZE {
+        response.extend_from_slice(&query[DNS_HEADER_SIZE..question_end]);
     }
 
     response

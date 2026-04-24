@@ -9,7 +9,7 @@ use flowey::node::prelude::GhPermissionValue;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_common::git_checkout::RepoSource;
-use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
+use flowey_lib_hvlite::common::CommonTriple;
 
 #[derive(Copy, Clone, clap::ValueEnum)]
 enum PipelineConfig {
@@ -40,7 +40,8 @@ impl IntoPipeline for BuildDocsCli {
 
         let mut pipeline = Pipeline::new();
 
-        // The docs pipeline should only run on the main branch.
+        // The docs pipeline should only run on the main branch, and only when
+        // the Guide directory or the docs workflow/pipeline definitions are modified.
         {
             let branches = vec!["main".into()];
             match config {

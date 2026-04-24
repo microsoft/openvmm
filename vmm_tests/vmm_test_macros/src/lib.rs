@@ -36,6 +36,7 @@ struct ResolvedConfig {
     arch: MachineArch,
     extra_deps: Vec<Path>,
     unstable: bool,
+    requires_vpci: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -90,6 +91,7 @@ struct ArgsWithOverrides {
     vmm: Option<Vmm>,
     unstable: bool,
     with_vtl0_pipette: bool,
+    requires_vpci: bool,
 }
 
 struct ResolvedArgs {
@@ -172,11 +174,11 @@ impl ToTokens for PcatGuest {
         tokens.extend(match self {
             PcatGuest::Vhd(known_vhd) => {
                 let vhd = known_vhd.image_artifact.clone();
-                quote!(::petri::PcatGuest::Vhd(petri::BootImageConfig::from_vhd(resolver.require(#vhd))))
+                quote!(::petri::PcatGuest::Vhd(petri::BootImageConfig::from_vhd(resolver.require_source(#vhd, remote_access))))
             }
             PcatGuest::Iso(known_iso) => {
                 let iso = known_iso.image_artifact.clone();
-                quote!(::petri::PcatGuest::Iso(petri::BootImageConfig::from_iso(resolver.require(#iso))))
+                quote!(::petri::PcatGuest::Iso(petri::BootImageConfig::from_iso(resolver.require_source(#iso, remote_access))))
             }
         });
     }
@@ -197,7 +199,7 @@ impl ToTokens for UefiGuest {
         tokens.extend(match self {
             UefiGuest::Vhd(known_vhd) => {
                 let v = known_vhd.image_artifact.clone();
-                quote!(::petri::UefiGuest::Vhd(petri::BootImageConfig::from_vhd(resolver.require(#v))))
+                quote!(::petri::UefiGuest::Vhd(petri::BootImageConfig::from_vhd(resolver.require_source(#v, remote_access))))
             }
             UefiGuest::GuestTestUefi(arch) => {
                 let arch_tokens = arch_to_tokens(*arch);
@@ -248,6 +250,7 @@ impl Parse for ArgsWithOverrides {
         let mut unstable = None;
         let mut with_vtl0_pipette = None;
         let mut vmm = None;
+        let mut requires_vpci = None;
 
         let word = input.parse::<Ident>()?;
         let conflict_err = || Err::<Self, Error>(Error::new(word.span(), "conflicting override"));
@@ -264,6 +267,12 @@ impl Parse for ArgsWithOverrides {
                         return conflict_err();
                     }
                     with_vtl0_pipette = Some(false);
+                }
+                "vpci" => {
+                    if requires_vpci.is_some() {
+                        return conflict_err();
+                    }
+                    requires_vpci = Some(true);
                 }
                 "hyperv" => {
                     if vmm.is_some() {
@@ -283,6 +292,7 @@ impl Parse for ArgsWithOverrides {
 
         let unstable = unstable.unwrap_or(false);
         let with_vtl0_pipette = with_vtl0_pipette.unwrap_or(true);
+        let requires_vpci = requires_vpci.unwrap_or(false);
 
         let parens;
         syn::parenthesized!(parens in input);
@@ -293,6 +303,7 @@ impl Parse for ArgsWithOverrides {
             vmm,
             with_vtl0_pipette,
             unstable,
+            requires_vpci,
         })
     }
 }
@@ -304,6 +315,7 @@ impl ArgsWithOverrides {
             vmm,
             unstable,
             with_vtl0_pipette,
+            requires_vpci,
         } = self;
 
         let mut resolved_configs = Vec::new();
@@ -324,6 +336,7 @@ impl ArgsWithOverrides {
                 arch: config.arch,
                 extra_deps: config.extra_deps,
                 unstable: config.unstable || unstable,
+                requires_vpci,
             });
         }
 
@@ -728,6 +741,7 @@ pub fn vmm_test(
         vmm: None,
         unstable: false,
         with_vtl0_pipette: true,
+        requires_vpci: false,
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -767,6 +781,7 @@ pub fn openvmm_test(
         vmm: Some(Vmm::OpenVmm),
         unstable: false,
         with_vtl0_pipette: true,
+        requires_vpci: false,
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -786,6 +801,7 @@ pub fn openvmm_test_no_agent(
         vmm: Some(Vmm::OpenVmm),
         unstable: false,
         with_vtl0_pipette: false,
+        requires_vpci: false,
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -817,12 +833,7 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
         let name = format!("{}_{original_name}", config.name_prefix());
 
         // Build requirements based on the configuration and resolved VMM
-        let requirements = build_requirements(&config.firmware, &name, config.vmm);
-        let requirements = if let Some(req) = requirements {
-            quote! { Some(#req) }
-        } else {
-            quote! { None }
-        };
+        let requirements = build_requirements(&config.firmware, config.vmm, config.requires_vpci);
 
         // Now move the values for the FirmwareAndArch and extra_deps
         let extra_deps = config.extra_deps;
@@ -846,6 +857,11 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
             ),
         };
 
+        let remote_access = match config.vmm {
+            Vmm::HyperV => quote!(::petri::RemoteAccess::LocalOnly),
+            Vmm::OpenVmm => quote!(::petri::RemoteAccess::Allow),
+        };
+
         let petri_vm_config = quote!(#petri_vm_config::new(params, artifacts, &driver)?);
         let unstable = config.unstable.to_token_stream();
 
@@ -854,6 +870,7 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
             ::petri::SimpleTest::new(
                 #name,
                 |resolver| {
+                    let remote_access = #remote_access;
                     let firmware = #firmware;
                     let arch = #arch;
                     let extra_deps = (#(resolver.require(#extra_deps),)*);
@@ -866,7 +883,7 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
                         #original_name(#original_args).await
                     })
                 },
-                #requirements,
+                Some(#requirements),
                 #unstable,
             ).into(),
         };
@@ -881,8 +898,8 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
 }
 
 // Helper to build requirements TokenStream for firmware and resolved VMM
-fn build_requirements(firmware: &Firmware, name: &str, resolved_vmm: Vmm) -> Option<TokenStream> {
-    let mut requirement_expr: Option<TokenStream> = None;
+fn build_requirements(firmware: &Firmware, resolved_vmm: Vmm, requires_vpci: bool) -> TokenStream {
+    let mut requirement_expr: TokenStream = quote!(::petri::requirements::TestRequirement::Any);
     let mut is_vbs = false;
     // Add isolation requirement if specified
     if let Firmware::OpenhclUefi(
@@ -907,57 +924,25 @@ fn build_requirements(firmware: &Firmware, name: &str, resolved_vmm: Vmm) -> Opt
             )),
         };
 
-        requirement_expr = Some(isolation_requirement);
-    }
-
-    // Special case for "servicing" tests
-    if name.contains("servicing") {
-        let servicing_expr = quote!(::petri::requirements::TestRequirement::Not(Box::new(
-            ::petri::requirements::TestRequirement::And(
-                Box::new(::petri::requirements::TestRequirement::Vendor(
-                    ::petri::requirements::Vendor::Amd
-                )),
-                Box::new(
-                    ::petri::requirements::TestRequirement::ExecutionEnvironment(
-                        ::petri::requirements::ExecutionEnvironment::Nested
-                    )
-                )
-            )
-        )));
-
-        requirement_expr = match requirement_expr {
-            Some(existing) => Some(quote!(
-                ::petri::requirements::TestRequirement::And(
-                    Box::new(#existing),
-                    Box::new(#servicing_expr)
-                )
-            )),
-            None => Some(servicing_expr),
-        };
+        requirement_expr = quote!(#requirement_expr.and(#isolation_requirement));
     }
 
     let is_hyperv = resolved_vmm == Vmm::HyperV;
 
     if is_hyperv && is_vbs {
-        let hyperv_vbs_requirement_expr = quote!(
+        requirement_expr = quote!(#requirement_expr.and(
             ::petri::requirements::TestRequirement::ExecutionEnvironment(
                 ::petri::requirements::ExecutionEnvironment::Baremetal
             )
-        );
-        requirement_expr = match requirement_expr {
-            Some(existing) => Some(quote!(
-                ::petri::requirements::TestRequirement::And(
-                    Box::new(#existing),
-                    Box::new(#hyperv_vbs_requirement_expr)
-                )
-            )),
-            None => Some(hyperv_vbs_requirement_expr),
-        };
+        ));
     }
 
-    if requirement_expr.is_some() {
-        Some(quote!(::petri::requirements::TestCaseRequirements::new(#requirement_expr)))
-    } else {
-        None
+    if requires_vpci {
+        requirement_expr =
+            quote!(#requirement_expr.and(::petri::requirements::TestRequirement::VpciSupport));
     }
+
+    quote!(
+        ::petri::requirements::TestCaseRequirements::new(#requirement_expr)
+    )
 }

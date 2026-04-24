@@ -141,14 +141,6 @@ pub struct Options {
     #[clap(long, requires("vtl2"), default_value = "halt")]
     pub late_map_vtl0_policy: Vtl0LateMapPolicyCli,
 
-    /// disable in-hypervisor enlightenment implementation (where possible)
-    #[clap(long)]
-    pub no_enlightenments: bool,
-
-    /// disable the in-hypervisor APIC and use the user-mode one (where possible)
-    #[clap(long)]
-    pub user_mode_apic: bool,
-
     /// attach a disk (can be passed multiple times)
     #[clap(long_help = r#"
 e.g: --disk memdiff:file:/path/to/disk.vhd
@@ -160,8 +152,9 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>[;create=<len>]`   file-backed disk
+    `file:<path>[;direct][;create=<len>]`   file-backed disk
         <path>: path to file
+        `;direct`: bypass the OS page cache
     `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
     `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
     `autocache:<key>:<disk>`       auto-cached SQLite layer (use `autocache::<disk>` to omit key; needs OPENVMM_AUTO_CACHE_PATH)
@@ -195,8 +188,9 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>[;create=<len>]`   file-backed disk
+    `file:<path>[;direct][;create=<len>]`   file-backed disk
         <path>: path to file
+        `;direct`: bypass the OS page cache
     `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
     `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
     `autocache:<key>:<disk>`       auto-cached SQLite layer (use `autocache::<disk>` to omit key; needs OPENVMM_AUTO_CACHE_PATH)
@@ -229,8 +223,9 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>`                  file-backed disk
+    `file:<path>[;direct]`                  file-backed disk
         <path>: path to file
+        `;direct`: bypass the OS page cache
 
 flags:
     `ro`                           open disk as read-only
@@ -246,8 +241,12 @@ options:
     /// The first positional argument is the socket path. Options:
     ///
     /// ```text
-    ///   type=blk|net|rng|console|fs|pmem  — device type (shorthand)
+    ///   type=blk|fs                        — device type (shorthand)
     ///   device_id=N                        — numeric virtio device ID
+    ///   tag=NAME                           — mount tag (required for type=fs)
+    ///   num_queues=N                       — queue count (type=blk/fs only)
+    ///   queue_size=N                       — per-queue size (type=blk/fs only)
+    ///   queue_sizes=[N,N,N]                — per-queue sizes (device_id= only)
     ///   pcie_port=NAME                     — present on PCIe under the specified port
     /// ```
     ///
@@ -255,8 +254,11 @@ options:
     ///
     /// ```text
     ///   --vhost-user /tmp/vhost.sock,type=blk
-    ///   --vhost-user /tmp/vhost.sock,device_id=2
+    ///   --vhost-user /tmp/vhost.sock,type=blk,num_queues=4,queue_size=512
+    ///   --vhost-user /tmp/vhost.sock,device_id=2,queue_sizes=[128,128]
     ///   --vhost-user /tmp/vhost.sock,type=blk,pcie_port=port0
+    ///   --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs
+    ///   --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs,num_queues=2,queue_size=1024
     /// ```
     #[cfg(target_os = "linux")]
     #[clap(long = "vhost-user")]
@@ -473,6 +475,12 @@ options:
     #[clap(long, value_name = "PATH")]
     pub log_file: Option<PathBuf>,
 
+    /// write the process ID to the specified file on startup, and remove it on
+    /// exit. the file is not removed if the process is killed with SIGKILL or
+    /// crashes. no file locking is performed.
+    #[clap(long, value_name = "PATH")]
+    pub pidfile: Option<PathBuf>,
+
     /// run as a ttrpc server on the specified Unix socket
     #[clap(long, value_name = "SOCKETPATH")]
     pub ttrpc: Option<PathBuf>,
@@ -580,7 +588,19 @@ flags:
     #[clap(long)]
     pub mana: Vec<NicConfigCli>,
 
-    /// use a specific hypervisor interface
+    /// use a specific hypervisor interface, with optional backend-specific
+    /// parameters.
+    ///
+    /// Format: `name` or `name:key=val,key,...`
+    ///
+    /// WHP parameters (x86_64 guests only):
+    ///   user_mode_apic       - use user-mode APIC emulator
+    ///   no_enlightenments    - disable in-hypervisor enlightenments
+    ///
+    /// Examples:
+    ///   --hypervisor whp
+    ///   --hypervisor whp:user_mode_apic
+    ///   --hypervisor whp:user_mode_apic,no_enlightenments
     #[clap(long)]
     pub hypervisor: Option<String>,
 
@@ -679,10 +699,6 @@ flags:
     /// specify the IMC hive file for booting Windows
     #[clap(long)]
     pub imc: Option<PathBuf>,
-
-    /// Expose MCR device
-    #[clap(long)]
-    pub mcr: bool, // TODO MCR: support closed source CLI flags
 
     /// expose a battery device
     #[clap(long)]
@@ -807,6 +823,26 @@ Options:
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_remote: Vec<PcieRemoteCli>,
+
+    /// Assign a host PCI device to the guest via VFIO (Linux only)
+    #[clap(long_help = r#"
+Assign a host PCI device to the guest via Linux VFIO.
+
+The device must be bound to vfio-pci on the host before starting the VM.
+
+Examples:
+    # Assign NVMe controller to root port rp0
+    --vfio rp0:0000:01:00.0
+
+Syntax: <port_name>:<pci_bdf>
+
+    port_name    Root port or downstream switch port name
+    pci_bdf      PCI domain:bus:device.function of the VFIO device on
+                 the host (use lspci -D to find it)
+"#)]
+    #[cfg(target_os = "linux")]
+    #[clap(long, conflicts_with("pcat"))]
+    pub vfio: Vec<VfioDeviceCli>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -976,10 +1012,11 @@ pub enum DiskCliKind {
     },
     // prwrap:<kind>
     PersistentReservationsWrapper(Box<DiskCliKind>),
-    // file:<path>[;create=<len>]
+    // file:<path>[;direct][;create=<len>]
     File {
         path: PathBuf,
         create_with_len: Option<u64>,
+        direct: bool,
     },
     // blob:<type>:<url>
     Blob {
@@ -1011,19 +1048,53 @@ pub enum BlobKind {
     Vhd1,
 }
 
-fn parse_path_and_len(arg: &str) -> anyhow::Result<(PathBuf, Option<u64>)> {
-    Ok(match arg.split_once(';') {
-        Some((path, len)) => {
-            let Some(len) = len.strip_prefix("create=") else {
-                anyhow::bail!("invalid syntax after ';', expected 'create=<len>'")
-            };
+struct FileOpts {
+    path: PathBuf,
+    create_with_len: Option<u64>,
+    direct: bool,
+}
 
-            let len = parse_memory(len)?;
+fn parse_file_opts(arg: &str) -> anyhow::Result<FileOpts> {
+    let mut path = arg;
+    let mut create_with_len = None;
+    let mut direct = false;
 
-            (path.into(), Some(len))
+    // Parse semicolon-delimited options after the path.
+    if let Some((p, rest)) = arg.split_once(';') {
+        path = p;
+        for opt in rest.split(';') {
+            if let Some(len) = opt.strip_prefix("create=") {
+                create_with_len = Some(parse_memory(len)?);
+            } else if opt == "direct" {
+                direct = true;
+            } else {
+                anyhow::bail!("invalid file option '{opt}', expected 'create=<len>' or 'direct'");
+            }
         }
-        None => (arg.into(), None),
+    }
+
+    Ok(FileOpts {
+        path: path.into(),
+        create_with_len,
+        direct,
     })
+}
+
+impl DiskCliKind {
+    /// Parse an `autocache:[key]:<kind>` disk spec, given the cache path
+    /// (normally read from `OPENVMM_AUTO_CACHE_PATH`).
+    fn parse_autocache(
+        arg: &str,
+        cache_path: Result<String, std::env::VarError>,
+    ) -> anyhow::Result<Self> {
+        let (key, kind) = arg.split_once(':').context("expected [key]:kind")?;
+        let cache_path = cache_path.context("must set cache path via OPENVMM_AUTO_CACHE_PATH")?;
+        Ok(DiskCliKind::AutoCacheSqlite {
+            cache_path,
+            key: (!key.is_empty()).then(|| key.to_string()),
+            disk: Box::new(kind.parse()?),
+        })
+    }
 }
 
 impl FromStr for DiskCliKind {
@@ -1033,17 +1104,29 @@ impl FromStr for DiskCliKind {
         let disk = match s.split_once(':') {
             // convenience support for passing bare paths as file disks
             None => {
-                let (path, create_with_len) = parse_path_and_len(s)?;
+                let FileOpts {
+                    path,
+                    create_with_len,
+                    direct,
+                } = parse_file_opts(s)?;
                 DiskCliKind::File {
                     path,
                     create_with_len,
+                    direct,
                 }
             }
             Some((kind, arg)) => match kind {
                 "mem" => DiskCliKind::Memory(parse_memory(arg)?),
                 "memdiff" => DiskCliKind::MemoryDiff(Box::new(arg.parse()?)),
                 "sql" => {
-                    let (path, create_with_len) = parse_path_and_len(arg)?;
+                    let FileOpts {
+                        path,
+                        create_with_len,
+                        direct,
+                    } = parse_file_opts(arg)?;
+                    if direct {
+                        anyhow::bail!("'direct' is not supported for 'sql' disks");
+                    }
                     DiskCliKind::Sqlite {
                         path,
                         create_with_len,
@@ -1072,21 +1155,19 @@ impl FromStr for DiskCliKind {
                     }
                 }
                 "autocache" => {
-                    let (key, kind) = arg.split_once(':').context("expected [key]:kind")?;
-                    let cache_path = std::env::var("OPENVMM_AUTO_CACHE_PATH")
-                        .context("must set cache path via OPENVMM_AUTO_CACHE_PATH")?;
-                    DiskCliKind::AutoCacheSqlite {
-                        cache_path,
-                        key: (!key.is_empty()).then(|| key.to_string()),
-                        disk: Box::new(kind.parse()?),
-                    }
+                    Self::parse_autocache(arg, std::env::var("OPENVMM_AUTO_CACHE_PATH"))?
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
                 "file" => {
-                    let (path, create_with_len) = parse_path_and_len(arg)?;
+                    let FileOpts {
+                        path,
+                        create_with_len,
+                        direct,
+                    } = parse_file_opts(arg)?;
                     DiskCliKind::File {
                         path,
                         create_with_len,
+                        direct,
                     }
                 }
                 "blob" => {
@@ -1118,11 +1199,16 @@ impl FromStr for DiskCliKind {
                     //
                     // in this case, we actually want to treat that leading `d:` as part of the
                     // path, rather than as a disk with `kind == 'd'`
-                    let (path, create_with_len) = parse_path_and_len(s)?;
+                    let FileOpts {
+                        path,
+                        create_with_len,
+                        direct,
+                    } = parse_file_opts(s)?;
                     if path.has_root() {
                         DiskCliKind::File {
                             path,
                             create_with_len,
+                            direct,
                         }
                     } else {
                         anyhow::bail!("invalid disk kind {kind}");
@@ -1929,6 +2015,45 @@ impl FromStr for PcieRemoteCli {
     }
 }
 
+/// CLI configuration for a VFIO-assigned PCI device.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug)]
+pub struct VfioDeviceCli {
+    /// Name of the PCIe downstream port to attach to.
+    pub port_name: String,
+    /// PCI BDF address of the device on the host (e.g., "0000:01:00.0").
+    pub pci_id: String,
+}
+
+#[cfg(target_os = "linux")]
+impl FromStr for VfioDeviceCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (port_name, pci_id) = s
+            .split_once(':')
+            .context("expected <port_name>:<pci_bdf> (e.g., rp0:0000:01:00.0)")?;
+
+        if port_name.is_empty() {
+            anyhow::bail!("port name cannot be empty");
+        }
+
+        if pci_id.is_empty() {
+            anyhow::bail!("PCI address cannot be empty");
+        }
+
+        // Reject path separators to prevent sysfs path traversal via Path::join.
+        if pci_id.contains('/') || pci_id.contains("..") {
+            anyhow::bail!("PCI address must not contain path separators");
+        }
+
+        Ok(VfioDeviceCli {
+            port_name: port_name.to_string(),
+            pci_id: pci_id.to_string(),
+        })
+    }
+}
+
 /// Read a environment variable that may / may-not have a target-specific
 /// prefix. e.g: `default_value_from_arch_env("FOO")` would first try and read
 /// from `FOO`, and if that's not found, it will try `X86_64_FOO`.
@@ -1962,10 +2087,59 @@ impl From<&std::ffi::OsStr> for OptionalPathBuf {
 
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
+pub enum VhostUserDeviceTypeCli {
+    /// Block device — config from backend via GET_CONFIG, with num_queues
+    /// patched by the frontend.
+    Blk {
+        num_queues: Option<u16>,
+        queue_size: Option<u16>,
+    },
+    /// Filesystem device — frontend-owned config with mount tag.
+    Fs {
+        tag: String,
+        num_queues: Option<u16>,
+        queue_size: Option<u16>,
+    },
+    /// Generic device identified by numeric virtio device ID.
+    Other {
+        device_id: u16,
+        queue_sizes: Vec<u16>,
+    },
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
 pub struct VhostUserCli {
     pub socket_path: String,
-    pub device_id: u16,
+    pub device_type: VhostUserDeviceTypeCli,
     pub pcie_port: Option<String>,
+}
+
+/// Split a string on commas, but not inside `[…]` brackets.
+///
+/// Returns an error on mismatched brackets (unmatched `]` or unclosed `[`).
+#[cfg(target_os = "linux")]
+fn split_respecting_brackets(s: &str) -> anyhow::Result<Vec<&str>> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut depth: i32 = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                anyhow::ensure!(depth >= 0, "unmatched ']' in option string");
+            }
+            ',' if depth == 0 => {
+                result.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    anyhow::ensure!(depth == 0, "unclosed '[' in option string");
+    result.push(&s[start..]);
+    Ok(result)
 }
 
 #[cfg(target_os = "linux")]
@@ -1973,102 +2147,169 @@ impl FromStr for VhostUserCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> anyhow::Result<Self> {
-        let mut opts = s.split(',');
-        let socket_path = opts.next().context("missing socket path")?.to_string();
+        // Split on commas, but not inside brackets (for queue_sizes=[N,N]).
+        let parts = split_respecting_brackets(s)?;
+        let mut parts_iter = parts.into_iter();
+        let socket_path = parts_iter
+            .next()
+            .context("missing socket path")?
+            .to_string();
 
         let mut device_id: Option<u16> = None;
+        let mut tag: Option<String> = None;
         let mut pcie_port: Option<String> = None;
-        for opt in opts {
+        let mut type_name = None;
+        let mut num_queues: Option<u16> = None;
+        let mut queue_size: Option<u16> = None;
+        let mut queue_sizes: Option<Vec<u16>> = None;
+        for opt in parts_iter {
             let (key, val) = opt.split_once('=').context("expected key=value option")?;
             match key {
                 "type" => {
-                    use virtio::spec::VirtioDeviceType;
-                    device_id = Some(match val {
-                        "net" => VirtioDeviceType::NET.0,
-                        "blk" => VirtioDeviceType::BLK.0,
-                        "console" => VirtioDeviceType::CONSOLE.0,
-                        "rng" => VirtioDeviceType::RNG.0,
-                        "fs" => VirtioDeviceType::FS.0,
-                        "pmem" => VirtioDeviceType::PMEM.0,
-                        other => anyhow::bail!("unknown vhost-user device type: '{other}'"),
-                    });
+                    type_name = Some(val);
                 }
                 "device_id" => {
                     device_id = Some(val.parse().context("invalid device_id")?);
                 }
+                "tag" => {
+                    tag = Some(val.to_string());
+                }
                 "pcie_port" => {
                     pcie_port = Some(val.to_string());
+                }
+                "num_queues" => {
+                    num_queues = Some(val.parse().context("invalid num_queues")?);
+                }
+                "queue_size" => {
+                    queue_size = Some(val.parse().context("invalid queue_size")?);
+                }
+                "queue_sizes" => {
+                    // Parse bracket-delimited comma-separated list: [N,N,N]
+                    let trimmed = val
+                        .strip_prefix('[')
+                        .and_then(|v| v.strip_suffix(']'))
+                        .context("queue_sizes must be bracketed: [N,N,N]")?;
+                    let sizes: Vec<u16> = trimmed
+                        .split(',')
+                        .map(|s| s.parse().context("invalid queue size in queue_sizes"))
+                        .collect::<anyhow::Result<_>>()?;
+                    anyhow::ensure!(!sizes.is_empty(), "queue_sizes must be non-empty");
+                    queue_sizes = Some(sizes);
                 }
                 other => anyhow::bail!("unknown vhost-user option: '{other}'"),
             }
         }
 
-        let device_id = device_id.context("must specify type=<name> or device_id=<N>")?;
+        if type_name.is_some() == device_id.is_some() {
+            anyhow::bail!("must specify type=<name> or device_id=<N>");
+        }
+
+        // Build the typed device variant.
+        let device_type = match type_name {
+            Some("fs") => {
+                let tag = tag.take().context("type=fs requires tag=<name>")?;
+                VhostUserDeviceTypeCli::Fs {
+                    tag,
+                    num_queues: num_queues.take(),
+                    queue_size: queue_size.take(),
+                }
+            }
+            Some("blk") => VhostUserDeviceTypeCli::Blk {
+                num_queues: num_queues.take(),
+                queue_size: queue_size.take(),
+            },
+            Some(ty) => anyhow::bail!("unknown vhost-user device type: '{ty}'"),
+            None => {
+                let queue_sizes = queue_sizes
+                    .take()
+                    .context("device_id= requires queue_sizes=[N,N,...]")?;
+                VhostUserDeviceTypeCli::Other {
+                    device_id: device_id.unwrap(),
+                    queue_sizes,
+                }
+            }
+        };
+
+        if tag.is_some() {
+            anyhow::bail!("tag= is only valid for type=fs");
+        }
+        if queue_sizes.is_some() {
+            anyhow::bail!("queue_sizes= is only valid for device_id=");
+        }
+        if num_queues.is_some() || queue_size.is_some() {
+            anyhow::bail!(
+                "num_queues= and queue_size= are not valid for device_id=; use queue_sizes="
+            );
+        }
 
         Ok(VhostUserCli {
             socket_path,
-            device_id,
+            device_type,
             pcie_port,
         })
     }
 }
 
 #[cfg(test)]
-// UNSAFETY: Needed to set and remove environment variables in tests
-#[expect(unsafe_code)]
 mod tests {
     use super::*;
 
-    fn with_env_var<F, R>(name: &str, value: &str, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        // SAFETY:
-        // Safe in a testing context because it won't be changed concurrently
-        unsafe {
-            std::env::set_var(name, value);
-        }
-        let result = f();
-        // SAFETY:
-        // Safe in a testing context because it won't be changed concurrently
-        unsafe {
-            std::env::remove_var(name);
-        }
-        result
-    }
+    use std::path::Path;
 
     #[test]
-    fn test_parse_file_disk_with_create() {
-        let s = "file:test.vhd;create=1G";
-        let disk = DiskCliKind::from_str(s).unwrap();
+    fn test_parse_file_opts() {
+        // file: prefix with create
+        let disk = DiskCliKind::from_str("file:test.vhd;create=1G").unwrap();
+        assert!(matches!(
+            &disk,
+            DiskCliKind::File { path, create_with_len: Some(len), direct: false }
+                if path == Path::new("test.vhd") && *len == 1024 * 1024 * 1024
+        ));
 
-        match disk {
-            DiskCliKind::File {
-                path,
-                create_with_len,
-            } => {
-                assert_eq!(path, PathBuf::from("test.vhd"));
-                assert_eq!(create_with_len, Some(1024 * 1024 * 1024)); // 1G
-            }
-            _ => panic!("Expected File variant"),
-        }
-    }
+        // bare path with create (no file: prefix)
+        let disk = DiskCliKind::from_str("test.vhd;create=1G").unwrap();
+        assert!(matches!(
+            &disk,
+            DiskCliKind::File { path, create_with_len: Some(len), direct: false }
+                if path == Path::new("test.vhd") && *len == 1024 * 1024 * 1024
+        ));
 
-    #[test]
-    fn test_parse_direct_file_with_create() {
-        let s = "test.vhd;create=1G";
-        let disk = DiskCliKind::from_str(s).unwrap();
+        // direct flag
+        let disk = DiskCliKind::from_str("file:/dev/sdb;direct").unwrap();
+        assert!(matches!(
+            &disk,
+            DiskCliKind::File { path, create_with_len: None, direct: true }
+                if path == Path::new("/dev/sdb")
+        ));
 
-        match disk {
-            DiskCliKind::File {
-                path,
-                create_with_len,
-            } => {
-                assert_eq!(path, PathBuf::from("test.vhd"));
-                assert_eq!(create_with_len, Some(1024 * 1024 * 1024)); // 1G
-            }
-            _ => panic!("Expected File variant"),
-        }
+        // direct + create in either order
+        let disk = DiskCliKind::from_str("file:disk.img;direct;create=1G").unwrap();
+        assert!(matches!(
+            &disk,
+            DiskCliKind::File { path, create_with_len: Some(len), direct: true }
+                if path == Path::new("disk.img") && *len == 1024 * 1024 * 1024
+        ));
+
+        let disk = DiskCliKind::from_str("file:disk.img;create=1G;direct").unwrap();
+        assert!(matches!(
+            &disk,
+            DiskCliKind::File { path, create_with_len: Some(len), direct: true }
+                if path == Path::new("disk.img") && *len == 1024 * 1024 * 1024
+        ));
+
+        // plain path, no options
+        let disk = DiskCliKind::from_str("file:disk.img").unwrap();
+        assert!(matches!(
+            &disk,
+            DiskCliKind::File { path, create_with_len: None, direct: false }
+                if path == Path::new("disk.img")
+        ));
+
+        // invalid option rejected
+        assert!(DiskCliKind::from_str("file:disk.img;bogus").is_err());
+
+        // direct rejected for sql disks
+        assert!(DiskCliKind::from_str("sql:db.sqlite;direct").is_err());
     }
 
     #[test]
@@ -2120,6 +2361,7 @@ mod tests {
                 DiskCliKind::File {
                     path,
                     create_with_len,
+                    ..
                 } => {
                     assert_eq!(path, PathBuf::from("base.img"));
                     assert_eq!(create_with_len, None);
@@ -2173,6 +2415,7 @@ mod tests {
                     DiskCliKind::File {
                         path,
                         create_with_len,
+                        ..
                     } => {
                         assert_eq!(path, PathBuf::from("base.img"));
                         assert_eq!(create_with_len, None);
@@ -2194,6 +2437,7 @@ mod tests {
                     DiskCliKind::File {
                         path,
                         create_with_len,
+                        ..
                     } => {
                         assert_eq!(path, PathBuf::from("base.img"));
                         assert_eq!(create_with_len, None);
@@ -2207,10 +2451,9 @@ mod tests {
 
     #[test]
     fn test_parse_autocache_sqlite_disk() {
-        // Test with environment variable set
-        let disk = with_env_var("OPENVMM_AUTO_CACHE_PATH", "/tmp/cache", || {
-            DiskCliKind::from_str("autocache::file:disk.vhd").unwrap()
-        });
+        // Test with cache path provided
+        let disk =
+            DiskCliKind::parse_autocache(":file:disk.vhd", Ok("/tmp/cache".to_string())).unwrap();
         assert!(matches!(
             disk,
             DiskCliKind::AutoCacheSqlite {
@@ -2220,8 +2463,24 @@ mod tests {
             } if cache_path == "/tmp/cache" && key.is_none()
         ));
 
-        // Test without environment variable
-        assert!(DiskCliKind::from_str("autocache::file:disk.vhd").is_err());
+        // Test with key
+        let disk =
+            DiskCliKind::parse_autocache("mykey:file:disk.vhd", Ok("/tmp/cache".to_string()))
+                .unwrap();
+        assert!(matches!(
+            disk,
+            DiskCliKind::AutoCacheSqlite {
+                cache_path,
+                key: Some(key),
+                disk: _disk,
+            } if cache_path == "/tmp/cache" && key == "mykey"
+        ));
+
+        // Test without cache path
+        assert!(
+            DiskCliKind::parse_autocache(":file:disk.vhd", Err(std::env::VarError::NotPresent),)
+                .is_err()
+        );
     }
 
     #[test]
@@ -2242,12 +2501,10 @@ mod tests {
         assert!(DiskCliKind::from_str("sqldiff:path").is_err());
 
         // Missing OPENVMM_AUTO_CACHE_PATH for AutoCacheSqlite
-        // SAFETY:
-        // Safe in a testing context because it won't be changed concurrently
-        unsafe {
-            std::env::remove_var("OPENVMM_AUTO_CACHE_PATH");
-        }
-        assert!(DiskCliKind::from_str("autocache:key:file:disk.vhd").is_err());
+        assert!(
+            DiskCliKind::parse_autocache("key:file:disk.vhd", Err(std::env::VarError::NotPresent),)
+                .is_err()
+        );
 
         // Invalid blob kind
         assert!(DiskCliKind::from_str("blob:invalid:url").is_err());
@@ -2580,6 +2837,7 @@ mod tests {
             DiskCliKind::File {
                 path,
                 create_with_len,
+                ..
             } => {
                 assert_eq!(path.to_str().unwrap(), "/path/to/floppy.img");
                 assert_eq!(create_with_len, None);
@@ -2869,5 +3127,11 @@ mod tests {
         assert!(PcieRemoteCli::from_str("port,controller=").is_err());
         assert!(PcieRemoteCli::from_str("port,controller=bad").is_err());
         assert!(PcieRemoteCli::from_str("port,unknown=value").is_err());
+    }
+
+    #[test]
+    fn test_pidfile_option_parsed() {
+        let opt = Options::try_parse_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
+        assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
     }
 }

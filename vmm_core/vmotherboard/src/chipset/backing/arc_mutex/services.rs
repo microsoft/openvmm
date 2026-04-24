@@ -27,7 +27,7 @@ use vmcore::vmtime::VmTimeSource;
 /// The concrete instance of [`ChipsetServices`] offered to devices when using
 /// the `Weak<CloseableMutex<..>>` [`Chipset`](crate::Chipset) API.
 pub struct ArcMutexChipsetServices<'a, 'b> {
-    builder: &'a mut ChipsetBuilder<'b>,
+    builder: &'a ChipsetBuilder<'b>,
     dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
     dev_name: Arc<str>,
     line_set_dependencies: Vec<LineSetId>,
@@ -67,6 +67,8 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
         let acknowledge_pic_interrupt;
         let line_target;
 
+        let mut inner = self.builder.inner.lock();
+
         let mut builder = {
             let mut device = device.lock();
             handle_eoi = device.supports_handle_eoi().is_some();
@@ -92,18 +94,23 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
         };
 
         if handle_eoi {
-            if !self.builder.try_set_eoi_handler(Some(device.clone())) {
+            if inner.vm_chipset.eoi_handler.is_some() {
                 return Err(FinalizeError::EoiHandlerAlreadySet);
             }
+            inner.vm_chipset.eoi_handler = Some(device.clone());
         }
         if acknowledge_pic_interrupt {
-            if !self.builder.try_set_pic(Some(device.clone())) {
+            if inner.vm_chipset.pic.is_some() {
                 return Err(FinalizeError::PicHandlerAlreadySet);
             }
+            inner.vm_chipset.pic = Some(device.clone());
         }
 
         for id in self.line_set_dependencies {
-            let (_, handle) = self.builder.line_set(id);
+            let (_, handle) =
+                inner
+                    .line_sets
+                    .line_set(self.builder.driver_source, self.builder.units, id);
             builder = builder.depends_on(handle);
         }
 
@@ -116,7 +123,10 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
                         && *range.end()
                             >= target_start + (source_range.end() - source_range.start())
                 }));
-                let (line_set, handle) = self.builder.line_set(id);
+                let (line_set, handle) =
+                    inner
+                        .line_sets
+                        .line_set(self.builder.driver_source, self.builder.units, id);
                 line_set.add_target(source_range, target_start, dev_name.clone(), device.clone());
                 builder = builder.dependency_of(handle);
             }
@@ -127,14 +137,14 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
             .spawn(self.builder.driver_source.simple(), |recv| device.run(recv))
             .map_err(FinalizeError::NameInUse)?;
 
-        self.builder.register_arc_mutex_device_unit(unit);
+        inner.arc_mutex_device_units.push(unit);
         Ok(())
     }
 }
 
 impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
     pub fn new(
-        builder: &'a mut ChipsetBuilder<'b>,
+        builder: &'a ChipsetBuilder<'b>,
         dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
         dev_name: Arc<str>,
     ) -> Self {
@@ -159,18 +169,20 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
     }
 
     pub fn register_mmio(&self) -> DeviceRangeMapper<u64> {
+        let inner = self.builder.inner.lock();
         DeviceRangeMapper {
             dev: self.dev.clone(),
             dev_name: self.dev_name.clone(),
-            ranges: self.builder.vm_chipset.mmio_ranges.clone(),
+            ranges: inner.vm_chipset.mmio_ranges.clone(),
         }
     }
 
     pub fn register_pio(&self) -> DeviceRangeMapper<u16> {
+        let inner = self.builder.inner.lock();
         DeviceRangeMapper {
             dev: self.dev.clone(),
             dev_name: self.dev_name.clone(),
-            ranges: self.builder.vm_chipset.pio_ranges.clone(),
+            ranges: inner.vm_chipset.pio_ranges.clone(),
         }
     }
 
@@ -192,7 +204,11 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
     }
 
     pub fn new_line(&mut self, id: LineSetId, name: &str, vector: u32) -> LineInterrupt {
-        let (line_set, _) = self.builder.line_set(id.clone());
+        let mut inner = self.builder.inner.lock();
+        let (line_set, _) =
+            inner
+                .line_sets
+                .line_set(self.builder.driver_source, self.builder.units, id.clone());
         match line_set.new_line(vector, format!("{}:{}", self.dev_name, name)) {
             Ok(line) => {
                 self.line_set_dependencies.push(id);
@@ -281,6 +297,9 @@ mod device_range {
 
                 fn map(&mut self, addr: $addr) {
                     tracing::trace!(region_name = ?self.region_name, ?addr, len = ?self.len, "map");
+                    if self.len == 0 {
+                        return;
+                    }
                     self.unmap();
                     match self.ranges.register(
                         addr,

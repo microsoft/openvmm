@@ -8,13 +8,11 @@
 //! are not vetted for production use and are *exclusively* for this test module on the
 //! Windows platform.
 
-use rsa::rand_core::CryptoRng;
-use rsa::rand_core::RngCore;
+use rsa::rand_core::Rng;
 use rsa::rand_core::SeedableRng;
 use sha2::digest;
 use sha2::digest::consts::U20;
 use sha2::digest::consts::U64;
-use sha2::digest::core_api::BlockSizeUser;
 
 /// Minimal, non-constant-time SHA-1 implementation sufficient to satisfy the
 /// `digest::Digest` trait required by `rsa::Oaep`. Do NOT use in production.
@@ -122,7 +120,7 @@ impl digest::OutputSizeUser for TestSha1 {
     type OutputSize = U20;
 }
 
-impl BlockSizeUser for TestSha1 {
+impl digest::common::BlockSizeUser for TestSha1 {
     type BlockSize = U64;
 }
 
@@ -415,32 +413,30 @@ impl SeedableRng for DummyRng {
     }
 }
 
-impl RngCore for DummyRng {
-    fn next_u32(&mut self) -> u32 {
+impl rsa::rand_core::TryRng for DummyRng {
+    type Error = std::convert::Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
         self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        (self.state >> 32) as u32
+        Ok((self.state >> 32) as u32)
     }
 
-    fn next_u64(&mut self) -> u64 {
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
         self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        self.state
+        Ok(self.state)
     }
 
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
         for chunk in dest.chunks_mut(8) {
             let n = self.next_u64().to_le_bytes();
             chunk.copy_from_slice(&n[..chunk.len()]);
         }
-    }
-
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rsa::rand_core::Error> {
-        self.fill_bytes(dest);
         Ok(())
     }
 }
 
 /// Marker trait to satisfy `rsa::RsaPrivateKey::new`.
-impl CryptoRng for DummyRng {}
+impl rsa::rand_core::TryCryptoRng for DummyRng {}
 
 #[cfg(test)]
 mod tests {

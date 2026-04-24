@@ -159,8 +159,14 @@ impl Node {
             |_| Ok(std::env::current_dir()?.absolute()?)
         });
 
-        let request_set_hash = {
+        // Build a human-readable cache key from repo names and tags so
+        // that cache entries are identifiable in the CI cache UI.
+        // The hash ensures uniqueness; the descriptive prefix aids debugging.
+        let cache_key = {
+            use std::fmt::Write as _;
+
             let hasher = &mut rustc_hash::FxHasher::default();
+            let mut key = String::from("gh-release-download-");
             for ((repo_owner, repo_name, tag), files) in &download_reqs {
                 std::hash::Hash::hash(repo_owner, hasher);
                 std::hash::Hash::hash(repo_name, hasher);
@@ -168,12 +174,17 @@ impl Node {
                 for file in files.keys() {
                     std::hash::Hash::hash(&file, hasher);
                 }
+                write!(key, "{repo_name}-{tag}_").unwrap();
             }
             let hash = std::hash::Hasher::finish(hasher);
-            format!("{:08x?}", hash)
-        };
 
-        let cache_key = ReadVar::from_static(format!("gh-release-download-{request_set_hash}"));
+            // Actions cache keys are limited to 512 characters total, but
+            // subsequent machinery adds some more stuff to the key. Truncate
+            // generously.
+            key.truncate(256);
+            write!(key, "{:016x}", hash).unwrap();
+            ReadVar::from_static(key)
+        };
         let hitvar = ctx.reqv(|v| {
             crate::cache::Request {
                 label: "gh-release-download".into(),

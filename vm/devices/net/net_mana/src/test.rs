@@ -568,9 +568,194 @@ async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
         max_num_vports: 1,
         reserved: 0,
         max_num_eqs: 64,
+        adapter_mtu: 0,
+        reserved2: 0,
+        adapter_link_speed_mbps: 0,
     };
     let thing = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
     let _ = thing.new_vport(0, None, &dev_config).await.unwrap();
+}
+
+/// Verifies that the link speed queried from the adapter via the full driver
+/// stack is reported correctly through `dev_config().link_speed_bps()`,
+/// `vport.link_speed_bps()`, and `endpoint.link_speed()`.
+///
+/// The emulated GDMA device returns `adapter_link_speed_mbps = 0`, so the
+/// driver-stack path exercises the 200 Gbps fallback.
+#[async_test]
+async fn test_link_speed_default(driver: DefaultDriver) {
+    // Verify that a non-zero adapter_link_speed_mbps is converted to bps
+    // correctly, without going through the driver stack.
+    let dev_config_nonzero = ManaQueryDeviceCfgResp {
+        pf_cap_flags1: 0.into(),
+        pf_cap_flags2: 0,
+        pf_cap_flags3: 0,
+        pf_cap_flags4: 0,
+        max_num_vports: 1,
+        reserved: 0,
+        max_num_eqs: 64,
+        adapter_mtu: 0,
+        reserved2: 0,
+        adapter_link_speed_mbps: 100 * 1000, // 100 Gbps
+    };
+    assert_eq!(
+        dev_config_nonzero.link_speed_bps(),
+        100 * 1000 * 1000 * 1000
+    );
+
+    // Now exercise the full driver stack. The emulated GDMA device returns
+    // adapter_link_speed_mbps = 0, so the 200 Gbps fallback is expected
+    // throughout.
+    const FALLBACK_LINK_SPEED_BPS: u64 = 200 * 1000 * 1000 * 1000;
+
+    let pages = 512; // 2MB
+    let mem = DeviceTestMemory::new(pages, false, "test_link_speed_default");
+    let msi_conn = MsiConnection::new();
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        msi_conn.target(),
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(LoopbackEndpoint::new()),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let device = EmulatedDevice::new(device, msi_conn, mem.dma_client());
+
+    let mana_device = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
+
+    // Verify the link speed as seen in the device config populated by
+    // query_dev_config() during ManaDevice::new().
+    assert_eq!(
+        mana_device.dev_config().link_speed_bps(),
+        FALLBACK_LINK_SPEED_BPS
+    );
+
+    let vport = mana_device
+        .new_vport(
+            0,
+            None,
+            &ManaQueryDeviceCfgResp {
+                pf_cap_flags1: 0.into(),
+                pf_cap_flags2: 0,
+                pf_cap_flags3: 0,
+                pf_cap_flags4: 0,
+                max_num_vports: 1,
+                reserved: 0,
+                max_num_eqs: 64,
+                adapter_mtu: 0,
+                reserved2: 0,
+                adapter_link_speed_mbps: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+    // The vport inherits the link speed from the ManaDevice (emulator value).
+    assert_eq!(vport.link_speed_bps(), FALLBACK_LINK_SPEED_BPS);
+
+    // Verify it is also surfaced correctly through the Endpoint trait.
+    let mut endpoint = ManaEndpoint::new(driver.clone(), vport, GuestDmaMode::DirectDma).await;
+    assert_eq!(endpoint.link_speed(), FALLBACK_LINK_SPEED_BPS);
+    endpoint.stop().await;
+}
+
+/// Verifies that a link speed configured on the emulated GDMA device propagates
+/// through the full net_mana driver stack: `dev_config().link_speed_bps()`,
+/// `vport.link_speed_bps()`, and `endpoint.link_speed()`.
+#[async_test]
+async fn test_link_speed_expected(driver: DefaultDriver) {
+    verify_link_speed_expected(driver, 400 * 1000).await; // 400 Gbps
+}
+
+async fn verify_link_speed_expected(driver: DefaultDriver, link_speed_mbps: u32) {
+    let link_speed_bps = link_speed_mbps as u64 * 1000 * 1000;
+
+    let pages = 512;
+    let mem = DeviceTestMemory::new(pages, false, "test_link_speed_expected");
+    let msi_conn = MsiConnection::new();
+    let device = gdma::GdmaDevice::new_with_config(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        msi_conn.target(),
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(LoopbackEndpoint::new()),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+        gdma::BnicConfig {
+            adapter_link_speed_mbps: link_speed_mbps,
+        },
+    );
+    let device = EmulatedDevice::new(device, msi_conn, mem.dma_client());
+
+    let thing = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
+
+    // Layer 1: dev_config stored on ManaDevice.
+    assert_eq!(
+        thing.dev_config().link_speed_bps(),
+        link_speed_bps,
+        "dev_config().link_speed_bps() should reflect the configured link speed"
+    );
+
+    let vport_dev_config = ManaQueryDeviceCfgResp {
+        pf_cap_flags1: 0.into(),
+        pf_cap_flags2: 0,
+        pf_cap_flags3: 0,
+        pf_cap_flags4: 0,
+        max_num_vports: 1,
+        reserved: 0,
+        max_num_eqs: 64,
+        adapter_mtu: 0,
+        reserved2: 0,
+        adapter_link_speed_mbps: 0,
+    };
+    let vport = thing.new_vport(0, None, &vport_dev_config).await.unwrap();
+
+    // Layer 2: vport derives its link speed from the stored dev_config,
+    // not from the per-call vport_dev_config.
+    assert_eq!(
+        vport.link_speed_bps(),
+        link_speed_bps,
+        "vport.link_speed_bps() should reflect the configured link speed"
+    );
+
+    // Layer 3: ManaEndpoint surfaces it via the Endpoint trait.
+    let mut endpoint = ManaEndpoint::new(driver.clone(), vport, GuestDmaMode::DirectDma).await;
+    assert_eq!(
+        endpoint.link_speed(),
+        link_speed_bps,
+        "endpoint.link_speed() should reflect the configured link speed"
+    );
+    endpoint.stop().await;
+}
+
+#[async_test]
+async fn test_rx_error_handling(driver: DefaultDriver) {
+    // Send a packet larger than the 2048-byte RX buffer, causing the GDMA BNIC emulator
+    // to return CQE_RX_TRUNCATED, exercising the rx_poll error path.
+    let expected_num_tx_packets = 1;
+    let expected_num_rx_packets = 0;
+    let num_segments = 1;
+    let packet_len = 4096; // Exceeds the 2048-byte RX buffer
+
+    let mut pkt_builder = TxPacketBuilder::new();
+    build_tx_segments(packet_len, num_segments, false, &mut pkt_builder);
+
+    let stats = test_endpoint(
+        driver,
+        GuestDmaMode::DirectDma,
+        &pkt_builder,
+        expected_num_tx_packets,
+        expected_num_rx_packets,
+        ManaTestConfiguration::default(),
+    )
+    .await;
+
+    assert_eq!(stats.rx_errors.get(), 1, "rx_errors should increase");
+    assert_eq!(stats.rx_packets.get(), 0, "rx_packets should stay the same");
+    assert_eq!(stats.tx_packets.get(), 1, "tx_packets should increase");
 }
 
 async fn send_test_packet(
@@ -620,8 +805,8 @@ async fn send_test_packet_multi(
         driver,
         dma_mode,
         pkt_builder,
-        expected_stats.rx_packets.get() as usize,
         expected_stats.tx_packets.get() as usize,
+        expected_stats.rx_packets.get() as usize,
         test_config,
     )
     .await;
@@ -662,10 +847,10 @@ fn build_tx_segments(
         id: TxId(tx_id),
         segment_count: num_segments as u8,
         len: packet_len as u32,
-        l2_len: 14,                 // Ethernet header
-        l3_len: 20,                 // IPv4 header
-        l4_len: 20,                 // TCP header
-        max_tcp_segment_size: 1460, // Typical MSS for Ethernet
+        l2_len: 14,             // Ethernet header
+        l3_len: 20,             // IPv4 header
+        l4_len: 20,             // TCP header
+        max_segment_size: 1460, // Typical MSS for Ethernet
         ..Default::default()
     };
 
@@ -729,6 +914,9 @@ async fn test_endpoint(
         max_num_vports: 1,
         reserved: 0,
         max_num_eqs: 64,
+        adapter_mtu: 0,
+        reserved2: 0,
+        adapter_link_speed_mbps: 0,
     };
     let thing = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
     let vport = thing.new_vport(0, None, &dev_config).await.unwrap();
@@ -763,7 +951,14 @@ async fn test_endpoint(
     let mut rx_packets_n = 0;
     let mut tx_done = vec![TxId(0); expected_num_send_packets.max(2)];
     let mut tx_done_n = 0;
-    while rx_packets_n == 0 {
+
+    // Wait until both expected RX and TX completions are satisfied.
+    // When an expected count is 0, its condition is immediately true.
+    let done = |rx_n: usize, tx_n: usize| -> bool {
+        rx_n >= expected_num_received_packets && tx_n >= expected_num_send_packets
+    };
+
+    loop {
         let mut context = CancelContext::new().with_timeout(Duration::from_secs(1));
         match context
             .until_cancelled(poll_fn(|cx| queues[0].poll_ready(cx, &mut pool)))
@@ -783,11 +978,12 @@ async fn test_endpoint(
         tx_done_n += queues[0]
             .tx_poll(&mut pool, &mut tx_done[tx_done_n..])
             .unwrap_or(0);
-        if expected_num_received_packets == 0 {
+        if done(rx_packets_n, tx_done_n) {
             break;
         }
     }
     assert_eq!(rx_packets_n, expected_num_received_packets);
+    assert_eq!(tx_done_n, expected_num_send_packets);
 
     if expected_num_received_packets == 0 {
         // If no packets were received, exit.
@@ -797,8 +993,6 @@ async fn test_endpoint(
         return stats;
     }
 
-    // Check tx
-    assert_eq!(tx_done_n, expected_num_send_packets);
     // GDMA emulator always returns TxId(1) for completed packets.
     for done in tx_done.iter().take(expected_num_send_packets) {
         assert_eq!(done.0, 1);

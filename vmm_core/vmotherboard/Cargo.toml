@@ -7,8 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-encryption = ["firmware_uefi/auth-var-verify-crypto"]
-
 dev_hyperv_vga = ["dep:vga"]
 dev_underhill_vga_proxy = ["dep:vga_proxy"]
 dev_generic_isa_floppy = ["dep:floppy"]

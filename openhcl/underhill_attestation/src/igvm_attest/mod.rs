@@ -124,7 +124,7 @@ impl IgvmAttestRequestHelper {
         let runtime_claims = runtime_claims_to_bytes(&runtime_claims);
 
         let hash_type = IgvmAttestHashType::SHA_256;
-        let hash = crate::crypto::sha_256(runtime_claims.as_bytes());
+        let hash = crypto::sha_256::sha_256(runtime_claims.as_bytes());
         let mut runtime_claims_hash = [0u8; tee_call::REPORT_DATA_SIZE];
         runtime_claims_hash[0..hash.len()].copy_from_slice(&hash);
 
@@ -167,7 +167,7 @@ impl IgvmAttestRequestHelper {
         let runtime_claims = runtime_claims_to_bytes(&runtime_claims);
 
         let hash_type = IgvmAttestHashType::SHA_256;
-        let hash = crate::crypto::sha_256(runtime_claims.as_bytes());
+        let hash = crypto::sha_256::sha_256(runtime_claims.as_bytes());
         let mut runtime_claims_hash = [0u8; tee_call::REPORT_DATA_SIZE];
         runtime_claims_hash[0..hash.len()].copy_from_slice(&hash);
 

@@ -5,6 +5,7 @@ use crate::dispatch::vtl2_settings_worker::wait_for_pci_path;
 use crate::options::KeepAliveConfig;
 use crate::vpci::HclVpciBusControl;
 use anyhow::Context;
+use anyhow::anyhow;
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::lock::Mutex;
@@ -51,6 +52,10 @@ use user_driver::vfio::vfio_set_device_reset_method;
 use vmcore::vm_task::VmTaskDriverSource;
 use vpci::bus_control::VpciBusControl;
 use vpci::bus_control::VpciBusEvent;
+
+/// Default timeout for actions communicating with other components where an action
+/// is expected to take time, but still complete in a reasonable window.
+const MAX_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Debug)]
 enum HclNetworkVfManagerMessage {
@@ -435,7 +440,6 @@ impl HclNetworkVFManagerWorker {
     }
 
     async fn send_vf_state_change_notifications(&self) -> anyhow::Result<()> {
-        const MAX_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
         let all_results =
             futures::future::join_all(self.guest_state_notifications.iter().map(async |update| {
                 update
@@ -462,7 +466,14 @@ impl HclNetworkVFManagerWorker {
         // method.
         *self.guest_state.offered_to_guest.lock().await = false;
         // Give the network stack a chance to prepare for the removal.
-        if let Err(err) = self.send_vf_state_change_notifications().await {
+        if let Err(err) = self
+            .send_vf_state_change_notifications()
+            .instrument(tracing::info_span!(
+                "sending VTL0 VF removal notice",
+                vtl2_vfid,
+                vtl0_bus = %bus_control))
+            .await
+        {
             tracing::error!(
                 vtl2_vfid,
                 err = err.as_ref() as &dyn std::error::Error,
@@ -518,12 +529,14 @@ impl HclNetworkVFManagerWorker {
                 };
                 bus_control
             };
-            vpci_bus_control
-                .revoke_device()
-                .instrument(
-                    tracing::info_span!("revoking vtl0 vf", vtl2_vfid, vtl0_bus = %bus_control),
-                )
-                .await
+
+            let mut ctx = mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
+
+            ctx.until_cancelled(vpci_bus_control.revoke_device().instrument(
+                tracing::info_span!("revoking vtl0 vf", vtl2_vfid, vtl0_bus = %bus_control),
+            ))
+            .await
+            .unwrap_or_else(|cr| Err(anyhow!("vtl0 revoke timed out: {cr}")))
         } {
             tracing::error!(
                 vtl2_vfid,
@@ -592,14 +605,13 @@ impl HclNetworkVFManagerWorker {
         if self.guest_state.is_offered_to_guest().await {
             *self.guest_state.offered_to_guest.lock().await = false;
             if let Vtl0Bus::Present(vtl0_bus_control) = &self.vtl0_bus_control {
-                match vtl0_bus_control
-                    .revoke_device()
-                    .instrument(tracing::info_span!(
-                        "Removing VF from VTL0",
-                        vtl2_vfid,
-                        vtl0_vfid,
+                let mut ctx = mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
+                match ctx
+                    .until_cancelled(vtl0_bus_control.revoke_device().instrument(
+                        tracing::info_span!("Removing VF from VTL0", vtl2_vfid, vtl0_vfid,),
                     ))
                     .await
+                    .unwrap_or_else(|cr| Err(anyhow!("vtl0 revoke timed out: {cr}")))
                 {
                     Ok(_) => (),
                     Err(err) => {
@@ -618,13 +630,19 @@ impl HclNetworkVFManagerWorker {
     async fn disconnect_all_endpoints(&mut self) {
         let num_endpoints = self.endpoint_controls.len();
         let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
+
         futures::future::join_all(self.endpoint_controls.iter_mut().map(async |control| {
             match control.disconnect().await {
                 Ok(Some(mut endpoint)) => {
                     tracing::info!(vtl2_vfid, "Network endpoint disconnected");
                     endpoint.stop().await;
                 }
-                Ok(None) => (),
+                Ok(None) => {
+                    tracing::info!(
+                        vtl2_vfid,
+                        "network endpoint disconnect processed; no endpoint connected"
+                    );
+                }
                 Err(err) => {
                     tracing::error!(
                         vtl2_vfid,
@@ -640,6 +658,8 @@ impl HclNetworkVFManagerWorker {
             num_endpoints
         ))
         .await;
+
+        self.pkt_capture_controls = None;
     }
 
     async fn update_vtl2_device_bind_state(&self, is_bound: bool) -> anyhow::Result<()> {
@@ -840,13 +860,16 @@ impl HclNetworkVFManagerWorker {
                     if !self.guest_state.is_offered_to_guest().await
                         && self.guest_state.vtl0_vfid().await.is_some()
                     {
-                        tracing::info!(
-                            vtl2_vfid,
-                            vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control),
-                            "Adding VF to VTL0"
-                        );
                         if let Vtl0Bus::Present(vtl0_bus_control) = &self.vtl0_bus_control {
-                            match vtl0_bus_control.offer_device().await {
+                            match vtl0_bus_control
+                                .offer_device()
+                                .instrument(tracing::info_span!(
+                                    "adding VF to VTL0",
+                                    vtl2_vfid,
+                                    vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control)
+                                ))
+                                .await
+                            {
                                 Ok(_) => {
                                     *self.guest_state.offered_to_guest.lock().await = true;
                                 }
@@ -860,6 +883,12 @@ impl HclNetworkVFManagerWorker {
                                     );
                                 }
                             }
+                        } else {
+                            tracing::info!(
+                                vtl2_vfid,
+                                %self.vtl0_bus_control,
+                                "Ignoring VTL0 device request from guest"
+                            );
                         }
                     }
                 }

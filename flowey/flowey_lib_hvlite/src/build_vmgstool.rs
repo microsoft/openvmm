@@ -3,8 +3,8 @@
 
 //! Build `vmgstool` binaries
 
-use crate::run_cargo_build::common::CommonProfile;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonProfile;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;

@@ -9,6 +9,8 @@ use crate::resources::Resource;
 use gdma_defs::GdmaDevId;
 use gdma_defs::GdmaQueueType;
 use gdma_defs::GdmaReqHdr;
+use gdma_defs::bnic::MANA_QUERY_DEV_CONFIG_REQUEST_V1;
+use gdma_defs::bnic::MANA_QUERY_DEV_CONFIG_RESPONSE_V4;
 use gdma_defs::bnic::MANA_VTL2_ASSIGN_SERIAL_NUMBER_REQUEST_V1;
 use gdma_defs::bnic::MANA_VTL2_ASSIGN_SERIAL_NUMBER_RESPONSE_V1;
 use gdma_defs::bnic::MANA_VTL2_MOVE_FILTER_REQUEST_V2;
@@ -49,10 +51,13 @@ impl<'a, T: DeviceBacking> BnicDriver<'a, T> {
 
     #[tracing::instrument(skip(self), level = "debug", err)]
     pub async fn query_dev_config(&mut self) -> anyhow::Result<ManaQueryDeviceCfgResp> {
-        let resp: ManaQueryDeviceCfgResp = self
+        let (resp, _activity_id): (ManaQueryDeviceCfgResp, u32) = self
             .gdma
-            .request(
+            .request_version(
                 ManaCommandCode::MANA_QUERY_DEV_CONFIG.0,
+                MANA_QUERY_DEV_CONFIG_REQUEST_V1,
+                ManaCommandCode::MANA_QUERY_DEV_CONFIG.0,
+                MANA_QUERY_DEV_CONFIG_RESPONSE_V4,
                 self.dev_id,
                 ManaQueryDeviceCfgReq {
                     mn_drv_cap_flags1: 0,
