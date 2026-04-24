@@ -1,7 +1,6 @@
 { system, stdenv, fetchzip, targetArch ? null, is_dev ? false, is_cvm ? false }:
-
 let
-  version = if is_dev then "6.12.52.12" else "6.12.52.11";
+  version = "6.18.0.100-savic_test";
   # Allow explicit override of architecture, otherwise derive from host system
   # Note: targetArch uses "x86_64"/"aarch64", but URLs use "x64"/"arm64"
   arch = if targetArch == "x86_64" then "x64"
