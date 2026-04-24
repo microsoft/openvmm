@@ -31,7 +31,7 @@ pub const NODEJS: &str = "24.x";
 //      comparable. They originate from separate branches, and the fourth digit
 //      increases with each release from the respective branch.
 pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.18.0.1";
-pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.0.13";
+pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.0.1";
 pub const OPENVMM_DEPS: &str = "0.1.0-20260401.1";
 pub const PROTOC: &str = "27.1";
 
