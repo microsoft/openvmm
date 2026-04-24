@@ -32,6 +32,8 @@ mod openhcl_servicing;
 mod pcie;
 /// Tests involving TPM functionality
 mod tpm;
+/// Tests for VLAN (802.1Q) support on virtual NICs.
+mod vlan;
 /// Tests of vmbus relay functionality.
 mod vmbus_relay;
 /// Tests involving VMGS functionality
