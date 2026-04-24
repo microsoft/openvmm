@@ -2803,6 +2803,8 @@ impl<T: RingMem> NetChannel<T> {
                 error = &err as &dyn std::error::Error,
                 "Failed to notify guest that data path is now synthetic"
             );
+        } else {
+            tracing::info!("Switched data path to synthetic")
         }
     }
 
