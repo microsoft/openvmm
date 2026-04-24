@@ -4,6 +4,7 @@
 use self::bnic_defs::CQE_RX_TRUNCATED;
 use self::bnic_defs::CQE_TX_GDMA_ERR;
 use self::bnic_defs::CQE_TX_OKAY;
+use self::bnic_defs::CQE_TX_VLAN_TAGGING_VIOLATION;
 use self::bnic_defs::MANA_CQE_COMPLETION;
 use self::bnic_defs::ManaCommandCode;
 use self::bnic_defs::ManaCqeHeader;
@@ -184,6 +185,8 @@ struct Vport {
     task: TaskControl<TxRxState, TxRxTask>,
     queue_cfg: QueueCfg,
     serial_no: u32,
+    #[cfg(test)]
+    reject_tx_with_vlan_error: bool,
 }
 
 impl InspectMut for Vport {
@@ -214,6 +217,8 @@ impl BasicNic {
                 |VportConfig {
                      mac_address,
                      endpoint,
+                     #[cfg(test)]
+                     reject_tx_with_vlan_error,
                  }| {
                     assert!(endpoint.is_ordered());
                     Vport {
@@ -222,6 +227,8 @@ impl BasicNic {
                         task: TaskControl::new(TxRxState),
                         queue_cfg: QueueCfg { tx: None, rx: None },
                         serial_no: 0,
+                        #[cfg(test)]
+                        reject_tx_with_vlan_error,
                     }
                 },
             )
@@ -407,6 +414,8 @@ impl BasicNic {
                                     rq_cq_id,
                                     tx_segment_buffer: Vec::new(),
                                     rx_buf_count: 0,
+                                    #[cfg(test)]
+                                    reject_tx_with_vlan_error: vport.reject_tx_with_vlan_error,
                                 },
                             );
                             vport.task.start();
@@ -482,6 +491,8 @@ pub struct TxRxTask {
     rq_cq_id: u32,
     tx_segment_buffer: Vec<TxSegment>,
     rx_buf_count: u32,
+    #[cfg(test)]
+    reject_tx_with_vlan_error: bool,
 }
 
 impl InspectTaskMut<TxRxTask> for TxRxState {
@@ -547,6 +558,13 @@ impl TxRxTask {
         };
 
         let sge0 = sqe.sgl().first().context("no sgl")?;
+
+        #[cfg(test)]
+        if self.reject_tx_with_vlan_error {
+            self.post_tx_completion_vlan_error();
+            return Ok(());
+        }
+
         let total_len: usize = sqe.sgl().iter().map(|sge| sge.size as usize).sum();
         let mut meta = TxMetadata {
             id: TxId(0),
@@ -562,6 +580,7 @@ impl TxRxTask {
             l3_len: oob.s_oob.trans_off().clamp(14, 255) - 14,
             l4_len: 0,
             max_segment_size: 0,
+            ..Default::default()
         };
 
         if sqe.header.params.client_oob_in_sgl() {
@@ -620,10 +639,18 @@ impl TxRxTask {
 
     // Possible test improvement: provide proper OOB data for the GDMA error.
     fn post_tx_completion_error(&mut self) {
+        self.post_tx_completion_with_type(CQE_TX_GDMA_ERR);
+    }
+
+    fn post_tx_completion_vlan_error(&mut self) {
+        self.post_tx_completion_with_type(CQE_TX_VLAN_TAGGING_VIOLATION);
+    }
+
+    fn post_tx_completion_with_type(&mut self, cqe_type: u8) {
         let tx_oob = ManaTxCompOob {
             cqe_hdr: ManaCqeHeader::new()
                 .with_client_type(MANA_CQE_COMPLETION)
-                .with_cqe_type(CQE_TX_GDMA_ERR),
+                .with_cqe_type(cqe_type),
             tx_data_offset: 0,
             offsets: ManaTxCompOobOffsets::new(),
             reserved: [0; 12],

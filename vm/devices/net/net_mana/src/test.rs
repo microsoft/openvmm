@@ -554,6 +554,7 @@ async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(LoopbackEndpoint::new()),
+            reject_tx_with_vlan_error: false,
         }],
         &mut ExternallyManagedMmioIntercepts,
     );
@@ -902,6 +903,7 @@ async fn test_endpoint(
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(LoopbackEndpoint::new()),
+            reject_tx_with_vlan_error: false,
         }],
         &mut ExternallyManagedMmioIntercepts,
     );
@@ -1037,4 +1039,116 @@ fn get_queue_stats(queue_stats: Option<&dyn net_backend::BackendQueueStats>) -> 
         tx_packets: queue_stats.tx_packets(),
         ..Default::default()
     }
+}
+
+#[async_test]
+async fn test_vlan_violation_triggers_fallback(driver: DefaultDriver) {
+    // Verify that a CQE_TX_VLAN_TAGGING_VIOLATION completion triggers the
+    // fallback signal through the Vport, which the emuplat layer would
+    // observe to initiate a VF-to-synthetic transition.
+    let pages = 256;
+    let mem = DeviceTestMemory::new(pages * 2, true, "test_vlan_fallback");
+    let payload_mem = mem.payload_mem();
+
+    let msi_conn = MsiConnection::new();
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        msi_conn.target(),
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(LoopbackEndpoint::new()),
+            reject_tx_with_vlan_error: true,
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let device = EmulatedDevice::new(device, msi_conn, mem.dma_client());
+    let dev_config = ManaQueryDeviceCfgResp {
+        pf_cap_flags1: 0.into(),
+        pf_cap_flags2: 0,
+        pf_cap_flags3: 0,
+        pf_cap_flags4: 0,
+        max_num_vports: 1,
+        reserved: 0,
+        max_num_eqs: 64,
+    };
+
+    let (fallback_tx, mut fallback_rx) = mesh::channel::<()>();
+    let vport_state = mana_driver::mana::VportState::new(None, None, Some(fallback_tx));
+
+    let thing = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
+    let vport = thing
+        .new_vport(0, Some(vport_state), &dev_config)
+        .await
+        .unwrap();
+    let mut endpoint = ManaEndpoint::new(driver.clone(), vport, GuestDmaMode::DirectDma).await;
+    let mut queues = Vec::new();
+    let mut pool = net_backend::tests::Bufs::new(payload_mem.clone());
+    endpoint
+        .get_queues(
+            vec![QueueConfig {
+                driver: Box::new(driver.clone()),
+            }],
+            None,
+            &mut queues,
+        )
+        .await
+        .unwrap();
+
+    // Post initial RX buffers.
+    queues[0].rx_avail(&mut pool, &(1..128u32).map(RxId).collect::<Vec<_>>());
+
+    // Build and send a single packet.
+    let packet_len = 128;
+    let data_to_send = vec![0xABu8; packet_len];
+    payload_mem.write_at(0, &data_to_send).unwrap();
+
+    let mut pkt_builder = TxPacketBuilder::new();
+    build_tx_segments(packet_len, 1, false, &mut pkt_builder);
+    queues[0]
+        .tx_avail(&mut pool, pkt_builder.segments())
+        .unwrap();
+
+    // Poll for the TX completion. The GDMA emulator will respond with
+    // CQE_TX_VLAN_TAGGING_VIOLATION, which tx_poll handles by calling
+    // signal_fallback() on the vport. It does not return a TxError.
+    let mut tx_done = [TxId(0); 2];
+    let mut tx_done_n = 0;
+    loop {
+        let mut context = CancelContext::new().with_timeout(Duration::from_secs(1));
+        match context
+            .until_cancelled(poll_fn(|cx| queues[0].poll_ready(cx, &mut pool)))
+            .await
+        {
+            Err(CancelReason::DeadlineExceeded) => break,
+            Err(e) => panic!("Unexpected error polling queue: {e:?}"),
+            _ => {}
+        }
+        tx_done_n += queues[0]
+            .tx_poll(&mut pool, &mut tx_done[tx_done_n..])
+            .unwrap_or(0);
+        if tx_done_n >= 1 {
+            break;
+        }
+    }
+    assert_eq!(tx_done_n, 1, "TX completion should be received");
+
+    // Verify stats reflect the VLAN violation.
+    let stats = get_queue_stats(queues[0].queue_stats());
+    assert_eq!(stats.tx_errors.get(), 1, "tx_errors should be incremented");
+    assert_eq!(
+        stats.tx_packets.get(),
+        0,
+        "tx_packets should not be incremented for VLAN violations"
+    );
+
+    // Verify the fallback signal was sent through the channel.
+    let fallback_signal = fallback_rx.try_recv();
+    assert!(
+        fallback_signal.is_ok(),
+        "fallback channel should have received a signal"
+    );
+
+    drop(queues);
+    endpoint.stop().await;
 }
