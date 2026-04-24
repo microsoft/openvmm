@@ -25,7 +25,7 @@
                     "policy": 196639,
                     "enable_debug": true,
                     "injection_type": "restricted",
-                    "secure_avic": "enabled"
+                    "secure_avic": "disabled"
                 }
             },
             "image": {
