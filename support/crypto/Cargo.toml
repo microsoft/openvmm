@@ -17,11 +17,13 @@ openssl = ["dep:openssl", "dep:openssl_kdf"]
 
 # Use Symcrypt instead of any native backend.
 # TODO: Wire up vendoring with symcrypt
-symcrypt = []
+symcrypt = ["dep:symcrypt"]
 
 [dependencies]
 openssl_kdf = { workspace = true, optional = true }
 openssl = { workspace = true, optional = true }
+
+symcrypt = { workspace = true, optional = true }
 
 thiserror.workspace = true
 

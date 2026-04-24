@@ -41,5 +41,12 @@ pub struct BackendError(#[source] openssl::error::ErrorStack, &'static str);
 #[error("windows crypto error during {1}")]
 pub struct BackendError(#[source] windows_result::Error, &'static str);
 
+/// An error that occurred in the crypto backend, with a description of the
+/// operation being performed when the error occurred.
+#[cfg(symcrypt)]
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("symcrypt error during {1}")]
+pub struct BackendError(#[source] symcrypt::errors::SymCryptError, &'static str);
+
 #[cfg(all(native, target_os = "macos"))]
 pub use mac::BackendError;
