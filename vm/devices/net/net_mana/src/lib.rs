@@ -644,6 +644,8 @@ struct PostedTx {
     id: TxId,
     wqe_len: u32,
     bounced_len_with_padding: u32,
+    /// GPA of the first data segment, used for error tracing.
+    head_gpa: u64,
 }
 
 #[derive(Default, Inspect)]
@@ -834,6 +836,36 @@ impl<T: DeviceBacking> ManaQueue<T> {
             Err(_) => {
                 tracelimit::error_ratelimited!("failed to read tx s_oob");
             }
+        }
+    }
+
+    fn trace_tx_eth_frame(
+        &mut self,
+        tracing_level: tracing::Level,
+        wqe_offset: u32,
+        guest_memory: &GuestMemory,
+    ) {
+        let Some(packet) = self.posted_tx.front() else {
+            return;
+        };
+        // Determine the location of the first SGE. If `bounced_len_with_padding` > 0,
+        // some part of the packet was bounced.
+        let head_gpa = packet.head_gpa;
+        if packet.bounced_len_with_padding > 0 {
+            // Look for the head SGE in the bounce buffer.
+            let found_in_bounce_buffer = trace_tx_eth_frame_from_bounce_buffer(
+                &mut self.tx_wq,
+                &self.tx_bounce_buffer,
+                tracing_level,
+                wqe_offset,
+            );
+            // In DirectDma tail-coalesce path, the head segment is not always bounced.
+            // If not found in the bounce buffer, read it from guest memory.
+            if !found_in_bounce_buffer {
+                trace_tx_eth_frame_from_guest_memory(tracing_level, head_gpa, guest_memory);
+            }
+        } else {
+            trace_tx_eth_frame_from_guest_memory(tracing_level, head_gpa, guest_memory);
         }
     }
 
@@ -1063,7 +1095,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
 
     fn tx_poll(
         &mut self,
-        _pool: &mut dyn BufferAccess,
+        pool: &mut dyn BufferAccess,
         done: &mut [TxId],
     ) -> Result<usize, TxError> {
         let mut i = 0;
@@ -1093,7 +1125,13 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         // The hardware rejected the packet due to an unsupported EtherType.
                         // Non-fatal: only the individual packet is dropped, the queue continues.
                         self.stats.tx_errors.increment();
+                        let wqe_offset = tx_oob.offsets.tx_wqe_offset();
                         self.trace_tx(tracing::Level::WARN, cqe.params, tx_oob, done.len());
+                        self.trace_tx_eth_frame(
+                            tracing::Level::WARN,
+                            wqe_offset,
+                            pool.guest_memory(),
+                        );
                     }
                     ty => {
                         tracelimit::error_ratelimited!(
@@ -1399,6 +1437,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
             id: meta.id,
             wqe_len,
             bounced_len_with_padding: bounce_buffer.commit(),
+            head_gpa: head.gpa,
         };
         Ok(Some(tx))
     }
@@ -1562,6 +1601,93 @@ impl ContiguousBufferManager {
     pub fn as_slice(&self) -> &[AtomicU8] {
         self.mem.as_slice()
     }
+
+    /// Given a GPA (DMA address) from an SGE, returns the corresponding
+    /// offset in the bounce buffer, or `None` if the GPA does not belong
+    /// to this buffer.
+    fn gpa_to_offset(&self, gpa: u64) -> Option<u32> {
+        let page_pfn = gpa / PAGE_SIZE64;
+        let offset_in_page = (gpa - page_pfn * PAGE_SIZE64) as u32;
+        let page_idx = self.mem.pfns().iter().position(|&pfn| pfn == page_pfn)? as u32;
+        Some(page_idx * PAGE_SIZE32 + offset_in_page)
+    }
+}
+
+// Logs the EtherType of an Ethernet II frame.
+// MAC addresses are omitted for customer privacy.
+fn log_eth_type(tracing_level: tracing::Level, eth_type_bytes: [u8; 2]) {
+    tracelimit::event_ratelimited!(
+        tracing_level,
+        eth_type = format_args!("{:#06x}", u16::from_be_bytes(eth_type_bytes)),
+        "tx ethernet frame"
+    );
+}
+
+/// Byte offset of the EtherType field within an Ethernet II frame (after
+/// the 6-byte destination MAC and 6-byte source MAC addresses).
+const ETH_TYPE_OFFSET: usize = 12;
+
+/// Attempts to read the first SGE from a TX WQE and log the EtherType
+/// from the bounce buffer. Returns `true` if the EtherType was found and logged.
+fn trace_tx_eth_frame_from_bounce_buffer(
+    tx_wq: &mut Wq,
+    tx_bounce_buffer: &ContiguousBufferManager,
+    tracing_level: tracing::Level,
+    wqe_offset: u32,
+) -> bool {
+    // WQE header (8) + the largest inline client OOB (32, padded to 48) + the first SGE (16).
+    const TX_WQE_PREFIX_BYTES: usize = 64;
+    let bytes = tx_wq.read(wqe_offset, TX_WQE_PREFIX_BYTES);
+    let Ok((wqe_header, _)) = WqeHeader::read_from_prefix(&bytes) else {
+        return false;
+    };
+
+    if wqe_header.params.num_sgl_entries() == 0 {
+        return false;
+    }
+
+    let sge_start = size_of::<WqeHeader>() + wqe_header.sgl_offset();
+    let Some(sge_bytes) = bytes.get(sge_start..) else {
+        return false;
+    };
+    let Ok((sge, _)) = Sge::read_from_prefix(sge_bytes) else {
+        return false;
+    };
+
+    /// Minimum length of an Ethernet II header (dst MAC 6 + src MAC 6 + EtherType 2).
+    const MIN_ETH_HEADER_LEN: usize = 14;
+    if (sge.size as usize) < MIN_ETH_HEADER_LEN {
+        return false;
+    }
+    let Some(buf_offset) = tx_bounce_buffer.gpa_to_offset(sge.address) else {
+        return false;
+    };
+    let start = buf_offset as usize + ETH_TYPE_OFFSET;
+    let Some(slot) = tx_bounce_buffer.as_slice().get(start..start + 2) else {
+        return false;
+    };
+    let mut eth_type_bytes = [0u8; 2];
+    slot.atomic_read(&mut eth_type_bytes);
+    log_eth_type(tracing_level, eth_type_bytes);
+    true
+}
+
+/// Reads the EtherType directly from guest memory at the given GPA.
+/// Returns `true` if the EtherType was found and logged.
+fn trace_tx_eth_frame_from_guest_memory(
+    tracing_level: tracing::Level,
+    head_gpa: u64,
+    guest_memory: &GuestMemory,
+) -> bool {
+    let mut eth_type_bytes = [0u8; 2];
+    let Some(addr) = head_gpa.checked_add(ETH_TYPE_OFFSET as u64) else {
+        return false;
+    };
+    if guest_memory.read_at(addr, &mut eth_type_bytes).is_err() {
+        return false;
+    }
+    log_eth_type(tracing_level, eth_type_bytes);
+    true
 }
 
 impl Inspect for ContiguousBufferManager {
@@ -1576,7 +1702,28 @@ impl Inspect for ContiguousBufferManager {
 mod tests {
     use super::*;
     use anyhow::{Result, anyhow, ensure};
+    use gdma_defs::WqeParams;
+    use mana_driver::queues::DoorbellPage;
+    use test_with_tracing::test;
+    use user_driver::DmaClient;
     use user_driver_emulated_mock::DeviceTestMemory;
+    use zerocopy::IntoBytes;
+
+    /// Builds a send-WQ containing a single WQE with a single SGE.
+    fn build_tx_wq_with_sge(dma_client: &dyn DmaClient, sge: Sge) -> Wq {
+        let wqe_header = WqeHeader {
+            reserved: [0; 3],
+            last_vbytes: 0,
+            params: WqeParams::new()
+                .with_num_sgl_entries(1)
+                .with_inline_client_oob_size(gdma_defs::CLIENT_OOB_8),
+        };
+        let wq_mem = dma_client.allocate_dma_buffer(4096).unwrap();
+        wq_mem.write_at(0, wqe_header.as_bytes()); // [WqeHeader (8B)]
+        wq_mem.write_at(8, &[0u8; 8]); // [ShortOOB (8B)] (placeholder)
+        wq_mem.write_at(16, sge.as_bytes()); // [SGE (16B)]
+        Wq::new_sq(wq_mem, DoorbellPage::null(), 0)
+    }
 
     #[test]
     fn page_counts_powers_of_two_only() -> Result<()> {
@@ -1599,5 +1746,120 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn test_gpa_to_offset_round_trip() {
+        // Allocate a multi-page bounce buffer so we can exercise different
+        // page indices and offsets within pages.
+        let page_count: u32 = 4;
+        let dtm = DeviceTestMemory::new((page_count * 2).into(), false, "test_gpa_to_offset");
+        let mut bounce = ContiguousBufferManager::new(dtm.dma_client(), page_count).unwrap();
+        let pfns = bounce.mem.pfns().to_vec();
+        assert_eq!(pfns.len(), page_count as usize);
+
+        // Drive GPAs through the production `reserve()` path and check that
+        // `gpa_to_offset` recovers the same offset that `reserve` reported.
+        // Hopefully prevents any drift between `reserve` and `gpa_to_offset`.
+        let alloc_sizes = [1u32, 12, 13, PAGE_SIZE32 / 2, PAGE_SIZE32 - 1];
+        let mut tx = bounce.start_allocation();
+        let mut reserved = Vec::new();
+        for &len in &alloc_sizes {
+            let buf = tx.allocate(len).unwrap();
+            reserved.push(buf.reserve());
+        }
+        tx.commit();
+        for r in &reserved {
+            assert_eq!(
+                bounce.gpa_to_offset(r.gpa),
+                Some(r.offset),
+                "round-trip failed for offset={} gpa={:#x}",
+                r.offset,
+                r.gpa
+            );
+        }
+
+        // A GPA outside this buffer return None.
+        assert_eq!(bounce.gpa_to_offset(0xDEAD_0000), None);
+
+        // A GPA one page before the first mapped page returns None.
+        let below = pfns[0].saturating_sub(1) * PAGE_SIZE64;
+        if below != pfns[0] * PAGE_SIZE64 {
+            assert_eq!(bounce.gpa_to_offset(below), None);
+        }
+    }
+
+    #[test]
+    fn test_trace_tx_eth_frame_bounce_buffer() {
+        let mem = DeviceTestMemory::new(16, false, "test_trace_tx_eth_frame");
+        let dma_client = mem.dma_client();
+
+        let bounce_buffer = ContiguousBufferManager::new(dma_client.clone(), 1).unwrap();
+        // EtherType 0x0800 (IPv4) at bytes 12-13.
+        bounce_buffer.mem.write_at(12, &0x0800u16.to_be_bytes());
+
+        let sge_gpa = bounce_buffer.mem.pfns()[0] * PAGE_SIZE64; // offset 0
+        let mut wq = build_tx_wq_with_sge(
+            dma_client.as_ref(),
+            Sge {
+                address: sge_gpa,
+                mem_key: 0,
+                size: 1500,
+            },
+        );
+
+        // Should parse the WQE, resolve the SGE GPA in the bounce buffer,
+        // and emit a rate-limited trace.
+        // The trace `eth_type: 0x0800` is visible when the test is run with `--nocapture`.
+        assert!(trace_tx_eth_frame_from_bounce_buffer(
+            &mut wq,
+            &bounce_buffer,
+            tracing::Level::WARN,
+            0,
+        ));
+
+        // SGE with out-of-range GPA should log nothing.
+        let mut wq = build_tx_wq_with_sge(
+            dma_client.as_ref(),
+            Sge {
+                address: 0xDEAD_0000,
+                mem_key: 0,
+                size: 1500,
+            },
+        );
+
+        assert!(!trace_tx_eth_frame_from_bounce_buffer(
+            &mut wq,
+            &bounce_buffer,
+            tracing::Level::WARN,
+            0,
+        ));
+    }
+
+    #[test]
+    fn test_trace_tx_eth_frame_guest_memory() {
+        use guestmem::GuestMemory;
+
+        let mut data = vec![0u8; 4096];
+        // Write EtherType 0x86DD (IPv6) at offset 12.
+        data[12] = 0x86;
+        data[13] = 0xDD;
+        let guest_memory = GuestMemory::allocate(4096);
+        guest_memory.write_at(0, &data).unwrap();
+
+        // Should read the EtherType out of guest memory and emit a rate-limited trace.
+        // The trace `eth_type: 0x86dd` is visible when the test is run with `--nocapture`.
+        assert!(trace_tx_eth_frame_from_guest_memory(
+            tracing::Level::WARN,
+            0,
+            &guest_memory
+        ));
+
+        // An out-of-range GPA should log nothing.
+        assert!(!trace_tx_eth_frame_from_guest_memory(
+            tracing::Level::WARN,
+            u64::MAX - 1,
+            &guest_memory
+        ));
     }
 }
