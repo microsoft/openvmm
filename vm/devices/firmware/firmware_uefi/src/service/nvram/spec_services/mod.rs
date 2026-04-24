@@ -1015,6 +1015,36 @@ impl<S: VmmNvramStorage> NvramSpecServices<S> {
         // `EfiVariableAttributes` to make things easier to follow.
         let attr = SupportedAttrs::from(u32::from(attr));
 
+        // From UEFI spec section 8.2:
+        //
+        // If a preexisting variable is rewritten with different attributes,
+        // SetVariable() shall not modify the variable and shall return EFI_INVALID_PARAMETER.
+        //
+        // Special case: If the caller is deleting a variable with no access attributes,
+        // attribute matching is not required (the "delete with no access attributes" case).
+        if let Some((existing_attr, _, _)) = existing_var {
+            // Check if this is a delete operation with no access attributes
+            let missing_access_attrs = !(attr.runtime_access() || attr.bootservice_access());
+            let is_delete_with_no_access =
+                matches!(op, VariableOperation::Delete) && missing_access_attrs;
+
+            // For authenticated variables, attributes MUST match even for delete operations
+            // (no special case for no access attributes).
+            //
+            // For non-authenticated variables, attributes must match unless this is
+            // the special "delete with no access attributes" case.
+            let requires_attr_match =
+                existing_attr.time_based_authenticated_write_access() || !is_delete_with_no_access;
+
+            if requires_attr_match && attr != existing_attr {
+                return NvramResult(
+                    (),
+                    EfiStatus::INVALID_PARAMETER,
+                    Some(NvramError::AttributeMismatch),
+                );
+            }
+        }
+
         let res = match op {
             VariableOperation::Append => {
                 // This implementation only supports non-volatile variables.
@@ -1049,19 +1079,6 @@ impl<S: VmmNvramStorage> NvramSpecServices<S> {
                             (),
                             EfiStatus::NOT_FOUND,
                             Some(NvramError::InvalidRuntimeAccess),
-                        );
-                    }
-
-                    // From UEFI spec section 8.2:
-                    //
-                    // If a preexisting variable is rewritten with different
-                    // attributes, SetVariable() shall not modify the variable
-                    // and shall return EFI_INVALID_PARAMETER.
-                    if attr != existing_attr {
-                        return NvramResult(
-                            (),
-                            EfiStatus::INVALID_PARAMETER,
-                            Some(NvramError::AttributeMismatch),
                         );
                     }
 
@@ -1241,19 +1258,6 @@ impl<S: VmmNvramStorage> NvramSpecServices<S> {
                             (),
                             EfiStatus::WRITE_PROTECTED,
                             Some(NvramError::InvalidRuntimeAccess),
-                        );
-                    }
-
-                    // From UEFI spec section 8.2:
-                    //
-                    // If a preexisting variable is rewritten with different
-                    // attributes, SetVariable() shall not modify the
-                    // variable and shall return EFI_INVALID_PARAMETER.
-                    if attr != existing_attr {
-                        return NvramResult(
-                            (),
-                            EfiStatus::INVALID_PARAMETER,
-                            Some(NvramError::AttributeMismatch),
                         );
                     }
                 }
@@ -1698,5 +1702,275 @@ mod test {
         assert!(name.is_none());
         assert_eq!(status, EfiStatus::NOT_FOUND);
         assert!(err.is_none());
+    }
+
+    #[async_test]
+    async fn delete_with_mismatched_attributes_fails() {
+        let nvram_storage = InMemoryNvram::new();
+        let mut nvram = NvramSpecServices::new(nvram_storage);
+
+        nvram.prepare_for_boot();
+
+        let name = wchz!(u16, "TestVar").as_bytes();
+        let dummy_data = b"test data".to_vec();
+
+        // Create a variable with specific attributes
+        let original_attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES.into();
+
+        nvram
+            .set_test_var(name, original_attr, &dummy_data)
+            .await
+            .unwrap_efi_success();
+
+        // Verify variable exists
+        let (attr, data) = nvram.get_test_var(name).await.unwrap_efi_success();
+        assert_eq!(attr, original_attr);
+        assert_eq!(data, Some(dummy_data.clone()));
+
+        // Try to delete with mismatched attributes (missing RUNTIME_ACCESS flag)
+        let wrong_attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES
+            .with_runtime_access(false)
+            .into();
+        let NvramResult(_, status, err) = nvram.set_test_var(name, wrong_attr, &[]).await;
+        assert_eq!(status, EfiStatus::INVALID_PARAMETER);
+        assert!(matches!(err, Some(NvramError::AttributeMismatch)));
+
+        // Verify variable still exists
+        let (attr, data) = nvram.get_test_var(name).await.unwrap_efi_success();
+        assert_eq!(attr, original_attr);
+        assert_eq!(data, Some(dummy_data.clone()));
+
+        // Delete with correct attributes should succeed
+        nvram
+            .set_test_var(name, original_attr, &[])
+            .await
+            .unwrap_efi_success();
+
+        // Verify variable is deleted
+        let NvramResult((attr, data), status, err) = nvram.get_test_var(name).await;
+        assert_eq!(attr, 0);
+        assert_eq!(data, None);
+        assert_eq!(status, EfiStatus::NOT_FOUND);
+        assert!(err.is_none());
+    }
+
+    #[async_test]
+    async fn delete_non_authenticated_variable_with_attributes_requires_match() {
+        let nvram_storage = InMemoryNvram::new();
+        let mut nvram = NvramSpecServices::new(nvram_storage);
+
+        nvram.prepare_for_boot();
+
+        let name = wchz!(u16, "RegularVar").as_bytes();
+        let dummy_data = b"regular data".to_vec();
+
+        // Create a regular (non-authenticated) variable
+        let regular_attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES.into();
+
+        nvram
+            .set_test_var(name, regular_attr, &dummy_data)
+            .await
+            .unwrap_efi_success();
+
+        // Verify variable exists
+        let (attr, data) = nvram.get_test_var(name).await.unwrap_efi_success();
+        assert_eq!(attr, regular_attr);
+        assert_eq!(data, Some(dummy_data.clone()));
+
+        // Try to delete with mismatched attributes (missing RUNTIME_ACCESS)
+        let wrong_attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES
+            .with_runtime_access(false)
+            .into();
+        let NvramResult(_, status, err) = nvram.set_test_var(name, wrong_attr, &[]).await;
+        assert_eq!(status, EfiStatus::INVALID_PARAMETER);
+        assert!(matches!(err, Some(NvramError::AttributeMismatch)));
+
+        // Verify variable still exists
+        let (attr, data) = nvram.get_test_var(name).await.unwrap_efi_success();
+        assert_eq!(attr, regular_attr);
+        assert_eq!(data, Some(dummy_data.clone()));
+
+        // Delete with no access attributes should succeed (special delete case)
+        let no_access_attr = 0; // No BS or RT access
+        nvram
+            .set_test_var(name, no_access_attr, &dummy_data)
+            .await
+            .unwrap_efi_success();
+
+        // Verify variable is deleted
+        let NvramResult((attr, data), status, err) = nvram.get_test_var(name).await;
+        assert_eq!(attr, 0);
+        assert_eq!(data, None);
+        assert_eq!(status, EfiStatus::NOT_FOUND);
+        assert!(err.is_none());
+    }
+
+    #[async_test]
+    async fn delete_non_authenticated_variable_with_no_access_attributes() {
+        let nvram_storage = InMemoryNvram::new();
+        let mut nvram = NvramSpecServices::new(nvram_storage);
+
+        nvram.prepare_for_boot();
+
+        let name = wchz!(u16, "TestVar").as_bytes();
+        let dummy_data = b"test data".to_vec();
+
+        // Create a regular variable
+        let regular_attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES.into();
+
+        nvram
+            .set_test_var(name, regular_attr, &dummy_data)
+            .await
+            .unwrap_efi_success();
+
+        // Delete with no access attributes (special delete case per UEFI spec)
+        // This should succeed regardless of existing attributes
+        let no_access_attr = 0;
+        nvram
+            .set_test_var(name, no_access_attr, &dummy_data)
+            .await
+            .unwrap_efi_success();
+
+        // Verify variable is deleted
+        let NvramResult((attr, data), status, err) = nvram.get_test_var(name).await;
+        assert_eq!(attr, 0);
+        assert_eq!(data, None);
+        assert_eq!(status, EfiStatus::NOT_FOUND);
+        assert!(err.is_none());
+    }
+
+    #[async_test]
+    async fn delete_with_zero_data_size() {
+        let nvram_storage = InMemoryNvram::new();
+        let mut nvram = NvramSpecServices::new(nvram_storage);
+
+        nvram.prepare_for_boot();
+
+        let name = wchz!(u16, "ZeroDataVar").as_bytes();
+        let dummy_data = b"some data".to_vec();
+
+        // Create a variable
+        let attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES.into();
+
+        nvram
+            .set_test_var(name, attr, &dummy_data)
+            .await
+            .unwrap_efi_success();
+
+        // Delete with zero data size and matching attributes
+        nvram
+            .set_test_var(name, attr, &[])
+            .await
+            .unwrap_efi_success();
+
+        // Verify variable is deleted
+        let NvramResult((ret_attr, data), status, err) = nvram.get_test_var(name).await;
+        assert_eq!(ret_attr, 0);
+        assert_eq!(data, None);
+        assert_eq!(status, EfiStatus::NOT_FOUND);
+        assert!(err.is_none());
+    }
+
+    #[async_test]
+    async fn delete_runtime_variable_at_runtime_requires_runtime_access() {
+        let nvram_storage = InMemoryNvram::new();
+        let mut nvram = NvramSpecServices::new(nvram_storage);
+
+        nvram.prepare_for_boot();
+
+        let name1 = wchz!(u16, "RuntimeVar").as_bytes();
+        let name2 = wchz!(u16, "BootVar").as_bytes();
+        let dummy_data = b"data".to_vec();
+
+        // Create runtime-accessible variable
+        let runtime_attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES.into();
+        nvram
+            .set_test_var(name1, runtime_attr, &dummy_data)
+            .await
+            .unwrap_efi_success();
+
+        // Create boot-time only variable
+        let boot_attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES
+            .with_runtime_access(false)
+            .into();
+        nvram
+            .set_test_var(name2, boot_attr, &dummy_data)
+            .await
+            .unwrap_efi_success();
+
+        // Enter runtime
+        nvram.exit_boot_services();
+
+        // Delete runtime variable should succeed
+        nvram
+            .set_test_var(name1, runtime_attr, &[])
+            .await
+            .unwrap_efi_success();
+
+        // Try to delete boot-time variable at runtime with matching attributes.
+        // The runtime access check at the top of the function catches this early
+        // and returns INVALID_PARAMETER because boot_attr doesn't have runtime access.
+        let NvramResult(_, status, err) = nvram.set_test_var(name2, boot_attr, &[]).await;
+        assert_eq!(status, EfiStatus::INVALID_PARAMETER);
+        assert!(matches!(err, Some(NvramError::InvalidRuntimeAccess)));
+
+        // Try to delete with no access attributes (the special delete case)
+        // This should succeed in reaching the Delete operation, but then fail
+        // because the existing variable doesn't have runtime access.
+        let NvramResult(_, status, err) = nvram.set_test_var(name2, 0, &dummy_data).await;
+        assert_eq!(status, EfiStatus::NOT_FOUND);
+        assert!(matches!(err, Some(NvramError::InvalidRuntimeAccess)));
+
+        // Boot-time variable should still exist (would be visible at boot-time)
+        // but is hidden at runtime
+        let NvramResult((attr, data), status, err) = nvram.get_test_var(name2).await;
+        assert_eq!(attr, 0);
+        assert_eq!(data, None);
+        assert_eq!(status, EfiStatus::NOT_FOUND);
+        assert!(matches!(err, Some(NvramError::InvalidRuntimeAccess)));
+    }
+
+    #[async_test]
+    async fn append_requires_attribute_match() {
+        let nvram_storage = InMemoryNvram::new();
+        let mut nvram = NvramSpecServices::new(nvram_storage);
+
+        nvram.prepare_for_boot();
+
+        let name = wchz!(u16, "AppendVar").as_bytes();
+        let initial_data = b"initial".to_vec();
+        let append_data = b"appended".to_vec();
+
+        // Create a variable
+        let attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES.into();
+        nvram
+            .set_test_var(name, attr, &initial_data)
+            .await
+            .unwrap_efi_success();
+
+        // Try to append with mismatched attributes
+        let wrong_attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES
+            .with_runtime_access(false)
+            .with_append_write(true)
+            .into();
+        let NvramResult(_, status, err) = nvram.set_test_var(name, wrong_attr, &append_data).await;
+        assert_eq!(status, EfiStatus::INVALID_PARAMETER);
+        assert!(matches!(err, Some(NvramError::AttributeMismatch)));
+
+        // Append with matching attributes should succeed
+        let append_attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES
+            .with_append_write(true)
+            .into();
+        nvram
+            .set_test_var(name, append_attr, &append_data)
+            .await
+            .unwrap_efi_success();
+
+        // Verify data was appended
+        let (ret_attr, data) = nvram.get_test_var(name).await.unwrap_efi_success();
+        assert_eq!(ret_attr, attr); // APPEND_WRITE bit should not be persisted
+        let mut expected = initial_data;
+        expected.extend_from_slice(&append_data);
+        assert_eq!(data, Some(expected));
     }
 }
