@@ -194,7 +194,11 @@ impl Container {
 
     /// Unmap a previously mapped IOVA range from the IOMMU.
     ///
-    /// `iova` and `size` must match a previous `map_dma` call.
+    /// For Type1v2, the unmap range must not bisect any previous mapping:
+    /// if a mapping exists at `iova`, it must start exactly at `iova`, and
+    /// if a mapping exists at `iova + size - 1`, it must end there.
+    /// Multiple mappings may be unmapped in one call as long as these
+    /// boundary conditions hold. Gaps within the range are fine.
     pub fn unmap_dma(&self, iova: u64, size: u64) -> anyhow::Result<()> {
         let mut dma_unmap = vfio_bindings::bindings::vfio::vfio_iommu_type1_dma_unmap {
             argsz: size_of::<vfio_bindings::bindings::vfio::vfio_iommu_type1_dma_unmap>() as u32,

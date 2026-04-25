@@ -62,14 +62,14 @@ pub trait DmaTarget: Send + Sync {
         file_offset: u64,
     ) -> anyhow::Result<()>;
 
-    /// Remove an IOMMU mapping for `range`.
+    /// Remove IOMMU mappings within `range`.
     ///
-    /// The region manager may call this with a range that is larger than any
-    /// single `map_dma` call (e.g., unmapping an entire region at once even
-    /// though individual sub-mappings were mapped separately). Implementations
-    /// must handle this gracefully — for example, by unmapping whatever
-    /// sub-ranges are currently mapped within the requested range and ignoring
-    /// any gaps.
+    /// The region manager may call this with a range that covers multiple
+    /// prior `map_dma` calls (e.g., unmapping an entire region at once even
+    /// though individual sub-mappings were mapped separately). The range
+    /// will always be aligned to mapping boundaries — it will not bisect
+    /// any prior mapping. Gaps within the range (unmapped sub-ranges) are
+    /// expected and must not cause errors.
     fn unmap_dma(&self, range: MemoryRange) -> anyhow::Result<()>;
 }
 
@@ -979,14 +979,63 @@ impl Drop for RegionHandle {
 mod tests {
     use super::MapParams;
     use super::RegionManagerTask;
+    use crate::mapping_manager::Mappable;
     use crate::mapping_manager::MappingManager;
     use crate::region_manager::AddRegionError;
+    use crate::region_manager::DmaTarget;
     use crate::region_manager::RegionId;
+    use crate::region_manager::RegionMappingParams;
     use crate::region_manager::RegionParams;
     use memory_range::MemoryRange;
     use pal_async::async_test;
     use pal_async::task::Spawn;
     use std::ops::Range;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    /// Records map/unmap calls for test assertions.
+    #[derive(Default)]
+    struct RecordingDmaTarget {
+        events: Mutex<Vec<DmaEvent>>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum DmaEvent {
+        Map(MemoryRange),
+        Unmap(MemoryRange),
+    }
+
+    impl DmaTarget for RecordingDmaTarget {
+        unsafe fn map_dma(
+            &self,
+            range: MemoryRange,
+            _host_va: Option<*const u8>,
+            _mappable: &Mappable,
+            _file_offset: u64,
+        ) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push(DmaEvent::Map(range));
+            Ok(())
+        }
+
+        fn unmap_dma(&self, range: MemoryRange) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push(DmaEvent::Unmap(range));
+            Ok(())
+        }
+    }
+
+    impl RecordingDmaTarget {
+        fn take_events(&self) -> Vec<DmaEvent> {
+            std::mem::take(&mut self.events.lock().unwrap())
+        }
+    }
+
+    /// Create a dummy Mappable from /dev/zero for tests.
+    fn test_mappable() -> Mappable {
+        use std::fs::File;
+        Mappable::from(std::os::fd::OwnedFd::from(
+            File::open("/dev/zero").unwrap(),
+        ))
+    }
 
     #[async_test]
     async fn test_region_overlap(spawn: impl Spawn) {
@@ -1042,5 +1091,188 @@ mod tests {
         task.add(0, 0..0x20000).await.unwrap_err();
 
         let _low = task.add(0, 0x1000..0x8000).await.unwrap();
+    }
+
+    /// Helper that wraps RegionManagerTask for DMA tests.
+    struct DmaTestTask {
+        task: RegionManagerTask,
+        mappable: Mappable,
+    }
+
+    impl DmaTestTask {
+        fn new(spawn: impl Spawn) -> Self {
+            let mm = MappingManager::new(spawn, 0x200000, false);
+            Self {
+                task: RegionManagerTask::new(mm.client().clone()),
+                mappable: test_mappable(),
+            }
+        }
+
+        async fn add_region(&mut self, range: Range<u64>) -> RegionId {
+            let id = self
+                .task
+                .add_region(RegionParams {
+                    priority: 0,
+                    name: format!("{range:x?}"),
+                    range: MemoryRange::new(range),
+                    dma_target: false,
+                })
+                .unwrap();
+            self.task
+                .map_region(
+                    id,
+                    MapParams {
+                        executable: true,
+                        writable: true,
+                        prefetch: false,
+                    },
+                )
+                .await;
+            id
+        }
+
+        async fn add_mapping(&mut self, id: RegionId, range_in_region: Range<u64>) {
+            self.task
+                .add_mapping(
+                    id,
+                    RegionMappingParams {
+                        range_in_region: MemoryRange::new(range_in_region),
+                        mappable: self.mappable.clone(),
+                        file_offset: 0,
+                        writable: true,
+                    },
+                )
+                .await;
+        }
+    }
+
+    #[async_test]
+    async fn test_dma_replay_on_registration(spawn: impl Spawn) {
+        let mut t = DmaTestTask::new(&spawn);
+        let r = t.add_region(0x0..0x10000).await;
+        t.add_mapping(r, 0x0..0x4000).await;
+        t.add_mapping(r, 0x8000..0xC000).await;
+
+        // Register a DMA mapper — it should replay the two active mappings.
+        let target = Arc::new(RecordingDmaTarget::default());
+        let id = t
+            .task
+            .add_dma_mapper(target.clone(), false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            target.take_events(),
+            vec![
+                DmaEvent::Map(MemoryRange::new(0x0..0x4000)),
+                DmaEvent::Map(MemoryRange::new(0x8000..0xC000)),
+            ]
+        );
+
+        // Clean up.
+        t.task.remove_dma_mapper(id);
+    }
+
+    #[async_test]
+    async fn test_dma_live_map_unmap(spawn: impl Spawn) {
+        let mut t = DmaTestTask::new(&spawn);
+        let r = t.add_region(0x0..0x10000).await;
+
+        let target = Arc::new(RecordingDmaTarget::default());
+        let _id = t
+            .task
+            .add_dma_mapper(target.clone(), false)
+            .await
+            .unwrap();
+        target.take_events(); // discard empty replay
+
+        // Adding a mapping to an active region should notify the DMA mapper.
+        t.add_mapping(r, 0x0..0x4000).await;
+        assert_eq!(
+            target.take_events(),
+            vec![DmaEvent::Map(MemoryRange::new(0x0..0x4000))]
+        );
+
+        // Removing the mapping should unmap it.
+        t.task
+            .remove_mappings(r, MemoryRange::new(0x0..0x4000))
+            .await;
+        assert_eq!(
+            target.take_events(),
+            vec![DmaEvent::Unmap(MemoryRange::new(0x0..0x4000))]
+        );
+    }
+
+    #[async_test]
+    async fn test_dma_disable_region_unmaps(spawn: impl Spawn) {
+        let mut t = DmaTestTask::new(&spawn);
+        let r = t.add_region(0x0..0x10000).await;
+        t.add_mapping(r, 0x0..0x4000).await;
+        t.add_mapping(r, 0x8000..0xC000).await;
+
+        let target = Arc::new(RecordingDmaTarget::default());
+        let _id = t
+            .task
+            .add_dma_mapper(target.clone(), false)
+            .await
+            .unwrap();
+        target.take_events(); // discard replay
+
+        // Disabling the region should unmap the entire region range.
+        t.task.unmap_region(r, false).await;
+        assert_eq!(
+            target.take_events(),
+            vec![DmaEvent::Unmap(MemoryRange::new(0x0..0x10000))]
+        );
+    }
+
+    #[async_test]
+    async fn test_dma_remove_mapper_unmaps_all(spawn: impl Spawn) {
+        let mut t = DmaTestTask::new(&spawn);
+        let r = t.add_region(0x0..0x10000).await;
+        t.add_mapping(r, 0x0..0x4000).await;
+        t.add_mapping(r, 0x8000..0xC000).await;
+
+        let target = Arc::new(RecordingDmaTarget::default());
+        let id = t
+            .task
+            .add_dma_mapper(target.clone(), false)
+            .await
+            .unwrap();
+        target.take_events(); // discard replay
+
+        // Removing the mapper should unmap each active sub-mapping.
+        t.task.remove_dma_mapper(id);
+        assert_eq!(
+            target.take_events(),
+            vec![
+                DmaEvent::Unmap(MemoryRange::new(0x0..0x4000)),
+                DmaEvent::Unmap(MemoryRange::new(0x8000..0xC000)),
+            ]
+        );
+    }
+
+    #[async_test]
+    async fn test_dma_inactive_region_no_notifications(spawn: impl Spawn) {
+        let mut t = DmaTestTask::new(&spawn);
+        let r = t.add_region(0x0..0x10000).await;
+        t.add_mapping(r, 0x0..0x4000).await;
+
+        // Disable the region before registering the mapper.
+        t.task.unmap_region(r, false).await;
+
+        let target = Arc::new(RecordingDmaTarget::default());
+        let _id = t
+            .task
+            .add_dma_mapper(target.clone(), false)
+            .await
+            .unwrap();
+
+        // No replay for inactive regions.
+        assert_eq!(target.take_events(), vec![]);
+
+        // Adding a mapping while inactive should also not notify.
+        t.add_mapping(r, 0x8000..0xC000).await;
+        assert_eq!(target.take_events(), vec![]);
     }
 }
