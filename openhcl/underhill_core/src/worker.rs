@@ -89,7 +89,6 @@ use hvdef::Vtl;
 use hvdef::hypercall::HvGuestOsId;
 use hyperv_ic_guest::ShutdownGuestIc;
 use ide_resources::GuestMedia;
-use ide_resources::IdePath;
 use igvm_defs::MemoryMapEntryType;
 use input_core::InputData;
 use input_core::MultiplexedInputHandle;
@@ -126,7 +125,6 @@ use std::future;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use storvsp::ScsiControllerDisk;
 use thiserror::Error;
 use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;
@@ -2650,15 +2648,15 @@ async fn new_underhill_vm(
         .unwrap();
 
     let mut ide_drives = [[None, None], [None, None]];
-    let mut storvsp_ide_disks = Vec::new();
-    let mut ide_io_queue_depth = None;
+    let mut storvsp_ide_handles: Vec<Resource<vm_resource::kind::VmbusDeviceHandleKind>> =
+        Vec::new();
 
     if let Some(ide_config) = controllers.ide_controller {
         if firmware_type != FirmwareType::Pcat {
             anyhow::bail!("ide requires generation 1, VM is configured for generation 2");
         }
 
-        ide_io_queue_depth = ide_config.io_queue_depth;
+        let ide_io_queue_depth = ide_config.io_queue_depth;
 
         for (channel, disks) in [
             (0, ide_config.primary_channel_disks),
@@ -2666,7 +2664,60 @@ async fn new_underhill_vm(
         ] {
             for disk_cfg in disks.into_iter() {
                 let drive = disk_cfg.path.drive;
-                let media = match disk_cfg.guest_media {
+
+                // Duplicate the config via mesh serialization so we can
+                // independently resolve for both the IDE emulator and
+                // the storvsp IDE accelerator. VTL2 settings are pure
+                // protobuf data (no OS handles), so this is safe.
+                let is_hard_disk = matches!(disk_cfg.guest_media, GuestMedia::Disk { .. });
+                let (emulator_cfg, storvsp_cfg) = if is_hard_disk {
+                    let serialized = mesh::resource::SerializedMessage::from_message(disk_cfg);
+                    anyhow::ensure!(
+                        serialized.resources.is_empty(),
+                        "IDE disk configs from VTL2 settings must not contain OS resources"
+                    );
+                    let storvsp_cfg: ide_resources::IdeDeviceConfig =
+                        (mesh::resource::SerializedMessage {
+                            data: serialized.data.clone(),
+                            resources: Vec::new(),
+                        })
+                        .into_message()
+                        .context("failed to duplicate IDE disk config for storvsp")?;
+                    let emulator_cfg: ide_resources::IdeDeviceConfig = serialized
+                        .into_message()
+                        .context("failed to decode IDE disk config for emulator")?;
+                    (emulator_cfg, Some(storvsp_cfg))
+                } else {
+                    (disk_cfg, None)
+                };
+
+                // Create a storvsp IDE accelerator handle from the
+                // duplicated config (hard disks only).
+                if let Some(storvsp_cfg) = storvsp_cfg {
+                    if let GuestMedia::Disk {
+                        disk_type,
+                        read_only,
+                        disk_parameters,
+                    } = storvsp_cfg.guest_media
+                    {
+                        storvsp_ide_handles.push(
+                            storvsp_resources::StorvspIdeDeviceHandle {
+                                channel_id: channel,
+                                device_id: drive,
+                                disk: scsidisk_resources::SimpleScsiDiskHandle {
+                                    disk: disk_type,
+                                    read_only,
+                                    parameters: disk_parameters.unwrap_or_default(),
+                                }
+                                .into_resource(),
+                                io_queue_depth: ide_io_queue_depth,
+                            }
+                            .into_resource(),
+                        );
+                    }
+                }
+
+                let media = match emulator_cfg.guest_media {
                     GuestMedia::Dvd(device) => {
                         let scsi_dvd = resolver
                             .resolve(
@@ -2681,21 +2732,11 @@ async fn new_underhill_vm(
                     GuestMedia::Disk {
                         disk_type,
                         read_only,
-                        disk_parameters,
+                        disk_parameters: _,
                     } => {
                         let disk =
                             disk_from_disk_type(disk_type, read_only, &resolver, &driver_source)
                                 .await?;
-                        let scsi_disk = Arc::new(scsidisk::SimpleScsiDisk::new(
-                            disk.clone(),
-                            disk_parameters.unwrap_or_default(),
-                        ));
-
-                        // Only disks, not DVD drives, get IDE accelerator channels.
-                        storvsp_ide_disks.push((
-                            IdePath { channel, drive },
-                            ScsiControllerDisk::new(scsi_disk),
-                        ));
 
                         ide::DriveMedia::hard_disk(disk)
                     }
@@ -3300,31 +3341,12 @@ async fn new_underhill_vm(
 
     let mut vmbus_device_handles = controllers.vmbus_devices;
 
+    // Push storvsp IDE accelerator handles into the VMBus device list.
+    vmbus_device_handles.append(&mut storvsp_ide_handles);
+
     // Storage
-    let mut ide_accel_devices = Vec::new();
     {
         let _span = tracing::info_span!("scsi_controller_map", CVM_ALLOWED).entered();
-
-        for (path, scsi_disk) in storvsp_ide_disks {
-            let io_queue_depth = ide_io_queue_depth.unwrap_or(default_io_queue_depth);
-            ide_accel_devices.push(
-                offer_channel_unit(
-                    &tp,
-                    &state_units,
-                    vmbus_server
-                        .as_ref()
-                        .context("ide requires vmbus redirection to be configured")?,
-                    storvsp::StorageDevice::build_ide(
-                        &driver_source,
-                        path.channel,
-                        path.drive,
-                        scsi_disk,
-                        io_queue_depth,
-                    ),
-                )
-                .await?,
-            );
-        }
     }
 
     // VPCI
@@ -3618,7 +3640,6 @@ async fn new_underhill_vm(
         vmbus_server,
         host_vmbus_relay,
         _vmbus_devices: vmbus_devices,
-        _ide_accel_devices: ide_accel_devices,
         network_settings,
         shutdown_relay,
 

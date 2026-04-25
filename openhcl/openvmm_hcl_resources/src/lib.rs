@@ -51,6 +51,7 @@ vm_resource::register_static_resolvers! {
     // Vmbus devices
     hyperv_ic::resolver::ShutdownIcResolver,
     storvsp::resolver::StorvspResolver,
+    storvsp::resolver::StorvspIdeResolver,
     #[cfg(feature = "uidevices")]
     uidevices::resolver::VmbusUiResolver,
 

@@ -25,17 +25,20 @@ use std::collections::BTreeMap;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
+use storvsp_resources::StorvspIdeDeviceHandle;
 use virtio_resources::VirtioPciDeviceHandle;
 use virtio_resources::blk::VirtioBlkHandle;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::VmbusDeviceHandleKind;
 use vtl2_settings_proto::Lun;
 use vtl2_settings_proto::StorageController;
 use vtl2_settings_proto::storage_controller;
 
 pub(super) struct StorageBuilder {
     vtl0_ide_disks: Vec<IdeDeviceConfig>,
+    storvsp_ide_handles: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     vtl0_scsi_devices: Vec<ScsiDeviceAndPath>,
     vtl2_scsi_devices: Vec<ScsiDeviceAndPath>,
     vtl0_nvme_namespaces: Vec<NamespaceDefinition>,
@@ -114,6 +117,7 @@ impl StorageBuilder {
     pub fn new(openhcl_vtl: Option<DeviceVtl>) -> Self {
         Self {
             vtl0_ide_disks: Vec::new(),
+            storvsp_ide_handles: Vec::new(),
             vtl0_scsi_devices: Vec::new(),
             vtl2_scsi_devices: Vec::new(),
             vtl0_nvme_namespaces: Vec::new(),
@@ -205,6 +209,26 @@ impl StorageBuilder {
                     },
                     guest_media,
                 });
+
+                // Hard disks also get a storvsp IDE accelerator channel.
+                if !is_dvd {
+                    let storvsp_disk = disk_open(kind, read_only).await?;
+                    self.storvsp_ide_handles.push((
+                        DeviceVtl::Vtl0,
+                        StorvspIdeDeviceHandle {
+                            channel_id: channel,
+                            device_id: device,
+                            disk: SimpleScsiDiskHandle {
+                                disk: storvsp_disk,
+                                read_only,
+                                parameters: Default::default(),
+                            }
+                            .into_resource(),
+                            io_queue_depth: None,
+                        }
+                        .into_resource(),
+                    ));
+                }
                 None
             }
             DiskLocation::Scsi(lun) => {
@@ -373,6 +397,7 @@ impl StorageBuilder {
         scsi_sub_channels: u16,
     ) -> anyhow::Result<()> {
         config.ide_disks.append(&mut self.vtl0_ide_disks);
+        config.vmbus_devices.append(&mut self.storvsp_ide_handles);
 
         // Add an empty VTL0 SCSI controller even if there are no configured disks.
         if !self.vtl0_scsi_devices.is_empty() || config.vmbus.is_some() {

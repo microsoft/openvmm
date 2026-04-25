@@ -8387,7 +8387,6 @@ dependencies = [
  "sparse_mmap",
  "state_unit",
  "storage_string",
- "storvsp",
  "storvsp_resources",
  "string_page_buf",
  "tee_call",
