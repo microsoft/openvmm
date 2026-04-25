@@ -31,25 +31,24 @@ struct VfioType1DmaTarget {
 impl membacking::DmaTarget for VfioType1DmaTarget {
     unsafe fn map_dma(
         &self,
-        iova: u64,
+        range: memory_range::MemoryRange,
         host_va: Option<*const u8>,
         _mappable: &membacking::Mappable,
         _file_offset: u64,
-        size: u64,
     ) -> anyhow::Result<()> {
         let vaddr = host_va.expect("VFIO type1 requires host VA (registered with needs_va=true)");
         // SAFETY: The caller (DmaMapper in membacking) guarantees that the
         // host VA is backed and stable via ensure_mapped + VaMapper lifetime.
         unsafe {
             self.container
-                .map_dma(iova, vaddr, size)
+                .map_dma(range.start(), vaddr, range.len())
                 .context("VFIO DMA map failed")
         }
     }
 
-    fn unmap_dma(&self, iova: u64, size: u64) -> anyhow::Result<()> {
+    fn unmap_dma(&self, range: memory_range::MemoryRange) -> anyhow::Result<()> {
         self.container
-            .unmap_dma(iova, size)
+            .unmap_dma(range.start(), range.len())
             .context("VFIO DMA unmap failed")
     }
 }

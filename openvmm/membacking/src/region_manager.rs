@@ -41,8 +41,8 @@ use vmcore::local_only::LocalOnly;
 /// Implementations must be `Send + Sync` because they are stored behind `Arc`
 /// in the region manager task.
 pub trait DmaTarget: Send + Sync {
-    /// Program an IOMMU mapping from `iova` to the backing described by
-    /// `mappable` at `file_offset` for `size` bytes.
+    /// Program an IOMMU mapping for `range` to the backing described by
+    /// `mappable` at `file_offset`.
     ///
     /// `host_va` is the host virtual address of the mapping, provided when
     /// the target was registered with `needs_va = true`. When `None`, the
@@ -56,14 +56,13 @@ pub trait DmaTarget: Send + Sync {
     /// [`Arc<VaMapper>`] and calling `ensure_mapped` before each invocation.
     unsafe fn map_dma(
         &self,
-        iova: u64,
+        range: MemoryRange,
         host_va: Option<*const u8>,
         mappable: &Mappable,
         file_offset: u64,
-        size: u64,
     ) -> anyhow::Result<()>;
 
-    /// Remove an IOMMU mapping at `iova` for `size` bytes.
+    /// Remove an IOMMU mapping for `range`.
     ///
     /// The region manager may call this with a range that is larger than any
     /// single `map_dma` call (e.g., unmapping an entire region at once even
@@ -71,7 +70,7 @@ pub trait DmaTarget: Send + Sync {
     /// must handle this gracefully — for example, by unmapping whatever
     /// sub-ranges are currently mapped within the requested range and ignoring
     /// any gaps.
-    fn unmap_dma(&self, iova: u64, size: u64) -> anyhow::Result<()>;
+    fn unmap_dma(&self, range: MemoryRange) -> anyhow::Result<()>;
 }
 
 /// Wraps a [`DmaTarget`] for use by the region manager.
@@ -91,25 +90,25 @@ impl DmaMapper {
     /// Map a sub-mapping into the IOMMU.
     async fn map_dma(
         &self,
-        iova: u64,
+        range: MemoryRange,
         mappable: &Mappable,
         file_offset: u64,
-        size: u64,
     ) -> anyhow::Result<()> {
         // Ensure the VaMapper has the backing pages faulted in and compute
         // the host VA for type1 backends.
         let host_va = if let Some(va_mapper) = &self.va_mapper {
             va_mapper
-                .ensure_mapped(MemoryRange::new(iova..iova + size))
+                .ensure_mapped(range)
                 .await
                 .map_err(|_| {
                     anyhow::anyhow!(
-                        "VA range {:#x}..{:#x} has no backing mapping",
-                        iova,
-                        iova + size
+                        "VA range {range} has no backing mapping",
                     )
                 })?;
-            Some(va_mapper.as_ptr().wrapping_add(iova as usize).cast_const())
+            // SAFETY: range.start() is within the VA reservation (ensured by
+            // ensure_mapped succeeding), so this produces a valid pointer
+            // within the mapping.
+            Some(unsafe { va_mapper.as_ptr().add(range.start() as usize).cast_const() })
         } else {
             None
         };
@@ -121,17 +120,16 @@ impl DmaMapper {
         // VaMapper releases the VA range.
         unsafe {
             self.target
-                .map_dma(iova, host_va, mappable, file_offset, size)
+                .map_dma(range, host_va, mappable, file_offset)
         }
     }
 
     /// Unmap a range from the IOMMU.
-    fn unmap_dma(&self, iova: u64, size: u64) {
-        if let Err(e) = self.target.unmap_dma(iova, size) {
+    fn unmap_dma(&self, range: MemoryRange) {
+        if let Err(e) = self.target.unmap_dma(range) {
             tracing::warn!(
                 error = &*e as &dyn std::error::Error,
-                iova,
-                size,
+                %range,
                 "DMA unmap failed"
             );
         }
@@ -398,14 +396,12 @@ impl RegionManagerTask {
         for region in &self.regions {
             if region.is_active {
                 for mapping in &region.mappings {
-                    let iova = region.params.range.start() + mapping.params.range_in_region.start();
-                    let size = mapping.params.range_in_region.len();
+                    let range = range_within(region.params.range, mapping.params.range_in_region);
                     mapper
                         .map_dma(
-                            iova,
+                            range,
                             &mapping.params.mappable,
                             mapping.params.file_offset,
-                            size,
                         )
                         .await?;
                 }
@@ -422,10 +418,8 @@ impl RegionManagerTask {
             for region in &self.regions {
                 if region.is_active {
                     for mapping in &region.mappings {
-                        let iova =
-                            region.params.range.start() + mapping.params.range_in_region.start();
-                        let size = mapping.params.range_in_region.len();
-                        mapper.unmap_dma(iova, size);
+                        let range = range_within(region.params.range, mapping.params.range_in_region);
+                        mapper.unmap_dma(range);
                     }
                 }
             }
@@ -613,17 +607,15 @@ impl RegionManagerTask {
             for dma_mapper in &self.inner.dma_mappers {
                 if let Err(e) = dma_mapper
                     .map_dma(
-                        range.start(),
+                        range,
                         &params.mappable,
                         params.file_offset,
-                        range.len(),
                     )
                     .await
                 {
                     tracing::warn!(
                         error = &*e as &dyn std::error::Error,
-                        iova = range.start(),
-                        size = range.len(),
+                        %range,
                         "DMA mapper failed to map new sub-mapping"
                     );
                 }
@@ -669,9 +661,9 @@ impl RegionManagerTask {
                 .await;
 
             // Unmap removed sub-mappings from DMA mappers.
-            for removed in &removed_ranges {
+            for &removed in &removed_ranges {
                 for dma_mapper in &self.inner.dma_mappers {
-                    dma_mapper.unmap_dma(removed.start(), removed.len());
+                    dma_mapper.unmap_dma(removed);
                 }
             }
             // Currently there is no need to tell the partitions about the
@@ -708,22 +700,19 @@ impl RegionManagerTaskInner {
 
         // Map sub-mappings into DMA mappers (per-sub-mapping granularity).
         for mapping in &region.mappings {
-            let iova = region.params.range.start() + mapping.params.range_in_region.start();
-            let size = mapping.params.range_in_region.len();
+            let range = range_within(region.params.range, mapping.params.range_in_region);
             for dma_mapper in &self.dma_mappers {
                 if let Err(e) = dma_mapper
                     .map_dma(
-                        iova,
+                        range,
                         &mapping.params.mappable,
                         mapping.params.file_offset,
-                        size,
                     )
                     .await
                 {
                     tracing::warn!(
                         error = &*e as &dyn std::error::Error,
-                        iova,
-                        size,
+                        %range,
                         "DMA mapper failed to map sub-mapping during region enable"
                     );
                 }
@@ -756,7 +745,7 @@ impl RegionManagerTaskInner {
         // valid at that point).
         let region_range = region.params.range;
         for dma_mapper in &mut self.dma_mappers {
-            dma_mapper.unmap_dma(region_range.start(), region_range.len());
+            dma_mapper.unmap_dma(region_range);
         }
 
         for partition in &mut self.partitions {

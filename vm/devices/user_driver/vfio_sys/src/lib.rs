@@ -41,9 +41,10 @@ pub fn host_page_size() -> u64 {
 
     let page_size = PAGE_SIZE.load(Relaxed);
     if page_size == 0 {
-        // SAFETY: sysconf(_SC_PAGESIZE) is always safe and always succeeds on Linux.
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 };
-        assert!(page_size >= 4096);
+        // SAFETY: sysconf(_SC_PAGESIZE) is always safe to call on Linux.
+        let raw = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        assert!(raw > 0, "sysconf(_SC_PAGESIZE) failed: {raw}");
+        let page_size = raw as u64;
         PAGE_SIZE.store(page_size, Relaxed);
         page_size
     } else {
