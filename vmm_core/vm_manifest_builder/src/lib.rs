@@ -226,6 +226,7 @@ impl VmManifestBuilder {
             pci_chipset_devices: Vec::new(),
             chipset: BaseChipsetManifest::empty(),
             capabilities: VmChipsetCapabilities {
+                with_ide: false,
                 with_ioapic: false,
                 with_pic: false,
                 with_pit: false,
@@ -265,7 +266,6 @@ impl VmManifestBuilder {
                     with_hyperv_firmware_uefi: false,
                     with_hyperv_framebuffer: !self.proxy_vga,
                     with_hyperv_guest_watchdog: false,
-                    with_hyperv_ide: true,
                     with_hyperv_power_management: false,
                     with_hyperv_vga: !self.proxy_vga,
                     with_i440bx_host_pci_bridge: true,
@@ -278,6 +278,7 @@ impl VmManifestBuilder {
                 };
                 result.capabilities.with_ioapic = true;
                 result.attach_pic();
+                result.capabilities.with_ide = true;
                 result.attach_pit();
                 result.attach_missing_arch_ports(self.arch, false);
                 if let Some(recv) = self.battery_status_recv {
@@ -297,7 +298,6 @@ impl VmManifestBuilder {
                     with_hyperv_firmware_uefi: false,
                     with_hyperv_framebuffer: self.framebuffer,
                     with_hyperv_guest_watchdog: self.guest_watchdog,
-                    with_hyperv_ide: false,
                     with_hyperv_power_management: is_x86,
                     with_hyperv_vga: false,
                     with_i440bx_host_pci_bridge: false,
@@ -339,7 +339,6 @@ impl VmManifestBuilder {
                     with_hyperv_firmware_uefi: matches!(self.ty, BaseChipsetType::HypervGen2Uefi),
                     with_hyperv_framebuffer: self.framebuffer,
                     with_hyperv_guest_watchdog: self.guest_watchdog,
-                    with_hyperv_ide: false,
                     with_hyperv_power_management: is_x86,
                     with_hyperv_vga: false,
                     with_i440bx_host_pci_bridge: false,

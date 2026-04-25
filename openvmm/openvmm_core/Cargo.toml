@@ -31,7 +31,6 @@ aarch64defs.workspace = true
 acpi.workspace = true
 floppy_resources.workspace = true
 hvdef.workspace = true
-ide_resources.workspace = true
 igvm.workspace = true
 igvm_defs.workspace = true
 loader.workspace = true
@@ -62,7 +61,6 @@ uefi_nvram_storage = { workspace = true, features = ["save_restore"] }
 framebuffer.workspace = true
 get_resources.workspace = true
 hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect", "save_restore"] }
-ide.workspace = true
 floppy.workspace = true
 input_core.workspace = true
 missing_dev.workspace = true
@@ -70,8 +68,6 @@ pci_bus.workspace = true
 pci_core.workspace = true
 pci_resources.workspace = true
 pcie.workspace = true
-scsi_core.workspace = true
-scsidisk.workspace = true
 serial_16550_resources.workspace = true
 storvsp.workspace = true
 virtio.workspace = true

@@ -19,7 +19,6 @@ use crate::ControlRequest;
 use crate::dispatch::LoadedVm;
 use crate::dispatch::LoadedVmNetworkSettings;
 use crate::dispatch::vtl2_settings_worker::InitialControllers;
-use crate::dispatch::vtl2_settings_worker::disk_from_disk_type;
 use crate::dispatch::vtl2_settings_worker::wait_for_mana;
 use crate::emuplat::EmuplatServicing;
 use crate::emuplat::firmware::UnderhillLogger;
@@ -89,7 +88,6 @@ use hvdef::Vtl;
 use hvdef::hypercall::HvGuestOsId;
 use hyperv_ic_guest::ShutdownGuestIc;
 use ide_resources::GuestMedia;
-use ide_resources::IdePath;
 use igvm_defs::MemoryMapEntryType;
 use input_core::InputData;
 use input_core::MultiplexedInputHandle;
@@ -115,8 +113,6 @@ use pal_async::DefaultPool;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
-use scsi_core::ResolveScsiDeviceHandleParams;
-use scsidisk::atapi_scsi::AtapiScsiDisk;
 use socket2::Socket;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
@@ -126,7 +122,6 @@ use std::future;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use storvsp::ScsiControllerDisk;
 use thiserror::Error;
 use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;
@@ -2649,16 +2644,16 @@ async fn new_underhill_vm(
         })
         .unwrap();
 
-    let mut ide_drives = [[None, None], [None, None]];
-    let mut storvsp_ide_disks = Vec::new();
-    let mut ide_io_queue_depth = None;
+    let mut storvsp_ide_handles: Vec<Resource<vm_resource::kind::VmbusDeviceHandleKind>> =
+        Vec::new();
+    let mut ide_handle_disks: Vec<ide_resources::IdeDeviceConfig> = Vec::new();
 
     if let Some(ide_config) = controllers.ide_controller {
         if firmware_type != FirmwareType::Pcat {
             anyhow::bail!("ide requires generation 1, VM is configured for generation 2");
         }
 
-        ide_io_queue_depth = ide_config.io_queue_depth;
+        let ide_io_queue_depth = ide_config.io_queue_depth;
 
         for (channel, disks) in [
             (0, ide_config.primary_channel_disks),
@@ -2666,48 +2661,55 @@ async fn new_underhill_vm(
         ] {
             for disk_cfg in disks.into_iter() {
                 let drive = disk_cfg.path.drive;
-                let media = match disk_cfg.guest_media {
-                    GuestMedia::Dvd(device) => {
-                        let scsi_dvd = resolver
-                            .resolve(
-                                device,
-                                ResolveScsiDeviceHandleParams {
-                                    driver_source: &driver_source,
-                                },
-                            )
-                            .await?;
-                        ide::DriveMedia::optical_disk(Arc::new(AtapiScsiDisk::new(scsi_dvd.0)))
-                    }
-                    GuestMedia::Disk {
+
+                // Duplicate the disk config: one copy for the IDE device
+                // handle (HyperVIdeDeviceHandle resolver) and one for the
+                // storvsp IDE accelerator handle. VTL2 settings are pure
+                // protobuf data (no OS handles), so mesh serialization is
+                // safe for cloning.
+                let is_hard_disk = matches!(disk_cfg.guest_media, GuestMedia::Disk { .. });
+                let serialized = mesh::resource::SerializedMessage::from_message(disk_cfg);
+                anyhow::ensure!(
+                    serialized.resources.is_empty(),
+                    "IDE disk configs from VTL2 settings must not contain OS resources"
+                );
+
+                // IDE device handle copy (always).
+                let handle_cfg: ide_resources::IdeDeviceConfig =
+                    (mesh::resource::SerializedMessage {
+                        data: serialized.data.clone(),
+                        resources: Vec::new(),
+                    })
+                    .into_message()
+                    .context("failed to duplicate IDE disk config for device handle")?;
+                ide_handle_disks.push(handle_cfg);
+
+                // Storvsp IDE accelerator handle (hard disks only).
+                if is_hard_disk {
+                    let storvsp_cfg: ide_resources::IdeDeviceConfig = serialized
+                        .into_message()
+                        .context("failed to decode IDE disk config for storvsp")?;
+                    if let GuestMedia::Disk {
                         disk_type,
                         read_only,
                         disk_parameters,
-                    } => {
-                        let disk =
-                            disk_from_disk_type(disk_type, read_only, &resolver, &driver_source)
-                                .await?;
-                        let scsi_disk = Arc::new(scsidisk::SimpleScsiDisk::new(
-                            disk.clone(),
-                            disk_parameters.unwrap_or_default(),
-                        ));
-
-                        // Only disks, not DVD drives, get IDE accelerator channels.
-                        storvsp_ide_disks.push((
-                            IdePath { channel, drive },
-                            ScsiControllerDisk::new(scsi_disk),
-                        ));
-
-                        ide::DriveMedia::hard_disk(disk)
+                    } = storvsp_cfg.guest_media
+                    {
+                        storvsp_ide_handles.push(
+                            storvsp_resources::StorvspIdeDeviceHandle {
+                                channel_id: channel,
+                                device_id: drive,
+                                disk: scsidisk_resources::SimpleScsiDiskHandle {
+                                    disk: disk_type,
+                                    read_only,
+                                    parameters: disk_parameters.unwrap_or_default(),
+                                }
+                                .into_resource(),
+                                io_queue_depth: ide_io_queue_depth,
+                            }
+                            .into_resource(),
+                        );
                     }
-                };
-
-                let old_media = ide_drives[channel as usize]
-                    .get_mut(drive as usize)
-                    .context("invalid ide device")?
-                    .replace(media);
-
-                if old_media.is_some() {
-                    anyhow::bail!("duplicate ide device at {}/{}", channel, drive);
                 }
             }
         }
@@ -2801,18 +2803,24 @@ async fn new_underhill_vm(
         enlightened_interrupts: true, // As advertised by the PCAT BIOS.
     });
 
-    let deps_hyperv_ide = if chipset.with_hyperv_ide {
-        let [primary_channel_drives, secondary_channel_drives] = ide_drives;
-        Some(dev::HyperVIdeDeps {
-            attached_to: pci_bus_id_piix4.clone(),
-            primary_channel_drives,
-            secondary_channel_drives,
-        })
-    } else {
-        // Ensured above.
-        assert!(ide_drives.iter().flatten().all(|d| d.is_none()));
-        None
-    };
+    // Push the IDE device handle for the chipset builder resolver.
+    let mut pci_chipset_devices = pci_chipset_devices;
+    if !ide_handle_disks.is_empty() {
+        use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
+        use chipset_resources::ide::HYPERV_IDE_BDF;
+        use chipset_resources::ide::HyperVIdeDeviceHandle;
+        use vmotherboard::LegacyPciChipsetDeviceHandle;
+
+        pci_chipset_devices.push(LegacyPciChipsetDeviceHandle {
+            name: "hyperv-ide".to_string(),
+            resource: HyperVIdeDeviceHandle {
+                disks: ide_handle_disks,
+            }
+            .into_resource(),
+            pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
+            bdf: HYPERV_IDE_BDF,
+        });
+    }
 
     let deps_underhill_vga_proxy =
         chipset
@@ -2970,7 +2978,6 @@ async fn new_underhill_vm(
         deps_generic_pci_bus: None,
         deps_hyperv_firmware_pcat,
         deps_hyperv_framebuffer: None,
-        deps_hyperv_ide,
         deps_hyperv_vga: None,
         deps_i440bx_host_pci_bridge,
         deps_piix4_cmos_rtc,
@@ -3300,31 +3307,12 @@ async fn new_underhill_vm(
 
     let mut vmbus_device_handles = controllers.vmbus_devices;
 
+    // Push storvsp IDE accelerator handles into the VMBus device list.
+    vmbus_device_handles.append(&mut storvsp_ide_handles);
+
     // Storage
-    let mut ide_accel_devices = Vec::new();
     {
         let _span = tracing::info_span!("scsi_controller_map", CVM_ALLOWED).entered();
-
-        for (path, scsi_disk) in storvsp_ide_disks {
-            let io_queue_depth = ide_io_queue_depth.unwrap_or(default_io_queue_depth);
-            ide_accel_devices.push(
-                offer_channel_unit(
-                    &tp,
-                    &state_units,
-                    vmbus_server
-                        .as_ref()
-                        .context("ide requires vmbus redirection to be configured")?,
-                    storvsp::StorageDevice::build_ide(
-                        &driver_source,
-                        path.channel,
-                        path.drive,
-                        scsi_disk,
-                        io_queue_depth,
-                    ),
-                )
-                .await?,
-            );
-        }
     }
 
     // VPCI
@@ -3618,7 +3606,6 @@ async fn new_underhill_vm(
         vmbus_server,
         host_vmbus_relay,
         _vmbus_devices: vmbus_devices,
-        _ide_accel_devices: ide_accel_devices,
         network_settings,
         shutdown_relay,
 

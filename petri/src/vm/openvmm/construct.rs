@@ -205,7 +205,8 @@ impl PetriVmConfigOpenVmm {
             None => (None, None, None),
         };
 
-        let ide_disks = ide_controllers_to_openvmm(firmware.ide_controllers()).await?;
+        let (ide_disks, storvsp_ide_handles) =
+            ide_controllers_to_openvmm(firmware.ide_controllers()).await?;
         let (mut vmbus_devices, vpci_devices) =
             vmbus_storage_controllers_to_openvmm(&vmbus_storage_controllers).await?;
 
@@ -238,6 +239,8 @@ impl PetriVmConfigOpenVmm {
                 .into_resource(),
             });
         }
+
+        vmbus_devices.extend(storvsp_ide_handles);
 
         let (firmware_event_send, firmware_event_recv) = mesh::mpsc_channel();
 
@@ -464,13 +467,28 @@ impl PetriVmConfigOpenVmm {
         let VmChipsetResult {
             chipset,
             mut chipset_devices,
-            pci_chipset_devices,
+            mut pci_chipset_devices,
             capabilities,
         } = chipset;
 
         // Add the TPM
         if let Some(tpm) = setup.config_tpm().await? {
             chipset_devices.push(tpm);
+        }
+
+        // Add the IDE device handle if there are any IDE disks.
+        if !ide_disks.is_empty() {
+            use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
+            use chipset_resources::ide::HYPERV_IDE_BDF;
+            use chipset_resources::ide::HyperVIdeDeviceHandle;
+            use vmotherboard::LegacyPciChipsetDeviceHandle;
+
+            pci_chipset_devices.push(LegacyPciChipsetDeviceHandle {
+                name: "hyperv-ide".to_string(),
+                resource: HyperVIdeDeviceHandle { disks: ide_disks }.into_resource(),
+                pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
+                bdf: HYPERV_IDE_BDF,
+            });
         }
 
         let config = Config {
@@ -510,7 +528,7 @@ impl PetriVmConfigOpenVmm {
 
             // Devices
             floppy_disks: vec![],
-            ide_disks,
+            ide_disks: vec![],
             pcie_root_complexes: vec![],
             pcie_devices,
             pcie_switches: vec![],
@@ -1111,17 +1129,38 @@ fn spawn_dump_handler(driver: &DefaultDriver, logger: &PetriLogSource) -> GuestC
     handle
 }
 
-/// Convert the generic IDE configuration to OpenVMM IDE disks.
+/// Convert the generic IDE configuration to OpenVMM IDE device disks and
+/// storvsp IDE accelerator handles.
+///
+/// Returns the IDE device disk configs (for HyperVIdeDeviceHandle) and
+/// storvsp IDE accelerator VMBus device handles (hard disks only).
 async fn ide_controllers_to_openvmm(
     ide_controllers: Option<&[[Option<Drive>; 2]; 2]>,
-) -> anyhow::Result<Vec<IdeDeviceConfig>> {
+) -> anyhow::Result<(
+    Vec<IdeDeviceConfig>,
+    Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
+)> {
     let mut ide_disks = Vec::new();
+    let mut storvsp_ide_handles = Vec::new();
 
     if let Some(ide_controllers) = ide_controllers {
         for (controller_number, controller) in ide_controllers.iter().enumerate() {
             for (controller_location, drive) in controller.iter().enumerate() {
                 if let Some(drive) = drive {
                     if let Some(disk) = &drive.disk {
+                        let path = ide_resources::IdePath {
+                            channel: controller_number as u8,
+                            drive: controller_location as u8,
+                        };
+
+                        // Create storvsp resource before shadowing the disk
+                        // binding with the resolved resource below.
+                        let storvsp_disk = if !drive.is_dvd {
+                            Some(petri_disk_to_openvmm(disk).await?)
+                        } else {
+                            None
+                        };
+
                         let disk = petri_disk_to_openvmm(disk).await?;
                         let guest_media = if drive.is_dvd {
                             GuestMedia::Dvd(
@@ -1139,20 +1178,33 @@ async fn ide_controllers_to_openvmm(
                             }
                         };
 
-                        ide_disks.push(IdeDeviceConfig {
-                            path: ide_resources::IdePath {
-                                channel: controller_number as u8,
-                                drive: controller_location as u8,
-                            },
-                            guest_media,
-                        });
+                        ide_disks.push(IdeDeviceConfig { path, guest_media });
+
+                        // Hard disks also get a storvsp IDE accelerator channel.
+                        if let Some(storvsp_disk) = storvsp_disk {
+                            storvsp_ide_handles.push((
+                                DeviceVtl::Vtl0,
+                                storvsp_resources::StorvspIdeDeviceHandle {
+                                    channel_id: path.channel,
+                                    device_id: path.drive,
+                                    disk: SimpleScsiDiskHandle {
+                                        disk: storvsp_disk,
+                                        read_only: false,
+                                        parameters: Default::default(),
+                                    }
+                                    .into_resource(),
+                                    io_queue_depth: None,
+                                }
+                                .into_resource(),
+                            ));
+                        }
                     }
                 }
             }
         }
     }
 
-    Ok(ide_disks)
+    Ok((ide_disks, storvsp_ide_handles))
 }
 
 /// Convert the generic VMBUS storage configuration to OpenVMM VMBUS and VPCI devices.

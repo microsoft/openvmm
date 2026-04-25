@@ -147,6 +147,29 @@ pub mod piix4_pci_isa_bridge {
     }
 }
 
+pub mod ide {
+    //! Resource definitions for the Hyper-V IDE controller device.
+
+    use ide_resources::IdeDeviceConfig;
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// A handle to a Hyper-V IDE controller device.
+    #[derive(MeshPayload)]
+    pub struct HyperVIdeDeviceHandle {
+        /// IDE device configurations for attached drives.
+        pub disks: Vec<IdeDeviceConfig>,
+    }
+
+    /// The fixed BDF used by the Hyper-V IDE controller in the Gen1 chipset.
+    pub const HYPERV_IDE_BDF: (u8, u8, u8) = (0, 7, 1);
+
+    impl ResourceId<ChipsetDeviceHandleKind> for HyperVIdeDeviceHandle {
+        const ID: &'static str = "hyperv-ide";
+    }
+}
+
 pub mod piix4_uhci {
     //! Resource definitions for the PIIX4 USB UHCI stub device.
 
