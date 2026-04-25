@@ -396,7 +396,8 @@ impl RegionManagerTask {
         for region in &self.regions {
             if region.is_active {
                 for mapping in &region.mappings {
-                    let range = range_within(region.params.range, mapping.params.range_in_region);
+                    let range =
+                        range_within(region.params.range, mapping.params.range_in_region);
                     mapper
                         .map_dma(
                             range,
@@ -407,6 +408,7 @@ impl RegionManagerTask {
                 }
             }
         }
+
         self.inner.dma_mappers.push(mapper);
         Ok(id)
     }
@@ -852,7 +854,9 @@ impl DmaMapperClient {
     /// be `None`. Use this for backends that map from the fd directly (iommufd).
     ///
     /// The replay loop maps all existing active sub-mappings into the new
-    /// consumer.
+    /// consumer. On failure, already-mapped entries are **not** rolled back;
+    /// the caller must clean up by dropping the [`DmaTarget`] (e.g., closing
+    /// the VFIO container fd).
     ///
     /// Returns a [`DmaMapperHandle`] that removes the mapper when dropped.
     pub async fn add_dma_mapper(
