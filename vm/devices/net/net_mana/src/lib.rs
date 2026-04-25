@@ -14,6 +14,7 @@ use gdma_defs::Cqe;
 use gdma_defs::CqeParams;
 use gdma_defs::GDMA_EQE_COMPLETION;
 use gdma_defs::Sge;
+use gdma_defs::WQE_ALIGNMENT;
 use gdma_defs::WqeHeader;
 use gdma_defs::bnic::CQE_RX_OKAY;
 use gdma_defs::bnic::CQE_TX_GDMA_ERR;
@@ -1635,9 +1636,12 @@ fn trace_tx_eth_frame_from_bounce_buffer(
     tracing_level: tracing::Level,
     wqe_offset: u32,
 ) -> bool {
-    // WQE header (8) + the largest inline client OOB (32, padded to 48) + the first SGE (16).
-    const TX_WQE_PREFIX_BYTES: usize = 64;
-    let bytes = tx_wq.read(wqe_offset, TX_WQE_PREFIX_BYTES);
+    // Reading 64 bytes
+    // WQE header (8) + largest inline client OOB (32, padded to 48) + the first SGE (16).
+    // Reading in two 32-byte (WQE_ALIGNMENT) chunks to handle ring-buffer wrap-around.
+    // Wq::read does not wrap, so each read must stay within a single alignment slot.
+    let mut bytes = tx_wq.read(wqe_offset, WQE_ALIGNMENT);
+    bytes.extend_from_slice(&tx_wq.read(wqe_offset.wrapping_add(1), WQE_ALIGNMENT));
     let Ok((wqe_header, _)) = WqeHeader::read_from_prefix(&bytes) else {
         return false;
     };
@@ -1833,6 +1837,57 @@ mod tests {
             &bounce_buffer,
             tracing::Level::WARN,
             0,
+        ));
+    }
+
+    #[test]
+    fn test_trace_tx_eth_frame_bounce_buffer_ring_wrap() {
+        let mem = DeviceTestMemory::new(16, false, "test_wrap");
+        let dma_client = mem.dma_client();
+
+        let bounce_buffer = ContiguousBufferManager::new(dma_client.clone(), 1).unwrap();
+        // EtherType 0x0800 (IPv4) at bytes 12-13.
+        bounce_buffer.mem.write_at(12, &0x0800u16.to_be_bytes());
+
+        let sge_gpa = bounce_buffer.mem.pfns()[0] * PAGE_SIZE64;
+
+        // Use CLIENT_OOB_32 so the WQE prefix is exactly 64 bytes:
+        //   WqeHeader(8) + sgl_offset(40) + SGE(16) = 64
+        // Placing this at the last 32-byte slot forces the SGE to wrap
+        // around to the beginning of the ring.
+        let wqe_header = WqeHeader {
+            reserved: [0; 3],
+            last_vbytes: 0,
+            params: WqeParams::new()
+                .with_num_sgl_entries(1)
+                .with_inline_client_oob_size(gdma_defs::CLIENT_OOB_32),
+        };
+        let sge = Sge {
+            address: sge_gpa,
+            mem_key: 0,
+            size: 1500,
+        };
+
+        // Build the 64-byte WQE prefix linearly, then split it across the
+        // ring boundary at offset 4064.
+        let mut wqe_buf = [0u8; 64];
+        wqe_buf[..8].copy_from_slice(wqe_header.as_bytes());
+        // OOB + padding (bytes 8..48) left as zeros.
+        wqe_buf[48..64].copy_from_slice(sge.as_bytes());
+
+        let wq_mem = dma_client.allocate_dma_buffer(4096).unwrap();
+        let wrap_offset: usize = 4096 - 32;
+        wq_mem.write_at(wrap_offset, &wqe_buf[..32]); // last 32 bytes of ring
+        wq_mem.write_at(0, &wqe_buf[32..]); // wraps to beginning
+        let mut wq = Wq::new_sq(wq_mem, DoorbellPage::null(), 0);
+
+        // wqe_offset is in WQE alignment units (32 bytes).
+        let wqe_offset = (wrap_offset / 32) as u32;
+        assert!(trace_tx_eth_frame_from_bounce_buffer(
+            &mut wq,
+            &bounce_buffer,
+            tracing::Level::WARN,
+            wqe_offset,
         ));
     }
 
