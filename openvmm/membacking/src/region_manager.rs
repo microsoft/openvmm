@@ -643,17 +643,19 @@ impl RegionManagerTask {
             false
         });
         if let Some(region_range) = active_range {
-            self.inner
-                .mapping_manager
-                .remove_mappings(range_within(region_range, range_in_region))
-                .await;
-
-            // Unmap removed sub-mappings from DMA mappers.
+            // Unmap DMA mappers first — IOMMU entries must be removed before
+            // the VA mappings are torn down (same ordering as disable_region).
             for &removed in &removed_ranges {
                 for dma_mapper in &self.inner.dma_mappers {
                     dma_mapper.unmap_dma(removed);
                 }
             }
+
+            self.inner
+                .mapping_manager
+                .remove_mappings(range_within(region_range, range_in_region))
+                .await;
+
             // Currently there is no need to tell the partitions about the
             // removed mappings; they will find out when the underlying VA is
             // invalidated by the kernel.
