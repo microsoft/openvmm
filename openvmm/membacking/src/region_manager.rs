@@ -12,6 +12,7 @@ use crate::mapping_manager::MappingManagerClient;
 use crate::mapping_manager::MappingParams;
 use crate::mapping_manager::VaMapper;
 use crate::partition_mapper::PartitionMapper;
+use anyhow::Context as _;
 use futures::StreamExt;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -100,11 +101,7 @@ impl DmaMapper {
             va_mapper
                 .ensure_mapped(range)
                 .await
-                .map_err(|_| {
-                    anyhow::anyhow!(
-                        "VA range {range} has no backing mapping",
-                    )
-                })?;
+                .context("VA range has no backing mapping")?;
             // SAFETY: range.start() is within the VA reservation (ensured by
             // ensure_mapped succeeding), so this produces a valid pointer
             // within the mapping.
@@ -118,10 +115,7 @@ impl DmaMapper {
         // ensure_mapped succeeded. The IOMMU mapping will be torn down
         // (via unmap_dma in disable_region or remove_dma_mapper) before the
         // VaMapper releases the VA range.
-        unsafe {
-            self.target
-                .map_dma(range, host_va, mappable, file_offset)
-        }
+        unsafe { self.target.map_dma(range, host_va, mappable, file_offset) }
     }
 
     /// Unmap a range from the IOMMU.
@@ -396,14 +390,9 @@ impl RegionManagerTask {
         for region in &self.regions {
             if region.is_active {
                 for mapping in &region.mappings {
-                    let range =
-                        range_within(region.params.range, mapping.params.range_in_region);
+                    let range = range_within(region.params.range, mapping.params.range_in_region);
                     mapper
-                        .map_dma(
-                            range,
-                            &mapping.params.mappable,
-                            mapping.params.file_offset,
-                        )
+                        .map_dma(range, &mapping.params.mappable, mapping.params.file_offset)
                         .await?;
                 }
             }
@@ -420,7 +409,8 @@ impl RegionManagerTask {
             for region in &self.regions {
                 if region.is_active {
                     for mapping in &region.mappings {
-                        let range = range_within(region.params.range, mapping.params.range_in_region);
+                        let range =
+                            range_within(region.params.range, mapping.params.range_in_region);
                         mapper.unmap_dma(range);
                     }
                 }
@@ -608,11 +598,7 @@ impl RegionManagerTask {
 
             for dma_mapper in &self.inner.dma_mappers {
                 if let Err(e) = dma_mapper
-                    .map_dma(
-                        range,
-                        &params.mappable,
-                        params.file_offset,
-                    )
+                    .map_dma(range, &params.mappable, params.file_offset)
                     .await
                 {
                     tracing::warn!(
@@ -705,11 +691,7 @@ impl RegionManagerTaskInner {
             let range = range_within(region.params.range, mapping.params.range_in_region);
             for dma_mapper in &self.dma_mappers {
                 if let Err(e) = dma_mapper
-                    .map_dma(
-                        range,
-                        &mapping.params.mappable,
-                        mapping.params.file_offset,
-                    )
+                    .map_dma(range, &mapping.params.mappable, mapping.params.file_offset)
                     .await
                 {
                     tracing::warn!(
@@ -1036,9 +1018,7 @@ mod tests {
     /// Create a dummy Mappable from /dev/zero for tests.
     fn test_mappable() -> Mappable {
         use std::fs::File;
-        Mappable::from(std::os::fd::OwnedFd::from(
-            File::open("/dev/zero").unwrap(),
-        ))
+        Mappable::from(std::os::fd::OwnedFd::from(File::open("/dev/zero").unwrap()))
     }
 
     #[async_test]
@@ -1159,11 +1139,7 @@ mod tests {
 
         // Register a DMA mapper — it should replay the two active mappings.
         let target = Arc::new(RecordingDmaTarget::default());
-        let id = t
-            .task
-            .add_dma_mapper(target.clone(), false)
-            .await
-            .unwrap();
+        let id = t.task.add_dma_mapper(target.clone(), false).await.unwrap();
 
         assert_eq!(
             target.take_events(),
@@ -1183,11 +1159,7 @@ mod tests {
         let r = t.add_region(0x0..0x10000).await;
 
         let target = Arc::new(RecordingDmaTarget::default());
-        let _id = t
-            .task
-            .add_dma_mapper(target.clone(), false)
-            .await
-            .unwrap();
+        let _id = t.task.add_dma_mapper(target.clone(), false).await.unwrap();
         target.take_events(); // discard empty replay
 
         // Adding a mapping to an active region should notify the DMA mapper.
@@ -1215,11 +1187,7 @@ mod tests {
         t.add_mapping(r, 0x8000..0xC000).await;
 
         let target = Arc::new(RecordingDmaTarget::default());
-        let _id = t
-            .task
-            .add_dma_mapper(target.clone(), false)
-            .await
-            .unwrap();
+        let _id = t.task.add_dma_mapper(target.clone(), false).await.unwrap();
         target.take_events(); // discard replay
 
         // Disabling the region should unmap the entire region range.
@@ -1238,11 +1206,7 @@ mod tests {
         t.add_mapping(r, 0x8000..0xC000).await;
 
         let target = Arc::new(RecordingDmaTarget::default());
-        let id = t
-            .task
-            .add_dma_mapper(target.clone(), false)
-            .await
-            .unwrap();
+        let id = t.task.add_dma_mapper(target.clone(), false).await.unwrap();
         target.take_events(); // discard replay
 
         // Removing the mapper should unmap each active sub-mapping.
@@ -1266,11 +1230,7 @@ mod tests {
         t.task.unmap_region(r, false).await;
 
         let target = Arc::new(RecordingDmaTarget::default());
-        let _id = t
-            .task
-            .add_dma_mapper(target.clone(), false)
-            .await
-            .unwrap();
+        let _id = t.task.add_dma_mapper(target.clone(), false).await.unwrap();
 
         // No replay for inactive regions.
         assert_eq!(target.take_events(), vec![]);
