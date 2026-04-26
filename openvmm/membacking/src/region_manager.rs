@@ -1015,10 +1015,11 @@ mod tests {
         }
     }
 
-    /// Create a dummy Mappable from /dev/zero for tests.
+    /// Create a dummy Mappable for tests (cross-platform).
     fn test_mappable() -> Mappable {
-        use std::fs::File;
-        Mappable::from(std::os::fd::OwnedFd::from(File::open("/dev/zero").unwrap()))
+        sparse_mmap::alloc_shared_memory(0x10000, "test-dma")
+            .unwrap()
+            .into()
     }
 
     #[async_test]
