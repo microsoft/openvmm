@@ -975,9 +975,9 @@ mod tests {
     use memory_range::MemoryRange;
     use pal_async::async_test;
     use pal_async::task::Spawn;
+    use parking_lot::Mutex;
     use std::ops::Range;
     use std::sync::Arc;
-    use std::sync::Mutex;
 
     /// Records map/unmap calls for test assertions.
     #[derive(Default)]
@@ -999,19 +999,19 @@ mod tests {
             _mappable: &Mappable,
             _file_offset: u64,
         ) -> anyhow::Result<()> {
-            self.events.lock().unwrap().push(DmaEvent::Map(range));
+            self.events.lock().push(DmaEvent::Map(range));
             Ok(())
         }
 
         fn unmap_dma(&self, range: MemoryRange) -> anyhow::Result<()> {
-            self.events.lock().unwrap().push(DmaEvent::Unmap(range));
+            self.events.lock().push(DmaEvent::Unmap(range));
             Ok(())
         }
     }
 
     impl RecordingDmaTarget {
         fn take_events(&self) -> Vec<DmaEvent> {
-            std::mem::take(&mut self.events.lock().unwrap())
+            std::mem::take(&mut self.events.lock())
         }
     }
 
