@@ -122,11 +122,6 @@ pub use bnic::BnicConfig;
 pub struct VportConfig {
     pub mac_address: MacAddress,
     pub endpoint: Box<dyn Endpoint>,
-    /// When set, all TX completions will be posted with
-    /// `CQE_TX_VLAN_TAGGING_VIOLATION` instead of being forwarded to the
-    /// backend endpoint. Used for testing VLAN fallback behavior.
-    #[cfg(test)]
-    pub reject_tx_with_vlan_error: bool,
 }
 
 impl GdmaDevice {

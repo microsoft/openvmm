@@ -59,8 +59,6 @@ impl AsyncResolveResource<PciDeviceHandleKind, GdmaDeviceHandle> for GdmaDeviceR
             Ok(VportConfig {
                 mac_address: vport.mac_address,
                 endpoint: endpoint.0,
-                #[cfg(test)]
-                reject_tx_with_vlan_error: false,
             })
         }))
         .await?;
