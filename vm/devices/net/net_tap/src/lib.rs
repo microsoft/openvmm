@@ -506,14 +506,15 @@ fn parse_vnet_hdr(hdr: &VirtioNetHdr) -> RxMetadata {
         (RxChecksumState::Unknown, RxChecksumState::Unknown)
     };
 
-    let l4_protocol = match hdr.gso_type.protocol() {
+    let gso_protocol = hdr.gso_type.protocol();
+
+    let l4_protocol = match gso_protocol {
         VirtioNetHdrGsoProtocol::TCPV4 | VirtioNetHdrGsoProtocol::TCPV6 => L4Protocol::Tcp,
         VirtioNetHdrGsoProtocol::UDP | VirtioNetHdrGsoProtocol::UDP_L4 => L4Protocol::Udp,
         _ => L4Protocol::Unknown,
     };
 
     // Extract GSO metadata when the kernel delivers a coalesced packet.
-    let gso_protocol = hdr.gso_type.protocol();
     let (l3_protocol, gso_size, l2_len, l3_len, l4_len) = if hdr.gso_size > 0
         && (gso_protocol == VirtioNetHdrGsoProtocol::TCPV4
             || gso_protocol == VirtioNetHdrGsoProtocol::TCPV6)
@@ -525,7 +526,7 @@ fn parse_vnet_hdr(hdr: &VirtioNetHdr) -> RxMetadata {
         };
         // csum_start = l2_len + l3_len; we assume standard Ethernet (14 bytes)
         // unless csum_start indicates otherwise.
-        let l2 = if hdr.csum_start > 14 { 14u8 } else { 0 };
+        let l2 = if hdr.csum_start >= 14 { 14u8 } else { 0 };
         let l3 = if l2 > 0 {
             hdr.csum_start - l2 as u16
         } else {
@@ -698,6 +699,7 @@ mod tests {
         assert_eq!(meta.l2_len, 14);
         assert_eq!(meta.l3_len, 40);
         assert_eq!(meta.l4_len, 20);
+        assert_eq!(meta.l4_protocol, L4Protocol::Tcp);
     }
 
     #[test]

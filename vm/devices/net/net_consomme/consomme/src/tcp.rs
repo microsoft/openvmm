@@ -1131,7 +1131,7 @@ impl TcpConnectionInner {
             // When the payload exceeds a single MSS, deliver the frame as a
             // TSO/LRO packet so the guest can re-segment it.
             let tso_mss = if payload_len > self.tx_mss {
-                Some(self.tx_mss as u16)
+                Some(self.tx_mss.min(u16::MAX as usize) as u16)
             } else {
                 None
             };

@@ -586,7 +586,10 @@ fn parse_rx_header_lengths(data: &[u8], checksum: &ChecksumState) -> (L3Protocol
             (L3Protocol::Ipv4, l2_len, l3_len, l4_len)
         }
         ETHERTYPE_IPV6 if data.len() >= l2_len as usize + 40 => {
-            let l3_len: u16 = 40; // Base IPv6 header; extension headers not handled
+            // Base IPv6 header only. Extension headers are not parsed, but
+            // this is safe because consomme never generates IPv6 extension
+            // headers on the receive path.
+            let l3_len: u16 = 40;
             let l4_start = l2_len as usize + l3_len as usize;
             let l4_len = if checksum.tcp && data.len() >= l4_start + 20 {
                 let data_offset = (data[l4_start + 12] >> 4) * 4;
