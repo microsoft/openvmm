@@ -251,10 +251,7 @@ struct MshvPartitionInner {
 }
 
 struct MshvVpInner {
-    #[cfg(guest_arch = "x86_64")]
     vp_info: vm_topology::processor::TargetVpInfo,
-    #[cfg(guest_arch = "aarch64")]
-    vp_info: vm_topology::processor::aarch64::Aarch64VpInfo,
     thread: RwLock<Option<Pthread>>,
     needs_yield: NeedsYield,
     message_queues: MessageQueues,
@@ -494,6 +491,7 @@ impl<T: Into<ErrorInner>> From<T> for Error {
     }
 }
 
+// TODO: Chunk this up into smaller types.
 #[derive(Error, Debug)]
 enum ErrorInner {
     #[error("operation not supported")]
