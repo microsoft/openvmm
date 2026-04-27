@@ -13,5 +13,9 @@ guid.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
 
+[dev-dependencies]
+pal_async = { workspace = true, features = ["tests"] }
+parking_lot.workspace = true
+
 [lints]
 workspace = true
