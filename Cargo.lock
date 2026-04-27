@@ -935,6 +935,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19d374276b40fb8bbdee95aef7c7fa6b5316ec764510eb64b8dd0e2ed0d7e7f5"
 
 [[package]]
+name = "crc32c"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a47af21622d091a8f0fb295b88bc886ac74efcc613efc19f5d0b21de5c89e47"
+dependencies = [
+ "rustc_version",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1666,6 +1675,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "disklayer_vhdx"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "blocking",
+ "disk_backend",
+ "disk_backend_resources",
+ "disk_layered",
+ "guestmem",
+ "inspect",
+ "pal_async",
+ "scsi_buffers",
+ "tempfile",
+ "thiserror 2.0.16",
+ "vhdx",
+ "vm_resource",
+]
+
+[[package]]
 name = "dissimilar"
 version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1688,9 +1717,9 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "elfcore"
-version = "2.0.1"
+version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e254a61387a9d5706e00576e8ddc08705a8ce3f2d306280459ece426378f94f2"
+checksum = "0fdaa3d1c27119b3394513f4596894a40cd53cb4acec7fce636a9ca0c4abb171"
 dependencies = [
  "libc",
  "nix 0.31.2",
@@ -4768,9 +4797,9 @@ dependencies = [
 
 [[package]]
 name = "ntapi"
-version = "0.4.3"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3b335231dfd352ffb0f8017f3b6027a4917f7df785ea2143d8af2adc66980ae"
+checksum = "e8a3895c6391c39d7fe7ebc444a87eb2991b2a0bc718fdabd071eec617fc68e4"
 dependencies = [
  "winapi",
 ]
@@ -5474,6 +5503,7 @@ dependencies = [
  "disk_backend_resources",
  "disk_vhd1",
  "disk_vhdmp",
+ "disklayer_vhdx",
  "fs-err",
  "get_resources",
  "hypervisor_resources",
@@ -5532,6 +5562,7 @@ dependencies = [
  "disk_vhdmp",
  "disklayer_ram",
  "disklayer_sqlite",
+ "disklayer_vhdx",
  "gdma",
  "guest_crash_device",
  "guest_emulation_device",
@@ -8776,6 +8807,26 @@ name = "vhd1_defs"
 version = "0.0.0"
 dependencies = [
  "guid",
+ "zerocopy",
+]
+
+[[package]]
+name = "vhdx"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "bitvec",
+ "crc32c",
+ "event-listener",
+ "futures",
+ "guid",
+ "mesh",
+ "pal_async",
+ "parking_lot",
+ "tempfile",
+ "thiserror 2.0.16",
+ "tracing",
+ "windows 0.62.0",
  "zerocopy",
 ]
 
