@@ -204,6 +204,9 @@ pub struct Options {
     /// Use the user-mode VFIO NVMe driver instead of the Linux driver.
     pub nvme_vfio: bool,
 
+    /// (OPENHCL_STORVSC_USERMODE=1)
+    /// Use the user-mode StorVSC driver instead of the Linux kernel hv_storvsc.
+    pub storvsc_usermode: bool,
     /// (OPENHCL_HIDE_ISOLATION=1)
     /// Hide the isolation mode from the guest.
     pub hide_isolation: bool,
@@ -395,6 +398,7 @@ impl Options {
         let vtl0_starts_paused = parse_legacy_env_bool("OPENHCL_VTL0_STARTS_PAUSED");
         let serial_wait_for_rts = parse_legacy_env_bool("OPENHCL_SERIAL_WAIT_FOR_RTS");
         let nvme_vfio = parse_legacy_env_bool("OPENHCL_NVME_VFIO");
+        let storvsc_usermode = parse_env_bool("OPENHCL_STORVSC_USERMODE");
         let hide_isolation = parse_env_bool("OPENHCL_HIDE_ISOLATION");
         let halt_on_guest_halt = parse_legacy_env_bool("OPENHCL_HALT_ON_GUEST_HALT");
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
@@ -515,6 +519,7 @@ impl Options {
             serial_wait_for_rts,
             force_load_vtl0_image,
             nvme_vfio,
+            storvsc_usermode,
             hide_isolation,
             halt_on_guest_halt,
             no_sidecar_hotplug,

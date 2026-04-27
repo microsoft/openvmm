@@ -50,6 +50,8 @@ use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_STANDARD_X
 #[cfg(windows)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
+#[cfg(windows)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STORVSC_USERMODE_X64;
 use pipette_client::PipetteClient;
 use pipette_client::process::Child;
 use pipette_client::process::Stdio;
@@ -111,6 +113,26 @@ async fn basic_servicing<T: PetriVmmBackend>(
     let mut flags = config.default_servicing_flags();
     flags.override_version_checks = true;
     openhcl_servicing_core(config, igvm_file, flags, DEFAULT_SERVICING_COUNT).await
+}
+
+/// Test servicing with the storvsc usermode driver.
+#[vmm_test(
+    openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64],
+    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STORVSC_USERMODE_X64],
+)]
+async fn storvsc_usermode_servicing<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> anyhow::Result<()> {
+    let mut flags = config.default_servicing_flags();
+    flags.override_version_checks = true;
+    openhcl_servicing_core(
+        config.with_openhcl_command_line("OPENHCL_STORVSC_USERMODE=1"),
+        igvm_file,
+        flags,
+        DEFAULT_SERVICING_COUNT,
+    )
+    .await
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself, with a tpm.

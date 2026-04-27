@@ -5,6 +5,10 @@
 
 use super::LoadedVm;
 use crate::nvme_manager::manager::NvmeDiskConfig;
+#[cfg(feature = "storvsc-usermode")]
+use crate::storvsc_manager::StorvscDiskBounceConfig;
+#[cfg(feature = "storvsc-usermode")]
+use crate::storvsc_manager::StorvscDiskConfig;
 use crate::worker::NicConfig;
 use anyhow::Context;
 use cvm_tracing::CVM_ALLOWED;
@@ -244,6 +248,7 @@ pub struct DeviceInterfaces {
     scsi_dvds: HashMap<StorageDevicePath, mesh::Sender<SimpleScsiDvdRequest>>,
     scsi_request: HashMap<Guid, mesh::Sender<ScsiControllerRequest>>,
     use_nvme_vfio: bool,
+    use_storvsc_usermode: bool,
 }
 
 impl Vtl2SettingsWorker {
@@ -397,6 +402,7 @@ impl Vtl2SettingsWorker {
                         &StorageContext {
                             uevent_listener,
                             use_nvme_vfio: self.interfaces.use_nvme_vfio,
+                            use_storvsc_usermode: self.interfaces.use_storvsc_usermode,
                         },
                         &disk,
                         false,
@@ -415,6 +421,7 @@ impl Vtl2SettingsWorker {
                         &StorageContext {
                             uevent_listener,
                             use_nvme_vfio: self.interfaces.use_nvme_vfio,
+                            use_storvsc_usermode: self.interfaces.use_storvsc_usermode,
                         },
                         &disk,
                         false,
@@ -978,6 +985,7 @@ async fn make_disk_type_from_physical_devices(
 struct StorageContext<'a> {
     uevent_listener: &'a UeventListener,
     use_nvme_vfio: bool,
+    use_storvsc_usermode: bool,
 }
 
 #[instrument(skip_all, fields(CVM_ALLOWED))]
@@ -1018,6 +1026,30 @@ async fn make_disk_type_from_physical_device(
         return Ok(Resource::new(NvmeDiskConfig {
             pci_id,
             nsid: sub_device_path,
+        }));
+    }
+
+    // If storvsc usermode is enabled, route VScsi devices through StorvscDiskResolver
+    // instead of the kernel path. Early return -- no need to wait for kernel device.
+    // storvsc_usermode field is always present but only actionable with feature.
+    let _ = storage_context.use_storvsc_usermode;
+    #[cfg(feature = "storvsc-usermode")]
+    if storage_context.use_storvsc_usermode
+        && matches!(
+            single_device.device_type,
+            underhill_config::DeviceType::VScsi
+        )
+    {
+        let lun =
+            u8::try_from(sub_device_path).map_err(|_| Error::StorageCannotFindVtl2Device {
+                device_type: single_device.device_type,
+                instance_id: controller_instance_id,
+                sub_device_path,
+                source: anyhow::anyhow!("sub_device_path {} exceeds u8 LUN range", sub_device_path),
+            })?;
+        return Ok(Resource::new(StorvscDiskConfig {
+            instance_guid: controller_instance_id,
+            lun,
         }));
     }
 
@@ -1211,11 +1243,37 @@ async fn make_ide_disk_config(
             Some(send),
         ))
     } else {
+        // When storvsc usermode is active and this IDE disk is backed by a
+        // VScsi controller, the IDE direct (port I/O) path needs a bounce
+        // wrapper because IDE CommandBuffer uses fake GPNs. The IDE accel
+        // (storvsp VMBus) path gets the normal GPA-direct disk.
+        #[cfg(feature = "storvsc-usermode")]
+        let ide_direct_disk_type = if storage_context.use_storvsc_usermode {
+            match &disk.physical_devices {
+                PhysicalDevices::Single { device }
+                    if device.device_type == underhill_config::DeviceType::VScsi =>
+                {
+                    u8::try_from(device.sub_device_path).ok().map(|lun| {
+                        Box::new(Resource::new(StorvscDiskBounceConfig {
+                            instance_guid: device.vmbus_instance_id,
+                            lun,
+                        }))
+                    })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        #[cfg(not(feature = "storvsc-usermode"))]
+        let ide_direct_disk_type: Option<Box<Resource<DiskHandleKind>>> = None;
+
         Ok((
             IdeDeviceConfig {
                 path: ide_path_from_config(disk)?,
                 guest_media: GuestMedia::Disk {
                     disk_type: disk_type.unwrap(),
+                    ide_direct_disk_type,
                     read_only: false,
                     disk_parameters: Some(make_disk_config_inner(
                         disk.location,
@@ -1467,6 +1525,7 @@ pub async fn create_storage_controllers_from_vtl2_settings(
     ctx: &mut CancelContext,
     uevent_listener: &UeventListener,
     use_nvme_vfio: bool,
+    use_storvsc_usermode: bool,
     settings: &Vtl2SettingsDynamic,
     sub_channels: u16,
     is_restoring: bool,
@@ -1482,6 +1541,7 @@ pub async fn create_storage_controllers_from_vtl2_settings(
     let storage_context = StorageContext {
         uevent_listener,
         use_nvme_vfio,
+        use_storvsc_usermode,
     };
     let ide_controller =
         make_ide_controller_config(ctx, &storage_context, settings, is_restoring).await?;
@@ -1829,6 +1889,7 @@ impl InitialControllers {
         uevent_listener: &UeventListener,
         dps: &DevicePlatformSettings,
         use_nvme_vfio: bool,
+        use_storvsc_usermode: bool,
         is_restoring: bool,
         default_io_queue_depth: u32,
         config_timeout_in_seconds: u64,
@@ -1853,6 +1914,7 @@ impl InitialControllers {
                 &mut context,
                 uevent_listener,
                 use_nvme_vfio,
+                use_storvsc_usermode,
                 dynamic,
                 fixed.scsi_sub_channels,
                 is_restoring,
@@ -1907,6 +1969,7 @@ impl InitialControllers {
                 scsi_dvds,
                 scsi_request,
                 use_nvme_vfio,
+                use_storvsc_usermode,
             },
         };
 

@@ -17,6 +17,8 @@ use crate::reference_time::ReferenceTime;
 use crate::servicing;
 use crate::servicing::NvmeSavedState;
 use crate::servicing::ServicingState;
+#[cfg(feature = "storvsc-usermode")]
+use crate::storvsc_manager::StorvscManager;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
 use crate::worker::FirmwareType;
 use crate::worker::NetworkSettingsError;
@@ -153,6 +155,8 @@ pub(crate) struct LoadedVm {
     pub uevent_listener: Arc<UeventListener>,
     pub resolver: ResourceResolver,
     pub nvme_manager: Option<NvmeManager>,
+    #[cfg(feature = "storvsc-usermode")]
+    pub storvsc_manager: Option<StorvscManager>,
     pub emuplat_servicing: EmuplatServicing,
     pub device_interfaces: Option<DeviceInterfaces>,
     pub vmbus_client: Option<vmbus_client::VmbusClient>,
@@ -350,6 +354,8 @@ impl LoadedVm {
                         resp.field("vmgs", self.vmgs.as_ref().map(|x| &x.0));
                         resp.field("network", &self.network_settings);
                         resp.field("nvme", &self.nvme_manager);
+                        #[cfg(feature = "storvsc-usermode")]
+                        resp.field("storvsc", &self.storvsc_manager);
                         resp.field("resolver", &self.resolver);
                         resp.field(
                             "vtl0_memory_map",
@@ -722,7 +728,20 @@ impl LoadedVm {
                 }
             };
 
-            // Reset all user-mode NVMe devices.
+            // Shut down user-mode StorVSC driver.
+            #[cfg(feature = "storvsc-usermode")]
+            let shutdown_storvsc = async {
+                if let Some(storvsc_manager) = self.storvsc_manager.take() {
+                    storvsc_manager
+                        .shutdown()
+                        .instrument(tracing::info_span!(
+                            "shutdown_storvsc_usermode",
+                            CVM_ALLOWED,
+                            correlation_id = %correlation_id,
+                        ))
+                        .await;
+                }
+            };
             let shutdown_nvme = async {
                 if let Some(nvme_manager) = self.nvme_manager.take() {
                     nvme_manager
@@ -760,6 +779,11 @@ impl LoadedVm {
             )
             .context("failed to write persisted info")?;
 
+            #[cfg(feature = "storvsc-usermode")]
+            let (r, (), (), ()) = (shutdown_pci, shutdown_mana, shutdown_nvme, shutdown_storvsc)
+                .join()
+                .await;
+            #[cfg(not(feature = "storvsc-usermode"))]
             let (r, (), ()) = (shutdown_pci, shutdown_mana, shutdown_nvme).join().await;
             r?;
 
@@ -933,6 +957,16 @@ impl LoadedVm {
             None
         };
 
+        // Save StorVSC state if the usermode driver is active.
+        #[cfg(feature = "storvsc-usermode")]
+        let storvsc_state = if let Some(s) = &self.storvsc_manager {
+            s.save()
+                .instrument(tracing::info_span!("storvsc_manager_save", CVM_ALLOWED))
+                .await
+                .map(|s| servicing::StorvscSavedState { storvsc_state: s })
+        } else {
+            None
+        };
         let units = self.save_units().await.context("state unit save failed")?;
         let mana_state = if let Some(network_settings) = &mut self.network_settings
             && mana_keepalive_mode.is_enabled()
@@ -971,6 +1005,8 @@ impl LoadedVm {
                 dma_manager_state,
                 vmbus_client,
                 mana_state,
+                #[cfg(feature = "storvsc-usermode")]
+                storvsc_state,
             },
             units,
         };

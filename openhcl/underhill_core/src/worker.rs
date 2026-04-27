@@ -54,6 +54,14 @@ use crate::reference_time::ReferenceTime;
 use crate::servicing;
 use crate::servicing::ServicingState;
 use crate::servicing::transposed::OptionServicingInitState;
+#[cfg(feature = "storvsc-usermode")]
+use crate::storvsc_manager::StorvscDiskBounceConfig;
+#[cfg(feature = "storvsc-usermode")]
+use crate::storvsc_manager::StorvscDiskConfig;
+#[cfg(feature = "storvsc-usermode")]
+use crate::storvsc_manager::StorvscDiskResolver;
+#[cfg(feature = "storvsc-usermode")]
+use crate::storvsc_manager::StorvscManager;
 use crate::threadpool_vm_task_backend::ThreadpoolBackend;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
 use crate::vmgs_logger::GetVmgsLogger;
@@ -284,6 +292,8 @@ pub struct UnderhillEnvCfg {
     pub force_load_vtl0_image: Option<String>,
     /// Use the user-mode NVMe driver.
     pub nvme_vfio: bool,
+    /// Use the user-mode StorVSC driver.
+    pub storvsc_usermode: bool,
     /// Halt on a guest halt request instead of forwarding to the host.
     pub halt_on_guest_halt: bool,
     /// Leave sidecar VPs remote even if they hit exits.
@@ -2195,6 +2205,7 @@ async fn new_underhill_vm(
         &uevent_listener,
         &dps,
         env_cfg.nvme_vfio,
+        env_cfg.storvsc_usermode,
         is_restoring,
         default_io_queue_depth,
         env_cfg.config_timeout_in_seconds,
@@ -2270,6 +2281,37 @@ async fn new_underhill_vm(
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
             manager.client().clone(),
         ));
+
+        Some(manager)
+    } else {
+        None
+    };
+
+    // Create the usermode StorVSC manager if enabled.
+    #[cfg(feature = "storvsc-usermode")]
+    let storvsc_manager = if env_cfg.storvsc_usermode {
+        let save_restore_supported = !runtime_params.private_pool_ranges().is_empty();
+        let manager = StorvscManager::new(
+            &driver_source,
+            save_restore_supported,
+            isolation.is_isolated(),
+            servicing_state.storvsc_state.unwrap_or(None),
+            dma_manager.client_spawner(),
+        );
+
+        tracing::debug!(
+            CVM_ALLOWED,
+            storvsc_usermode = true,
+            save_restore_supported,
+            "StorVSC usermode manager initialized, setting up resolver"
+        );
+        let storvsc_resolver =
+            StorvscDiskResolver::new(manager.client().clone(), isolation.is_isolated());
+        resolver.add_async_resolver::<DiskHandleKind, _, StorvscDiskConfig, _>(
+            storvsc_resolver.clone(),
+        );
+        resolver
+            .add_async_resolver::<DiskHandleKind, _, StorvscDiskBounceConfig, _>(storvsc_resolver);
 
         Some(manager)
     } else {
@@ -2680,6 +2722,7 @@ async fn new_underhill_vm(
                     }
                     GuestMedia::Disk {
                         disk_type,
+                        ide_direct_disk_type,
                         read_only,
                         disk_parameters,
                     } => {
@@ -2697,7 +2740,18 @@ async fn new_underhill_vm(
                             ScsiControllerDisk::new(scsi_disk),
                         ));
 
-                        ide::DriveMedia::hard_disk(disk)
+                        // storvsc usermode backs both the IDE accelerator (VMBus SCSI,
+                        // GPA-direct) and port I/O paths. The port I/O path needs a
+                        // separate bounce-buffer disk because IDE CommandBuffer uses
+                        // synthetic GPNs that cannot be sent to the host via GPA-direct.
+                        let ide_disk = if let Some(bounce_type) = ide_direct_disk_type {
+                            disk_from_disk_type(*bounce_type, read_only, &resolver, &driver_source)
+                                .await?
+                        } else {
+                            disk
+                        };
+
+                        ide::DriveMedia::hard_disk(ide_disk)
                     }
                 };
 
@@ -3603,6 +3657,8 @@ async fn new_underhill_vm(
         uevent_listener,
         resolver,
         nvme_manager,
+        #[cfg(feature = "storvsc-usermode")]
+        storvsc_manager,
         emuplat_servicing: EmuplatServicing {
             get_backed_adjust_gpa_range: emuplat_adjust_gpa_range,
             rtc_local_clock: rtc_time_source.0,

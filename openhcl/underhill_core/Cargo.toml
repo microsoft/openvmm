@@ -21,6 +21,9 @@ dev_snp_ohcl_tio_support = ["tee_call/dev_snp_ohcl_tio_support"]
 # Enable VPCI device support
 vpci = []
 
+# Enable storvsc usermode disk backend
+storvsc-usermode = ["dep:disk_storvsc", "dep:storvsc_driver", "dep:storvsp_protocol"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
 vmotherboard = { workspace = true, features = [
     "dev_underhill_vga_proxy",
@@ -51,6 +54,7 @@ disk_backend_resources.workspace = true
 disk_blockdevice.workspace = true
 disk_get_vmgs.workspace = true
 disk_nvme.workspace = true
+disk_storvsc = { workspace = true, optional = true }
 firmware_uefi.workspace = true
 firmware_uefi_custom_vars.workspace = true
 gdma_defs.workspace = true
@@ -77,6 +81,8 @@ net_mana.workspace = true
 netvsp.workspace = true
 nvme_driver.workspace = true
 nvme_resources.workspace = true
+storvsc_driver = { workspace = true, optional = true }
+storvsp_protocol = { workspace = true, optional = true }
 openhcl_dma_manager.workspace = true
 scsi_core.workspace = true
 scsidisk.workspace = true

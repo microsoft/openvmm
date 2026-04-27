@@ -18,6 +18,8 @@ pub enum OpenhclRecipeCli {
     Aarch64,
     /// Aarch64 OpenHCL, using the dev kernel in VTL2
     Aarch64Devkern,
+    /// X64 OpenHCL, with storvsc usermode feature.
+    X64StorvscUsermode,
     /// X64 OpenHCL, with CVM support.
     X64Cvm,
     /// X64 OpenHCL, with CVM support using the dev kernel in VTL2
@@ -327,6 +329,7 @@ impl IntoPipeline for BuildIgvmCli {
         let recipe_arch = match recipe {
             OpenhclRecipeCli::X64
             | OpenhclRecipeCli::X64Devkern
+            | OpenhclRecipeCli::X64StorvscUsermode
             | OpenhclRecipeCli::X64Cvm
             | OpenhclRecipeCli::X64CvmDevkern
             | OpenhclRecipeCli::X64TestLinuxDirect
@@ -417,6 +420,7 @@ impl IntoPipeline for BuildIgvmCli {
                 OpenhclRecipeCli::X64TestLinuxDirectDevkern => {
                     OpenhclIgvmRecipe::X64TestLinuxDirectDevkern
                 }
+                OpenhclRecipeCli::X64StorvscUsermode => OpenhclIgvmRecipe::X64StorvscUsermode,
                 OpenhclRecipeCli::X64Cvm => OpenhclIgvmRecipe::X64Cvm,
                 OpenhclRecipeCli::X64CvmDevkern => OpenhclIgvmRecipe::X64CvmDevkern,
                 OpenhclRecipeCli::Aarch64 => OpenhclIgvmRecipe::Aarch64,

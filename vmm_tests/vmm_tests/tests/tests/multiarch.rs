@@ -18,6 +18,8 @@ use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 #[cfg(target_os = "linux")]
 use petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_NATIVE;
+#[cfg(windows)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STORVSC_USERMODE_X64;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
@@ -756,5 +758,40 @@ async fn vhost_user_blk_device<T>(
         "openvmm_vhost exited with non-zero status: {status}"
     );
 
+    Ok(())
+}
+
+/// Boot with the storvsc usermode driver.
+#[vmm_test(
+    openvmm_openhcl_linux_direct_x64,
+    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STORVSC_USERMODE_X64]
+)]
+async fn storvsc_usermode_boot<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_openhcl_command_line("OPENHCL_STORVSC_USERMODE=1")
+        .run()
+        .await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Reboot with the storvsc usermode driver.
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn storvsc_usermode_reboot(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = config
+        .with_openhcl_command_line("OPENHCL_STORVSC_USERMODE=1")
+        .run()
+        .await?;
+    agent.ping().await?;
+    agent.reboot().await?;
+    let agent = vm.wait_for_reset().await?;
+    agent.ping().await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }

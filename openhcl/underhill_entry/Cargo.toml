@@ -21,6 +21,7 @@ mi-secure = ["mimalloc/secure"]
 
 # Enable vpci support.
 vpci = ["underhill_core/vpci"]
+storvsc-usermode = ["underhill_core/storvsc-usermode"]
 
 # Enable TIO support for SEV-SNP
 dev_snp_ohcl_tio_support = ["underhill_core/dev_snp_ohcl_tio_support"]

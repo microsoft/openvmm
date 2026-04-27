@@ -22,6 +22,9 @@ uidevices = ["openvmm_hcl_resources/uidevices", "openvmm_hcl_resources/vnc_worke
 
 # Enable NVMe emulation.
 nvme = ["openvmm_hcl_resources/nvme", "vpci"]
+
+# Enable storvsc usermode disk backend.
+storvsc-usermode = ["underhill_entry/storvsc-usermode"]
 vpci = ["underhill_entry/vpci"]
 
 # Enable TIO support for SEV-SNP

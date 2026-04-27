@@ -20,6 +20,8 @@ mod nvme_manager;
 mod options;
 mod reference_time;
 mod servicing;
+#[cfg(feature = "storvsc-usermode")]
+mod storvsc_manager;
 mod threadpool_vm_task_backend;
 mod vmbus_relay_unit;
 mod vmgs_logger;
@@ -318,6 +320,7 @@ async fn launch_workers(
         emulated_serial_wait_for_rts: opt.serial_wait_for_rts,
         force_load_vtl0_image: opt.force_load_vtl0_image,
         nvme_vfio: opt.nvme_vfio,
+        storvsc_usermode: opt.storvsc_usermode,
         halt_on_guest_halt: opt.halt_on_guest_halt,
         no_sidecar_hotplug: opt.no_sidecar_hotplug,
         gdbstub: opt.gdbstub,

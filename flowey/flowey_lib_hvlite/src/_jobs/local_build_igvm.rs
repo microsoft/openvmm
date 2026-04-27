@@ -320,6 +320,7 @@ pub fn non_production_build_igvm_tool_out_name(recipe: &OpenhclIgvmRecipe) -> &'
         OpenhclIgvmRecipe::X64Devkern => "x64-devkern",
         OpenhclIgvmRecipe::X64TestLinuxDirect => "x64-test-linux-direct",
         OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => "x64-test-linux-direct-devkern",
+        OpenhclIgvmRecipe::X64StorvscUsermode => "x64-storvsc",
         OpenhclIgvmRecipe::X64Cvm => "x64-cvm",
         OpenhclIgvmRecipe::X64CvmDevkern => "x64-cvm-devkern",
         OpenhclIgvmRecipe::Aarch64 => "aarch64",

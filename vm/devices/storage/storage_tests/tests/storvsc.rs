@@ -137,14 +137,14 @@ async fn test_request_response(driver: DefaultDriver) {
 
     // Send SCSI write request
     let write_response = storvsc
-        .send_request(&generate_write_packet(0, 0, 0, 1, 4096), 4096, 4096)
+        .send_request(&generate_write_packet(0, 0, 0, 1, 4096), &[1], 4096)
         .await
         .unwrap();
     assert_eq!(write_response.scsi_status, ScsiStatus::GOOD);
 
     // Send SCSI read request
     let read_response = storvsc
-        .send_request(&generate_read_packet(0, 0, 0, 1, 4096), 8192, 4096)
+        .send_request(&generate_read_packet(0, 0, 0, 1, 4096), &[2], 4096)
         .await
         .unwrap();
     assert_eq!(read_response.scsi_status, ScsiStatus::GOOD);

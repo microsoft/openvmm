@@ -15,6 +15,7 @@ arbitrary = { workspace = true, optional = true, features = ["derive"] }
 scsi_defs.workspace = true
 
 guid.workspace = true
+inspect.workspace = true
 open_enum.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]

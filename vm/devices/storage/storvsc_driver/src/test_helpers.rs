@@ -4,10 +4,10 @@
 //! Helpers for unit tests.
 
 #![cfg_attr(not(test), expect(dead_code))]
-#![expect(missing_docs)]
 
 use crate::PacketError;
 use crate::Storvsc;
+use crate::StorvscAddResizeListenerRequest;
 use crate::StorvscCompletion;
 use crate::StorvscError;
 use crate::StorvscErrorInner;
@@ -215,21 +215,28 @@ fn parse_storvsp_packet<T: RingMem>(
     })
 }
 
+/// Test helper that wraps a storvsc driver for integration testing.
 pub struct TestStorvscWorker<T: Send + Sync + RingMem> {
     task: TaskControl<StorvscState, Storvsc<T>>,
     new_request_sender: Option<Sender<StorvscRequest>>,
+    add_resize_listener_sender: Option<Sender<StorvscAddResizeListenerRequest>>,
 }
 
 impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
+    /// Creates a new test storvsc worker.
     pub fn new() -> Self {
         Self {
             task: TaskControl::new(StorvscState),
             new_request_sender: None,
+            add_resize_listener_sender: None,
         }
     }
 
+    /// Starts the storvsc driver task on the given channel.
     pub fn start(&mut self, spawner: impl Spawn, channel: RawAsyncChannel<T>) {
         let (new_request_sender, new_request_receiver) = mesh_channel::channel::<StorvscRequest>();
+        let (add_resize_listener_sender, add_resize_listener_receiver) =
+            mesh_channel::channel::<StorvscAddResizeListenerRequest>();
         let storvsc = Storvsc::new(
             channel,
             storvsp_protocol::ProtocolVersion {
@@ -237,26 +244,32 @@ impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
                 reserved: 0,
             },
             new_request_receiver,
+            add_resize_listener_receiver,
         )
         .unwrap();
         self.new_request_sender = Some(new_request_sender);
+        self.add_resize_listener_sender = Some(add_resize_listener_sender);
 
         self.task.insert(spawner, "storvsc", storvsc);
         self.task.start();
     }
 
+    /// Stops the driver task.
     pub async fn stop(&mut self) {
         self.task.stop().await;
     }
 
+    /// Resumes a previously stopped driver task.
     pub async fn resume(&mut self) {
         self.task.start();
     }
 
+    #[expect(dead_code)]
     pub(crate) fn get_mut(&mut self) -> &Storvsc<T> {
         self.task.get_mut().1.unwrap()
     }
 
+    /// Stops and removes the driver task.
     pub async fn teardown(&mut self) {
         self.task.stop().await;
         self.task.remove();
@@ -291,14 +304,15 @@ impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
     pub async fn send_request(
         &mut self,
         request: &storvsp_protocol::ScsiRequest,
-        buf_gpa: u64,
+        buf_gpns: &[u64],
         byte_len: usize,
     ) -> Result<storvsp_protocol::ScsiRequest, StorvscError> {
         let (sender, mut receiver) = mesh_channel::channel::<StorvscCompletion>();
         let storvsc_request = StorvscRequest {
             request: *request,
-            buf_gpa,
+            buf_gpns: buf_gpns.to_vec(),
             byte_len,
+            gpn_offset: 0,
             completion_sender: sender,
         };
         match &self.new_request_sender {
