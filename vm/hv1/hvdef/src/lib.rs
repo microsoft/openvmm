@@ -745,6 +745,7 @@ open_enum! {
         HvCallPinGpaPageRanges = 0x0112,
         HvCallUnpinGpaPageRanges = 0x0113,
         HvCallQuerySparseGpaPageHostVisibility = 0x011C,
+        HvCallGetSnpVmpck = 0x0134,
 
         // Extended hypercalls.
         HvExtCallQueryCapabilities = 0x8001,
@@ -2486,6 +2487,15 @@ pub mod hypercall {
         pub reserved: u32,
         pub reference_time_in_100_ns: u64,
         pub tsc: u64,
+    }
+
+    /// The size of a VMPCK key in bytes.
+    pub const SNP_VMPCK_KEY_SIZE: usize = 0x20;
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct GetSnpVmpckOutput {
+        pub vmpck_key: [u8; SNP_VMPCK_KEY_SIZE],
     }
 }
 

@@ -567,6 +567,7 @@ pub(crate) mod ioctls {
     pub const HCL_CAP_VTL_RETURN_ACTION: u32 = 2;
     pub const HCL_CAP_DR6_SHARED: u32 = 3;
     pub const HCL_CAP_LOWER_VTL_TIMER_VIRT: u32 = 4;
+    pub const HCL_CAP_LOWER_VTL_SNP_GUEST_REQUEST: u32 = 5;
 
     ioctl_write_ptr!(
         /// Check for the presence of an extension capability.
@@ -1343,6 +1344,7 @@ pub struct Hcl {
     supports_register_page: bool,
     dr6_shared: bool,
     supports_lower_vtl_timer_virt: bool,
+    supports_lower_vtl_snp_guest_request: bool,
     isolation: IsolationType,
     snp_register_bitmap: [u8; 64],
     sidecar: Option<SidecarClient>,
@@ -1382,6 +1384,12 @@ impl Hcl {
     /// Returns true if timer virtualization for lower VTL is supported.
     pub fn supports_lower_vtl_timer_virt(&self) -> bool {
         self.supports_lower_vtl_timer_virt
+    }
+
+    /// Returns true if SNP guest requests from lower VTLs are intercepted and
+    /// forwarded to VTL2.
+    pub fn supports_lower_vtl_snp_guest_request(&self) -> bool {
+        self.supports_lower_vtl_snp_guest_request
     }
 }
 
@@ -1784,10 +1792,13 @@ impl Hcl {
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
         let supports_lower_vtl_timer_virt =
             mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
+        let supports_lower_vtl_snp_guest_request =
+            mshv_fd.check_extension(HCL_CAP_LOWER_VTL_SNP_GUEST_REQUEST)?;
         tracing::debug!(
             supports_vtl_ret_action,
             supports_register_page,
             supports_lower_vtl_timer_virt,
+            supports_lower_vtl_snp_guest_request,
             "HCL capabilities",
         );
 
@@ -1812,6 +1823,7 @@ impl Hcl {
             supports_register_page,
             dr6_shared,
             supports_lower_vtl_timer_virt,
+            supports_lower_vtl_snp_guest_request,
             isolation,
             snp_register_bitmap,
             sidecar,

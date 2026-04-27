@@ -21,6 +21,15 @@ pub const SEV_INTR_TYPE_SW: u32 = 4;
 pub const REG_TWEAK_BITMAP_OFFSET: usize = 0x100;
 pub const REG_TWEAK_BITMAP_SIZE: usize = 0x40;
 
+// VMPCK key offsets within the SNP secrets page.
+// See AMD SEV-SNP Firmware ABI Specification, Table 11 (Guest-Secrets Page Layout).
+pub const SNP_NUM_VMPCKS: usize = 4;
+pub const SNP_SECRETS_VMPCK0_OFFSET: usize = 0x20;
+pub const SNP_SECRETS_VMPCK1_OFFSET: usize = 0x40;
+pub const SNP_SECRETS_VMPCK2_OFFSET: usize = 0x60;
+pub const SNP_SECRETS_VMPCK3_OFFSET: usize = 0x80;
+pub const SNP_VMPCK_KEY_SIZE: usize = 0x20;
+
 /// Value for the `msg_version` member in [`SNP_GUEST_REQ_MSG_VERSION`].
 /// Use 1 for now.
 pub const SNP_GUEST_REQ_MSG_VERSION: u32 = 1;

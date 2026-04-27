@@ -73,6 +73,9 @@ use vmcore::vmtime::VmTimeAccess;
 use x86defs::RFlags;
 use x86defs::apic::X2APIC_MSR_BASE;
 use x86defs::cpuid::CpuidFunction;
+use x86defs::snp::SNP_NUM_VMPCKS;
+use x86defs::snp::SNP_SECRETS_VMPCK0_OFFSET;
+use x86defs::snp::SNP_VMPCK_KEY_SIZE;
 use x86defs::snp::SevAvicIncompleteIpiInfo1;
 use x86defs::snp::SevAvicIncompleteIpiInfo2;
 use x86defs::snp::SevAvicNoAccelInfo;
@@ -427,11 +430,18 @@ pub struct SnpBackedShared {
     #[inspect(skip)]
     guest_timer: hardware_cvm::VmTimeGuestTimer,
     secure_avic: bool,
+    /// VMPCK keys extracted from the SNP secrets page at partition initialization.
+    /// Indexed by VMPCK index (0-3), where each key is [`SNP_VMPCK_KEY_SIZE`] bytes.
+    #[inspect(skip)]
+    vmpck_keys: [[u8; SNP_VMPCK_KEY_SIZE]; SNP_NUM_VMPCKS],
+    /// Whether the hypervisor supports intercepting SNP guest requests from lower
+    /// VTLs and forwarding them to VTL2.
+    supports_lower_vtl_snp_guest_request: bool,
 }
 
 impl SnpBackedShared {
     pub(crate) fn new(
-        _partition_params: &UhPartitionNewParams<'_>,
+        partition_params: &UhPartitionNewParams<'_>,
         params: BackingSharedParams<'_>,
     ) -> Result<Self, Error> {
         let cvm = params.cvm_state.unwrap();
@@ -460,6 +470,18 @@ impl SnpBackedShared {
         // Configure timer interface for lower VTLs.
         let guest_timer = hardware_cvm::VmTimeGuestTimer;
 
+        // Extract the four VMPCK keys from the SNP secrets page.
+        let vmpck_keys = if let Some(secrets) = partition_params.snp_secrets {
+            let mut keys = [[0u8; SNP_VMPCK_KEY_SIZE]; SNP_NUM_VMPCKS];
+            for (i, key) in keys.iter_mut().enumerate() {
+                let offset = SNP_SECRETS_VMPCK0_OFFSET + i * SNP_VMPCK_KEY_SIZE;
+                key.copy_from_slice(&secrets[offset..offset + SNP_VMPCK_KEY_SIZE]);
+            }
+            keys
+        } else {
+            [[0u8; SNP_VMPCK_KEY_SIZE]; SNP_NUM_VMPCKS]
+        };
+
         Ok(Self {
             sev_status,
             invlpgb_count_max,
@@ -467,6 +489,8 @@ impl SnpBackedShared {
             secure_avic,
             cvm,
             guest_timer,
+            vmpck_keys,
+            supports_lower_vtl_snp_guest_request: params.hcl.supports_lower_vtl_snp_guest_request(),
         })
     }
 }
@@ -954,6 +978,7 @@ impl UhHypercallHandler<'_, '_, SnpBacked> {
             hv1_hypercall::HvSendSyntheticClusterIpiEx,
             hv1_hypercall::HvInstallIntercept,
             hv1_hypercall::HvAssertVirtualInterrupt,
+            hv1_hypercall::HvGetSnpVmpck,
         ],
     );
 
@@ -3120,6 +3145,23 @@ impl TlbFlushLockAccess for SnpTlbLockFlushAccess<'_> {
             }
             .set_wait_for_tlb_locks(vtl);
         }
+    }
+}
+
+impl hv1_hypercall::GetSnpVmpck for UhHypercallHandler<'_, '_, SnpBacked> {
+    fn get_snp_vmpck(&mut self) -> hvdef::HvResult<hvdef::hypercall::GetSnpVmpckOutput> {
+        if !self.vp.shared.supports_lower_vtl_snp_guest_request {
+            return Err(HvError::AccessDenied);
+        }
+
+        // The VMPCK index corresponds to the VMPL of the calling VTL:
+        // VTL0 runs at VMPL2, VTL1 runs at VMPL1.
+        let index = match self.intercepted_vtl {
+            GuestVtl::Vtl0 => 2,
+            GuestVtl::Vtl1 => 1,
+        };
+        let vmpck_key = self.vp.shared.vmpck_keys[index];
+        Ok(hvdef::hypercall::GetSnpVmpckOutput { vmpck_key })
     }
 }
 
