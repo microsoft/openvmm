@@ -335,7 +335,7 @@ impl MshvPartitionInner {
             notifications.set_sints(sints);
             self.vmfd
                 .register_deliverabilty_notifications(vp_index.index(), (*notifications).into())
-                .expect("Requesting deliverability is not a fallable operation");
+                .expect("Requesting deliverability is not a fallible operation");
         }
     }
 
@@ -376,36 +376,21 @@ impl MshvPartitionInner {
     // TODO: upstream an arch-independent version to mshv-ioctls.
     fn signal_event_direct(&self, vp: u32, sint: u8, flag: u16) -> Result<(), MshvError> {
         use mshv_bindings::mshv_root_hvcall;
+        use zerocopy::FromZeros;
 
-        #[repr(C)]
-        #[derive(Default)]
-        struct HvInputSignalEventDirect {
-            target_partition: u64,
-            target_vp: u32,
-            target_vtl: u8,
-            target_sint: u8,
-            flag_number: u16,
-        }
-
-        #[repr(C)]
-        #[derive(Default)]
-        struct HvOutputSignalEventDirect {
-            newly_signaled: u8,
-            _reserved: [u8; 7],
-        }
-
-        let input = HvInputSignalEventDirect {
+        let input = hvdef::hypercall::SignalEventDirect {
+            target_partition: 0,
             target_vp: vp,
+            target_vtl: 0,
             target_sint: sint,
             flag_number: flag,
-            ..Default::default()
         };
-        let mut output = HvOutputSignalEventDirect::default();
+        let mut output = hvdef::hypercall::SignalEventDirectOutput::new_zeroed();
 
         let mut args = mshv_root_hvcall {
             code: hvdef::HypercallCode::HvCallSignalEventDirect.0,
-            in_sz: size_of::<HvInputSignalEventDirect>() as u16,
-            out_sz: size_of::<HvOutputSignalEventDirect>() as u16,
+            in_sz: size_of::<hvdef::hypercall::SignalEventDirect>() as u16,
+            out_sz: size_of::<hvdef::hypercall::SignalEventDirectOutput>() as u16,
             in_ptr: std::ptr::addr_of!(input) as u64,
             out_ptr: std::ptr::addr_of_mut!(output) as u64,
             ..Default::default()
