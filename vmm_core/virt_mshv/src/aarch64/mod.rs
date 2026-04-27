@@ -584,6 +584,7 @@ impl virt::Processor for MshvProcessor<'_> {
                                     reset_type = ?info.reset_type,
                                     "unknown reset type"
                                 );
+                                return Err(VpHaltReason::Reset);
                             }
                         }
                     }
@@ -674,10 +675,7 @@ struct MshvHypercallHandler<'a> {
 impl MshvHypercallHandler<'_> {
     const DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
-        [
-            hv1_hypercall::HvPostMessage,
-            hv1_hypercall::HvSignalEvent,
-        ],
+        [hv1_hypercall::HvPostMessage, hv1_hypercall::HvSignalEvent],
     );
 }
 
