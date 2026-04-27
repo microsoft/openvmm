@@ -3,7 +3,7 @@
 
 //! Invoke `xtask fmt`
 
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 
 flowey_request! {

@@ -9,7 +9,6 @@ rust-version.workspace = true
 [dependencies]
 pci_core.workspace = true
 tdisp.workspace = true
-openhcl_tdisp.workspace = true
 vpci_protocol.workspace = true
 
 device_emulators.workspace = true
@@ -17,7 +16,6 @@ vmbus_channel.workspace = true
 vmbus_async.workspace = true
 vmbus_ring.workspace = true
 
-chipset_arc_mutex_device.workspace = true
 chipset_device.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
@@ -27,9 +25,7 @@ closeable_mutex.workspace = true
 guid.workspace = true
 inspect.workspace = true
 mesh.workspace = true
-pal_async.workspace = true
 task_control.workspace = true
-test_with_tracing.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
@@ -38,6 +34,12 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
+[dev-dependencies]
+chipset_arc_mutex_device.workspace = true
+openhcl_tdisp.workspace = true
+pal_async.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

@@ -361,11 +361,32 @@ where
 
 #[derive(clap::Parser)]
 struct Options {
-    /// Lists the required artifacts for all tests.
+    /// Lists the required artifacts for all tests in JSON format.
+    /// Use --tests-from-stdin to query artifacts for specific tests.
     #[clap(long)]
     list_required_artifacts: bool,
+    /// When used with --list-required-artifacts, read exact test names from
+    /// stdin (one per line) to query artifacts for specific tests only.
+    ///
+    /// Even though users can use nextest's filter logic to run a subset of
+    /// tests, due to nextest's architecture of running one test per binary we
+    /// cannot accept a nextest filter here directly. Instead, vmm-tests-run
+    /// must first call nextest with the desired filter to determine the exact
+    /// test names to pass via stdin, then ask petri what artifacts are required
+    /// for those tests.
+    #[clap(long, requires = "list_required_artifacts")]
+    tests_from_stdin: bool,
     #[clap(flatten)]
     inner: libtest_mimic::Arguments,
+}
+
+/// JSON output format for `--list-required-artifacts`.
+#[derive(serde::Serialize)]
+struct ArtifactListOutput {
+    /// List of unique required artifact IDs across all matching tests.
+    required: Vec<String>,
+    /// List of unique optional artifact IDs across all matching tests.
+    optional: Vec<String>,
 }
 
 /// Entry point for test binaries.
@@ -374,17 +395,62 @@ pub fn test_main(
 ) -> ! {
     let mut args = <Options as clap::Parser>::parse();
     if args.list_required_artifacts {
-        // FUTURE: write this in a machine readable format.
+        use std::collections::BTreeSet;
+
+        // Collect all artifacts from tests (all tests, or those specified via stdin)
+        let mut required_set = BTreeSet::new();
+        let mut optional_set = BTreeSet::new();
+
+        // If reading test names from stdin, collect them into a set for exact matching
+        let stdin_tests: Option<BTreeSet<String>> = if args.tests_from_stdin {
+            use std::io::BufRead;
+            let stdin = std::io::stdin();
+            let tests: BTreeSet<String> = stdin
+                .lock()
+                .lines()
+                .map_while(Result::ok)
+                .filter(|line| !line.is_empty())
+                .collect();
+            if tests.is_empty() {
+                eprintln!("warning: no test names provided on stdin");
+            }
+            Some(tests)
+        } else {
+            None
+        };
+
         for test in Test::all() {
-            println!("{}:", test.name());
-            for artifact in test.artifact_requirements.required_artifacts() {
-                println!("required: {artifact:?}");
+            let name = test.name();
+
+            // If reading from stdin, do exact matching; otherwise include all tests
+            let matches = match stdin_tests {
+                Some(ref stdin_tests) => stdin_tests.contains(&name),
+                None => true,
+            };
+
+            if matches {
+                for artifact in test.artifact_requirements.required_artifacts() {
+                    required_set.insert(format!("{artifact:?}"));
+                }
+                for artifact in test.artifact_requirements.optional_artifacts() {
+                    optional_set.insert(format!("{artifact:?}"));
+                }
             }
-            for artifact in test.artifact_requirements.optional_artifacts() {
-                println!("optional: {artifact:?}");
-            }
-            println!();
         }
+
+        // Remove from optional any artifacts that are required
+        let optional_set: BTreeSet<String> =
+            optional_set.difference(&required_set).cloned().collect();
+
+        let output = ArtifactListOutput {
+            required: required_set.into_iter().collect(),
+            optional: optional_set.into_iter().collect(),
+        };
+
+        println!(
+            "{}",
+            serde_json::to_string(&output).expect("JSON serialization failed")
+        );
         std::process::exit(0);
     }
 

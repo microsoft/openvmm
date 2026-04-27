@@ -11,9 +11,6 @@ rust-version.workspace = true
 ci = []
 sandbox_tests = []
 
-[dependencies]
-getrandom.workspace = true
-
 [target.'cfg(windows)'.dependencies]
 headervec.workspace = true
 pal_event.workspace = true
@@ -92,6 +89,9 @@ landlock.workspace = true
 fs-err.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+getrandom.workspace = true
 
 [lints]
 workspace = true

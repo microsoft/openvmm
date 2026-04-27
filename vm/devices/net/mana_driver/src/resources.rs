@@ -63,11 +63,25 @@ impl ResourceArena {
     }
 
     pub(crate) async fn destroy<T: DeviceBacking>(mut self, gdma: &mut GdmaDriver<T>) {
+        let skip_hwc = gdma.get_vf_reconfiguration_pending();
+        if skip_hwc {
+            tracing::info!(
+                count = self.resources.len(),
+                "skipping HWC resource teardown during VF reconfiguration"
+            );
+        }
         for resource in self.resources.drain(..).rev() {
             let r = match resource {
                 Resource::MemoryBlock(mem) => {
                     drop(ManuallyDrop::into_inner(mem));
                     Ok(())
+                }
+                // During VF reconfiguration, skip sending teardown commands for HWC resources.
+                // HWC requests will fail and the device reclaims resources on its own reset.
+                Resource::DmaRegion { .. } | Resource::Eq { .. } | Resource::BnicQueue { .. }
+                    if skip_hwc =>
+                {
+                    continue;
                 }
                 Resource::DmaRegion {
                     dev_id,

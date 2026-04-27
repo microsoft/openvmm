@@ -36,10 +36,10 @@ impl SimpleFlowNode for Node {
             move |rt| {
                 let mut dist_path = rt.read(openvmm_repo_path);
 
-                // Navigate to the petri/logview_new directory within the
+                // Navigate to the petri/logview directory within the
                 // OpenVMM repo
                 dist_path.push("petri");
-                dist_path.push("logview_new");
+                dist_path.push("logview");
 
                 rt.sh.change_dir(&dist_path);
 
@@ -51,7 +51,7 @@ impl SimpleFlowNode for Node {
                 dist_path.push("dist-ci");
                 if !dist_path.exists() {
                     anyhow::bail!(
-                        "logview_new build failed. Expected 'dist-ci' directory at {:?} but it was not found.",
+                        "logview build failed. Expected 'dist-ci' directory at {:?} but it was not found.",
                         dist_path
                     );
                 }

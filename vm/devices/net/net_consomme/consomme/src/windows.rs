@@ -2,18 +2,22 @@
 // Licensed under the MIT License.
 
 #![cfg(windows)]
-// UNSAFETY: Calling Win32 APIs to set TCP initial RTO and to check host IPv6
-// addresses.
+// UNSAFETY: Calling Win32 APIs to set TCP initial RTO, to configure UDP GSO
+// via setsockopt, and to check host IPv6 addresses.
 #![expect(unsafe_code)]
 
 use socket2::Socket;
+use std::mem::size_of;
 use std::net::Ipv6Addr;
+use std::net::SocketAddr;
+use std::net::UdpSocket;
 use std::os::windows::io::AsRawSocket;
 use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::NetworkManagement::IpHelper::MIB_UNICASTIPADDRESS_TABLE;
 use windows_sys::Win32::Networking::WinSock;
 use windows_sys::Win32::Networking::WinSock::AF_INET6;
+use windows_sys::Win32::Networking::WinSock::UDP_SEND_MSG_SIZE;
 
 pub fn disable_connection_retries(sock: &Socket) -> Result<(), i32> {
     const TCP_INITIAL_RTO_UNSPECIFIED_RTT: u16 = 0xffff;
@@ -94,4 +98,38 @@ pub fn host_has_ipv6_address() -> Result<bool, std::io::Error> {
     };
 
     Ok(has_ipv6)
+}
+
+/// Configure the `UDP_SEND_MSG_SIZE` socket option on `socket`.
+pub fn set_udp_gso_size(socket: &UdpSocket, size: u16) -> std::io::Result<()> {
+    let raw = socket.as_raw_socket() as WinSock::SOCKET;
+    let size_dword = size as u32;
+    // SAFETY: setsockopt with a valid DWORD optval per MSDN documentation for
+    // UDP_SEND_MSG_SIZE.
+    let ret = unsafe {
+        WinSock::setsockopt(
+            raw,
+            WinSock::IPPROTO_UDP,
+            UDP_SEND_MSG_SIZE,
+            std::ptr::from_ref(&size_dword).cast::<u8>(),
+            size_of::<u32>() as i32,
+        )
+    };
+    if ret == WinSock::SOCKET_ERROR {
+        return Err(std::io::Error::from_raw_os_error(
+            // SAFETY: WSAGetLastError is safe to call after a socket error.
+            unsafe { WinSock::WSAGetLastError() } as i32,
+        ));
+    }
+    Ok(())
+}
+
+/// Send `data` to `dst` via `socket`.
+pub fn send_to(
+    socket: &UdpSocket,
+    data: &[u8],
+    dst: &SocketAddr,
+    _: Option<u16>,
+) -> std::io::Result<usize> {
+    socket.send_to(data, *dst)
 }

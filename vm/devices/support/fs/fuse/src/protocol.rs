@@ -7,7 +7,6 @@
 //! FUSE protocol version 7.31.
 //!
 //! For more details, see fuse.h.
-#![allow(non_camel_case_types)]
 #![expect(unused_parens)]
 
 use bitfield_struct::bitfield;

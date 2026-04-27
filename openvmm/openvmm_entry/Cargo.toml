@@ -9,11 +9,7 @@ rust-version.workspace = true
 [features]
 default = ["ttrpc", "grpc"]
 
-# Enable locally compiling and statically linking a copy of OpenSSL.
-# The build process requires a C compiler, perl, and make.
-openssl-vendored = ["openssl/vendored"]
-
-encryption = ["vmotherboard/encryption"]
+vendored_crypto = ["crypto/vendored"]
 
 unstable_whp = ["virt_whp/unstable_whp", "whp/unstable_whp"]
 
@@ -49,6 +45,7 @@ net_backend_resources.workspace = true
 netvsp_resources.workspace = true
 nvme_resources.workspace = true
 scsidisk_resources.workspace = true
+vfio_assigned_device_resources.workspace = true
 serial_core.workspace = true
 serial_16550_resources.workspace = true
 serial_socket.workspace = true
@@ -66,11 +63,11 @@ vmgs_resources.workspace = true
 vm_manifest_builder.workspace = true
 vm_resource.workspace = true
 vtl2_settings_proto.workspace = true
-mcr_resources.workspace = true
 pcie_remote_resources.workspace = true
 
 clap_dyn_complete.workspace = true
 console_relay.workspace = true
+crypto = { workspace = true, optional = true }
 guid.workspace = true
 inspect.workspace = true
 inspect_proto.workspace = true
@@ -93,8 +90,6 @@ fs-err.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 getrandom.workspace = true
-openssl = { optional = true, workspace = true }
-parking_lot.workspace = true
 prost.workspace = true
 rustyline = { workspace = true, features = ["derive"] }
 shell-words.workspace = true
@@ -103,6 +98,9 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 unicycle.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+net_tap.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 vmswitch.workspace = true
@@ -125,5 +123,5 @@ build_rs_guest_arch.workspace = true
 workspace = true
 
 [package.metadata.xtask.unused-deps]
-# keep the ossl dep so we can specify the vendored feature
-ignored = ["openssl"]
+# keep the crypto dep so we can specify the vendored feature
+ignored = ["crypto"]

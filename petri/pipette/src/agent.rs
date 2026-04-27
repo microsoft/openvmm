@@ -199,6 +199,12 @@ async fn handle_request(
             })
             .await
         }
+        #[cfg(target_os = "linux")]
+        PipetteRequest::Mount(rpc) => rpc.handle_failable_sync(crate::mount::handle_mount),
+        #[cfg(not(target_os = "linux"))]
+        PipetteRequest::Mount(rpc) => {
+            rpc.handle_failable_sync(|_| anyhow::bail!("mount not supported on this platform"))
+        }
     }
 }
 

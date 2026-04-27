@@ -18,7 +18,6 @@ fuse.workspace = true
 inspect.workspace = true
 lx.workspace = true
 lxutil.workspace = true
-pal.workspace = true
 task_control.workspace = true
 
 anyhow.workspace = true
@@ -29,6 +28,7 @@ tracing.workspace = true
 zerocopy.workspace = true
 [target.'cfg(windows)'.dependencies]
 ntapi.workspace = true
+pal.workspace = true
 windows-sys = { workspace = true, features = [
 	"Wdk_Storage_FileSystem",
 	"Wdk_System_Memory",

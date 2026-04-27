@@ -154,21 +154,37 @@ impl AcpiTopology for Aarch64Topology {
     }
 
     fn extend_madt(topology: &ProcessorTopology<Self>, madt: &mut Vec<u8>) {
-        // GIC version 3.
+        use vm_topology::processor::aarch64::GicVersion;
+
+        let gic_acpi_version: u8 = match topology.gic_version() {
+            GicVersion::V2 { .. } => 2,
+            GicVersion::V3 { .. } => 3,
+        };
+
         madt.extend_from_slice(
-            acpi_spec::madt::MadtGicd::new(0, topology.gic_distributor_base(), 3).as_bytes(),
+            acpi_spec::madt::MadtGicd::new(0, topology.gic_distributor_base(), gic_acpi_version)
+                .as_bytes(),
         );
         for vp in topology.vps_arch() {
             let uid = vp.base.vp_index.index() + 1;
 
             // ACPI specifies that just the MPIDR affinity fields should be included.
             let mpidr = u64::from(vp.mpidr) & u64::from(aarch64defs::MpidrEl1::AFFINITY_MASK);
-            let gicr = topology.gic_redistributors_base()
-                + vp.base.vp_index.index() as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE;
-            let pmu_gsiv = topology.pmu_gsiv().unwrap_or(0);
-            madt.extend_from_slice(
-                acpi_spec::madt::MadtGicc::new(uid, mpidr, gicr, pmu_gsiv).as_bytes(),
-            );
+
+            let mut gicc = acpi_spec::madt::MadtGicc::new(uid, mpidr);
+
+            if let Some(gicr) = vp.gicr {
+                gicc.gicr_base_address = gicr.into();
+            }
+
+            if let GicVersion::V2 { cpu_interface_base } = topology.gic_version() {
+                gicc.base_address = cpu_interface_base.into();
+            }
+
+            if let Some(pmu_gsiv) = topology.pmu_gsiv() {
+                gicc.performance_monitoring_gsiv = pmu_gsiv.into();
+            }
+            madt.extend_from_slice(gicc.as_bytes());
         }
 
         // GIC v2m MSI frame for PCIe MSI support.

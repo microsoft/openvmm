@@ -3,7 +3,7 @@
 
 use flowey::pipeline::prelude::*;
 use restore_packages::RestorePackagesCli;
-use vmm_tests::VmmTestsCli;
+use vmm_tests_run::VmmTestsRunCli;
 
 pub mod build_docs;
 pub mod build_igvm;
@@ -11,7 +11,7 @@ pub mod build_reproducible;
 pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
 pub mod restore_packages;
-pub mod vmm_tests;
+pub mod vmm_tests_run;
 
 #[derive(clap::Subcommand)]
 #[expect(clippy::large_enum_variant)]
@@ -34,8 +34,8 @@ pub enum OpenvmmPipelines {
     /// Install tools needed to build OpenVMM
     RestorePackages(RestorePackagesCli),
 
-    /// Build and run VMM tests
-    VmmTests(VmmTestsCli),
+    /// Build and run VMM tests with automatic artifact discovery
+    VmmTestsRun(VmmTestsRunCli),
 }
 
 #[derive(clap::Subcommand)]
@@ -63,7 +63,7 @@ impl IntoPipeline for OpenvmmPipelines {
                 OpenvmmPipelinesCi::BuildDocs(cmd) => cmd.into_pipeline(pipeline_hint),
             },
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),
-            OpenvmmPipelines::VmmTests(cmd) => cmd.into_pipeline(pipeline_hint),
+            OpenvmmPipelines::VmmTestsRun(cmd) => cmd.into_pipeline(pipeline_hint),
         }
     }
 }

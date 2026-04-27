@@ -12,6 +12,7 @@ gdb = ["vmm_core/gdb"]
 unstable_whp = ["virt_whp/unstable_whp"]
 
 [dependencies]
+hypervisor_resources.workspace = true
 openvmm_defs.workspace = true
 openvmm_pcat_locator.workspace = true
 membacking.workspace = true
@@ -34,7 +35,6 @@ ide_resources.workspace = true
 igvm.workspace = true
 igvm_defs.workspace = true
 loader.workspace = true
-page_table.workspace = true
 virt.workspace = true
 vm_loader.workspace = true
 vmgs.workspace = true
@@ -52,6 +52,7 @@ chipset_legacy.workspace = true
 chipset_device.workspace = true
 chipset_device_resources.workspace = true
 chipset_device_worker.workspace = true
+chipset_resources.workspace = true
 closeable_mutex.workspace = true
 disk_backend.workspace = true
 firmware_pcat.workspace = true
@@ -77,7 +78,6 @@ virtio.workspace = true
 vmbus_channel.workspace = true
 vmbus_core.workspace = true
 vmbus_server.workspace = true
-vpci.workspace = true
 watchdog_core.workspace = true
 
 cache_topology.workspace = true
@@ -89,7 +89,6 @@ local_clock.workspace = true
 mesh_worker.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
-pal.workspace = true
 range_map_vec.workspace = true
 sparse_mmap.workspace = true
 
@@ -104,17 +103,16 @@ tracing.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+pal.workspace = true
+vpci.workspace = true
 vmgs_broker = { workspace = true, features = ["encryption"] }
 virt_whp = { workspace = true, optional = true }
 vmswitch.workspace = true
 
-[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
-virt_hvf = { workspace = true, optional = true }
-
 [target.'cfg(target_os = "linux")'.dependencies]
+vfio_assigned_device.workspace = true
+vfio_assigned_device_resources.workspace = true
 vmgs_broker = { workspace = true, features = ["encryption"] }
-virt_kvm = { workspace = true, optional = true }
-virt_mshv = { workspace = true, optional = true }
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

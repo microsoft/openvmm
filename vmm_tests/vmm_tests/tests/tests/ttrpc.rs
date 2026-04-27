@@ -35,6 +35,7 @@ fn test_ttrpc_interface(
 ) -> anyhow::Result<()> {
     let mut socket_path = std::env::temp_dir();
     socket_path.push(Guid::new_random().to_string());
+    let pidfile_path = std::env::temp_dir().join(format!("{}.pid", Guid::new_random()));
 
     tracing::info!(socket_path = %socket_path.display(), "launching OpenVMM with ttrpc");
 
@@ -42,6 +43,8 @@ fn test_ttrpc_interface(
     let mut child = std::process::Command::new(openvmm)
         .arg("--ttrpc")
         .arg(&socket_path)
+        .arg("--pidfile")
+        .arg(&pidfile_path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(stderr_write)
@@ -51,6 +54,14 @@ fn test_ttrpc_interface(
     let mut stdout = child.stdout.take().context("failed to take stdout")?;
     let mut b = [0];
     assert_eq!(stdout.read(&mut b)?, 0);
+
+    // Verify the pidfile was created with the correct PID.
+    let pid_content = std::fs::read_to_string(&pidfile_path).context("failed to read pidfile")?;
+    assert_eq!(
+        pid_content,
+        format!("{}\n", child.id()),
+        "pidfile should contain the child PID"
+    );
 
     DefaultPool::run_with(async |driver| {
         let driver = driver;
@@ -175,6 +186,12 @@ fn test_ttrpc_interface(
 
     child.wait()?;
     let _ = std::fs::remove_file(&socket_path);
+
+    // Verify the pidfile was cleaned up on exit.
+    assert!(
+        !pidfile_path.exists(),
+        "pidfile should be removed after exit"
+    );
 
     Ok(())
 }

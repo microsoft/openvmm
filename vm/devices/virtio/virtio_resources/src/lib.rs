@@ -149,3 +149,89 @@ pub mod console {
         const ID: &'static str = "virtio-console";
     }
 }
+
+#[cfg(unix)]
+pub mod vhost_user {
+    use mesh::MeshPayload;
+    use std::os::fd::OwnedFd;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
+
+    /// Handle for a generic vhost-user device backed by an external process.
+    ///
+    /// The socket must already be connected. The CLI layer connects
+    /// to the backend and passes the connected fd here.
+    ///
+    /// For device types with specific handles (FS, BLK), use those
+    /// instead. This handle is for devices identified only by their
+    /// numeric virtio device ID.
+    #[derive(MeshPayload)]
+    pub struct VhostUserGenericHandle {
+        /// Connected Unix socket fd to the vhost-user backend.
+        pub socket: OwnedFd,
+        /// Virtio device ID (e.g., 2 for block, 1 for net).
+        pub device_id: u16,
+        /// Per-queue sizes. Length determines the queue count.
+        /// Required — must be non-empty.
+        pub queue_sizes: Vec<u16>,
+    }
+
+    impl ResourceId<VirtioDeviceHandle> for VhostUserGenericHandle {
+        const ID: &'static str = "vhost-user-generic";
+    }
+
+    /// Handle for a vhost-user virtio-fs device.
+    ///
+    /// The frontend owns the config space (tag + num_request_queues)
+    /// and does not negotiate `VHOST_USER_PROTOCOL_F_CONFIG` with the
+    /// backend. The tag is specified by the host, matching the
+    /// behavior of cloud-hypervisor.
+    #[derive(MeshPayload)]
+    pub struct VhostUserFsHandle {
+        /// Connected Unix socket fd to the vhost-user backend.
+        pub socket: OwnedFd,
+        /// The mount tag exposed to the guest (max 36 bytes).
+        pub tag: String,
+        /// Number of request queues (default 1 in resolver).
+        pub num_queues: Option<u16>,
+        /// Queue size for all queues (default 1024 in resolver).
+        pub queue_size: Option<u16>,
+    }
+
+    impl ResourceId<VirtioDeviceHandle> for VhostUserFsHandle {
+        const ID: &'static str = "vhost-user-fs";
+    }
+
+    /// Handle for a vhost-user virtio-blk device.
+    #[derive(MeshPayload)]
+    pub struct VhostUserBlkHandle {
+        /// Connected Unix socket fd to the vhost-user backend.
+        pub socket: OwnedFd,
+        /// Number of queues (default 1 in resolver).
+        pub num_queues: Option<u16>,
+        /// Queue size for all queues (default 128 in resolver).
+        pub queue_size: Option<u16>,
+    }
+
+    impl ResourceId<VirtioDeviceHandle> for VhostUserBlkHandle {
+        const ID: &'static str = "vhost-user-blk";
+    }
+}
+
+pub mod vsock {
+    use mesh::MeshPayload;
+    use unix_socket::UnixListener;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
+
+    #[derive(MeshPayload)]
+    pub struct VirtioVsockHandle {
+        pub guest_cid: u64,
+        pub base_path: String,
+        pub listener: UnixListener,
+    }
+
+    impl ResourceId<VirtioDeviceHandle> for VirtioVsockHandle {
+        const ID: &'static str = "virtio-vsock";
+    }
+}
