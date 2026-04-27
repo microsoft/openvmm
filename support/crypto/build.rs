@@ -6,6 +6,7 @@
 fn main() {
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_OPENSSL");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_SYMCRYPT");
+    println!("cargo::rerun-if-env-changed=CARGO_FEATURE_VENDORED");
     println!("cargo::rerun-if-env-changed=CARGO_CFG_TARGET_OS");
 
     println!("cargo::rustc-check-cfg=cfg(native)");
@@ -14,7 +15,12 @@ fn main() {
 
     let openssl = std::env::var_os("CARGO_FEATURE_OPENSSL").is_some();
     let symcrypt = std::env::var_os("CARGO_FEATURE_SYMCRYPT").is_some();
+    let vendored = std::env::var_os("CARGO_FEATURE_VENDORED").is_some();
     let linux = std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "linux";
+
+    if vendored && symcrypt {
+        panic!("The symcrypt backend does not support vendoring");
+    }
 
     // Output a single config flag to indicate which backend should be used.
     match (openssl, symcrypt) {
