@@ -1655,13 +1655,23 @@ impl<'a> UhProtoPartition<'a> {
 
         #[cfg(guest_arch = "x86_64")]
         let cpuid = match params.isolation {
-            IsolationType::Snp => cvm_cpuid::CpuidResultsIsolationType::Snp {
-                cpuid_pages: params.cvm_cpuid_info.unwrap(),
-                vtom: params.vtom.unwrap(),
-                access_vsm: guest_vsm_available,
+            IsolationType::Snp => {
+                let secure_avic = x86defs::snp::SevStatusMsr::from(
+                    MsrDevice::new(0)
+                        .expect("open msr")
+                        .read_msr(x86defs::X86X_AMD_MSR_SEV)
+                        .expect("read msr"),
+                )
+                .secure_avic();
+                cvm_cpuid::CpuidResultsIsolationType::Snp {
+                    cpuid_pages: params.cvm_cpuid_info.unwrap(),
+                    vtom: params.vtom.unwrap(),
+                    access_vsm: guest_vsm_available,
+                    secure_avic,
+                }
+                .build()
+                .map_err(Error::CvmCpuid)?
             }
-            .build()
-            .map_err(Error::CvmCpuid)?,
 
             IsolationType::Tdx => cvm_cpuid::CpuidResultsIsolationType::Tdx {
                 topology: params.topology,

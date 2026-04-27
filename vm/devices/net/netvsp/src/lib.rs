@@ -2004,8 +2004,8 @@ enum WorkerError {
     InvalidRndisState,
     #[error("rndis message type not implemented")]
     RndisMessageTypeNotImplemented,
-    #[error("invalid TCP header offset")]
-    InvalidTcpHeaderOffset,
+    #[error("invalid TCP header offset {0}")]
+    InvalidTcpHeaderOffset(u16),
     #[error("cancelled")]
     Cancelled(task_control::Cancelled),
     #[error("tearing down because send/receive buffer is revoked")]
@@ -2577,13 +2577,20 @@ impl<T: RingMem> NetChannel<T> {
                         metadata.flags.set_is_ipv6(n.is_ipv6() && !n.is_ipv4());
                         metadata.l2_len = ETHERNET_HEADER_LEN as u8;
                         if n.tcp_header_offset() < metadata.l2_len as u16 {
-                            return Err(WorkerError::InvalidTcpHeaderOffset);
+                            return Err(WorkerError::InvalidTcpHeaderOffset(n.tcp_header_offset()));
                         }
                         metadata.l3_len = n.tcp_header_offset() - metadata.l2_len as u16;
+                        // Offset of `Data Offset` field in the TCP header (byte 12)
+                        const TCP_DOFF_BYTE_OFFSET: u32 = 12;
+                        let tcp_hdr_doff_offset =
+                            u32::from(n.tcp_header_offset()) + TCP_DOFF_BYTE_OFFSET;
+                        // Validate TCP header Data Offset 4 bit nibble within the packet data bounds.
+                        if tcp_hdr_doff_offset >= request.data_length {
+                            return Err(WorkerError::InvalidTcpHeaderOffset(n.tcp_header_offset()));
+                        }
                         metadata.l4_len = {
                             let mut reader = data.clone().reader(mem);
-                            reader
-                                .skip(metadata.l2_len as usize + metadata.l3_len as usize + 12)?;
+                            reader.skip(tcp_hdr_doff_offset as usize)?;
                             let mut b = 0;
                             reader.read(std::slice::from_mut(&mut b))?;
                             (b >> 4) * 4

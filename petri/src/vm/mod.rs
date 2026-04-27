@@ -226,6 +226,19 @@ pub struct PetriVmConfig {
     pub tpm: Option<TpmConfig>,
     /// Storage controllers and associated disks
     pub vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
+    /// PCIe NVMe drives.
+    pub pcie_nvme_drives: Vec<PcieNvmeDrive>,
+}
+
+/// PCIe NVMe drive configuration.
+#[derive(Debug)]
+pub struct PcieNvmeDrive {
+    /// PCIe root port name (e.g. "s0rc0rp0").
+    pub port_name: String,
+    /// NVMe namespace ID.
+    pub nsid: u32,
+    /// The drive to attach.
+    pub drive: Drive,
 }
 
 /// Static properties about the VM for convenience during contruction and
@@ -398,6 +411,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 vmgs: PetriVmgsResource::Ephemeral,
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
+                pcie_nvme_drives: Vec::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -470,6 +484,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 vmgs: PetriVmgsResource::Ephemeral,
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
+                pcie_nvme_drives: Vec::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -820,6 +835,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                     ),
                 BootDeviceType::NvmeViaScsi => todo!(),
                 BootDeviceType::NvmeViaNvme => todo!(),
+                BootDeviceType::PcieNvme => {
+                    self.config.pcie_nvme_drives.push(PcieNvmeDrive {
+                        port_name: "s0rc0rp0".into(),
+                        nsid: 1,
+                        drive: boot_drive,
+                    });
+                    self
+                }
             }
         } else {
             self
@@ -2347,6 +2370,8 @@ pub enum BootDeviceType {
     NvmeViaScsi,
     /// Boot from NVMe via NVMe to VTL2.
     NvmeViaNvme,
+    /// Boot from NVMe attached to a PCIe root port.
+    PcieNvme,
 }
 
 impl BootDeviceType {
@@ -2355,7 +2380,8 @@ impl BootDeviceType {
             BootDeviceType::None
             | BootDeviceType::Ide
             | BootDeviceType::Scsi
-            | BootDeviceType::Nvme => false,
+            | BootDeviceType::Nvme
+            | BootDeviceType::PcieNvme => false,
             BootDeviceType::IdeViaScsi
             | BootDeviceType::IdeViaNvme
             | BootDeviceType::ScsiViaScsi

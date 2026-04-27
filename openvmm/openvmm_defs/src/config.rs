@@ -353,8 +353,6 @@ pub struct VmbusConfig {
 #[derive(Debug, MeshPayload, Default)]
 pub struct HypervisorConfig {
     pub with_hv: bool,
-    pub user_mode_hv_enlightenments: bool,
-    pub user_mode_apic: bool,
     pub with_vtl2: Option<Vtl2Config>,
     pub with_isolation: Option<IsolationType>,
 }

@@ -3,9 +3,11 @@
 
 //! SHA-256 hashing.
 
-#[cfg(unix)]
+#![cfg(openssl)]
+
+#[cfg(openssl)]
 mod ossl;
-#[cfg(unix)]
+#[cfg(openssl)]
 use ossl as sys;
 
 /// Compute the SHA-256 hash of `data`.

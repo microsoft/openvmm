@@ -7,11 +7,15 @@
 //! and BAR MMIO accesses to a physical device opened via Linux VFIO. The device
 //! appears as a standard PCIe endpoint to the guest. MSI-X table and PBA
 //! accesses are intercepted and handled by a software emulator; all other BAR
-//! MMIO is proxied directly to hardware.
+//! MMIO regions are mapped directly into guest GPA space via a `MemoryMapper`,
+//! allowing the guest to access device registers without VM exits. A
+//! `MemoryMapper` is required for VFIO device assignment; mapping failures are
+//! fatal.
 
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
 
+pub mod manager;
 pub mod resolver;
 
 use anyhow::Context as _;
@@ -19,14 +23,18 @@ use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
+use guestmem::MappableGuestMemory;
+use guestmem::MemoryMapper;
 use inspect::Inspect;
 use inspect::InspectMut;
+use memory_range::MemoryRange;
 use pci_core::bar_mapping::BarMappings;
 use pci_core::capabilities::PciCapability;
 use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::msi::MsiTarget;
 use pci_core::spec::cfg_space;
 use pci_core::spec::cfg_space::HeaderType00;
+use std::ops::Range;
 use std::os::unix::fs::FileExt;
 use std::sync::Arc;
 use virt::irqfd::IrqFd;
@@ -35,18 +43,35 @@ use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
+use vmcore::vm_task::VmTaskDriverSource;
 
 /// VFIO BAR region information (offset and size within the device fd).
 #[derive(Debug, Clone, Copy, Inspect)]
-pub struct VfioBarInfo {
-    /// BAR index (0-5).
-    pub index: u8,
+struct VfioBarInfo {
     /// Offset within the VFIO device fd where this BAR region starts.
     #[inspect(hex)]
     pub vfio_offset: u64,
     /// Size of the BAR region in bytes.
     #[inspect(hex)]
     pub size: u64,
+}
+
+/// A direct mapping of a VFIO BAR sub-region into guest GPA space.
+///
+/// Created during device initialization for each mmappable sub-region
+/// of a BAR. The `memory` handle is mapped/unmapped from guest GPA space
+/// as the guest enables/disables MMIO via the PCI Command register.
+#[derive(Inspect)]
+struct BarDirectMap {
+    /// Guest memory mapping handle backed by the VFIO device fd.
+    #[inspect(skip)]
+    memory: Box<dyn MappableGuestMemory>,
+    /// BAR index this sub-region belongs to.
+    bar_index: u8,
+    /// The memory range within the BAR.
+    range: MemoryRange,
+    /// Whether this sub-region is currently mapped into guest GPA space.
+    mapped: bool,
 }
 
 /// MSI-X emulation state, discovered from the physical device's capabilities.
@@ -67,20 +92,12 @@ struct MsixEmulationState {
     vector_count: u16,
     /// BAR index containing the MSI-X table.
     table_bar: u8,
-    /// Byte offset of the MSI-X table within its BAR.
-    #[inspect(hex)]
-    table_offset: u32,
-    /// Total size of the MSI-X table in bytes (vector_count * 16).
-    #[inspect(hex)]
-    table_size: u64,
+    #[inspect(with = r#"|x| format!("{:#x}-{:#x}", x.start, x.end)"#)]
+    table_range: Range<u64>,
     /// BAR index containing the PBA.
     pba_bar: u8,
-    /// Byte offset of the PBA within its BAR.
-    #[inspect(hex)]
-    pba_offset: u32,
-    /// Total size of the PBA in bytes.
-    #[inspect(hex)]
-    pba_size: u64,
+    #[inspect(with = r#"|x| format!("{:#x}-{:#x}", x.start, x.end)"#)]
+    pba_range: Range<u64>,
     /// Whether MSI-X is currently enabled by the guest.
     enabled: bool,
 }
@@ -93,7 +110,7 @@ struct MsixEmulationState {
 /// intercepted and handled by a software emulator; all other BAR MMIO is
 /// proxied to the physical device via pread/pwrite on the VFIO device fd.
 #[derive(InspectMut)]
-pub struct VfioAssignedPciDevice {
+pub(crate) struct VfioAssignedPciDevice {
     /// The PCI address string (e.g., "0000:01:00.0") for diagnostics.
     #[inspect(display)]
     pci_id: String,
@@ -145,33 +162,19 @@ pub struct VfioAssignedPciDevice {
     /// MSI-X emulation state (None if device has no MSI-X capability).
     msix: Option<MsixEmulationState>,
 
-    /// VFIO container and group handles. These must be kept alive for the
-    /// lifetime of the device — dropping them would close the VFIO fds and
-    /// tear down IOMMU mappings. Declared after `vfio_device` so they are
-    /// dropped after the device fd.
-    #[inspect(skip)]
-    _vfio_container: vfio_sys::Container,
-    #[inspect(skip)]
-    _vfio_group: vfio_sys::Group,
-}
+    /// Whether the device supports VFIO_DEVICE_RESET (cached from device info
+    /// flags at init).
+    supports_reset: bool,
 
-/// Parameters for creating a [`VfioAssignedPciDevice`].
-pub struct VfioAssignedPciDeviceConfig {
-    /// PCI BDF string (e.g., "0000:01:00.0").
-    pub pci_id: String,
-    /// The opened VFIO device (from `vfio_sys::Group::open_device`).
-    pub vfio_device: vfio_sys::Device,
-    /// Config region info from `vfio_sys::Device::region_info(CONFIG_REGION_INDEX)`.
-    pub config_offset: u64,
-    /// Config region size.
-    pub config_size: u64,
-    /// VFIO region info per BAR. `None` if the BAR region does not exist or
-    /// has zero size.
-    pub bar_info: Vec<VfioBarInfo>,
-    /// VFIO container handle (must outlive the device).
-    pub vfio_container: vfio_sys::Container,
-    /// VFIO group handle (must outlive the device).
-    pub vfio_group: vfio_sys::Group,
+    /// Direct guest GPA mappings for BAR sub-regions that support mmap.
+    /// When MMIO is enabled, these are mapped to guest GPA space for direct
+    /// access without VM exits. When MMIO is disabled, they are unmapped.
+    #[inspect(iter_by_index)]
+    bar_direct_maps: Vec<BarDirectMap>,
+
+    /// VFIO container/group binding. Keeps the container and group fds alive
+    /// and notifies the container manager on drop.
+    binding: manager::VfioDeviceBinding,
 }
 
 impl VfioAssignedPciDevice {
@@ -180,16 +183,27 @@ impl VfioAssignedPciDevice {
     /// Reads BAR flags from config space and derives BAR masks from the VFIO
     /// region sizes (avoiding the write-all-ones probe cycle). Discovers MSI-X
     /// capability if present and creates a software emulator for it.
-    pub fn new(
-        config: VfioAssignedPciDeviceConfig,
-        register_mmio: &mut dyn chipset_device::mmio::RegisterMmioIntercept,
+    pub async fn new(
+        binding: manager::VfioDeviceBinding,
+        pci_id: String,
+        driver_source: &VmTaskDriverSource,
+        register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
         msi_target: &MsiTarget,
         irqfd: Arc<dyn IrqFd>,
+        memory_mapper: &dyn MemoryMapper,
     ) -> anyhow::Result<Self> {
-        let vfio_device = config.vfio_device;
-        let config_offset = config.config_offset;
-        let config_size = config.config_size;
-        let device_file = vfio_device.as_ref();
+        let vfio_device = binding
+            .group()
+            .open_device(&pci_id, &driver_source.simple())
+            .await
+            .with_context(|| format!("failed to open VFIO device {pci_id}"))?;
+
+        let config_info = vfio_device
+            .region_info(vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX)
+            .context("failed to get VFIO config region info")?;
+
+        let config_offset = config_info.offset;
+        let config_size = config_info.size;
 
         // Read BAR values and derive masks from VFIO region sizes.
         // This avoids the standard write-all-ones probe cycle — VFIO already
@@ -200,7 +214,7 @@ impl VfioAssignedPciDevice {
         let mut bars = [0u32; 6];
         for (i, bar) in bars.iter_mut().enumerate() {
             *bar = read_config_u32(
-                device_file,
+                vfio_device.as_ref(),
                 config_offset,
                 config_size,
                 HeaderType00::BAR0.0 + (i as u16) * 4,
@@ -209,8 +223,18 @@ impl VfioAssignedPciDevice {
 
         let mut bar_regions = [None; 6];
         let mut bar_mmio_controls = [(); 6].map(|_| None);
-        for info in config.bar_info {
-            let i = usize::from(info.index);
+        let mut bar_mmap_areas: [Vec<_>; 6] = Default::default();
+        let mut processed = 0;
+        while processed < 6 {
+            let i = processed;
+            processed += 1;
+            let Ok(info) = vfio_device.region_info(i as u32) else {
+                continue;
+            };
+            if info.size == 0 {
+                continue;
+            }
+
             let flags = bars[i] & 0xf;
             bar_flags[i] = flags;
             let encoded = cfg_space::BarEncodingBits::from(flags);
@@ -233,24 +257,89 @@ impl VfioAssignedPciDevice {
             bar_masks[i] = (mask64 as u32) | flags;
             if is_64bit {
                 bar_masks[i + 1] = (mask64 >> 32) as u32;
+                processed += 1;
             }
 
-            bar_regions[i] = Some(info);
+            bar_regions[i] = Some(VfioBarInfo {
+                vfio_offset: info.offset,
+                size: info.size,
+            });
+
             bar_mmio_controls[i] = Some(register_mmio.new_io_region(&format!("bar{i}"), info.size));
+            bar_mmap_areas[i] = vfio_device
+                .region_mmap_areas(i as u32)
+                .with_context(|| format!("failed to query VFIO mmap areas for BAR {i}"))?;
         }
 
         // Discover MSI-X capability from physical device config space.
-        let msix = discover_msix(device_file, config_offset, config_size, msi_target);
+        // This must happen BEFORE creating direct BAR mappings so we can
+        // exclude the MSI-X table/PBA regions.
+        let msix = discover_msix(vfio_device.as_ref(), config_offset, config_size, msi_target);
+
+        // Cache whether the device supports VFIO_DEVICE_RESET so we can skip
+        // the ioctl on every VM reset for devices that don't support it.
+        let supports_reset = vfio_device
+            .info()
+            .map(|info| info.flags.reset())
+            .unwrap_or(false);
+
+        // If the device has MSI-X, remove the table and PBA regions from
+        // the mmap areas so they remain trap-and-emulate.
+        if let Some(msix) = &msix {
+            subtract_msix_regions(&mut bar_mmap_areas, msix);
+        }
+
+        // Create direct BAR mappings for mmappable regions. Each
+        // mmappable sub-region gets a guest memory mapping backed by the
+        // VFIO device fd. These are mapped into guest GPA space when the
+        // guest enables MMIO, allowing direct hardware access without VM
+        // exits. Non-mmappable regions (e.g. MSI-X table/PBA) remain
+        // trap-and-emulate.
+        let mut bar_direct_maps = Vec::new();
+        for (i, areas) in bar_mmap_areas.iter().enumerate() {
+            let Some(region) = &bar_regions[i] else {
+                continue;
+            };
+            for &area in areas {
+                let name = format!("vfio-{pci_id}-bar{i}-{area}");
+                let (memory, mapped_region) = memory_mapper
+                    .new_region(area.len() as usize, name)
+                    .with_context(|| {
+                    format!("failed to create BAR {i} direct mapping region for {pci_id}")
+                })?;
+                mapped_region
+                    .map(
+                        0,
+                        &vfio_device,
+                        region.vfio_offset + area.start(),
+                        area.len() as usize,
+                        true,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "failed to map VFIO BAR {i} region at offset {:#x}",
+                            area.start()
+                        )
+                    })?;
+                bar_direct_maps.push(BarDirectMap {
+                    memory,
+                    bar_index: i as u8,
+                    range: area,
+                    mapped: false,
+                });
+            }
+        }
 
         tracing::info!(
-            pci_id = config.pci_id.as_str(),
+            pci_id = pci_id.as_str(),
             ?bar_masks,
             has_msix = msix.is_some(),
+            supports_reset,
             "VFIO assigned PCI device initialized"
         );
 
         Ok(Self {
-            pci_id: config.pci_id,
+            pci_id,
             vfio_device,
             irqfd,
             config_offset,
@@ -263,8 +352,9 @@ impl VfioAssignedPciDevice {
             bar_mmio_controls,
             bar_regions,
             msix,
-            _vfio_container: config.vfio_container,
-            _vfio_group: config.vfio_group,
+            supports_reset,
+            bar_direct_maps,
+            binding,
         })
     }
 
@@ -309,24 +399,16 @@ impl VfioAssignedPciDevice {
         let msix = self.msix.as_ref()?;
 
         // Check MSI-X table region.
-        if bar == msix.table_bar {
-            let table_start = msix.table_offset as u64;
-            let table_end = table_start + msix.table_size;
-            if offset >= table_start && offset < table_end {
-                // Emulator table starts at offset 0.
-                return Some(offset - table_start);
-            }
+        if bar == msix.table_bar && msix.table_range.contains(&offset) {
+            // Emulator table starts at offset 0.
+            return Some(offset - msix.table_range.start);
         }
 
         // Check PBA region.
-        if bar == msix.pba_bar {
-            let pba_start = msix.pba_offset as u64;
-            let pba_end = pba_start + msix.pba_size;
-            if offset >= pba_start && offset < pba_end {
-                // In the emulator, PBA starts right after the table.
-                let emu_pba_start = msix.table_size;
-                return Some(emu_pba_start + (offset - pba_start));
-            }
+        if bar == msix.pba_bar && msix.pba_range.contains(&offset) {
+            // In the emulator, PBA starts right after the table.
+            let emu_pba_start = msix.table_range.end - msix.table_range.start;
+            return Some(emu_pba_start + (offset - msix.pba_range.start));
         }
 
         None
@@ -380,6 +462,46 @@ impl VfioAssignedPciDevice {
             "MSI-X disabled: unmapped vectors"
         );
     }
+
+    /// Map directly-mapped BAR sub-regions into guest GPA space.
+    ///
+    /// Called when MMIO is enabled. For each active BAR, maps its mmappable
+    /// sub-regions at `bar_base_address + offset_in_bar`.
+    fn map_bars_to_guest(&mut self) {
+        for dm in &mut self.bar_direct_maps {
+            let bar_base = self
+                .active_bars
+                .get(dm.bar_index)
+                .expect("BAR with direct map must have an active mapping");
+            let gpa = bar_base + dm.range.start();
+            match dm.memory.map_to_guest(gpa, true) {
+                Ok(()) => dm.mapped = true,
+                Err(e) => {
+                    tracelimit::error_ratelimited!(
+                        bar = dm.bar_index,
+                        gpa,
+                        error = ?e,
+                        pci_id = self.pci_id.as_str(),
+                        "failed to direct-map BAR region to guest"
+                    );
+                }
+            }
+        }
+    }
+
+    fn disable_mmio(&mut self) {
+        // Unmap direct BAR mappings from guest, then unregister
+        // MMIO intercepts.
+        for dm in &mut self.bar_direct_maps {
+            dm.memory.unmap_from_guest();
+            dm.mapped = false;
+        }
+        for control in self.bar_mmio_controls.iter_mut().flatten() {
+            control.unmap();
+        }
+        self.active_bars = BarMappings::default();
+        self.mmio_enabled = false;
+    }
 }
 
 fn read_config_u32(
@@ -420,6 +542,53 @@ fn write_config_u32(
         "short config write at offset {offset:#x}: wrote {n} bytes"
     );
     Ok(())
+}
+
+/// Remove MSI-X table and PBA regions from the mmap areas for the
+/// corresponding BARs. This ensures those regions are NOT direct-mapped
+/// and remain trap-and-emulate so the software MSI-X emulator can
+/// intercept accesses.
+///
+/// Each mmap area that overlaps with the MSI-X table or PBA is split
+/// into up to two non-overlapping areas (before and after the excluded
+/// region). The exclusion zone is expanded to page boundaries since
+/// the resulting areas must be page-aligned for mmap.
+fn subtract_msix_regions(bar_mmap_areas: &mut [Vec<MemoryRange>; 6], msix: &MsixEmulationState) {
+    let page_size = page_size();
+
+    for (i, area) in bar_mmap_areas.iter_mut().enumerate() {
+        let i = i as u8;
+        if area.is_empty() || (msix.table_bar != i && msix.pba_bar != i) {
+            continue;
+        }
+        area.sort();
+        *area = memory_range::subtract_ranges(
+            memory_range::subtract_ranges(
+                area.iter().copied(),
+                if msix.table_bar == i {
+                    Some(MemoryRange::bounding_aligned(
+                        msix.table_range.clone(),
+                        page_size,
+                    ))
+                } else {
+                    None
+                },
+            ),
+            if msix.pba_bar == i {
+                Some(MemoryRange::bounding_aligned(
+                    msix.pba_range.clone(),
+                    page_size,
+                ))
+            } else {
+                None
+            },
+        )
+        .collect();
+    }
+}
+
+fn page_size() -> u64 {
+    vfio_sys::host_page_size()
 }
 
 /// Walk the PCI capabilities list to find an MSI-X capability. If found,
@@ -494,11 +663,9 @@ fn discover_msix(
                 cap_offset: cap_ptr,
                 vector_count: table_count,
                 table_bar: table_bir,
-                table_offset,
-                table_size,
+                table_range: table_offset as u64..table_offset as u64 + table_size,
                 pba_bar: pba_bir,
-                pba_offset,
-                pba_size,
+                pba_range: pba_offset as u64..pba_offset as u64 + pba_size,
                 enabled: false,
             });
         }
@@ -564,14 +731,52 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
         // Tear down MSI-X irqfd routes before resetting state.
         if self.msix.as_ref().is_some_and(|m| m.enabled) {
             self.msix_disable();
-            self.msix.as_mut().expect("msix must be present").enabled = false;
         }
-        // Unmap BAR MMIO regions.
-        for control in self.bar_mmio_controls.iter_mut().flatten() {
-            control.unmap();
+
+        self.disable_mmio();
+
+        // Destructure to ensure every field is explicitly considered for reset.
+        let Self {
+            pci_id,
+            vfio_device,
+            irqfd: _,         // handle — no reset needed
+            config_offset: _, // immutable device geometry
+            config_size: _,   // immutable device geometry
+            bar_masks: _,     // immutable device geometry
+            bars,
+            bar_flags,
+            mmio_enabled: _,      // handled by disable_mmio()
+            active_bars: _,       // handled by disable_mmio()
+            bar_mmio_controls: _, // handled by disable_mmio()
+            bar_direct_maps: _,   // handled by disable_mmio()
+            bar_regions: _,       // immutable device geometry
+            msix,
+            supports_reset,
+            binding: _, // lifetime handle — no reset needed
+        } = self;
+
+        // Reset emulated MSI-X table and capability to power-on defaults
+        // (all vectors masked, address/data zeroed). The capability and
+        // emulator share state via Arc<Mutex>.
+        if let Some(msix) = msix {
+            msix.enabled = false;
+            msix.capability.reset();
         }
-        self.mmio_enabled = false;
-        self.active_bars = BarMappings::default();
+
+        // Reset cached BAR addresses to power-on defaults (flags only, no
+        // address bits). The guest will re-probe and re-program BARs.
+        *bars = *bar_flags;
+
+        // Reset the physical device via VFIO so it starts in a clean state.
+        if *supports_reset {
+            if let Err(err) = vfio_device.reset() {
+                tracing::warn!(
+                    pci_id = pci_id.as_str(),
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "failed to reset VFIO device"
+                );
+            }
+        }
     }
 }
 
@@ -635,17 +840,15 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                             .expect("BAR MMIO control must be present")
                             .map(mapping.base_address);
                     }
+                    // Map directly-mapped BAR regions into guest GPA space.
+                    self.map_bars_to_guest();
+                    self.mmio_enabled = true;
                     tracing::debug!(pci_id = self.pci_id.as_str(), "MMIO enabled by guest");
                 } else if !new_mmio_enabled && self.mmio_enabled {
-                    // Unregister BAR address ranges.
-                    for control in self.bar_mmio_controls.iter_mut().flatten() {
-                        control.unmap();
-                    }
-                    self.active_bars = BarMappings::default();
+                    self.disable_mmio();
                     tracing::debug!(pci_id = self.pci_id.as_str(), "MMIO disabled by guest");
                 }
 
-                self.mmio_enabled = new_mmio_enabled;
                 self.write_phys_config(offset, value);
             }
             // BAR registers: mask and cache locally.

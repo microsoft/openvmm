@@ -355,6 +355,185 @@ open_enum! {
     }
 }
 
+open_enum! {
+    /// Partition property codes.
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum HvPartitionPropertyCode: u32 {
+        #![expect(non_upper_case_globals)]
+
+        // Privilege properties
+        PrivilegeFlags                       = 0x00010000,
+        SyntheticProcFeatures                = 0x00010001,
+        AllowedParentUserModeHypercalls      = 0x00010002,
+
+        // Scheduling properties
+        Suspend                                = 0x00020000,
+        CpuReserve                             = 0x00020001,
+        CpuCap                                 = 0x00020002,
+        CpuWeight                              = 0x00020003,
+        CpuGroupId                             = 0x00020004,
+        HierarchicalIntegratedSchedulerEnabled = 0x00020005,
+
+        // Time properties
+        TimeFreeze                           = 0x00030003,
+        ApicFrequency                        = 0x00030004,
+        ReferenceTime                        = 0x00030005,
+
+        // Debugging properties
+        DebugChannelId                       = 0x00040000,
+        DebugChannelId0                      = 0x00040001,
+        DebugChannelId1                      = 0x00040002,
+        DebugChannelId2                      = 0x00040003,
+
+        // Resource properties
+        VirtualTlbPageCount                  = 0x00050000,
+        VsmConfig                            = 0x00050001,
+        ZeroMemoryOnReset                    = 0x00050002,
+        ProcessorsPerSocket                  = 0x00050003,
+        NestedTlbSize                        = 0x00050004,
+        GpaPageAccessTracking                = 0x00050005,
+        VsmPermissionsDirtySinceLastQuery    = 0x00050006,
+        SgxLaunchControlConfig               = 0x00050007,
+        DefaultSgxLaunchControl0             = 0x00050008,
+        DefaultSgxLaunchControl1             = 0x00050009,
+        DefaultSgxLaunchControl2             = 0x0005000A,
+        DefaultSgxLaunchControl3             = 0x0005000B,
+        IsolationState                       = 0x0005000C,
+        IsolationControl                     = 0x0005000D,
+        AllocationId                         = 0x0005000E,
+        MonitoringId                         = 0x0005000F,
+        ImplementedPhysicalAddressBits       = 0x00050010,
+        NonArchitecturalCoreSharing          = 0x00050011,
+        HypercallDoorbellPage                = 0x00050012,
+        CppcRequestValue                     = 0x00050013,
+        IsolationPolicy                      = 0x00050014,
+        DmaCapableDevices                    = 0x00050015,
+        ProcessorsPerL3                      = 0x00050016,
+        UnimplementedMsrAction               = 0x00050017,
+        AmdNodesPerSocket                    = 0x00050018,
+        ReferenceTscPageActive               = 0x00050019,
+        AutoEoiEnabled                       = 0x0005001A,
+        L3CacheWays                          = 0x0005001B,
+        IsolationType                        = 0x0005001C,
+        PerfmonMode                          = 0x0005001D,
+        DepositStatus                        = 0x0005001E,
+        Mirroring                            = 0x0005001F,
+        MirrorState                          = 0x00050020,
+        MgmtVtlMaxMemorySections             = 0x00050021,
+        SevVmgexitOffloads                   = 0x00050022,
+        PenalizeBusLock                      = 0x00050023,
+        TopologyApicIdOptIn                  = 0x00050024,
+        CppcResourcePrioritiesValue          = 0x00050025,
+        PartitionDiagBufferConfig            = 0x00050026,
+        GicdBaseAddress                      = 0x00050028,
+        GitsTranslaterBaseAddress            = 0x00050029,
+        GicLpiIntIdBits                      = 0x0005002A,
+        GicPpiOverflowInterruptFromCntv      = 0x0005002B,
+        GicPpiOverflowInterruptFromCntp      = 0x0005002C,
+        GicPpiPerformanceMonitorsInterrupt   = 0x0005002D,
+        GicPpiPmbirq                         = 0x0005002E,
+        TdMigrationStreamCount               = 0x0005002F,
+        AutoSuspend                          = 0x00050030,
+        SintReservedInterruptId              = 0x00050031,
+        GpaPinningEnabled                    = 0x00050032,
+        TdMigrationMaxStreamCount            = 0x00050033,
+        TdMigrationNumMemScanContext         = 0x00050034,
+        TdMigrationMaxMemScanRanges          = 0x00050035,
+
+        // Compatibility properties
+        ProcessorVendor                      = 0x00060000,
+        ProcessorFeaturesDeprecated          = 0x00060001,
+        ProcessorXsaveFeatures               = 0x00060002,
+        ProcessorCLFlushSize                 = 0x00060003,
+        EnlightenmentModifications           = 0x00060004,
+        CompatibilityVersion                 = 0x00060005,
+        PhysicalAddressWidth                 = 0x00060006,
+        XsaveStates                          = 0x00060007,
+        MaxXsaveDataSize                     = 0x00060008,
+        ProcessorClockFrequency              = 0x00060009,
+        ProcessorFeatures0                   = 0x0006000A,
+        ProcessorFeatures1                   = 0x0006000B,
+        ProcessorCtrEl0                      = 0x0006000C,
+        ProcessorDczidEl0                    = 0x0006000D,
+        ProcessorIchVtrEl2                   = 0x0006000E,
+        ProcessorIdAa64Dfr0El1               = 0x0006000F,
+        RootProcessorFeatures0               = 0x00060010,
+        RootProcessorFeatures1               = 0x00060011,
+        RootProcessorXsaveFeatures           = 0x00060012,
+        RootSyntheticProcFeatures            = 0x00060013,
+        PhysicalAddressSize                  = 0x00060014,
+        FeatureBankCount                     = 0x00060015,
+        ProcessorIdAa64Dfr1El1               = 0x00060016,
+        ProcessorCntfrqEl0                   = 0x00060017,
+        MaxSveVectorLength                   = 0x00060018,
+        MaxSmeStreamingVectorLength          = 0x00060019,
+
+        // Guest software properties
+        GuestOsId                            = 0x00070000,
+
+        // Nested virtualization properties
+        ProcessorVirtualizationFeatures      = 0x00080000,
+        MaxHardwareIsolatedGuests            = 0x00080001,
+        SnpEnabled                           = 0x00080002,
+        NestedVmxBasic                       = 0x00080003,
+        NestedVmxPinbasedCtls                = 0x00080004,
+        NestedVmxProcbasedCtls               = 0x00080005,
+        NestedVmxExitCtls                    = 0x00080006,
+        NestedVmxEntryCtls                   = 0x00080007,
+        NestedVmxMisc                        = 0x00080008,
+        NestedVmxCr0Fixed0                   = 0x00080009,
+        NestedVmxCr0Fixed1                   = 0x0008000A,
+        NestedVmxCr4Fixed0                   = 0x0008000B,
+        NestedVmxCr4Fixed1                   = 0x0008000C,
+        NestedVmxVmcsEnum                    = 0x0008000D,
+        NestedVmxProcbasedCtls2              = 0x0008000E,
+        NestedVmxEptVpidCap                  = 0x0008000F,
+        NestedVmxTruePinbasedCtls            = 0x00080010,
+        NestedVmxTrueProcbasedCtls           = 0x00080011,
+        NestedVmxTrueExitCtls                = 0x00080012,
+        NestedVmxTrueEntryCtls               = 0x00080013,
+        NestedVmxProcbasedCtls3              = 0x00080014,
+        NestedVmxExitCtls2                   = 0x00080015,
+        VhState                              = 0x00080100,
+        MaxHierarchicalPartitionCount        = 0x00080101,
+        MaxHierarchicalVpCount               = 0x00080102,
+        StateTransferMode                    = 0x00080103,
+        MigrationAbortCleanupCount           = 0x00080104,
+        TdComprehensiveReset                 = 0x00080105,
+
+        // Extended properties with larger property values
+        InheritedDeviceDomainReservedRegions = 0x00090000,
+        TdMrConfigId                         = 0x00090001,
+        TdMrOwner                            = 0x00090002,
+        TdMrOwnerConfig                      = 0x00090003,
+        VNUMATopologyConfig                  = 0x00090004,
+        RootVpSharedPages                    = 0x00090005,
+        VmmCapabilities                      = 0x00090007,
+        CompletePartitionIntercept           = 0x00090008,
+        AssignableSyntheticProcFeatures      = 0x00090009,
+        HwIsolationTdxSupported              = 0x0009000A,
+        HwIsolationSevSupported              = 0x0009000B,
+        MigrationTdInfoHash                  = 0x0009000C,
+        MigrationTdBindingSlot               = 0x0009000D,
+        DisabledProcessorFeaturesEx          = 0x0009000E,
+        RootProcessorFeaturesEx              = 0x0009000F,
+        EnabledProcessorFeaturesEx           = 0x00090010,
+        PmuEventTypes                        = 0x00090011,
+        TdComprehensiveConfigure             = 0x00090012,
+    }
+}
+
+open_enum! {
+    /// Processor vendor as returned by [`HvPartitionPropertyCode::ProcessorVendor`].
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum HvProcessorVendor: u32 {
+        AMD    = 0x0000,
+        INTEL  = 0x0001,
+        HYGON  = 0x0002,
+        ARM    = 0x0010,
+    }
+}
+
 #[bitfield(u128)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvFeatures {
@@ -559,6 +738,7 @@ open_enum! {
         HvCallCheckSparseGpaPageVtlAccess = 0x00D4,
         HvCallAcceptGpaPages = 0x00D9,
         HvCallModifySparseGpaPageHostVisibility = 0x00DB,
+        HvCallGetVpCpuidValues = 0x00F4,
         HvCallRestorePartitionTime = 0x0103,
         HvCallMemoryMappedIoRead = 0x0106,
         HvCallMemoryMappedIoWrite = 0x0107,
@@ -2684,6 +2864,8 @@ registers! {
 
         // AMD SEV configuration MSRs
         SevControl = 0x00090040,
+        SevGhcbGpa = 0x00090041,
+        SevAvicGpa = 0x00090043,
 
         CrInterceptControl = 0x000E0000,
         CrInterceptCr0Mask = 0x000E0001,
@@ -3538,11 +3720,37 @@ pub struct HvRegisterVsmPartitionStatus {
     pub reserved: u64,
 }
 
+open_enum! {
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum HvSnpInterruptInjection : u8  {
+        #![allow(non_upper_case_globals)]
+        HvSnpRestricted = 0x0,
+        HvSnpNormal = 0x1,
+        HvSnpAlternate = 0x2,
+        HvSnpSecureAvic = 0x3,
+    }
+}
+
+// Support for bitfield structures.
+impl HvSnpInterruptInjection {
+    const fn from_bits(val: u8) -> Self {
+        HvSnpInterruptInjection(val)
+    }
+
+    const fn into_bits(self) -> u8 {
+        self.0
+    }
+}
+
 #[bitfield(u64)]
 pub struct HvRegisterGuestVsmPartitionConfig {
     #[bits(4)]
     pub maximum_vtl: u8,
-    #[bits(60)]
+    #[bits(2)]
+    pub vtl0_interrupt_injection: HvSnpInterruptInjection,
+    #[bits(2)]
+    pub vtl1_interrupt_injection: HvSnpInterruptInjection,
+    #[bits(56)]
     pub reserved: u64,
 }
 
@@ -4003,6 +4211,16 @@ pub struct HvX64RegisterSevControl {
     _rsvd1: u64,
     #[bits(52)]
     pub vmsa_gpa_page_number: u64,
+}
+
+#[bitfield(u64)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HvX64RegisterSevAvic {
+    pub enable_secure_apic: bool,
+    #[bits(11)]
+    _rsvd1: u64,
+    #[bits(52)]
+    pub avic_gpa_page_number: u64,
 }
 
 #[bitfield(u64)]

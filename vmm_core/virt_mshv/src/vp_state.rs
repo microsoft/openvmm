@@ -3,6 +3,7 @@
 
 use super::Error;
 use super::VcpuFdExt;
+use crate::ErrorInner;
 use crate::MshvProcessor;
 use hvdef::HvX64RegisterName;
 use hvdef::hypercall::HvRegisterAssoc;
@@ -35,7 +36,7 @@ impl MshvProcessor<'_> {
         self.runner
             .vcpufd
             .set_hvdef_regs(&assoc[..])
-            .map_err(Error::Register)?;
+            .map_err(ErrorInner::Register)?;
 
         Ok(())
     }
@@ -54,7 +55,7 @@ impl MshvProcessor<'_> {
         self.runner
             .vcpufd
             .get_hvdef_regs(&mut assoc[..])
-            .map_err(Error::Register)?;
+            .map_err(ErrorInner::Register)?;
 
         regs.set_values(assoc.iter().map(|assoc| assoc.value));
         Ok(regs)
@@ -74,10 +75,11 @@ impl MshvProcessor<'_> {
         self.runner
             .vcpufd
             .set_vp_state_ioctl(&vp_state)
-            .map_err(|e| Error::SetVpState {
-                error: e,
+            .map_err(|e| ErrorInner::SetVpState {
+                error: e.into(),
                 ty: ty as u8,
-            })
+            })?;
+        Ok(())
     }
 
     fn get_fixed_state<T: zerocopy::FromBytes>(&self, ty: u32) -> Result<T, Error> {
@@ -97,8 +99,8 @@ impl MshvProcessor<'_> {
         self.runner
             .vcpufd
             .get_vp_state_ioctl(&mut vp_state)
-            .map_err(|e| Error::GetVpState {
-                error: e,
+            .map_err(|e| ErrorInner::GetVpState {
+                error: e.into(),
                 ty: ty as u8,
             })?;
         Ok(buf)
@@ -240,7 +242,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         self.runner
             .vcpufd
             .get_hvdef_regs(&mut assoc)
-            .map_err(Error::Register)?;
+            .map_err(ErrorInner::Register)?;
         let apic_base = assoc[0].value.as_u64();
 
         // Get the LAPIC state page.
@@ -259,7 +261,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
                 HvX64RegisterName::ApicBase,
                 value.apic_base,
             ))])
-            .map_err(Error::Register)?;
+            .map_err(ErrorInner::Register)?;
 
         // Preserve the current NMI pending state across the restore.
         let nmi_pending = self.get_lapic()?.hv_apic_nmi_pending();

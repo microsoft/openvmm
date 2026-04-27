@@ -4,8 +4,9 @@
 //! Infrastructure for spawning tasks and issuing async IO related to VM
 //! activity.
 
-// UNSAFETY: Needed to implement the unsafe new_dyn_overlapped_file method.
-#![cfg_attr(windows, expect(unsafe_code))]
+// UNSAFETY: Needed to implement the unsafe new_dyn_overlapped_file method on
+// Windows and to implement the unsafe io_uring_submit method on Linux.
+#![cfg_attr(any(windows, target_os = "linux"), expect(unsafe_code))]
 
 use inspect::Inspect;
 use pal_async::driver::Driver;
@@ -44,6 +45,17 @@ impl VmTaskDriverSource {
         self.builder().build("")
     }
 
+    /// Returns a driver that dispatches to the current thread's executor.
+    ///
+    /// Use this when a shared resource (e.g., a disk) should use whatever
+    /// executor its caller is running on, rather than a fixed executor
+    /// captured at construction time.
+    pub fn current(&self) -> VmTaskDriver {
+        VmTaskDriver {
+            inner: self.backend.build_current(),
+        }
+    }
+
     /// Returns a builder for a custom VM task driver.
     pub fn builder(&self) -> VmTaskDriverBuilder<'_> {
         VmTaskDriverBuilder {
@@ -58,9 +70,14 @@ impl VmTaskDriverSource {
 pub trait BuildVmTaskDriver: Send + Sync {
     /// The associated driver type.
     type Driver: TargetedDriver;
+    /// The driver type for `build_current`.
+    type CurrentDriver: TargetedDriver;
 
     /// Builds a new driver that can drive IO and spawn tasks.
     fn build(&self, name: String, target_vp: Option<u32>, run_on_target: bool) -> Self::Driver;
+
+    /// Builds a driver that dispatches to the current thread's executor.
+    fn build_current(&self) -> Self::CurrentDriver;
 }
 
 /// Trait implemented by drivers built with [`BuildVmTaskDriver`].
@@ -121,6 +138,8 @@ trait DynVmBackend: Send + Sync {
         target_vp: Option<u32>,
         run_on_target: bool,
     ) -> Arc<dyn DynTargetedDriver>;
+
+    fn build_current(&self) -> Arc<dyn DynTargetedDriver>;
 }
 
 impl<T: BuildVmTaskDriver> DynVmBackend for T {
@@ -131,6 +150,10 @@ impl<T: BuildVmTaskDriver> DynVmBackend for T {
         run_on_target: bool,
     ) -> Arc<dyn DynTargetedDriver> {
         Arc::new(self.build(name, target_vp, run_on_target))
+    }
+
+    fn build_current(&self) -> Arc<dyn DynTargetedDriver> {
+        Arc::new(BuildVmTaskDriver::build_current(self))
     }
 }
 
@@ -278,8 +301,17 @@ impl Driver for VmTaskDriver {
     }
 
     #[cfg(target_os = "linux")]
-    fn io_uring_submit(&self) -> Option<&dyn pal_async::io_uring::IoUringSubmit> {
-        self.inner.driver().io_uring_submit()
+    fn io_uring_probe(&self, opcode: u8) -> bool {
+        self.inner.driver().io_uring_probe(opcode)
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn io_uring_submit(
+        &self,
+        sqe: pal_async::io_uring::Entry,
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<i32>> + Send + '_>> {
+        // SAFETY: passthru from caller
+        unsafe { self.inner.driver().io_uring_submit(sqe) }
     }
 }
 
@@ -313,8 +345,13 @@ impl<T> Inspect for SingleDriver<T> {
 
 impl<T: Driver + Spawn + Clone> BuildVmTaskDriver for SingleDriverBackend<T> {
     type Driver = SingleDriver<T>;
+    type CurrentDriver = SingleDriver<T>;
 
     fn build(&self, _name: String, _target_vp: Option<u32>, _run_on_target: bool) -> Self::Driver {
+        SingleDriver(self.0.clone())
+    }
+
+    fn build_current(&self) -> Self::CurrentDriver {
         SingleDriver(self.0.clone())
     }
 }
@@ -338,10 +375,17 @@ pub mod thread {
     use super::BuildVmTaskDriver;
     use super::TargetedDriver;
     use inspect::Inspect;
+    use loan_cell::LoanCell;
     use pal_async::DefaultDriver;
     use pal_async::DefaultPool;
     use pal_async::driver::Driver;
     use pal_async::task::Spawn;
+    use pal_async::task::TaskMetadata;
+    use std::sync::Arc;
+
+    thread_local! {
+        static CURRENT_DRIVER: LoanCell<DefaultDriver> = const { LoanCell::new() };
+    }
 
     /// A backend for [`VmTaskDriverSource`](super::VmTaskDriverSource) based on
     /// individual threads.
@@ -364,6 +408,7 @@ pub mod thread {
 
     impl BuildVmTaskDriver for ThreadDriverBackend {
         type Driver = ThreadDriver;
+        type CurrentDriver = CurrentThreadDriver;
 
         fn build(
             &self,
@@ -373,7 +418,15 @@ pub mod thread {
         ) -> Self::Driver {
             // Build a standalone thread for this device if a target VP was specified.
             if target_vp.is_some() {
-                let (_, driver) = DefaultPool::spawn_on_thread(name);
+                let pool = DefaultPool::new();
+                let driver = pool.driver();
+                let tls_driver = driver.clone();
+                std::thread::Builder::new()
+                    .name(name)
+                    .spawn(move || {
+                        CURRENT_DRIVER.with(|cell| cell.lend(&tls_driver, || pool.run()));
+                    })
+                    .unwrap();
                 ThreadDriver {
                     inner: driver,
                     has_dedicated_thread: true,
@@ -385,9 +438,15 @@ pub mod thread {
                 }
             }
         }
+
+        fn build_current(&self) -> Self::CurrentDriver {
+            CurrentThreadDriver {
+                default: self.default_driver.clone(),
+            }
+        }
     }
 
-    /// The driver for [`ThreadDriverBackend`].
+    /// A driver targeting a fixed executor thread.
     #[derive(Debug, Inspect)]
     pub struct ThreadDriver {
         #[inspect(skip)]
@@ -402,6 +461,133 @@ pub mod thread {
 
         fn driver(&self) -> &dyn Driver {
             &self.inner
+        }
+
+        fn retarget_vp(&self, _target_vp: u32) {}
+    }
+
+    /// A driver that dispatches to the current thread's registered executor.
+    ///
+    /// If the current thread has no registered executor (i.e., it is not a
+    /// thread spawned by [`ThreadDriverBackend`]), falls back to a default
+    /// driver.
+    #[derive(Inspect)]
+    pub struct CurrentThreadDriver {
+        #[inspect(skip)]
+        default: DefaultDriver,
+    }
+
+    impl CurrentThreadDriver {
+        fn with_driver<R>(&self, f: impl FnOnce(&DefaultDriver) -> R) -> R {
+            CURRENT_DRIVER.with(|cell| cell.borrow(|driver| f(driver.unwrap_or(&self.default))))
+        }
+    }
+
+    impl Driver for CurrentThreadDriver {
+        fn new_dyn_timer(&self) -> pal_async::driver::PollImpl<dyn pal_async::timer::PollTimer> {
+            self.with_driver(|d| d.new_dyn_timer())
+        }
+
+        #[cfg(unix)]
+        fn new_dyn_fd_ready(
+            &self,
+            fd: std::os::fd::RawFd,
+        ) -> std::io::Result<pal_async::driver::PollImpl<dyn pal_async::fd::PollFdReady>> {
+            self.with_driver(|d| d.new_dyn_fd_ready(fd))
+        }
+
+        #[cfg(unix)]
+        fn new_dyn_socket_ready(
+            &self,
+            socket: std::os::fd::RawFd,
+        ) -> std::io::Result<pal_async::driver::PollImpl<dyn pal_async::socket::PollSocketReady>>
+        {
+            self.with_driver(|d| d.new_dyn_socket_ready(socket))
+        }
+
+        #[cfg(windows)]
+        fn new_dyn_socket_ready(
+            &self,
+            socket: std::os::windows::io::RawSocket,
+        ) -> std::io::Result<pal_async::driver::PollImpl<dyn pal_async::socket::PollSocketReady>>
+        {
+            self.with_driver(|d| d.new_dyn_socket_ready(socket))
+        }
+
+        #[cfg(unix)]
+        fn new_dyn_wait(
+            &self,
+            fd: std::os::fd::RawFd,
+            read_size: usize,
+        ) -> std::io::Result<pal_async::driver::PollImpl<dyn pal_async::wait::PollWait>> {
+            self.with_driver(|d| d.new_dyn_wait(fd, read_size))
+        }
+
+        #[cfg(windows)]
+        fn new_dyn_wait(
+            &self,
+            handle: std::os::windows::io::RawHandle,
+        ) -> std::io::Result<pal_async::driver::PollImpl<dyn pal_async::wait::PollWait>> {
+            self.with_driver(|d| d.new_dyn_wait(handle))
+        }
+
+        #[cfg(windows)]
+        unsafe fn new_dyn_overlapped_file(
+            &self,
+            handle: std::os::windows::io::RawHandle,
+        ) -> std::io::Result<
+            pal_async::driver::PollImpl<dyn pal_async::windows::overlapped::IoOverlapped>,
+        > {
+            self.with_driver(|d| {
+                // SAFETY: passthru from caller
+                unsafe { d.new_dyn_overlapped_file(handle) }
+            })
+        }
+
+        #[cfg(target_os = "linux")]
+        fn io_uring_probe(&self, opcode: u8) -> bool {
+            self.with_driver(|d| d.io_uring_probe(opcode))
+        }
+
+        #[cfg(target_os = "linux")]
+        unsafe fn io_uring_submit(
+            &self,
+            sqe: pal_async::io_uring::Entry,
+        ) -> std::pin::Pin<Box<dyn Future<Output = std::io::Result<i32>> + Send + '_>> {
+            use pal_async::io_uring::{IoUringDriver, IoUringSubmit};
+            Box::pin(async move {
+                // We have to clone the driver, since the current driver may
+                // change across the lifetime of the async block. This is not
+                // very expensive, though--in practice this is an Arc refcount
+                // increment, and the driver is per-thread so there is no cache
+                // contention.
+                let driver = CURRENT_DRIVER.with(|cell| cell.borrow(|driver| driver.cloned()));
+                let driver = driver.as_ref().unwrap_or(&self.default);
+                // SAFETY: passthru from caller
+                unsafe {
+                    driver
+                        .io_uring_submitter()
+                        .ok_or(std::io::ErrorKind::Unsupported)?
+                        .submit(sqe)
+                        .await
+                }
+            })
+        }
+    }
+
+    impl Spawn for CurrentThreadDriver {
+        fn scheduler(&self, metadata: &TaskMetadata) -> Arc<dyn pal_async::task::Schedule> {
+            self.with_driver(|d| d.scheduler(metadata))
+        }
+    }
+
+    impl TargetedDriver for CurrentThreadDriver {
+        fn spawner(&self) -> &dyn Spawn {
+            self
+        }
+
+        fn driver(&self) -> &dyn Driver {
+            self
         }
 
         fn retarget_vp(&self, _target_vp: u32) {}

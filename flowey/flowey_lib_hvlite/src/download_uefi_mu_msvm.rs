@@ -100,15 +100,15 @@ impl FlowNodeWithConfig for Node {
         }
 
         let version = version.expect("local paths handled above");
-        let extract_zip_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
+        let extract_archive_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
 
         for (arch, out_vars) in reqs {
             let file_name = match arch {
-                CommonArch::X86_64 => "RELEASE-X64-artifacts.zip",
-                CommonArch::Aarch64 => "RELEASE-AARCH64-artifacts.zip",
+                CommonArch::X86_64 => "RELEASE-X64-VS2022-artifacts.tar.gz",
+                CommonArch::Aarch64 => "RELEASE-AARCH64-CLANGPDB-artifacts.tar.gz",
             };
 
-            let mu_msvm_zip = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
+            let mu_msvm_archive = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
                 repo_owner: "microsoft".into(),
                 repo_name: "mu_msvm".into(),
                 needs_auth: false,
@@ -117,7 +117,7 @@ impl FlowNodeWithConfig for Node {
                 path: v,
             });
 
-            let zip_file_version = format!("{version}-{file_name}");
+            let archive_file_version = format!("{version}-{file_name}");
 
             ctx.emit_rust_step(
                 {
@@ -130,17 +130,17 @@ impl FlowNodeWithConfig for Node {
                     )
                 },
                 |ctx| {
-                    let extract_zip_deps = extract_zip_deps.clone().claim(ctx);
+                    let extract_archive_deps = extract_archive_deps.clone().claim(ctx);
                     let out_vars = out_vars.claim(ctx);
-                    let mu_msvm_zip = mu_msvm_zip.claim(ctx);
+                    let mu_msvm_archive = mu_msvm_archive.claim(ctx);
                     move |rt| {
-                        let mu_msvm_zip = rt.read(mu_msvm_zip);
+                        let mu_msvm_archive = rt.read(mu_msvm_archive);
 
                         let extract_dir = flowey_lib_common::_util::extract::extract_zip_if_new(
                             rt,
-                            extract_zip_deps,
-                            &mu_msvm_zip,
-                            &zip_file_version,
+                            extract_archive_deps,
+                            &mu_msvm_archive,
+                            &archive_file_version,
                         )?;
 
                         let msvm_fd = extract_dir.join("FV/MSVM.fd");

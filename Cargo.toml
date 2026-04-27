@@ -65,7 +65,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.94"
+rust-version = "1.95"
 edition = "2024"
 
 [workspace.dependencies]
@@ -459,7 +459,7 @@ crc32fast = { version = "1.3.2", default-features = false }
 criterion = { version = "0.7", default-features = false }
 crossterm = { version = "0.29.0", default-features = false }
 ctrlc = "3.4.0"
-der = "0.7"
+der = "0.8"
 dhat = "0.3.3"
 dirs = "6.0"
 elfcore = "2.0.1"
@@ -540,7 +540,7 @@ range_map_vec = "0.2.0"
 resolv-conf = "0.7"
 rlimit = "0.10.1"
 roxmltree = "0.20.0"
-rsa = "0.9.10"
+rsa = { version = "0.10.0-rc.17", default-features = false }
 rusqlite = "0.37"
 rustc-hash = "2.1.1"
 rustyline = "17"
@@ -548,7 +548,7 @@ seccompiler = "0.5"
 serde = { version = "1.0.185", default-features = false }
 serde_json = { version = "1.0", default-features = false }
 serde_yaml = "0.9"
-sha2 = { version = "0.10.8", default-features = false }
+sha2 = { version = "0.11.0", default-features = false }
 shell-words = "1.1"
 signal-hook = { version = "0.3", default-features = false }
 slab = "0.4"

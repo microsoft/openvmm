@@ -5556,6 +5556,148 @@ async fn rndis_send_lso_packet(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn rndis_send_lso_packet_invalid_tcp_header_offset(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let initialize_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(initialize_complete.request_id, 123);
+    assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
+
+    assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
+
+    // Send an LSO packet with tcp_header_offset pointing beyond the packet
+    // data so that the Data Offset byte (byte 12 of the TCP header) cannot
+    // be read. This should be rejected with Status::FAILURE.
+    let data = vec![0xCC; 60];
+    let mem = channel.nic.mock_vmbus.memory.clone();
+    let gpadl_view = channel
+        .gpadl_map
+        .clone()
+        .view()
+        .map(channel.send_buf_id)
+        .unwrap();
+    let mut buf_writer = PagedRanges::new(&*gpadl_view).writer(&mem);
+
+    let per_packet_info_offset = size_of::<rndisprot::Packet>() as u32;
+    let per_packet_info_length =
+        size_of::<rndisprot::PerPacketInfo>() as u32 + size_of::<rndisprot::TcpLsoInfo>() as u32;
+    let message_length = size_of::<rndisprot::MessageHeader>()
+        + size_of::<rndisprot::Packet>()
+        + per_packet_info_length as usize
+        + data.len();
+
+    buf_writer
+        .write(
+            rndisprot::MessageHeader {
+                message_type: rndisprot::MESSAGE_TYPE_PACKET_MSG,
+                message_length: message_length as u32,
+            }
+            .as_bytes(),
+        )
+        .unwrap();
+
+    buf_writer
+        .write(
+            rndisprot::Packet {
+                data_offset: per_packet_info_offset + per_packet_info_length,
+                data_length: data.len() as u32,
+                oob_data_offset: 0,
+                oob_data_length: 0,
+                num_oob_data_elements: 0,
+                per_packet_info_offset,
+                per_packet_info_length,
+                vc_handle: 0,
+                reserved: 0,
+            }
+            .as_bytes(),
+        )
+        .unwrap();
+
+    // tcp_header_offset = 100 means the TCP header starts at byte 100, so the
+    // Data Offset nibble is at byte 112. With only 60 bytes of data this is
+    // out of bounds.
+    const INVALID_TCP_HEADER_OFFSET: u16 = 100;
+    const NORMAL_MTU: u32 = 1460;
+    let lso_info = rndisprot::TcpLsoInfo(NORMAL_MTU | ((INVALID_TCP_HEADER_OFFSET as u32) << 20));
+
+    buf_writer
+        .write(
+            rndisprot::PerPacketInfo {
+                size: size_of::<rndisprot::PerPacketInfo>() as u32
+                    + size_of::<rndisprot::TcpLsoInfo>() as u32,
+                typ: rndisprot::PPI_LSO,
+                per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+            }
+            .as_bytes(),
+        )
+        .unwrap();
+    buf_writer.write(lso_info.as_bytes()).unwrap();
+    buf_writer.write(data.as_bytes()).unwrap();
+
+    let message = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET,
+        },
+        data: protocol::Message1SendRndisPacket {
+            channel_type: protocol::DATA_CHANNEL_TYPE,
+            send_buffer_section_index: 0xffffffff,
+            send_buffer_section_size: 0,
+        },
+        padding: &[],
+    };
+
+    let gpadl_map_view = channel
+        .gpadl_map
+        .clone()
+        .view()
+        .map(channel.send_buf_id)
+        .unwrap();
+    let gpa_range = gpadl_map_view.first().unwrap().subrange(0, message_length);
+    channel
+        .write(OutgoingPacket {
+            transaction_id: channel.transaction_id,
+            packet_type: OutgoingPacketType::GpaDirect(&[gpa_range]),
+            payload: &message.payload(),
+        })
+        .await;
+    channel.transaction_id += 1;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::FAILURE);
+}
+
+#[async_test]
 async fn rndis_send_tcp_checksum_packet(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));

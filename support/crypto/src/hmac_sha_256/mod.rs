@@ -3,9 +3,11 @@
 
 //! HMAC-SHA-256 message authentication.
 
-#[cfg(unix)]
+#![cfg(openssl)]
+
+#[cfg(openssl)]
 mod ossl;
-#[cfg(unix)]
+#[cfg(openssl)]
 use ossl as sys;
 
 use thiserror::Error;

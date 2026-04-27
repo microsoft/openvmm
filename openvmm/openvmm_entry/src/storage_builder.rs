@@ -131,7 +131,7 @@ impl StorageBuilder {
         !self.vtl0_nvme_namespaces.is_empty() || !self.underhill_nvme_luns.is_empty()
     }
 
-    pub fn add(
+    pub async fn add(
         &mut self,
         vtl: DeviceVtl,
         underhill: Option<UnderhillDiskSource>,
@@ -144,16 +144,17 @@ impl StorageBuilder {
             if vtl != DeviceVtl::Vtl0 {
                 anyhow::bail!("underhill can only offer devices to vtl0");
             }
-            self.add_underhill(source.into(), target, kind, is_dvd, read_only)?;
+            self.add_underhill(source.into(), target, kind, is_dvd, read_only)
+                .await?;
         } else {
-            self.add_inner(vtl, target, kind, is_dvd, read_only)?;
+            self.add_inner(vtl, target, kind, is_dvd, read_only).await?;
         }
         Ok(())
     }
 
     /// Returns the "sub device path" for assigning this into Underhill, or
     /// `None` if Underhill can't use this device as a source.
-    fn add_inner(
+    async fn add_inner(
         &mut self,
         vtl: DeviceVtl,
         target: DiskLocation,
@@ -161,7 +162,7 @@ impl StorageBuilder {
         is_dvd: bool,
         read_only: bool,
     ) -> anyhow::Result<Option<u32>> {
-        let disk = disk_open(kind, read_only || is_dvd)?;
+        let disk = disk_open(kind, read_only || is_dvd).await?;
         let location = match target {
             DiskLocation::Ide(channel, device) => {
                 let guest_media = if is_dvd {
@@ -280,7 +281,7 @@ impl StorageBuilder {
         Ok(location)
     }
 
-    fn add_underhill(
+    async fn add_underhill(
         &mut self,
         source: DiskLocation,
         target: DiskLocation,
@@ -290,7 +291,8 @@ impl StorageBuilder {
     ) -> anyhow::Result<()> {
         let vtl = self.openhcl_vtl.context("openhcl not configured")?;
         let sub_device_path = self
-            .add_inner(vtl, source.clone(), kind, is_dvd, read_only)?
+            .add_inner(vtl, source.clone(), kind, is_dvd, read_only)
+            .await?
             .context("source device not supported by underhill")?;
 
         let (device_type, device_path) = match source {

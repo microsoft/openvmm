@@ -209,12 +209,13 @@ impl BlockDevice {
         bounce_buffer_tracker: Option<Arc<BounceBufferTracker>>,
         always_bounce: bool,
     ) -> Result<BlockDevice, NewDeviceError> {
-        let uring = driver.io_uring_submit().ok_or(NewDeviceError::NoIoUring)?;
-        assert!(uring.probe(opcode::Read::CODE));
-        assert!(uring.probe(opcode::Write::CODE));
-        assert!(uring.probe(opcode::Readv::CODE));
-        assert!(uring.probe(opcode::Writev::CODE));
-        assert!(uring.probe(opcode::Fsync::CODE));
+        if !driver.io_uring_probe(opcode::Read::CODE) {
+            return Err(NewDeviceError::NoIoUring);
+        }
+        assert!(driver.io_uring_probe(opcode::Write::CODE));
+        assert!(driver.io_uring_probe(opcode::Readv::CODE));
+        assert!(driver.io_uring_probe(opcode::Writev::CODE));
+        assert!(driver.io_uring_probe(opcode::Fsync::CODE));
 
         let metadata = file.metadata().map_err(DiskError::Io)?;
 
@@ -275,12 +276,6 @@ impl BlockDevice {
         };
 
         Ok(device)
-    }
-
-    fn uring(&self) -> &dyn pal_async::io_uring::IoUringSubmit {
-        self.driver
-            .io_uring_submit()
-            .expect("driver does not support io-uring")
     }
 
     /// Use a box to avoid embedding a large `TrackedBounceBuffer` directly in
@@ -545,7 +540,7 @@ impl DiskIo for BlockDevice {
         // the returned future and will not be freed before it completes
         // or is dropped (which aborts).
         let bytes_read = unsafe {
-            self.uring().submit(
+            self.driver.io_uring_submit(
                 opcode::Readv::new(
                     types::Fd(self.file.as_raw_fd()),
                     io_vecs.as_ptr().cast(),
@@ -602,7 +597,7 @@ impl DiskIo for BlockDevice {
         // the returned future and will not be freed before it completes
         // or is dropped (which aborts).
         let bytes_written = unsafe {
-            self.uring().submit(
+            self.driver.io_uring_submit(
                 opcode::Writev::new(
                     types::Fd(self.file.as_raw_fd()),
                     io_vecs.as_ptr().cast::<libc::iovec>(),
@@ -626,8 +621,8 @@ impl DiskIo for BlockDevice {
     async fn sync_cache(&self) -> Result<(), DiskError> {
         // SAFETY: No data buffers.
         unsafe {
-            self.uring()
-                .submit(opcode::Fsync::new(types::Fd(self.file.as_raw_fd())).build())
+            self.driver
+                .io_uring_submit(opcode::Fsync::new(types::Fd(self.file.as_raw_fd())).build())
         }
         .await
         .map_err(|err| self.map_io_error(err))?;

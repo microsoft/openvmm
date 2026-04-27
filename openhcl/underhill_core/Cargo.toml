@@ -23,7 +23,6 @@ vpci = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 vmotherboard = { workspace = true, features = [
-    "encryption",
     "dev_underhill_vga_proxy",
     "dev_winbond_super_io_and_floppy_stub",
 ] }
@@ -139,7 +138,7 @@ x86defs.workspace = true
 safe_intrinsics.workspace = true
 debug_ptr.workspace = true
 guid.workspace = true
-crypto = { workspace = true, features = ["vendored"] }
+crypto = { workspace = true, features = ["vendored", "openssl"] }
 inspect.workspace = true
 kmsg.workspace = true
 local_clock.workspace = true
@@ -197,5 +196,5 @@ build_rs_guest_arch.workspace = true
 workspace = true
 
 [package.metadata.xtask.unused-deps]
-# keep the crypto dep so we can specify the vendored feature
+# keep the crypto dep so we can specify the vendored and openssl features
 ignored = ["crypto"]

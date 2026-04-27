@@ -369,8 +369,8 @@ impl IoUringSubmit for AffinitizedThreadpool {
 
     unsafe fn submit(
         &self,
-        sqe: io_uring::squeue::Entry,
-    ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<i32>> + Send + '_>> {
+        sqe: pal_async::io_uring::Entry,
+    ) -> impl Future<Output = io::Result<i32>> + Send + '_ {
         // SAFETY: caller guarantees the SQE references valid memory.
         unsafe { self.current_driver().initiator().submit(sqe) }
     }
@@ -669,8 +669,10 @@ impl TimerDriver for ThreadpoolDriver {
     }
 }
 
-impl pal_async::driver::IoUringDriver for ThreadpoolDriver {
-    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit> {
+impl pal_async::io_uring::IoUringDriver for ThreadpoolDriver {
+    type Submitter = IoInitiator;
+
+    fn io_uring_submitter(&self) -> Option<&IoInitiator> {
         Some(self.client(None).initiator())
     }
 }
@@ -771,8 +773,10 @@ impl TimerDriver for RetargetableDriver {
     }
 }
 
-impl pal_async::driver::IoUringDriver for RetargetableDriver {
-    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit> {
+impl pal_async::io_uring::IoUringDriver for RetargetableDriver {
+    type Submitter = IoInitiator;
+
+    fn io_uring_submitter(&self) -> Option<&IoInitiator> {
         Some(self.inner.current_driver().initiator())
     }
 }

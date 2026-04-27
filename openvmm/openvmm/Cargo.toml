@@ -20,7 +20,6 @@ default = [
 ]
 
 # see the `openvmm_entry` crate for more info on these features
-encryption = ["openvmm_entry/encryption"]
 gdb = ["openvmm_resources/gdb"]
 vendored_crypto = ["openvmm_entry/vendored_crypto"]
 tpm = ["openvmm_resources/tpm"]

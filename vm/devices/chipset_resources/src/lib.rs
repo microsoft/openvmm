@@ -29,6 +29,22 @@ pub mod i8042 {
     }
 }
 
+pub mod pic {
+    //! Resource definitions for the PIC (dual 8259 Programmable Interrupt Controller).
+
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// A handle to a dual 8259 PIC (Programmable Interrupt Controller) device.
+    #[derive(MeshPayload)]
+    pub struct PicDeviceHandle;
+
+    impl ResourceId<ChipsetDeviceHandleKind> for PicDeviceHandle {
+        const ID: &'static str = "pic";
+    }
+}
+
 pub mod pit {
     //! Resource definitions for the PIT (Programmable Interval Timer).
 
@@ -109,6 +125,25 @@ pub mod battery {
                 ac_online: true,
             }
         }
+    }
+}
+
+pub mod piix4_pci_isa_bridge {
+    //! Resource definitions for the PIIX4 PCI-ISA bridge device.
+
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// A handle to the PIIX4 PCI-to-ISA bridge (PCI device function 0).
+    #[derive(MeshPayload)]
+    pub struct Piix4PciIsaBridgeDeviceHandle;
+
+    /// The fixed BDF used by the PIIX4 PCI-ISA bridge in the Gen1 chipset.
+    pub const PIIX4_PCI_ISA_BRIDGE_BDF: (u8, u8, u8) = (0, 7, 0);
+
+    impl ResourceId<ChipsetDeviceHandleKind> for Piix4PciIsaBridgeDeviceHandle {
+        const ID: &'static str = "piix4PciIsaBridge";
     }
 }
 

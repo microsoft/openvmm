@@ -111,7 +111,7 @@ async fn do_main(driver: DefaultDriver) -> anyhow::Result<()> {
                 #[cfg(target_os = "linux")]
                 HypervisorOpt::Kvm => state.run_host_vmm(virt_kvm::Kvm::new()?, test).await,
                 #[cfg(all(target_os = "linux", guest_arch = "x86_64"))]
-                HypervisorOpt::Mshv => state.run_host_vmm(virt_mshv::LinuxMshv, test).await,
+                HypervisorOpt::Mshv => state.run_host_vmm(virt_mshv::LinuxMshv::new()?, test).await,
                 #[cfg(target_os = "linux")]
                 HypervisorOpt::MshvVtl => {
                     state
@@ -119,7 +119,17 @@ async fn do_main(driver: DefaultDriver) -> anyhow::Result<()> {
                         .await
                 }
                 #[cfg(windows)]
-                HypervisorOpt::Whp => state.run_host_vmm(virt_whp::Whp, test).await,
+                HypervisorOpt::Whp => {
+                    state
+                        .run_host_vmm(
+                            virt_whp::Whp {
+                                user_mode_apic: state.state.opts.disable_offloads,
+                                offload_enlightenments: !state.state.opts.disable_offloads,
+                            },
+                            test,
+                        )
+                        .await
+                }
                 #[cfg(target_os = "macos")]
                 HypervisorOpt::Hvf => state.run_host_vmm(virt_hvf::HvfHypervisor, test).await,
             })
