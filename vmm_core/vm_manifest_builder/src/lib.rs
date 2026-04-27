@@ -255,7 +255,6 @@ impl VmManifestBuilder {
                     self.serial.unwrap_or_else(|| [(); 4].map(|_| None)),
                 );
                 result.chipset = BaseChipsetManifest {
-                    with_generic_cmos_rtc: false,
                     with_generic_ioapic: true,
                     with_generic_isa_dma: true,
                     with_generic_isa_floppy: false,
@@ -269,7 +268,6 @@ impl VmManifestBuilder {
                     with_hyperv_power_management: false,
                     with_hyperv_vga: !self.proxy_vga,
                     with_i440bx_host_pci_bridge: true,
-                    with_piix4_cmos_rtc: true,
                     with_piix4_pci_bus: true,
                     with_piix4_power_management: true,
                     with_underhill_vga_proxy: self.proxy_vga,
@@ -287,7 +285,6 @@ impl VmManifestBuilder {
             BaseChipsetType::UnenlightenedLinuxDirect => {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
-                    with_generic_cmos_rtc: is_x86,
                     with_generic_ioapic: is_x86,
                     with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
@@ -301,7 +298,6 @@ impl VmManifestBuilder {
                     with_hyperv_power_management: is_x86,
                     with_hyperv_vga: false,
                     with_i440bx_host_pci_bridge: false,
-                    with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
                     with_piix4_power_management: false,
                     with_underhill_vga_proxy: false,
@@ -329,7 +325,6 @@ impl VmManifestBuilder {
             BaseChipsetType::HypervGen2Uefi | BaseChipsetType::HyperVGen2LinuxDirect => {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
-                    with_generic_cmos_rtc: is_x86,
                     with_generic_ioapic: is_x86,
                     with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
@@ -343,7 +338,6 @@ impl VmManifestBuilder {
                     with_hyperv_power_management: is_x86,
                     with_hyperv_vga: false,
                     with_i440bx_host_pci_bridge: false,
-                    with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
                     with_piix4_power_management: false,
                     with_underhill_vga_proxy: false,

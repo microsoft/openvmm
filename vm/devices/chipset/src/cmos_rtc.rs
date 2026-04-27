@@ -6,6 +6,8 @@
 
 #![warn(missing_docs)]
 
+pub mod resolver;
+
 use self::spec::CmosReg;
 use self::spec::ENABLE_OSCILLATOR_CONTROL;
 use self::spec::StatusRegA;

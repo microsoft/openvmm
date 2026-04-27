@@ -5,8 +5,118 @@
 
 #![forbid(unsafe_code)]
 
+use local_clock::InspectableLocalClock;
+use vm_resource::CanResolveTo;
+use vm_resource::ResourceKind;
+
 /// The PCI bus name used by the Gen1 (i440BX + PIIX4) chipset.
 pub const LEGACY_CHIPSET_PCI_BUS_NAME: &str = "i440bx";
+
+/// Resource kind for CMOS RTC time-source handles.
+pub enum CmosRtcTimeSourceHandleKind {}
+
+impl ResourceKind for CmosRtcTimeSourceHandleKind {
+    const NAME: &'static str = "cmos_rtc_time_source";
+}
+
+/// Resolved runtime time source for CMOS RTC devices.
+pub struct ResolvedCmosRtcTimeSource(pub Box<dyn InspectableLocalClock>);
+
+impl CanResolveTo<ResolvedCmosRtcTimeSource> for CmosRtcTimeSourceHandleKind {
+    type Input<'a> = ();
+}
+
+pub mod cmos_rtc_time_source {
+    //! Resource definitions and resolvers for CMOS RTC time sources.
+
+    use super::CmosRtcTimeSourceHandleKind;
+    use super::ResolvedCmosRtcTimeSource;
+    use local_clock::LocalClockDelta;
+    use local_clock::SystemTimeClock;
+    use mesh::MeshPayload;
+    use vm_resource::ResolveResource;
+    use vm_resource::ResourceId;
+    use vm_resource::declare_static_resolver;
+
+    /// A time source backed by the host system clock with a configurable
+    /// millisecond delta.
+    #[derive(MeshPayload)]
+    pub struct SystemTimeClockHandle {
+        /// Offset from system time in milliseconds.
+        pub delta_milliseconds: i64,
+    }
+
+    impl ResourceId<CmosRtcTimeSourceHandleKind> for SystemTimeClockHandle {
+        const ID: &'static str = "system_time_clock";
+    }
+
+    /// Resolver for [`SystemTimeClockHandle`].
+    pub struct SystemTimeClockResolver;
+
+    declare_static_resolver! {
+        SystemTimeClockResolver,
+        (CmosRtcTimeSourceHandleKind, SystemTimeClockHandle),
+    }
+
+    impl ResolveResource<CmosRtcTimeSourceHandleKind, SystemTimeClockHandle>
+        for SystemTimeClockResolver
+    {
+        type Output = ResolvedCmosRtcTimeSource;
+        type Error = std::convert::Infallible;
+
+        fn resolve(
+            &self,
+            resource: SystemTimeClockHandle,
+            (): (),
+        ) -> Result<Self::Output, Self::Error> {
+            Ok(ResolvedCmosRtcTimeSource(Box::new(SystemTimeClock::new(
+                LocalClockDelta::from_millis(resource.delta_milliseconds),
+            ))))
+        }
+    }
+}
+
+pub mod cmos_rtc {
+    //! Resource definitions for CMOS RTC devices.
+
+    use super::CmosRtcTimeSourceHandleKind;
+    use mesh::MeshPayload;
+    use vm_resource::Resource;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// Handle for the generic MC146818-compatible CMOS RTC device.
+    #[derive(MeshPayload)]
+    pub struct GenericCmosRtcDeviceHandle {
+        /// IRQ line to signal RTC device events.
+        pub irq: u32,
+        /// Which CMOS RAM register contains the century register.
+        pub century_reg_idx: u8,
+        /// Initial state of CMOS RAM.
+        pub initial_cmos: Option<[u8; 256]>,
+        /// Runtime clock source for this RTC instance.
+        pub time_source: Resource<CmosRtcTimeSourceHandleKind>,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for GenericCmosRtcDeviceHandle {
+        const ID: &'static str = "genericCmosRtc";
+    }
+
+    /// Handle for the PIIX4 CMOS RTC device.
+    #[derive(MeshPayload)]
+    pub struct Piix4CmosRtcDeviceHandle {
+        /// Initial state of CMOS RAM.
+        pub initial_cmos: Option<[u8; 256]>,
+        /// Whether enlightened interrupts are enabled.
+        pub enlightened_interrupts: bool,
+        /// Runtime clock source for this RTC instance.
+        pub time_source: Resource<CmosRtcTimeSourceHandleKind>,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for Piix4CmosRtcDeviceHandle {
+        const ID: &'static str = "piix4CmosRtc";
+    }
+}
 
 pub mod i8042 {
     //! Resource definitions for the i8042 PS2 keyboard/mouse controller.

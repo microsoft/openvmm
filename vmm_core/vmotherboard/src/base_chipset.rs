@@ -214,7 +214,6 @@ impl<'a> BaseChipsetBuilder<'a> {
 
         // oh boy, time to build all the devices!
         let options::BaseChipsetDevices {
-            deps_generic_cmos_rtc,
             deps_generic_ioapic,
             deps_generic_isa_dma,
             deps_generic_isa_floppy,
@@ -228,7 +227,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_hyperv_power_management,
             deps_hyperv_vga,
             deps_i440bx_host_pci_bridge,
-            deps_piix4_cmos_rtc,
             deps_piix4_pci_bus,
             deps_piix4_power_management,
             deps_underhill_vga_proxy,
@@ -415,44 +413,6 @@ impl<'a> BaseChipsetBuilder<'a> {
                         secondary_channel_line_interrupt,
                     )
                 })?;
-        }
-
-        if let Some(options::dev::GenericCmosRtcDeps {
-            irq,
-            time_source,
-            century_reg_idx,
-            initial_cmos,
-        }) = deps_generic_cmos_rtc
-        {
-            builder.arc_mutex_device("rtc").add(|services| {
-                cmos_rtc::Rtc::new(
-                    time_source,
-                    services.new_line(IRQ_LINE_SET, "interrupt", irq),
-                    services.register_vmtime(),
-                    century_reg_idx,
-                    initial_cmos,
-                    false,
-                )
-            })?;
-        }
-
-        if let Some(options::dev::Piix4CmosRtcDeps {
-            time_source,
-            initial_cmos,
-            enlightened_interrupts,
-        }) = deps_piix4_cmos_rtc
-        {
-            builder.arc_mutex_device("piix4-rtc").add(|services| {
-                // hard-coded to IRQ line 8, as per PIIX4 spec
-                let rtc_interrupt = services.new_line(IRQ_LINE_SET, "interrupt", 8);
-                chipset_legacy::piix4_cmos_rtc::Piix4CmosRtc::new(
-                    time_source,
-                    rtc_interrupt,
-                    services.register_vmtime(),
-                    initial_cmos,
-                    enlightened_interrupts,
-                )
-            })?;
         }
 
         // The ACPI GPE0 line to use for generation ID. This must match the
@@ -1110,7 +1070,6 @@ pub mod options {
         }
 
         devices {
-            generic_cmos_rtc:            dev::GenericCmosRtcDeps,
             generic_ioapic:              dev::GenericIoApicDeps,
             generic_isa_dma:             dev::GenericIsaDmaDeps,
             generic_isa_floppy:          dev::GenericIsaFloppyDeps,
@@ -1127,7 +1086,6 @@ pub mod options {
 
             i440bx_host_pci_bridge:      dev::I440BxHostPciBridgeDeps,
 
-            piix4_cmos_rtc:              dev::Piix4CmosRtcDeps,
             piix4_pci_bus:               dev::Piix4PciBusDeps,
             piix4_power_management:      dev::Piix4PowerManagementDeps,
 
@@ -1303,29 +1261,6 @@ pub mod options {
             pub num_entries: u8,
             /// Trait allowing the IO-APIC device to assert VM interrupts.
             pub routing: Box<dyn ioapic::IoApicRouting>,
-        }
-
-        /// Generic MC146818A compatible RTC + CMOS device
-        pub struct GenericCmosRtcDeps {
-            /// IRQ line to signal RTC device events
-            pub irq: u32,
-            /// A source of "real time"
-            pub time_source: Box<dyn InspectableLocalClock>,
-            /// Which CMOS RAM register contains the century register
-            pub century_reg_idx: u8,
-            /// Initial state of CMOS RAM
-            pub initial_cmos: Option<[u8; 256]>,
-        }
-
-        /// PIIX4 "flavored" MC146818A compatible RTC + CMOS device
-        pub struct Piix4CmosRtcDeps {
-            /// A source of "real time"
-            pub time_source: Box<dyn InspectableLocalClock>,
-            /// Initial state of CMOS RAM
-            pub initial_cmos: Option<[u8; 256]>,
-            /// Whether enlightened interrupts are enabled. Needed when
-            /// advertised by ACPI WAET table.
-            pub enlightened_interrupts: bool,
         }
 
         /// Hyper-V specific ACPI-compatible battery device
