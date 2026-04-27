@@ -554,7 +554,6 @@ async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(LoopbackEndpoint::new()),
-            reject_tx_with_vlan_error: false,
         }],
         &mut ExternallyManagedMmioIntercepts,
     );
@@ -880,6 +879,46 @@ fn build_tx_segments(
     }
 }
 
+/// Like [`build_tx_segments`] but with 802.1Q VLAN tagging enabled.
+fn build_tx_segments_vlan(
+    packet_len: usize,
+    num_segments: usize,
+    vlan_id: u16,
+    pkt_builder: &mut TxPacketBuilder,
+) {
+    assert_eq!(packet_len % num_segments, 0);
+    let tx_id = 1;
+    let segment_len = packet_len / num_segments;
+    let mut tx_metadata = net_backend::TxMetadata {
+        id: TxId(tx_id),
+        segment_count: num_segments as u8,
+        len: packet_len as u32,
+        l2_len: 18,             // Ethernet header (with VLAN)
+        l3_len: 20,             // IPv4 header
+        l4_len: 20,             // TCP header
+        max_segment_size: 1460, // Typical MSS for Ethernet
+        vlan_id,
+        ..Default::default()
+    };
+    tx_metadata.flags.set_vlan_enabled(true);
+
+    let mut gpa = pkt_builder.data_len();
+    pkt_builder.push(TxSegment {
+        ty: net_backend::TxSegmentType::Head(tx_metadata.clone()),
+        gpa,
+        len: segment_len as u32,
+    });
+
+    for _ in 0..(num_segments - 1) {
+        gpa += segment_len as u64;
+        pkt_builder.push(TxSegment {
+            ty: net_backend::TxSegmentType::Tail,
+            gpa,
+            len: segment_len as u32,
+        });
+    }
+}
+
 async fn test_endpoint(
     driver: DefaultDriver,
     dma_mode: GuestDmaMode,
@@ -903,7 +942,6 @@ async fn test_endpoint(
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(LoopbackEndpoint::new()),
-            reject_tx_with_vlan_error: false,
         }],
         &mut ExternallyManagedMmioIntercepts,
     );
@@ -1058,7 +1096,6 @@ async fn test_vlan_violation_triggers_fallback(driver: DefaultDriver) {
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(LoopbackEndpoint::new()),
-            reject_tx_with_vlan_error: true,
         }],
         &mut ExternallyManagedMmioIntercepts,
     );
@@ -1098,13 +1135,14 @@ async fn test_vlan_violation_triggers_fallback(driver: DefaultDriver) {
     // Post initial RX buffers.
     queues[0].rx_avail(&mut pool, &(1..128u32).map(RxId).collect::<Vec<_>>());
 
-    // Build and send a single packet.
+    // Build and send a single VLAN-tagged packet. The BNIC emulator will
+    // reject this because MANA does not support 802.1Q VLAN tag insertion.
     let packet_len = 128;
     let data_to_send = vec![0xABu8; packet_len];
     payload_mem.write_at(0, &data_to_send).unwrap();
 
     let mut pkt_builder = TxPacketBuilder::new();
-    build_tx_segments(packet_len, 1, false, &mut pkt_builder);
+    build_tx_segments_vlan(packet_len, 1, 100, &mut pkt_builder);
     queues[0]
         .tx_avail(&mut pool, pkt_builder.segments())
         .unwrap();

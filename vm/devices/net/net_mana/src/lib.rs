@@ -1166,7 +1166,13 @@ impl<T: DeviceBacking> ManaQueue<T> {
         if meta.flags.offload_tcp_checksum() {
             oob.s_oob.set_trans_off(meta.l2_len as u16 + meta.l3_len);
         }
-        let short_format = self.vp_offset <= 0xff;
+        if meta.flags.vlan_enabled() {
+            oob.l_oob.set_inject_vlan_pri_tag(true);
+            oob.l_oob.set_vlan_id(meta.vlan_id);
+            oob.l_oob.set_pcp(meta.priority);
+            oob.l_oob.set_dei(meta.canonical_format_id != 0);
+        }
+        let short_format = self.vp_offset <= 0xff && !meta.flags.vlan_enabled();
         if short_format {
             oob.s_oob.set_pkt_fmt(MANA_SHORT_PKT_FMT);
             oob.s_oob.set_short_vp_offset(self.vp_offset as u8);

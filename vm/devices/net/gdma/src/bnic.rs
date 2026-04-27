@@ -185,8 +185,6 @@ struct Vport {
     task: TaskControl<TxRxState, TxRxTask>,
     queue_cfg: QueueCfg,
     serial_no: u32,
-    #[cfg(test)]
-    reject_tx_with_vlan_error: bool,
 }
 
 impl InspectMut for Vport {
@@ -217,8 +215,6 @@ impl BasicNic {
                 |VportConfig {
                      mac_address,
                      endpoint,
-                     #[cfg(test)]
-                     reject_tx_with_vlan_error,
                  }| {
                     assert!(endpoint.is_ordered());
                     Vport {
@@ -227,8 +223,6 @@ impl BasicNic {
                         task: TaskControl::new(TxRxState),
                         queue_cfg: QueueCfg { tx: None, rx: None },
                         serial_no: 0,
-                        #[cfg(test)]
-                        reject_tx_with_vlan_error,
                     }
                 },
             )
@@ -414,8 +408,6 @@ impl BasicNic {
                                     rq_cq_id,
                                     tx_segment_buffer: Vec::new(),
                                     rx_buf_count: 0,
-                                    #[cfg(test)]
-                                    reject_tx_with_vlan_error: vport.reject_tx_with_vlan_error,
                                 },
                             );
                             vport.task.start();
@@ -491,8 +483,6 @@ pub struct TxRxTask {
     rq_cq_id: u32,
     tx_segment_buffer: Vec<TxSegment>,
     rx_buf_count: u32,
-    #[cfg(test)]
-    reject_tx_with_vlan_error: bool,
 }
 
 impl InspectTaskMut<TxRxTask> for TxRxState {
@@ -559,8 +549,10 @@ impl TxRxTask {
 
         let sge0 = sqe.sgl().first().context("no sgl")?;
 
-        #[cfg(test)]
-        if self.reject_tx_with_vlan_error {
+        // Real MANA hardware rejects packets that request 802.1Q VLAN tag
+        // insertion, since MANA does not support VLANs. Emulate this by
+        // inspecting the long OOB field that the guest driver sets.
+        if oob.l_oob.inject_vlan_pri_tag() {
             self.post_tx_completion_vlan_error();
             return Ok(());
         }
