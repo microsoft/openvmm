@@ -15,6 +15,7 @@ use std::future::Future;
 
 pub mod error;
 pub mod format;
+pub mod log;
 
 pub use error::CreateError;
 pub use error::InvalidFormatReason;

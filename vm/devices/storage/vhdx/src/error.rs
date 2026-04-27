@@ -28,7 +28,13 @@ pub enum CreateError {
 /// Errors returned when opening or parsing a VHDX file.
 #[derive(Debug, Error)]
 #[error(transparent)]
-pub struct OpenError(#[from] pub(crate) OpenErrorInner);
+pub struct OpenError(pub(crate) OpenErrorInner);
+
+impl<T: Into<OpenErrorInner>> From<T> for OpenError {
+    fn from(inner: T) -> Self {
+        OpenError(inner.into())
+    }
+}
 
 /// Inner representation of [`OpenError`].
 #[derive(Debug, Error)]
