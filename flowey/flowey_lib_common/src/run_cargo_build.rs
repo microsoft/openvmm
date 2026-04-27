@@ -31,7 +31,7 @@ impl CargoBuildProfile {
     }
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Default, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Default)]
 pub enum CargoFeatureSet {
     All,
     Specific(Vec<String>),

@@ -193,17 +193,18 @@ impl FlowNode for Node {
             // 'native' no-feature backend. On linux additionally test the
             // openssl backend and --all-features (we could test openssl on
             // non-linux targets too, but setting up builds for them is a pain).
-            let mut crypto_feature_sets = vec![CargoFeatureSet::None];
+            let mut crypto_feature_sets = vec![("none", CargoFeatureSet::None)];
             if matches!(
                 target.operating_system,
                 target_lexicon::OperatingSystem::Linux
             ) {
-                crypto_feature_sets.push(CargoFeatureSet::Specific(vec!["openssl".into()]));
-                crypto_feature_sets.push(CargoFeatureSet::All);
+                crypto_feature_sets
+                    .push(("openssl", CargoFeatureSet::Specific(vec!["openssl".into()])));
+                crypto_feature_sets.push(("all", CargoFeatureSet::All));
             }
-            for features in crypto_feature_sets {
+            for (name, features) in crypto_feature_sets {
                 runs.push((
-                    format!("unit-tests crypto ({:?})", features),
+                    format!("unit-tests crypto ({})", name),
                     NextestBuildParams {
                         packages: ReadVar::from_static(TestPackages::Crates {
                             crates: vec!["crypto".into()],
