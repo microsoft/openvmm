@@ -194,7 +194,7 @@ async fn nvme_relay_explicit_private_pool(
     nvme_relay_test_core(
         config,
         NvmeRelayTestParams {
-            openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
+            openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
             expected_props: Some(ExpectedNvmeDeviceProperties {
                 save_restore_supported: true,
                 qsize: 256, // private pool should allow contiguous allocations.
@@ -219,7 +219,7 @@ async fn nvme_relay_heuristic_debug_16vp_768mb_heavy(
     nvme_relay_test_core(
         config,
         NvmeRelayTestParams {
-            openhcl_cmdline: "",
+            openhcl_cmdline: "OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
             processor_topology: Some(ProcessorTopology {
                 vp_count: 16,
                 ..Default::default()
@@ -250,7 +250,7 @@ async fn nvme_relay_heuristic_release_16vp_256mb_heavy(
     nvme_relay_test_core(
         config,
         NvmeRelayTestParams {
-            openhcl_cmdline: "",
+            openhcl_cmdline: "OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
             processor_topology: Some(ProcessorTopology {
                 vp_count: 16,
                 ..Default::default()
@@ -284,7 +284,7 @@ async fn nvme_relay_heuristic_release_32vp_500mb_very_heavy(
     nvme_relay_test_core(
         config,
         NvmeRelayTestParams {
-            openhcl_cmdline: "",
+            openhcl_cmdline: "OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
             processor_topology: Some(ProcessorTopology {
                 vp_count: 32,
                 ..Default::default()
@@ -317,7 +317,7 @@ async fn nvme_relay_32vp_768mb_very_heavy(
             ..Default::default()
         }),
         NvmeRelayTestParams {
-            openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=10240",
+            openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=10240 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
             processor_topology: Some(ProcessorTopology {
                 vp_count: 32,
                 ..Default::default()
