@@ -1194,7 +1194,7 @@ jobs:
     - name: generate nextest command
       run: flowey.exe e 12 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
-    - name: run 'unit-tests crypto (None)' nextest tests
+    - name: run 'unit-tests crypto (none)' nextest tests
       run: |-
         flowey.exe e 12 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 12 flowey_lib_common::run_cargo_nextest_run 1
@@ -1208,9 +1208,9 @@ jobs:
     - id: flowey_lib_common__publish_test_results__3
       uses: actions/upload-artifact@v7
       with:
-        name: x64-windows-unit-tests-unit-tests crypto (None)-junit-xml
+        name: x64-windows-unit-tests-unit-tests crypto (none)-junit-xml
         path: ${{ env.floweyvar1 }}
-      name: 'publish test results: x64-windows-unit-tests-unit-tests crypto (None) (JUnit XML)'
+      name: 'publish test results: x64-windows-unit-tests-unit-tests crypto (none) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: |-
@@ -1397,7 +1397,7 @@ jobs:
     - name: generate nextest command
       run: flowey e 13 flowey_lib_common::gen_cargo_nextest_run_cmd 2
       shell: bash
-    - name: run 'unit-tests crypto (Specific(["openssl"]))' nextest tests
+    - name: run 'unit-tests crypto (openssl)' nextest tests
       run: |-
         flowey e 13 flowey_lib_common::run_cargo_nextest_run 4
         flowey e 13 flowey_lib_common::run_cargo_nextest_run 5
@@ -1411,14 +1411,14 @@ jobs:
     - id: flowey_lib_common__publish_test_results__7
       uses: actions/upload-artifact@v7
       with:
-        name: x64-linux-unit-tests-unit-tests crypto (Specific(["openssl"]))-junit-xml
+        name: x64-linux-unit-tests-unit-tests crypto (openssl)-junit-xml
         path: ${{ env.floweyvar2 }}
-      name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (Specific(["openssl"])) (JUnit XML)'
+      name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (openssl) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: generate nextest command
       run: flowey e 13 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
-    - name: run 'unit-tests crypto (All)' nextest tests
+    - name: run 'unit-tests crypto (all)' nextest tests
       run: |-
         flowey e 13 flowey_lib_common::run_cargo_nextest_run 0
         flowey e 13 flowey_lib_common::run_cargo_nextest_run 1
@@ -1432,9 +1432,9 @@ jobs:
     - id: flowey_lib_common__publish_test_results__11
       uses: actions/upload-artifact@v7
       with:
-        name: x64-linux-unit-tests-unit-tests crypto (All)-junit-xml
+        name: x64-linux-unit-tests-unit-tests crypto (all)-junit-xml
         path: ${{ env.floweyvar3 }}
-      name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (All) (JUnit XML)'
+      name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (all) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: cargo build xtask
       run: |-
@@ -1475,7 +1475,7 @@ jobs:
     - name: generate nextest command
       run: flowey e 13 flowey_lib_common::gen_cargo_nextest_run_cmd 1
       shell: bash
-    - name: run 'unit-tests crypto (None)' nextest tests
+    - name: run 'unit-tests crypto (none)' nextest tests
       run: |-
         flowey e 13 flowey_lib_common::run_cargo_nextest_run 2
         flowey e 13 flowey_lib_common::run_cargo_nextest_run 3
@@ -1489,9 +1489,9 @@ jobs:
     - id: flowey_lib_common__publish_test_results__3
       uses: actions/upload-artifact@v7
       with:
-        name: x64-linux-unit-tests-unit-tests crypto (None)-junit-xml
+        name: x64-linux-unit-tests-unit-tests crypto (none)-junit-xml
         path: ${{ env.floweyvar1 }}
-      name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (None) (JUnit XML)'
+      name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (none) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: |-
@@ -1697,7 +1697,7 @@ jobs:
     - name: generate nextest command
       run: flowey e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 1
       shell: bash
-    - name: run 'unit-tests crypto (None)' nextest tests
+    - name: run 'unit-tests crypto (none)' nextest tests
       run: |-
         flowey e 14 flowey_lib_common::run_cargo_nextest_run 2
         flowey e 14 flowey_lib_common::run_cargo_nextest_run 3
@@ -1711,14 +1711,14 @@ jobs:
     - id: flowey_lib_common__publish_test_results__7
       uses: actions/upload-artifact@v7
       with:
-        name: x64-linux-musl-unit-tests-unit-tests crypto (None)-junit-xml
+        name: x64-linux-musl-unit-tests-unit-tests crypto (none)-junit-xml
         path: ${{ env.floweyvar2 }}
-      name: 'publish test results: x64-linux-musl-unit-tests-unit-tests crypto (None) (JUnit XML)'
+      name: 'publish test results: x64-linux-musl-unit-tests-unit-tests crypto (none) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: generate nextest command
       run: flowey e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 2
       shell: bash
-    - name: run 'unit-tests crypto (Specific(["openssl"]))' nextest tests
+    - name: run 'unit-tests crypto (openssl)' nextest tests
       run: |-
         flowey e 14 flowey_lib_common::run_cargo_nextest_run 4
         flowey e 14 flowey_lib_common::run_cargo_nextest_run 5
@@ -1732,14 +1732,14 @@ jobs:
     - id: flowey_lib_common__publish_test_results__11
       uses: actions/upload-artifact@v7
       with:
-        name: x64-linux-musl-unit-tests-unit-tests crypto (Specific(["openssl"]))-junit-xml
+        name: x64-linux-musl-unit-tests-unit-tests crypto (openssl)-junit-xml
         path: ${{ env.floweyvar3 }}
-      name: 'publish test results: x64-linux-musl-unit-tests-unit-tests crypto (Specific(["openssl"])) (JUnit XML)'
+      name: 'publish test results: x64-linux-musl-unit-tests-unit-tests crypto (openssl) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: generate nextest command
       run: flowey e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
-    - name: run 'unit-tests crypto (All)' nextest tests
+    - name: run 'unit-tests crypto (all)' nextest tests
       run: |-
         flowey e 14 flowey_lib_common::run_cargo_nextest_run 0
         flowey e 14 flowey_lib_common::run_cargo_nextest_run 1
@@ -1753,9 +1753,9 @@ jobs:
     - id: flowey_lib_common__publish_test_results__15
       uses: actions/upload-artifact@v7
       with:
-        name: x64-linux-musl-unit-tests-unit-tests crypto (All)-junit-xml
+        name: x64-linux-musl-unit-tests-unit-tests crypto (all)-junit-xml
         path: ${{ env.floweyvar4 }}
-      name: 'publish test results: x64-linux-musl-unit-tests-unit-tests crypto (All) (JUnit XML)'
+      name: 'publish test results: x64-linux-musl-unit-tests-unit-tests crypto (all) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: cargo build xtask
       run: |-
@@ -2040,7 +2040,7 @@ jobs:
     - name: generate nextest command
       run: flowey.exe e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
-    - name: run 'unit-tests crypto (None)' nextest tests
+    - name: run 'unit-tests crypto (none)' nextest tests
       run: |-
         flowey.exe e 15 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 15 flowey_lib_common::run_cargo_nextest_run 1
@@ -2054,9 +2054,9 @@ jobs:
     - id: flowey_lib_common__publish_test_results__3
       uses: actions/upload-artifact@v7
       with:
-        name: aarch64-windows-unit-tests-unit-tests crypto (None)-junit-xml
+        name: aarch64-windows-unit-tests-unit-tests crypto (none)-junit-xml
         path: ${{ env.floweyvar1 }}
-      name: 'publish test results: aarch64-windows-unit-tests-unit-tests crypto (None) (JUnit XML)'
+      name: 'publish test results: aarch64-windows-unit-tests-unit-tests crypto (none) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: |-
@@ -2290,7 +2290,7 @@ jobs:
     - name: generate nextest command
       run: flowey e 16 flowey_lib_common::gen_cargo_nextest_run_cmd 2
       shell: bash
-    - name: run 'unit-tests crypto (Specific(["openssl"]))' nextest tests
+    - name: run 'unit-tests crypto (openssl)' nextest tests
       run: |-
         flowey e 16 flowey_lib_common::run_cargo_nextest_run 4
         flowey e 16 flowey_lib_common::run_cargo_nextest_run 5
@@ -2304,14 +2304,14 @@ jobs:
     - id: flowey_lib_common__publish_test_results__7
       uses: actions/upload-artifact@v7
       with:
-        name: aarch64-linux-unit-tests-unit-tests crypto (Specific(["openssl"]))-junit-xml
+        name: aarch64-linux-unit-tests-unit-tests crypto (openssl)-junit-xml
         path: ${{ env.floweyvar2 }}
-      name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (Specific(["openssl"])) (JUnit XML)'
+      name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (openssl) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: generate nextest command
       run: flowey e 16 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
-    - name: run 'unit-tests crypto (All)' nextest tests
+    - name: run 'unit-tests crypto (all)' nextest tests
       run: |-
         flowey e 16 flowey_lib_common::run_cargo_nextest_run 0
         flowey e 16 flowey_lib_common::run_cargo_nextest_run 1
@@ -2325,9 +2325,9 @@ jobs:
     - id: flowey_lib_common__publish_test_results__11
       uses: actions/upload-artifact@v7
       with:
-        name: aarch64-linux-unit-tests-unit-tests crypto (All)-junit-xml
+        name: aarch64-linux-unit-tests-unit-tests crypto (all)-junit-xml
         path: ${{ env.floweyvar3 }}
-      name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (All) (JUnit XML)'
+      name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (all) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: cargo build xtask
       run: |-
@@ -2368,7 +2368,7 @@ jobs:
     - name: generate nextest command
       run: flowey e 16 flowey_lib_common::gen_cargo_nextest_run_cmd 1
       shell: bash
-    - name: run 'unit-tests crypto (None)' nextest tests
+    - name: run 'unit-tests crypto (none)' nextest tests
       run: |-
         flowey e 16 flowey_lib_common::run_cargo_nextest_run 2
         flowey e 16 flowey_lib_common::run_cargo_nextest_run 3
@@ -2382,9 +2382,9 @@ jobs:
     - id: flowey_lib_common__publish_test_results__3
       uses: actions/upload-artifact@v7
       with:
-        name: aarch64-linux-unit-tests-unit-tests crypto (None)-junit-xml
+        name: aarch64-linux-unit-tests-unit-tests crypto (none)-junit-xml
         path: ${{ env.floweyvar1 }}
-      name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (None) (JUnit XML)'
+      name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (none) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: |-
@@ -2630,7 +2630,7 @@ jobs:
     - name: generate nextest command
       run: flowey e 17 flowey_lib_common::gen_cargo_nextest_run_cmd 1
       shell: bash
-    - name: run 'unit-tests crypto (None)' nextest tests
+    - name: run 'unit-tests crypto (none)' nextest tests
       run: |-
         flowey e 17 flowey_lib_common::run_cargo_nextest_run 2
         flowey e 17 flowey_lib_common::run_cargo_nextest_run 3
@@ -2644,14 +2644,14 @@ jobs:
     - id: flowey_lib_common__publish_test_results__7
       uses: actions/upload-artifact@v7
       with:
-        name: aarch64-linux-musl-unit-tests-unit-tests crypto (None)-junit-xml
+        name: aarch64-linux-musl-unit-tests-unit-tests crypto (none)-junit-xml
         path: ${{ env.floweyvar2 }}
-      name: 'publish test results: aarch64-linux-musl-unit-tests-unit-tests crypto (None) (JUnit XML)'
+      name: 'publish test results: aarch64-linux-musl-unit-tests-unit-tests crypto (none) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: generate nextest command
       run: flowey e 17 flowey_lib_common::gen_cargo_nextest_run_cmd 2
       shell: bash
-    - name: run 'unit-tests crypto (Specific(["openssl"]))' nextest tests
+    - name: run 'unit-tests crypto (openssl)' nextest tests
       run: |-
         flowey e 17 flowey_lib_common::run_cargo_nextest_run 4
         flowey e 17 flowey_lib_common::run_cargo_nextest_run 5
@@ -2665,14 +2665,14 @@ jobs:
     - id: flowey_lib_common__publish_test_results__11
       uses: actions/upload-artifact@v7
       with:
-        name: aarch64-linux-musl-unit-tests-unit-tests crypto (Specific(["openssl"]))-junit-xml
+        name: aarch64-linux-musl-unit-tests-unit-tests crypto (openssl)-junit-xml
         path: ${{ env.floweyvar3 }}
-      name: 'publish test results: aarch64-linux-musl-unit-tests-unit-tests crypto (Specific(["openssl"])) (JUnit XML)'
+      name: 'publish test results: aarch64-linux-musl-unit-tests-unit-tests crypto (openssl) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: generate nextest command
       run: flowey e 17 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
-    - name: run 'unit-tests crypto (All)' nextest tests
+    - name: run 'unit-tests crypto (all)' nextest tests
       run: |-
         flowey e 17 flowey_lib_common::run_cargo_nextest_run 0
         flowey e 17 flowey_lib_common::run_cargo_nextest_run 1
@@ -2686,9 +2686,9 @@ jobs:
     - id: flowey_lib_common__publish_test_results__15
       uses: actions/upload-artifact@v7
       with:
-        name: aarch64-linux-musl-unit-tests-unit-tests crypto (All)-junit-xml
+        name: aarch64-linux-musl-unit-tests-unit-tests crypto (all)-junit-xml
         path: ${{ env.floweyvar4 }}
-      name: 'publish test results: aarch64-linux-musl-unit-tests-unit-tests crypto (All) (JUnit XML)'
+      name: 'publish test results: aarch64-linux-musl-unit-tests-unit-tests crypto (all) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: cargo build xtask
       run: |-
