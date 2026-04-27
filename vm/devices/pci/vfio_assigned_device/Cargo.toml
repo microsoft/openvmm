@@ -11,6 +11,7 @@ chipset_device.workspace = true
 guestmem.workspace = true
 inspect.workspace = true
 memory_range.workspace = true
+membacking.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 pci_core.workspace = true

@@ -44,6 +44,10 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use thiserror::Error;
 
+/// A virtual address space mapper for guest memory.
+///
+/// Maintains a reserved VA range and maps file-backed or anonymous memory
+/// into it as directed by the mapping manager.
 pub struct VaMapper {
     inner: Arc<MapperInner>,
     process: Option<RemoteProcess>,
@@ -259,14 +263,17 @@ impl VaMapper {
         self.inner.request_mapping(range, false).await
     }
 
+    /// Returns the base pointer of the VA reservation.
     pub fn as_ptr(&self) -> *mut u8 {
         self.inner.mapping.as_ptr().cast()
     }
 
+    /// Returns the length of the VA reservation in bytes.
     pub fn len(&self) -> usize {
         self.inner.mapping.len()
     }
 
+    /// Returns the remote process, if this mapper maps into a remote process.
     pub fn process(&self) -> Option<&RemoteProcess> {
         self.process.as_ref()
     }

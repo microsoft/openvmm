@@ -1798,7 +1798,7 @@ impl InitializedVm {
         let vfio_inspect = {
             let vfio_resolver = vfio_assigned_device::resolver::VfioDeviceResolver::new(
                 driver_source.builder().build("vfio-container-mgr"),
-                gm.clone(),
+                memory_manager.dma_mapper_client(),
             );
             let handle = vfio_resolver.inspect_handle();
             resolver.add_async_resolver::<
