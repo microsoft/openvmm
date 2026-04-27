@@ -176,7 +176,11 @@ impl<'a> MshvProtoPartition<'a> {
         // SAFETY: The signal handler does not perform any actions that are
         // forbidden for signal handlers to perform, as it performs nothing.
         SIGNAL_HANDLER_INIT.call_once(|| unsafe {
-            signal_hook::low_level::register(libc::SIGRTMIN(), || {}).unwrap();
+            signal_hook::low_level::register(libc::SIGRTMIN(), || {
+                // Signal handler does nothing other than enabling run_fd()
+                // ioctl to return with EINTR, when the associated signal is
+                // sent to run_fd() thread.                
+            }).unwrap();
         });
 
         if let Some(hv_config) = &config.hv_config {
