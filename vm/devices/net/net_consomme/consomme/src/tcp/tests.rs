@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Repr;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 // ── Mock client ────────────────────────────────────────────────────
@@ -32,7 +33,7 @@ impl TestClient {
 }
 
 impl Client for TestClient {
-    fn driver(&self) -> &dyn pal_async::driver::Driver {
+    fn driver(&self) -> &dyn Driver {
         &self.driver
     }
 

@@ -1727,7 +1727,9 @@ fn parse_endpoint(
                             cli_args::HostPortProtocolCli::Tcp => HostPortProtocol::Tcp,
                             cli_args::HostPortProtocolCli::Udp => HostPortProtocol::Udp,
                         },
-                        host_address: fwd.host_address.clone(),
+                        host_address: fwd
+                            .host_address
+                            .map(net_backend_resources::consomme::HostIpAddress::from),
                         host_port: fwd.host_port,
                         guest_port: fwd.guest_port,
                     }

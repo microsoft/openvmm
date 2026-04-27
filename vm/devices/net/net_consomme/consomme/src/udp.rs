@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use super::Access;
+use super::BindError;
 use super::Client;
 use super::DropReason;
 use super::dhcp::DHCP_SERVER;
@@ -38,6 +39,7 @@ use smoltcp::wire::Ipv6Repr;
 use smoltcp::wire::UDP_HEADER_LEN;
 use smoltcp::wire::UdpPacket;
 use smoltcp::wire::UdpRepr;
+use socket2::Socket;
 use std::collections::HashMap;
 use std::collections::hash_map;
 use std::io::ErrorKind;
@@ -62,6 +64,7 @@ use crate::windows as platform;
 
 pub(crate) struct Udp {
     connections: HashMap<SocketAddr, UdpConnection>,
+    listeners: HashMap<u16, UdpListener>,
     timeout: Duration,
 }
 
@@ -69,6 +72,7 @@ impl Udp {
     pub fn new(timeout: Duration) -> Self {
         Self {
             connections: HashMap::new(),
+            listeners: HashMap::new(),
             timeout,
         }
     }
@@ -81,7 +85,20 @@ impl InspectMut for Udp {
             let key = addr.to_string();
             resp.field_mut(&key, conn);
         }
+        for (port, listener) in &mut self.listeners {
+            resp.field_mut(&format!("listener:{port}"), listener);
+        }
     }
+}
+
+#[derive(InspectMut)]
+struct UdpListener {
+    #[inspect(skip)]
+    socket: Option<PolledSocket<UdpSocket>>,
+    /// The guest port to forward received packets to.
+    #[inspect(display)]
+    guest_port: u16,
+    stats: Stats,
 }
 
 #[derive(InspectMut)]
@@ -192,6 +209,97 @@ impl UdpConnection {
     }
 }
 
+impl UdpListener {
+    fn poll_listener(
+        &mut self,
+        cx: &mut Context<'_>,
+        state: &mut ConsommeState,
+        client: &mut impl Client,
+    ) {
+        let Some(socket) = self.socket.as_mut() else {
+            return;
+        };
+        let mut eth = EthernetFrame::new_unchecked(&mut state.buffer);
+        loop {
+            if client.rx_mtu() == 0 {
+                break;
+            }
+
+            // Determine header offset and guest destination from the bound socket's address family.
+            let local_addr = match socket.get().local_addr() {
+                Ok(addr) => addr,
+                Err(_) => break,
+            };
+            let (header_offset, guest_dst_ip, guest_mac) = match local_addr.ip() {
+                IpAddr::V4(_) => (
+                    IPV4_HEADER_LEN + UDP_HEADER_LEN,
+                    IpAddr::V4(state.params.client_ip),
+                    state.params.client_mac,
+                ),
+                IpAddr::V6(_) => {
+                    let Some(client_ipv6) = state.params.client_ip_ipv6 else {
+                        break;
+                    };
+                    (
+                        IPV6_HEADER_LEN + UDP_HEADER_LEN,
+                        IpAddr::V6(client_ipv6),
+                        state.params.client_mac,
+                    )
+                }
+            };
+
+            match socket.poll_io(cx, InterestSlot::Read, PollEvents::IN, |socket| {
+                socket
+                    .get()
+                    .recv_from(&mut eth.payload_mut()[header_offset..])
+            }) {
+                Poll::Ready(Ok((n, src_addr))) => {
+                    let (packet_len, checksum_state) = match (guest_dst_ip, src_addr.ip()) {
+                        (IpAddr::V4(dst_ip), IpAddr::V4(src_ip)) => {
+                            let len = build_udp_packet(
+                                &mut eth,
+                                src_ip.into(),
+                                dst_ip.into(),
+                                src_addr.port(),
+                                self.guest_port,
+                                n,
+                                state.params.gateway_mac,
+                                guest_mac,
+                            );
+                            (len, ChecksumState::UDP4)
+                        }
+                        (IpAddr::V6(dst_ip), IpAddr::V6(src_ip)) => {
+                            let len = build_udp_packet(
+                                &mut eth,
+                                src_ip.into(),
+                                dst_ip.into(),
+                                src_addr.port(),
+                                self.guest_port,
+                                n,
+                                state.params.gateway_mac,
+                                guest_mac,
+                            );
+                            (len, ChecksumState::NONE)
+                        }
+                        _ => unreachable!("mismatched address families"),
+                    };
+
+                    client.recv(&eth.as_ref()[..packet_len], &checksum_state);
+                    self.stats.rx_packets.increment();
+                }
+                Poll::Ready(Err(err)) => {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        "udp listener recv error"
+                    );
+                    break;
+                }
+                Poll::Pending => break,
+            }
+        }
+    }
+}
+
 impl<T: Client> Access<'_, T> {
     pub(crate) fn poll_udp(&mut self, cx: &mut Context<'_>) {
         let timeout = self.inner.udp.timeout;
@@ -209,6 +317,11 @@ impl<T: Client> Access<'_, T> {
 
             conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
         });
+
+        for listener in self.inner.udp.listeners.values_mut() {
+            listener.poll_listener(cx, &mut self.inner.state, self.client);
+        }
+
         while let Some(response) =
             self.inner
                 .dns
@@ -236,6 +349,23 @@ impl<T: Client> Access<'_, T> {
                     tracing::warn!(
                         error = &err as &dyn std::error::Error,
                         "failed to update driver for udp connection"
+                    );
+                    false
+                }
+            }
+        });
+        self.inner.udp.listeners.retain(|port, listener| {
+            let socket = listener.socket.take().unwrap().into_inner();
+            match PolledSocket::new(self.client.driver(), socket) {
+                Ok(socket) => {
+                    listener.socket = Some(socket);
+                    true
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        port,
+                        error = &err as &dyn std::error::Error,
+                        "failed to update driver for udp listener"
                     );
                     false
                 }
@@ -413,38 +543,29 @@ impl<T: Client> Access<'_, T> {
 
     /// Binds to the specified host IP and port for forwarding inbound UDP
     /// packets to the guest.
-    pub fn bind_udp_port(
-        &mut self,
-        ip_addr: Option<IpAddr>,
-        guest_port: u16,
-        host_port: u16,
-    ) -> Result<u16, DropReason> {
-        let guest_addr = match ip_addr {
-            Some(IpAddr::V4(ip)) => SocketAddr::V4(SocketAddrV4::new(ip, guest_port)),
-            Some(IpAddr::V6(ip)) => SocketAddr::V6(SocketAddrV6::new(ip, guest_port, 0, 0)),
-            None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, guest_port)),
-        };
-        let conn = self.get_or_insert(guest_addr, Some(host_port), None)?;
-        let host_port = conn
-            .socket
-            .as_ref()
-            .map_or(0, |s| s.get().local_addr().map_or(0, |addr| addr.port()));
-        Ok(host_port)
+    pub fn bind_udp_port(&mut self, socket: Socket, guest_port: u16) -> Result<(), BindError> {
+        if self.inner.udp.listeners.contains_key(&guest_port) {
+            return Err(BindError::PortAlreadyBound(guest_port));
+        }
+        let socket: UdpSocket = socket.into();
+        let socket = PolledSocket::new(self.client.driver(), socket).map_err(BindError::Io)?;
+        self.inner.udp.listeners.insert(
+            guest_port,
+            UdpListener {
+                socket: Some(socket),
+                guest_port,
+                stats: Default::default(),
+            },
+        );
+        Ok(())
     }
 
-    /// Unbinds from the specified host port for both IPv4 and IPv6.
-    pub fn unbind_udp_port(&mut self, port: u16) -> Result<(), DropReason> {
-        // Try to remove both IPv4 and IPv6 bindings
-        let v4_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port));
-        let v6_addr = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0));
-
-        let v4_removed = self.inner.udp.connections.remove(&v4_addr).is_some();
-        let v6_removed = self.inner.udp.connections.remove(&v6_addr).is_some();
-
-        if v4_removed || v6_removed {
+    /// Unbinds from the specified guest port.
+    pub fn unbind_udp_port(&mut self, port: u16) -> Result<(), BindError> {
+        if self.inner.udp.listeners.remove(&port).is_some() {
             Ok(())
         } else {
-            Err(DropReason::PortNotBound)
+            Err(BindError::PortNotBound)
         }
     }
 

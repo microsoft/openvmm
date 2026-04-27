@@ -1549,7 +1549,7 @@ pub enum EndpointConfigCli {
 #[derive(Clone, Debug, PartialEq)]
 pub struct HostPortConfigCli {
     pub protocol: HostPortProtocolCli,
-    pub host_address: Option<String>,
+    pub host_address: Option<std::net::IpAddr>,
     pub host_port: u16,
     pub guest_port: u16,
 }
@@ -1603,14 +1603,17 @@ fn parse_hostfwd(s: &str) -> Result<HostPortConfigCli, String> {
 /// - `addr:port`
 /// - `:port`  (empty address)
 /// - `port`   (no address)
-fn parse_addr_port(s: &str) -> Result<(Option<String>, u16), String> {
+fn parse_addr_port(s: &str) -> Result<(Option<std::net::IpAddr>, u16), String> {
     if let Some(rest) = s.strip_prefix('[') {
         // Bracketed IPv6 address: [addr]:port
         let (addr, port) = rest
             .split_once("]:")
             .ok_or_else(|| format!("expected '[addr]:port', got '[{rest}'"))?;
         let port: u16 = port.parse().map_err(|_| format!("invalid port '{port}'"))?;
-        Ok((Some(addr.to_owned()), port))
+        let addr: std::net::IpAddr = addr
+            .parse()
+            .map_err(|e| format!("invalid address '{addr}': {e}"))?;
+        Ok((Some(addr), port))
     } else {
         match s.rsplit_once(':') {
             Some((addr, port)) => {
@@ -1618,7 +1621,10 @@ fn parse_addr_port(s: &str) -> Result<(Option<String>, u16), String> {
                 let addr = if addr.is_empty() {
                     None
                 } else {
-                    Some(addr.to_owned())
+                    let parsed: std::net::IpAddr = addr
+                        .parse()
+                        .map_err(|e| format!("invalid address '{addr}': {e}"))?;
+                    Some(parsed)
                 };
                 Ok((addr, port))
             }
@@ -2772,7 +2778,10 @@ mod tests {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Udp);
-                assert_eq!(host_fwd[0].host_address.as_deref(), Some("127.0.0.1"));
+                assert_eq!(
+                    host_fwd[0].host_address,
+                    Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)))
+                );
                 assert_eq!(host_fwd[0].host_port, 5000);
                 assert_eq!(host_fwd[0].guest_port, 5000);
             }
@@ -2812,7 +2821,10 @@ mod tests {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
-                assert_eq!(host_fwd[0].host_address.as_deref(), Some("127.0.0.1"));
+                assert_eq!(
+                    host_fwd[0].host_address,
+                    Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)))
+                );
                 assert_eq!(host_fwd[0].host_port, 8080);
                 assert_eq!(host_fwd[0].guest_port, 80);
             }
@@ -2835,7 +2847,10 @@ mod tests {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
-                assert_eq!(host_fwd[0].host_address.as_deref(), Some("::1"));
+                assert_eq!(
+                    host_fwd[0].host_address,
+                    Some(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST))
+                );
                 assert_eq!(host_fwd[0].host_port, 8080);
                 assert_eq!(host_fwd[0].guest_port, 80);
             }

@@ -2,7 +2,9 @@
 // Licensed under the MIT License.
 
 use crate::ConsommeEndpoint;
+use crate::IpProtocol;
 use crate::PortForwardConfig;
+use crate::create_bound_socket;
 use consomme::ConsommeParams;
 use net_backend::resolve::ResolveEndpointParams;
 use net_backend::resolve::ResolvedEndpoint;
@@ -26,8 +28,8 @@ pub enum ResolveConsommeError {
     Consomme(consomme::Error),
     #[error(transparent)]
     InvalidCidr(consomme::InvalidCidr),
-    #[error("invalid host forward address '{0}'")]
-    InvalidAddress(String),
+    #[error("failed to create socket for port forward")]
+    SocketCreation(#[source] std::io::Error),
 }
 
 impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver {
@@ -50,25 +52,20 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
             .ports
             .into_iter()
             .map(|p| {
-                let address = p
-                    .host_address
-                    .as_deref()
-                    .map(|a| {
-                        a.parse()
-                            .map_err(|_| ResolveConsommeError::InvalidAddress(a.to_owned()))
-                    })
-                    .transpose()?;
+                let protocol = match p.protocol {
+                    HostPortProtocol::Tcp => IpProtocol::Tcp,
+                    HostPortProtocol::Udp => IpProtocol::Udp,
+                };
+                let ip_addr = p.host_address.map(std::net::IpAddr::from);
+                let socket = create_bound_socket(&protocol, ip_addr, p.host_port)
+                    .map_err(ResolveConsommeError::SocketCreation)?;
                 Ok(PortForwardConfig {
-                    protocol: match p.protocol {
-                        HostPortProtocol::Tcp => crate::IpProtocol::Tcp,
-                        HostPortProtocol::Udp => crate::IpProtocol::Udp,
-                    },
-                    address,
-                    host_port: p.host_port,
+                    protocol,
+                    socket,
                     guest_port: p.guest_port,
                 })
             })
-            .collect::<Result<_, ResolveConsommeError>>()?;
+            .collect::<Result<Vec<_>, ResolveConsommeError>>()?;
         let endpoint = ConsommeEndpoint::new_with_ports(state, port_forwards);
         Ok(endpoint.into())
     }

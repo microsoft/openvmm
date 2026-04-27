@@ -40,13 +40,40 @@ pub mod consomme {
         Udp,
     }
 
+    /// An IP address, suitable for serialization via mesh.
+    #[derive(Clone, Debug, MeshPayload)]
+    pub enum HostIpAddress {
+        /// IPv4 address.
+        Ipv4(std::net::Ipv4Addr),
+        /// IPv6 address.
+        Ipv6(std::net::Ipv6Addr),
+    }
+
+    impl From<std::net::IpAddr> for HostIpAddress {
+        fn from(addr: std::net::IpAddr) -> Self {
+            match addr {
+                std::net::IpAddr::V4(v4) => HostIpAddress::Ipv4(v4),
+                std::net::IpAddr::V6(v6) => HostIpAddress::Ipv6(v6),
+            }
+        }
+    }
+
+    impl From<HostIpAddress> for std::net::IpAddr {
+        fn from(addr: HostIpAddress) -> Self {
+            match addr {
+                HostIpAddress::Ipv4(v4) => std::net::IpAddr::V4(v4),
+                HostIpAddress::Ipv6(v6) => std::net::IpAddr::V6(v6),
+            }
+        }
+    }
+
     /// Configuration for forwarding a host port into the guest.
     #[derive(Clone, Debug, MeshPayload)]
     pub struct HostPortConfig {
         /// The protocol to forward.
         pub protocol: HostPortProtocol,
         /// The host IP address to bind to, or `None` to bind to all interfaces.
-        pub host_address: Option<String>,
+        pub host_address: Option<HostIpAddress>,
         /// The host port to listen on.
         pub host_port: u16,
         /// The guest port to forward to.
