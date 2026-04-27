@@ -1564,10 +1564,6 @@ jobs:
       cat <<'EOF' | tr '[:upper:]' '[:lower:]' | $FLOWEY_BIN v 8 'verbose' update
       ${{ parameters.verbose }}
       EOF
-      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-musl-openvmm"
-      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-openvmm" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-musl-openvmm' --is-raw-string update
-      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-musl-openvmm_vhost"
-      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-openvmm_vhost" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-musl-openvmm_vhost' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-musl-pipette"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-pipette" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-musl-pipette' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-musl-tmk_vmm"
@@ -1667,12 +1663,12 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 2
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 1
     displayName: extract Aarch64 sysroot.tar.gz
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_common::run_cargo_build 3
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 8
+      $(FLOWEY_BIN) e 8 flowey_lib_common::run_cargo_build 2
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 6
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_openvmm_hcl 0
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 13
     displayName: cargo build openvmm_hcl
@@ -1687,7 +1683,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_openhcl_initrd 1
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 19
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 6
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 4
     displayName: building openhcl initrd
   - bash: |-
       set -e
@@ -1696,7 +1692,7 @@ jobs:
     displayName: cargo build igvmfilegen
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_split_debug_info 7
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_split_debug_info 5
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_igvmfilegen 0
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 20
@@ -1749,67 +1745,35 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 8 flowey_lib_common::copy_to_artifact_dir 0
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 4
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 2
     displayName: copying OpenHCL igvm extras to artifact dir
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_common::run_cargo_build 5
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 11
+      $(FLOWEY_BIN) e 8 flowey_lib_common::run_cargo_build 3
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 7
     displayName: cargo build pipette
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_split_debug_info 5
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 12
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_split_debug_info 3
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 8
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_pipette 0
       $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 0
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 5
-    displayName: split debug symbols
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_common::run_cargo_build 6
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 13
-    displayName: cargo build tmk_vmm
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_split_debug_info 6
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 14
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_tmk_vmm 0
-      $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 1
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 1
-    displayName: split debug symbols
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_common::run_cargo_build 2
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 6
-    displayName: cargo build openvmm
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_split_debug_info 3
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 7
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_openvmm 0
-      $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 2
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 3
     displayName: split debug symbols
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 8 flowey_lib_common::run_cargo_build 4
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 9
-    displayName: cargo build openvmm_vhost
+    displayName: cargo build tmk_vmm
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_split_debug_info 4
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 10
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_openvmm_vhost 0
-      $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 3
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_tmk_vmm 0
+      $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 1
     displayName: split debug symbols
   - bash: $(FLOWEY_BIN) e 8 flowey_lib_common::cache 3
     displayName: 'validate cache entry: gh-release-download'
-  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-openvmm
-    displayName: 🌼📦 Publish aarch64-linux-musl-openvmm
-    artifact: aarch64-linux-musl-openvmm
-  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-openvmm_vhost
-    displayName: 🌼📦 Publish aarch64-linux-musl-openvmm_vhost
-    artifact: aarch64-linux-musl-openvmm_vhost
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-pipette
     displayName: 🌼📦 Publish aarch64-linux-musl-pipette
     artifact: aarch64-linux-musl-pipette

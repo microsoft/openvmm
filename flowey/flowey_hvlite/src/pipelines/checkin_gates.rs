@@ -759,10 +759,16 @@ impl IntoPipeline for CheckinGatesCli {
             // Also build openvmm and openvmm_vhost for musl on this job,
             // alongside pipette and tmk_vmm. This enables running VMM tests
             // on Azure Linux (MSHV) runners which have an older glibc.
-            let (pub_openvmm_musl, use_openvmm_musl) =
-                pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-openvmm"));
+            // Only needed for x86_64 (the MSHV test job is x64-only).
+            let (pub_openvmm_musl, use_openvmm_musl) = matches!(arch, CommonArch::X86_64)
+                .then(|| pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-openvmm")))
+                .unzip();
             let (pub_openvmm_vhost_musl, use_openvmm_vhost_musl) =
-                pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-openvmm_vhost"));
+                matches!(arch, CommonArch::X86_64)
+                    .then(|| {
+                        pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-openvmm_vhost"))
+                    })
+                    .unzip();
 
             // skim off interesting artifacts required by the VMM tests job
             match arch {
@@ -777,9 +783,10 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_windows_x86.use_tmk_vmm_linux_musl =
                         Some(use_tmk_vmm.clone());
                     // musl artifacts for MSHV test job
-                    vmm_tests_artifacts_linux_musl_x86.use_openvmm = Some(use_openvmm_musl.clone());
+                    vmm_tests_artifacts_linux_musl_x86.use_openvmm =
+                        Some(use_openvmm_musl.clone().unwrap());
                     vmm_tests_artifacts_linux_musl_x86.use_openvmm_vhost =
-                        Some(use_openvmm_vhost_musl.clone());
+                        Some(use_openvmm_vhost_musl.clone().unwrap());
                     vmm_tests_artifacts_linux_musl_x86.use_pipette_linux_musl =
                         Some(use_pipette_linux_musl.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_tmk_vmm = Some(use_tmk_vmm.clone());
@@ -861,31 +868,37 @@ impl IntoPipeline for CheckinGatesCli {
                     profile: CommonProfile::from_release(release),
                     unstable_whp: false,
                     tmk_vmm: ctx.publish_typed_artifact(pub_tmk_vmm),
-                })
-                .dep_on(|ctx| flowey_lib_hvlite::build_openvmm::Request {
-                    params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxMusl,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm].into(),
-                    },
-                    openvmm: ctx.publish_typed_artifact(pub_openvmm_musl),
-                })
-                .dep_on(|ctx| flowey_lib_hvlite::build_openvmm_vhost::Request {
-                    params: flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostBuildParams {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxMusl,
-                        },
-                        profile: CommonProfile::from_release(release),
-                    },
-                    openvmm_vhost: ctx.publish_typed_artifact(pub_openvmm_vhost_musl),
                 });
 
-            // Build musl VMM tests archive on the OpenHCL x86 job
-            if matches!(arch, CommonArch::X86_64) {
+            // Build musl openvmm, openvmm_vhost, and VMM tests archive on the
+            // OpenHCL x86 job only (the MSHV test job is x64-only).
+            if let (Some(pub_openvmm_musl), Some(pub_openvmm_vhost_musl)) =
+                (pub_openvmm_musl, pub_openvmm_vhost_musl)
+            {
+                job = job
+                    .dep_on(|ctx| flowey_lib_hvlite::build_openvmm::Request {
+                        params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxMusl,
+                            },
+                            profile: CommonProfile::from_release(release),
+                            features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
+                                .into(),
+                        },
+                        openvmm: ctx.publish_typed_artifact(pub_openvmm_musl),
+                    })
+                    .dep_on(|ctx| flowey_lib_hvlite::build_openvmm_vhost::Request {
+                        params: flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostBuildParams {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxMusl,
+                            },
+                            profile: CommonProfile::from_release(release),
+                        },
+                        openvmm_vhost: ctx.publish_typed_artifact(pub_openvmm_vhost_musl),
+                    });
+
                 let pub_vmm_tests_archive_linux_musl_x86 =
                     pub_vmm_tests_archive_linux_musl_x86.take().unwrap();
                 job = job.dep_on(|ctx| flowey_lib_hvlite::build_nextest_vmm_tests::Request {
