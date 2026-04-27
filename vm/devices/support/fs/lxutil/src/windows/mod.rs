@@ -979,7 +979,7 @@ impl LxVolume {
                         W32Fs::DELETE | W32Fs::FILE_READ_ATTRIBUTES | W32Fs::FILE_WRITE_ATTRIBUTES,
                     )?;
 
-                    fs::delete_read_only_file(&self.state.fs_context, &handle)
+                    fs::delete_read_only_file(&self.state.fs_context, &handle, e)
                 }
             },
         }
@@ -1185,6 +1185,9 @@ impl LxFile {
         offset: lx::off_t,
         thread_uid: lx::uid_t,
     ) -> lx::Result<usize> {
+        if offset < 0 {
+            return Err(lx::Error::EINVAL);
+        }
         unsafe {
             // When metadata is enabled, the Linux behavior of clearing set-user-ID and set-group-ID
             // on write must be emulated. This should actually be based on CAP_FSETID, but that
@@ -1230,6 +1233,10 @@ impl LxFile {
     where
         F: FnMut(lx::DirEntry) -> lx::Result<bool>,
     {
+        if offset < 0 {
+            return Err(lx::Error::EINVAL);
+        }
+
         if self.enumerator.is_none() {
             self.enumerator = Some(readdir::DirectoryEnumerator::new(false)?);
         }

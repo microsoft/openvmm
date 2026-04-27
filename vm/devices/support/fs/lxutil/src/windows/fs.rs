@@ -316,7 +316,7 @@ pub fn delete_file(fs_context: &FsContext, file_handle: &OwnedHandle) -> lx::Res
         Err(e) => match analyze_delete_error(e, file_handle) {
             DeleteErrorAction::ReturnError(err) => Err(err),
             DeleteErrorAction::TryReadOnlyWorkaround => {
-                delete_read_only_file(fs_context, file_handle)
+                delete_read_only_file(fs_context, file_handle, e)
             }
         },
     }
@@ -344,14 +344,23 @@ pub fn delete_file_core(fs_context: &FsContext, file_handle: &OwnedHandle) -> lx
     }
 }
 
-pub fn delete_read_only_file(fs_context: &FsContext, file_handle: &OwnedHandle) -> lx::Result<()> {
+pub fn delete_read_only_file(
+    fs_context: &FsContext,
+    file_handle: &OwnedHandle,
+    original_error: lx::Error,
+) -> lx::Result<()> {
     let info: FileSystem::FILE_BASIC_INFORMATION = util::query_information_file(file_handle)?;
 
     if info.FileAttributes & W32Fs::FILE_ATTRIBUTE_READONLY.0 == 0 {
-        Err(lx::Error::from_lx(lx::EIO))
+        Err(original_error)
     } else {
         util::set_readonly_attribute(file_handle, info.FileAttributes, false)?;
-        delete_file_core(fs_context, file_handle)
+        let result = delete_file_core(fs_context, file_handle);
+        if result.is_err() {
+            // Best-effort restore the read-only attribute.
+            let _ = util::set_readonly_attribute(file_handle, info.FileAttributes, true);
+        }
+        result
     }
 }
 
@@ -877,8 +886,11 @@ pub fn read_link_length(file_handle: &OwnedHandle, state: &VolumeState) -> lx::R
             match version {
                 LX_UTIL_SYMLINK_DATA_VERSION_2 => {
                     // SAFETY: Accessing union field of type returned from Win32 API
-                    let data_length = unsafe { reparse_buffer.head.header.ReparseDataLength };
-                    Ok(data_length as u32 - LX_UTIL_SYMLINK_TARGET_OFFSET)
+                    let data_length =
+                        unsafe { reparse_buffer.head.header.ReparseDataLength } as u32;
+                    data_length
+                        .checked_sub(LX_UTIL_SYMLINK_TARGET_OFFSET)
+                        .ok_or(lx::Error::EIO)
                 }
                 _ => Err(lx::Error::EIO),
             }
@@ -922,7 +934,9 @@ pub fn read_reparse_link(
                 LX_UTIL_SYMLINK_DATA_VERSION_2 => {
                     // SAFETY: Accessing union field of type returned from Win32 API
                     let data_length = unsafe { reparse_buffer.head.header.ReparseDataLength };
-                    let path_length = data_length - LX_UTIL_SYMLINK_TARGET_OFFSET as u16;
+                    let path_length = data_length
+                        .checked_sub(LX_UTIL_SYMLINK_TARGET_OFFSET as u16)
+                        .ok_or(lx::Error::EIO)?;
                     if iosb.Information < LX_UTIL_SYMLINK_REPARSE_BASE_SIZE as usize
                         || iosb.Information
                             != REPARSE_DATA_BUFFER_HEADER_SIZE + data_length as usize
@@ -994,24 +1008,14 @@ fn determine_fallback_mode(
 
     // Check if FILE_STAT_(LX_)INFORMATION is supported even if query by name is not.
     if fallback_mode < LX_DRVFS_DISABLE_QUERY_BY_NAME_AND_STAT_INFO {
-        if util::query_information_file_by_name::<FileSystem::FILE_STAT_LX_INFORMATION>(
-            Some(file_handle),
-            &empty_string,
-        )
-        .is_ok()
+        if util::query_information_file::<FileSystem::FILE_STAT_LX_INFORMATION>(file_handle).is_ok()
         {
             flags.set_supports_stat_info(true);
             flags.set_supports_stat_lx_info(true);
             return;
         };
 
-        if util::query_information_file_by_name::<FileSystem::FILE_STAT_INFORMATION>(
-            Some(file_handle),
-            &empty_string,
-        )
-        .is_ok()
-        {
-            flags.set_supports_query_by_name(true);
+        if util::query_information_file::<FileSystem::FILE_STAT_INFORMATION>(file_handle).is_ok() {
             flags.set_supports_stat_info(true);
         };
     }
@@ -1096,11 +1100,15 @@ pub fn create_link_reparse_buffer(target: &lx::LxStr) -> lx::Result<Vec<u8>> {
     }
 
     let mut buf = vec![0u8; reparse_size];
-    // SAFETY: Casting buffer which is guaranteed to be large enough.
-    let reparse = unsafe { buf.as_mut_ptr().cast::<SymlinkReparse>().as_mut().unwrap() };
-    reparse.header.ReparseTag = FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32;
-    reparse.header.ReparseDataLength = LX_UTIL_SYMLINK_TARGET_OFFSET as u16 + target_length as u16;
-    reparse.data.symlink.version = LX_UTIL_SYMLINK_DATA_VERSION_2;
+    let tag_off = offset_of!(FileSystem::REPARSE_DATA_BUFFER, ReparseTag);
+    buf[tag_off..tag_off + 4]
+        .copy_from_slice(&(FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32).to_ne_bytes());
+    let len_off = offset_of!(FileSystem::REPARSE_DATA_BUFFER, ReparseDataLength);
+    buf[len_off..len_off + 2].copy_from_slice(
+        &(LX_UTIL_SYMLINK_TARGET_OFFSET as u16 + target_length as u16).to_ne_bytes(),
+    );
+    let ver_off = REPARSE_DATA_BUFFER_HEADER_SIZE + offset_of!(SymlinkData, version);
+    buf[ver_off..ver_off + 4].copy_from_slice(&LX_UTIL_SYMLINK_DATA_VERSION_2.to_ne_bytes());
     let offset = REPARSE_DATA_BUFFER_HEADER_SIZE + LX_UTIL_SYMLINK_TARGET_OFFSET as usize;
     buf[offset..offset + target_length].copy_from_slice(link_target.as_slice());
     Ok(buf)
@@ -1184,13 +1192,8 @@ fn add_ea(
         return Err(lx::Error::EINVAL);
     }
 
-    // SAFETY: Writing to a properly sized buffer.
-    let ea = unsafe {
-        &mut *buffer[*offset..]
-            .as_mut_ptr()
-            .cast::<FileSystem::FILE_FULL_EA_INFORMATION>()
-    };
-    ea.EaNameLength = LX_UTIL_FILE_METADATA_EA_NAME_LENGTH as u8;
+    buffer[*offset + offset_of!(FileSystem::FILE_FULL_EA_INFORMATION, EaNameLength)] =
+        LX_UTIL_FILE_METADATA_EA_NAME_LENGTH as u8;
 
     // Copy the name and null terminator into the buffer
     let name_offset = *offset + offset_of!(FileSystem::FILE_FULL_EA_INFORMATION, EaName);
@@ -1202,20 +1205,27 @@ fn add_ea(
         *offset + offset_of!(FileSystem::FILE_FULL_EA_INFORMATION, EaName) + name.len() + 1;
     buffer[value_offset..value_offset + size_of::<u32>()].copy_from_slice(&value1.to_ne_bytes());
 
+    let val_len_off = *offset + offset_of!(FileSystem::FILE_FULL_EA_INFORMATION, EaValueLength);
+    let next_off = *offset + offset_of!(FileSystem::FILE_FULL_EA_INFORMATION, NextEntryOffset);
+
     if let Some(value2) = value2 {
         // Copy value2 after value1
         let value2_offset = value_offset + size_of::<u32>();
         buffer[value2_offset..value2_offset + size_of::<u32>()]
             .copy_from_slice(&value2.to_ne_bytes());
 
-        ea.EaValueLength = (size_of::<u32>() * 2) as u16;
-        ea.NextEntryOffset = LX_UTIL_FS_METADATA_EA_BUFFER_DEVICE_ID_SIZE as u32;
+        buffer[val_len_off..val_len_off + 2]
+            .copy_from_slice(&((size_of::<u32>() * 2) as u16).to_ne_bytes());
+        buffer[next_off..next_off + 4]
+            .copy_from_slice(&(LX_UTIL_FS_METADATA_EA_BUFFER_DEVICE_ID_SIZE as u32).to_ne_bytes());
     } else {
-        ea.EaValueLength = size_of::<u32>() as u16;
-        ea.NextEntryOffset = LX_UTIL_FS_METADATA_EA_BUFFER_BASE_SIZE as u32;
+        buffer[val_len_off..val_len_off + 2]
+            .copy_from_slice(&(size_of::<u32>() as u16).to_ne_bytes());
+        buffer[next_off..next_off + 4]
+            .copy_from_slice(&(LX_UTIL_FS_METADATA_EA_BUFFER_BASE_SIZE as u32).to_ne_bytes());
     }
 
-    Ok(*offset + ea.NextEntryOffset as usize)
+    Ok(*offset + u32::from_ne_bytes(buffer[next_off..next_off + 4].try_into().unwrap()) as usize)
 }
 
 /// Creates the EA buffer for LX metadata.
@@ -1266,13 +1276,9 @@ pub fn create_metadata_ea_buffer(
 
     // The last EA added should have a NextEntryOffset of 0.
     if offset > 0 {
-        // SAFETY: Writing to a properly sized buffer.
-        let ea = unsafe {
-            &mut *buffer[last_offset..]
-                .as_mut_ptr()
-                .cast::<FileSystem::FILE_FULL_EA_INFORMATION>()
-        };
-        ea.NextEntryOffset = 0;
+        let next_off =
+            last_offset + offset_of!(FileSystem::FILE_FULL_EA_INFORMATION, NextEntryOffset);
+        buffer[next_off..next_off + 4].copy_from_slice(&0u32.to_ne_bytes());
     }
 
     Ok(offset)

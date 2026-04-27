@@ -138,9 +138,24 @@ pub unsafe fn read_nt_symlink_length(
     reparse: &FileSystem::REPARSE_DATA_BUFFER,
     state: &super::VolumeState,
 ) -> lx::Result<u32> {
-    // The length is just the target's UTF-8 length.
     // SAFETY: The validity of the reparse buffer is guaranteed by the caller.
-    Ok(unsafe { read_nt_symlink(reparse, state) }?.len() as _)
+    match unsafe { read_nt_symlink(reparse, state) } {
+        Ok(target) => Ok(target.len() as u32),
+        Err(lx::Error::EPERM) => {
+            // For absolute symlinks blocked by sandbox policy, compute a length
+            // from the raw substitute name so lstat reports a nonzero size.
+            // SAFETY: The validity of the reparse buffer is guaranteed by the caller.
+            let (substitute_name, _) = unsafe { get_substitute_name(reparse)? };
+            let name = if substitute_name.last().is_some_and(|&c| c == 0) {
+                &substitute_name[..substitute_name.len() - 1]
+            } else {
+                substitute_name
+            };
+            let utf8 = String::from_utf16(name).map_err(|_| lx::Error::EIO)?;
+            Ok(utf8.len() as u32)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub fn read(link_file: &OwnedHandle) -> lx::Result<lx::LxString> {

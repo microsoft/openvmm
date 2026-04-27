@@ -786,7 +786,7 @@ impl LxVolumeOptions {
                 }
                 "mode" => {
                     if let Some(value) = value {
-                        if let Ok(mode) = value.parse::<u32>() {
+                        if let Ok(mode) = u32::from_str_radix(value, 8) {
                             if (mode & !0o777) == 0 {
                                 options.mode(mode);
                             } else {
@@ -823,7 +823,7 @@ impl LxVolumeOptions {
                 }
                 "umask" => {
                     if let Some(value) = value {
-                        if let Ok(umask) = value.parse::<u32>() {
+                        if let Ok(umask) = u32::from_str_radix(value, 8) {
                             if (umask & !0o777) == 0 {
                                 options.umask(umask);
                             } else {
@@ -838,7 +838,7 @@ impl LxVolumeOptions {
                 }
                 "dmask" => {
                     if let Some(value) = value {
-                        if let Ok(dmask) = value.parse::<u32>() {
+                        if let Ok(dmask) = u32::from_str_radix(value, 8) {
                             if (dmask & !0o777) == 0 {
                                 options.dmask(dmask);
                             } else {
@@ -853,7 +853,7 @@ impl LxVolumeOptions {
                 }
                 "fmask" => {
                     if let Some(value) = value {
-                        if let Ok(fmask) = value.parse::<u32>() {
+                        if let Ok(fmask) = u32::from_str_radix(value, 8) {
                             if (fmask & !0o777) == 0 {
                                 options.fmask(fmask);
                             } else {

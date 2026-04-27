@@ -15,7 +15,7 @@ const LX_UTIL_CASE_SENSITIVE: &str = "system.wsl_case_sensitive";
 
 const LX_UTIL_XATTR_NAME_PREFIX: &str = "LX.";
 const LX_UTIL_XATTR_NAME_PREFIX_LENGTH: usize = LX_UTIL_XATTR_NAME_PREFIX.len();
-const LX_UTIL_XATTR_NAME_MAX: usize = u16::MAX as usize - LX_UTIL_XATTR_NAME_PREFIX_LENGTH;
+const LX_UTIL_XATTR_NAME_MAX: usize = u8::MAX as usize - LX_UTIL_XATTR_NAME_PREFIX_LENGTH;
 
 const LX_UTILP_XATTR_QUERY_RESTART_SCAN: i32 = 0x1;
 const LX_UTILP_XATTR_QUERY_RETURN_SINGLE_ENTRY: i32 = 0x2;
@@ -118,7 +118,7 @@ pub fn get_system(handle: &OwnedHandle, name: &str, value: Option<&mut [u8]>) ->
 fn set_name(name: &str, buffer: &mut [u8]) -> lx::Result<usize> {
     let name_bytes = name.as_bytes();
 
-    if name_bytes.len() >= LX_UTIL_XATTR_NAME_MAX {
+    if name_bytes.len() > LX_UTIL_XATTR_NAME_MAX {
         return Err(lx::Error::ERANGE);
     }
 
@@ -245,8 +245,7 @@ pub fn get(handle: &OwnedHandle, name: &str, value: Option<&mut [u8]>) -> lx::Re
         .map_err(|_| lx::Error::EIO)?
         .0;
 
-    // The attribute doesn't exist.
-    if (ea_info.ea_value_length.get() as usize) < LX_UTILP_EA_VALUE_HEADER_SIZE {
+    if !has_valid_ea_value_header(&ea, &ea_info) {
         return Err(lx::Error::ENODATA);
     }
 
@@ -287,12 +286,7 @@ fn check_exists(handle: &OwnedHandle, name: &str) -> lx::Result<bool> {
         .map_err(|_| lx::Error::EIO)?
         .0;
 
-    // The attribute doesn't exist.
-    if (ea_info.ea_value_length.get() as usize) < LX_UTILP_EA_VALUE_HEADER_SIZE {
-        return Ok(false);
-    }
-
-    Ok(true)
+    Ok(has_valid_ea_value_header(&ea, &ea_info))
 }
 
 /// Set an extended attribute on a file
@@ -379,6 +373,20 @@ pub fn set_system(handle: &OwnedHandle, name: &str, value: &[u8], flags: i32) ->
     }
 }
 
+/// Check if an EA buffer contains a valid Linux xattr value header magic.
+fn has_valid_ea_value_header(ea_buf: &[u8], ea_info: &FileFullEaInformation) -> bool {
+    if (ea_info.ea_value_length.get() as usize) < LX_UTILP_EA_VALUE_HEADER_SIZE {
+        return false;
+    }
+    let header_start = size_of::<FileFullEaInformation>() + ea_info.ea_name_length as usize + 1;
+    let header_end = header_start + LX_UTILP_EA_VALUE_HEADER_SIZE;
+    if header_end > ea_buf.len() {
+        return false;
+    }
+    let header = u32::from_ne_bytes(ea_buf[header_start..header_end].try_into().unwrap());
+    header == LX_UTILP_EA_VALUE_HEADER
+}
+
 /// Check if the EaName of a specified FILE_FULL_EA_INFORMATION buffer matches the Linux EA prefix and namespaces.
 fn is_linux_ea(ea_buf: &[u8]) -> bool {
     if ea_buf.len() < size_of::<FileFullEaInformation>() + LX_UTIL_XATTR_NAME_PREFIX_LENGTH {
@@ -393,9 +401,19 @@ fn is_linux_ea(ea_buf: &[u8]) -> bool {
     }
 
     let name = &ea_buf[name_start + LX_UTIL_XATTR_NAME_PREFIX_LENGTH..];
-    name.starts_with(LX_UTILP_XATTR_NAMESPACE_SECURITY.as_bytes())
-        || name.starts_with(LX_UTILP_XATTR_NAMESPACE_TRUSTED.as_bytes())
-        || name.starts_with(LX_UTILP_XATTR_NAMESPACE_USER.as_bytes())
+    if !name.starts_with(LX_UTILP_XATTR_NAMESPACE_SECURITY.as_bytes())
+        && !name.starts_with(LX_UTILP_XATTR_NAMESPACE_TRUSTED.as_bytes())
+        && !name.starts_with(LX_UTILP_XATTR_NAMESPACE_USER.as_bytes())
+    {
+        return false;
+    }
+
+    let ea_info = match FileFullEaInformation::read_from_prefix(ea_buf) {
+        Ok((info, _)) => info,
+        Err(_) => return false,
+    };
+
+    has_valid_ea_value_header(ea_buf, &ea_info)
 }
 
 /// List extended attributes on a file.

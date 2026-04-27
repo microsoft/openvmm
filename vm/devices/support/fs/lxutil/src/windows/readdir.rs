@@ -9,7 +9,6 @@ use arrayvec::ArrayVec;
 use bitfield_struct::bitfield;
 use pal::windows::UnicodeString;
 use pal::windows::UnicodeStringRef;
-use std::ffi;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::FromRawHandle;
 use std::os::windows::io::OwnedHandle;
@@ -20,7 +19,6 @@ use windows::Wdk::System::Threading;
 use windows::Win32::Foundation;
 use windows::Win32::Storage::FileSystem as W32Fs;
 use windows::Win32::System::Kernel;
-use windows::Win32::System::Memory;
 use windows::Win32::System::Threading as W32Threading;
 
 const DIR_ENUM_BUFFER_SIZE: usize = 4096;
@@ -341,9 +339,8 @@ impl DirEntryCursor {
 
 /// A DirectoryEnumerator that owns its buffer.
 pub struct DirectoryEnumerator {
-    buffer: *mut ffi::c_void,
-    buffer_next_entry: *mut ffi::c_void,
-    buffer_size: u32,
+    buffer: Vec<u8>,
+    buffer_next_entry: Option<usize>,
     next_read_index: u32,
     file_information_class: DirectoryEnumeratorFileInformationClass,
     flags: DirectoryEnumeratorFlags,
@@ -357,26 +354,12 @@ pub struct FileDirectoryInformation {
     reparse_tag: u32,
 }
 
-unsafe impl Send for DirectoryEnumerator {}
-
-unsafe impl Sync for DirectoryEnumerator {}
-
 impl DirectoryEnumerator {
-    /// Create a new DirectoryEnumerator that owns its buffer. The buffer will be
-    /// freed on drop.
+    /// Create a new DirectoryEnumerator that owns its buffer.
     pub fn new(asynchronous_mode: bool) -> lx::Result<Self> {
-        let buf = unsafe {
-            FileSystem::RtlAllocateHeap(
-                Memory::GetProcessHeap().map_err(|_| lx::Error::ENOMEM)?.0,
-                None,
-                DIR_ENUM_BUFFER_SIZE,
-            )
-        };
-        assert!(!buf.is_null(), "out of memory");
         Ok(Self {
-            buffer: buf,
-            buffer_next_entry: ptr::null_mut(),
-            buffer_size: DIR_ENUM_BUFFER_SIZE as _,
+            buffer: vec![0u8; DIR_ENUM_BUFFER_SIZE],
+            buffer_next_entry: None,
             flags: DirectoryEnumeratorFlags::new().with_asynchronous_mode(asynchronous_mode),
             next_read_index: 0,
             file_information_class:
@@ -461,7 +444,7 @@ impl DirectoryEnumerator {
             self.cursor.reset();
             // Also reset the Windows enumerator state.
             self.next_read_index = 0;
-            self.buffer_next_entry = ptr::null_mut();
+            self.buffer_next_entry = None;
             self.flags.set_end_reached(false);
         }
 
@@ -511,7 +494,7 @@ impl DirectoryEnumerator {
         restart_scan: bool,
     ) -> lx::Result<Option<FileDirectoryInformation>> {
         if restart_scan {
-            self.buffer_next_entry = ptr::null_mut();
+            self.buffer_next_entry = None;
             self.flags.set_end_reached(false);
         }
 
@@ -524,18 +507,18 @@ impl DirectoryEnumerator {
             return Ok(None);
         }
 
-        if self.buffer_next_entry.is_null() {
+        if self.buffer_next_entry.is_none() {
             let bytes_read = self.fill_buffer(handle, restart_scan)?;
 
             if bytes_read == 0 {
-                debug_assert!(self.buffer_next_entry.is_null());
+                debug_assert!(self.buffer_next_entry.is_none());
 
                 self.flags.set_end_reached(true);
                 return Ok(None);
             }
         }
 
-        debug_assert!(!self.buffer_next_entry.is_null());
+        debug_assert!(self.buffer_next_entry.is_some());
         let entry: &dyn DirectoryInformation = match self.file_information_class {
             DirectoryEnumeratorFileInformationClass::FileId64ExtdDirectoryInformation => {
                 self.get_next_entry::<FILE_ID_64_EXTD_DIR_INFORMATION>()?
@@ -575,7 +558,7 @@ impl DirectoryEnumerator {
 
     /// Fills the buffer of the enumerator. Returns the number of bytes read into the buffer.
     fn fill_buffer(&mut self, handle: &OwnedHandle, restart_scan: bool) -> lx::Result<u32> {
-        debug_assert!(self.buffer_next_entry.is_null());
+        debug_assert!(self.buffer_next_entry.is_none());
 
         let mut raw_event = Default::default();
         let _event;
@@ -607,8 +590,8 @@ impl DirectoryEnumerator {
                     None,
                     None,
                     &mut iosb,
-                    self.buffer,
-                    self.buffer_size,
+                    self.buffer.as_mut_ptr().cast(),
+                    self.buffer.len().try_into().map_err(|_| lx::Error::EOVERFLOW)?,
                     self.current_file_information_class(),
                     false,
                     None,
@@ -705,22 +688,17 @@ impl DirectoryEnumerator {
             // the buffer can't hold at least one entry. On subsequent calls, it
             // returns success but the number of bytes read is zero.
             if !buffer_too_small && iosb.Information != 0 {
-                self.buffer_next_entry = self.buffer;
+                self.buffer_next_entry = Some(0);
                 break;
             }
 
-            // Try to grow the buffer. The size is guaranteed not to overflow as
-            // buffer_size is u32 and usize::MAX > u32::MAX.
-            self.free_buffer();
-            let buf = unsafe {
-                FileSystem::RtlAllocateHeap(
-                    Memory::GetProcessHeap().map_err(|_| lx::Error::ENOMEM)?.0,
-                    None,
-                    self.buffer_size as usize + BUFFER_EXTRA_SIZE,
-                )
-            };
-            assert!(!buf.is_null(), "out of memory");
-            self.buffer = buf;
+            // Try to grow the buffer.
+            let new_size = self
+                .buffer
+                .len()
+                .checked_add(BUFFER_EXTRA_SIZE)
+                .ok_or(lx::Error::ENOMEM)?;
+            self.buffer = vec![0u8; new_size];
         }
         Ok(iosb.Information as _)
     }
@@ -729,12 +707,12 @@ impl DirectoryEnumerator {
     where
         T: DirectoryInformation,
     {
-        if self.buffer.is_null() || offset + size_of::<T>() > self.buffer_size as _ {
+        if offset + size_of::<T>() > self.buffer.len() {
             return Err(lx::Error::EFAULT);
         }
 
         // The buffer is guaranteed to be large enough for this operation.
-        let ptr = self.buffer.wrapping_byte_add(offset as _);
+        let ptr = self.buffer.as_mut_ptr().wrapping_byte_add(offset);
 
         if ptr.align_offset(align_of::<T>()) != 0 {
             return Err(lx::Error::EFAULT);
@@ -748,19 +726,23 @@ impl DirectoryEnumerator {
     where
         T: DirectoryInformation,
     {
-        if self.buffer_next_entry.is_null()
-            || self.buffer_next_entry.align_offset(align_of::<T>()) != 0
-        {
+        let offset = self.buffer_next_entry.ok_or(lx::Error::EFAULT)?;
+        if offset + size_of::<T>() > self.buffer.len() {
+            return Err(lx::Error::EFAULT);
+        }
+
+        let ptr = self.buffer.as_mut_ptr().wrapping_byte_add(offset);
+        if ptr.align_offset(align_of::<T>()) != 0 {
             return Err(lx::Error::EFAULT);
         }
 
         // SAFETY: The pointer is aligned and will read within the buffer bounds.
-        unsafe { Ok(&mut *(self.buffer_next_entry.cast())) }
+        unsafe { Ok(&mut *(ptr.cast())) }
     }
 
     /// Advances the enumerator to the next entry.
     fn next(&mut self) -> lx::Result<()> {
-        debug_assert!(!self.buffer.is_null() && !self.buffer_next_entry.is_null());
+        debug_assert!(!self.buffer.is_empty() && self.buffer_next_entry.is_some());
 
         // If the end was previously reached, do nothing.
         if self.flags.end_reached() {
@@ -771,9 +753,9 @@ impl DirectoryEnumerator {
         if entry.NextEntryOffset != 0 {
             self.buffer_next_entry = self
                 .buffer_next_entry
-                .wrapping_byte_add(entry.NextEntryOffset as _);
+                .map(|off| off + entry.NextEntryOffset as usize);
         } else {
-            self.buffer_next_entry = ptr::null_mut();
+            self.buffer_next_entry = None;
         }
 
         Ok(())
@@ -804,20 +786,6 @@ impl DirectoryEnumerator {
                 FileSystem::FileDirectoryInformation
             }
         }
-    }
-
-    /// Free the buffer with RtlFreeHeap.
-    fn free_buffer(&self) {
-        // SAFETY: Calling Win32 API as documented.
-        unsafe {
-            FileSystem::RtlFreeHeap(Memory::GetProcessHeap().unwrap().0, None, Some(self.buffer))
-        };
-    }
-}
-
-impl Drop for DirectoryEnumerator {
-    fn drop(&mut self) {
-        self.free_buffer();
     }
 }
 

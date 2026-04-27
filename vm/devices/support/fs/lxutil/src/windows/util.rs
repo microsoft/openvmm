@@ -108,7 +108,8 @@ pub fn open_relative_file(
     let mut handle = Default::default();
     let mut iosb = Default::default();
     let (ea_ptr, ea_len) = if let Some(ea) = ea_buffer {
-        (Some(ea.as_ptr().cast()), ea.len() as u32)
+        let len: u32 = ea.len().try_into().map_err(|_| lx::Error::EINVAL)?;
+        (Some(ea.as_ptr().cast()), len)
     } else {
         (None, 0)
     };
@@ -155,18 +156,18 @@ fn get_token_for_access_check() -> lx::Result<OwnedHandle> {
     let mut client_token_raw = Foundation::HANDLE::default();
     let mut duplicate_token_raw = Foundation::HANDLE::default();
     // SAFETY: Calling Win32 API as documented.
-    let result = unsafe {
-        check_status(FileSystem::NtOpenThreadToken(
+    let status = unsafe {
+        FileSystem::NtOpenThreadToken(
             Threading::GetCurrentThread(),
             Security::TOKEN_QUERY.0 | Security::TOKEN_DUPLICATE.0,
             true,
             &mut client_token_raw,
-        ))
+        )
     };
 
-    if let Err(e) = result {
-        // Use the process token if there's no token.
-        if e.value() == Foundation::STATUS_NO_TOKEN.0 {
+    if status.is_err() {
+        if status == Foundation::STATUS_NO_TOKEN {
+            // Use the process token if there's no thread token.
             // SAFETY: Calling Win32 API as documented.
             unsafe {
                 let _ = check_status(FileSystem::NtOpenProcessToken(
@@ -176,7 +177,7 @@ fn get_token_for_access_check() -> lx::Result<OwnedHandle> {
                 ))?;
             }
         } else {
-            return Err(e);
+            return Err(nt_status_to_lx(status));
         }
     }
 
@@ -252,29 +253,37 @@ pub fn check_security(
     let mut length_needed: u32 = 0;
 
     // Call NtQuerySecurityObject until we pass a big enough buffer.
-    while let Err(e) =
-        // unsafe: calling Win32 API as documented.
-        unsafe {
-            // If the buffer was too small, try again and remember the size
-            // for future calls. This is the same strategy used by
-            // ObGetObjectSecurity.
-            check_status(FileSystem::NtQuerySecurityObject(
+    // If the buffer was too small, try again and remember the size
+    // for future calls. This is the same strategy used by
+    // ObGetObjectSecurity.
+    let mut current_size = initial_size;
+    loop {
+        // SAFETY: Calling Win32 API as documented.
+        let status = unsafe {
+            FileSystem::NtQuerySecurityObject(
                 Foundation::HANDLE(file.as_raw_handle()),
                 (Security::OWNER_SECURITY_INFORMATION
                     | Security::GROUP_SECURITY_INFORMATION
                     | Security::DACL_SECURITY_INFORMATION)
                     .0,
                 Some(Security::PSECURITY_DESCRIPTOR(sd.as_mut_ptr().cast())),
-                initial_size as u32,
+                current_size as u32,
                 &mut length_needed,
-            ))
+            )
+        };
+
+        if status.is_ok() {
+            break;
         }
-    {
-        if e.value() == Foundation::STATUS_BUFFER_TOO_SMALL.0 {
-            LX_UTIL_FS_SECURITY_DESCRIPTOR_SIZE.store(length_needed as usize, Ordering::Relaxed);
-            sd.reserve_tail(length_needed as usize);
+
+        if status == Foundation::STATUS_BUFFER_TOO_SMALL {
+            current_size = length_needed as usize;
+            LX_UTIL_FS_SECURITY_DESCRIPTOR_SIZE.store(current_size, Ordering::Relaxed);
+            let tail_size =
+                current_size.saturating_sub(size_of::<Security::SECURITY_DESCRIPTOR>());
+            sd.reserve_tail(tail_size);
         } else {
-            return Err(e);
+            return Err(nt_status_to_lx(status));
         }
     }
 
@@ -1048,13 +1057,15 @@ pub fn permissions_for_set_attr(attr: &SetAttributes, metadata: bool) -> W32Fs::
 pub fn set_extended_attr(handle: &OwnedHandle, ea_buffer: &[u8]) -> lx::Result<()> {
     let mut iosb = Default::default();
 
+    let ea_len: u32 = ea_buffer.len().try_into().map_err(|_| lx::Error::EINVAL)?;
+
     // SAFETY: Calling NtSetEaFile as documented.
     unsafe {
         let _ = check_status(FileSystem::NtSetEaFile(
             Foundation::HANDLE(handle.as_raw_handle()),
             &mut iosb,
             ea_buffer.as_ptr() as *mut ffi::c_void,
-            ea_buffer.len() as u32,
+            ea_len,
         ))?;
 
         Ok(())
