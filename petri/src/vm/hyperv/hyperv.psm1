@@ -223,6 +223,21 @@ function New-CustomVM
         [hashtable] $ScsiControllers = $null,
 
         # must be a hashtable with format:
+        # NvmeControllers => {
+        #     Vsid => {
+        #         Vtl,
+        #         Drives => @(
+        #             @{ Nsid; DiskPath },
+        #             ...
+        #         )
+        #     },
+        #     ...
+        # }
+        # Drives are pre-sorted by NSID. The emulator assigns NSIDs 1..N
+        # by argument order.
+        [hashtable] $NvmeControllers = $null,
+
+        # must be a hashtable with format:
         # IdeControllers => {
         #     ControllerNumber => {
         #         Lun => {
@@ -349,6 +364,22 @@ function New-CustomVM
                 "VirtualSystemIdentifiers" = @("{$vsid}");
                 "TargetVtl" = $targetVtl
             } | ConvertTo-CimEmbeddedString
+        }
+    }
+
+    if ($NvmeControllers) {
+        Import-Module HvlDeviceHost
+        foreach ($controller in $NvmeControllers.GetEnumerator()) {
+            $vsid = $controller.Name
+            $targetVtl = $controller.Value["Vtl"]
+            $drives = $controller.Value["Drives"]
+            # Drives arrive pre-sorted by NSID from the Rust layer.
+            $vhdPaths = @($drives | ForEach-Object { $_["DiskPath"] })
+            $resourceSettings += New-NvmeEmulatorRasd `
+                -VhdPaths $vhdPaths `
+                -TargetVtl $targetVtl `
+                -Vsid ([Guid]$vsid) `
+                | ConvertTo-CimEmbeddedString
         }
     }
 
