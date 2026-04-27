@@ -513,6 +513,7 @@ struct QueueStats {
     tx_lso_packets: Counter,
     tx_checksum_packets: Counter,
     tx_invalid_lso_packets: Counter,
+    tx_vlan_packets: Counter,
     tx_packets_per_wake: Histogram<10>,
     rx_packets_per_wake: Histogram<10>,
 }
@@ -2654,6 +2655,9 @@ impl<T: RingMem> NetChannel<T> {
         }
         if metadata.flags.offload_tcp_segmentation() {
             stats.tx_lso_packets.increment();
+        }
+        if metadata.flags.vlan_enabled() {
+            stats.tx_vlan_packets.increment();
         }
 
         segments[start].ty = net_backend::TxSegmentType::Head(metadata);
