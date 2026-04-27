@@ -205,9 +205,7 @@ jobs:
         flowey e 0 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 0 flowey_lib_hvlite::run_cargo_build 1
         flowey e 0 flowey_lib_hvlite::build_xtask 0
-      shell: bash
-    - name: determine clippy exclusions
-      run: flowey e 0 flowey_lib_hvlite::_jobs::check_clippy 0
+        flowey e 0 flowey_lib_hvlite::_jobs::check_clippy 0
       shell: bash
     - name: cargo clippy
       run: flowey e 0 flowey_lib_common::run_cargo_clippy 0
@@ -1113,9 +1111,7 @@ jobs:
         flowey.exe e 12 flowey_lib_common::run_cargo_build 0
         flowey.exe e 12 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 12 flowey_lib_hvlite::build_xtask 0
-      shell: bash
-    - name: determine clippy exclusions
-      run: flowey.exe e 12 flowey_lib_hvlite::_jobs::check_clippy 0
+        flowey.exe e 12 flowey_lib_hvlite::_jobs::check_clippy 0
       shell: bash
     - name: cargo clippy
       run: flowey.exe e 12 flowey_lib_common::run_cargo_clippy 0
@@ -1163,9 +1159,6 @@ jobs:
         flowey.exe e 12 flowey_lib_common::run_cargo_build 1
         flowey.exe e 12 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 12 flowey_lib_hvlite::build_xtask 1
-      shell: bash
-    - name: determine unit test exclusions
-      run: |-
         flowey.exe e 12 flowey_lib_hvlite::build_nextest_unit_tests 0
         flowey.exe e 12 flowey_lib_hvlite::init_cross_build 1
         flowey.exe e 12 flowey_lib_hvlite::run_cargo_nextest_run 0
@@ -1348,9 +1341,7 @@ jobs:
         flowey e 13 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 13 flowey_lib_hvlite::run_cargo_build 1
         flowey e 13 flowey_lib_hvlite::build_xtask 0
-      shell: bash
-    - name: determine clippy exclusions
-      run: flowey e 13 flowey_lib_hvlite::_jobs::check_clippy 0
+        flowey e 13 flowey_lib_hvlite::_jobs::check_clippy 0
       shell: bash
     - name: cargo clippy
       run: flowey e 13 flowey_lib_common::run_cargo_clippy 0
@@ -1447,9 +1438,7 @@ jobs:
         flowey e 13 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 13 flowey_lib_hvlite::run_cargo_build 3
         flowey e 13 flowey_lib_hvlite::build_xtask 1
-      shell: bash
-    - name: determine unit test exclusions
-      run: flowey e 13 flowey_lib_hvlite::build_nextest_unit_tests 0
+        flowey e 13 flowey_lib_hvlite::build_nextest_unit_tests 0
       shell: bash
     - name: generate nextest command
       run: flowey e 13 flowey_lib_common::gen_cargo_nextest_run_cmd 3
@@ -1645,9 +1634,7 @@ jobs:
         flowey e 14 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 14 flowey_lib_hvlite::run_cargo_build 1
         flowey e 14 flowey_lib_hvlite::build_xtask 0
-      shell: bash
-    - name: determine clippy exclusions
-      run: flowey e 14 flowey_lib_hvlite::_jobs::check_clippy 0
+        flowey e 14 flowey_lib_hvlite::_jobs::check_clippy 0
       shell: bash
     - name: cargo clippy
       run: flowey e 14 flowey_lib_common::run_cargo_clippy 0
@@ -1768,9 +1755,7 @@ jobs:
         flowey e 14 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 14 flowey_lib_hvlite::run_cargo_build 3
         flowey e 14 flowey_lib_hvlite::build_xtask 1
-      shell: bash
-    - name: determine unit test exclusions
-      run: flowey e 14 flowey_lib_hvlite::build_nextest_unit_tests 0
+        flowey e 14 flowey_lib_hvlite::build_nextest_unit_tests 0
       shell: bash
     - name: generate nextest command
       run: flowey e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 3
@@ -1959,9 +1944,7 @@ jobs:
         flowey.exe e 15 flowey_lib_common::run_cargo_build 0
         flowey.exe e 15 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 15 flowey_lib_hvlite::build_xtask 0
-      shell: bash
-    - name: determine clippy exclusions
-      run: flowey.exe e 15 flowey_lib_hvlite::_jobs::check_clippy 0
+        flowey.exe e 15 flowey_lib_hvlite::_jobs::check_clippy 0
       shell: bash
     - name: cargo clippy
       run: flowey.exe e 15 flowey_lib_common::run_cargo_clippy 0
@@ -2009,9 +1992,6 @@ jobs:
         flowey.exe e 15 flowey_lib_common::run_cargo_build 1
         flowey.exe e 15 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 15 flowey_lib_hvlite::build_xtask 1
-      shell: bash
-    - name: determine unit test exclusions
-      run: |-
         flowey.exe e 15 flowey_lib_hvlite::build_nextest_unit_tests 0
         flowey.exe e 15 flowey_lib_hvlite::init_cross_build 1
         flowey.exe e 15 flowey_lib_hvlite::run_cargo_nextest_run 0
@@ -2235,9 +2215,7 @@ jobs:
         flowey e 16 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 16 flowey_lib_hvlite::run_cargo_build 1
         flowey e 16 flowey_lib_hvlite::build_xtask 0
-      shell: bash
-    - name: determine clippy exclusions
-      run: flowey e 16 flowey_lib_hvlite::_jobs::check_clippy 0
+        flowey e 16 flowey_lib_hvlite::_jobs::check_clippy 0
       shell: bash
     - name: cargo clippy
       run: flowey e 16 flowey_lib_common::run_cargo_clippy 0
@@ -2340,9 +2318,7 @@ jobs:
         flowey e 16 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 16 flowey_lib_hvlite::run_cargo_build 3
         flowey e 16 flowey_lib_hvlite::build_xtask 1
-      shell: bash
-    - name: determine unit test exclusions
-      run: flowey e 16 flowey_lib_hvlite::build_nextest_unit_tests 0
+        flowey e 16 flowey_lib_hvlite::build_nextest_unit_tests 0
       shell: bash
     - name: generate nextest command
       run: flowey e 16 flowey_lib_common::gen_cargo_nextest_run_cmd 3
@@ -2578,9 +2554,7 @@ jobs:
         flowey e 17 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 17 flowey_lib_hvlite::run_cargo_build 1
         flowey e 17 flowey_lib_hvlite::build_xtask 0
-      shell: bash
-    - name: determine clippy exclusions
-      run: flowey e 17 flowey_lib_hvlite::_jobs::check_clippy 0
+        flowey e 17 flowey_lib_hvlite::_jobs::check_clippy 0
       shell: bash
     - name: cargo clippy
       run: flowey e 17 flowey_lib_common::run_cargo_clippy 0
@@ -2701,9 +2675,7 @@ jobs:
         flowey e 17 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 17 flowey_lib_hvlite::run_cargo_build 3
         flowey e 17 flowey_lib_hvlite::build_xtask 1
-      shell: bash
-    - name: determine unit test exclusions
-      run: flowey e 17 flowey_lib_hvlite::build_nextest_unit_tests 0
+        flowey e 17 flowey_lib_hvlite::build_nextest_unit_tests 0
       shell: bash
     - name: generate nextest command
       run: flowey e 17 flowey_lib_common::gen_cargo_nextest_run_cmd 3

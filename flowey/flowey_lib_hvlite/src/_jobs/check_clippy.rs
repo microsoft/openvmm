@@ -130,7 +130,7 @@ impl SimpleFlowNode for Node {
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
-        let exclude = ctx.emit_rust_stepv("determine clippy exclusions", |ctx| {
+        let exclude = ctx.emit_minor_rust_stepv("determine clippy exclusions", |ctx| {
             let xtask = xtask.claim(ctx);
             let repo_path = openvmm_repo_path.clone().claim(ctx);
             move |rt| {
@@ -151,9 +151,10 @@ impl SimpleFlowNode for Node {
                     };
 
                     rt.sh.change_dir(repo_path);
-                    let output =
-                        flowey::shell_cmd!(rt, "{xtask_bin} fuzz list --crates").output()?;
-                    let output = String::from_utf8(output.stdout)?;
+                    let output = flowey::shell_cmd!(rt, "{xtask_bin} fuzz list --crates")
+                        .output()
+                        .unwrap();
+                    let output = String::from_utf8(output.stdout).unwrap();
 
                     let fuzz_crates = output.trim().split('\n').map(|s| s.to_owned());
                     exclude.extend(fuzz_crates);
@@ -167,7 +168,7 @@ impl SimpleFlowNode for Node {
                     exclude.extend(["openssl_kdf", "vmgs_lib", "disk_crypt"].map(|x| x.into()));
                 }
 
-                Ok(Some(exclude))
+                exclude
             }
         });
 
@@ -205,7 +206,7 @@ impl SimpleFlowNode for Node {
             features: CargoFeatureSet::None,
             target: target.clone(),
             extra_env: None,
-            exclude: ReadVar::from_static(None),
+            exclude: ReadVar::from_static(Vec::new()),
             keep_going: true,
             all_targets: true,
             pre_build_deps: pre_build_deps.clone(),
@@ -225,7 +226,7 @@ impl SimpleFlowNode for Node {
                 features: CargoFeatureSet::Specific(vec!["openssl".into()]),
                 target: target.clone(),
                 extra_env: None,
-                exclude: ReadVar::from_static(None),
+                exclude: ReadVar::from_static(Vec::new()),
                 keep_going: true,
                 all_targets: true,
                 pre_build_deps: pre_build_deps.clone(),
@@ -238,7 +239,7 @@ impl SimpleFlowNode for Node {
                 features: CargoFeatureSet::All,
                 target: target.clone(),
                 extra_env: None,
-                exclude: ReadVar::from_static(None),
+                exclude: ReadVar::from_static(Vec::new()),
                 keep_going: true,
                 all_targets: true,
                 pre_build_deps: pre_build_deps.clone(),
@@ -255,7 +256,7 @@ impl SimpleFlowNode for Node {
                 features: CargoFeatureSet::All,
                 target: target_lexicon::triple!(boot_target),
                 extra_env: Some(vec![("MINIMAL_RT_BUILD".into(), "1".into())]),
-                exclude: ReadVar::from_static(None),
+                exclude: ReadVar::from_static(Vec::new()),
                 keep_going: true,
                 all_targets: false,
                 pre_build_deps: pre_build_deps.clone(),
@@ -270,7 +271,7 @@ impl SimpleFlowNode for Node {
                 features: CargoFeatureSet::All,
                 target: target_lexicon::triple!(uefi_target),
                 extra_env: None,
-                exclude: ReadVar::from_static(None),
+                exclude: ReadVar::from_static(Vec::new()),
                 keep_going: true,
                 all_targets: false,
                 pre_build_deps: pre_build_deps.clone(),
