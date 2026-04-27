@@ -3,10 +3,7 @@
 
 //! Run OpenVMM CCA tests. Now we run them using emulator, code can be tweaked
 //! to support running tests on native hardware platform.
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonPlatform;
-use crate::run_cargo_build::common::CommonProfile;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::{CommonArch, CommonPlatform, CommonProfile, CommonTriple};
 use flowey::node::prelude::*;
 use std::env;
 

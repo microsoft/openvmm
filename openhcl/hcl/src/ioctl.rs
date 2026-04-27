@@ -770,7 +770,7 @@ impl Mshv {
             // SAFETY: calling IOCTL as documented, with no special requirements.
             let supported = unsafe {
                 x64_extensions::hcl_check_extension(self.file.as_raw_fd(), &cap)
-                    .map_err(Error::CheckExtensions)?
+                    .map_err(|e| Error::CheckExtensions(cap, e))?
             };
             Ok(supported != 0)
         }
