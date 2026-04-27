@@ -1332,14 +1332,7 @@ impl<D: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<D> {
                 }
             })
             .await;
-        match &r {
-            Ok(()) => {
-                tracing::info!(pci_id = %self.device.id(), "nvme worker task exiting: channel closed")
-            }
-            Err(_) => {
-                tracing::info!(pci_id = %self.device.id(), "nvme worker task exiting: cancelled by TaskControl")
-            }
-        }
+        tracing::info!(pci_id = %self.device.id(), result= ?r, "nvme worker task exiting");
         r
     }
 }
