@@ -23,7 +23,11 @@ const DEFAULT_FLAGS: u32 = FUSE_ASYNC_READ
     | FUSE_HANDLE_KILLPRIV
     | FUSE_ASYNC_DIO
     | FUSE_ATOMIC_O_TRUNC
-    | FUSE_BIG_WRITES;
+    | FUSE_BIG_WRITES
+    | FUSE_INIT_EXT;
+
+// Default flags2 to negotiate when FUSE_INIT_EXT is supported.
+const DEFAULT_FLAGS2: u32 = FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
 
 const DEFAULT_MAX_PAGES: u32 = 256;
 
@@ -478,6 +482,15 @@ impl Session {
         info.max_readahead = init.max_readahead;
         info.capable = init.flags;
         info.want = DEFAULT_FLAGS & init.flags;
+        info.want2 = 0;
+        // Negotiate flags2 when the kernel supports extended init.
+        // We cannot read the kernel's flags2 from the request (the struct is
+        // kept at its legacy 16-byte size for backward compatibility), so we
+        // set our desired flags2 unconditionally and rely on the kernel to
+        // mask out any bits it does not support.
+        if init.flags & FUSE_INIT_EXT != 0 {
+            info.want2 = DEFAULT_FLAGS2;
+        }
         info.time_gran = 1;
         info.max_write = DEFAULT_MAX_PAGES * PAGE_SIZE;
         self.fs.init(&mut info);
@@ -493,6 +506,10 @@ impl Session {
         out.max_write = info.max_write;
         out.time_gran = info.time_gran;
         out.max_pages = ((info.max_write - 1) / PAGE_SIZE - 1).try_into().unwrap();
+        // Only report flags2 when extended init was negotiated.
+        if info.want & FUSE_INIT_EXT != 0 {
+            out.flags2 = info.want2;
+        }
 
         sender.send_arg(request.unique(), out)?;
 
@@ -589,6 +606,8 @@ pub struct SessionInfo {
     pub max_readahead: u32,
     capable: u32,
     pub want: u32,
+    /// Extended flags (flags2) to negotiate when FUSE_INIT_EXT is active.
+    pub want2: u32,
     pub max_background: u16,
     pub congestion_threshold: u16,
     pub max_write: u32,
@@ -772,7 +791,7 @@ mod tests {
     const LOOKUP_CALLED: u32 = 0x4;
 
     const INIT_REPLY: &[u8] = &[
-        80, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 31, 0, 0, 0, 0, 0, 2, 0, 41,
+        80, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 39, 0, 0, 0, 0, 0, 2, 0, 41,
         144, 12, 0, 0, 0, 0, 0, 0, 0, 16, 0, 1, 0, 0, 0, 254, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ];
