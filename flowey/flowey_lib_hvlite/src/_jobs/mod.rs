@@ -24,6 +24,7 @@ pub mod consume_and_test_nextest_unit_tests_archive;
 pub mod consume_and_test_nextest_vmm_tests_archive;
 pub mod local_build_and_run_nextest_vmm_tests;
 pub mod local_build_igvm;
+pub mod local_build_opentmk;
 pub mod local_custom_vmfirmwareigvm_dll;
 pub mod local_restore_packages;
 pub mod publish_vmgstool_gh_release;
