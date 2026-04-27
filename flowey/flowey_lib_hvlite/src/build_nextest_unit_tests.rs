@@ -167,6 +167,20 @@ impl FlowNode for Node {
                 );
             }
 
+            // On windows, we can't run with all features, as many crates
+            // require openSSL for crypto, which isn't supported yet.
+            //
+            // Adding the the "ci" feature is also used to skip certain tests
+            // that fail in CI.
+            let features = if matches!(
+                target.operating_system,
+                target_lexicon::OperatingSystem::Windows
+            ) {
+                CargoFeatureSet::Specific(vec!["ci".into()])
+            } else {
+                CargoFeatureSet::All
+            };
+
             let injected_env = ctx.reqv(|v| crate::init_cross_build::Request {
                 target: target.clone(),
                 injected_env: v,
@@ -174,7 +188,7 @@ impl FlowNode for Node {
 
             let base_build_params = NextestBuildParams {
                 packages: test_packages.clone(),
-                features: CargoFeatureSet::All,
+                features,
                 no_default_features: false,
                 target: target.clone(),
                 profile: match profile {

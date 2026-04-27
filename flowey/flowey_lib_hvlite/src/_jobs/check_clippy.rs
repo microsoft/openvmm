@@ -171,11 +171,22 @@ impl SimpleFlowNode for Node {
             }
         });
 
+        // On windows & mac, we can't build with all features, as many crates
+        // require openSSL for crypto, which isn't supported in CI yet.
+        let features = if matches!(
+            target.operating_system,
+            target_lexicon::OperatingSystem::Windows | target_lexicon::OperatingSystem::Darwin(_)
+        ) {
+            CargoFeatureSet::None
+        } else {
+            CargoFeatureSet::All
+        };
+
         let mut reqs = vec![ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
             in_folder: openvmm_repo_path.clone(),
             package: CargoPackage::Workspace,
             profile: profile.clone(),
-            features: CargoFeatureSet::All,
+            features: features.clone(),
             target: target.clone(),
             extra_env: None,
             exclude,
