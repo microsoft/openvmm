@@ -194,8 +194,9 @@ jobs:
       $(FLOWEY_BIN) e 0 flowey_lib_hvlite::run_split_debug_info 1
       $(FLOWEY_BIN) e 0 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 0 flowey_lib_hvlite::build_xtask 0
-      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::_jobs::check_clippy 0
     displayName: split debug symbols
+  - bash: $(FLOWEY_BIN) e 0 flowey_lib_hvlite::_jobs::check_clippy 0
+    displayName: determine clippy exclusions
   - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::run_cargo_clippy 0
     displayName: cargo clippy
   - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::run_cargo_clippy 2
@@ -593,8 +594,9 @@ jobs:
       $(FLOWEY_BIN) e 12 flowey_lib_hvlite::run_split_debug_info 1
       $(FLOWEY_BIN) e 12 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 12 flowey_lib_hvlite::build_xtask 0
-      $(FLOWEY_BIN) e 12 flowey_lib_hvlite::_jobs::check_clippy 0
     displayName: split debug symbols
+  - bash: $(FLOWEY_BIN) e 12 flowey_lib_hvlite::_jobs::check_clippy 0
+    displayName: determine clippy exclusions
   - bash: $(FLOWEY_BIN) e 12 flowey_lib_common::run_cargo_clippy 0
     displayName: cargo clippy
   - bash: $(FLOWEY_BIN) e 12 flowey_lib_common::run_cargo_clippy 2
@@ -688,8 +690,9 @@ jobs:
       $(FLOWEY_BIN) e 12 flowey_lib_hvlite::run_split_debug_info 0
       $(FLOWEY_BIN) e 12 flowey_lib_hvlite::run_cargo_build 3
       $(FLOWEY_BIN) e 12 flowey_lib_hvlite::build_xtask 1
-      $(FLOWEY_BIN) e 12 flowey_lib_hvlite::build_nextest_unit_tests 0
     displayName: split debug symbols
+  - bash: $(FLOWEY_BIN) e 12 flowey_lib_hvlite::build_nextest_unit_tests 0
+    displayName: determine unit test exclusions
   - bash: $(FLOWEY_BIN) e 12 flowey_lib_common::gen_cargo_nextest_run_cmd 3
     displayName: generate nextest command
   - bash: |-
@@ -853,8 +856,9 @@ jobs:
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_split_debug_info 1
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_xtask 0
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::_jobs::check_clippy 0
     displayName: split debug symbols
+  - bash: $(FLOWEY_BIN) e 11 flowey_lib_hvlite::_jobs::check_clippy 0
+    displayName: determine clippy exclusions
   - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_clippy 0
     displayName: cargo clippy
   - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_clippy 1
@@ -926,8 +930,9 @@ jobs:
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_split_debug_info 0
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_cargo_build 3
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_xtask 1
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_nextest_unit_tests 0
     displayName: split debug symbols
+  - bash: $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_nextest_unit_tests 0
+    displayName: determine unit test exclusions
   - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 3
     displayName: generate nextest command
   - bash: |-
@@ -1148,8 +1153,9 @@ jobs:
       $(FLOWEY_BIN) e 10 flowey_lib_common::run_cargo_build 0
       $(FLOWEY_BIN) e 10 flowey_lib_hvlite::run_cargo_build 0
       $(FLOWEY_BIN) e 10 flowey_lib_hvlite::build_xtask 0
-      $(FLOWEY_BIN) e 10 flowey_lib_hvlite::_jobs::check_clippy 0
     displayName: cargo build xtask
+  - bash: $(FLOWEY_BIN) e 10 flowey_lib_hvlite::_jobs::check_clippy 0
+    displayName: determine clippy exclusions
   - bash: $(FLOWEY_BIN) e 10 flowey_lib_common::run_cargo_clippy 0
     displayName: cargo clippy
   - bash: $(FLOWEY_BIN) e 10 flowey_lib_common::run_cargo_clippy 1
@@ -1216,8 +1222,9 @@ jobs:
       $(FLOWEY_BIN) e 10 flowey_lib_common::run_cargo_build 1
       $(FLOWEY_BIN) e 10 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 10 flowey_lib_hvlite::build_xtask 1
-      $(FLOWEY_BIN) e 10 flowey_lib_hvlite::build_nextest_unit_tests 0
     displayName: cargo build xtask
+  - bash: $(FLOWEY_BIN) e 10 flowey_lib_hvlite::build_nextest_unit_tests 0
+    displayName: determine unit test exclusions
   - bash: $(FLOWEY_BIN) e 10 flowey_lib_common::gen_cargo_nextest_run_cmd 1
     displayName: generate nextest command
   - bash: |-

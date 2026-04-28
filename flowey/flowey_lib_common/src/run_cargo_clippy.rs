@@ -21,7 +21,7 @@ flowey_request! {
         pub features: CargoFeatureSet,
         pub target: target_lexicon::Triple,
         pub extra_env: Option<Vec<(String, String)>>,
-        pub exclude: ReadVar<Vec<String>>,
+        pub exclude: ReadVar<Option<Vec<String>>>,
         pub keep_going: bool,
         pub all_targets: bool,
         /// Wait for specified side-effects to resolve before running cargo-run.
@@ -123,8 +123,8 @@ impl FlowNode for Node {
                     args.push(&target);
                     args.push("--profile");
                     args.push(cargo_profile);
-                    if !exclude.is_empty() {
-                        for excluded_crate in &exclude {
+                    if let Some(exclude) = &exclude {
+                        for excluded_crate in exclude {
                             args.push("--exclude");
                             args.push(excluded_crate);
                         }

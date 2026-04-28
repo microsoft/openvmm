@@ -93,7 +93,7 @@ impl FlowNode for Node {
         // additional deps
         let ambient_deps = vec![ctx.reqv(crate::install_openvmm_rust_build_essential::Request)];
 
-        let test_packages = ctx.emit_minor_rust_stepv("determine unit test exclusions", |ctx| {
+        let test_packages = ctx.emit_rust_stepv("determine unit test exclusions", |ctx| {
             let xtask = xtask.claim(ctx);
             let openvmm_repo_path = openvmm_repo_path.clone().claim(ctx);
             move |rt| {
@@ -132,16 +132,15 @@ impl FlowNode for Node {
                     };
 
                     rt.sh.change_dir(openvmm_repo_path);
-                    let output = flowey::shell_cmd!(rt, "{xtask_bin} fuzz list --crates")
-                        .output()
-                        .unwrap();
-                    let output = String::from_utf8(output.stdout).unwrap();
+                    let output =
+                        flowey::shell_cmd!(rt, "{xtask_bin} fuzz list --crates").output()?;
+                    let output = String::from_utf8(output.stdout)?;
 
                     let fuzz_crates = output.trim().split('\n').map(|s| s.to_owned());
                     exclude.extend(fuzz_crates);
                 }
 
-                TestPackages::Workspace { exclude }
+                Ok(TestPackages::Workspace { exclude })
             }
         });
 
