@@ -182,6 +182,13 @@ impl ConsommeControl {
     ) -> Result<(), ConsommeMessageError> {
         let socket = create_bound_socket(&protocol, ip_addr, port)
             .map_err(|e| ConsommeMessageError::Bind(consomme::BindError::Io(e)))?;
+        let host_addr = socket.local_addr().ok();
+        tracing::info!(
+            ?protocol,
+            ?host_addr,
+            guest_port = port,
+            "port forward socket created"
+        );
         self.send
             .call(
                 ConsommeMessage::BindPort,
@@ -266,10 +273,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
                     IpProtocol::Udp => c.bind_udp_port(fwd.socket, guest_port),
                 };
                 match result {
-                    Ok(()) => {
-                        tracing::info!(?protocol, guest_port, "bound port forward");
-                        bound.push((protocol, guest_port));
-                    }
+                    Ok(()) => bound.push((protocol, guest_port)),
                     Err(err) => {
                         // Roll back successful binds before returning error.
                         for (prev_protocol, prev_guest_port) in &bound {

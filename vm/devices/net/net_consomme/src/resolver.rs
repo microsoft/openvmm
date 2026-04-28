@@ -28,8 +28,12 @@ pub enum ResolveConsommeError {
     Consomme(consomme::Error),
     #[error(transparent)]
     InvalidCidr(consomme::InvalidCidr),
-    #[error("failed to create socket for port forward")]
-    SocketCreation(#[source] std::io::Error),
+    #[error("failed to create socket for port forward ({details})")]
+    SocketCreation {
+        #[source]
+        source: std::io::Error,
+        details: String,
+    },
 }
 
 impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver {
@@ -57,8 +61,26 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
                     HostPortProtocol::Udp => IpProtocol::Udp,
                 };
                 let ip_addr = p.host_address.map(std::net::IpAddr::from);
-                let socket = create_bound_socket(&protocol, ip_addr, p.host_port)
-                    .map_err(ResolveConsommeError::SocketCreation)?;
+                let socket = create_bound_socket(&protocol, ip_addr, p.host_port).map_err(|e| {
+                    ResolveConsommeError::SocketCreation {
+                        source: e,
+                        details: format!(
+                            "{:?} {}:{}",
+                            protocol,
+                            ip_addr
+                                .map(|a| a.to_string())
+                                .unwrap_or_else(|| "*".to_string()),
+                            p.host_port,
+                        ),
+                    }
+                })?;
+                let host_addr = socket.local_addr().ok();
+                tracing::info!(
+                    ?protocol,
+                    ?host_addr,
+                    guest_port = p.guest_port,
+                    "port forward socket created"
+                );
                 Ok(PortForwardConfig {
                     protocol,
                     socket,

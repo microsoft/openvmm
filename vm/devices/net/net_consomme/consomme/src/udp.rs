@@ -254,7 +254,7 @@ impl UdpListener {
                     .recv_from(&mut eth.payload_mut()[header_offset..])
             }) {
                 Poll::Ready(Ok((n, src_addr))) => {
-                    let (packet_len, checksum_state) = match (guest_dst_ip, src_addr.ip()) {
+                    let Some((packet_len, checksum_state)) = (match (guest_dst_ip, src_addr.ip()) {
                         (IpAddr::V4(dst_ip), IpAddr::V4(src_ip)) => {
                             let len = build_udp_packet(
                                 &mut eth,
@@ -266,7 +266,7 @@ impl UdpListener {
                                 state.params.gateway_mac,
                                 guest_mac,
                             );
-                            (len, ChecksumState::UDP4)
+                            Some((len, ChecksumState::UDP4))
                         }
                         (IpAddr::V6(dst_ip), IpAddr::V6(src_ip)) => {
                             let len = build_udp_packet(
@@ -279,9 +279,18 @@ impl UdpListener {
                                 state.params.gateway_mac,
                                 guest_mac,
                             );
-                            (len, ChecksumState::NONE)
+                            Some((len, ChecksumState::NONE))
                         }
-                        _ => unreachable!("mismatched address families"),
+                        _ => {
+                            tracelimit::warn_ratelimited!(
+                                local_addr = %local_addr,
+                                src_addr = %src_addr,
+                                "udp listener received packet with mismatched address family"
+                            );
+                            None
+                        }
+                    }) else {
+                        continue;
                     };
 
                     client.recv(&eth.as_ref()[..packet_len], &checksum_state);
@@ -835,6 +844,102 @@ mod tests {
             access.udp_connection_count(),
             0,
             "Connection should be removed after timeout"
+        );
+    }
+
+    #[pal_async::async_test]
+    async fn test_udp_bind_port_forward(driver: DefaultDriver) {
+        let driver = Arc::new(driver);
+        let mut consomme = create_consomme_with_timeout(Duration::from_secs(30));
+        let mut client = TestClient::new(driver.clone());
+
+        // Bind a UDP listener socket on an ephemeral port.
+        let socket = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+        socket
+            .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+            .unwrap();
+        let host_addr: SocketAddr = socket.local_addr().unwrap().as_socket().unwrap();
+
+        let guest_port = 5555;
+        let packets = client.received_packets.clone();
+        let mut access = consomme.access(&mut client);
+        access
+            .bind_udp_port(socket, guest_port)
+            .expect("bind should succeed");
+
+        assert!(
+            access.inner.udp.listeners.contains_key(&guest_port),
+            "listener should be registered"
+        );
+
+        // Send a UDP packet to the listener from another socket.
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender.send_to(b"hello", host_addr).unwrap();
+
+        // Poll until the forwarded packet arrives (the first poll registers
+        // interest, subsequent polls receive the data).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            std::future::poll_fn(|cx| {
+                access.poll(cx);
+                Poll::Ready(())
+            })
+            .await;
+
+            if !packets.lock().is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for forwarded UDP packet"
+            );
+            pal_async::timer::PolledTimer::new(&*driver)
+                .sleep(Duration::from_millis(10))
+                .await;
+        }
+
+        // Verify the packet targets the guest IP and the correct guest port.
+        let packets = packets.lock();
+        let pkt = &packets[0];
+        let eth = EthernetFrame::new_unchecked(pkt.as_slice());
+        let ipv4 = Ipv4Packet::new_unchecked(eth.payload());
+        let udp = UdpPacket::new_unchecked(ipv4.payload());
+        assert_eq!(
+            udp.dst_port(),
+            guest_port,
+            "forwarded packet should target the guest port"
+        );
+    }
+
+    #[pal_async::async_test]
+    async fn test_udp_bind_duplicate_port(driver: DefaultDriver) {
+        let driver = Arc::new(driver);
+        let mut consomme = create_consomme_with_timeout(Duration::from_secs(30));
+        let mut client = TestClient::new(driver.clone());
+
+        let guest_port = 6666;
+
+        let socket1 = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+        socket1
+            .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+            .unwrap();
+
+        let socket2_inst = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+        socket2_inst
+            .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+            .unwrap();
+
+        let mut access = consomme.access(&mut client);
+        access
+            .bind_udp_port(socket1, guest_port)
+            .expect("first bind should succeed");
+
+        let err = access
+            .bind_udp_port(socket2_inst, guest_port)
+            .expect_err("duplicate bind should fail");
+        assert!(
+            matches!(err, BindError::PortAlreadyBound(_)),
+            "error should be PortAlreadyBound"
         );
     }
 }
