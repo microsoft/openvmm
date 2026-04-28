@@ -60,6 +60,10 @@ pub(crate) enum OpenErrorInner {
     /// An open option is invalid.
     #[error("invalid parameter")]
     InvalidParameter(#[from] InvalidFormatReason),
+
+    /// A metadata item could not be read through the page cache.
+    #[error("failed to access metadata page cache")]
+    MetadataCache(#[source] CacheError),
 }
 
 /// Errors returned by runtime VHDX I/O operations.
@@ -201,6 +205,8 @@ pub(crate) enum CorruptionType {
     InvalidLogOffsetOrLength,
     #[error("log offset is not aligned")]
     InvalidLogOffset,
+    #[error("log region extends beyond end of file")]
+    LogBeyondEndOfFile,
     #[error("unsupported VHDX version")]
     UnsupportedVersion,
     #[error("unsupported VHDX log version")]

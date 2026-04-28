@@ -134,6 +134,19 @@ impl InMemoryFile {
             interceptor: None,
         }
     }
+
+    /// Create a VHDX file in memory with the given disk size and default parameters.
+    ///
+    /// Returns the `InMemoryFile` and the validated `CreateParams`.
+    pub async fn create_test_vhdx(disk_size: u64) -> (Self, crate::create::CreateParams) {
+        let file = Self::new(0);
+        let mut params = crate::create::CreateParams {
+            disk_size,
+            ..Default::default()
+        };
+        crate::create::create(&file, &mut params).await.unwrap();
+        (file, params)
+    }
 }
 
 impl AsyncFile for InMemoryFile {

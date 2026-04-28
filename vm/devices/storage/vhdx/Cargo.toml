@@ -10,6 +10,7 @@ rust-version.workspace = true
 bitfield-struct.workspace = true
 crc32c.workspace = true
 event-listener.workspace = true
+futures.workspace = true
 guid.workspace = true
 mesh.workspace = true
 parking_lot = { workspace = true, features = ["arc_lock"] }
@@ -18,7 +19,6 @@ tracing.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
-futures.workspace = true
 pal_async = { workspace = true, features = ["tests"] }
 
 [lints]

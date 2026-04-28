@@ -19,10 +19,15 @@ pub mod create;
 pub mod error;
 pub(crate) mod flush;
 pub mod format;
+pub(crate) mod header;
+pub(crate) mod known_meta;
+pub(crate) mod locator;
 pub mod log;
 pub(crate) mod log_permits;
 pub(crate) mod log_task;
 pub(crate) mod lsn_watermark;
+pub(crate) mod metadata;
+pub(crate) mod region;
 
 pub use create::CreateParams;
 pub use create::create;
