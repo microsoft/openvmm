@@ -174,6 +174,8 @@ pub enum Error {
     InvalidDebugConfiguration,
     #[error("failed to allocate TLB flush page")]
     AllocateTlbFlushPage(#[source] anyhow::Error),
+    #[error("failed to allocate crash VMSA page")]
+    AllocateCrashVmsaPage(#[source] anyhow::Error),
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
     #[error("failed to get register")]
