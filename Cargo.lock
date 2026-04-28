@@ -1609,9 +1609,7 @@ name = "disk_vhdmp"
 version = "0.0.0"
 dependencies = [
  "disk_backend",
- "disk_file",
  "disk_vhd1",
- "futures",
  "guestmem",
  "guid",
  "inspect",

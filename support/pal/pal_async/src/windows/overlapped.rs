@@ -23,8 +23,11 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 use windows_sys::Win32::Foundation::ERROR_IO_PENDING;
+pub use windows_sys::Win32::Storage::FileSystem::FILE_SEGMENT_ELEMENT;
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
+use windows_sys::Win32::Storage::FileSystem::ReadFileScatter;
 use windows_sys::Win32::Storage::FileSystem::WriteFile;
+use windows_sys::Win32::Storage::FileSystem::WriteFileGather;
 use windows_sys::Win32::System::IO::CancelIoEx;
 use windows_sys::Win32::System::IO::DeviceIoControl;
 use windows_sys::Win32::System::IO::OVERLAPPED;
@@ -343,6 +346,46 @@ impl<T: IoBufMut, U: IoBufMut> Io<(T, U)> {
     }
 }
 
+impl Io<()> {
+    fn read_scatter(
+        file: &OverlappedFile,
+        offset: i64,
+        segments: &[FILE_SEGMENT_ELEMENT],
+        len: u32,
+    ) -> Self {
+        let segments_ptr = segments.as_ptr();
+        Self::issue(file, offset, (), |handle, _, overlapped| {
+            // SAFETY: caller of read_scatter_at ensures segments are valid.
+            unsafe {
+                if ReadFileScatter(handle, segments_ptr, len, null_mut(), overlapped) != 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            }
+        })
+    }
+
+    fn write_gather(
+        file: &OverlappedFile,
+        offset: i64,
+        segments: &[FILE_SEGMENT_ELEMENT],
+        len: u32,
+    ) -> Self {
+        let segments_ptr = segments.as_ptr();
+        Self::issue(file, offset, (), |handle, _, overlapped| {
+            // SAFETY: caller of write_gather_at ensures segments are valid.
+            unsafe {
+                if WriteFileGather(handle, segments_ptr, len, null_mut(), overlapped) != 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            }
+        })
+    }
+}
+
 /// Called when an overlapped IO has completed.
 ///
 /// # Safety
@@ -521,6 +564,62 @@ impl OverlappedFile {
     {
         Custom(Io::issue(self, 0, buffers, f))
     }
+
+    /// Reads from the file at `offset` using scatter IO
+    /// ([`ReadFileScatter`]).
+    ///
+    /// `segments` is a slice of [`FILE_SEGMENT_ELEMENT`] values, each pointing
+    /// to a page-aligned, system-page-sized buffer. The slice must be
+    /// terminated by a zeroed element. The segment array is copied by the
+    /// kernel during the call and does not need to remain valid after this
+    /// method returns.
+    ///
+    /// `len` is the total number of bytes to read. It must be a multiple of
+    /// the file's sector size.
+    ///
+    /// # Safety
+    /// The caller must ensure that each segment points to a valid,
+    /// page-aligned, page-sized buffer that will not be referenced (via Rust
+    /// references) until the IO completes. The file must have been opened
+    /// with `FILE_NO_INTERMEDIATE_BUFFERING` and `FILE_FLAG_OVERLAPPED`.
+    ///
+    /// [`ReadFileScatter`]: windows_sys::Win32::Storage::FileSystem::ReadFileScatter
+    pub unsafe fn read_scatter_at(
+        &self,
+        offset: u64,
+        segments: &[FILE_SEGMENT_ELEMENT],
+        len: u32,
+    ) -> ReadScatter {
+        ReadScatter(Io::read_scatter(self, offset as i64, segments, len))
+    }
+
+    /// Writes to the file at `offset` using gather IO
+    /// ([`WriteFileGather`]).
+    ///
+    /// `segments` is a slice of [`FILE_SEGMENT_ELEMENT`] values, each pointing
+    /// to a page-aligned, system-page-sized buffer. The slice must be
+    /// terminated by a zeroed element. The segment array is copied by the
+    /// kernel during the call and does not need to remain valid after this
+    /// method returns.
+    ///
+    /// `len` is the total number of bytes to write. It must be a multiple of
+    /// the file's sector size.
+    ///
+    /// # Safety
+    /// The caller must ensure that each segment points to a valid,
+    /// page-aligned, page-sized buffer that will not be referenced (via Rust
+    /// references) until the IO completes. The file must have been opened
+    /// with `FILE_NO_INTERMEDIATE_BUFFERING` and `FILE_FLAG_OVERLAPPED`.
+    ///
+    /// [`WriteFileGather`]: windows_sys::Win32::Storage::FileSystem::WriteFileGather
+    pub unsafe fn write_gather_at(
+        &self,
+        offset: u64,
+        segments: &[FILE_SEGMENT_ELEMENT],
+        len: u32,
+    ) -> WriteGather {
+        WriteGather(Io::write_gather(self, offset as i64, segments, len))
+    }
 }
 
 /// An IO result that returns the associated buffers.
@@ -557,3 +656,5 @@ io!(Read, (T), T);
 io!(Write, (T), T);
 io!(Ioctl, (T, U), (T, U));
 io!(Custom, (T), T);
+io!(ReadScatter, (), ());
+io!(WriteGather, (), ());

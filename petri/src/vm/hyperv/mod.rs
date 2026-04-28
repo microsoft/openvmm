@@ -115,9 +115,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
         crash_disk
             .attach_for_raw_access(false)
             .context("error attaching crash dump vhdx")?;
+        let tp = pal_async::windows::TpPool::system();
         let mut crash_disk = BlockingDisk::new(
             disk_backend::Disk::new(
-                VhdmpDisk::new(crash_disk, false).context("failed opening vhdmp")?,
+                VhdmpDisk::new(crash_disk, false, &tp).context("failed opening vhdmp")?,
             )
             .unwrap(),
         );
@@ -148,7 +149,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     std::thread::sleep(Duration::from_secs(3));
                 }
             }
-            let vhdmp = VhdmpDisk::new(vhd?, true).context("failed opening vhdmp")?;
+            let tp = pal_async::windows::TpPool::system();
+            let vhdmp = VhdmpDisk::new(vhd?, true, &tp).context("failed opening vhdmp")?;
             Ok(Box::new(BlockingDisk::new(disk_backend::Disk::new(vhdmp).unwrap())) as _)
         });
         Ok(Some((crash_disk_path, disk_opener)))
