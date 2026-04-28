@@ -66,6 +66,7 @@ $ sudo apt install \
   build-essential       \
   gcc-aarch64-linux-gnu \
   libssl-dev            \
+  symcrypt              \
   pkg-config
 ```
 
