@@ -55,11 +55,10 @@ pub struct Options {
 
     /// per-NUMA-node guest RAM sizes (comma-separated, e.g. "2G,2G").
     /// Distributes memory across vNUMA nodes reported to the guest. Mutually
-    /// exclusive with --memory.
+    /// exclusive with --memory. This is for test-only usage.
     ///
-    /// TODO: This is informational topology only. Backing pages are not pinned
-    /// to any host topology, nor coordinated with CPUs. This should change once
-    /// we implement real numa support.
+    /// TODO: Backing pages are not pinned to any host topology, nor coordinated
+    /// with CPUs. This should change once we implement real numa support.
     #[clap(long, value_name = "SIZES", value_parser = parse_memory, value_delimiter = ',', conflicts_with = "memory")]
     pub numa_memory: Option<Vec<u64>>,
 
