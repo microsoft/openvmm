@@ -621,7 +621,12 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
 
     let scsi_controllers = (!scsi_map.is_empty()).then(|| {
         ps::HashTable::new(scsi_map.into_iter().map(
-            |(vsid, HyperVVmbusStorageController { target_vtl, drives, .. })| {
+            |(
+                vsid,
+                HyperVVmbusStorageController {
+                    target_vtl, drives, ..
+                },
+            )| {
                 (
                     format!("\"{vsid}\""),
                     ps::Value::new(ps::HashTable::new([
@@ -673,7 +678,12 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
     // New-CustomVM imports HvlDeviceHost internally and calls New-NvmeEmulatorRasd.
     let nvme_controllers = (!nvme_map.is_empty()).then(|| {
         ps::HashTable::new(nvme_map.into_iter().map(
-            |(vsid, HyperVVmbusStorageController { target_vtl, drives, .. })| {
+            |(
+                vsid,
+                HyperVVmbusStorageController {
+                    target_vtl, drives, ..
+                },
+            )| {
                 // Sort drives by namespace ID and validate they are exactly
                 // 1..N — the emulator assigns NSIDs sequentially by VHD
                 // argument order.
@@ -682,7 +692,8 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
                 let expected: Vec<u32> = (1..=sorted_drives.len() as u32).collect();
                 let actual: Vec<u32> = sorted_drives.iter().map(|(nsid, _)| *nsid).collect();
                 assert_eq!(
-                    actual, expected,
+                    actual,
+                    expected,
                     "NVMe namespace IDs must be 1..{}, got {:?}",
                     expected.len(),
                     actual
