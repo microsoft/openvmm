@@ -13,7 +13,6 @@
 //! fatal.
 
 #![cfg(target_os = "linux")]
-#![forbid(unsafe_code)]
 
 pub mod manager;
 pub mod resolver;
@@ -69,9 +68,9 @@ struct BarDirectMap {
     /// BAR index this sub-region belongs to.
     bar_index: u8,
     /// The memory range within the BAR.
-    range: MemoryRange,
+    bar_range: MemoryRange,
     /// Whether this sub-region is currently mapped into guest GPA space.
-    mapped: bool,
+    mapping: Option<MemoryRange>,
 }
 
 /// MSI-X emulation state, discovered from the physical device's capabilities.
@@ -323,8 +322,8 @@ impl VfioAssignedPciDevice {
                 bar_direct_maps.push(BarDirectMap {
                     memory,
                     bar_index: i as u8,
-                    range: area,
-                    mapped: false,
+                    bar_range: area,
+                    mapping: None,
                 });
             }
         }
@@ -462,44 +461,71 @@ impl VfioAssignedPciDevice {
         );
     }
 
-    /// Map directly-mapped BAR sub-regions into guest GPA space.
+    /// Re-evaluate BAR mappings against the current BAR register values.
     ///
-    /// Called when MMIO is enabled. For each active BAR, maps its mmappable
-    /// sub-regions at `bar_base_address + offset_in_bar`.
-    fn map_bars_to_guest(&mut self) {
-        for dm in &mut self.bar_direct_maps {
-            let bar_base = self
-                .active_bars
-                .get(dm.bar_index)
-                .expect("BAR with direct map must have an active mapping");
-            let gpa = bar_base + dm.range.start();
-            match dm.memory.map_to_guest(gpa, true) {
-                Ok(()) => dm.mapped = true,
-                Err(e) => {
-                    tracelimit::error_ratelimited!(
-                        bar = dm.bar_index,
-                        gpa,
-                        error = ?e,
-                        pci_id = self.pci_id.as_str(),
-                        "failed to direct-map BAR region to guest"
-                    );
+    /// Diffs the old and new decoded addresses and only unmaps/remaps BARs
+    /// whose address actually changed. When MMIO is disabled, all BARs are
+    /// treated as unmapped so the diff naturally tears everything down.
+    fn update_bar_mappings(&mut self) {
+        let new_bars = if self.mmio_enabled {
+            BarMappings::parse(&self.bars, &self.bar_masks)
+        } else {
+            BarMappings::default()
+        };
+
+        // For each BAR that had a mapping, check if its address changed.
+        // Unmap any that moved or disappeared.
+        for old in self.active_bars.iter() {
+            let new_addr = new_bars.get(old.index);
+            if new_addr == Some(old.base_address) {
+                continue;
+            }
+            // Address changed or BAR disappeared — tear down old mapping.
+            if let Some(control) = self.bar_mmio_controls[old.index as usize].as_mut() {
+                control.unmap();
+            }
+            for dm in &mut self.bar_direct_maps {
+                if dm.bar_index == old.index {
+                    dm.memory.unmap_from_guest();
+                    dm.mapping = None;
                 }
             }
         }
-    }
 
-    fn disable_mmio(&mut self) {
-        // Unmap direct BAR mappings from guest, then unregister
-        // MMIO intercepts.
-        for dm in &mut self.bar_direct_maps {
-            dm.memory.unmap_from_guest();
-            dm.mapped = false;
+        // For each BAR in the new set, map any that are new or moved.
+        for new in new_bars.iter() {
+            let old_addr = self.active_bars.get(new.index);
+            if old_addr == Some(new.base_address) {
+                continue;
+            }
+            // New or moved — set up mapping.
+            self.bar_mmio_controls[new.index as usize]
+                .as_mut()
+                .expect("BAR MMIO control must be present")
+                .map(new.base_address);
+
+            for dm in &mut self.bar_direct_maps {
+                if dm.bar_index == new.index {
+                    let gpa = new.base_address + dm.bar_range.start();
+                    match dm.memory.map_to_guest(gpa, true) {
+                        Ok(()) => {
+                            dm.mapping = Some(MemoryRange::new(gpa..gpa + dm.bar_range.len()));
+                        }
+                        Err(e) => {
+                            tracelimit::error_ratelimited!(
+                                bar = dm.bar_index,
+                                gpa,
+                                error = ?e,
+                                pci_id = self.pci_id.as_str(),
+                                "failed to direct-map BAR region to guest"
+                            );
+                        }
+                    }
+                }
+            }
         }
-        for control in self.bar_mmio_controls.iter_mut().flatten() {
-            control.unmap();
-        }
-        self.active_bars = BarMappings::default();
-        self.mmio_enabled = false;
+
+        self.active_bars = new_bars;
     }
 }
 
@@ -732,7 +758,8 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             self.msix_disable();
         }
 
-        self.disable_mmio();
+        self.mmio_enabled = false;
+        self.update_bar_mappings();
 
         // Destructure to ensure every field is explicitly considered for reset.
         let Self {
@@ -744,10 +771,10 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             bar_masks: _,     // immutable device geometry
             bars,
             bar_flags,
-            mmio_enabled: _,      // handled by disable_mmio()
-            active_bars: _,       // handled by disable_mmio()
-            bar_mmio_controls: _, // handled by disable_mmio()
-            bar_direct_maps: _,   // handled by disable_mmio()
+            mmio_enabled: _,      // handled above
+            active_bars: _,       // handled by update_bar_mappings()
+            bar_mmio_controls: _, // handled by update_bar_mappings()
+            bar_direct_maps: _,   // handled by update_bar_mappings()
             bar_regions: _,       // immutable device geometry
             msix,
             supports_reset,
@@ -829,28 +856,21 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                 let command = cfg_space::Command::from_bits(value as u16);
                 let new_mmio_enabled = command.mmio_enabled();
 
-                if new_mmio_enabled && !self.mmio_enabled {
-                    self.active_bars = BarMappings::parse(&self.bars, &self.bar_masks);
-                    // Register BAR address ranges with the chipset so MMIO
-                    // accesses are routed to this device.
-                    for mapping in self.active_bars.iter() {
-                        self.bar_mmio_controls[mapping.index as usize]
-                            .as_mut()
-                            .expect("BAR MMIO control must be present")
-                            .map(mapping.base_address);
-                    }
-                    // Map directly-mapped BAR regions into guest GPA space.
-                    self.map_bars_to_guest();
-                    self.mmio_enabled = true;
-                    tracing::debug!(pci_id = self.pci_id.as_str(), "MMIO enabled by guest");
-                } else if !new_mmio_enabled && self.mmio_enabled {
-                    self.disable_mmio();
-                    tracing::debug!(pci_id = self.pci_id.as_str(), "MMIO disabled by guest");
+                if new_mmio_enabled != self.mmio_enabled {
+                    self.mmio_enabled = new_mmio_enabled;
+                    self.update_bar_mappings();
+                    tracing::debug!(
+                        pci_id = self.pci_id.as_str(),
+                        enabled = new_mmio_enabled,
+                        "MMIO state changed by guest"
+                    );
                 }
 
                 self.write_phys_config(offset, value);
             }
-            // BAR registers: mask and cache locally.
+            // BAR registers: mask and cache locally. If MMIO is active,
+            // re-evaluate mappings so the device responds at the new address
+            // immediately (matching real hardware behavior).
             HeaderType00::BAR0
             | HeaderType00::BAR1
             | HeaderType00::BAR2
@@ -859,6 +879,10 @@ impl PciConfigSpace for VfioAssignedPciDevice {
             | HeaderType00::BAR5 => {
                 let i = (offset - HeaderType00::BAR0.0) as usize / 4;
                 self.bars[i] = (value & self.bar_masks[i]) | self.bar_flags[i];
+
+                if self.mmio_enabled {
+                    self.update_bar_mappings();
+                }
             }
             // All other registers: pass through to physical device.
             _ => {

@@ -7,14 +7,51 @@
 //! tables) for every assigned device, this module manages a pool of containers
 //! and reuses them across devices whose IOMMU groups are compatible.
 
+// UNSAFETY: Implementing unsafe DmaTarget::map_dma for VFIO type1 IOMMU.
+#![expect(unsafe_code)]
+
 use anyhow::Context as _;
-use guestmem::GuestMemory;
 use inspect::{Inspect, InspectMut};
+use membacking::DmaMapperClient;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend as _;
 use std::collections::HashMap;
 use std::fs::File;
 use std::sync::Arc;
+
+/// Implements [`membacking::DmaTarget`] for VFIO type1 IOMMU containers.
+///
+/// Translates sub-mapping events from the region manager into VFIO
+/// `map_dma`/`unmap_dma` ioctls. The host VA needed for `pin_user_pages`
+/// is provided by the region manager's `DmaMapper` wrapper.
+struct VfioType1DmaTarget {
+    container: Arc<vfio_sys::Container>,
+}
+
+impl membacking::DmaTarget for VfioType1DmaTarget {
+    unsafe fn map_dma(
+        &self,
+        range: memory_range::MemoryRange,
+        host_va: Option<*const u8>,
+        _mappable: &membacking::Mappable,
+        _file_offset: u64,
+    ) -> anyhow::Result<()> {
+        let vaddr = host_va.expect("VFIO type1 requires host VA (registered with needs_va=true)");
+        // SAFETY: The caller (DmaMapper in membacking) guarantees that the
+        // host VA is backed and stable via ensure_mapped + VaMapper lifetime.
+        unsafe {
+            self.container
+                .map_dma(range.start(), vaddr, range.len())
+                .context("VFIO DMA map failed")
+        }
+    }
+
+    fn unmap_dma(&self, range: memory_range::MemoryRange) -> anyhow::Result<()> {
+        self.container
+            .unmap_dma(range.start(), range.len())
+            .context("VFIO DMA unmap failed")
+    }
+}
 
 /// RPC messages for the container manager task.
 enum VfioManagerRpc {
@@ -69,6 +106,9 @@ impl VfioDeviceBinding {
 struct ContainerEntry {
     id: u64,
     container: Arc<vfio_sys::Container>,
+    /// Handle to the DMA mapper registration — removes the mapper from
+    /// the region manager when dropped, unmapping all IOMMU entries.
+    _dma_handle: membacking::DmaMapperHandle,
 }
 
 /// Manages VFIO containers and groups, sharing containers across devices.
@@ -90,11 +130,9 @@ pub(crate) struct VfioContainerManager {
     /// Next container ID to assign.
     #[inspect(skip)]
     next_container_id: u64,
-    /// Guest memory handle for DMA mapping.
-    guest_memory: GuestMemory,
-    /// Cached guest memory regions + base VA, fetched lazily.
+    /// Client for registering VFIO containers as DMA mappers.
     #[inspect(skip)]
-    dma_info: Option<DmaInfo>,
+    dma_mapper_client: DmaMapperClient,
     #[inspect(skip)]
     recv: mesh::Receiver<VfioManagerRpc>,
 }
@@ -140,23 +178,16 @@ struct GroupEntry {
     container_id: u64,
 }
 
-struct DmaInfo {
-    regions: Vec<guestmem::ShareableRegion>,
-    base_va: u64,
-    va_size: u64,
-}
-
 impl VfioContainerManager {
     /// Create a new container manager.
-    pub fn new(guest_memory: GuestMemory) -> Self {
+    pub fn new(dma_mapper_client: DmaMapperClient) -> Self {
         Self {
             containers: Vec::new(),
             groups: HashMap::new(),
             devices: Vec::new(),
             next_device_id: 0,
             next_container_id: 0,
-            guest_memory,
-            dma_info: None,
+            dma_mapper_client,
             recv: mesh::Receiver::new(),
         }
     }
@@ -365,8 +396,9 @@ impl VfioContainerManager {
             .map(|c| &c.container)
     }
 
-    /// Create a new container, set IOMMU type, map guest RAM, and attach the
-    /// group. Returns the container ID.
+    /// Create a new container, set IOMMU type, register with the region
+    /// manager for dynamic DMA mapping, and attach the group. Returns the
+    /// container ID.
     async fn create_container_for_group(
         &mut self,
         group: &vfio_sys::Group,
@@ -383,35 +415,21 @@ impl VfioContainerManager {
             .set_iommu(vfio_sys::IommuType::Type1v2)
             .context("failed to set VFIO IOMMU type to Type1v2 (IOMMU required)")?;
 
-        // Lazily fetch guest memory regions on first use.
-        if self.dma_info.is_none() {
-            self.dma_info = Some(self.fetch_dma_info().await?);
-        }
-        let dma_info = self.dma_info.as_ref().unwrap();
+        let container = Arc::new(container);
 
-        // Identity-map guest RAM (IOVA == GPA) for device DMA access.
-        for region in &dma_info.regions {
-            let gpa = region.guest_address;
-            let size = region.size;
-            let gpa_end = gpa
-                .checked_add(size)
-                .context("guest memory region overflows u64")?;
-            anyhow::ensure!(
-                gpa_end <= dma_info.va_size,
-                "guest memory region {:#x}..{:#x} exceeds mapping size {:#x}",
-                gpa,
-                gpa_end,
-                dma_info.va_size
-            );
-            let vaddr = dma_info.base_va + gpa;
-            container.map_dma(gpa, vaddr, size).with_context(|| {
-                format!(
-                    "failed to map DMA for guest memory region {:#x}..{:#x}",
-                    gpa, gpa_end
-                )
-            })?;
-            tracing::debug!(gpa, size, vaddr, "mapped guest RAM for VFIO DMA");
-        }
+        let dma_target: Arc<dyn membacking::DmaTarget> = Arc::new(VfioType1DmaTarget {
+            container: container.clone(),
+        });
+
+        // Register as a DMA mapper — the region manager will create a
+        // VaMapper internally (since needs_va is true) and replay all
+        // existing active sub-mappings (guest RAM + any active device
+        // BARs) into this container's IOMMU.
+        let dma_handle = self
+            .dma_mapper_client
+            .add_dma_mapper(dma_target, true)
+            .await
+            .context("failed to register VFIO container with region manager")?;
 
         tracing::info!(
             pci_id,
@@ -420,35 +438,14 @@ impl VfioContainerManager {
             "created new VFIO container"
         );
 
-        let container = Arc::new(container);
         let id = self.next_container_id;
         self.next_container_id += 1;
-        self.containers.push(ContainerEntry { id, container });
+        self.containers.push(ContainerEntry {
+            id,
+            container,
+            _dma_handle: dma_handle,
+        });
         Ok(id)
-    }
-
-    async fn fetch_dma_info(&self) -> anyhow::Result<DmaInfo> {
-        let sharing = self
-            .guest_memory
-            .sharing()
-            .context("VFIO requires shareable guest memory")?;
-
-        let regions = sharing
-            .get_regions()
-            .await
-            .map_err(|e| anyhow::anyhow!(e))
-            .context("failed to get shareable guest memory regions")?;
-
-        let (base_va, va_size) = self
-            .guest_memory
-            .full_mapping()
-            .context("VFIO DMA mapping requires linearly mapped guest memory")?;
-
-        Ok(DmaInfo {
-            regions,
-            base_va: base_va as u64,
-            va_size: va_size as u64,
-        })
     }
 
     pub(crate) fn client(&mut self) -> VfioManagerClient {

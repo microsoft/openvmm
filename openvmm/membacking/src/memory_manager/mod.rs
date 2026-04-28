@@ -455,6 +455,11 @@ impl GuestMemoryManager {
         DeviceMemoryMapper::new(self.region_manager.client().clone())
     }
 
+    /// Returns a client for registering DMA mappers (VFIO, iommufd).
+    pub fn dma_mapper_client(&self) -> crate::region_manager::DmaMapperClient {
+        crate::region_manager::DmaMapperClient::new(self.region_manager.client())
+    }
+
     /// Returns an object for manipulating the visibility state of different RAM
     /// regions.
     pub fn ram_visibility_control(&self) -> RamVisibilityControl {

@@ -37,8 +37,20 @@ use vfio_bindings::bindings::vfio::vfio_region_sparse_mmap_area;
 
 /// Returns the host page size.
 pub fn host_page_size() -> u64 {
-    // SAFETY: sysconf(_SC_PAGESIZE) is always safe and always succeeds on Linux.
-    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 }
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static PAGE_SIZE: AtomicU64 = const { AtomicU64::new(0) };
+
+    let page_size = PAGE_SIZE.load(Relaxed);
+    if page_size == 0 {
+        // SAFETY: sysconf(_SC_PAGESIZE) is always safe to call on Linux.
+        let raw = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        assert!(raw > 0, "sysconf(_SC_PAGESIZE) failed: {raw}");
+        let page_size = raw as u64;
+        PAGE_SIZE.store(page_size, Relaxed);
+        page_size
+    } else {
+        page_size
+    }
 }
 
 mod ioctl {
@@ -148,16 +160,18 @@ impl Container {
     /// page-aligned.
     ///
     /// Only valid when the container uses a Type1v2 IOMMU.
-    pub fn map_dma(&self, iova: u64, vaddr: u64, size: u64) -> anyhow::Result<()> {
+    ///
+    /// # Safety
+    /// `vaddr` must point to valid, backed memory for `size` bytes. The
+    /// memory must not be unmapped while the IOMMU mapping is live (until
+    /// a corresponding `unmap_dma` call).
+    pub unsafe fn map_dma(&self, iova: u64, vaddr: *const u8, size: u64) -> anyhow::Result<()> {
         use vfio_bindings::bindings::vfio::VFIO_DMA_MAP_FLAG_READ;
         use vfio_bindings::bindings::vfio::VFIO_DMA_MAP_FLAG_WRITE;
 
-        // SAFETY: sysconf(_SC_PAGESIZE) is always safe and returns the
-        // host page size.
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-        anyhow::ensure!(page_size > 0, "sysconf(_SC_PAGESIZE) failed");
-        let page_size = page_size as u64;
+        let page_size = host_page_size();
         let page_mask = page_size - 1;
+        let vaddr = vaddr as u64;
         anyhow::ensure!(
             iova & page_mask == 0 && vaddr & page_mask == 0 && size & page_mask == 0,
             "VFIO DMA mapping requires page-aligned iova ({iova:#x}), vaddr ({vaddr:#x}), and size ({size:#x}), page size {page_size:#x}"
@@ -181,7 +195,11 @@ impl Container {
 
     /// Unmap a previously mapped IOVA range from the IOMMU.
     ///
-    /// `iova` and `size` must match a previous `map_dma` call.
+    /// For Type1v2, the unmap range must not bisect any previous mapping:
+    /// if a mapping exists at `iova`, it must start exactly at `iova`, and
+    /// if a mapping exists at `iova + size - 1`, it must end there.
+    /// Multiple mappings may be unmapped in one call as long as these
+    /// boundary conditions hold. Gaps within the range are fine.
     pub fn unmap_dma(&self, iova: u64, size: u64) -> anyhow::Result<()> {
         let mut dma_unmap = vfio_bindings::bindings::vfio::vfio_iommu_type1_dma_unmap {
             argsz: size_of::<vfio_bindings::bindings::vfio::vfio_iommu_type1_dma_unmap>() as u32,
