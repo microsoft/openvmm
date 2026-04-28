@@ -18,6 +18,10 @@ fn main() {
     let vendored = std::env::var_os("CARGO_FEATURE_VENDORED").is_some();
     let linux = std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "linux";
 
+    // Symcrypt does not support vendoring, so fail early if the user tries to
+    // enable both the symcrypt backend and the vendored feature. However if
+    // openssl is also enabled then the user likely passed --all-features, so we
+    // allow this combination to succeed with the openssl backend.
     if vendored && symcrypt && !openssl {
         panic!("The symcrypt backend does not support vendoring");
     }
