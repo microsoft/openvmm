@@ -1260,7 +1260,6 @@ impl HclNetworkVFManagerWorker {
                 )
                     .merge()
                     .next()
-                    .instrument(tracing::info_span!("awaiting command", vtl2_vfid))
                     .await
                     .unwrap()
             };
