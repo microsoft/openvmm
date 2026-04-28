@@ -25,6 +25,7 @@ vmcore.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
+nix.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 
