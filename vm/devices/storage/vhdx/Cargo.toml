@@ -9,13 +9,15 @@ rust-version.workspace = true
 [dependencies]
 bitfield-struct.workspace = true
 crc32c.workspace = true
+event-listener.workspace = true
 guid.workspace = true
+parking_lot.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+futures.workspace = true
 pal_async = { workspace = true, features = ["tests"] }
-parking_lot.workspace = true
 
 [lints]
 workspace = true

@@ -14,8 +14,11 @@ use std::borrow::Borrow;
 use std::future::Future;
 
 pub mod error;
+pub(crate) mod flush;
 pub mod format;
 pub mod log;
+pub(crate) mod log_permits;
+pub(crate) mod lsn_watermark;
 
 pub use error::CreateError;
 pub use error::InvalidFormatReason;

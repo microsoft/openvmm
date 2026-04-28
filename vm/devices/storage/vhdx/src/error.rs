@@ -13,6 +13,15 @@
 
 use thiserror::Error;
 
+/// The VHDX write pipeline has been poisoned by a previous fatal error.
+///
+/// Once set, pending and future operations that depend on the write pipeline
+/// fail permanently. Produced by the log permits semaphore and LSN watermark
+/// when the later log or apply tasks encounter a fatal error.
+#[derive(Debug, Clone, Error)]
+#[error("VHDX pipeline failed: {0}")]
+pub(crate) struct PipelineFailed(pub(crate) String);
+
 /// Errors returned by VHDX file creation.
 #[derive(Debug, Error)]
 pub enum CreateError {
