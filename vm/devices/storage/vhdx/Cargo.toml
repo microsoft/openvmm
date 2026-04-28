@@ -12,7 +12,7 @@ crc32c.workspace = true
 event-listener.workspace = true
 guid.workspace = true
 mesh.workspace = true
-parking_lot.workspace = true
+parking_lot = { workspace = true, features = ["arc_lock"] }
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true

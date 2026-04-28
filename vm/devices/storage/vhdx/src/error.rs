@@ -121,6 +121,25 @@ pub(crate) enum VhdxIoErrorInner {
     BeyondEndOfDisk,
 }
 
+/// Errors from the page cache write path.
+///
+/// Produced by [`PageCache::acquire_write`](crate::cache::PageCache::acquire_write)
+/// when a page cannot be acquired for writing.
+#[derive(Debug, Error)]
+pub(crate) enum CacheError {
+    /// An I/O error occurred while loading the page from disk.
+    #[error("read error at file offset {file_offset:#x}")]
+    Read {
+        #[source]
+        err: std::io::Error,
+        file_offset: u64,
+    },
+
+    /// The write pipeline has been poisoned by a previous fatal error.
+    #[error("pipeline failed")]
+    PipelineFailed(#[source] PipelineFailed),
+}
+
 /// Specific reasons a VHDX creation or parameter validation may fail.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum InvalidFormatReason {
