@@ -175,11 +175,11 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        // On windows & mac, we can't build with all features, as many crates
-        // require openSSL for crypto, which isn't supported in CI yet.
+        // On mac, we can't build with all features, as many crates
+        // require unimplemented crypto
         let features = if matches!(
             target.operating_system,
-            target_lexicon::OperatingSystem::Windows | target_lexicon::OperatingSystem::Darwin(_)
+            target_lexicon::OperatingSystem::Darwin(_)
         ) {
             CargoFeatureSet::None
         } else {
