@@ -7,6 +7,7 @@ mod macros;
 use crate::protocol::*;
 use std::io;
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
@@ -127,7 +128,7 @@ impl Request {
         );
     }
 
-    fn read_operation(header: &fuse_in_header, reader: impl RequestReader) -> FuseOperation {
+    fn read_operation(header: &fuse_in_header, mut reader: impl RequestReader) -> FuseOperation {
         if header.len as usize > reader.remaining_len() + size_of_val(header) {
             tracing::error!(
                 opcode = header.opcode,
@@ -137,6 +138,25 @@ impl Request {
                 "Invalid message length",
             );
             return FuseOperation::Invalid;
+        }
+
+        // FUSE_INIT requires special handling: the kernel may send either the
+        // legacy 16-byte payload or the extended 64-byte payload (when
+        // FUSE_INIT_EXT is supported). Read whatever is available and
+        // zero-fill the rest so that flags2 defaults to 0 for old kernels.
+        if header.opcode == FUSE_INIT {
+            let mut init = fuse_init_in::new_zeroed();
+            let available = reader.remaining_len().min(size_of::<fuse_init_in>());
+            if let Err(e) = reader.read_exact(&mut init.as_mut_bytes()[..available]) {
+                tracing::error!(
+                    opcode = header.opcode,
+                    unique = header.unique,
+                    error = &e as &dyn std::error::Error,
+                    "Failed to read FUSE_INIT payload",
+                );
+                return FuseOperation::Invalid;
+            }
+            return FuseOperation::Init { arg: init };
         }
 
         match FuseOperation::read(header.opcode, reader) {
@@ -239,6 +259,7 @@ pub(crate) mod tests {
             assert_eq!(arg.minor, 27);
             assert_eq!(arg.max_readahead, 131072);
             assert_eq!(arg.flags, 0x3FFFFB);
+            assert_eq!(arg.flags2, 0);
         } else {
             panic!("Incorrect operation {:?}", request.operation);
         }

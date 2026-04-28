@@ -484,12 +484,8 @@ impl Session {
         info.want = DEFAULT_FLAGS & init.flags;
         info.want2 = 0;
         // Negotiate flags2 when the kernel supports extended init.
-        // We cannot read the kernel's flags2 from the request (the struct is
-        // kept at its legacy 16-byte size for backward compatibility), so we
-        // set our desired flags2 unconditionally and rely on the kernel to
-        // mask out any bits it does not support.
         if init.flags & FUSE_INIT_EXT != 0 {
-            info.want2 = DEFAULT_FLAGS2;
+            info.want2 = DEFAULT_FLAGS2 & init.flags2;
         }
         info.time_gran = 1;
         info.max_write = DEFAULT_MAX_PAGES * PAGE_SIZE;
@@ -860,7 +856,13 @@ mod tests {
     }
 
     /// Build a FUSE_INIT request with the given version and flags.
-    fn make_init_request(major: u32, minor: u32, max_readahead: u32, flags: u32) -> Vec<u8> {
+    fn make_init_request(
+        major: u32,
+        minor: u32,
+        max_readahead: u32,
+        flags: u32,
+        flags2: u32,
+    ) -> Vec<u8> {
         let header = fuse_in_header {
             len: (size_of::<fuse_in_header>() + size_of::<fuse_init_in>()) as u32,
             opcode: FUSE_INIT,
@@ -876,6 +878,8 @@ mod tests {
             minor,
             max_readahead,
             flags,
+            flags2,
+            unused: [0; 11],
         };
         let mut data = Vec::new();
         data.extend_from_slice(header.as_bytes());
@@ -899,7 +903,7 @@ mod tests {
     fn init_with_ext_negotiates_flags2_and_direct_io_allow_mmap() {
         // Kernel advertises FUSE_INIT_EXT among its capabilities.
         let flags = 0x003FFFFB | FUSE_INIT_EXT;
-        let request_data = make_init_request(7, 39, 131072, flags);
+        let request_data = make_init_request(7, 39, 131072, flags, FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2);
 
         let fs = InitCapturingFs::default();
         let info_ref = fs.info.clone();
@@ -946,7 +950,7 @@ mod tests {
     fn init_without_ext_does_not_negotiate_flags2() {
         // Kernel does NOT advertise FUSE_INIT_EXT.
         let flags = 0x003FFFFB; // same as FUSE_INIT_REQUEST, no FUSE_INIT_EXT
-        let request_data = make_init_request(7, 27, 131072, flags);
+        let request_data = make_init_request(7, 27, 131072, flags, 0);
 
         let fs = InitCapturingFs::default();
         let info_ref = fs.info.clone();
@@ -975,9 +979,39 @@ mod tests {
     }
 
     #[test]
+    fn init_ext_without_direct_io_mmap_results_in_zero_flags2() {
+        // Kernel supports FUSE_INIT_EXT but does NOT advertise
+        // FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 in flags2.
+        let flags = 0x003FFFFB | FUSE_INIT_EXT;
+        let request_data = make_init_request(7, 39, 131072, flags, 0);
+
+        let fs = InitCapturingFs::default();
+        let info_ref = fs.info.clone();
+        let session = Session::new(fs);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        assert!(session.is_initialized());
+
+        let (_want, want2, _capable) = info_ref.lock().unwrap();
+        assert_eq!(
+            want2, 0,
+            "want2 must be zero when kernel flags2 lacks FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2"
+        );
+
+        let (_hdr, init_out) = sender.parse_init_reply();
+        assert_eq!(init_out.flags2, 0, "Reply flags2 must be zero");
+    }
+
+    #[test]
     fn init_higher_major_version_replies_with_supported_version() {
         // Kernel reports major version 8, higher than FUSE_KERNEL_VERSION (7).
-        let request_data = make_init_request(8, 0, 131072, 0);
+        let request_data = make_init_request(8, 0, 131072, 0, 0);
 
         let fs = InitCapturingFs::default();
         let info_ref = fs.info.clone();
@@ -1006,7 +1040,7 @@ mod tests {
     #[test]
     fn init_old_unsupported_version_returns_error() {
         // Kernel reports version 7.26, below the minimum (7.27).
-        let request_data = make_init_request(7, 26, 131072, 0);
+        let request_data = make_init_request(7, 26, 131072, 0, 0);
 
         let fs = InitCapturingFs::default();
         let session = Session::new(fs);
