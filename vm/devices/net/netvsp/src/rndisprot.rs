@@ -718,7 +718,7 @@ impl EthVlanInfo {
         (self.0 as u8) & 0x3
     }
 
-    pub fn canonical_format_id(self) -> u8 {
+    pub fn drop_eligible_indicator(self) -> u8 {
         (self.0 >> 3) as u8 & 0x1
     }
 
