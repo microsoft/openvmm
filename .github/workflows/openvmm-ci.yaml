@@ -1623,11 +1623,7 @@ jobs:
       shell: bash
   job14:
     name: clippy [aarch64-linux], unit tests [aarch64-linux]
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=openvmm-gh-arm-westus2
-    - 1ES.ImageOverride=ubuntu2404-arm64
-    - JobId=job14-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       id-token: write
@@ -1978,11 +1974,7 @@ jobs:
       shell: bash
   job15:
     name: clippy [aarch64-linux-musl, misc nostd], unit tests [aarch64-linux-musl]
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=openvmm-gh-arm-westus2
-    - 1ES.ImageOverride=ubuntu2404-arm64
-    - JobId=job15-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       id-token: write
