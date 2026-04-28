@@ -186,7 +186,7 @@ impl VfioAssignedPciDevice {
     pub async fn new(
         binding: manager::VfioDeviceBinding,
         pci_id: String,
-        driver_source: &VmTaskDriverSource,
+        _driver_source: &VmTaskDriverSource,
         register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
         msi_target: &MsiTarget,
         irqfd: Arc<dyn IrqFd>,
@@ -194,8 +194,7 @@ impl VfioAssignedPciDevice {
     ) -> anyhow::Result<Self> {
         let vfio_device = binding
             .group()
-            .open_device(&pci_id, &driver_source.simple())
-            .await
+            .open_device(&pci_id)
             .with_context(|| format!("failed to open VFIO device {pci_id}"))?;
 
         let config_info = vfio_device
