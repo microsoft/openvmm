@@ -917,16 +917,6 @@ impl<'a> arbitrary::Arbitrary<'a> for Vendor {
     }
 }
 
-impl Vendor {
-    pub fn is_intel_compatible(&self) -> bool {
-        false
-    }
-
-    pub fn is_amd_compatible(&self) -> bool {
-        false
-    }
-}
-
 impl Display for Vendor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let Ok(s) = core::str::from_utf8(&self.0) {

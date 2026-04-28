@@ -40,34 +40,17 @@ impl RunContext<'_> {
 
         let p = virt_mshv_vtl::UhProtoPartition::new(params, |_| self.state.driver.clone())?;
 
-        #[cfg_attr(guest_arch = "x86_64", allow(unused_mut))]
-        let mut vtom = None;
-
-        #[cfg(guest_arch = "aarch64")]
-        match isolation {
-            virt::IsolationType::Cca => {
-                vtom = Some((1 as u64) << (p.realm_config().ipa_width() - 1));
-
-                p.cca_set_mem_perm(
-                    self.state.memory_layout.ram()[0].range.start(),
-                    self.state.memory_layout.ram()[0].range.end(),
-                )
-                .expect("failed to set CCA memory permissions");
-            }
-            _ => {}
-        }
-
         let m = underhill_mem::init(&underhill_mem::Init {
             processor_topology: &self.state.processor_topology,
             isolation,
             vtl0_alias_map_bit: None,
-            vtom,
+            vtom: None,
             mem_layout: &self.state.memory_layout,
             complete_memory_layout: &self.state.memory_layout,
             boot_init: None,
             shared_pool: &[],
             maximum_vtl: hvdef::Vtl::Vtl0,
-        })
+        }, &p)
         .await?;
 
         let (partition, vps) = p
