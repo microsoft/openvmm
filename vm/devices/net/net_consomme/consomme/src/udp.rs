@@ -162,11 +162,19 @@ impl UdpConnection {
                 },
             ) {
                 Poll::Ready(Ok((n, src_addr))) => {
+                    // Replace loopback source IPs with the gateway IP so
+                    // the guest's reply routes back through the virtual
+                    // adapter instead of its own loopback interface.
                     let (packet_len, checksum_state) = match (dst_addr, src_addr.ip()) {
                         (SocketAddr::V4(dst), IpAddr::V4(src_ip)) => {
+                            let effective_src_ip: IpAddress = if src_ip.is_loopback() {
+                                state.params.gateway_ip.into()
+                            } else {
+                                src_ip.into()
+                            };
                             let len = build_udp_packet(
                                 &mut eth,
-                                src_ip.into(),
+                                effective_src_ip,
                                 (*dst.ip()).into(),
                                 src_addr.port(),
                                 dst.port(),
@@ -177,9 +185,14 @@ impl UdpConnection {
                             (len, ChecksumState::UDP4)
                         }
                         (SocketAddr::V6(dst), IpAddr::V6(src_ip)) => {
+                            let effective_src_ip: IpAddress = if src_ip.is_loopback() {
+                                state.params.gateway_link_local_ipv6.into()
+                            } else {
+                                src_ip.into()
+                            };
                             let len = build_udp_packet(
                                 &mut eth,
-                                src_ip.into(),
+                                effective_src_ip,
                                 (*dst.ip()).into(),
                                 src_addr.port(),
                                 dst.port(),
@@ -254,11 +267,19 @@ impl UdpListener {
                     .recv_from(&mut eth.payload_mut()[header_offset..])
             }) {
                 Poll::Ready(Ok((n, src_addr))) => {
+                    // Replace loopback source IPs with the gateway IP so
+                    // the guest's reply routes back through the virtual
+                    // adapter instead of its own loopback interface.
                     let Some((packet_len, checksum_state)) = (match (guest_dst_ip, src_addr.ip()) {
                         (IpAddr::V4(dst_ip), IpAddr::V4(src_ip)) => {
+                            let effective_src_ip: IpAddress = if src_ip.is_loopback() {
+                                state.params.gateway_ip.into()
+                            } else {
+                                src_ip.into()
+                            };
                             let len = build_udp_packet(
                                 &mut eth,
-                                src_ip.into(),
+                                effective_src_ip,
                                 dst_ip.into(),
                                 src_addr.port(),
                                 self.guest_port,
@@ -269,9 +290,14 @@ impl UdpListener {
                             Some((len, ChecksumState::UDP4))
                         }
                         (IpAddr::V6(dst_ip), IpAddr::V6(src_ip)) => {
+                            let effective_src_ip: IpAddress = if src_ip.is_loopback() {
+                                state.params.gateway_link_local_ipv6.into()
+                            } else {
+                                src_ip.into()
+                            };
                             let len = build_udp_packet(
                                 &mut eth,
-                                src_ip.into(),
+                                effective_src_ip,
                                 dst_ip.into(),
                                 src_addr.port(),
                                 self.guest_port,
