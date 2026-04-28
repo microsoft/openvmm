@@ -15,6 +15,7 @@ use std::future::Future;
 
 pub(crate) mod apply_task;
 pub(crate) mod cache;
+pub mod create;
 pub mod error;
 pub(crate) mod flush;
 pub mod format;
@@ -23,6 +24,8 @@ pub(crate) mod log_permits;
 pub(crate) mod log_task;
 pub(crate) mod lsn_watermark;
 
+pub use create::CreateParams;
+pub use create::create;
 pub use error::CreateError;
 pub use error::InvalidFormatReason;
 pub use error::OpenError;
