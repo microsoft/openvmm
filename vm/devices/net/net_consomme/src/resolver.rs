@@ -74,11 +74,11 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
                         ),
                     }
                 })?;
-                let host_addr = socket.local_addr().ok();
+                let host_addr = socket.local_addr().ok().and_then(|a| a.as_socket());
                 tracing::info!(
                     ?protocol,
-                    ?host_addr,
-                    guest_port = p.guest_port,
+                    host_addr = %host_addr.map(|a| a.to_string()).unwrap_or_default(),
+                    guest_port = %p.guest_port,
                     "port forward socket created"
                 );
                 Ok(PortForwardConfig {

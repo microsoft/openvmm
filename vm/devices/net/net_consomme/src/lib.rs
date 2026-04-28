@@ -182,11 +182,11 @@ impl ConsommeControl {
     ) -> Result<(), ConsommeMessageError> {
         let socket = create_bound_socket(&protocol, ip_addr, port)
             .map_err(|e| ConsommeMessageError::Bind(consomme::BindError::Io(e)))?;
-        let host_addr = socket.local_addr().ok();
+        let host_addr = socket.local_addr().ok().and_then(|a| a.as_socket());
         tracing::info!(
             ?protocol,
-            ?host_addr,
-            guest_port = port,
+            host_addr = %host_addr.map(|a| a.to_string()).unwrap_or_default(),
+            guest_port = %port,
             "port forward socket created"
         );
         self.send
