@@ -13,11 +13,13 @@
 use std::borrow::Borrow;
 use std::future::Future;
 
+pub(crate) mod apply_task;
 pub mod error;
 pub(crate) mod flush;
 pub mod format;
 pub mod log;
 pub(crate) mod log_permits;
+pub(crate) mod log_task;
 pub(crate) mod lsn_watermark;
 
 pub use error::CreateError;

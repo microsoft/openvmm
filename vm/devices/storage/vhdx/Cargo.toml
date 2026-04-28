@@ -11,8 +11,10 @@ bitfield-struct.workspace = true
 crc32c.workspace = true
 event-listener.workspace = true
 guid.workspace = true
+mesh.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]

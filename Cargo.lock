@@ -9068,9 +9068,11 @@ dependencies = [
  "event-listener",
  "futures",
  "guid",
+ "mesh",
  "pal_async",
  "parking_lot",
  "thiserror 2.0.16",
+ "tracing",
  "zerocopy",
 ]
 
