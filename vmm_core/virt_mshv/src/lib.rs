@@ -179,8 +179,9 @@ impl<'a> MshvProtoPartition<'a> {
             signal_hook::low_level::register(libc::SIGRTMIN(), || {
                 // Signal handler does nothing other than enabling run_fd()
                 // ioctl to return with EINTR, when the associated signal is
-                // sent to run_fd() thread.                
-            }).unwrap();
+                // sent to run_fd() thread.
+            })
+            .unwrap();
         });
 
         if let Some(hv_config) = &config.hv_config {
