@@ -193,7 +193,14 @@ async fn do_main(driver: DefaultDriver, mut tracing: TracingBackend) -> anyhow::
 
     let crate_name = build_info::get().crate_name();
     let crate_revision = build_info::get().scm_revision();
-    tracing::info!(CVM_ALLOWED, ?crate_name, ?crate_revision, "VMM process");
+    let openhcl_version = build_info::get().openhcl_version();
+    tracing::info!(
+        CVM_ALLOWED,
+        ?crate_name,
+        ?crate_revision,
+        ?openhcl_version,
+        "VMM process"
+    );
     log_boot_times().context("failure logging boot times")?;
 
     // Write the current pid to a file.
