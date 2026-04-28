@@ -69,7 +69,7 @@ hostfwd=<proto>:[<hostaddr>]:<hostport>-[<guestaddr>]:<guestport>
 | Field | Description |
 |-------|-------------|
 | `proto` | `tcp` or `udp` |
-| `hostaddr` | Host IP to bind (default: all interfaces). Use `[addr]` brackets for IPv6 |
+| `hostaddr` | Host IP to bind (default: all IPv4 interfaces, `0.0.0.0`). Use `[addr]` brackets for IPv6 addresses |
 | `hostport` | Host port to listen on. Use `0` for any available port |
 | `guestaddr` | Currently ignored — traffic always forwards to the guest IP |
 | `guestport` | Guest port to forward to |

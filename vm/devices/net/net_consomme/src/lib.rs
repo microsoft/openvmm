@@ -42,6 +42,8 @@ use std::task::Poll;
 use thiserror::Error;
 
 /// Creates and binds a socket for the given protocol, address, and port.
+///
+/// When `ip_addr` is `None`, binds to `0.0.0.0` (IPv4 only).
 pub fn create_bound_socket(
     protocol: &IpProtocol,
     ip_addr: Option<IpAddr>,
