@@ -676,53 +676,55 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
     // Serialize NVMe controllers as a hashtable keyed by VSID.
     // Each value: @{ Vtl = N; Drives = @(@{Nsid = 1; DiskPath = "..."}, ...) }
     // New-CustomVM imports HvlDeviceHost internally and calls New-NvmeEmulatorRasd.
-    let nvme_controllers = (!nvme_map.is_empty()).then(|| {
-        ps::HashTable::new(nvme_map.into_iter().map(
-            |(
-                vsid,
-                HyperVVmbusStorageController {
-                    target_vtl, drives, ..
-                },
-            )| {
-                // Sort drives by namespace ID and validate they are exactly
-                // 1..N — the emulator assigns NSIDs sequentially by VHD
-                // argument order.
-                let mut sorted_drives: Vec<_> = drives.into_iter().collect();
-                sorted_drives.sort_by_key(|(nsid, _)| *nsid);
-                let expected: Vec<u32> = (1..=sorted_drives.len() as u32).collect();
-                let actual: Vec<u32> = sorted_drives.iter().map(|(nsid, _)| *nsid).collect();
-                assert_eq!(
-                    actual,
-                    expected,
-                    "NVMe namespace IDs must be 1..{}, got {:?}",
-                    expected.len(),
-                    actual
-                );
-                (
-                    format!("\"{vsid}\""),
-                    ps::Value::new(ps::HashTable::new([
-                        ("Vtl", ps::Value::new(target_vtl as u32)),
-                        (
-                            "Drives",
-                            ps::Value::new(ps::Array::new(sorted_drives.into_iter().map(
-                                |(nsid, HyperVDrive { disk, .. })| {
-                                    ps::HashTable::new([
-                                        ("Nsid", ps::Value::new(nsid)),
-                                        (
-                                            "DiskPath",
-                                            ps::Value::new(
-                                                disk.expect("NVMe drives must have disk paths"),
-                                            ),
-                                        ),
-                                    ])
-                                },
-                            ))),
-                        ),
-                    ])),
-                )
+    let nvme_controllers = if nvme_map.is_empty() {
+        None
+    } else {
+        let mut nvme_entries = Vec::new();
+        for (
+            vsid,
+            HyperVVmbusStorageController {
+                target_vtl, drives, ..
             },
-        ))
-    });
+        ) in nvme_map
+        {
+            // Sort drives by namespace ID and validate they are exactly
+            // 1..N — the emulator assigns NSIDs sequentially by VHD
+            // argument order.
+            let mut sorted_drives: Vec<_> = drives.into_iter().collect();
+            sorted_drives.sort_by_key(|(nsid, _)| *nsid);
+            let expected: Vec<u32> = (1..=sorted_drives.len() as u32).collect();
+            let actual: Vec<u32> = sorted_drives.iter().map(|(nsid, _)| *nsid).collect();
+            anyhow::ensure!(
+                actual == expected,
+                "NVMe namespace IDs must be 1..{}, got {:?}",
+                expected.len(),
+                actual
+            );
+            nvme_entries.push((
+                format!("\"{vsid}\""),
+                ps::Value::new(ps::HashTable::new([
+                    ("Vtl", ps::Value::new(target_vtl as u32)),
+                    (
+                        "Drives",
+                        ps::Value::new(ps::Array::new(sorted_drives.into_iter().map(
+                            |(nsid, HyperVDrive { disk, .. })| {
+                                ps::HashTable::new([
+                                    ("Nsid", ps::Value::new(nsid)),
+                                    (
+                                        "DiskPath",
+                                        ps::Value::new(
+                                            disk.expect("NVMe drives must have disk paths"),
+                                        ),
+                                    ),
+                                ])
+                            },
+                        ))),
+                    ),
+                ])),
+            ));
+        }
+        Some(ps::HashTable::new(nvme_entries))
+    };
 
     let builder = PowerShellBuilder::new()
         .cmdlet("Import-Module")
