@@ -642,6 +642,8 @@ mod tests {
     use crate::request::tests::*;
     use parking_lot::Mutex;
     use std::sync::Arc;
+    use zerocopy::FromBytes;
+    use zerocopy::IntoBytes;
 
     #[test]
     fn dispatch_error_name_too_long() {
@@ -831,6 +833,196 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    /// A ReplySender that captures the raw response bytes for inspection.
+    #[derive(Default)]
+    struct CapturingSender {
+        data: Vec<u8>,
+    }
+
+    impl ReplySender for CapturingSender {
+        fn send(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
+            self.data = bufs.iter().flat_map(|s| s.iter()).copied().collect();
+            Ok(())
+        }
+    }
+
+    impl CapturingSender {
+        /// Parse the captured reply as a fuse_out_header + fuse_init_out.
+        fn parse_init_reply(&self) -> (fuse_out_header, fuse_init_out) {
+            let hdr = fuse_out_header::read_from_prefix(&self.data).unwrap().0;
+            let body = fuse_init_out::read_from_prefix(&self.data[size_of::<fuse_out_header>()..])
+                .unwrap()
+                .0;
+            (hdr, body)
+        }
+    }
+
+    /// Build a FUSE_INIT request with the given version and flags.
+    fn make_init_request(major: u32, minor: u32, max_readahead: u32, flags: u32) -> Vec<u8> {
+        let header = fuse_in_header {
+            len: (size_of::<fuse_in_header>() + size_of::<fuse_init_in>()) as u32,
+            opcode: FUSE_INIT,
+            unique: 1,
+            nodeid: 0,
+            uid: 0,
+            gid: 0,
+            pid: 0,
+            padding: 0,
+        };
+        let init = fuse_init_in {
+            major,
+            minor,
+            max_readahead,
+            flags,
+        };
+        let mut data = Vec::new();
+        data.extend_from_slice(header.as_bytes());
+        data.extend_from_slice(init.as_bytes());
+        data
+    }
+
+    /// A minimal Fuse implementation that records the SessionInfo seen during init.
+    #[derive(Default)]
+    struct InitCapturingFs {
+        info: Arc<Mutex<Option<(u32, u32, u32)>>>, // (want, want2, capable)
+    }
+
+    impl Fuse for InitCapturingFs {
+        fn init(&self, info: &mut SessionInfo) {
+            *self.info.lock() = Some((info.want, info.want2, info.capable()));
+        }
+    }
+
+    #[test]
+    fn init_with_ext_negotiates_flags2_and_direct_io_allow_mmap() {
+        // Kernel advertises FUSE_INIT_EXT among its capabilities.
+        let flags = 0x003FFFFB | FUSE_INIT_EXT;
+        let request_data = make_init_request(7, 39, 131072, flags);
+
+        let fs = InitCapturingFs::default();
+        let info_ref = fs.info.clone();
+        let session = Session::new(fs);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        assert!(session.is_initialized());
+
+        // The filesystem should see FUSE_INIT_EXT in the negotiated flags and
+        // FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 in want2.
+        let (want, want2, _capable) = info_ref.lock().unwrap();
+        assert_ne!(
+            want & FUSE_INIT_EXT,
+            0,
+            "FUSE_INIT_EXT should be negotiated"
+        );
+        assert_ne!(
+            want2 & FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2,
+            0,
+            "FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 should be in want2"
+        );
+
+        // The reply must carry both flags and flags2.
+        let (_hdr, init_out) = sender.parse_init_reply();
+        assert_ne!(
+            init_out.flags & FUSE_INIT_EXT,
+            0,
+            "Reply flags must include FUSE_INIT_EXT"
+        );
+        assert_ne!(
+            init_out.flags2 & FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2,
+            0,
+            "Reply flags2 must include FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2"
+        );
+    }
+
+    #[test]
+    fn init_without_ext_does_not_negotiate_flags2() {
+        // Kernel does NOT advertise FUSE_INIT_EXT.
+        let flags = 0x003FFFFB; // same as FUSE_INIT_REQUEST, no FUSE_INIT_EXT
+        let request_data = make_init_request(7, 27, 131072, flags);
+
+        let fs = InitCapturingFs::default();
+        let info_ref = fs.info.clone();
+        let session = Session::new(fs);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        assert!(session.is_initialized());
+
+        // Without FUSE_INIT_EXT the daemon must not request any flags2.
+        let (_want, want2, _capable) = info_ref.lock().unwrap();
+        assert_eq!(want2, 0, "want2 must be zero without FUSE_INIT_EXT");
+
+        let (_hdr, init_out) = sender.parse_init_reply();
+        assert_eq!(
+            init_out.flags & FUSE_INIT_EXT,
+            0,
+            "Reply flags must NOT include FUSE_INIT_EXT"
+        );
+        assert_eq!(init_out.flags2, 0, "Reply flags2 must be zero");
+    }
+
+    #[test]
+    fn init_higher_major_version_replies_with_supported_version() {
+        // Kernel reports major version 8, higher than FUSE_KERNEL_VERSION (7).
+        let request_data = make_init_request(8, 0, 131072, 0);
+
+        let fs = InitCapturingFs::default();
+        let info_ref = fs.info.clone();
+        let session = Session::new(fs);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        // Session should NOT be marked initialized — the kernel will resend INIT.
+        assert!(!session.is_initialized());
+
+        // The filesystem's init callback should NOT have been called.
+        assert!(info_ref.lock().is_none());
+
+        // Reply should carry the supported version.
+        let (hdr, init_out) = sender.parse_init_reply();
+        assert_eq!(hdr.error, 0);
+        assert_eq!(init_out.major, FUSE_KERNEL_VERSION);
+        assert_eq!(init_out.minor, FUSE_KERNEL_MINOR_VERSION);
+    }
+
+    #[test]
+    fn init_old_unsupported_version_returns_error() {
+        // Kernel reports version 7.26, below the minimum (7.27).
+        let request_data = make_init_request(7, 26, 131072, 0);
+
+        let fs = InitCapturingFs::default();
+        let session = Session::new(fs);
+
+        let mut sender = ErrorCheckingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        // Session should not be initialized after an unsupported version.
+        assert!(!session.is_initialized());
+
+        // An error reply should have been sent.
+        assert!(sender.last_error.is_some());
     }
 
     /// Creates a FUSE_LOOKUP request with a name that's too long (256 bytes, exceeds NAME_MAX of 255)
