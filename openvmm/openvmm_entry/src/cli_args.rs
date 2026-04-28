@@ -281,7 +281,7 @@ options:
     /// For consomme, forward host ports into the guest with `hostfwd=`:
     ///   --net consomme:hostfwd=tcp::3389-:3389
     ///   --net consomme:hostfwd=tcp:127.0.0.1:8080-:80
-    ///   --net consomme:hostfwd=tcp:[::1]:8080-:80
+    ///   --net consomme:hostfwd=tcp:\[::1\]:8080-:80
     ///   --net consomme:10.0.0.0/24,hostfwd=tcp::22-:22,hostfwd=udp::5000-:5000
     #[clap(long)]
     pub net: Vec<NicConfigCli>,

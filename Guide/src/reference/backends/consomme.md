@@ -62,7 +62,7 @@ host ports into the guest:
 This binds host port 2222 and forwards incoming TCP connections to
 guest port 22. The general syntax is:
 
-```
+```text
 hostfwd=<proto>:[<hostaddr>]:<hostport>-[<guestaddr>]:<guestport>
 ```
 
