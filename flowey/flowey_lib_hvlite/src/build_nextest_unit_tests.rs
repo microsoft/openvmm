@@ -15,7 +15,9 @@ use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoBuildProfile;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use flowey_lib_common::run_cargo_nextest_run::TestResults;
+use flowey_lib_common::run_cargo_nextest_run::build_params::NextestBuildParams;
 use flowey_lib_common::run_cargo_nextest_run::build_params::TestPackages;
+use std::collections::BTreeMap;
 
 /// Type-safe wrapper around a built nextest archive containing unit tests
 #[derive(Serialize, Deserialize)]
@@ -27,15 +29,25 @@ pub struct NextestUnitTestArchive {
 /// Build mode to use when building the nextest unit tests
 #[derive(Serialize, Deserialize)]
 pub enum BuildNextestUnitTestMode {
-    /// Build and immediate run unit tests, side-stepping any intermediate
-    /// archiving steps.
+    /// Build, immediately run, and publish unit test results, side-stepping
+    /// any intermediate archiving steps.
     ImmediatelyRun {
         nextest_profile: NextestProfile,
-        results: WriteVar<TestResults>,
+        /// Friendly label prefix used when publishing JUnit results. Each run
+        /// is published with this prefix combined with the run's friendly
+        /// name to ensure uniqueness within the pipeline.
+        junit_test_label: String,
+        /// If provided, also copy the published junit.xml files into this
+        /// directory (only honored on local backends).
+        artifact_dir: Option<ReadVar<PathBuf>>,
+        /// Per-run test results, in the same order produced internally.
+        results: WriteVar<Vec<TestResults>>,
+        /// Signaled once every run's junit.xml has been published.
+        publish_done: WriteVar<SideEffect>,
     },
-    /// Build and archive the tests into a nextest archive file, which can then
+    /// Build and archive the tests into nextest archive files, which can then
     /// be run via [`crate::test_nextest_unit_tests_archive`].
-    Archive(WriteVar<NextestUnitTestArchive>),
+    Archive(WriteVar<Vec<NextestUnitTestArchive>>),
 }
 
 flowey_request! {
@@ -62,6 +74,7 @@ impl FlowNode for Node {
         ctx.import::<crate::run_cargo_nextest_run::Node>();
         ctx.import::<crate::init_cross_build::Node>();
         ctx.import::<flowey_lib_common::run_cargo_nextest_archive::Node>();
+        ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -88,15 +101,12 @@ impl FlowNode for Node {
                 let openvmm_repo_path = rt.read(openvmm_repo_path);
 
                 let mut exclude = [
-                    // TODO: document why we're skipping these first few crates
-                    // (I'm just cargo-cult copying these exclusions)
-                    "whp",
-                    "kvm",
-                    "openvmm",
                     // Skip VMM tests, they get run in a different step.
                     "vmm_tests",
                     // Skip guest_test_uefi, as it's a no_std UEFI crate
                     "guest_test_uefi",
+                    // Skip crypto, handle it separately due to its non-additive features
+                    "crypto",
                     // Exclude various proc_macro crates, since they don't compile successfully
                     // under --test with panic=abort targets.
                     // https://github.com/rust-lang/cargo/issues/4336 is tracking this.
@@ -157,10 +167,6 @@ impl FlowNode for Node {
                 );
             }
 
-            // HACK: the following behavior has been cargo-culted from our old
-            // CI, and at some point, we should actually improve the testing
-            // story on windows, so that we can run with FeatureSet::All in CI.
-            //
             // On windows, we can't run with all features, as many crates
             // require openSSL for crypto, which isn't supported yet.
             //
@@ -180,53 +186,139 @@ impl FlowNode for Node {
                 injected_env: v,
             });
 
-            let build_params =
-                flowey_lib_common::run_cargo_nextest_run::build_params::NextestBuildParams {
-                    packages: test_packages.clone(),
-                    features,
-                    no_default_features: false,
-                    target: target.clone(),
-                    profile: match profile {
-                        CommonProfile::Release => CargoBuildProfile::Release,
-                        CommonProfile::Debug => CargoBuildProfile::Debug,
+            let base_build_params = NextestBuildParams {
+                packages: test_packages.clone(),
+                features,
+                no_default_features: false,
+                target: target.clone(),
+                profile: match profile {
+                    CommonProfile::Release => CargoBuildProfile::Release,
+                    CommonProfile::Debug => CargoBuildProfile::Debug,
+                },
+                extra_env: injected_env,
+            };
+
+            // The first run is the main workspace run with --all-features.
+            let mut runs: Vec<(String, NextestBuildParams)> =
+                vec![("unit-tests".into(), base_build_params.clone())];
+
+            // crypto has non-additive features, so it gets its own runs to
+            // ensure full coverage of different backends. Always test the
+            // 'native' no-feature backend. On linux additionally test the
+            // openssl & symcrypt backends and --all-features (we could test
+            // openssl on non-linux targets too, but setting up builds for
+            // them is a pain).
+            let mut crypto_feature_sets = vec![("none", CargoFeatureSet::None)];
+            if matches!(
+                target.operating_system,
+                target_lexicon::OperatingSystem::Linux
+            ) {
+                crypto_feature_sets
+                    .push(("openssl", CargoFeatureSet::Specific(vec!["openssl".into()])));
+                crypto_feature_sets.push((
+                    "symcrypt",
+                    CargoFeatureSet::Specific(vec!["symcrypt".into()]),
+                ));
+                crypto_feature_sets.push(("all", CargoFeatureSet::All));
+            }
+            for (name, features) in crypto_feature_sets {
+                runs.push((
+                    format!("unit-tests crypto ({})", name),
+                    NextestBuildParams {
+                        packages: ReadVar::from_static(TestPackages::Crates {
+                            crates: vec!["crypto".into()],
+                        }),
+                        features,
+                        ..base_build_params.clone()
                     },
-                    extra_env: injected_env,
-                };
+                ));
+            }
 
             match build_mode {
                 BuildNextestUnitTestMode::ImmediatelyRun {
                     nextest_profile,
+                    junit_test_label,
+                    artifact_dir,
                     results,
-                } => ctx.req(crate::run_cargo_nextest_run::Request {
-                    friendly_name: "unit-tests".into(),
-                    run_kind: flowey_lib_common::run_cargo_nextest_run::NextestRunKind::BuildAndRun(
-                        build_params,
-                    ),
-                    nextest_profile,
-                    nextest_filter_expr: None,
-                    nextest_working_dir: None,
-                    nextest_config_file: None,
-                    run_ignored: false,
-                    extra_env: None,
-                    pre_run_deps,
-                    results,
-                }),
+                    publish_done,
+                } => {
+                    let test_results: Vec<_> = runs
+                        .into_iter()
+                        .map(|(friendly_name, build_params)| {
+                            let r = ctx.reqv(|v| crate::run_cargo_nextest_run::Request {
+                                friendly_name: friendly_name.clone(),
+                                run_kind:
+                                    flowey_lib_common::run_cargo_nextest_run::NextestRunKind::BuildAndRun(
+                                        build_params,
+                                    ),
+                                nextest_profile,
+                                nextest_filter_expr: None,
+                                nextest_working_dir: None,
+                                nextest_config_file: None,
+                                run_ignored: false,
+                                extra_env: None,
+                                pre_run_deps: pre_run_deps.clone(),
+                                results: v,
+                            });
+                            (friendly_name, r)
+                        })
+                        .collect();
+
+                    // Emit a publish_test_results request per run, so each
+                    // run's junit.xml gets uploaded with a distinct label.
+                    let publish_dones: Vec<_> = test_results
+                        .iter()
+                        .map(|(friendly_name, r)| {
+                            let junit_xml = r.clone().map(ctx, |t| t.junit_xml);
+                            ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
+                                junit_xml,
+                                test_label: format!("{junit_test_label}-{friendly_name}"),
+                                attachments: BTreeMap::new(),
+                                output_dir: artifact_dir.clone(),
+                                done: v,
+                            })
+                        })
+                        .collect();
+
+                    ctx.emit_minor_rust_step("merge unit test results", |ctx| {
+                        let test_results = test_results
+                            .into_iter()
+                            .map(|(_, r)| r.claim(ctx))
+                            .collect::<Vec<_>>();
+                        let results = results.claim(ctx);
+                        move |rt| {
+                            let flattened = test_results.into_iter().map(|t| rt.read(t)).collect();
+                            rt.write(results, &flattened);
+                        }
+                    });
+
+                    ctx.emit_side_effect_step(publish_dones, [publish_done]);
+                }
                 BuildNextestUnitTestMode::Archive(unit_tests_archive) => {
-                    let archive_file =
-                        ctx.reqv(|v| flowey_lib_common::run_cargo_nextest_archive::Request {
-                            friendly_label: "unit-tests".into(),
-                            working_dir: openvmm_repo_path.clone(),
-                            build_params,
-                            pre_run_deps,
-                            archive_file: v,
-                        });
+                    let archive_files: Vec<_> = runs
+                        .into_iter()
+                        .map(|(friendly_name, build_params)| {
+                            ctx.reqv(|v| flowey_lib_common::run_cargo_nextest_archive::Request {
+                                friendly_label: friendly_name,
+                                working_dir: openvmm_repo_path.clone(),
+                                build_params,
+                                pre_run_deps: pre_run_deps.clone(),
+                                archive_file: v,
+                            })
+                        })
+                        .collect();
 
                     ctx.emit_minor_rust_step("report built unit tests", |ctx| {
-                        let archive_file = archive_file.claim(ctx);
+                        let archive_files = archive_files.claim(ctx);
                         let unit_tests = unit_tests_archive.claim(ctx);
                         |rt| {
-                            let archive_file = rt.read(archive_file);
-                            rt.write(unit_tests, &NextestUnitTestArchive { archive_file });
+                            let flattened = archive_files
+                                .into_iter()
+                                .map(|t| NextestUnitTestArchive {
+                                    archive_file: rt.read(t),
+                                })
+                                .collect::<Vec<_>>();
+                            rt.write(unit_tests, &flattened);
                         }
                     });
                 }
