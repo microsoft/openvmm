@@ -547,6 +547,14 @@ impl virt::Processor for MshvProcessor<'_> {
             .thaw_time()
             .expect("failed to thaw partition time");
 
+        // Ensure any messages present from a state restore are flushed on
+        // the first loop iteration.
+        if vpinner.message_queues.pending_sints() != 0 {
+            vpinner
+                .message_queues_pending
+                .store(true, Ordering::Relaxed);
+        }
+
         let mut last_waker: Option<Waker> = None;
 
         loop {
