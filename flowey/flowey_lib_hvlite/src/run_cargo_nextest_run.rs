@@ -12,7 +12,7 @@ use flowey_lib_common::run_cargo_nextest_run::TestResults;
 use std::collections::BTreeMap;
 
 /// Nextest profiles defined in HvLite's `.config/nextest.toml`
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub enum NextestProfile {
     Default,
     Ci,
