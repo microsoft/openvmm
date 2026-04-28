@@ -513,6 +513,7 @@ struct QueueStats {
     tx_lso_packets: Counter,
     tx_checksum_packets: Counter,
     tx_invalid_lso_packets: Counter,
+    rx_vlan_packets: Counter,
     tx_vlan_packets: Counter,
     tx_packets_per_wake: Histogram<10>,
     rx_packets_per_wake: Histogram<10>,
@@ -2561,25 +2562,24 @@ impl<T: RingMem> NetChannel<T> {
                         metadata.flags.set_is_ipv4(n.is_ipv4());
                         metadata.flags.set_is_ipv6(n.is_ipv6() && !n.is_ipv4());
                         metadata.max_segment_size = n.mss() as u16;
-                        metadata.l2_len = ETHERNET_HEADER_LEN as u8;
                         metadata.tcp_header_offset = n.tcp_header_offset();
                     }
                     rndisprot::PPI_VLAN => {
                         let n: rndisprot::EthVlanInfo = d.reader(mem).read_plain()?;
 
-                        metadata.flags.set_vlan_enabled(true);
                         metadata.vlan = Some(net_backend::VlanMetadata {
                             priority: n.priority(),
-                            canonical_format_id: n.canonical_format_id(),
-                            vlan_id: n.vlan_id()
+                            drop_eligible_indicator: n.drop_eligible_indicator(),
+                            vlan_id: n.vlan_id(),
                         });
+                        stats.rx_vlan_packets.increment();
                     }
                     _ => {}
                 }
                 ppi = rest;
             }
 
-            metadata.l2_len = if metadata.flags.vlan_enabled() {
+            metadata.l2_len = if metadata.vlan.is_some() {
                 ETHERNET_VLAN_HEADER_LEN
             } else {
                 ETHERNET_HEADER_LEN
@@ -2658,7 +2658,7 @@ impl<T: RingMem> NetChannel<T> {
         if metadata.flags.offload_tcp_segmentation() {
             stats.tx_lso_packets.increment();
         }
-        if metadata.flags.vlan_enabled() {
+        if metadata.vlan.is_some() {
             stats.tx_vlan_packets.increment();
         }
 

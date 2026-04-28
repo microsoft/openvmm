@@ -967,10 +967,10 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                             (L4Protocol::Unknown, RxChecksumState::Unknown)
                         };
                         let vlantag = if rx_oob.flags.rx_vlantag_present() {
-                            Some(VlanMetadata{
-                                canonical_format_id: 0,
+                            Some(VlanMetadata {
+                                drop_eligible_indicator: 0,
                                 priority: 0,
-                                vlan_id: rx_oob.flags.rx_vlan_id() as u16
+                                vlan_id: rx_oob.flags.rx_vlan_id() as u16,
                             })
                         } else {
                             None
@@ -1181,7 +1181,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
             oob.l_oob.set_inject_vlan_pri_tag(true);
             oob.l_oob.set_vlan_id(vlan.vlan_id);
             oob.l_oob.set_pcp(vlan.priority);
-            oob.l_oob.set_dei(vlan.canonical_format_id != 0);
+            oob.l_oob.set_dei(vlan.drop_eligible_indicator != 0);
         }
         let short_format = self.vp_offset <= 0xff && !meta.vlan.is_some();
         if short_format {
