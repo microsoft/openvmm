@@ -284,6 +284,8 @@ impl TestHarness {
             minor: FUSE_KERNEL_MINOR_VERSION,
             max_readahead: 0,
             flags: 0,
+            flags2: 0,
+            unused: [0; 11],
         };
 
         let resp_size = OUT_HEADER_SIZE + size_of::<fuse_init_out>() as u32;
