@@ -205,8 +205,9 @@ impl FlowNode for Node {
             // crypto has non-additive features, so it gets its own runs to
             // ensure full coverage of different backends. Always test the
             // 'native' no-feature backend. On linux additionally test the
-            // openssl backend and --all-features (we could test openssl on
-            // non-linux targets too, but setting up builds for them is a pain).
+            // openssl & symcrypt backends and --all-features (we could test
+            // openssl on non-linux targets too, but setting up builds for
+            // them is a pain).
             let mut crypto_feature_sets = vec![("none", CargoFeatureSet::None)];
             if matches!(
                 target.operating_system,
@@ -214,6 +215,10 @@ impl FlowNode for Node {
             ) {
                 crypto_feature_sets
                     .push(("openssl", CargoFeatureSet::Specific(vec!["openssl".into()])));
+                crypto_feature_sets.push((
+                    "symcrypt",
+                    CargoFeatureSet::Specific(vec!["symcrypt".into()]),
+                ));
                 crypto_feature_sets.push(("all", CargoFeatureSet::All));
             }
             for (name, features) in crypto_feature_sets {

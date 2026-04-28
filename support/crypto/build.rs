@@ -18,7 +18,7 @@ fn main() {
     let vendored = std::env::var_os("CARGO_FEATURE_VENDORED").is_some();
     let linux = std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "linux";
 
-    if vendored && symcrypt {
+    if vendored && symcrypt && !openssl {
         panic!("The symcrypt backend does not support vendoring");
     }
 
