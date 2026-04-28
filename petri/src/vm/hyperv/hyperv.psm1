@@ -368,7 +368,12 @@ function New-CustomVM
     }
 
     if ($NvmeControllers) {
-        Import-Module HvlDeviceHost
+        if (-not (Get-Module -ListAvailable HvlDeviceHost)) {
+            throw ("NVMe emulator support requires the HvlDeviceHost " +
+                "PowerShell module. Ensure hvldevicehost.dll is installed " +
+                "and the module is available on this host.")
+        }
+        Import-Module HvlDeviceHost -ErrorAction Stop
         foreach ($controller in $NvmeControllers.GetEnumerator()) {
             $vsid = $controller.Name
             $targetVtl = $controller.Value["Vtl"]
