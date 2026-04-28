@@ -483,8 +483,10 @@ impl Session {
         info.capable = init.flags;
         info.want = DEFAULT_FLAGS & init.flags;
         info.want2 = 0;
+        info.capable2 = 0;
         // Negotiate flags2 when the kernel supports extended init.
         if init.flags & FUSE_INIT_EXT != 0 {
+            info.capable2 = init.flags2;
             info.want2 = DEFAULT_FLAGS2 & init.flags2;
         }
         info.time_gran = 1;
@@ -492,6 +494,12 @@ impl Session {
         self.fs.init(&mut info);
 
         assert!(info.want & !info.capable == 0);
+        // If the filesystem cleared FUSE_INIT_EXT from want, force want2 to
+        // zero so we never reply with flags2 the kernel won't expect.
+        if info.want & FUSE_INIT_EXT == 0 {
+            info.want2 = 0;
+        }
+        assert!(info.want2 & !info.capable2 == 0);
 
         // Report the negotiated values back to the client.
         // TODO: Set map_alignment for DAX.
@@ -601,6 +609,7 @@ pub struct SessionInfo {
     minor: u32,
     pub max_readahead: u32,
     capable: u32,
+    capable2: u32,
     pub want: u32,
     /// Extended flags (flags2) to negotiate when FUSE_INIT_EXT is active.
     pub want2: u32,
@@ -621,6 +630,10 @@ impl SessionInfo {
 
     pub fn capable(&self) -> u32 {
         self.capable
+    }
+
+    pub fn capable2(&self) -> u32 {
+        self.capable2
     }
 }
 
