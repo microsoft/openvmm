@@ -58,6 +58,7 @@ use net_backend::TxId;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
+use net_backend::VlanMetadata;
 use pal_async::task::Spawn;
 use safeatomic::AtomicSliceOps;
 use std::collections::VecDeque;
@@ -965,6 +966,15 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         } else {
                             (L4Protocol::Unknown, RxChecksumState::Unknown)
                         };
+                        let vlantag = if rx_oob.flags.rx_vlantag_present() {
+                            Some(VlanMetadata{
+                                canonical_format_id: 0,
+                                priority: 0,
+                                vlan_id: rx_oob.flags.rx_vlan_id() as u16
+                            })
+                        } else {
+                            None
+                        };
                         let len = rx_oob.ppi[0].pkt_len.into();
                         pool.write_header(
                             rx.id,
@@ -974,6 +984,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                                 ip_checksum,
                                 l4_checksum,
                                 l4_protocol,
+                                vlan: vlantag,
                             },
                         );
                         if rx.bounced_len_with_padding > 0 {
@@ -1166,13 +1177,13 @@ impl<T: DeviceBacking> ManaQueue<T> {
         if meta.flags.offload_tcp_checksum() {
             oob.s_oob.set_trans_off(meta.l2_len as u16 + meta.l3_len);
         }
-        if meta.flags.vlan_enabled() {
+        if let Some(vlan) = &meta.vlan {
             oob.l_oob.set_inject_vlan_pri_tag(true);
-            oob.l_oob.set_vlan_id(meta.vlan_id);
-            oob.l_oob.set_pcp(meta.priority);
-            oob.l_oob.set_dei(meta.canonical_format_id != 0);
+            oob.l_oob.set_vlan_id(vlan.vlan_id);
+            oob.l_oob.set_pcp(vlan.priority);
+            oob.l_oob.set_dei(vlan.canonical_format_id != 0);
         }
-        let short_format = self.vp_offset <= 0xff && !meta.flags.vlan_enabled();
+        let short_format = self.vp_offset <= 0xff && !meta.vlan.is_some();
         if short_format {
             oob.s_oob.set_pkt_fmt(MANA_SHORT_PKT_FMT);
             oob.s_oob.set_short_vp_offset(self.vp_offset as u8);

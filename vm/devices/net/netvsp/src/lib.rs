@@ -2568,9 +2568,11 @@ impl<T: RingMem> NetChannel<T> {
                         let n: rndisprot::EthVlanInfo = d.reader(mem).read_plain()?;
 
                         metadata.flags.set_vlan_enabled(true);
-                        metadata.priority = n.priority();
-                        metadata.canonical_format_id = n.canonical_format_id();
-                        metadata.vlan_id = n.vlan_id();
+                        metadata.vlan = Some(net_backend::VlanMetadata {
+                            priority: n.priority(),
+                            canonical_format_id: n.canonical_format_id(),
+                            vlan_id: n.vlan_id()
+                        });
                     }
                     _ => {}
                 }

@@ -522,6 +522,7 @@ impl consomme::Client for Client<'_> {
                     } else {
                         L4Protocol::Unknown
                     },
+                    vlan: None
                 },
                 data,
             );
