@@ -45,6 +45,14 @@ pub fn linux_1es() -> GhRunner {
     ])
 }
 
+pub fn linux_mshv_1es() -> GhRunner {
+    GhRunner::SelfHosted(vec![
+        "self-hosted".to_string(),
+        "1ES.Pool=openvmm-gh-intel-westus3".to_string(),
+        "1ES.ImageOverride=azurelinux3-amd64-dom0".to_string(),
+    ])
+}
+
 pub fn gh_hosted_x64_windows() -> GhRunner {
     GhRunner::GhHosted(GhRunnerOsLabel::WindowsLatest)
 }

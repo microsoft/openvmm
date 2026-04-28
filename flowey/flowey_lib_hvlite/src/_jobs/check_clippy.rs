@@ -90,7 +90,11 @@ impl SimpleFlowNode for Node {
         ) {
             pre_build_deps.push(ctx.reqv(|v| {
                 flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: vec!["libssl-dev".into(), "build-essential".into()],
+                    package_names: vec![
+                        "libssl-dev".into(),
+                        "symcrypt".into(),
+                        "build-essential".into(),
+                    ],
                     done: v,
                 }
             }));
@@ -137,7 +141,9 @@ impl SimpleFlowNode for Node {
                 let xtask = rt.read(xtask);
                 let repo_path = rt.read(repo_path);
 
-                let mut exclude = vec!["guest_test_uefi".into()];
+                // guest_test_uefi is uefi-only, and is handled separately below
+                // crypto is handled separately in order to deal with its non-additive features
+                let mut exclude = vec!["guest_test_uefi".into(), "crypto".into()];
 
                 // packages depending on libfuzzer-sys are currently x86 only
                 if !(matches!(target.architecture, target_lexicon::Architecture::X86_64)
@@ -155,12 +161,9 @@ impl SimpleFlowNode for Node {
 
                     let fuzz_crates = output.trim().split('\n').map(|s| s.to_owned());
                     exclude.extend(fuzz_crates);
-
-                    exclude.push("chipset_device_fuzz".into());
-                    exclude.push("xtask_fuzz".into());
                 }
 
-                // packages requiring crypto support won't cross compile for macos
+                // packages requiring crypto or openssl support won't cross compile for macos
                 if matches!(
                     target.operating_system,
                     target_lexicon::OperatingSystem::Darwin(_)
@@ -172,10 +175,6 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        // HACK: the following behavior has been cargo-culted from our old
-        // CI, and at some point, we should actually improve the testing
-        // story on windows, so that we can run with FeatureSet::All in CI.
-        //
         // On windows & mac, we can't build with all features, as many crates
         // require openSSL for crypto, which isn't supported in CI yet.
         let features = if matches!(
@@ -192,7 +191,7 @@ impl SimpleFlowNode for Node {
             package: CargoPackage::Workspace,
             profile: profile.clone(),
             features: features.clone(),
-            target,
+            target: target.clone(),
             extra_env: None,
             exclude,
             keep_going: true,
@@ -201,12 +200,76 @@ impl SimpleFlowNode for Node {
             done: v,
         })];
 
+        // crypto has non-additive features, we need to ensure full coverage of different backends.
+        // Always test the 'native' no-feature backends.
+        reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
+            in_folder: openvmm_repo_path.clone(),
+            package: CargoPackage::Crate("crypto".into()),
+            profile: profile.clone(),
+            features: CargoFeatureSet::None,
+            target: target.clone(),
+            extra_env: None,
+            exclude: ReadVar::from_static(None),
+            keep_going: true,
+            all_targets: true,
+            pre_build_deps: pre_build_deps.clone(),
+            done: v,
+        }));
+
+        // Then on linux test the openssl & symcrypt backends, and ensure that --all-features works properly.
+        // We could test openssl on non-linux targets too, but setting up builds for them is a pain.
+        if matches!(
+            target.operating_system,
+            target_lexicon::OperatingSystem::Linux
+        ) {
+            reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
+                in_folder: openvmm_repo_path.clone(),
+                package: CargoPackage::Crate("crypto".into()),
+                profile: profile.clone(),
+                features: CargoFeatureSet::Specific(vec!["openssl".into()]),
+                target: target.clone(),
+                extra_env: None,
+                exclude: ReadVar::from_static(None),
+                keep_going: true,
+                all_targets: true,
+                pre_build_deps: pre_build_deps.clone(),
+                done: v,
+            }));
+            reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
+                in_folder: openvmm_repo_path.clone(),
+                package: CargoPackage::Crate("crypto".into()),
+                profile: profile.clone(),
+                features: CargoFeatureSet::Specific(vec!["symcrypt".into()]),
+                target: target.clone(),
+                extra_env: None,
+                exclude: ReadVar::from_static(None),
+                keep_going: true,
+                all_targets: true,
+                pre_build_deps: pre_build_deps.clone(),
+                done: v,
+            }));
+            reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
+                in_folder: openvmm_repo_path.clone(),
+                package: CargoPackage::Crate("crypto".into()),
+                profile: profile.clone(),
+                features: CargoFeatureSet::All,
+                target: target.clone(),
+                extra_env: None,
+                exclude: ReadVar::from_static(None),
+                keep_going: true,
+                all_targets: true,
+                pre_build_deps: pre_build_deps.clone(),
+                done: v,
+            }));
+        }
+
         if also_check_misc_nostd_crates {
+            // don't pass --all-targets, since that pulls in a std dependency
             reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
                 in_folder: openvmm_repo_path.clone(),
                 package: CargoPackage::Crate("openhcl_boot".into()),
                 profile: profile.clone(),
-                features: features.clone(),
+                features: CargoFeatureSet::All,
                 target: target_lexicon::triple!(boot_target),
                 extra_env: Some(vec![("MINIMAL_RT_BUILD".into(), "1".into())]),
                 exclude: ReadVar::from_static(None),
@@ -221,7 +284,7 @@ impl SimpleFlowNode for Node {
                 in_folder: openvmm_repo_path.clone(),
                 package: CargoPackage::Crate("guest_test_uefi".into()),
                 profile: profile.clone(),
-                features,
+                features: CargoFeatureSet::All,
                 target: target_lexicon::triple!(uefi_target),
                 extra_env: None,
                 exclude: ReadVar::from_static(None),

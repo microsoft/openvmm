@@ -23,6 +23,16 @@ AARCH64_UNKNOWN_LINUX_MUSL_OPENSSL_DIR = { value = ".packages/extracted/aarch64-
 AARCH64_UNDERHILL_LINUX_MUSL_OPENSSL_STATIC = "1"
 AARCH64_UNKNOWN_LINUX_MUSL_OPENSSL_STATIC = "1"
 
+# and tell symcrypt-sys exactly where to get symcrypt.
+X86_64_UNDERHILL_LINUX_MUSL_SYMCRYPT_LIB_PATH = { value = ".packages/extracted/x86_64-sysroot/lib", relative = true }
+X86_64_UNKNOWN_LINUX_MUSL_SYMCRYPT_LIB_PATH = { value = ".packages/extracted/x86_64-sysroot/lib", relative = true }
+X86_64_UNDERHILL_LINUX_MUSL_SYMCRYPT_STATIC = "1"
+X86_64_UNKNOWN_LINUX_MUSL_SYMCRYPT_STATIC = "1"
+AARCH64_UNDERHILL_LINUX_MUSL_SYMCRYPT_LIB_PATH = { value = ".packages/extracted/aarch64-sysroot/lib", relative = true }
+AARCH64_UNKNOWN_LINUX_MUSL_SYMCRYPT_LIB_PATH = { value = ".packages/extracted/aarch64-sysroot/lib", relative = true }
+AARCH64_UNDERHILL_LINUX_MUSL_SYMCRYPT_STATIC = "1"
+AARCH64_UNKNOWN_LINUX_MUSL_SYMCRYPT_STATIC = "1"
+
 # Tell cc-rs where the Underhill compilers are.
 CC_aarch64_underhill_linux_musl = { value = "build_support/underhill_cross/aarch64-underhill-musl-gcc", relative = true }
 CC_aarch64_unknown_linux_musl = { value = "build_support/underhill_cross/aarch64-underhill-musl-gcc", relative = true }

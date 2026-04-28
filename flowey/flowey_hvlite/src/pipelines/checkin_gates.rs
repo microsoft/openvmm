@@ -186,6 +186,8 @@ impl IntoPipeline for CheckinGatesCli {
         // initialize the various VMM tests nextest archive artifacts
         let (pub_vmm_tests_archive_linux_x86, use_vmm_tests_archive_linux_x86) =
             pipeline.new_typed_artifact("x64-linux-vmm-tests-archive");
+        let (pub_vmm_tests_archive_linux_musl_x86, use_vmm_tests_archive_linux_musl_x86) =
+            pipeline.new_typed_artifact("x64-linux-musl-vmm-tests-archive");
         let (pub_vmm_tests_archive_windows_x86, use_vmm_tests_archive_windows_x86) =
             pipeline.new_typed_artifact("x64-windows-vmm-tests-archive");
         let (pub_vmm_tests_archive_windows_aarch64, use_vmm_tests_archive_windows_aarch64) =
@@ -194,6 +196,7 @@ impl IntoPipeline for CheckinGatesCli {
         // wrap each publish handle in an option, so downstream code can
         // `.take()` the handle when emitting the corresponding job
         let mut pub_vmm_tests_archive_linux_x86 = Some(pub_vmm_tests_archive_linux_x86);
+        let mut pub_vmm_tests_archive_linux_musl_x86 = Some(pub_vmm_tests_archive_linux_musl_x86);
         let mut pub_vmm_tests_archive_windows_x86 = Some(pub_vmm_tests_archive_windows_x86);
         let mut pub_vmm_tests_archive_windows_aarch64 = Some(pub_vmm_tests_archive_windows_aarch64);
 
@@ -201,6 +204,8 @@ impl IntoPipeline for CheckinGatesCli {
         // are used to "skim off" various artifacts that the VMM test jobs
         // require.
         let mut vmm_tests_artifacts_linux_x86 =
+            vmm_tests_artifact_builders::VmmTestsArtifactsBuilderLinuxX86::default();
+        let mut vmm_tests_artifacts_linux_musl_x86 =
             vmm_tests_artifact_builders::VmmTestsArtifactsBuilderLinuxX86::default();
         let mut vmm_tests_artifacts_windows_x86 =
             vmm_tests_artifact_builders::VmmTestsArtifactsBuilderWindowsX86::default();
@@ -336,6 +341,8 @@ impl IntoPipeline for CheckinGatesCli {
             match arch {
                 CommonArch::X86_64 => {
                     vmm_tests_artifacts_linux_x86.use_pipette_windows =
+                        Some(use_pipette_windows.clone());
+                    vmm_tests_artifacts_linux_musl_x86.use_pipette_windows =
                         Some(use_pipette_windows.clone());
                     vmm_tests_artifacts_windows_x86.use_openvmm = Some(use_openvmm.clone());
                     vmm_tests_artifacts_windows_x86.use_pipette_windows =
@@ -585,6 +592,10 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_linux_x86.use_tmks = Some(use_tmks.clone());
                     vmm_tests_artifacts_windows_x86.use_tpm_guest_tests_linux =
                         Some(use_tpm_guest_tests.clone());
+                    // arch-neutral artifacts for musl MSHV test job
+                    vmm_tests_artifacts_linux_musl_x86.use_guest_test_uefi =
+                        Some(use_guest_test_uefi.clone());
+                    vmm_tests_artifacts_linux_musl_x86.use_tmks = Some(use_tmks.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_windows_aarch64.use_guest_test_uefi =
@@ -745,6 +756,20 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_tmk_vmm, use_tmk_vmm) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-tmk_vmm"));
 
+            // Also build openvmm and openvmm_vhost for musl on this job,
+            // alongside pipette and tmk_vmm. This enables running VMM tests
+            // on Azure Linux (MSHV) runners which have an older glibc.
+            // Only needed for x86_64 (the MSHV test job is x64-only).
+            let (pub_openvmm_musl, use_openvmm_musl) = matches!(arch, CommonArch::X86_64)
+                .then(|| pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-openvmm")))
+                .unzip();
+            let (pub_openvmm_vhost_musl, use_openvmm_vhost_musl) =
+                matches!(arch, CommonArch::X86_64)
+                    .then(|| {
+                        pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-openvmm_vhost"))
+                    })
+                    .unzip();
+
             // skim off interesting artifacts required by the VMM tests job
             match arch {
                 CommonArch::X86_64 => {
@@ -757,6 +782,14 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_linux_x86.use_tmk_vmm = Some(use_tmk_vmm.clone());
                     vmm_tests_artifacts_windows_x86.use_tmk_vmm_linux_musl =
                         Some(use_tmk_vmm.clone());
+                    // musl artifacts for MSHV test job
+                    vmm_tests_artifacts_linux_musl_x86.use_openvmm =
+                        Some(use_openvmm_musl.clone().unwrap());
+                    vmm_tests_artifacts_linux_musl_x86.use_openvmm_vhost =
+                        Some(use_openvmm_vhost_musl.clone().unwrap());
+                    vmm_tests_artifacts_linux_musl_x86.use_pipette_linux_musl =
+                        Some(use_pipette_linux_musl.clone());
+                    vmm_tests_artifacts_linux_musl_x86.use_tmk_vmm = Some(use_tmk_vmm.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_windows_aarch64.use_openhcl_igvm_files =
@@ -784,7 +817,7 @@ impl IntoPipeline for CheckinGatesCli {
             };
 
             let build_openhcl_job_tag = |arch_tag| format!("build openhcl [{arch_tag}-linux]");
-            let job = pipeline
+            let mut job = pipeline
                 .new_job(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                     FlowArch::X86_64,
@@ -836,6 +869,46 @@ impl IntoPipeline for CheckinGatesCli {
                     unstable_whp: false,
                     tmk_vmm: ctx.publish_typed_artifact(pub_tmk_vmm),
                 });
+
+            // Build musl openvmm, openvmm_vhost, and VMM tests archive on the
+            // OpenHCL x86 job only (the MSHV test job is x64-only).
+            if let (Some(pub_openvmm_musl), Some(pub_openvmm_vhost_musl)) =
+                (pub_openvmm_musl, pub_openvmm_vhost_musl)
+            {
+                job = job
+                    .dep_on(|ctx| flowey_lib_hvlite::build_openvmm::Request {
+                        params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxMusl,
+                            },
+                            profile: CommonProfile::from_release(release),
+                            features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
+                                .into(),
+                        },
+                        openvmm: ctx.publish_typed_artifact(pub_openvmm_musl),
+                    })
+                    .dep_on(|ctx| flowey_lib_hvlite::build_openvmm_vhost::Request {
+                        params: flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostBuildParams {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxMusl,
+                            },
+                            profile: CommonProfile::from_release(release),
+                        },
+                        openvmm_vhost: ctx.publish_typed_artifact(pub_openvmm_vhost_musl),
+                    });
+
+                let pub_vmm_tests_archive_linux_musl_x86 =
+                    pub_vmm_tests_archive_linux_musl_x86.take().unwrap();
+                job = job.dep_on(|ctx| flowey_lib_hvlite::build_nextest_vmm_tests::Request {
+                    target: CommonTriple::X86_64_LINUX_MUSL.as_triple(),
+                    profile: CommonProfile::from_release(release),
+                    build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
+                        ctx.publish_typed_artifact(pub_vmm_tests_archive_linux_musl_x86),
+                    ),
+                });
+            }
 
             all_jobs.push(job.finish());
 
@@ -1097,6 +1170,11 @@ impl IntoPipeline for CheckinGatesCli {
             .map_err(|missing| {
                 anyhow::anyhow!("missing required windows-amd-snp vmm_tests artifact: {missing}")
             })?;
+        let vmm_tests_artifacts_linux_mshv_x86 = vmm_tests_artifacts_linux_musl_x86
+            .finish()
+            .map_err(|missing| {
+                anyhow::anyhow!("missing required linux-mshv (musl) vmm_tests artifact: {missing}")
+            })?;
         let vmm_tests_artifacts_linux_x86 =
             vmm_tests_artifacts_linux_x86.finish().map_err(|missing| {
                 anyhow::anyhow!("missing required linux vmm_tests artifact: {missing}")
@@ -1263,9 +1341,21 @@ impl IntoPipeline for CheckinGatesCli {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
                 gh_pool: crate::pipelines_shared::gh_pools::linux_1es(),
-                label: "x64-linux",
+                label: "x64-linux-amd-kvm",
                 target: CommonTriple::X86_64_LINUX_GNU,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
+                // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
+                nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
+                test_artifacts: standard_x64_test_artifacts.clone(),
+                needs_prep_run: false,
+            },
+            VmmTestJobParams {
+                platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
+                arch: FlowArch::X86_64,
+                gh_pool: crate::pipelines_shared::gh_pools::linux_mshv_1es(),
+                label: "x64-linux-intel-mshv",
+                target: CommonTriple::X86_64_LINUX_MUSL,
+                resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_mshv_x86,
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
                 nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
                 test_artifacts: standard_x64_test_artifacts.clone(),
@@ -1289,11 +1379,12 @@ impl IntoPipeline for CheckinGatesCli {
                 needs_prep_run: false,
             },
         ] {
-            // Skip ARM64/CVM jobs entirely for ADO backend (no native ARM64/CVM pools in ADO)
+            // Skip ARM64/CVM/MSHV jobs entirely for ADO backend (no native ARM64/CVM/MSHV pools in ADO)
             if matches!(backend_hint, PipelineBackendHint::Ado) {
                 if matches!(arch, FlowArch::Aarch64)
                     || label.contains("tdx")
                     || label.contains("snp")
+                    || label.contains("mshv")
                 {
                     continue;
                 }
@@ -1309,6 +1400,7 @@ impl IntoPipeline for CheckinGatesCli {
             let use_vmm_tests_archive = match target {
                 CommonTriple::X86_64_WINDOWS_MSVC => &use_vmm_tests_archive_windows_x86,
                 CommonTriple::X86_64_LINUX_GNU => &use_vmm_tests_archive_linux_x86,
+                CommonTriple::X86_64_LINUX_MUSL => &use_vmm_tests_archive_linux_musl_x86,
                 CommonTriple::AARCH64_WINDOWS_MSVC => &use_vmm_tests_archive_windows_aarch64,
                 _ => unreachable!(),
             };
@@ -1317,19 +1409,24 @@ impl IntoPipeline for CheckinGatesCli {
                 .new_job(platform, arch, format!("run vmm-tests [{label}]"))
                 .gh_set_pool(gh_pool);
 
-            // Only add ADO pool for x86_64 jobs (ARM not supported in ADO org)
+            // Only add ADO pool for x86_64 jobs that have a matching ADO pool
             if matches!(arch, FlowArch::X86_64) {
-                vmm_tests_run_job = vmm_tests_run_job.ado_set_pool(match platform {
-                    FlowPlatform::Windows => {
-                        crate::pipelines_shared::ado_pools::default_x86_pool(FlowPlatform::Windows)
-                    }
+                let ado_pool = match platform {
+                    FlowPlatform::Windows => Some(
+                        crate::pipelines_shared::ado_pools::default_x86_pool(FlowPlatform::Windows),
+                    ),
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => {
-                        crate::pipelines_shared::ado_pools::default_x86_pool(FlowPlatform::Linux(
-                            FlowPlatformLinuxDistro::Ubuntu,
+                        Some(crate::pipelines_shared::ado_pools::default_x86_pool(
+                            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                         ))
                     }
+                    // No ADO pool for AzureLinux (MSHV jobs are GH-only)
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux) => None,
                     _ => anyhow::bail!("unsupported platform"),
-                });
+                };
+                if let Some(pool) = ado_pool {
+                    vmm_tests_run_job = vmm_tests_run_job.ado_set_pool(pool);
+                }
             }
 
             vmm_tests_run_job = vmm_tests_run_job.dep_on(|ctx| {
@@ -1603,7 +1700,7 @@ mod vmm_tests_artifact_builders {
     pub type ResolveVmmTestsDepArtifacts =
         Box<dyn Fn(&mut PipelineJobCtx<'_>) -> VmmTestsDepArtifacts>;
 
-    #[derive(Default)]
+    #[derive(Default, Clone)]
     pub struct VmmTestsArtifactsBuilderLinuxX86 {
         // windows build machine
         pub use_pipette_windows: Option<UseTypedArtifact<PipetteOutput>>,
