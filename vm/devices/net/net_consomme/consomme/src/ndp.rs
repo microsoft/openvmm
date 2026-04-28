@@ -14,6 +14,7 @@ use super::Client;
 use super::DropReason;
 use crate::ChecksumState;
 use crate::MIN_MTU;
+use crate::is_same_ipv6_subnet;
 use smoltcp::phy::Medium;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::EthernetFrame;
@@ -177,8 +178,9 @@ impl<T: Client> Access<'_, T> {
             .compute_network_prefix(NETWORK_PREFIX_BASE, self.inner.state.params.prefix_len_ipv6);
 
         // RFC 4861 Section 4.6.2: Router Advertisement with Prefix Information
-        // We set the ADDRCONF flag to enable SLAAC and ON_LINK flag to indicate
-        // that addresses with this prefix are on-link.
+        // We set the ADDRCONF flag to enable SLAAC. We intentionally omit ON_LINK
+        // so the guest treats global addresses as off-link and routes all traffic
+        // through the gateway rather than attempting on-link NDP resolution.
         let ndp_repr = NdiscRepr::RouterAdvert {
             hop_limit: 255,
             flags: NdiscRouterFlags::empty(),
@@ -194,7 +196,7 @@ impl<T: Client> Access<'_, T> {
                 prefix,
                 valid_lifetime: smoltcp::time::Duration::from_secs(2592000), // https://www.rfc-editor.org/rfc/rfc4861#section-6.2.1
                 preferred_lifetime: smoltcp::time::Duration::from_secs(604800), // https://www.rfc-editor.org/rfc/rfc4861#section-6.2.1
-                flags: NdiscPrefixInfoFlags::ON_LINK | NdiscPrefixInfoFlags::ADDRCONF,
+                flags: NdiscPrefixInfoFlags::ADDRCONF,
             }),
         };
 
@@ -274,12 +276,16 @@ impl<T: Client> Access<'_, T> {
 
         // RFC 4862 Section 5.4.3: Handle Duplicate Address Detection (DAD)
         // If source is unspecified (::), this is DAD - we should NOT respond
-        // to avoid interfering with the client's address configuration
+        // to avoid interfering with the client's address configuration.
+        // We learn the client's address here because consomme is the only other
+        // entity on this virtual link, so DAD will always succeed.
         if ipv6_src_addr.is_unspecified() {
-            tracing::trace!(
-                target_addr = %target_addr,
-                "received DAD Neighbor Solicitation, silently ignoring"
-            );
+            tracing::debug!(%target_addr, "learned client IPv6 address from DAD Neighbor Solicitation");
+            if target_addr.is_unicast_link_local() {
+                self.inner.state.params.client_ip_ipv6 = Some(target_addr);
+            } else {
+                self.inner.state.params.client_ip_ipv6_routable = Some(target_addr);
+            }
             return Ok(());
         }
 
@@ -298,33 +304,39 @@ impl<T: Client> Access<'_, T> {
             return Ok(());
         }
 
-        // Learn client IPv6 address from Neighbor Solicitation
-        // When the client performs address resolution using their SLAAC-configured
-        // global address, we learn it here. We only learn global unicast addresses
-        // (not link-local, multicast, or unspecified).
-        if !ipv6_src_addr.is_unicast_link_local()
-            && !ipv6_src_addr.is_multicast()
-            && !ipv6_src_addr.is_unspecified()
-        {
-            if self.inner.state.params.client_ip_ipv6.is_none()
-                || self.inner.state.params.client_ip_ipv6 != Some(ipv6_src_addr)
-            {
-                tracing::debug!(
-                    client_ipv6 = %ipv6_src_addr,
-                    "learned client IPv6 address from Neighbor Solicitation"
-                );
-                self.inner.state.params.client_ip_ipv6 = Some(ipv6_src_addr);
-            }
-        }
-
-        // Only respond if the target is our link-local address
-        // In a stateless NAT implementation, the gateway only responds for its own
-        // link-local address, not for global addresses that clients autoconfigure
-        if target_addr != self.inner.state.params.gateway_link_local_ipv6 {
+        // For any addresses in the subnet given to the guest, provide the gateway MAC address.
+        // This is the standard mechanism to indicate all traffic flows through the gateway, even
+        // local subnet traffic.
+        if !is_same_ipv6_subnet(
+            self.inner.state.params.gateway_link_local_ipv6,
+            target_addr,
+            self.inner.state.params.prefix_len_ipv6,
+        ) {
             tracing::debug!(
                 target_addr = %target_addr,
-                our_link_local = %self.inner.state.params.gateway_link_local_ipv6,
-                "NS target is not our link-local address, ignoring"
+                gateway = %self.inner.state.params.gateway_link_local_ipv6,
+                prefix_len = %self.inner.state.params.prefix_len_ipv6,
+                "NS target is not local, ignoring"
+            );
+            return Ok(());
+        }
+
+        // Don't claim the address if it belongs to the guest. If the guest does not yet have an
+        // address, only respond for the gateway so as not to interfere with the client's address
+        // configuration.
+        if self
+            .inner
+            .state
+            .params
+            .client_ip_ipv6
+            .map(|client_ip| client_ip == target_addr)
+            .unwrap_or(self.inner.state.params.gateway_link_local_ipv6 != target_addr)
+        {
+            tracing::debug!(
+                target_addr = %target_addr,
+                client_ip = ?self.inner.state.params.client_ip_ipv6,
+                gateway = %self.inner.state.params.gateway_link_local_ipv6,
+                "Ignoring NS target"
             );
             return Ok(());
         }

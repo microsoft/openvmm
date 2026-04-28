@@ -10,6 +10,7 @@ use super::Client;
 use super::DropReason;
 use crate::ChecksumState;
 use crate::ConsommeState;
+use crate::FourTuple;
 use crate::IpAddresses;
 use crate::dns_resolver::DnsResolver;
 use crate::dns_resolver::dns_tcp::DnsTcpHandler;
@@ -56,18 +57,6 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-struct FourTuple {
-    src: SocketAddr,
-    dst: SocketAddr,
-}
-
-impl core::fmt::Display for FourTuple {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}-{}", self.src, self.dst)
-    }
-}
 
 #[derive(InspectMut)]
 pub(crate) struct Tcp {
@@ -185,6 +174,7 @@ fn inspect_seq(seq: &TcpSeqNumber) -> inspect::AsHex<u32> {
 struct TcpListener {
     #[inspect(skip)]
     socket: PolledSocket<Socket>,
+    host_port: u16,
 }
 
 #[derive(Debug, PartialEq, Eq, Inspect)]
@@ -243,39 +233,28 @@ impl<T: Client> Access<'_, T> {
             .retain(|port, listener| match listener.poll_listener(cx) {
                 Ok(result) => {
                     if let Some((socket, mut other_addr)) = result {
-                        // Check for loopback requests and replace the dest port.
-                        // This supports a guest owning both the sending and receiving ports.
-                        if other_addr.ip().is_loopback() {
+                        // If this packet was originally from the guest, update the port to match
+                        // the original guest port. This allows loopback to work as expected.
+                        if self.inner.state.params.is_local_address(&other_addr) {
                             for (other_ft, connection) in self.inner.tcp.connections.iter() {
-                                if connection.inner.state == TcpState::Connecting && other_ft.dst.port() == *port {
+                                if connection.inner.state == TcpState::Connecting && other_ft.dst.port() == other_addr.port() {
                                     if let LoopbackPortInfo::ProxyForGuestPort{sending_port, guest_port} = connection.inner.loopback_port {
                                         if sending_port == other_addr.port() {
                                             other_addr.set_port(guest_port);
-                                            break;
                                         }
                                     }
+                                    break;
                                 }
                             }
                         }
+                        let Some(ft) = self.inner.state.try_ft_from_remote_address(&other_addr, *port) else {
+                            return true;
+                        };
 
-                        let ft = match other_addr {
-                            SocketAddr::V4(_) => FourTuple {
-                                dst: other_addr,
-                                src: SocketAddr::V4(SocketAddrV4::new(self.inner.state.params.client_ip, *port)),
-                            },
-                            SocketAddr::V6(_) => {
-                                let client_ipv6 = match self.inner.state.params.client_ip_ipv6 {
-                                    Some(ip) => ip,
-                                    None => {
-                                        tracing::warn!("Received IPv6 connection but client IPv6 address is not known");
-                                        return true;
-                                    }
-                                };
-                                FourTuple {
-                                    dst: other_addr,
-                                    src: SocketAddr::V6(SocketAddrV6::new(client_ipv6, *port, 0, 0)),
-                                }
-                            }
+                        // TCP connections are stored with the source always as the guest. Switch the order.
+                        let ft = FourTuple {
+                            src: ft.dst,
+                            dst: ft.src,
                         };
 
                         match self.inner.tcp.connections.entry(ft) {
@@ -302,6 +281,7 @@ impl<T: Client> Access<'_, T> {
                                         return true;
                                     }
                                 };
+                                tracing::trace!(?ft, "TCP connection established");
                                 e.insert(conn);
                             }
                             hash_map::Entry::Occupied(_) => {
@@ -434,7 +414,39 @@ impl<T: Client> Access<'_, T> {
                             &self.inner.tcp.connection_params,
                         )?
                     } else {
-                        TcpConnection::new(&mut sender, &tcp, &self.inner.tcp.connection_params)?
+                        // Resolve virtual mapped addresses back to real host
+                        // addresses before establishing the connection.
+                        let resolved_dst = sender.state.resolve_destination(&sender.ft.dst);
+                        // If this is directed to a local port owned by the guest, use the
+                        // appropriate host port substitution.
+                        let is_local_address = sender.state.params.is_local_address(&resolved_dst);
+                        let ft = if is_local_address
+                            && let Some(listener) =
+                                self.inner.tcp.listeners.get(&resolved_dst.port())
+                        {
+                            FourTuple {
+                                src: sender.ft.src,
+                                dst: SocketAddr::new(resolved_dst.ip(), listener.host_port),
+                            }
+                        } else if resolved_dst != sender.ft.dst {
+                            FourTuple {
+                                src: sender.ft.src,
+                                dst: resolved_dst,
+                            }
+                        } else {
+                            ft
+                        };
+                        let mut sender = Sender {
+                            ft: &ft,
+                            client: sender.client,
+                            state: sender.state,
+                        };
+                        TcpConnection::new(
+                            &mut sender,
+                            &tcp,
+                            &self.inner.tcp.connection_params,
+                            is_local_address,
+                        )?
                     };
                     e.insert(conn);
                 } else {
@@ -611,6 +623,7 @@ impl TcpConnection {
         sender: &mut Sender<'_, impl Client>,
         tcp: &TcpRepr<'_>,
         params: &ConnectionParams,
+        is_local_address: bool,
     ) -> Result<Self, DropReason> {
         let mut inner = Self::new_base(params);
         inner.initialize_from_first_client_packet(tcp)?;
@@ -645,7 +658,7 @@ impl TcpConnection {
                 return Err(DropReason::Io(err));
             }
         }
-        if let Ok(addr) = socket.get().local_addr() {
+        if is_local_address && let Ok(addr) = socket.get().local_addr() {
             match addr.as_socket() {
                 None => {
                     tracing::warn!(
@@ -655,12 +668,10 @@ impl TcpConnection {
                     );
                 }
                 Some(addr) => {
-                    if addr.ip().is_loopback() {
-                        inner.loopback_port = LoopbackPortInfo::ProxyForGuestPort {
-                            sending_port: addr.port(),
-                            guest_port: sender.ft.src.port(),
-                        };
-                    }
+                    inner.loopback_port = LoopbackPortInfo::ProxyForGuestPort {
+                        sending_port: addr.port(),
+                        guest_port: sender.ft.src.port(),
+                    };
                 }
             }
         }
@@ -1412,6 +1423,16 @@ impl TcpListener {
     /// The socket must already be bound to an address. This method will call
     /// `listen` on it.
     pub fn from_socket(driver: &dyn Driver, socket: Socket) -> Result<Self, BindError> {
+        let Some(host_port) = socket
+            .local_addr()
+            .map_err(BindError::Io)?
+            .as_socket()
+            .map(|addr| addr.port())
+        else {
+            return Err(BindError::Io(io::Error::other(
+                "socket local address is invalid",
+            )));
+        };
         let socket = PolledSocket::new(driver, socket).map_err(BindError::Io)?;
         if let Err(err) = socket.listen(10) {
             tracing::warn!(
@@ -1420,7 +1441,7 @@ impl TcpListener {
             );
             return Err(BindError::Io(err));
         }
-        Ok(Self { socket })
+        Ok(Self { socket, host_port })
     }
 
     fn poll_listener(
