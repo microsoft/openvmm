@@ -90,7 +90,15 @@ fn allocate_private_pool(
     vp_count: usize,
     mem_size: u64,
 ) {
-    // Try allocating the entire pool on node 0 first (unless forced to split).
+    // Try allocating the entire pool on node 0 first. We do this to maintain
+    // compatibility with older openhcl_boot images that do not understand how
+    // to handle a split private pool, and to maintain previous behavior where
+    // the pool was completely allocated on numa node 0.
+    //
+    // Allocate from high memory downward to avoid overlapping any used ranges
+    // in low memory when openhcl's usage gets bigger, as otherwise the
+    // used_range by the bootshim could overlap the pool range chosen when
+    // servicing to a new image.
     if !force_numa_split {
         if let Some(pool) = address_space.allocate(
             Some(0),
@@ -107,6 +115,8 @@ fn allocate_private_pool(
     }
 
     // Enumerate unique NUMA nodes from VTL2 RAM.
+    //
+    // FUTURE: Handle cases where the are CPU only or RAM only numa nodes.
     let mut numa_nodes = off_stack!(ArrayVec<u32, MAX_NUMA_NODES>, ArrayVec::new_const());
     for entry in vtl2_ram.iter() {
         match numa_nodes.binary_search(&entry.vnode) {
@@ -118,10 +128,25 @@ fn allocate_private_pool(
     }
 
     let num_nodes = numa_nodes.len() as u64;
+    // Split the per node size to page size aligned chunks, and give the
+    // remainder to the last node.
     let per_node_size = (pool_size_bytes / num_nodes) & !(HV_PAGE_SIZE - 1);
-    // Give the remainder (due to rounding) to the last node.
     let last_node_size = pool_size_bytes - per_node_size * (num_nodes - 1);
     let mut remaining = pool_size_bytes;
+
+    // If per-node-size is zero, we're in some strange configuration. We should
+    // have been able to allocate this from a single node, as this would mean
+    // the number of nodes is larger than the number of pages requested for the
+    // pool, so fail explicitly.
+    if per_node_size == 0 {
+        panic!(
+            "cannot split VTL2 pool of size {pool_size_bytes:#x} bytes across \
+            {num_nodes} nodes, per node size {per_node_size:#x} bytes; \
+            enable_vtl2_gpa_pool={enable_vtl2_gpa_pool:?}, \
+            device_dma_page_count={device_dma_page_count:#x?}, \
+            vp_count={vp_count}, mem_size={mem_size:#x}"
+        );
+    }
 
     for (i, vnode) in numa_nodes.iter().enumerate() {
         if remaining == 0 {
@@ -135,6 +160,8 @@ fn allocate_private_pool(
             per_node_size
         };
 
+        // Make sure to allocate high memory downward, for the same reason as
+        // described in the numa 0 case.
         match address_space.allocate(
             Some(*vnode),
             alloc_size,

@@ -5,6 +5,7 @@
 
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_VTL2_RAM_RANGES;
+use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
 use host_fdt_parser::MemoryEntry;
 #[cfg(test)]
@@ -240,7 +241,8 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             persisted_state_region.split_at_offset(PAGE_SIZE_4K);
 
         // The other ranges are reserved, and must overlap with the used range.
-        let mut reserved: ArrayVec<(MemoryRange, ReservedMemoryType), 20> = ArrayVec::new();
+        const MAX_RESERVED_RANGES: usize = 20;
+        let mut reserved = off_stack(ArrayVec<(MemoryRange, ReservedMemoryType), MAX_RESERVED_RANGES>, ArrayVec::new_const());
         reserved.push((persisted_header, ReservedMemoryType::PersistedStateHeader));
         reserved.push((persisted_payload, ReservedMemoryType::PersistedStatePayload));
         reserved.extend(vtl2_config.map(|r| (r, ReservedMemoryType::Vtl2Config)));
@@ -266,8 +268,10 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
         );
         reserved.sort_unstable_by_key(|(r, _)| r.start());
 
-        let mut used_ranges: ArrayVec<(MemoryRange, AddressUsage), { 13 + MAX_NUMA_NODES }> =
-            ArrayVec::new();
+        // Maximum number of used ranges is reserved ranges, plus any allocated
+        // pool ranges (one per node maximally).
+        const MAX_USED_RANGES: usize = MAX_RESERVED_RANGES + MAX_NUMA_NODES;
+        let mut used_ranges = off_stack!(ArrayVec<(MemoryRange, AddressUsage), MAX_USED_RANGES>, ArrayVec::new_const());
 
         // Construct initial used ranges by walking both the bootshim_used range
         // and all reserved ranges that overlap.
