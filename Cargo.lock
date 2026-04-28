@@ -8944,6 +8944,7 @@ dependencies = [
 name = "virt_mshv"
 version = "0.0.0"
 dependencies = [
+ "aarch64defs",
  "anyhow",
  "build_rs_guest_arch",
  "fs-err",
