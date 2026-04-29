@@ -7,11 +7,15 @@
 // UNSAFETY: Calling HV APIs and manually managing memory.
 #![expect(unsafe_code)]
 
+#[cfg(guest_arch = "aarch64")]
+mod aarch64;
 #[cfg(guest_arch = "x86_64")]
 mod x86_64;
 
 #[cfg(guest_arch = "aarch64")]
-mod aarch64;
+use aarch64 as arch;
+#[cfg(guest_arch = "x86_64")]
+use x86_64 as arch;
 
 // irqfd is arch-independent but only wired up on x86_64 for now.
 // TODO: wire up on aarch64 once MSI signaling is implemented.
@@ -45,6 +49,8 @@ use pal::unix::pthread::*;
 use pal_event::Event;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
+use std::convert::Infallible;
+use std::future::poll_fn;
 use std::io;
 use std::os::fd::AsFd;
 use std::os::fd::AsRawFd;
@@ -52,11 +58,17 @@ use std::os::fd::IntoRawFd as _;
 use std::sync::Arc;
 use std::sync::Once;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::task::Waker;
 use thiserror::Error;
 use virt::NeedsYield;
 use virt::PartitionAccessState;
 use virt::ProtoPartitionConfig;
+use virt::StopVp;
+use virt::VpHaltReason;
 use virt::VpIndex;
+use virt::io::CpuIo;
 use vmcore::interrupt::Interrupt;
 use vmcore::reference_time::GetReferenceTime;
 use vmcore::reference_time::ReferenceTimeResult;
@@ -137,9 +149,8 @@ impl<'a> MshvProtoPartition<'a> {
                 thread: RwLock::new(None),
                 needs_yield: NeedsYield::new(),
                 message_queues: MessageQueues::new(),
-                deliverability_notifications: Mutex::new(
-                    HvDeliverabilityNotificationsRegister::new(),
-                ),
+                message_queues_pending: AtomicBool::new(false),
+                waker: RwLock::new(None),
             })
             .collect();
 
@@ -260,7 +271,12 @@ struct MshvVpInner {
     thread: RwLock<Option<Pthread>>,
     needs_yield: NeedsYield,
     message_queues: MessageQueues,
-    deliverability_notifications: Mutex<HvDeliverabilityNotificationsRegister>,
+    /// Set by device threads after enqueuing a message to signal the VP
+    /// thread to flush its message queues.
+    message_queues_pending: AtomicBool,
+    /// Waker for the VP run loop task. Set by the VP thread, used by device
+    /// threads to re-poll the run loop when new messages are enqueued.
+    waker: RwLock<Option<Waker>>,
 }
 
 struct MshvVpInnerCleaner<'a> {
@@ -320,24 +336,13 @@ impl MshvPartitionInner {
     }
 
     fn post_message(&self, vp_index: VpIndex, sint: u8, message: &HvMessage) {
-        let request_notification = self
-            .vp(vp_index)
-            .message_queues
-            .enqueue_message(sint, message);
-
-        if request_notification {
-            self.request_sint_notifications(vp_index, 1 << sint);
-        }
-    }
-
-    fn request_sint_notifications(&self, vp_index: VpIndex, sints: u16) {
-        // To avoid an additional get_reg hypercall, clear w/ deliverable sints mask
-        let mut notifications = self.vp(vp_index).deliverability_notifications.lock();
-        if notifications.sints() != sints {
-            notifications.set_sints(sints);
-            self.vmfd
-                .register_deliverabilty_notifications(vp_index.index(), (*notifications).into())
-                .expect("Requesting deliverability is not a fallible operation");
+        let vp = self.vp(vp_index);
+        let wake = vp.message_queues.enqueue_message(sint, message);
+        // Signal the VP thread to flush message queues.
+        if wake && !vp.message_queues_pending.swap(true, Ordering::Release) {
+            if let Some(waker) = &*vp.waker.read() {
+                waker.wake_by_ref();
+            }
         }
     }
 
@@ -446,10 +451,17 @@ pub struct MshvProcessor<'a> {
     vpindex: VpIndex,
     #[inspect(skip)]
     runner: MshvVpRunner<'a>,
+    /// The deliverability notification state currently registered with the
+    /// hypervisor.
+    #[inspect(skip)]
+    deliverability_notifications: HvDeliverabilityNotificationsRegister,
 }
 
 impl MshvProcessor<'_> {
-    fn flush_messages(&self, deliverable_sints: u16) {
+    /// Posts any queued messages for the given sints, and requests
+    /// deliverability notifications for any sints that still have pending
+    /// messages.
+    fn flush_messages(&mut self, deliverable_sints: u16) {
         let nonempty_sints =
             self.inner
                 .message_queues
@@ -472,16 +484,153 @@ impl MshvProcessor<'_> {
                     }
                 });
 
-        {
-            let mut notifications = self.inner.deliverability_notifications.lock();
-            let remaining_sints = notifications.sints() & !deliverable_sints;
-            notifications.set_sints(remaining_sints);
+        if self.deliverability_notifications.sints() != nonempty_sints {
+            let notifications = self.deliverability_notifications.with_sints(nonempty_sints);
+            tracing::trace!(?notifications, "setting deliverability notifications");
+            self.partition
+                .vmfd
+                .register_deliverabilty_notifications(
+                    self.vpindex.index(),
+                    u64::from(notifications),
+                )
+                .expect("requesting deliverability is not a fallible operation");
+            self.deliverability_notifications = notifications;
+        }
+    }
+
+    /// Handles a synic sint deliverable exit. The deliverable sints bitmap
+    /// is architecture-specific (different message types for x86_64 and
+    /// aarch64), so the caller extracts it and passes it here.
+    fn handle_sint_deliverable(&mut self, deliverable_sints: u16) {
+        // Clear the delivered sints from both the current and next state.
+        self.deliverability_notifications
+            .set_sints(self.deliverability_notifications.sints() & !deliverable_sints);
+
+        self.flush_messages(deliverable_sints);
+    }
+
+    /// Resets the VP's message queue and deliverability notification state.
+    fn reset_synic_state(&mut self) {
+        self.inner.message_queues.clear();
+        self.inner
+            .message_queues_pending
+            .store(false, Ordering::Relaxed);
+        self.deliverability_notifications = HvDeliverabilityNotificationsRegister::new();
+    }
+}
+
+impl virt::Processor for MshvProcessor<'_> {
+    type StateAccess<'a>
+        = &'a mut Self
+    where
+        Self: 'a;
+
+    fn set_debug_state(
+        &mut self,
+        _vtl: Vtl,
+        _state: Option<&virt::x86::DebugState>,
+    ) -> Result<(), <&mut Self as virt::vp::AccessVpState>::Error> {
+        Err(ErrorInner::NotSupported.into())
+    }
+
+    async fn run_vp(
+        &mut self,
+        stop: StopVp<'_>,
+        dev: &impl CpuIo,
+    ) -> Result<Infallible, VpHaltReason> {
+        let vpinner = self.inner;
+        let _cleaner = MshvVpInnerCleaner { vpinner };
+
+        assert!(vpinner.thread.write().replace(Pthread::current()).is_none());
+
+        self.partition
+            .thaw_time()
+            .expect("failed to thaw partition time");
+
+        // Ensure any messages present from a state restore are flushed on
+        // the first loop iteration.
+        if vpinner.message_queues.pending_sints() != 0 {
+            vpinner
+                .message_queues_pending
+                .store(true, Ordering::Relaxed);
         }
 
-        if nonempty_sints != 0 {
-            self.partition
-                .request_sint_notifications(self.vpindex, nonempty_sints);
+        let mut last_waker: Option<Waker> = None;
+
+        loop {
+            vpinner.needs_yield.maybe_yield().await;
+            stop.check()?;
+
+            // Ensure the waker is set so device threads can wake us.
+            poll_fn(|cx| {
+                if !last_waker.as_ref().is_some_and(|w| cx.waker().will_wake(w)) {
+                    last_waker = Some(cx.waker().clone());
+                    *vpinner.waker.write() = last_waker.clone();
+                }
+                std::task::Poll::Ready(())
+            })
+            .await;
+
+            // Flush any messages enqueued by device threads.
+            if vpinner.message_queues_pending.load(Ordering::Relaxed) {
+                vpinner
+                    .message_queues_pending
+                    .store(false, Ordering::SeqCst);
+                let pending_sints = vpinner.message_queues.pending_sints();
+                if pending_sints != 0 {
+                    self.flush_messages(pending_sints);
+                }
+            }
+
+            match self.runner.run() {
+                Ok(exit) => {
+                    self.handle_exit(&exit, dev).await?;
+                }
+                Err(e) => match e.errno() {
+                    libc::EAGAIN | libc::EINTR => {}
+                    _ => tracing::error!(
+                        error = &e as &dyn std::error::Error,
+                        "vcpufd.run returned error"
+                    ),
+                },
+            }
         }
+    }
+
+    fn flush_async_requests(&mut self) {}
+
+    fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
+        assert_eq!(vtl, Vtl::Vtl0);
+        self
+    }
+
+    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        use virt::vp::AccessVpState;
+
+        let vp_info = self.inner.vp_info;
+        self.access_state(Vtl::Vtl0)
+            .reset_all(&vp_info)
+            .map_err(|e| ErrorInner::ResetState(Box::new(e)))?;
+
+        self.reset_synic_state();
+
+        Ok::<(), Error>(())
+    }
+}
+
+impl hv1_hypercall::PostMessage for arch::MshvHypercallHandler<'_> {
+    fn post_message(&mut self, connection_id: u32, message: &[u8]) -> hvdef::HvResult<()> {
+        self.partition
+            .synic_ports
+            .handle_post_message(Vtl::Vtl0, connection_id, false, message)
+    }
+}
+
+impl hv1_hypercall::SignalEvent for arch::MshvHypercallHandler<'_> {
+    fn signal_event(&mut self, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
+        self.partition
+            .synic_ports
+            .handle_signal_event(Vtl::Vtl0, connection_id, flag)
     }
 }
 
@@ -697,6 +846,14 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
             rsvd: [0; 7],
         };
 
+        let _span = tracing::info_span!(
+            "mshv map user memory",
+            guest_pfn = mem_region.guest_pfn,
+            size = mem_region.size,
+            writable,
+            exec,
+        )
+        .entered();
         self.vmfd.map_user_memory(mem_region)?;
         state.ranges[slot_to_use] = Some(mem_region);
         Ok(())
@@ -714,6 +871,12 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
             let region_end = region.guest_pfn + (region.size >> HV_PAGE_SHIFT);
             if unmap_start <= region_start && region_end <= unmap_end {
                 // Region is fully contained in the unmap range.
+                let _span = tracing::info_span!(
+                    "mshv unmap user memory",
+                    guest_pfn = region.guest_pfn,
+                    size = region.size,
+                )
+                .entered();
                 self.vmfd.unmap_user_memory(*region)?;
                 *entry = None;
             } else {

@@ -37,6 +37,7 @@ impl membacking::DmaTarget for VfioType1DmaTarget {
         _file_offset: u64,
     ) -> anyhow::Result<()> {
         let vaddr = host_va.expect("VFIO type1 requires host VA (registered with needs_va=true)");
+        let _span = tracing::info_span!("vfio map", %range).entered();
         // SAFETY: The caller (DmaMapper in membacking) guarantees that the
         // host VA is backed and stable via ensure_mapped + VaMapper lifetime.
         unsafe {
@@ -47,6 +48,7 @@ impl membacking::DmaTarget for VfioType1DmaTarget {
     }
 
     fn unmap_dma(&self, range: memory_range::MemoryRange) -> anyhow::Result<()> {
+        let _span = tracing::info_span!("vfio unmap", %range).entered();
         self.container
             .unmap_dma(range.start(), range.len())
             .context("VFIO DMA unmap failed")

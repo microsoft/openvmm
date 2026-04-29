@@ -4589,6 +4589,7 @@ dependencies = [
  "net_backend_resources",
  "pal_async",
  "parking_lot",
+ "socket2",
  "thiserror 2.0.16",
  "tracing",
  "vm_resource",

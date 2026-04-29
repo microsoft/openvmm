@@ -568,7 +568,10 @@ async fn vm_config_from_command_line(
         let nic_config = parse_endpoint(
             &NicConfigCli {
                 vtl: DeviceVtl::Vtl0,
-                endpoint: EndpointConfigCli::Consomme { cidr: None },
+                endpoint: EndpointConfigCli::Consomme {
+                    cidr: None,
+                    host_fwd: Vec::new(),
+                },
                 max_queues: None,
                 underhill: false,
                 pcie_port: None,
@@ -1714,8 +1717,29 @@ fn parse_endpoint(
 ) -> anyhow::Result<NicConfig> {
     let _ = resources;
     let endpoint = match &cli_cfg.endpoint {
-        EndpointConfigCli::Consomme { cidr } => {
-            net_backend_resources::consomme::ConsommeHandle { cidr: cidr.clone() }.into_resource()
+        EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            let ports = host_fwd
+                .iter()
+                .map(|fwd| {
+                    use net_backend_resources::consomme::HostPortProtocol;
+                    net_backend_resources::consomme::HostPortConfig {
+                        protocol: match fwd.protocol {
+                            cli_args::HostPortProtocolCli::Tcp => HostPortProtocol::Tcp,
+                            cli_args::HostPortProtocolCli::Udp => HostPortProtocol::Udp,
+                        },
+                        host_address: fwd
+                            .host_address
+                            .map(net_backend_resources::consomme::HostIpAddress::from),
+                        host_port: fwd.host_port,
+                        guest_port: fwd.guest_port,
+                    }
+                })
+                .collect();
+            net_backend_resources::consomme::ConsommeHandle {
+                cidr: cidr.clone(),
+                ports,
+            }
+            .into_resource()
         }
         EndpointConfigCli::None => net_backend_resources::null::NullHandle.into_resource(),
         EndpointConfigCli::Dio { id } => {

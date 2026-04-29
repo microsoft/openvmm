@@ -1,7 +1,7 @@
 { system, stdenv, fetchzip, targetArch ? null, is_dev ? false, is_cvm ? false }:
 
 let
-  version = if is_dev then "6.12.52.12" else "6.12.52.11";
+  version = if is_dev then "6.18.0.2" else "6.18.0.2";
   # Allow explicit override of architecture, otherwise derive from host system
   # Note: targetArch uses "x86_64"/"aarch64", but URLs use "x64"/"arm64"
   arch = if targetArch == "x86_64" then "x64"
@@ -18,21 +18,21 @@ let
   hashes = {
     hcl-main = {
       std = {
-        x64 = "sha256-vuXKGF5iIa3G8+4gqAzPbNjVw30RkW00d1tNf3M/eVg=";
-        arm64 = "sha256-Kx/nq8/bTA5UJIaiMdRREngqpf5bB41DifpvWgBMzOg=";
+        x64 = "sha256-YMi5VLU51eBjOy3SkxIFqFZHpctfXw5c8VR8rg6wOys=";
+        arm64 = "sha256-MmpQbHe20dxq7XU8/d0nVPJvyAct/tqxNKasNpOy/A8=";
       };
       cvm = {
-        x64 = "sha256-L6sa70xnV7OU+zdYKJfyuhtsBk4SpRrR9RMMcvZb294=";
+        x64 = "sha256-vOrq8A1s6aLyOGidxLl48v59McDb8dAxDe5V0QC2Dzo=";
         arm64 = throw "openhcl-kernel: cvm arm64 variant not available";
       };
     };
     hcl-dev = {
       std = {
-        x64 = "sha256-7PRUo4igtRL1wFzp99YZlOK+y5OcPH7ZENIDBmV0sY0=";
-        arm64 = "sha256-lLVu13Y0fdz8RzhXs6QieZ76+0Y0ttQeuTjXLuxI9QQ=";
+        x64 = "sha256-sFqwcX9c0/fk7ZylM82QSYxBMVXaALDgKN/A82ChyGs=";
+        arm64 = "sha256-AuUeQF4yr8sdJIMIicSlB1PH+mOQ0Gnr4SP/R/SFi2I=";
       };
       cvm = {
-        x64 = "sha256-kbQEKm1/KNushR9rBuuL1LVfM77hG6t4F55vZvzPuAU=";
+        x64 = "sha256-ClS82fGHeXUeiENJh+6+DfErTPui44wPkhVQQKIIx3o=";
         arm64 = throw "openhcl-kernel: dev cvm arm64 variant not available";
       };
     };
