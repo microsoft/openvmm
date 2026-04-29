@@ -98,14 +98,6 @@ impl SimpleFlowNode for Node {
                         move |rt| {
                             let hugepages_dir =
                                 Path::new("/sys/kernel/mm/hugepages/hugepages-2048kB");
-                            let overcommit_path = hugepages_dir.join("nr_overcommit_hugepages");
-
-                            if !overcommit_path.exists() {
-                                anyhow::bail!(
-                                    "missing {}; host does not expose 2 MiB hugetlb overcommit configuration",
-                                    overcommit_path.display()
-                                );
-                            }
 
                             let read_counter = |name: &str| -> anyhow::Result<u64> {
                                 let path = hugepages_dir.join(name);
@@ -113,20 +105,15 @@ impl SimpleFlowNode for Node {
                                 Ok(value.trim().parse()?)
                             };
 
-                            let current_overcommit = read_counter("nr_overcommit_hugepages")?;
-                            if current_overcommit < overcommit_pages {
-                                flowey::shell_cmd!(
-                                    rt,
-                                    "sudo tee {overcommit_path}"
-                                )
-                                .stdin(format!("{overcommit_pages}\n"))
-                                .run()?;
-                            }
+                            let write_overcommit_script = format!(
+                                "echo {overcommit_pages} | sudo tee {path}",
+                                path = hugepages_dir.join("nr_overcommit_hugepages").display(),
+                            );
+                            flowey::shell_cmd!(rt, "sh -c {write_overcommit_script}").run()?;
 
                             let nr_hugepages = read_counter("nr_hugepages")?;
                             let free_hugepages = read_counter("free_hugepages")?;
-                            let nr_overcommit_hugepages =
-                                read_counter("nr_overcommit_hugepages")?;
+                            let nr_overcommit_hugepages = read_counter("nr_overcommit_hugepages")?;
                             let surplus_hugepages = read_counter("surplus_hugepages")?;
 
                             log::info!("2 MiB hugetlb nr_hugepages={nr_hugepages}");
@@ -138,7 +125,9 @@ impl SimpleFlowNode for Node {
 
                             if nr_overcommit_hugepages < overcommit_pages {
                                 anyhow::bail!(
-                                    "2 MiB hugetlb overcommit remains {nr_overcommit_hugepages}, below requested {overcommit_pages}"
+                                    "2 MiB hugetlb overcommit remains {}, below requested {}",
+                                    nr_overcommit_hugepages,
+                                    overcommit_pages
                                 );
                             }
 
