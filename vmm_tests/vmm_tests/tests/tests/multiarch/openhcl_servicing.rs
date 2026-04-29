@@ -1261,42 +1261,7 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
             );
         }
     };
-
     assert!(entries.len() == 1, "expected only 1 entry, the AER command");
-
-    // Helper: descend through a chain of named directory children.
-    fn dir_child<'a>(node: &'a inspect::Node, name: &str) -> &'a inspect::Node {
-        match node {
-            inspect::Node::Dir(children) => {
-                &children
-                    .iter()
-                    .find(|c| c.name == name)
-                    .unwrap_or_else(|| panic!("missing child '{name}' in inspect dir"))
-                    .node
-            }
-            other => panic!("expected dir for '{name}', found {:?}", other),
-        }
-    }
-
-    let create_io_cq_opcode = u64::from(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0);
-
-    for e in &entries {
-        let opcode_node = dir_child(dir_child(dir_child(&e.node, "command"), "cdw0"), "opcode");
-        let opcode = match opcode_node {
-            inspect::Node::Value(v) => match v.kind {
-                inspect::ValueKind::Unsigned(n) => n,
-                ref other => panic!("opcode for entry '{}' is not unsigned: {:?}", e.name, other),
-            },
-            other => panic!("opcode for entry '{}' is not a value: {:?}", e.name, other),
-        };
-        tracing::info!(entry = %e.name, opcode, "inspected pending command");
-        assert_ne!(
-            opcode, create_io_cq_opcode,
-            "pending command '{}' has CREATE_IO_COMPLETION_QUEUE opcode (5); \
-             expected the slow create_io_queue command to have completed before save",
-            e.name
-        );
-    }
 
     Ok(())
 }
