@@ -926,6 +926,7 @@ impl InitializedVm {
             .prefetch_ram(cfg.memory.prefetch_memory)
             .private_memory(cfg.memory.private_memory)
             .transparent_hugepages(cfg.memory.transparent_hugepages)
+            .hugepages(cfg.memory.hugepages, cfg.memory.hugepage_size)
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
             );

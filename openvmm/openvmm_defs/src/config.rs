@@ -335,6 +335,8 @@ pub struct MemoryConfig {
     pub prefetch_memory: bool,
     pub private_memory: bool,
     pub transparent_hugepages: bool,
+    pub hugepages: bool,
+    pub hugepage_size: Option<u64>,
     pub mmio_gaps: Vec<MemoryRange>,
     pub pci_ecam_gaps: Vec<MemoryRange>,
     pub pci_mmio_gaps: Vec<MemoryRange>,

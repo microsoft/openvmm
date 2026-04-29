@@ -8,7 +8,39 @@ as well as the generated CLI help (via `cargo run -- --help`).
 ```
 
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
-* `--memory <SIZE>`: The VM's memory size. Defaults to 1GB.
+* `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
+  `SPEC` can be a size-only shorthand, such as `--memory 4G`, or a
+  comma-separated key/value list:
+
+  ```bash
+  --memory size=4G,shared=on,prefetch=off
+  ```
+
+  Supported keys:
+  * `size=<SIZE>` - guest RAM size. Sizes accept `K`, `M`, `G`, and
+    `T` suffixes, optionally followed by `B`.
+  * `shared=on|off` - use shared file-backed guest RAM. The default is
+    `on`; `off` uses private anonymous memory.
+  * `prefetch=on|off` - pre-populate shared guest RAM mappings.
+  * `thp=on|off` - mark private guest RAM as Transparent Huge Page
+    eligible. Requires `shared=off`.
+  * `hugepages=on|off` - allocate guest RAM from Linux hugetlb pages.
+    This is Linux-only, requires shared memory, and cannot be combined
+    with file-backed memory or PCAT/legacy x86 RAM splitting.
+  * `hugepage_size=<SIZE>` - request a specific hugetlb page size, such
+    as `2MB` or `1GB`. Requires `hugepages=on`; if omitted,
+    OpenVMM uses 2 MB pages.
+  * `file=<PATH>` - use an existing file as the guest RAM backing file.
+    This is used by snapshots.
+
+  Examples:
+
+  ```bash
+  --memory 4G
+  --memory size=64GB,hugepages=on,hugepage_size=2MB
+  --memory size=4G,file=path/to/memory.bin
+  --memory size=4G,shared=off,thp=on
+  ```
 * `--hv`: Exposes Hyper-V enlightenments and VMBus support.
 * `--hypervisor <SPEC>`: Select a specific hypervisor backend, optionally with
   backend-specific parameters. The format is `name` or `name:key=val,key,...`.
@@ -40,10 +72,10 @@ as well as the generated CLI help (via `cargo run -- --help`).
   On Linux, raw files and block devices use the `disk_blockdevice` backend
   (io_uring-based async I/O) by default. Append `;direct` to the path to
   bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct`.
-* `--private-memory`: Use private anonymous memory for guest RAM
-  instead of shared file-backed sections.
-* `--thp`: Enable Transparent Huge Pages for guest RAM (Linux only).
-  Requires `--private-memory`.
+* `--private-memory`, `--prefetch`, `--thp`, and
+  `--memory-backing-file <PATH>`: Deprecated aliases for `--memory`
+  parameters. Prefer `shared=off`, `prefetch=on`, `thp=on`, and
+  `file=<PATH>`.
 * `--pidfile <PATH>`: Write the process ID to the specified file on startup,
   and remove it on clean exit. If the process is killed with `SIGKILL` or
   crashes, the pidfile is not removed — consumers should verify the PID is

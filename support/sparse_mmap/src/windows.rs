@@ -293,6 +293,23 @@ impl SparseMapping {
         Self::new_inner(None, None, len)
     }
 
+    /// Reserves a sparse mapping range with at least the requested alignment.
+    pub fn new_with_minimum_alignment(len: usize, minimum_alignment: usize) -> Result<Self, Error> {
+        if !minimum_alignment.is_power_of_two() {
+            return Err(Error::new(
+                io::ErrorKind::InvalidInput,
+                "alignment must be a power of two",
+            ));
+        }
+        if minimum_alignment > page_size() {
+            return Err(Error::new(
+                io::ErrorKind::Unsupported,
+                "over-aligned sparse mappings are not supported on Windows",
+            ));
+        }
+        Self::new(len)
+    }
+
     /// Reserves a sparse mapping range with the given address and size in a
     /// remote process.
     pub fn new_remote(
@@ -735,6 +752,18 @@ pub fn alloc_shared_memory(size: usize, _name: &str) -> io::Result<OwnedHandle> 
         }
         Ok(OwnedHandle::from_raw_handle(h))
     }
+}
+
+/// Allocates a hugetlb mappable shared memory object of `size` bytes.
+pub fn alloc_shared_memory_hugetlb(
+    _size: usize,
+    _name: &str,
+    _hugepage_size: Option<usize>,
+) -> io::Result<OwnedHandle> {
+    Err(Error::new(
+        io::ErrorKind::Unsupported,
+        "hugetlb shared memory is only supported on Linux",
+    ))
 }
 
 #[cfg(test)]

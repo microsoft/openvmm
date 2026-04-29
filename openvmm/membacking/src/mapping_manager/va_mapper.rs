@@ -206,9 +206,13 @@ impl VaMapper {
         len: u64,
         remote_process: Option<RemoteProcess>,
         private_ram: bool,
+        minimum_alignment: Option<usize>,
     ) -> Result<Self, VaMapperError> {
         let mapping = match &remote_process {
-            None => SparseMapping::new(len as usize),
+            None => SparseMapping::new_with_minimum_alignment(
+                len as usize,
+                minimum_alignment.unwrap_or(1),
+            ),
             Some(process) => match process {
                 #[cfg(not(windows))]
                 _ => unreachable!(),
