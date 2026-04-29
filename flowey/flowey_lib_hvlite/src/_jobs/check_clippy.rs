@@ -92,7 +92,7 @@ impl SimpleFlowNode for Node {
                 flowey_lib_common::install_dist_pkg::Request::Install {
                     package_names: vec![
                         "libssl-dev".into(),
-                        "symcrypt".into(),
+                        "pkg-config".into(),
                         "build-essential".into(),
                     ],
                     done: v,
@@ -235,19 +235,22 @@ impl SimpleFlowNode for Node {
                 pre_build_deps: pre_build_deps.clone(),
                 done: v,
             }));
-            reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
-                in_folder: openvmm_repo_path.clone(),
-                package: CargoPackage::Crate("crypto".into()),
-                profile: profile.clone(),
-                features: CargoFeatureSet::Specific(vec!["symcrypt".into()]),
-                target: target.clone(),
-                extra_env: None,
-                exclude: ReadVar::from_static(None),
-                keep_going: true,
-                all_targets: true,
-                pre_build_deps: pre_build_deps.clone(),
-                done: v,
-            }));
+            // Only test the symcrypt backend on musl targets with our prebuilt lib
+            if matches!(target.environment, target_lexicon::Environment::Musl) {
+                reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
+                    in_folder: openvmm_repo_path.clone(),
+                    package: CargoPackage::Crate("crypto".into()),
+                    profile: profile.clone(),
+                    features: CargoFeatureSet::Specific(vec!["symcrypt".into()]),
+                    target: target.clone(),
+                    extra_env: None,
+                    exclude: ReadVar::from_static(None),
+                    keep_going: true,
+                    all_targets: true,
+                    pre_build_deps: pre_build_deps.clone(),
+                    done: v,
+                }));
+            }
             reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
                 in_folder: openvmm_repo_path.clone(),
                 package: CargoPackage::Crate("crypto".into()),
