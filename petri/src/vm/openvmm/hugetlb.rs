@@ -29,6 +29,22 @@ fn read_hugetlb_counter(name: &str) -> anyhow::Result<Option<u64>> {
     ))
 }
 
+fn available_2mb_hugetlb_pages() -> anyhow::Result<Option<u64>> {
+    let Some(free_pages) = read_hugetlb_counter("free_hugepages")? else {
+        return Ok(None);
+    };
+    let Some(overcommit_pages) = read_hugetlb_counter("nr_overcommit_hugepages")? else {
+        return Ok(None);
+    };
+    let Some(surplus_pages) = read_hugetlb_counter("surplus_hugepages")? else {
+        return Ok(None);
+    };
+
+    Ok(Some(
+        free_pages + overcommit_pages.saturating_sub(surplus_pages),
+    ))
+}
+
 /// Returns whether the host appears to have enough 2 MiB hugetlb pages available.
 ///
 /// By default, missing or insufficient host support returns `Ok(false)` after
@@ -36,41 +52,19 @@ fn read_hugetlb_counter(name: &str) -> anyhow::Result<Option<u64>> {
 /// `OPENVMM_REQUIRE_2MB_HUGETLB` is set, missing or insufficient host support is
 /// an error.
 pub fn ensure_2mb_hugetlb_pages(required_pages: u64) -> anyhow::Result<bool> {
-    let missing_message = "host does not have 2 MiB hugetlb support configured";
-
-    let Some(free_pages) = read_hugetlb_counter("free_hugepages")? else {
-        if require_2mb_hugetlb() {
-            anyhow::bail!(missing_message);
+    let message = match available_2mb_hugetlb_pages()? {
+        Some(available_pages) if available_pages >= required_pages => return Ok(true),
+        Some(available_pages) => {
+            format!(
+                "host has {available_pages} available 2 MiB hugetlb pages, but {required_pages} are required; configure /sys/kernel/mm/hugepages/hugepages-2048kB/nr_overcommit_hugepages before running this test"
+            )
         }
-        tracing::warn!(missing_message);
-        return Ok(false);
-    };
-    let Some(overcommit_pages) = read_hugetlb_counter("nr_overcommit_hugepages")? else {
-        if require_2mb_hugetlb() {
-            anyhow::bail!(missing_message);
-        }
-        tracing::warn!(missing_message);
-        return Ok(false);
-    };
-    let Some(surplus_pages) = read_hugetlb_counter("surplus_hugepages")? else {
-        if require_2mb_hugetlb() {
-            anyhow::bail!(missing_message);
-        }
-        tracing::warn!(missing_message);
-        return Ok(false);
+        None => "host does not have 2 MiB hugetlb support configured".into(),
     };
 
-    let available_pages = free_pages + overcommit_pages.saturating_sub(surplus_pages);
-    if available_pages < required_pages {
-        let message = format!(
-            "host has {available_pages} available 2 MiB hugetlb pages, but {required_pages} are required; configure /sys/kernel/mm/hugepages/hugepages-2048kB/nr_overcommit_hugepages before running this test"
-        );
-        if require_2mb_hugetlb() {
-            anyhow::bail!(message);
-        }
-        tracing::warn!(message);
-        return Ok(false);
+    if require_2mb_hugetlb() {
+        anyhow::bail!(message);
     }
-
-    Ok(true)
+    tracing::warn!(message);
+    Ok(false)
 }
