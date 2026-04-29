@@ -195,6 +195,7 @@ minimal_rt_build = { path = "openhcl/minimal_rt_build" }
 minimal_rt_reloc = { path = "openhcl/minimal_rt_reloc" }
 mem_profile_tracing = { path = "openhcl/mem_profile_tracing" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
+openhcl_cpuid_features = { path = "openhcl/openhcl_cpuid_features" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
 tee_call = { path = "openhcl/tee_call" }

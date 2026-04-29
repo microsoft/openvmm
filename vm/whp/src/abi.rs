@@ -567,10 +567,6 @@ impl WHV_SYNTHETIC_PROCESSOR_FEATURES {
     /// SPIs are advertised to VTL2.
     #[cfg(target_arch = "aarch64")]
     pub const ManagementVtlSpiSupport: Self = Self(1 << 44);
-
-    // Hypervisor supports for lower VTLs to make guest requests.
-    #[cfg(target_arch = "x86_64")]
-    pub const LowerVtlGuestRequestSupport: Self = Self(1 << 46);
 }
 
 #[repr(C)]

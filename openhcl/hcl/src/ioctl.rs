@@ -567,7 +567,6 @@ pub(crate) mod ioctls {
     pub const HCL_CAP_VTL_RETURN_ACTION: u32 = 2;
     pub const HCL_CAP_DR6_SHARED: u32 = 3;
     pub const HCL_CAP_LOWER_VTL_TIMER_VIRT: u32 = 4;
-    pub const HCL_CAP_LOWER_VTL_SNP_GUEST_REQUEST: u32 = 5;
 
     ioctl_write_ptr!(
         /// Check for the presence of an extension capability.
@@ -1344,10 +1343,10 @@ pub struct Hcl {
     supports_register_page: bool,
     dr6_shared: bool,
     supports_lower_vtl_timer_virt: bool,
-    supports_lower_vtl_snp_guest_request: bool,
     isolation: IsolationType,
     snp_register_bitmap: [u8; 64],
     sidecar: Option<SidecarClient>,
+    cpuid_features: openhcl_cpuid_features::CpuidFeatures,
 }
 
 /// The isolation type for a partition.
@@ -1386,10 +1385,9 @@ impl Hcl {
         self.supports_lower_vtl_timer_virt
     }
 
-    /// Returns true if SNP guest requests from lower VTLs are intercepted and
-    /// forwarded to VTL2.
-    pub fn supports_lower_vtl_snp_guest_request(&self) -> bool {
-        self.supports_lower_vtl_snp_guest_request
+    /// Returns cached host CPUID feature information.
+    pub fn cpuid_features(&self) -> &openhcl_cpuid_features::CpuidFeatures {
+        &self.cpuid_features
     }
 }
 
@@ -1735,7 +1733,12 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
 
 impl Hcl {
     /// Returns a new HCL instance.
-    pub fn new(isolation: IsolationType, sidecar: Option<SidecarClient>) -> Result<Hcl, Error> {
+    #[cfg(guest_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
+    pub fn new(
+        isolation: IsolationType,
+        sidecar: Option<SidecarClient>,
+        cpuid_features: openhcl_cpuid_features::CpuidFeatures,
+    ) -> Result<Hcl, Error> {
         static SIGNAL_HANDLER_INIT: Once = Once::new();
         // SAFETY: The signal handler does not perform any actions that are forbidden
         // for signal handlers to perform, as it performs nothing.
@@ -1792,8 +1795,11 @@ impl Hcl {
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
         let supports_lower_vtl_timer_virt =
             mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
+
+        // Use CPUID features from caller
         let supports_lower_vtl_snp_guest_request =
-            mshv_fd.check_extension(HCL_CAP_LOWER_VTL_SNP_GUEST_REQUEST)?;
+            cpuid_features.supports_lower_vtl_guest_request();
+
         tracing::debug!(
             supports_vtl_ret_action,
             supports_register_page,
@@ -1823,10 +1829,10 @@ impl Hcl {
             supports_register_page,
             dr6_shared,
             supports_lower_vtl_timer_virt,
-            supports_lower_vtl_snp_guest_request,
             isolation,
             snp_register_bitmap,
             sidecar,
+            cpuid_features,
         })
     }
 

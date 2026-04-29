@@ -1591,21 +1591,15 @@ async fn new_underhill_vm(
     let uevent_listener =
         Arc::new(UeventListener::new(tp.driver(0)).context("failed to start uevent listener")?);
 
-    let use_mmio_hypercalls = dps.general.always_relay_host_mmio;
-    // TODO: Centralize cpuid based feature determination.
+    // Initialize CPUID features once at worker startup.
+    #[cfg(guest_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
+    let cpuid_features = openhcl_cpuid_features::CpuidFeatures::new();
+
     #[cfg(guest_arch = "x86_64")]
-    let use_mmio_hypercalls = use_mmio_hypercalls
-        || hardware_isolated && {
-            let result =
-                safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
-            hvdef::HvEnlightenmentInformation::from(
-                result.eax as u128
-                    | (result.ebx as u128) << 32
-                    | (result.ecx as u128) << 64
-                    | (result.edx as u128) << 96,
-            )
-            .use_hypercall_for_mmio_access()
-        };
+    let use_mmio_hypercalls = dps.general.always_relay_host_mmio
+        || (hardware_isolated && cpuid_features.use_hypercall_for_mmio_access());
+    #[cfg(not(guest_arch = "x86_64"))]
+    let use_mmio_hypercalls = dps.general.always_relay_host_mmio;
 
     let boot_info = runtime_params.parsed_openhcl_boot();
 
@@ -1713,21 +1707,14 @@ async fn new_underhill_vm(
     // boot rather than allowing the host to make that decision. This would
     // just require Underhill setting the apicbase register on the VPs
     // before start.
-    //
-    // TODO: centralize cpuid querying logic.
     #[cfg(guest_arch = "x86_64")]
     let x2apic = if isolation.is_hardware_isolated() && !hide_isolation {
         // For hardware CVMs, always enable x2apic support at boot.
         vm_topology::processor::x86::X2ApicState::Enabled
+    } else if cpuid_features.x2_apic_supported() {
+        vm_topology::processor::x86::X2ApicState::Supported
     } else {
-        let features = x86defs::cpuid::VersionAndFeaturesEcx::from(
-            safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx,
-        );
-        if features.x2_apic() {
-            vm_topology::processor::x86::X2ApicState::Supported
-        } else {
-            vm_topology::processor::x86::X2ApicState::Unsupported
-        }
+        vm_topology::processor::x86::X2ApicState::Unsupported
     };
 
     #[cfg(guest_arch = "x86_64")]
@@ -1871,6 +1858,8 @@ async fn new_underhill_vm(
         hide_isolation,
         disable_proxy_redirect: env_cfg.disable_proxy_redirect,
         disable_lower_vtl_timer_virt: env_cfg.disable_lower_vtl_timer_virt,
+        #[cfg(guest_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
+        cpuid_features,
     };
 
     let proto_partition = UhProtoPartition::new(params, |cpu| tp.driver(cpu).clone())

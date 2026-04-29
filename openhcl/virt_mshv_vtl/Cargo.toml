@@ -11,6 +11,7 @@ gdb = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 hcl.workspace = true
+openhcl_cpuid_features.workspace = true
 virt.workspace = true
 virt_support_apic.workspace = true
 virt_support_x86emu.workspace = true

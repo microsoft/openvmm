@@ -621,13 +621,20 @@ pub struct HvEnlightenmentInformation {
     pub use_hypercall_for_mmio_access: bool,
     pub use_gpa_pinning_hypercall: bool,
     pub wake_vps: bool,
-    _reserved: u8,
+    pub proxy_interrupt_doorbell_support: bool,
+    pub memory_type_locking_support: bool,
+    pub map_partition_event_log_buffer: bool,
+    pub lower_vtl_guest_request_support: bool,
+    pub heat_hint_beneficial_support: bool,
+    pub ring_buffer_message_port_support: bool,
+    _reserved1: bool,
+    _reserved2: bool,
     pub long_spin_wait_count: u32,
     #[bits(7)]
     pub implemented_physical_address_bits: u32,
     #[bits(25)]
-    _reserved1: u32,
-    _reserved2: u32,
+    _reserved3: u32,
+    _reserved4: u32,
 }
 
 impl HvEnlightenmentInformation {

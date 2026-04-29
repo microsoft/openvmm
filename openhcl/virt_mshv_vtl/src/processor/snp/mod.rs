@@ -434,9 +434,6 @@ pub struct SnpBackedShared {
     /// Indexed by VMPCK index (0-3), where each key is [`SNP_VMPCK_KEY_SIZE`] bytes.
     #[inspect(skip)]
     vmpck_keys: [[u8; SNP_VMPCK_KEY_SIZE]; SNP_NUM_VMPCKS],
-    /// Whether the hypervisor supports intercepting SNP guest requests from lower
-    /// VTLs and forwarding them to VTL2.
-    supports_lower_vtl_snp_guest_request: bool,
 }
 
 impl SnpBackedShared {
@@ -490,7 +487,6 @@ impl SnpBackedShared {
             cvm,
             guest_timer,
             vmpck_keys,
-            supports_lower_vtl_snp_guest_request: params.hcl.supports_lower_vtl_snp_guest_request(),
         })
     }
 }
@@ -3150,7 +3146,13 @@ impl TlbFlushLockAccess for SnpTlbLockFlushAccess<'_> {
 
 impl hv1_hypercall::GetSnpVmpck for UhHypercallHandler<'_, '_, SnpBacked> {
     fn get_snp_vmpck(&mut self) -> hvdef::HvResult<hvdef::hypercall::GetSnpVmpckOutput> {
-        if !self.vp.shared.supports_lower_vtl_snp_guest_request {
+        if !self
+            .vp
+            .partition
+            .hcl
+            .cpuid_features()
+            .supports_lower_vtl_guest_request()
+        {
             return Err(HvError::AccessDenied);
         }
 
