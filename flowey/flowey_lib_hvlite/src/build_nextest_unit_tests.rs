@@ -167,13 +167,29 @@ impl FlowNode for Node {
                 );
             }
 
+            let mut test_packages = test_packages.clone();
+
+            // the TPM requires openssl, so exclude it from windows builds
+            if matches!(
+                target.operating_system,
+                target_lexicon::OperatingSystem::Windows
+            ) {
+                test_packages = test_packages.map(ctx, |test_packages| {
+                    let TestPackages::Workspace { mut exclude } = test_packages else {
+                        unreachable!()
+                    };
+                    exclude.extend(["tpm_device", "tpm_lib"].map(|x| x.into()));
+                    TestPackages::Workspace { exclude }
+                });
+            }
+
             let injected_env = ctx.reqv(|v| crate::init_cross_build::Request {
                 target: target.clone(),
                 injected_env: v,
             });
 
             let base_build_params = NextestBuildParams {
-                packages: test_packages.clone(),
+                packages: test_packages,
                 features: CargoFeatureSet::All,
                 no_default_features: false,
                 target: target.clone(),

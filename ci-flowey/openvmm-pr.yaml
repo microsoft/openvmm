@@ -1248,7 +1248,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 10 flowey_lib_common::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 10 flowey_lib_common::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 10 flowey_lib_hvlite::build_nextest_unit_tests 2
+      $(FLOWEY_BIN) e 10 flowey_lib_hvlite::build_nextest_unit_tests 3
       $(FLOWEY_BIN) e 10 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 10 flowey_lib_common::ado_task_publish_test_results 2
       $(FLOWEY_BIN) e 10 flowey_lib_common::publish_test_results 0
@@ -1269,7 +1269,10 @@ jobs:
       $(FLOWEY_BIN) e 10 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 10 flowey_lib_hvlite::build_xtask 1
     displayName: cargo build xtask
-  - bash: $(FLOWEY_BIN) e 10 flowey_lib_hvlite::build_nextest_unit_tests 0
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 10 flowey_lib_hvlite::build_nextest_unit_tests 0
+      $(FLOWEY_BIN) e 10 flowey_lib_hvlite::build_nextest_unit_tests 1
     displayName: determine unit test exclusions
   - bash: $(FLOWEY_BIN) e 10 flowey_lib_common::gen_cargo_nextest_run_cmd 1
     displayName: generate nextest command
@@ -1277,7 +1280,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 10 flowey_lib_common::run_cargo_nextest_run 2
       $(FLOWEY_BIN) e 10 flowey_lib_common::run_cargo_nextest_run 3
-      $(FLOWEY_BIN) e 10 flowey_lib_hvlite::build_nextest_unit_tests 1
+      $(FLOWEY_BIN) e 10 flowey_lib_hvlite::build_nextest_unit_tests 2
       $(FLOWEY_BIN) e 10 flowey_lib_common::publish_test_results 3
       $(FLOWEY_BIN) e 10 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 10 flowey_lib_common::publish_test_results 2
@@ -1293,7 +1296,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 10 flowey_lib_hvlite::build_nextest_unit_tests 3
+      $(FLOWEY_BIN) e 10 flowey_lib_hvlite::build_nextest_unit_tests 4
       $(FLOWEY_BIN) e 10 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 10 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0

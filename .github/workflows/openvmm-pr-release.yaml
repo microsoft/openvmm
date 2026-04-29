@@ -605,6 +605,7 @@ jobs:
     - name: determine unit test exclusions
       run: |-
         flowey.exe e 10 flowey_lib_hvlite::build_nextest_unit_tests 0
+        flowey.exe e 10 flowey_lib_hvlite::build_nextest_unit_tests 1
         flowey.exe e 10 flowey_lib_hvlite::init_cross_build 1
         flowey.exe e 10 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
@@ -615,7 +616,7 @@ jobs:
       run: |-
         flowey.exe e 10 flowey_lib_common::run_cargo_nextest_run 2
         flowey.exe e 10 flowey_lib_common::run_cargo_nextest_run 3
-        flowey.exe e 10 flowey_lib_hvlite::build_nextest_unit_tests 1
+        flowey.exe e 10 flowey_lib_hvlite::build_nextest_unit_tests 2
         flowey.exe e 10 flowey_lib_common::publish_test_results 5
         flowey.exe e 10 flowey_lib_common::publish_test_results 6
         flowey.exe e 10 flowey_lib_common::publish_test_results 4
@@ -636,7 +637,7 @@ jobs:
       run: |-
         flowey.exe e 10 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 10 flowey_lib_common::run_cargo_nextest_run 1
-        flowey.exe e 10 flowey_lib_hvlite::build_nextest_unit_tests 2
+        flowey.exe e 10 flowey_lib_hvlite::build_nextest_unit_tests 3
         flowey.exe e 10 flowey_lib_common::publish_test_results 0
         flowey.exe e 10 flowey_lib_common::publish_test_results 1
         flowey.exe e 10 flowey_lib_common::publish_test_results 2
@@ -652,7 +653,7 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: |-
-        flowey.exe e 10 flowey_lib_hvlite::build_nextest_unit_tests 3
+        flowey.exe e 10 flowey_lib_hvlite::build_nextest_unit_tests 4
         flowey.exe e 10 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
       shell: bash
     - name: run doctests for x86_64-pc-windows-msvc
@@ -1500,6 +1501,7 @@ jobs:
     - name: determine unit test exclusions
       run: |-
         flowey.exe e 13 flowey_lib_hvlite::build_nextest_unit_tests 0
+        flowey.exe e 13 flowey_lib_hvlite::build_nextest_unit_tests 1
         flowey.exe e 13 flowey_lib_hvlite::init_cross_build 1
         flowey.exe e 13 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
@@ -1510,7 +1512,7 @@ jobs:
       run: |-
         flowey.exe e 13 flowey_lib_common::run_cargo_nextest_run 2
         flowey.exe e 13 flowey_lib_common::run_cargo_nextest_run 3
-        flowey.exe e 13 flowey_lib_hvlite::build_nextest_unit_tests 1
+        flowey.exe e 13 flowey_lib_hvlite::build_nextest_unit_tests 2
         flowey.exe e 13 flowey_lib_common::publish_test_results 5
         flowey.exe e 13 flowey_lib_common::publish_test_results 6
         flowey.exe e 13 flowey_lib_common::publish_test_results 4
@@ -1531,7 +1533,7 @@ jobs:
       run: |-
         flowey.exe e 13 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 13 flowey_lib_common::run_cargo_nextest_run 1
-        flowey.exe e 13 flowey_lib_hvlite::build_nextest_unit_tests 2
+        flowey.exe e 13 flowey_lib_hvlite::build_nextest_unit_tests 3
         flowey.exe e 13 flowey_lib_common::publish_test_results 0
         flowey.exe e 13 flowey_lib_common::publish_test_results 1
         flowey.exe e 13 flowey_lib_common::publish_test_results 2
@@ -1547,7 +1549,7 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: |-
-        flowey.exe e 13 flowey_lib_hvlite::build_nextest_unit_tests 3
+        flowey.exe e 13 flowey_lib_hvlite::build_nextest_unit_tests 4
         flowey.exe e 13 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
       shell: bash
     - name: run doctests for aarch64-pc-windows-msvc

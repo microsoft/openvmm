@@ -171,6 +171,16 @@ impl SimpleFlowNode for Node {
                     exclude.extend(["openssl_kdf", "vmgs_lib", "disk_crypt"].map(|x| x.into()));
                 }
 
+                // the TPM requires openssl, so exclude it from windows builds
+                // these crates only do something when a feature is enabled, so they
+                // don't need to be excluded from mac runs
+                if matches!(
+                    target.operating_system,
+                    target_lexicon::OperatingSystem::Windows
+                ) {
+                    exclude.extend(["tpm_device", "tpm_lib"].map(|x| x.into()));
+                }
+
                 Ok(Some(exclude))
             }
         });
