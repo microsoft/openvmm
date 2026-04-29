@@ -919,6 +919,12 @@ impl InitializedVm {
                 .then_some(1 << (physical_address_size - 1))
         });
 
+        if let Some(size) = cfg.memory.hugepage_size
+            && !cfg.memory.hugepages
+        {
+            anyhow::bail!("hugepage_size={size} requires hugepages=on");
+        }
+
         let mut memory_builder = GuestMemoryBuilder::new();
         memory_builder = memory_builder
             .existing_backing(shared_memory)
@@ -926,10 +932,12 @@ impl InitializedVm {
             .prefetch_ram(cfg.memory.prefetch_memory)
             .private_memory(cfg.memory.private_memory)
             .transparent_hugepages(cfg.memory.transparent_hugepages)
-            .hugepages(cfg.memory.hugepages, cfg.memory.hugepage_size)
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
             );
+        if cfg.memory.hugepages {
+            memory_builder = memory_builder.hugepages(cfg.memory.hugepage_size);
+        }
 
         #[cfg(all(windows, feature = "virt_whp"))]
         if !cfg.vpci_resources.is_empty() {

@@ -39,6 +39,7 @@ use windows_sys::Win32::System::Memory;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const PAGE_SIZE: usize = 4096;
+const ALLOCATION_GRANULARITY: usize = 0x10000;
 
 pub(crate) fn page_size() -> usize {
     PAGE_SIZE
@@ -294,6 +295,9 @@ impl SparseMapping {
     }
 
     /// Reserves a sparse mapping range with at least the requested alignment.
+    ///
+    /// Windows virtual address reservations are aligned to the system
+    /// allocation granularity.
     pub fn new_with_minimum_alignment(len: usize, minimum_alignment: usize) -> Result<Self, Error> {
         if !minimum_alignment.is_power_of_two() {
             return Err(Error::new(
@@ -301,10 +305,10 @@ impl SparseMapping {
                 "alignment must be a power of two",
             ));
         }
-        if minimum_alignment > page_size() {
+        if minimum_alignment > ALLOCATION_GRANULARITY {
             return Err(Error::new(
                 io::ErrorKind::Unsupported,
-                "over-aligned sparse mappings are not supported on Windows",
+                "sparse mapping alignment greater than the Windows allocation granularity is not supported",
             ));
         }
         Self::new(len)

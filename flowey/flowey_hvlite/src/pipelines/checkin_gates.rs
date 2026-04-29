@@ -26,6 +26,10 @@ use std::path::PathBuf;
 use target_lexicon::Triple;
 use vmm_test_images::KnownTestArtifacts;
 
+// This is a cap for surplus 2 MiB hugetlb pages, not a reservation. Keep it
+// generous enough for VMM tests without tying CI provisioning to one test's RAM.
+const HUGETLB_2MB_OVERCOMMIT_PAGES: u64 = 4096;
+
 #[derive(Copy, Clone, clap::ValueEnum)]
 enum PipelineConfig {
     /// Run on all PRs targeting the OpenVMM GitHub repo.
@@ -1206,6 +1210,7 @@ impl IntoPipeline for CheckinGatesCli {
             nextest_filter_expr: String,
             test_artifacts: Vec<KnownTestArtifacts>,
             needs_prep_run: bool,
+            hugetlb_2mb_overcommit_pages: Option<u64>,
         }
 
         let standard_filter = {
@@ -1303,6 +1308,7 @@ impl IntoPipeline for CheckinGatesCli {
             nextest_filter_expr,
             test_artifacts,
             needs_prep_run,
+            hugetlb_2mb_overcommit_pages,
         } in [
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1315,6 +1321,7 @@ impl IntoPipeline for CheckinGatesCli {
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 needs_prep_run: false,
+                hugetlb_2mb_overcommit_pages: None,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1327,6 +1334,7 @@ impl IntoPipeline for CheckinGatesCli {
                 nextest_filter_expr: cvm_filter("tdx"),
                 test_artifacts: cvm_x64_test_artifacts.clone(),
                 needs_prep_run: true,
+                hugetlb_2mb_overcommit_pages: None,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1339,6 +1347,7 @@ impl IntoPipeline for CheckinGatesCli {
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 needs_prep_run: false,
+                hugetlb_2mb_overcommit_pages: None,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1351,6 +1360,7 @@ impl IntoPipeline for CheckinGatesCli {
                 nextest_filter_expr: cvm_filter("snp"),
                 test_artifacts: cvm_x64_test_artifacts,
                 needs_prep_run: true,
+                hugetlb_2mb_overcommit_pages: None,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -1364,6 +1374,7 @@ impl IntoPipeline for CheckinGatesCli {
                 nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 needs_prep_run: false,
+                hugetlb_2mb_overcommit_pages: Some(HUGETLB_2MB_OVERCOMMIT_PAGES),
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
@@ -1377,6 +1388,7 @@ impl IntoPipeline for CheckinGatesCli {
                 nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 needs_prep_run: false,
+                hugetlb_2mb_overcommit_pages: None,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1395,6 +1407,7 @@ impl IntoPipeline for CheckinGatesCli {
                     KnownTestArtifacts::VmgsWith16kTpm,
                 ],
                 needs_prep_run: false,
+                hugetlb_2mb_overcommit_pages: None,
             },
         ] {
             // Skip unsupported jobs on ADO backend
@@ -1438,6 +1451,7 @@ impl IntoPipeline for CheckinGatesCli {
                     fail_job_on_test_fail: true,
                     artifact_dir: pub_vmm_tests_results.map(|x| ctx.publish_artifact(x)),
                     needs_prep_run,
+                    hugetlb_2mb_overcommit_pages,
                     done: ctx.new_done_handle(),
                 }
             });
@@ -1579,6 +1593,7 @@ impl IntoPipeline for CheckinGatesCli {
                         fail_job_on_test_fail: true,
                         artifact_dir: pub_mi_secure_test_results.map(|x| ctx.publish_artifact(x)),
                         needs_prep_run: false,
+                        hugetlb_2mb_overcommit_pages: None,
                         done: ctx.new_done_handle(),
                     }
                 });

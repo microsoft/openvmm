@@ -206,11 +206,29 @@ mod tests {
             SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), 1).unwrap();
         assert_eq!(mapping.as_ptr() as usize % SparseMapping::page_size(), 0);
 
-        let alignment = 0x200000;
+        let alignment = 0x10000;
         let mapping =
             SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
                 .unwrap();
         assert_eq!(mapping.as_ptr() as usize % alignment, 0);
+
+        let alignment = 0x200000;
+
+        #[cfg(unix)]
+        {
+            let mapping =
+                SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
+                    .unwrap();
+            assert_eq!(mapping.as_ptr() as usize % alignment, 0);
+        }
+
+        #[cfg(windows)]
+        {
+            let error =
+                SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
+                    .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        }
     }
 
     #[test]

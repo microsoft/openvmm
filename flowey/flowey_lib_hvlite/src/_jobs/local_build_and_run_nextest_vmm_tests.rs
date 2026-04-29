@@ -863,6 +863,7 @@ impl SimpleFlowNode for Node {
                 target: Some(ReadVar::from_static(target_triple.clone())),
                 extra_env,
                 pre_run_deps: side_effects,
+                hugetlb_2mb_overcommit_pages: None,
                 results: v,
             });
 

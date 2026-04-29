@@ -165,6 +165,12 @@ pub enum MemoryBuildError {
 
 const DEFAULT_HUGEPAGE_SIZE: u64 = 2 * 1024 * 1024;
 
+/// Explicit hugetlb memfd backing configuration.
+#[derive(Debug, Copy, Clone)]
+struct HugepageConfig {
+    size: Option<u64>,
+}
+
 fn validate_hugepage_size(size: u64) -> Result<usize, MemoryBuildError> {
     if !size.is_power_of_two() || size < SparseMapping::page_size() as u64 {
         return Err(MemoryBuildError::InvalidHugepageSize(MemorySize(size)));
@@ -231,8 +237,7 @@ pub struct GuestMemoryBuilder {
     x86_legacy_support: bool,
     private_memory: bool,
     transparent_hugepages: bool,
-    hugepages: bool,
-    hugepage_size: Option<u64>,
+    hugepages: Option<HugepageConfig>,
 }
 
 impl GuestMemoryBuilder {
@@ -246,8 +251,7 @@ impl GuestMemoryBuilder {
             x86_legacy_support: false,
             private_memory: false,
             transparent_hugepages: false,
-            hugepages: false,
-            hugepage_size: None,
+            hugepages: None,
         }
     }
 
@@ -323,9 +327,8 @@ impl GuestMemoryBuilder {
     }
 
     /// Enables explicit hugetlb memfd backing for guest RAM.
-    pub fn hugepages(mut self, enable: bool, hugepage_size: Option<u64>) -> Self {
-        self.hugepages = enable;
-        self.hugepage_size = hugepage_size;
+    pub fn hugepages(mut self, size: Option<u64>) -> Self {
+        self.hugepages = Some(HugepageConfig { size });
         self
     }
 
@@ -364,7 +367,7 @@ impl GuestMemoryBuilder {
             .chain(mem_layout.vtl2_range())
             .collect::<Vec<_>>();
 
-        let hugepage_size = if self.hugepages {
+        let hugepage_size = if let Some(hugepages) = self.hugepages {
             if !cfg!(target_os = "linux") {
                 return Err(MemoryBuildError::HugepagesUnsupportedPlatform);
             }
@@ -377,13 +380,10 @@ impl GuestMemoryBuilder {
             if self.x86_legacy_support {
                 return Err(MemoryBuildError::HugepagesWithLegacy);
             }
-            let size = validate_hugepage_size(self.hugepage_size.unwrap_or(DEFAULT_HUGEPAGE_SIZE))?;
+            let size = validate_hugepage_size(hugepages.size.unwrap_or(DEFAULT_HUGEPAGE_SIZE))?;
             validate_hugepage_ram_alignment(ram_size, &ram_ranges, size as u64)?;
             Some(size)
         } else {
-            if let Some(size) = self.hugepage_size {
-                return Err(MemoryBuildError::HugepageSizeTooLarge(MemorySize(size)));
-            }
             None
         };
 
@@ -398,7 +398,7 @@ impl GuestMemoryBuilder {
                 .try_into()
                 .map_err(|_| MemoryBuildError::RamTooLarge(MemorySize(ram_size)))?;
             Some(
-                if self.hugepages {
+                if hugepage_size.is_some() {
                     let hugepage_size = hugepage_size.unwrap();
                     sparse_mmap::alloc_shared_memory_hugetlb(
                         ram_size,
@@ -759,6 +759,7 @@ impl RamVisibilityControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error as _;
 
     #[test]
     fn test_validate_hugepage_size() {
@@ -840,6 +841,10 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "failed to reserve 512 hugetlb pages of 2 MB each (1 GB total); increase the hugetlb pool or reduce guest memory size"
+        );
+        assert_eq!(
+            error.source().unwrap().to_string(),
+            "Cannot allocate memory"
         );
     }
 }
