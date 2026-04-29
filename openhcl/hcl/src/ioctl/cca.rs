@@ -11,11 +11,11 @@ use super::ProcessorRunner;
 use crate::GuestVtl;
 use crate::ioctl::Error;
 use crate::ioctl::HvError;
+use crate::ioctl::SetRegError;
 use crate::ioctl::ioctls::mshv_realm_config;
 use crate::ioctl::ioctls::mshv_rsi_set_mem_perm;
 use crate::ioctl::ioctls::mshv_rsi_sysreg_write;
 use crate::ioctl::ioctls::{hcl_realm_config, hcl_rsi_set_mem_perm, hcl_rsi_sysreg_write};
-use crate::ioctl::SetRegError;
 use crate::mapped_page::MappedPage;
 use crate::protocol::RSI_PLANE_ENTER_FLAGS_TRAP_SIMD;
 use crate::protocol::RSI_PLANE_GIC_NUM_LRS;
@@ -30,7 +30,6 @@ use hvdef::HvRegisterValue;
 use sidecar_client::SidecarVp;
 use std::fs::OpenOptions;
 use std::io;
-
 
 /// Runner backing for CCA partitions.
 pub struct Cca {

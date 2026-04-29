@@ -6,8 +6,8 @@ pub mod gic_v2m;
 pub mod vm;
 pub mod vp;
 
-use aarch64defs::Vendor;
 use crate::state::StateElement;
+use aarch64defs::Vendor;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
 use thiserror::Error;

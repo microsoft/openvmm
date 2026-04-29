@@ -31,9 +31,13 @@ pub struct CcaTestsCli {
 #[derive(clap::Args)]
 #[clap(next_help_heading = "--update_emu subcommands")]
 pub struct CcaTestsUpdateEmuSubCmds {
-    /// Rebuild everything. The user can do local modifications, then use this to rebuild the env.
+    /// Rebuild the plane0 Linux image from the existing source tree.
     #[clap(long)]
-    pub rebuild: bool,
+    pub rebuild_plane0_linux: bool,
+
+    /// Rebuild the shrinkwrap-generated rootfs image.
+    #[clap(long)]
+    pub rebuild_rootfs: bool,
 
     /// Update TF-A to specified revision and rebuild.
     #[clap(long)]
@@ -57,7 +61,8 @@ impl IntoPipeline for CcaTestsCli {
             verbose,
             update_emu_subcmds:
                 CcaTestsUpdateEmuSubCmds {
-                    rebuild,
+                    rebuild_plane0_linux,
+                    rebuild_rootfs,
                     tfa_rev,
                     tfrmm_rev,
                     plane0_linux_rev,
@@ -139,7 +144,8 @@ impl IntoPipeline for CcaTestsCli {
                         |ctx| flowey_lib_hvlite::_jobs::local_update_cca_emu::Params {
                             test_root: test_root.clone(),
                             sub_cmds: flowey_lib_hvlite::_jobs::local_update_cca_emu::SubCmds {
-                                rebuild,
+                                rebuild_plane0_linux,
+                                rebuild_rootfs,
                                 tfa_rev,
                                 tfrmm_rev,
                                 plane0_linux_rev,
