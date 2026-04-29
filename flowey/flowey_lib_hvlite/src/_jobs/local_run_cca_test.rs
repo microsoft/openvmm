@@ -45,7 +45,7 @@ impl SimpleFlowNode for Node {
         let plane0_linux_image = test_root.join("plane0-linux/arch/arm64/boot/Image");
         if !plane0_linux_image.exists() {
             anyhow::bail!(
-                "can't find plane0 linux image at {}, try --install-emu or --update-emu --rebuild",
+                "can't find plane0 linux image at {}, try --install-emu or --update-emu --rebuild-plane0-linux",
                 plane0_linux_image.display()
             );
         }
@@ -55,7 +55,7 @@ impl SimpleFlowNode for Node {
         let rootfs_file = firmware_dir.join("rootfs.ext2");
         if !rootfs_file.exists() {
             anyhow::bail!(
-                "can't find cca emulation rootfs at {}, try --install-emu or --update-emu --rebuild",
+                "can't find cca emulation rootfs at {}, try --install-emu or --update-emu --rebuild-rootfs",
                 rootfs_file.display()
             );
         }

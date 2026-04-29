@@ -104,7 +104,12 @@ pub fn load_aarch64(
     test: &TestInfo,
 ) -> anyhow::Result<Arc<virt::aarch64::Aarch64InitialRegs>> {
     let mut loader = vm_loader::Loader::new(guest_memory.clone(), memory_layout, Vtl::Vtl0);
-    let load_info = load_common(Some(memory_layout.ram()[0].range.start()), &mut loader, tmk, test)?;
+    let load_info = load_common(
+        Some(memory_layout.ram()[0].range.start()),
+        &mut loader,
+        tmk,
+        test,
+    )?;
 
     let mut import_reg = |reg| {
         loader

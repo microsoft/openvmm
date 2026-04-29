@@ -15,6 +15,7 @@ use crate::KvmPartition;
 use crate::KvmPartitionInner;
 use crate::KvmRunVpError;
 use aarch64defs::SystemReg;
+use aarch64defs::Vendor;
 use bitfield_struct::bitfield;
 use core::panic;
 use hvdef::Vtl;
@@ -50,7 +51,6 @@ use virt::x86::DebugState;
 use vm_topology::processor::aarch64::Aarch64VpInfo;
 use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::vmtime::VmTimeAccess;
-use aarch64defs::Vendor;
 
 // linux/arch/arm64/include/asm/sysreg.h
 

@@ -7,10 +7,10 @@ mod deferred;
 pub mod register;
 
 pub mod aarch64;
+pub mod cca;
 pub mod snp;
 pub mod tdx;
 pub mod x64;
-pub mod cca;
 
 use self::deferred::DeferredActionSlots;
 use self::ioctls::*;
@@ -1513,7 +1513,7 @@ enum BackingState {
     },
     Cca {
         // TODO: CCA: add vGIC backing here
-    }
+    },
 }
 
 #[derive(Debug)]
@@ -1557,7 +1557,7 @@ impl HclVp {
                         None
                     },
                 }
-            },
+            }
             IsolationType::None | IsolationType::Vbs => BackingState::MshvX64 {
                 reg_page: if map_reg_page {
                     Some(
@@ -1582,7 +1582,7 @@ impl HclVp {
                         .allocate_dma_buffer(HV_PAGE_SIZE as usize)
                         .map_err(Error::AllocVp)?,
                 }
-            },
+            }
             IsolationType::Tdx => BackingState::Tdx {
                 vtl0_apic_page: MappedPage::new(fd, MSHV_APIC_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,

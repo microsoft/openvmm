@@ -102,7 +102,7 @@ fn make_target(
     Ok(())
 }
 
-fn build_plane0_linux(
+pub(crate) fn build_plane0_linux(
     rt: &RustRuntimeServices<'_>,
     plane0_linux: &Path,
     plane0_image: &Path,
@@ -142,6 +142,102 @@ fn build_plane0_linux(
 
     log::info!("Plane0 Linux kernel compiled successfully");
     log::info!("Kernel image at: {}", plane0_image.display());
+    Ok(())
+}
+
+fn sync_shrinkwrap_overlay_assets(
+    openvmm_root: &Path,
+    shrinkwrap_dir: &Path,
+) -> anyhow::Result<()> {
+    let overlay_assets = [
+        (
+            openvmm_root.join("vmm_tests/vmm_tests/test_data/cca_planes.yaml"),
+            shrinkwrap_dir.join("config/cca_planes.yaml"),
+            "planes.yaml",
+        ),
+        (
+            openvmm_root.join("vmm_tests/vmm_tests/test_data/cca_realm_overlay.yaml"),
+            shrinkwrap_dir.join("config/cca_realm_overlay.yaml"),
+            "realm overlay config",
+        ),
+    ];
+
+    fs_err::create_dir_all(shrinkwrap_dir.join("config"))?;
+
+    for (src, dest, label) in overlay_assets {
+        if dest.is_file() {
+            if fs_err::read(&src)? == fs_err::read(&dest)? {
+                log::info!("{label} already exists at {} and matches source", dest.display());
+                continue;
+            }
+
+            log::info!(
+                "{label} already exists at {} but differs from source; replacing it",
+                dest.display()
+            );
+        }
+
+        log::info!(
+            "Copying {label} from {} to {}",
+            src.display(),
+            dest.display()
+        );
+
+        fs_err::copy(&src, &dest)?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn build_cca_rootfs(
+    rt: &RustRuntimeServices<'_>,
+    test_root: &Path,
+    shrinkwrap_dir: &Path,
+    venv_dir: &Path,
+) -> anyhow::Result<()> {
+    let shrinkwrap_exe = shrinkwrap_dir.join("shrinkwrap/shrinkwrap");
+    anyhow::ensure!(
+        shrinkwrap_exe.exists(),
+        "shrinkwrap installation is missing or broken at {}, try --install-emu first",
+        shrinkwrap_exe.display()
+    );
+    anyhow::ensure!(
+        venv_dir.exists(),
+        "shrinkwrap venv is missing at {}, try --install-emu first",
+        venv_dir.display()
+    );
+
+    let log_dir = test_root.join("logs");
+    fs_err::create_dir_all(&log_dir)?;
+    let log_file = log_dir.join("shrinkwrap.build.log");
+
+    let path = format!(
+        "{}:{}",
+        venv_dir.join("bin").display(),
+        env::var("PATH").unwrap_or_default()
+    );
+
+    let rootfs = "${artifact:BUILDROOT}";
+    let tfa_revision = "8dae0862c502e08568a61a1050091fa9357f1240";
+    let cmd = format!(
+        "{} build cca-3world.yaml \
+        --overlay buildroot.yaml \
+        --overlay cca_realm_overlay.yaml \
+        --overlay cca_planes.yaml \
+        --btvar GUEST_ROOTFS={rootfs} \
+        --btvar TFA_REVISION={tfa_revision} \
+        2>&1 | tee {}",
+        shrinkwrap_exe.display(),
+        log_file.display()
+    );
+
+    flowey::shell_cmd!(rt, "bash -c {cmd}")
+        .env("VIRTUAL_ENV", venv_dir)
+        .env("PATH", path)
+        .run()
+        .with_context(|| "failed to do shrinkwrap build")?;
+
+    log::info!("shrinkwrap build finished, emulation env have been setup");
     Ok(())
 }
 
@@ -229,46 +325,8 @@ impl SimpleFlowNode for Node {
                     flowey::shell_cmd!(rt, "{pip} install pyyaml termcolor tuxmake").run()?;
                 }
 
-                // A few cleanups after we checkout 'shrinkwrap' source code
-                //   - copy over cca plane configuration
-                //   - create python venv and install all packages needed when using 'shrinkwrap'
-                //   - sync local shrinkwrap overlays into the checked-out tree on every run.
                 let openvmm_root = rt.read(openvmm_root);
-                let planes_yaml_src =
-                    openvmm_root.join("vmm_tests/vmm_tests/test_data/cca_planes.yaml");
-                let planes_yaml_dest = shrinkwrap_dir.join("config/cca_planes.yaml");
-                let realm_overlay_yaml_src =
-                    openvmm_root.join("vmm_tests/vmm_tests/test_data/cca_realm_overlay.yaml");
-                let realm_overlay_yaml_dest = shrinkwrap_dir.join("config/cca_realm_overlay.yaml");
-                let realm_overlay_dir_src =
-                    openvmm_root.join("vmm_tests/vmm_tests/test_data/cca-overlay");
-                let realm_overlay_dir_dest = shrinkwrap_dir.join("config/cca-overlay");
-                fs_err::create_dir_all(planes_yaml_dest.parent().unwrap())?;
-
-                log::info!(
-                    "Copying planes.yaml from {} to {}",
-                    planes_yaml_src.display(),
-                    planes_yaml_dest.display()
-                );
-                fs_err::copy(&planes_yaml_src, &planes_yaml_dest)?;
-
-                log::info!(
-                    "Copying realm overlay config from {} to {}",
-                    realm_overlay_yaml_src.display(),
-                    realm_overlay_yaml_dest.display()
-                );
-                fs_err::copy(&realm_overlay_yaml_src, &realm_overlay_yaml_dest)?;
-
-                if realm_overlay_dir_dest.exists() {
-                    fs_err::remove_dir_all(&realm_overlay_dir_dest)?;
-                }
-                log::info!(
-                    "Copying realm overlay directory from {} to {}",
-                    realm_overlay_dir_src.display(),
-                    realm_overlay_dir_dest.display()
-                );
-                flowey::shell_cmd!(rt, "cp -a {realm_overlay_dir_src} {realm_overlay_dir_dest}")
-                    .run()?;
+                sync_shrinkwrap_overlay_assets(&openvmm_root, &shrinkwrap_dir)?;
 
                 let home_dir = env::var("HOME").map(PathBuf::from).expect("HOME not set");
                 let rootfs_file = home_dir.join(".shrinkwrap/package/cca-3world/rootfs.ext2");
@@ -278,41 +336,7 @@ impl SimpleFlowNode for Node {
                         rootfs_file.display()
                     );
                 } else {
-                    // Now, we are all good to use 'shrinkwrap' to build all
-                    // components needed by OpenVMM CCA tests
-                    let log_dir = test_root.join("logs");
-                    fs_err::create_dir_all(&log_dir)?;
-                    let log_file = log_dir.join("shrinkwrap.build.log");
-
-                    // Build the command line and go
-                    let shrinkwrap_exe = shrinkwrap_dir.join("shrinkwrap/shrinkwrap");
-                    let path = format!(
-                        "{}:{}",
-                        venv_dir.join("bin").display(),
-                        env::var("PATH").unwrap_or_default()
-                    );
-
-                    let rootfs = "${artifact:BUILDROOT}";
-                    let tfa_revision = "8dae0862c502e08568a61a1050091fa9357f1240";
-                    let cmd = format!(
-                        "{} build cca-3world.yaml \
-                        --overlay buildroot.yaml \
-                        --overlay cca_realm_overlay.yaml \
-                        --overlay cca_planes.yaml \
-                        --btvar GUEST_ROOTFS={rootfs} \
-                        --btvar TFA_REVISION={tfa_revision} \
-                        2>&1 | tee {}",
-                        shrinkwrap_exe.display(),
-                        log_file.display()
-                    );
-
-                    flowey::shell_cmd!(rt, "bash -c {cmd}")
-                        .env("VIRTUAL_ENV", &venv_dir)
-                        .env("PATH", path)
-                        .run()
-                        .with_context(|| "failed to do shrinkwrap build")?;
-
-                    log::info!("shrinkwrap build finished, emulation env have been setup");
+                    build_cca_rootfs(rt, &test_root, &shrinkwrap_dir, &venv_dir)?;
                 }
 
                 Ok(())

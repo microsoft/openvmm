@@ -10,9 +10,10 @@ use std::sync::atomic::AtomicU8;
 
 use super::HardwareIsolatedBacking;
 use super::vp_state;
+use crate::Error;
 use crate::TlbFlushLockAccess;
 use crate::UhPartitionInner;
-use crate::Error;
+use crate::processor::InterceptMessageState;
 use crate::{BackingShared, UhCvmPartitionState, UhCvmVpState, UhPartitionNewParams};
 use aarch64defs::EsrEl2;
 use aarch64defs::SystemReg;
@@ -21,18 +22,17 @@ use hcl::{GuestVtl, ioctl::cca::Cca, ioctl::register};
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
 use hv1_structs::VtlArray;
+use hvdef::HvRegisterCrInterceptControl;
 use inspect::{Inspect, InspectMut};
 use virt::VpIndex;
 use virt::aarch64::vp;
 use virt::io::CpuIo;
 use virt::{VpHaltReason, aarch64::vp::AccessVpState};
 use virt_support_aarch64emu::translate::TranslationRegisters;
-use crate::processor::InterceptMessageState;
-use hvdef::HvRegisterCrInterceptControl;
 use zerocopy::FromZeros;
 
 use super::{BackingSharedParams, UhProcessor, private::BackingPrivate, vp_state::UhVpStateAccess};
- 
+
 #[derive(Debug, Error)]
 #[error("failed to run")]
 struct CcaRunVpError(#[source] hcl::ioctl::Error);
@@ -303,7 +303,7 @@ impl BackingPrivate for CcaBacked {
         _scan_irr: VtlArray<bool, 2>,
         _first_scan_irr: &mut bool,
         _dev: &impl CpuIo,
-    ) -> bool{
+    ) -> bool {
         false
     }
 
@@ -627,7 +627,8 @@ impl HardwareIsolatedBacking for CcaBacked {
     fn cr_intercept_registration(
         _this: &mut UhProcessor<'_, Self>,
         _intercept_control: HvRegisterCrInterceptControl,
-    ) {}
+    ) {
+    }
 
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
@@ -636,7 +637,6 @@ impl HardwareIsolatedBacking for CcaBacked {
     fn update_deadline(_this: &mut UhProcessor<'_, Self>, _ref_time_now: u64, _next_ref_time: u64) {
         unimplemented!()
     }
-
 
     fn clear_deadline(_this: &mut UhProcessor<'_, Self>) {
         unimplemented!()

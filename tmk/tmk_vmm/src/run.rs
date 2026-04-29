@@ -92,7 +92,7 @@ impl CommonState {
             .context("failed to build processor topology")?;
 
         let ram_size = 0x400000;
-        
+
         #[cfg_attr(guest_arch = "x86_64", allow(unused_mut))]
         let mut memory_layout =
             MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
@@ -106,7 +106,10 @@ impl CommonState {
                 let map_size = ram_size;
                 let non_zero_size = NonZeroUsize::new(map_size as usize)
                     .expect("Size was already checked to be non-zero");
-                let file = OpenOptions::new().read(true).write(true).open("/dev/zero")?;
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open("/dev/zero")?;
                 #[allow(unsafe_code)]
                 let addr = unsafe {
                     mmap(
