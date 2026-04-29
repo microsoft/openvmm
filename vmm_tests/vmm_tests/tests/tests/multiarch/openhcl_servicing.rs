@@ -1138,17 +1138,17 @@ async fn servicing_keepalive_slow_create_io_queue(
 }
 
 /// Verifies that save works correctly when a create_io_queue command
-/// is stuck. The `DriverWorkerTask` run loop should still be able to process
-/// save commands when the stuck create_io_queue command completes, even when
-/// that happens after save has been issued.
+/// is still in flight and inspect is called on the device. Previously we saw
+/// inspect calls inadvertently throwing away create_io_issuer futures and then
+/// save being serviced with CREATE_IO_COMPLETION_QUEUE commands still pending.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn servicing_keepalive_slow_create_io_queue_with_inspect(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
-    const QUEUE_CREATION_DELAY: Duration = Duration::from_secs(200);
+    const QUEUE_CREATION_DELAY: Duration = Duration::from_secs(60);
     const TRIGGER_CREATE_IO_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
-    const TOTAL_SAVE_TIMEOUT: Duration = Duration::from_secs(50);
+    const TOTAL_SAVE_TIMEOUT: Duration = Duration::from_secs(15);
 
     let mut flags = config.default_servicing_flags();
     flags.enable_nvme_keepalive = true;
@@ -1226,7 +1226,10 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
         "IO command should have timed out. This likely means the create_io_queue command did not get injected correctly."
     );
 
-    for _ in 0..3 {
+    // In previous versions invoking inspect would cause the DriverWorkerTask to
+    // just drop the stuck create io queue command and service the save with
+    // pending admin commands (not good)
+    for _ in 0..2 {
         let nvme_device_inspect = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
         tracing::info!(nvme_device_inspect = ?nvme_device_inspect, "nvme device inspected");
     }
