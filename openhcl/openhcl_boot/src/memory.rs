@@ -242,7 +242,7 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
 
         // The other ranges are reserved, and must overlap with the used range.
         const MAX_RESERVED_RANGES: usize = 20;
-        let mut reserved = off_stack(ArrayVec<(MemoryRange, ReservedMemoryType), MAX_RESERVED_RANGES>, ArrayVec::new_const());
+        let mut reserved = off_stack!(ArrayVec<(MemoryRange, ReservedMemoryType), MAX_RESERVED_RANGES>, ArrayVec::new_const());
         reserved.push((persisted_header, ReservedMemoryType::PersistedStateHeader));
         reserved.push((persisted_payload, ReservedMemoryType::PersistedStatePayload));
         reserved.extend(vtl2_config.map(|r| (r, ReservedMemoryType::Vtl2Config)));
