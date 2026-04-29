@@ -214,6 +214,116 @@ impl AsyncFile for InMemoryFile {
     }
 }
 
+/// File operation recorded by [`CrashTestFile`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CrashFileOp {
+    /// A write was issued to the backing file.
+    Write { offset: u64, len: usize },
+    /// A flush was issued to the backing file.
+    Flush,
+    /// The file size was changed.
+    SetFileSize { size: u64 },
+}
+
+/// A file implementation that separates volatile and durable state.
+///
+/// Writes update volatile state immediately. Flushes copy volatile state to
+/// durable state, which can then be used to simulate a post-crash reopen.
+pub struct CrashTestFile {
+    inner: Mutex<CrashTestFileInner>,
+}
+
+struct CrashTestFileInner {
+    durable: Vec<u8>,
+    volatile: Vec<u8>,
+    operations: Vec<CrashFileOp>,
+}
+
+impl CrashTestFile {
+    /// Create a crash-test file from existing durable data.
+    pub fn from_durable(data: Vec<u8>) -> Self {
+        Self {
+            inner: Mutex::new(CrashTestFileInner {
+                volatile: data.clone(),
+                durable: data,
+                operations: Vec::new(),
+            }),
+        }
+    }
+
+    /// Return the recorded operation sequence.
+    pub fn operations(&self) -> Vec<CrashFileOp> {
+        self.inner.lock().operations.clone()
+    }
+
+    /// Clear the recorded operation sequence.
+    pub fn clear_operations(&self) {
+        self.inner.lock().operations.clear();
+    }
+}
+
+impl AsyncFile for CrashTestFile {
+    type Buffer = Vec<u8>;
+
+    fn alloc_buffer(&self, len: usize) -> Vec<u8> {
+        vec![0; len]
+    }
+
+    async fn read_into(&self, offset: u64, mut buf: Vec<u8>) -> Result<Vec<u8>, std::io::Error> {
+        let inner = self.inner.lock();
+        let offset = offset as usize;
+        let file_len = inner.volatile.len();
+        for (index, byte) in buf.iter_mut().enumerate() {
+            let pos = offset + index;
+            *byte = if pos < file_len {
+                inner.volatile[pos]
+            } else {
+                0
+            };
+        }
+        Ok(buf)
+    }
+
+    async fn write_from(
+        &self,
+        offset: u64,
+        buf: impl Borrow<Vec<u8>> + Send + 'static,
+    ) -> Result<(), std::io::Error> {
+        let buf = buf.borrow();
+        let mut inner = self.inner.lock();
+        let offset_usize = offset as usize;
+        let end = offset_usize + buf.len();
+        if end > inner.volatile.len() {
+            inner.volatile.resize(end, 0);
+        }
+        inner.volatile[offset_usize..end].copy_from_slice(buf.as_ref());
+        inner.operations.push(CrashFileOp::Write {
+            offset,
+            len: buf.len(),
+        });
+        Ok(())
+    }
+
+    async fn flush(&self) -> Result<(), std::io::Error> {
+        let mut inner = self.inner.lock();
+        inner.durable = inner.volatile.clone();
+        inner.operations.push(CrashFileOp::Flush);
+        Ok(())
+    }
+
+    async fn file_size(&self) -> Result<u64, std::io::Error> {
+        Ok(self.inner.lock().volatile.len() as u64)
+    }
+
+    async fn set_file_size(&self, size: u64) -> Result<(), std::io::Error> {
+        let mut inner = self.inner.lock();
+        inner.volatile.resize(size as usize, 0);
+        inner.durable.resize(size as usize, 0);
+        inner.operations.push(CrashFileOp::SetFileSize { size });
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
