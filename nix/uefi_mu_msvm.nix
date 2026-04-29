@@ -14,11 +14,11 @@ let
 
 in stdenv.mkDerivation {
   pname = "uefi-mu-msvm-${archToolchain}";
-  version = "26.0.0";
+  version = "26.0.2";
 
   src = fetchzip {
     url =
-      "https://github.com/microsoft/mu_msvm/releases/download/v26.0.0/RELEASE-${archToolchain}-artifacts.tar.gz";
+      "https://github.com/microsoft/mu_msvm/releases/download/v26.0.2/RELEASE-${archToolchain}-artifacts.tar.gz";
     stripRoot = false;
     inherit hash;
   };
