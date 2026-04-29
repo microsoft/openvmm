@@ -140,9 +140,9 @@ impl BufferAccess for GuestBuffers {
             },
         }
 
-        if metadata.vlan_id != 0 {
+        if let Some(vlan) = &metadata.vlan {
             flags.set_rx_vlantag_present(true);
-            flags.set_rx_vlan_id(metadata.vlan_id as u32);
+            flags.set_rx_vlan_id(vlan.vlan_id as u32);
         }
 
         let packet = &mut self.rx_packets[id.0 as usize];
