@@ -61,7 +61,26 @@ impl<'a, T> OffStackRef<'a, T> {
 struct BorrowRef<'a>(&'a Cell<bool>);
 
 impl<'a> BorrowRef<'a> {
+    #[cfg(test)]
+    #[track_caller]
+    fn assert_single_threaded() {
+        static OFF_STACK_THREAD_ID: std::sync::OnceLock<std::thread::ThreadId> =
+            std::sync::OnceLock::new();
+
+        let current_thread = std::thread::current().id();
+        let off_stack_thread = OFF_STACK_THREAD_ID.get_or_init(|| current_thread);
+        if *off_stack_thread != current_thread {
+            panic!(
+                "off_stack! used from multiple test threads; run openhcl_boot \
+                tests with nextest or specify only a single test"
+            );
+        }
+    }
+
     fn try_new(used: &'a Cell<bool>) -> Option<Self> {
+        #[cfg(test)]
+        Self::assert_single_threaded();
+
         if used.replace(true) {
             None
         } else {
@@ -125,3 +144,24 @@ macro_rules! off_stack {
     }};
 }
 pub(crate) use off_stack;
+
+#[cfg(test)]
+mod tests {
+    fn borrow_a() -> super::OffStackRef<'static, u32> {
+        off_stack!(u32, 0)
+    }
+
+    #[test]
+    fn off_stack_panics_when_used_by_two_threads() {
+        let _value = borrow_a();
+
+        let result = std::thread::Builder::new()
+            .spawn(|| {
+                let _other = borrow_a();
+            })
+            .unwrap()
+            .join();
+
+        assert!(result.is_err());
+    }
+}
