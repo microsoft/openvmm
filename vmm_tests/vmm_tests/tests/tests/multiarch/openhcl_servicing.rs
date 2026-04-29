@@ -1229,10 +1229,23 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
     // In previous versions invoking inspect would cause the DriverWorkerTask to
     // just drop the stuck create io queue command and service the save with
     // pending admin commands (not good)
-    for _ in 0..2 {
-        let nvme_device_inspect = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
-        tracing::info!(nvme_device_inspect = ?nvme_device_inspect, "nvme device inspected");
-    }
+    let nvme_device_inspect = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
+    tracing::info!(nvme_device_inspect = ?nvme_device_inspect, "nvme device inspected");
+
+    let entries = match &nvme_device_inspect {
+        inspect::Node::Dir(entries) => entries,
+        _ => panic!(
+            "expected dir for 'vm/nvme/devices' but found {}",
+            nvme_device_inspect.json()
+        ),
+    };
+    assert_eq!(
+        entries.len(),
+        1,
+        "expected exactly 1 NVMe device under 'vm/nvme/devices', found {}",
+        entries.len()
+    );
+    let nvme_device_name = entries[0].name.clone();
 
     CancelContext::new()
         .with_timeout(TOTAL_SAVE_TIMEOUT)
@@ -1248,7 +1261,7 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
 
     let vm_inspect = vm
         .inspect_openhcl(
-            "vm/nvme/devices/182f:00:00.0/driver/driver/admin/commands/commands",
+            &format!("vm/nvme/devices/{nvme_device_name}/driver/driver/admin/commands/commands"),
             None,
             None,
         )
@@ -1259,7 +1272,7 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
         inspect::Node::Dir(entries) => entries,
         _ => {
             panic!(
-                "expected node for the list of commands but found {}",
+                "expected list of pending commands but found {}",
                 vm_inspect.json()
             );
         }
