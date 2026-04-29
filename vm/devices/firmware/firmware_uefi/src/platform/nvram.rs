@@ -16,3 +16,18 @@ pub use uefi_specs::uefi::time::EFI_TIME;
 pub trait VsmConfig: Send {
     fn revoke_guest_vsm(&self);
 }
+
+/// Callbacks for MOR (Memory Overwrite Request) bit changes.
+///
+/// When the guest sets the MOR bit via the UEFI device, the platform may need
+/// to take action to ensure memory is scrubbed on the next reset. In Underhill,
+/// this is done by setting the `zero_memory_on_reset` flag in
+/// `HvRegisterVsmPartitionConfig`.
+pub trait MorConfig: Send {
+    /// Called when the guest sets the MOR variable.
+    ///
+    /// `mor_value` is the raw byte written by the guest. Bit 0
+    /// (`MOR_CLEAR_MEMORY_BIT_MASK`) indicates whether memory should be cleared
+    /// on the next reset.
+    fn notify_mor_set(&self, mor_value: u8);
+}
