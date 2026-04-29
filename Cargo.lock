@@ -9064,6 +9064,7 @@ name = "vhdx"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
+ "bitvec",
  "crc32c",
  "event-listener",
  "futures",

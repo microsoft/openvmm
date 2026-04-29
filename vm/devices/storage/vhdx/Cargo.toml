@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 bitfield-struct.workspace = true
+bitvec = { workspace = true, features = ["std"] }
 crc32c.workspace = true
 event-listener.workspace = true
 futures.workspace = true

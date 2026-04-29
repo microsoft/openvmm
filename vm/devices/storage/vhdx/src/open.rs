@@ -4,13 +4,15 @@
 //! VHDX file open orchestration.
 //!
 //! Ties together file identifier validation, header parsing, log replay,
-//! region table parsing, metadata parsing, cache tag setup, and writable log
-//! task startup. BAT/free-space setup and guest-visible I/O are added in later
+//! region table parsing, metadata parsing, BAT/free-space setup, cache tag
+//! setup, and writable log task startup. Guest-visible I/O is added in later
 //! chunks of the split review series.
 
 #![allow(dead_code)]
 
 use crate::AsyncFile;
+use crate::bat::BAT_TAG;
+use crate::bat::Bat;
 use crate::cache::PageCache;
 use crate::error::CorruptionType;
 use crate::error::OpenError;
@@ -33,6 +35,9 @@ use crate::log_task::LogRequest;
 use crate::metadata::METADATA_TAG;
 use crate::metadata::MetadataTable;
 use crate::region::parse_region_tables;
+use crate::space::DeferredReleases;
+use crate::space::EofState;
+use crate::space::FreeSpaceTracker;
 use guid::Guid;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -112,6 +117,7 @@ impl<F: 'static + AsyncFile> VhdxBuilder<F> {
 pub struct VhdxFile<F: AsyncFile> {
     pub(crate) file: Arc<F>,
     pub(crate) cache: PageCache<F>,
+    pub(crate) bat: Bat,
 
     disk_size: u64,
     block_size: u32,
@@ -123,6 +129,10 @@ pub struct VhdxFile<F: AsyncFile> {
 
     metadata_table: MetadataTable,
     pub(crate) header_state: HeaderState,
+    pub(crate) allocation_lock: futures::lock::Mutex<EofState>,
+    pub(crate) allocation_event: event_listener::Event,
+    pub(crate) free_space: FreeSpaceTracker,
+    pub(crate) deferred_releases: DeferredReleases,
     pub(crate) read_only: bool,
     region_rewrite_data: Option<F::Buffer>,
     pub(crate) failed: Arc<FailureFlag>,
@@ -215,13 +225,47 @@ impl<F: 'static + AsyncFile> VhdxFile<F> {
             None,
             0,
         );
+        cache.register_tag(BAT_TAG, regions.bat_offset);
         cache.register_tag(METADATA_TAG, regions.metadata_offset);
 
         let known = read_known_metadata(&cache, &metadata_table).await?;
 
+        let mut bat = Bat::new(
+            known.disk_size,
+            known.block_size,
+            known.logical_sector_size,
+            known.has_parent,
+            regions.bat_length,
+        )?;
+
+        let (free_space, mut eof_state) = FreeSpaceTracker::new(
+            file_length,
+            known.block_size,
+            options.block_alignment,
+            format::HEADER_AREA_SIZE,
+            header.log_offset,
+            header.log_length,
+            regions.bat_offset,
+            regions.bat_length,
+            regions.metadata_offset,
+            regions.metadata_length,
+            bat.data_block_count,
+        )?;
+
+        bat.load_bat_state(
+            file.as_ref(),
+            regions.bat_offset,
+            regions.bat_length,
+            &free_space,
+            &mut eof_state,
+        )
+        .await?;
+        free_space.complete_initialization(&eof_state);
+
         Ok(VhdxFile {
             file,
             cache,
+            bat,
             disk_size: known.disk_size,
             block_size: known.block_size,
             logical_sector_size: known.logical_sector_size,
@@ -231,6 +275,10 @@ impl<F: 'static + AsyncFile> VhdxFile<F> {
             page_83_data: known.page_83_data,
             metadata_table,
             header_state: HeaderState::new(&header),
+            allocation_lock: futures::lock::Mutex::new(eof_state),
+            allocation_event: event_listener::Event::new(),
+            free_space,
+            deferred_releases: DeferredReleases::new(),
             read_only,
             region_rewrite_data: regions.rewrite_data,
             failed: Arc::new(FailureFlag::new()),
@@ -501,10 +549,13 @@ mod tests {
     use crate::AsyncFileExt;
     use crate::create::{self, CreateParams};
     use crate::error::OpenError;
+    use crate::format::BatEntry;
+    use crate::format::BatEntryState;
     use crate::format::Header;
     use crate::format::MB1;
     use crate::log::DataPage;
     use crate::log::ZeroRange;
+    use crate::space::AllocateFlags;
     use crate::tests::support::InMemoryFile;
     use pal_async::async_test;
     use zerocopy::IntoBytes;
@@ -648,6 +699,90 @@ mod tests {
         let (file, _params) = InMemoryFile::create_test_vhdx(format::GB1).await;
         let vhdx = VhdxFile::open(file).read_only().await.unwrap();
         assert!(vhdx.is_read_only());
+    }
+
+    #[async_test]
+    async fn open_bat_block_lookup() {
+        let (file, _) = InMemoryFile::create_test_vhdx(format::GB1).await;
+        let vhdx = VhdxFile::open(file).read_only().await.unwrap();
+
+        let mapping = vhdx.bat.get_block_mapping(0);
+        assert_eq!(mapping.bat_state(), BatEntryState::NotPresent);
+        assert_eq!(mapping.file_offset(), 0);
+    }
+
+    #[async_test]
+    async fn open_populates_in_memory_bat() {
+        let (file, _) = InMemoryFile::create_test_vhdx(format::GB1).await;
+        let vhdx = VhdxFile::open(file).read_only().await.unwrap();
+
+        for block in 0..vhdx.bat.data_block_count {
+            assert_eq!(
+                vhdx.bat.get_block_mapping(block).bat_state(),
+                BatEntryState::NotPresent,
+                "block {block} should be NotPresent"
+            );
+        }
+    }
+
+    #[async_test]
+    async fn open_with_allocated_blocks() {
+        let (file, _) = InMemoryFile::create_test_vhdx(format::GB1).await;
+        let regions = parse_region_tables(&file).await.unwrap();
+
+        file.set_file_size(6 * MB1).await.unwrap();
+        let entry = BatEntry::new()
+            .with_state(BatEntryState::FullyPresent as u8)
+            .with_file_offset_mb(4);
+        file.write_at(regions.bat_offset, entry.as_bytes())
+            .await
+            .unwrap();
+
+        let vhdx = VhdxFile::open(file).read_only().await.unwrap();
+        let mapping = vhdx.bat.get_block_mapping(0);
+        assert_eq!(mapping.bat_state(), BatEntryState::FullyPresent);
+        assert_eq!(mapping.file_megabyte(), 4);
+    }
+
+    #[async_test]
+    async fn eof_counter_no_overlap() {
+        let (file, _) = InMemoryFile::create_test_vhdx(format::GB1).await;
+        let vhdx = VhdxFile::open_inner(file, false, None, &OpenOptions::new())
+            .await
+            .unwrap();
+        let mut eof = vhdx.allocation_lock.lock().await;
+        let first = vhdx
+            .allocate_space(&mut eof, MB1 as u32, AllocateFlags::new())
+            .await
+            .unwrap();
+        let second = vhdx
+            .allocate_space(&mut eof, MB1 as u32, AllocateFlags::new())
+            .await
+            .unwrap();
+
+        assert_ne!(first.file_offset, second.file_offset);
+        assert!(second.file_offset >= first.file_offset + MB1);
+    }
+
+    #[async_test]
+    async fn open_with_allocated_blocks_inits_space() {
+        let (file, _) = InMemoryFile::create_test_vhdx(format::GB1).await;
+        let regions = parse_region_tables(&file).await.unwrap();
+
+        file.set_file_size(8 * MB1).await.unwrap();
+        let entry = BatEntry::new()
+            .with_state(BatEntryState::FullyPresent as u8)
+            .with_file_offset_mb(4);
+        file.write_at(regions.bat_offset, entry.as_bytes())
+            .await
+            .unwrap();
+
+        let vhdx = VhdxFile::open(file).read_only().await.unwrap();
+        let eof = vhdx.allocation_lock.lock().await;
+        assert!(
+            vhdx.free_space
+                .is_range_in_use(&eof, 4 * MB1, vhdx.block_size())
+        );
     }
 
     #[async_test]

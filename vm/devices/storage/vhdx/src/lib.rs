@@ -14,6 +14,7 @@ use std::borrow::Borrow;
 use std::future::Future;
 
 pub(crate) mod apply_task;
+pub(crate) mod bat;
 pub(crate) mod cache;
 pub mod create;
 pub mod error;
@@ -29,6 +30,7 @@ pub(crate) mod lsn_watermark;
 pub(crate) mod metadata;
 pub mod open;
 pub(crate) mod region;
+pub(crate) mod space;
 
 pub use create::CreateParams;
 pub use create::create;

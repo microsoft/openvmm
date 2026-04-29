@@ -116,6 +116,34 @@ pub(crate) enum VhdxIoErrorInner {
     #[error("failed to commit cache")]
     CommitCache(#[source] CacheError),
 
+    /// Failed to zero newly allocated file space.
+    #[error("failed to zero block at file offset {file_offset:#x}")]
+    ZeroBlock {
+        #[source]
+        err: std::io::Error,
+        file_offset: u64,
+    },
+
+    /// Failed to extend the backing file.
+    #[error("failed to extend file to {target_file_size:#x}")]
+    ExtendFile {
+        #[source]
+        err: std::io::Error,
+        target_file_size: u64,
+    },
+
+    /// Failed to truncate the backing file.
+    #[error("failed to truncate file to {target_file_size:#x}")]
+    TruncateFile {
+        #[source]
+        err: std::io::Error,
+        target_file_size: u64,
+    },
+
+    /// Failed to access a cached BAT page.
+    #[error("failed to access BAT page cache")]
+    BatCache(#[source] CacheError),
+
     /// The write pipeline failed permanently.
     #[error("VHDX file failed")]
     Failed(#[source] PipelineFailed),
