@@ -21,6 +21,7 @@ pub mod error;
 pub(crate) mod flush;
 pub mod format;
 pub(crate) mod header;
+pub(crate) mod io;
 pub(crate) mod known_meta;
 pub(crate) mod locator;
 pub mod log;
@@ -40,6 +41,10 @@ pub use error::InvalidFormatReason;
 pub use error::OpenError;
 pub use error::VhdxIoError;
 pub use error::VhdxIoErrorKind;
+pub use io::ReadIoGuard;
+pub use io::ReadRange;
+pub use io::WriteIoGuard;
+pub use io::WriteRange;
 pub use open::VhdxBuilder;
 pub use open::VhdxFile;
 

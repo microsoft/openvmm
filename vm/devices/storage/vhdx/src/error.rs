@@ -93,11 +93,11 @@ impl VhdxIoError {
 pub enum VhdxIoErrorKind {
     /// The file was opened read-only.
     ReadOnly,
-    /// The I/O request had invalid parameters, such as an unaligned offset.
+    /// The I/O request had invalid parameters (e.g., unaligned).
     InvalidInput,
     /// The I/O request referenced a sector beyond the virtual disk.
     InvalidSector,
-    /// Any other error.
+    /// Any other error (I/O failure, pipeline failure, etc.).
     Other,
 }
 
@@ -115,6 +115,10 @@ pub(crate) enum VhdxIoErrorInner {
     /// Failed to commit cached metadata pages to the log pipeline.
     #[error("failed to commit cache")]
     CommitCache(#[source] CacheError),
+
+    /// Failed to read a sector bitmap page.
+    #[error("failed to read sector bitmap")]
+    ReadSectorBitmap(#[source] CacheError),
 
     /// Failed to zero newly allocated file space.
     #[error("failed to zero block at file offset {file_offset:#x}")]
@@ -143,6 +147,14 @@ pub(crate) enum VhdxIoErrorInner {
     /// Failed to access a cached BAT page.
     #[error("failed to access BAT page cache")]
     BatCache(#[source] CacheError),
+
+    /// Failed to access a cached sector bitmap page.
+    #[error("failed to access sector bitmap page cache")]
+    SectorBitmapCache(#[source] CacheError),
+
+    /// Failed to flush the backing file.
+    #[error("failed to flush")]
+    Flush(#[source] std::io::Error),
 
     /// The write pipeline failed permanently.
     #[error("VHDX file failed")]

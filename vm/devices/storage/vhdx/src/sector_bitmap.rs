@@ -5,12 +5,19 @@
 //!
 //! A sector bitmap is a 1-MiB block of bits where each bit represents one
 //! logical sector in the chunk. Bits are stored LSB-first within each byte.
-//! Higher-level guest-visible I/O consumes these helpers in a later chunk.
+//! Guest-visible I/O consumes these helpers to resolve partially-present reads
+//! and update differencing-disk presence bits after writes.
 
-#![allow(dead_code)]
-
+use crate::AsyncFile;
+use crate::cache::PageKey;
+use crate::cache::WriteMode;
+use crate::error::VhdxIoError;
+use crate::error::VhdxIoErrorInner;
+use crate::format::BatEntryState;
 use crate::format::CACHE_PAGE_SIZE;
 use crate::format::SECTORS_PER_CHUNK;
+use crate::io::ReadRange;
+use crate::open::VhdxFile;
 use bitvec::prelude::*;
 use std::ops::Range;
 
@@ -221,6 +228,118 @@ fn checked_bit_range(
         return Err(SectorBitmapError::BitmapRangeOutOfBounds);
     }
     Ok(start_bit as usize..end_bit as usize)
+}
+
+impl<F: AsyncFile> VhdxFile<F> {
+    pub(crate) async fn resolve_partial_block_read(
+        &self,
+        data_file_offset: u64,
+        virtual_offset: u64,
+        length: u32,
+        ranges: &mut Vec<ReadRange>,
+    ) -> Result<(), VhdxIoError> {
+        let sector_number = virtual_offset / self.logical_sector_size() as u64;
+        let chunk_number = (sector_number / SECTORS_PER_CHUNK) as u32;
+        let sbm_mapping = self.bat.get_sector_bitmap_mapping(chunk_number);
+        assert!(
+            sbm_mapping.bat_state() == BatEntryState::FullyPresent,
+            "SBM for chunk {chunk_number} must be allocated for PartiallyPresent block"
+        );
+
+        for page_range in bitmap_page_ranges(self.logical_sector_size(), virtual_offset, length)
+            .map_err(|_| VhdxIoErrorInner::UnalignedIo)?
+        {
+            let page_file_offset = page_range
+                .page_file_offset(sbm_mapping.file_offset())
+                .ok_or(VhdxIoErrorInner::BeyondEndOfDisk)?;
+            let guard = self
+                .cache
+                .acquire_read(PageKey {
+                    tag: SBM_TAG,
+                    offset: page_file_offset,
+                })
+                .await
+                .map_err(VhdxIoErrorInner::ReadSectorBitmap)?;
+
+            for run in bitmap_runs_in_page(
+                &*guard,
+                self.logical_sector_size(),
+                self.block_size(),
+                page_range.virtual_offset,
+                page_range.start_bit,
+                page_range.bit_count,
+            )
+            .map_err(|_| VhdxIoErrorInner::UnalignedIo)?
+            {
+                match run.kind {
+                    SectorBitmapRunKind::Present => ranges.push(ReadRange::Data {
+                        guest_offset: run.virtual_offset,
+                        length: run.length,
+                        file_offset: data_file_offset + u64::from(run.block_offset),
+                    }),
+                    SectorBitmapRunKind::Transparent => ranges.push(ReadRange::Unmapped {
+                        guest_offset: run.virtual_offset,
+                        length: run.length,
+                    }),
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn set_sector_bitmap_bits(
+        &self,
+        virtual_offset: u64,
+        length: u32,
+        set: bool,
+    ) -> Result<(), VhdxIoError> {
+        let sector_number = virtual_offset / self.logical_sector_size() as u64;
+        let chunk_number = (sector_number / SECTORS_PER_CHUNK) as u32;
+        let sbm_mapping = self.bat.get_sector_bitmap_mapping(chunk_number);
+        assert!(
+            sbm_mapping.bat_state() == BatEntryState::FullyPresent,
+            "SBM for chunk {chunk_number} must be allocated for PartiallyPresent block"
+        );
+
+        for page_range in bitmap_page_ranges(self.logical_sector_size(), virtual_offset, length)
+            .map_err(|_| VhdxIoErrorInner::UnalignedIo)?
+        {
+            let page_file_offset = page_range
+                .page_file_offset(sbm_mapping.file_offset())
+                .ok_or(VhdxIoErrorInner::BeyondEndOfDisk)?;
+            let full_page =
+                page_range.start_bit == 0 && page_range.bit_count == SECTORS_PER_BITMAP_PAGE;
+            let mode = if full_page {
+                WriteMode::Overwrite
+            } else {
+                WriteMode::Modify
+            };
+
+            let mut guard = self
+                .cache
+                .acquire_write(
+                    PageKey {
+                        tag: SBM_TAG,
+                        offset: page_file_offset,
+                    },
+                    mode,
+                )
+                .await
+                .map_err(VhdxIoErrorInner::SectorBitmapCache)?;
+
+            if full_page {
+                if set || !guard.is_overwriting() {
+                    guard.fill(if set { 0xff } else { 0x00 });
+                }
+            } else {
+                set_bitmap_bits(&mut *guard, page_range.start_bit, page_range.bit_count, set)
+                    .map_err(|_| VhdxIoErrorInner::UnalignedIo)?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
