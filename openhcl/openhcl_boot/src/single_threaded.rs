@@ -102,6 +102,14 @@ impl<T> DerefMut for OffStackRef<'_, T> {
 /// create multiple mutable references to the same global variable.
 ///
 /// This only works in a single-threaded environment.
+///
+/// Note that when an `off_stack` is used in a function that can be called
+/// multiple times, the caller must not assume the the value is initialized with
+/// the value specified in the macro. For example, if `off_stack!(ArrayVec<u8>,
+/// ArrayVec::new_const())` is used in a function, the caller must not assume
+/// that the value is an empty vector, since the function could have been called
+/// before and left stale values, due to this being a wrapper around a global
+/// variable.
 macro_rules! off_stack {
     ($ty:ty, $val:expr) => {{
         use core::cell::Cell;
