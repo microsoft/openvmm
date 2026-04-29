@@ -30,6 +30,7 @@ pub(crate) mod lsn_watermark;
 pub(crate) mod metadata;
 pub mod open;
 pub(crate) mod region;
+pub(crate) mod sector_bitmap;
 pub(crate) mod space;
 
 pub use create::CreateParams;

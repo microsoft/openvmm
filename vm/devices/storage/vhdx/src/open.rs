@@ -35,6 +35,7 @@ use crate::log_task::LogRequest;
 use crate::metadata::METADATA_TAG;
 use crate::metadata::MetadataTable;
 use crate::region::parse_region_tables;
+use crate::sector_bitmap::SBM_TAG;
 use crate::space::DeferredReleases;
 use crate::space::EofState;
 use crate::space::FreeSpaceTracker;
@@ -227,6 +228,7 @@ impl<F: 'static + AsyncFile> VhdxFile<F> {
         );
         cache.register_tag(BAT_TAG, regions.bat_offset);
         cache.register_tag(METADATA_TAG, regions.metadata_offset);
+        cache.register_tag(SBM_TAG, 0);
 
         let known = read_known_metadata(&cache, &metadata_table).await?;
 
