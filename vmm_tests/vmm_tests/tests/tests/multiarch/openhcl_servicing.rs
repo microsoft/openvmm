@@ -1137,45 +1137,6 @@ async fn servicing_keepalive_slow_create_io_queue(
     Ok(())
 }
 
-async fn apply_fault_with_keepalive(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-    fault_configuration: FaultConfiguration,
-    mut fault_start_updater: CellUpdater<bool>,
-    igvm_file: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
-    new_cmdline: Option<&str>,
-) -> Result<PetriVm<OpenVmmPetriBackend>, anyhow::Error> {
-    let mut flags = config.default_servicing_flags();
-    flags.enable_nvme_keepalive = true;
-    let (mut vm, agent) = create_keepalive_test_config_default(
-        config,
-        fault_configuration,
-        VTL0_NVME_LUN,
-        Guid::new_random(),
-        DEFAULT_DISK_SIZE,
-    )
-    .await?;
-
-    agent.ping().await?;
-    let sh = agent.unix_shell();
-
-    // Make sure the disk showed up.
-    cmd!(sh, "ls /dev/sda").run().await?;
-
-    fault_start_updater.set(true).await;
-
-    if let Some(cmdline) = new_cmdline {
-        vm.update_command_line(cmdline).await?;
-    }
-
-    vm.restart_openhcl(igvm_file.clone(), flags).await?;
-
-    // Ensure the agent is responsive after the restart before returning.
-    agent.ping().await?;
-
-    fault_start_updater.set(false).await;
-    Ok(vm)
-}
-
 /// Verifies that save works correctly when a create_io_queue command
 /// is stuck. The `DriverWorkerTask` run loop should still be able to process
 /// save commands when the stuck create_io_queue command completes, even when
@@ -1185,7 +1146,7 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
-    const QUEUE_CREATION_DELAY: Duration = Duration::from_secs(20);
+    const QUEUE_CREATION_DELAY: Duration = Duration::from_secs(200);
     const TRIGGER_CREATE_IO_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
     const TOTAL_SAVE_TIMEOUT: Duration = Duration::from_secs(50);
 
@@ -1205,7 +1166,7 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
 
     let scsi_controller_guid = Guid::new_random();
     let disk_size = 4 * 1024 * 1024; // 4 MiB — enough for dd reads
-    let vp_count = 6;
+    let vp_count = 4;
 
     let (mut vm, agent) = create_keepalive_test_config_custom_vps(
         config,
@@ -1265,8 +1226,10 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
         "IO command should have timed out. This likely means the create_io_queue command did not get injected correctly."
     );
 
-    let nvme_device_inspect = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
-    tracing::info!(nvme_device_inspect = ?nvme_device_inspect, "nvme device inspected");
+    for _ in 0..3 {
+        let nvme_device_inspect = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
+        tracing::info!(nvme_device_inspect = ?nvme_device_inspect, "nvme device inspected");
+    }
 
     CancelContext::new()
         .with_timeout(TOTAL_SAVE_TIMEOUT)
@@ -1275,13 +1238,106 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
         .expect("VM save did not complete within the given timeout, even though it should have. Save is stuck when draining after restore with slow create_io_queue.")
         .expect("Save failed");
 
-    let vm_inspect = vm.inspect_openhcl("", None, None).await?;
-    tracing::info!(vm_inspect = ?vm_inspect, "vm inspected");
-
     fault_start_updater.set(false).await;
+
     vm.restore_openhcl().await?;
     agent.ping().await?;
+
+    let vm_inspect = vm
+        .inspect_openhcl(
+            "vm/nvme/devices/182f:00:00.0/driver/driver/admin/commands/commands",
+            None,
+            None,
+        )
+        .await?;
+
+    tracing::info!("vm inspected {}", vm_inspect.json());
+    let entries = match vm_inspect {
+        inspect::Node::Dir(entries) => entries,
+        _ => {
+            panic!(
+                "expected node for the list of commands but found {}",
+                vm_inspect.json()
+            );
+        }
+    };
+
+    assert!(entries.len() == 1, "expected only 1 entry, the AER command");
+
+    // Helper: descend through a chain of named directory children.
+    fn dir_child<'a>(node: &'a inspect::Node, name: &str) -> &'a inspect::Node {
+        match node {
+            inspect::Node::Dir(children) => {
+                &children
+                    .iter()
+                    .find(|c| c.name == name)
+                    .unwrap_or_else(|| panic!("missing child '{name}' in inspect dir"))
+                    .node
+            }
+            other => panic!("expected dir for '{name}', found {:?}", other),
+        }
+    }
+
+    let create_io_cq_opcode = u64::from(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0);
+
+    for e in &entries {
+        let opcode_node = dir_child(dir_child(dir_child(&e.node, "command"), "cdw0"), "opcode");
+        let opcode = match opcode_node {
+            inspect::Node::Value(v) => match v.kind {
+                inspect::ValueKind::Unsigned(n) => n,
+                ref other => panic!("opcode for entry '{}' is not unsigned: {:?}", e.name, other),
+            },
+            other => panic!("opcode for entry '{}' is not a value: {:?}", e.name, other),
+        };
+        tracing::info!(entry = %e.name, opcode, "inspected pending command");
+        assert_ne!(
+            opcode, create_io_cq_opcode,
+            "pending command '{}' has CREATE_IO_COMPLETION_QUEUE opcode (5); \
+             expected the slow create_io_queue command to have completed before save",
+            e.name
+        );
+    }
+
     Ok(())
+}
+
+async fn apply_fault_with_keepalive(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    fault_configuration: FaultConfiguration,
+    mut fault_start_updater: CellUpdater<bool>,
+    igvm_file: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+    new_cmdline: Option<&str>,
+) -> Result<PetriVm<OpenVmmPetriBackend>, anyhow::Error> {
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = true;
+    let (mut vm, agent) = create_keepalive_test_config_default(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        Guid::new_random(),
+        DEFAULT_DISK_SIZE,
+    )
+    .await?;
+
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+
+    fault_start_updater.set(true).await;
+
+    if let Some(cmdline) = new_cmdline {
+        vm.update_command_line(cmdline).await?;
+    }
+
+    vm.restart_openhcl(igvm_file.clone(), flags).await?;
+
+    // Ensure the agent is responsive after the restart before returning.
+    agent.ping().await?;
+
+    fault_start_updater.set(false).await;
+    Ok(vm)
 }
 
 async fn create_keepalive_test_config_default(
