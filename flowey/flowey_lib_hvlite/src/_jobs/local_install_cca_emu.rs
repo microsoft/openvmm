@@ -210,22 +210,6 @@ impl SimpleFlowNode for Node {
                 } else {
                     clone_repo(&rt, SHRINKWRAP_REPO, &shrinkwrap_dir, None, "shrinkwrap")?;
 
-                    // A few cleanups after we checkout 'shrinkwrap' source code
-                    //   - copy over cca plane configuration
-                    //   - create python venv and install all packages needed when using 'shrinkwrap'
-                    let openvmm_root = rt.read(openvmm_root);
-                    let planes_yaml_src =
-                        openvmm_root.join("vmm_tests/vmm_tests/test_data/cca_planes.yaml");
-                    let planes_yaml_dest = shrinkwrap_dir.join("config/cca_planes.yaml");
-                    fs_err::create_dir_all(planes_yaml_dest.parent().unwrap())?;
-
-                    log::info!(
-                        "Copying planes.yaml from {} to {}",
-                        planes_yaml_src.display(),
-                        planes_yaml_dest.display()
-                    );
-                    fs_err::copy(&planes_yaml_src, &planes_yaml_dest)?;
-
                     // Create venv
                     if !venv_dir.exists() {
                         log::info!(
@@ -244,6 +228,47 @@ impl SimpleFlowNode for Node {
                     flowey::shell_cmd!(rt, "{pip} install --upgrade pip").run()?;
                     flowey::shell_cmd!(rt, "{pip} install pyyaml termcolor tuxmake").run()?;
                 }
+
+                // A few cleanups after we checkout 'shrinkwrap' source code
+                //   - copy over cca plane configuration
+                //   - create python venv and install all packages needed when using 'shrinkwrap'
+                //   - sync local shrinkwrap overlays into the checked-out tree on every run.
+                let openvmm_root = rt.read(openvmm_root);
+                let planes_yaml_src =
+                    openvmm_root.join("vmm_tests/vmm_tests/test_data/cca_planes.yaml");
+                let planes_yaml_dest = shrinkwrap_dir.join("config/cca_planes.yaml");
+                let realm_overlay_yaml_src =
+                    openvmm_root.join("vmm_tests/vmm_tests/test_data/cca_realm_overlay.yaml");
+                let realm_overlay_yaml_dest = shrinkwrap_dir.join("config/cca_realm_overlay.yaml");
+                let realm_overlay_dir_src =
+                    openvmm_root.join("vmm_tests/vmm_tests/test_data/cca-overlay");
+                let realm_overlay_dir_dest = shrinkwrap_dir.join("config/cca-overlay");
+                fs_err::create_dir_all(planes_yaml_dest.parent().unwrap())?;
+
+                log::info!(
+                    "Copying planes.yaml from {} to {}",
+                    planes_yaml_src.display(),
+                    planes_yaml_dest.display()
+                );
+                fs_err::copy(&planes_yaml_src, &planes_yaml_dest)?;
+
+                log::info!(
+                    "Copying realm overlay config from {} to {}",
+                    realm_overlay_yaml_src.display(),
+                    realm_overlay_yaml_dest.display()
+                );
+                fs_err::copy(&realm_overlay_yaml_src, &realm_overlay_yaml_dest)?;
+
+                if realm_overlay_dir_dest.exists() {
+                    fs_err::remove_dir_all(&realm_overlay_dir_dest)?;
+                }
+                log::info!(
+                    "Copying realm overlay directory from {} to {}",
+                    realm_overlay_dir_src.display(),
+                    realm_overlay_dir_dest.display()
+                );
+                flowey::shell_cmd!(rt, "cp -a {realm_overlay_dir_src} {realm_overlay_dir_dest}")
+                    .run()?;
 
                 let home_dir = env::var("HOME").map(PathBuf::from).expect("HOME not set");
                 let rootfs_file = home_dir.join(".shrinkwrap/package/cca-3world/rootfs.ext2");
@@ -272,6 +297,7 @@ impl SimpleFlowNode for Node {
                     let cmd = format!(
                         "{} build cca-3world.yaml \
                         --overlay buildroot.yaml \
+                        --overlay cca_realm_overlay.yaml \
                         --overlay cca_planes.yaml \
                         --btvar GUEST_ROOTFS={rootfs} \
                         --btvar TFA_REVISION={tfa_revision} \

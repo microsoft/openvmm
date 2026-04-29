@@ -1,0 +1,72 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+%YAML 1.2
+---
+description: >-
+  Add a Buildroot rootfs overlay that installs the realm-launch wrapper and
+  an init script that starts it automatically during host boot.
+
+build:
+  buildroot:
+    prebuild:
+      - mkdir -p ${param:builddir}/overlay/usr/local/bin
+      - mkdir -p ${param:builddir}/overlay/etc/init.d
+      - |
+        cat > ${param:builddir}/overlay/usr/local/bin/run_realm_test.sh <<'SH'
+        #!/bin/sh
+        set -eu
+
+        CCA_DIR="$${CCA_DIR:-/cca}"
+        KERNEL="$${KERNEL:-/cca/Image}"
+
+        if [ ! -x "$${CCA_DIR}/lkvm" ]; then
+            echo "[host] lkvm missing at $${CCA_DIR}/lkvm; skipping realm launch"
+            exit 0
+        fi
+
+        if [ ! -f "$${KERNEL}" ]; then
+          echo "[host] kernel missing at $${KERNEL}; skipping realm launch"
+            exit 0
+        fi
+
+        echo "[host] Waiting for host boot to settle..."
+        sleep 3
+
+        echo "[host] Launching realm guest..."
+        cd "$${CCA_DIR}"
+
+        exec ./lkvm run --realm --disable-sve --irqchip=gicv3-its \
+            -c 1 -m 512 --no-pvtime --force-pci --console virtio \
+            --kernel "$${KERNEL}" \
+            --9p /cca/,cca_mount \
+            -p "console=hvc0 root=/dev/vda2 hugepagesz=32M hugepages=1" \
+            --measurement-algo=sha256 \
+            --restricted_mem
+        SH
+      - |
+        cat > ${param:builddir}/overlay/etc/init.d/S99realm-launch <<'SH'
+        #!/bin/sh
+
+        case "$$1" in
+            start|"")
+                echo "[realm-launch] starting on /dev/console" >/dev/console
+                if [ -x /usr/local/bin/run_realm_test.sh ]; then
+                    exec </dev/console >/dev/console 2>&1 /usr/local/bin/run_realm_test.sh
+                fi
+                ;;
+            stop)
+                ;;
+            restart)
+                ;;
+            *)
+                echo "Usage: $$0 {start|stop|restart|reload}"
+                exit 1
+                ;;
+        esac
+
+        exit 0
+        SH
+      - chmod 0755 ${param:builddir}/overlay/usr/local/bin/run_realm_test.sh
+      - chmod 0755 ${param:builddir}/overlay/etc/init.d/S99realm-launch
+      - ${param:sourcedir}/utils/config --file ${param:builddir}/.config --set-val BR2_ROOTFS_OVERLAY "${param:builddir}/overlay"
