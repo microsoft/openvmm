@@ -397,28 +397,19 @@ impl GuestMemoryBuilder {
             let ram_size = ram_size
                 .try_into()
                 .map_err(|_| MemoryBuildError::RamTooLarge(MemorySize(ram_size)))?;
-            Some(
-                if hugepage_size.is_some() {
-                    let hugepage_size = hugepage_size.unwrap();
-                    sparse_mmap::alloc_shared_memory_hugetlb(
-                        ram_size,
-                        "guest-ram",
-                        Some(hugepage_size),
-                    )
-                    .map_err(|error| {
-                        MemoryBuildError::HugepageAllocationFailed {
-                            size: MemorySize(ram_size as u64),
-                            hugepage_size: MemorySize(hugepage_size as u64),
-                            page_count: ram_size / hugepage_size,
-                            error,
-                        }
-                    })
-                } else {
-                    sparse_mmap::alloc_shared_memory(ram_size, "guest-ram")
-                        .map_err(MemoryBuildError::AllocationFailed)
-                }?
-                .into(),
-            )
+            let guest_ram = if let Some(hugepage_size) = hugepage_size {
+                sparse_mmap::alloc_shared_memory_hugetlb(ram_size, "guest-ram", Some(hugepage_size))
+                    .map_err(|error| MemoryBuildError::HugepageAllocationFailed {
+                        size: MemorySize(ram_size as u64),
+                        hugepage_size: MemorySize(hugepage_size as u64),
+                        page_count: ram_size / hugepage_size,
+                        error,
+                    })?
+            } else {
+                sparse_mmap::alloc_shared_memory(ram_size, "guest-ram")
+                    .map_err(MemoryBuildError::AllocationFailed)?
+            };
+            Some(guest_ram.into())
         };
 
         // Spawn a thread to handle memory requests.
