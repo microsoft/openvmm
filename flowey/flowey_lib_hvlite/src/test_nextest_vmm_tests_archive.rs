@@ -115,11 +115,11 @@ impl SimpleFlowNode for Node {
 
                             let current_overcommit = read_counter("nr_overcommit_hugepages")?;
                             if current_overcommit < overcommit_pages {
-                                let overcommit_pages_arg = overcommit_pages.to_string();
                                 flowey::shell_cmd!(
                                     rt,
-                                    "echo {overcommit_pages_arg} | sudo tee {overcommit_path}"
+                                    "sudo tee {overcommit_path}"
                                 )
+                                .stdin(format!("{overcommit_pages}\n"))
                                 .run()?;
                             }
 
