@@ -91,7 +91,7 @@ fn convert_pixels(src: &[u32], fmt: &rfb::PixelFormat, out: &mut Vec<u8>) {
     let dest_depth = fmt.bits_per_pixel as usize / 8;
     let shift_r = 24 - fmt.red_max.get().count_ones();
     let shift_g = 16 - fmt.green_max.get().count_ones();
-    let shift_b = 8 - fmt.red_max.get().count_ones();
+    let shift_b = 8 - fmt.blue_max.get().count_ones();
     let big_endian = fmt.big_endian_flag != 0;
     let no_convert = dest_depth == 4
         && !big_endian
