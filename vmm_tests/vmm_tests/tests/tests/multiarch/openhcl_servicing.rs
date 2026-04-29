@@ -1258,7 +1258,7 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
     let io_result = CancelContext::new()
         .with_timeout(TRIGGER_CREATE_IO_QUEUE_TIMEOUT)
         .until_cancelled(run_cpu_pinned_io(&agent, disk_path, target_cpu))
-        .await;d
+        .await;
 
     assert!(
         io_result.is_err(),
