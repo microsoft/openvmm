@@ -17,6 +17,7 @@
 #![allow(dead_code)]
 
 use crate::AsyncFile;
+use crate::open::FailureFlag;
 use event_listener::Event;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -27,6 +28,7 @@ use std::sync::atomic::Ordering::Release;
 /// Tracks flush sequence numbers and coalesces concurrent flush requests.
 pub(crate) struct FlushSequencer {
     state: Mutex<FlushState>,
+    failure_flag: Option<Arc<FailureFlag>>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -62,7 +64,13 @@ impl FlushSequencer {
                 completed_fsn: Fsn::ZERO,
                 active_flush: None,
             }),
+            failure_flag: None,
         }
+    }
+
+    /// Set the failure flag for poisoning on I/O errors.
+    pub fn set_failure_flag(&mut self, flag: Arc<FailureFlag>) {
+        self.failure_flag = Some(flag);
     }
 
     /// Returns the next FSN that will be assigned to a flush request.
@@ -150,7 +158,11 @@ impl FlushSequencer {
         };
         my_flush.done.store(true, Release);
         my_flush.event.notify(usize::MAX);
-        r?;
+        r.inspect_err(|err| {
+            if let Some(flag) = &self.failure_flag {
+                flag.set(err);
+            }
+        })?;
         Ok(completed_fsn)
     }
 }

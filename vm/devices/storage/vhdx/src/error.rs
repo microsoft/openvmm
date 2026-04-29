@@ -61,6 +61,10 @@ pub(crate) enum OpenErrorInner {
     #[error("invalid parameter")]
     InvalidParameter(#[from] InvalidFormatReason),
 
+    /// The write pipeline failed during writable open initialization.
+    #[error("pipeline failed during open")]
+    PipelineFailed(#[source] PipelineFailed),
+
     /// A metadata item could not be read through the page cache.
     #[error("failed to access metadata page cache")]
     MetadataCache(#[source] CacheError),
@@ -103,6 +107,14 @@ pub(crate) enum VhdxIoErrorInner {
     /// An I/O error occurred.
     #[error("I/O error")]
     Io(#[from] std::io::Error),
+
+    /// Failed to write or flush a VHDX header update.
+    #[error("failed to write header")]
+    WriteHeader(#[source] std::io::Error),
+
+    /// Failed to commit cached metadata pages to the log pipeline.
+    #[error("failed to commit cache")]
+    CommitCache(#[source] CacheError),
 
     /// The write pipeline failed permanently.
     #[error("VHDX file failed")]

@@ -17,6 +17,7 @@ use crate::log_permits::LogPermits;
 use crate::log_task::LogData;
 use crate::log_task::Lsn;
 use crate::lsn_watermark::LsnWatermark;
+use crate::open::FailureFlag;
 use std::sync::Arc;
 
 /// A batch of page-aligned data that has been logged and needs to be applied.
@@ -34,6 +35,7 @@ pub(crate) async fn run_apply_task<F: AsyncFile>(
     flush_sequencer: Arc<FlushSequencer>,
     applied_lsn: Arc<LsnWatermark>,
     log_permits: Arc<LogPermits>,
+    failure_flag: Arc<FailureFlag>,
 ) {
     loop {
         let batch = match rx.recv().await {
@@ -55,6 +57,7 @@ pub(crate) async fn run_apply_task<F: AsyncFile>(
                 let message = format!("apply write failed: {err}");
                 log_permits.fail(message.clone());
                 applied_lsn.fail(message);
+                failure_flag.set(&err);
                 return;
             }
         }

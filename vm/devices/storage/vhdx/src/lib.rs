@@ -27,6 +27,7 @@ pub(crate) mod log_permits;
 pub(crate) mod log_task;
 pub(crate) mod lsn_watermark;
 pub(crate) mod metadata;
+pub mod open;
 pub(crate) mod region;
 
 pub use create::CreateParams;
@@ -36,6 +37,8 @@ pub use error::InvalidFormatReason;
 pub use error::OpenError;
 pub use error::VhdxIoError;
 pub use error::VhdxIoErrorKind;
+pub use open::VhdxBuilder;
+pub use open::VhdxFile;
 
 #[cfg(test)]
 mod tests;
