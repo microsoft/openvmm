@@ -897,7 +897,11 @@ fn build_tx_segments_vlan(
         l3_len: 20,             // IPv4 header
         l4_len: 20,             // TCP header
         max_segment_size: 1460, // Typical MSS for Ethernet
-        vlan: Some(net_backend::VlanMetadata{ priority: 0, drop_eligible_indicator: 0, vlan_id}),
+        vlan: Some(net_backend::VlanMetadata {
+            priority: 0,
+            drop_eligible_indicator: 0,
+            vlan_id,
+        }),
         ..Default::default()
     };
 
