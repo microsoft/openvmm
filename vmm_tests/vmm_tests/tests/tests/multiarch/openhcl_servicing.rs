@@ -1176,6 +1176,114 @@ async fn apply_fault_with_keepalive(
     Ok(vm)
 }
 
+/// Verifies that save works correctly when a create_io_queue command
+/// is stuck. The `DriverWorkerTask` run loop should still be able to process
+/// save commands when the stuck create_io_queue command completes, even when
+/// that happens after save has been issued.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_slow_create_io_queue_with_inspect(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    const QUEUE_CREATION_DELAY: Duration = Duration::from_secs(20);
+    const TRIGGER_CREATE_IO_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
+    const TOTAL_SAVE_TIMEOUT: Duration = Duration::from_secs(50);
+
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = true;
+    let mut fault_start_updater = CellUpdater::new(false);
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
+                    .build(),
+                AdminQueueFaultBehavior::Delay(QUEUE_CREATION_DELAY),
+            ),
+        );
+
+    let scsi_controller_guid = Guid::new_random();
+    let disk_size = 4 * 1024 * 1024; // 4 MiB — enough for dd reads
+    let vp_count = 6;
+
+    let (mut vm, agent) = create_keepalive_test_config_custom_vps(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        scsi_controller_guid,
+        disk_size,
+        vp_count,
+    )
+    .await?;
+    agent.ping().await?;
+
+    let cpus_with_issuers = find_cpus_with_io_issuers(&vm).await?;
+    let target_cpu = (0u32..vp_count)
+        .find(|cpu| !cpus_with_issuers.contains(cpu))
+        .unwrap_or_else(|| {
+            panic!(
+                "all {vp_count} CPUs already have IO issuers after boot — \
+             test cannot exercise create_io_queue. Consider increasing vp_count."
+            )
+        });
+    tracing::info!(
+        target_cpu,
+        existing_issuers = ?cpus_with_issuers,
+        "selected target CPU with no IO issuer"
+    );
+
+    // Resolve the disk path before save. The device might appear as /dev/sda
+    // or /dev/sdb depending on timing.
+    let device_paths = get_device_paths(
+        &agent,
+        scsi_controller_guid,
+        vec![ExpectedGuestDevice {
+            lun: VTL0_NVME_LUN,
+            disk_size_sectors: (disk_size / SCSI_SECTOR_SIZE) as usize,
+            friendly_name: "nvme_disk".to_string(),
+        }],
+    )
+    .await?;
+    assert!(device_paths.len() == 1);
+    let disk_path = &device_paths[0];
+
+    // DEV NOTE: `run_cpu_pinned_io` only needs to be run for a duration that
+    // guarantees the create_io_queue command getting stuck. Ideally this should
+    // be event driven instead of time driven, but the infrastructure for that
+    // is not in place yet.
+    // Even though the dd command will timeout, the run loop will be stuck until
+    // the create_io_queue command completes.
+    fault_start_updater.set(true).await;
+    let io_result = CancelContext::new()
+        .with_timeout(TRIGGER_CREATE_IO_QUEUE_TIMEOUT)
+        .until_cancelled(run_cpu_pinned_io(&agent, disk_path, target_cpu))
+        .await;d
+
+    assert!(
+        io_result.is_err(),
+        "IO command should have timed out. This likely means the create_io_queue command did not get injected correctly."
+    );
+
+    let nvme_device_inspect = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
+    tracing::info!(nvme_device_inspect = ?nvme_device_inspect, "nvme device inspected");
+
+    CancelContext::new()
+        .with_timeout(TOTAL_SAVE_TIMEOUT)
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM save did not complete within the given timeout, even though it should have. Save is stuck when draining after restore with slow create_io_queue.")
+        .expect("Save failed");
+
+    let vm_inspect = vm.inspect_openhcl("", None, None).await?;
+    tracing::info!(vm_inspect = ?vm_inspect, "vm inspected");
+
+    fault_start_updater.set(false).await;
+    vm.restore_openhcl().await?;
+    agent.ping().await?;
+    Ok(())
+}
+
 async fn create_keepalive_test_config_default(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
