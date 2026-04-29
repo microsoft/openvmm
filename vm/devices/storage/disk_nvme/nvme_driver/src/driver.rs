@@ -831,6 +831,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                 tracing::info!(
                     id = a.qid,
                     pending_commands_count = a.handler_data.pending_cmds.commands.len(),
+                    base_pfn = a.base_pfn,
                     ?pci_id,
                     "restoring admin queue",
                 );
@@ -914,9 +915,10 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                 .io
                 .iter()
                 .map(|io_state| format!(
-                    "{{qid={}, pending_commands_count={}}}",
+                    "{{qid={}, pending_commands_count={}, base_pfn={}}}",
                     io_state.queue_data.qid,
-                    io_state.queue_data.handler_data.pending_cmds.commands.len()
+                    io_state.queue_data.handler_data.pending_cmds.commands.len(),
+                    io_state.queue_data.base_pfn,
                 ))
                 .collect::<Vec<_>>()
                 .join(", "),
@@ -1706,6 +1708,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
                         pci_id = ?self.device.id(),
                         id = admin_state.qid,
                         pending_commands_count = admin_state.handler_data.pending_cmds.commands.len(),
+                        pfn = admin_state.base_pfn,
                         "saved admin queue",
                     );
                     Some(admin_state)
@@ -1761,9 +1764,10 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
                 state = io
                     .iter()
                     .map(|io_state| format!(
-                        "{{qid={}, pending_commands_count={}}}",
+                        "{{qid={}, pending_commands_count={}, base_pfn={}}}",
                         io_state.queue_data.qid,
-                        io_state.queue_data.handler_data.pending_cmds.commands.len()
+                        io_state.queue_data.handler_data.pending_cmds.commands.len(),
+                        io_state.queue_data.base_pfn
                     ))
                     .collect::<Vec<_>>()
                     .join(", "),
