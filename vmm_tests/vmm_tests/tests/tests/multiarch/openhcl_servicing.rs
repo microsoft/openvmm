@@ -1277,7 +1277,7 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
             );
         }
     };
-    assert!(entries.len() == 1, "expected only 1 entry, the AER command");
+    assert_eq!(entries.len(), 1, "expected only 1 entry, the AER command");
 
     Ok(())
 }
