@@ -33,6 +33,7 @@ pub mod open;
 pub(crate) mod region;
 pub(crate) mod sector_bitmap;
 pub(crate) mod space;
+pub(crate) mod trim;
 
 pub use create::CreateParams;
 pub use create::create;
@@ -47,6 +48,8 @@ pub use io::WriteIoGuard;
 pub use io::WriteRange;
 pub use open::VhdxBuilder;
 pub use open::VhdxFile;
+pub use trim::TrimMode;
+pub use trim::TrimRequest;
 
 #[cfg(test)]
 mod tests;

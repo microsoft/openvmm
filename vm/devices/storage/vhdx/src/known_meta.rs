@@ -7,8 +7,6 @@
 //! reads and parses the well-known items (file parameters, disk size,
 //! sector sizes, page 83 data) into typed Rust values.
 
-#![allow(dead_code)]
-
 use crate::AsyncFile;
 use crate::cache::PageCache;
 use crate::error::CorruptionType;

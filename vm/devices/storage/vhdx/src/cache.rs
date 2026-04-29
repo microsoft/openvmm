@@ -30,8 +30,6 @@
 //! the cache automatically commits the current dirty set to the log before
 //! allowing the new page to enter the dirty set.
 
-#![allow(dead_code)]
-
 use crate::AsyncFile;
 use crate::error::CacheError;
 use crate::flush::Fsn;

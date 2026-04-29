@@ -11,8 +11,6 @@
 //! a `futures::lock::Mutex` and exposes the current [`WriteMode`] via an
 //! `AtomicU8` for lock-free hot-path checks.
 
-#![allow(dead_code)]
-
 use crate::AsyncFile;
 use crate::error::CorruptionType;
 use crate::error::OpenError;

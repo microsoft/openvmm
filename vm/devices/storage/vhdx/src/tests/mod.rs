@@ -7,6 +7,8 @@ pub mod support;
 mod crash_tests;
 #[cfg(test)]
 mod io_tests;
+#[cfg(test)]
+mod trim_tests;
 
 #[cfg(test)]
 mod integration {

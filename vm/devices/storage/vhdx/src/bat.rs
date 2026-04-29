@@ -7,8 +7,6 @@
 //! the correct BAT page offset for any given block number. Handles the
 //! interleaving of payload block entries with sector bitmap entries.
 
-#![allow(dead_code)]
-
 use crate::AsyncFile;
 use crate::cache::PageCache;
 use crate::cache::PageKey;

@@ -6,8 +6,6 @@
 //! Reads the metadata table from the metadata region, validates entries,
 //! and provides lookup and raw-read access for individual metadata items.
 
-#![allow(dead_code)]
-
 use crate::AsyncFile;
 use crate::cache::PAGE_SIZE;
 use crate::cache::PageCache;

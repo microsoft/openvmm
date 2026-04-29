@@ -15,8 +15,6 @@
 //! The bitmap uses 1-bit-per-megabyte granularity with SET = free / anchored
 //! and CLEAR = in-use.
 
-#![allow(dead_code)]
-
 use crate::bat::Bat;
 use crate::error::CorruptionType;
 use crate::error::OpenError;

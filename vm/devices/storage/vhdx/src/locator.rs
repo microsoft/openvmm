@@ -6,8 +6,6 @@
 //! Parses the parent locator metadata item (a key-value table of UTF-16LE
 //! strings) into a structured Rust type.
 
-#![allow(dead_code)]
-
 use crate::error::CorruptionType;
 use crate::error::OpenError;
 use crate::format;

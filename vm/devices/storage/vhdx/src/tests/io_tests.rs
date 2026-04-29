@@ -1988,3 +1988,256 @@ async fn concurrent_read_guards_same_block(driver: DefaultDriver) {
     drop(guard2);
     assert_eq!(vhdx.bat.io_refcount(0), 0);
 }
+
+// ---- Concurrent write+trim and mixed-workload stress tests ----
+
+use crate::trim::TrimMode;
+use crate::trim::TrimRequest;
+
+#[async_test]
+async fn concurrent_write_and_trim_same_block(driver: DefaultDriver) {
+    // Setup: 8 MiB disk, 1 MiB blocks.
+    let (file, _) = create_vhdx_with_block_size(8 * MB1, MB1 as u32).await;
+    let vhdx = Arc::new(VhdxFile::open(file).writable(&driver).await.unwrap());
+    let block_size = vhdx.block_size();
+
+    // Write block 0 with pattern 0xAA, complete.
+    write_block(&*vhdx, 0, block_size, 0xAA).await;
+
+    // Concurrently: write block 0 with 0xEE + trim block 0 (FileSpace).
+    let vhdx_w = vhdx.clone();
+    let vhdx_t = vhdx.clone();
+
+    let (write_result, trim_result) = futures::join!(
+        async {
+            write_block(&*vhdx_w, 0, block_size, 0xEE).await;
+            Ok::<(), VhdxIoError>(())
+        },
+        async {
+            vhdx_t
+                .trim(TrimRequest::new(TrimMode::FileSpace, 0, block_size as u64))
+                .await
+        }
+    );
+
+    write_result.unwrap();
+    trim_result.unwrap();
+
+    // Check what actually happened by examining block state.
+    let mapping = vhdx.bat.get_block_mapping(0);
+    match mapping.bat_state() {
+        BatEntryState::Unmapped => {
+            // Trim won — read should return zeros.
+            verify_block_pattern(&*vhdx, 0, block_size, 0x00).await;
+        }
+        BatEntryState::FullyPresent => {
+            // Write won — read should return 0xEE.
+            verify_block_pattern(&*vhdx, 0, block_size, 0xEE).await;
+        }
+        other => panic!("unexpected state: {other:?}"),
+    }
+}
+
+#[async_test]
+async fn concurrent_trim_then_rewrite(driver: DefaultDriver) {
+    // Setup: 8 MiB disk, 1 MiB blocks.
+    let (file, _) = create_vhdx_with_block_size(8 * MB1, MB1 as u32).await;
+    let vhdx = Arc::new(VhdxFile::open(file).writable(&driver).await.unwrap());
+    let block_size = vhdx.block_size();
+
+    // Write block 0 with pattern 0xAA.
+    write_block(&*vhdx, 0, block_size, 0xAA).await;
+
+    // Sequential: trim → rewrite. Verify the trim→re-allocate path.
+    vhdx.trim(TrimRequest::new(TrimMode::FileSpace, 0, block_size as u64))
+        .await
+        .unwrap();
+
+    let mapping = vhdx.bat.get_block_mapping(0);
+    assert_eq!(
+        mapping.bat_state(),
+        BatEntryState::Unmapped,
+        "block should be Unmapped after trim"
+    );
+
+    // Re-write with pattern 0xBB.
+    write_block(&*vhdx, 0, block_size, 0xBB).await;
+
+    let mapping = vhdx.bat.get_block_mapping(0);
+    assert_eq!(mapping.bat_state(), BatEntryState::FullyPresent);
+    verify_block_pattern(&*vhdx, 0, block_size, 0xBB).await;
+
+    // Now do trim + write concurrently.
+    let vhdx_t = vhdx.clone();
+    let vhdx_w = vhdx.clone();
+
+    let (trim_result, write_result) = futures::join!(
+        async {
+            vhdx_t
+                .trim(TrimRequest::new(TrimMode::FileSpace, 0, block_size as u64))
+                .await
+        },
+        async {
+            write_block(&*vhdx_w, 0, block_size, 0xCC).await;
+            Ok::<(), VhdxIoError>(())
+        }
+    );
+
+    trim_result.unwrap();
+    write_result.unwrap();
+
+    // Verify no panics and data is consistent.
+    let mapping = vhdx.bat.get_block_mapping(0);
+    match mapping.bat_state() {
+        BatEntryState::Unmapped => {
+            verify_block_pattern(&*vhdx, 0, block_size, 0x00).await;
+        }
+        BatEntryState::FullyPresent => {
+            verify_block_pattern(&*vhdx, 0, block_size, 0xCC).await;
+        }
+        other => panic!("unexpected state: {other:?}"),
+    }
+}
+
+#[async_test]
+async fn mixed_workload_stress(driver: DefaultDriver) {
+    // 8 MiB disk with 1 MiB blocks → 8 blocks.
+    let (file, _) = create_vhdx_with_block_size(8 * MB1, MB1 as u32).await;
+    let vhdx = Arc::new(VhdxFile::open(file).writable(&driver).await.unwrap());
+    let block_size = vhdx.block_size();
+    let num_blocks: u32 = 8;
+
+    // Shadow state: None = unwritten/trimmed (expect zeros), Some(pattern) = last written pattern.
+    let shadow: Arc<parking_lot::Mutex<Vec<Option<u8>>>> =
+        Arc::new(parking_lot::Mutex::new(vec![None; num_blocks as usize]));
+
+    let num_tasks: u32 = 8;
+    let iters_per_task: u8 = 16;
+
+    let tasks: Vec<_> = (0..num_tasks)
+        .map(|task_id| {
+            let vhdx = vhdx.clone();
+            let shadow = shadow.clone();
+            let bs = block_size;
+
+            async move {
+                for iter in 0..iters_per_task {
+                    let block = (task_id.wrapping_mul(3).wrapping_add(iter as u32)) % num_blocks;
+                    let pattern = ((task_id as u16 * 16 + iter as u16) as u8) | 0x01; // always nonzero
+                    let block_offset = block as u64 * bs as u64;
+
+                    let op = (task_id as u8).wrapping_add(iter) % 10;
+                    match op {
+                        0..=4 => {
+                            // Write (50%)
+                            write_block(&*vhdx, block_offset, bs, pattern).await;
+                            shadow.lock()[block as usize] = Some(pattern);
+                        }
+                        5..=7 => {
+                            // Read + verify (30%)
+                            let expected = shadow.lock()[block as usize];
+                            let mut ranges = Vec::new();
+                            let guard = vhdx
+                                .resolve_read(block_offset, bs, &mut ranges)
+                                .await
+                                .unwrap();
+                            for rr in &ranges {
+                                match rr {
+                                    ReadRange::Data {
+                                        file_offset,
+                                        length,
+                                        ..
+                                    } => {
+                                        let mut buf = vec![0u8; *length as usize];
+                                        vhdx.file.read_at(*file_offset, &mut buf).await.unwrap();
+                                        let exp = expected.unwrap_or_else(|| {
+                                            panic!(
+                                                "task {task_id} iter {iter}: shadow says \
+                                                     None but got Data range"
+                                            )
+                                        });
+                                        assert!(
+                                            buf.iter().all(|&b| b == exp),
+                                            "task {task_id} iter {iter}: expected \
+                                                 0x{exp:02x}, got mismatch"
+                                        );
+                                    }
+                                    ReadRange::Zero { .. } => {
+                                        assert!(
+                                            expected.is_none(),
+                                            "task {task_id} iter {iter}: got Zero but \
+                                                 expected Some({:02x})",
+                                            expected.unwrap()
+                                        );
+                                    }
+                                    ReadRange::Unmapped { .. } => {
+                                        panic!("unexpected Unmapped on non-differencing disk");
+                                    }
+                                }
+                            }
+                            drop(guard);
+                        }
+                        8 => {
+                            // Trim (10%)
+                            vhdx.trim(TrimRequest::new(
+                                TrimMode::FileSpace,
+                                block_offset,
+                                bs as u64,
+                            ))
+                            .await
+                            .unwrap();
+                            shadow.lock()[block as usize] = None;
+                        }
+                        9 => {
+                            // Flush (10%)
+                            vhdx.flush().await.unwrap();
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        })
+        .collect();
+
+    futures::future::join_all(tasks).await;
+
+    // Post-check: verify every block against final shadow state.
+    let final_shadow = shadow.lock().clone();
+    for block in 0..num_blocks {
+        let block_offset = block as u64 * block_size as u64;
+        let expected = final_shadow[block as usize];
+        match expected {
+            Some(pattern) => {
+                verify_block_pattern(&*vhdx, block_offset, block_size, pattern).await;
+            }
+            None => {
+                // Should be zeros.
+                let mut ranges = Vec::new();
+                let _guard = vhdx
+                    .resolve_read(block_offset, block_size, &mut ranges)
+                    .await
+                    .unwrap();
+                for rr in &ranges {
+                    match rr {
+                        ReadRange::Zero { .. } => {}
+                        ReadRange::Data {
+                            file_offset,
+                            length,
+                            ..
+                        } => {
+                            let mut buf = vec![0u8; *length as usize];
+                            vhdx.file.read_at(*file_offset, &mut buf).await.unwrap();
+                            assert!(
+                                buf.iter().all(|&b| b == 0),
+                                "block {block}: shadow says None but data is non-zero"
+                            );
+                        }
+                        ReadRange::Unmapped { .. } => {
+                            panic!("unexpected Unmapped on non-differencing disk");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
