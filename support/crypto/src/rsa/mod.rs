@@ -3,12 +3,17 @@
 
 //! RSA cryptographic operations.
 
-#![cfg(openssl)]
+#![cfg(any(openssl, symcrypt))]
 
 #[cfg(openssl)]
 pub(crate) mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
+
+#[cfg(symcrypt)]
+pub(crate) mod symcrypt;
+#[cfg(symcrypt)]
+use symcrypt as sys;
 
 use thiserror::Error;
 
@@ -36,6 +41,7 @@ impl RsaKeyPair {
     }
 
     /// Parse an RSA private key from PKCS#8 DER-encoded bytes.
+    #[cfg(openssl)]
     pub fn from_pkcs8_der(der: &[u8]) -> Result<Self, RsaError> {
         sys::RsaKeyPairInner::from_pkcs8_der(der).map(Self)
     }
@@ -74,11 +80,13 @@ impl RsaKeyPair {
     }
 
     /// Export the private key in PKCS#8 DER format.
+    #[cfg(openssl)]
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
         self.0.to_pkcs8_der()
     }
 
     /// Export the private key in traditional RSA DER format.
+    #[cfg(openssl)]
     pub fn to_private_key_der(&self) -> Result<Vec<u8>, RsaError> {
         self.0.to_private_key_der()
     }

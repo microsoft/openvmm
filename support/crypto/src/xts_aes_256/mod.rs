@@ -3,7 +3,7 @@
 
 //! XTS-AES-256 encryption and decryption.
 
-#![cfg(any(openssl, all(native, windows)))]
+#![cfg(any(openssl, symcrypt, all(native, windows)))]
 
 #[cfg(openssl)]
 mod ossl;
@@ -14,6 +14,11 @@ use ossl as sys;
 mod win;
 #[cfg(all(native, windows))]
 use win as sys;
+
+#[cfg(symcrypt)]
+mod symcrypt;
+#[cfg(symcrypt)]
+use symcrypt as sys;
 
 use thiserror::Error;
 

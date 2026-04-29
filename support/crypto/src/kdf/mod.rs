@@ -3,12 +3,17 @@
 
 //! SP800-108 KBKDF (Key-Based Key Derivation Function) using HMAC-SHA-256.
 
-#![cfg(openssl)]
+#![cfg(any(openssl, symcrypt))]
 
 #[cfg(openssl)]
 mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
+
+#[cfg(symcrypt)]
+mod symcrypt;
+#[cfg(symcrypt)]
+use symcrypt as sys;
 
 use thiserror::Error;
 
@@ -19,6 +24,7 @@ use thiserror::Error;
 #[error("KDF derivation error")]
 pub struct KdfError(#[source] openssl_kdf::kdf::KdfError);
 
+/// An error for KDF operations.
 #[cfg(not(openssl))]
 #[derive(Debug, Error)]
 #[error("KDF derivation error")]
