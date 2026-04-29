@@ -1035,10 +1035,7 @@ impl IntoPipeline for CheckinGatesCli {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::Aarch64,
                 gh_pool: if release {
-                    // TODO: go back to 1es once we understand why the image is
-                    // missing package lists
-                    // crate::pipelines_shared::gh_pools::linux_arm_1es()
-                    crate::pipelines_shared::gh_pools::gh_hosted_arm_linux()
+                    crate::pipelines_shared::gh_pools::linux_arm_1es()
                 } else {
                     crate::pipelines_shared::gh_pools::gh_hosted_arm_linux()
                 },
@@ -1055,10 +1052,7 @@ impl IntoPipeline for CheckinGatesCli {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::Aarch64,
                 gh_pool: if release {
-                    // TODO: go back to 1es once we understand why the image is
-                    // missing package lists
-                    // crate::pipelines_shared::gh_pools::linux_arm_1es()
-                    crate::pipelines_shared::gh_pools::gh_hosted_arm_linux()
+                    crate::pipelines_shared::gh_pools::linux_arm_1es()
                 } else {
                     crate::pipelines_shared::gh_pools::gh_hosted_arm_linux()
                 },
