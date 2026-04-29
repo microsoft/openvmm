@@ -739,3 +739,119 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_fmt(
+        bits_per_pixel: u8,
+        big_endian: bool,
+        red_max: u16,
+        green_max: u16,
+        blue_max: u16,
+        red_shift: u8,
+        green_shift: u8,
+        blue_shift: u8,
+    ) -> rfb::PixelFormat {
+        rfb::PixelFormat {
+            bits_per_pixel,
+            depth: bits_per_pixel,
+            big_endian_flag: big_endian as u8,
+            true_color_flag: 1,
+            red_max: red_max.into(),
+            green_max: green_max.into(),
+            blue_max: blue_max.into(),
+            red_shift,
+            green_shift,
+            blue_shift,
+            padding: [0; 3],
+        }
+    }
+
+    // Source pixel format is 0x00RRGGBB.
+    fn pixel(r: u8, g: u8, b: u8) -> u32 {
+        (r as u32) << 16 | (g as u32) << 8 | b as u32
+    }
+
+    /// Verify that the 32bpp RGBx fast path (no_convert) correctly passes
+    /// through pixel data without modification.
+    #[test]
+    fn test_convert_pixels_32bpp_no_convert() {
+        let fmt = make_fmt(32, false, 255, 255, 255, 16, 8, 0);
+        let src = vec![
+            pixel(0xFF, 0x80, 0x40),
+            pixel(0x00, 0x00, 0x00),
+            pixel(0xFF, 0xFF, 0xFF),
+        ];
+        let mut out = Vec::new();
+        convert_pixels(&src, &fmt, &mut out);
+        // Fast path: bytes should be identical to source
+        assert_eq!(out.len(), src.len() * 4);
+        for (i, &p) in src.iter().enumerate() {
+            let got = u32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+            assert_eq!(got, p, "pixel {i} mismatch");
+        }
+    }
+
+    /// Verify that 8bpp RGB 3:3:2 conversion correctly scales each channel.
+    /// This exercises the case where red_max (7, 3 bits) != blue_max (3, 2 bits),
+    /// which was the root cause of the color regression.
+    #[test]
+    fn test_convert_pixels_8bpp_332_blue_channel() {
+        // Standard 8bpp 3:3:2: red=3bits@5, green=3bits@2, blue=2bits@0
+        let fmt = make_fmt(8, false, 7, 7, 3, 5, 2, 0);
+
+        // Pure blue (B=255, R=0, G=0) should map to the max 2-bit blue value (3).
+        let src = vec![pixel(0x00, 0x00, 0xFF)];
+        let mut out = Vec::new();
+        convert_pixels(&src, &fmt, &mut out);
+        assert_eq!(out.len(), 1);
+        let blue_bits = out[0] & 0b00000011; // bits 1-0 = blue
+        let green_bits = (out[0] >> 2) & 0b00000111; // bits 4-2 = green
+        assert_eq!(
+            blue_bits, 3,
+            "pure blue should yield max 2-bit blue value (3)"
+        );
+        assert_eq!(
+            green_bits, 0,
+            "pure blue should not bleed into green channel"
+        );
+
+        // Pure red (R=255, G=0, B=0) should map to the max 3-bit red value (7).
+        let src = vec![pixel(0xFF, 0x00, 0x00)];
+        let mut out = Vec::new();
+        convert_pixels(&src, &fmt, &mut out);
+        assert_eq!(out.len(), 1);
+        let red_bits = (out[0] >> 5) & 0b00000111; // bits 7-5 = red
+        assert_eq!(red_bits, 7, "pure red should yield max 3-bit red value (7)");
+    }
+
+    /// Verify 16bpp RGB 5:6:5 conversion.
+    #[test]
+    fn test_convert_pixels_16bpp_565() {
+        // RGB565: red=5bits@11, green=6bits@5, blue=5bits@0
+        let fmt = make_fmt(16, false, 31, 63, 31, 11, 5, 0);
+
+        // Pure red
+        let src = vec![pixel(0xFF, 0x00, 0x00)];
+        let mut out = Vec::new();
+        convert_pixels(&src, &fmt, &mut out);
+        assert_eq!(out.len(), 2);
+        let val = u16::from_le_bytes(out[0..2].try_into().unwrap()) as u32;
+        let r5 = (val >> 11) & 0x1F;
+        let g6 = (val >> 5) & 0x3F;
+        let b5 = val & 0x1F;
+        assert_eq!(r5, 31, "pure red should yield max 5-bit red");
+        assert_eq!(g6, 0, "pure red should have no green");
+        assert_eq!(b5, 0, "pure red should have no blue");
+
+        // Pure blue
+        let src = vec![pixel(0x00, 0x00, 0xFF)];
+        let mut out = Vec::new();
+        convert_pixels(&src, &fmt, &mut out);
+        let val = u16::from_le_bytes(out[0..2].try_into().unwrap()) as u32;
+        let b5 = val & 0x1F;
+        assert_eq!(b5, 31, "pure blue should yield max 5-bit blue");
+    }
+}
