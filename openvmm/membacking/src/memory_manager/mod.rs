@@ -179,7 +179,7 @@ fn validate_hugepage_size(size: u64) -> Result<usize, MemoryBuildError> {
         .map_err(|_| MemoryBuildError::HugepageSizeTooLarge(MemorySize(size)))
 }
 
-/// A byte count displayed using the same binary units accepted by the CLI.
+/// A byte count displayed in a human-readable format in error messages.
 #[derive(Debug, Copy, Clone)]
 pub struct MemorySize(
     /// The size in bytes.
