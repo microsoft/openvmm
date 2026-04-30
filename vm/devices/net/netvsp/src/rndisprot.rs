@@ -714,15 +714,32 @@ impl TcpLsoInfo {
 pub struct EthVlanInfo(pub u32);
 
 impl EthVlanInfo {
-    pub fn priority(self) -> u8 {
-        (self.0 as u8) & 0x3
+    /// priority is a 3-bit field, any bits outside the lower portion of the low
+    /// nybble are ignored
+    pub fn set_priority(mut self, priority: u8) -> Self {
+        self.0 = (self.0 & !0x7) | (priority as u32 & 0x7);
+        self
     }
 
-    pub fn drop_eligible_indicator(self) -> u8 {
+    pub fn priority(&self) -> u8 {
+        (self.0 as u8) & 0x7
+    }
+
+    pub fn set_drop_eligible_indicator(mut self, indicator: bool) -> Self {
+        self.0 = (self.0 & !0x8) | if indicator { 0x8 } else { 0x0 };
+        self
+    }
+
+    pub fn drop_eligible_indicator(&self) -> u8 {
         (self.0 >> 3) as u8 & 0x1
     }
 
-    pub fn vlan_id(self) -> u16 {
+    pub fn set_vlan_id(mut self, vlan_id: u16) -> Self {
+        self.0 = (self.0 & !0xFFF0) | ((vlan_id as u32 & 0xFFF) << 4);
+        self
+    }
+
+    pub fn vlan_id(&self) -> u16 {
         (self.0 >> 4) as u16 & 0xfff
     }
 }

@@ -29,10 +29,12 @@ use net_backend::BufferAccess;
 use net_backend::DisconnectableEndpoint;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
+use net_backend::L4Protocol;
 use net_backend::MultiQueueSupport;
 use net_backend::Queue as NetQueue;
 use net_backend::QueueConfig;
-use net_backend::RxBufferSegment;
+use net_backend::RxChecksumState;
+use net_backend::RxMetadata;
 use net_backend::TxError;
 use net_backend::TxOffloadSupport;
 use net_backend::null::NullEndpoint;
@@ -140,7 +142,7 @@ struct TestNicEndpointState {
     pub vf_state: Option<TestVirtualFunctionState>,
     pub stop_endpoint_counter: usize,
     pub link_status_updater: Option<mesh::Sender<VecDeque<bool>>>,
-    pub queues: Vec<mesh::Sender<Vec<u8>>>,
+    pub queues: Vec<mesh::Sender<(Vec<u8>, RxMetadata)>>,
     /// When true (default), `TestNicQueue::tx_avail` returns `(true, N)` so
     /// TX packets are completed synchronously.  When false it returns
     /// `(false, N)`, leaving packets in-flight.
@@ -168,6 +170,20 @@ impl TestNicEndpointState {
         let link_status_updater = locked_self.link_status_updater.as_ref().unwrap();
         let status_vec = link_status.iter().copied().collect::<VecDeque<bool>>();
         link_status_updater.send(status_vec);
+    }
+
+    /// Send an RX packet on the given queue with default (no offload) metadata.
+    pub fn send_rx(&self, queue_idx: usize, data: Vec<u8>) {
+        let metadata = RxMetadata {
+            len: data.len(),
+            ..Default::default()
+        };
+        self.queues[queue_idx].send((data, metadata));
+    }
+
+    /// Send an RX packet on the given queue with explicit metadata.
+    pub fn send_rx_with_metadata(&self, queue_idx: usize, data: Vec<u8>, metadata: RxMetadata) {
+        self.queues[queue_idx].send((data, metadata));
     }
 }
 
@@ -343,19 +359,18 @@ struct TestNicQueue {
     #[inspect(skip)]
     rx_ids: VecDeque<RxId>,
     #[inspect(skip)]
-    rx: mesh::Receiver<Vec<u8>>,
+    rx: mesh::Receiver<(Vec<u8>, RxMetadata)>,
     #[inspect(skip)]
     endpoint_state: Option<Arc<parking_lot::Mutex<TestNicEndpointState>>>,
-    next_rx_packet: Option<Vec<u8>>,
-    sync_tx: bool,
     #[inspect(skip)]
-    scratch_segments: Vec<RxBufferSegment>,
+    next_rx_packet: Option<(Vec<u8>, RxMetadata)>,
+    sync_tx: bool,
 }
 
 impl TestNicQueue {
     pub fn new(
         _config: QueueConfig,
-        rx: mesh::Receiver<Vec<u8>>,
+        rx: mesh::Receiver<(Vec<u8>, RxMetadata)>,
         sync_tx: bool,
         endpoint_state: Option<Arc<parking_lot::Mutex<TestNicEndpointState>>>,
     ) -> Self {
@@ -365,7 +380,6 @@ impl TestNicQueue {
             endpoint_state,
             next_rx_packet: None,
             sync_tx,
-            scratch_segments: Vec::new(),
         }
     }
 }
@@ -407,29 +421,24 @@ impl NetQueue for TestNicQueue {
             self.next_rx_packet = self.rx.try_recv().ok();
         }
 
-        if let Some(packet) = self.next_rx_packet.take() {
-            let len = packet.len();
-            assert!(len > 0);
+        if let Some((packet, metadata)) = self.next_rx_packet.take() {
+            assert!(!packet.is_empty(), "test RX packets must not be empty");
+            assert_eq!(
+                metadata.len,
+                packet.len(),
+                "RxMetadata.len must match actual packet length"
+            );
             let rx_id = self.rx_ids.pop_front().unwrap();
-            tracing::info!(rx_id = rx_id.0, ?packet, "returning packet on receive path");
-            let mut packet = &packet[..];
-            self.scratch_segments.clear();
-            pool.push_guest_addresses(rx_id, &mut self.scratch_segments);
-            let guest_memory = pool.guest_memory();
-            for seg in &self.scratch_segments {
-                // N.B. The packet data is written after the implicit header,
-                //      which is 256 bytes long. The header can be written with
-                //      self.pool.write_header(...) if desired.
-                let write_len = packet.len().min(seg.len as usize);
-                tracing::info!(seg.gpa, write_len, "writing packet to guest memory");
-                guest_memory
-                    .write_at(seg.gpa, &packet[..write_len])
-                    .unwrap();
-                packet = &packet[write_len..];
-                if packet.is_empty() {
-                    break;
-                }
-            }
+            assert!(
+                packet.len() <= pool.capacity(rx_id) as usize,
+                "test RX packet exceeds buffer capacity"
+            );
+            tracing::info!(
+                rx_id = rx_id.0,
+                len = packet.len(),
+                "returning packet on receive path"
+            );
+            pool.write_packet(rx_id, &metadata, &packet);
             packets[0] = rx_id;
             Ok(1)
         } else {
@@ -1831,6 +1840,79 @@ impl RndisMessageParser {
         assert!(reader.skip(RX_HEADER_LEN).is_ok());
         reader.read_plain::<T>().unwrap()
     }
+
+    /// Parse the per-packet info (PPI) entries from an RX data message.
+    /// Walks the PPI chain using the Packet header's offset/length fields,
+    /// matching each entry by type.
+    pub fn parse_rx_ppi(&self, external_ranges: &MultiPagedRangeBuf) -> RxPpiInfo {
+        let mut reader = PagedRanges::new(external_ranges.iter()).reader(&self.mem);
+        // Skip the MessageHeader to read the Packet struct.
+        assert!(reader.skip(size_of::<rndisprot::MessageHeader>()).is_ok());
+        let packet: rndisprot::Packet = reader.read_plain().unwrap();
+
+        let ppi_offset = packet.per_packet_info_offset as usize;
+        let ppi_length = packet.per_packet_info_length as usize;
+
+        if ppi_length == 0 {
+            return RxPpiInfo::default();
+        }
+
+        // Seek to the PPI area (relative to after MessageHeader).
+        let mut reader = PagedRanges::new(external_ranges.iter()).reader(&self.mem);
+        let ppi_start = size_of::<rndisprot::MessageHeader>() + ppi_offset;
+        assert!(reader.skip(ppi_start).is_ok());
+
+        let mut ppi_bytes = vec![0u8; ppi_length];
+        reader.read(&mut ppi_bytes).unwrap();
+
+        let mut result = RxPpiInfo::default();
+        let mut offset = 0usize;
+        while offset < ppi_length {
+            assert!(
+                offset + size_of::<rndisprot::PerPacketInfo>() <= ppi_length,
+                "PPI header extends past PPI region"
+            );
+            let header = rndisprot::PerPacketInfo::read_from_prefix(&ppi_bytes[offset..])
+                .unwrap()
+                .0;
+            assert!(
+                header.size as usize >= size_of::<rndisprot::PerPacketInfo>(),
+                "PPI entry size too small"
+            );
+            assert!(
+                offset + header.size as usize <= ppi_length,
+                "PPI entry extends past PPI region"
+            );
+
+            let payload_start = offset + header.per_packet_information_offset as usize;
+            match header.typ {
+                rndisprot::PPI_TCP_IP_CHECKSUM => {
+                    let value = u32::read_from_prefix(&ppi_bytes[payload_start..])
+                        .unwrap()
+                        .0;
+                    result.checksum = Some(rndisprot::RxTcpIpChecksumInfo(value));
+                }
+                rndisprot::PPI_VLAN => {
+                    let value = u32::read_from_prefix(&ppi_bytes[payload_start..])
+                        .unwrap()
+                        .0;
+                    result.vlan = Some(rndisprot::EthVlanInfo(value));
+                }
+                _ => {
+                    // Unknown PPI type — skip.
+                }
+            }
+            offset += header.size as usize;
+        }
+        result
+    }
+}
+
+/// Parsed per-packet info from an RX RNDIS message.
+#[derive(Default, Debug)]
+struct RxPpiInfo {
+    pub checksum: Option<rndisprot::RxTcpIpChecksumInfo>,
+    pub vlan: Option<rndisprot::EthVlanInfo>,
 }
 
 enum TestVirtualFunctionStateChange {
@@ -4412,8 +4494,8 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
     // Send a packet on every queue.
     {
         let locked_state = endpoint_state.lock();
-        for (idx, queue) in locked_state.queues.iter().enumerate() {
-            queue.send(vec![idx as u8]);
+        for idx in 0..locked_state.queues.len() {
+            locked_state.send_rx(idx, vec![idx as u8]);
         }
     }
 
@@ -4452,8 +4534,8 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
     // Send a packet on every queue.
     {
         let locked_state = endpoint_state.lock();
-        for (idx, queue) in locked_state.queues.iter().enumerate() {
-            queue.send(vec![idx as u8]);
+        for idx in 0..locked_state.queues.len() {
+            locked_state.send_rx(idx, vec![idx as u8]);
         }
     }
 
@@ -4521,8 +4603,8 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
     // Test sending packets with the filter set to None.
     for _ in 0..2 {
         let locked_state = endpoint_state.lock();
-        for (idx, queue) in locked_state.queues.iter().enumerate() {
-            queue.send(vec![idx as u8]);
+        for idx in 0..locked_state.queues.len() {
+            locked_state.send_rx(idx, vec![idx as u8]);
         }
     }
 
@@ -5307,8 +5389,8 @@ async fn set_rss_parameter_bufs_not_evenly_divisible(driver: DefaultDriver) {
     // Receive a packet on every queue.
     {
         let locked_state = endpoint_state.lock();
-        for (idx, queue) in locked_state.queues.iter().enumerate() {
-            queue.send(vec![idx as u8]);
+        for idx in 0..locked_state.queues.len() {
+            locked_state.send_rx(idx, vec![idx as u8]);
         }
     }
 
@@ -6069,6 +6151,291 @@ async fn rndis_send_lso_packet_with_vlan_ppi(driver: DefaultDriver) {
         "VLAN-tagged IPv4 packets must keep a 20-byte L3 header"
     );
     assert_eq!(metadata.max_segment_size, 1460);
+}
+
+/// Helper to initialize RNDIS and set the packet filter on a channel so
+/// that RX packets will be delivered to the guest.
+async fn initialize_rndis_for_rx(channel: &mut TestNicChannel<'_>) {
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let init_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(init_complete.status, rndisprot::STATUS_SUCCESS);
+
+    // Set packet filter so RX packets are delivered to the guest.
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 2,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NPROTO_PACKET_FILTER.to_le_bytes(),
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+}
+
+/// Helper to inject an RX packet on queue 0, read it from the guest channel,
+/// parse the RNDIS PPI, and complete the transfer.
+async fn inject_and_parse_rx(
+    channel: &mut TestNicChannel<'_>,
+    endpoint_state: &Arc<parking_lot::Mutex<TestNicEndpointState>>,
+    parser: &RndisMessageParser,
+    data: Vec<u8>,
+    metadata: RxMetadata,
+) -> RxPpiInfo {
+    {
+        let locked_state = endpoint_state.lock();
+        locked_state.send_rx_with_metadata(0, data, metadata);
+    }
+
+    let (ppi, txid) = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(data) => {
+                let (_, external_ranges) = parser.parse_data_message(data);
+                let ppi = parser.parse_rx_ppi(&external_ranges);
+                let txid = data
+                    .transaction_id()
+                    .expect("data packets should have txid");
+                (ppi, txid)
+            }
+            _ => panic!("Unexpected packet type on RX"),
+        })
+        .await
+        .expect("RX data packet");
+
+    // Complete the transfer so the buffer is returned.
+    channel
+        .write(OutgoingPacket {
+            transaction_id: txid,
+            packet_type: OutgoingPacketType::Completion,
+            payload: &NvspMessage {
+                header: protocol::MessageHeader {
+                    message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                },
+                data: protocol::Message1SendRndisPacketComplete {
+                    status: protocol::Status::SUCCESS,
+                },
+                padding: &[],
+            }
+            .payload(),
+        })
+        .await;
+
+    ppi
+}
+
+#[async_test]
+async fn rndis_rx_vlan_packet(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_for_rx(&mut channel).await;
+
+    let parser = channel.rndis_message_parser();
+    let data = vec![0xAA; 60];
+    let metadata = RxMetadata {
+        len: data.len(),
+        vlan: Some(net_backend::VlanMetadata {
+            priority: 5,
+            drop_eligible_indicator: 1,
+            vlan_id: 100,
+        }),
+        ..Default::default()
+    };
+
+    let ppi = inject_and_parse_rx(&mut channel, &endpoint_state, &parser, data, metadata).await;
+
+    let vlan = ppi.vlan.expect("VLAN PPI should be present");
+    assert_eq!(vlan.vlan_id(), 100);
+    assert_eq!(vlan.priority(), 5);
+    assert_eq!(vlan.drop_eligible_indicator(), 1);
+    // Checksum PPI should also be present (always emitted).
+    assert!(
+        ppi.checksum.is_some(),
+        "checksum PPI should always be present"
+    );
+}
+
+#[async_test]
+async fn rndis_rx_vlan_packet_with_tcp_checksum(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_for_rx(&mut channel).await;
+
+    let parser = channel.rndis_message_parser();
+    let data = vec![0xBB; 60];
+    let metadata = RxMetadata {
+        len: data.len(),
+        ip_checksum: RxChecksumState::Good,
+        l4_checksum: RxChecksumState::Good,
+        l4_protocol: L4Protocol::Tcp,
+        vlan: Some(net_backend::VlanMetadata {
+            priority: 3,
+            drop_eligible_indicator: 0,
+            vlan_id: 42,
+        }),
+        ..Default::default()
+    };
+
+    let ppi = inject_and_parse_rx(&mut channel, &endpoint_state, &parser, data, metadata).await;
+
+    // Verify VLAN PPI.
+    let vlan = ppi.vlan.expect("VLAN PPI should be present");
+    assert_eq!(vlan.vlan_id(), 42);
+    assert_eq!(vlan.priority(), 3);
+    assert_eq!(vlan.drop_eligible_indicator(), 0);
+
+    // Verify checksum PPI reports TCP checksum succeeded.
+    let csum = ppi.checksum.expect("checksum PPI should be present");
+    assert!(csum.tcp_checksum_succeeded());
+    assert!(csum.ip_checksum_succeeded());
+    assert!(!csum.tcp_checksum_failed());
+}
+
+#[async_test]
+async fn rndis_rx_packet_no_vlan(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_for_rx(&mut channel).await;
+
+    let parser = channel.rndis_message_parser();
+    let data = vec![0xCC; 60];
+    let metadata = RxMetadata {
+        len: data.len(),
+        ..Default::default()
+    };
+
+    let ppi = inject_and_parse_rx(&mut channel, &endpoint_state, &parser, data, metadata).await;
+
+    assert!(
+        ppi.vlan.is_none(),
+        "VLAN PPI should not be present when no VLAN metadata is set"
+    );
+    assert!(
+        ppi.checksum.is_some(),
+        "checksum PPI should always be present"
+    );
+}
+
+#[async_test]
+async fn rndis_rx_vlan_preserves_packet_data(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_for_rx(&mut channel).await;
+
+    let parser = channel.rndis_message_parser();
+    let data = vec![0xDD; 60];
+    let metadata = RxMetadata {
+        len: data.len(),
+        vlan: Some(net_backend::VlanMetadata {
+            priority: 7,
+            drop_eligible_indicator: 0,
+            vlan_id: 4094,
+        }),
+        ..Default::default()
+    };
+
+    {
+        let locked_state = endpoint_state.lock();
+        locked_state.send_rx_with_metadata(0, data.clone(), metadata);
+    }
+
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(data_packet) => {
+                let (_, external_ranges) = parser.parse_data_message(data_packet);
+                // Verify the packet data is intact after the 256-byte RNDIS header.
+                let received: [u8; 60] = parser.get_data_packet_content(&external_ranges);
+                assert_eq!(&received[..], &data[..], "packet data should be preserved");
+
+                // Also verify the VLAN PPI.
+                let ppi = parser.parse_rx_ppi(&external_ranges);
+                let vlan = ppi.vlan.expect("VLAN PPI should be present");
+                assert_eq!(vlan.vlan_id(), 4094);
+                assert_eq!(vlan.priority(), 7);
+            }
+            _ => panic!("Unexpected packet type on RX"),
+        })
+        .await
+        .expect("RX data packet");
 }
 
 /// Helper: builds an RSS-enable parameter block that the set_rss_parameter
