@@ -8,6 +8,7 @@ use crate::manager::VfioContainerManager;
 use crate::manager::VfioManagerClient;
 use anyhow::Context as _;
 use async_trait::async_trait;
+use membacking::DmaMapperClient;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
 use vfio_assigned_device_resources::VfioDeviceHandle;
@@ -27,10 +28,10 @@ pub struct VfioDeviceResolver {
 impl VfioDeviceResolver {
     /// Create a new resolver, spawning the container manager task.
     ///
-    /// The manager lazily initializes DMA mappings on first use, so creating
-    /// this is cheap for VMs that have no VFIO devices.
-    pub fn new(spawner: impl pal_async::task::Spawn, guest_memory: guestmem::GuestMemory) -> Self {
-        let mut manager = VfioContainerManager::new(guest_memory);
+    /// The manager registers each new VFIO container with the region manager
+    /// so that DMA mappings are kept in sync with the VM's memory map.
+    pub fn new(spawner: impl pal_async::task::Spawn, dma_mapper_client: DmaMapperClient) -> Self {
+        let mut manager = VfioContainerManager::new(dma_mapper_client);
         let client = manager.client();
         let task = spawner.spawn("vfio-container-mgr", manager.run());
         Self {

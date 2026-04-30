@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::Error;
-use super::VcpuFdExt;
+use crate::Error;
 use crate::ErrorInner;
 use crate::MshvProcessor;
+use crate::VcpuFdExt;
 use hvdef::HvX64RegisterName;
 use hvdef::hypercall::HvRegisterAssoc;
 use mshv_bindings::MSHV_VP_STATE_SIEFP;

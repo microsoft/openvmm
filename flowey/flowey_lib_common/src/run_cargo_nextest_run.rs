@@ -36,7 +36,7 @@ pub mod build_params {
         },
     }
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Serialize, Deserialize, Clone)]
     pub struct NextestBuildParams<C = VarNotClaimed> {
         /// Packages to test for
         pub packages: ReadVar<TestPackages, C>,
