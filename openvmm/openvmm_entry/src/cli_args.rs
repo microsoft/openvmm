@@ -48,9 +48,19 @@ pub struct Options {
         long,
         value_name = "SIZE",
         default_value = "1GB",
-        value_parser = parse_memory
+        value_parser = parse_memory,
+        conflicts_with = "numa_memory"
     )]
     pub memory: u64,
+
+    /// per-NUMA-node guest RAM sizes (comma-separated, e.g. "2G,2G").
+    /// Distributes memory across vNUMA nodes reported to the guest. Mutually
+    /// exclusive with --memory. This is for test-only usage.
+    ///
+    /// TODO: Backing pages are not pinned to any host topology, nor coordinated
+    /// with CPUs. This should change once we implement real numa support.
+    #[clap(long, value_name = "SIZES", value_parser = parse_memory, value_delimiter = ',', conflicts_with = "memory")]
+    pub numa_memory: Option<Vec<u64>>,
 
     /// use shared memory segment
     #[clap(short = 'M', long)]

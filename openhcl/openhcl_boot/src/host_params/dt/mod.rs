@@ -75,6 +75,146 @@ pub enum DtError {
     NotEnoughVtl2Mmio,
 }
 
+/// Allocate the private pool across NUMA nodes.
+///
+/// By default, tries to allocate the entire pool on NUMA node 0 (preserving
+/// previous behavior). If that fails, or if `force_numa_split` is true, the
+/// pool is split evenly across all available NUMA nodes (one range per node).
+fn allocate_private_pool(
+    address_space: &mut AddressSpaceManager,
+    vtl2_ram: &[MemoryEntry],
+    pool_size_bytes: u64,
+    force_numa_split: bool,
+    enable_vtl2_gpa_pool: crate::cmdline::Vtl2GpaPoolConfig,
+    device_dma_page_count: Option<u64>,
+    vp_count: usize,
+    mem_size: u64,
+) {
+    // Try allocating the entire pool on node 0 first. We do this to maintain
+    // compatibility with older openhcl_boot images that do not understand how
+    // to handle a split private pool, and to maintain previous behavior where
+    // the pool was completely allocated on numa node 0.
+    //
+    // Allocate from high memory downward to avoid overlapping any used ranges
+    // in low memory when openhcl's usage gets bigger, as otherwise the
+    // used_range by the bootshim could overlap the pool range chosen when
+    // servicing to a new image.
+    if !force_numa_split {
+        if let Some(pool) = address_space.allocate(
+            Some(0),
+            pool_size_bytes,
+            AllocationType::GpaPool,
+            AllocationPolicy::HighMemory,
+        ) {
+            log::info!("allocated VTL2 pool at {:#x?}", pool.range);
+            return;
+        }
+        log::info!("node 0 cannot fit full pool, splitting across NUMA nodes");
+    } else {
+        log::info!("forcing VTL2 pool NUMA split across nodes");
+    }
+
+    // Enumerate unique NUMA nodes from VTL2 RAM.
+    //
+    // FUTURE: Handle cases where the are CPU only or RAM only numa nodes.
+    let mut numa_nodes = off_stack!(ArrayVec<u32, MAX_NUMA_NODES>, ArrayVec::new_const());
+    for entry in vtl2_ram.iter() {
+        match numa_nodes.binary_search(&entry.vnode) {
+            Ok(_) => {}
+            Err(index) => {
+                numa_nodes.insert(index, entry.vnode);
+            }
+        }
+    }
+
+    let num_nodes = numa_nodes.len() as u64;
+    // Split the per node size to page size aligned chunks, and give the
+    // remainder to the last node.
+    let per_node_size = (pool_size_bytes / num_nodes) & !(HV_PAGE_SIZE - 1);
+    let last_node_size = pool_size_bytes - per_node_size * (num_nodes - 1);
+    let mut remaining = pool_size_bytes;
+
+    // If per-node-size is zero, we're in some strange configuration. We should
+    // have been able to allocate this from a single node, as this would mean
+    // the number of nodes is larger than the number of pages requested for the
+    // pool, so fail explicitly.
+    if per_node_size == 0 {
+        panic!(
+            "cannot split VTL2 pool of size {pool_size_bytes:#x} bytes across \
+            {num_nodes} nodes, per node size {per_node_size:#x} bytes; \
+            enable_vtl2_gpa_pool={enable_vtl2_gpa_pool:?}, \
+            device_dma_page_count={device_dma_page_count:#x?}, \
+            vp_count={vp_count}, mem_size={mem_size:#x}"
+        );
+    }
+
+    for (i, vnode) in numa_nodes.iter().enumerate() {
+        if remaining == 0 {
+            break;
+        }
+
+        let is_last = i == numa_nodes.len() - 1;
+        let alloc_size = if is_last {
+            last_node_size
+        } else {
+            per_node_size
+        };
+
+        // Make sure to allocate high memory downward, for the same reason as
+        // described in the numa 0 case.
+        match address_space.allocate(
+            Some(*vnode),
+            alloc_size,
+            AllocationType::GpaPool,
+            AllocationPolicy::HighMemory,
+        ) {
+            Some(pool) => {
+                remaining -= pool.range.len();
+                log::info!(
+                    "allocated VTL2 pool on node {} at {:#x?}",
+                    vnode,
+                    pool.range
+                );
+            }
+            None => {
+                let mut free_ranges = off_stack!(ArrayString<2048>, ArrayString::new_const());
+                for node in numa_nodes.iter() {
+                    for range in address_space.free_ranges(*node) {
+                        if write!(
+                            free_ranges,
+                            "n{}:[{:#x?}, {:#x?}) ",
+                            node,
+                            range.start(),
+                            range.end()
+                        )
+                        .is_err()
+                        {
+                            let _ = write!(free_ranges, "...");
+                            break;
+                        }
+                    }
+                }
+                let highest_numa_node = vtl2_ram.iter().map(|e| e.vnode).max().unwrap_or(0);
+                panic!(
+                    "failed to allocate VTL2 pool on node {vnode}: \
+                     need {alloc_size:#x} bytes, pool total {pool_size_bytes:#x} bytes \
+                     (enable_vtl2_gpa_pool={enable_vtl2_gpa_pool:?}, \
+                     device_dma_page_count={device_dma_page_count:#x?}, \
+                     vp_count={vp_count}, mem_size={mem_size:#x}), \
+                     highest_numa_node={highest_numa_node}, \
+                     free_ranges=[ {}]",
+                    free_ranges.as_str()
+                );
+            }
+        }
+    }
+
+    assert_eq!(
+        remaining, 0,
+        "pool allocation arithmetic error: {remaining:#x} bytes unallocated"
+    );
+}
+
 /// Allocate VTL2 ram from the partition's memory map.
 fn allocate_vtl2_ram(
     params: &ShimParams,
@@ -577,43 +717,16 @@ fn topology_from_host_dt(
             // ranges to figure out which VTL2 memory is free to allocate from.
             let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
 
-            // NOTE: For now, allocate all the private pool on NUMA node 0 to
-            // match previous behavior. Allocate from high memory downward to
-            // avoid overlapping any used ranges in low memory when openhcl's
-            // usage gets bigger, as otherwise the used_range by the bootshim
-            // could overlap the pool range chosen, when servicing to a new
-            // image.
-            let vnode = 0;
-            match address_space.allocate(
-                Some(vnode),
+            allocate_private_pool(
+                address_space,
+                &vtl2_ram,
                 pool_size_bytes,
-                AllocationType::GpaPool,
-                AllocationPolicy::HighMemory,
-            ) {
-                Some(pool) => {
-                    log::info!("allocated VTL2 pool at {:#x?}", pool.range);
-                }
-                None => {
-                    // Build a compact string representation of the free ranges
-                    // for diagnostics. Keep the string relatively small, as the
-                    // enlightened panic message can only contain 1 page (4096)
-                    // bytes of output.
-                    let mut free_ranges = off_stack!(ArrayString<2048>, ArrayString::new_const());
-                    for range in address_space.free_ranges(vnode) {
-                        if write!(free_ranges, "[{:#x?}, {:#x?}) ", range.start(), range.end())
-                            .is_err()
-                        {
-                            let _ = write!(free_ranges, "...");
-                            break;
-                        }
-                    }
-                    let highest_numa_node = vtl2_ram.iter().map(|e| e.vnode).max().unwrap_or(0);
-                    panic!(
-                        "failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes (enable_vtl2_gpa_pool={enable_vtl2_gpa_pool:?}, device_dma_page_count={device_dma_page_count:#x?}, vp_count={vp_count}, mem_size={mem_size:#x}), highest_numa_node={highest_numa_node}, free_ranges=[ {}]",
-                        free_ranges.as_str()
-                    );
-                }
-            };
+                options.vtl2_gpa_pool_numa_split,
+                enable_vtl2_gpa_pool,
+                device_dma_page_count,
+                vp_count,
+                mem_size,
+            );
         }
     }
 
@@ -774,22 +887,15 @@ fn topology_from_persisted_state(
     // allocated vtl2 pool. Today, we do not allocate a new/larger pool if the
     // command line arguments or host device tree changed, as that's not
     // something we expect to happen in practice.
-    let mut pool_ranges = partition_memory.iter().filter_map(|entry| {
+    let pool_ranges = partition_memory.iter().filter_map(|entry| {
         if entry.vtl_type == MemoryVtlType::VTL2_GPA_POOL {
             Some(entry.range)
         } else {
             None
         }
     });
-    let pool_range = pool_ranges.next();
-    assert!(
-        pool_ranges.next().is_none(),
-        "previous instance had multiple pool ranges"
-    );
 
-    if let Some(pool_range) = pool_range {
-        address_space_builder = address_space_builder.with_pool_range(pool_range);
-    }
+    address_space_builder = address_space_builder.with_pool_ranges(pool_ranges);
 
     // As described above, other ranges come from this current boot.
     address_space_builder = add_common_ranges(params, address_space_builder);

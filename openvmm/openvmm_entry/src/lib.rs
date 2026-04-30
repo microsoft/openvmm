@@ -1583,13 +1583,21 @@ async fn vm_config_from_command_line(
         vpci_devices,
         ide_disks: Vec::new(),
         memory: MemoryConfig {
-            mem_size: opt.memory,
+            mem_size: if let Some(ref sizes) = opt.numa_memory {
+                sizes
+                    .iter()
+                    .try_fold(0u64, |acc, &s| acc.checked_add(s))
+                    .context("numa memory sizes overflow")?
+            } else {
+                opt.memory
+            },
             mmio_gaps,
             prefetch_memory: opt.prefetch,
             private_memory: opt.private_memory,
             transparent_hugepages: opt.thp,
             pci_ecam_gaps,
             pci_mmio_gaps,
+            numa_mem_sizes: opt.numa_memory.clone(),
         },
         processor_topology: ProcessorTopologyConfig {
             proc_count: opt.processors,
