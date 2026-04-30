@@ -61,7 +61,7 @@ impl AsyncResolveResource<DiskHandleKind, BlockDeviceDiskHandle> for BlockDevice
         let disk = BlockDevice::new(
             rsrc.file,
             input.read_only,
-            input.driver_source.simple(),
+            input.driver_source.current(),
             self.uevent_listener.as_deref(),
             Some(self.bounce_buffer_tracker.clone()),
             self.always_bounce,
@@ -96,7 +96,7 @@ impl AsyncResolveResource<DiskHandleKind, BlockDeviceDiskHandle> for StaticBlock
         let disk = BlockDevice::new(
             rsrc.file,
             input.read_only,
-            input.driver_source.simple(),
+            input.driver_source.current(),
             None,
             None,
             false,

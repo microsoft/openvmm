@@ -79,6 +79,7 @@ mod vnet_hdr {
             TCPV4 = 1,
             UDP = 3,
             TCPV6 = 4,
+            UDP_L4 = 5,
         }
     }
 
@@ -186,6 +187,7 @@ impl Endpoint for TapEndpoint {
             tcp: true,
             udp: true,
             tso: true,
+            uso: true,
         }
     }
 }
@@ -433,7 +435,8 @@ fn fixup_ipv4_header_checksum(packet: &mut [u8], l2_len: usize) {
 ///
 /// For TSO, `gso_type` is set based on the `is_ipv4`/`is_ipv6` flags, and
 /// `NEEDS_CSUM` is always set since the kernel requires the checksum to be
-/// partially computed when performing segmentation.
+/// partially computed when performing segmentation. For USO,
+/// `gso_type` is set to `UDP_L4` and the UDP header length (8) is used.
 ///
 /// If no offload flags are set, an all-zero header is returned, which tells the
 /// TAP device that the packet requires no special handling.
@@ -448,9 +451,19 @@ fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
             flags: VirtioNetHdrFlags::new().with_needs_csum(true),
             gso_type: VirtioNetHdrGso::new().with_protocol(protocol),
             hdr_len: meta.l2_len as u16 + meta.l3_len + meta.l4_len as u16,
-            gso_size: meta.max_tcp_segment_size,
+            gso_size: meta.max_segment_size,
             csum_start: meta.l2_len as u16 + meta.l3_len,
             csum_offset: 16, // TCP checksum field offset
+            num_buffers: 0,
+        }
+    } else if meta.flags.offload_udp_segmentation() {
+        VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::UDP_L4),
+            hdr_len: meta.l2_len as u16 + meta.l3_len + 8, // 8 = UDP header length
+            gso_size: meta.max_segment_size,
+            csum_start: meta.l2_len as u16 + meta.l3_len,
+            csum_offset: 6, // UDP checksum field offset
             num_buffers: 0,
         }
     } else if meta.flags.offload_tcp_checksum() {
@@ -497,7 +510,7 @@ fn parse_vnet_hdr(hdr: &VirtioNetHdr) -> RxMetadata {
 
     let l4_protocol = match hdr.gso_type.protocol() {
         VirtioNetHdrGsoProtocol::TCPV4 | VirtioNetHdrGsoProtocol::TCPV6 => L4Protocol::Tcp,
-        VirtioNetHdrGsoProtocol::UDP => L4Protocol::Udp,
+        VirtioNetHdrGsoProtocol::UDP | VirtioNetHdrGsoProtocol::UDP_L4 => L4Protocol::Udp,
         _ => L4Protocol::Unknown,
     };
 
@@ -544,7 +557,7 @@ mod tests {
             l2_len: 14,
             l3_len: 20,
             l4_len: 32,
-            max_tcp_segment_size: 1460,
+            max_segment_size: 1460,
             ..Default::default()
         };
         let hdr = build_vnet_hdr(&meta);
@@ -633,6 +646,27 @@ mod tests {
         };
         let meta = parse_vnet_hdr(&hdr);
         assert_eq!(meta.l4_protocol, L4Protocol::Udp);
+    }
+
+    #[test]
+    fn vnet_hdr_from_tx_metadata_uso() {
+        let meta = TxMetadata {
+            flags: TxFlags::new()
+                .with_offload_udp_segmentation(true)
+                .with_offload_udp_checksum(true)
+                .with_is_ipv4(true),
+            l2_len: 14,
+            l3_len: 20,
+            max_segment_size: 1472,
+            ..Default::default()
+        };
+        let hdr = build_vnet_hdr(&meta);
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::UDP_L4);
+        assert_eq!(hdr.gso_size, 1472);
+        assert_eq!(hdr.hdr_len, 14 + 20 + 8);
+        assert!(hdr.flags.needs_csum());
+        assert_eq!(hdr.csum_start, 14 + 20);
+        assert_eq!(hdr.csum_offset, 6);
     }
 
     #[test]

@@ -43,7 +43,10 @@ impl ResourceId<HypervisorKind> for KvmHandle {
 
 /// Handle for the MSHV hypervisor backend.
 #[derive(MeshPayload)]
-pub struct MshvHandle;
+pub struct MshvHandle {
+    /// An open `/dev/mshv` file descriptor.
+    pub mshv: std::fs::File,
+}
 
 impl ResourceId<HypervisorKind> for MshvHandle {
     const ID: &'static str = "mshv";
@@ -51,7 +54,27 @@ impl ResourceId<HypervisorKind> for MshvHandle {
 
 /// Handle for the WHP hypervisor backend.
 #[derive(MeshPayload)]
-pub struct WhpHandle;
+pub struct WhpHandle {
+    /// Use the user-mode APIC emulator instead of the in-hypervisor one.
+    ///
+    /// Only supported on x86_64. Setting this on aarch64 will cause partition
+    /// creation to fail.
+    pub user_mode_apic: bool,
+    /// Use the hypervisor's in-built enlightenment support if available.
+    ///
+    /// Only supported on x86_64. Setting this to `false` on aarch64 will cause
+    /// partition creation to fail.
+    pub offload_enlightenments: bool,
+}
+
+impl Default for WhpHandle {
+    fn default() -> Self {
+        Self {
+            user_mode_apic: false,
+            offload_enlightenments: true,
+        }
+    }
+}
 
 impl ResourceId<HypervisorKind> for WhpHandle {
     const ID: &'static str = "whp";
@@ -74,10 +97,24 @@ pub trait HypervisorProbe: Send + Sync + 'static {
     fn name(&self) -> &str;
 
     /// Checks whether this backend is available and, if so, returns a new
-    /// [`Resource<HypervisorKind>`] for it.
+    /// [`Resource<HypervisorKind>`] for it with default settings.
     ///
-    /// Returns `Ok(None)` if the backend is not available on this system.
+    /// Used for auto-detection: backends are tried in priority order, and
+    /// `Ok(None)` means "skip me, try the next one".
     fn try_new_resource(&self) -> anyhow::Result<Option<Resource<HypervisorKind>>>;
+
+    /// Constructs a [`Resource<HypervisorKind>`] for an explicitly selected
+    /// backend, with optional parameters.
+    ///
+    /// Unlike [`try_new_resource`](Self::try_new_resource), this returns
+    /// `Err` (not `Ok(None)`) if the backend is unavailable, so the caller
+    /// gets a specific error message.
+    ///
+    /// `params` contains backend-specific key-value pairs parsed from the
+    /// `--hypervisor name:key=val,...` CLI syntax. A bare key (no `=`) is
+    /// passed as `(key, "true")`. Backends should return an error for
+    /// unrecognized keys.
+    fn new_resource(&self, params: &[(&str, &str)]) -> anyhow::Result<Resource<HypervisorKind>>;
 }
 
 /// Private module for linkme infrastructure.

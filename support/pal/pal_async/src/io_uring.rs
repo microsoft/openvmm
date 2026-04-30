@@ -6,10 +6,41 @@
 // UNSAFETY: The `IoUringSubmit` trait has an unsafe method for submitting SQEs.
 #![expect(unsafe_code)]
 
+pub use squeue::Entry;
+
 use io_uring::squeue;
 use std::future::Future;
 use std::io;
-use std::pin::Pin;
+
+/// Component trait for drivers that optionally support io-uring submission.
+///
+/// All types that participate in the `Driver` blanket impl on Linux must
+/// implement this trait. There is no default—implementors must explicitly
+/// return `None` if they do not support io-uring, so that wrapper types
+/// do not silently drop the capability.
+#[cfg(target_os = "linux")]
+pub trait IoUringDriver {
+    /// The type used to submit io-uring operations.
+    ///
+    /// Use [`NoIoUring`] if the driver does not support io-uring.
+    type Submitter: IoUringSubmit;
+
+    /// Returns an io-uring submitter.
+    fn io_uring_submitter(&self) -> Option<&Self::Submitter>;
+}
+
+/// A type that represents the absence of io-uring support.
+pub enum NoIoUring {}
+
+impl IoUringSubmit for NoIoUring {
+    fn probe(&self, _opcode: u8) -> bool {
+        match *self {}
+    }
+
+    unsafe fn submit(&self, _sqe: Entry) -> impl Future<Output = io::Result<i32>> + Send + '_ {
+        (match *self {}) as std::future::Pending<_>
+    }
+}
 
 /// Trait for submitting io-uring operations.
 pub trait IoUringSubmit: Send + Sync {
@@ -60,8 +91,5 @@ pub trait IoUringSubmit: Send + Sync {
     ///     Ok(buf.len())
     /// }
     /// ```
-    unsafe fn submit(
-        &self,
-        sqe: squeue::Entry,
-    ) -> Pin<Box<dyn Future<Output = io::Result<i32>> + Send + '_>>;
+    unsafe fn submit(&self, sqe: Entry) -> impl Future<Output = io::Result<i32>> + Send + '_;
 }

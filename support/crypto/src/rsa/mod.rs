@@ -3,9 +3,11 @@
 
 //! RSA cryptographic operations.
 
-#[cfg(unix)]
+#![cfg(openssl)]
+
+#[cfg(openssl)]
 pub(crate) mod ossl;
-#[cfg(unix)]
+#[cfg(openssl)]
 use ossl as sys;
 
 use thiserror::Error;

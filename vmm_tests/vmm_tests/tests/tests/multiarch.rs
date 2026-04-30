@@ -476,6 +476,128 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     Ok(())
 }
 
+/// Test that unauthenticated deletion of PK and KEK is rejected by the firmware.
+/// With secure boot enabled, PK and KEK are authenticated variables. An unsigned
+/// delete (e.g. `rm` via efivarfs) must fail, leaving the variables intact and
+/// SetupMode unchanged.
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+)]
+async fn secure_boot_pk_kek_unauthenticated_delete_rejected<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config.with_secure_boot().run().await?;
+    let shell = agent.unix_shell();
+
+    const EFI_GLOBAL_VARIABLE_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
+
+    let pk_path = format!("/sys/firmware/efi/efivars/PK-{}", EFI_GLOBAL_VARIABLE_GUID);
+    let kek_path = format!("/sys/firmware/efi/efivars/KEK-{}", EFI_GLOBAL_VARIABLE_GUID);
+    let setup_mode_path = format!(
+        "/sys/firmware/efi/efivars/SetupMode-{}",
+        EFI_GLOBAL_VARIABLE_GUID
+    );
+
+    // Verify initial state: PK and KEK exist, SetupMode is 0
+    let pk_exists = cmd!(shell, "sudo")
+        .args(["test", "-f", &pk_path])
+        .output()
+        .await?;
+    assert!(pk_exists.status.success(), "PK should exist initially");
+
+    let kek_exists = cmd!(shell, "sudo")
+        .args(["test", "-f", &kek_path])
+        .output()
+        .await?;
+    assert!(kek_exists.status.success(), "KEK should exist initially");
+
+    let setup_mode = cmd!(shell, "sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!("od -An -t u1 {} | tail -c 2", setup_mode_path),
+        ])
+        .output()
+        .await?;
+    let sm = String::from_utf8_lossy(&setup_mode.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(sm, "0", "SetupMode should be 0 (secure boot active)");
+
+    // Attempt to delete PK without authentication — should fail
+    cmd!(shell, "sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!("chattr -i {} 2>/dev/null || true", pk_path),
+        ])
+        .run()
+        .await?;
+    let pk_delete = cmd!(shell, "sudo")
+        .args(["rm", "-f", &pk_path])
+        .output()
+        .await?;
+
+    // Verify PK still exists after failed delete attempt
+    let pk_still_exists = cmd!(shell, "sudo")
+        .args(["test", "-f", &pk_path])
+        .output()
+        .await?;
+    assert!(
+        pk_still_exists.status.success(),
+        "PK should still exist after unauthenticated delete attempt (rm exit status: {})",
+        pk_delete.status,
+    );
+
+    // Attempt to delete KEK without authentication — should fail
+    cmd!(shell, "sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!("chattr -i {} 2>/dev/null || true", kek_path),
+        ])
+        .run()
+        .await?;
+    let kek_delete = cmd!(shell, "sudo")
+        .args(["rm", "-f", &kek_path])
+        .output()
+        .await?;
+
+    // Verify KEK still exists after failed delete attempt
+    let kek_still_exists = cmd!(shell, "sudo")
+        .args(["test", "-f", &kek_path])
+        .output()
+        .await?;
+    assert!(
+        kek_still_exists.status.success(),
+        "KEK should still exist after unauthenticated delete attempt (rm exit status: {})",
+        kek_delete.status,
+    );
+
+    // Verify SetupMode is still 0 — the failed deletes should not change it
+    let setup_mode_after = cmd!(shell, "sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!("od -An -t u1 {} | tail -c 2", setup_mode_path),
+        ])
+        .output()
+        .await?;
+    let sm_after = String::from_utf8_lossy(&setup_mode_after.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(
+        sm_after, "0",
+        "SetupMode should still be 0 after failed delete attempts"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Boot with a virtio-blk device served by the openvmm_vhost binary over
 /// a vhost-user Unix socket.  Verifies the full stack: guest driver →
 /// virtio transport → frontend protocol → socket → backend protocol →

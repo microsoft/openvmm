@@ -159,8 +159,16 @@ impl BufferAccess for GuestBuffers {
     }
 }
 
+/// Configuration for the emulated BNIC device.
+#[derive(Default)]
+pub struct BnicConfig {
+    /// Adapter link speed in megabits per second.
+    pub adapter_link_speed_mbps: u32,
+}
+
 pub struct BasicNic {
     vports: Vec<Vport>,
+    config: BnicConfig,
 }
 
 impl InspectMut for BasicNic {
@@ -197,7 +205,7 @@ struct QueueCfg {
 }
 
 impl BasicNic {
-    pub fn new(vports: Vec<VportConfig>) -> Self {
+    pub fn new(vports: Vec<VportConfig>, config: BnicConfig) -> Self {
         assert!(!vports.is_empty());
 
         let vports = vports
@@ -219,7 +227,7 @@ impl BasicNic {
             )
             .collect();
 
-        Self { vports }
+        Self { vports, config }
     }
 
     pub async fn handle_req(
@@ -231,7 +239,16 @@ impl BasicNic {
     ) -> anyhow::Result<usize> {
         tracing::debug!(msg_type = ?ManaCommandCode(hdr.req.msg_type), "bnic request");
 
-        let response_len = match ManaCommandCode(hdr.req.msg_type) {
+        // Zero the guest response buffer before writing the actual response
+        // to maintain forward compatibility: a newer VF driver may request
+        // fields added in a later protocol version that this emulator does
+        // not yet populate. Zeroing ensures those fields read as zero rather
+        // than containing undefined data.
+        let guest_resp_size = MemoryWrite::len(&write);
+        let mut zero_write = write.clone();
+        zero_write.write(&vec![0u8; guest_resp_size])?;
+
+        match ManaCommandCode(hdr.req.msg_type) {
             ManaCommandCode::MANA_QUERY_DEV_CONFIG => {
                 let _req: ManaQueryDeviceCfgReq = read
                     .read_plain()
@@ -245,10 +262,14 @@ impl BasicNic {
                     max_num_vports: self.vports.len() as u16,
                     reserved: 0,
                     max_num_eqs: 64,
+                    adapter_mtu: 0,
+                    reserved2: 0,
+                    adapter_link_speed_mbps: self.config.adapter_link_speed_mbps,
                 };
 
-                write.write(resp.as_bytes())?;
-                size_of_val(&resp)
+                let resp_bytes = resp.as_bytes();
+                let write_len = guest_resp_size.min(resp_bytes.len());
+                write.write(&resp_bytes[..write_len])?;
             }
             ManaCommandCode::MANA_CONFIG_VPORT_TX => {
                 let req: ManaConfigVportReq = read
@@ -265,7 +286,6 @@ impl BasicNic {
                     reserved: 0,
                 };
                 write.write(resp.as_bytes())?;
-                size_of_val(&resp)
             }
             ManaCommandCode::MANA_CREATE_WQ_OBJ => {
                 let req: ManaCreateWqobjReq =
@@ -317,7 +337,6 @@ impl BasicNic {
                 // Take ownership of the DMA regions.
                 state.remove_dma_region(req.wq_gdma_region).unwrap();
                 state.remove_dma_region(req.cq_gdma_region).unwrap();
-                size_of_val(&resp)
             }
             ManaCommandCode::MANA_DESTROY_WQ_OBJ => {
                 let req: ManaDestroyWqobjReq = read
@@ -339,7 +358,6 @@ impl BasicNic {
                 let (wq_id, cq_id) = queues.take().context("specified queue does not exist")?;
                 state.queues.free_wq(is_send, wq_id).unwrap();
                 state.queues.free_cq(cq_id).unwrap();
-                0
             }
             ManaCommandCode::MANA_CONFIG_VPORT_RX => {
                 let req: ManaCfgRxSteerReq = read
@@ -398,7 +416,6 @@ impl BasicNic {
                     }
                     _ => {}
                 }
-                0
             }
             ManaCommandCode::MANA_VTL2_MOVE_FILTER => {
                 anyhow::bail!("unsupported command MANA_VTL2_MOVE_FILTER");
@@ -418,7 +435,6 @@ impl BasicNic {
                 };
 
                 write.write(resp.as_bytes())?;
-                size_of_val(&resp)
             }
             ManaCommandCode::MANA_QUERY_VPORT_CONFIG => {
                 let req: ManaQueryVportCfgReq = read
@@ -440,7 +456,6 @@ impl BasicNic {
                 };
 
                 write.write(resp.as_bytes())?;
-                size_of_val(&resp)
             }
             ManaCommandCode::MANA_VTL2_ASSIGN_SERIAL_NUMBER => {
                 let req: ManaSetVportSerialNo =
@@ -450,11 +465,10 @@ impl BasicNic {
                     .get_mut(req.vport as usize)
                     .context("invalid vport")?;
                 vport.serial_no = req.serial_no;
-                0
             }
             n => anyhow::bail!("unsupported request {:?}", n),
-        };
-        Ok(response_len)
+        }
+        Ok(guest_resp_size)
     }
 }
 
@@ -547,14 +561,14 @@ impl TxRxTask {
             l2_len: 14,
             l3_len: oob.s_oob.trans_off().clamp(14, 255) - 14,
             l4_len: 0,
-            max_tcp_segment_size: 0,
+            max_segment_size: 0,
         };
 
         if sqe.header.params.client_oob_in_sgl() {
             meta.l4_len =
                 sge0.size
                     .saturating_sub(meta.l2_len as u32 + meta.l3_len as u32) as u8;
-            meta.max_tcp_segment_size = sqe.header.params.gd_client_unit_data();
+            meta.max_segment_size = sqe.header.params.gd_client_unit_data();
             meta.flags.set_offload_tcp_segmentation(true);
         }
 

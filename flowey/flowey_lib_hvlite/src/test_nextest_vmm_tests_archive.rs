@@ -67,9 +67,16 @@ impl SimpleFlowNode for Node {
             && matches!(ctx.platform(), FlowPlatform::Linux(_))
         {
             pre_run_deps.push({
-                ctx.emit_rust_step("ensure /dev/kvm is accessible", |_| {
+                ctx.emit_rust_step("ensure hypervisor device is accessible", |_| {
                     |rt| {
-                        flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/kvm").run()?;
+                        // Make whichever hypervisor device exists accessible.
+                        // KVM machines have /dev/kvm, MSHV machines have /dev/mshv.
+                        if Path::new("/dev/kvm").exists() {
+                            flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/kvm").run()?;
+                        }
+                        if Path::new("/dev/mshv").exists() {
+                            flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/mshv").run()?;
+                        }
                         Ok(())
                     }
                 })

@@ -96,10 +96,11 @@ pub struct SnpCpuidInitializer {
     cpuid_pages: Vec<HvPspCpuidPage>,
     access_vsm: bool,
     vtom: u64,
+    secure_avic: bool,
 }
 
 impl SnpCpuidInitializer {
-    pub fn new(cpuid_pages_data: &[u8], access_vsm: bool, vtom: u64) -> Self {
+    pub fn new(cpuid_pages_data: &[u8], access_vsm: bool, vtom: u64, secure_avic: bool) -> Self {
         let mut cpuid_pages = vec![
             HvPspCpuidPage::new_zeroed();
             cpuid_pages_data.len() / size_of::<HvPspCpuidPage>()
@@ -113,6 +114,7 @@ impl SnpCpuidInitializer {
             cpuid_pages,
             access_vsm,
             vtom,
+            secure_avic,
         }
     }
 }
@@ -214,6 +216,7 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
                     .with_vmpl(true)
                     .with_rmp_query(true)
                     .with_tsc_aux_virtualization(true)
+                    .with_secure_avic(self.secure_avic)
                     .into(),
                 cpuid::ExtendedSevFeaturesEbx::new()
                     .with_cbit_position(0x3f)
@@ -429,12 +432,16 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
             .with_use_ex_processor_masks(true)
             // If only xAPIC is supported, then the Hyper-V MSRs are
             // more efficient for EOIs.
+            //
             // If X2APIC is supported, then we can use the X2APIC MSRs. These
             // are as efficient as the Hyper-V MSRs, and they are
             // compatible with APIC hardware offloads.
             // However, Lazy EOI on SNP is beneficial and requires the
             // Hyper-V MSRs to function. Enable it here always.
-            .with_use_apic_msrs(true)
+            //
+            // When Secure AVIC is enabled, x2APIC MSR accesses are
+            // not intercepted. Secure AVIC accelerates EOIs (15.36.21.5 Guest APIC Accesses).
+            .with_use_apic_msrs(!self.secure_avic)
             .with_long_spin_wait_count(!0)
             .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
             .with_use_synthetic_cluster_ipi(true);

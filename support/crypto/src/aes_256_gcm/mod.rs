@@ -3,15 +3,22 @@
 
 //! AES-256-GCM encryption and decryption.
 
-#[cfg(unix)]
+#![cfg(any(openssl, symcrypt, all(native, windows)))]
+
+#[cfg(openssl)]
 mod ossl;
-#[cfg(unix)]
+#[cfg(openssl)]
 use ossl as sys;
 
-#[cfg(windows)]
+#[cfg(all(native, windows))]
 mod win;
-#[cfg(windows)]
+#[cfg(all(native, windows))]
 use win as sys;
+
+#[cfg(symcrypt)]
+mod symcrypt;
+#[cfg(symcrypt)]
+use symcrypt as sys;
 
 use thiserror::Error;
 

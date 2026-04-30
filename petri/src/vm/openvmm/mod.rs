@@ -193,7 +193,7 @@ struct PetriVmResourcesOpenVmm {
     properties: PetriVmProperties,
 }
 
-fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
+async fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
     let disk = open_disk_type(
         path,
         OpenDiskOptions {
@@ -201,6 +201,7 @@ fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
             direct: false,
         },
     )
+    .await
     .with_context(|| format!("failed to open disk: {}", path.display()))?;
     Ok(LayeredDiskHandle {
         layers: vec![
@@ -270,46 +271,54 @@ fn memdiff_remote_disk(url: &str) -> anyhow::Result<Resource<DiskHandleKind>> {
     .into_resource())
 }
 
-fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
-    let convert_disk = |disk: &PetriVmgsDisk| -> anyhow::Result<VmgsDisk> {
+async fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
+    async fn convert_disk(disk: &PetriVmgsDisk) -> anyhow::Result<VmgsDisk> {
         Ok(VmgsDisk {
-            disk: petri_disk_to_openvmm(&disk.disk)?,
+            disk: petri_disk_to_openvmm(&disk.disk).await?,
             encryption_policy: disk.encryption_policy,
         })
-    };
+    }
 
     Ok(match vmgs {
-        PetriVmgsResource::Disk(disk) => VmgsResource::Disk(convert_disk(disk)?),
+        PetriVmgsResource::Disk(disk) => VmgsResource::Disk(convert_disk(disk).await?),
         PetriVmgsResource::ReprovisionOnFailure(disk) => {
-            VmgsResource::ReprovisionOnFailure(convert_disk(disk)?)
+            VmgsResource::ReprovisionOnFailure(convert_disk(disk).await?)
         }
-        PetriVmgsResource::Reprovision(disk) => VmgsResource::Reprovision(convert_disk(disk)?),
+        PetriVmgsResource::Reprovision(disk) => {
+            VmgsResource::Reprovision(convert_disk(disk).await?)
+        }
         PetriVmgsResource::Ephemeral => VmgsResource::Ephemeral,
     })
 }
 
-fn petri_disk_to_openvmm(disk: &Disk) -> anyhow::Result<Resource<DiskHandleKind>> {
+async fn petri_disk_to_openvmm(disk: &Disk) -> anyhow::Result<Resource<DiskHandleKind>> {
     Ok(match disk {
         Disk::Memory(len) => LayeredDiskHandle::single_layer(RamDiskLayerHandle {
             len: Some(*len),
             sector_size: None,
         })
         .into_resource(),
-        Disk::Differencing(DiskPath::Local(path)) => memdiff_disk(path)?,
+        Disk::Differencing(DiskPath::Local(path)) => memdiff_disk(path).await?,
         Disk::Differencing(DiskPath::Remote { url }) => memdiff_remote_disk(url)?,
-        Disk::Persistent(path) => open_disk_type(
-            path.as_ref(),
-            OpenDiskOptions {
-                read_only: false,
-                direct: false,
-            },
-        )?,
-        Disk::Temporary(path) => open_disk_type(
-            path.as_ref(),
-            OpenDiskOptions {
-                read_only: false,
-                direct: false,
-            },
-        )?,
+        Disk::Persistent(path) => {
+            open_disk_type(
+                path.as_ref(),
+                OpenDiskOptions {
+                    read_only: false,
+                    direct: false,
+                },
+            )
+            .await?
+        }
+        Disk::Temporary(path) => {
+            open_disk_type(
+                path.as_ref(),
+                OpenDiskOptions {
+                    read_only: false,
+                    direct: false,
+                },
+            )
+            .await?
+        }
     })
 }

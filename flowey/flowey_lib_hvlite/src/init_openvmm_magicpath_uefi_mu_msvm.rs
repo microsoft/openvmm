@@ -65,22 +65,14 @@ impl FlowNode for Node {
                 let openvmm_magicpath = rt.read(openvmm_magicpath);
                 for (arch, (msvm_fd, _dones)) in packages {
                     let msvm_fd = rt.read(msvm_fd);
-                    let dst_folder = openvmm_magicpath
-                        .join(format!(
-                            "hyperv.uefi.mscoreuefi.{}.RELEASE",
-                            match arch {
-                                CommonArch::Aarch64 => "AARCH64",
-                                CommonArch::X86_64 => "x64",
-                            }
-                        ))
-                        .join(format!(
-                            "Msvm{}",
-                            match arch {
-                                CommonArch::Aarch64 => "AARCH64",
-                                CommonArch::X86_64 => "X64",
-                            }
-                        ))
-                        .join("RELEASE_VS2022/FV");
+                    let dst_folder = openvmm_magicpath.join(match arch {
+                        CommonArch::Aarch64 => {
+                            "hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV"
+                        }
+                        CommonArch::X86_64 => {
+                            "hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV"
+                        }
+                    });
                     let dst = dst_folder.join("MSVM.fd");
 
                     if msvm_fd.absolute()? != dst.absolute()? {

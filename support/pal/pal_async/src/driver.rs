@@ -4,14 +4,14 @@
 //! Driver trait.
 
 // UNSAFETY: Needed to define and implement the unsafe new_dyn_overlapped_file method.
-#![cfg_attr(windows, expect(unsafe_code))]
+#![cfg_attr(any(windows, target_os = "linux"), expect(unsafe_code))]
 
 #[cfg(unix)]
 use crate::fd::FdReadyDriver;
 #[cfg(unix)]
 use crate::fd::PollFdReady;
 #[cfg(target_os = "linux")]
-use crate::io_uring::IoUringSubmit;
+use crate::io_uring::IoUringDriver;
 use crate::socket::PollSocketReady;
 use crate::socket::SocketReadyDriver;
 #[cfg(windows)]
@@ -75,23 +75,59 @@ pub trait Driver: 'static + Send + Sync {
         handle: RawHandle,
     ) -> io::Result<PollImpl<dyn IoOverlapped>>;
 
-    /// Returns an io-uring submitter, if the driver supports io-uring.
-    ///
-    /// Returns `None` if the driver does not support io-uring.
+    /// Returns whether the given opcode is supported by the ring.
     #[cfg(target_os = "linux")]
-    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit>;
-}
+    fn io_uring_probe(&self, opcode: u8) -> bool;
 
-/// Component trait for drivers that optionally support io-uring submission.
-///
-/// All types that participate in the `Driver` blanket impl on Linux must
-/// implement this trait. There is no default—implementors must explicitly
-/// return `None` if they do not support io-uring, so that wrapper types
-/// do not silently drop the capability.
-#[cfg(target_os = "linux")]
-pub trait IoUringDriver {
-    /// Returns an io-uring submitter, if supported.
-    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit>;
+    /// Submits an io-uring SQE for asynchronous execution.
+    ///
+    /// Returns a future that completes with the IO result. The future **aborts
+    /// the process** if dropped while the IO is in flight, since there is no
+    /// way to synchronously cancel an in-flight io-uring operation.
+    ///
+    /// # Safety
+    ///
+    /// All memory referenced by the SQE must remain valid for the lifetime of
+    /// the returned future.
+    ///
+    /// This can be hard to do safely; in particular, if this future can be
+    /// leaked (via [`std::mem::forget`] or otherwise) then the caller must
+    /// ensure that any referenced memory also leaks. The easiest way to do that
+    /// is to ensure that the future is `await`ed in an async function or block
+    /// that owns the underlying memory. So, this is safe:
+    ///
+    /// ```rust,ignore
+    /// async fn write(driver: &impl Driver, file: &File, buf: Vec<u8>) -> io::Result<usize> {
+    ///     let sqe = opcode::Write::new(
+    ///         types::Fd(file.as_raw_fd()), buf.as_ptr(), buf.len() as u32,
+    ///     ).build();
+    ///     // SAFETY: `buf` is owned by this async function's state machine.
+    ///     // If the outer future is leaked, `buf` leaks with it, so the
+    ///     // memory remains valid for the io-uring operation.
+    ///     unsafe { driver.io_uring_submit(sqe).await? };
+    ///     Ok(buf.len())
+    /// }
+    /// ```
+    ///
+    /// But this is not:
+    ///
+    /// ```rust,ignore
+    /// async fn write(driver: &impl Driver, file: &File, buf: &[u8]) -> io::Result<usize> {
+    ///     let sqe = opcode::Write::new(
+    ///         types::Fd(file.as_raw_fd()), buf.as_ptr(), buf.len() as u32,
+    ///     ).build();
+    ///     // NOT SAFE: `buf` is a borrow. If the outer future is leaked,
+    ///     // the referent can be freed while the io-uring operation is
+    ///     // still in flight.
+    ///     unsafe { driver.io_uring_submit(sqe).await? };
+    ///     Ok(buf.len())
+    /// }
+    /// ```
+    #[cfg(target_os = "linux")]
+    unsafe fn io_uring_submit(
+        &self,
+        sqe: crate::io_uring::Entry,
+    ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<i32>> + Send + '_>>;
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -144,8 +180,28 @@ where
         Ok(smallbox::smallbox!(self.new_wait(fd, read_size)?))
     }
 
-    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit> {
-        IoUringDriver::io_uring_submit(self)
+    fn io_uring_probe(&self, opcode: u8) -> bool {
+        use crate::io_uring::IoUringSubmit as _;
+
+        self.io_uring_submitter()
+            .is_some_and(|submitter| submitter.probe(opcode))
+    }
+
+    unsafe fn io_uring_submit(
+        &self,
+        sqe: crate::io_uring::Entry,
+    ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<i32>> + Send + '_>> {
+        use crate::io_uring::IoUringSubmit as _;
+
+        Box::pin(async move {
+            // SAFETY: caller guarantees contract
+            unsafe {
+                self.io_uring_submitter()
+                    .ok_or(io::ErrorKind::Unsupported)?
+                    .submit(sqe)
+            }
+            .await
+        })
     }
 }
 
@@ -196,8 +252,17 @@ impl Driver for Box<dyn Driver> {
     }
 
     #[cfg(target_os = "linux")]
-    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit> {
-        self.as_ref().io_uring_submit()
+    fn io_uring_probe(&self, opcode: u8) -> bool {
+        self.as_ref().io_uring_probe(opcode)
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn io_uring_submit(
+        &self,
+        sqe: crate::io_uring::Entry,
+    ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<i32>> + Send + '_>> {
+        // SAFETY: caller guarantees contract
+        unsafe { self.as_ref().io_uring_submit(sqe) }
     }
 }
 
@@ -243,8 +308,17 @@ impl Driver for Arc<dyn Driver> {
     }
 
     #[cfg(target_os = "linux")]
-    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit> {
-        self.as_ref().io_uring_submit()
+    fn io_uring_probe(&self, opcode: u8) -> bool {
+        self.as_ref().io_uring_probe(opcode)
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn io_uring_submit(
+        &self,
+        sqe: crate::io_uring::Entry,
+    ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<i32>> + Send + '_>> {
+        // SAFETY: caller guarantees contract
+        unsafe { self.as_ref().io_uring_submit(sqe) }
     }
 }
 

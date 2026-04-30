@@ -338,6 +338,10 @@ pub struct MemoryConfig {
     pub mmio_gaps: Vec<MemoryRange>,
     pub pci_ecam_gaps: Vec<MemoryRange>,
     pub pci_mmio_gaps: Vec<MemoryRange>,
+    /// Test only: per-NUMA-node memory sizes. When set, RAM is distributed
+    /// across vNUMA nodes according to these sizes instead of assigning all RAM
+    /// to node 0. The sum must equal `mem_size`.
+    pub numa_mem_sizes: Option<Vec<u64>>,
 }
 
 #[derive(Debug, MeshPayload, Default)]
@@ -353,8 +357,6 @@ pub struct VmbusConfig {
 #[derive(Debug, MeshPayload, Default)]
 pub struct HypervisorConfig {
     pub with_hv: bool,
-    pub user_mode_hv_enlightenments: bool,
-    pub user_mode_apic: bool,
     pub with_vtl2: Option<Vtl2Config>,
     pub with_isolation: Option<IsolationType>,
 }

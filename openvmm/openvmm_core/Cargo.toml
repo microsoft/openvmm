@@ -110,6 +110,8 @@ virt_whp = { workspace = true, optional = true }
 vmswitch.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+vfio_assigned_device.workspace = true
+vfio_assigned_device_resources.workspace = true
 vmgs_broker = { workspace = true, features = ["encryption"] }
 
 [build-dependencies]

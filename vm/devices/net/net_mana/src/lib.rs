@@ -537,6 +537,7 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
             udp: true,
             // Tbe bounce buffer path does not support TSO.
             tso: !self.bounce_buffer,
+            uso: false,
         }
     }
 
@@ -576,8 +577,7 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
     }
 
     fn link_speed(&self) -> u64 {
-        // Hard code to 200Gbps until MANA supports querying this.
-        200 * 1000 * 1000 * 1000
+        self.vport.link_speed_bps()
     }
 }
 
@@ -1211,17 +1211,18 @@ impl<T: DeviceBacking> ManaQueue<T> {
         } else {
             let (segments, segment_offset) = if meta.flags.offload_tcp_segmentation() {
                 // For LSO, GDMA requires that SGE0 should only contain the header.
-                let header_len = (meta.l2_len as u16 + meta.l3_len + meta.l4_len as u16) as u32;
-                if header_len > PAGE_SIZE32 {
+                let header_len =
+                    u32::from(meta.l2_len) + u32::from(meta.l3_len) + u32::from(meta.l4_len);
+                let Some(header_len_u8) = u8::try_from(header_len).ok() else {
                     tracelimit::error_ratelimited!(
                         header_len,
-                        "Header larger than PAGE_SIZE unsupported"
+                        "Header larger than u8::MAX unsupported"
                     );
                     // Drop the packet
                     return Ok(None);
-                }
-                builder.set_client_oob_in_sgl(header_len as u8);
-                builder.set_gd_client_unit_data(meta.max_tcp_segment_size);
+                };
+                builder.set_client_oob_in_sgl(header_len_u8);
+                builder.set_gd_client_unit_data(meta.max_segment_size);
 
                 let (head_iova, used_segments, used_segments_len) =
                     if header_len > head.len || self.force_tx_header_bounce {

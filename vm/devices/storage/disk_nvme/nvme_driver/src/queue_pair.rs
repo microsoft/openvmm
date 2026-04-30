@@ -699,7 +699,7 @@ pub enum RequestError {
     Nvme(#[source] NvmeError),
     #[error("memory error")]
     Memory(#[source] GuestMemoryError),
-    #[error("i/o too large for double buffering")]
+    #[error("data request too large for double buffering")]
     TooLarge,
 }
 
@@ -841,7 +841,7 @@ impl Issuer {
                 self.alloc
                     .alloc_bytes(mem.len())
                     .await
-                    .ok_or(RequestError::TooLarge)?,
+                    .map_err(|_| RequestError::TooLarge)?,
             );
 
             if opcode.transfer_host_to_controller() {
@@ -917,11 +917,14 @@ impl Issuer {
         mut command: spec::Command,
         data: &[u8],
     ) -> Result<spec::Completion, RequestError> {
-        let mem = self
-            .alloc
-            .alloc_bytes(data.len())
-            .await
-            .expect("pool cap is >= 1 page");
+        let mem = self.alloc.alloc_bytes(data.len()).await.map_err(|e| {
+            tracelimit::warn_ratelimited!(
+                requested_pages = e.requested,
+                max_pages = e.max,
+                "Insufficient memory to complete issue in request"
+            );
+            RequestError::TooLarge
+        })?;
 
         mem.write(data);
         assert_eq!(
@@ -942,11 +945,14 @@ impl Issuer {
         mut command: spec::Command,
         data: &mut [u8],
     ) -> Result<spec::Completion, RequestError> {
-        let mem = self
-            .alloc
-            .alloc_bytes(data.len())
-            .await
-            .expect("pool capacity is sufficient");
+        let mem = self.alloc.alloc_bytes(data.len()).await.map_err(|e| {
+            tracelimit::warn_ratelimited!(
+                requested_pages = e.requested,
+                max_pages = e.max,
+                "Insufficient memory to complete issue out request"
+            );
+            RequestError::TooLarge
+        })?;
 
         let prp = self
             .make_prp(0, (0..mem.page_count()).map(|i| mem.physical_address(i)))

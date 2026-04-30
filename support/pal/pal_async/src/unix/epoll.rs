@@ -459,10 +459,11 @@ impl TimerDriver for EpollDriver {
     }
 }
 
-impl crate::driver::IoUringDriver for EpollDriver {
-    fn io_uring_submit(&self) -> Option<&dyn crate::io_uring::IoUringSubmit> {
-        let uring = self
-            .inner
+impl crate::io_uring::IoUringDriver for EpollDriver {
+    type Submitter = EpollIoUring;
+
+    fn io_uring_submitter(&self) -> Option<&EpollIoUring> {
+        self.inner
             .io_uring
             .get_or_try_init(|| {
                 EpollIoUring::new(
@@ -470,8 +471,7 @@ impl crate::driver::IoUringDriver for EpollDriver {
                     self.inner.wake_event.as_fd().as_raw_fd(),
                 )
             })
-            .ok()?;
-        Some(uring)
+            .ok()
     }
 }
 

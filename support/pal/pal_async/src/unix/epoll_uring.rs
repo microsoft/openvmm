@@ -105,10 +105,7 @@ thread_local! {
 }
 
 /// A standalone io-uring that integrates with an epoll event loop.
-///
-/// Completions are processed by calling [`process_completions`](Self::process_completions)
-/// from the epoll event loop when the ring's fd becomes readable.
-pub(crate) struct EpollIoUring {
+pub struct EpollIoUring {
     /// Remote submission queue for off-thread callers. Entries already have
     /// `user_data` set to point at the pinned `IoFuture`'s completion state.
     remote_queue: Mutex<VecDeque<squeue::Entry>>,
@@ -373,10 +370,10 @@ impl IoUringSubmit for EpollIoUring {
     unsafe fn submit(
         &self,
         sqe: squeue::Entry,
-    ) -> Pin<Box<dyn Future<Output = io::Result<i32>> + Send + '_>> {
-        Box::pin(IoFuture {
+    ) -> impl Future<Output = io::Result<i32>> + Send + '_ {
+        IoFuture {
             state: IoFutureState::Init { ring: self, sqe },
-        })
+        }
     }
 }
 
@@ -384,7 +381,7 @@ impl IoUringSubmit for EpollIoUring {
 ///
 /// The completion state is embedded in this future, and the io-uring
 /// `user_data` is set to the address of the `completion` field. This
-/// requires the future to be pinned (ensured by `Box::pin` in `submit`).
+/// requires the future to be pinned before first poll.
 ///
 /// **Aborts on drop** if the IO is in flight, because the kernel holds
 /// a pointer into this future's memory.

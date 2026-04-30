@@ -878,6 +878,18 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             activity_id = format!("{:#x}", hdr.activity_id),
             "HWC request",
         );
+        // Zero the response page for the expected response size before sending
+        // the request. This ensures that fields added in newer response versions
+        // read as zero when talking to an older socmana that does not populate
+        // them, rather than containing stale data.
+        let expected_resp_size = size_of::<GdmaRespHdr>() + size_of::<Resp>();
+        assert!(
+            expected_resp_size <= PAGE_SIZE,
+            "response size {expected_resp_size} exceeds {PAGE_SIZE}"
+        );
+        self.dma_buffer
+            .write_zeros(RESPONSE_PAGE * PAGE_SIZE, expected_resp_size);
+
         self.dma_buffer.write_obj(REQUEST_PAGE * PAGE_SIZE, &hdr);
         self.dma_buffer
             .write_obj(REQUEST_PAGE * PAGE_SIZE + size_of_val(&hdr), &req);

@@ -460,3 +460,36 @@ async fn pcie_save_restore(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+/// Boot a guest through UEFI from an NVMe device on an emulated PCIe root port.
+/// Validates that UEFI's driver stack correctly enumerates and uses the NVMe
+/// device to load the guest OS.
+#[openvmm_test(
+    uefi_x64(vhd(alpine_3_23_x64)),
+    uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    uefi_aarch64(vhd(alpine_3_23_aarch64)),
+    uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+)]
+async fn pcie_nvme_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (vm, agent) = config
+        .with_boot_device_type(petri::BootDeviceType::PcieNvme)
+        .with_default_boot_always_attempt(true)
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .run()
+        .await?;
+
+    // Verify the NVMe device is visible from guest
+    let guest_devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+    tracing::info!(?guest_devices, "guest devices");
+
+    let nvme_count = guest_devices
+        .iter()
+        .filter(|d| d.class_code == 0x010802)
+        .count();
+    assert!(nvme_count >= 1, "NVMe controller not visible in guest");
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
