@@ -313,7 +313,7 @@ async fn test_adapter_link_speed_expected(driver: DefaultDriver) {
 }
 
 #[async_test]
-async fn test_gdma_reconfig_vf(driver: DefaultDriver) {
+async fn test_gdma_reset_request(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
     let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
@@ -336,8 +336,8 @@ async fn test_gdma_reconfig_vf(driver: DefaultDriver) {
         .unwrap();
 
     assert!(
-        !gdma.get_vf_reconfiguration_pending(),
-        "vf_reconfiguration_pending should be false"
+        !gdma.get_reset_request_pending(),
+        "reset_request_pending should be false"
     );
 
     // Get the device ID while HWC is still alive (needed for deregister later).
@@ -350,24 +350,24 @@ async fn test_gdma_reconfig_vf(driver: DefaultDriver) {
         .find(|dev_id| dev_id.ty == GdmaDevType::GDMA_DEVICE_MANA)
         .unwrap();
 
-    // Trigger the reconfig event (EQE 135).
-    gdma.generate_reconfig_vf_event().await.unwrap();
+    // Trigger the reset event (EQE 135).
+    gdma.generate_reset_request_eqe().await.unwrap();
 
     assert!(
-        gdma.get_vf_reconfiguration_pending(),
-        "vf_reconfiguration_pending should be true after reconfig event"
+        gdma.get_reset_request_pending(),
+        "reset_request_pending should be true after reset request"
     );
 
-    // Deregister should fail immediately because vf_reconfiguration_pending is set.
+    // Deregister should fail immediately because reset_request_pending is set.
     let deregister_result = gdma.deregister_device(dev_id).await;
     let err = deregister_result.expect_err("deregister_device should fail after EQE 135");
     let err_msg = format!("{err:#}");
     assert!(
-        err_msg.contains("VF reconfiguration pending"),
+        err_msg.contains("HWC reset request pending"),
         "unexpected error: {err_msg}"
     );
     assert!(
-        gdma.get_vf_reconfiguration_pending(),
-        "vf_reconfiguration_pending should remain true after deregister_device"
+        gdma.get_reset_request_pending(),
+        "reset_request_pending should remain true after deregister_device"
     );
 }

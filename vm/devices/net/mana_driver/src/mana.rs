@@ -69,7 +69,7 @@ struct Inner<T: DeviceBacking> {
     dev_config: ManaQueryDeviceCfgResp,
     doorbell: Arc<dyn Doorbell>,
     vport_link_status: Arc<Mutex<Vec<LinkStatus>>>,
-    vf_reconfig_sender: Arc<Mutex<Option<mesh::Sender<()>>>>,
+    vf_reset_request_sender: Arc<Mutex<Option<mesh::Sender<()>>>>,
 }
 
 impl<T: DeviceBacking> ManaDevice<T> {
@@ -142,7 +142,7 @@ impl<T: DeviceBacking> ManaDevice<T> {
             dev_config,
             doorbell,
             vport_link_status: Arc::new(Mutex::new(vport_link_status)),
-            vf_reconfig_sender: Arc::new(Mutex::new(None)),
+            vf_reset_request_sender: Arc::new(Mutex::new(None)),
         });
 
         let (inspect_send, mut inspect_recv) = mesh::channel::<inspect::Deferred>();
@@ -157,7 +157,7 @@ impl<T: DeviceBacking> ManaDevice<T> {
                         dev_config: _,
                         doorbell: _,
                         vport_link_status: _,
-                        vf_reconfig_sender: _,
+                        vf_reset_request_sender: _,
                     } = inner.as_ref();
                     let gdma = gdma.lock().await;
                     deferred.respond(|resp| {
@@ -245,8 +245,10 @@ impl<T: DeviceBacking> ManaDevice<T> {
                                 );
                             }
                         }
-                        if gdma.get_vf_reconfiguration_pending() {
-                            if let Some(sender) = inner.vf_reconfig_sender.lock().await.as_ref() {
+                        if gdma.get_reset_request_pending() {
+                            if let Some(sender) =
+                                inner.vf_reset_request_sender.lock().await.as_ref()
+                            {
                                 sender.send(());
                             }
                         }
@@ -291,17 +293,17 @@ impl<T: DeviceBacking> ManaDevice<T> {
         Ok(vport)
     }
 
-    /// Subscribes to VF reconfiguration events.
-    /// Returned receiver will receive a message on VF reconfiguration events.
-    pub async fn subscribe_vf_reconfig(&self) -> mesh::Receiver<()> {
-        tracing::debug!("subscribing to VF reconfiguration events");
-        let mut vf_reconfig_sender = self.inner.vf_reconfig_sender.lock().await;
+    /// Subscribes to HWC reset request events.
+    /// Returned receiver will receive a message on HWC reset request events.
+    pub async fn subscribe_vf_reset_request(&self) -> mesh::Receiver<()> {
+        tracing::debug!("subscribing to HWC reset request events");
+        let mut reset_request_sender = self.inner.vf_reset_request_sender.lock().await;
         assert!(
-            vf_reconfig_sender.is_none(),
-            "multiple VF reconfiguration subscribers not supported"
+            reset_request_sender.is_none(),
+            "multiple HWC reset request subscribers not supported"
         );
         let (sender, receiver) = mesh::channel();
-        *vf_reconfig_sender = Some(sender);
+        *reset_request_sender = Some(sender);
         receiver
     }
 
