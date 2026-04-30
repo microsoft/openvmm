@@ -31,6 +31,14 @@ use sidecar_client::SidecarVp;
 use std::fs::OpenOptions;
 use std::io;
 
+const fn encode_rsi_sysreg(sysreg: SystemReg) -> u64 {
+    ((sysreg.0.op0() as u64) << 14)
+        | ((sysreg.0.op1() as u64) << 11)
+        | ((sysreg.0.crn() as u64) << 7)
+        | ((sysreg.0.crm() as u64) << 3)
+        | (sysreg.0.op2() as u64)
+}
+
 /// Runner backing for CCA partitions.
 pub struct Cca {
     plane_run: MappedPage<cca_rsi_plane_run>,
@@ -189,7 +197,7 @@ impl ProcessorRunner<'_, Cca> {
         value: u64,
     ) -> Result<(), SetRegError> {
         self.hcl
-            .rsi_sysreg_write(vtl, u32::from(name.0) as u64, value)
+            .rsi_sysreg_write(vtl, encode_rsi_sysreg(name), value)
     }
 
     /// Update the address of the `plane_run` structure in `mshv_vtl_run.context`.

@@ -40,9 +40,6 @@ use vmcore::vmtime::VmTimeKeeper;
 use vmcore::vmtime::VmTimeSource;
 use zerocopy::TryFromBytes as _;
 
-//temp
-// use crate::mapped_page::MappedPage;
-
 pub const COMMAND_ADDRESS: u64 = 0xffff_0000;
 
 pub struct CommonState {

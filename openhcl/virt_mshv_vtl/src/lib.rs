@@ -18,7 +18,6 @@ cfg_if::cfg_if!(
         use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
-        // use hv1_emulator::hv::ProcessorVtlHv;
         use processor::LapicState;
         use devmsr::MsrDevice;
         use processor::snp::SnpBackedShared;
@@ -457,7 +456,6 @@ impl UhCvmVpState {
     }
 }
 
-// #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect, Default)]
 #[inspect(hex)]
 /// Configuration of VTL 1 registration for intercepts on certain registers
@@ -2434,7 +2432,6 @@ impl UhPartition {
     }
 }
 
-// #[cfg(guest_arch = "x86_64")]
 /// Gets the TSC frequency for the current platform.
 fn get_tsc_frequency(isolation: IsolationType) -> Result<u64, Error> {
     // Always get the frequency from the hypervisor. It's believed that, as long
