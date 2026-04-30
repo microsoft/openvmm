@@ -84,15 +84,13 @@ impl firmware_uefi::platform::nvram::MorConfig for UnderhillMorConfig {
 
         let clear_memory = (mor_value & MOR_CLEAR_MEMORY_BIT_MASK) != 0;
 
-        if clear_memory {
-            if let Some(partition) = self.partition.upgrade() {
-                if let Err(err) = partition.set_zero_memory_on_reset(true) {
-                    tracing::warn!(
-                        CVM_ALLOWED,
-                        error = &err as &dyn std::error::Error,
-                        "failed to set zero_memory_on_reset for MOR"
-                    );
-                }
+        if let Some(partition) = self.partition.upgrade() {
+            if let Err(err) = partition.set_zero_memory_on_reset(clear_memory) {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    error = &err as &dyn std::error::Error,
+                    "failed to update zero_memory_on_reset for MOR"
+                );
             }
         }
     }

@@ -322,12 +322,19 @@ impl UefiDevice {
 
         self.mor_bit_status = result.is_ok();
 
-        if self.mor_bit_status {
-            if let Some(mor_config) = &self.mor_config {
-                mor_config.notify_mor_set(value);
+        match result {
+            Ok(_) => {
+                if let Some(mor_config) = &self.mor_config {
+                    mor_config.notify_mor_set(value);
+                }
             }
-        } else {
-            tracelimit::warn_ratelimited!("failed to set MOR variable in NVRAM");
+            Err((status, error)) => {
+                tracelimit::warn_ratelimited!(
+                    ?status,
+                    ?error,
+                    "failed to set MOR variable in NVRAM"
+                );
+            }
         }
     }
 
@@ -610,6 +617,8 @@ mod save_restore {
             pub time: <TimeServices as SaveRestore>::SavedState,
             #[mesh(7)]
             pub diagnostics: <DiagnosticsServices as SaveRestore>::SavedState,
+            #[mesh(8)]
+            pub mor_bit_status: bool,
         }
     }
 
@@ -622,7 +631,7 @@ mod save_restore {
                 command_set: _,
                 gm: _,
                 watchdog_recv: _,
-                mor_bit_status: _,
+                mor_bit_status,
                 mor_config: _,
                 service:
                     UefiDeviceServices {
@@ -645,6 +654,7 @@ mod save_restore {
                 generation_id: generation_id.save()?,
                 time: time.save()?,
                 diagnostics: diagnostics.save()?,
+                mor_bit_status: *mor_bit_status,
             })
         }
 
@@ -658,9 +668,11 @@ mod save_restore {
                 generation_id,
                 time,
                 diagnostics,
+                mor_bit_status,
             } = state;
 
             self.address = address;
+            self.mor_bit_status = mor_bit_status;
 
             self.service.nvram.restore(nvram)?;
             self.service.event_log.restore(event_log)?;
