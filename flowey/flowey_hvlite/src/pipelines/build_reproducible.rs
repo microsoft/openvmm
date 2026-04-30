@@ -82,6 +82,7 @@ impl IntoPipeline for BuildReproducibleCli {
         // wrap all shell commands with `nix-shell --pure --run`
         job = job.set_command_wrapper(flowey::shell::CommandWrapperKind::NixShell {
             path: Some(crate::repo_root().join("shell.nix")),
+            keep_vars: vec![],
         });
 
         let openvmm_hcl_profile = if release {

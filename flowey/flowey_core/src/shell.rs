@@ -298,6 +298,9 @@ pub enum CommandWrapperKind {
         /// uses its default discovery (looking for `shell.nix` /
         /// `default.nix` in the current directory).
         path: Option<std::path::PathBuf>,
+        /// Environment variables to preserve inside the pure nix-shell
+        /// via `--keep`. By default, Nix won't pass any environment variables through.
+        keep_vars: Vec<String>,
     },
     /// Wrap commands with `sh -c "..."` (test-only).
     #[cfg(test)]
@@ -319,10 +322,13 @@ impl CommandWrapperKind {
     fn wrap_cmd<'a>(self, sh: &'a xshell::Shell, cmd: xshell::Cmd<'a>) -> xshell::Cmd<'a> {
         let cmd_str = format!("{cmd}");
         match self {
-            CommandWrapperKind::NixShell { path } => {
+            CommandWrapperKind::NixShell { path, keep_vars } => {
                 let mut wrapped = sh.cmd("nix-shell");
                 if let Some(path) = path {
                     wrapped = wrapped.arg(path);
+                }
+                for var in keep_vars {
+                    wrapped = wrapped.arg("--keep").arg(var);
                 }
                 wrapped.arg("--pure").arg("--run").arg(cmd_str)
             }
@@ -448,7 +454,11 @@ mod tests {
     #[test]
     fn nix_wrapper_display_without_path() {
         let sh = FloweyShell::new().unwrap();
-        let cmd = CommandWrapperKind::NixShell { path: None }.wrap_cmd(
+        let cmd = CommandWrapperKind::NixShell {
+            path: None,
+            keep_vars: vec![],
+        }
+        .wrap_cmd(
             sh.xshell(),
             xshell::cmd!(sh.xshell(), "cargo build --release"),
         );
@@ -463,11 +473,26 @@ mod tests {
         let sh = FloweyShell::new().unwrap();
         let cmd = CommandWrapperKind::NixShell {
             path: Some("/my/shell.nix".into()),
+            keep_vars: vec![],
         }
         .wrap_cmd(sh.xshell(), xshell::cmd!(sh.xshell(), "cargo build"));
         assert_eq!(
             format!("{cmd}"),
             "nix-shell /my/shell.nix --pure --run \"cargo build\""
+        );
+    }
+
+    #[test]
+    fn nix_wrapper_keep_vars() {
+        let sh = FloweyShell::new().unwrap();
+        let cmd = CommandWrapperKind::NixShell {
+            path: Some("/my/shell.nix".into()),
+            keep_vars: vec!["CARGO_HOME".into(), "HOME".into()],
+        }
+        .wrap_cmd(sh.xshell(), xshell::cmd!(sh.xshell(), "cargo build"));
+        assert_eq!(
+            format!("{cmd}"),
+            "nix-shell /my/shell.nix --keep CARGO_HOME --keep HOME --pure --run \"cargo build\""
         );
     }
 
