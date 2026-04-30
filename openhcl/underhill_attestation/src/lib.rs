@@ -53,6 +53,7 @@ use tee_call::TeeCall;
 use thiserror::Error;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
+use zeroize::Zeroize;
 
 /// An attestation error.
 #[derive(Debug, Error)]
@@ -180,7 +181,7 @@ fn derive_key(
     Ok(output.try_into().unwrap())
 }
 
-#[derive(Debug)]
+#[derive(Debug, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 struct Keys {
     ingress: [u8; AES_GCM_KEY_LENGTH],
     decrypt_egress: Option<[u8; AES_GCM_KEY_LENGTH]>,
@@ -1337,7 +1338,7 @@ async fn persist_all_key_protectors(
             // Remove ingress KP & DEK, no longer applies to data store
             key_protector.dek[key_protector.active_kp as usize % NUMBER_KP]
                 .dek_buffer
-                .fill(0);
+                .zeroize();
             key_protector.gsp[key_protector.active_kp as usize % NUMBER_KP].gsp_length = 0;
             key_protector.active_kp += 1;
 

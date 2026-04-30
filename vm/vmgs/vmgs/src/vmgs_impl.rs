@@ -39,6 +39,8 @@ use vmgs_format::VmgsProvisioningReason;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
+#[cfg(feature = "encryption")]
+use zeroize::Zeroize;
 
 /// Operation types for provisioning telemetry.
 #[derive(Debug)]
@@ -1234,7 +1236,7 @@ impl Vmgs {
         let mut temp_state = self.temp_state();
 
         // Remove the corresponding datastore_key
-        temp_state.datastore_keys[key_index].fill(0);
+        temp_state.datastore_keys[key_index].zeroize();
 
         // Remove the corresponding metadata_key
         temp_state.encrypted_metadata_keys[key_index] = VmgsEncryptionKey::new_zeroed();

@@ -36,6 +36,7 @@ thiserror.workspace = true
 tracing.workspace = true
 cvm_tracing.workspace = true
 zerocopy.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 pal_async.workspace = true
