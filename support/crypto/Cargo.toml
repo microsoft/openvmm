@@ -16,12 +16,15 @@ vendored = ["openssl?/vendored"]
 openssl = ["dep:openssl", "dep:openssl_kdf"]
 
 # Use Symcrypt instead of any native backend.
-# TODO: Wire up vendoring with symcrypt
-symcrypt = []
+# Note that the symcrypt backend does not support vendoring, enabling both
+# `symcrypt` and `vendored` will trigger a compile error
+symcrypt = ["dep:symcrypt"]
 
 [dependencies]
 openssl_kdf = { workspace = true, optional = true }
 openssl = { workspace = true, optional = true }
+
+symcrypt = { workspace = true, optional = true }
 
 thiserror.workspace = true
 

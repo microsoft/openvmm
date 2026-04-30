@@ -3,12 +3,7 @@
 
 //! MSHV hypervisor backend.
 
-#![cfg(all(
-    target_os = "linux",
-    feature = "virt_mshv",
-    guest_is_native,
-    guest_arch = "x86_64"
-))]
+#![cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native))]
 
 use hypervisor_resources::HypervisorKind;
 use hypervisor_resources::MshvHandle;

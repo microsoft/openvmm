@@ -575,6 +575,7 @@ impl VmService {
                 prefetch_memory: false,
                 private_memory: false,
                 transparent_hugepages: false,
+                numa_mem_sizes: None,
             },
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {

@@ -1042,6 +1042,7 @@ dependencies = [
  "hex",
  "openssl",
  "openssl_kdf",
+ "symcrypt",
  "thiserror 2.0.16",
  "wchar",
  "windows 0.62.0",
@@ -4588,6 +4589,7 @@ dependencies = [
  "net_backend_resources",
  "pal_async",
  "parking_lot",
+ "socket2",
  "thiserror 2.0.16",
  "tracing",
  "vm_resource",
@@ -7455,6 +7457,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
+name = "symcrypt"
+version = "0.6.0"
+source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#c5cbfebeb6ab12afff9b8d01cb6a9e547f60f8da"
+dependencies = [
+ "libc",
+ "symcrypt-sys",
+]
+
+[[package]]
+name = "symcrypt-sys"
+version = "0.4.0"
+source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#c5cbfebeb6ab12afff9b8d01cb6a9e547f60f8da"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "syn"
 version = "1.0.109"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8630,6 +8649,7 @@ dependencies = [
  "inspect_counters",
  "libc",
  "mesh",
+ "nix 0.30.1",
  "pal_async",
  "pal_event",
  "parking_lot",
@@ -8707,6 +8727,7 @@ dependencies = [
  "membacking",
  "memory_range",
  "mesh",
+ "nix 0.30.1",
  "pal_async",
  "pci_core",
  "pci_resources",
@@ -8739,6 +8760,7 @@ dependencies = [
  "memory_range",
  "nix 0.30.1",
  "pal_async",
+ "tracelimit",
  "tracing",
  "vfio-bindings",
 ]
@@ -8944,6 +8966,7 @@ dependencies = [
 name = "virt_mshv"
 version = "0.0.0"
 dependencies = [
+ "aarch64defs",
  "anyhow",
  "build_rs_guest_arch",
  "fs-err",
