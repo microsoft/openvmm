@@ -27,6 +27,7 @@ use crate::devmsr;
 use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
 use crate::processor::hardware_cvm::apic::ApicBacking;
+use core::mem::size_of;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
 use hcl::protocol::hcl_intr_offload_flags;
@@ -51,6 +52,7 @@ use hvdef::hypercall::HypercallOutput;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use user_driver::memory::MemoryBlock;
 use virt::EmulatorMonitorSupport;
 use virt::Processor;
 use virt::VpHaltReason;
@@ -115,6 +117,10 @@ pub struct SnpBacked {
     hv_sint_notifications: u16,
     general_stats: VtlArray<GeneralStats, 2>,
     exit_stats: VtlArray<ExitStats, 2>,
+    #[inspect(skip)]
+    crash_vmsa_page: MemoryBlock,
+    #[inspect(hex)]
+    crash_vmsa_page_pa: u64,
     #[inspect(flatten)]
     cvm: UhCvmVpState,
 }
@@ -173,6 +179,55 @@ impl SnpBacked {
     /// for each CPU.
     pub fn shared_pages_required_per_cpu() -> u64 {
         UhDirectOverlay::Count as u64
+    }
+
+    fn update_vmsa_crash_page(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
+        let crash_page_pa = this.backing.crash_vmsa_page_pa;
+        let vmsa_size = size_of::<SevVmsa>() as u64;
+
+        // Keep the crash-page register pair pointing to a host-visible page
+        // so a hypervisor debugger can find the latest VMSA snapshot.
+        this.crash_reg[3] = crash_page_pa;
+        this.crash_reg[4] = vmsa_size;
+
+        for target_vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
+            if let Err(err) = this.runner.set_vp_register(
+                target_vtl,
+                HvX64RegisterName::GuestCrashP3,
+                crash_page_pa.into(),
+            ) {
+                tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
+                    ?err,
+                    ?target_vtl,
+                    "failed to publish crash page address"
+                );
+            }
+
+            if let Err(err) = this.runner.set_vp_register(
+                target_vtl,
+                HvX64RegisterName::GuestCrashP4,
+                vmsa_size.into(),
+            ) {
+                tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
+                    ?err,
+                    ?target_vtl,
+                    "failed to publish crash page size"
+                );
+            }
+        }
+
+        let vmsa = this.runner.vmsa(vtl);
+        let src = vmsa.as_bytes();
+        if let Err(err) = this.shared.cvm.shared_memory.write_at(crash_page_pa, src) {
+            tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
+                ?err,
+                crash_page_pa,
+                "failed to write crash VMSA page"
+            );
+        }
     }
 }
 
@@ -237,6 +292,7 @@ impl HardwareIsolatedBacking for SnpBacked {
         }
 
         this.backing.cvm_state_mut().exit_vtl = target_vtl;
+        Self::update_vmsa_crash_page(this, target_vtl);
     }
 
     fn translation_registers(
@@ -485,10 +541,19 @@ impl BackingPrivate for SnpBacked {
     }
 
     fn new(params: BackingParams<'_, '_, Self>, shared: &SnpBackedShared) -> Result<Self, Error> {
+        let crash_vmsa_page = shared
+            .cvm
+            .shared_dma_client
+            .allocate_dma_buffer(HV_PAGE_SIZE as usize)
+            .map_err(Error::AllocateCrashVmsaPage)?;
+        let crash_vmsa_page_pa = crash_vmsa_page.pfns()[0] << hvdef::HV_PAGE_SHIFT;
+
         Ok(Self {
             hv_sint_notifications: 0,
             general_stats: VtlArray::from_fn(|_| Default::default()),
             exit_stats: VtlArray::from_fn(|_| Default::default()),
+            crash_vmsa_page,
+            crash_vmsa_page_pa,
             cvm: UhCvmVpState::new(
                 &shared.cvm,
                 params.partition,
@@ -1437,6 +1502,7 @@ impl UhProcessor<'_, SnpBacked> {
             .map_err(|e| dev.fatal_error(SnpRunVpError(e).into()))?;
 
         let entered_from_vtl = next_vtl;
+        SnpBacked::update_vmsa_crash_page(self, entered_from_vtl);
         let (avic_page, mut vmsa) = self.runner.secure_avic_page_vmsa_mut(entered_from_vtl);
 
         // TODO SNP: The guest busy bit needs to be tested and set atomically.
