@@ -13,6 +13,7 @@ use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_common::git_checkout::RepoSource;
 use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmBuildParams;
+use flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline::KernelCheck;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use flowey_lib_hvlite::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use flowey_lib_hvlite::build_openvmm_hcl::OpenvmmHclFeature;
@@ -747,7 +748,6 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(job.finish());
         }
 
-        use flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline::KernelCheck;
         use flowey_lib_hvlite::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
 
         // emit openhcl build job
