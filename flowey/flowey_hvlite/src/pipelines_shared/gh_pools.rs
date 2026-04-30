@@ -24,7 +24,7 @@ fn gh_pool_with_image_1es(pool: &str, image: &str) -> GhRunner {
 }
 
 pub fn windows_amd_1es() -> GhRunner {
-    gh_pool_with_image_1es(AMD_POOL_1ES, WINDOWS_IMAGE_AMD64)
+    gh_pool_with_image_1es(AMD_POOL_1ES, "win-amd64-nvme")
 }
 
 pub fn windows_intel_1es() -> GhRunner {
