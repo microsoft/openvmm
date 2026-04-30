@@ -41,7 +41,6 @@ members = [
   "vm/devices/storage/scsi_buffers/fuzz",
   "vm/devices/storage/storage_tests",
   "vm/devices/storage/storvsp/fuzz",
-  "vm/devices/storage/vhdx",
   "vm/vmcore/guestmem/fuzz",
   "vm/x86/x86emu/fuzz",
   # in-guest test bins
@@ -316,6 +315,7 @@ disk_delay = { path = "vm/devices/storage/disk_delay" }
 disk_prwrap = { path = "vm/devices/storage/disk_prwrap" }
 disk_striped = { path = "vm/devices/storage/disk_striped" }
 disk_vhd1 = { path = "vm/devices/storage/disk_vhd1" }
+disklayer_vhdx = { path = "vm/devices/storage/disklayer_vhdx" }
 disk_vhdmp = { path = "vm/devices/storage/disk_vhdmp" }
 disklayer_ram = { path = "vm/devices/storage/disklayer_ram" }
 disklayer_sqlite = { path = "vm/devices/storage/disklayer_sqlite" }
@@ -333,6 +333,7 @@ storvsc_driver = { path = "vm/devices/storage/storvsc_driver" }
 storvsp = { path = "vm/devices/storage/storvsp" }
 storvsp_protocol = { path = "vm/devices/storage/storvsp_protocol" }
 storvsp_resources = { path = "vm/devices/storage/storvsp_resources" }
+vhdx = { path = "vm/devices/storage/vhdx" }
 device_emulators = { path = "vm/devices/support/device_emulators" }
 fuse = { path = "vm/devices/support/fs/fuse" }
 lx = { path = "vm/devices/support/fs/lx" }
