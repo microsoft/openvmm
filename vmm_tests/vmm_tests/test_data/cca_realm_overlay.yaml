@@ -4,46 +4,133 @@
 %YAML 1.2
 ---
 description: >-
-  Add a Buildroot rootfs overlay that installs the realm-launch wrapper and
-  an init script that starts it automatically during host boot.
+  Buildroot overlay that installs realm auto-launch and injects
+  Plane0 start-tmk.sh via lkvm 9P root.
 
 build:
   buildroot:
     prebuild:
       - mkdir -p ${param:builddir}/overlay/usr/local/bin
       - mkdir -p ${param:builddir}/overlay/etc/init.d
+
+      # =========================
+      # run_realm_test.sh
+      # =========================
       - |
         cat > ${param:builddir}/overlay/usr/local/bin/run_realm_test.sh <<'SH'
-        #!/bin/sh
-        set -eu
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        echo "[realm-launch] Starting..."
+        date
 
         CCA_DIR="$${CCA_DIR:-/cca}"
+        LKVM="$${CCA_DIR}/lkvm"
         KERNEL="$${KERNEL:-/cca/Image}"
+        GUESTROOT="/.lkvm/default"
 
-        if [ ! -x "$${CCA_DIR}/lkvm" ]; then
-            echo "[host] lkvm missing at $${CCA_DIR}/lkvm; skipping realm launch"
-            exit 0
+        # Wait for artifacts
+        for i in $$(seq 1 30); do
+            echo "[realm-launch] waiting for artifacts: $$i"
+            if [ -x "$$LKVM" ] && [ -f "$$KERNEL" ]; then
+                break
+            fi
+            sleep 1
+        done
+
+        if [ ! -x "$$LKVM" ]; then
+            echo "[realm-launch][ERROR] Missing $$LKVM"
+            exit 1
         fi
 
-        if [ ! -f "$${KERNEL}" ]; then
-          echo "[host] kernel missing at $${KERNEL}; skipping realm launch"
-            exit 0
+        if [ ! -f "$$KERNEL" ]; then
+            echo "[realm-launch][ERROR] Missing $$KERNEL"
+            exit 1
         fi
 
-        echo "[host] Waiting for host boot to settle..."
-        sleep 3
+        # =========================
+        # Background watcher
+        # =========================
+        prepare_plane0_hook() {
+            echo "[realm-launch] watcher waiting for Plane0 root tree..."
 
-        echo "[host] Launching realm guest..."
-        cd "$${CCA_DIR}"
+            for i in $$(seq 1 300); do
+                if [ -d "$$GUESTROOT/root" ] && [ -e "$$GUESTROOT/virt/init" ]; then
+                    echo "[realm-launch] Plane0 root tree found"
+                    break
+                fi
+                echo "[realm-launch] waiting for Plane0 root tree: $$i/300"
+                sleep 1
+            done
+
+            if [ ! -d "$$GUESTROOT/root" ]; then
+                echo "[realm-launch][ERROR] Plane0 root tree did not appear"
+                return 1
+            fi
+
+
+            echo "[realm-launch] installing busybox..."
+
+            cp /bin/busybox "$$GUESTROOT/root/busybox"
+            chmod 755 "$$GUESTROOT/root/busybox"
+
+            echo "[realm-launch] installing start-tmk.sh..."
+
+            cat > "$$GUESTROOT/root/start-tmk.sh" <<'EOF'
+        #!/root/busybox sh
+        set -e
+
+        echo "[plane0] start-tmk.sh reached"
+
+        mount -t proc proc /proc 2>/dev/null || true
+        mount -t sysfs sysfs /sys 2>/dev/null || true
+
+        mkdir -p /root/mount
+        mount -t 9p -o trans=virtio cca_mount /root/mount
+
+        mkdir -p /root/huge
+        mount -t hugetlbfs -o pagesize=32768kB,size=32768kB none /root/huge
+
+        cd /root/mount
+        export RUST_BACKTRACE=1
+
+        echo "[plane0] Launching tmk_vmm..."
+        exec ./tmk_vmm --hv cca --tmk ./simple_tmk
+        EOF
+
+            chmod 755 "$$GUESTROOT/root/start-tmk.sh"
+
+            # Debug to verify correct shebang + interpreter
+            od -An -tx1 -N16 "$$GUESTROOT/root/start-tmk.sh" >/dev/console 2>&1 || true
+            head -1 "$$GUESTROOT/root/start-tmk.sh" >/dev/console 2>&1 || true
+
+            ls -l "$$GUESTROOT/root/busybox" >/dev/console 2>&1 || true
+            head -1 "$$GUESTROOT/root/start-tmk.sh" >/dev/console 2>&1 || true
+
+            echo "[realm-launch] Installed $$GUESTROOT/root/start-tmk.sh"
+        }
+
+        # Start watcher in background
+        prepare_plane0_hook &
+
+        cd "$$CCA_DIR"
+
+        echo "[realm-launch] Launching lkvm..."
 
         exec ./lkvm run --realm --disable-sve --irqchip=gicv3-its \
-            -c 1 -m 512 --no-pvtime --force-pci --console virtio \
-            --kernel "$${KERNEL}" \
+            -c 1 -m 512 \
+            --no-pvtime --force-pci \
+            --console virtio \
+            --kernel "$$KERNEL" \
             --9p /cca/,cca_mount \
             -p "console=hvc0 root=/dev/vda2 hugepagesz=32M hugepages=1" \
             --measurement-algo=sha256 \
             --restricted_mem
         SH
+
+      # =========================
+      # S99realm-launch
+      # =========================
       - |
         cat > ${param:builddir}/overlay/etc/init.d/S99realm-launch <<'SH'
         #!/bin/sh
@@ -60,13 +147,17 @@ build:
             restart)
                 ;;
             *)
-                echo "Usage: $$0 {start|stop|restart|reload}"
+                echo "Usage: $$0 {start|stop|restart}"
                 exit 1
                 ;;
         esac
 
         exit 0
         SH
+
+      # Permissions
       - chmod 0755 ${param:builddir}/overlay/usr/local/bin/run_realm_test.sh
       - chmod 0755 ${param:builddir}/overlay/etc/init.d/S99realm-launch
+
+      # Enable overlay
       - ${param:sourcedir}/utils/config --file ${param:builddir}/.config --set-val BR2_ROOTFS_OVERLAY "${param:builddir}/overlay"
