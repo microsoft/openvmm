@@ -701,6 +701,37 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
+            async fn shutdown_nvme_manager(
+                nvme_manager: &mut Option<NvmeManager>,
+                nvme_keepalive_enabled: bool,
+                correlation_id: Guid,
+            ) {
+                if let Some(nvme_manager) = nvme_manager.take() {
+                    nvme_manager
+                        .shutdown(nvme_keepalive_enabled)
+                        .instrument(tracing::info_span!(
+                            "shutdown_nvme_vfio",
+                            CVM_ALLOWED,
+                            correlation_id = %correlation_id,
+                            nvme_keep_alive_enabled = nvme_keepalive_enabled
+                        ))
+                        .await;
+                }
+            }
+
+            let nvme_keepalive_enabled = self.nvme_keep_alive.is_enabled();
+
+            // If keepalive is disabled, reset all user-mode NVMe devices before
+            // save to free all resources, including DMA allocations.
+            if !nvme_keepalive_enabled {
+                shutdown_nvme_manager(
+                    &mut self.nvme_manager,
+                    nvme_keepalive_enabled,
+                    correlation_id,
+                )
+                .await;
+            }
+
             let mut state = self
                 .save(
                     Some(deadline),
@@ -722,18 +753,15 @@ impl LoadedVm {
                 }
             };
 
-            // Reset all user-mode NVMe devices.
+            // If keepalive is enabled, partially reset all user-mode NVMe devices after save.
             let shutdown_nvme = async {
-                if let Some(nvme_manager) = self.nvme_manager.take() {
-                    nvme_manager
-                        .shutdown(self.nvme_keep_alive.is_enabled())
-                        .instrument(tracing::info_span!(
-                            "shutdown_nvme_vfio",
-                            CVM_ALLOWED,
-                            correlation_id = %correlation_id,
-                            nvme_keep_alive_enabled = self.nvme_keep_alive.is_enabled()
-                        ))
-                        .await;
+                if nvme_keepalive_enabled {
+                    shutdown_nvme_manager(
+                        &mut self.nvme_manager,
+                        nvme_keepalive_enabled,
+                        correlation_id,
+                    )
+                    .await;
                 }
             };
 
