@@ -18,6 +18,7 @@ pub struct OpenhclBootOutput {
 pub enum OpenhclBootBuildProfile {
     Debug,
     Release,
+    ReleaseReproducible,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -71,6 +72,9 @@ impl FlowNode for Node {
             let profile = match profile {
                 OpenhclBootBuildProfile::Debug => BuildProfile::BootDev,
                 OpenhclBootBuildProfile::Release => BuildProfile::BootRelease,
+                OpenhclBootBuildProfile::ReleaseReproducible => {
+                    BuildProfile::BootReleaseReproducible
+                }
             };
 
             let mut pre_build_deps = Vec::new();

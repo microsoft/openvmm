@@ -23,6 +23,7 @@ pub enum OpenvmmHclBuildProfile {
     Debug,
     Release,
     OpenvmmHclShip,
+    OpenvmmHclShipReproducible,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -162,6 +163,9 @@ impl FlowNode for Node {
                     }
                     OpenvmmHclBuildProfile::OpenvmmHclShip => {
                         crate::run_cargo_build::BuildProfile::UnderhillShip
+                    }
+                    OpenvmmHclBuildProfile::OpenvmmHclShipReproducible => {
+                        crate::run_cargo_build::BuildProfile::UnderhillShipReproducible
                     }
                 },
                 features: CargoFeatureSet::Specific(features),

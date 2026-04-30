@@ -255,6 +255,7 @@ impl SimpleFlowNode for Node {
                         OpenvmmHclBuildProfile::Debug => "debug",
                         OpenvmmHclBuildProfile::Release => "release",
                         OpenvmmHclBuildProfile::OpenvmmHclShip => "ship",
+                        OpenvmmHclBuildProfile::OpenvmmHclShipReproducible => "ship-reproducible",
                     })
                     .join(&build_label);
                 fs_err::create_dir_all(&output_dir)?;
