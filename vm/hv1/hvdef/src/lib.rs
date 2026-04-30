@@ -2500,7 +2500,7 @@ pub mod hypercall {
     pub const SNP_VMPCK_KEY_SIZE: usize = 0x20;
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct GetSnpVmpckOutput {
         pub vmpck_key: [u8; SNP_VMPCK_KEY_SIZE],
     }
