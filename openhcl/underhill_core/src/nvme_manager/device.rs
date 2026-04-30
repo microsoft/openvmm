@@ -557,6 +557,7 @@ impl NvmeDriverManagerWorker {
                 }
                 NvmeDriverRequest::Shutdown(rpc) => {
                     rpc.handle(async |(_span, options)| {
+                            tracing::info!(pci_id = %self.pci_id, do_not_reset = %options.do_not_reset, skip_device_shutdown = %options.skip_device_shutdown, "nvme device manager worker shutdown called");
                             // Driver may be `None` here if there was a failure during driver creation.
                             // In that case, we just skip the shutdown rather than panic.
                             match self.driver.take() {
