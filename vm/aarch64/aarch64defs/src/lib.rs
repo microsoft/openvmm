@@ -5,6 +5,7 @@
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
+#![no_std]
 
 pub mod gic;
 pub mod smccc;
@@ -423,6 +424,8 @@ impl IssSystem {
 #[bitfield(u32)]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SystemRegEncoding {
+    #[bits(5)]
+    _rsvd: u32,
     #[bits(3)]
     pub op2: u8,
     #[bits(4)]
@@ -433,7 +436,7 @@ pub struct SystemRegEncoding {
     pub op1: u8,
     #[bits(2)]
     pub op0: u8,
-    #[bits(16)]
+    #[bits(11)]
     _rsvd2: u32,
 }
 
