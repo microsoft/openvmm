@@ -9,7 +9,7 @@ pub fn windows_amd_1es() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
         "1ES.Pool=openvmm-gh-amd-westus3".to_string(),
-        "1ES.ImageOverride=win-amd64".to_string(),
+        "1ES.ImageOverride=win-amd64-nvme".to_string(),
     ])
 }
 
