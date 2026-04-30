@@ -49,6 +49,59 @@ flowchart TB
 The subnet is configurable via the `--net consomme:<cidr>` CLI option.
 The gateway is always `.1` and the guest is always `.2`.
 
+## Port forwarding
+
+By default, Consomme only provides outbound connectivity from the guest.
+To accept inbound connections, use the `hostfwd=` option to forward
+host ports into the guest:
+
+```bash
+--net consomme:hostfwd=tcp::2222-:22
+```
+
+This binds host port 2222 and forwards incoming TCP connections to
+guest port 22. The general syntax is:
+
+```text
+hostfwd=<proto>:[<hostaddr>]:<hostport>-[<guestaddr>]:<guestport>
+```
+
+| Field | Description |
+|-------|-------------|
+| `proto` | `tcp` or `udp` |
+| `hostaddr` | Host IP to bind (default: all IPv4 interfaces, `0.0.0.0`). Use `[addr]` brackets for IPv6 addresses |
+| `hostport` | Host port to listen on. Use `0` for any available port |
+| `guestaddr` | Currently ignored — traffic always forwards to the guest IP |
+| `guestport` | Guest port to forward to |
+
+Multiple forwards can be specified with commas:
+
+```bash
+--net consomme:hostfwd=tcp::2222-:22,hostfwd=tcp::3389-:3389
+```
+
+Port forwards can also be combined with a CIDR:
+
+```bash
+--net consomme:10.0.0.0/24,hostfwd=tcp::2222-:22
+```
+
+Examples:
+
+```bash
+# Forward host port 8080 to guest port 80
+--net consomme:hostfwd=tcp::8080-:80
+
+# Bind only to localhost
+--net consomme:hostfwd=tcp:127.0.0.1:8080-:80
+
+# IPv6 localhost
+--net consomme:hostfwd=tcp:[::1]:8080-:80
+
+# UDP forwarding
+--net consomme:hostfwd=udp::5353-:53
+```
+
 IPv6 is enabled when the host has a routable IPv6 address. Consomme
 advertises a prefix via SLAAC and the guest auto-configures its own
 address. IPv6 DNS servers are advertised via RDNSS (in Router

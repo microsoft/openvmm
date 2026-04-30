@@ -391,9 +391,6 @@ pub enum DropReason {
     /// The TCP state is invalid.
     #[error("bad tcp state")]
     BadTcpState(#[from] tcp::TcpError),
-    /// Specified port is not bound.
-    #[error("port is not bound")]
-    PortNotBound,
     /// The DHCPv6 message type is unsupported.
     #[error("unsupported dhcpv6 message type {0:?}")]
     UnsupportedDhcpv6(dhcpv6::MessageType),
@@ -415,6 +412,20 @@ pub enum DropReason {
     /// or link-local when host-local access is disabled).
     #[error("destination address not allowed")]
     DestinationNotAllowed,
+}
+
+/// An error from a port bind or unbind operation.
+#[derive(Debug, Error)]
+pub enum BindError {
+    /// The specified port is already bound.
+    #[error("port {0} is already bound")]
+    PortAlreadyBound(u16),
+    /// The specified port is not bound.
+    #[error("port is not bound")]
+    PortNotBound,
+    /// An IO error occurred during binding.
+    #[error(transparent)]
+    Io(std::io::Error),
 }
 
 /// An error to create a consomme instance.

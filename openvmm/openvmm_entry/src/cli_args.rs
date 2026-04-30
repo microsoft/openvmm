@@ -48,9 +48,19 @@ pub struct Options {
         long,
         value_name = "SIZE",
         default_value = "1GB",
-        value_parser = parse_memory
+        value_parser = parse_memory,
+        conflicts_with = "numa_memory"
     )]
     pub memory: u64,
+
+    /// per-NUMA-node guest RAM sizes (comma-separated, e.g. "2G,2G").
+    /// Distributes memory across vNUMA nodes reported to the guest. Mutually
+    /// exclusive with --memory. This is for test-only usage.
+    ///
+    /// TODO: Backing pages are not pinned to any host topology, nor coordinated
+    /// with CPUs. This should change once we implement real numa support.
+    #[clap(long, value_name = "SIZES", value_parser = parse_memory, value_delimiter = ',', conflicts_with = "memory")]
+    pub numa_memory: Option<Vec<u64>>,
 
     /// use shared memory segment
     #[clap(short = 'M', long)]
@@ -277,6 +287,12 @@ options:
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
     /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
     /// expose the NIC over emulated PCIe at the specified port.
+    ///
+    /// For consomme, forward host ports into the guest with `hostfwd=`:
+    ///   --net consomme:hostfwd=tcp::3389-:3389
+    ///   --net consomme:hostfwd=tcp:127.0.0.1:8080-:80
+    ///   --net consomme:hostfwd=tcp:\[::1\]:8080-:80
+    ///   --net consomme:10.0.0.0/24,hostfwd=tcp::22-:22,hostfwd=udp::5000-:5000
     #[clap(long)]
     pub net: Vec<NicConfigCli>,
 
@@ -1527,9 +1543,107 @@ impl SerialConfigCli {
 #[derive(Clone, Debug, PartialEq)]
 pub enum EndpointConfigCli {
     None,
-    Consomme { cidr: Option<String> },
-    Dio { id: Option<String> },
-    Tap { name: String },
+    Consomme {
+        cidr: Option<String>,
+        host_fwd: Vec<HostPortConfigCli>,
+    },
+    Dio {
+        id: Option<String>,
+    },
+    Tap {
+        name: String,
+    },
+}
+
+/// Parsed host port forwarding configuration from the CLI.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HostPortConfigCli {
+    pub protocol: HostPortProtocolCli,
+    pub host_address: Option<std::net::IpAddr>,
+    pub host_port: u16,
+    pub guest_port: u16,
+}
+
+/// Protocol for host port forwarding.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HostPortProtocolCli {
+    Tcp,
+    Udp,
+}
+
+fn parse_hostfwd(s: &str) -> Result<HostPortConfigCli, String> {
+    // Format: protocol:[hostaddr]:hostport-[guestaddr]:guestport
+    // Examples: "tcp::3389-:3389", "tcp:127.0.0.1:8080-:80", "tcp:[::1]:8080-:80"
+    let (host_part, guest_part) = s.split_once('-').ok_or_else(|| {
+        format!(
+            "invalid hostfwd format '{s}', \
+             expected 'proto:[hostaddr]:hostport-[guestaddr]:guestport'"
+        )
+    })?;
+
+    // Extract protocol from host part (first colon-delimited field)
+    let (proto, host_addr_port) = host_part.split_once(':').ok_or_else(|| {
+        format!("invalid hostfwd host part '{host_part}', expected 'proto:[hostaddr]:hostport'")
+    })?;
+    let protocol = match proto {
+        "tcp" => HostPortProtocolCli::Tcp,
+        "udp" => HostPortProtocolCli::Udp,
+        other => {
+            return Err(format!(
+                "unknown hostfwd protocol '{other}', expected 'tcp' or 'udp'"
+            ));
+        }
+    };
+
+    let (host_address, host_port) = parse_addr_port(host_addr_port)
+        .map_err(|e| format!("invalid hostfwd host address/port: {e}"))?;
+    let (_, guest_port) = parse_addr_port(guest_part)
+        .map_err(|e| format!("invalid hostfwd guest address/port: {e}"))?;
+
+    Ok(HostPortConfigCli {
+        protocol,
+        host_address,
+        host_port,
+        guest_port,
+    })
+}
+
+/// Parse an address-port pair in one of these forms:
+/// - `[ipv6addr]:port`
+/// - `addr:port`
+/// - `:port`  (empty address)
+/// - `port`   (no address)
+fn parse_addr_port(s: &str) -> Result<(Option<std::net::IpAddr>, u16), String> {
+    if let Some(rest) = s.strip_prefix('[') {
+        // Bracketed IPv6 address: [addr]:port
+        let (addr, port) = rest
+            .split_once("]:")
+            .ok_or_else(|| format!("expected '[addr]:port', got '[{rest}'"))?;
+        let port: u16 = port.parse().map_err(|_| format!("invalid port '{port}'"))?;
+        let addr: std::net::IpAddr = addr
+            .parse()
+            .map_err(|e| format!("invalid address '{addr}': {e}"))?;
+        Ok((Some(addr), port))
+    } else {
+        match s.rsplit_once(':') {
+            Some((addr, port)) => {
+                let port: u16 = port.parse().map_err(|_| format!("invalid port '{port}'"))?;
+                let addr = if addr.is_empty() {
+                    None
+                } else {
+                    let parsed: std::net::IpAddr = addr
+                        .parse()
+                        .map_err(|e| format!("invalid address '{addr}': {e}"))?;
+                    Some(parsed)
+                };
+                Ok((addr, port))
+            }
+            None => {
+                let port: u16 = s.parse().map_err(|_| format!("invalid port '{s}'"))?;
+                Ok((None, port))
+            }
+        }
+    }
 }
 
 impl FromStr for EndpointConfigCli {
@@ -1538,9 +1652,21 @@ impl FromStr for EndpointConfigCli {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let ret = match s.split(':').collect::<Vec<_>>().as_slice() {
             ["none"] => EndpointConfigCli::None,
-            ["consomme", s @ ..] => EndpointConfigCli::Consomme {
-                cidr: s.first().map(|&s| s.to_owned()),
-            },
+            ["consomme", rest @ ..] => {
+                let remaining = rest.join(":");
+                let mut cidr = None;
+                let mut host_fwd = Vec::new();
+                for opt in remaining.split(',').filter(|s| !s.is_empty()) {
+                    if let Some(fwd) = opt.strip_prefix("hostfwd=") {
+                        host_fwd.push(parse_hostfwd(fwd)?);
+                    } else if cidr.is_none() {
+                        cidr = Some(opt.to_owned());
+                    } else {
+                        return Err(format!("unexpected consomme option '{opt}'"));
+                    }
+                }
+                EndpointConfigCli::Consomme { cidr, host_fwd }
+            }
             ["dio", s @ ..] => EndpointConfigCli::Dio {
                 id: s.first().map(|s| (*s).to_owned()),
             },
@@ -2637,16 +2763,118 @@ mod tests {
 
         // Test consomme without cidr
         match EndpointConfigCli::from_str("consomme").unwrap() {
-            EndpointConfigCli::Consomme { cidr: None } => (),
+            EndpointConfigCli::Consomme {
+                cidr: None,
+                host_fwd,
+            } => assert!(host_fwd.is_empty()),
             _ => panic!("Expected Consomme variant without cidr"),
         }
 
         // Test consomme with cidr
         match EndpointConfigCli::from_str("consomme:192.168.0.0/24").unwrap() {
-            EndpointConfigCli::Consomme { cidr: Some(cidr) } => {
+            EndpointConfigCli::Consomme {
+                cidr: Some(cidr),
+                host_fwd,
+            } => {
                 assert_eq!(cidr, "192.168.0.0/24");
+                assert!(host_fwd.is_empty());
             }
             _ => panic!("Expected Consomme variant with cidr"),
+        }
+
+        // Test consomme with hostfwd
+        match EndpointConfigCli::from_str("consomme:hostfwd=udp:127.0.0.1:5000-:5000").unwrap() {
+            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+                assert!(cidr.is_none());
+                assert_eq!(host_fwd.len(), 1);
+                assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Udp);
+                assert_eq!(
+                    host_fwd[0].host_address,
+                    Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)))
+                );
+                assert_eq!(host_fwd[0].host_port, 5000);
+                assert_eq!(host_fwd[0].guest_port, 5000);
+            }
+            _ => panic!("Expected Consomme variant with hostfwd"),
+        }
+
+        // Test consomme with cidr and hostfwd
+        match EndpointConfigCli::from_str("consomme:10.0.0.0/24,hostfwd=tcp::2222-:22").unwrap() {
+            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+                assert_eq!(cidr.as_deref(), Some("10.0.0.0/24"));
+                assert_eq!(host_fwd.len(), 1);
+                assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
+                assert_eq!(host_fwd[0].host_port, 2222);
+                assert_eq!(host_fwd[0].guest_port, 22);
+            }
+            _ => panic!("Expected Consomme variant with cidr and hostfwd"),
+        }
+
+        // Test consomme with multiple hostfwd
+        match EndpointConfigCli::from_str("consomme:hostfwd=tcp::2222-:22,hostfwd=tcp::3389-:3389")
+            .unwrap()
+        {
+            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+                assert!(cidr.is_none());
+                assert_eq!(host_fwd.len(), 2);
+                assert_eq!(host_fwd[0].host_port, 2222);
+                assert_eq!(host_fwd[0].guest_port, 22);
+                assert_eq!(host_fwd[1].host_port, 3389);
+                assert_eq!(host_fwd[1].guest_port, 3389);
+            }
+            _ => panic!("Expected Consomme variant with multiple hostfwd"),
+        }
+
+        // Test consomme with different host and guest ports
+        match EndpointConfigCli::from_str("consomme:hostfwd=tcp:127.0.0.1:8080-:80").unwrap() {
+            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+                assert!(cidr.is_none());
+                assert_eq!(host_fwd.len(), 1);
+                assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
+                assert_eq!(
+                    host_fwd[0].host_address,
+                    Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)))
+                );
+                assert_eq!(host_fwd[0].host_port, 8080);
+                assert_eq!(host_fwd[0].guest_port, 80);
+            }
+            _ => panic!("Expected Consomme variant with host/guest port mapping"),
+        }
+
+        // Test consomme with guest address (accepted but ignored by backend)
+        match EndpointConfigCli::from_str("consomme:hostfwd=tcp::8080-10.0.0.2:80").unwrap() {
+            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+                assert!(cidr.is_none());
+                assert_eq!(host_fwd[0].host_port, 8080);
+                assert_eq!(host_fwd[0].guest_port, 80);
+            }
+            _ => panic!("Expected Consomme variant with guest address"),
+        }
+
+        // Test consomme with IPv6 host address (bracketed)
+        match EndpointConfigCli::from_str("consomme:hostfwd=tcp:[::1]:8080-:80").unwrap() {
+            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+                assert!(cidr.is_none());
+                assert_eq!(host_fwd.len(), 1);
+                assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
+                assert_eq!(
+                    host_fwd[0].host_address,
+                    Some(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST))
+                );
+                assert_eq!(host_fwd[0].host_port, 8080);
+                assert_eq!(host_fwd[0].guest_port, 80);
+            }
+            _ => panic!("Expected Consomme variant with IPv6 hostfwd"),
+        }
+
+        // Test consomme with IPv6 guest address (bracketed)
+        match EndpointConfigCli::from_str("consomme:hostfwd=tcp::8080-[::1]:80").unwrap() {
+            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+                assert!(cidr.is_none());
+                assert_eq!(host_fwd[0].host_port, 8080);
+                assert_eq!(host_fwd[0].guest_port, 80);
+            }
+            _ => panic!("Expected Consomme variant with IPv6 guest address"),
         }
 
         // Test dio without id
