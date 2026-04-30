@@ -300,6 +300,9 @@ pub struct ChecksumState {
     ///
     /// The IP header's length field may be invalid and should be ignored.
     pub tso: Option<u16>,
+    /// The data is a large UDP payload that should be sent with OS-level UDP
+    /// GSO, splitting into UDP datagrams of this segment size.
+    pub gso: Option<u16>,
 }
 
 impl ChecksumState {
@@ -308,30 +311,35 @@ impl ChecksumState {
         tcp: false,
         udp: false,
         tso: None,
+        gso: None,
     };
     const IPV4_ONLY: Self = Self {
         ipv4: true,
         tcp: false,
         udp: false,
         tso: None,
+        gso: None,
     };
     const TCP4: Self = Self {
         ipv4: true,
         tcp: true,
         udp: false,
         tso: None,
+        gso: None,
     };
     const UDP4: Self = Self {
         ipv4: true,
         tcp: false,
         udp: true,
         tso: None,
+        gso: None,
     };
     const TCP6: Self = Self {
         ipv4: false,
         tcp: true,
         udp: false,
         tso: None,
+        gso: None,
     };
 
     fn caps(&self) -> ChecksumCapabilities {
@@ -396,6 +404,9 @@ pub enum DropReason {
     /// E.g. a TCP packet with both SYN and FIN flags set.
     #[error("packet is malformed")]
     MalformedPacket,
+    /// The IP total-length field does not match the buffer size.
+    #[error("ip length mismatch")]
+    IpLengthMismatch,
     /// An incoming IP packet has been split into several IP fragments and was dropped,
     /// since IP reassembly is not supported.
     #[error("packet fragmentation is not supported")]
@@ -601,12 +612,20 @@ impl<T: Client> Access<'_, T> {
         if payload.len() < IPV4_HEADER_LEN
             || ipv4.version() != 4
             || payload.len() < ipv4.header_len().into()
-            || payload.len() < ipv4.total_len().into()
         {
             return Err(DropReason::MalformedPacket);
         }
 
-        let total_len = if checksum.tso.is_some() {
+        // For segmentation offload (TSO/USO) the IP total_length field may
+        // not reflect the actual buffer size (it can hold only one segment's
+        // worth or wrap for payloads > 64 KiB). Use the real buffer length
+        // instead.
+        let segmentation_offload = checksum.tso.is_some() || checksum.gso.is_some();
+        if !segmentation_offload && payload.len() < ipv4.total_len().into() {
+            return Err(DropReason::IpLengthMismatch);
+        }
+
+        let total_len = if segmentation_offload {
             payload.len()
         } else {
             ipv4.total_len().into()
@@ -662,9 +681,15 @@ impl<T: Client> Access<'_, T> {
             return Err(DropReason::MalformedPacket);
         }
 
-        let required_len = smoltcp::wire::IPV6_HEADER_LEN + ipv6.payload_len() as usize;
-        if payload.len() < required_len {
-            return Err(DropReason::MalformedPacket);
+        // For segmentation offload (TSO/USO) the IPv6 payload_length field
+        // may not reflect the actual buffer size. Skip the length validation
+        // and use the full buffer.
+        let segmentation_offload = checksum.tso.is_some() || checksum.gso.is_some();
+        if !segmentation_offload {
+            let required_len = smoltcp::wire::IPV6_HEADER_LEN + ipv6.payload_len() as usize;
+            if payload.len() < required_len {
+                return Err(DropReason::MalformedPacket);
+            }
         }
 
         // Reject guest traffic to host-local-only destinations.

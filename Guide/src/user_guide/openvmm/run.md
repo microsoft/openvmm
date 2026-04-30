@@ -57,10 +57,10 @@ If you ran `cargo xflowey restore-packages`, the firmware is at:
 
 ```text
 .packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd        # x64
-.packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_VS2022/FV/MSVM.fd # aarch64
+.packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV/MSVM.fd # aarch64
 ```
 
-If you used `cargo xflowey vmm-tests --build-only --dir <out>`, the firmware
+If you used `cargo xflowey vmm-tests-run --build-only --dir <out>`, the firmware
 is copied into that output directory under the same relative path.
 
 Alternatively, set the environment variable so you don't need the flag each time:
@@ -154,11 +154,11 @@ This example will boot OpenHCL in Linux direct mode, running a minimal shell
 inside VTL2. This is the same configuration used by the `openhcl_linux_direct_x64`
 integration tests.
 
-First, build the test artifacts from Linux or WSL using `vmm-tests --build-only`.
+First, build the test artifacts from Linux or WSL using `vmm-tests-run --build-only`.
 The IGVM must be built on Linux:
 
 ```shell
-cargo xflowey vmm-tests --build-only --dir <out> --target windows-x64
+cargo xflowey vmm-tests-run --build-only --dir <out> --target windows-x64
 ```
 
 ```admonish tip
@@ -179,7 +179,7 @@ This places `openvmm.exe` and `openhcl-x64-test-linux-direct.bin` in the
     -m 2GB `
     --vmbus-com1-serial "term,name=VTL0 Linux" `
     --com3 "term,name=VTL2 OpenHCL" `
-    --vtl2-vsock-path $env:temp\ohcldiag-dev
+    --vmbus-vtl2-vsock-path $env:temp\ohcldiag-dev
 ```
 
 ```admonish warning

@@ -97,6 +97,7 @@ pub enum CpuidResultsIsolationType<'a> {
         cpuid_pages: &'a [u8],
         access_vsm: bool,
         vtom: u64,
+        secure_avic: bool,
     },
     Tdx {
         topology: &'a ProcessorTopology<X86Topology>,
@@ -214,12 +215,13 @@ impl CpuidResults {
                 cpuid_pages,
                 access_vsm,
                 vtom,
+                secure_avic,
             } => {
                 assert!(
                     cpuid_pages.len() % size_of::<HvPspCpuidPage>() == 0 && !cpuid_pages.is_empty()
                 );
 
-                snp_init = SnpCpuidInitializer::new(cpuid_pages, access_vsm, vtom);
+                snp_init = SnpCpuidInitializer::new(cpuid_pages, access_vsm, vtom, secure_avic);
                 &snp_init as &dyn CpuidArchInitializer
             }
             CpuidResultsIsolationType::Tdx {
@@ -648,9 +650,9 @@ impl CpuidResults {
 
         let CpuidResult {
             eax: xsave_low,
-            ebx: xsave_high,
+            ebx: _,
             ecx: _,
-            edx: _,
+            edx: xsave_high,
         } = *self
             .leaf_result_ref(CpuidFunction::ExtendedStateEnumeration, Some(0), true)
             .expect("validated this subleaf exists");

@@ -6,19 +6,14 @@ name = "underhill_attestation"
 edition.workspace = true
 rust-version.workspace = true
 
-[features]
-# Enable locally compiling and statically linking a copy of OpenSSL.
-# The build process requires a C compiler, perl, and make.
-openssl-vendored = ["openssl/vendored"]
-
 [target.'cfg(target_os = "linux")'.dependencies]
+crypto.workspace = true
 guest_emulation_transport.workspace = true
 openhcl_attestation_protocol.workspace = true
 vmgs = { workspace = true, features = ["encryption"] }
 get_protocol.workspace = true
 guid.workspace = true
 mesh.workspace = true
-openssl_kdf.workspace = true
 tee_call.workspace = true
 pal_async.workspace = true
 tracing.workspace = true
@@ -26,8 +21,8 @@ cvm_tracing.workspace = true
 
 base64.workspace = true
 base64-serde.workspace = true
+constant_time_eq.workspace = true
 getrandom.workspace = true
-openssl.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 static_assertions.workspace = true

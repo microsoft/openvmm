@@ -56,12 +56,9 @@ impl VirtioDevice for VirtioRngDevice {
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::RNG,
             device_features: VirtioDeviceFeatures::new()
-                .with_bank0(
-                    virtio::spec::VirtioDeviceFeaturesBank0::new()
-                        .with_ring_event_idx(true)
-                        .with_ring_indirect_desc(true),
-                )
-                .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true)),
+                .with_ring_event_idx(true)
+                .with_ring_indirect_desc(true)
+                .with_ring_packed(true),
             max_queues: 1,
             device_register_length: 0,
             shared_memory: DeviceTraitsSharedMemory::default(),
@@ -86,7 +83,7 @@ impl VirtioDevice for VirtioRngDevice {
         let queue_event = PolledWait::new(&self.driver, resources.event)
             .context("failed to create polled wait")?;
         let queue = VirtioQueue::new(
-            features.clone(),
+            *features,
             resources.params,
             resources.guest_memory.clone(),
             resources.notify,
@@ -152,7 +149,8 @@ impl AsyncRun<RngQueue> for RngWorker {
             let Some(work) = work else { break };
             match work {
                 Ok(work) => {
-                    process_rng_request(&state.mem, work);
+                    let bytes = process_rng_request(&state.mem, &work);
+                    state.queue.complete(work, bytes);
                 }
                 Err(err) => {
                     tracelimit::error_ratelimited!(
@@ -167,25 +165,22 @@ impl AsyncRun<RngQueue> for RngWorker {
     }
 }
 
-fn process_rng_request(mem: &GuestMemory, mut work: VirtioQueueCallbackWork) {
+fn process_rng_request(mem: &GuestMemory, work: &VirtioQueueCallbackWork) -> u32 {
     let writable_len = std::cmp::min(work.get_payload_length(true) as usize, MAX_REQUEST_BYTES);
     if writable_len == 0 {
-        work.complete(0);
-        return;
+        return 0;
     }
 
     let mut buf = vec![0u8; writable_len];
     getrandom::fill(&mut buf).expect("host entropy source failure");
     match work.write(mem, &buf) {
-        Ok(()) => {
-            work.complete(writable_len as u32);
-        }
+        Ok(()) => writable_len as u32,
         Err(err) => {
             tracelimit::error_ratelimited!(
                 err = &err as &dyn std::error::Error,
                 "failed to write random bytes to guest memory"
             );
-            work.complete(0);
+            0
         }
     }
 }

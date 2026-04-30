@@ -9,20 +9,29 @@
 #![expect(unsafe_code)]
 #![expect(clippy::undocumented_unsafe_blocks)]
 
+mod arch;
+#[cfg(guest_arch = "x86_64")]
+mod gsi;
+
+pub use arch::Kvm;
+
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use std::sync::Arc;
-
-mod arch;
-#[cfg(guest_arch = "x86_64")]
-mod gsi;
-
 use thiserror::Error;
 use virt::state::StateError;
 
-pub use arch::Kvm;
+/// Returns whether KVM is available on this machine.
+pub fn is_available() -> Result<bool, KvmError> {
+    match std::fs::metadata("/dev/kvm") {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(KvmError::AvailableCheck(err)),
+    }
+}
+
 use arch::KvmVpInner;
 use hvdef::Vtl;
 use std::sync::atomic::Ordering;
@@ -47,8 +56,13 @@ pub enum KvmError {
     InvalidState(&'static str),
     #[error("misaligned gic base address")]
     Misaligned,
+    #[error("host does not support GICv2 or GICv3")]
+    NoGic,
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to compute topology cpuid")]
+    TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
 
 #[derive(Debug, Inspect)]
@@ -70,6 +84,11 @@ struct KvmMemoryRangeState {
 pub struct KvmPartition {
     #[inspect(flatten)]
     inner: Arc<KvmPartitionInner>,
+    #[inspect(skip)]
+    synic_ports: Arc<virt::synic::SynicPorts<KvmPartitionInner>>,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    irqfd_state: Arc<dyn virt::irqfd::IrqFd>,
 }
 
 #[derive(Inspect)]
@@ -90,9 +109,17 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     cpuid: virt::CpuidLeafSet,
 
+    /// The GIC device fd, kept alive for the VM lifetime.
+    #[cfg(guest_arch = "aarch64")]
+    #[inspect(skip)]
+    _gic_device: kvm::Device,
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
     gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
+    /// Total configured GIC interrupt count (SGIs + PPIs + SPIs).
+    #[cfg(guest_arch = "aarch64")]
+    gic_nr_irqs: u32,
+    synic_ports: virt::synic::SynicPortMap,
 }
 
 // TODO: Chunk this up into smaller types.
@@ -104,6 +131,9 @@ enum KvmRunVpError {
     InvalidVpState,
     #[error("failed to run VP")]
     Run(#[source] kvm::Error),
+    #[cfg_attr(guest_arch = "x86_64", expect(dead_code))]
+    #[error("unhandled system event type: {0:#x}")]
+    UnhandledSystemEvent(u32),
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to inject an extint interrupt")]
     ExtintInterrupt(#[source] kvm::Error),

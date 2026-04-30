@@ -9,7 +9,6 @@
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
 
-mod crypto;
 mod hardware_key_sealing;
 mod igvm_attest;
 mod jwt;
@@ -27,6 +26,7 @@ pub use igvm_attest::ak_cert::parse_response as parse_ak_cert_response;
 use ::vmgs::EncryptionAlgorithm;
 use ::vmgs::GspType;
 use ::vmgs::Vmgs;
+use crypto::rsa::RsaKeyPair;
 use cvm_tracing::CVM_ALLOWED;
 use get_protocol::dps_json::GuestStateEncryptionPolicy;
 use guest_emulation_transport::GuestEmulationTransportClient;
@@ -45,8 +45,6 @@ use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
 use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::SecurityProfile;
-use openssl::pkey::Private;
-use openssl::rsa::Rsa;
 use pal_async::local::LocalDriver;
 use secure_key_release::VmgsEncryptionKeys;
 use static_assertions::const_assert_eq;
@@ -114,22 +112,22 @@ enum GetDerivedKeysError {
     #[error("failed to get derived key by id")]
     GetDerivedKeyById(#[source] GetDerivedKeysByIdError),
     #[error("failed to derive an ingress key")]
-    DeriveIngressKey(#[source] crypto::KbkdfError),
+    DeriveIngressKey(#[source] crypto::kdf::KdfError),
     #[error("failed to derive an egress key")]
-    DeriveEgressKey(#[source] crypto::KbkdfError),
+    DeriveEgressKey(#[source] crypto::kdf::KdfError),
 }
 
 #[derive(Debug, Error)]
 enum GetDerivedKeysByIdError {
     #[error("failed to derive an egress key based on current vm bios guid")]
-    DeriveEgressKeyUsingCurrentVmId(#[source] crypto::KbkdfError),
+    DeriveEgressKeyUsingCurrentVmId(#[source] crypto::kdf::KdfError),
     #[error("invalid derived egress key size {key_size}, expected {expected_size}")]
     InvalidDerivedEgressKeySize {
         key_size: usize,
         expected_size: usize,
     },
     #[error("failed to derive an ingress key based on key protector Id from vmgs")]
-    DeriveIngressKeyUsingKeyProtectorId(#[source] crypto::KbkdfError),
+    DeriveIngressKeyUsingKeyProtectorId(#[source] crypto::kdf::KdfError),
     #[error("invalid derived egress key size {key_size}, expected {expected_size}")]
     InvalidDerivedIngressKeySize {
         key_size: usize,
@@ -171,6 +169,16 @@ enum LogOpType {
 
 /// Label used by `derive_key`
 const VMGS_KEY_DERIVE_LABEL: &[u8; 7] = b"VMGSKEY";
+
+/// KBKDF from SP800-108, using HMAC-SHA-256.
+fn derive_key(
+    key: &[u8],
+    context: &[u8],
+    label: &[u8],
+) -> Result<[u8; AES_GCM_KEY_LENGTH], crypto::kdf::KdfError> {
+    let output = crypto::kdf::kbkdf_hmac_sha256(key, context, label, AES_GCM_KEY_LENGTH)?;
+    Ok(output.try_into().unwrap())
+}
 
 #[derive(Debug)]
 struct Keys {
@@ -579,7 +587,7 @@ async fn unlock_vmgs_data_store(
         return Ok(());
     };
 
-    if !openssl::memcmp::eq(&new_ingress_key, &new_egress_key) {
+    if !constant_time_eq::constant_time_eq(&new_ingress_key, &new_egress_key) {
         tracing::trace!(CVM_ALLOWED, "EgressKey is different than IngressKey");
         new_key = true;
     }
@@ -678,7 +686,7 @@ async fn get_derived_keys(
     bios_guid: Guid,
     attestation_vm_config: &AttestationVmConfig,
     is_encrypted: bool,
-    ingress_rsa_kek: Option<&Rsa<Private>>,
+    ingress_rsa_kek: Option<&RsaKeyPair>,
     wrapped_des_key: Option<&[u8]>,
     tcb_version: Option<u64>,
     guest_state_encryption_policy: GuestStateEncryptionPolicy,
@@ -1163,18 +1171,18 @@ async fn get_derived_keys(
 
     // Derive key used to lock data store previously
     if let Some(seed) = ingress_seed {
-        derived_keys.ingress = crypto::derive_key(&ingress_key, &seed, VMGS_KEY_DERIVE_LABEL)
+        derived_keys.ingress = derive_key(&ingress_key, &seed, VMGS_KEY_DERIVE_LABEL)
             .map_err(GetDerivedKeysError::DeriveIngressKey)?;
     }
 
     // Always derive a new egress key using best available seed
     derived_keys.decrypt_egress = decrypt_egress_key
-        .map(|key| crypto::derive_key(&key, &egress_seed, VMGS_KEY_DERIVE_LABEL))
+        .map(|key| derive_key(&key, &egress_seed, VMGS_KEY_DERIVE_LABEL))
         .transpose()
         .map_err(GetDerivedKeysError::DeriveEgressKey)?;
 
     derived_keys.encrypt_egress =
-        crypto::derive_key(&encrypt_egress_key, &egress_seed, VMGS_KEY_DERIVE_LABEL)
+        derive_key(&encrypt_egress_key, &egress_seed, VMGS_KEY_DERIVE_LABEL)
             .map_err(GetDerivedKeysError::DeriveEgressKey)?;
 
     if key_protector_settings.should_write_kp {
@@ -1233,7 +1241,7 @@ fn get_derived_keys_by_id(
     // When converted to a later scheme, Egress Key will be overwritten.
 
     // Always derive a new egress key from current VmUniqueId
-    let new_egress_key = crypto::derive_key(
+    let new_egress_key = derive_key(
         &gsp_response_by_id.seed.buffer[..gsp_response_by_id.seed.length as usize],
         bios_guid.as_bytes(),
         VMGS_KEY_DERIVE_LABEL,
@@ -1251,7 +1259,7 @@ fn get_derived_keys_by_id(
     // If not previously encrypted (no saved Id), then Ingress Key not required.
     let new_ingress_key = if key_protector_by_id.inner.id_guid != Guid::default() {
         // Derive key used to lock data store previously
-        crypto::derive_key(
+        derive_key(
             &gsp_response_by_id.seed.buffer[..gsp_response_by_id.seed.length as usize],
             key_protector_by_id.inner.id_guid.as_bytes(),
             VMGS_KEY_DERIVE_LABEL,

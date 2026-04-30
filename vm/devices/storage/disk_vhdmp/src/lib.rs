@@ -399,8 +399,33 @@ fn chk_win32(err: u32) -> std::io::Result<()> {
     }
 }
 
-impl Vhd {
-    fn open(path: &Path, read_only: bool) -> std::io::Result<Self> {
+/// Options for opening a VHD file.
+///
+/// Returned via [`VhdmpDisk::options()`].
+pub struct OpenOptions {
+    flags: u32,
+    read_only: bool,
+    attach: bool,
+}
+
+impl OpenOptions {
+    /// Sets whether the disk should be opened as read-only.
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    /// Sets whether the disk should use cached I/O.
+    pub fn cached_io(mut self, cached: bool) -> Self {
+        if cached {
+            self.flags |= virtdisk::OPEN_VIRTUAL_DISK_FLAG_CACHED_IO;
+        } else {
+            self.flags &= !virtdisk::OPEN_VIRTUAL_DISK_FLAG_CACHED_IO;
+        }
+        self
+    }
+
+    fn open_raw(&self, path: &Path) -> std::io::Result<Vhd> {
         let mut storage_type = virtdisk::VIRTUAL_STORAGE_TYPE::default();
         // Use a unique ID for each open to avoid virtual disk sharing
         // within VHDMP. In the future, consider taking this as a parameter
@@ -410,7 +435,7 @@ impl Vhd {
             Version: 2,
             u: virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS_u {
                 Version2: virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS_2 {
-                    ReadOnly: read_only.into(),
+                    ReadOnly: self.read_only.into(),
                     ResiliencyGuid: resiliency_guid.into(),
                     GetInfoOnly: 0,
                 },
@@ -427,14 +452,30 @@ impl Vhd {
                 &mut storage_type,
                 path16.as_ptr(),
                 0,
-                0,
+                self.flags,
                 Some(&mut parameters),
                 &mut handle,
             ))?;
-            Ok(Self(fs::File::from_raw_handle(handle)))
+            Ok(Vhd(fs::File::from_raw_handle(handle)))
         }
     }
 
+    /// Opens a VHD file at the given path with the current options.
+    pub fn open(&self, path: &Path) -> Result<Vhd, Error> {
+        let vhd = self.open_raw(path).map_err(Error::Open)?;
+
+        if self.attach {
+            // N.B. This must be attached here and not later in a worker process
+            //      since this operation may require impersonation, which is
+            //      prohibited from a sandboxed process.
+            vhd.attach_for_raw_access(self.read_only)
+                .map_err(Error::Attach)?;
+        }
+        Ok(vhd)
+    }
+}
+
+impl Vhd {
     /// Create a new dynamic VHD
     pub fn create_dynamic(path: &Path, max_size_mb: u64, vhdx: bool) -> std::io::Result<Self> {
         let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
@@ -688,19 +729,17 @@ pub enum Error {
 }
 
 impl VhdmpDisk {
-    /// Opens a VHD for use with [`Self::new()`].
-    pub fn open_vhd(path: &Path, read_only: bool) -> Result<Vhd, Error> {
-        let vhd = Vhd::open(path, read_only).map_err(Error::Open)?;
-
-        // N.B. This must be attached here and not later in a worker process
-        //      since this operation may require impersonation, which is
-        //      prohibited from a sandboxed process.
-        vhd.attach_for_raw_access(read_only)
-            .map_err(Error::Attach)?;
-        Ok(vhd)
+    /// Returns the default options for opening a VHDMP disk.
+    pub fn options() -> OpenOptions {
+        OpenOptions {
+            flags: 0,
+            read_only: false,
+            // The VHD must be attached to allow raw access.
+            attach: true,
+        }
     }
 
-    /// Creates a disk from an open VHD handle. `vhd` should have been opened via [`Self::open_vhd()`].
+    /// Creates a disk from an open VHD handle. `vhd` should have been opened via [`OpenOptions::open()`].
     pub fn new(vhd: Vhd, read_only: bool) -> Result<Self, Error> {
         let size = vhd.get_size().map_err(Error::Query)?;
         let disk_id = vhd.get_disk_id().map_err(Error::Query)?;
@@ -810,15 +849,27 @@ mod tests {
     #[test]
     fn open_readonly() {
         let path = make_test_vhd();
-        let _vhd = VhdmpDisk::open_vhd(path.as_ref(), true).unwrap();
-        let _vhd = VhdmpDisk::open_vhd(path.as_ref(), true).unwrap();
-        let _vhd = VhdmpDisk::open_vhd(path.as_ref(), false).unwrap_err();
+        let _vhd = VhdmpDisk::options()
+            .read_only(true)
+            .open(path.as_ref())
+            .unwrap();
+        let _vhd = VhdmpDisk::options()
+            .read_only(true)
+            .open(path.as_ref())
+            .unwrap();
+        let _vhd = VhdmpDisk::options()
+            .read_only(false)
+            .open(path.as_ref())
+            .unwrap_err();
     }
 
     #[async_test]
     async fn test_invalid_lba() {
         let path = make_test_vhd();
-        let vhd = VhdmpDisk::open_vhd(path.as_ref(), true).unwrap();
+        let vhd = VhdmpDisk::options()
+            .read_only(true)
+            .open(path.as_ref())
+            .unwrap();
         let disk = VhdmpDisk::new(vhd, true).unwrap();
         let gm = GuestMemory::allocate(512);
         match disk

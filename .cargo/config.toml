@@ -23,6 +23,16 @@ AARCH64_UNKNOWN_LINUX_MUSL_OPENSSL_DIR = { value = ".packages/extracted/aarch64-
 AARCH64_UNDERHILL_LINUX_MUSL_OPENSSL_STATIC = "1"
 AARCH64_UNKNOWN_LINUX_MUSL_OPENSSL_STATIC = "1"
 
+# and tell symcrypt-sys exactly where to get symcrypt.
+X86_64_UNDERHILL_LINUX_MUSL_SYMCRYPT_LIB_PATH = { value = ".packages/extracted/x86_64-sysroot/lib", relative = true }
+X86_64_UNKNOWN_LINUX_MUSL_SYMCRYPT_LIB_PATH = { value = ".packages/extracted/x86_64-sysroot/lib", relative = true }
+X86_64_UNDERHILL_LINUX_MUSL_SYMCRYPT_STATIC = "1"
+X86_64_UNKNOWN_LINUX_MUSL_SYMCRYPT_STATIC = "1"
+AARCH64_UNDERHILL_LINUX_MUSL_SYMCRYPT_LIB_PATH = { value = ".packages/extracted/aarch64-sysroot/lib", relative = true }
+AARCH64_UNKNOWN_LINUX_MUSL_SYMCRYPT_LIB_PATH = { value = ".packages/extracted/aarch64-sysroot/lib", relative = true }
+AARCH64_UNDERHILL_LINUX_MUSL_SYMCRYPT_STATIC = "1"
+AARCH64_UNKNOWN_LINUX_MUSL_SYMCRYPT_STATIC = "1"
+
 # Tell cc-rs where the Underhill compilers are.
 CC_aarch64_underhill_linux_musl = { value = "build_support/underhill_cross/aarch64-underhill-musl-gcc", relative = true }
 CC_aarch64_unknown_linux_musl = { value = "build_support/underhill_cross/aarch64-underhill-musl-gcc", relative = true }
@@ -46,12 +56,12 @@ AARCH64_OPENVMM_LINUX_DIRECT_INITRD = { value = ".packages/underhill-deps-privat
 # Streamline the OpenVMM `cargo run` experience by setting a sane-default for
 # what UEFI firmware to use (i.e: use the Microsoft MSVM firmware)
 X86_64_OPENVMM_UEFI_FIRMWARE = { value = ".packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd", relative = true }
-AARCH64_OPENVMM_UEFI_FIRMWARE = { value = ".packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_VS2022/FV/MSVM.fd", relative = true }
+AARCH64_OPENVMM_UEFI_FIRMWARE = { value = ".packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV/MSVM.fd", relative = true }
 
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = [
   # Set up delayloads.
-  "-C", "link-args=dloadhelper.lib /delayload:ws2_32.dll /delayload:virtdisk.dll /delayload:user32.dll /delayload:winhvplatform.dll",
+  "-C", "link-args=dloadhelper.lib /delayload:ws2_32.dll /delayload:virtdisk.dll /delayload:user32.dll /delayload:winhvplatform.dll /delayload:bcrypt.dll /delayload:crypt32.dll",
   # Set up the CRT: use ucrtbase.dll but statically link the VC runtime.
   "-C", "link-args=/nodefaultlib onecore_apiset.lib ucrt.lib libvcruntime.lib libcmt.lib",
   # Enable CFG

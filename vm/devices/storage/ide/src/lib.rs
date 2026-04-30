@@ -12,8 +12,7 @@
 //! - **ATA hard drives** — use [`Disk`] for I/O. Support
 //!   PIO and DMA modes, 28-bit and 48-bit LBA, `IDENTIFY DEVICE`, `FLUSH CACHE`.
 //! - **ATAPI optical drives** — use `PACKET COMMAND` (0xA0) to transport SCSI
-//!   CDBs over the ATA interface, delegating to
-//!   [`SimpleScsiDvd`](scsidisk::scsidvd::SimpleScsiDvd).
+//!   CDBs over the ATA interface, delegating to [`AsyncScsiDisk`].
 //!
 //! # Port I/O
 //!
@@ -412,6 +411,26 @@ impl Channel {
             "enlightened hdd command"
         );
 
+        // The enlightened INT13 path is a DMA-only fast path used by
+        // the Hyper-V BIOS. Non-DMA commands (PIO reads/writes,
+        // IDENTIFY_DEVICE, etc.) would leave the drive with a PIO
+        // buffer that DMA can't drain, causing the deferred write to
+        // never complete.
+        let cmd = eint13_cmd.command;
+        if !matches!(
+            cmd,
+            IdeCommand::READ_DMA
+                | IdeCommand::READ_DMA_ALT
+                | IdeCommand::WRITE_DMA
+                | IdeCommand::WRITE_DMA_ALT
+                | IdeCommand::READ_DMA_EXT
+                | IdeCommand::WRITE_DMA_EXT
+                | IdeCommand::WRITE_DMA_FUA_EXT
+        ) {
+            tracelimit::warn_ratelimited!(?cmd, "ignoring non-DMA command in enlightened path");
+            return IoResult::Ok;
+        }
+
         // Write out the PRD register for the bus master
         self.write_bus_master_reg(
             BusMasterReg::TABLE_PTR,
@@ -422,7 +441,6 @@ impl Channel {
 
         // Now that we know what the IDE command is, disambiguate between
         // 28-bit LBA and 48-bit LBA
-        let cmd = eint13_cmd.command;
         if cmd == IdeCommand::READ_DMA_EXT || cmd == IdeCommand::WRITE_DMA_EXT {
             // 48-bit LBA, high 24 bits of logical block address
             self.write_drive_register(
@@ -2935,5 +2953,67 @@ mod tests {
             ..FromZeros::new_zeroed()
         };
         assert_eq!(features.as_bytes(), ex_features.as_bytes());
+    }
+
+    /// Enlightened INT13 with a non-DMA command (READ_SECTORS) should not
+    /// hang. Before the fix, this would start async disk IO that produces
+    /// a PIO buffer on completion. The DMA engine can't drain a PIO buffer,
+    /// so the deferred write completion check (!(bsy || drq)) never passes.
+    #[async_test]
+    async fn enlightened_hdd_non_dma_cmd_completes() {
+        let test_guest_mem = GuestMemory::allocate(16384);
+
+        // Set up a PRD table (the enlightened path always writes it,
+        // even though READ_SECTORS won't use it)
+        let table_gpa: u64 = 0x1000;
+        let data_gpa: u32 = 0x2000;
+        test_guest_mem
+            .write_plain(
+                table_gpa,
+                &BusMasterDmaDesc {
+                    mem_physical_base: data_gpa,
+                    byte_count: 512,
+                    unused: 0,
+                    end_of_table: 0x80,
+                },
+            )
+            .unwrap();
+
+        // READ_SECTORS (0x20) is a PIO read command. The enlightened path
+        // is designed for DMA commands only (READ_DMA_EXT, WRITE_DMA_EXT).
+        // Sending a PIO command through it starts async disk IO, but the
+        // resulting PIO buffer can't be drained by DMA -- hang forever.
+        let eint13_command = protocol::EnlightenedInt13Command {
+            command: IdeCommand::READ_SECTORS,
+            device_head: DeviceHeadReg::new().with_lba(true),
+            flags: 0,
+            result_status: 0,
+            lba_low: 0,
+            lba_high: 0,
+            block_count: 1,
+            byte_count: 0,
+            data_buffer: table_gpa as u32,
+            skip_bytes_head: 0,
+            skip_bytes_tail: 0,
+        };
+        test_guest_mem.write_plain(0, &eint13_command).unwrap();
+
+        let dev_path = IdePath::default();
+        let (mut ide_device, _disk, _, _) =
+            ide_test_setup(Some(test_guest_mem.clone()), DriveType::Hard);
+
+        device_select(&mut ide_device, &dev_path).await;
+        prep_ide_channel(&mut ide_device, DriveType::Hard, &dev_path);
+
+        // After fix: non-DMA commands through the enlightened path are
+        // rejected early and return Ok (not Defer). Before the fix,
+        // this would return Defer and hang forever.
+        assert!(
+            matches!(
+                ide_device.io_write(IdeIoPort::PRI_ENLIGHTENED.0, 0_u32.as_bytes()),
+                IoResult::Ok
+            ),
+            "non-DMA command (READ_SECTORS) via enlightened path should return Ok, not Defer"
+        );
     }
 }

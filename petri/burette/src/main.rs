@@ -23,6 +23,7 @@
 //! ```
 
 mod harness;
+mod iperf_helper;
 mod report;
 mod tests;
 
@@ -33,6 +34,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use tests::boot_time::BootProfile;
+use tests::disk_io::DiskBackend;
+use tests::network::NetBackend;
 use tests::network::NicBackend;
 
 /// Available performance tests.
@@ -44,8 +47,10 @@ enum TestName {
     ScaleBoot,
     /// Measures VMM memory overhead.
     Memory,
-    /// Network throughput via iperf3 (Alpine VM + Consomme).
+    /// Network throughput via iperf3.
     Network,
+    /// Block I/O throughput via fio (Alpine VM + data disk).
+    DiskIo,
 }
 
 /// Global log source for petri, initialized once.
@@ -121,10 +126,29 @@ struct RunArgs {
     #[arg(long, default_value = "vmbus")]
     nic: NicBackend,
 
-    /// Record `perf record -p <pid> -g` traces scoped to each iperf3 test,
+    /// Network endpoint backend.
+    #[arg(long, default_value = "consomme")]
+    backend: NetBackend,
+
+    /// Record `perf record -p <pid> -g` traces scoped to each test,
     /// saving per-test .data files in this directory. Linux only.
     #[arg(long)]
     perf_dir: Option<PathBuf>,
+
+    /// Disk backend for the disk_io test.
+    #[arg(long, default_value = "virtio-blk")]
+    disk_backend: DiskBackend,
+
+    /// Path to raw data disk file for the disk_io test.
+    /// Must be on fast storage (e.g. NVMe) for meaningful results.
+    /// If omitted, uses a RAM-backed disk (measures virtio/storvsc overhead
+    /// without host filesystem noise).
+    #[arg(long)]
+    data_disk: Option<PathBuf>,
+
+    /// Data disk size in GiB for the disk_io test.
+    #[arg(long, default_value = "4")]
+    data_disk_size_gib: u64,
 }
 
 #[derive(clap::Args)]
@@ -153,6 +177,21 @@ struct PackageArgs {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Check for helper subprocess modes before any threads spawn.
+    // The TAP helper must call unshare(CLONE_NEWUSER) while single-threaded.
+    match std::env::args().nth(1).as_deref() {
+        Some("iperf-helper") => {
+            iperf_helper::run_helper();
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        Some("tap-ns-helper") => {
+            iperf_helper::linux::run_tap_helper();
+            return Ok(());
+        }
+        _ => {}
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -212,6 +251,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
         TestName::ScaleBoot,
         TestName::Memory,
         TestName::Network,
+        TestName::DiskIo,
     ];
     let tests_to_run: Vec<TestName> = if let Some(name) = args.test {
         vec![name]
@@ -277,6 +317,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                 let test = tests::network::NetworkTest {
                     diag: args.diag,
                     nic: args.nic,
+                    backend: args.backend,
                     perf_dir: args.perf_dir.clone(),
                 };
 
@@ -287,6 +328,24 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                     harness::run_warm_test(&test, &resolver, &driver, args.iterations).await
                 })
                 .context("network test failed")?;
+                all_stats.extend(stats);
+            }
+            TestName::DiskIo => {
+                let test = tests::disk_io::DiskIoTest {
+                    diag: args.diag,
+                    backend: args.disk_backend,
+                    data_disk: args.data_disk.clone(),
+                    data_disk_size_gib: args.data_disk_size_gib,
+                    perf_dir: args.perf_dir.clone(),
+                };
+
+                let artifacts = resolve_artifacts(tests::disk_io::register_artifacts)?;
+                let resolver = petri::ArtifactResolver::resolver(&artifacts);
+
+                let stats = pal_async::DefaultPool::run_with(async |driver| {
+                    harness::run_warm_test(&test, &resolver, &driver, args.iterations).await
+                })
+                .context("disk_io test failed")?;
                 all_stats.extend(stats);
             }
         }
@@ -305,25 +364,41 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
 }
 
 fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
-    use petri_artifacts_core::AsArtifactHandle;
-    use petri_artifacts_core::ResolveTestArtifact;
-
     let resolver =
         petri_artifact_resolver_openvmm_known_paths::OpenvmmKnownPathsTestArtifactResolver::new("");
 
     let bundle_name = petri_artifact_resolver_openvmm_known_paths::resolve_bundle_name;
 
-    // Each entry: (artifact ID, resolved path, bundle-relative destination).
-    // Bundle destinations come from resolve_bundle_name, which returns the
-    // same file_name that get_path uses — so VMM_TESTS_CONTENT_DIR finds them.
-    let artifact_ids = [
-        petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE.erase(),
-        petri_artifacts_common::artifacts::PIPETTE_LINUX_X64.erase(),
-        petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64.erase(),
-        petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64.erase(),
-        petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_X64.erase(),
-        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64.erase(),
+    // Collect the union of all artifacts needed by every test, using the
+    // same register_artifacts functions that cmd_run uses. This avoids
+    // duplicating artifact lists and automatically adapts to the host arch.
+    let all_registers: &[fn(&petri::ArtifactResolver<'_>)] = &[
+        tests::boot_time::register_artifacts,
+        tests::scale_boot::register_artifacts,
+        tests::memory::register_artifacts,
+        tests::network::register_artifacts,
+        tests::disk_io::register_artifacts,
     ];
+
+    let mut requirements = petri::TestArtifactRequirements::new();
+    for register in all_registers {
+        register(&petri::ArtifactResolver::collector(&mut requirements));
+    }
+
+    // Deduplicate: required_artifacts may contain repeats across tests.
+    let artifact_ids: Vec<_> = {
+        let mut seen = std::collections::HashSet::new();
+        requirements
+            .required_artifacts()
+            .filter(|id| seen.insert(*id))
+            .collect()
+    };
+
+    // Resolve all artifacts at once — reports every missing artifact in
+    // a single error rather than failing on the first one.
+    let artifacts = requirements
+        .resolve(&resolver)
+        .context("failed to resolve test artifacts")?;
 
     let mut files: Vec<(PathBuf, String)> = Vec::new();
 
@@ -333,39 +408,22 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
             .context("failed to find burette binary")?;
     files.push((burette_path, "burette".into()));
 
-    // Resolve each artifact and determine its bundle destination.
+    // Build the file list from resolved artifacts.
     for id in artifact_ids {
-        let path = resolver
-            .resolve(id)
-            .with_context(|| format!("failed to resolve artifact {id:?}"))?;
-
+        let path = artifacts.get(id).to_path_buf();
         let dest = if let Some(name) = bundle_name(id) {
             name.to_string()
         } else {
-            // VHD images: use the filename from the resolved path,
-            // which matches IsHostedOnHvliteAzureBlobStore::FILENAME.
             path.file_name()
-                .context("artifact path has no filename")?
-                .to_string_lossy()
-                .into_owned()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| format!("{:?}", id))
         };
-
         files.push((path, dest));
     }
 
     // Stage files into a temporary directory.
     let staging = tempfile::tempdir().context("failed to create staging dir")?;
     let bundle = staging.path().join("burette_bundle");
-
-    // Verify all source files exist.
-    for (path, name) in &files {
-        anyhow::ensure!(
-            path.exists(),
-            "missing artifact: {} (expected at {})",
-            name,
-            path.display()
-        );
-    }
 
     // Copy files into staging directory, stripping debug symbols from
     // ELF binaries to reduce tarball size.

@@ -6,8 +6,11 @@
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::pci::PciConfigSpace;
+use chipset_resources::piix4_uhci::PIIX4_PCI_USB_UHCI_STUB_BDF;
 use inspect::InspectMut;
 use vmcore::device_state::ChangeDeviceState;
+
+pub mod resolver;
 
 /// PIIX4 (PCI device function 2) - USB configuration (stub)
 ///
@@ -88,7 +91,7 @@ impl PciConfigSpace for Piix4UsbUhciStub {
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
-        Some((0, 7, 2)) // as per PIIX4 spec
+        Some(PIIX4_PCI_USB_UHCI_STUB_BDF) // as per PIIX4 spec
     }
 }
 

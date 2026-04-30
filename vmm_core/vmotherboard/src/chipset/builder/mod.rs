@@ -33,6 +33,7 @@ use chipset_device_resources::LineSetId;
 use closeable_mutex::CloseableMutex;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use parking_lot::Mutex;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use state_unit::UnitHandle;
@@ -106,28 +107,30 @@ pub(crate) struct BusResolver {
     pcie: BusResolverWeakMutexPcie,
 }
 
-/// A builder for [`Chipset`]
-pub struct ChipsetBuilder<'a> {
-    // The chipset that's getting built-up
+/// Mutable state behind the builder's interior mutex.
+pub(crate) struct ChipsetBuilderInner {
     pub(crate) vm_chipset: Chipset,
-
     pub(crate) bus_resolver: BusResolver,
+    pub(crate) line_sets: super::line_sets::LineSets,
+    pub(crate) arc_mutex_device_units: Vec<SpawnedUnit<ArcMutexChipsetDeviceUnit>>,
+    chipset_recv: mesh::Receiver<state_unit::StateRequest>,
+}
 
-    // External runtime dependencies
+/// A builder for [`Chipset`].
+///
+/// Methods on this type use interior mutability so that multiple devices
+/// can be constructed concurrently via `arc_mutex_device().try_add_async()`.
+pub struct ChipsetBuilder<'a> {
+    pub(crate) inner: Mutex<ChipsetBuilderInner>,
+
+    // External runtime dependencies (shared, read-only)
     pub(crate) units: &'a StateUnits,
     pub(crate) driver_source: &'a VmTaskDriverSource,
     pub(crate) vmtime: &'a VmTimeSource,
     pub(crate) vmtime_unit: &'a UnitHandle,
 
-    // Root chipset state-unit (which devices may need to take a dependency on,
-    // if they use any Chipset-specific services)
+    // Root chipset state-unit
     pub(crate) chipset_unit: UnitHandle,
-    chipset_recv: mesh::Receiver<state_unit::StateRequest>,
-
-    line_sets: super::line_sets::LineSets,
-
-    // Fields related to `Arc + Mutex`-backed `ChipsetDevice` construction
-    arc_mutex_device_units: Vec<SpawnedUnit<ArcMutexChipsetDeviceUnit>>,
 }
 
 impl<'a> ChipsetBuilder<'a> {
@@ -145,16 +148,21 @@ impl<'a> ChipsetBuilder<'a> {
         let chipset_unit = units.add("chipset").build(send).unwrap();
 
         Self {
-            vm_chipset: Chipset {
-                mmio_ranges: IoRanges::new(trace_unknown_mmio, fallback_mmio_device),
-                pio_ranges: IoRanges::new(trace_unknown_pio, None),
+            inner: Mutex::new(ChipsetBuilderInner {
+                vm_chipset: Chipset {
+                    mmio_ranges: IoRanges::new(trace_unknown_mmio, fallback_mmio_device),
+                    pio_ranges: IoRanges::new(trace_unknown_pio, None),
 
-                pic: None,
-                eoi_handler: None,
-                debug_event_handler,
-            },
+                    pic: None,
+                    eoi_handler: None,
+                    debug_event_handler,
+                },
 
-            bus_resolver: BusResolver::default(),
+                bus_resolver: BusResolver::default(),
+                line_sets: super::line_sets::LineSets::new(),
+                arc_mutex_device_units: Vec::new(),
+                chipset_recv,
+            }),
 
             units,
             driver_source,
@@ -162,27 +170,16 @@ impl<'a> ChipsetBuilder<'a> {
             vmtime_unit,
 
             chipset_unit,
-            chipset_recv,
-
-            line_sets: super::line_sets::LineSets::new(),
-
-            arc_mutex_device_units: Vec::new(),
         }
     }
 
-    pub(crate) fn register_arc_mutex_device_unit(
-        &mut self,
-        unit: SpawnedUnit<ArcMutexChipsetDeviceUnit>,
-    ) {
-        self.arc_mutex_device_units.push(unit)
-    }
-
     pub(crate) fn register_weak_mutex_pci_bus(
-        &mut self,
+        &self,
         bus_id: BusIdPci,
         bus: Box<dyn RegisterWeakMutexPci>,
     ) {
-        let existing = self.bus_resolver.pci.buses.insert(bus_id.clone(), bus);
+        let mut inner = self.inner.lock();
+        let existing = inner.bus_resolver.pci.buses.insert(bus_id.clone(), bus);
         assert!(
             existing.is_none(),
             "shouldn't be possible to have duplicate bus IDs: {:?}",
@@ -191,13 +188,15 @@ impl<'a> ChipsetBuilder<'a> {
     }
 
     pub(crate) fn register_weak_mutex_pci_device(
-        &mut self,
+        &self,
         bus_id: BusIdPci,
         bdf: (u8, u8, u8),
         name: Arc<str>,
         dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
     ) {
-        self.bus_resolver
+        self.inner
+            .lock()
+            .bus_resolver
             .pci
             .devices
             .entry(bus_id)
@@ -208,12 +207,13 @@ impl<'a> ChipsetBuilder<'a> {
     /// Register a PCIe enumerator (ex. root complex or switch), and all of
     /// it's downstream ports.
     pub fn register_weak_mutex_pcie_enumerator(
-        &mut self,
+        &self,
         bus_id: BusIdPcieEnumerator,
         enumerator: Box<dyn RegisterWeakMutexPcie>,
     ) {
         let downstream_ports = enumerator.downstream_ports();
-        let existing = self
+        let mut inner = self.inner.lock();
+        let existing = inner
             .bus_resolver
             .pcie
             .enumerators
@@ -225,7 +225,7 @@ impl<'a> ChipsetBuilder<'a> {
         );
 
         for (port_number, port_name) in downstream_ports {
-            let existing = self
+            let existing = inner
                 .bus_resolver
                 .pcie
                 .ports
@@ -239,12 +239,14 @@ impl<'a> ChipsetBuilder<'a> {
     }
 
     pub(crate) fn register_weak_mutex_pcie_device(
-        &mut self,
+        &self,
         bus_id_port: BusIdPcieDownstreamPort,
         name: Arc<str>,
         dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
     ) {
-        self.bus_resolver
+        self.inner
+            .lock()
+            .bus_resolver
             .pcie
             .devices
             .push(WeakMutexPcieDeviceEntry {
@@ -254,41 +256,10 @@ impl<'a> ChipsetBuilder<'a> {
             });
     }
 
-    pub(crate) fn line_set(
-        &mut self,
-        id: LineSetId,
-    ) -> (&vmcore::line_interrupt::LineSet, &UnitHandle) {
-        self.line_sets.line_set(self.driver_source, self.units, id)
-    }
-
-    #[must_use]
-    pub(crate) fn try_set_pic(
-        &mut self,
-        pic: Option<Arc<CloseableMutex<dyn ChipsetDevice>>>,
-    ) -> bool {
-        if self.vm_chipset.pic.is_some() {
-            return false;
-        }
-        self.vm_chipset.pic = pic;
-        true
-    }
-
-    #[must_use]
-    pub(crate) fn try_set_eoi_handler(
-        &mut self,
-        eoi_handler: Option<Arc<CloseableMutex<dyn ChipsetDevice>>>,
-    ) -> bool {
-        if self.vm_chipset.eoi_handler.is_some() {
-            return false;
-        }
-        self.vm_chipset.eoi_handler = eoi_handler;
-        true
-    }
-
     /// Add a new [`ChipsetDevice`](chipset_device::ChipsetDevice) to the
     /// chipset. **`dev_name` must be unique!**
     pub fn arc_mutex_device<'b, T: VmmChipsetDevice>(
-        &'b mut self,
+        &'b self,
         dev_name: impl Into<Arc<str>>,
     ) -> ArcMutexChipsetDeviceBuilder<'b, 'a, T> {
         ArcMutexChipsetDeviceBuilder::new(dev_name.into(), |dev, name| {
@@ -297,19 +268,20 @@ impl<'a> ChipsetBuilder<'a> {
     }
 
     /// Wrap up device construction, returning the completed chipset and devices
-    pub fn build(mut self) -> Result<(Arc<Chipset>, ChipsetDevices), FinalChipsetBuilderError> {
+    pub fn build(self) -> Result<(Arc<Chipset>, ChipsetDevices), FinalChipsetBuilderError> {
+        let mut inner = self.inner.into_inner();
         let mut errs = None;
 
-        for conflict in (self.vm_chipset.mmio_ranges).take_static_registration_conflicts() {
+        for conflict in (inner.vm_chipset.mmio_ranges).take_static_registration_conflicts() {
             errs.append(ChipsetBuilderError::MmioConflict(conflict));
         }
 
-        for conflict in (self.vm_chipset.pio_ranges).take_static_registration_conflicts() {
+        for conflict in (inner.vm_chipset.pio_ranges).take_static_registration_conflicts() {
             errs.append(ChipsetBuilderError::PioConflict(conflict));
         }
 
         {
-            let BusResolver { pci, pcie } = self.bus_resolver;
+            let BusResolver { pci, pcie } = inner.bus_resolver;
 
             match pci.resolve() {
                 Ok(()) => {}
@@ -334,13 +306,13 @@ impl<'a> ChipsetBuilder<'a> {
             return Err(FinalChipsetBuilderError(err));
         }
 
-        let mmio_ranges = self.vm_chipset.mmio_ranges.clone();
+        let mmio_ranges = inner.vm_chipset.mmio_ranges.clone();
 
         // Spawn a task for the chipset unit.
-        let vm_chipset = Arc::new(self.vm_chipset);
+        let vm_chipset = Arc::new(inner.vm_chipset);
         let chipset_task = self.driver_source.simple().spawn("chipset-unit", {
             let vm_chipset = vm_chipset.clone();
-            let mut recv = self.chipset_recv;
+            let mut recv = inner.chipset_recv;
             async move {
                 while let Ok(req) = recv.recv().await {
                     req.apply(&mut chipset_unit::ChipsetUnit(&vm_chipset)).await;
@@ -351,8 +323,8 @@ impl<'a> ChipsetBuilder<'a> {
         let devices = ChipsetDevices {
             chipset_unit: self.chipset_unit,
             _chipset_task: chipset_task,
-            _arc_mutex_device_units: self.arc_mutex_device_units,
-            _line_set_units: self.line_sets.units,
+            _arc_mutex_device_units: inner.arc_mutex_device_units,
+            _line_set_units: inner.line_sets.units,
             mmio_ranges,
         };
 
@@ -361,16 +333,16 @@ impl<'a> ChipsetBuilder<'a> {
 
     /// Add a new line set target from an external source.
     pub fn add_external_line_target(
-        &mut self,
+        &self,
         id: LineSetId,
         source_range: RangeInclusive<u32>,
         target_start: u32,
         debug_label: &str,
         target: Arc<dyn LineSetTarget>,
     ) {
-        self.line_set(id)
-            .0
-            .add_target(source_range, target_start, debug_label, target)
+        let mut inner = self.inner.lock();
+        let (line_set, _) = inner.line_sets.line_set(self.driver_source, self.units, id);
+        line_set.add_target(source_range, target_start, debug_label, target)
     }
 }
 

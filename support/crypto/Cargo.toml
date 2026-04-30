@@ -7,19 +7,40 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-ossl_vendored = ["openssl/vendored"]
+# If the chosen backend supports it, vendor it.
+# If the chosen backend is natively available, this feature is a no-op.
+# If the chosen backend is not natively available and can't be vendored, this will trigger a compile error.
+vendored = ["openssl?/vendored"]
+
+# Use OpenSSL instead of any native backend.
+openssl = ["dep:openssl", "dep:openssl_kdf"]
+
+# Use Symcrypt instead of any native backend.
+# Note that the symcrypt backend does not support vendoring, enabling both
+# `symcrypt` and `vendored` will trigger a compile error
+symcrypt = ["dep:symcrypt"]
 
 [dependencies]
-thiserror.workspace = true
-zerocopy.workspace = true
+openssl_kdf = { workspace = true, optional = true }
+openssl = { workspace = true, optional = true }
 
-[target.'cfg(unix)'.dependencies]
-openssl.workspace = true 
+symcrypt = { workspace = true, optional = true }
+
+thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 wchar.workspace = true
 windows = { workspace = true, features = ["Win32_Foundation","Win32_Security_Cryptography"] }
 windows-result.workspace = true
+zerocopy.workspace = true
+
+# Default to OpenSSL on Linux since there is no native backend available
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl_kdf.workspace = true
+openssl.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
 
 [lints]
 workspace = true

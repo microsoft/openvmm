@@ -161,18 +161,32 @@ fn build_dt(
 
     let num_cpus = processor_topology.vps().len();
 
+    use vm_topology::processor::aarch64::GicVersion;
+
     let gic_dist_base: u64 = processor_topology.gic_distributor_base();
-    let gic_dist_size: u64 = aarch64defs::GIC_DISTRIBUTOR_SIZE;
-    let gic_redist_base: u64 = processor_topology.gic_redistributors_base();
-    let gic_redist_size: u64 = aarch64defs::GIC_REDISTRIBUTOR_SIZE * num_cpus as u64;
+    let gic_dist_size: u64 = match processor_topology.gic_version() {
+        GicVersion::V3 { .. } => aarch64defs::GIC_DISTRIBUTOR_SIZE,
+        GicVersion::V2 { .. } => aarch64defs::GIC_V2_DISTRIBUTOR_SIZE,
+    };
+    let (gic_second_base, gic_second_size) = match processor_topology.gic_version() {
+        GicVersion::V3 {
+            redistributors_base,
+        } => (
+            redistributors_base,
+            aarch64defs::GIC_REDISTRIBUTOR_SIZE * num_cpus as u64,
+        ),
+        GicVersion::V2 { cpu_interface_base } => {
+            (cpu_interface_base, aarch64defs::GIC_V2_CPU_INTERFACE_SIZE)
+        }
+    };
 
     // With the default values, that will overlap with the GIC distributor range
     // if the number of VPs goes above `2048`. That is more than enough for the time being,
     // both for the Linux and the Windows guests. The debug assert below is for the time
     // when custom values are used.
     debug_assert!(
-        !(gic_dist_base..gic_dist_base + gic_dist_size).contains(&gic_redist_base)
-            && !(gic_redist_base..gic_redist_base + gic_redist_size).contains(&gic_dist_base)
+        !(gic_dist_base..gic_dist_base + gic_dist_size).contains(&gic_second_base)
+            && !(gic_second_base..gic_second_base + gic_second_size).contains(&gic_dist_base)
     );
 
     let mut buffer = vec![0u8; 0x200000];
@@ -295,19 +309,24 @@ fn build_dt(
         .add_u32(p_phandle, PHANDLE_APB_PCLK)?
         .end_node()?;
 
-    // ARM64 Generic Interrupt Controller aka GIC, v3.
-    // The GICv3 node has a v2m child for SPI-based MSIs (PCIe).
+    // ARM64 Generic Interrupt Controller.
+    // GICv3 uses "arm,gic-v3"; GICv2 uses "arm,cortex-a15-gic".
+    // Both versions can have a v2m child for SPI-based MSIs (PCIe).
     let v2m_info = processor_topology.gic_v2m();
-    let gicv3 = root_builder
+    let gic_compatible = match processor_topology.gic_version() {
+        GicVersion::V3 { .. } => "arm,gic-v3",
+        GicVersion::V2 { .. } => "arm,cortex-a15-gic",
+    };
+    let gic_node = root_builder
         .start_node(format!("intc@{gic_dist_base:x}").as_str())?
-        .add_str(p_compatible, "arm,gic-v3")?
+        .add_str(p_compatible, gic_compatible)?
         .add_u64_array(
             p_reg,
             &[
                 gic_dist_base,
                 gic_dist_size,
-                gic_redist_base,
-                gic_redist_size,
+                gic_second_base,
+                gic_second_size,
             ],
         )?
         .add_u32(p_address_cells, 2)?
@@ -317,7 +336,7 @@ fn build_dt(
         .add_u32(p_phandle, PHANDLE_GIC)?
         .add_null(p_ranges)?;
     root_builder = if let Some(v2m) = v2m_info {
-        gicv3
+        gic_node
             .start_node(format!("v2m@{:x}", v2m.frame_base).as_str())?
             .add_str(p_compatible, "arm,gic-v2m-frame")?
             .add_null(p_msi_controller)?
@@ -331,7 +350,7 @@ fn build_dt(
             .end_node()?
             .end_node()?
     } else {
-        gicv3.end_node()?
+        gic_node.end_node()?
     };
 
     // ARM64 Architectural Timer.

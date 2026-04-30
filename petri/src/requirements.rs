@@ -63,6 +63,8 @@ pub struct HostContext {
     pub vendor: Vendor,
     /// Execution environment
     pub execution_environment: ExecutionEnvironment,
+    /// Whether the host hypervisor supports software VPCI device emulation
+    pub vpci_supported: bool,
 }
 
 impl HostContext {
@@ -140,6 +142,9 @@ impl HostContext {
             }
         };
 
+        // VPCI support: only Windows (virt_whp and Hyper-V) supports it for now.
+        let vpci_supported = cfg!(windows);
+
         Self {
             vm_host_info,
             vendor,
@@ -148,6 +153,7 @@ impl HostContext {
             } else {
                 ExecutionEnvironment::Baremetal
             },
+            vpci_supported,
         }
     }
 }
@@ -160,15 +166,36 @@ pub enum TestRequirement {
     Vendor(Vendor),
     /// Isolation requirement.
     Isolation(IsolationType),
+    /// Requires a hypervisor backend that supports VPCI (virtual PCI)
+    /// device emulation. On Linux this means /dev/mshv (not KVM).
+    VpciSupport,
     /// Logical AND of two requirements.
     And(Box<TestRequirement>, Box<TestRequirement>),
     /// Logical OR of two requirements.
     Or(Box<TestRequirement>, Box<TestRequirement>),
     /// Logical NOT of a requirement.
     Not(Box<TestRequirement>),
+    /// Requirement satisfied by any host context.
+    Any,
 }
 
 impl TestRequirement {
+    /// Combine this requirement with another requirement using logical AND.
+    pub fn and(self, other: TestRequirement) -> TestRequirement {
+        TestRequirement::And(Box::new(self), Box::new(other))
+    }
+
+    /// Combine this requirement with another requirement using logical OR.
+    pub fn or(self, other: TestRequirement) -> TestRequirement {
+        TestRequirement::Or(Box::new(self), Box::new(other))
+    }
+
+    /// Negate this requirement.
+    #[expect(clippy::should_implement_trait)]
+    pub fn not(self) -> TestRequirement {
+        TestRequirement::Not(Box::new(self))
+    }
+
     /// Evaluate if this requirement is satisfied with the given host context
     pub fn is_satisfied(&self, context: &HostContext) -> bool {
         match self {
@@ -185,6 +212,7 @@ impl TestRequirement {
                     false
                 }
             }
+            TestRequirement::VpciSupport => context.vpci_supported,
             TestRequirement::And(req1, req2) => {
                 req1.is_satisfied(context) && req2.is_satisfied(context)
             }
@@ -192,6 +220,7 @@ impl TestRequirement {
                 req1.is_satisfied(context) || req2.is_satisfied(context)
             }
             TestRequirement::Not(req) => !req.is_satisfied(context),
+            TestRequirement::Any => true,
         }
     }
 }

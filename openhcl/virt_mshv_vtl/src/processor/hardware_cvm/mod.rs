@@ -123,7 +123,7 @@ impl Drop for RedirectedVectorMapping<'_> {
     }
 }
 
-impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
+impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
     fn validate_register_access(
         &mut self,
         target_vtl: GuestVtl,
@@ -874,8 +874,8 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     }
 }
 
-impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::ModifySparseGpaPageHostVisibility
-    for UhHypercallHandler<'_, '_, T, B>
+impl<B: HardwareIsolatedBacking> hv1_hypercall::ModifySparseGpaPageHostVisibility
+    for UhHypercallHandler<'_, '_, B>
 {
     fn modify_gpa_visibility(
         &mut self,
@@ -915,7 +915,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::ModifySparseGpaPageHos
     }
 }
 
-impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
+impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
     fn retarget_physical_interrupt(
         &mut self,
         device_id: u64,
@@ -1083,9 +1083,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     }
 }
 
-impl<T, B: HardwareIsolatedBacking> hv1_hypercall::GetVpRegisters
-    for UhHypercallHandler<'_, '_, T, B>
-{
+impl<B: HardwareIsolatedBacking> hv1_hypercall::GetVpRegisters for UhHypercallHandler<'_, '_, B> {
     fn get_vp_registers(
         &mut self,
         partition_id: u64,
@@ -1114,8 +1112,8 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::GetVpRegisters
     }
 }
 
-impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::RetargetDeviceInterrupt
-    for UhHypercallHandler<'_, '_, T, B>
+impl<B: HardwareIsolatedBacking> hv1_hypercall::RetargetDeviceInterrupt
+    for UhHypercallHandler<'_, '_, B>
 {
     fn retarget_interrupt(
         &mut self,
@@ -1154,9 +1152,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::RetargetDeviceInterrup
     }
 }
 
-impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
-    for UhHypercallHandler<'_, '_, T, B>
-{
+impl<B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters for UhHypercallHandler<'_, '_, B> {
     fn set_vp_registers(
         &mut self,
         partition_id: u64,
@@ -1184,7 +1180,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
     }
 }
 
-impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandler<'_, '_, T, B> {
+impl<B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandler<'_, '_, B> {
     fn is_vtl_call_allowed(&self) -> bool {
         // Only allowed from VTL 0
         if self.intercepted_vtl != GuestVtl::Vtl0 {
@@ -1215,7 +1211,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
     }
 }
 
-impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHandler<'_, '_, T, B> {
+impl<B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHandler<'_, '_, B> {
     fn is_vtl_return_allowed(&self) -> bool {
         if self.intercepted_vtl != GuestVtl::Vtl1 {
             tracelimit::warn_ratelimited!(
@@ -1254,9 +1250,9 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
     }
 }
 
-impl<T, B: HardwareIsolatedBacking>
+impl<B: HardwareIsolatedBacking>
     hv1_hypercall::StartVirtualProcessor<hvdef::hypercall::InitialVpContextX64>
-    for UhHypercallHandler<'_, '_, T, B>
+    for UhHypercallHandler<'_, '_, B>
 {
     fn start_virtual_processor(
         &mut self,
@@ -1341,8 +1337,8 @@ impl<T, B: HardwareIsolatedBacking>
     }
 }
 
-impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
-    for UhHypercallHandler<'_, '_, T, B>
+impl<B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
+    for UhHypercallHandler<'_, '_, B>
 {
     fn modify_vtl_protection_mask(
         &mut self,
@@ -1399,8 +1395,8 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
     }
 }
 
-impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::QuerySparseGpaPageHostVisibility
-    for UhHypercallHandler<'_, '_, T, B>
+impl<B: HardwareIsolatedBacking> hv1_hypercall::QuerySparseGpaPageHostVisibility
+    for UhHypercallHandler<'_, '_, B>
 {
     fn query_gpa_visibility(
         &mut self,
@@ -1423,8 +1419,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::QuerySparseGpaPageHost
     }
 }
 
-impl<T, B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
-    for UhHypercallHandler<'_, '_, T, B>
+impl<B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
+    for UhHypercallHandler<'_, '_, B>
 {
     fn enable_partition_vtl(
         &mut self,
@@ -1485,9 +1481,8 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
     }
 }
 
-impl<T, B: HardwareIsolatedBacking>
-    hv1_hypercall::EnableVpVtl<hvdef::hypercall::InitialVpContextX64>
-    for UhHypercallHandler<'_, '_, T, B>
+impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::InitialVpContextX64>
+    for UhHypercallHandler<'_, '_, B>
 {
     fn enable_vp_vtl(
         &mut self,
@@ -1618,8 +1613,8 @@ impl<T, B: HardwareIsolatedBacking>
     }
 }
 
-impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
-    for UhHypercallHandler<'_, '_, T, B>
+impl<B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
+    for UhHypercallHandler<'_, '_, B>
 {
     fn translate_virtual_address(
         &mut self,
@@ -2784,8 +2779,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport for UhEmulationSt
     }
 }
 
-impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SendSyntheticClusterIpi
-    for UhHypercallHandler<'_, '_, T, B>
+impl<B: HardwareIsolatedBacking> hv1_hypercall::SendSyntheticClusterIpi
+    for UhHypercallHandler<'_, '_, B>
 {
     fn send_synthetic_cluster_ipi(
         &mut self,
@@ -2806,8 +2801,8 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SendSyntheticClusterIpi
     }
 }
 
-impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SendSyntheticClusterIpiEx
-    for UhHypercallHandler<'_, '_, T, B>
+impl<B: HardwareIsolatedBacking> hv1_hypercall::SendSyntheticClusterIpiEx
+    for UhHypercallHandler<'_, '_, B>
 {
     fn send_synthetic_cluster_ipi_ex(
         &mut self,
@@ -2828,9 +2823,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SendSyntheticClusterIpiEx
     }
 }
 
-impl<T, B: HardwareIsolatedBacking> hv1_hypercall::InstallIntercept
-    for UhHypercallHandler<'_, '_, T, B>
-{
+impl<B: HardwareIsolatedBacking> hv1_hypercall::InstallIntercept for UhHypercallHandler<'_, '_, B> {
     fn install_intercept(
         &mut self,
         partition_id: u64,
@@ -2891,8 +2884,8 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::InstallIntercept
     }
 }
 
-impl<T, B: HardwareIsolatedBacking> hv1_hypercall::AssertVirtualInterrupt
-    for UhHypercallHandler<'_, '_, T, B>
+impl<B: HardwareIsolatedBacking> hv1_hypercall::AssertVirtualInterrupt
+    for UhHypercallHandler<'_, '_, B>
 {
     fn assert_virtual_interrupt(
         &mut self,

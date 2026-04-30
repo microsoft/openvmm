@@ -10,9 +10,7 @@
 
 use crate::report::MetricResult;
 use anyhow::Context as _;
-
-pub const ARCH: petri_artifacts_common::tags::MachineArch =
-    petri_artifacts_common::tags::MachineArch::X86_64;
+use petri_artifacts_common::tags::MachineArch;
 
 /// Boot time configuration profile.
 ///
@@ -138,7 +136,7 @@ pub struct BootTimeTest {
 
 /// Build the firmware configuration for Linux direct boot.
 pub fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
-    petri::Firmware::linux_direct(resolver, ARCH)
+    petri::Firmware::linux_direct(resolver, MachineArch::host())
 }
 
 /// Build artifacts for the OpenVMM backend.
@@ -147,7 +145,10 @@ pub fn build_artifacts(
 ) -> anyhow::Result<petri::PetriVmArtifacts<petri::openvmm::OpenVmmPetriBackend>> {
     let firmware = build_firmware(resolver);
     petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-        resolver, firmware, ARCH, true,
+        resolver,
+        firmware,
+        MachineArch::host(),
+        true,
     )
     .context("firmware/arch not compatible with OpenVMM backend")
 }
@@ -156,7 +157,10 @@ pub fn build_artifacts(
 pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
     let firmware = build_firmware(resolver);
     petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-        resolver, firmware, ARCH, true,
+        resolver,
+        firmware,
+        MachineArch::host(),
+        true,
     );
 }
 

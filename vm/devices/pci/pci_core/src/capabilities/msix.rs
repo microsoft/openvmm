@@ -14,6 +14,8 @@ use parking_lot::Mutex;
 use std::fmt::Debug;
 use std::sync::Arc;
 use vmcore::interrupt::Interrupt;
+use vmcore::irqfd::IrqFd;
+use vmcore::irqfd::IrqFdRoute;
 
 #[derive(Debug, Inspect)]
 struct MsiTableLocation {
@@ -110,6 +112,7 @@ impl PciCapability for MsixCapability {
         let mut state = self.state.lock();
         state.enabled = false;
         for vector in &mut state.vectors {
+            vector.msi.disable();
             vector.state = EntryState::new();
         }
     }
@@ -118,19 +121,37 @@ impl PciCapability for MsixCapability {
 #[derive(Clone, Inspect, Debug)]
 pub(crate) struct MsiInterrupt(#[inspect(flatten)] Arc<Mutex<MsiInterruptInner>>);
 
-#[derive(Inspect, Debug)]
+#[derive(Inspect)]
 struct MsiInterruptInner {
     target: MsiTarget,
+    /// Optional kernel-mediated route for fast interrupt delivery.
+    /// When present, `enable()`/`disable()` automatically program the
+    /// kernel's MSI routing alongside the userspace `MsiTarget` path.
+    #[inspect(skip)]
+    route: Option<Box<dyn IrqFdRoute>>,
     pending: bool,
     enabled: bool,
     address: u64,
     data: u32,
 }
 
+impl Debug for MsiInterruptInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MsiInterruptInner")
+            .field("pending", &self.pending)
+            .field("enabled", &self.enabled)
+            .field("address", &self.address)
+            .field("data", &self.data)
+            .field("has_route", &self.route.is_some())
+            .finish()
+    }
+}
+
 impl MsiInterrupt {
     pub fn new(target: MsiTarget) -> Self {
         Self(Arc::new(Mutex::new(MsiInterruptInner {
             target,
+            route: None,
             pending: false,
             enabled: false,
             address: 0,
@@ -144,6 +165,30 @@ impl MsiInterrupt {
         state.address = address;
         state.data = data;
         state.enabled = true;
+
+        // Program the kernel route if present.
+        if state.route.is_some() {
+            let route = state.route.as_ref().unwrap();
+            if route.consume_pending() {
+                state.pending = true;
+            }
+        }
+        if let Some(route) = &state.route {
+            if address != 0 || data != 0 {
+                if let Err(e) = route.set_msi(address, data) {
+                    tracelimit::warn_ratelimited!(
+                        error = ?e,
+                        "failed to program MSI-X route on enable"
+                    );
+                }
+            } else if let Err(e) = route.clear_msi() {
+                tracelimit::warn_ratelimited!(
+                    error = ?e,
+                    "failed to clear MSI-X route on enable"
+                );
+            }
+        }
+
         if state.pending {
             state.target.signal_msi(0, address, data);
             state.pending = false;
@@ -153,13 +198,34 @@ impl MsiInterrupt {
     pub fn disable(&self) {
         let mut state = self.0.lock();
         state.enabled = false;
+        if let Some(route) = &state.route {
+            if let Err(e) = route.mask() {
+                tracelimit::warn_ratelimited!(
+                    error = ?e,
+                    "failed to mask MSI-X route on disable"
+                );
+            }
+        }
     }
 
     pub fn drain_pending(&self) -> bool {
         let mut state = self.0.lock();
+        if let Some(route) = &state.route {
+            state.pending |= route.consume_pending();
+        }
         let was_pending = state.pending;
         state.pending = false;
         was_pending
+    }
+
+    /// Install a kernel-mediated route for fast interrupt delivery.
+    pub(crate) fn set_route(&self, route: Box<dyn IrqFdRoute>) {
+        self.0.lock().route = Some(route);
+    }
+
+    /// Remove the kernel-mediated route.
+    pub(crate) fn clear_route(&self) {
+        self.0.lock().route = None;
     }
 
     pub fn interrupt(&self) -> Interrupt {
@@ -363,6 +429,7 @@ impl MsixEmulator {
                 entry.write_u32(offset & 0xf, val);
                 let is_enabled = entry.is_enabled(global);
                 if is_enabled && !was_enabled {
+                    // Vector just unmasked.
                     entry.msi.enable(
                         entry.state.address,
                         entry.state.data,
@@ -370,7 +437,14 @@ impl MsixEmulator {
                     );
                     entry.state.is_pending = false;
                 } else if was_enabled && !is_enabled {
+                    // Vector just masked.
                     entry.msi.disable();
+                } else if is_enabled {
+                    // Still enabled. addr/data may have changed — enable()
+                    // will update the route if present.
+                    entry
+                        .msi
+                        .enable(entry.state.address, entry.state.data, false);
                 }
                 return;
             }
@@ -401,10 +475,66 @@ impl MsixEmulator {
         state.vectors[index as usize].state.is_pending = false;
     }
 
-    #[cfg(test)]
-    fn set_pending_bit(&self, index: u8) {
+    /// Sets the pending bit for the given vector index.
+    ///
+    /// Used by device passthrough (e.g., VFIO with irqfd) to record that an
+    /// interrupt arrived while the vector was masked, so PBA reads return
+    /// the correct pending state.
+    pub fn set_pending_bit(&self, index: u16) {
         let mut state = self.state.lock();
-        state.vectors[index as usize].state.is_pending = true;
+        if let Some(entry) = state.vectors.get_mut(index as usize) {
+            entry.state.is_pending = true;
+        } else {
+            tracelimit::warn_ratelimited!(
+                index,
+                count = state.vectors.len(),
+                "set_pending_bit: vector index out of range"
+            );
+        }
+    }
+
+    /// Enable kernel-mediated interrupt delivery for all vectors.
+    ///
+    /// Creates one irqfd route per vector using the provided [`IrqFd`]
+    /// interface. The `register` callback receives references to the events
+    /// for all vectors. The caller uses this to pass events to the
+    /// interrupt source (e.g., VFIO `map_msix` or vhost-user
+    /// `SET_VRING_CALL`). After the callback returns, the routes are
+    /// installed in the emulator. When the guest programs MSI-X table
+    /// entries, the emulator automatically updates the kernel's MSI routing.
+    ///
+    /// Call [`disable_irqfd`](Self::disable_irqfd) to tear down the routes.
+    pub fn enable_irqfd(
+        &self,
+        irqfd: &dyn IrqFd,
+        register: impl FnOnce(&[&pal_event::Event]) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let state = self.state.lock();
+        let mut routes: Vec<Box<dyn IrqFdRoute>> = Vec::with_capacity(state.vectors.len());
+        for _ in state.vectors.iter() {
+            routes.push(irqfd.new_irqfd_route()?);
+        }
+
+        // Collect event references while routes are still in our local Vec.
+        let events: Vec<&pal_event::Event> = routes.iter().map(|r| r.event()).collect();
+        register(&events)?;
+
+        // Move routes into the emulator's MsiInterrupts.
+        for (entry, route) in state.vectors.iter().zip(routes) {
+            entry.msi.set_route(route);
+        }
+        Ok(())
+    }
+
+    /// Tear down kernel-mediated interrupt delivery.
+    ///
+    /// Drops all irqfd routes, unregistering them from the hypervisor and
+    /// freeing GSI allocations.
+    pub fn disable_irqfd(&self) {
+        let state = self.state.lock();
+        for entry in &state.vectors {
+            entry.msi.clear_route();
+        }
     }
 }
 
@@ -567,5 +697,239 @@ mod tests {
         msix.clear_pending_bit(1);
         assert_eq!(msix.read_u32(0x400), 0x80000000);
         assert_eq!(msix.read_u32(0x404), 0x80000002);
+    }
+
+    use pal_event::Event;
+    use parking_lot::Mutex;
+
+    /// Record of a call made to a [`MockIrqFdRoute`].
+    #[derive(Debug, Clone, PartialEq)]
+    enum RouteCall {
+        SetMsi { address: u64, data: u32 },
+        ClearMsi,
+        Mask,
+        ConsumePending,
+    }
+
+    /// Mock irqfd route that records calls.
+    struct MockIrqFdRoute {
+        event: Event,
+        calls: Arc<Mutex<Vec<RouteCall>>>,
+        pending: Arc<Mutex<bool>>,
+    }
+
+    impl IrqFdRoute for MockIrqFdRoute {
+        fn event(&self) -> &Event {
+            &self.event
+        }
+
+        fn set_msi(&self, address: u64, data: u32) -> anyhow::Result<()> {
+            self.calls.lock().push(RouteCall::SetMsi { address, data });
+            Ok(())
+        }
+
+        fn clear_msi(&self) -> anyhow::Result<()> {
+            self.calls.lock().push(RouteCall::ClearMsi);
+            Ok(())
+        }
+
+        fn mask(&self) -> anyhow::Result<()> {
+            self.calls.lock().push(RouteCall::Mask);
+            Ok(())
+        }
+
+        fn unmask(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn consume_pending(&self) -> bool {
+            self.calls.lock().push(RouteCall::ConsumePending);
+            let mut p = self.pending.lock();
+            let was = *p;
+            *p = false;
+            was
+        }
+    }
+
+    /// Mock IrqFd that creates MockIrqFdRoutes and returns shared call logs.
+    struct MockIrqFd {
+        routes: Mutex<Vec<(Arc<Mutex<Vec<RouteCall>>>, Arc<Mutex<bool>>)>>,
+    }
+
+    impl MockIrqFd {
+        fn new(count: usize) -> (Self, Vec<Arc<Mutex<Vec<RouteCall>>>>, Vec<Arc<Mutex<bool>>>) {
+            let mut call_logs = Vec::new();
+            let mut pendings = Vec::new();
+            let mut route_params = Vec::new();
+            for _ in 0..count {
+                let calls = Arc::new(Mutex::new(Vec::new()));
+                let pending = Arc::new(Mutex::new(false));
+                call_logs.push(calls.clone());
+                pendings.push(pending.clone());
+                route_params.push((calls, pending));
+            }
+            (
+                Self {
+                    routes: Mutex::new(route_params),
+                },
+                call_logs,
+                pendings,
+            )
+        }
+    }
+
+    impl IrqFd for MockIrqFd {
+        fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn IrqFdRoute>> {
+            let (calls, pending) = self.routes.lock().remove(0);
+            Ok(Box::new(MockIrqFdRoute {
+                event: Event::new(),
+                calls,
+                pending,
+            }))
+        }
+    }
+
+    #[test]
+    fn route_set_msi_on_unmask() {
+        let msi_conn = MsiConnection::new();
+        let (mut msix, mut cap) = MsixEmulator::new(2, 2, msi_conn.target());
+        let msi_controller = TestPciInterruptController::new();
+        msi_conn.connect(msi_controller.signal_msi());
+
+        let (mock_irqfd, calls, _pendings) = MockIrqFd::new(2);
+        msix.enable_irqfd(&mock_irqfd, |_| Ok(())).unwrap();
+
+        // Enable MSI-X globally.
+        cap.write_u32(0, 0x80000000);
+
+        // Program vector 0 addr/data (still masked — control starts at 1).
+        msix.write_u32(0, 0xFEE00000); // addr_lo
+        msix.write_u32(4, 0); // addr_hi
+        msix.write_u32(8, 0x42); // data
+
+        // No set_msi yet because vector is still masked.
+        assert!(
+            !calls[0]
+                .lock()
+                .iter()
+                .any(|c| matches!(c, RouteCall::SetMsi { .. }))
+        );
+
+        // Unmask vector 0 (write control = 0).
+        calls[0].lock().clear();
+        msix.write_u32(12, 0);
+
+        // Should have called consume_pending then set_msi.
+        let log = calls[0].lock().clone();
+        assert!(log.contains(&RouteCall::ConsumePending));
+        assert!(log.contains(&RouteCall::SetMsi {
+            address: 0xFEE00000,
+            data: 0x42
+        }));
+    }
+
+    #[test]
+    fn route_mask_on_vector_mask() {
+        let msi_conn = MsiConnection::new();
+        let (mut msix, mut cap) = MsixEmulator::new(2, 2, msi_conn.target());
+        let msi_controller = TestPciInterruptController::new();
+        msi_conn.connect(msi_controller.signal_msi());
+
+        let (mock_irqfd, calls, _pendings) = MockIrqFd::new(2);
+        msix.enable_irqfd(&mock_irqfd, |_| Ok(())).unwrap();
+
+        // Enable MSI-X, program and unmask vector 0.
+        cap.write_u32(0, 0x80000000);
+        msix.write_u32(0, 0xFEE00000);
+        msix.write_u32(8, 0x42);
+        msix.write_u32(12, 0); // unmask
+
+        calls[0].lock().clear();
+
+        // Mask vector 0 (write control = 1).
+        msix.write_u32(12, 1);
+
+        let log = calls[0].lock().clone();
+        assert!(log.contains(&RouteCall::Mask));
+    }
+
+    #[test]
+    fn route_global_disable_masks_all() {
+        let msi_conn = MsiConnection::new();
+        let (mut msix, mut cap) = MsixEmulator::new(2, 2, msi_conn.target());
+        let msi_controller = TestPciInterruptController::new();
+        msi_conn.connect(msi_controller.signal_msi());
+
+        let (mock_irqfd, calls, _pendings) = MockIrqFd::new(2);
+        msix.enable_irqfd(&mock_irqfd, |_| Ok(())).unwrap();
+
+        // Enable, program, and unmask both vectors.
+        cap.write_u32(0, 0x80000000);
+        for v in 0..2u64 {
+            msix.write_u32(v * 16, 0xFEE00000);
+            msix.write_u32(v * 16 + 8, (v + 1) as u32);
+            msix.write_u32(v * 16 + 12, 0); // unmask
+        }
+        calls[0].lock().clear();
+        calls[1].lock().clear();
+
+        // Disable MSI-X globally.
+        cap.write_u32(0, 0);
+
+        // Both vectors should have been masked.
+        assert!(calls[0].lock().contains(&RouteCall::Mask));
+        assert!(calls[1].lock().contains(&RouteCall::Mask));
+    }
+
+    #[test]
+    fn route_consume_pending_on_pba_read() {
+        let msi_conn = MsiConnection::new();
+        let (msix, mut cap) = MsixEmulator::new(2, 2, msi_conn.target());
+        let msi_controller = TestPciInterruptController::new();
+        msi_conn.connect(msi_controller.signal_msi());
+
+        let (mock_irqfd, calls, pendings) = MockIrqFd::new(2);
+        msix.enable_irqfd(&mock_irqfd, |_| Ok(())).unwrap();
+
+        // Enable MSI-X but leave vectors masked (control = 1 by default).
+        cap.write_u32(0, 0x80000000);
+
+        // Simulate a pending interrupt on vector 0.
+        *pendings[0].lock() = true;
+        calls[0].lock().clear();
+
+        // PBA is at offset = vector_count * 16 = 32.
+        let pba = msix.read_u32(32);
+
+        // Should have called consume_pending and returned bit 0 set.
+        assert!(calls[0].lock().contains(&RouteCall::ConsumePending));
+        assert_eq!(pba & 1, 1);
+    }
+
+    #[test]
+    fn route_set_msi_on_addr_data_change_while_unmasked() {
+        let msi_conn = MsiConnection::new();
+        let (mut msix, mut cap) = MsixEmulator::new(2, 1, msi_conn.target());
+        let msi_controller = TestPciInterruptController::new();
+        msi_conn.connect(msi_controller.signal_msi());
+
+        let (mock_irqfd, calls, _pendings) = MockIrqFd::new(1);
+        msix.enable_irqfd(&mock_irqfd, |_| Ok(())).unwrap();
+
+        // Enable, program, unmask.
+        cap.write_u32(0, 0x80000000);
+        msix.write_u32(0, 0xFEE00000);
+        msix.write_u32(8, 0x42);
+        msix.write_u32(12, 0);
+        calls[0].lock().clear();
+
+        // Change data while still unmasked.
+        msix.write_u32(8, 0x99);
+
+        let log = calls[0].lock().clone();
+        assert!(log.contains(&RouteCall::SetMsi {
+            address: 0xFEE00000,
+            data: 0x99
+        }));
     }
 }

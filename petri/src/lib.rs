@@ -6,6 +6,11 @@
 //! At this time - `petri` supports testing OpenVMM, OpenHCL,
 //! and Hyper-V based VMs.
 
+// TODO: Remove this dependency by adding a frontend worker that handles
+// hypervisor auto-detection in the spawned openvmm process instead of
+// requiring probes to be registered in the petri process.
+extern crate openvmm_hypervisors as _;
+
 mod cpio;
 pub mod disk_image;
 mod linux_direct_serial_agent;
@@ -21,10 +26,13 @@ mod worker;
 
 pub use petri_artifacts_core::ArtifactHandle;
 pub use petri_artifacts_core::ArtifactResolver;
+pub use petri_artifacts_core::ArtifactSource;
 pub use petri_artifacts_core::AsArtifactHandle;
 pub use petri_artifacts_core::ErasedArtifactHandle;
+pub use petri_artifacts_core::RemoteAccess;
 pub use petri_artifacts_core::ResolveTestArtifact;
 pub use petri_artifacts_core::ResolvedArtifact;
+pub use petri_artifacts_core::ResolvedArtifactSource;
 pub use petri_artifacts_core::ResolvedOptionalArtifact;
 pub use petri_artifacts_core::TestArtifactRequirements;
 pub use petri_artifacts_core::TestArtifacts;

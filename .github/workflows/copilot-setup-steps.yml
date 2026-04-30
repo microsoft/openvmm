@@ -24,7 +24,7 @@ jobs:
       - name: Install Rust toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- --default-toolchain=1.94.0 -y
+            | sh -s -- --default-toolchain=1.95.0 -y
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       # Install cargo-nextest so the agent can run unit tests.

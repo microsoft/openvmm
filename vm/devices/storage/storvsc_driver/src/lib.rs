@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 //! Storvsc driver for use as a disk backend.
 
 #[cfg(feature = "test")]

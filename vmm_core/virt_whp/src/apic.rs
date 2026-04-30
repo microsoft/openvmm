@@ -25,8 +25,6 @@ use virt::io::CpuIo;
 use virt::irqcon::MsiRequest;
 use virt::x86::MsrError;
 use virt::x86::vp;
-use virt::x86::vp::hv_apic_nmi_pending;
-use virt::x86::vp::set_hv_apic_nmi_pending;
 use virt_support_apic::ApicClient;
 use virt_support_apic::ApicWork;
 use virt_support_apic::LocalApic;
@@ -212,8 +210,10 @@ impl WhpProcessor<'_> {
             LocalApicKind::Offloaded => {
                 // Get the NMI pending bit from the APIC.
                 let mut activity: vp::Activity = self.vp.get_register_state(vtl)?;
-                let apic = self.vp.whp(vtl).get_apic().for_op("get apic state")?;
-                activity.nmi_pending = hv_apic_nmi_pending(&apic);
+                let apic = vp::ApicRegisters::from_page(
+                    &self.vp.whp(vtl).get_apic().for_op("get apic state")?,
+                );
+                activity.nmi_pending = apic.hv_apic_nmi_pending();
                 activity
             }
         };
@@ -260,9 +260,16 @@ impl WhpProcessor<'_> {
             LocalApicKind::Offloaded => {
                 self.vp.set_register_state(vtl, value)?;
                 // Set the NMI pending bit via the APIC.
-                let mut apic = self.vp.whp(vtl).get_apic().for_op("get apic state")?;
-                set_hv_apic_nmi_pending(&mut apic, value.nmi_pending);
-                self.vp.whp(vtl).set_apic(&apic).for_op("set apic state")?;
+                let mut apic = vp::ApicRegisters::from_page(
+                    &self.vp.whp(vtl).get_apic().for_op("get apic state")?,
+                );
+                if value.nmi_pending != apic.hv_apic_nmi_pending() {
+                    apic.set_hv_apic_nmi_pending(value.nmi_pending);
+                    self.vp
+                        .whp(vtl)
+                        .set_apic(&apic.as_page())
+                        .for_op("set apic state")?;
+                }
             }
         }
         Ok(())
@@ -281,10 +288,12 @@ impl WhpProcessor<'_> {
                 lapic.apic.save()
             }
             LocalApicKind::Offloaded => {
-                let mut apic = self.vp.whp(vtl).get_apic().for_op("get apic state")?;
+                let mut apic = vp::ApicRegisters::from_page(
+                    &self.vp.whp(vtl).get_apic().for_op("get apic state")?,
+                );
                 // Clear the non-architectural NMI pending bit.
-                set_hv_apic_nmi_pending(&mut apic, false);
-                vp::Apic::from_page(apic_base, &apic[..1024].try_into().unwrap())
+                apic.set_hv_apic_nmi_pending(false);
+                vp::Apic::new(apic_base.into(), apic, [0; 8])
             }
         };
 
@@ -306,11 +315,16 @@ impl WhpProcessor<'_> {
             }
             LocalApicKind::Offloaded => {
                 // Preserve NMI pending.
-                let mut apic = self.vp.whp(vtl).get_apic().for_op("get apic state")?;
-                let nmi_pending = hv_apic_nmi_pending(&apic);
-                apic[..1024].copy_from_slice(&value.as_page());
-                set_hv_apic_nmi_pending(&mut apic, nmi_pending);
-                self.vp.whp(vtl).set_apic(&apic).for_op("set apic state")?;
+                let nmi_pending = vp::ApicRegisters::from_page(
+                    &self.vp.whp(vtl).get_apic().for_op("get apic state")?,
+                )
+                .hv_apic_nmi_pending();
+                let mut apic = *value.registers();
+                apic.set_hv_apic_nmi_pending(nmi_pending);
+                self.vp
+                    .whp(vtl)
+                    .set_apic(&apic.as_page())
+                    .for_op("set apic state")?;
             }
         }
 

@@ -8,8 +8,6 @@
 //! descriptor ring just as a guest driver would.
 
 use crate::VirtioBlkDevice;
-use crate::spec::VirtioBlkDiscardWriteZeroes;
-use crate::spec::*;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
@@ -27,6 +25,8 @@ use virtio::QueueResources;
 use virtio::VirtioDevice;
 use virtio::queue::QueueParams;
 use virtio::spec::VirtioDeviceFeatures;
+use virtio::spec::blk::VirtioBlkDiscardWriteZeroes;
+use virtio::spec::blk::*;
 use virtio::spec::queue::DescriptorFlags;
 use virtio::test_helpers::init_avail_ring;
 use virtio::test_helpers::init_used_ring;

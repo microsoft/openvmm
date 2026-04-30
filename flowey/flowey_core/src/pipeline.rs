@@ -13,6 +13,7 @@ use crate::node::FlowNodeBase;
 use crate::node::FlowPlatform;
 use crate::node::FlowPlatformLinuxDistro;
 use crate::node::GhUserSecretVar;
+use crate::node::IntoConfig;
 use crate::node::IntoRequest;
 use crate::node::NodeHandle;
 use crate::node::ReadVar;
@@ -33,6 +34,7 @@ use std::path::PathBuf;
 /// `flowey` prelude.
 pub mod user_facing {
     pub use super::AdoCiTriggers;
+    pub use super::AdoPool;
     pub use super::AdoPrTriggers;
     pub use super::AdoResourcesRepository;
     pub use super::AdoResourcesRepositoryRef;
@@ -167,9 +169,15 @@ pub struct AdoPrTriggers {
     /// Automatically cancel the pipeline run if a new commit lands in the
     /// branch. Defaults to `true`.
     pub auto_cancel: bool,
+    /// Only run the pipeline when files matching these paths are changed
+    /// (supports glob syntax)
+    pub paths: Vec<String>,
+    /// Specify any paths which should be filtered out from the list of
+    /// `paths` (supports glob syntax)
+    pub exclude_paths: Vec<String>,
 }
 
-/// Trigger ADO pipelines per PR
+/// Trigger ADO pipelines per CI
 #[derive(Debug, Default)]
 pub struct AdoCiTriggers {
     /// Run the pipeline whenever there is a change to these specified branches
@@ -186,6 +194,12 @@ pub struct AdoCiTriggers {
     pub exclude_tags: Vec<String>,
     /// Whether to batch changes per branch.
     pub batch: bool,
+    /// Only run the pipeline when files matching these paths are changed
+    /// (supports glob syntax)
+    pub paths: Vec<String>,
+    /// Specify any paths which should be filtered out from the list of
+    /// `paths` (supports glob syntax)
+    pub exclude_paths: Vec<String>,
 }
 
 impl Default for AdoPrTriggers {
@@ -195,6 +209,8 @@ impl Default for AdoPrTriggers {
             exclude_branches: Vec::new(),
             run_on_draft: false,
             auto_cancel: true,
+            paths: Vec::new(),
+            exclude_paths: Vec::new(),
         }
     }
 }
@@ -254,6 +270,12 @@ pub struct GhPrTriggers {
     pub auto_cancel: bool,
     /// Run the pipeline whenever the PR trigger matches the specified types
     pub types: Vec<String>,
+    /// Only run the pipeline when files matching these paths are changed
+    /// (supports glob syntax)
+    pub paths: Vec<String>,
+    /// Specify any paths which should be filtered out from the list of
+    /// `paths` (supports glob syntax)
+    pub paths_ignore: Vec<String>,
 }
 
 /// Trigger Github Actions pipelines per PR
@@ -271,6 +293,12 @@ pub struct GhCiTriggers {
     /// Specify any tags which should be filtered out from the list of `tags`
     /// (supports glob syntax)
     pub exclude_tags: Vec<String>,
+    /// Only run the pipeline when files matching these paths are changed
+    /// (supports glob syntax)
+    pub paths: Vec<String>,
+    /// Specify any paths which should be filtered out from the list of
+    /// `paths` (supports glob syntax)
+    pub paths_ignore: Vec<String>,
 }
 
 impl GhPrTriggers {
@@ -286,6 +314,8 @@ impl GhPrTriggers {
                 "ready_for_review".into(),
             ],
             auto_cancel: true,
+            paths: Vec::new(),
+            paths_ignore: Vec::new(),
         }
     }
 }
@@ -326,6 +356,14 @@ impl GhRunner {
     pub fn is_self_hosted_with_label(&self, label: &str) -> bool {
         matches!(self, GhRunner::SelfHosted(labels) if labels.iter().any(|s| s.as_str() == label))
     }
+}
+
+// TODO: support a more structured format for demands
+// See https://learn.microsoft.com/en-us/azure/devops/pipelines/yaml-schema/pool-demands
+#[derive(Debug, Clone)]
+pub struct AdoPool {
+    pub name: String,
+    pub demands: Vec<String>,
 }
 
 /// Parameter type (unstable / stable).
@@ -606,6 +644,7 @@ impl Pipeline {
         let idx = self.jobs.len();
         self.jobs.push(PipelineJobMetadata {
             root_nodes: BTreeMap::new(),
+            root_configs: BTreeMap::new(),
             patches: ResolvedPatches::build(),
             label: label.as_ref().into(),
             platform,
@@ -1040,8 +1079,9 @@ pub struct PipelineJob<'a> {
 
 impl PipelineJob<'_> {
     /// (ADO only) specify which agent pool this job will be run on.
-    pub fn ado_set_pool(self, pool: impl AsRef<str>) -> Self {
-        self.ado_set_pool_with_demands(pool, Vec::new())
+    pub fn ado_set_pool(self, pool: AdoPool) -> Self {
+        self.pipeline.jobs[self.job_idx].ado_pool = Some(pool);
+        self
     }
 
     /// (ADO only) specify which agent pool this job will be run on, with
@@ -1260,6 +1300,22 @@ impl PipelineJob<'_> {
         self
     }
 
+    /// Set config on a node for this job.
+    ///
+    /// This is the pipeline-level equivalent of [`NodeCtx::config`]. Config
+    /// set here is merged with any config set by nodes within the job.
+    ///
+    /// [`NodeCtx::config`]: crate::node::NodeCtx::config
+    pub fn config<C: IntoConfig + 'static>(self, config: C) -> Self {
+        self.pipeline.jobs[self.job_idx]
+            .root_configs
+            .entry(NodeHandle::from_type::<C::Node>())
+            .or_default()
+            .push(serde_json::to_vec(&config).unwrap().into());
+
+        self
+    }
+
     /// Finish describing the pipeline job.
     pub fn finish(self) -> PipelineJobHandle {
         PipelineJobHandle {
@@ -1424,6 +1480,7 @@ pub mod internal {
 
     pub struct PipelineJobMetadata {
         pub root_nodes: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
+        pub root_configs: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
         pub patches: PatchResolver,
         pub label: String,
         pub platform: FlowPlatform,
@@ -1438,14 +1495,6 @@ pub mod internal {
         pub gh_pool: Option<GhRunner>,
         pub gh_global_env: BTreeMap<String, String>,
         pub gh_permissions: BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
-    }
-
-    // TODO: support a more structured format for demands
-    // See https://learn.microsoft.com/en-us/azure/devops/pipelines/yaml-schema/pool-demands
-    #[derive(Debug, Clone)]
-    pub struct AdoPool {
-        pub name: String,
-        pub demands: Vec<String>,
     }
 
     #[derive(Debug)]
