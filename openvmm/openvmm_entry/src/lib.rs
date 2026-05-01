@@ -16,18 +16,21 @@ mod serial_io;
 mod storage_builder;
 mod tracing_init;
 mod ttrpc;
+mod vm_connect;
 mod vm_controller;
 
 // `pub` so that the missing_docs warning fires for options without
 // documentation.
 pub use cli_args::Options;
-use console_relay::ConsoleLaunchOptions;
+pub use cli_args::RpcTransportCli;
+pub use cli_args::RunOptions;
+pub use cli_args::ServeOptions;
 
 use crate::cli_args::SecureBootTemplateCli;
 use anyhow::Context;
 use anyhow::bail;
 use chipset_resources::battery::HostBatteryUpdate;
-use clap::Parser;
+use cli_args::Command;
 use cli_args::DiskCliKind;
 use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
@@ -37,6 +40,7 @@ use cli_args::SerialConfigCli;
 use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use cli_args::VmgsCli;
+use console_relay::ConsoleLaunchOptions;
 use crash_dump::spawn_dump_handler;
 use disk_backend_resources::DelayDiskHandle;
 use disk_backend_resources::DiskLayerDescription;
@@ -57,6 +61,7 @@ use gdma_resources::VportDefinition;
 use guid::Guid;
 use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
+use inspect::InspectionBuilder;
 use io::Read;
 use memory_range::MemoryRange;
 use mesh::CancelContext;
@@ -219,7 +224,7 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
 async fn vm_config_from_command_line(
     spawner: impl Spawn,
     mesh: &VmmMesh,
-    opt: &Options,
+    opt: &RunOptions,
 ) -> anyhow::Result<(Config, VmResources)> {
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
     // Ensure the serial driver stays alive with no tasks.
@@ -409,16 +414,16 @@ async fn vm_config_from_command_line(
     if opt.shared_memory {
         tracing::warn!("--shared-memory/-M flag has no effect and will be removed");
     }
-    if opt.deprecated_prefetch {
+    if opt.deprecated_prefetch() {
         tracing::warn!("--prefetch is deprecated; use --memory prefetch=on");
     }
-    if opt.deprecated_private_memory {
+    if opt.deprecated_private_memory() {
         tracing::warn!("--private-memory is deprecated; use --memory shared=off");
     }
-    if opt.deprecated_thp {
+    if opt.deprecated_thp() {
         tracing::warn!("--thp is deprecated; use --memory shared=off,thp=on");
     }
-    if opt.deprecated_memory_backing_file.is_some() {
+    if opt.deprecated_memory_backing_file() {
         tracing::warn!("--memory-backing-file is deprecated; use --memory file=<path>");
     }
 
@@ -1695,17 +1700,21 @@ pub(crate) fn openvmm_terminal_app() -> Option<PathBuf> {
 }
 
 // Tries to remove `path` if it is confirmed to be a Unix socket.
-fn cleanup_socket(path: &Path) {
-    #[cfg(windows)]
-    let is_socket = pal::windows::fs::is_unix_socket(path).unwrap_or(false);
-    #[cfg(not(windows))]
-    let is_socket = path
-        .metadata()
-        .is_ok_and(|meta| std::os::unix::fs::FileTypeExt::is_socket(&meta.file_type()));
-
-    if is_socket {
+pub(crate) fn cleanup_socket(path: &Path) {
+    if path_is_socket(path).unwrap_or(false) {
         let _ = std::fs::remove_file(path);
     }
+}
+
+#[cfg(windows)]
+fn path_is_socket(path: &Path) -> io::Result<bool> {
+    pal::windows::fs::is_unix_socket(path)
+}
+
+#[cfg(not(windows))]
+fn path_is_socket(path: &Path) -> io::Result<bool> {
+    let file_type = std::fs::symlink_metadata(path)?.file_type();
+    Ok(std::os::unix::fs::FileTypeExt::is_socket(&file_type))
 }
 
 #[cfg(windows)]
@@ -2062,7 +2071,7 @@ pub(crate) const GUEST_ARCH: &str = if cfg!(guest_arch = "x86_64") {
 /// Returns the shared memory fd (from memory.bin) and the saved device state.
 fn prepare_snapshot_restore(
     snapshot_dir: &Path,
-    opt: &Options,
+    opt: &RunOptions,
 ) -> anyhow::Result<(
     openvmm_defs::worker::SharedMemoryFd,
     mesh::payload::message::ProtobufMessage,
@@ -2116,58 +2125,219 @@ fn do_main(pidfile_path: &mut Option<PathBuf>) -> anyhow::Result<()> {
     // not return). Any worker host setup errors are return and bubbled up.
     meshworker::run_vmm_mesh_host()?;
 
-    let opt = Options::parse();
-    if let Some(path) = &opt.write_saved_state_proto {
+    let run_options = match cli_args::parse_options() {
+        Command::Run(run_options) => run_options,
+        command => {
+            return DefaultPool::run_with(async |driver| run_command(&driver, command).await);
+        }
+    };
+
+    if let Some(path) = &run_options.write_saved_state_proto {
         mesh::payload::protofile::DescriptorWriter::new(vmcore::save_restore::saved_state_roots())
             .write_to_path(path)
             .context("failed to write protobuf descriptors")?;
         return Ok(());
     }
 
-    if let Some(ref path) = opt.pidfile {
-        std::fs::write(path, format!("{}\n", std::process::id()))
-            .context("failed to write pidfile")?;
-        *pidfile_path = Some(path.clone());
-    }
+    *pidfile_path = write_pidfile(&run_options.pidfile)?;
 
-    if let Some(path) = opt.relay_console_path {
-        let console_title = opt.relay_console_title.unwrap_or_default();
+    if let Some(path) = run_options.relay_console_path {
+        let console_title = run_options.relay_console_title.unwrap_or_default();
         return console_relay::relay_console(&path, console_title.as_str());
     }
 
-    #[cfg(any(feature = "grpc", feature = "ttrpc"))]
-    if let Some(path) = opt.ttrpc.as_ref().or(opt.grpc.as_ref()) {
-        return block_on(async {
-            let _ = std::fs::remove_file(path);
-            let listener =
-                unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
+    DefaultPool::run_with(async |driver| run_control(&driver, run_options).await)
+}
 
-            let transport = if opt.ttrpc.is_some() {
-                ttrpc::RpcTransport::Ttrpc
-            } else {
-                ttrpc::RpcTransport::Grpc
-            };
+fn write_pidfile(path: &Option<PathBuf>) -> anyhow::Result<Option<PathBuf>> {
+    if let Some(path) = path {
+        std::fs::write(path, format!("{}\n", std::process::id()))
+            .context("failed to write pidfile")?;
+        Ok(Some(path.clone()))
+    } else {
+        Ok(None)
+    }
+}
 
-            // This is a local launch
-            let mut handle =
-                mesh_worker::launch_local_worker::<ttrpc::TtrpcWorker>(ttrpc::Parameters {
-                    listener,
-                    transport,
-                })
-                .await?;
+#[cfg(any(feature = "grpc", feature = "ttrpc"))]
+async fn run_management_server(driver: &DefaultDriver, opt: ServeOptions) -> anyhow::Result<()> {
+    let path = opt.socket_path.clone();
+    cleanup_socket(&path);
+    let listener = unix_socket::UnixListener::bind(&path)
+        .with_context(|| format!("failed to bind to socket {}", path.display()))?;
 
-            tracing::info!(%transport, path = %path.display(), "listening");
+    let transport = match opt.transport {
+        #[cfg(feature = "grpc")]
+        RpcTransportCli::Grpc => ttrpc::RpcTransport::Grpc,
+        #[cfg(not(feature = "grpc"))]
+        RpcTransportCli::Grpc => bail!("grpc transport is not enabled in this build"),
+        #[cfg(feature = "ttrpc")]
+        RpcTransportCli::Ttrpc => ttrpc::RpcTransport::Ttrpc,
+        #[cfg(not(feature = "ttrpc"))]
+        RpcTransportCli::Ttrpc => bail!("ttrpc transport is not enabled in this build"),
+    };
 
-            // Signal the the parent process that the server is ready.
-            pal::close_stdout().context("failed to close stdout")?;
-
-            handle.join().await?;
-
-            Ok(())
-        });
+    let mesh = VmmMesh::new(driver, opt.single_process)?;
+    let (vm_controller_send, vm_controller_recv) = mesh::channel();
+    let (event_send, event_recv) = mesh::channel();
+    let mut controller = vm_controller::VmController {
+        driver: driver.clone(),
+        mesh,
+        vm_controller: vm_controller_send.clone(),
+        current_vm: None,
+        attach_path: opt.mesh_listen,
+        attach_listener: None,
+        exit_on_vm_stop: false,
+    };
+    if let Err(err) = controller.start_attach_listener().await {
+        vm_controller_send.send(vm_controller::VmControllerRpc::Quit);
+        controller.run(vm_controller_recv, event_send).await;
+        return Err(err);
     }
 
-    DefaultPool::run_with(async |driver| run_control(&driver, opt).await)
+    let controller_task = driver.spawn(
+        "vm-controller",
+        controller.run(vm_controller_recv, event_send),
+    );
+
+    let mut server_worker =
+        match mesh_worker::launch_local_worker::<ttrpc::TtrpcWorker>(ttrpc::Parameters {
+            listener,
+            transport,
+            vm_controller: vm_controller_send.clone(),
+            vm_controller_events: event_recv,
+        })
+        .await
+        {
+            Ok(worker) => worker,
+            Err(err) => {
+                vm_controller_send.send(vm_controller::VmControllerRpc::Quit);
+                controller_task.await;
+                return Err(err);
+            }
+        };
+
+    tracing::info!(%transport, path = %path.display(), "listening");
+
+    let pidfile_path = write_pidfile(&opt.pidfile)?;
+
+    // Signal the the parent process that the server is ready.
+    let result = async {
+        pal::close_stdout().context("failed to close stdout")?;
+
+        let server_result = server_worker.join().await;
+        vm_controller_send.send(vm_controller::VmControllerRpc::Quit);
+        controller_task.await;
+
+        server_result
+    }
+    .await;
+
+    if let Some(path) = pidfile_path {
+        let _ = std::fs::remove_file(path);
+    }
+
+    result
+}
+
+#[cfg(not(any(feature = "grpc", feature = "ttrpc")))]
+async fn run_management_server(_driver: &DefaultDriver, opt: ServeOptions) -> anyhow::Result<()> {
+    match opt.transport {
+        RpcTransportCli::Grpc => bail!("grpc transport is not enabled in this build"),
+        RpcTransportCli::Ttrpc => bail!("ttrpc transport is not enabled in this build"),
+    }
+}
+
+async fn run_command(driver: &DefaultDriver, command: Command) -> anyhow::Result<()> {
+    match command {
+        Command::Run(_) => unreachable!("run commands are handled before run_command"),
+        Command::Serve(opt) => run_management_server(driver, opt).await,
+        Command::Attach { socket_path } => attach_repl(driver, &socket_path).await,
+        Command::Inspect {
+            recursive,
+            limit,
+            paravisor,
+            socket_path,
+            element,
+        } => {
+            inspect_attached_vm(
+                driver,
+                &socket_path,
+                element.as_deref(),
+                recursive,
+                limit,
+                paravisor,
+            )
+            .await
+        }
+    }
+}
+
+async fn connect_to_vm(
+    driver: &DefaultDriver,
+    socket_path: &Path,
+) -> anyhow::Result<(vm_connect::VmConnectResponse, mesh_process::Connection)> {
+    let (request_send, connection) =
+        mesh_process::connect::<vm_connect::VmConnectRequest>(driver.clone(), socket_path)
+            .await
+            .with_context(|| format!("failed to connect to {}", socket_path.display()))?;
+    let (response_send, response_recv) = mesh::oneshot();
+    request_send.send(vm_connect::VmConnectRequest {
+        response: response_send,
+    });
+
+    match response_recv
+        .await
+        .context("failed to receive VM connect response")
+    {
+        Ok(Ok(response)) => Ok((response, connection)),
+        Ok(Err(err)) => {
+            connection.shutdown().await;
+            Err(err.into())
+        }
+        Err(err) => {
+            connection.shutdown().await;
+            Err(err)
+        }
+    }
+}
+
+async fn attach_repl(driver: &DefaultDriver, socket_path: &Path) -> anyhow::Result<()> {
+    let (response, connection) = connect_to_vm(driver, socket_path).await?;
+    let result = repl::run_repl(driver, response.into_repl_resources()).await;
+    connection.shutdown().await;
+    result
+}
+
+async fn inspect_attached_vm(
+    driver: &DefaultDriver,
+    socket_path: &Path,
+    element: Option<&str>,
+    recursive: bool,
+    limit: Option<usize>,
+    paravisor: bool,
+) -> anyhow::Result<()> {
+    let (response, connection) = connect_to_vm(driver, socket_path).await?;
+    let vm_controller = response.vm_controller;
+    let target = if paravisor {
+        vm_controller::InspectTarget::Paravisor
+    } else {
+        vm_controller::InspectTarget::Host
+    };
+    let element = element.unwrap_or_default();
+    let depth = if recursive { limit } else { Some(0) };
+    let mut inspection = InspectionBuilder::new(element)
+        .depth(depth)
+        .inspect(inspect::adhoc_mut(|req| {
+            vm_controller.send(vm_controller::VmControllerRpc::Inspect(target, req.defer()));
+        }));
+    let _ = CancelContext::new()
+        .with_timeout(Duration::from_secs(1))
+        .until_cancelled(inspection.resolve())
+        .await;
+    println!("{:#}", inspection.results());
+    connection.shutdown().await;
+    Ok(())
 }
 
 fn new_hvsock_service_id(port: u32) -> Guid {
@@ -2179,24 +2349,17 @@ fn new_hvsock_service_id(port: u32) -> Guid {
     }
 }
 
-async fn run_control(driver: &DefaultDriver, opt: Options) -> anyhow::Result<()> {
-    let mut mesh = Some(VmmMesh::new(&driver, opt.single_process)?);
-    let result = run_control_inner(driver, &mut mesh, opt).await;
-    // If setup failed before the mesh was handed to the controller, shut it
-    // down so the child host process exits cleanly without noisy logs.
-    if let Some(mesh) = mesh {
-        mesh.shutdown().await;
-    }
-    result
+async fn run_control(driver: &DefaultDriver, opt: RunOptions) -> anyhow::Result<()> {
+    let mesh = VmmMesh::new(driver, opt.single_process)?;
+    run_control_inner(driver, mesh, opt).await
 }
 
 async fn run_control_inner(
     driver: &DefaultDriver,
-    mesh_slot: &mut Option<VmmMesh>,
-    opt: Options,
+    mesh: VmmMesh,
+    opt: RunOptions,
 ) -> anyhow::Result<()> {
-    let mesh = mesh_slot.as_ref().unwrap();
-    let (mut vm_config, mut resources) = vm_config_from_command_line(driver, mesh, &opt).await?;
+    let (mut vm_config, mut resources) = vm_config_from_command_line(driver, &mesh, &opt).await?;
 
     let mut vnc_worker = None;
     if opt.gfx || opt.vnc {
@@ -2332,27 +2495,47 @@ async fn run_control_inner(
     let has_vtl2 = resources.vtl2_settings.is_some();
 
     // Build the VmController with exclusive resources.
-    let controller = vm_controller::VmController {
-        mesh: mesh_slot.take().unwrap(),
-        vm_worker,
-        vnc_worker,
-        gdb_worker,
-        diag_inspector: Some(diag_inspector),
-        vtl2_settings: resources.vtl2_settings,
-        ged_rpc: resources.ged_rpc.clone(),
-        vm_rpc: vm_rpc.clone(),
-        paravisor_diag: Some(paravisor_diag),
-        igvm_path: opt.igvm.clone(),
-        memory_backing_file: opt.memory_backing_file().cloned(),
-        memory: opt.memory_size(),
-        processors: opt.processors,
-        log_file: opt.log_file.clone(),
+    let mut controller = vm_controller::VmController {
+        driver: driver.clone(),
+        mesh,
+        vm_controller: vm_controller_send.clone(),
+        current_vm: Some(vm_controller::CurrentVm {
+            vm_worker,
+            vnc_worker,
+            gdb_worker,
+            diag_inspector: Some(diag_inspector),
+            vtl2_settings: resources.vtl2_settings,
+            ged_rpc: resources.ged_rpc.clone(),
+            vm_rpc: vm_rpc.clone(),
+            scsi_rpc: resources.scsi_rpc.clone(),
+            nvme_vtl2_rpc: resources.nvme_vtl2_rpc.clone(),
+            shutdown_ic: resources.shutdown_ic.clone(),
+            kvp_ic: resources.kvp_ic.clone(),
+            paravisor_diag: Some(paravisor_diag),
+            igvm_path: opt.igvm.clone(),
+            memory_backing_file: opt.memory_backing_file().cloned(),
+            memory: opt.memory_size(),
+            processors: opt.processors,
+            log_file: opt.log_file.clone(),
+            notify_recv,
+        }),
+        attach_path: opt.mesh_listen.clone(),
+        attach_listener: None,
+        exit_on_vm_stop: true,
     };
+
+    if let Err(err) = controller.start_attach_listener().await {
+        vm_controller_send.send(vm_controller::VmControllerRpc::Quit);
+        controller
+            .run(vm_controller_recv, vm_controller_event_send)
+            .await;
+        return Err(err);
+    }
 
     // Spawn the VmController as a task.
     let controller_task = driver.spawn(
         "vm-controller",
-        controller.run(vm_controller_recv, vm_controller_event_send, notify_recv),
+        controller.run(vm_controller_recv, vm_controller_event_send),
     );
 
     // Run the REPL with shareable resources.
@@ -2368,6 +2551,7 @@ async fn run_control_inner(
             kvp_ic: resources.kvp_ic,
             console_in: resources.console_in,
             has_vtl2,
+            quit_behavior: repl::ReplQuitBehavior::QuitVm,
         },
     )
     .await;
