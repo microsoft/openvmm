@@ -399,6 +399,7 @@ impl ChangeDeviceState for UefiDevice {
 
     async fn reset(&mut self) {
         self.address = 0;
+        self.mor_bit_status = true;
 
         self.service.nvram.reset();
         self.service.event_log.reset();
@@ -618,7 +619,7 @@ mod save_restore {
             #[mesh(7)]
             pub diagnostics: <DiagnosticsServices as SaveRestore>::SavedState,
             #[mesh(8)]
-            pub mor_bit_status: bool,
+            pub mor_bit_status: Option<bool>,
         }
     }
 
@@ -654,7 +655,7 @@ mod save_restore {
                 generation_id: generation_id.save()?,
                 time: time.save()?,
                 diagnostics: diagnostics.save()?,
-                mor_bit_status: *mor_bit_status,
+                mor_bit_status: Some(*mor_bit_status),
             })
         }
 
@@ -672,7 +673,7 @@ mod save_restore {
             } = state;
 
             self.address = address;
-            self.mor_bit_status = mor_bit_status;
+            self.mor_bit_status = mor_bit_status.unwrap_or(true);
 
             self.service.nvram.restore(nvram)?;
             self.service.event_log.restore(event_log)?;

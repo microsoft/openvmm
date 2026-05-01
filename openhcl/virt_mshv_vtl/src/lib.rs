@@ -844,11 +844,13 @@ impl UhPartition {
     /// This is used to implement TCG MOR (Memory Overwrite Request) by updating
     /// `HvRegisterVsmPartitionConfig.zero_memory_on_reset`.
     pub fn set_zero_memory_on_reset(&self, zero: bool) -> anyhow::Result<()> {
+        use anyhow::Context;
+
         let config = self
             .inner
             .hcl
             .get_vtl2_vsm_partition_config()
-            .map_err(|e| anyhow::anyhow!("failed to get VsmPartitionConfig: {e}"))?;
+            .context("failed to get VsmPartitionConfig")?;
 
         // Skip the hypercall if the flag is already in the desired state.
         if config.zero_memory_on_reset() == zero {
@@ -860,7 +862,7 @@ impl UhPartition {
         self.inner
             .hcl
             .set_vtl2_vsm_partition_config(config)
-            .map_err(|e| anyhow::anyhow!("failed to set VsmPartitionConfig: {e}"))?;
+            .context("failed to set VsmPartitionConfig")?;
 
         tracing::debug!(zero, "updated zero_memory_on_reset for MOR");
         Ok(())
