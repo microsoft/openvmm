@@ -430,6 +430,28 @@ impl IntoPipeline for CheckinGatesCli {
 
             all_jobs.push(job.finish());
 
+            // emit a job for artifacts used by VMM tests on multiple platforms
+            let job = pipeline
+                .new_job(
+                    FlowPlatform::Windows,
+                    FlowArch::X86_64,
+                    format!("build artifacts (shared VMM tests) [{arch_tag}-windows]"),
+                )
+                .gh_set_pool(gh_pools::default_windows())
+                .ado_set_pool(ado_pools::default_windows())
+                .publish(pub_pipette_windows, |pipette| {
+                    flowey_lib_hvlite::build_pipette::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::WindowsMsvc,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        pipette,
+                    }
+                });
+
+            all_jobs.push(job.finish());
+
             let vmgstool_target = CommonTriple::Common {
                 arch,
                 platform: CommonPlatform::WindowsMsvc,
@@ -468,18 +490,6 @@ impl IntoPipeline for CheckinGatesCli {
                             },
                         },
                         openvmm,
-                    }
-                })
-                // TODO: As of writing this, pipette_windows is the only windows-built artifact used by
-                // linux vmm tests. Consider splitting it into its own job to let them start sooner.
-                .publish(pub_pipette_windows, |pipette| {
-                    flowey_lib_hvlite::build_pipette::Request {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::WindowsMsvc,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        pipette,
                     }
                 })
                 .publish(pub_tmk_vmm, |tmk_vmm| {
