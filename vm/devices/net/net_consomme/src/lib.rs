@@ -617,12 +617,19 @@ impl consomme::Client for Client<'_> {
                 &RxMetadata {
                     offset: 0,
                     len: data.len(),
-                    ip_checksum: if checksum.ipv4 {
+                    ip_checksum: if checksum.tso.is_some() {
+                        // TSO packets have partial/coalesced checksums;
+                        // the guest must recompute per-segment checksums
+                        // via NEEDS_CSUM.
+                        RxChecksumState::Unknown
+                    } else if checksum.ipv4 {
                         RxChecksumState::Good
                     } else {
                         RxChecksumState::Unknown
                     },
-                    l4_checksum: if checksum.tcp || checksum.udp {
+                    l4_checksum: if checksum.tso.is_some() {
+                        RxChecksumState::Unknown
+                    } else if checksum.tcp || checksum.udp {
                         RxChecksumState::Good
                     } else {
                         RxChecksumState::Unknown

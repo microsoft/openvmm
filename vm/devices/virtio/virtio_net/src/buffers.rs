@@ -186,34 +186,49 @@ impl BufferAccess for VirtioWorkPool {
             L3Protocol::Ipv6 => self.guest_tso6,
             L3Protocol::Unknown => false,
         };
-        let (gso_type, gso_size, hdr_len, csum_start, csum_offset) =
-            if metadata.gso_size > 0 && metadata.l2_len > 0 && metadata.l3_len > 0 && gso_allowed {
-                let gso_protocol = match metadata.l3_protocol {
-                    L3Protocol::Ipv4 => VirtioNetHeaderGsoProtocol::TCPV4,
-                    L3Protocol::Ipv6 => VirtioNetHeaderGsoProtocol::TCPV6,
-                    L3Protocol::Unknown => VirtioNetHeaderGsoProtocol::NONE,
-                };
-                let gso_type_byte: u8 =
-                    VirtioNetHeaderGso::new().with_protocol(gso_protocol).into();
-                let total_hdr = metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16;
-                let csum_start = metadata.l2_len as u16 + metadata.l3_len;
-                // TCP checksum offset within TCP header is 16.
-                let csum_offset: u16 = 16;
-                (
-                    gso_type_byte,
-                    metadata.gso_size,
-                    total_hdr,
-                    csum_start,
-                    csum_offset,
-                )
-            } else {
-                (0, 0, 0, 0, 0)
+        let (gso_type, gso_size, hdr_len, csum_start, csum_offset) = if metadata.gso_size > 0
+            && metadata.l2_len > 0
+            && metadata.l3_len > 0
+            && metadata.l4_len > 0
+            && gso_allowed
+        {
+            let gso_protocol = match metadata.l3_protocol {
+                L3Protocol::Ipv4 => VirtioNetHeaderGsoProtocol::TCPV4,
+                L3Protocol::Ipv6 => VirtioNetHeaderGsoProtocol::TCPV6,
+                L3Protocol::Unknown => VirtioNetHeaderGsoProtocol::NONE,
             };
+            let gso_type_byte: u8 = VirtioNetHeaderGso::new().with_protocol(gso_protocol).into();
+            let total_hdr = metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16;
+            let csum_start = metadata.l2_len as u16 + metadata.l3_len;
+            // TCP checksum offset within TCP header is 16.
+            let csum_offset: u16 = 16;
+            (
+                gso_type_byte,
+                metadata.gso_size,
+                total_hdr,
+                csum_start,
+                csum_offset,
+            )
+        } else {
+            if metadata.gso_size > 0 {
+                tracelimit::warn_ratelimited!(
+                    gso_size = metadata.gso_size,
+                    l2_len = metadata.l2_len,
+                    l3_len = metadata.l3_len,
+                    l4_len = metadata.l4_len,
+                    ?gso_allowed,
+                    "cannot emit GSO metadata: missing header lengths or guest feature"
+                );
+            }
+            (0, 0, 0, 0, 0)
+        };
 
         // When GSO is active, set NEEDS_CSUM so the guest computes
-        // per-segment checksums.
+        // per-segment checksums, and clear DATA_VALID to avoid the
+        // contradictory combination that could cause the guest to
+        // skip required per-segment checksum computation.
         let flags = if gso_size > 0 {
-            flags.with_needs_csum(true)
+            flags.with_needs_csum(true).with_data_valid(false)
         } else {
             flags
         };
