@@ -397,6 +397,8 @@ impl PetriVmConfigOpenVmm {
                 prefetch_memory: false,
                 private_memory: false,
                 transparent_hugepages: false,
+                hugepages: false,
+                hugepage_size: None,
                 numa_mem_sizes,
             }
         };

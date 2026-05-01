@@ -32,6 +32,27 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use thiserror::Error;
 
+const DEFAULT_MEMORY_SIZE: u64 = 1024 * 1024 * 1024;
+
+/// Guest memory configuration parsed from `--memory`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryCli {
+    /// Guest RAM size in bytes.
+    pub mem_size: u64,
+    /// Whether shared file-backed memory was explicitly requested.
+    pub shared: Option<bool>,
+    /// Whether to prefetch guest RAM.
+    pub prefetch: bool,
+    /// Whether to use transparent huge pages for private guest RAM.
+    pub transparent_hugepages: bool,
+    /// Whether to use explicit hugetlb memfd backing for guest RAM.
+    pub hugepages: bool,
+    /// Explicit hugetlb page size in bytes.
+    pub hugepage_size: Option<u64>,
+    /// File used to back guest RAM.
+    pub file: Option<PathBuf>,
+}
+
 /// OpenVMM virtual machine monitor.
 ///
 /// This is not yet a stable interface and may change radically between
@@ -42,16 +63,36 @@ pub struct Options {
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
     pub processors: u32,
 
-    /// guest RAM size
+    /// guest RAM configuration (`SIZE` or `key=value[,key=value...]`)
     #[clap(
         short = 'm',
         long,
-        value_name = "SIZE",
+        value_name = "PARAMS",
         default_value = "1GB",
-        value_parser = parse_memory,
-        conflicts_with = "numa_memory"
+        value_parser = parse_memory_config,
+        conflicts_with = "numa_memory",
+        long_help = r#"Configure guest RAM.
+
+Syntax: SIZE | key=value[,key=value...]
+
+Size suffixes accept K, M, G, and T, optionally followed by B.
+
+Options:
+    size=<SIZE>              guest RAM size, default 1GB
+    shared=on|off            use shared file-backed RAM, default on
+    prefetch=on|off          pre-populate shared RAM mappings
+    thp=on|off               mark private RAM as THP-eligible; requires shared=off
+    hugepages=on|off         allocate RAM from Linux hugetlb pages
+    hugepage_size=<SIZE>     hugetlb page size, default 2MB; requires hugepages=on
+    file=<PATH>              use an existing file as guest RAM backing
+
+Examples:
+    --memory 4G
+    --memory size=64GB,hugepages=on,hugepage_size=2MB
+    --memory size=4G,file=path/to/memory.bin
+    --memory size=4G,shared=off,thp=on"#
     )]
-    pub memory: u64,
+    pub memory: MemoryCli,
 
     /// per-NUMA-node guest RAM sizes (comma-separated, e.g. "2G,2G").
     /// Distributes memory across vNUMA nodes reported to the guest. Mutually
@@ -63,31 +104,40 @@ pub struct Options {
     pub numa_memory: Option<Vec<u64>>,
 
     /// use shared memory segment
-    #[clap(short = 'M', long)]
+    #[clap(short = 'M', long, hide = true)]
     pub shared_memory: bool,
 
     /// prefetch guest RAM
-    #[clap(long)]
-    pub prefetch: bool,
+    #[clap(long = "prefetch", hide = true)]
+    pub deprecated_prefetch: bool,
 
     /// back guest RAM with a file instead of anonymous memory.
     /// The file is created/opened and sized to the guest RAM size.
     /// Enables snapshot save (fsync) and restore (open + mmap).
-    #[clap(long, value_name = "FILE", conflicts_with = "private_memory")]
-    pub memory_backing_file: Option<PathBuf>,
+    #[clap(
+        long = "memory-backing-file",
+        value_name = "FILE",
+        hide = true,
+        conflicts_with = "deprecated_private_memory"
+    )]
+    pub deprecated_memory_backing_file: Option<PathBuf>,
 
     /// Restore VM from a snapshot directory (implies file-backed memory from
     /// the snapshot's memory.bin). Cannot be used with --memory-backing-file.
-    #[clap(long, value_name = "DIR", conflicts_with = "memory_backing_file")]
+    #[clap(
+        long,
+        value_name = "DIR",
+        conflicts_with = "deprecated_memory_backing_file"
+    )]
     pub restore_snapshot: Option<PathBuf>,
 
     /// use private anonymous memory for guest RAM
-    #[clap(long, conflicts_with_all = ["memory_backing_file", "restore_snapshot"])]
-    pub private_memory: bool,
+    #[clap(long = "private-memory", hide = true, conflicts_with_all = ["deprecated_memory_backing_file", "restore_snapshot"])]
+    pub deprecated_private_memory: bool,
 
     /// enable transparent huge pages for guest RAM (Linux only, requires --private-memory)
-    #[clap(long, requires("private_memory"))]
-    pub thp: bool,
+    #[clap(long = "thp", hide = true)]
+    pub deprecated_thp: bool,
 
     /// start in paused state
     #[clap(short = 'P', long)]
@@ -861,6 +911,70 @@ Syntax: <port_name>:<pci_bdf>
     pub vfio: Vec<VfioDeviceCli>,
 }
 
+impl Options {
+    /// Returns the effective guest RAM size.
+    pub fn memory_size(&self) -> u64 {
+        self.memory.mem_size
+    }
+
+    /// Returns whether guest RAM should be prefetched.
+    pub fn prefetch_memory(&self) -> bool {
+        self.memory.prefetch || self.deprecated_prefetch
+    }
+
+    /// Returns whether guest RAM should use private anonymous backing.
+    pub fn private_memory(&self) -> bool {
+        self.memory.shared == Some(false) || self.deprecated_private_memory
+    }
+
+    /// Returns whether guest RAM should be marked THP-eligible.
+    pub fn transparent_hugepages(&self) -> bool {
+        self.memory.transparent_hugepages || self.deprecated_thp
+    }
+
+    /// Returns the effective file backing path for guest RAM.
+    pub fn memory_backing_file(&self) -> Option<&PathBuf> {
+        self.memory
+            .file
+            .as_ref()
+            .or(self.deprecated_memory_backing_file.as_ref())
+    }
+
+    /// Validates combinations that span the new `--memory` parser and legacy aliases.
+    pub fn validate_memory_options(&self) -> anyhow::Result<()> {
+        if self.memory.file.is_some() && self.deprecated_memory_backing_file.is_some() {
+            anyhow::bail!("--memory file=... conflicts with --memory-backing-file");
+        }
+        if self.memory.file.is_some() && self.restore_snapshot.is_some() {
+            anyhow::bail!("--memory file=... conflicts with --restore-snapshot");
+        }
+        if self.memory.shared == Some(true) && self.deprecated_private_memory {
+            anyhow::bail!("--memory shared=on conflicts with --private-memory");
+        }
+        if self.memory_backing_file().is_some() && self.private_memory() {
+            anyhow::bail!("file-backed memory conflicts with private memory");
+        }
+        if self.transparent_hugepages() && !self.private_memory() {
+            anyhow::bail!("transparent huge pages requires private memory mode");
+        }
+        if self.memory.hugepages {
+            if !cfg!(target_os = "linux") {
+                anyhow::bail!("hugepages are only supported on Linux");
+            }
+            if self.private_memory() {
+                anyhow::bail!("hugepages conflict with private memory");
+            }
+            if self.memory_backing_file().is_some() || self.restore_snapshot.is_some() {
+                anyhow::bail!("hugepages conflict with file-backed memory");
+            }
+            if self.pcat {
+                anyhow::bail!("hugepages conflict with x86 legacy RAM splitting");
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FsArgs {
     pub tag: String,
@@ -989,10 +1103,122 @@ fn parse_memory(s: &str) -> anyhow::Result<u64> {
                 b = &b[..b.len() - 1]
             }
             let n: u64 = std::str::from_utf8(b).ok()?.parse().ok()?;
-            Some(n * multi.unwrap_or(1))
+            n.checked_mul(multi.unwrap_or(1))
         }()
         .with_context(|| format!("invalid memory size '{0}'", s))
     }
+}
+
+fn parse_memory_toggle(key: &str, value: &str) -> anyhow::Result<bool> {
+    match value {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => anyhow::bail!("invalid {key} value '{value}', expected 'on' or 'off'"),
+    }
+}
+
+fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
+    if !s.contains('=') && !s.contains(',') {
+        return Ok(MemoryCli {
+            mem_size: parse_memory(s)?,
+            shared: None,
+            prefetch: false,
+            transparent_hugepages: false,
+            hugepages: false,
+            hugepage_size: None,
+            file: None,
+        });
+    }
+
+    let mut mem_size = DEFAULT_MEMORY_SIZE;
+    let mut saw_size = false;
+    let mut shared = None;
+    let mut prefetch = None;
+    let mut transparent_hugepages = None;
+    let mut hugepages = None;
+    let mut hugepage_size = None;
+    let mut file = None;
+
+    for part in s.split(',') {
+        let (key, value) = part
+            .split_once('=')
+            .with_context(|| format!("invalid memory option '{part}', expected key=value"))?;
+        if key.is_empty() || value.is_empty() {
+            anyhow::bail!("invalid memory option '{part}', expected key=value");
+        }
+
+        match key {
+            "size" => {
+                if saw_size {
+                    anyhow::bail!("duplicate memory option 'size'");
+                }
+                mem_size = parse_memory(value)?;
+                saw_size = true;
+            }
+            "shared" => {
+                if shared.is_some() {
+                    anyhow::bail!("duplicate memory option 'shared'");
+                }
+                shared = Some(parse_memory_toggle(key, value)?);
+            }
+            "prefetch" => {
+                if prefetch.is_some() {
+                    anyhow::bail!("duplicate memory option 'prefetch'");
+                }
+                prefetch = Some(parse_memory_toggle(key, value)?);
+            }
+            "thp" => {
+                if transparent_hugepages.is_some() {
+                    anyhow::bail!("duplicate memory option 'thp'");
+                }
+                transparent_hugepages = Some(parse_memory_toggle(key, value)?);
+            }
+            "hugepages" => {
+                if hugepages.is_some() {
+                    anyhow::bail!("duplicate memory option 'hugepages'");
+                }
+                hugepages = Some(parse_memory_toggle(key, value)?);
+            }
+            "hugepage_size" => {
+                if hugepage_size.is_some() {
+                    anyhow::bail!("duplicate memory option 'hugepage_size'");
+                }
+                hugepage_size = Some(parse_memory(value)?);
+            }
+            "file" => {
+                if file.is_some() {
+                    anyhow::bail!("duplicate memory option 'file'");
+                }
+                file = Some(PathBuf::from(value));
+            }
+            _ => anyhow::bail!("unknown memory option '{key}'"),
+        }
+    }
+
+    if transparent_hugepages == Some(true) && shared != Some(false) {
+        anyhow::bail!("memory thp=on requires shared=off");
+    }
+    if hugepage_size.is_some() && hugepages != Some(true) {
+        anyhow::bail!("memory hugepage_size requires hugepages=on");
+    }
+    if hugepages == Some(true) {
+        if shared == Some(false) {
+            anyhow::bail!("memory hugepages=on conflicts with shared=off");
+        }
+        if file.is_some() {
+            anyhow::bail!("memory hugepages=on conflicts with file=...");
+        }
+    }
+
+    Ok(MemoryCli {
+        mem_size,
+        shared,
+        prefetch: prefetch.unwrap_or(false),
+        transparent_hugepages: transparent_hugepages.unwrap_or(false),
+        hugepages: hugepages.unwrap_or(false),
+        hugepage_size,
+        file,
+    })
 }
 
 /// Parse a number from a string that could be prefixed with 0x to indicate hex.
@@ -3355,6 +3581,142 @@ mod tests {
         assert!(PcieRemoteCli::from_str("port,controller=").is_err());
         assert!(PcieRemoteCli::from_str("port,controller=bad").is_err());
         assert!(PcieRemoteCli::from_str("port,unknown=value").is_err());
+    }
+
+    #[test]
+    fn test_parse_memory_units() {
+        assert_eq!(parse_memory("64G").unwrap(), 64 * 1024 * 1024 * 1024);
+        assert_eq!(parse_memory("64GB").unwrap(), 64 * 1024 * 1024 * 1024);
+        assert_eq!(parse_memory("3MB").unwrap(), 3 * 1024 * 1024);
+        assert_eq!(parse_memory("512KB").unwrap(), 512 * 1024);
+        assert!(parse_memory("3MiB").is_err());
+    }
+
+    #[test]
+    fn test_memory_config_size_only() {
+        assert_eq!(
+            parse_memory_config("64G").unwrap(),
+            MemoryCli {
+                mem_size: 64 * 1024 * 1024 * 1024,
+                shared: None,
+                prefetch: false,
+                transparent_hugepages: false,
+                hugepages: false,
+                hugepage_size: None,
+                file: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_memory_config_key_value() {
+        assert_eq!(
+            parse_memory_config("size=2G,shared=off,prefetch=on,thp=on").unwrap(),
+            MemoryCli {
+                mem_size: 2 * 1024 * 1024 * 1024,
+                shared: Some(false),
+                prefetch: true,
+                transparent_hugepages: true,
+                hugepages: false,
+                hugepage_size: None,
+                file: None,
+            }
+        );
+
+        assert_eq!(
+            parse_memory_config("size=4GB,hugepages=on,hugepage_size=2MB").unwrap(),
+            MemoryCli {
+                mem_size: 4 * 1024 * 1024 * 1024,
+                shared: None,
+                prefetch: false,
+                transparent_hugepages: false,
+                hugepages: true,
+                hugepage_size: Some(2 * 1024 * 1024),
+                file: None,
+            }
+        );
+
+        assert_eq!(
+            parse_memory_config("file=/tmp/memory.bin").unwrap(),
+            MemoryCli {
+                mem_size: DEFAULT_MEMORY_SIZE,
+                shared: None,
+                prefetch: false,
+                transparent_hugepages: false,
+                hugepages: false,
+                hugepage_size: None,
+                file: Some(PathBuf::from("/tmp/memory.bin")),
+            }
+        );
+    }
+
+    #[test]
+    fn test_memory_config_rejects_invalid_combinations() {
+        assert!(parse_memory_config("thp=on").is_err());
+        assert!(parse_memory_config("size=1G,size=2G").is_err());
+        assert!(parse_memory_config("hugepage_size=2M").is_err());
+        assert!(parse_memory_config("hugepages=on,shared=off").is_err());
+        assert!(parse_memory_config("hugepages=on,file=/tmp/memory.bin").is_err());
+
+        // Semantic validation of the hugepage size happens in the memory
+        // builder, not in CLI parsing.
+        assert_eq!(
+            parse_memory_config("hugepages=on,hugepage_size=3MB")
+                .unwrap()
+                .hugepage_size,
+            Some(3 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn test_memory_options_merge_legacy_aliases() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--memory",
+            "2G",
+            "--prefetch",
+            "--private-memory",
+            "--thp",
+        ])
+        .unwrap();
+        opt.validate_memory_options().unwrap();
+        assert_eq!(opt.memory_size(), 2 * 1024 * 1024 * 1024);
+        assert!(opt.prefetch_memory());
+        assert!(opt.private_memory());
+        assert!(opt.transparent_hugepages());
+    }
+
+    #[test]
+    fn test_memory_options_allow_legacy_thp_with_new_private_memory() {
+        let opt = Options::try_parse_from(["openvmm", "--memory", "shared=off", "--thp"]).unwrap();
+        opt.validate_memory_options().unwrap();
+        assert!(opt.private_memory());
+        assert!(opt.transparent_hugepages());
+    }
+
+    #[test]
+    fn test_memory_options_reject_conflicting_legacy_aliases() {
+        let opt = Options::try_parse_from(["openvmm", "--memory", "shared=on", "--private-memory"])
+            .unwrap();
+        assert!(opt.validate_memory_options().is_err());
+    }
+
+    #[test]
+    fn test_memory_options_reject_hugepage_legacy_conflicts() {
+        let opt =
+            Options::try_parse_from(["openvmm", "--memory", "hugepages=on", "--private-memory"])
+                .unwrap();
+        assert!(opt.validate_memory_options().is_err());
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--memory",
+            "hugepages=on",
+            "--memory-backing-file",
+            "/tmp/memory.bin",
+        ])
+        .unwrap();
+        assert!(opt.validate_memory_options().is_err());
     }
 
     #[test]

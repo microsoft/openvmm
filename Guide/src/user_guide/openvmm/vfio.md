@@ -131,6 +131,51 @@ lspci
 
 The device will appear with its real vendor and device ID from the physical hardware.
 
+## Optional: use hugetlb-backed guest RAM
+
+For large VMs, VFIO DMA setup can be much faster when guest RAM is backed by
+Linux hugetlb pages. Without hugetlb backing, the kernel may have to pin each
+4 KB page individually during `VFIO_IOMMU_MAP_DMA`. With 2 MB or 1 GB hugetlb
+pages, the same mapping work is performed over far fewer pages.
+
+Hugetlb pages must be reserved on the host before starting OpenVMM. For
+example, reserve enough 2 MB pages for a 64 GB VM:
+
+```bash
+echo 32768 | sudo tee /proc/sys/vm/nr_hugepages
+```
+
+For 1 GB pages, reserve pages through the size-specific sysfs pool:
+
+```bash
+echo 64 | sudo tee \
+  /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages
+```
+
+Then request hugepage-backed RAM with the `--memory` option:
+
+```bash
+sudo openvmm \
+  --pcie-root-complex rc0 \
+  --pcie-root-port rc0:rp0 \
+  --vfio rp0:0000:01:00.0 \
+  --kernel /path/to/vmlinux \
+  --initrd /path/to/initrd \
+  --cmdline "console=ttyS0" \
+  --com1 console \
+  --memory size=64GB,hugepages=on,hugepage_size=2MB \
+  --processors 16
+```
+
+Use `hugepage_size=1GB` to request 1 GB pages. If `hugepage_size` is omitted,
+OpenVMM uses 2 MB pages.
+
+```admonish note
+Hugepage-backed RAM is Linux-only. It cannot be combined with file-backed
+memory, private memory (`shared=off`), or legacy x86 RAM splitting such as
+PCAT firmware.
+```
+
 ## Troubleshooting
 
 ### "No such file or directory" for `/dev/vfio/*`
@@ -151,6 +196,21 @@ Run OpenVMM with `sudo`, or add your user to the `vfio` group and set appropriat
 - Verify the VFIO group exists in `/dev/vfio/` (Step 4)
 - Verify the `--vfio` port name matches a `--pcie-root-port` name
 - Check OpenVMM log output for errors during VFIO device initialization
+
+### Hugepage allocation fails
+
+If OpenVMM fails while allocating guest RAM with `hugepages=on`, verify that
+the host has enough free pages in the requested hugetlb pool:
+
+```bash
+grep -i Huge /proc/meminfo
+```
+
+For 1 GB pages, also check the size-specific pool:
+
+```bash
+grep . /sys/kernel/mm/hugepages/hugepages-1048576kB/*
+```
 
 ## Current Limitations
 
