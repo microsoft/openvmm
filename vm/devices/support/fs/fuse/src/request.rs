@@ -38,7 +38,7 @@ fuse_operations! {
     FUSE_REMOVEXATTR RemoveXAttr name:str;
     FUSE_FLUSH Flush arg:fuse_flush_in;
     // Note: FUSE_INIT parsing is handled specially in read_operation() for
-    // backward compatibility, but the variant must still be declared here. 
+    // backward compatibility, but the variant must still be declared here.
     FUSE_INIT Init arg:fuse_init_in;
     FUSE_OPENDIR OpenDir arg:fuse_open_in;
     FUSE_READDIR ReadDir arg:fuse_read_in;
