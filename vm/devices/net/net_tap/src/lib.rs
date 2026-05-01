@@ -686,13 +686,9 @@ mod tests {
     }
 
     // Minimal 14-byte Ethernet header with IPv4 EtherType for use in tests.
-    const ETH_IPV4: [u8; 14] = [
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x00,
-    ];
+    const ETH_IPV4: [u8; 14] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x00];
     // Minimal 14-byte Ethernet header with IPv6 EtherType for use in tests.
-    const ETH_IPV6: [u8; 14] = [
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x86, 0xDD,
-    ];
+    const ETH_IPV6: [u8; 14] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x86, 0xDD];
 
     #[test]
     fn rx_metadata_from_vnet_hdr_valid() {
