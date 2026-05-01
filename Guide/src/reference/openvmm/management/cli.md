@@ -67,7 +67,7 @@ as well as the generated CLI help (via `cargo run -- --help`).
   pass `--hv`. The `DISK` argument can be:
   * A flat binary disk image
   * A VHD file with an extension of .vhd (Windows host only)
-  * A VHDX file with an extension of .vhdx (Windows host only)
+  * A VHDX file with an extension of .vhdx
 
   On Linux, raw files and block devices use the `disk_blockdevice` backend
   (io_uring-based async I/O) by default. Append `;direct` to the path to

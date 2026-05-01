@@ -133,12 +133,14 @@ docs.
 
 The file `windows.vhdx` can be any format of VHD(X).
 
-Note that OpenVMM does not currently support using dynamic VHD/VHDX files on
-Linux hosts. Unless you have a fixed VHD1 image, you will need to convert the
-image to raw format, using the following command:
+VHDX files (dynamic, fixed, and differencing) are supported on non-Windows
+platforms via the pure-Rust [`vhdx`](../../reference/backends/vhdx.md)
+parser. On Windows, `.vhdx` files use the native kernel-mode VHD path
+instead. Fixed VHD1 images work on all platforms. Dynamic and differencing VHD1
+files are **not** supported — convert them to VHDX first:
 
-```shell
-qemu-img convert -f vhdx -O raw windows.vhdx windows.img
+```bash
+qemu-img convert -f vpc -O vhdx dynamic.vhd converted.vhdx
 ```
 
 Also, note the use of `memdiff`, which creates a memory-backed "differencing
@@ -157,7 +159,7 @@ integration tests.
 First, build the test artifacts from Linux or WSL using `vmm-tests-run --build-only`.
 The IGVM must be built on Linux:
 
-```shell
+```bash
 cargo xflowey vmm-tests-run --build-only --dir <out> --target windows-x64
 ```
 
