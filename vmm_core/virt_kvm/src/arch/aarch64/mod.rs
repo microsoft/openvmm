@@ -15,6 +15,7 @@ use crate::KvmPartition;
 use crate::KvmPartitionInner;
 use crate::KvmRunVpError;
 use aarch64defs::SystemReg;
+use aarch64defs::Vendor;
 use bitfield_struct::bitfield;
 use core::panic;
 use hvdef::Vtl;
@@ -760,6 +761,7 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                 pfr0 & 0xf == 2
             };
             PartitionCapabilities {
+                vendor: Vendor([0; 12]),
                 supports_aarch32_el0,
             }
         };

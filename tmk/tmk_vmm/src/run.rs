@@ -3,13 +3,26 @@
 
 //! Support for running a VM's VPs.
 
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+use crate::HypervisorOpt;
+// use std::{io, os::unix::io::AsRawFd, ptr};
 use crate::Options;
 use crate::load;
 use anyhow::Context as _;
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+use core::ops::Range;
 use futures::StreamExt as _;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+use memory_range::MemoryRange;
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+use nix::sys::mman::{MapFlags, ProtFlags, mmap};
 use pal_async::DefaultDriver;
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+use std::fs::OpenOptions;
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use virt::PartitionCapabilities;
 use virt::Processor;
@@ -18,6 +31,8 @@ use virt::VpIndex;
 use virt::io::CpuIo;
 use virt::vp::AccessVpState as _;
 use vm_topology::memory::MemoryLayout;
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+use vm_topology::memory::MemoryRangeWithNode;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
 use vmcore::vmtime::VmTime;
@@ -74,8 +89,64 @@ impl CommonState {
             .context("failed to build processor topology")?;
 
         let ram_size = 0x400000;
-        let memory_layout =
+
+        #[cfg_attr(guest_arch = "x86_64", allow(unused_mut))]
+        let mut memory_layout =
             MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
+
+        #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+        let hv = opts.hv.expect("hv must have an finalized value");
+        #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+        match hv {
+            #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+            HypervisorOpt::Cca => {
+                let map_size = ram_size;
+                let non_zero_size = NonZeroUsize::new(map_size as usize)
+                    .expect("Size was already checked to be non-zero");
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open("/dev/zero")?;
+                #[allow(unsafe_code)]
+                let addr = unsafe {
+                    mmap(
+                        None,
+                        non_zero_size,
+                        ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+                        MapFlags::MAP_SHARED,
+                        &file,
+                        0,
+                    )
+                }
+                .context("Failed to memory-map bytes")?;
+
+                #[allow(unsafe_code)]
+                unsafe {
+                    std::ptr::write_bytes(addr.as_ptr() as *mut u8, 0, map_size as usize);
+                }
+
+                #[allow(unsafe_code)]
+                let pa = unsafe { load::virt_to_phys(addr.as_ptr() as u64) }
+                    .map_err(anyhow::Error::msg)
+                    .context("failed to get page physical address")?;
+
+                const PAGE: u64 = 4096;
+                const ALIGN: u64 = PAGE * 8;
+
+                let start = (pa + ALIGN - 1) & !(ALIGN - 1);
+                let end = (pa + map_size / 2) & !(ALIGN - 1);
+
+                memory_layout = MemoryLayout::new_from_ranges(
+                    &[MemoryRangeWithNode {
+                        range: MemoryRange::new(Range { start, end }),
+                        vnode: 0,
+                    }],
+                    &[],
+                )
+                .context("bad memory layout")?;
+            }
+            _ => {}
+        }
 
         Ok(Self {
             driver,

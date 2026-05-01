@@ -7,6 +7,7 @@ pub mod vm;
 pub mod vp;
 
 use crate::state::StateElement;
+use aarch64defs::Vendor;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
 use thiserror::Error;
@@ -34,6 +35,8 @@ impl Aarch64InitialRegs {
 pub struct Aarch64PartitionCapabilities {
     /// Whether the processor supports aarch32 execution at EL0.
     pub supports_aarch32_el0: bool,
+    #[inspect(display)]
+    pub vendor: Vendor,
 }
 
 #[derive(Error, Debug)]

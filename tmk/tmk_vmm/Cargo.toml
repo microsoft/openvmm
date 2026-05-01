@@ -35,6 +35,10 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zerocopy.workspace = true
 
+openhcl_dma_manager.workspace = true
+nix = { version = "0.31.2", features = ["feature", "fs", "mman"] }
+memory_range.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 virt_whp.workspace = true
 
@@ -44,6 +48,7 @@ underhill_mem.workspace = true
 virt_kvm.workspace = true
 virt_mshv.workspace = true
 virt_mshv_vtl.workspace = true
+hcl.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 virt_hvf.workspace = true

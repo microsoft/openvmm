@@ -37,6 +37,7 @@ impl RunContext<'_> {
             // TODO: match openhcl defaults when TDX is supported.
             disable_lower_vtl_timer_virt: true,
         };
+
         let p = virt_mshv_vtl::UhProtoPartition::new(params, |_| self.state.driver.clone())?;
 
         let m = underhill_mem::init(&underhill_mem::Init {
@@ -49,7 +50,7 @@ impl RunContext<'_> {
             boot_init: None,
             shared_pool: &[],
             maximum_vtl: hvdef::Vtl::Vtl0,
-        })
+        }, &p)
         .await?;
 
         let (partition, vps) = p
@@ -65,7 +66,12 @@ impl RunContext<'_> {
                 cpuid: Vec::new(),
                 crash_notification_send: mesh::channel().0,
                 vmtime: self.vmtime_source,
-                cvm_params: None,
+                cvm_params: Some(virt_mshv_vtl::CvmLateParams {
+                    shared_gm: m.cvm_memory().unwrap().shared_gm.clone(),
+                    isolated_memory_protector: m.cvm_memory().unwrap().protector.clone(),
+                    shared_dma_client: None,
+                    private_dma_client: None,
+                }),
                 vmbus_relay: false,
             })
             .await?;
@@ -100,6 +106,12 @@ async fn start_vp(
         let pool = pal_uring::IoUringPool::new("vp", 256).unwrap();
         let driver = pool.client().initiator().clone();
         pool.client().set_idle_task(async move |mut control| {
+            #[cfg(guest_arch = "aarch64")]
+            let vp = vp
+                .bind_processor::<virt_mshv_vtl::CcaBacked>(&driver, Some(&mut control))
+                .unwrap();
+
+            #[cfg(guest_arch = "x86_64")]
             let vp = vp
                 .bind_processor::<virt_mshv_vtl::HypervisorBacked>(&driver, Some(&mut control))
                 .unwrap();
