@@ -944,7 +944,10 @@ mod tests {
 
         // The filesystem should see FUSE_INIT_EXT in the negotiated flags and
         // FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 in want2.
-        let (want, want2, _capable) = info_ref.lock().unwrap();
+        let info = info_ref.lock();
+        let &(want, want2, _capable) = info
+            .as_ref()
+            .expect("filesystem init info should be captured after initialization");
         assert_ne!(
             want & FUSE_INIT_EXT,
             0,
@@ -990,7 +993,10 @@ mod tests {
         assert!(session.is_initialized());
 
         // Without FUSE_INIT_EXT the daemon must not request any flags2.
-        let (_want, want2, _capable) = info_ref.lock().unwrap();
+        let info = info_ref.lock();
+        let &(_want, want2, _capable) = info
+            .as_ref()
+            .expect("filesystem init info should be captured after initialization");
         assert_eq!(want2, 0, "want2 must be zero without FUSE_INIT_EXT");
 
         let (_hdr, init_out) = sender.parse_init_reply();
@@ -1022,7 +1028,10 @@ mod tests {
 
         assert!(session.is_initialized());
 
-        let (_want, want2, _capable) = info_ref.lock().unwrap();
+        let info = info_ref.lock();
+        let &(_want, want2, _capable) = info
+            .as_ref()
+            .expect("filesystem init info should be captured after initialization");
         assert_eq!(
             want2, 0,
             "want2 must be zero when kernel flags2 lacks FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2"
