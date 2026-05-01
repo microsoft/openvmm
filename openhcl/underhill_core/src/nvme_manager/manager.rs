@@ -5,6 +5,7 @@ use crate::nvme_manager::CreateNvmeDriver;
 use crate::nvme_manager::device::NvmeDriverManager;
 use crate::nvme_manager::device::NvmeDriverManagerClient;
 use crate::nvme_manager::device::NvmeDriverShutdownOptions;
+use crate::nvme_manager::is_nvme_keepalive_compatible;
 use crate::nvme_manager::save_restore::NvmeManagerSavedState;
 use crate::nvme_manager::save_restore::NvmeSavedDiskConfig;
 use crate::servicing::NvmeSavedState;
@@ -301,12 +302,27 @@ impl NvmeManagerWorker {
 
         async {
             join_all(devices_to_shutdown.into_iter().map(|(pci_id, driver)| {
+                // nvme_keepalive is received from host but it is only valid
+                // when memory pool allocator supports save/restore. Further,
+                // as a partial mitigation for known incompatibilities between
+                // keepalive and NVMe Direct v2 devices, we only honor
+                // keepalive for ASAP devices (identified by the VPCI
+                // instance GUID containing `c05b`).
+                let host_requested_keepalive =
+                    nvme_keepalive && self.context.save_restore_supported;
+                let device_keepalive =
+                    host_requested_keepalive && is_nvme_keepalive_compatible(&pci_id);
+                if host_requested_keepalive && !device_keepalive {
+                    tracing::info!(
+                        %pci_id,
+                        "disabling nvme keepalive for non-ASAP device; \
+                         falling back to reset-on-servicing"
+                    );
+                }
                 driver
                     .shutdown(NvmeDriverShutdownOptions {
-                        // nvme_keepalive is received from host but it is only valid
-                        // when memory pool allocator supports save/restore.
-                        do_not_reset: nvme_keepalive && self.context.save_restore_supported,
-                        skip_device_shutdown: nvme_keepalive && self.context.save_restore_supported,
+                        do_not_reset: device_keepalive,
+                        skip_device_shutdown: device_keepalive,
                     })
                     .instrument(tracing::info_span!("shutdown_nvme_driver", %pci_id))
             }))
@@ -419,12 +435,27 @@ impl NvmeManagerWorker {
     /// Saves NVMe device's states into buffer during servicing.
     pub async fn save(&mut self) -> anyhow::Result<NvmeManagerSavedState> {
         let mut nvme_disks: Vec<NvmeSavedDiskConfig> = Vec::new();
+        // Only save state for devices known to be keepalive-compatible.
+        // Non-ASAP (NVMe Direct v2) devices will be reset on servicing, so
+        // persisting their state would be a waste and could conflict with
+        // the reset path on restore.
         let mut devices_to_save: HashMap<String, NvmeDriverManagerClient> = self
             .context
             .devices
             .write()
             .iter()
-            .map(|(pci_id, driver)| (pci_id.clone(), driver.client().clone()))
+            .filter_map(|(pci_id, driver)| {
+                if is_nvme_keepalive_compatible(pci_id) {
+                    Some((pci_id.clone(), driver.client().clone()))
+                } else {
+                    tracing::info!(
+                        %pci_id,
+                        "skipping save of non-ASAP nvme device; \
+                         keepalive disabled for this device"
+                    );
+                    None
+                }
+            })
             .collect();
         for (pci_id, client) in devices_to_save.iter_mut() {
             nvme_disks.push(NvmeSavedDiskConfig {
