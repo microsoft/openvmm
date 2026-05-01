@@ -134,8 +134,24 @@ impl Future for StopTask<'_> {
     }
 }
 
-/// A task wrapper that runs the task asynchronously and provides access to its
-/// state.
+/// A task wrapper that runs a task asynchronously and provides access to its
+/// state and control over its execution (start/stop).
+///
+/// Pairs a task implementation `T: AsyncRun<S>` with transient state `S`.
+/// Execution is cancelled when [`stop`](Self::stop) is invoked.
+///
+/// Cancellation is cooperative: implementations are expected to wrap
+/// futures in [`StopTask::until_stopped`], which drops the inner future and
+/// returns `Err(Cancelled)` when a stop is signaled. `T::run` should
+/// propagate `Err(Cancelled)` so `TaskControl` regains control.
+///
+/// Implementations of `T: AsyncRun<S>` are expected to be cancel-tolerant. Outside of
+/// an actual [`stop`](Self::stop), `TaskControl` also raises the stop
+/// signal to fulfill [`update_with`](Self::update_with) and
+/// [`Inspect`]/[`InspectMut`] calls, after which `run` is re-invoked with
+/// the (possibly updated) state. Because `until_stopped` discards the
+/// inner future on cancellation, implementations must ensure no in-flight
+/// work is silently lost.
 pub struct TaskControl<T, S> {
     inner: Inner<T, S>,
 }
