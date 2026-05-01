@@ -7,6 +7,8 @@ use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
+use zeroize::Zeroize;
+use zeroize::ZeroizeOnDrop;
 
 /// Number of the key protector entries.
 /// One for ingress, and one for egress
@@ -23,7 +25,7 @@ pub const KEY_PROTECTOR_SIZE: usize = size_of::<KeyProtector>();
 
 /// DEK key protector entry.
 #[repr(C)]
-#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Zeroize, ZeroizeOnDrop)]
 pub struct DekKp {
     /// DEK buffer
     pub dek_buffer: [u8; DEK_BUFFER_SIZE],
@@ -31,7 +33,7 @@ pub struct DekKp {
 
 /// GSP key protector entry.
 #[repr(C)]
-#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Zeroize, ZeroizeOnDrop)]
 pub struct GspKp {
     /// GSP data size
     pub gsp_length: u32,
@@ -41,7 +43,7 @@ pub struct GspKp {
 
 /// The data format of the `FileId::KEY_PROTECTOR` entry in the VMGS file.
 #[repr(C)]
-#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Zeroize, ZeroizeOnDrop)]
 pub struct KeyProtector {
     /// Array of DEK entries
     pub dek: [DekKp; NUMBER_KP],
@@ -123,9 +125,10 @@ impl HardwareKeyProtectorHeader {
 
 /// The data format of the `FileId::HW_KEY_PROTECTOR` entry in the VMGS file.
 #[repr(C)]
-#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Zeroize, ZeroizeOnDrop)]
 pub struct HardwareKeyProtector {
     /// Header
+    #[zeroize(skip)]
     pub header: HardwareKeyProtectorHeader,
     /// Random IV for AES-CBC
     pub iv: [u8; AES_CBC_IV_LENGTH],
@@ -140,7 +143,7 @@ pub const GUEST_SECRET_KEY_MAX_SIZE: usize = 2048;
 
 /// The data format of the `FileId::GUEST_SECRET_KEY` entry in the VMGS file.
 #[repr(C)]
-#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Zeroize, ZeroizeOnDrop)]
 pub struct GuestSecretKey {
     /// the guest secret key to be provisioned to vTPM
     pub guest_secret_key: [u8; GUEST_SECRET_KEY_MAX_SIZE],

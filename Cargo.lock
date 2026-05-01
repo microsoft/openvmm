@@ -5060,6 +5060,7 @@ dependencies = [
  "serde_json",
  "x86defs",
  "zerocopy",
+ "zeroize",
 ]
 
 [[package]]
@@ -8285,6 +8286,7 @@ dependencies = [
  "vmgs",
  "vmgs_format",
  "zerocopy",
+ "zeroize",
 ]
 
 [[package]]
@@ -9850,6 +9852,7 @@ dependencies = [
  "tracing",
  "vmgs_format",
  "zerocopy",
+ "zeroize",
 ]
 
 [[package]]
@@ -11048,3 +11051,17 @@ name = "zeroize"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ced3678a2879b30306d323f4542626697a464a97c0a07c9aebf7ebca65cd4dde"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85a5b4158499876c763cb03bc4e49185d3cccbabb15b33c627f7884f43db852e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]

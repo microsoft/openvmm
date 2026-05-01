@@ -589,6 +589,7 @@ xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshel
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
 zerocopy = { version = "0.8.25", features = ["derive"]}
+zeroize = { version = "1.8", features = ["derive"]}
 
 [profile.release]
 panic = 'abort'

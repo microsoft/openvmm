@@ -11,6 +11,8 @@ use openhcl_attestation_protocol::vmgs;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
 use thiserror::Error;
 use zerocopy::IntoBytes;
+use zeroize::Zeroize;
+use zeroize::ZeroizeOnDrop;
 
 #[derive(Debug, Error)]
 pub(crate) enum HardwareDerivedKeysError {
@@ -39,6 +41,7 @@ pub(crate) enum HardwareKeySealingError {
 }
 
 /// Hold the hardware-derived keys.
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct HardwareDerivedKeys {
     tcb_version: u64,
     aes_key: [u8; vmgs::AES_CBC_KEY_LENGTH],
