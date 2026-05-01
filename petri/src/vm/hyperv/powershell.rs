@@ -674,7 +674,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
         });
 
     // Serialize NVMe controllers as a hashtable keyed by VSID.
-    // Each value: @{ Vtl = N; Drives = @(@{Nsid = 1; DiskPath = "..."}, ...) }
+    // Each value: @{ Vtl = N; Drives = @("path1", "path2", ...) }
     // New-CustomVM imports HvlDeviceHost internally and calls New-NvmeEmulatorRasd.
     let nvme_controllers = if nvme_map.is_empty() {
         None
@@ -707,16 +707,8 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
                     (
                         "Drives",
                         ps::Value::new(ps::Array::new(sorted_drives.into_iter().map(
-                            |(nsid, HyperVDrive { disk, .. })| {
-                                ps::HashTable::new([
-                                    ("Nsid", ps::Value::new(nsid)),
-                                    (
-                                        "DiskPath",
-                                        ps::Value::new(
-                                            disk.expect("NVMe drives must have disk paths"),
-                                        ),
-                                    ),
-                                ])
+                            |(_, HyperVDrive { disk, .. })| {
+                                disk.expect("NVMe drives must have disk paths")
                             },
                         ))),
                     ),

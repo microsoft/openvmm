@@ -349,7 +349,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=win-amd64-nvme
+    - 1ES.ImageOverride=win-amd64
     - JobId=job10-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -2832,7 +2832,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=win-amd64-nvme
+    - 1ES.ImageOverride=win-amd64
     - JobId=job18-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -3366,7 +3366,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=win-amd64-nvme
+    - 1ES.ImageOverride=win-amd64
     - JobId=job2-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -5277,7 +5277,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=win-amd64-nvme
+    - 1ES.ImageOverride=win-amd64
     - JobId=job3-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -5595,7 +5595,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=win-amd64-nvme
+    - 1ES.ImageOverride=win-amd64
     - JobId=job4-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -5814,7 +5814,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=win-amd64-nvme
+    - 1ES.ImageOverride=win-amd64
     - JobId=job5-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read

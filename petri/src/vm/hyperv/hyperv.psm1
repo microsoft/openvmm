@@ -226,10 +226,10 @@ function New-CustomVM
         # NvmeControllers => {
         #     Vsid => {
         #         Vtl,
-        #         Drives => @(
-        #             @{ Nsid; DiskPath },
+        #         Drives => [
+        #             DiskPath,
         #             ...
-        #         )
+        #         ]
         #     },
         #     ...
         # }
@@ -377,9 +377,7 @@ function New-CustomVM
         foreach ($controller in $NvmeControllers.GetEnumerator()) {
             $vsid = $controller.Name
             $targetVtl = $controller.Value["Vtl"]
-            $drives = $controller.Value["Drives"]
-            # Drives arrive pre-sorted by NSID from the Rust layer.
-            $vhdPaths = @($drives | ForEach-Object { $_["DiskPath"] })
+            $vhdPaths = $controller.Value["Drives"]
             $resourceSettings += New-NvmeEmulatorRasd `
                 -VhdPaths $vhdPaths `
                 -TargetVtl $targetVtl `
