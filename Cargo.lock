@@ -10042,6 +10042,7 @@ dependencies = [
  "get_resources",
  "guid",
  "hyperv_ic_resources",
+ "inspect",
  "jiff",
  "kmsg",
  "memory_range",
