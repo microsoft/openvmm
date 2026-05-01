@@ -30,7 +30,7 @@ tracing.workspace = true
 zerocopy.workspace = true
 fs-err.workspace = true
 libc.workspace = true
-nix = { workspace = true, features = ["ioctl","feature"] }
+nix = { workspace = true, features = ["ioctl"] }
 bitfield-struct.workspace = true
 safe_intrinsics.workspace = true
 open_enum.workspace = true

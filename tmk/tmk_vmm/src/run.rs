@@ -5,7 +5,6 @@
 
 #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
 use crate::HypervisorOpt;
-// use std::{io, os::unix::io::AsRawFd, ptr};
 use crate::Options;
 use crate::load;
 use anyhow::Context as _;
