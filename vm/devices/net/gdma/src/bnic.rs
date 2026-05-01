@@ -4,7 +4,6 @@
 use self::bnic_defs::CQE_RX_TRUNCATED;
 use self::bnic_defs::CQE_TX_GDMA_ERR;
 use self::bnic_defs::CQE_TX_OKAY;
-use self::bnic_defs::CQE_TX_VLAN_TAGGING_VIOLATION;
 use self::bnic_defs::MANA_CQE_COMPLETION;
 use self::bnic_defs::ManaCommandCode;
 use self::bnic_defs::ManaCqeHeader;
@@ -554,14 +553,6 @@ impl TxRxTask {
 
         let sge0 = sqe.sgl().first().context("no sgl")?;
 
-        // Real MANA hardware rejects packets that request 802.1Q VLAN tag
-        // insertion, since MANA does not support VLANs. Emulate this by
-        // inspecting the long OOB field that the guest driver sets.
-        if oob.l_oob.inject_vlan_pri_tag() {
-            self.post_tx_completion_vlan_error();
-            return Ok(());
-        }
-
         let total_len: usize = sqe.sgl().iter().map(|sge| sge.size as usize).sum();
         let mut meta = TxMetadata {
             id: TxId(0),
@@ -576,8 +567,16 @@ impl TxRxTask {
             l2_len: 14,
             l3_len: oob.s_oob.trans_off().clamp(14, 255) - 14,
             l4_len: 0,
+            tcp_header_offset: 0,
             max_segment_size: 0,
-            ..Default::default()
+            vlan: oob
+                .l_oob
+                .inject_vlan_pri_tag()
+                .then(|| net_backend::VlanMetadata {
+                    priority: 0,
+                    drop_eligible_indicator: 0,
+                    vlan_id: oob.l_oob.vlan_id(),
+                }),
         };
 
         if sqe.header.params.client_oob_in_sgl() {
@@ -636,18 +635,10 @@ impl TxRxTask {
 
     // Possible test improvement: provide proper OOB data for the GDMA error.
     fn post_tx_completion_error(&mut self) {
-        self.post_tx_completion_with_type(CQE_TX_GDMA_ERR);
-    }
-
-    fn post_tx_completion_vlan_error(&mut self) {
-        self.post_tx_completion_with_type(CQE_TX_VLAN_TAGGING_VIOLATION);
-    }
-
-    fn post_tx_completion_with_type(&mut self, cqe_type: u8) {
         let tx_oob = ManaTxCompOob {
             cqe_hdr: ManaCqeHeader::new()
                 .with_client_type(MANA_CQE_COMPLETION)
-                .with_cqe_type(cqe_type),
+                .with_cqe_type(CQE_TX_GDMA_ERR),
             tx_data_offset: 0,
             offsets: ManaTxCompOobOffsets::new(),
             reserved: [0; 12],

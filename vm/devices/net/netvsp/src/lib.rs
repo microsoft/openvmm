@@ -2587,23 +2587,13 @@ impl<T: RingMem> NetChannel<T> {
 
             if metadata.flags.offload_tcp_checksum() {
                 // The offset must be set if a checksum is being captured.
-                if metadata.tcp_header_offset < metadata.l2_len as u16 {
-                    return Err(WorkerError::InvalidTcpHeaderOffset(
-                        metadata.tcp_header_offset,
-                    ));
-                } else if metadata.flags.is_ipv4()
-                    && metadata.tcp_header_offset < (metadata.l2_len as u16 + 20)
+                if (metadata.tcp_header_offset < metadata.l2_len as u16)
+                    || (metadata.flags.is_ipv4()
+                        && metadata.tcp_header_offset < (metadata.l2_len as u16 + 20))
+                    || (metadata.flags.is_ipv6()
+                        && metadata.tcp_header_offset < (metadata.l2_len as u16 + 40))
+                    || (metadata.tcp_header_offset as u32 >= request.data_length)
                 {
-                    return Err(WorkerError::InvalidTcpHeaderOffset(
-                        metadata.tcp_header_offset,
-                    ));
-                } else if metadata.flags.is_ipv6()
-                    && metadata.tcp_header_offset < (metadata.l2_len as u16 + 40)
-                {
-                    return Err(WorkerError::InvalidTcpHeaderOffset(
-                        metadata.tcp_header_offset,
-                    ));
-                } else if metadata.tcp_header_offset as u32 >= request.data_length {
                     return Err(WorkerError::InvalidTcpHeaderOffset(
                         metadata.tcp_header_offset,
                     ));
