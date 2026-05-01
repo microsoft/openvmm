@@ -829,11 +829,12 @@ impl IntoPipeline for CheckinGatesCli {
             // Hang building the linux VMM tests off this big linux job.
             // No ARM64 VMM tests yet
             if matches!(arch, CommonArch::X86_64) {
-                let pub_vmm_tests_archive_linux = pub_vmm_tests_archive_linux_x86.take().unwrap();
-                let pub_vmm_tests_archive_linux_musl =
+                let pub_vmm_tests_archive_linux_x86 =
+                    pub_vmm_tests_archive_linux_x86.take().unwrap();
+                let pub_vmm_tests_archive_linux_musl_x86 =
                     pub_vmm_tests_archive_linux_musl_x86.take().unwrap();
 
-                job = job.publish(pub_vmm_tests_archive_linux, |archive| {
+                job = job.publish(pub_vmm_tests_archive_linux_x86, |archive| {
                         flowey_lib_hvlite::build_nextest_vmm_tests::Request {
                             target: CommonTriple::Common {
                                 arch,
@@ -844,11 +845,11 @@ impl IntoPipeline for CheckinGatesCli {
                                 archive,
                             ),
                         }
-                    }).publish(pub_vmm_tests_archive_linux_musl, |archive| {
+                    }).publish(pub_vmm_tests_archive_linux_musl_x86, |archive| {
                     flowey_lib_hvlite::build_nextest_vmm_tests::Request {
                             target: CommonTriple::Common {
                                 arch,
-                                platform: CommonPlatform::LinuxGnu,
+                                platform: CommonPlatform::LinuxMusl,
                             }.as_triple(),
                             profile: CommonProfile::from_release(release),
                             build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
