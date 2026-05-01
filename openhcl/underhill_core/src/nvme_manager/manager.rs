@@ -311,7 +311,7 @@ impl NvmeManagerWorker {
                             && is_nvme_keepalive_compatible(&pci_id),
                         skip_device_shutdown: nvme_keepalive
                             && self.context.save_restore_supported
-                            && !is_nvme_keepalive_compatible(&pci_id),
+                            && is_nvme_keepalive_compatible(&pci_id),
                     })
                     .instrument(tracing::info_span!("shutdown_nvme_driver", %pci_id))
             }))
