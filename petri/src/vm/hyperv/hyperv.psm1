@@ -384,6 +384,12 @@ function New-CustomVM
                 -TargetVtl $targetVtl `
                 -Vsid ([Guid]$vsid) `
                 | ConvertTo-CimEmbeddedString
+
+            # For emulated NVMe drives, we must explicitly give the VM access to
+            # the backing VHD
+            foreach ($vhdPath in $controller.Value["Drives"]) {
+                icacls $vhdPath /grant "NT VIRTUAL MACHINE\${vmid}:(F)" | Out-Null
+            }
         }
     }
 
