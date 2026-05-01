@@ -8,7 +8,6 @@ use crate::OpenHclServicingFlags;
 use crate::PetriVmConfig;
 use crate::PetriVmProperties;
 use crate::VmScreenshotMeta;
-use crate::Vtl;
 use crate::run_host_cmd;
 use crate::vm::append_cmdline;
 use anyhow::Context;
@@ -290,8 +289,8 @@ pub struct HyperVNewCustomVMArgs {
     pub hw_threads_per_core: Option<u64>,
     /// Processors per socket
     pub max_processors_per_numa_node: Option<u64>,
-    /// SCSI controllers and associated drives/disks
-    pub scsi_controllers: HashMap<Guid, HyperVScsiController>,
+    /// VMBus storage controllers (SCSI and NVMe), keyed by VSID
+    pub storage_controllers: HashMap<Guid, HyperVVmbusStorageController>,
     /// IDE controllers and associated drives/disks
     pub ide_controllers: HashMap<u32, HashMap<u8, HyperVDrive>>,
     /// Temporary file containing initial machine configuration data
@@ -306,11 +305,21 @@ pub struct HyperVNewCustomVMArgs {
     pub management_vtl_settings: Option<NamedTempFile>,
 }
 
-/// Hyper-V SCSI controller
-pub struct HyperVScsiController {
-    /// The VTL to assign the storage controller to
-    pub target_vtl: Vtl,
-    /// Drives (with any inserted disks) attached to this storage controller
+/// VMBus storage controller type
+pub enum HyperVVmbusStorageType {
+    /// SCSI controller (Msvm_ResourceAllocationSettingData)
+    Scsi,
+    /// NVMe emulator controller (created via closed-source HvlDeviceHost module)
+    Nvme,
+}
+
+/// VMBus storage controller configuration (SCSI or NVMe), keyed by VSID.
+pub struct HyperVVmbusStorageController {
+    /// Controller type
+    pub controller_type: HyperVVmbusStorageType,
+    /// Target VTL
+    pub target_vtl: crate::Vtl,
+    /// Drives attached to this controller, keyed by LUN (SCSI) or namespace ID (NVMe).
     pub drives: HashMap<u32, HyperVDrive>,
 }
 
@@ -565,7 +574,7 @@ impl HyperVNewCustomVMArgs {
             firmware_file: None,
             firmware_parameters: None,
             guest_state_path: None,
-            scsi_controllers: HashMap::new(),
+            storage_controllers: HashMap::new(),
             ide_controllers: HashMap::new(),
             com_3: false,
             imc_hiv: None,
@@ -596,9 +605,28 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
         }
     });
 
-    let scsi_controllers = (!args.scsi_controllers.is_empty()).then(|| {
-        ps::HashTable::new(args.scsi_controllers.into_iter().map(
-            |(vsid, HyperVScsiController { target_vtl, drives })| {
+    // Partition storage controllers into SCSI and NVMe.
+    let mut scsi_map: HashMap<Guid, HyperVVmbusStorageController> = HashMap::new();
+    let mut nvme_map: HashMap<Guid, HyperVVmbusStorageController> = HashMap::new();
+    for (vsid, controller) in args.storage_controllers {
+        match controller.controller_type {
+            HyperVVmbusStorageType::Scsi => {
+                scsi_map.insert(vsid, controller);
+            }
+            HyperVVmbusStorageType::Nvme => {
+                nvme_map.insert(vsid, controller);
+            }
+        }
+    }
+
+    let scsi_controllers = (!scsi_map.is_empty()).then(|| {
+        ps::HashTable::new(scsi_map.into_iter().map(
+            |(
+                vsid,
+                HyperVVmbusStorageController {
+                    target_vtl, drives, ..
+                },
+            )| {
                 (
                     format!("\"{vsid}\""),
                     ps::Value::new(ps::HashTable::new([
@@ -645,11 +673,58 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             ))
         });
 
+    // Serialize NVMe controllers as a hashtable keyed by VSID.
+    // Each value: @{ Vtl = N; Drives = @("path1", "path2", ...) }
+    // New-CustomVM imports HvlDeviceHost internally and calls New-NvmeEmulatorRasd.
+    let nvme_controllers = if nvme_map.is_empty() {
+        None
+    } else {
+        let mut nvme_entries = Vec::new();
+        for (
+            vsid,
+            HyperVVmbusStorageController {
+                target_vtl, drives, ..
+            },
+        ) in nvme_map
+        {
+            // Sort drives by namespace ID and validate they are exactly
+            // 1..N — the emulator assigns NSIDs sequentially by VHD
+            // argument order.
+            let mut sorted_drives: Vec<_> = drives.into_iter().collect();
+            sorted_drives.sort_by_key(|(nsid, _)| *nsid);
+            let expected: Vec<u32> = (1..=sorted_drives.len() as u32).collect();
+            let actual: Vec<u32> = sorted_drives.iter().map(|(nsid, _)| *nsid).collect();
+            anyhow::ensure!(
+                actual == expected,
+                "NVMe namespace IDs must be 1..{}, got {:?}",
+                expected.len(),
+                actual
+            );
+            nvme_entries.push((
+                format!("\"{vsid}\""),
+                ps::Value::new(ps::HashTable::new([
+                    ("Vtl", ps::Value::new(target_vtl as u32)),
+                    (
+                        "Drives",
+                        ps::Value::new(ps::Array::new(sorted_drives.into_iter().map(
+                            |(_, HyperVDrive { disk, .. })| {
+                                disk.expect("NVMe drives must have disk paths")
+                            },
+                        ))),
+                    ),
+                ])),
+            ));
+        }
+        Some(ps::HashTable::new(nvme_entries))
+    };
+
+    let builder = PowerShellBuilder::new()
+        .cmdlet("Import-Module")
+        .positional(ps_mod)
+        .next();
+
     let vmid = run_host_cmd(
-        PowerShellBuilder::new()
-            .cmdlet("Import-Module")
-            .positional(ps_mod)
-            .next()
+        builder
             .cmdlet("New-CustomVM")
             .arg("VMName", args.name)
             .arg_opt("Generation", args.generation)
@@ -686,6 +761,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             )
             .arg_opt("ScsiControllers", scsi_controllers)
             .arg_opt("IdeControllers", ide_controllers)
+            .arg_opt("NvmeControllers", nvme_controllers)
             .arg_opt("ImcHive", args.imc_hiv.as_ref().map(|f| f.path()))
             .arg("Com1", args.com_1)
             .arg("Com3", args.com_3)

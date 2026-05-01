@@ -221,8 +221,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
         }
 
-        // Map SCSI
-        let mut scsi_controllers = HashMap::new();
+        // Map VMBus storage controllers (SCSI and NVMe).
+        let mut storage_controllers = HashMap::new();
         for (
             vsid,
             VmbusStorageController {
@@ -232,10 +232,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
             },
         ) in config.vmbus_storage_controllers.iter()
         {
-            if !matches!(controller_type, crate::VmbusStorageType::Scsi) {
-                todo!("other storage types for hyper-v")
-            }
-
             let mut hyperv_drives = HashMap::new();
             for (lun, Drive { disk, is_dvd }) in drives {
                 hyperv_drives.insert(
@@ -246,9 +242,32 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     },
                 );
             }
-            scsi_controllers.insert(
+
+            let vmbus_controller_type = match controller_type {
+                crate::VmbusStorageType::Scsi => powershell::HyperVVmbusStorageType::Scsi,
+                crate::VmbusStorageType::Nvme => {
+                    for (nsid, drive) in &hyperv_drives {
+                        if drive.is_dvd {
+                            anyhow::bail!("NVMe emulator does not support DVD drives");
+                        }
+                        if drive.disk.is_none() {
+                            anyhow::bail!("NVMe drive cannot be empty (NSID {})", nsid);
+                        }
+                    }
+                    powershell::HyperVVmbusStorageType::Nvme
+                }
+                _ => {
+                    todo!(
+                        "storage type {:?} not yet supported for hyper-v",
+                        controller_type
+                    )
+                }
+            };
+
+            storage_controllers.insert(
                 *vsid,
-                powershell::HyperVScsiController {
+                powershell::HyperVVmbusStorageController {
+                    controller_type: vmbus_controller_type,
                     target_vtl: *target_vtl,
                     drives: hyperv_drives,
                 },
@@ -338,8 +357,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             firmware_file: igvm_file.clone(),
             firmware_parameters: openhcl_command_line,
             guest_state_path,
-            scsi_controllers,
-            ide_controllers,
+            storage_controllers,
             com_3: supports_com3,
             imc_hiv,
             management_vtl_settings,
