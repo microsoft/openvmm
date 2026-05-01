@@ -256,6 +256,18 @@ impl<T: Client> Access<'_, T> {
                                     }
                                 }
                             }
+
+                            // Replace the loopback IP with the gateway IP so
+                            // the guest's reply routes back through the virtual
+                            // adapter instead of its own loopback interface.
+                            match &mut other_addr {
+                                SocketAddr::V4(v4) => {
+                                    v4.set_ip(self.inner.state.params.gateway_ip);
+                                }
+                                SocketAddr::V6(v6) => {
+                                    v6.set_ip(self.inner.state.params.gateway_link_local_ipv6);
+                                }
+                            }
                         }
 
                         let ft = match other_addr {
