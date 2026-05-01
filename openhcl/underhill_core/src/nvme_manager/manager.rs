@@ -304,6 +304,8 @@ impl NvmeManagerWorker {
             join_all(devices_to_shutdown.into_iter().map(|(pci_id, driver)| {
                 driver
                     .shutdown(NvmeDriverShutdownOptions {
+                        // nvme_keepalive is received from host but it is only valid
+                        // when memory pool allocator supports save/restore.
                         do_not_reset: nvme_keepalive
                             && self.context.save_restore_supported
                             && is_nvme_keepalive_compatible(&pci_id),
