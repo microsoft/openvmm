@@ -3,17 +3,12 @@
 
 //! SP800-108 KBKDF (Key-Based Key Derivation Function) using HMAC-SHA-256.
 
-#![cfg(any(openssl, symcrypt))]
+#![cfg(openssl)]
 
 #[cfg(openssl)]
 mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
-
-#[cfg(symcrypt)]
-mod symcrypt;
-#[cfg(symcrypt)]
-use symcrypt as sys;
 
 use thiserror::Error;
 

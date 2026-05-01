@@ -3,17 +3,12 @@
 
 //! RSA cryptographic operations.
 
-#![cfg(any(openssl, symcrypt))]
+#![cfg(openssl)]
 
 #[cfg(openssl)]
 pub(crate) mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
-
-#[cfg(symcrypt)]
-pub(crate) mod symcrypt;
-#[cfg(symcrypt)]
-use symcrypt as sys;
 
 use thiserror::Error;
 
