@@ -21,6 +21,7 @@ use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use chipset_resources::i8042::I8042DeviceHandle;
+use chipset_resources::ioapic::GenericIoApicDeviceHandle;
 use chipset_resources::pic::PicDeviceHandle;
 use chipset_resources::piix4_pci_isa_bridge::PIIX4_PCI_ISA_BRIDGE_BDF;
 use chipset_resources::piix4_pci_isa_bridge::Piix4PciIsaBridgeDeviceHandle;
@@ -36,6 +37,7 @@ use serial_pl011_resources::SerialPl011DeviceHandle;
 use std::iter::zip;
 use thiserror::Error;
 use vm_resource::IntoResource;
+use vm_resource::PlatformResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::kind::SerialBackendHandle;
@@ -256,7 +258,6 @@ impl VmManifestBuilder {
                 );
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: false,
-                    with_generic_ioapic: true,
                     with_generic_isa_dma: true,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
@@ -276,7 +277,7 @@ impl VmManifestBuilder {
                     with_winbond_super_io_and_floppy_stub: self.stub_floppy,
                     with_winbond_super_io_and_floppy_full: !self.stub_floppy,
                 };
-                result.capabilities.with_ioapic = true;
+                result.attach_generic_ioapic();
                 result.attach_pic();
                 result.attach_pit();
                 result.attach_missing_arch_ports(self.arch, false);
@@ -288,7 +289,6 @@ impl VmManifestBuilder {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
-                    with_generic_ioapic: is_x86,
                     with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
@@ -308,7 +308,9 @@ impl VmManifestBuilder {
                     with_winbond_super_io_and_floppy_stub: false,
                     with_winbond_super_io_and_floppy_full: false,
                 };
-                result.capabilities.with_ioapic = is_x86;
+                if is_x86 {
+                    result.attach_generic_ioapic();
+                }
                 result.capabilities.with_psp = self.psp;
                 if is_x86 {
                     result.attach_pic();
@@ -330,7 +332,6 @@ impl VmManifestBuilder {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
-                    with_generic_ioapic: is_x86,
                     with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
@@ -350,7 +351,9 @@ impl VmManifestBuilder {
                     with_winbond_super_io_and_floppy_stub: false,
                     with_winbond_super_io_and_floppy_full: false,
                 };
-                result.capabilities.with_ioapic = is_x86;
+                if is_x86 {
+                    result.attach_generic_ioapic();
+                }
                 result.capabilities.with_psp = self.psp;
                 result
                     .maybe_attach_arch_serial(
@@ -412,6 +415,22 @@ impl VmChipsetResult {
             resource: PitDeviceHandle.into_resource(),
         });
         self.capabilities.with_pit = true;
+        self
+    }
+
+    fn attach_generic_ioapic(&mut self) -> &mut Self {
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            // Use "ioapic" (not GenericIoApicDeviceHandle::ID) to match the
+            // device unit name used by the old inline construction path. This
+            // is required for servicing compatibility (upgrade from old ->
+            // new OpenHCL).
+            name: "ioapic".to_owned(),
+            resource: GenericIoApicDeviceHandle {
+                routing: PlatformResource.into_resource(),
+            }
+            .into_resource(),
+        });
+        self.capabilities.with_ioapic = true;
         self
     }
 

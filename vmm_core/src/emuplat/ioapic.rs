@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 pub struct IoApicRouting<T: ?Sized>(pub Arc<T>);
 
-impl<T: ?Sized + virt::irqcon::IoApicRouting> chipset::ioapic::IoApicRouting for IoApicRouting<T> {
+impl<T: ?Sized + virt::irqcon::IoApicRouting> chipset_resources::ioapic::IoApicRouting
+    for IoApicRouting<T>
+{
     fn assert(&self, index: u8) {
         self.0.assert_irq(index);
     }
