@@ -619,7 +619,7 @@ mod save_restore {
             #[mesh(7)]
             pub diagnostics: <DiagnosticsServices as SaveRestore>::SavedState,
             #[mesh(8)]
-            pub mor_bit_status: Option<bool>,
+            pub mor_bit_status: bool,
         }
     }
 
@@ -655,7 +655,7 @@ mod save_restore {
                 generation_id: generation_id.save()?,
                 time: time.save()?,
                 diagnostics: diagnostics.save()?,
-                mor_bit_status: Some(*mor_bit_status),
+                mor_bit_status: *mor_bit_status,
             })
         }
 
@@ -673,7 +673,7 @@ mod save_restore {
             } = state;
 
             self.address = address;
-            self.mor_bit_status = mor_bit_status.unwrap_or(true);
+            self.mor_bit_status = mor_bit_status;
 
             self.service.nvram.restore(nvram)?;
             self.service.event_log.restore(event_log)?;
