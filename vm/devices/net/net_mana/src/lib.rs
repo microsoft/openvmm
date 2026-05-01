@@ -44,6 +44,7 @@ use net_backend::BackendQueueStats;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
+use net_backend::L3Protocol;
 use net_backend::L4Protocol;
 use net_backend::MultiQueueSupport;
 use net_backend::Queue;
@@ -974,6 +975,11 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                                 ip_checksum,
                                 l4_checksum,
                                 l4_protocol,
+                                l3_protocol: L3Protocol::Unknown,
+                                l2_len: 0,
+                                l3_len: 0,
+                                l4_len: 0,
+                                gso_size: 0,
                             },
                         );
                         if rx.bounced_len_with_padding > 0 {
