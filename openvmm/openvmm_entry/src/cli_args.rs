@@ -84,6 +84,10 @@ struct LegacyOptions {
     #[clap(long = "ttrpc", value_name = "SOCKETPATH", hide = true)]
     pub legacy_ttrpc: Option<PathBuf>,
 
+    /// use shared memory segment
+    #[clap(short = 'M', long = "shared-memory", hide = true)]
+    pub deprecated_shared_memory: bool,
+
     /// prefetch guest RAM
     #[clap(long = "prefetch", hide = true)]
     pub deprecated_prefetch: bool,
@@ -208,21 +212,40 @@ fn legacy_options_from(
         unreachable!("should have been rejected by clap due to args_conflicts_with_subcommands")
     }
     let mut run = opt.run;
-    run.deprecated_memory = DeprecatedMemoryOptions {
-        prefetch: opt.deprecated_prefetch,
-        memory_backing_file: opt.deprecated_memory_backing_file,
-        private_memory: opt.deprecated_private_memory,
-        thp: opt.deprecated_thp,
-    };
+    if opt.deprecated_prefetch {
+        run.memory.prefetch = true;
+    }
+    if opt.deprecated_shared_memory {
+        if run.memory.shared == Some(false) {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ValueValidation,
+                "--memory shared=off conflicts with --shared-memory",
+            ));
+        }
+        run.memory.shared = Some(true);
+    }
+    if let Some(path) = opt.deprecated_memory_backing_file {
+        if run.memory.file.is_some() {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ValueValidation,
+                "--memory file=... conflicts with --memory-backing-file",
+            ));
+        }
+        run.memory.file = Some(path);
+    }
+    if opt.deprecated_private_memory {
+        if run.memory.shared == Some(true) {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ValueValidation,
+                "--memory shared=on conflicts with --private-memory",
+            ));
+        }
+        run.memory.shared = Some(false);
+    }
+    if opt.deprecated_thp {
+        run.memory.transparent_hugepages = true;
+    }
     Ok(Command::Run(run))
-}
-
-#[derive(Default)]
-struct DeprecatedMemoryOptions {
-    prefetch: bool,
-    memory_backing_file: Option<PathBuf>,
-    private_memory: bool,
-    thp: bool,
 }
 
 /// VM launch options.
@@ -263,9 +286,6 @@ Examples:
     )]
     pub memory: MemoryCli,
 
-    #[clap(skip)]
-    deprecated_memory: DeprecatedMemoryOptions,
-
     /// per-NUMA-node guest RAM sizes (comma-separated, e.g. "2G,2G").
     /// Distributes memory across vNUMA nodes reported to the guest. Mutually
     /// exclusive with --memory. This is for test-only usage.
@@ -274,10 +294,6 @@ Examples:
     /// with CPUs. This should change once we implement real numa support.
     #[clap(long, value_name = "SIZES", value_parser = parse_memory, value_delimiter = ',', conflicts_with = "memory")]
     pub numa_memory: Option<Vec<u64>>,
-
-    /// use shared memory segment
-    #[clap(short = 'M', long, hide = true)]
-    pub shared_memory: bool,
 
     /// Restore VM from a snapshot directory (implies file-backed memory from
     /// the snapshot's memory.bin). Cannot be used with --memory-backing-file.
@@ -1062,53 +1078,28 @@ impl RunOptions {
 
     /// Returns whether guest RAM should be prefetched.
     pub fn prefetch_memory(&self) -> bool {
-        self.memory.prefetch || self.deprecated_memory.prefetch
+        self.memory.prefetch
     }
 
     /// Returns whether guest RAM should use private anonymous backing.
     pub fn private_memory(&self) -> bool {
-        self.memory.shared == Some(false) || self.deprecated_memory.private_memory
+        self.memory.shared == Some(false)
     }
 
     /// Returns whether guest RAM should be marked THP-eligible.
     pub fn transparent_hugepages(&self) -> bool {
-        self.memory.transparent_hugepages || self.deprecated_memory.thp
+        self.memory.transparent_hugepages
     }
 
     /// Returns the effective file backing path for guest RAM.
     pub fn memory_backing_file(&self) -> Option<&PathBuf> {
-        self.memory
-            .file
-            .as_ref()
-            .or(self.deprecated_memory.memory_backing_file.as_ref())
-    }
-
-    pub(crate) fn deprecated_prefetch(&self) -> bool {
-        self.deprecated_memory.prefetch
-    }
-
-    pub(crate) fn deprecated_private_memory(&self) -> bool {
-        self.deprecated_memory.private_memory
-    }
-
-    pub(crate) fn deprecated_thp(&self) -> bool {
-        self.deprecated_memory.thp
-    }
-
-    pub(crate) fn deprecated_memory_backing_file(&self) -> bool {
-        self.deprecated_memory.memory_backing_file.is_some()
+        self.memory.file.as_ref()
     }
 
     /// Validates combinations that span the new `--memory` parser and legacy aliases.
     pub fn validate_memory_options(&self) -> anyhow::Result<()> {
-        if self.memory.file.is_some() && self.deprecated_memory.memory_backing_file.is_some() {
-            anyhow::bail!("--memory file=... conflicts with --memory-backing-file");
-        }
         if self.memory.file.is_some() && self.restore_snapshot.is_some() {
             anyhow::bail!("--memory file=... conflicts with --restore-snapshot");
-        }
-        if self.memory.shared == Some(true) && self.deprecated_memory.private_memory {
-            anyhow::bail!("--memory shared=on conflicts with --private-memory");
         }
         if self.memory_backing_file().is_some() && self.private_memory() {
             anyhow::bail!("file-backed memory conflicts with private memory");
@@ -3926,13 +3917,46 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_options_reject_conflicting_legacy_aliases() {
-        let opt = try_parse_options_from(["openvmm", "--memory", "shared=on", "--private-memory"])
-            .unwrap();
+    fn test_memory_options_allow_legacy_shared_memory_alias() {
+        let opt = try_parse_options_from(["openvmm", "--memory", "2G", "--shared-memory"]).unwrap();
         let Command::Run(opt) = opt else {
             panic!("expected run command");
         };
-        assert!(opt.validate_memory_options().is_err());
+        opt.validate_memory_options().unwrap();
+        assert_eq!(opt.memory_size(), 2 * 1024 * 1024 * 1024);
+        assert_eq!(opt.memory.shared, Some(true));
+
+        let opt = try_parse_options_from(["openvmm", "--memory", "2G", "-M"]).unwrap();
+        let Command::Run(opt) = opt else {
+            panic!("expected run command");
+        };
+        opt.validate_memory_options().unwrap();
+        assert_eq!(opt.memory.shared, Some(true));
+    }
+
+    #[test]
+    fn test_memory_options_reject_conflicting_legacy_aliases() {
+        let err = match try_parse_options_from([
+            "openvmm",
+            "--memory",
+            "shared=on",
+            "--private-memory",
+        ]) {
+            Ok(_) => panic!("conflicting legacy memory alias should fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+
+        let err = match try_parse_options_from([
+            "openvmm",
+            "--memory",
+            "shared=off",
+            "--shared-memory",
+        ]) {
+            Ok(_) => panic!("conflicting legacy memory alias should fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
     }
 
     #[test]
@@ -3961,11 +3985,13 @@ mod tests {
 
     #[test]
     fn test_run_subcommand_rejects_deprecated_memory_aliases() {
-        let err = match try_parse_options_from(["openvmm", "run", "--prefetch"]) {
-            Ok(_) => panic!("deprecated memory alias should not be accepted by run"),
-            Err(err) => err,
-        };
-        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        for arg in ["--prefetch", "--shared-memory", "-M"] {
+            let err = match try_parse_options_from(["openvmm", "run", arg]) {
+                Ok(_) => panic!("deprecated memory alias should not be accepted by run"),
+                Err(err) => err,
+            };
+            assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
     }
 
     #[test]

@@ -411,22 +411,6 @@ async fn vm_config_from_command_line(
         console_str = device;
     }
 
-    if opt.shared_memory {
-        tracing::warn!("--shared-memory/-M flag has no effect and will be removed");
-    }
-    if opt.deprecated_prefetch() {
-        tracing::warn!("--prefetch is deprecated; use --memory prefetch=on");
-    }
-    if opt.deprecated_private_memory() {
-        tracing::warn!("--private-memory is deprecated; use --memory shared=off");
-    }
-    if opt.deprecated_thp() {
-        tracing::warn!("--thp is deprecated; use --memory shared=off,thp=on");
-    }
-    if opt.deprecated_memory_backing_file() {
-        tracing::warn!("--memory-backing-file is deprecated; use --memory file=<path>");
-    }
-
     opt.validate_memory_options()?;
 
     const MAX_PROCESSOR_COUNT: u32 = 1024;
