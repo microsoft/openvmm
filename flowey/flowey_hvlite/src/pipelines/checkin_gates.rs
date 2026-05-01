@@ -470,6 +470,8 @@ impl IntoPipeline for CheckinGatesCli {
                         openvmm,
                     }
                 })
+                // TODO: As of writing pipette_windows is the only windows-built artifact used by
+                // linux vmm tests. Consider splitting it into its own job to let them start sooner.
                 .publish(pub_pipette_windows, |pipette| {
                     flowey_lib_hvlite::build_pipette::Request {
                         target: CommonTriple::Common {
