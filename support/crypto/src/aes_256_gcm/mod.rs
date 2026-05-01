@@ -27,6 +27,11 @@ use thiserror::Error;
 /// An AES-256-GCM key is 256 bits.
 pub const KEY_LEN: usize = 32;
 
+/// The required IV length for the algorithm.
+///
+/// An AES-256-GCM IV is 96 bits (12 bytes).
+pub const IV_LEN: usize = 12;
+
 /// AES-256-GCM encryption/decryption.
 pub struct Aes256Gcm(sys::Aes256GcmInner);
 
@@ -60,7 +65,7 @@ impl Aes256GcmEncCtx<'_> {
     /// authentication tag in `tag`.
     pub fn cipher(
         &mut self,
-        iv: &[u8],
+        iv: &[u8; IV_LEN],
         data: &[u8],
         tag: &mut [u8],
     ) -> Result<Vec<u8>, Aes256GcmError> {
@@ -76,7 +81,7 @@ impl Aes256GcmDecCtx<'_> {
     /// authentication `tag`.
     pub fn cipher(
         &mut self,
-        iv: &[u8],
+        iv: &[u8; IV_LEN],
         data: &[u8],
         tag: &[u8],
     ) -> Result<Vec<u8>, Aes256GcmError> {
@@ -93,7 +98,10 @@ mod tests {
         // Test Case 14 from the NIST GCM specification (gcm-spec.pdf).
         let key = hex::decode("feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308")
             .unwrap();
-        let iv = hex::decode("cafebabefacedbaddecaf888").unwrap();
+        let iv = hex::decode("cafebabefacedbaddecaf888")
+            .unwrap()
+            .try_into()
+            .unwrap();
         let plain = hex::decode(
             "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72\
              1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255",
