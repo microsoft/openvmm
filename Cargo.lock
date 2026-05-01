@@ -4649,6 +4649,7 @@ dependencies = [
  "net_backend",
  "page_pool_alloc",
  "pal_async",
+ "parking_lot",
  "pci_core",
  "safeatomic",
  "test_with_tracing",
