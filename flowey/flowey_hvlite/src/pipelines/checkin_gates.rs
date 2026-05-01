@@ -735,106 +735,117 @@ impl IntoPipeline for CheckinGatesCli {
             }
 
             // Emit a job for building dependencies used by just linux vmm tests
-            // No ARM64 VMM tests yet
-            if matches!(arch, CommonArch::X86_64) {
-                let pub_vmm_tests_archive_linux_x86 =
-                    pub_vmm_tests_archive_linux_x86.take().unwrap();
-                let pub_vmm_tests_archive_linux_musl_x86 =
-                    pub_vmm_tests_archive_linux_musl_x86.take().unwrap();
 
-                let job = pipeline
-                    .new_job(
-                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                        FlowArch::X86_64,
-                        format!("build artifacts (for VMM tests) [{arch_tag}-linux]"),
-                    )
-                    .gh_set_pool(gh_pools::default_linux())
-                    .ado_set_pool(ado_pools::default_linux())
-                    .publish(pub_openvmm, |openvmm| {
-                        flowey_lib_hvlite::build_openvmm::Request {
-                            params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
+            let mut job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    format!("build artifacts (for VMM tests) [{arch_tag}-linux]"),
+                )
+                .gh_set_pool(gh_pools::default_linux())
+                .ado_set_pool(ado_pools::default_linux())
+                .publish(pub_openvmm, |openvmm| {
+                    flowey_lib_hvlite::build_openvmm::Request {
+                        params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxGnu,
+                            },
+                            profile: CommonProfile::from_release(release),
+                            // FIXME: this relies on openvmm default features
+                            features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
+                                .into(),
+                        },
+                        openvmm,
+                    }
+                })
+                .publish(pub_openvmm_vhost, |openvmm_vhost| {
+                    flowey_lib_hvlite::build_openvmm_vhost::Request {
+                        params: flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostBuildParams {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxGnu,
+                            },
+                            profile: CommonProfile::from_release(release),
+                        },
+                        openvmm_vhost,
+                    }
+                })
+                .publish(pub_vmgstool, |vmgstool| {
+                    flowey_lib_hvlite::build_vmgstool::Request {
+                        target: vmgstool_target,
+                        profile: CommonProfile::from_release(release),
+                        with_crypto: true,
+                        with_test_helpers: true,
+                        vmgstool,
+                    }
+                })
+                .publish(pub_vmgs_lib, |vmgs_lib| {
+                    flowey_lib_hvlite::build_and_test_vmgs_lib::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::LinuxGnu,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        vmgs_lib,
+                    }
+                })
+                .publish(pub_igvmfilegen, |igvmfilegen| {
+                    flowey_lib_hvlite::build_igvmfilegen::Request {
+                        build_params:
+                            flowey_lib_hvlite::build_igvmfilegen::IgvmfilegenBuildParams {
                                 target: CommonTriple::Common {
                                     arch,
                                     platform: CommonPlatform::LinuxGnu,
                                 },
-                                profile: CommonProfile::from_release(release),
-                                // FIXME: this relies on openvmm default features
-                                features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
-                                    .into(),
+                                profile: CommonProfile::from_release(release).into(),
                             },
-                            openvmm,
-                        }
-                    })
-                    .publish(pub_openvmm_vhost, |openvmm_vhost| {
-                        flowey_lib_hvlite::build_openvmm_vhost::Request {
-                            params:
-                                flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostBuildParams {
-                                    target: CommonTriple::Common {
-                                        arch,
-                                        platform: CommonPlatform::LinuxGnu,
-                                    },
-                                    profile: CommonProfile::from_release(release),
-                                },
-                            openvmm_vhost,
-                        }
-                    })
-                    .publish(pub_vmgstool, |vmgstool| {
-                        flowey_lib_hvlite::build_vmgstool::Request {
-                            target: vmgstool_target,
-                            profile: CommonProfile::from_release(release),
-                            with_crypto: true,
-                            with_test_helpers: true,
-                            vmgstool,
-                        }
-                    })
-                    .publish(pub_vmgs_lib, |vmgs_lib| {
-                        flowey_lib_hvlite::build_and_test_vmgs_lib::Request {
-                            target: CommonTriple::Common {
-                                arch,
-                                platform: CommonPlatform::LinuxGnu,
-                            },
-                            profile: CommonProfile::from_release(release),
-                            vmgs_lib,
-                        }
-                    })
-                    .publish(pub_igvmfilegen, |igvmfilegen| {
-                        flowey_lib_hvlite::build_igvmfilegen::Request {
-                            build_params:
-                                flowey_lib_hvlite::build_igvmfilegen::IgvmfilegenBuildParams {
-                                    target: CommonTriple::Common {
-                                        arch,
-                                        platform: CommonPlatform::LinuxGnu,
-                                    },
-                                    profile: CommonProfile::from_release(release).into(),
-                                },
-                            igvmfilegen,
-                        }
-                    })
-                    .publish(pub_ohcldiag_dev, |ohcldiag_dev| {
-                        flowey_lib_hvlite::build_ohcldiag_dev::Request {
-                            target: CommonTriple::Common {
-                                arch,
-                                platform: CommonPlatform::LinuxGnu,
-                            },
-                            profile: CommonProfile::from_release(release),
-                            ohcldiag_dev,
-                        }
-                    }).publish(pub_vmm_tests_archive_linux_x86, |archive| flowey_lib_hvlite::build_nextest_vmm_tests::Request {
-                    target: CommonTriple::X86_64_LINUX_GNU.as_triple(),
-                    profile: CommonProfile::from_release(release),
-                    build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
-                        archive,
-                    ),
-                }).publish(pub_vmm_tests_archive_linux_musl_x86, |archive| flowey_lib_hvlite::build_nextest_vmm_tests::Request {
-                    target: CommonTriple::X86_64_LINUX_MUSL.as_triple(),
-                    profile: CommonProfile::from_release(release),
-                    build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
-                        archive,
-                    ),
+                        igvmfilegen,
+                    }
+                })
+                .publish(pub_ohcldiag_dev, |ohcldiag_dev| {
+                    flowey_lib_hvlite::build_ohcldiag_dev::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::LinuxGnu,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        ohcldiag_dev,
+                    }
                 });
 
-                all_jobs.push(job.finish());
+            // No ARM64 VMM tests yet
+            if matches!(arch, CommonArch::X86_64) {
+                let pub_vmm_tests_archive_linux = pub_vmm_tests_archive_linux_x86.take().unwrap();
+                let pub_vmm_tests_archive_linux_musl =
+                    pub_vmm_tests_archive_linux_musl_x86.take().unwrap();
+
+                job = job.publish(pub_vmm_tests_archive_linux, |archive| {
+                        flowey_lib_hvlite::build_nextest_vmm_tests::Request {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxGnu,
+                            }.as_triple(),
+                            profile: CommonProfile::from_release(release),
+                            build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
+                                archive,
+                            ),
+                        }
+                    }).publish(pub_vmm_tests_archive_linux_musl, |archive| {
+                    flowey_lib_hvlite::build_nextest_vmm_tests::Request {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxGnu,
+                            }.as_triple(),
+                            profile: CommonProfile::from_release(release),
+                            build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
+                                archive,
+                            ),
+                        }
+                    });
             }
+
+            all_jobs.push(job.finish());
         }
 
         // emit openhcl build job
