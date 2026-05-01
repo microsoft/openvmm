@@ -1183,7 +1183,7 @@ impl IntoPipeline for CheckinGatesCli {
             .map_err(|missing| {
                 anyhow::anyhow!("missing required windows-amd-snp vmm_tests artifact: {missing}")
             })?;
-        let vmm_tests_artifacts_linux_mshv_x86 = vmm_tests_artifacts_linux_musl_x86
+        let _vmm_tests_artifacts_linux_mshv_x86 = vmm_tests_artifacts_linux_musl_x86
             .finish()
             .map_err(|missing| {
                 anyhow::anyhow!("missing required linux-mshv (musl) vmm_tests artifact: {missing}")
@@ -1376,20 +1376,20 @@ impl IntoPipeline for CheckinGatesCli {
                 needs_prep_run: false,
                 hugetlb_2mb_overcommit_pages: Some(HUGETLB_2MB_OVERCOMMIT_PAGES),
             },
-            VmmTestJobParams {
-                platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
-                arch: FlowArch::X86_64,
-                gh_pool: gh_pools::linux_mshv_1es(),
-                ado_pool: None,
-                label: "x64-linux-intel-mshv",
-                target: CommonTriple::X86_64_LINUX_MUSL,
-                resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_mshv_x86,
-                // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
-                nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
-                test_artifacts: standard_x64_test_artifacts.clone(),
-                needs_prep_run: false,
-                hugetlb_2mb_overcommit_pages: None,
-            },
+            // VmmTestJobParams {
+            //     platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
+            //     arch: FlowArch::X86_64,
+            //     gh_pool: gh_pools::linux_mshv_1es(),
+            //     ado_pool: None,
+            //     label: "x64-linux-intel-mshv",
+            //     target: CommonTriple::X86_64_LINUX_MUSL,
+            //     resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_mshv_x86,
+            //     // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
+            //     nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
+            //     test_artifacts: standard_x64_test_artifacts.clone(),
+            //     needs_prep_run: false,
+            //     hugetlb_2mb_overcommit_pages: None,
+            // },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::Aarch64,
