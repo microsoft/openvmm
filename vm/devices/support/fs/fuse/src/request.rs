@@ -147,9 +147,8 @@ impl Request {
         // FUSE_INIT_EXT is supported). Read whatever is available and
         // zero-fill the rest so that flags2 defaults to 0 for old kernels.
         if header.opcode == FUSE_INIT {
-            // The legacy FUSE_INIT payload is the first 16 bytes (major,
-            // minor, max_readahead, flags). Reject anything smaller.
-            let available = reader.remaining_len().min(size_of::<fuse_init_in>());
+            let payload_len = (header.len as usize) - size_of::<fuse_in_header>();
+            let available = payload_len.min(size_of::<fuse_init_in>());
             if available < FUSE_COMPAT_INIT_IN_SIZE as usize {
                 tracing::error!(
                     opcode = header.opcode,
