@@ -22,6 +22,7 @@ use vmgs_format::VMGS_BYTES_PER_BLOCK;
 use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
 use vmgs_format::VMGS_FILE_TABLE_BLOCK_SIZE;
 use vmgs_format::VMGS_MIN_FILE_BLOCK_OFFSET;
+use vmgs_format::VMGS_NONCE_SIZE;
 use vmgs_format::VMGS_SIGNATURE;
 use vmgs_format::VMGS_VERSION_3_0;
 use vmgs_format::VmgsAuthTag;
@@ -1740,7 +1741,7 @@ fn is_empty_key(encryption_key: &[u8]) -> bool {
 #[cfg_attr(not(feature = "encryption"), expect(unused_variables))]
 fn encrypt_metadata_key(
     encryption_key: &[u8; VMGS_ENCRYPTION_KEY_SIZE],
-    nonce: &[u8],
+    nonce: &[u8; VMGS_NONCE_SIZE],
     metadata_key: &[u8],
     authentication_tag: &mut [u8],
 ) -> Result<Vec<u8>, Error> {
@@ -1770,7 +1771,7 @@ fn encrypt_metadata_key(
 )]
 fn decrypt_metadata_key(
     datastore_key: &[u8; VMGS_ENCRYPTION_KEY_SIZE],
-    nonce: &[u8],
+    nonce: &[u8; VMGS_NONCE_SIZE],
     metadata_key: &[u8],
     authentication_tag: &[u8],
 ) -> Result<Vec<u8>, Error> {

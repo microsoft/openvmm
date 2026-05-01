@@ -19,6 +19,7 @@ use thiserror::Error;
 #[error("KDF derivation error")]
 pub struct KdfError(#[source] openssl_kdf::kdf::KdfError);
 
+/// An error for KDF operations.
 #[cfg(not(openssl))]
 #[derive(Debug, Error)]
 #[error("KDF derivation error")]

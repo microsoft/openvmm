@@ -3,12 +3,17 @@
 
 //! AES-256-CBC encryption and decryption (no padding).
 
-#![cfg(openssl)]
+#![cfg(any(openssl, symcrypt))]
 
 #[cfg(openssl)]
 mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
+
+#[cfg(symcrypt)]
+mod symcrypt;
+#[cfg(symcrypt)]
+use symcrypt as sys;
 
 use thiserror::Error;
 
@@ -16,6 +21,11 @@ use thiserror::Error;
 ///
 /// An AES-256-CBC key is 256 bits.
 pub const KEY_LEN: usize = 32;
+
+/// The required IV length for the algorithm.
+///
+/// An AES-256-CBC IV is 128 bits (16 bytes).
+pub const IV_LEN: usize = 16;
 
 /// AES-256-CBC encryption/decryption.
 pub struct Aes256Cbc(sys::Aes256CbcInner);
@@ -49,7 +59,7 @@ impl Aes256CbcEncCtx<'_> {
     /// Encrypts `data` using the provided `iv`.
     ///
     /// Padding is disabled — `data` must be a multiple of 16 bytes.
-    pub fn cipher(&mut self, iv: &[u8], data: &[u8]) -> Result<Vec<u8>, Aes256CbcError> {
+    pub fn cipher(&mut self, iv: &[u8; IV_LEN], data: &[u8]) -> Result<Vec<u8>, Aes256CbcError> {
         self.0.cipher(iv, data)
     }
 }
@@ -61,7 +71,7 @@ impl Aes256CbcDecCtx<'_> {
     /// Decrypts `data` using the provided `iv`.
     ///
     /// Padding is disabled — `data` must be a multiple of 16 bytes.
-    pub fn cipher(&mut self, iv: &[u8], data: &[u8]) -> Result<Vec<u8>, Aes256CbcError> {
+    pub fn cipher(&mut self, iv: &[u8; IV_LEN], data: &[u8]) -> Result<Vec<u8>, Aes256CbcError> {
         self.0.cipher(iv, data)
     }
 }
@@ -73,7 +83,7 @@ mod tests {
     #[test]
     fn test_aes_256_cbc_roundtrip() {
         let key = [0x42u8; KEY_LEN];
-        let iv = [0x01u8; 16];
+        let iv = [0x01u8; IV_LEN];
         let data = [0xABu8; 32]; // must be block-aligned for no-padding CBC
 
         let aes = Aes256Cbc::new(&key).unwrap();
