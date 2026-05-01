@@ -27,7 +27,9 @@ const DEFAULT_FLAGS: u32 = FUSE_ASYNC_READ
     | FUSE_INIT_EXT;
 
 // Default flags2 to negotiate when FUSE_INIT_EXT is supported.
-const DEFAULT_FLAGS2: u32 = FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
+// Individual filesystem implementations can set additional flags2 in their
+// init callback (e.g. FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 for virtiofs).
+const DEFAULT_FLAGS2: u32 = 0;
 
 const DEFAULT_MAX_PAGES: u32 = 256;
 
@@ -900,14 +902,20 @@ mod tests {
         data
     }
 
-    /// A minimal Fuse implementation that records the SessionInfo seen during init.
+    /// A minimal Fuse implementation that records the SessionInfo seen during init
+    /// and optionally requests FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2.
     #[derive(Default)]
     struct InitCapturingFs {
         info: Arc<Mutex<Option<(u32, u32, u32)>>>, // (want, want2, capable)
+        request_direct_io_mmap: bool,
     }
 
     impl Fuse for InitCapturingFs {
         fn init(&self, info: &mut SessionInfo) {
+            if self.request_direct_io_mmap && info.capable2() & FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 != 0
+            {
+                info.want2 |= FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
+            }
             *self.info.lock() = Some((info.want, info.want2, info.capable()));
         }
     }
@@ -918,7 +926,10 @@ mod tests {
         let flags = 0x003FFFFB | FUSE_INIT_EXT;
         let request_data = make_init_request(7, 39, 131072, flags, FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2);
 
-        let fs = InitCapturingFs::default();
+        let fs = InitCapturingFs {
+            request_direct_io_mmap: true,
+            ..Default::default()
+        };
         let info_ref = fs.info.clone();
         let session = Session::new(fs);
 
