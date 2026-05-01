@@ -725,15 +725,18 @@ impl EthVlanInfo {
         (self.0 as u8) & 0x7
     }
 
+    /// In practical use this should always be false, but who knows?
     pub fn set_drop_eligible_indicator(mut self, indicator: bool) -> Self {
         self.0 = (self.0 & !0x8) | if indicator { 0x8 } else { 0x0 };
         self
     }
 
-    pub fn drop_eligible_indicator(&self) -> u8 {
-        (self.0 >> 3) as u8 & 0x1
+    pub fn drop_eligible_indicator(&self) -> bool {
+        self.0 & 0x8 != 0
     }
 
+    /// VLAN IDs are 12 bits. This will silently reject any bits outside of
+    /// the range.
     pub fn set_vlan_id(mut self, vlan_id: u16) -> Self {
         self.0 = (self.0 & !0xFFF0) | ((vlan_id as u32 & 0xFFF) << 4);
         self
