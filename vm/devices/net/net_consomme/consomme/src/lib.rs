@@ -653,10 +653,14 @@ impl<T: Client> Access<'_, T> {
             return Err(DropReason::Ipv4Checksum);
         }
 
+        fn is_blocked_host_local_ipv4(addr: std::net::Ipv4Addr) -> bool {
+            addr.is_loopback() || addr.is_unspecified() || addr.is_link_local()
+        }
+
         // Reject guest traffic to host-local-only destinations.
         if !self.inner.state.params.allow_host_local_access {
             let dst_ip = std::net::Ipv4Addr::from(ipv4.dst_addr().octets());
-            if dst_ip.is_loopback() || dst_ip.is_unspecified() || dst_ip.is_link_local() {
+            if is_blocked_host_local_ipv4(dst_ip) {
                 return Err(DropReason::DestinationNotAllowed);
             }
         }
@@ -706,7 +710,10 @@ impl<T: Client> Access<'_, T> {
         // Reject guest traffic to host-local-only destinations.
         if !self.inner.state.params.allow_host_local_access {
             let dst_ip = std::net::Ipv6Addr::from(ipv6.dst_addr().octets());
-            if dst_ip.is_loopback() || dst_ip.is_unicast_link_local() {
+            if dst_ip.is_unspecified()
+                || dst_ip.is_loopback()
+                || dst_ip.is_unicast_link_local()
+            {
                 return Err(DropReason::DestinationNotAllowed);
             }
         }
