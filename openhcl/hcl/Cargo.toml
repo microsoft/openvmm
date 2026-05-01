@@ -12,6 +12,7 @@ hv1_structs.workspace = true
 hvdef.workspace = true
 pal.workspace = true
 memory_range.workspace = true
+openhcl_cpuid_features.workspace = true
 sidecar_client.workspace = true
 tdcall = { workspace = true, features = ["tracing"] }
 x86defs.workspace = true

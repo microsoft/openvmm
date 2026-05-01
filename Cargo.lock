@@ -3058,6 +3058,7 @@ dependencies = [
  "memory_range",
  "nix 0.30.1",
  "open_enum",
+ "openhcl_cpuid_features",
  "pal",
  "parking_lot",
  "safe_intrinsics",
@@ -5093,6 +5094,15 @@ dependencies = [
  "underhill_confidentiality",
  "x86defs",
  "zerocopy",
+]
+
+[[package]]
+name = "openhcl_cpuid_features"
+version = "0.0.0"
+dependencies = [
+ "hvdef",
+ "safe_intrinsics",
+ "x86defs",
 ]
 
 [[package]]
@@ -8388,13 +8398,13 @@ dependencies = [
  "nvme_resources",
  "nvme_spec",
  "openhcl_attestation_protocol",
+ "openhcl_cpuid_features",
  "openhcl_dma_manager",
  "pal",
  "pal_async",
  "pal_uring",
  "parking_lot",
  "profiler_worker",
- "safe_intrinsics",
  "scsi_buffers",
  "scsi_core",
  "scsidisk",
@@ -8461,7 +8471,6 @@ dependencies = [
  "vpci_relay",
  "watchdog_core",
  "watchdog_vmgs_format",
- "x86defs",
  "zerocopy",
 ]
 
@@ -9022,6 +9031,7 @@ dependencies = [
  "memory_range",
  "mesh",
  "minircu",
+ "openhcl_cpuid_features",
  "pal",
  "pal_async",
  "pal_uring",

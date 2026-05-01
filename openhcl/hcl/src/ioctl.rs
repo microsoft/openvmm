@@ -1346,6 +1346,7 @@ pub struct Hcl {
     isolation: IsolationType,
     snp_register_bitmap: [u8; 64],
     sidecar: Option<SidecarClient>,
+    cpuid_features: openhcl_cpuid_features::CpuidFeatures,
 }
 
 /// The isolation type for a partition.
@@ -1382,6 +1383,11 @@ impl Hcl {
     /// Returns true if timer virtualization for lower VTL is supported.
     pub fn supports_lower_vtl_timer_virt(&self) -> bool {
         self.supports_lower_vtl_timer_virt
+    }
+
+    /// Returns cached host CPUID feature information.
+    pub fn cpuid_features(&self) -> &openhcl_cpuid_features::CpuidFeatures {
+        &self.cpuid_features
     }
 }
 
@@ -1727,7 +1733,12 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
 
 impl Hcl {
     /// Returns a new HCL instance.
-    pub fn new(isolation: IsolationType, sidecar: Option<SidecarClient>) -> Result<Hcl, Error> {
+    #[cfg(guest_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
+    pub fn new(
+        isolation: IsolationType,
+        sidecar: Option<SidecarClient>,
+        cpuid_features: openhcl_cpuid_features::CpuidFeatures,
+    ) -> Result<Hcl, Error> {
         static SIGNAL_HANDLER_INIT: Once = Once::new();
         // SAFETY: The signal handler does not perform any actions that are forbidden
         // for signal handlers to perform, as it performs nothing.
@@ -1784,10 +1795,16 @@ impl Hcl {
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
         let supports_lower_vtl_timer_virt =
             mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
+
+        // Use CPUID features from caller
+        let supports_lower_vtl_snp_guest_request =
+            cpuid_features.supports_lower_vtl_guest_request();
+
         tracing::debug!(
             supports_vtl_ret_action,
             supports_register_page,
             supports_lower_vtl_timer_virt,
+            supports_lower_vtl_snp_guest_request,
             "HCL capabilities",
         );
 
@@ -1815,6 +1832,7 @@ impl Hcl {
             isolation,
             snp_register_bitmap,
             sidecar,
+            cpuid_features,
         })
     }
 

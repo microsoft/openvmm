@@ -78,6 +78,7 @@ netvsp.workspace = true
 nvme_driver.workspace = true
 nvme_resources.workspace = true
 openhcl_dma_manager.workspace = true
+openhcl_cpuid_features.workspace = true
 scsi_core.workspace = true
 scsidisk.workspace = true
 scsidisk_resources.workspace = true
@@ -133,9 +134,7 @@ vmgs = { workspace = true, features = ["encryption", "save_restore"] }
 vmgs_broker = { workspace = true, features = ["encryption"] }
 vmgs_format.workspace = true
 vmgs_resources.workspace = true
-x86defs.workspace = true
 
-safe_intrinsics.workspace = true
 debug_ptr.workspace = true
 guid.workspace = true
 crypto = { workspace = true, features = ["vendored", "openssl"] }

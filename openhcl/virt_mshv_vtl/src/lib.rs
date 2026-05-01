@@ -1440,6 +1440,9 @@ pub struct UhPartitionNewParams<'a> {
     pub disable_proxy_redirect: bool,
     /// Disable lower VTL timer virtualization.
     pub disable_lower_vtl_timer_virt: bool,
+    /// Cached CPUID features queried once at worker startup.
+    #[cfg(guest_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
+    pub cpuid_features: openhcl_cpuid_features::CpuidFeatures,
 }
 
 /// Parameters to [`UhProtoPartition::build`].
@@ -1610,6 +1613,9 @@ impl<'a> UhProtoPartition<'a> {
         // Try to open the sidecar device, if it is present.
         let sidecar = sidecar_client::SidecarClient::new(driver).map_err(Error::Sidecar)?;
 
+        #[cfg(guest_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
+        let hcl = Hcl::new(hcl_isolation, sidecar, params.cpuid_features).map_err(Error::Hcl)?;
+        #[cfg(not(guest_arch = "x86_64"))] // xtask-fmt allow-target-arch cpu-intrinsic
         let hcl = Hcl::new(hcl_isolation, sidecar).map_err(Error::Hcl)?;
 
         // Set the hypercalls that this process will use.

@@ -389,6 +389,22 @@ impl<T: TranslateVirtualAddressExAarch64> HypercallDispatch<HvAarch64TranslateVi
     }
 }
 
+/// Defines the `HvGetSnpVmpck` hypercall.
+pub type HvGetSnpVmpck =
+    SimpleHypercall<(), defs::GetSnpVmpckOutput, { HypercallCode::HvCallGetSnpVmpck.0 }>;
+
+/// Implements the `HvGetSnpVmpck` hypercall.
+pub trait GetSnpVmpck {
+    /// Returns the VMPCK (VM Platform Communication Key) for the calling VTL.
+    fn get_snp_vmpck(&mut self) -> HvResult<defs::GetSnpVmpckOutput>;
+}
+
+impl<T: GetSnpVmpck> HypercallDispatch<HvGetSnpVmpck> for T {
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        HvGetSnpVmpck::run(params, |()| self.get_snp_vmpck())
+    }
+}
+
 /// Defines the `HvGetVpRegisters` hypercall.
 pub type HvGetVpRegisters = RepHypercall<
     defs::GetSetVpRegisters,
