@@ -112,19 +112,8 @@ pub trait CreateNvmeDriver: Inspect + Send + Sync {
     ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError>;
 }
 
-/// Returns whether NVMe keepalive (servicing without device reset) is
-/// known to be compatible with the device identified by this VPCI
-/// instance ID.
-///
-/// NVMe keepalive currently has known incompatibilities with NVMe Direct
-/// v2 devices. As a partial mitigation, we only enable keepalive for
-/// ASAP devices, which can be identified by the substring `c05b` in the
-/// VPCI instance GUID. All other devices (NVMe Direct v2) fall back to
-/// the legacy reset-on-servicing path even when the host-level keepalive
-/// flag is enabled.
-///
-/// This heuristic is intentionally fragile and is intended only as a
-/// temporary mitigation while the real compatibility work is in flight.
+/// Returns whether the given PCI ID corresponds to an NVMe device that is
+/// compatible with the keepalive.
 pub fn is_nvme_keepalive_compatible(pci_id: &str) -> bool {
     pci_id.to_ascii_lowercase().starts_with("c05b")
 }
