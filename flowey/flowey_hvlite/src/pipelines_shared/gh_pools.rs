@@ -5,15 +5,15 @@
 
 use flowey::pipeline::prelude::*;
 
-pub const AMD_POOL_1ES: &str = "openvmm-gh-amd-westus3";
-pub const INTEL_POOL_1ES: &str = "openvmm-gh-intel-westus3";
-pub const ARM_POOL_1ES: &str = "openvmm-gh-arm-westus2";
+pub const AMD_POOL_1ES: &str = "openvmm-gh-amd";
+pub const INTEL_POOL_1ES: &str = "openvmm-gh-intel";
+pub const ARM_POOL_1ES: &str = "openvmm-gh-arm";
 
-pub const WINDOWS_IMAGE_AMD64: &str = "win-amd64";
-pub const WINDOWS_IMAGE_ARM64: &str = "win-arm64";
-pub const LINUX_IMAGE_AMD64: &str = "ubuntu2404-amd64";
-pub const LINUX_IMAGE_ARM64: &str = "ubuntu2404-arm64";
-pub const MSHV_IMAGE_AMD64: &str = "azurelinux3-amd64-dom0";
+pub const WINDOWS_IMAGE_AMD64: &str = "win-amd64-v2";
+pub const WINDOWS_IMAGE_ARM64: &str = "win-arm64-v2";
+pub const LINUX_IMAGE_AMD64: &str = "ubuntu2404-amd64-v2";
+pub const LINUX_IMAGE_ARM64: &str = "ubuntu2404-arm64-v2";
+pub const MSHV_IMAGE_AMD64: &str = "azurelinux3-amd64-dom0-v2";
 
 fn gh_pool_with_image_1es(pool: &str, image: &str) -> GhRunner {
     GhRunner::SelfHosted(vec![
