@@ -12,7 +12,7 @@ default = []
 inspect = ["vmgs_format/inspect", "dep:inspect", "dep:inspect_counters"]
 save_restore = ["dep:mesh_protobuf"]
 mesh = ["dep:mesh_protobuf"]
-encryption = ["dep:crypto"]
+encryption = ["dep:crypto", "dep:zeroize"]
 test_helpers = []
 
 # run encryption unit tests in CI
@@ -36,7 +36,7 @@ thiserror.workspace = true
 tracing.workspace = true
 cvm_tracing.workspace = true
 zerocopy.workspace = true
-zeroize.workspace = true
+zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
 pal_async.workspace = true
