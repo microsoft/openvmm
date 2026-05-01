@@ -58,7 +58,199 @@ pub struct MemoryCli {
 /// This is not yet a stable interface and may change radically between
 /// versions.
 #[derive(Parser)]
+#[clap(
+    after_help = "For now, omitting a subcommand is treated as `run` for compatibility.\nThis will change in the future. Use `openvmm run ...` for VM launch options."
+)]
 pub struct Options {
+    /// Command to run.
+    #[clap(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Parser)]
+#[clap(args_conflicts_with_subcommands = true)]
+struct LegacyOptions {
+    #[clap(subcommand)]
+    command: Option<Command>,
+
+    #[clap(flatten)]
+    pub run: RunOptions,
+
+    /// Legacy gRPC server socket path.
+    #[clap(long = "grpc", value_name = "SOCKETPATH", hide = true)]
+    pub legacy_grpc: Option<PathBuf>,
+
+    /// Legacy ttrpc server socket path.
+    #[clap(long = "ttrpc", value_name = "SOCKETPATH", hide = true)]
+    pub legacy_ttrpc: Option<PathBuf>,
+
+    /// use shared memory segment
+    #[clap(short = 'M', long = "shared-memory", hide = true)]
+    pub deprecated_shared_memory: bool,
+
+    /// prefetch guest RAM
+    #[clap(long = "prefetch", hide = true)]
+    pub deprecated_prefetch: bool,
+
+    /// back guest RAM with a file instead of anonymous memory.
+    /// The file is created/opened and sized to the guest RAM size.
+    /// Enables snapshot save (fsync) and restore (open + mmap).
+    #[clap(
+        long = "memory-backing-file",
+        value_name = "FILE",
+        hide = true,
+        conflicts_with = "deprecated_private_memory"
+    )]
+    pub deprecated_memory_backing_file: Option<PathBuf>,
+
+    /// use private anonymous memory for guest RAM
+    #[clap(long = "private-memory", hide = true, conflicts_with_all = ["deprecated_memory_backing_file", "restore_snapshot"])]
+    pub deprecated_private_memory: bool,
+
+    /// enable transparent huge pages for guest RAM (Linux only, requires --private-memory)
+    #[clap(long = "thp", hide = true)]
+    pub deprecated_thp: bool,
+}
+
+pub(crate) fn parse_options() -> Command {
+    match try_parse_options_from(std::env::args_os()) {
+        Ok(options) => options,
+        Err(err) => err.exit(),
+    }
+}
+
+fn try_parse_options_from<I, T>(args: I) -> Result<Command, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    // In non-optimized builds, clap uses an embarassing amount of stack space
+    // to construct the `Command` instance for `Options`, more than the Windows
+    // default of 1MB. This has been known since 2023:
+    // <https://github.com/clap-rs/clap/issues/5134>, but no one has stepped up
+    // to fix it.
+    //
+    // Work around this by running the code on a thread with lots of stack
+    // space. This is easier and more reliable than configuring the PE binary to
+    // have a larger stack.
+    fn on_big_stack<R: Send>(f: impl Send + FnOnce() -> R) -> R {
+        if cfg!(windows) {
+            std::thread::scope(|s| {
+                std::thread::Builder::new()
+                    .stack_size(0x400000)
+                    .spawn_scoped(s, f)
+                    .unwrap()
+                    .join()
+                    .unwrap()
+            })
+        } else {
+            f()
+        }
+    }
+
+    let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+    on_big_stack(|| match Options::try_parse_from(args.clone()) {
+        Ok(Options { command }) => Ok(command),
+        Err(err)
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            Err(err)
+        }
+        Err(primary_err) => legacy_options_from(primary_err, args.as_slice()),
+    })
+}
+
+fn preferred_parse_error(primary_err: clap::Error, legacy_err: clap::Error) -> clap::Error {
+    match legacy_err.kind() {
+        clap::error::ErrorKind::ArgumentConflict => {
+            mixed_legacy_command_error(&legacy_err).unwrap_or(legacy_err)
+        }
+        clap::error::ErrorKind::InvalidValue | clap::error::ErrorKind::ValueValidation => {
+            legacy_err
+        }
+        _ => primary_err,
+    }
+}
+
+fn mixed_legacy_command_error(err: &clap::Error) -> Option<clap::Error> {
+    let command = match err.get(clap::error::ContextKind::InvalidSubcommand)? {
+        clap::error::ContextValue::String(command) => command.as_str(),
+        _ => return None,
+    };
+
+    let message = if command == "run" {
+        "VM launch options must be passed after the `run` subcommand.\n\nUse:\n  openvmm run [VM launch options]\n\nFor example:\n  openvmm run --memory 4\n\nIf you intended `run` as a value, pass it to the option that should receive it, for example:\n  openvmm --memory 4 -c run\n"
+            .to_owned()
+    } else {
+        format!(
+            "VM launch options cannot be used with the `{command}` command.\n\nUse `openvmm run ...` for VM launch options, or remove the launch options before `{command}`.\n"
+        )
+    };
+
+    Some(clap::Error::raw(
+        clap::error::ErrorKind::ArgumentConflict,
+        message,
+    ))
+}
+
+fn legacy_options_from(
+    primary_err: clap::Error,
+    args: &[OsString],
+) -> Result<Command, clap::Error> {
+    let opt = LegacyOptions::try_parse_from(args.iter().cloned())
+        .map_err(|err| preferred_parse_error(primary_err, err))?;
+    if opt.legacy_grpc.is_some() || opt.legacy_ttrpc.is_some() {
+        return Err(clap::Error::raw(
+            clap::error::ErrorKind::UnknownArgument,
+            "the --grpc and --ttrpc VM launch options have moved to the serve command\n\nUse one of:\n  openvmm serve --transport grpc <SOCKETPATH>\n  openvmm serve --transport ttrpc <SOCKETPATH>\n",
+        ));
+    }
+    if opt.command.is_some() {
+        unreachable!("should have been rejected by clap due to args_conflicts_with_subcommands")
+    }
+    let mut run = opt.run;
+    if opt.deprecated_prefetch {
+        run.memory.prefetch = true;
+    }
+    if opt.deprecated_shared_memory {
+        if run.memory.shared == Some(false) {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ValueValidation,
+                "--memory shared=off conflicts with --shared-memory",
+            ));
+        }
+        run.memory.shared = Some(true);
+    }
+    if let Some(path) = opt.deprecated_memory_backing_file {
+        if run.memory.file.is_some() {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ValueValidation,
+                "--memory file=... conflicts with --memory-backing-file",
+            ));
+        }
+        run.memory.file = Some(path);
+    }
+    if opt.deprecated_private_memory {
+        if run.memory.shared == Some(true) {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ValueValidation,
+                "--memory shared=on conflicts with --private-memory",
+            ));
+        }
+        run.memory.shared = Some(false);
+    }
+    if opt.deprecated_thp {
+        run.memory.transparent_hugepages = true;
+    }
+    Ok(Command::Run(run))
+}
+
+/// VM launch options.
+#[derive(clap::Args)]
+pub struct RunOptions {
     /// processor count
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
     pub processors: u32,
@@ -103,41 +295,10 @@ Examples:
     #[clap(long, value_name = "SIZES", value_parser = parse_memory, value_delimiter = ',', conflicts_with = "memory")]
     pub numa_memory: Option<Vec<u64>>,
 
-    /// use shared memory segment
-    #[clap(short = 'M', long, hide = true)]
-    pub shared_memory: bool,
-
-    /// prefetch guest RAM
-    #[clap(long = "prefetch", hide = true)]
-    pub deprecated_prefetch: bool,
-
-    /// back guest RAM with a file instead of anonymous memory.
-    /// The file is created/opened and sized to the guest RAM size.
-    /// Enables snapshot save (fsync) and restore (open + mmap).
-    #[clap(
-        long = "memory-backing-file",
-        value_name = "FILE",
-        hide = true,
-        conflicts_with = "deprecated_private_memory"
-    )]
-    pub deprecated_memory_backing_file: Option<PathBuf>,
-
     /// Restore VM from a snapshot directory (implies file-backed memory from
     /// the snapshot's memory.bin). Cannot be used with --memory-backing-file.
-    #[clap(
-        long,
-        value_name = "DIR",
-        conflicts_with = "deprecated_memory_backing_file"
-    )]
+    #[clap(long, value_name = "DIR")]
     pub restore_snapshot: Option<PathBuf>,
-
-    /// use private anonymous memory for guest RAM
-    #[clap(long = "private-memory", hide = true, conflicts_with_all = ["deprecated_memory_backing_file", "restore_snapshot"])]
-    pub deprecated_private_memory: bool,
-
-    /// enable transparent huge pages for guest RAM (Linux only, requires --private-memory)
-    #[clap(long = "thp", hide = true)]
-    pub deprecated_thp: bool,
 
     /// start in paused state
     #[clap(short = 'P', long)]
@@ -403,11 +564,11 @@ options:
     pub com4: Option<SerialConfigCli>,
 
     /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
-    #[structopt(long, value_name = "SERIAL")]
+    #[clap(long, value_name = "SERIAL")]
     pub vmbus_com1_serial: Option<SerialConfigCli>,
 
     /// vmbus com2 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
-    #[structopt(long, value_name = "SERIAL")]
+    #[clap(long, value_name = "SERIAL")]
     pub vmbus_com2_serial: Option<SerialConfigCli>,
 
     /// Only allow guest to host serial traffic
@@ -547,13 +708,11 @@ options:
     #[clap(long, value_name = "PATH")]
     pub pidfile: Option<PathBuf>,
 
-    /// run as a ttrpc server on the specified Unix socket
-    #[clap(long, value_name = "SOCKETPATH")]
-    pub ttrpc: Option<PathBuf>,
-
-    /// run as a grpc server on the specified Unix socket
-    #[clap(long, value_name = "SOCKETPATH", conflicts_with("ttrpc"))]
-    pub grpc: Option<PathBuf>,
+    /// Listen for REPL attach connections on the specified socket path.
+    ///
+    /// Requires a process mesh.
+    #[clap(long, value_name = "SOCKETPATH", conflicts_with = "single_process")]
+    pub mesh_listen: Option<PathBuf>,
 
     /// do not launch child processes
     #[clap(long)]
@@ -911,7 +1070,7 @@ Syntax: <port_name>:<pci_bdf>
     pub vfio: Vec<VfioDeviceCli>,
 }
 
-impl Options {
+impl RunOptions {
     /// Returns the effective guest RAM size.
     pub fn memory_size(&self) -> u64 {
         self.memory.mem_size
@@ -919,37 +1078,28 @@ impl Options {
 
     /// Returns whether guest RAM should be prefetched.
     pub fn prefetch_memory(&self) -> bool {
-        self.memory.prefetch || self.deprecated_prefetch
+        self.memory.prefetch
     }
 
     /// Returns whether guest RAM should use private anonymous backing.
     pub fn private_memory(&self) -> bool {
-        self.memory.shared == Some(false) || self.deprecated_private_memory
+        self.memory.shared == Some(false)
     }
 
     /// Returns whether guest RAM should be marked THP-eligible.
     pub fn transparent_hugepages(&self) -> bool {
-        self.memory.transparent_hugepages || self.deprecated_thp
+        self.memory.transparent_hugepages
     }
 
     /// Returns the effective file backing path for guest RAM.
     pub fn memory_backing_file(&self) -> Option<&PathBuf> {
-        self.memory
-            .file
-            .as_ref()
-            .or(self.deprecated_memory_backing_file.as_ref())
+        self.memory.file.as_ref()
     }
 
     /// Validates combinations that span the new `--memory` parser and legacy aliases.
     pub fn validate_memory_options(&self) -> anyhow::Result<()> {
-        if self.memory.file.is_some() && self.deprecated_memory_backing_file.is_some() {
-            anyhow::bail!("--memory file=... conflicts with --memory-backing-file");
-        }
         if self.memory.file.is_some() && self.restore_snapshot.is_some() {
             anyhow::bail!("--memory file=... conflicts with --restore-snapshot");
-        }
-        if self.memory.shared == Some(true) && self.deprecated_private_memory {
-            anyhow::bail!("--memory shared=on conflicts with --private-memory");
         }
         if self.memory_backing_file().is_some() && self.private_memory() {
             anyhow::bail!("file-backed memory conflicts with private memory");
@@ -973,6 +1123,72 @@ impl Options {
         }
         Ok(())
     }
+}
+
+/// Management RPC server options.
+#[derive(clap::Args)]
+pub struct ServeOptions {
+    /// RPC transport to host.
+    #[clap(long, value_enum, value_name = "grpc|ttrpc", required = true)]
+    pub transport: RpcTransportCli,
+
+    /// Management RPC server socket path.
+    pub socket_path: PathBuf,
+
+    /// Write the process ID to the specified file on startup, and remove it on
+    /// clean exit.
+    #[clap(long, value_name = "PATH")]
+    pub pidfile: Option<PathBuf>,
+
+    /// Listen for REPL attach connections on the specified socket path.
+    #[clap(long, value_name = "SOCKETPATH", conflicts_with = "single_process")]
+    pub mesh_listen: Option<PathBuf>,
+
+    /// do not launch child processes
+    #[clap(long)]
+    pub single_process: bool,
+}
+
+/// Management RPC server transport.
+#[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
+pub enum RpcTransportCli {
+    /// gRPC over Unix socket.
+    Grpc,
+    /// ttrpc over Unix socket.
+    Ttrpc,
+}
+
+/// Top-level openvmm commands.
+#[expect(clippy::large_enum_variant)]
+#[derive(clap::Subcommand)]
+pub enum Command {
+    /// Launch a VM.
+    Run(RunOptions),
+
+    /// Host the management RPC API.
+    Serve(ServeOptions),
+
+    /// Attach an interactive REPL to a running VM.
+    Attach {
+        /// Socket path exposed by --mesh-listen.
+        socket_path: PathBuf,
+    },
+    /// Inspect a running VM once and exit.
+    Inspect {
+        /// Enumerate state recursively.
+        #[clap(short, long)]
+        recursive: bool,
+        /// The recursive depth limit.
+        #[clap(short, long, requires("recursive"))]
+        limit: Option<usize>,
+        /// Target the paravisor.
+        #[clap(short = 'v', long)]
+        paravisor: bool,
+        /// Socket path exposed by --mesh-listen.
+        socket_path: PathBuf,
+        /// Inspect element path.
+        element: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3670,7 +3886,7 @@ mod tests {
 
     #[test]
     fn test_memory_options_merge_legacy_aliases() {
-        let opt = Options::try_parse_from([
+        let opt = try_parse_options_from([
             "openvmm",
             "--memory",
             "2G",
@@ -3679,6 +3895,9 @@ mod tests {
             "--thp",
         ])
         .unwrap();
+        let Command::Run(opt) = opt else {
+            panic!("expected run command");
+        };
         opt.validate_memory_options().unwrap();
         assert_eq!(opt.memory_size(), 2 * 1024 * 1024 * 1024);
         assert!(opt.prefetch_memory());
@@ -3688,27 +3907,69 @@ mod tests {
 
     #[test]
     fn test_memory_options_allow_legacy_thp_with_new_private_memory() {
-        let opt = Options::try_parse_from(["openvmm", "--memory", "shared=off", "--thp"]).unwrap();
+        let opt = try_parse_options_from(["openvmm", "--memory", "shared=off", "--thp"]).unwrap();
+        let Command::Run(opt) = opt else {
+            panic!("expected run command");
+        };
         opt.validate_memory_options().unwrap();
         assert!(opt.private_memory());
         assert!(opt.transparent_hugepages());
     }
 
     #[test]
+    fn test_memory_options_allow_legacy_shared_memory_alias() {
+        let opt = try_parse_options_from(["openvmm", "--memory", "2G", "--shared-memory"]).unwrap();
+        let Command::Run(opt) = opt else {
+            panic!("expected run command");
+        };
+        opt.validate_memory_options().unwrap();
+        assert_eq!(opt.memory_size(), 2 * 1024 * 1024 * 1024);
+        assert_eq!(opt.memory.shared, Some(true));
+
+        let opt = try_parse_options_from(["openvmm", "--memory", "2G", "-M"]).unwrap();
+        let Command::Run(opt) = opt else {
+            panic!("expected run command");
+        };
+        opt.validate_memory_options().unwrap();
+        assert_eq!(opt.memory.shared, Some(true));
+    }
+
+    #[test]
     fn test_memory_options_reject_conflicting_legacy_aliases() {
-        let opt = Options::try_parse_from(["openvmm", "--memory", "shared=on", "--private-memory"])
-            .unwrap();
-        assert!(opt.validate_memory_options().is_err());
+        let err = match try_parse_options_from([
+            "openvmm",
+            "--memory",
+            "shared=on",
+            "--private-memory",
+        ]) {
+            Ok(_) => panic!("conflicting legacy memory alias should fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+
+        let err = match try_parse_options_from([
+            "openvmm",
+            "--memory",
+            "shared=off",
+            "--shared-memory",
+        ]) {
+            Ok(_) => panic!("conflicting legacy memory alias should fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
     }
 
     #[test]
     fn test_memory_options_reject_hugepage_legacy_conflicts() {
         let opt =
-            Options::try_parse_from(["openvmm", "--memory", "hugepages=on", "--private-memory"])
+            try_parse_options_from(["openvmm", "--memory", "hugepages=on", "--private-memory"])
                 .unwrap();
+        let Command::Run(opt) = opt else {
+            panic!("expected run command");
+        };
         assert!(opt.validate_memory_options().is_err());
 
-        let opt = Options::try_parse_from([
+        let opt = try_parse_options_from([
             "openvmm",
             "--memory",
             "hugepages=on",
@@ -3716,12 +3977,232 @@ mod tests {
             "/tmp/memory.bin",
         ])
         .unwrap();
+        let Command::Run(opt) = opt else {
+            panic!("expected run command");
+        };
         assert!(opt.validate_memory_options().is_err());
     }
 
     #[test]
+    fn test_run_subcommand_rejects_deprecated_memory_aliases() {
+        for arg in ["--prefetch", "--shared-memory", "-M"] {
+            let err = match try_parse_options_from(["openvmm", "run", arg]) {
+                Ok(_) => panic!("deprecated memory alias should not be accepted by run"),
+                Err(err) => err,
+            };
+            assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
+    }
+
+    #[test]
     fn test_pidfile_option_parsed() {
-        let opt = Options::try_parse_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
-        assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
+        let opt = try_parse_options_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
+        let Command::Run(run) = opt else {
+            panic!("expected implicit run options");
+        };
+        assert_eq!(run.pidfile, Some(PathBuf::from("/tmp/test.pid")));
+    }
+
+    #[test]
+    fn test_run_subcommand_parses_launch_options() {
+        let opt = try_parse_options_from(["openvmm", "run", "-p", "2"]).unwrap();
+        let Command::Run(run) = opt else {
+            panic!("expected run command");
+        };
+        assert_eq!(run.processors, 2);
+    }
+
+    #[test]
+    fn test_serve_subcommand_parses_grpc_transport() {
+        let opt = try_parse_options_from([
+            "openvmm",
+            "serve",
+            "--transport",
+            "grpc",
+            "/tmp/openvmm.sock",
+        ])
+        .unwrap();
+        let Command::Serve(serve) = opt else {
+            panic!("expected serve command");
+        };
+        assert_eq!(serve.transport, RpcTransportCli::Grpc);
+        assert_eq!(serve.socket_path, PathBuf::from("/tmp/openvmm.sock"));
+    }
+
+    #[test]
+    fn test_serve_subcommand_parses_ttrpc_transport() {
+        let opt = try_parse_options_from([
+            "openvmm",
+            "serve",
+            "--transport",
+            "ttrpc",
+            "--pidfile",
+            "/tmp/openvmm.pid",
+            "/tmp/openvmm.sock",
+        ])
+        .unwrap();
+        let Command::Serve(serve) = opt else {
+            panic!("expected serve command");
+        };
+        assert_eq!(serve.transport, RpcTransportCli::Ttrpc);
+        assert_eq!(serve.socket_path, PathBuf::from("/tmp/openvmm.sock"));
+        assert_eq!(serve.pidfile, Some(PathBuf::from("/tmp/openvmm.pid")));
+    }
+
+    #[test]
+    fn test_attach_subcommand_parses_socket_path() {
+        let opt =
+            try_parse_options_from(["openvmm", "attach", "/tmp/openvmm-attach.sock"]).unwrap();
+        let Command::Attach { socket_path } = opt else {
+            panic!("expected attach command");
+        };
+        assert_eq!(socket_path, PathBuf::from("/tmp/openvmm-attach.sock"));
+    }
+
+    #[test]
+    fn test_inspect_subcommand_parses_options() {
+        let opt = try_parse_options_from([
+            "openvmm",
+            "inspect",
+            "--recursive",
+            "--limit",
+            "2",
+            "--paravisor",
+            "/tmp/openvmm-attach.sock",
+            "devices/vmbus",
+        ])
+        .unwrap();
+        let Command::Inspect {
+            recursive,
+            limit,
+            paravisor,
+            socket_path,
+            element,
+        } = opt
+        else {
+            panic!("expected inspect command");
+        };
+        assert!(recursive);
+        assert_eq!(limit, Some(2));
+        assert!(paravisor);
+        assert_eq!(socket_path, PathBuf::from("/tmp/openvmm-attach.sock"));
+        assert_eq!(element.as_deref(), Some("devices/vmbus"));
+    }
+
+    #[test]
+    fn test_inspect_limit_requires_recursive() {
+        let err = match try_parse_options_from([
+            "openvmm",
+            "inspect",
+            "--limit",
+            "2",
+            "/tmp/openvmm-attach.sock",
+        ]) {
+            Ok(_) => panic!("--limit without --recursive should fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        assert!(err.to_string().contains("--recursive"));
+    }
+
+    #[test]
+    fn test_serve_transport_required() {
+        let err = match try_parse_options_from(["openvmm", "serve", "/tmp/openvmm.sock"]) {
+            Ok(_) => panic!("missing --transport should fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn test_unknown_option_before_command_reports_top_level_error() {
+        let err = match try_parse_options_from(["openvmm", "--foo", "inspect"]) {
+            Ok(_) => panic!("unknown option should fail"),
+            Err(err) => err,
+        };
+        let message = err.to_string();
+        println!("Error message: {}", message);
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert!(message.contains("unexpected argument '--foo'"));
+        assert!(message.contains("Usage: openvmm <COMMAND>"));
+        assert!(!message.contains("--uefi-console-mode"));
+    }
+
+    #[test]
+    fn test_invalid_legacy_run_option_reports_run_error() {
+        let err = match try_parse_options_from(["openvmm", "--memory", "nope"]) {
+            Ok(_) => panic!("invalid memory value should fail"),
+            Err(err) => err,
+        };
+        let message = err.to_string();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+        assert!(message.contains("invalid value 'nope'"));
+        assert!(message.contains("--memory <SIZE>"));
+    }
+
+    #[test]
+    fn test_legacy_rpc_options_report_migration_error() {
+        for args in [
+            ["openvmm", "--grpc", "/tmp/sock"].as_slice(),
+            ["openvmm", "--ttrpc", "/tmp/sock"].as_slice(),
+        ] {
+            let err = match try_parse_options_from(args) {
+                Ok(_) => panic!("legacy RPC option should fail"),
+                Err(err) => err,
+            };
+            let message = err.to_string();
+            println!("Error message: {}", message);
+            assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+            assert!(message.contains("openvmm serve --transport grpc <SOCKETPATH>"));
+            assert!(message.contains("openvmm serve --transport ttrpc <SOCKETPATH>"));
+        }
+    }
+
+    #[test]
+    fn test_launch_options_conflict_with_other_commands() {
+        let err = match try_parse_options_from([
+            "openvmm",
+            "-p",
+            "2",
+            "inspect",
+            "/tmp/openvmm-attach.sock",
+            "/",
+        ]) {
+            Ok(_) => panic!("expected launch options to conflict with inspect"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let message = err.to_string();
+        assert!(message.contains("VM launch options cannot be used with the `inspect` command"));
+        assert!(message.contains("Use `openvmm run ...` for VM launch options"));
+
+        let err = match try_parse_options_from([
+            "openvmm",
+            "-p",
+            "2",
+            "serve",
+            "--transport",
+            "grpc",
+            "/tmp/openvmm.sock",
+        ]) {
+            Ok(_) => panic!("expected launch options to conflict with serve"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let message = err.to_string();
+        assert!(message.contains("VM launch options cannot be used with the `serve` command"));
+    }
+
+    #[test]
+    fn test_launch_options_before_run_suggests_run_order() {
+        let err = match try_parse_options_from(["openvmm", "--memory", "4", "run"]) {
+            Ok(_) => panic!("legacy launch options before run should fail"),
+            Err(err) => err,
+        };
+        let message = err.to_string();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert!(message.contains("VM launch options must be passed after the `run` subcommand"));
+        assert!(message.contains("openvmm run [VM launch options]"));
+        assert!(message.contains("openvmm --memory 4 -c run"));
     }
 }
