@@ -1340,6 +1340,9 @@ async fn persist_all_key_protectors(
                 .dek_buffer
                 .zeroize();
             key_protector.gsp[key_protector.active_kp as usize % NUMBER_KP].gsp_length = 0;
+            key_protector.gsp[key_protector.active_kp as usize % NUMBER_KP]
+                .gsp_buffer
+                .zeroize();
             key_protector.active_kp += 1;
 
             vmgs::write_key_protector(key_protector, vmgs)
