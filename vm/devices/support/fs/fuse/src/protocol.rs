@@ -4,7 +4,7 @@
 //! Defines the kernel interface of FUSE.
 //!
 //! This was derived from the official fuse.h from the Linux kernel sources. It represents
-//! FUSE protocol version 7.31.
+//! FUSE protocol version 7.39.
 //!
 //! For more details, see fuse.h.
 #![expect(unused_parens)]
@@ -39,7 +39,7 @@ use zerocopy::KnownLayout;
 pub const FUSE_KERNEL_VERSION: u32 = 7;
 
 /** Minor version number of this interface */
-pub const FUSE_KERNEL_MINOR_VERSION: u32 = 31;
+pub const FUSE_KERNEL_MINOR_VERSION: u32 = 39;
 
 /** The node ID of the root inode */
 pub const FUSE_ROOT_ID: u64 = 1;
@@ -187,6 +187,11 @@ pub const FOPEN_STREAM: u32 = (1 << 4);
  * FUSE_NO_OPENDIR_SUPPORT: kernel supports zero-message opendir
  * FUSE_EXPLICIT_INVAL_DATA: only invalidate cached pages on explicit request
  * FUSE_MAP_ALIGNMENT: map_alignment field is valid
+ * FUSE_SUBMOUNTS: kernel supports auto-mounting directory submounts
+ * FUSE_HANDLE_KILLPRIV_V2: fs kills suid/sgid/cap on write/chown/trunc
+ * FUSE_SETXATTR_EXT: server supports extended struct fuse_setxattr_in
+ * FUSE_INIT_EXT: extended fuse_init_in request (flags2 field is valid)
+ * FUSE_INIT_RESERVED: reserved, do not use
  */
 pub const FUSE_ASYNC_READ: u32 = (1 << 0);
 pub const FUSE_POSIX_LOCKS: u32 = (1 << 1);
@@ -217,6 +222,24 @@ pub const FUSE_EXPLICIT_INVAL_DATA: u32 = (1 << 25);
 pub const FUSE_MAP_ALIGNMENT: u32 = (1 << 26);
 pub const FUSE_SUBMOUNTS: u32 = (1 << 27);
 pub const FUSE_HANDLE_KILLPRIV_V2: u32 = (1 << 28);
+pub const FUSE_SETXATTR_EXT: u32 = (1 << 29);
+pub const FUSE_INIT_EXT: u32 = (1 << 30);
+pub const FUSE_INIT_RESERVED: u32 = (1 << 31);
+
+/**
+ * INIT flags2 (bits 32..63 of the combined flag space, shifted down by 32)
+ *
+ * FUSE_SECURITY_CTX: add security context to create, mkdir, symlink, and mknod
+ * FUSE_HAS_INODE_DAX: use per inode DAX
+ * FUSE_CREATE_SUPP_GROUP: add supplementary group info to create, mkdir, symlink and mknod
+ * FUSE_HAS_EXPIRE_ONLY: kernel supports expiry-only entry invalidation
+ * FUSE_DIRECT_IO_ALLOW_MMAP: allow shared mmap in FOPEN_DIRECT_IO mode
+ */
+pub const FUSE_SECURITY_CTX_FLAG2: u32 = (1 << 0);
+pub const FUSE_HAS_INODE_DAX_FLAG2: u32 = (1 << 1);
+pub const FUSE_CREATE_SUPP_GROUP_FLAG2: u32 = (1 << 2);
+pub const FUSE_HAS_EXPIRE_ONLY_FLAG2: u32 = (1 << 3);
+pub const FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2: u32 = (1 << 4);
 
 /**
  * CUSE INIT request/reply flags
@@ -611,6 +634,8 @@ pub struct fuse_access_in {
     pub padding: u32,
 }
 
+pub const FUSE_COMPAT_INIT_IN_SIZE: u32 = 16;
+
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct fuse_init_in {
@@ -618,6 +643,8 @@ pub struct fuse_init_in {
     pub minor: u32,
     pub max_readahead: u32,
     pub flags: u32,
+    pub flags2: u32,
+    pub unused: [u32; 11],
 }
 
 pub const FUSE_COMPAT_INIT_OUT_SIZE: u32 = 8;
@@ -636,7 +663,8 @@ pub struct fuse_init_out {
     pub time_gran: u32,
     pub max_pages: u16,
     pub map_alignment: u16,
-    pub unused: [u32; 8],
+    pub flags2: u32,
+    pub unused: [u32; 7],
 }
 
 pub const CUSE_INIT_INFO_MAX: u32 = 4096;
