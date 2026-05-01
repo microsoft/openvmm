@@ -134,8 +134,68 @@ impl Future for StopTask<'_> {
     }
 }
 
-/// A task wrapper that runs the task asynchronously and provides access to its
-/// state.
+/// Hosts an async task that can be started, stopped, mutated, and inspected.
+///
+/// Pairs a task implementation `T: AsyncRun<S>` with transient state `S`.
+/// State is provided via [`insert`](Self::insert), the task body is run by
+/// [`start`](Self::start) calling `T::run(&mut StopTask, &mut S)`, and
+/// execution is paused via [`stop`](Self::stop). While stopped, `T` and `S`
+/// are accessible through [`task_mut`](Self::task_mut),
+/// [`state_mut`](Self::state_mut), etc., and the state can be swapped out
+/// before the next run.
+///
+/// Cancellation is cooperative: implementations wrap interruptible await
+/// points in [`StopTask::until_stopped`], which drops the inner future and
+/// returns `Err(Cancelled)` when a stop is signaled. `T::run` should
+/// propagate `Err(Cancelled)` so `TaskControl` regains control.
+///
+/// `TaskControl` also raises the stop signal internally to service
+/// [`update_with`](Self::update_with) and [`Inspect`]/[`InspectMut`]
+/// requests, after which it re-invokes `T::run` with the (possibly updated)
+/// state. Because `until_stopped` discards the inner future on
+/// cancellation, implementations must ensure no in-flight work is silently
+/// lost. The recommended pattern is to wrap only a single "wait for next
+/// request" await (e.g. a channel receive) in `until_stopped` and process
+/// the resulting request outside of it. Wrapping a larger scope keeps
+/// inspect/`update_with` responsive but risks dropping work; await points
+/// outside `until_stopped` block servicing of those requests until they
+/// complete.
+///
+/// # Example
+/// ```no_run
+/// use task_control::AsyncRun;
+/// use task_control::Cancelled;
+/// use task_control::StopTask;
+///
+/// struct Worker;
+///
+/// struct WorkerState {
+///     processed: u64,
+/// }
+///
+/// impl Worker {
+///     async fn next_request(&mut self) -> Option<u32> { None }
+///     async fn handle(&mut self, _req: u32, _state: &mut WorkerState) {}
+/// }
+///
+/// impl AsyncRun<WorkerState> for Worker {
+///     async fn run(
+///         &mut self,
+///         stop: &mut StopTask<'_>,
+///         state: &mut WorkerState,
+///     ) -> Result<(), Cancelled> {
+///         loop {
+///             // Only the receive is wrapped: a dropped recv future is
+///             // harmless, but request handling below runs to completion
+///             // so no in-flight work is lost across stops.
+///             let Some(req) = stop.until_stopped(self.next_request()).await? else {
+///                 return Ok(());
+///             };
+///             self.handle(req, state).await;
+///         }
+///     }
+/// }
+/// ```
 pub struct TaskControl<T, S> {
     inner: Inner<T, S>,
 }
