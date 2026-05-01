@@ -111,3 +111,9 @@ pub trait CreateNvmeDriver: Inspect + Send + Sync {
         saved_state: Option<&nvme_driver::save_restore::NvmeDriverSavedState>,
     ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError>;
 }
+
+/// Returns whether the given PCI ID corresponds to an NVMe device that is
+/// compatible with the keepalive.
+pub fn is_nvme_keepalive_compatible(pci_id: &str) -> bool {
+    pci_id.to_ascii_lowercase().starts_with("c05b")
+}
