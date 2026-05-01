@@ -15,36 +15,40 @@ pub const LINUX_IMAGE_AMD64: &str = "ubuntu2404-amd64-v2";
 pub const LINUX_IMAGE_ARM64: &str = "ubuntu2404-arm64-v2";
 pub const MSHV_IMAGE_AMD64: &str = "azurelinux3-amd64-dom0-v2";
 
-fn gh_pool_with_image_1es(pool: &str, image: &str) -> GhRunner {
+pub const WINDOWS_WORK_FOLDER: &str = "E:\\_work";
+pub const LINUX_WORK_FOLDER: &str = "/mnt/azure_nvme_temp/_work";
+
+fn gh_pool_with_image_1es(pool: &str, image: &str, work_folder: &str) -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
         format!("1ES.Pool={pool}"),
         format!("1ES.ImageOverride={image}"),
+        format!("1ES.WorkFolder={work_folder}"),
     ])
 }
 
 pub fn windows_amd_1es() -> GhRunner {
-    gh_pool_with_image_1es(AMD_POOL_1ES, WINDOWS_IMAGE_AMD64)
+    gh_pool_with_image_1es(AMD_POOL_1ES, WINDOWS_IMAGE_AMD64, WINDOWS_WORK_FOLDER)
 }
 
 pub fn windows_intel_1es() -> GhRunner {
-    gh_pool_with_image_1es(INTEL_POOL_1ES, WINDOWS_IMAGE_AMD64)
+    gh_pool_with_image_1es(INTEL_POOL_1ES, WINDOWS_IMAGE_AMD64, WINDOWS_WORK_FOLDER)
 }
 
 pub fn windows_arm_1es() -> GhRunner {
-    gh_pool_with_image_1es(ARM_POOL_1ES, WINDOWS_IMAGE_ARM64)
+    gh_pool_with_image_1es(ARM_POOL_1ES, WINDOWS_IMAGE_ARM64, WINDOWS_WORK_FOLDER)
 }
 
 pub fn linux_arm_1es() -> GhRunner {
-    gh_pool_with_image_1es(ARM_POOL_1ES, LINUX_IMAGE_ARM64)
+    gh_pool_with_image_1es(ARM_POOL_1ES, LINUX_IMAGE_ARM64, LINUX_WORK_FOLDER)
 }
 
 pub fn linux_amd_1es() -> GhRunner {
-    gh_pool_with_image_1es(AMD_POOL_1ES, LINUX_IMAGE_AMD64)
+    gh_pool_with_image_1es(AMD_POOL_1ES, LINUX_IMAGE_AMD64, LINUX_WORK_FOLDER)
 }
 
 pub fn linux_mshv_1es() -> GhRunner {
-    gh_pool_with_image_1es(INTEL_POOL_1ES, MSHV_IMAGE_AMD64)
+    gh_pool_with_image_1es(INTEL_POOL_1ES, MSHV_IMAGE_AMD64, LINUX_WORK_FOLDER)
 }
 
 pub fn windows_x64_gh() -> GhRunner {

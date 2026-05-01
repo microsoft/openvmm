@@ -31,6 +31,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=ubuntu2404-amd64-v2
+    - 1ES.WorkFolder=/mnt/azure_nvme_temp/_work
     - JobId=job0-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -397,6 +398,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=win-amd64-v2
+    - 1ES.WorkFolder=E:\_work
     - JobId=job10-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -666,6 +668,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=ubuntu2404-amd64-v2
+    - 1ES.WorkFolder=/mnt/azure_nvme_temp/_work
     - JobId=job11-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -947,6 +950,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=ubuntu2404-amd64-v2
+    - 1ES.WorkFolder=/mnt/azure_nvme_temp/_work
     - JobId=job12-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -1271,6 +1275,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-arm
     - 1ES.ImageOverride=win-arm64-v2
+    - 1ES.WorkFolder=E:\_work
     - JobId=job13-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -1540,6 +1545,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-arm
     - 1ES.ImageOverride=ubuntu2404-arm64-v2
+    - 1ES.WorkFolder=/mnt/azure_nvme_temp/_work
     - JobId=job14-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -1872,6 +1878,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-arm
     - 1ES.ImageOverride=ubuntu2404-arm64-v2
+    - 1ES.WorkFolder=/mnt/azure_nvme_temp/_work
     - JobId=job15-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -2240,6 +2247,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel
     - 1ES.ImageOverride=win-amd64-v2
+    - 1ES.WorkFolder=E:\_work
     - JobId=job16-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -2776,6 +2784,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=win-amd64-v2
+    - 1ES.WorkFolder=E:\_work
     - JobId=job18-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -3312,6 +3321,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=win-amd64-v2
+    - 1ES.WorkFolder=E:\_work
     - JobId=job2-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -3529,6 +3539,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=ubuntu2404-amd64-v2
+    - 1ES.WorkFolder=/mnt/azure_nvme_temp/_work
     - JobId=job20-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -4164,6 +4175,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=ubuntu2404-amd64-v2
+    - 1ES.WorkFolder=/mnt/azure_nvme_temp/_work
     - JobId=job23-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -4443,6 +4455,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel
     - 1ES.ImageOverride=win-amd64-v2
+    - 1ES.WorkFolder=E:\_work
     - JobId=job24-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -4709,6 +4722,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=win-amd64-v2
+    - 1ES.WorkFolder=E:\_work
     - JobId=job3-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -5029,6 +5043,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=win-amd64-v2
+    - 1ES.WorkFolder=E:\_work
     - JobId=job4-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -5250,6 +5265,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=win-amd64-v2
+    - 1ES.WorkFolder=E:\_work
     - JobId=job5-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -5578,6 +5594,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=ubuntu2404-amd64-v2
+    - 1ES.WorkFolder=/mnt/azure_nvme_temp/_work
     - JobId=job6-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -5877,6 +5894,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=ubuntu2404-amd64-v2
+    - 1ES.WorkFolder=/mnt/azure_nvme_temp/_work
     - JobId=job7-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -6232,6 +6250,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=ubuntu2404-amd64-v2
+    - 1ES.WorkFolder=/mnt/azure_nvme_temp/_work
     - JobId=job8-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -6515,6 +6534,7 @@ jobs:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd
     - 1ES.ImageOverride=ubuntu2404-amd64-v2
+    - 1ES.WorkFolder=/mnt/azure_nvme_temp/_work
     - JobId=job9-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
