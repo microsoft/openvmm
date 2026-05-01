@@ -335,9 +335,15 @@ pub struct MemoryConfig {
     pub prefetch_memory: bool,
     pub private_memory: bool,
     pub transparent_hugepages: bool,
+    pub hugepages: bool,
+    pub hugepage_size: Option<u64>,
     pub mmio_gaps: Vec<MemoryRange>,
     pub pci_ecam_gaps: Vec<MemoryRange>,
     pub pci_mmio_gaps: Vec<MemoryRange>,
+    /// Test only: per-NUMA-node memory sizes. When set, RAM is distributed
+    /// across vNUMA nodes according to these sizes instead of assigning all RAM
+    /// to node 0. The sum must equal `mem_size`.
+    pub numa_mem_sizes: Option<Vec<u64>>,
 }
 
 #[derive(Debug, MeshPayload, Default)]

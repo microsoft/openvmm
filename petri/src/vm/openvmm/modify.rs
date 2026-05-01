@@ -224,6 +224,13 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Use explicit hugetlb-backed guest memory.
+    pub fn with_hugepages(mut self, hugepage_size: Option<u64>) -> Self {
+        self.config.memory.hugepages = true;
+        self.config.memory.hugepage_size = hugepage_size;
+        self
+    }
+
     /// Add a symmetric PCIe topology to the VM based on some basic scale factors
     ///
     /// All root ports are named according to their index within their parent

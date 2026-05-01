@@ -20,6 +20,7 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::os::unix::prelude::*;
 use std::path::Path;
+use std::time::Duration;
 use vfio_bindings::bindings::vfio::VFIO_IRQ_SET_ACTION_TRIGGER;
 use vfio_bindings::bindings::vfio::VFIO_IRQ_SET_DATA_EVENTFD;
 use vfio_bindings::bindings::vfio::VFIO_IRQ_SET_DATA_NONE;
@@ -275,30 +276,12 @@ impl Group {
         Ok(group)
     }
 
-    pub async fn open_device(
-        &self,
-        device_id: &str,
-        driver: &(impl ?Sized + Driver),
-    ) -> anyhow::Result<Device> {
+    pub fn open_device(&self, device_id: &str) -> anyhow::Result<Device> {
         let id = CString::new(device_id)?;
         // SAFETY: The file descriptor is valid and the string is null-terminated.
         let file = unsafe {
-            let fd = ioctl::vfio_group_get_device_fd(self.file.as_raw_fd(), id.as_ptr());
-            // There is a small race window in the 6.1 kernel between when the
-            // vfio device is visible to userspace, and when it is added to its
-            // internal list. Try one more time on ENODEV failure after a brief
-            // sleep.
-            let fd = match fd {
-                Err(nix::errno::Errno::ENODEV) => {
-                    tracing::warn!(pci_id = device_id, "Retrying vfio open_device after delay");
-                    PolledTimer::new(driver)
-                        .sleep(std::time::Duration::from_millis(250))
-                        .await;
-                    ioctl::vfio_group_get_device_fd(self.file.as_raw_fd(), id.as_ptr())
-                }
-                _ => fd,
-            };
-            let fd = fd.with_context(|| format!("failed to get device fd for {device_id}"))?;
+            let fd = ioctl::vfio_group_get_device_fd(self.file.as_raw_fd(), id.as_ptr())
+                .with_context(|| format!("failed to get device fd for {device_id}"))?;
             File::from_raw_fd(fd)
         };
 
@@ -347,39 +330,69 @@ impl Group {
     /// Skip VFIO device reset when kernel is reloaded during servicing.
     /// This feature is non-upstream version of our kernel and will be
     /// eventually replaced with iommufd.
-    pub async fn set_keep_alive(
-        &self,
-        device_id: &str,
-        driver: &(impl ?Sized + Driver),
-    ) -> anyhow::Result<()> {
+    pub fn set_keep_alive(&self, device_id: &str) -> anyhow::Result<()> {
+        let id = CString::new(device_id)?;
         // SAFETY: The file descriptor is valid and a correctly constructed struct is being passed.
         unsafe {
-            let id = CString::new(device_id)?;
-            let r = ioctl::vfio_group_set_keep_alive(self.file.as_raw_fd(), id.as_ptr());
-            match r {
-                Ok(_) => Ok(()),
-                Err(nix::errno::Errno::ENODEV) => {
-                    // There is a small race window in the kernel between when the
-                    // vfio device is visible to userspace, and when it is added to its
-                    // internal list. Try one more time on ENODEV failure after a brief
-                    // sleep.
-                    tracing::warn!(
-                        pci_id = device_id,
-                        "vfio keepalive got ENODEV, retrying after delay"
+            ioctl::vfio_group_set_keep_alive(self.file.as_raw_fd(), id.as_ptr())
+                .with_context(|| format!("failed to set keep-alive for {device_id}"))?;
+        }
+        Ok(())
+    }
+}
+
+/// Retry wrapper for VFIO operations that may transiently fail
+pub struct VfioRetry<'a> {
+    driver: &'a dyn Driver,
+    device_id: &'a str,
+    sleep_duration: Duration,
+    max_retries: u32,
+}
+
+impl<'a> VfioRetry<'a> {
+    const SLEEP_DURATION: Duration = Duration::from_millis(250);
+    const MAX_RETRIES: u32 = 1;
+
+    pub fn new(driver: &'a dyn Driver, device_id: &'a str) -> Self {
+        Self {
+            driver,
+            device_id,
+            sleep_duration: Self::SLEEP_DURATION,
+            max_retries: Self::MAX_RETRIES,
+        }
+    }
+
+    /// Retry `op` when `should_retry` returns true for the error, up to
+    /// `max_retries` times with a sleep between attempts.
+    pub async fn retry<T, E>(
+        &self,
+        mut op: impl FnMut() -> Result<T, E>,
+        should_retry: impl Fn(&E) -> bool,
+        context: &str,
+    ) -> Result<T, E>
+    where
+        E: std::fmt::Display,
+    {
+        let mut attempt = 0;
+        loop {
+            match op() {
+                Ok(val) => return Ok(val),
+                Err(err) => {
+                    if attempt >= self.max_retries || !should_retry(&err) {
+                        return Err(err);
+                    }
+                    attempt += 1;
+                    tracelimit::warn_ratelimited!(
+                        device_id = self.device_id,
+                        operation = context,
+                        attempt,
+                        "retrying after transient error: {err}"
                     );
-                    PolledTimer::new(driver)
-                        .sleep(std::time::Duration::from_millis(250))
-                        .await;
-                    ioctl::vfio_group_set_keep_alive(self.file.as_raw_fd(), id.as_ptr())
-                        .with_context(|| {
-                            format!("failed to set keep-alive after delay for {device_id}")
-                        })
-                        .map(|_| ())
                 }
-                Err(_) => r
-                    .with_context(|| format!("failed to set keep-alive for {device_id}"))
-                    .map(|_| ()),
             }
+            PolledTimer::new(self.driver)
+                .sleep(self.sleep_duration)
+                .await;
         }
     }
 }

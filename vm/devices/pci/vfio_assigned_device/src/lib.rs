@@ -191,9 +191,21 @@ impl VfioAssignedPciDevice {
         irqfd: Arc<dyn IrqFd>,
         memory_mapper: &dyn MemoryMapper,
     ) -> anyhow::Result<Self> {
-        let vfio_device = binding
-            .group()
-            .open_device(&pci_id, &driver_source.simple())
+        let driver = driver_source.simple();
+        let retry = vfio_sys::VfioRetry::new(&driver, &pci_id);
+        let is_enodev = |e: &anyhow::Error| {
+            e.chain().any(|cause| {
+                cause
+                    .downcast_ref::<nix::errno::Errno>()
+                    .is_some_and(|e| *e == nix::errno::Errno::ENODEV)
+            })
+        };
+        let vfio_device = retry
+            .retry(
+                || binding.group().open_device(&pci_id),
+                &is_enodev,
+                "open_device",
+            )
             .await
             .with_context(|| format!("failed to open VFIO device {pci_id}"))?;
 

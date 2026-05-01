@@ -39,6 +39,7 @@ use windows_sys::Win32::System::Memory;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const PAGE_SIZE: usize = 4096;
+const ALLOCATION_GRANULARITY: usize = 0x10000;
 
 pub(crate) fn page_size() -> usize {
     PAGE_SIZE
@@ -291,6 +292,26 @@ impl SparseMapping {
     pub fn new(len: usize) -> Result<Self, Error> {
         trycopy::initialize_try_copy();
         Self::new_inner(None, None, len)
+    }
+
+    /// Reserves a sparse mapping range with at least the requested alignment.
+    ///
+    /// Windows virtual address reservations are aligned to the system
+    /// allocation granularity.
+    pub fn new_with_minimum_alignment(len: usize, minimum_alignment: usize) -> Result<Self, Error> {
+        if !minimum_alignment.is_power_of_two() {
+            return Err(Error::new(
+                io::ErrorKind::InvalidInput,
+                "alignment must be a power of two",
+            ));
+        }
+        if minimum_alignment > ALLOCATION_GRANULARITY {
+            return Err(Error::new(
+                io::ErrorKind::Unsupported,
+                "sparse mapping alignment greater than the Windows allocation granularity is not supported",
+            ));
+        }
+        Self::new(len)
     }
 
     /// Reserves a sparse mapping range with the given address and size in a
@@ -735,6 +756,18 @@ pub fn alloc_shared_memory(size: usize, _name: &str) -> io::Result<OwnedHandle> 
         }
         Ok(OwnedHandle::from_raw_handle(h))
     }
+}
+
+/// Allocates a hugetlb mappable shared memory object of `size` bytes.
+pub fn alloc_shared_memory_hugetlb(
+    _size: usize,
+    _name: &str,
+    _hugepage_size: Option<usize>,
+) -> io::Result<OwnedHandle> {
+    Err(Error::new(
+        io::ErrorKind::Unsupported,
+        "hugetlb shared memory is only supported on Linux",
+    ))
 }
 
 #[cfg(test)]
