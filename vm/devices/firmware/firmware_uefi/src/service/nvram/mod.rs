@@ -99,6 +99,18 @@ impl NvramServices {
         self.services.prepare_for_boot();
     }
 
+    /// Set the MOR (Memory Overwrite Request) variable in NVRAM.
+    pub async fn set_mor_variable(
+        &mut self,
+        (vendor, name): (guid::Guid, &ucs2::Ucs2LeSlice),
+        value: u8,
+        attr: u32,
+    ) -> Result<(), (EfiStatus, Option<NvramError>)> {
+        self.services
+            .set_variable_ucs2(vendor, name, attr, vec![value])
+            .await
+    }
+
     /// Check if this is the VM's first boot, and if so, inject various
     /// hard-coded and custom UEFI vars.
     async fn inject_vars_on_first_boot(

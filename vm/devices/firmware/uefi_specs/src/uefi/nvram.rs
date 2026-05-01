@@ -201,4 +201,17 @@ pub mod vars {
 
     defn_nvram_var!(DB = (IMAGE_SECURITY_DATABASE_GUID, "db"));
     defn_nvram_var!(DBX = (IMAGE_SECURITY_DATABASE_GUID, "dbx"));
+
+    /// TCG MOR (Memory Overwrite Request) variable GUID.
+    ///
+    /// See "TCG Platform Reset Attack Mitigation Specification".
+    pub const EFI_MEMORY_OVERWRITE_REQUEST_CONTROL_GUID: Guid =
+        guid::guid!("e20939be-32d4-41be-a150-897f85d49829");
+
+    defn_nvram_var!(
+        MEMORY_OVERWRITE_REQUEST_CONTROL = (
+            EFI_MEMORY_OVERWRITE_REQUEST_CONTROL_GUID,
+            "MemoryOverwriteRequestControl"
+        )
+    );
 }

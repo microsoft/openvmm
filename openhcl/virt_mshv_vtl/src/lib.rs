@@ -839,6 +839,35 @@ impl UhPartition {
         Ok(())
     }
 
+    /// Ensures that guest memory will be zeroed on the next partition reset.
+    ///
+    /// This is used to implement TCG MOR (Memory Overwrite Request) by updating
+    /// `HvRegisterVsmPartitionConfig.zero_memory_on_reset`.
+    pub fn set_zero_memory_on_reset(&self, zero: bool) -> anyhow::Result<()> {
+        use anyhow::Context;
+
+        let config = self
+            .inner
+            .hcl
+            .get_vtl2_vsm_partition_config()
+            .context("failed to get VsmPartitionConfig")?;
+
+        // Skip the hypercall if the flag is already in the desired state.
+        if config.zero_memory_on_reset() == zero {
+            return Ok(());
+        }
+
+        let config = config.with_zero_memory_on_reset(zero);
+
+        self.inner
+            .hcl
+            .set_vtl2_vsm_partition_config(config)
+            .context("failed to set VsmPartitionConfig")?;
+
+        tracing::debug!(zero, "updated zero_memory_on_reset for MOR");
+        Ok(())
+    }
+
     /// Returns the current hypervisor reference time, in 100ns units.
     pub fn reference_time(&self) -> u64 {
         if let Some(hv) = self.inner.hv() {

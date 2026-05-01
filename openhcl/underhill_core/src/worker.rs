@@ -23,6 +23,7 @@ use crate::dispatch::vtl2_settings_worker::disk_from_disk_type;
 use crate::dispatch::vtl2_settings_worker::wait_for_mana;
 use crate::emuplat::EmuplatServicing;
 use crate::emuplat::firmware::UnderhillLogger;
+use crate::emuplat::firmware::UnderhillMorConfig;
 use crate::emuplat::firmware::UnderhillVsmConfig;
 use crate::emuplat::framebuffer::FramebufferRemoteControl;
 use crate::emuplat::i440bx_host_pci_bridge::ArcMutexGetBackedAdjustGpaRange;
@@ -2612,6 +2613,9 @@ async fn new_underhill_vm(
                     partition: Arc::downgrade(&partition),
                 })),
                 time_source: Box::new(rtc_time_source.new_linked_clock()),
+                mor_config: Some(Box::new(UnderhillMorConfig {
+                    partition: Arc::downgrade(&partition),
+                })),
             })
         }
         FirmwareType::None => {}

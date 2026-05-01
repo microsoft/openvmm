@@ -430,6 +430,14 @@ impl Hcl {
         )
     }
 
+    /// Get the current [`hvdef::HvRegisterVsmPartitionConfig`] register.
+    pub fn get_vtl2_vsm_partition_config(
+        &self,
+    ) -> Result<hvdef::HvRegisterVsmPartitionConfig, GetRegError> {
+        let value = self.get_partition_vtl2_register(HvArchRegisterName::VsmPartitionConfig)?;
+        Ok(hvdef::HvRegisterVsmPartitionConfig::from(value.as_u64()))
+    }
+
     /// Configure guest VSM.
     /// The only configuration attribute currently supported is changing the maximum number of
     /// guest-visible virtual trust levels for the partition. (VTL 1)

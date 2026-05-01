@@ -556,6 +556,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             watchdog_recv,
             vsm_config,
             time_source,
+            mor_config,
         }) = deps_hyperv_firmware_uefi
         {
             builder
@@ -585,6 +586,7 @@ impl<'a> BaseChipsetBuilder<'a> {
                         },
                         vsm_config,
                         time_source,
+                        mor_config,
                     };
 
                     firmware_uefi::UefiDevice::new(runtime_deps, config, foundation.is_restoring)
@@ -1387,6 +1389,8 @@ pub mod options {
             pub vsm_config: Option<Box<dyn firmware_uefi::platform::nvram::VsmConfig>>,
             /// Time source
             pub time_source: Box<dyn InspectableLocalClock>,
+            /// Interface for MOR (Memory Overwrite Request) bit notifications.
+            pub mor_config: Option<Box<dyn firmware_uefi::platform::nvram::MorConfig>>,
         }
 
         /// Hyper-V specific framebuffer device
