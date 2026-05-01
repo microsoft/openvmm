@@ -374,6 +374,7 @@ function New-CustomVM
                 "and the module is available on this host.")
         }
         Import-Module HvlDeviceHost -ErrorAction Stop
+        Register-HvlDeviceHostClsid $CLSID_FIOV_NVME
         foreach ($controller in $NvmeControllers.GetEnumerator()) {
             $vsid = $controller.Name
             $targetVtl = $controller.Value["Vtl"]
