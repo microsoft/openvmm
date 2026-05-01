@@ -634,6 +634,8 @@ pub struct fuse_access_in {
     pub padding: u32,
 }
 
+pub const FUSE_COMPAT_INIT_IN_SIZE: u32 = 16;
+
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct fuse_init_in {

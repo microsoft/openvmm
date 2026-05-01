@@ -145,8 +145,19 @@ impl Request {
         // FUSE_INIT_EXT is supported). Read whatever is available and
         // zero-fill the rest so that flags2 defaults to 0 for old kernels.
         if header.opcode == FUSE_INIT {
-            let mut init = fuse_init_in::new_zeroed();
+            // The legacy FUSE_INIT payload is the first 16 bytes (major,
+            // minor, max_readahead, flags). Reject anything smaller.
             let available = reader.remaining_len().min(size_of::<fuse_init_in>());
+            if available < FUSE_COMPAT_INIT_IN_SIZE as usize {
+                tracing::error!(
+                    opcode = header.opcode,
+                    unique = header.unique,
+                    len = available,
+                    "FUSE_INIT payload too small",
+                );
+                return FuseOperation::Invalid;
+            }
+            let mut init = fuse_init_in::new_zeroed();
             if let Err(e) = reader.read_exact(&mut init.as_mut_bytes()[..available]) {
                 tracing::error!(
                     opcode = header.opcode,
@@ -263,6 +274,27 @@ pub(crate) mod tests {
         } else {
             panic!("Incorrect operation {:?}", request.operation);
         }
+    }
+
+    #[test]
+    fn parse_init_too_small_payload_is_invalid() {
+        // Build a FUSE_INIT request with only 8 bytes of payload (less than
+        // the required 16-byte legacy minimum).
+        let header = fuse_in_header {
+            len: (size_of::<fuse_in_header>() + 8) as u32,
+            opcode: FUSE_INIT,
+            unique: 1,
+            nodeid: 0,
+            uid: 0,
+            gid: 0,
+            pid: 0,
+            padding: 0,
+        };
+        let mut data = Vec::new();
+        data.extend_from_slice(header.as_bytes());
+        data.extend_from_slice(&[7, 0, 0, 0, 27, 0, 0, 0]); // only major + minor
+        let request = Request::new(data.as_slice()).unwrap();
+        assert!(matches!(request.operation, FuseOperation::Invalid));
     }
 
     #[test]
