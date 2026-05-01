@@ -966,15 +966,11 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         } else {
                             (L4Protocol::Unknown, RxChecksumState::Unknown)
                         };
-                        let vlantag = if rx_oob.flags.rx_vlantag_present() {
-                            Some(VlanMetadata {
-                                drop_eligible_indicator: 0,
-                                priority: 0,
-                                vlan_id: rx_oob.flags.rx_vlan_id() as u16,
-                            })
-                        } else {
-                            None
-                        };
+                        let vlantag = rx_oob.flags.rx_vlantag_present().then(|| VlanMetadata {
+                            drop_eligible_indicator: false,
+                            priority: 0,
+                            vlan_id: rx_oob.flags.rx_vlan_id() as u16,
+                        });
                         let len = rx_oob.ppi[0].pkt_len.into();
                         pool.write_header(
                             rx.id,
@@ -1181,7 +1177,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
             oob.l_oob.set_inject_vlan_pri_tag(true);
             oob.l_oob.set_vlan_id(vlan.vlan_id);
             oob.l_oob.set_pcp(vlan.priority);
-            oob.l_oob.set_dei(vlan.drop_eligible_indicator != 0);
+            oob.l_oob.set_dei(vlan.drop_eligible_indicator);
         }
         let short_format = self.vp_offset <= 0xff && !meta.vlan.is_some();
         if short_format {

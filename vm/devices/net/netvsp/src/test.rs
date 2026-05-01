@@ -6273,7 +6273,7 @@ async fn rndis_rx_vlan_packet(driver: DefaultDriver) {
         len: data.len(),
         vlan: Some(net_backend::VlanMetadata {
             priority: 5,
-            drop_eligible_indicator: 1,
+            drop_eligible_indicator: true,
             vlan_id: 100,
         }),
         ..Default::default()
@@ -6284,7 +6284,7 @@ async fn rndis_rx_vlan_packet(driver: DefaultDriver) {
     let vlan = ppi.vlan.expect("VLAN PPI should be present");
     assert_eq!(vlan.vlan_id(), 100);
     assert_eq!(vlan.priority(), 5);
-    assert_eq!(vlan.drop_eligible_indicator(), 1);
+    assert_eq!(vlan.drop_eligible_indicator(), true);
     // Checksum PPI should also be present (always emitted).
     assert!(
         ppi.checksum.is_some(),
@@ -6321,7 +6321,7 @@ async fn rndis_rx_vlan_packet_with_tcp_checksum(driver: DefaultDriver) {
         l4_protocol: L4Protocol::Tcp,
         vlan: Some(net_backend::VlanMetadata {
             priority: 3,
-            drop_eligible_indicator: 0,
+            drop_eligible_indicator: false,
             vlan_id: 42,
         }),
         ..Default::default()
@@ -6333,7 +6333,7 @@ async fn rndis_rx_vlan_packet_with_tcp_checksum(driver: DefaultDriver) {
     let vlan = ppi.vlan.expect("VLAN PPI should be present");
     assert_eq!(vlan.vlan_id(), 42);
     assert_eq!(vlan.priority(), 3);
-    assert_eq!(vlan.drop_eligible_indicator(), 0);
+    assert_eq!(vlan.drop_eligible_indicator(), false);
 
     // Verify checksum PPI reports TCP checksum succeeded.
     let csum = ppi.checksum.expect("checksum PPI should be present");
@@ -6407,7 +6407,7 @@ async fn rndis_rx_vlan_preserves_packet_data(driver: DefaultDriver) {
         len: data.len(),
         vlan: Some(net_backend::VlanMetadata {
             priority: 7,
-            drop_eligible_indicator: 0,
+            drop_eligible_indicator: false,
             vlan_id: 4094,
         }),
         ..Default::default()

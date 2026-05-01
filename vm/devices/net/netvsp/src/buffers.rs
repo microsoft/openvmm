@@ -203,7 +203,7 @@ impl BufferAccess for BufferPool {
                 },
                 payload: rndisprot::EthVlanInfo::new_zeroed()
                     .set_priority(vlan_info.priority)
-                    .set_drop_eligible_indicator(vlan_info.drop_eligible_indicator != 0)
+                    .set_drop_eligible_indicator(vlan_info.drop_eligible_indicator)
                     .set_vlan_id(vlan_info.vlan_id)
                     .0,
             })

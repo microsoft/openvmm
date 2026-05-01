@@ -552,7 +552,6 @@ impl TxRxTask {
         };
 
         let sge0 = sqe.sgl().first().context("no sgl")?;
-
         let total_len: usize = sqe.sgl().iter().map(|sge| sge.size as usize).sum();
         let mut meta = TxMetadata {
             id: TxId(0),
@@ -574,7 +573,7 @@ impl TxRxTask {
                 .inject_vlan_pri_tag()
                 .then(|| net_backend::VlanMetadata {
                     priority: 0,
-                    drop_eligible_indicator: 0,
+                    drop_eligible_indicator: false,
                     vlan_id: oob.l_oob.vlan_id(),
                 }),
         };

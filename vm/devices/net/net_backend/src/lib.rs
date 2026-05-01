@@ -285,8 +285,8 @@ pub trait BufferAccess {
 pub struct VlanMetadata {
     /// Priority for 802.1Q. Actually a 3-bit value.
     pub priority: u8,
-    /// This should be 0.
-    pub drop_eligible_indicator: u8,
+    /// In pretty much every circumstance this is false.
+    pub drop_eligible_indicator: bool,
     /// The 802.1Q ID for this transmission. Actually a 12-bit value.
     pub vlan_id: u16,
 }
@@ -418,6 +418,9 @@ pub struct TxMetadata {
     /// Only guaranteed to be set if [`TxFlags::offload_tcp_segmentation`] or
     /// [`TxFlags::offload_udp_segmentation`] is set.
     pub max_segment_size: u16,
+    /// Information about 802.1Q VLAN tagging. When a vlan is in use, this structure
+    /// is populated. Only applies when traffic is being received over an L2 connection,
+    /// so L3-only or above traffic will not use this option.
     pub vlan: Option<VlanMetadata>,
 }
 
