@@ -682,6 +682,7 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "inspect",
+ "local_clock",
  "mesh",
  "vm_resource",
 ]
@@ -5451,6 +5452,7 @@ dependencies = [
  "build_rs_guest_arch",
  "chipset",
  "chipset_legacy",
+ "chipset_resources",
  "debug_worker",
  "disk_striped",
  "hyperv_ic",
@@ -5526,6 +5528,7 @@ dependencies = [
  "build_rs_guest_arch",
  "chipset",
  "chipset_legacy",
+ "chipset_resources",
  "debug_worker",
  "disk_blob",
  "disk_blockdevice",
@@ -8324,6 +8327,7 @@ dependencies = [
  "chipset_device_worker",
  "chipset_device_worker_defs",
  "chipset_legacy",
+ "chipset_resources",
  "closeable_mutex",
  "crypto",
  "cvm_tracing",
