@@ -831,6 +831,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                 tracing::info!(
                     id = a.qid,
                     pending_commands_count = a.handler_data.pending_cmds.commands.len(),
+                    base_pfn = a.base_pfn,
                     ?pci_id,
                     "restoring admin queue",
                 );
@@ -914,9 +915,10 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                 .io
                 .iter()
                 .map(|io_state| format!(
-                    "{{qid={}, pending_commands_count={}}}",
+                    "{{qid={}, pending_commands_count={}, base_pfn={}}}",
                     io_state.queue_data.qid,
-                    io_state.queue_data.handler_data.pending_cmds.commands.len()
+                    io_state.queue_data.handler_data.pending_cmds.commands.len(),
+                    io_state.queue_data.base_pfn,
                 ))
                 .collect::<Vec<_>>()
                 .join(", "),
@@ -1270,7 +1272,7 @@ async fn handle_asynchronous_events(
 
 impl<D: DeviceBacking> Drop for NvmeDriver<D> {
     fn drop(&mut self) {
-        tracing::trace!(pci_id = ?self.device_id, ka = self.nvme_keepalive, task = self.task.is_some(), "dropping nvme driver");
+        tracing::info!(pci_id = ?self.device_id, ka = self.nvme_keepalive, task = self.task.is_some(), "dropping nvme driver");
         if self.task.is_some() {
             // Do not reset NVMe device when nvme_keepalive is requested.
             tracing::debug!(nvme_keepalive = self.nvme_keepalive, pci_id = ?self.device_id, "dropping nvme driver");
@@ -1308,32 +1310,29 @@ impl<D: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<D> {
         stop: &mut task_control::StopTask<'_>,
         state: &mut WorkerState,
     ) -> Result<(), task_control::Cancelled> {
-        let r = stop
-            .until_stopped(async {
-                loop {
-                    match self.recv.next().await {
-                        Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
-                            rpc.handle(async |cpu| self.create_io_issuer(state, cpu).await)
-                                .await
-                        }
-                        Some(NvmeWorkerRequest::Save(rpc)) => {
-                            rpc.handle(async |span| {
-                                let child_span = tracing::info_span!(
-                                    parent: &span,
-                                    "nvme_worker_save",
-                                    pci_id = %self.device.id()
-                                );
-                                self.save(state).instrument(child_span).await
-                            })
-                            .await
-                        }
-                        None => break,
-                    }
+        loop {
+            let cmd = stop.until_stopped(self.recv.next()).await?;
+            match cmd {
+                Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
+                    rpc.handle(async |cpu| self.create_io_issuer(state, cpu).await)
+                        .await
                 }
-            })
-            .await;
-        tracing::info!(pci_id = %self.device.id(), "nvme worker task exiting");
-        r
+                Some(NvmeWorkerRequest::Save(rpc)) => {
+                    rpc.handle(async |span| {
+                        let child_span = tracing::info_span!(
+                            parent: &span,
+                            "nvme_worker_save",
+                            pci_id = %self.device.id()
+                        );
+                        self.save(state).instrument(child_span).await
+                    })
+                    .await
+                }
+                None => break,
+            }
+        }
+        tracing::info!(pci_id = %self.device.id(), "nvme worker task exiting cleanly");
+        Ok(())
     }
 }
 
@@ -1398,7 +1397,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
     }
 
     async fn create_io_issuer(&mut self, state: &mut WorkerState, cpu: u32) {
-        tracing::debug!(cpu, pci_id = ?self.device.id(), "issuer request");
+        tracing::info!(cpu, pci_id = ?self.device.id(), "create io issuer request");
         if self.io_issuers.per_cpu[cpu as usize].get().is_some() {
             return;
         }
@@ -1496,7 +1495,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
         let iv = qid - 1;
         self.next_ioq_id += 1;
 
-        tracing::debug!(cpu, qid, iv, pci_id = ?self.device.id(), "creating io queue");
+        tracing::info!(cpu, qid, iv, pci_id = ?self.device.id(), "create_nvme_io_queue_fn: creating io queue");
 
         let interrupt = self
             .device
@@ -1516,7 +1515,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
                 qid,
                 cpu,
                 pci_id = ?self.device.id(),
-                "created io queue in SelfDrained state"
+                "create_nvme_io_queue_fn: created io queue in SelfDrained state"
             );
         }
 
@@ -1533,6 +1532,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             drain_after_restore,
         )
         .map_err(|err| DeviceError::IoQueuePairCreationFailure(err, qid))?;
+        tracing::info!(cpu, qid, pci_id = ?self.device.id(), "create_nvme_io_queue_fn: created the internal queue pair object.");
 
         assert_eq!(queue.sq_entries(), queue.cq_entries());
         state.qsize = queue.sq_entries();
@@ -1599,6 +1599,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
         };
 
         if let Err(err) = r.await {
+            tracing::info!(cpu, qid, pci_id = ?self.device.id(), created_completion_queue, error = ?err, "create_nvme_io_queue_fn: failed to create IO queue, tearing down and deleting internal resources.");
             if created_completion_queue {
                 if let Err(err) = admin
                     .issue_raw(spec::Command {
@@ -1619,6 +1620,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             return Err(DeviceError::Other(err));
         }
 
+        tracing::info!(cpu, qid, pci_id = ?self.device.id(), "create_nvme_io_queue_fn: successfuly created io queue.");
         Ok(IoIssuer {
             issuer: io_queue.queue.issuer().clone(),
             cpu,
@@ -1703,6 +1705,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
                         pci_id = ?self.device.id(),
                         id = admin_state.qid,
                         pending_commands_count = admin_state.handler_data.pending_cmds.commands.len(),
+                        pfn = admin_state.base_pfn,
                         "saved admin queue",
                     );
                     Some(admin_state)
@@ -1758,9 +1761,10 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
                 state = io
                     .iter()
                     .map(|io_state| format!(
-                        "{{qid={}, pending_commands_count={}}}",
+                        "{{qid={}, pending_commands_count={}, base_pfn={}}}",
                         io_state.queue_data.qid,
-                        io_state.queue_data.handler_data.pending_cmds.commands.len()
+                        io_state.queue_data.handler_data.pending_cmds.commands.len(),
+                        io_state.queue_data.base_pfn
                     ))
                     .collect::<Vec<_>>()
                     .join(", "),

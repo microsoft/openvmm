@@ -147,9 +147,7 @@ async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
 ) -> anyhow::Result<()> {
     let flags = config.default_servicing_flags();
     openhcl_servicing_core(
-        config.with_openhcl_command_line(
-            "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
-        ),
+        config.with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512"),
         igvm_file,
         flags,
         DEFAULT_SERVICING_COUNT,
@@ -198,9 +196,7 @@ async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
     let flags = config.default_servicing_flags();
     openhcl_servicing_core(
         config
-            .with_openhcl_command_line(
-                "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
-            )
+            .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
             .with_boot_device_type(petri::BootDeviceType::ScsiViaNvme)
             .with_vmbus_redirect(true), // Need this to attach the NVMe device
         igvm_file,
@@ -1219,9 +1215,7 @@ async fn create_keepalive_test_config_default(
 
     config
         .with_vmbus_redirect(true)
-        .with_openhcl_command_line(
-            "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
-        )
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
                 // Add a fault controller to test the nvme controller functionality
@@ -1309,9 +1303,9 @@ async fn create_keepalive_test_config_custom(
 ) -> Result<(PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
 
-    let mut builder = config.with_vmbus_redirect(true).with_openhcl_command_line(
-        "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
-    );
+    let mut builder = config
+        .with_vmbus_redirect(true)
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512");
 
     for cmdline in extra_cmdlines {
         builder = builder.with_openhcl_command_line(cmdline);
