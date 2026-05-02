@@ -3,7 +3,10 @@
 
 //! 440BX Host to PCI Bridge
 
-pub use pam::GpaState;
+pub mod resolver;
+
+pub use chipset_resources::i440bx_host_pci_bridge::AdjustGpaRange;
+pub use chipset_resources::i440bx_host_pci_bridge::GpaState;
 
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
@@ -20,15 +23,6 @@ use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 use vmcore::device_state::ChangeDeviceState;
-
-/// A trait to create GPA alias ranges.
-pub trait AdjustGpaRange: Send {
-    /// Adjusts a memory range's mapping state.
-    ///
-    /// This will only be called for memory ranges supported by the i440BX PAM
-    /// registers, or for VGA memory.
-    fn adjust_gpa_range(&mut self, range: MemoryRange, state: GpaState);
-}
 
 struct HostPciBridgeRuntime {
     adjust_gpa_range: Box<dyn AdjustGpaRange>,
@@ -340,20 +334,8 @@ open_enum! {
 }
 
 mod pam {
+    use super::GpaState;
     use memory_range::MemoryRange;
-
-    #[derive(Default, Copy, Clone, Debug, PartialEq, Eq)]
-    pub enum GpaState {
-        /// Reads and writes go to RAM.
-        #[default]
-        Writable,
-        /// Reads go to RAM, writes go to MMIO.
-        WriteProtected,
-        /// Reads go to ROM, writes go to RAM.
-        WriteOnly,
-        /// Reads and writes go to MMIO.
-        Mmio,
-    }
 
     pub const PAM_RANGES: &[MemoryRange; 13] = &[
         MemoryRange::new(0xf0000..0x100000),
