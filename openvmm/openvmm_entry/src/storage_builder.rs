@@ -371,6 +371,7 @@ impl StorageBuilder {
         config: &mut Config,
         resources: &mut VmResources,
         scsi_sub_channels: u16,
+        use_pci_for_virtio_blk: bool,
     ) -> anyhow::Result<()> {
         config.ide_disks.append(&mut self.vtl0_ide_disks);
 
@@ -496,20 +497,32 @@ impl StorageBuilder {
             .into_iter()
             .enumerate()
         {
-            let mut instance_id = VIRTIO_BLK_INSTANCE_ID_TEMPLATE;
-            instance_id.data1 = i as u32;
-            config.vpci_devices.push(VpciDeviceConfig {
-                vtl: DeviceVtl::Vtl0,
-                instance_id,
-                resource: VirtioPciDeviceHandle(
+            if use_pci_for_virtio_blk {
+                // Place virtio-blk on the PCI bus (for KVM guests that don't have VMBus/VPCI).
+                config.virtio_devices.push((
+                    openvmm_defs::config::VirtioBus::Pci,
                     VirtioBlkHandle {
                         disk: vblk.disk,
                         read_only: vblk.read_only,
                     }
                     .into_resource(),
-                )
-                .into_resource(),
-            });
+                ));
+            } else {
+                let mut instance_id = VIRTIO_BLK_INSTANCE_ID_TEMPLATE;
+                instance_id.data1 = i as u32;
+                config.vpci_devices.push(VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl0,
+                    instance_id,
+                    resource: VirtioPciDeviceHandle(
+                        VirtioBlkHandle {
+                            disk: vblk.disk,
+                            read_only: vblk.read_only,
+                        }
+                        .into_resource(),
+                    )
+                    .into_resource(),
+                });
+            }
         }
 
         for (port_name, vblk) in std::mem::take(&mut self.pcie_virtio_blk_disks) {
