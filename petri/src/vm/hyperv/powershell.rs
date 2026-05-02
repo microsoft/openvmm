@@ -438,12 +438,10 @@ impl HyperVNewCustomVMArgs {
         use crate::IsolationType;
         use crate::PetriVmgsResource;
         use crate::SecureBootTemplate;
-        use petri_artifacts_common::tags::MachineArch;
         use vmgs_resources::GuestStateEncryptionPolicy;
 
         let PetriVmConfig {
             name,
-            arch,
             firmware,
             memory,
             proc_topology,
@@ -537,19 +535,11 @@ impl HyperVNewCustomVMArgs {
             vp_count: Some(proc_topology.vp_count as u64),
             // TODO: fix this mapping, and/or update petri to better match
             // Hyper-V's capabilities.
-            apic_mode: proc_topology
-                .apic_mode
-                .map(|m| match m {
-                    ApicMode::Xapic => HyperVApicMode::Legacy,
-                    ApicMode::X2apicSupported => HyperVApicMode::X2Apic,
-                    ApicMode::X2apicEnabled => HyperVApicMode::X2Apic,
-                })
-                .or(
-                    (*arch == MachineArch::X86_64 && !properties.is_pcat).then_some({
-                        // This is necessary for some tests to pass. TODO: fix.
-                        HyperVApicMode::X2Apic
-                    }),
-                ),
+            apic_mode: proc_topology.apic_mode.map(|m| match m {
+                ApicMode::Xapic => HyperVApicMode::Legacy,
+                ApicMode::X2apicSupported => HyperVApicMode::X2Apic,
+                ApicMode::X2apicEnabled => HyperVApicMode::X2Apic,
+            }),
             hw_threads_per_core: proc_topology.enable_smt.map(|smt| if smt { 2 } else { 1 }),
             max_processors_per_numa_node: proc_topology.vps_per_socket.map(|v| v as u64),
             tpm_enabled: {
