@@ -3,20 +3,21 @@
 
 //! Traits for irqfd-based interrupt delivery.
 //!
-//! irqfd allows a hypervisor to directly inject an MSI into a guest when an
-//! event is signaled, without involving userspace in the interrupt delivery
+//! irqfd allows a hypervisor to directly inject an interrupt into a guest when
+//! an event is signaled, without involving userspace in the interrupt delivery
 //! path. This is used for device passthrough (e.g., VFIO) where the physical
-//! device signals an event and the hypervisor injects the corresponding MSI
-//! into the guest VM.
+//! device signals an event and the hypervisor injects the corresponding
+//! interrupt into the guest VM.
 
 use pal_event::Event;
 
 /// Trait for partitions that support irqfd-based interrupt delivery.
 ///
 /// An irqfd associates an event with a GSI (Global System Interrupt), and a
-/// GSI routing table maps GSIs to MSI addresses and data values. When the
-/// event is signaled, the kernel looks up the GSI routing and injects the
-/// configured MSI into the guest without a usermode transition.
+/// GSI routing table maps GSIs to architecture-specific interrupt message
+/// routes. When the event is signaled, the kernel looks up the GSI routing and
+/// injects the configured interrupt into the guest without a usermode
+/// transition.
 pub trait IrqFd: Send + Sync {
     /// Creates a new irqfd route.
     ///
@@ -34,9 +35,9 @@ pub trait IrqFd: Send + Sync {
 
 /// A handle to a registered irqfd route.
 ///
-/// Each route represents a single GSI with an associated event. When the
-/// event is signaled (e.g., by VFIO on a device interrupt), the kernel injects
-/// the MSI configured via [`set_msi`](IrqFdRoute::set_msi) into the guest.
+/// Each route represents a single GSI with an associated event. When the event
+/// is signaled (e.g., by VFIO on a device interrupt), the kernel injects the
+/// interrupt configured via [`set_msi`](IrqFdRoute::set_msi) into the guest.
 ///
 /// Dropping this handle unregisters the irqfd and frees the GSI.
 pub trait IrqFdRoute: Send + Sync {
@@ -47,10 +48,12 @@ pub trait IrqFdRoute: Send + Sync {
     /// is the event handle returned by `WHvCreateTrigger`.
     fn event(&self) -> &Event;
 
-    /// Sets the MSI routing for this irqfd's GSI.
+    /// Sets the interrupt routing for this irqfd's GSI.
     ///
-    /// `address` and `data` are the x86 MSI address and data values that the
-    /// kernel will use when injecting the interrupt into the guest.
+    /// `address` and `data` are the guest-visible interrupt message programmed
+    /// by the device. Their interpretation is architecture-specific; for
+    /// example, x86 uses MSI address/data values, while aarch64 GICv2m uses the
+    /// SETSPI doorbell address and SPI interrupt ID.
     fn set_msi(&self, address: u64, data: u32) -> anyhow::Result<()>;
 
     /// Clears the MSI routing for this irqfd's GSI.

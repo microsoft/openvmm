@@ -10,7 +10,6 @@
 #![expect(clippy::undocumented_unsafe_blocks)]
 
 mod arch;
-#[cfg(guest_arch = "x86_64")]
 mod gsi;
 
 pub use arch::Kvm;
@@ -86,9 +85,8 @@ pub struct KvmPartition {
     inner: Arc<KvmPartitionInner>,
     #[inspect(skip)]
     synic_ports: Arc<virt::synic::SynicPorts<KvmPartitionInner>>,
-    #[cfg(guest_arch = "x86_64")]
     #[inspect(skip)]
-    irqfd_state: Arc<dyn virt::irqfd::IrqFd>,
+    irqfd_state: Arc<gsi::KvmIrqFdState>,
 }
 
 #[derive(Inspect)]
@@ -100,7 +98,6 @@ struct KvmPartitionInner {
     gm: GuestMemory,
     #[inspect(skip)]
     vps: Vec<KvmVpInner>,
-    #[cfg(guest_arch = "x86_64")]
     #[inspect(skip)]
     gsi_routing: Mutex<gsi::GsiRouting>,
     caps: virt::PartitionCapabilities,
