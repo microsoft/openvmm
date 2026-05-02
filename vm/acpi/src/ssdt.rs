@@ -106,6 +106,7 @@ impl Ssdt {
     ///     Name(_UID, <index>)
     ///     Name(_SEG, <segment>)
     ///     Name(_BBN, <bus number>)
+    ///     Name(_CCA, 1)
     ///     Name(_CRS, ResourceTemplate()
     ///     {
     ///         WordBusNumber(...) // Bus number range
@@ -130,6 +131,7 @@ impl Ssdt {
         pcie.add_object(&NamedInteger::new(b"_UID", index.into()));
         pcie.add_object(&NamedInteger::new(b"_SEG", segment.into()));
         pcie.add_object(&NamedInteger::new(b"_BBN", start_bus.into()));
+        pcie.add_object(&NamedInteger::new(b"_CCA", 1));
 
         // _OSC method: grant native PCIe control to the OS.
         //
@@ -299,5 +301,27 @@ mod tests {
         let bytes = ssdt.to_bytes();
         verify_header(&bytes);
         verify_expected_bytes(&bytes[36..], &[8, b'_', b'S', b'0', b'_', 0x12, 4, 2, 0, 0]);
+    }
+
+    #[test]
+    fn pcie_includes_cca() {
+        let mut ssdt = Ssdt::new();
+        ssdt.add_pcie(
+            0,
+            0,
+            0,
+            255,
+            MemoryRange::new(0x1000_0000..0x2000_0000),
+            MemoryRange::new(0xdc00_0000..0xe000_0000),
+            MemoryRange::new(0x10_0000_0000..0x10_4000_0000),
+        );
+
+        let bytes = ssdt.to_bytes();
+        verify_header(&bytes);
+        assert!(
+            bytes
+                .windows(6)
+                .any(|window| window == [8, b'_', b'C', b'C', b'A', 1,])
+        );
     }
 }
