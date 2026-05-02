@@ -520,6 +520,7 @@ fn parse_vnet_hdr(hdr: &VirtioNetHdr) -> RxMetadata {
         ip_checksum,
         l4_checksum,
         l4_protocol,
+        vlan: None,
     }
 }
 

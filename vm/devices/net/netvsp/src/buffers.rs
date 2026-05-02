@@ -150,16 +150,16 @@ impl BufferAccess for BufferPool {
         struct Header {
             header: rndisprot::MessageHeader,
             packet: rndisprot::Packet,
-            per_packet_info: PerPacketInfo,
         }
 
         #[repr(C)]
         #[derive(zerocopy::IntoBytes, Immutable, KnownLayout, Debug)]
         struct PerPacketInfo {
             header: rndisprot::PerPacketInfo,
-            checksum: rndisprot::RxTcpIpChecksumInfo,
+            payload: u32,
         }
 
+        let mut ppi_count = 1;
         let checksum = rndisprot::RxTcpIpChecksumInfo::new_zeroed()
             .set_ip_checksum_failed(metadata.ip_checksum == RxChecksumState::Bad)
             .set_ip_checksum_succeeded(metadata.ip_checksum.is_valid())
@@ -184,6 +184,32 @@ impl BufferAccess for BufferPool {
             .set_udp_checksum_succeeded(
                 metadata.l4_protocol == L4Protocol::Udp && metadata.l4_checksum.is_valid(),
             );
+        let checksum_ppi = PerPacketInfo {
+            header: rndisprot::PerPacketInfo {
+                size: size_of::<PerPacketInfo>() as u32,
+                typ: rndisprot::PPI_TCP_IP_CHECKSUM,
+                per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+            },
+            payload: checksum.0,
+        };
+
+        let vlan = if let Some(vlan_info) = metadata.vlan {
+            ppi_count += 1;
+            Some(PerPacketInfo {
+                header: rndisprot::PerPacketInfo {
+                    size: size_of::<PerPacketInfo>() as u32,
+                    typ: rndisprot::PPI_VLAN,
+                    per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+                },
+                payload: rndisprot::EthVlanInfo::new_zeroed()
+                    .set_priority(vlan_info.priority)
+                    .set_drop_eligible_indicator(vlan_info.drop_eligible_indicator)
+                    .set_vlan_id(vlan_info.vlan_id)
+                    .0,
+            })
+        } else {
+            None
+        };
 
         let header = Header {
             header: rndisprot::MessageHeader {
@@ -202,21 +228,20 @@ impl BufferAccess for BufferPool {
                 oob_data_length: 0,
                 num_oob_data_elements: 0,
                 per_packet_info_offset: size_of::<rndisprot::Packet>() as u32,
-                per_packet_info_length: size_of::<PerPacketInfo>() as u32,
+                per_packet_info_length: ppi_count * size_of::<PerPacketInfo>() as u32,
                 vc_handle: 0,
                 reserved: 0,
             },
-            per_packet_info: PerPacketInfo {
-                header: rndisprot::PerPacketInfo {
-                    size: size_of::<PerPacketInfo>() as u32,
-                    typ: rndisprot::PPI_TCP_IP_CHECKSUM,
-                    per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
-                },
-                checksum,
-            },
         };
 
-        self.buffers.write_at(self.offset(id), header.as_bytes());
+        let mut offset = self.offset(id);
+        self.buffers.write_at(offset, header.as_bytes());
+        offset += size_of::<Header>() as u32;
+        self.buffers.write_at(offset, checksum_ppi.as_bytes());
+        offset += size_of::<PerPacketInfo>() as u32;
+        if let Some(vlan_ppi) = vlan {
+            self.buffers.write_at(offset, vlan_ppi.as_bytes());
+        }
     }
 }
 

@@ -513,6 +513,8 @@ struct QueueStats {
     tx_lso_packets: Counter,
     tx_checksum_packets: Counter,
     tx_invalid_lso_packets: Counter,
+    rx_vlan_packets: Counter,
+    tx_vlan_packets: Counter,
     tx_packets_per_wake: Histogram<10>,
     rx_packets_per_wake: Histogram<10>,
 }
@@ -2549,23 +2551,7 @@ impl<T: RingMem> NetChannel<T> {
                             .set_offload_ip_header_checksum(n.is_ipv4() && n.ip_header_checksum());
                         metadata.flags.set_is_ipv4(n.is_ipv4());
                         metadata.flags.set_is_ipv6(n.is_ipv6() && !n.is_ipv4());
-                        metadata.l2_len = ETHERNET_HEADER_LEN as u8;
-                        if metadata.flags.offload_tcp_checksum()
-                            || metadata.flags.offload_udp_checksum()
-                        {
-                            metadata.l3_len = if n.tcp_header_offset() >= metadata.l2_len as u16 {
-                                n.tcp_header_offset() - metadata.l2_len as u16
-                            } else if n.is_ipv4() {
-                                let mut reader = data.clone().reader(mem);
-                                reader.skip(metadata.l2_len as usize)?;
-                                let mut b = 0;
-                                reader.read(std::slice::from_mut(&mut b))?;
-                                (b as u16 >> 4) * 4
-                            } else {
-                                // Hope there are no extensions.
-                                40
-                            };
-                        }
+                        metadata.tcp_header_offset = n.tcp_header_offset();
                     }
                     rndisprot::PPI_LSO => {
                         let n: rndisprot::TcpLsoInfo = d.reader(mem).read_plain()?;
@@ -2575,36 +2561,71 @@ impl<T: RingMem> NetChannel<T> {
                         metadata.flags.set_offload_ip_header_checksum(n.is_ipv4());
                         metadata.flags.set_is_ipv4(n.is_ipv4());
                         metadata.flags.set_is_ipv6(n.is_ipv6() && !n.is_ipv4());
-                        metadata.l2_len = ETHERNET_HEADER_LEN as u8;
-                        if n.tcp_header_offset() < metadata.l2_len as u16 {
-                            return Err(WorkerError::InvalidTcpHeaderOffset(n.tcp_header_offset()));
-                        }
-                        metadata.l3_len = n.tcp_header_offset() - metadata.l2_len as u16;
-                        // Offset of `Data Offset` field in the TCP header (byte 12)
-                        const TCP_DOFF_BYTE_OFFSET: u32 = 12;
-                        let tcp_hdr_doff_offset =
-                            u32::from(n.tcp_header_offset()) + TCP_DOFF_BYTE_OFFSET;
-                        // Validate TCP header Data Offset 4 bit nibble within the packet data bounds.
-                        if tcp_hdr_doff_offset >= request.data_length {
-                            return Err(WorkerError::InvalidTcpHeaderOffset(n.tcp_header_offset()));
-                        }
-                        metadata.l4_len = {
-                            let mut reader = data.clone().reader(mem);
-                            reader.skip(tcp_hdr_doff_offset as usize)?;
-                            let mut b = 0;
-                            reader.read(std::slice::from_mut(&mut b))?;
-                            (b >> 4) * 4
-                        };
                         metadata.max_segment_size = n.mss() as u16;
+                        metadata.tcp_header_offset = n.tcp_header_offset();
+                    }
+                    rndisprot::PPI_VLAN => {
+                        let n: rndisprot::EthVlanInfo = d.reader(mem).read_plain()?;
 
-                        if request.data_length >= rndisprot::LSO_MAX_OFFLOAD_SIZE {
-                            // Not strictly enforced.
-                            stats.tx_invalid_lso_packets.increment();
-                        }
+                        metadata.vlan = Some(net_backend::VlanMetadata {
+                            priority: n.priority(),
+                            drop_eligible_indicator: n.drop_eligible_indicator(),
+                            vlan_id: n.vlan_id(),
+                        });
+                        stats.rx_vlan_packets.increment();
                     }
                     _ => {}
                 }
                 ppi = rest;
+            }
+
+            metadata.l2_len = if metadata.vlan.is_some() {
+                ETHERNET_VLAN_HEADER_LEN
+            } else {
+                ETHERNET_HEADER_LEN
+            } as u8;
+
+            if metadata.flags.offload_tcp_checksum() {
+                // The offset must be set if a checksum is being captured.
+                if (metadata.tcp_header_offset < metadata.l2_len as u16)
+                    || (metadata.flags.is_ipv4()
+                        && metadata.tcp_header_offset < (metadata.l2_len as u16 + 20))
+                    || (metadata.flags.is_ipv6()
+                        && metadata.tcp_header_offset < (metadata.l2_len as u16 + 40))
+                    || (metadata.tcp_header_offset as u32 >= request.data_length)
+                {
+                    return Err(WorkerError::InvalidTcpHeaderOffset(
+                        metadata.tcp_header_offset,
+                    ));
+                }
+
+                metadata.l3_len = metadata.tcp_header_offset - metadata.l2_len as u16;
+            }
+
+            // no UDP validation currently.
+
+            if metadata.flags.offload_tcp_segmentation() {
+                const TCP_DOFF_BYTE_OFFSET: u32 = 12;
+                let tcp_hdr_doff_offset =
+                    u32::from(metadata.tcp_header_offset) + TCP_DOFF_BYTE_OFFSET;
+                // Validate TCP header Data Offset 4 bit nibble within the packet data bounds.
+                if tcp_hdr_doff_offset >= request.data_length {
+                    return Err(WorkerError::InvalidTcpHeaderOffset(
+                        metadata.tcp_header_offset,
+                    ));
+                }
+                metadata.l4_len = {
+                    let mut reader = data.clone().reader(mem);
+                    reader.skip(tcp_hdr_doff_offset as usize)?;
+                    let mut b = 0;
+                    reader.read(std::slice::from_mut(&mut b))?;
+                    (b >> 4) * 4
+                };
+
+                if request.data_length >= rndisprot::LSO_MAX_OFFLOAD_SIZE {
+                    // Not strictly enforced.
+                    stats.tx_invalid_lso_packets.increment();
+                }
             }
         }
 
@@ -2626,6 +2647,9 @@ impl<T: RingMem> NetChannel<T> {
         }
         if metadata.flags.offload_tcp_segmentation() {
             stats.tx_lso_packets.increment();
+        }
+        if metadata.vlan.is_some() {
+            stats.tx_vlan_packets.increment();
         }
 
         segments[start].ty = net_backend::TxSegmentType::Head(metadata);
@@ -2775,6 +2799,8 @@ impl<T: RingMem> NetChannel<T> {
                 error = &err as &dyn std::error::Error,
                 "Failed to notify guest that data path is now synthetic"
             );
+        } else {
+            tracing::info!("Switched data path to synthetic")
         }
     }
 
@@ -3267,6 +3293,7 @@ const MIN_MTU: u32 = DEFAULT_MTU;
 const MAX_MTU: u32 = 9216;
 
 const ETHERNET_HEADER_LEN: u32 = 14;
+const ETHERNET_VLAN_HEADER_LEN: u32 = 18;
 
 impl Adapter {
     fn get_guest_vf_serial_number(&self, vfid: u32) -> u32 {

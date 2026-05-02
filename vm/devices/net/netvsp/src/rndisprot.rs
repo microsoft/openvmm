@@ -709,8 +709,47 @@ impl TcpLsoInfo {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct EthVlanInfo(pub u32);
+
+impl EthVlanInfo {
+    /// priority is a 3-bit field, any bits outside the lower portion of the low
+    /// nybble are ignored
+    pub fn set_priority(mut self, priority: u8) -> Self {
+        self.0 = (self.0 & !0x7) | (priority as u32 & 0x7);
+        self
+    }
+
+    pub fn priority(&self) -> u8 {
+        (self.0 as u8) & 0x7
+    }
+
+    /// In practical use this should always be false, but who knows?
+    pub fn set_drop_eligible_indicator(mut self, indicator: bool) -> Self {
+        self.0 = (self.0 & !0x8) | if indicator { 0x8 } else { 0x0 };
+        self
+    }
+
+    pub fn drop_eligible_indicator(&self) -> bool {
+        self.0 & 0x8 != 0
+    }
+
+    /// VLAN IDs are 12 bits. This will silently reject any bits outside of
+    /// the range.
+    pub fn set_vlan_id(mut self, vlan_id: u16) -> Self {
+        self.0 = (self.0 & !0xFFF0) | ((vlan_id as u32 & 0xFFF) << 4);
+        self
+    }
+
+    pub fn vlan_id(&self) -> u16 {
+        (self.0 >> 4) as u16 & 0xfff
+    }
+}
+
 pub const PPI_TCP_IP_CHECKSUM: u32 = 0;
 pub const PPI_LSO: u32 = 2;
+pub const PPI_VLAN: u32 = 6;
 
 //
 //  Format of Information buffer passed in a SetRequest for the OID

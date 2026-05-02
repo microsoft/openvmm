@@ -281,6 +281,16 @@ pub trait BufferAccess {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct VlanMetadata {
+    /// Priority for 802.1Q. Actually a 3-bit value.
+    pub priority: u8,
+    /// In pretty much every circumstance this is false.
+    pub drop_eligible_indicator: bool,
+    /// The 802.1Q ID for this transmission. Actually a 12-bit value.
+    pub vlan_id: u16,
+}
+
 /// A receive buffer ID.
 #[derive(Debug, Copy, Clone)]
 #[repr(transparent)]
@@ -308,6 +318,10 @@ pub struct RxMetadata {
     pub l4_checksum: RxChecksumState,
     /// The L4 protocol.
     pub l4_protocol: L4Protocol,
+    /// Information about 802.1Q VLAN tagging. When a vlan is in use, this structure
+    /// is populated. Only applies when traffic is being received over an L2 connection,
+    /// so L3-only or above traffic will not use this option.
+    pub vlan: Option<VlanMetadata>,
 }
 
 impl Default for RxMetadata {
@@ -318,6 +332,7 @@ impl Default for RxMetadata {
             ip_checksum: RxChecksumState::Unknown,
             l4_checksum: RxChecksumState::Unknown,
             l4_protocol: L4Protocol::Unknown,
+            vlan: None,
         }
     }
 }
@@ -396,10 +411,17 @@ pub struct TxMetadata {
     /// The length of the TCP header. Only guaranteed to be set if various
     /// offload flags are set.
     pub l4_len: u8,
+    /// The offset into the buffer where the TCP header begins. Only expected
+    /// to be set if offload flags are set.
+    pub tcp_header_offset: u16,
     /// The maximum segment size, used for segmentation offload (TSO or USO).
     /// Only guaranteed to be set if [`TxFlags::offload_tcp_segmentation`] or
     /// [`TxFlags::offload_udp_segmentation`] is set.
     pub max_segment_size: u16,
+    /// Information about 802.1Q VLAN tagging. When a vlan is in use, this structure
+    /// is populated. Only applies when traffic is being received over an L2 connection,
+    /// so L3-only or above traffic will not use this option.
+    pub vlan: Option<VlanMetadata>,
 }
 
 /// Flags affecting transmit behavior.
@@ -444,7 +466,9 @@ impl Default for TxMetadata {
             l2_len: 0,
             l3_len: 0,
             l4_len: 0,
+            tcp_header_offset: 0,
             max_segment_size: 0,
+            vlan: None,
         }
     }
 }

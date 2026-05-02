@@ -139,6 +139,11 @@ impl BufferAccess for GuestBuffers {
             },
         }
 
+        if let Some(vlan) = &metadata.vlan {
+            flags.set_rx_vlantag_present(true);
+            flags.set_rx_vlan_id(vlan.vlan_id as u32);
+        }
+
         let packet = &mut self.rx_packets[id.0 as usize];
 
         let cqe_type = if metadata.len > packet.len as usize {
@@ -561,7 +566,16 @@ impl TxRxTask {
             l2_len: 14,
             l3_len: oob.s_oob.trans_off().clamp(14, 255) - 14,
             l4_len: 0,
+            tcp_header_offset: 0,
             max_segment_size: 0,
+            vlan: oob
+                .l_oob
+                .inject_vlan_pri_tag()
+                .then(|| net_backend::VlanMetadata {
+                    priority: 0,
+                    drop_eligible_indicator: false,
+                    vlan_id: oob.l_oob.vlan_id(),
+                }),
         };
 
         if sqe.header.params.client_oob_in_sgl() {
