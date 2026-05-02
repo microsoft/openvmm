@@ -2378,6 +2378,7 @@ async fn new_underhill_vm(
         chipset,
         mut chipset_devices,
         pci_chipset_devices,
+        isa_dma_controller,
         capabilities,
     } = chipset
         .build()
@@ -2774,9 +2775,6 @@ async fn new_underhill_vm(
         None
     };
 
-    let deps_generic_isa_dma = chipset
-        .with_generic_isa_dma
-        .then_some(dev::GenericIsaDmaDeps);
     let deps_piix4_power_management =
         chipset
             .with_piix4_power_management
@@ -2965,7 +2963,6 @@ async fn new_underhill_vm(
         deps_hyperv_firmware_uefi,
         deps_hyperv_guest_watchdog,
         deps_hyperv_power_management,
-        deps_generic_isa_dma,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
         deps_hyperv_firmware_pcat,
@@ -3033,6 +3030,7 @@ async fn new_underhill_vm(
     .with_expected_manifest(chipset)
     .with_device_handles(chipset_devices)
     .with_pci_device_handles(pci_chipset_devices)
+    .with_isa_dma_handle(isa_dma_controller)
     .with_trace_unknown_mmio(!use_mmio_hypercalls)
     .with_fallback_mmio_device(fallback_mmio_device)
     .build(&driver_source, &state_units, &resolver)

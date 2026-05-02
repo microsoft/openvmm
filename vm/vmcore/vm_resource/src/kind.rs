@@ -102,6 +102,13 @@ impl ResourceKind for VmbusDeviceHandleKind {
     const NAME: &'static str = "vmbus_device_handle";
 }
 
+/// A resource kind for ISA DMA controller handles.
+pub enum IsaDmaControllerHandleKind {}
+
+impl ResourceKind for IsaDmaControllerHandleKind {
+    const NAME: &'static str = "isa_dma_controller";
+}
+
 /// Resource kind for non-volatile stores.
 pub enum NonVolatileStoreKind {}
 

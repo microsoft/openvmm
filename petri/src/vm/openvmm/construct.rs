@@ -478,6 +478,7 @@ impl PetriVmConfigOpenVmm {
             chipset,
             mut chipset_devices,
             pci_chipset_devices,
+            isa_dma_controller,
             capabilities,
         } = chipset;
 
@@ -499,6 +500,7 @@ impl PetriVmConfigOpenVmm {
             chipset,
             chipset_devices,
             pci_chipset_devices,
+            isa_dma_controller,
             chipset_capabilities: capabilities,
 
             // Basic virtualization device support

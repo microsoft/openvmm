@@ -11,6 +11,7 @@ use crate::chipset::ChipsetBuilder;
 use crate::chipset::backing::arc_mutex::device::AddDeviceError;
 use crate::chipset::backing::arc_mutex::services::ArcMutexChipsetServices;
 use chipset::*;
+use chipset_device::ChipsetDevice;
 use chipset_device::interrupt::LineInterruptTarget;
 use chipset_device_resources::ConfigureChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
@@ -29,7 +30,9 @@ use state_unit::StateUnits;
 use std::fmt::Debug;
 use std::sync::Arc;
 use thiserror::Error;
+use vm_resource::Resource;
 use vm_resource::ResourceResolver;
+use vm_resource::kind::IsaDmaControllerHandleKind;
 use vmcore::vm_task::VmTaskDriverSource;
 
 /// Errors which may occur during base chipset construction
@@ -46,6 +49,8 @@ pub enum BaseChipsetBuilderError {
     FeatureGatedDevice(&'static str),
     #[error("no valid ISA DMA controller for floppy")]
     NoDmaForFloppy,
+    #[error("failed to resolve ISA DMA controller")]
+    ResolveIsaDma(#[source] vm_resource::ResolveError),
 }
 
 /// A grab-bag of device-specific interfaces that may need to be wired up into
@@ -77,8 +82,9 @@ pub struct BaseChipsetBuilder<'a> {
     devices: options::BaseChipsetDevices,
     device_handles: Vec<ChipsetDeviceHandle>,
     pci_device_handles: Vec<LegacyPciChipsetDeviceHandle>,
+    isa_dma_handle: Option<Resource<IsaDmaControllerHandleKind>>,
     expected_manifest: Option<options::BaseChipsetManifest>,
-    fallback_mmio_device: Option<Arc<CloseableMutex<dyn chipset_device::ChipsetDevice>>>,
+    fallback_mmio_device: Option<Arc<CloseableMutex<dyn ChipsetDevice>>>,
     flags: BaseChipsetBuilderFlags,
 }
 
@@ -98,6 +104,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             devices,
             device_handles: Vec::new(),
             pci_device_handles: Vec::new(),
+            isa_dma_handle: None,
             expected_manifest: None,
             fallback_mmio_device: None,
             flags: BaseChipsetBuilderFlags {
@@ -146,6 +153,15 @@ impl<'a> BaseChipsetBuilder<'a> {
         self
     }
 
+    /// Sets the ISA DMA controller handle to be resolved and instantiated.
+    pub fn with_isa_dma_handle(
+        mut self,
+        handle: Option<Resource<IsaDmaControllerHandleKind>>,
+    ) -> Self {
+        self.isa_dma_handle = handle;
+        self
+    }
+
     /// Emit "missing device" traces when accessing unknown port IO addresses.
     ///
     /// Disabled by default.
@@ -166,7 +182,7 @@ impl<'a> BaseChipsetBuilder<'a> {
     /// address range.
     pub fn with_fallback_mmio_device(
         mut self,
-        fallback_mmio_device: Option<Arc<CloseableMutex<dyn chipset_device::ChipsetDevice>>>,
+        fallback_mmio_device: Option<Arc<CloseableMutex<dyn ChipsetDevice>>>,
     ) -> Self {
         self.fallback_mmio_device = fallback_mmio_device;
         self
@@ -187,6 +203,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             devices,
             device_handles,
             pci_device_handles,
+            isa_dma_handle,
             expected_manifest,
             fallback_mmio_device,
             flags,
@@ -216,7 +233,6 @@ impl<'a> BaseChipsetBuilder<'a> {
         let options::BaseChipsetDevices {
             deps_generic_cmos_rtc,
             deps_generic_ioapic,
-            deps_generic_isa_dma,
             deps_generic_isa_floppy,
             deps_generic_pci_bus,
             deps_generic_psp: _, // not actually a device... yet
@@ -292,16 +308,44 @@ impl<'a> BaseChipsetBuilder<'a> {
                 })?;
         }
 
-        let dma = {
-            if let Some(options::dev::GenericIsaDmaDeps {}) = deps_generic_isa_dma {
-                let dma = builder
-                    .arc_mutex_device("dma")
-                    .add(|_| dma::DmaController::new())?;
-                Some(dma)
-            } else {
-                None
-            }
+        let dma = if let Some(dma_handle) = isa_dma_handle {
+            let resolved = resolver
+                .resolve(dma_handle, ())
+                .await
+                .map_err(BaseChipsetBuilderError::ResolveIsaDma)?;
+            let dev = builder
+                .arc_mutex_device::<dma::DmaController>("dma")
+                .add(|_services| resolved.0)?;
+            Some(dev)
+        } else {
+            None
         };
+
+        for device in device_handles {
+            let ChipsetDeviceHandle { name, resource } = device;
+            builder
+                .arc_mutex_device(name.as_ref())
+                .try_add_async(async |services| {
+                    resolver
+                        .resolve(
+                            resource,
+                            ResolveChipsetDeviceHandleParams {
+                                device_name: name.as_ref(),
+                                guest_memory: &foundation.untrusted_dma_memory,
+                                encrypted_guest_memory: &foundation.trusted_vtl0_dma_memory,
+                                vmtime: foundation.vmtime,
+                                is_restoring: foundation.is_restoring,
+                                task_driver_source: driver_source,
+                                register_mmio: &mut services.register_mmio(),
+                                register_pio: &mut services.register_pio(),
+                                configure: services,
+                            },
+                        )
+                        .await
+                        .map(|device| device.0)
+                })
+                .await?;
+        }
 
         let _ = dma;
         #[cfg(feature = "dev_generic_isa_floppy")]
@@ -685,33 +729,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             "dev_winbond_super_io_and_floppy_stub",
             deps_winbond_super_io_and_floppy_stub
         );
-
-        for device in device_handles {
-            let ChipsetDeviceHandle { name, resource } = device;
-
-            builder
-                .arc_mutex_device(name.as_ref())
-                .try_add_async(async |services| {
-                    resolver
-                        .resolve(
-                            resource,
-                            ResolveChipsetDeviceHandleParams {
-                                device_name: name.as_ref(),
-                                guest_memory: &foundation.untrusted_dma_memory,
-                                encrypted_guest_memory: &foundation.trusted_vtl0_dma_memory,
-                                vmtime: foundation.vmtime,
-                                is_restoring: foundation.is_restoring,
-                                task_driver_source: driver_source,
-                                register_mmio: &mut services.register_mmio(),
-                                register_pio: &mut services.register_pio(),
-                                configure: services,
-                            },
-                        )
-                        .await
-                        .map(|dev| dev.0)
-                })
-                .await?;
-        }
 
         for device in pci_device_handles {
             let LegacyPciChipsetDeviceHandle {
@@ -1112,7 +1129,6 @@ pub mod options {
         devices {
             generic_cmos_rtc:            dev::GenericCmosRtcDeps,
             generic_ioapic:              dev::GenericIoApicDeps,
-            generic_isa_dma:             dev::GenericIsaDmaDeps,
             generic_isa_floppy:          dev::GenericIsaFloppyDeps,
             generic_pci_bus:             dev::GenericPciBusDeps,
             generic_psp:                 dev::GenericPspDeps,
@@ -1147,6 +1163,8 @@ pub mod options {
         pub with_pic: bool,
         /// Whether the VM exposes a PIT.
         pub with_pit: bool,
+        /// Whether the VM exposes a generic ISA DMA controller.
+        pub with_generic_isa_dma: bool,
         /// Whether the VM exposes a PSP.
         pub with_psp: bool,
     }
@@ -1195,9 +1213,6 @@ pub mod options {
             /// Interface to enable/disable PM timer assist
             pub pm_timer_assist: Option<Box<dyn pm::PmTimerAssist>>,
         }
-
-        /// Generic dual 8237A ISA DMA controllers
-        pub struct GenericIsaDmaDeps;
 
         /// Hyper-V specific ACPI-compatible power management device
         pub struct HyperVPowerManagementDeps {

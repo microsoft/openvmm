@@ -195,6 +195,7 @@ impl Manifest {
             vmbus_devices: config.vmbus_devices,
             chipset_devices: config.chipset_devices,
             pci_chipset_devices: config.pci_chipset_devices,
+            isa_dma_controller: config.isa_dma_controller,
             chipset_capabilities: config.chipset_capabilities,
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
@@ -244,6 +245,7 @@ pub struct Manifest {
     vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     chipset_devices: Vec<ChipsetDeviceHandle>,
     pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
+    isa_dma_controller: Option<Resource<vm_resource::kind::IsaDmaControllerHandleKind>>,
     chipset_capabilities: VmChipsetCapabilities,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
@@ -1482,9 +1484,6 @@ impl InitializedVm {
             None
         };
 
-        let deps_generic_isa_dma =
-            (cfg.chipset.with_generic_isa_dma).then_some(dev::GenericIsaDmaDeps {});
-
         let mut primary_disk_drive = floppy::DriveRibbon::None;
         let mut secondary_disk_drive = floppy::DriveRibbon::None;
         if cfg.chipset.with_winbond_super_io_and_floppy_full {
@@ -1632,7 +1631,6 @@ impl InitializedVm {
             BaseChipsetDevices {
                 deps_generic_cmos_rtc,
                 deps_generic_ioapic,
-                deps_generic_isa_dma,
                 deps_generic_isa_floppy,
                 deps_generic_pci_bus,
                 deps_generic_psp,
@@ -1677,6 +1675,7 @@ impl InitializedVm {
         .with_expected_manifest(cfg.chipset.clone())
         .with_device_handles(cfg.chipset_devices)
         .with_pci_device_handles(cfg.pci_chipset_devices)
+        .with_isa_dma_handle(cfg.isa_dma_controller)
         .with_trace_unknown_pio(true) // todo: add CLI param?
         .build(&driver_source, &state_units, &resolver)
         .await?;
@@ -3134,6 +3133,7 @@ impl LoadedVm {
             vmbus_devices: vec![],       // TODO
             chipset_devices: vec![],     // TODO
             pci_chipset_devices: vec![], // TODO
+            isa_dma_controller: None,    // TODO
             chipset_capabilities: self.inner.chipset_capabilities,
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
