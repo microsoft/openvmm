@@ -139,6 +139,8 @@ impl SimpleFlowNode for Node {
         let disk_images_dir =
             ctx.reqv(crate::download_openvmm_vmm_tests_artifacts::Request::GetDownloadFolder);
 
+        let temp_dir = test_content_dir.map(ctx, |d| d.join("temp"));
+
         ctx.config(crate::install_vmm_tests_deps::Config {
             selections: Some(match target.operating_system {
                 target_lexicon::OperatingSystem::Windows => VmmTestsDepSelections::Windows {
@@ -172,6 +174,8 @@ impl SimpleFlowNode for Node {
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir,
+            disk_images_dir: Some(disk_images_dir),
+            temp_dir: Some(temp_dir),
             vmm_tests_target: target.clone(),
             register_openvmm,
             register_openvmm_vhost,
@@ -185,7 +189,6 @@ impl SimpleFlowNode for Node {
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,
-            disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
             get_env: v,
