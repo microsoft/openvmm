@@ -29,6 +29,7 @@ vm_resource::register_static_resolvers! {
     #[cfg(guest_arch = "aarch64")]
     serial_pl011::resolver::SerialPl011Resolver,
     chipset::battery::resolver::BatteryResolver,
+    guest_watchdog::resolver::HyperVGuestWatchdogResolver,
 
     // Non-volatile stores
     vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreResolver,

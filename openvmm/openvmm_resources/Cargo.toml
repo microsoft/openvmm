@@ -51,6 +51,7 @@ disklayer_sqlite = { workspace = true, optional = true }
 chipset.workspace = true
 chipset_legacy.workspace = true
 missing_dev.workspace = true
+guest_watchdog.workspace = true
 tpm_device = { workspace = true, optional = true, features = ["tpm"] }
 
 # Non-volatile stores

@@ -33,7 +33,6 @@ framebuffer.workspace = true
 floppy = { optional = true, workspace = true }
 floppy_pcat_stub = { optional = true, workspace = true }
 generation_id.workspace = true
-guest_watchdog.workspace = true
 ide.workspace = true
 missing_dev.workspace = true
 pci_bus.workspace = true

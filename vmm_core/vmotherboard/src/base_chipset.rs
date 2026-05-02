@@ -223,7 +223,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_hyperv_firmware_pcat,
             deps_hyperv_firmware_uefi,
             deps_hyperv_framebuffer,
-            deps_hyperv_guest_watchdog,
             deps_hyperv_ide,
             deps_hyperv_power_management,
             deps_hyperv_vga,
@@ -523,28 +522,6 @@ impl<'a> BaseChipsetBuilder<'a> {
                     }
                     pm
                 })?;
-        }
-
-        if let Some(options::dev::HyperVGuestWatchdogDeps {
-            watchdog_platform,
-            port_base: pio_wdat_port,
-        }) = deps_hyperv_guest_watchdog
-        {
-            builder
-                .arc_mutex_device("guest-watchdog")
-                .add_async(async |services| {
-                    let vmtime = services.register_vmtime();
-                    let mut register_pio = services.register_pio();
-                    guest_watchdog::GuestWatchdogServices::new(
-                        vmtime.access("guest-watchdog-time"),
-                        watchdog_platform,
-                        &mut register_pio,
-                        pio_wdat_port,
-                        foundation.is_restoring,
-                    )
-                    .await
-                })
-                .await?;
         }
 
         if let Some(options::dev::HyperVFirmwareUefi {
@@ -1120,7 +1097,6 @@ pub mod options {
             hyperv_firmware_pcat:        dev::HyperVFirmwarePcat,
             hyperv_firmware_uefi:        dev::HyperVFirmwareUefi,
             hyperv_framebuffer:          dev::HyperVFramebufferDeps,
-            hyperv_guest_watchdog:       dev::HyperVGuestWatchdogDeps,
             hyperv_ide:                  dev::HyperVIdeDeps,
             hyperv_power_management:     dev::HyperVPowerManagementDeps,
             hyperv_vga:                  dev::HyperVVgaDeps,
@@ -1149,6 +1125,8 @@ pub mod options {
         pub with_pit: bool,
         /// Whether the VM exposes a PSP.
         pub with_psp: bool,
+        /// Whether the VM exposes the Hyper-V guest watchdog device.
+        pub with_guest_watchdog: bool,
     }
 
     /// Device specific dependencies
@@ -1338,15 +1316,6 @@ pub mod options {
             pub line_interrupt_no: u32,
             /// Channel to receive updated battery state
             pub battery_status_recv: mesh::Receiver<HostBatteryUpdate>,
-        }
-
-        /// Hyper-V specific Guest Watchdog device
-        pub struct HyperVGuestWatchdogDeps {
-            /// Port io address of the device's register region
-            pub port_base: u16,
-            /// Device-specific functions the platform must provide in order to
-            /// use this device.
-            pub watchdog_platform: Box<dyn watchdog_core::platform::WatchdogPlatform>,
         }
 
         /// Hyper-V specific UEFI Helper Device

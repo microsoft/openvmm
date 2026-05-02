@@ -20,6 +20,8 @@ use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
+use chipset_resources::hyperv_guest_watchdog::DEFAULT_WDAT_PORT_BASE;
+use chipset_resources::hyperv_guest_watchdog::HyperVGuestWatchdogDeviceHandle;
 use chipset_resources::i8042::I8042DeviceHandle;
 use chipset_resources::pic::PicDeviceHandle;
 use chipset_resources::piix4_pci_isa_bridge::PIIX4_PCI_ISA_BRIDGE_BDF;
@@ -230,6 +232,7 @@ impl VmManifestBuilder {
                 with_pic: false,
                 with_pit: false,
                 with_psp: false,
+                with_guest_watchdog: false,
             },
         };
 
@@ -264,7 +267,6 @@ impl VmManifestBuilder {
                     with_hyperv_firmware_pcat: true,
                     with_hyperv_firmware_uefi: false,
                     with_hyperv_framebuffer: !self.proxy_vga,
-                    with_hyperv_guest_watchdog: false,
                     with_hyperv_ide: true,
                     with_hyperv_power_management: false,
                     with_hyperv_vga: !self.proxy_vga,
@@ -296,7 +298,6 @@ impl VmManifestBuilder {
                     with_hyperv_firmware_pcat: false,
                     with_hyperv_firmware_uefi: false,
                     with_hyperv_framebuffer: self.framebuffer,
-                    with_hyperv_guest_watchdog: self.guest_watchdog,
                     with_hyperv_ide: false,
                     with_hyperv_power_management: is_x86,
                     with_hyperv_vga: false,
@@ -325,6 +326,9 @@ impl VmManifestBuilder {
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }
+                if self.guest_watchdog {
+                    result.attach_guest_watchdog();
+                }
             }
             BaseChipsetType::HypervGen2Uefi | BaseChipsetType::HyperVGen2LinuxDirect => {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
@@ -338,7 +342,6 @@ impl VmManifestBuilder {
                     with_hyperv_firmware_pcat: false,
                     with_hyperv_firmware_uefi: matches!(self.ty, BaseChipsetType::HypervGen2Uefi),
                     with_hyperv_framebuffer: self.framebuffer,
-                    with_hyperv_guest_watchdog: self.guest_watchdog,
                     with_hyperv_ide: false,
                     with_hyperv_power_management: is_x86,
                     with_hyperv_vga: false,
@@ -362,6 +365,9 @@ impl VmManifestBuilder {
                     .attach_missing_arch_ports(self.arch, true);
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
+                }
+                if self.guest_watchdog {
+                    result.attach_guest_watchdog();
                 }
             }
             BaseChipsetType::HclHost => {
@@ -454,6 +460,18 @@ impl VmChipsetResult {
             pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
             bdf: PIIX4_PCI_ISA_BRIDGE_BDF,
         });
+        self
+    }
+
+    fn attach_guest_watchdog(&mut self) -> &mut Self {
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "guest-watchdog".to_owned(),
+            resource: HyperVGuestWatchdogDeviceHandle {
+                port_base: DEFAULT_WDAT_PORT_BASE,
+            }
+            .into_resource(),
+        });
+        self.capabilities.with_guest_watchdog = true;
         self
     }
 

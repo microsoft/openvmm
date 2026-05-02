@@ -151,11 +151,10 @@ use vpci::bus::VpciBus;
 use watchdog_core::platform::BaseWatchdogPlatform;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
+use watchdog_core::resources::StaticWatchdogPlatformResolver;
 
 const PM_BASE: u16 = 0x400;
 const SYSTEM_IRQ_ACPI: u32 = 9;
-
-const WDAT_PORT: u16 = 0x30;
 
 /// Creates a thread to run low-performance devices on.
 pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
@@ -1413,38 +1412,33 @@ impl InitializedVm {
             }
         }
 
-        let deps_hyperv_guest_watchdog = if cfg.chipset.with_hyperv_guest_watchdog {
-            Some(dev::HyperVGuestWatchdogDeps {
-                port_base: WDAT_PORT,
-                watchdog_platform: {
-                    use vmcore::non_volatile_store::EphemeralNonVolatileStore;
+        if cfg.chipset_capabilities.with_guest_watchdog {
+            use vmcore::non_volatile_store::EphemeralNonVolatileStore;
 
-                    let store = match vmgs_client {
-                        Some(vmgs) => vmgs
-                            .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
-                            .context("failed to instantiate guest watchdog store")?,
-                        None => EphemeralNonVolatileStore::new_boxed(),
-                    };
+            let store = match vmgs_client {
+                Some(vmgs) => vmgs
+                    .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
+                    .context("failed to instantiate guest watchdog store")?,
+                None => EphemeralNonVolatileStore::new_boxed(),
+            };
 
-                    // Create the base watchdog platform
-                    let mut base_watchdog_platform = BaseWatchdogPlatform::new(store).await?;
+            // Create the base watchdog platform
+            let mut base_watchdog_platform = BaseWatchdogPlatform::new(store).await?;
 
-                    // Create callback to reset on watchdog timeout
-                    let watchdog_callback = WatchdogTimeoutReset {
-                        halt_vps: halt_vps.clone(),
-                        watchdog_send: None, // This is not the UEFI watchdog, so no need to send
-                                             // watchdog notifications
-                    };
+            // Create callback to reset on watchdog timeout
+            let watchdog_callback = WatchdogTimeoutReset {
+                halt_vps: halt_vps.clone(),
+                watchdog_send: None, // This is not the UEFI watchdog, so no need to send
+                                     // watchdog notifications
+            };
 
-                    // Add callbacks
-                    base_watchdog_platform.add_callback(Box::new(watchdog_callback));
+            // Add callbacks
+            base_watchdog_platform.add_callback(Box::new(watchdog_callback));
 
-                    Box::new(base_watchdog_platform)
-                },
-            })
-        } else {
-            None
-        };
+            resolver.add_resolver(StaticWatchdogPlatformResolver::new(Box::new(
+                base_watchdog_platform,
+            )));
+        }
 
         let initial_rtc_cmos = if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {
             Some(firmware_pcat::default_cmos_values(&mem_layout))
@@ -1639,7 +1633,6 @@ impl InitializedVm {
                 deps_hyperv_firmware_pcat,
                 deps_hyperv_firmware_uefi,
                 deps_hyperv_framebuffer,
-                deps_hyperv_guest_watchdog,
                 deps_hyperv_ide,
                 deps_hyperv_power_management,
                 deps_hyperv_vga,
@@ -2530,7 +2523,7 @@ impl LoadedVmInner {
                     frontpage: !disable_frontpage,
                     tpm: enable_tpm,
                     battery: enable_battery,
-                    guest_watchdog: self.chipset_cfg.with_hyperv_guest_watchdog,
+                    guest_watchdog: self.chipset_capabilities.with_guest_watchdog,
                     vpci_boot: enable_vpci_boot,
                     serial: enable_serial,
                     uefi_console_mode,
