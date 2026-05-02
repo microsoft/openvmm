@@ -644,7 +644,6 @@ impl SimpleFlowNode for Node {
         });
 
         let temp_dir = test_content_dir.join("temp");
-        fs_err::create_dir_all(&temp_dir)?;
 
         ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));
         let test_artifacts_dir =

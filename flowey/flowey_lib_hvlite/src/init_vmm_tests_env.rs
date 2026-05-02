@@ -258,8 +258,18 @@ impl SimpleFlowNode for Node {
                 }
 
                 if let Some(temp_dir) = converted_temp_dir {
-                    env.insert("TEMP".into(), make_portable_path(temp_dir.clone())?);
-                    env.insert("TMP".into(), make_portable_path(temp_dir)?);
+                    if !temp_dir.exists() {
+                        fs_err::create_dir_all(&temp_dir)?
+                    };
+                    match rt.platform().kind() {
+                        FlowPlatformKind::Windows => {
+                            env.insert("TEMP".into(), make_portable_path(temp_dir.clone())?);
+                            env.insert("TMP".into(), make_portable_path(temp_dir)?);
+                        }
+                        FlowPlatformKind::Unix => {
+                            env.insert("TMPDIR".into(), make_portable_path(temp_dir.clone())?);
+                        }
+                    }
                 }
 
                 if disable_remote_artifacts {
