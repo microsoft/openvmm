@@ -190,7 +190,9 @@ use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
 use zerocopy::FromZeros;
 
+#[cfg(guest_arch = "x86_64")]
 pub(crate) const PM_BASE: u16 = 0x400;
+#[cfg(guest_arch = "x86_64")]
 pub(crate) const SYSTEM_IRQ_ACPI: u32 = 9;
 pub(crate) const WDAT_PORT: u16 = 0x30;
 
@@ -2207,6 +2209,9 @@ async fn new_underhill_vm(
     let halt_vps = Arc::new(halt_vps);
 
     resolver.add_resolver(vmm_core::platform_resolvers::HaltResolver(halt_vps.clone()));
+    resolver.add_resolver(UnderhillPmTimerAssistResolver {
+        partition: Arc::downgrade(&partition),
+    });
 
     let bounce_buffer_tracker = {
         let size = {
@@ -2340,7 +2345,8 @@ async fn new_underhill_vm(
         } else {
             anyhow::bail!("unsupported guest architecture")
         },
-    );
+    )
+    .with_platform_pm_timer_assist();
 
     if with_serial {
         chipset = chipset.with_serial(serial_inputs);
@@ -2777,15 +2783,6 @@ async fn new_underhill_vm(
     let deps_generic_isa_dma = chipset
         .with_generic_isa_dma
         .then_some(dev::GenericIsaDmaDeps);
-    let deps_piix4_power_management =
-        chipset
-            .with_piix4_power_management
-            .then(|| dev::Piix4PowerManagementDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-                pm_timer_assist: Some(Box::new(UnderhillPmTimerAssist {
-                    partition: Arc::downgrade(&partition),
-                })),
-            });
 
     let deps_winbond_super_io_and_floppy_stub = chipset
         .with_winbond_super_io_and_floppy_stub
@@ -2947,24 +2944,12 @@ async fn new_underhill_vm(
         });
     };
 
-    let deps_hyperv_power_management =
-        chipset
-            .with_hyperv_power_management
-            .then(|| dev::HyperVPowerManagementDeps {
-                acpi_irq: SYSTEM_IRQ_ACPI,
-                pio_base: PM_BASE,
-                pm_timer_assist: Some(Box::new(UnderhillPmTimerAssist {
-                    partition: Arc::downgrade(&partition),
-                })),
-            });
-
     let devices = BaseChipsetDevices {
         deps_generic_cmos_rtc,
         deps_generic_ioapic,
         deps_generic_psp,
         deps_hyperv_firmware_uefi,
         deps_hyperv_guest_watchdog,
-        deps_hyperv_power_management,
         deps_generic_isa_dma,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
@@ -2975,7 +2960,6 @@ async fn new_underhill_vm(
         deps_i440bx_host_pci_bridge,
         deps_piix4_cmos_rtc,
         deps_piix4_pci_bus,
-        deps_piix4_power_management,
         deps_underhill_vga_proxy,
         deps_winbond_super_io_and_floppy_stub,
         deps_winbond_super_io_and_floppy_full: None,
@@ -3926,6 +3910,33 @@ impl chipset::pm::PmTimerAssist for UnderhillPmTimerAssist {
                 );
             }
         }
+    }
+}
+
+/// Resolver for the PM timer assist platform resource in Underhill.
+pub struct UnderhillPmTimerAssistResolver {
+    partition: std::sync::Weak<UhPartition>,
+}
+
+impl
+    vm_resource::ResolveResource<
+        chipset_resources::pm::PmTimerAssistHandleKind,
+        vm_resource::PlatformResource,
+    > for UnderhillPmTimerAssistResolver
+{
+    type Output = chipset_resources::pm::ResolvedPmTimerAssist;
+    type Error = std::convert::Infallible;
+
+    fn resolve(
+        &self,
+        _resource: vm_resource::PlatformResource,
+        _input: (),
+    ) -> Result<Self::Output, Self::Error> {
+        Ok(chipset_resources::pm::ResolvedPmTimerAssist(Box::new(
+            UnderhillPmTimerAssist {
+                partition: self.partition.clone(),
+            },
+        )))
     }
 }
 

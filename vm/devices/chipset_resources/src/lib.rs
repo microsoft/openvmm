@@ -165,3 +165,71 @@ pub mod piix4_uhci {
         const ID: &'static str = "piix4PciUsbUhciStub";
     }
 }
+
+pub mod pm {
+    //! Resource definitions for power management devices.
+
+    use mesh::MeshPayload;
+    use vm_resource::CanResolveTo;
+    use vm_resource::Resource;
+    use vm_resource::ResourceId;
+    use vm_resource::ResourceKind;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// Interface to enable/disable hypervisor PM timer assist.
+    pub trait PmTimerAssist: Send + Sync {
+        /// Sets the port of the PM timer assist, or disables it if `None`.
+        fn set(&self, port: Option<u16>);
+    }
+
+    /// Resolved PM timer assist, wrapping a boxed trait object.
+    pub struct ResolvedPmTimerAssist(pub Box<dyn PmTimerAssist>);
+
+    /// Resource kind for PM timer assist implementations.
+    pub enum PmTimerAssistHandleKind {}
+
+    impl ResourceKind for PmTimerAssistHandleKind {
+        const NAME: &'static str = "pm_timer_assist";
+    }
+
+    impl CanResolveTo<ResolvedPmTimerAssist> for PmTimerAssistHandleKind {
+        type Input<'a> = ();
+    }
+
+    /// A handle to the Hyper-V power management device (non-PCI, ACPI/PIO).
+    #[derive(MeshPayload)]
+    pub struct HyperVPowerManagementDeviceHandle {
+        /// IRQ line triggered on ACPI power event.
+        pub acpi_irq: u32,
+        /// Base port IO address of the device's dynamic register region.
+        pub pio_base: u16,
+        /// Optional PM timer assist resource.
+        pub pm_timer_assist: Option<Resource<PmTimerAssistHandleKind>>,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for HyperVPowerManagementDeviceHandle {
+        const ID: &'static str = "hyperv_power_management";
+    }
+
+    /// A handle to the PIIX4 power management device (PCI function 3).
+    #[derive(MeshPayload)]
+    pub struct Piix4PowerManagementDeviceHandle {
+        /// Optional PM timer assist resource.
+        pub pm_timer_assist: Option<Resource<PmTimerAssistHandleKind>>,
+    }
+
+    /// The fixed BDF used by the PIIX4 PM device in the Gen1 chipset.
+    pub const PIIX4_PM_BDF: (u8, u8, u8) = (0, 7, 3);
+
+    /// Default PIO base address for the PM dynamic register region.
+    ///
+    /// This value must match what is reported by the firmware (FADT).
+    pub const DEFAULT_PM_PIO_BASE: u16 = 0x400;
+
+    /// Default ACPI IRQ line for the Hyper-V power management device.
+    pub const DEFAULT_ACPI_IRQ: u32 = 9;
+
+    impl ResourceId<ChipsetDeviceHandleKind> for Piix4PowerManagementDeviceHandle {
+        const ID: &'static str = "piix4_power_management";
+    }
+}

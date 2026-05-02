@@ -27,6 +27,11 @@ use chipset_resources::piix4_pci_isa_bridge::Piix4PciIsaBridgeDeviceHandle;
 use chipset_resources::piix4_uhci::PIIX4_PCI_USB_UHCI_STUB_BDF;
 use chipset_resources::piix4_uhci::Piix4PciUsbUhciStubDeviceHandle;
 use chipset_resources::pit::PitDeviceHandle;
+use chipset_resources::pm::DEFAULT_ACPI_IRQ;
+use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
+use chipset_resources::pm::HyperVPowerManagementDeviceHandle;
+use chipset_resources::pm::PIIX4_PM_BDF;
+use chipset_resources::pm::Piix4PowerManagementDeviceHandle;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
@@ -36,6 +41,7 @@ use serial_pl011_resources::SerialPl011DeviceHandle;
 use std::iter::zip;
 use thiserror::Error;
 use vm_resource::IntoResource;
+use vm_resource::PlatformResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::kind::SerialBackendHandle;
@@ -56,6 +62,7 @@ pub struct VmManifestBuilder {
     framebuffer: bool,
     guest_watchdog: bool,
     psp: bool,
+    platform_pm_timer_assist: bool,
     debugcon: Option<(Resource<SerialBackendHandle>, u16)>,
 }
 
@@ -132,6 +139,7 @@ impl VmManifestBuilder {
             framebuffer: false,
             guest_watchdog: false,
             psp: false,
+            platform_pm_timer_assist: false,
             debugcon: None,
         }
     }
@@ -219,6 +227,17 @@ impl VmManifestBuilder {
         self
     }
 
+    /// Use the platform-provided PM timer assist implementation for power
+    /// management devices.
+    ///
+    /// When set, the PM device handles will include a platform resource
+    /// reference for PM timer assist, which must be resolved by a
+    /// platform-specific resolver registered with the resource resolver.
+    pub fn with_platform_pm_timer_assist(mut self) -> Self {
+        self.platform_pm_timer_assist = true;
+        self
+    }
+
     /// Build the VM manifest.
     pub fn build(self) -> Result<VmChipsetResult, Error> {
         let mut result = VmChipsetResult {
@@ -266,12 +285,10 @@ impl VmManifestBuilder {
                     with_hyperv_framebuffer: !self.proxy_vga,
                     with_hyperv_guest_watchdog: false,
                     with_hyperv_ide: true,
-                    with_hyperv_power_management: false,
                     with_hyperv_vga: !self.proxy_vga,
                     with_i440bx_host_pci_bridge: true,
                     with_piix4_cmos_rtc: true,
                     with_piix4_pci_bus: true,
-                    with_piix4_power_management: true,
                     with_underhill_vga_proxy: self.proxy_vga,
                     with_winbond_super_io_and_floppy_stub: self.stub_floppy,
                     with_winbond_super_io_and_floppy_full: !self.stub_floppy,
@@ -279,6 +296,7 @@ impl VmManifestBuilder {
                 result.capabilities.with_ioapic = true;
                 result.attach_pic();
                 result.attach_pit();
+                result.attach_piix4_power_management(self.platform_pm_timer_assist);
                 result.attach_missing_arch_ports(self.arch, false);
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
@@ -298,12 +316,10 @@ impl VmManifestBuilder {
                     with_hyperv_framebuffer: self.framebuffer,
                     with_hyperv_guest_watchdog: self.guest_watchdog,
                     with_hyperv_ide: false,
-                    with_hyperv_power_management: is_x86,
                     with_hyperv_vga: false,
                     with_i440bx_host_pci_bridge: false,
                     with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
-                    with_piix4_power_management: false,
                     with_underhill_vga_proxy: false,
                     with_winbond_super_io_and_floppy_stub: false,
                     with_winbond_super_io_and_floppy_full: false,
@@ -313,6 +329,7 @@ impl VmManifestBuilder {
                 if is_x86 {
                     result.attach_pic();
                     result.attach_pit();
+                    result.attach_hyperv_power_management(self.platform_pm_timer_assist);
                 }
                 result
                     .maybe_attach_arch_serial(
@@ -340,18 +357,20 @@ impl VmManifestBuilder {
                     with_hyperv_framebuffer: self.framebuffer,
                     with_hyperv_guest_watchdog: self.guest_watchdog,
                     with_hyperv_ide: false,
-                    with_hyperv_power_management: is_x86,
                     with_hyperv_vga: false,
                     with_i440bx_host_pci_bridge: false,
                     with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
-                    with_piix4_power_management: false,
+
                     with_underhill_vga_proxy: false,
                     with_winbond_super_io_and_floppy_stub: false,
                     with_winbond_super_io_and_floppy_full: false,
                 };
                 result.capabilities.with_ioapic = is_x86;
                 result.capabilities.with_psp = self.psp;
+                if is_x86 {
+                    result.attach_hyperv_power_management(self.platform_pm_timer_assist);
+                }
                 result
                     .maybe_attach_arch_serial(
                         self.arch,
@@ -453,6 +472,31 @@ impl VmChipsetResult {
             resource: Piix4PciIsaBridgeDeviceHandle.into_resource(),
             pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
             bdf: PIIX4_PCI_ISA_BRIDGE_BDF,
+        });
+        self
+    }
+
+    fn attach_hyperv_power_management(&mut self, platform_pm_timer_assist: bool) -> &mut Self {
+        let pm_timer_assist = platform_pm_timer_assist.then(|| PlatformResource.into_resource());
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "pm".to_owned(),
+            resource: HyperVPowerManagementDeviceHandle {
+                acpi_irq: DEFAULT_ACPI_IRQ,
+                pio_base: DEFAULT_PM_PIO_BASE,
+                pm_timer_assist,
+            }
+            .into_resource(),
+        });
+        self
+    }
+
+    fn attach_piix4_power_management(&mut self, platform_pm_timer_assist: bool) -> &mut Self {
+        let pm_timer_assist = platform_pm_timer_assist.then(|| PlatformResource.into_resource());
+        self.pci_chipset_devices.push(LegacyPciChipsetDeviceHandle {
+            name: "piix4-pm".to_string(),
+            resource: Piix4PowerManagementDeviceHandle { pm_timer_assist }.into_resource(),
+            pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
+            bdf: PIIX4_PM_BDF,
         });
         self
     }

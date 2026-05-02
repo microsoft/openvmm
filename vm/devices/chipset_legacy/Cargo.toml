@@ -18,8 +18,8 @@ local_clock.workspace = true
 pci_bus.workspace = true
 pci_core.workspace = true
 memory_range.workspace = true
-vmcore.workspace = true
 power_resources.workspace = true
+vmcore.workspace = true
 
 async-trait.workspace = true
 inspect.workspace = true

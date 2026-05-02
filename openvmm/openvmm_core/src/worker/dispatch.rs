@@ -152,7 +152,9 @@ use watchdog_core::platform::BaseWatchdogPlatform;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
 
+#[cfg(guest_arch = "x86_64")]
 const PM_BASE: u16 = 0x400;
+#[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
 
 const WDAT_PORT: u16 = 0x30;
@@ -1568,13 +1570,6 @@ impl InitializedVm {
                 vtl2_framebuffer_gpa_base,
             });
 
-        let deps_hyperv_power_management =
-            (cfg.chipset.with_hyperv_power_management).then_some(dev::HyperVPowerManagementDeps {
-                acpi_irq: SYSTEM_IRQ_ACPI,
-                pio_base: PM_BASE,
-                pm_timer_assist: None,
-            });
-
         let deps_hyperv_vga = if cfg.chipset.with_hyperv_vga {
             let vga_firmware = cfg.vga_firmware.as_ref().context("no VGA BIOS file")?;
             let rom_builder = RomBuilder::new("vga".into(), Box::new(mapper.clone()));
@@ -1622,12 +1617,6 @@ impl InitializedVm {
             secondary_channel_drives,
         });
 
-        let deps_piix4_power_management =
-            (cfg.chipset.with_piix4_power_management).then_some(dev::Piix4PowerManagementDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-                pm_timer_assist: None,
-            });
-
         let base_chipset_devices = {
             BaseChipsetDevices {
                 deps_generic_cmos_rtc,
@@ -1641,12 +1630,10 @@ impl InitializedVm {
                 deps_hyperv_framebuffer,
                 deps_hyperv_guest_watchdog,
                 deps_hyperv_ide,
-                deps_hyperv_power_management,
                 deps_hyperv_vga,
                 deps_i440bx_host_pci_bridge,
                 deps_piix4_cmos_rtc,
                 deps_piix4_pci_bus,
-                deps_piix4_power_management,
                 deps_underhill_vga_proxy: None,
                 deps_winbond_super_io_and_floppy_stub: None,
                 deps_winbond_super_io_and_floppy_full,
