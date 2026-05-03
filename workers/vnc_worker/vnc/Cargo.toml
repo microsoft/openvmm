@@ -8,12 +8,18 @@ rust-version.workspace = true
 
 [dependencies]
 pal_async.workspace = true
+video_core.workspace = true
 
 flate2.workspace = true
 futures.workspace = true
 thiserror.workspace = true
+tracelimit.workspace = true
+tracing.workspace = true
 zerocopy.workspace = true
 socket2 = { workspace = true, features = [ "all" ] }
+
+[dev-dependencies]
+parking_lot.workspace = true
 
 [lints]
 workspace = true

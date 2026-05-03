@@ -5399,6 +5399,7 @@ dependencies = [
  "serial_core",
  "serial_socket",
  "shell-words",
+ "socket2",
  "sparse_mmap",
  "storvsp_resources",
  "tempfile",
@@ -8223,6 +8224,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "framebuffer",
  "futures",
  "guestmem",
  "guid",
@@ -8230,6 +8232,7 @@ dependencies = [
  "inspect",
  "mesh",
  "pal_async",
+ "sparse_mmap",
  "static_assertions",
  "task_control",
  "test_with_tracing",
@@ -8252,6 +8255,7 @@ name = "uidevices_resources"
 version = "0.0.0"
 dependencies = [
  "mesh",
+ "video_core",
  "vm_resource",
 ]
 
@@ -10163,8 +10167,12 @@ dependencies = [
  "flate2",
  "futures",
  "pal_async",
+ "parking_lot",
  "socket2",
  "thiserror 2.0.16",
+ "tracelimit",
+ "tracing",
+ "video_core",
  "zerocopy",
 ]
 
@@ -10180,9 +10188,13 @@ dependencies = [
  "mesh",
  "mesh_worker",
  "pal_async",
+ "parking_lot",
  "socket2",
+ "sparse_mmap",
  "tracing",
  "tracing_helpers",
+ "unicycle",
+ "video_core",
  "vmsocket",
  "vnc",
  "vnc_worker_defs",
@@ -10196,6 +10208,7 @@ dependencies = [
  "input_core",
  "mesh",
  "mesh_worker",
+ "video_core",
  "vmsocket",
 ]
 
