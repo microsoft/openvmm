@@ -2453,7 +2453,6 @@ jobs:
       run: |-
         flowey.exe e 16 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey.exe e 16 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
-        flowey.exe e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: create gh cache dir
       run: flowey.exe e 16 flowey_lib_common::download_gh_cli 0
@@ -2519,12 +2518,12 @@ jobs:
       run: |-
         flowey.exe e 16 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 16 flowey_lib_common::run_cargo_nextest_run 1
-        flowey.exe e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+        flowey.exe e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: stopping test_igvm_agent_rpc_server
       run: |-
         flowey.exe e 16 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-        flowey.exe e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey.exe e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
         flowey.exe e 16 flowey_lib_common::publish_test_results 4
         flowey.exe e 16 flowey_lib_common::publish_test_results 5
         flowey.exe v 16 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs:152:62' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57 write-to-env github floweyvar2
@@ -2539,7 +2538,7 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+        flowey.exe e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
         flowey.exe e 16 flowey_lib_common::publish_test_results 0
         flowey.exe e 16 flowey_lib_common::publish_test_results 1
         flowey.exe e 16 flowey_lib_common::publish_test_results 2
@@ -2554,7 +2553,7 @@ jobs:
       name: 'publish test results: x64-windows-intel-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey.exe e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      run: flowey.exe e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 16 flowey_lib_common::cache 3
@@ -2719,7 +2718,6 @@ jobs:
       run: |-
         flowey.exe e 17 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey.exe e 17 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
-        flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: create gh cache dir
       run: flowey.exe e 17 flowey_lib_common::download_gh_cli 0
@@ -2773,29 +2771,29 @@ jobs:
         flowey.exe e 17 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: generate nextest command
-      run: |-
-        flowey.exe e 17 flowey_lib_common::gen_cargo_nextest_run_cmd 0
-        flowey.exe e 17 flowey_core::pipeline::artifact::resolve 7
-      shell: bash
-    - name: running vmm_test prep_steps
-      run: flowey.exe e 17 flowey_lib_hvlite::run_prep_steps 0
+      run: flowey.exe e 17 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
     - name: install vmm tests deps (windows)
       run: flowey.exe e 17 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
     - name: starting test_igvm_agent_rpc_server
-      run: flowey.exe e 17 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
+      run: |-
+        flowey.exe e 17 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
+        flowey.exe e 17 flowey_core::pipeline::artifact::resolve 7
+      shell: bash
+    - name: running vmm_test prep_steps
+      run: flowey.exe e 17 flowey_lib_hvlite::run_prep_steps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
         flowey.exe e 17 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 17 flowey_lib_common::run_cargo_nextest_run 1
-        flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+        flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: stopping test_igvm_agent_rpc_server
       run: |-
         flowey.exe e 17 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-        flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
         flowey.exe e 17 flowey_lib_common::publish_test_results 4
         flowey.exe e 17 flowey_lib_common::publish_test_results 5
         flowey.exe v 17 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs:152:62' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57 write-to-env github floweyvar2
@@ -2810,7 +2808,7 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+        flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
         flowey.exe e 17 flowey_lib_common::publish_test_results 0
         flowey.exe e 17 flowey_lib_common::publish_test_results 1
         flowey.exe e 17 flowey_lib_common::publish_test_results 2
@@ -2825,7 +2823,7 @@ jobs:
       name: 'publish test results: x64-windows-intel-tdx-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      run: flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 17 flowey_lib_common::cache 3
@@ -2990,7 +2988,6 @@ jobs:
       run: |-
         flowey.exe e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey.exe e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
-        flowey.exe e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: create gh cache dir
       run: flowey.exe e 18 flowey_lib_common::download_gh_cli 0
@@ -3056,12 +3053,12 @@ jobs:
       run: |-
         flowey.exe e 18 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 18 flowey_lib_common::run_cargo_nextest_run 1
-        flowey.exe e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+        flowey.exe e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: stopping test_igvm_agent_rpc_server
       run: |-
         flowey.exe e 18 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-        flowey.exe e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey.exe e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
         flowey.exe e 18 flowey_lib_common::publish_test_results 4
         flowey.exe e 18 flowey_lib_common::publish_test_results 5
         flowey.exe v 18 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs:152:62' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57 write-to-env github floweyvar2
@@ -3076,7 +3073,7 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+        flowey.exe e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
         flowey.exe e 18 flowey_lib_common::publish_test_results 0
         flowey.exe e 18 flowey_lib_common::publish_test_results 1
         flowey.exe e 18 flowey_lib_common::publish_test_results 2
@@ -3091,7 +3088,7 @@ jobs:
       name: 'publish test results: x64-windows-amd-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey.exe e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      run: flowey.exe e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 18 flowey_lib_common::cache 3
@@ -3256,7 +3253,6 @@ jobs:
       run: |-
         flowey.exe e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey.exe e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
-        flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: create gh cache dir
       run: flowey.exe e 19 flowey_lib_common::download_gh_cli 0
@@ -3310,29 +3306,29 @@ jobs:
         flowey.exe e 19 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: generate nextest command
-      run: |-
-        flowey.exe e 19 flowey_lib_common::gen_cargo_nextest_run_cmd 0
-        flowey.exe e 19 flowey_core::pipeline::artifact::resolve 7
-      shell: bash
-    - name: running vmm_test prep_steps
-      run: flowey.exe e 19 flowey_lib_hvlite::run_prep_steps 0
+      run: flowey.exe e 19 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
     - name: install vmm tests deps (windows)
       run: flowey.exe e 19 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
     - name: starting test_igvm_agent_rpc_server
-      run: flowey.exe e 19 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
+      run: |-
+        flowey.exe e 19 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
+        flowey.exe e 19 flowey_core::pipeline::artifact::resolve 7
+      shell: bash
+    - name: running vmm_test prep_steps
+      run: flowey.exe e 19 flowey_lib_hvlite::run_prep_steps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
         flowey.exe e 19 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 19 flowey_lib_common::run_cargo_nextest_run 1
-        flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+        flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: stopping test_igvm_agent_rpc_server
       run: |-
         flowey.exe e 19 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-        flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
         flowey.exe e 19 flowey_lib_common::publish_test_results 4
         flowey.exe e 19 flowey_lib_common::publish_test_results 5
         flowey.exe v 19 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs:152:62' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57 write-to-env github floweyvar2
@@ -3347,7 +3343,7 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+        flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
         flowey.exe e 19 flowey_lib_common::publish_test_results 0
         flowey.exe e 19 flowey_lib_common::publish_test_results 1
         flowey.exe e 19 flowey_lib_common::publish_test_results 2
@@ -3362,7 +3358,7 @@ jobs:
       name: 'publish test results: x64-windows-amd-snp-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      run: flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 19 flowey_lib_common::cache 3
@@ -3687,7 +3683,6 @@ jobs:
       run: |-
         flowey e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
-        flowey e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: create gh cache dir
       run: flowey e 20 flowey_lib_common::download_gh_cli 0
@@ -3806,7 +3801,7 @@ jobs:
       run: |-
         flowey e 20 flowey_lib_common::run_cargo_nextest_run 0
         flowey e 20 flowey_lib_common::run_cargo_nextest_run 1
-        flowey e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+        flowey e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
         flowey e 20 flowey_lib_common::publish_test_results 4
         flowey e 20 flowey_lib_common::publish_test_results 5
         flowey v 20 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs:152:62' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57 write-to-env github floweyvar2
@@ -3821,7 +3816,7 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
         flowey e 20 flowey_lib_common::publish_test_results 0
         flowey e 20 flowey_lib_common::publish_test_results 1
         flowey e 20 flowey_lib_common::publish_test_results 2
@@ -3836,7 +3831,7 @@ jobs:
       name: 'publish test results: x64-linux-amd-kvm-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      run: flowey e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 20 flowey_lib_common::cache 3
@@ -4042,7 +4037,6 @@ jobs:
       run: |-
         flowey.exe e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey.exe e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
-        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: create gh cache dir
       run: flowey.exe e 21 flowey_lib_common::download_gh_cli 0
@@ -4108,12 +4102,12 @@ jobs:
       run: |-
         flowey.exe e 21 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 21 flowey_lib_common::run_cargo_nextest_run 1
-        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: stopping test_igvm_agent_rpc_server
       run: |-
         flowey.exe e 21 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
         flowey.exe e 21 flowey_lib_common::publish_test_results 4
         flowey.exe e 21 flowey_lib_common::publish_test_results 5
         flowey.exe v 21 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs:152:62' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57 write-to-env github floweyvar2
@@ -4128,7 +4122,7 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
         flowey.exe e 21 flowey_lib_common::publish_test_results 0
         flowey.exe e 21 flowey_lib_common::publish_test_results 1
         flowey.exe e 21 flowey_lib_common::publish_test_results 2
@@ -4143,7 +4137,7 @@ jobs:
       name: 'publish test results: aarch64-windows-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      run: flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 21 flowey_lib_common::cache 3
@@ -4744,7 +4738,6 @@ jobs:
       run: |-
         flowey.exe e 24 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey.exe e 24 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
-        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: create gh cache dir
       run: flowey.exe e 24 flowey_lib_common::download_gh_cli 0
@@ -4810,12 +4803,12 @@ jobs:
       run: |-
         flowey.exe e 24 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 24 flowey_lib_common::run_cargo_nextest_run 1
-        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: stopping test_igvm_agent_rpc_server
       run: |-
         flowey.exe e 24 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
         flowey.exe e 24 flowey_lib_common::publish_test_results 4
         flowey.exe e 24 flowey_lib_common::publish_test_results 5
         flowey.exe v 24 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs:152:62' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57 write-to-env github floweyvar2
@@ -4830,7 +4823,7 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
         flowey.exe e 24 flowey_lib_common::publish_test_results 0
         flowey.exe e 24 flowey_lib_common::publish_test_results 1
         flowey.exe e 24 flowey_lib_common::publish_test_results 2
@@ -4845,7 +4838,7 @@ jobs:
       name: 'publish test results: x64-windows-intel-mi-secure-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      run: flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 24 flowey_lib_common::cache 3

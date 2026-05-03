@@ -20,7 +20,7 @@ flowey_request! {
         /// Specify where VMM tests disk images are stored.
         pub disk_images_dir: Option<ReadVar<PathBuf>>,
         /// Specify where tempory files used by tests are stored.
-        pub temp_dir: Option<ReadVar<PathBuf>>,
+        pub temp_dir: Option<PathBuf>,
         /// What triple VMM tests are built for.
         ///
         /// Used to detect cases of running Windows VMM tests via WSL2, and adjusting
@@ -135,7 +135,6 @@ impl SimpleFlowNode for Node {
         ctx.emit_rust_step("setting up vmm_tests env", |ctx| {
             let test_content_dir = test_content_dir.claim(ctx);
             let disk_image_dir = disk_images_dir.claim(ctx);
-            let temp_dir = temp_dir.claim(ctx);
             let get_env = get_env.claim(ctx);
             let get_test_log_path = get_test_log_path.claim(ctx);
             let openvmm = register_openvmm.claim(ctx);
@@ -172,7 +171,6 @@ impl SimpleFlowNode for Node {
 
                 let working_dir_ref = test_content_dir.as_path();
                 let disk_image_dir = disk_image_dir.map(|v| rt.read(v));
-                let temp_dir = temp_dir.map(|v| rt.read(v));
 
                 let working_dir_win = windows_via_wsl2.then(|| {
                     flowey_lib_common::_util::wslpath::linux_to_win(rt, working_dir_ref)

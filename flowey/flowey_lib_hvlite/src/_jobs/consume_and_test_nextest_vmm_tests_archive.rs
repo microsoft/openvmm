@@ -63,6 +63,8 @@ flowey_request! {
         pub fail_job_on_test_fail: bool,
         /// If provided, also publish junit.xml test results as an artifact.
         pub artifact_dir: Option<ReadVar<PathBuf>>,
+        /// Specify where to store temporary files
+        pub temp_dir: Option<PathBuf>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -100,6 +102,7 @@ impl SimpleFlowNode for Node {
             needs_prep_run,
             hugetlb_2mb_overcommit_pages,
             artifact_dir,
+            temp_dir,
             done,
         } = request;
 
@@ -139,8 +142,6 @@ impl SimpleFlowNode for Node {
         let disk_images_dir =
             ctx.reqv(crate::download_openvmm_vmm_tests_artifacts::Request::GetDownloadFolder);
 
-        let temp_dir = test_content_dir.map(ctx, |d| d.join("temp"));
-
         ctx.config(crate::install_vmm_tests_deps::Config {
             selections: Some(match target.operating_system {
                 target_lexicon::OperatingSystem::Windows => VmmTestsDepSelections::Windows {
@@ -175,7 +176,7 @@ impl SimpleFlowNode for Node {
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir,
             disk_images_dir: Some(disk_images_dir),
-            temp_dir: Some(temp_dir),
+            temp_dir,
             vmm_tests_target: target.clone(),
             register_openvmm,
             register_openvmm_vhost,

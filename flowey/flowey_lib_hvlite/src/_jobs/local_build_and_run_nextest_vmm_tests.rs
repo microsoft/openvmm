@@ -709,7 +709,7 @@ impl SimpleFlowNode for Node {
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir: ReadVar::from_static(test_content_dir.clone()),
             disk_images_dir: Some(test_artifacts_dir),
-            temp_dir: Some(ReadVar::from_static(temp_dir)),
+            temp_dir: Some(temp_dir),
             vmm_tests_target: target_triple.clone(),
             register_openvmm,
             register_openvmm_vhost,

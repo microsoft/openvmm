@@ -1204,6 +1204,7 @@ impl IntoPipeline for CheckinGatesCli {
             arch: FlowArch,
             gh_pool: GhRunner,
             ado_pool: Option<AdoPool>,
+            temp_dir: Option<PathBuf>,
             label: &'a str,
             target: CommonTriple,
             resolve_vmm_tests_artifacts: vmm_tests_artifact_builders::ResolveVmmTestsDepArtifacts,
@@ -1297,11 +1298,14 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::VmgsWith16kTpm,
         ];
 
+        let temp_dir_from = |work_folder: &str| Some(PathBuf::from(work_folder).join("temp"));
+
         for VmmTestJobParams {
             platform,
             arch,
             gh_pool,
             ado_pool,
+            temp_dir,
             label,
             target,
             resolve_vmm_tests_artifacts,
@@ -1315,6 +1319,7 @@ impl IntoPipeline for CheckinGatesCli {
                 arch: FlowArch::X86_64,
                 gh_pool: gh_pools::windows_intel_1es(),
                 ado_pool: Some(ado_pools::windows_intel_1es()),
+                temp_dir: temp_dir_from(gh_pools::WINDOWS_WORK_FOLDER),
                 label: "x64-windows-intel",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_x86,
@@ -1328,6 +1333,7 @@ impl IntoPipeline for CheckinGatesCli {
                 arch: FlowArch::X86_64,
                 gh_pool: gh_pools::windows_tdx_self_hosted_baremetal(),
                 ado_pool: None,
+                temp_dir: None,
                 label: "x64-windows-intel-tdx",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_tdx_x86,
@@ -1341,10 +1347,14 @@ impl IntoPipeline for CheckinGatesCli {
                 arch: FlowArch::X86_64,
                 gh_pool: gh_pools::windows_amd_1es(),
                 ado_pool: Some(ado_pools::windows_amd_1es()),
+                temp_dir: temp_dir_from(gh_pools::WINDOWS_WORK_FOLDER),
                 label: "x64-windows-amd",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
-                nextest_filter_expr: standard_filter.clone(),
+                // tmk and sidecar requires x2apic, which causes our amd nested runners to crash
+                nextest_filter_expr: format!(
+                    "{standard_filter} & !(test(hyperv_openhcl) & (test(sidecar) + test(tmk)))"
+                ),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 needs_prep_run: false,
                 hugetlb_2mb_overcommit_pages: None,
@@ -1354,6 +1364,7 @@ impl IntoPipeline for CheckinGatesCli {
                 arch: FlowArch::X86_64,
                 gh_pool: gh_pools::windows_snp_self_hosted_baremetal(),
                 ado_pool: None,
+                temp_dir: None,
                 label: "x64-windows-amd-snp",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_snp_x86,
@@ -1367,6 +1378,7 @@ impl IntoPipeline for CheckinGatesCli {
                 arch: FlowArch::X86_64,
                 gh_pool: gh_pools::linux_amd_1es(),
                 ado_pool: Some(ado_pools::linux_amd_1es()),
+                temp_dir: temp_dir_from(gh_pools::LINUX_WORK_FOLDER),
                 label: "x64-linux-amd-kvm",
                 target: CommonTriple::X86_64_LINUX_GNU,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
@@ -1381,6 +1393,7 @@ impl IntoPipeline for CheckinGatesCli {
             //     arch: FlowArch::X86_64,
             //     gh_pool: gh_pools::linux_mshv_1es(),
             //     ado_pool: None,
+            //     temp_dir: temp_dir_from(gh_pools::WINDOWS_WORK_FOLDER),
             //     label: "x64-linux-intel-mshv",
             //     target: CommonTriple::X86_64_LINUX_MUSL,
             //     resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_mshv_x86,
@@ -1395,6 +1408,7 @@ impl IntoPipeline for CheckinGatesCli {
                 arch: FlowArch::Aarch64,
                 gh_pool: gh_pools::windows_arm_self_hosted_baremetal(),
                 ado_pool: None,
+                temp_dir: None,
                 label: "aarch64-windows",
                 target: CommonTriple::AARCH64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_aarch64,
@@ -1452,6 +1466,7 @@ impl IntoPipeline for CheckinGatesCli {
                     artifact_dir: pub_vmm_tests_results.map(|x| ctx.publish_artifact(x)),
                     needs_prep_run,
                     hugetlb_2mb_overcommit_pages,
+                    temp_dir,
                     done: ctx.new_done_handle(),
                 }
             });
@@ -1594,6 +1609,7 @@ impl IntoPipeline for CheckinGatesCli {
                         artifact_dir: pub_mi_secure_test_results.map(|x| ctx.publish_artifact(x)),
                         needs_prep_run: false,
                         hugetlb_2mb_overcommit_pages: None,
+                        temp_dir: temp_dir_from(gh_pools::WINDOWS_WORK_FOLDER),
                         done: ctx.new_done_handle(),
                     }
                 });
