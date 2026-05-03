@@ -643,6 +643,8 @@ impl SimpleFlowNode for Node {
             ..Default::default()
         });
 
+        let temp_dir = test_content_dir.join("temp");
+
         ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));
         let test_artifacts_dir =
             ctx.reqv(crate::download_openvmm_vmm_tests_artifacts::Request::GetDownloadFolder);
@@ -706,6 +708,8 @@ impl SimpleFlowNode for Node {
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir: ReadVar::from_static(test_content_dir.clone()),
+            disk_images_dir: Some(test_artifacts_dir),
+            temp_dir: Some(temp_dir),
             vmm_tests_target: target_triple.clone(),
             register_openvmm,
             register_openvmm_vhost,
@@ -719,7 +723,6 @@ impl SimpleFlowNode for Node {
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,
-            disk_images_dir: Some(test_artifacts_dir),
             register_openhcl_igvm_files,
             get_test_log_path: None,
             get_env: v,

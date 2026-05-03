@@ -19,6 +19,8 @@ flowey_request! {
         pub test_content_dir: ReadVar<PathBuf>,
         /// Specify where VMM tests disk images are stored.
         pub disk_images_dir: Option<ReadVar<PathBuf>>,
+        /// Specify where tempory files used by tests are stored.
+        pub temp_dir: Option<PathBuf>,
         /// What triple VMM tests are built for.
         ///
         /// Used to detect cases of running Windows VMM tests via WSL2, and adjusting
@@ -87,6 +89,8 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
             test_content_dir,
+            disk_images_dir,
+            temp_dir,
             vmm_tests_target,
             register_openvmm,
             register_openvmm_vhost,
@@ -100,7 +104,6 @@ impl SimpleFlowNode for Node {
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,
-            disk_images_dir,
             register_openhcl_igvm_files,
             get_test_log_path,
             get_env,
@@ -131,6 +134,7 @@ impl SimpleFlowNode for Node {
 
         ctx.emit_rust_step("setting up vmm_tests env", |ctx| {
             let test_content_dir = test_content_dir.claim(ctx);
+            let disk_image_dir = disk_images_dir.claim(ctx);
             let get_env = get_env.claim(ctx);
             let get_test_log_path = get_test_log_path.claim(ctx);
             let openvmm = register_openvmm.claim(ctx);
@@ -145,7 +149,6 @@ impl SimpleFlowNode for Node {
             let test_igvm_agent_rpc_server = register_test_igvm_agent_rpc_server.claim(ctx);
             let tpm_guest_tests_windows = register_tpm_guest_tests_windows.claim(ctx);
             let tpm_guest_tests_linux = register_tpm_guest_tests_linux.claim(ctx);
-            let disk_image_dir = disk_images_dir.claim(ctx);
             let openhcl_igvm_files = register_openhcl_igvm_files.claim(ctx);
             let test_linux_initrd = test_linux_initrd.claim(ctx);
             let test_linux_kernel = test_linux_kernel.claim(ctx);
@@ -194,6 +197,8 @@ impl SimpleFlowNode for Node {
                     .as_ref()
                     .map(|p| wsl_convert_path(p))
                     .transpose()?;
+                let converted_temp_dir =
+                    temp_dir.as_ref().map(|p| wsl_convert_path(p)).transpose()?;
 
                 // Make a converted path relative if requested.
                 let make_portable_path = |path: PathBuf| -> anyhow::Result<String> {
@@ -248,6 +253,21 @@ impl SimpleFlowNode for Node {
                         "VMM_TEST_IMAGES".into(),
                         make_portable_path(disk_image_dir)?,
                     );
+                }
+
+                if let Some(temp_dir) = converted_temp_dir {
+                    if !temp_dir.exists() {
+                        fs_err::create_dir_all(&temp_dir)?
+                    };
+                    match rt.platform().kind() {
+                        FlowPlatformKind::Windows => {
+                            env.insert("TEMP".into(), make_portable_path(temp_dir.clone())?);
+                            env.insert("TMP".into(), make_portable_path(temp_dir)?);
+                        }
+                        FlowPlatformKind::Unix => {
+                            env.insert("TMPDIR".into(), make_portable_path(temp_dir.clone())?);
+                        }
+                    }
                 }
 
                 if disable_remote_artifacts {

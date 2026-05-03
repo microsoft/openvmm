@@ -63,6 +63,8 @@ flowey_request! {
         pub fail_job_on_test_fail: bool,
         /// If provided, also publish junit.xml test results as an artifact.
         pub artifact_dir: Option<ReadVar<PathBuf>>,
+        /// Specify where to store temporary files
+        pub temp_dir: Option<PathBuf>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -100,6 +102,7 @@ impl SimpleFlowNode for Node {
             needs_prep_run,
             hugetlb_2mb_overcommit_pages,
             artifact_dir,
+            temp_dir,
             done,
         } = request;
 
@@ -172,6 +175,8 @@ impl SimpleFlowNode for Node {
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir,
+            disk_images_dir: Some(disk_images_dir),
+            temp_dir,
             vmm_tests_target: target.clone(),
             register_openvmm,
             register_openvmm_vhost,
@@ -185,7 +190,6 @@ impl SimpleFlowNode for Node {
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,
-            disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
             get_env: v,
