@@ -9,6 +9,7 @@ use anyhow::Context as _;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::task::Spawn as _;
+use petri::ApicMode;
 use petri::PetriVm;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
@@ -230,6 +231,7 @@ fn openvmm_openhcl_tmks(
             .with_openhcl_agent_file("simple_tmk", artifacts.tmk)
             .with_processor_topology(ProcessorTopology {
                 vp_count: 1,
+                apic_mode: Some(ApicMode::X2apicSupported),
                 ..Default::default()
             })
             // TODO: remove once the TMK VMM initializes memory properly.
@@ -252,6 +254,7 @@ mod hyperv {
     use crate::openhcl_tmks_inner;
     use crate::resolve_openhcl_tmks;
     use pal_async::DefaultPool;
+    use petri::ApicMode;
     use petri::ProcessorTopology;
     use petri::hyperv::HyperVPetriBackend;
 
@@ -268,6 +271,7 @@ mod hyperv {
                 .with_openhcl_agent_file("simple_tmk", artifacts.tmk)
                 .with_processor_topology(ProcessorTopology {
                     vp_count: 1,
+                    apic_mode: Some(ApicMode::X2apicSupported),
                     ..Default::default()
                 })
                 .run_without_agent()
