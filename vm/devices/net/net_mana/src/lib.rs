@@ -1191,7 +1191,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
             .set_comp_tcp_csum(meta.flags.offload_tcp_checksum());
         oob.s_oob
             .set_comp_udp_csum(meta.flags.offload_udp_checksum());
-        if meta.flags.offload_tcp_checksum() {
+        if meta.flags.offload_tcp_checksum() || meta.flags.offload_udp_checksum() {
             oob.s_oob.set_trans_off(meta.l2_len as u16 + meta.l3_len);
         }
         if let Some(vlan) = &meta.vlan {

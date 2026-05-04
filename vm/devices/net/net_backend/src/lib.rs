@@ -411,9 +411,9 @@ pub struct TxMetadata {
     /// The length of the TCP header. Only guaranteed to be set if various
     /// offload flags are set.
     pub l4_len: u8,
-    /// The offset into the buffer where the TCP header begins. Only expected
-    /// to be set if offload flags are set.
-    pub tcp_header_offset: u16,
+    /// The offset into the buffer where the L4 header begins (TCP or UDP). Only
+    /// expected to be set if offload (checksum and/or segmentation) flags are set.
+    pub transport_header_offset: u16,
     /// The maximum segment size, used for segmentation offload (TSO or USO).
     /// Only guaranteed to be set if [`TxFlags::offload_tcp_segmentation`] or
     /// [`TxFlags::offload_udp_segmentation`] is set.
@@ -466,7 +466,7 @@ impl Default for TxMetadata {
             l2_len: 0,
             l3_len: 0,
             l4_len: 0,
-            tcp_header_offset: 0,
+            transport_header_offset: 0,
             max_segment_size: 0,
             vlan: None,
         }

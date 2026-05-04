@@ -2587,7 +2587,7 @@ impl<T: RingMem> NetChannel<T> {
                             .set_offload_ip_header_checksum(n.is_ipv4() && n.ip_header_checksum());
                         metadata.flags.set_is_ipv4(n.is_ipv4());
                         metadata.flags.set_is_ipv6(n.is_ipv6() && !n.is_ipv4());
-                        metadata.tcp_header_offset = n.tcp_header_offset();
+                        metadata.transport_header_offset = n.tcp_header_offset();
                     }
                     rndisprot::PPI_LSO => {
                         let n: rndisprot::TcpLsoInfo = d.reader(mem).read_plain()?;
@@ -2598,7 +2598,7 @@ impl<T: RingMem> NetChannel<T> {
                         metadata.flags.set_is_ipv4(n.is_ipv4());
                         metadata.flags.set_is_ipv6(n.is_ipv6() && !n.is_ipv4());
                         metadata.max_segment_size = n.mss() as u16;
-                        metadata.tcp_header_offset = n.tcp_header_offset();
+                        metadata.transport_header_offset = n.tcp_header_offset();
                     }
                     rndisprot::PPI_VLAN => {
                         let n: rndisprot::EthVlanInfo = d.reader(mem).read_plain()?;
@@ -2621,33 +2621,34 @@ impl<T: RingMem> NetChannel<T> {
                 ETHERNET_HEADER_LEN
             } as u8;
 
-            if metadata.flags.offload_tcp_checksum() {
-                // The offset must be set if a checksum is being captured.
-                if (metadata.tcp_header_offset < metadata.l2_len as u16)
+            if metadata.flags.offload_tcp_checksum() || metadata.flags.offload_udp_checksum() {
+                // The offset must be set if we're handling checksums; we already know from the above logic
+                // that the L4 checksum-type will match the L4 protocol.
+                if (metadata.transport_header_offset < metadata.l2_len as u16)
                     || (metadata.flags.is_ipv4()
-                        && metadata.tcp_header_offset < (metadata.l2_len as u16 + 20))
+                        && metadata.transport_header_offset
+                            < (metadata.l2_len as u16 + IPV4_MIN_HEADER_LEN))
                     || (metadata.flags.is_ipv6()
-                        && metadata.tcp_header_offset < (metadata.l2_len as u16 + 40))
-                    || (metadata.tcp_header_offset as u32 >= request.data_length)
+                        && metadata.transport_header_offset
+                            < (metadata.l2_len as u16 + IPV6_MIN_HEADER_LEN))
+                    || (metadata.transport_header_offset as u32 >= request.data_length)
                 {
                     return Err(WorkerError::InvalidTcpHeaderOffset(
-                        metadata.tcp_header_offset,
+                        metadata.transport_header_offset,
                     ));
                 }
 
-                metadata.l3_len = metadata.tcp_header_offset - metadata.l2_len as u16;
+                metadata.l3_len = metadata.transport_header_offset - metadata.l2_len as u16;
             }
-
-            // no UDP validation currently.
 
             if metadata.flags.offload_tcp_segmentation() {
                 const TCP_DOFF_BYTE_OFFSET: u32 = 12;
                 let tcp_hdr_doff_offset =
-                    u32::from(metadata.tcp_header_offset) + TCP_DOFF_BYTE_OFFSET;
+                    u32::from(metadata.transport_header_offset) + TCP_DOFF_BYTE_OFFSET;
                 // Validate TCP header Data Offset 4 bit nibble within the packet data bounds.
                 if tcp_hdr_doff_offset >= request.data_length {
                     return Err(WorkerError::InvalidTcpHeaderOffset(
-                        metadata.tcp_header_offset,
+                        metadata.transport_header_offset,
                     ));
                 }
                 metadata.l4_len = {
@@ -2663,6 +2664,8 @@ impl<T: RingMem> NetChannel<T> {
                     stats.tx_invalid_lso_packets.increment();
                 }
             }
+
+            // TODO: USO support is not present.
         }
 
         let start = segments.len();
@@ -3330,6 +3333,9 @@ const MAX_MTU: u32 = 9216;
 
 const ETHERNET_HEADER_LEN: u32 = 14;
 const ETHERNET_VLAN_HEADER_LEN: u32 = 18;
+
+const IPV4_MIN_HEADER_LEN: u16 = 20;
+const IPV6_MIN_HEADER_LEN: u16 = 40;
 
 impl Adapter {
     fn get_guest_vf_serial_number(&self, vfid: u32) -> u32 {
