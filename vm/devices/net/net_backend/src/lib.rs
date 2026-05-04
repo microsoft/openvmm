@@ -281,6 +281,12 @@ pub trait BufferAccess {
     }
 }
 
+pub const ETHERNET_HEADER_LEN: u32 = 14;
+pub const ETHERNET_VLAN_HEADER_LEN: u32 = 18;
+
+pub const IPV4_MIN_HEADER_LEN: u16 = 20;
+pub const IPV6_MIN_HEADER_LEN: u16 = 40;
+
 #[derive(Debug, Copy, Clone)]
 pub struct VlanMetadata {
     /// Priority for 802.1Q. Actually a 3-bit value.
@@ -419,7 +425,7 @@ pub struct TxMetadata {
     /// [`TxFlags::offload_udp_segmentation`] is set.
     pub max_segment_size: u16,
     /// Information about 802.1Q VLAN tagging. When a vlan is in use, this structure
-    /// is populated. Only applies when traffic is being received over an L2 connection,
+    /// is populated. Only applies when traffic is being sent over an L2 connection,
     /// so L3-only or above traffic will not use this option.
     pub vlan: Option<VlanMetadata>,
 }

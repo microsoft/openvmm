@@ -553,6 +553,11 @@ impl TxRxTask {
 
         let sge0 = sqe.sgl().first().context("no sgl")?;
         let total_len: usize = sqe.sgl().iter().map(|sge| sge.size as usize).sum();
+        let l2_len = if oob.l_oob.inject_vlan_pri_tag() {
+            net_backend::ETHERNET_VLAN_HEADER_LEN
+        } else {
+            net_backend::ETHERNET_HEADER_LEN
+        } as u16;
         let mut meta = TxMetadata {
             id: TxId(0),
             segment_count: sqe.sgl().len().try_into().unwrap(),
@@ -563,8 +568,8 @@ impl TxRxTask {
                 .with_offload_udp_checksum(oob.s_oob.comp_udp_csum())
                 .with_is_ipv4(oob.s_oob.is_outer_ipv4())
                 .with_is_ipv6(oob.s_oob.is_outer_ipv6() && !oob.s_oob.is_outer_ipv4()),
-            l2_len: 14,
-            l3_len: oob.s_oob.trans_off().clamp(14, 255) - 14,
+            l2_len: l2_len as u8,
+            l3_len: oob.s_oob.trans_off().clamp(l2_len, 255) - l2_len,
             l4_len: 0,
             transport_header_offset: 0,
             max_segment_size: 0,

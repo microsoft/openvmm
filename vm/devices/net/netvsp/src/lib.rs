@@ -2608,7 +2608,7 @@ impl<T: RingMem> NetChannel<T> {
                             drop_eligible_indicator: n.drop_eligible_indicator(),
                             vlan_id: n.vlan_id(),
                         });
-                        stats.rx_vlan_packets.increment();
+                        stats.tx_vlan_packets.increment();
                     }
                     _ => {}
                 }
@@ -2616,9 +2616,9 @@ impl<T: RingMem> NetChannel<T> {
             }
 
             metadata.l2_len = if metadata.vlan.is_some() {
-                ETHERNET_VLAN_HEADER_LEN
+                net_backend::ETHERNET_VLAN_HEADER_LEN
             } else {
-                ETHERNET_HEADER_LEN
+                net_backend::ETHERNET_HEADER_LEN
             } as u8;
 
             if metadata.flags.offload_tcp_checksum() || metadata.flags.offload_udp_checksum() {
@@ -2627,10 +2627,10 @@ impl<T: RingMem> NetChannel<T> {
                 if (metadata.transport_header_offset < metadata.l2_len as u16)
                     || (metadata.flags.is_ipv4()
                         && metadata.transport_header_offset
-                            < (metadata.l2_len as u16 + IPV4_MIN_HEADER_LEN))
+                            < (metadata.l2_len as u16 + net_backend::IPV4_MIN_HEADER_LEN))
                     || (metadata.flags.is_ipv6()
                         && metadata.transport_header_offset
-                            < (metadata.l2_len as u16 + IPV6_MIN_HEADER_LEN))
+                            < (metadata.l2_len as u16 + net_backend::IPV6_MIN_HEADER_LEN))
                     || (metadata.transport_header_offset as u32 >= request.data_length)
                 {
                     return Err(WorkerError::InvalidTcpHeaderOffset(
@@ -3331,12 +3331,6 @@ const DEFAULT_MTU: u32 = 1514;
 const MIN_MTU: u32 = DEFAULT_MTU;
 const MAX_MTU: u32 = 9216;
 
-const ETHERNET_HEADER_LEN: u32 = 14;
-const ETHERNET_VLAN_HEADER_LEN: u32 = 18;
-
-const IPV4_MIN_HEADER_LEN: u16 = 20;
-const IPV6_MIN_HEADER_LEN: u16 = 40;
-
 impl Adapter {
     fn get_guest_vf_serial_number(&self, vfid: u32) -> u32 {
         if let Some(guest_os_id) = self.get_guest_os_id.as_ref().map(|f| f()) {
@@ -3456,7 +3450,7 @@ impl Adapter {
             rndisprot::Oid::OID_GEN_MAXIMUM_LOOKAHEAD
             | rndisprot::Oid::OID_GEN_CURRENT_LOOKAHEAD
             | rndisprot::Oid::OID_GEN_MAXIMUM_FRAME_SIZE => {
-                let len: u32 = buffers.ndis_config.mtu - ETHERNET_HEADER_LEN;
+                let len: u32 = buffers.ndis_config.mtu - net_backend::ETHERNET_HEADER_LEN;
                 writer.write(len.as_bytes())?;
             }
             rndisprot::Oid::OID_GEN_MAXIMUM_TOTAL_SIZE
@@ -3555,10 +3549,10 @@ impl Adapter {
                         },
                         ipv4_enabled: rndisprot::NDIS_OFFLOAD_SUPPORTED,
                         ipv4_encapsulation_type: rndisprot::NDIS_ENCAPSULATION_IEEE_802_3,
-                        ipv4_header_size: ETHERNET_HEADER_LEN,
+                        ipv4_header_size: net_backend::ETHERNET_HEADER_LEN,
                         ipv6_enabled: rndisprot::NDIS_OFFLOAD_SUPPORTED,
                         ipv6_encapsulation_type: rndisprot::NDIS_ENCAPSULATION_IEEE_802_3,
-                        ipv6_header_size: ETHERNET_HEADER_LEN,
+                        ipv6_header_size: net_backend::ETHERNET_HEADER_LEN,
                     }
                     .as_bytes()[..rndisprot::NDIS_SIZEOF_OFFLOAD_ENCAPSULATION_REVISION_1],
                 )?;
@@ -3788,13 +3782,13 @@ impl Adapter {
         )?;
         if encap.ipv4_enabled == rndisprot::NDIS_OFFLOAD_SET_ON
             && (encap.ipv4_encapsulation_type != rndisprot::NDIS_ENCAPSULATION_IEEE_802_3
-                || encap.ipv4_header_size != ETHERNET_HEADER_LEN)
+                || encap.ipv4_header_size != net_backend::ETHERNET_HEADER_LEN)
         {
             return Err(OidError::NotSupported("ipv4 encap"));
         }
         if encap.ipv6_enabled == rndisprot::NDIS_OFFLOAD_SET_ON
             && (encap.ipv6_encapsulation_type != rndisprot::NDIS_ENCAPSULATION_IEEE_802_3
-                || encap.ipv6_header_size != ETHERNET_HEADER_LEN)
+                || encap.ipv6_header_size != net_backend::ETHERNET_HEADER_LEN)
         {
             return Err(OidError::NotSupported("ipv6 encap"));
         }

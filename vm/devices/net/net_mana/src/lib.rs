@@ -1200,7 +1200,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
             oob.l_oob.set_pcp(vlan.priority);
             oob.l_oob.set_dei(vlan.drop_eligible_indicator);
         }
-        let short_format = self.vp_offset <= 0xff && !meta.vlan.is_some();
+        let short_format = self.vp_offset <= 0xff && meta.vlan.is_none();
         if short_format {
             oob.s_oob.set_pkt_fmt(MANA_SHORT_PKT_FMT);
             oob.s_oob.set_short_vp_offset(self.vp_offset as u8);

@@ -1885,6 +1885,10 @@ impl RndisMessageParser {
             );
 
             let payload_start = offset + header.per_packet_information_offset as usize;
+            assert!(
+                payload_start + 4 <= offset + header.size as usize,
+                "PPI offset results in invalid reads"
+            );
             match header.typ {
                 rndisprot::PPI_TCP_IP_CHECKSUM => {
                     let value = u32::read_from_prefix(&ppi_bytes[payload_start..])
