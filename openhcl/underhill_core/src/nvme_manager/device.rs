@@ -334,6 +334,9 @@ enum NvmeDriverRequest {
 pub struct NvmeDriverManager {
     task: Task<()>,
     pci_id: String,
+    /// Whether the underlying device is compatible with NVMe keepalive
+    /// (cached at construction time so callers don't have to re-read sysfs).
+    keepalive_compatible: bool,
     client: NvmeDriverManagerClient,
 }
 
@@ -358,12 +361,18 @@ impl NvmeDriverManager {
         &self.client
     }
 
+    /// Returns whether the underlying device is compatible with NVMe keepalive.
+    pub fn keepalive_compatible(&self) -> bool {
+        self.keepalive_compatible
+    }
+
     /// Creates the [`NvmeDriverManager`].
     pub fn new(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
         vp_count: u32,
         save_restore_supported: bool,
+        keepalive_compatible: bool,
         device: Option<Box<dyn NvmeDevice>>,
         nvme_driver_spawner: Arc<dyn CreateNvmeDriver>,
     ) -> anyhow::Result<Self> {
@@ -382,6 +391,7 @@ impl NvmeDriverManager {
         Ok(Self {
             task,
             pci_id: pci_id.into(),
+            keepalive_compatible,
             client: NvmeDriverManagerClient {
                 pci_id: pci_id.into(),
                 sender: send,

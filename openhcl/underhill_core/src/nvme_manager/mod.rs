@@ -67,9 +67,13 @@ pub struct NamespaceError {
     source: NvmeSpawnerError,
 }
 
-/// Device prefix for nvme devices that are compatibble with keepalive.
-/// the "dddd:" in the `dddd:bb:dd.f` PCI ID format.
-const KEEPALIVE_COMPATIBLE_DEVICE_PREFIX: &str = "c05b:";
+/// PCI vendor ID, as it appears in the sysfs `vendor` file (e.g. `0x0100`),
+/// for NVMe devices that are compatible with keepalive.
+const KEEPALIVE_INCOMPATIBLE_VENDOR_ID: &str = "0x1414";
+
+/// PCI device ID, as it appears in the sysfs `device` file (e.g. `0x0100`),
+/// for NVMe devices that are compatible with keepalive.
+const KEEPALIVE_INCOMPATIBLE_DEVICE_ID: &str = "0xb111";
 
 #[derive(Debug, Error)]
 pub enum NvmeSpawnerError {
@@ -116,11 +120,44 @@ pub trait CreateNvmeDriver: Inspect + Send + Sync {
     ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError>;
 }
 
-/// Returns whether the given PCI ID corresponds to an NVMe device that is
-/// compatible with the keepalive.
-/// DEV_NOTE: This is a weak heuristic based approach which is not ideal but is necessary
+/// Returns whether the given PCI device is compatible with NVMe keepalive.
 pub(crate) fn is_nvme_keepalive_compatible(pci_id: &str) -> bool {
-    pci_id
-        .to_ascii_lowercase()
-        .starts_with(KEEPALIVE_COMPATIBLE_DEVICE_PREFIX)
+    match read_pci_vendor_device_ids(&pci_id) {
+        Ok((vendor_id, device_id)) => {
+            vendor_id != KEEPALIVE_INCOMPATIBLE_VENDOR_ID
+                || device_id != KEEPALIVE_INCOMPATIBLE_DEVICE_ID
+        }
+        Err(err) => {
+            tracing::warn!(
+                pci_id = %pci_id,
+                error = err.as_ref() as &dyn std::error::Error,
+                "failed to read PCI vendor/device IDs; treating device as not keepalive-compatible"
+            );
+            false
+        }
+    }
+}
+
+/// Reads the sysfs `vendor` and `device` files for the given PCI device,
+/// returning the trimmed contents (e.g. `"0x0100"`).
+///
+/// Callers should invoke this once per device and cache the result, since
+/// the values do not change for the lifetime of the device.
+fn read_pci_vendor_device_ids(pci_id: &str) -> anyhow::Result<(String, String)> {
+    let devpath = std::path::Path::new("/sys/bus/pci/devices").join(pci_id);
+    let vendor = fs_err::read_to_string(devpath.join("vendor"))?
+        .trim_end()
+        .to_owned();
+    let device = fs_err::read_to_string(devpath.join("device"))?
+        .trim_end()
+        .to_owned();
+
+    tracing::info!(
+        pci_id = %pci_id,
+        vendor = %vendor,
+        device = %device,
+        "read PCI vendor/device IDs"
+    );
+
+    Ok((vendor, device))
 }

@@ -19,6 +19,7 @@ use nvme_resources::NvmeFaultControllerHandle;
 use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::HardwareConfigFaultConfig;
 use nvme_resources::fault::IoQueueFaultBehavior;
 use nvme_resources::fault::IoQueueFaultConfig;
 use nvme_resources::fault::NamespaceChange;
@@ -1240,6 +1241,11 @@ async fn servicing_keepalive_per_device_gate(
                     .build(),
                 AdminQueueFaultBehavior::Verify(Some(no_keepalive_create_seen_send)),
             ),
+        )
+        .with_hardware_config_fault(
+            HardwareConfigFaultConfig::new()
+                .with_vendor_id(0x1414)
+                .with_device_id(0xb111),
         );
 
     let scsi_instance = Guid::new_random();
@@ -1251,27 +1257,6 @@ async fn servicing_keepalive_per_device_gate(
         )
         .modify_backend(move |b| {
             b.with_custom_config(move |c| {
-                c.vpci_devices.push(VpciDeviceConfig {
-                    vtl: DeviceVtl::Vtl2,
-                    instance_id: WITH_KEEPALIVE_NVME_INSTANCE,
-                    resource: NvmeFaultControllerHandle {
-                        subsystem_id: Guid::new_random(),
-                        msix_count: 10,
-                        max_io_queues: 10,
-                        namespaces: vec![NamespaceDefinition {
-                            nsid: WITH_KEEPALIVE_NSID,
-                            read_only: false,
-                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                                len: Some(DEFAULT_DISK_SIZE),
-                                sector_size: None,
-                            })
-                            .into_resource(),
-                        }],
-                        fault_config: with_keepalive_fault_config,
-                        enable_tdisp_tests: false,
-                    }
-                    .into_resource(),
-                });
                 c.vpci_devices.push(VpciDeviceConfig {
                     vtl: DeviceVtl::Vtl2,
                     instance_id: NO_KEEPALIVE_NVME_INSTANCE,
@@ -1293,6 +1278,27 @@ async fn servicing_keepalive_per_device_gate(
                     }
                     .into_resource(),
                 });
+                c.vpci_devices.push(VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl2,
+                    instance_id: WITH_KEEPALIVE_NVME_INSTANCE,
+                    resource: NvmeFaultControllerHandle {
+                        subsystem_id: Guid::new_random(),
+                        msix_count: 10,
+                        max_io_queues: 10,
+                        namespaces: vec![NamespaceDefinition {
+                            nsid: WITH_KEEPALIVE_NSID,
+                            read_only: false,
+                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(DEFAULT_DISK_SIZE),
+                                sector_size: None,
+                            })
+                            .into_resource(),
+                        }],
+                        fault_config: with_keepalive_fault_config,
+                        enable_tdisp_tests: false,
+                    }
+                    .into_resource(),
+                });
             })
         })
         .add_vtl2_storage_controller(
@@ -1300,20 +1306,20 @@ async fn servicing_keepalive_per_device_gate(
                 .with_instance_id(scsi_instance)
                 .add_lun(
                     Vtl2LunBuilder::disk()
-                        .with_location(WITH_KEEPALIVE_LUN)
-                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                            ControllerType::Nvme,
-                            WITH_KEEPALIVE_NVME_INSTANCE,
-                            WITH_KEEPALIVE_NSID,
-                        )),
-                )
-                .add_lun(
-                    Vtl2LunBuilder::disk()
                         .with_location(NO_KEEPALIVE_LUN)
                         .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
                             ControllerType::Nvme,
                             NO_KEEPALIVE_NVME_INSTANCE,
                             NO_KEEPALIVE_NSID,
+                        )),
+                )
+                .add_lun(
+                    Vtl2LunBuilder::disk()
+                        .with_location(WITH_KEEPALIVE_LUN)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Nvme,
+                            WITH_KEEPALIVE_NVME_INSTANCE,
+                            WITH_KEEPALIVE_NSID,
                         )),
                 )
                 .build(),
