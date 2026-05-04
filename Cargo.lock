@@ -4676,6 +4676,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "vm_resource",
  "zerocopy",

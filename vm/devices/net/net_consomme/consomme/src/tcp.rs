@@ -1060,8 +1060,15 @@ impl TcpConnectionInner {
                     SocketAddr::V6(_) => IPV6_HEADER_LEN,
                 };
                 let header_len = ETHERNET_HEADER_LEN + ip_header_len + tcp.header_len();
-                let mtu = rx_mtu.min(sender.state.buffer.len());
-                let max_payload = mtu - header_len;
+                // Cap MTU to avoid overflowing the IP total-length field
+                // (u16, max 65535 bytes of IP payload + header).
+                let max_ip_frame = u16::MAX as usize + ETHERNET_HEADER_LEN;
+                let mtu = rx_mtu.min(sender.state.buffer.len()).min(max_ip_frame);
+                let max_payload = mtu.saturating_sub(header_len);
+                if max_payload == 0 {
+                    // Buffer too small to fit even the headers.
+                    break;
+                }
                 // When the client buffer can hold more than one MSS of
                 // payload, skip the MSS cap and fill the whole buffer —
                 // the packet will be delivered as an LRO/TSO frame.

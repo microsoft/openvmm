@@ -130,7 +130,13 @@ impl TapEndpoint {
         const TUN_F_CSUM: u32 = 1;
         const TUN_F_TSO4: u32 = 2;
         const TUN_F_TSO6: u32 = 4;
-        tap.set_offloads(TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6)?;
+        if let Err(err) = tap.set_offloads(TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6) {
+            tracing::warn!(
+                error = &err as &dyn std::error::Error,
+                "failed to enable TAP RX offloads, falling back to no offloads"
+            );
+            tap.set_offloads(0)?;
+        }
 
         Ok(Self {
             tap: Arc::new(Mutex::new(Some(tap))),
@@ -260,7 +266,7 @@ impl Queue for TapQueue {
                     // frames larger than the guest RX buffer. Drop them
                     // gracefully instead of panicking in write_packet.
                     if frame_len > pool.capacity(rx) as usize {
-                        tracing::warn!(
+                        tracelimit::warn_ratelimited!(
                             frame_len,
                             capacity = pool.capacity(rx),
                             "dropping rx packet: frame exceeds buffer capacity"
@@ -537,19 +543,21 @@ fn parse_ethertype(frame: &[u8]) -> (u8, bool, bool) {
 /// parse the actual L2 header length, including VLAN tags.
 fn parse_vnet_hdr(hdr: &VirtioNetHdr, frame: &[u8]) -> RxMetadata {
     let (ip_checksum, l4_checksum) = if hdr.flags.data_valid() {
+        // The kernel has fully validated the checksums.
         (RxChecksumState::Good, RxChecksumState::Good)
     } else if hdr.flags.needs_csum() && hdr.gso_size > 0 {
-        // GSO + NEEDS_CSUM: the L4 checksum is partial (pseudo-header
-        // only). Report as Unknown so the virtio layer does not set
-        // DATA_VALID — it will set NEEDS_CSUM in the virtio header
-        // instead, and the guest will compute per-segment checksums.
+        // GSO packet with a partial (pseudo-header-only) L4 checksum.
+        // The guest needs to segment this large packet and compute a
+        // per-segment checksum for each one. Report Unknown so the
+        // frontend does not mark the checksum as validated; instead,
+        // the virtio layer will set NEEDS_CSUM in the guest-visible
+        // header, telling the guest to finalize each segment's checksum
+        // after splitting.
         (RxChecksumState::Unknown, RxChecksumState::Unknown)
     } else if hdr.flags.needs_csum() {
-        // Non-GSO + NEEDS_CSUM: the data integrity is fine but the L4
-        // checksum field is partial. Since RxMetadata has no way to
-        // propagate NEEDS_CSUM for non-GSO packets, report as Good so
-        // the virtio header gets DATA_VALID and the guest accepts the
-        // packet.
+        // Non-GSO packet with a partial (pseudo-header-only) L4
+        // checksum. The kernel guarantees the packet data is correct,
+        // but the checksum field in the packet itself is incomplete.
         (RxChecksumState::Good, RxChecksumState::Good)
     } else {
         (RxChecksumState::Unknown, RxChecksumState::Unknown)

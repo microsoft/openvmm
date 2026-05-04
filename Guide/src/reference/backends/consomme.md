@@ -147,8 +147,14 @@ UDP packets to the gateway on well-known ports are intercepted:
 - **Port 53** — handled by the DNS forwarder
 
 UDP segmentation offload and receive coalescing are not currently
-supported. Each datagram requires a separate socket call, which may
+supported for UDP. Each datagram requires a separate socket call, which may
 matter for QUIC/HTTP/3 performance.
+
+TCP receive coalescing (LRO) is supported: when the guest has negotiated
+`VIRTIO_NET_F_GUEST_TSO4` or `VIRTIO_NET_F_GUEST_TSO6`, Consomme
+delivers large coalesced TCP frames with TSO metadata, allowing the
+guest to re-segment them. This reduces per-packet overhead and improves
+receive throughput.
 
 ### DNS
 

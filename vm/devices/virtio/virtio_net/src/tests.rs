@@ -6,6 +6,8 @@ use guestmem::GuestMemory;
 use inspect::InspectMut;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
+use net_backend::L3Protocol;
+use net_backend::L4Protocol;
 use net_backend::MultiQueueSupport;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
@@ -1790,4 +1792,162 @@ impl Endpoint for MockEndpointWithOffloads {
     async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
         pending().await
     }
+}
+
+// --- RX GSO/LRO Tests ---
+
+/// Helper: features with GUEST_TSO4 + GUEST_TSO6 negotiated.
+fn features_guest_tso() -> NetworkFeaturesBank0 {
+    NetworkFeaturesBank0::new()
+        .with_guest_tso4(true)
+        .with_guest_tso6(true)
+}
+
+/// RX GSO packet with guest_tso4 negotiated: verify virtio header has
+/// correct gso_type, gso_size, hdr_len, csum_start, csum_offset, and
+/// NEEDS_CSUM flag set with DATA_VALID cleared.
+#[async_test]
+async fn rx_gso_ipv4_header_fields(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let features =
+        VirtioDeviceFeatures::new().with_bank(0, features_guest_tso().into_bits());
+    let mut handle = harness.enable_and_get_handle_with_features(features).await;
+
+    let buffer_size: u32 = 65535;
+    let desc_index: u16 = 0;
+    let gpa = harness.post_rx_buffer_and_signal(desc_index, buffer_size);
+    handle.wait_for_rx_pending().await;
+
+    let payload = vec![0xAAu8; 4000];
+    let metadata = RxMetadata {
+        offset: 0,
+        len: payload.len(),
+        ip_checksum: RxChecksumState::Unknown,
+        l4_checksum: RxChecksumState::Unknown,
+        l4_protocol: L4Protocol::Tcp,
+        l3_protocol: L3Protocol::Ipv4,
+        l2_len: 14,
+        l3_len: 20,
+        l4_len: 20,
+        gso_size: 1460,
+    };
+    handle.inject_rx_packet_with_metadata(&payload, &metadata);
+
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, desc_index);
+    assert_eq!(used_len, NET_HEADER_SIZE + payload.len() as u32);
+
+    let hdr = read_virtio_header(&harness.mem, gpa);
+    let flags = VirtioNetHeaderFlags::from(hdr.flags);
+    let gso = VirtioNetHeaderGso::from(hdr.gso_type);
+
+    assert!(flags.needs_csum(), "NEEDS_CSUM should be set for GSO");
+    assert!(
+        !flags.data_valid(),
+        "DATA_VALID should be cleared when GSO is active"
+    );
+    assert_eq!(
+        gso.protocol(),
+        VirtioNetHeaderGsoProtocol::TCPV4,
+        "gso_type should be TCPv4"
+    );
+    assert_eq!(hdr.gso_size, 1460, "gso_size should match MSS");
+    // hdr_len = l2_len + l3_len + l4_len = 14 + 20 + 20 = 54
+    assert_eq!(hdr.hdr_len, 54, "hdr_len should be total header length");
+    // csum_start = l2_len + l3_len = 14 + 20 = 34
+    assert_eq!(hdr.csum_start, 34, "csum_start should point to TCP header");
+    assert_eq!(hdr.csum_offset, 16, "csum_offset should be TCP checksum field");
+}
+
+/// RX GSO packet with IPv6 (guest_tso6): verify TCPv6 gso_type and header
+/// lengths.
+#[async_test]
+async fn rx_gso_ipv6_header_fields(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let features =
+        VirtioDeviceFeatures::new().with_bank(0, features_guest_tso().into_bits());
+    let mut handle = harness.enable_and_get_handle_with_features(features).await;
+
+    let buffer_size: u32 = 65535;
+    let desc_index: u16 = 0;
+    let gpa = harness.post_rx_buffer_and_signal(desc_index, buffer_size);
+    handle.wait_for_rx_pending().await;
+
+    let payload = vec![0xBBu8; 3000];
+    let metadata = RxMetadata {
+        offset: 0,
+        len: payload.len(),
+        ip_checksum: RxChecksumState::Unknown,
+        l4_checksum: RxChecksumState::Unknown,
+        l4_protocol: L4Protocol::Tcp,
+        l3_protocol: L3Protocol::Ipv6,
+        l2_len: 14,
+        l3_len: 40,
+        l4_len: 20,
+        gso_size: 1440,
+    };
+    handle.inject_rx_packet_with_metadata(&payload, &metadata);
+
+    let (used_id, _) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, desc_index);
+
+    let hdr = read_virtio_header(&harness.mem, gpa);
+    let flags = VirtioNetHeaderFlags::from(hdr.flags);
+    let gso = VirtioNetHeaderGso::from(hdr.gso_type);
+
+    assert!(flags.needs_csum());
+    assert!(!flags.data_valid());
+    assert_eq!(gso.protocol(), VirtioNetHeaderGsoProtocol::TCPV6);
+    assert_eq!(hdr.gso_size, 1440);
+    // hdr_len = 14 + 40 + 20 = 74
+    assert_eq!(hdr.hdr_len, 74);
+    // csum_start = 14 + 40 = 54
+    assert_eq!(hdr.csum_start, 54);
+    assert_eq!(hdr.csum_offset, 16);
+}
+
+/// RX GSO packet without guest_tso negotiated: GSO metadata should be
+/// dropped and the packet delivered as a normal (non-GSO) frame.
+#[async_test]
+async fn rx_gso_without_guest_feature_falls_back(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    // No guest_tso4/6 features negotiated (default).
+    let mut handle = harness.enable_and_get_handle().await;
+
+    let buffer_size: u32 = 65535;
+    let desc_index: u16 = 0;
+    let gpa = harness.post_rx_buffer_and_signal(desc_index, buffer_size);
+    handle.wait_for_rx_pending().await;
+
+    let payload = vec![0xCCu8; 4000];
+    let metadata = RxMetadata {
+        offset: 0,
+        len: payload.len(),
+        ip_checksum: RxChecksumState::Unknown,
+        l4_checksum: RxChecksumState::Unknown,
+        l4_protocol: L4Protocol::Tcp,
+        l3_protocol: L3Protocol::Ipv4,
+        l2_len: 14,
+        l3_len: 20,
+        l4_len: 20,
+        gso_size: 1460,
+    };
+    handle.inject_rx_packet_with_metadata(&payload, &metadata);
+
+    let (used_id, _) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, desc_index);
+
+    let hdr = read_virtio_header(&harness.mem, gpa);
+    let flags = VirtioNetHeaderFlags::from(hdr.flags);
+    let gso = VirtioNetHeaderGso::from(hdr.gso_type);
+
+    // Without guest TSO, GSO should not be emitted.
+    assert!(!flags.needs_csum(), "NEEDS_CSUM should not be set without guest TSO");
+    assert_eq!(
+        gso.protocol(),
+        VirtioNetHeaderGsoProtocol::NONE,
+        "gso_type should be NONE without guest TSO"
+    );
+    assert_eq!(hdr.gso_size, 0);
+    assert_eq!(hdr.hdr_len, 0);
 }
