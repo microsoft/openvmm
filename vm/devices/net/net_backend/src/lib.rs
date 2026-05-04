@@ -291,7 +291,9 @@ pub const IPV6_MIN_HEADER_LEN: u16 = 40;
 pub struct VlanMetadata {
     /// Priority for 802.1Q. Actually a 3-bit value.
     pub priority: u8,
-    /// In pretty much every circumstance this is false.
+    /// In pretty much every circumstance this is false. When
+    /// it is used, setting DEI will inform switches/routing infra
+    /// that this can be dropped before higher priority traffic.
     pub drop_eligible_indicator: bool,
     /// The 802.1Q ID for this transmission. Actually a 12-bit value.
     pub vlan_id: u16,

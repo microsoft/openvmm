@@ -557,7 +557,7 @@ impl TxRxTask {
             net_backend::ETHERNET_VLAN_HEADER_LEN
         } else {
             net_backend::ETHERNET_HEADER_LEN
-        } as u16;
+        };
         let mut meta = TxMetadata {
             id: TxId(0),
             segment_count: sqe.sgl().len().try_into().unwrap(),
@@ -569,7 +569,7 @@ impl TxRxTask {
                 .with_is_ipv4(oob.s_oob.is_outer_ipv4())
                 .with_is_ipv6(oob.s_oob.is_outer_ipv6() && !oob.s_oob.is_outer_ipv4()),
             l2_len: l2_len as u8,
-            l3_len: oob.s_oob.trans_off().clamp(l2_len, 255) - l2_len,
+            l3_len: oob.s_oob.trans_off().clamp(l2_len as u16, 255) - l2_len as u16,
             l4_len: 0,
             transport_header_offset: 0,
             max_segment_size: 0,
@@ -577,8 +577,8 @@ impl TxRxTask {
                 .l_oob
                 .inject_vlan_pri_tag()
                 .then(|| net_backend::VlanMetadata {
-                    priority: 0,
-                    drop_eligible_indicator: false,
+                    priority: oob.l_oob.pcp(),
+                    drop_eligible_indicator: oob.l_oob.dei(),
                     vlan_id: oob.l_oob.vlan_id(),
                 }),
         };
