@@ -300,9 +300,9 @@ pub struct ErasedArtifactHandle {
     artifact_id_str: &'static str,
 }
 
-// used to serialize the artifact handle for vmm-tests-run
-impl ToString for ErasedArtifactHandle {
-    fn to_string(&self) -> String {
+impl ErasedArtifactHandle {
+    /// used to serialize the artifact handle when querying petri for test requirements
+    pub fn to_global_unique_id(&self) -> String {
         self.artifact_id_str.to_string()
     }
 }

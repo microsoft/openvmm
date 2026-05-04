@@ -421,10 +421,10 @@ pub fn test_main(
 
             if matches {
                 for artifact in test.artifact_requirements.required_artifacts() {
-                    required_set.insert(artifact.to_string());
+                    required_set.insert(artifact.to_global_unique_id());
                 }
                 for artifact in test.artifact_requirements.optional_artifacts() {
-                    optional_set.insert(artifact.to_string());
+                    optional_set.insert(artifact.to_global_unique_id());
                 }
             }
         }
