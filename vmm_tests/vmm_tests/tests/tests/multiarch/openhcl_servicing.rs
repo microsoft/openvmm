@@ -1178,7 +1178,7 @@ async fn servicing_keepalive_slow_create_io_queue(
 ///   this device — its controller is not reset across servicing, so
 ///   `CREATE_IO_COMPLETION_QUEUE` must NOT be issued after servicing.
 ///   The fault panics if the opcode is observed.
-/// * An "NVMe Direct v2" device whose pci_id does not start with
+/// * A device whose pci_id does not start with
 ///   `c05b:`. Keepalive must be downgraded to reset-on-servicing for
 ///   this device, so `CREATE_IO_COMPLETION_QUEUE` MUST be issued after
 ///   servicing. The fault verifies (via a oneshot) that the opcode is
@@ -1230,7 +1230,7 @@ async fn servicing_keepalive_per_device_gate(
             ),
         );
 
-    // NVMe Direct v2 (non-c05b) device: keepalive must be downgraded —
+    // Non c05b device: keepalive must be downgraded —
     // verify CREATE_IO_COMPLETION_QUEUE IS issued after servicing.
     let nd2_fault_config = FaultConfiguration::new(nd2_fault_updater.cell())
         .with_admin_queue_fault(
