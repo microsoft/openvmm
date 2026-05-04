@@ -36,7 +36,11 @@ pub struct VmmTestsRunCli {
     #[clap(long)]
     target: Option<VmmTestTargetCli>,
 
-    /// Directory for the output artifacts
+    /// Directory for the output artifacts.
+    ///
+    /// If not specified, defaults to `target/vmm_tests`.
+    /// WSL-to-Windows runs still require explicitly overriding this to a
+    /// Windows-accessible output directory.
     #[clap(long)]
     dir: Option<PathBuf>,
 
@@ -163,7 +167,7 @@ impl IntoPipeline for VmmTestsRunCli {
 
         let target = resolve_target(target, backend_hint)?;
         let target_os = target.as_triple().operating_system;
-        let target_arch = target.common_arch()?;
+        let target_architecture = target.common_arch()?;
         let target_str = target.as_triple().to_string();
 
         let repo_root = crate::repo_root();
@@ -289,7 +293,7 @@ impl IntoPipeline for VmmTestsRunCli {
             job =
                 job.dep_on(
                     move |_| flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalKernel {
-                        arch: target_arch,
+                        arch: target_architecture,
                         kernel: ReadVar::from_static(kernel_path),
                         modules: ReadVar::from_static(modules_path),
                     },
@@ -300,7 +304,7 @@ impl IntoPipeline for VmmTestsRunCli {
         if let Some(fw_path) = custom_uefi_firmware {
             job = job.dep_on(move |_| {
                 flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalUefi(
-                    target_arch,
+                    target_architecture,
                     ReadVar::from_static(fw_path),
                 )
             });
@@ -457,12 +461,9 @@ fn parse_nextest_output(stdout: &str) -> anyhow::Result<BTreeMap<String, RustSui
     Ok(suites)
 }
 
-/// Query the test binary for required and optional artifacts given a list of
-/// test names.
-///
-/// This invokes the binary with `--list-required-artifacts --tests-from-stdin`
-/// and returns the resulting JSON as a string after processing it to inject
-/// the `target` field.
+/// Runs the test binary with `--list-required-artifacts --tests-from-stdin`
+/// and returns all the required and optional artifacts for all test defined
+/// in the RustSuite.
 fn query_test_binary_artifacts(suite: &RustSuite) -> anyhow::Result<Vec<String>> {
     log::info!("Using test binary: {}", suite.binary_path.display());
     log::info!("Querying artifacts for {} tests", suite.testcases.len());
@@ -600,8 +601,7 @@ fn selections_from_resolved(
 }
 
 impl ResolvedArtifactSelections {
-    /// Resolve a single artifact ID and update selections. Returns true if the
-    /// artifact was recognized.
+    /// Resolve a single artifact ID and update selections.
     fn resolve_artifact(&mut self, id: &str) -> anyhow::Result<()> {
         match id {
             // OpenVMM binary
@@ -781,7 +781,7 @@ impl ResolvedArtifactSelections {
                 self.build.pipette_windows = true;
             }
 
-            _ => anyhow::bail!("unknown artifact type"),
+            _ => anyhow::bail!("unknown artifact: {id}"),
         };
         Ok(())
     }
