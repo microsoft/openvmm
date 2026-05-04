@@ -67,9 +67,9 @@ pub struct NamespaceError {
     source: NvmeSpawnerError,
 }
 
-/// PCI vendor-ID prefix for NVMe devices that support keepalive, including
-/// the expected `:` separator in the `dddd:bb:dd.f` PCI ID format.
-const KEEPALIVE_COMPATIBLE_PCI_VENDOR_PREFIX: &str = "c05b:";
+/// Device prefix for nvme devices that are compatibble with keepalive.
+/// the "dddd:" in the `dddd:bb:dd.f` PCI ID format.
+const KEEPALIVE_COMPATIBLE_DEVICE_PREFIX: &str = "c05b:";
 
 #[derive(Debug, Error)]
 pub enum NvmeSpawnerError {
@@ -118,9 +118,9 @@ pub trait CreateNvmeDriver: Inspect + Send + Sync {
 
 /// Returns whether the given PCI ID corresponds to an NVMe device that is
 /// compatible with the keepalive.
-/// DEV_NOTE: This is a heuristic based on the PCI vendor ID, which is not ideal but is necessary
+/// DEV_NOTE: This is a weak heuristic based approach which is not ideal but is necessary
 pub(crate) fn is_nvme_keepalive_compatible(pci_id: &str) -> bool {
     pci_id
         .to_ascii_lowercase()
-        .starts_with(KEEPALIVE_COMPATIBLE_PCI_VENDOR_PREFIX)
+        .starts_with(KEEPALIVE_COMPATIBLE_DEVICE_PREFIX)
 }
