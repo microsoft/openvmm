@@ -41,7 +41,12 @@ impl MappingManager {
     /// If `private_ram` is true, mappers created from this manager will use
     /// anonymous private memory for guest RAM instead of shared file-backed
     /// memory.
-    pub fn new(spawn: impl Spawn, max_addr: u64, private_ram: bool) -> Self {
+    pub fn new(
+        spawn: impl Spawn,
+        max_addr: u64,
+        private_ram: bool,
+        minimum_va_alignment: Option<usize>,
+    ) -> Self {
         let (req_send, mut req_recv) = mesh::mpsc_channel();
         spawn
             .spawn("mapping_manager", {
@@ -57,6 +62,7 @@ impl MappingManager {
                 req_send,
                 max_addr,
                 private_ram,
+                minimum_va_alignment,
             },
         }
     }
@@ -75,6 +81,7 @@ pub struct MappingManagerClient {
     id: ObjectId,
     max_addr: u64,
     private_ram: bool,
+    minimum_va_alignment: Option<usize>,
 }
 
 static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
@@ -91,7 +98,14 @@ impl MappingManagerClient {
         let private_ram = self.private_ram;
         MAPPER_CACHE
             .get_or_insert_with(&self.id, async {
-                VaMapper::new(self.req_send.clone(), self.max_addr, None, private_ram).await
+                VaMapper::new(
+                    self.req_send.clone(),
+                    self.max_addr,
+                    None,
+                    private_ram,
+                    self.minimum_va_alignment,
+                )
+                .await
             })
             .await
     }
@@ -112,7 +126,14 @@ impl MappingManagerClient {
             return Err(VaMapperError::RemoteWithPrivateMemory);
         }
         Ok(Arc::new(
-            VaMapper::new(self.req_send.clone(), self.max_addr, Some(process), false).await?,
+            VaMapper::new(
+                self.req_send.clone(),
+                self.max_addr,
+                Some(process),
+                false,
+                self.minimum_va_alignment,
+            )
+            .await?,
         ))
     }
 
@@ -404,7 +425,7 @@ mod tests {
 
     #[pal_async::async_test]
     async fn test_dma_target_regions_returned(spawn: impl Spawn) {
-        let mm = MappingManager::new(&spawn, 0x200000, false);
+        let mm = MappingManager::new(&spawn, 0x200000, false, None);
         let client = mm.client().clone();
 
         let ram: Mappable = sparse_mmap::alloc_shared_memory(0x100000, "test-ram")
@@ -448,7 +469,7 @@ mod tests {
 
     #[pal_async::async_test]
     async fn test_no_dma_targets_returns_empty(spawn: impl Spawn) {
-        let mm = MappingManager::new(&spawn, 0x100000, false);
+        let mm = MappingManager::new(&spawn, 0x100000, false, None);
         let client = mm.client().clone();
 
         let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x1000, "test")

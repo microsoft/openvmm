@@ -409,6 +409,20 @@ async fn vm_config_from_command_line(
     if opt.shared_memory {
         tracing::warn!("--shared-memory/-M flag has no effect and will be removed");
     }
+    if opt.deprecated_prefetch {
+        tracing::warn!("--prefetch is deprecated; use --memory prefetch=on");
+    }
+    if opt.deprecated_private_memory {
+        tracing::warn!("--private-memory is deprecated; use --memory shared=off");
+    }
+    if opt.deprecated_thp {
+        tracing::warn!("--thp is deprecated; use --memory shared=off,thp=on");
+    }
+    if opt.deprecated_memory_backing_file.is_some() {
+        tracing::warn!("--memory-backing-file is deprecated; use --memory file=<path>");
+    }
+
+    opt.validate_memory_options()?;
 
     const MAX_PROCESSOR_COUNT: u32 = 1024;
 
@@ -1589,12 +1603,14 @@ async fn vm_config_from_command_line(
                     .try_fold(0u64, |acc, &s| acc.checked_add(s))
                     .context("numa memory sizes overflow")?
             } else {
-                opt.memory
+                opt.memory_size()
             },
             mmio_gaps,
-            prefetch_memory: opt.prefetch,
-            private_memory: opt.private_memory,
-            transparent_hugepages: opt.thp,
+            prefetch_memory: opt.prefetch_memory(),
+            private_memory: opt.private_memory(),
+            transparent_hugepages: opt.transparent_hugepages(),
+            hugepages: opt.memory.hugepages,
+            hugepage_size: opt.memory.hugepage_size,
             pci_ecam_gaps,
             pci_mmio_gaps,
             numa_mem_sizes: opt.numa_memory.clone(),
@@ -2057,7 +2073,7 @@ fn prepare_snapshot_restore(
     openvmm_helpers::snapshot::validate_manifest(
         &manifest,
         GUEST_ARCH,
-        opt.memory,
+        opt.memory_size(),
         opt.processors,
         system_page_size(),
     )?;
@@ -2258,10 +2274,12 @@ async fn run_control_inner(
             (Some(fd), Some(state_msg))
         } else {
             let shared_memory = opt
-                .memory_backing_file
-                .as_ref()
+                .memory_backing_file()
                 .map(|path| {
-                    openvmm_helpers::shared_memory::open_memory_backing_file(path, opt.memory)
+                    openvmm_helpers::shared_memory::open_memory_backing_file(
+                        path,
+                        opt.memory_size(),
+                    )
                 })
                 .transpose()?;
             (shared_memory, None)
@@ -2325,8 +2343,8 @@ async fn run_control_inner(
         vm_rpc: vm_rpc.clone(),
         paravisor_diag: Some(paravisor_diag),
         igvm_path: opt.igvm.clone(),
-        memory_backing_file: opt.memory_backing_file.clone(),
-        memory: opt.memory,
+        memory_backing_file: opt.memory_backing_file().cloned(),
+        memory: opt.memory_size(),
         processors: opt.processors,
         log_file: opt.log_file.clone(),
     };
