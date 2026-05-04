@@ -340,15 +340,17 @@ async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<
     Ok(())
 }
 
-/// Boot OpenHCL, and validate that we did not see any numa errors from the
-/// kernel parsing the bootloader provided device tree.
-///
-/// TODO: OpenVMM doesn't support multiple numa nodes yet, but when it does, we
-/// should also validate that the kernel gets two different numa nodes.
+/// Boot OpenHCL with a multi-NUMA topology and validate that the kernel
+/// correctly parses the device tree with memory on multiple NUMA nodes.
+/// Checks the absence of NUMA errors and confirms the kernel brought up
+/// multiple NUMA nodes with memory (not memoryless).
 #[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
 async fn no_numa_errors<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {
+    // Use Vtl2Allocate so OpenHCL self-allocates from the multi-vnode
+    // partition memory map, giving both nodes actual memory.
+    // Explicitly set per-node memory sizes (2GB per node).
     let vm = config
         .with_openhcl_command_line("OPENHCL_WAIT_FOR_START=1")
         .with_expect_no_boot_event()
@@ -357,16 +359,28 @@ async fn no_numa_errors<T: PetriVmmBackend>(
             vps_per_socket: Some(1),
             ..Default::default()
         })
+        .with_memory(MemoryConfig {
+            numa_mem_sizes: Some(vec![2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024]),
+            ..Default::default()
+        })
+        .with_vtl2_base_address_type(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            size: Some(512 * 1024 * 1024), // 512MB — large enough to allocate from both nodes
+        })
         .run_without_agent()
         .await?;
 
     const BAD_PROP: &str = "OF: NUMA: bad property in memory node";
     const NO_NUMA: &str = "NUMA: No NUMA configuration found";
     const FAKING_NODE: &str = "Faking a node at";
+    const MEMORYLESS: &str = "as memoryless";
+    // The kernel prints "Brought up N nodes, M CPUs" during SMP init.
+    const BROUGHT_UP: &str = "Brought up ";
 
     let mut kmsg = vm.kmsg().await?;
+    let mut numa_node_count: Option<u32> = None;
+    let mut found_memoryless = false;
 
-    // Search kmsg and make sure we didn't see any errors from the kernel
+    // Search kmsg for NUMA errors, memoryless nodes, and the node count.
     while let Some(data) = kmsg.next().await {
         let data = data.context("reading kmsg")?;
         let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
@@ -380,7 +394,97 @@ async fn no_numa_errors<T: PetriVmmBackend>(
         if raw.contains(FAKING_NODE) {
             anyhow::bail!("found faking a node in kmsg");
         }
+        if raw.contains(MEMORYLESS) {
+            found_memoryless = true;
+        }
+        // Parse "Brought up N nodes, M CPUs" to get the NUMA node count.
+        if let Some(idx) = raw.find(BROUGHT_UP) {
+            let rest = &raw[idx + BROUGHT_UP.len()..];
+            if let Some(n_str) = rest.split_whitespace().next() {
+                if let Ok(n) = n_str.parse::<u32>() {
+                    numa_node_count = Some(n);
+                }
+            }
+        }
     }
+
+    let count = numa_node_count.context("did not find 'Brought up N nodes' in kmsg")?;
+    assert!(
+        count >= 2,
+        "expected kernel to bring up at least 2 NUMA nodes, but found: {count}"
+    );
+    assert!(
+        !found_memoryless,
+        "found memoryless NUMA node — all nodes should have memory"
+    );
+
+    Ok(())
+}
+
+/// Boot OpenHCL with a multi-NUMA topology and force the private pool to be
+/// split across NUMA nodes via `OPENHCL_VTL2_GPA_POOL_NUMA=split`. Validates
+/// that the pool was actually allocated on multiple NUMA nodes.
+#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
+async fn numa_private_pool_split<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
+    // 2 NUMA nodes (vps_per_socket=2, 4 VPs → 2 sockets → 2 nodes).
+    // Force NUMA split via command line flag — the pool will be split
+    // across both nodes instead of trying node 0 first.
+    // Use Vtl2Allocate so OpenHCL self-allocates from the multi-vnode
+    // partition memory map, which is required for the pool to see
+    // memory on multiple nodes.
+    // Explicitly set per-node memory sizes (2GB per node).
+    let mut vm = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 4,
+            vps_per_socket: Some(2),
+            ..Default::default()
+        })
+        .with_memory(MemoryConfig {
+            numa_mem_sizes: Some(vec![2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024]),
+            ..Default::default()
+        })
+        .with_openhcl_command_line("OPENHCL_VTL2_GPA_POOL_NUMA=split")
+        .with_vtl2_base_address_type(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            size: Some(512 * 1024 * 1024), // 512MB — large enough to allocate from both nodes
+        })
+        .with_expect_no_boot_event()
+        .run_without_agent()
+        .await?;
+
+    vm.wait_for_vtl2_ready().await?;
+
+    // Inspect the private pool ranges to verify the pool was split across
+    // multiple NUMA nodes.
+    let pool_ranges = vm
+        .inspect_openhcl(
+            "vm/runtime_params/parsed_openhcl_boot/private_pool_ranges",
+            None,
+            None,
+        )
+        .await?;
+    let pool_ranges: serde_json::Value = serde_json::from_str(&format!("{}", pool_ranges.json()))?;
+    tracing::info!(pool_ranges = %pool_ranges, "private pool ranges");
+
+    let ranges = pool_ranges
+        .as_object()
+        .context("pool_ranges is not an object")?;
+    assert!(
+        !ranges.is_empty(),
+        "expected at least one private pool range"
+    );
+
+    // Collect unique vnodes across all pool ranges.
+    let vnodes: std::collections::BTreeSet<u64> = ranges
+        .values()
+        .map(|entry| entry["vnode"].as_u64().expect("vnode field"))
+        .collect();
+
+    assert!(
+        vnodes.len() >= 2,
+        "expected pool ranges on at least 2 NUMA nodes, but found vnodes: {vnodes:?}"
+    );
 
     Ok(())
 }

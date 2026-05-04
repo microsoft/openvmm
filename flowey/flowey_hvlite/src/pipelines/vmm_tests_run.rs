@@ -592,8 +592,8 @@ fn build_vmm_tests_pipeline(
             deny_warnings: false,
             no_incremental: false,
         })
-        .dep_on(
-            |ctx| flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::Params {
+        .side_effect(|done| {
+            flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::Params {
                 target,
                 test_content_dir: dir,
                 selections,
@@ -604,9 +604,9 @@ fn build_vmm_tests_pipeline(
                 custom_kernel_modules: opts.custom_kernel_modules,
                 custom_kernel: opts.custom_kernel,
                 skip_vhd_prompt: opts.skip_vhd_prompt,
-                done: ctx.new_done_handle(),
-            },
-        );
+                done,
+            }
+        });
 
     job.finish();
 

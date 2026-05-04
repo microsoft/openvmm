@@ -5,6 +5,7 @@ mod assembler;
 mod ring;
 
 use super::Access;
+use super::BindError;
 use super::Client;
 use super::DropReason;
 use crate::ChecksumState;
@@ -16,6 +17,7 @@ use futures::AsyncRead;
 use futures::AsyncWrite;
 use inspect::Inspect;
 use inspect::InspectMut;
+use pal_async::driver::Driver;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PollReady;
 use pal_async::socket::PolledSocket;
@@ -46,8 +48,6 @@ use std::io::ErrorKind;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::net::IpAddr;
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
 use std::net::Shutdown;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
@@ -439,48 +439,27 @@ impl<T: Client> Access<'_, T> {
 
     /// Binds to the specified host IP and port for listening for incoming
     /// connections.
-    pub fn bind_tcp_port(&mut self, ip_addr: Option<IpAddr>, port: u16) -> Result<(), DropReason> {
-        let ip_addr = match ip_addr {
-            Some(IpAddr::V4(ip)) => SocketAddr::V4(SocketAddrV4::new(ip, port)),
-            Some(IpAddr::V6(ip)) => SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0)),
-            None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
-        };
-        match self.inner.tcp.listeners.entry(port) {
+    pub fn bind_tcp_port(&mut self, socket: Socket, guest_port: u16) -> Result<(), BindError> {
+        match self.inner.tcp.listeners.entry(guest_port) {
             hash_map::Entry::Occupied(_) => {
-                tracing::warn!(port, "Duplicate TCP bind for port");
+                return Err(BindError::PortAlreadyBound(guest_port));
             }
             hash_map::Entry::Vacant(e) => {
-                let ft = match ip_addr {
-                    SocketAddr::V4(ip) => FourTuple {
-                        dst: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
-                        src: SocketAddr::V4(ip),
-                    },
-                    SocketAddr::V6(ip) => FourTuple {
-                        dst: SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0)),
-                        src: SocketAddr::V6(ip),
-                    },
-                };
-                let mut sender = Sender {
-                    ft: &ft,
-                    client: self.client,
-                    state: &mut self.inner.state,
-                };
-
-                let listener = TcpListener::new(&mut sender)?;
+                let listener = TcpListener::from_socket(self.client.driver(), socket)?;
                 e.insert(listener);
             }
-        }
+        };
         Ok(())
     }
 
     /// Unbinds from the specified host port.
-    pub fn unbind_tcp_port(&mut self, port: u16) -> Result<(), DropReason> {
+    pub fn unbind_tcp_port(&mut self, port: u16) -> Result<(), BindError> {
         match self.inner.tcp.listeners.entry(port) {
             hash_map::Entry::Occupied(e) => {
                 e.remove();
                 Ok(())
             }
-            hash_map::Entry::Vacant(_) => Err(DropReason::PortNotBound),
+            hash_map::Entry::Vacant(_) => Err(BindError::PortNotBound),
         }
     }
 }
@@ -1384,28 +1363,18 @@ impl TcpConnectionInner {
 }
 
 impl TcpListener {
-    pub fn new(sender: &mut Sender<'_, impl Client>) -> Result<Self, DropReason> {
-        let socket = match sender.ft.src {
-            SocketAddr::V4(_) => Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)),
-            SocketAddr::V6(_) => Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP)),
-        }
-        .map_err(DropReason::Io)?;
-
-        let socket = PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?;
-        if let Err(err) = socket.get().bind(&sender.ft.src.into()) {
-            tracing::warn!(
-                address = ?sender.ft.src,
-                error = &err as &dyn std::error::Error,
-                "socket bind error"
-            );
-            return Err(DropReason::Io(err));
-        }
+    /// Creates a `TcpListener` from an already-bound `socket2::Socket`.
+    ///
+    /// The socket must already be bound to an address. This method will call
+    /// `listen` on it.
+    pub fn from_socket(driver: &dyn Driver, socket: Socket) -> Result<Self, BindError> {
+        let socket = PolledSocket::new(driver, socket).map_err(BindError::Io)?;
         if let Err(err) = socket.listen(10) {
             tracing::warn!(
                 error = &err as &dyn std::error::Error,
                 "socket listen error"
             );
-            return Err(DropReason::Io(err));
+            return Err(BindError::Io(err));
         }
         Ok(Self { socket })
     }

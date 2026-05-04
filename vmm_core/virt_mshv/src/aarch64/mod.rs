@@ -11,7 +11,6 @@ use crate::MshvPartitionInner;
 use crate::MshvProcessor;
 use crate::MshvProcessorBinder;
 use crate::MshvProtoPartition;
-use crate::MshvVpInnerCleaner;
 use crate::MshvVpRunner;
 use crate::VcpuFdExt;
 use crate::common_synthetic_features;
@@ -31,15 +30,12 @@ use hvdef::HvPartitionPropertyCode;
 use hvdef::Vtl;
 use hvdef::hypercall::HvRegisterAssoc;
 use pal::unix::pthread::Pthread;
-use parking_lot::Mutex;
 use pci_core::msi::SignalMsi;
-use std::convert::Infallible;
 use std::sync::Arc;
 use virt::Hv1;
 use virt::PartitionConfig;
 use virt::ProtoPartition;
 use virt::ProtoPartitionConfig;
-use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::aarch64::Aarch64PartitionCapabilities;
@@ -48,7 +44,6 @@ use virt::io::CpuIo;
 use virt::irqcon::ControlGic as _;
 use virt::irqcon::MsiRequest;
 use virt::state::HvRegisterState;
-use virt::x86::DebugState;
 use vmcore::reference_time::ReferenceTimeSource;
 use zerocopy::FromZeros;
 
@@ -153,7 +148,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             vps: self.vps,
             caps,
             synic_ports: Default::default(),
-            time_frozen: Mutex::new(false),
+            time_frozen: false.into(),
         });
 
         let partition = MshvPartition {
@@ -349,6 +344,7 @@ impl virt::BindProcessor for MshvProcessorBinder {
             inner,
             vpindex: self.vpindex,
             runner,
+            deliverability_notifications: HvDeliverabilityNotificationsRegister::new(),
         })
     }
 }
@@ -519,110 +515,50 @@ impl MshvProcessor<'_> {
 
         Ok(())
     }
-}
 
-impl virt::Processor for MshvProcessor<'_> {
-    type StateAccess<'a>
-        = &'a mut Self
-    where
-        Self: 'a;
-
-    fn set_debug_state(
+    pub(crate) async fn handle_exit(
         &mut self,
-        _vtl: Vtl,
-        _state: Option<&DebugState>,
-    ) -> Result<(), <&mut Self as virt::vp::AccessVpState>::Error> {
-        Err(ErrorInner::NotSupported.into())
-    }
-
-    async fn run_vp(
-        &mut self,
-        stop: StopVp<'_>,
+        exit: &HvMessage,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason> {
-        let vpinner = self.inner;
-        let _cleaner = MshvVpInnerCleaner { vpinner };
-
-        assert!(vpinner.thread.write().replace(Pthread::current()).is_none());
-
-        self.partition
-            .thaw_time()
-            .expect("failed to thaw partition time");
-
-        loop {
-            vpinner.needs_yield.maybe_yield().await;
-            stop.check()?;
-
-            match self.runner.run() {
-                Ok(exit) => match exit.header.typ {
-                    HvMessageType::HvMessageTypeUnrecoverableException => {
-                        return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+    ) -> Result<(), VpHaltReason> {
+        match exit.header.typ {
+            HvMessageType::HvMessageTypeUnrecoverableException => {
+                return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+            }
+            HvMessageType::HvMessageTypeUnmappedGpa | HvMessageType::HvMessageTypeGpaIntercept => {
+                self.handle_memory_intercept(exit, dev).await?;
+            }
+            HvMessageType::HvMessageTypeSynicSintDeliverable => {
+                let info = exit.as_message::<hvdef::HvArm64SynicSintDeliverableMessage>();
+                self.handle_sint_deliverable(info.deliverable_sints);
+            }
+            HvMessageType::HvMessageTypeHypercallIntercept => {
+                tracing::trace!("HYPERCALL_INTERCEPT");
+                self.handle_hypercall_intercept(exit);
+            }
+            HvMessageType::HvMessageTypeArm64ResetIntercept => {
+                let info = exit.as_message::<hvdef::HvArm64ResetInterceptMessage>();
+                match info.reset_type {
+                    hvdef::HvArm64ResetType::POWER_OFF => {
+                        return Err(VpHaltReason::PowerOff);
                     }
-                    HvMessageType::HvMessageTypeUnmappedGpa
-                    | HvMessageType::HvMessageTypeGpaIntercept => {
-                        self.handle_memory_intercept(&exit, dev).await?;
+                    hvdef::HvArm64ResetType::REBOOT => {
+                        return Err(VpHaltReason::Reset);
                     }
-                    HvMessageType::HvMessageTypeSynicSintDeliverable => {
-                        let info = exit.as_message::<hvdef::HvArm64SynicSintDeliverableMessage>();
-                        self.flush_messages(info.deliverable_sints);
+                    _ => {
+                        tracelimit::warn_ratelimited!(
+                            reset_type = ?info.reset_type,
+                            "unknown reset type"
+                        );
+                        return Err(VpHaltReason::Reset);
                     }
-                    HvMessageType::HvMessageTypeHypercallIntercept => {
-                        tracing::trace!("HYPERCALL_INTERCEPT");
-                        self.handle_hypercall_intercept(&exit);
-                    }
-                    HvMessageType::HvMessageTypeArm64ResetIntercept => {
-                        let info = exit.as_message::<hvdef::HvArm64ResetInterceptMessage>();
-                        match info.reset_type {
-                            hvdef::HvArm64ResetType::POWER_OFF => {
-                                return Err(VpHaltReason::PowerOff);
-                            }
-                            hvdef::HvArm64ResetType::REBOOT => {
-                                return Err(VpHaltReason::Reset);
-                            }
-                            _ => {
-                                tracelimit::warn_ratelimited!(
-                                    reset_type = ?info.reset_type,
-                                    "unknown reset type"
-                                );
-                                return Err(VpHaltReason::Reset);
-                            }
-                        }
-                    }
-                    exit_type => {
-                        panic!("Unhandled vcpu exit code {exit_type:?}");
-                    }
-                },
-
-                Err(e) => match e.errno() {
-                    libc::EAGAIN | libc::EINTR => {}
-                    _ => tracing::error!(
-                        error = &e as &dyn std::error::Error,
-                        "vcpufd.run returned error"
-                    ),
-                },
+                }
+            }
+            exit_type => {
+                panic!("Unhandled vcpu exit code {exit_type:?}");
             }
         }
-    }
-
-    fn flush_async_requests(&mut self) {}
-
-    fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
-        assert_eq!(vtl, Vtl::Vtl0);
-        self
-    }
-
-    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
-        use virt::aarch64::vp::AccessVpState;
-
-        let vp_info = self.inner.vp_info;
-        self.access_state(Vtl::Vtl0)
-            .reset_all(&vp_info)
-            .map_err(|e| Error(ErrorInner::ResetState(Box::new(e))))?;
-
-        self.inner.message_queues.clear();
-        *self.inner.deliverability_notifications.lock() =
-            HvDeliverabilityNotificationsRegister::new();
-        Ok::<(), Error>(())
+        Ok(())
     }
 }
 
@@ -665,8 +601,8 @@ impl virt::vp::AccessVpState for &'_ mut MshvProcessor<'_> {
 // Hypercall handler
 // ---------------------------------------------------------------------------
 
-struct MshvHypercallHandler<'a> {
-    partition: &'a MshvPartitionInner,
+pub(crate) struct MshvHypercallHandler<'a> {
+    pub(crate) partition: &'a MshvPartitionInner,
     x: [u64; 18],
     pc: u64,
     dirty: bool,
@@ -696,21 +632,5 @@ impl hv1_hypercall::Arm64RegisterState for MshvHypercallHandler<'_> {
     fn set_x(&mut self, n: u8, v: u64) {
         self.x[n as usize] = v;
         self.dirty = true;
-    }
-}
-
-impl hv1_hypercall::PostMessage for MshvHypercallHandler<'_> {
-    fn post_message(&mut self, connection_id: u32, message: &[u8]) -> hvdef::HvResult<()> {
-        self.partition
-            .synic_ports
-            .handle_post_message(Vtl::Vtl0, connection_id, false, message)
-    }
-}
-
-impl hv1_hypercall::SignalEvent for MshvHypercallHandler<'_> {
-    fn signal_event(&mut self, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
-        self.partition
-            .synic_ports
-            .handle_signal_event(Vtl::Vtl0, connection_id, flag)
     }
 }

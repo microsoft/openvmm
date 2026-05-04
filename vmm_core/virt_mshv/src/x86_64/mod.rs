@@ -15,7 +15,6 @@ use crate::MshvPartitionInner;
 use crate::MshvProcessor;
 use crate::MshvProcessorBinder;
 use crate::MshvProtoPartition;
-use crate::MshvVpInnerCleaner;
 use crate::MshvVpRunner;
 use crate::VcpuFdExt;
 use crate::common_synthetic_features;
@@ -38,14 +37,12 @@ use mshv_ioctls::VcpuFd;
 use pal::unix::pthread::Pthread;
 use parking_lot::Mutex;
 use pci_core::msi::SignalMsi;
-use std::convert::Infallible;
 use std::sync::Arc;
 use virt::Hv1;
 use virt::PartitionAccessState;
 use virt::PartitionConfig;
 use virt::ProtoPartition;
 use virt::ProtoPartitionConfig;
-use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::io::CpuIo;
@@ -542,6 +539,7 @@ impl virt::BindProcessor for MshvProcessorBinder {
             inner,
             vpindex: self.vpindex,
             runner,
+            deliverability_notifications: HvDeliverabilityNotificationsRegister::new(),
         };
 
         // Set the APIC state.
@@ -591,6 +589,41 @@ impl MshvProcessor<'_> {
         virt_support_x86emu::emulate::emulate(&mut support, &emu_mem, devices).await
     }
 
+    pub(crate) async fn handle_exit(
+        &mut self,
+        exit: &HvMessage,
+        dev: &impl CpuIo,
+    ) -> Result<(), VpHaltReason> {
+        match exit.header.typ {
+            HvMessageType::HvMessageTypeUnrecoverableException => {
+                return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+            }
+            HvMessageType::HvMessageTypeX64IoPortIntercept => {
+                self.handle_io_port_intercept(exit, dev).await?;
+            }
+            HvMessageType::HvMessageTypeUnmappedGpa | HvMessageType::HvMessageTypeGpaIntercept => {
+                self.handle_mmio_intercept(exit, dev).await?;
+            }
+            HvMessageType::HvMessageTypeSynicSintDeliverable => {
+                tracing::trace!("SYNIC_SINT_DELIVERABLE");
+                let info = exit.as_message::<hvdef::HvX64SynicSintDeliverableMessage>();
+                self.handle_sint_deliverable(info.deliverable_sints);
+            }
+            HvMessageType::HvMessageTypeHypercallIntercept => {
+                tracing::trace!("HYPERCALL_INTERCEPT");
+                self.handle_hypercall_intercept(exit, dev);
+            }
+            HvMessageType::HvMessageTypeX64ApicEoi => {
+                let msg = exit.as_message::<hvdef::HvX64ApicEoiMessage>();
+                dev.handle_eoi(msg.interrupt_vector);
+            }
+            exit_type => {
+                panic!("Unhandled vcpu exit code {exit_type:?}");
+            }
+        }
+        Ok(())
+    }
+
     async fn handle_io_port_intercept(
         &mut self,
         message: &HvMessage,
@@ -636,11 +669,6 @@ impl MshvProcessor<'_> {
         self.emulate(message, devices, interruption_pending).await
     }
 
-    fn handle_synic_deliverable_exit(&self, message: &HvMessage, _devices: &impl CpuIo) {
-        let info = message.as_message::<hvdef::HvX64SynicSintDeliverableMessage>();
-        self.flush_messages(info.deliverable_sints);
-    }
-
     fn handle_hypercall_intercept(&mut self, message: &HvMessage, _devices: &impl CpuIo) {
         let info = message.as_message::<hvdef::HvX64HypercallInterceptMessage>();
         let is_64bit =
@@ -655,101 +683,6 @@ impl MshvProcessor<'_> {
             &self.partition.gm,
             X64RegisterIo::new(&mut handler, is_64bit),
         );
-    }
-}
-
-impl virt::Processor for MshvProcessor<'_> {
-    type StateAccess<'a>
-        = &'a mut Self
-    where
-        Self: 'a;
-
-    fn set_debug_state(
-        &mut self,
-        _vtl: Vtl,
-        _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), <&mut Self as virt::vp::AccessVpState>::Error> {
-        Err(ErrorInner::NotSupported.into())
-    }
-
-    async fn run_vp(
-        &mut self,
-        stop: StopVp<'_>,
-        dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason> {
-        let vpinner = self.inner;
-        let _cleaner = MshvVpInnerCleaner { vpinner };
-
-        assert!(vpinner.thread.write().replace(Pthread::current()).is_none());
-
-        self.partition
-            .thaw_time()
-            .expect("failed to thaw partition time");
-
-        loop {
-            vpinner.needs_yield.maybe_yield().await;
-            stop.check()?;
-
-            match self.runner.run() {
-                Ok(exit) => match exit.header.typ {
-                    HvMessageType::HvMessageTypeUnrecoverableException => {
-                        return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
-                    }
-                    HvMessageType::HvMessageTypeX64IoPortIntercept => {
-                        self.handle_io_port_intercept(&exit, dev).await?;
-                    }
-                    HvMessageType::HvMessageTypeUnmappedGpa
-                    | HvMessageType::HvMessageTypeGpaIntercept => {
-                        self.handle_mmio_intercept(&exit, dev).await?;
-                    }
-                    HvMessageType::HvMessageTypeSynicSintDeliverable => {
-                        tracing::trace!("SYNIC_SINT_DELIVERABLE");
-                        self.handle_synic_deliverable_exit(&exit, dev);
-                    }
-                    HvMessageType::HvMessageTypeHypercallIntercept => {
-                        tracing::trace!("HYPERCALL_INTERCEPT");
-                        self.handle_hypercall_intercept(&exit, dev);
-                    }
-                    HvMessageType::HvMessageTypeX64ApicEoi => {
-                        let msg = exit.as_message::<hvdef::HvX64ApicEoiMessage>();
-                        dev.handle_eoi(msg.interrupt_vector);
-                    }
-                    exit => {
-                        panic!("Unhandled vcpu exit code {exit:?}");
-                    }
-                },
-
-                Err(e) => match e.errno() {
-                    libc::EAGAIN | libc::EINTR => {}
-                    _ => tracing::error!(
-                        error = &e as &dyn std::error::Error,
-                        "vcpufd.run returned error"
-                    ),
-                },
-            }
-        }
-    }
-
-    fn flush_async_requests(&mut self) {}
-
-    fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
-        assert_eq!(vtl, Vtl::Vtl0);
-        self
-    }
-
-    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
-        use virt::x86::vp::AccessVpState;
-
-        let vp_info = self.inner.vp_info;
-        self.access_state(Vtl::Vtl0)
-            .reset_all(&vp_info)
-            .map_err(|e| ErrorInner::ResetState(Box::new(e)))?;
-
-        self.inner.message_queues.clear();
-        *self.inner.deliverability_notifications.lock() =
-            HvDeliverabilityNotificationsRegister::new();
-
-        Ok::<(), Error>(())
     }
 }
 
@@ -1015,9 +948,9 @@ impl hv1_hypercall::X64RegisterState for MshvHypercallHandler<'_> {
     }
 }
 
-struct MshvHypercallHandler<'a> {
-    partition: &'a MshvPartitionInner,
-    reg_page: &'a mut HvX64RegisterPage,
+pub(crate) struct MshvHypercallHandler<'a> {
+    pub(crate) partition: &'a MshvPartitionInner,
+    pub(crate) reg_page: &'a mut HvX64RegisterPage,
 }
 
 impl MshvHypercallHandler<'_> {
@@ -1029,22 +962,6 @@ impl MshvHypercallHandler<'_> {
             hv1_hypercall::HvRetargetDeviceInterrupt,
         ],
     );
-}
-
-impl hv1_hypercall::PostMessage for MshvHypercallHandler<'_> {
-    fn post_message(&mut self, connection_id: u32, message: &[u8]) -> hvdef::HvResult<()> {
-        self.partition
-            .synic_ports
-            .handle_post_message(Vtl::Vtl0, connection_id, false, message)
-    }
-}
-
-impl hv1_hypercall::SignalEvent for MshvHypercallHandler<'_> {
-    fn signal_event(&mut self, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
-        self.partition
-            .synic_ports
-            .handle_signal_event(Vtl::Vtl0, connection_id, flag)
-    }
 }
 
 impl hv1_hypercall::RetargetDeviceInterrupt for MshvHypercallHandler<'_> {

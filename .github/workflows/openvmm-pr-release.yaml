@@ -30,7 +30,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=ubuntu2404-amd64-256gb
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job0-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -194,10 +194,6 @@ jobs:
       run: |-
         flowey e 0 flowey_lib_hvlite::_jobs::check_xtask_fmt 0
         flowey e 0 flowey_lib_hvlite::init_cross_build 0
-      shell: bash
-    - name: cargo clippy
-      run: |-
-        flowey e 0 flowey_lib_common::run_cargo_clippy 1
         flowey e 0 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build xtask
@@ -224,7 +220,7 @@ jobs:
       run: flowey e 0 flowey_lib_common::run_cargo_clippy 3
       shell: bash
     - name: cargo clippy
-      run: flowey e 0 flowey_lib_common::run_cargo_clippy 4
+      run: flowey e 0 flowey_lib_common::run_cargo_clippy 1
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 0 flowey_lib_common::cache 3
@@ -669,7 +665,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=ubuntu2404-amd64-256gb
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job11-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -721,7 +717,7 @@ jobs:
     - name: check if openvmm needs to be cloned
       run: |-
         flowey e 11 flowey_lib_common::git_checkout 0
-        flowey v 11 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:489:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:490:46 write-to-env github floweyvar10
+        flowey v 11 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:489:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:490:46 write-to-env github floweyvar9
         flowey v 11 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:490:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
@@ -729,7 +725,7 @@ jobs:
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar10 }}
+        persist-credentials: ${{ env.floweyvar9 }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -749,14 +745,14 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 11 flowey_lib_common::cache 4
-        flowey v 11 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar8
-        flowey v 11 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar9
+        flowey v 11 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar7
+        flowey v 11 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar8
       shell: bash
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v5
       with:
-        key: ${{ env.floweyvar8 }}
-        path: ${{ env.floweyvar9 }}
+        key: ${{ env.floweyvar7 }}
+        path: ${{ env.floweyvar8 }}
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
@@ -806,14 +802,14 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 11 flowey_lib_common::cache 0
-        flowey v 11 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar6
-        flowey v 11 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar7
+        flowey v 11 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar5
+        flowey v 11 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar6
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v5
       with:
-        key: ${{ env.floweyvar6 }}
-        path: ${{ env.floweyvar7 }}
+        key: ${{ env.floweyvar5 }}
+        path: ${{ env.floweyvar6 }}
       name: 'Restore cache: cargo-nextest'
     - name: downloading cargo-nextest
       run: |-
@@ -833,13 +829,13 @@ jobs:
         flowey e 11 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
     - name: generate nextest command
-      run: flowey e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 1
+      run: flowey e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 2
       shell: bash
-    - name: run 'unit-tests crypto (none)' nextest tests
+    - name: run 'unit-tests crypto (openssl)' nextest tests
       run: |-
-        flowey e 11 flowey_lib_common::run_cargo_nextest_run 2
-        flowey e 11 flowey_lib_common::run_cargo_nextest_run 3
-        flowey e 11 flowey_lib_hvlite::build_nextest_unit_tests 2
+        flowey e 11 flowey_lib_common::run_cargo_nextest_run 4
+        flowey e 11 flowey_lib_common::run_cargo_nextest_run 5
+        flowey e 11 flowey_lib_hvlite::build_nextest_unit_tests 3
         flowey e 11 flowey_lib_common::publish_test_results 5
         flowey e 11 flowey_lib_common::publish_test_results 6
         flowey e 11 flowey_lib_common::publish_test_results 4
@@ -849,18 +845,18 @@ jobs:
     - id: flowey_lib_common__publish_test_results__7
       uses: actions/upload-artifact@v7
       with:
-        name: x64-linux-unit-tests-unit-tests crypto (none)-junit-xml
+        name: x64-linux-unit-tests-unit-tests crypto (openssl)-junit-xml
         path: ${{ env.floweyvar2 }}
-      name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (none) (JUnit XML)'
+      name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (openssl) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: generate nextest command
-      run: flowey e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 2
+      run: flowey e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
-    - name: run 'unit-tests crypto (openssl)' nextest tests
+    - name: run 'unit-tests crypto (all)' nextest tests
       run: |-
-        flowey e 11 flowey_lib_common::run_cargo_nextest_run 4
-        flowey e 11 flowey_lib_common::run_cargo_nextest_run 5
-        flowey e 11 flowey_lib_hvlite::build_nextest_unit_tests 3
+        flowey e 11 flowey_lib_common::run_cargo_nextest_run 0
+        flowey e 11 flowey_lib_common::run_cargo_nextest_run 1
+        flowey e 11 flowey_lib_hvlite::build_nextest_unit_tests 4
         flowey e 11 flowey_lib_common::publish_test_results 8
         flowey e 11 flowey_lib_common::publish_test_results 9
         flowey e 11 flowey_lib_common::publish_test_results 10
@@ -870,50 +866,8 @@ jobs:
     - id: flowey_lib_common__publish_test_results__11
       uses: actions/upload-artifact@v7
       with:
-        name: x64-linux-unit-tests-unit-tests crypto (openssl)-junit-xml
-        path: ${{ env.floweyvar3 }}
-      name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (openssl) (JUnit XML)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: generate nextest command
-      run: flowey e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 3
-      shell: bash
-    - name: run 'unit-tests crypto (symcrypt)' nextest tests
-      run: |-
-        flowey e 11 flowey_lib_common::run_cargo_nextest_run 6
-        flowey e 11 flowey_lib_common::run_cargo_nextest_run 7
-        flowey e 11 flowey_lib_hvlite::build_nextest_unit_tests 4
-        flowey e 11 flowey_lib_common::publish_test_results 12
-        flowey e 11 flowey_lib_common::publish_test_results 13
-        flowey e 11 flowey_lib_common::publish_test_results 14
-        flowey v 11 'flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:21:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar4
-        flowey v 11 'flowey_lib_common::publish_test_results:21:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
-      shell: bash
-    - id: flowey_lib_common__publish_test_results__15
-      uses: actions/upload-artifact@v7
-      with:
-        name: x64-linux-unit-tests-unit-tests crypto (symcrypt)-junit-xml
-        path: ${{ env.floweyvar4 }}
-      name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (symcrypt) (JUnit XML)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: generate nextest command
-      run: flowey e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 0
-      shell: bash
-    - name: run 'unit-tests crypto (all)' nextest tests
-      run: |-
-        flowey e 11 flowey_lib_common::run_cargo_nextest_run 0
-        flowey e 11 flowey_lib_common::run_cargo_nextest_run 1
-        flowey e 11 flowey_lib_hvlite::build_nextest_unit_tests 5
-        flowey e 11 flowey_lib_common::publish_test_results 16
-        flowey e 11 flowey_lib_common::publish_test_results 17
-        flowey e 11 flowey_lib_common::publish_test_results 18
-        flowey v 11 'flowey_lib_common::publish_test_results:32:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:28:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar5
-        flowey v 11 'flowey_lib_common::publish_test_results:28:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
-      shell: bash
-    - id: flowey_lib_common__publish_test_results__19
-      uses: actions/upload-artifact@v7
-      with:
         name: x64-linux-unit-tests-unit-tests crypto (all)-junit-xml
-        path: ${{ env.floweyvar5 }}
+        path: ${{ env.floweyvar3 }}
       name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (all) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: cargo build xtask
@@ -932,13 +886,34 @@ jobs:
       run: flowey e 11 flowey_lib_hvlite::build_nextest_unit_tests 0
       shell: bash
     - name: generate nextest command
-      run: flowey e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 4
+      run: flowey e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 3
       shell: bash
     - name: run 'unit-tests' nextest tests
       run: |-
-        flowey e 11 flowey_lib_common::run_cargo_nextest_run 8
-        flowey e 11 flowey_lib_common::run_cargo_nextest_run 9
+        flowey e 11 flowey_lib_common::run_cargo_nextest_run 6
+        flowey e 11 flowey_lib_common::run_cargo_nextest_run 7
         flowey e 11 flowey_lib_hvlite::build_nextest_unit_tests 1
+        flowey e 11 flowey_lib_common::publish_test_results 12
+        flowey e 11 flowey_lib_common::publish_test_results 13
+        flowey e 11 flowey_lib_common::publish_test_results 14
+        flowey v 11 'flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:21:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar4
+        flowey v 11 'flowey_lib_common::publish_test_results:21:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
+      shell: bash
+    - id: flowey_lib_common__publish_test_results__15
+      uses: actions/upload-artifact@v7
+      with:
+        name: x64-linux-unit-tests-unit-tests-junit-xml
+        path: ${{ env.floweyvar4 }}
+      name: 'publish test results: x64-linux-unit-tests-unit-tests (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: generate nextest command
+      run: flowey e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 1
+      shell: bash
+    - name: run 'unit-tests crypto (none)' nextest tests
+      run: |-
+        flowey e 11 flowey_lib_common::run_cargo_nextest_run 2
+        flowey e 11 flowey_lib_common::run_cargo_nextest_run 3
+        flowey e 11 flowey_lib_hvlite::build_nextest_unit_tests 2
         flowey e 11 flowey_lib_common::publish_test_results 0
         flowey e 11 flowey_lib_common::publish_test_results 1
         flowey e 11 flowey_lib_common::publish_test_results 2
@@ -948,13 +923,13 @@ jobs:
     - id: flowey_lib_common__publish_test_results__3
       uses: actions/upload-artifact@v7
       with:
-        name: x64-linux-unit-tests-unit-tests-junit-xml
+        name: x64-linux-unit-tests-unit-tests crypto (none)-junit-xml
         path: ${{ env.floweyvar1 }}
-      name: 'publish test results: x64-linux-unit-tests-unit-tests (JUnit XML)'
+      name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (none) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: |-
-        flowey e 11 flowey_lib_hvlite::build_nextest_unit_tests 6
+        flowey e 11 flowey_lib_hvlite::build_nextest_unit_tests 5
         flowey e 11 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
       shell: bash
     - name: run doctests for x86_64-unknown-linux-gnu
@@ -971,7 +946,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=ubuntu2404-amd64-256gb
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job12-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -1660,7 +1635,7 @@ jobs:
     - name: check if openvmm needs to be cloned
       run: |-
         flowey e 14 flowey_lib_common::git_checkout 0
-        flowey v 14 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:489:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:490:46 write-to-env github floweyvar10
+        flowey v 14 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:489:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:490:46 write-to-env github floweyvar9
         flowey v 14 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:490:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
@@ -1668,7 +1643,7 @@ jobs:
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar10 }}
+        persist-credentials: ${{ env.floweyvar9 }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -1688,14 +1663,14 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 14 flowey_lib_common::cache 4
-        flowey v 14 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar8
-        flowey v 14 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar9
+        flowey v 14 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar7
+        flowey v 14 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar8
       shell: bash
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v5
       with:
-        key: ${{ env.floweyvar8 }}
-        path: ${{ env.floweyvar9 }}
+        key: ${{ env.floweyvar7 }}
+        path: ${{ env.floweyvar8 }}
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
@@ -1714,10 +1689,6 @@ jobs:
       run: |-
         flowey e 14 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
         flowey e 14 flowey_lib_hvlite::init_cross_build 0
-      shell: bash
-    - name: cargo clippy
-      run: |-
-        flowey e 14 flowey_lib_common::run_cargo_clippy 1
         flowey e 14 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build xtask
@@ -1744,7 +1715,7 @@ jobs:
       run: flowey e 14 flowey_lib_common::run_cargo_clippy 3
       shell: bash
     - name: cargo clippy
-      run: flowey e 14 flowey_lib_common::run_cargo_clippy 4
+      run: flowey e 14 flowey_lib_common::run_cargo_clippy 1
       shell: bash
     - name: create cargo-nextest cache dir
       run: |-
@@ -1756,14 +1727,14 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 14 flowey_lib_common::cache 0
-        flowey v 14 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar6
-        flowey v 14 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar7
+        flowey v 14 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar5
+        flowey v 14 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar6
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v5
       with:
-        key: ${{ env.floweyvar6 }}
-        path: ${{ env.floweyvar7 }}
+        key: ${{ env.floweyvar5 }}
+        path: ${{ env.floweyvar6 }}
       name: 'Restore cache: cargo-nextest'
     - name: downloading cargo-nextest
       run: |-
@@ -1783,13 +1754,13 @@ jobs:
         flowey e 14 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
     - name: generate nextest command
-      run: flowey e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 1
+      run: flowey e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 2
       shell: bash
-    - name: run 'unit-tests crypto (none)' nextest tests
+    - name: run 'unit-tests crypto (openssl)' nextest tests
       run: |-
-        flowey e 14 flowey_lib_common::run_cargo_nextest_run 2
-        flowey e 14 flowey_lib_common::run_cargo_nextest_run 3
-        flowey e 14 flowey_lib_hvlite::build_nextest_unit_tests 2
+        flowey e 14 flowey_lib_common::run_cargo_nextest_run 4
+        flowey e 14 flowey_lib_common::run_cargo_nextest_run 5
+        flowey e 14 flowey_lib_hvlite::build_nextest_unit_tests 3
         flowey e 14 flowey_lib_common::publish_test_results 5
         flowey e 14 flowey_lib_common::publish_test_results 6
         flowey e 14 flowey_lib_common::publish_test_results 4
@@ -1799,18 +1770,18 @@ jobs:
     - id: flowey_lib_common__publish_test_results__7
       uses: actions/upload-artifact@v7
       with:
-        name: aarch64-linux-unit-tests-unit-tests crypto (none)-junit-xml
+        name: aarch64-linux-unit-tests-unit-tests crypto (openssl)-junit-xml
         path: ${{ env.floweyvar2 }}
-      name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (none) (JUnit XML)'
+      name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (openssl) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: generate nextest command
-      run: flowey e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 2
+      run: flowey e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
-    - name: run 'unit-tests crypto (openssl)' nextest tests
+    - name: run 'unit-tests crypto (all)' nextest tests
       run: |-
-        flowey e 14 flowey_lib_common::run_cargo_nextest_run 4
-        flowey e 14 flowey_lib_common::run_cargo_nextest_run 5
-        flowey e 14 flowey_lib_hvlite::build_nextest_unit_tests 3
+        flowey e 14 flowey_lib_common::run_cargo_nextest_run 0
+        flowey e 14 flowey_lib_common::run_cargo_nextest_run 1
+        flowey e 14 flowey_lib_hvlite::build_nextest_unit_tests 4
         flowey e 14 flowey_lib_common::publish_test_results 8
         flowey e 14 flowey_lib_common::publish_test_results 9
         flowey e 14 flowey_lib_common::publish_test_results 10
@@ -1820,50 +1791,8 @@ jobs:
     - id: flowey_lib_common__publish_test_results__11
       uses: actions/upload-artifact@v7
       with:
-        name: aarch64-linux-unit-tests-unit-tests crypto (openssl)-junit-xml
-        path: ${{ env.floweyvar3 }}
-      name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (openssl) (JUnit XML)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: generate nextest command
-      run: flowey e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 3
-      shell: bash
-    - name: run 'unit-tests crypto (symcrypt)' nextest tests
-      run: |-
-        flowey e 14 flowey_lib_common::run_cargo_nextest_run 6
-        flowey e 14 flowey_lib_common::run_cargo_nextest_run 7
-        flowey e 14 flowey_lib_hvlite::build_nextest_unit_tests 4
-        flowey e 14 flowey_lib_common::publish_test_results 12
-        flowey e 14 flowey_lib_common::publish_test_results 13
-        flowey e 14 flowey_lib_common::publish_test_results 14
-        flowey v 14 'flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:21:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar4
-        flowey v 14 'flowey_lib_common::publish_test_results:21:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
-      shell: bash
-    - id: flowey_lib_common__publish_test_results__15
-      uses: actions/upload-artifact@v7
-      with:
-        name: aarch64-linux-unit-tests-unit-tests crypto (symcrypt)-junit-xml
-        path: ${{ env.floweyvar4 }}
-      name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (symcrypt) (JUnit XML)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: generate nextest command
-      run: flowey e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 0
-      shell: bash
-    - name: run 'unit-tests crypto (all)' nextest tests
-      run: |-
-        flowey e 14 flowey_lib_common::run_cargo_nextest_run 0
-        flowey e 14 flowey_lib_common::run_cargo_nextest_run 1
-        flowey e 14 flowey_lib_hvlite::build_nextest_unit_tests 5
-        flowey e 14 flowey_lib_common::publish_test_results 16
-        flowey e 14 flowey_lib_common::publish_test_results 17
-        flowey e 14 flowey_lib_common::publish_test_results 18
-        flowey v 14 'flowey_lib_common::publish_test_results:32:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:28:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar5
-        flowey v 14 'flowey_lib_common::publish_test_results:28:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
-      shell: bash
-    - id: flowey_lib_common__publish_test_results__19
-      uses: actions/upload-artifact@v7
-      with:
         name: aarch64-linux-unit-tests-unit-tests crypto (all)-junit-xml
-        path: ${{ env.floweyvar5 }}
+        path: ${{ env.floweyvar3 }}
       name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (all) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: cargo build xtask
@@ -1882,13 +1811,34 @@ jobs:
       run: flowey e 14 flowey_lib_hvlite::build_nextest_unit_tests 0
       shell: bash
     - name: generate nextest command
-      run: flowey e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 4
+      run: flowey e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 3
       shell: bash
     - name: run 'unit-tests' nextest tests
       run: |-
-        flowey e 14 flowey_lib_common::run_cargo_nextest_run 8
-        flowey e 14 flowey_lib_common::run_cargo_nextest_run 9
+        flowey e 14 flowey_lib_common::run_cargo_nextest_run 6
+        flowey e 14 flowey_lib_common::run_cargo_nextest_run 7
         flowey e 14 flowey_lib_hvlite::build_nextest_unit_tests 1
+        flowey e 14 flowey_lib_common::publish_test_results 12
+        flowey e 14 flowey_lib_common::publish_test_results 13
+        flowey e 14 flowey_lib_common::publish_test_results 14
+        flowey v 14 'flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:21:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar4
+        flowey v 14 'flowey_lib_common::publish_test_results:21:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
+      shell: bash
+    - id: flowey_lib_common__publish_test_results__15
+      uses: actions/upload-artifact@v7
+      with:
+        name: aarch64-linux-unit-tests-unit-tests-junit-xml
+        path: ${{ env.floweyvar4 }}
+      name: 'publish test results: aarch64-linux-unit-tests-unit-tests (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: generate nextest command
+      run: flowey e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 1
+      shell: bash
+    - name: run 'unit-tests crypto (none)' nextest tests
+      run: |-
+        flowey e 14 flowey_lib_common::run_cargo_nextest_run 2
+        flowey e 14 flowey_lib_common::run_cargo_nextest_run 3
+        flowey e 14 flowey_lib_hvlite::build_nextest_unit_tests 2
         flowey e 14 flowey_lib_common::publish_test_results 0
         flowey e 14 flowey_lib_common::publish_test_results 1
         flowey e 14 flowey_lib_common::publish_test_results 2
@@ -1898,13 +1848,13 @@ jobs:
     - id: flowey_lib_common__publish_test_results__3
       uses: actions/upload-artifact@v7
       with:
-        name: aarch64-linux-unit-tests-unit-tests-junit-xml
+        name: aarch64-linux-unit-tests-unit-tests crypto (none)-junit-xml
         path: ${{ env.floweyvar1 }}
-      name: 'publish test results: aarch64-linux-unit-tests-unit-tests (JUnit XML)'
+      name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (none) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: |-
-        flowey e 14 flowey_lib_hvlite::build_nextest_unit_tests 6
+        flowey e 14 flowey_lib_hvlite::build_nextest_unit_tests 5
         flowey e 14 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
       shell: bash
     - name: run doctests for aarch64-unknown-linux-gnu
@@ -3578,7 +3528,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=ubuntu2404-amd64-256gb
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job20-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -3720,7 +3670,10 @@ jobs:
       run: flowey e 20 flowey_lib_hvlite::init_vmm_tests_env 0
       shell: bash
     - name: ensure hypervisor device is accessible
-      run: flowey e 20 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      run: flowey e 20 flowey_lib_hvlite::test_nextest_vmm_tests_archive 1
+      shell: bash
+    - name: ensure 2 MiB hugetlb pages are available
+      run: flowey e 20 flowey_lib_hvlite::test_nextest_vmm_tests_archive 2
       shell: bash
     - name: create cargo-nextest cache dir
       run: |-
@@ -3771,9 +3724,10 @@ jobs:
         flowey e 20 flowey_lib_common::git_checkout 3
         flowey e 20 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 20 flowey_lib_hvlite::run_cargo_nextest_run 0
+        flowey e 20 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
         flowey e 20 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey e 20 flowey_core::pipeline::artifact::resolve 5
-        flowey e 20 flowey_lib_hvlite::test_nextest_vmm_tests_archive 1
+        flowey e 20 flowey_lib_hvlite::test_nextest_vmm_tests_archive 3
       shell: bash
     - name: generate nextest command
       run: flowey e 20 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -4510,7 +4464,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=ubuntu2404-amd64-256gb
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job24-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -5924,7 +5878,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=ubuntu2404-amd64-256gb
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job6-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -6223,7 +6177,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=ubuntu2404-amd64-256gb
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job7-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -6578,7 +6532,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=ubuntu2404-amd64-256gb
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job8-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -6861,7 +6815,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
-    - 1ES.ImageOverride=ubuntu2404-amd64-256gb
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job9-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read

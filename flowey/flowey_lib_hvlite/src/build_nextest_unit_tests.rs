@@ -215,10 +215,13 @@ impl FlowNode for Node {
             ) {
                 crypto_feature_sets
                     .push(("openssl", CargoFeatureSet::Specific(vec!["openssl".into()])));
-                crypto_feature_sets.push((
-                    "symcrypt",
-                    CargoFeatureSet::Specific(vec!["symcrypt".into()]),
-                ));
+                // Only test the symcrypt backend on musl targets with our prebuilt lib
+                if matches!(target.environment, target_lexicon::Environment::Musl) {
+                    crypto_feature_sets.push((
+                        "symcrypt",
+                        CargoFeatureSet::Specific(vec!["symcrypt".into()]),
+                    ));
+                }
                 crypto_feature_sets.push(("all", CargoFeatureSet::All));
             }
             for (name, features) in crypto_feature_sets {

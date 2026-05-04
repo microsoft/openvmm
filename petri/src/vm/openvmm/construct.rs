@@ -358,14 +358,24 @@ impl PetriVmConfigOpenVmm {
                 startup_bytes,
                 dynamic_memory_range,
                 mmio_gaps,
+                numa_mem_sizes,
             } = memory;
 
             if dynamic_memory_range.is_some() {
                 anyhow::bail!("dynamic memory not supported in OpenVMM");
             }
 
+            let mem_size = if let Some(ref sizes) = numa_mem_sizes {
+                sizes
+                    .iter()
+                    .try_fold(0u64, |acc, &s| acc.checked_add(s))
+                    .context("numa memory sizes overflow")?
+            } else {
+                startup_bytes
+            };
+
             openvmm_defs::config::MemoryConfig {
-                mem_size: startup_bytes,
+                mem_size,
                 mmio_gaps: match mmio_gaps {
                     MmioConfig::Platform => {
                         if firmware.is_openhcl() {
@@ -387,6 +397,9 @@ impl PetriVmConfigOpenVmm {
                 prefetch_memory: false,
                 private_memory: false,
                 transparent_hugepages: false,
+                hugepages: false,
+                hugepage_size: None,
+                numa_mem_sizes,
             }
         };
 

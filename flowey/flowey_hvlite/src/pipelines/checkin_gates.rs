@@ -3,6 +3,8 @@
 
 //! See [`CheckinGatesCli`]
 
+use crate::pipelines_shared::ado_pools;
+use crate::pipelines_shared::gh_pools;
 use flowey::node::prelude::AdoResourcesRepositoryId;
 use flowey::node::prelude::FlowPlatformLinuxDistro;
 use flowey::node::prelude::GhPermission;
@@ -23,6 +25,10 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use target_lexicon::Triple;
 use vmm_test_images::KnownTestArtifacts;
+
+// This is a cap for surplus 2 MiB hugetlb pages, not a reservation. Keep it
+// generous enough for VMM tests without tying CI provisioning to one test's RAM.
+const HUGETLB_2MB_OVERCOMMIT_PAGES: u64 = 4096;
 
 #[derive(Copy, Clone, clap::ValueEnum)]
 enum PipelineConfig {
@@ -219,7 +225,8 @@ impl IntoPipeline for CheckinGatesCli {
         // <https://github.com/orgs/community/discussions/12395>
         let mut all_jobs = Vec::new();
 
-        // ── Phase 1: quick-check gate ──────────────────────────────────────
+        // Quick check gate
+        //
         // Combined fmt + clippy on one self-hosted linux machine.
         // Catches the most common failures quickly before fanning out expensive jobs.
         let quick_check_job = if matches!(config, PipelineConfig::Pr | PipelineConfig::PrRelease) {
@@ -229,27 +236,25 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "quick check [fmt, clippy x64-linux]",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_1es())
-                .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
+                .gh_set_pool(gh_pools::default_linux())
+                .ado_set_pool(ado_pools::default_linux())
                 // 1. xtask fmt (linux)
-                .dep_on(|ctx| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
+                .side_effect(|done| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
                     target: CommonTriple::X86_64_LINUX_GNU,
-                    done: ctx.new_done_handle(),
+                    done,
                 })
                 // 2. clippy for x64-linux-gnu
-                .dep_on(|ctx| flowey_lib_hvlite::_jobs::check_clippy::Request {
+                .side_effect(|done| flowey_lib_hvlite::_jobs::check_clippy::Request {
                     target: target_lexicon::triple!("x86_64-unknown-linux-gnu"),
                     profile: CommonProfile::from_release(release),
-                    done: ctx.new_done_handle(),
+                    done,
                     also_check_misc_nostd_crates: false,
                 })
                 .finish();
 
             Some(job)
         } else {
-            // CI (post-merge) keeps full fan-out — no phase-1 gate
+            // skip in CI
             None
         };
 
@@ -261,13 +266,11 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "xtask fmt (windows)",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_windows())
-                .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
-                    FlowPlatform::Windows,
-                ))
-                .dep_on(|ctx| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
+                .gh_set_pool(gh_pools::windows_x64_gh())
+                .ado_set_pool(ado_pools::default_windows())
+                .side_effect(|done| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
                     target: CommonTriple::X86_64_WINDOWS_MSVC,
-                    done: ctx.new_done_handle(),
+                    done,
                 })
                 .finish();
 
@@ -282,13 +285,11 @@ impl IntoPipeline for CheckinGatesCli {
                         FlowArch::X86_64,
                         "xtask fmt (linux)",
                     )
-                    .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
-                    .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
-                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                    ))
-                    .dep_on(|ctx| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
+                    .gh_set_pool(gh_pools::linux_x64_gh())
+                    .ado_set_pool(ado_pools::default_linux())
+                    .side_effect(|done| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
                         target: CommonTriple::X86_64_LINUX_GNU,
-                        done: ctx.new_done_handle(),
+                        done,
                     })
                     .finish();
                 all_jobs.push(job.clone());
@@ -381,43 +382,50 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts (not for VMM tests) [{arch_tag}-windows]"),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::windows_amd_1es())
-                .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
-                    FlowPlatform::Windows,
-                ))
-                .dep_on(|ctx| flowey_lib_hvlite::build_hypestv::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::WindowsMsvc,
-                    },
-                    profile: CommonProfile::from_release(release),
-                    hypestv: ctx.publish_typed_artifact(pub_hypestv),
-                })
-                .dep_on(|ctx| flowey_lib_hvlite::build_and_test_vmgs_lib::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::WindowsMsvc,
-                    },
-                    profile: CommonProfile::from_release(release),
-                    vmgs_lib: ctx.publish_typed_artifact(pub_vmgs_lib),
-                })
-                .dep_on(|ctx| flowey_lib_hvlite::build_igvmfilegen::Request {
-                    build_params: flowey_lib_hvlite::build_igvmfilegen::IgvmfilegenBuildParams {
+                .gh_set_pool(gh_pools::default_windows())
+                .ado_set_pool(ado_pools::default_windows())
+                .publish(pub_hypestv, |hypestv| {
+                    flowey_lib_hvlite::build_hypestv::Request {
                         target: CommonTriple::Common {
                             arch,
                             platform: CommonPlatform::WindowsMsvc,
                         },
-                        profile: CommonProfile::from_release(release).into(),
-                    },
-                    igvmfilegen: ctx.publish_typed_artifact(pub_igvmfilegen),
+                        profile: CommonProfile::from_release(release),
+                        hypestv,
+                    }
                 })
-                .dep_on(|ctx| flowey_lib_hvlite::build_ohcldiag_dev::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::WindowsMsvc,
-                    },
-                    profile: CommonProfile::from_release(release),
-                    ohcldiag_dev: ctx.publish_typed_artifact(pub_ohcldiag_dev),
+                .publish(pub_vmgs_lib, |vmgs_lib| {
+                    flowey_lib_hvlite::build_and_test_vmgs_lib::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::WindowsMsvc,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        vmgs_lib,
+                    }
+                })
+                .publish(pub_igvmfilegen, |igvmfilegen| {
+                    flowey_lib_hvlite::build_igvmfilegen::Request {
+                        build_params:
+                            flowey_lib_hvlite::build_igvmfilegen::IgvmfilegenBuildParams {
+                                target: CommonTriple::Common {
+                                    arch,
+                                    platform: CommonPlatform::WindowsMsvc,
+                                },
+                                profile: CommonProfile::from_release(release).into(),
+                            },
+                        igvmfilegen,
+                    }
+                })
+                .publish(pub_ohcldiag_dev, |ohcldiag_dev| {
+                    flowey_lib_hvlite::build_ohcldiag_dev::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::WindowsMsvc,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        ohcldiag_dev,
+                    }
                 });
 
             all_jobs.push(job.finish());
@@ -440,11 +448,9 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts (for VMM tests) [{arch_tag}-windows]"),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::windows_amd_1es())
-                .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
-                    FlowPlatform::Windows,
-                ))
-                .dep_on(|ctx| {
+                .gh_set_pool(gh_pools::default_windows())
+                .ado_set_pool(ado_pools::default_windows())
+                .publish(pub_openvmm, |openvmm| {
                     flowey_lib_hvlite::build_openvmm::Request {
                         params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
                             target: CommonTriple::Common {
@@ -461,58 +467,70 @@ impl IntoPipeline for CheckinGatesCli {
                                 [].into()
                             },
                         },
-                        openvmm: ctx.publish_typed_artifact(pub_openvmm),
+                        openvmm,
                     }
                 })
-                .dep_on(|ctx| flowey_lib_hvlite::build_pipette::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::WindowsMsvc,
-                    },
-                    profile: CommonProfile::from_release(release),
-                    pipette: ctx.publish_typed_artifact(pub_pipette_windows),
-                })
-                .dep_on(|ctx| flowey_lib_hvlite::build_tmk_vmm::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::WindowsMsvc,
-                    },
-                    unstable_whp: true, // The ARM64 CI runner supports the unstable WHP interface
-                    profile: CommonProfile::from_release(release),
-                    tmk_vmm: ctx.publish_typed_artifact(pub_tmk_vmm),
-                })
-                .dep_on(|ctx| flowey_lib_hvlite::build_prep_steps::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::WindowsMsvc,
-                    },
-                    profile: CommonProfile::from_release(release),
-                    prep_steps: ctx.publish_typed_artifact(pub_prep_steps),
-                })
-                .dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
-                    target: vmgstool_target,
-                    profile: CommonProfile::from_release(release),
-                    with_crypto: true,
-                    with_test_helpers: true,
-                    vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
-                })
-                .dep_on(|ctx| flowey_lib_hvlite::build_tpm_guest_tests::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::WindowsMsvc,
-                    },
-                    profile: CommonProfile::from_release(release),
-                    tpm_guest_tests: ctx.publish_typed_artifact(pub_tpm_guest_tests),
-                })
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::build_test_igvm_agent_rpc_server::Request {
+                .publish(pub_pipette_windows, |pipette| {
+                    flowey_lib_hvlite::build_pipette::Request {
                         target: CommonTriple::Common {
                             arch,
                             platform: CommonPlatform::WindowsMsvc,
                         },
                         profile: CommonProfile::from_release(release),
-                        test_igvm_agent_rpc_server: ctx
-                            .publish_typed_artifact(pub_test_igvm_agent_rpc_server),
+                        pipette,
+                    }
+                })
+                .publish(pub_tmk_vmm, |tmk_vmm| {
+                    flowey_lib_hvlite::build_tmk_vmm::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::WindowsMsvc,
+                        },
+                        unstable_whp: true, // The ARM64 CI runner supports the unstable WHP interface
+                        profile: CommonProfile::from_release(release),
+                        tmk_vmm,
+                    }
+                })
+                .publish(pub_prep_steps, |prep_steps| {
+                    flowey_lib_hvlite::build_prep_steps::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::WindowsMsvc,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        prep_steps,
+                    }
+                })
+                .publish(pub_vmgstool, |vmgstool| {
+                    flowey_lib_hvlite::build_vmgstool::Request {
+                        target: vmgstool_target,
+                        profile: CommonProfile::from_release(release),
+                        with_crypto: true,
+                        with_test_helpers: true,
+                        vmgstool,
+                    }
+                })
+                .publish(pub_tpm_guest_tests, |tpm_guest_tests| {
+                    flowey_lib_hvlite::build_tpm_guest_tests::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::WindowsMsvc,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        tpm_guest_tests,
+                    }
+                })
+                .publish(
+                    pub_test_igvm_agent_rpc_server,
+                    |test_igvm_agent_rpc_server| {
+                        flowey_lib_hvlite::build_test_igvm_agent_rpc_server::Request {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::WindowsMsvc,
+                            },
+                            profile: CommonProfile::from_release(release),
+                            test_igvm_agent_rpc_server,
+                        }
                     },
                 );
 
@@ -521,23 +539,23 @@ impl IntoPipeline for CheckinGatesCli {
                 CommonArch::X86_64 => {
                     let pub_vmm_tests_archive_windows_x86 =
                         pub_vmm_tests_archive_windows_x86.take().unwrap();
-                    job = job.dep_on(|ctx|
+                    job = job.publish(pub_vmm_tests_archive_windows_x86, |archive|
                         flowey_lib_hvlite::build_nextest_vmm_tests::Request {
                         target: CommonTriple::X86_64_WINDOWS_MSVC.as_triple(),
                         profile: CommonProfile::from_release(release),
                         build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
-                            ctx.publish_typed_artifact(pub_vmm_tests_archive_windows_x86),
+                            archive,
                         ),
                     });
                 }
                 CommonArch::Aarch64 => {
                     let pub_vmm_tests_archive_windows_aarch64 =
                         pub_vmm_tests_archive_windows_aarch64.take().unwrap();
-                    job = job.dep_on(|ctx| flowey_lib_hvlite::build_nextest_vmm_tests::Request {
+                    job = job.publish(pub_vmm_tests_archive_windows_aarch64, |archive| flowey_lib_hvlite::build_nextest_vmm_tests::Request {
                         target: CommonTriple::AARCH64_WINDOWS_MSVC.as_triple(),
                         profile: CommonProfile::from_release(release),
                         build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
-                            ctx.publish_typed_artifact(pub_vmm_tests_archive_windows_aarch64),
+                            archive,
                         ),
                     });
                 }
@@ -621,11 +639,9 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts [{arch_tag}-linux]"),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_1es())
-                .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
-                .dep_on(|ctx| {
+                .gh_set_pool(gh_pools::default_linux())
+                .ado_set_pool(ado_pools::default_linux())
+                .publish(pub_openvmm, |openvmm| {
                     flowey_lib_hvlite::build_openvmm::Request {
                         params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
                             target: CommonTriple::Common {
@@ -637,69 +653,84 @@ impl IntoPipeline for CheckinGatesCli {
                             features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
                                 .into(),
                         },
-                        openvmm: ctx.publish_typed_artifact(pub_openvmm),
+                        openvmm,
                     }
                 })
-                .dep_on(|ctx| flowey_lib_hvlite::build_openvmm_vhost::Request {
-                    params: flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostBuildParams {
+                .publish(pub_openvmm_vhost, |openvmm_vhost| {
+                    flowey_lib_hvlite::build_openvmm_vhost::Request {
+                        params: flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostBuildParams {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxGnu,
+                            },
+                            profile: CommonProfile::from_release(release),
+                        },
+                        openvmm_vhost,
+                    }
+                })
+                .publish(pub_vmgstool, |vmgstool| {
+                    flowey_lib_hvlite::build_vmgstool::Request {
+                        target: vmgstool_target,
+                        profile: CommonProfile::from_release(release),
+                        with_crypto: true,
+                        with_test_helpers: true,
+                        vmgstool,
+                    }
+                })
+                .publish(pub_vmgs_lib, |vmgs_lib| {
+                    flowey_lib_hvlite::build_and_test_vmgs_lib::Request {
                         target: CommonTriple::Common {
                             arch,
                             platform: CommonPlatform::LinuxGnu,
                         },
                         profile: CommonProfile::from_release(release),
-                    },
-                    openvmm_vhost: ctx.publish_typed_artifact(pub_openvmm_vhost),
+                        vmgs_lib,
+                    }
                 })
-                .dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
-                    target: vmgstool_target,
-                    profile: CommonProfile::from_release(release),
-                    with_crypto: true,
-                    with_test_helpers: true,
-                    vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
+                .publish(pub_igvmfilegen, |igvmfilegen| {
+                    flowey_lib_hvlite::build_igvmfilegen::Request {
+                        build_params:
+                            flowey_lib_hvlite::build_igvmfilegen::IgvmfilegenBuildParams {
+                                target: CommonTriple::Common {
+                                    arch,
+                                    platform: CommonPlatform::LinuxGnu,
+                                },
+                                profile: CommonProfile::from_release(release).into(),
+                            },
+                        igvmfilegen,
+                    }
                 })
-                .dep_on(|ctx| flowey_lib_hvlite::build_and_test_vmgs_lib::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::LinuxGnu,
-                    },
-                    profile: CommonProfile::from_release(release),
-                    vmgs_lib: ctx.publish_typed_artifact(pub_vmgs_lib),
-                })
-                .dep_on(|ctx| flowey_lib_hvlite::build_igvmfilegen::Request {
-                    build_params: flowey_lib_hvlite::build_igvmfilegen::IgvmfilegenBuildParams {
+                .publish(pub_ohcldiag_dev, |ohcldiag_dev| {
+                    flowey_lib_hvlite::build_ohcldiag_dev::Request {
                         target: CommonTriple::Common {
                             arch,
                             platform: CommonPlatform::LinuxGnu,
                         },
-                        profile: CommonProfile::from_release(release).into(),
-                    },
-                    igvmfilegen: ctx.publish_typed_artifact(pub_igvmfilegen),
+                        profile: CommonProfile::from_release(release),
+                        ohcldiag_dev,
+                    }
                 })
-                .dep_on(|ctx| flowey_lib_hvlite::build_ohcldiag_dev::Request {
-                    target: CommonTriple::Common {
+                .publish(pub_guest_test_uefi, |guest_test_uefi| {
+                    flowey_lib_hvlite::build_guest_test_uefi::Request {
                         arch,
-                        platform: CommonPlatform::LinuxGnu,
-                    },
-                    profile: CommonProfile::from_release(release),
-                    ohcldiag_dev: ctx.publish_typed_artifact(pub_ohcldiag_dev),
+                        profile: CommonProfile::from_release(release),
+                        guest_test_uefi,
+                    }
                 })
-                .dep_on(|ctx| flowey_lib_hvlite::build_guest_test_uefi::Request {
+                .publish(pub_tmks, |tmks| flowey_lib_hvlite::build_tmks::Request {
                     arch,
                     profile: CommonProfile::from_release(release),
-                    guest_test_uefi: ctx.publish_typed_artifact(pub_guest_test_uefi),
+                    tmks,
                 })
-                .dep_on(|ctx| flowey_lib_hvlite::build_tmks::Request {
-                    arch,
-                    profile: CommonProfile::from_release(release),
-                    tmks: ctx.publish_typed_artifact(pub_tmks),
-                })
-                .dep_on(|ctx| flowey_lib_hvlite::build_tpm_guest_tests::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::LinuxGnu,
-                    },
-                    profile: CommonProfile::from_release(release),
-                    tpm_guest_tests: ctx.publish_typed_artifact(pub_tpm_guest_tests),
+                .publish(pub_tpm_guest_tests, |tpm_guest_tests| {
+                    flowey_lib_hvlite::build_tpm_guest_tests::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::LinuxGnu,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        tpm_guest_tests,
+                    }
                 });
 
             // Hang building the linux VMM tests off this big linux job.
@@ -708,11 +739,11 @@ impl IntoPipeline for CheckinGatesCli {
             if matches!(arch, CommonArch::X86_64) {
                 let pub_vmm_tests_archive_linux_x86 =
                     pub_vmm_tests_archive_linux_x86.take().unwrap();
-                job = job.dep_on(|ctx| flowey_lib_hvlite::build_nextest_vmm_tests::Request {
+                job = job.publish(pub_vmm_tests_archive_linux_x86, |archive| flowey_lib_hvlite::build_nextest_vmm_tests::Request {
                     target: CommonTriple::X86_64_LINUX_GNU.as_triple(),
                     profile: CommonProfile::from_release(release),
                     build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
-                        ctx.publish_typed_artifact(pub_vmm_tests_archive_linux_x86),
+                        archive,
                     ),
                 });
             }
@@ -823,10 +854,8 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     build_openhcl_job_tag(arch_tag),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_1es())
-                .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
+                .gh_set_pool(gh_pools::default_linux())
+                .ado_set_pool(ado_pools::default_linux())
                 .dep_on(|ctx| {
                     let publish_baseline_artifact = pub_openhcl_baseline
                         .map(|baseline_artifact| ctx.publish_artifact(baseline_artifact));
@@ -852,22 +881,26 @@ impl IntoPipeline for CheckinGatesCli {
                         done: ctx.new_done_handle(),
                     }
                 })
-                .dep_on(|ctx| flowey_lib_hvlite::build_pipette::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::LinuxMusl,
-                    },
-                    profile: CommonProfile::from_release(release),
-                    pipette: ctx.publish_typed_artifact(pub_pipette_linux_musl),
+                .publish(pub_pipette_linux_musl, |pipette| {
+                    flowey_lib_hvlite::build_pipette::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::LinuxMusl,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        pipette,
+                    }
                 })
-                .dep_on(|ctx| flowey_lib_hvlite::build_tmk_vmm::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::LinuxMusl,
-                    },
-                    profile: CommonProfile::from_release(release),
-                    unstable_whp: false,
-                    tmk_vmm: ctx.publish_typed_artifact(pub_tmk_vmm),
+                .publish(pub_tmk_vmm, |tmk_vmm| {
+                    flowey_lib_hvlite::build_tmk_vmm::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::LinuxMusl,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        unstable_whp: false,
+                        tmk_vmm,
+                    }
                 });
 
             // Build musl openvmm, openvmm_vhost, and VMM tests archive on the
@@ -922,14 +955,14 @@ impl IntoPipeline for CheckinGatesCli {
                         FlowArch::X86_64,
                         format!("verify openhcl binary size [{}]", arch_tag),
                     )
-                    .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
-                    .dep_on(
-                        |ctx| flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::Request {
+                    .gh_set_pool(gh_pools::linux_x64_gh())
+                    .side_effect(
+                        |done| flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::Request {
                             target: CommonTriple::Common {
                                 arch,
                                 platform: CommonPlatform::LinuxMusl,
                             },
-                            done: ctx.new_done_handle(),
+                            done,
                             pipeline_name: "openvmm-ci.yaml".into(),
                             job_name: build_openhcl_job_tag(arch_tag),
                         },
@@ -947,6 +980,7 @@ impl IntoPipeline for CheckinGatesCli {
             platform: FlowPlatform,
             arch: FlowArch,
             gh_pool: GhRunner,
+            ado_pool: Option<AdoPool>,
             clippy_targets: Option<(&'a str, &'a [(Triple, bool)])>,
             unit_test_target: Option<(&'a str, Triple)>,
         }
@@ -961,17 +995,15 @@ impl IntoPipeline for CheckinGatesCli {
             platform,
             arch,
             gh_pool,
+            ado_pool,
             clippy_targets,
             unit_test_target,
         } in [
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::X86_64,
-                gh_pool: if release {
-                    crate::pipelines_shared::gh_pools::windows_amd_1es()
-                } else {
-                    crate::pipelines_shared::gh_pools::gh_hosted_x64_windows()
-                },
+                gh_pool: gh_pools::windows_amd_1es(),
+                ado_pool: Some(ado_pools::windows_amd_1es()),
                 clippy_targets: Some((
                     "x64-windows",
                     &[(target_lexicon::triple!("x86_64-pc-windows-msvc"), false)],
@@ -984,11 +1016,10 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                // This job fails on github runners for an unknown reason, so
-                // use self-hosted runners for now.
-                gh_pool: crate::pipelines_shared::gh_pools::linux_1es(),
+                gh_pool: gh_pools::linux_amd_1es(),
+                ado_pool: Some(ado_pools::linux_amd_1es()),
                 clippy_targets: if quick_check_job.is_some() {
-                    // Phase 1 already ran clippy for x64-linux;
+                    // quick check already ran clippy for x64-linux;
                     // still need macos cross-clippy here.
                     Some(("macos", macos_clippy_targets.as_slice()))
                 } else {
@@ -1005,9 +1036,8 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                // This job fails on github runners due to disk space exhaustion, so
-                // use self-hosted runners for now.
-                gh_pool: crate::pipelines_shared::gh_pools::linux_1es(),
+                gh_pool: gh_pools::linux_amd_1es(),
+                ado_pool: Some(ado_pools::linux_amd_1es()),
                 clippy_targets: Some((
                     "x64-linux-musl, misc nostd",
                     &[(openhcl_musl_target(CommonArch::X86_64), true)],
@@ -1017,11 +1047,8 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::Aarch64,
-                gh_pool: if release {
-                    crate::pipelines_shared::gh_pools::windows_arm_1es()
-                } else {
-                    crate::pipelines_shared::gh_pools::gh_hosted_arm_windows()
-                },
+                gh_pool: gh_pools::windows_arm_1es(),
+                ado_pool: None,
                 clippy_targets: Some((
                     "aarch64-windows",
                     &[(target_lexicon::triple!("aarch64-pc-windows-msvc"), false)],
@@ -1034,11 +1061,8 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::Aarch64,
-                gh_pool: if release {
-                    crate::pipelines_shared::gh_pools::linux_arm_1es()
-                } else {
-                    crate::pipelines_shared::gh_pools::gh_hosted_arm_linux()
-                },
+                gh_pool: gh_pools::linux_arm_1es(),
+                ado_pool: None,
                 clippy_targets: Some((
                     "aarch64-linux",
                     &[(target_lexicon::triple!("aarch64-unknown-linux-gnu"), false)],
@@ -1051,11 +1075,8 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::Aarch64,
-                gh_pool: if release {
-                    crate::pipelines_shared::gh_pools::linux_arm_1es()
-                } else {
-                    crate::pipelines_shared::gh_pools::gh_hosted_arm_linux()
-                },
+                gh_pool: gh_pools::linux_arm_1es(),
+                ado_pool: None,
                 clippy_targets: Some((
                     "aarch64-linux-musl, misc nostd",
                     &[(openhcl_musl_target(CommonArch::Aarch64), true)],
@@ -1066,9 +1087,8 @@ impl IntoPipeline for CheckinGatesCli {
                 )),
             },
         ] {
-            // Skip ARM64 jobs entirely for ADO backend (there is no native ARM64 pool ADO)
-            if matches!(arch, FlowArch::Aarch64) && matches!(backend_hint, PipelineBackendHint::Ado)
-            {
+            // Skip unsupported jobs on ADO backend
+            if matches!(backend_hint, PipelineBackendHint::Ado) && ado_pool.is_none() {
                 continue;
             }
 
@@ -1094,26 +1114,19 @@ impl IntoPipeline for CheckinGatesCli {
 
             let mut clippy_unit_test_job = pipeline
                 .new_job(platform, arch, job_name)
-                .gh_set_pool(gh_pool)
-                .ado_set_pool(match platform {
-                    FlowPlatform::Windows => {
-                        crate::pipelines_shared::ado_pools::default_x86_pool(FlowPlatform::Windows)
-                    }
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => {
-                        crate::pipelines_shared::ado_pools::default_x86_pool(FlowPlatform::Linux(
-                            FlowPlatformLinuxDistro::Ubuntu,
-                        ))
-                    }
-                    _ => anyhow::bail!("unsupported platform"),
-                });
+                .gh_set_pool(gh_pool);
+
+            if let Some(pool) = ado_pool {
+                clippy_unit_test_job = clippy_unit_test_job.ado_set_pool(pool);
+            }
 
             if let Some((_, targets)) = clippy_targets {
                 for (target, also_check_misc_nostd_crates) in targets {
-                    clippy_unit_test_job = clippy_unit_test_job.dep_on(|ctx| {
+                    clippy_unit_test_job = clippy_unit_test_job.side_effect(|done| {
                         flowey_lib_hvlite::_jobs::check_clippy::Request {
                             target: target.clone(),
                             profile: CommonProfile::from_release(release),
-                            done: ctx.new_done_handle(),
+                            done,
                             also_check_misc_nostd_crates: *also_check_misc_nostd_crates,
                         }
                     });
@@ -1134,13 +1147,13 @@ impl IntoPipeline for CheckinGatesCli {
                             done: ctx.new_done_handle(),
                         }
                     })
-                    .dep_on(
-                        |ctx| flowey_lib_hvlite::_jobs::build_and_run_doc_tests::Params {
+                    .side_effect(|done| {
+                        flowey_lib_hvlite::_jobs::build_and_run_doc_tests::Params {
                             target,
                             profile: CommonProfile::from_release(release),
-                            done: ctx.new_done_handle(),
-                        },
-                    );
+                            done,
+                        }
+                    });
             }
 
             all_jobs.push(clippy_unit_test_job.finish());
@@ -1190,12 +1203,14 @@ impl IntoPipeline for CheckinGatesCli {
             platform: FlowPlatform,
             arch: FlowArch,
             gh_pool: GhRunner,
+            ado_pool: Option<AdoPool>,
             label: &'a str,
             target: CommonTriple,
             resolve_vmm_tests_artifacts: vmm_tests_artifact_builders::ResolveVmmTestsDepArtifacts,
             nextest_filter_expr: String,
             test_artifacts: Vec<KnownTestArtifacts>,
             needs_prep_run: bool,
+            hugetlb_2mb_overcommit_pages: Option<u64>,
         }
 
         let standard_filter = {
@@ -1286,61 +1301,72 @@ impl IntoPipeline for CheckinGatesCli {
             platform,
             arch,
             gh_pool,
+            ado_pool,
             label,
             target,
             resolve_vmm_tests_artifacts,
             nextest_filter_expr,
             test_artifacts,
             needs_prep_run,
+            hugetlb_2mb_overcommit_pages,
         } in [
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::windows_intel_1es(),
+                gh_pool: gh_pools::windows_intel_1es(),
+                ado_pool: Some(ado_pools::windows_intel_1es()),
                 label: "x64-windows-intel",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_x86,
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 needs_prep_run: false,
+                hugetlb_2mb_overcommit_pages: None,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::windows_tdx_self_hosted_baremetal(),
+                gh_pool: gh_pools::windows_tdx_self_hosted_baremetal(),
+                ado_pool: None,
                 label: "x64-windows-intel-tdx",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_tdx_x86,
                 nextest_filter_expr: cvm_filter("tdx"),
                 test_artifacts: cvm_x64_test_artifacts.clone(),
                 needs_prep_run: true,
+                hugetlb_2mb_overcommit_pages: None,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::windows_amd_1es(),
+                gh_pool: gh_pools::windows_amd_1es(),
+                ado_pool: Some(ado_pools::windows_amd_1es()),
                 label: "x64-windows-amd",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 needs_prep_run: false,
+                hugetlb_2mb_overcommit_pages: None,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::windows_snp_self_hosted_baremetal(),
+                gh_pool: gh_pools::windows_snp_self_hosted_baremetal(),
+                ado_pool: None,
                 label: "x64-windows-amd-snp",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_snp_x86,
                 nextest_filter_expr: cvm_filter("snp"),
                 test_artifacts: cvm_x64_test_artifacts,
                 needs_prep_run: true,
+                hugetlb_2mb_overcommit_pages: None,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::linux_1es(),
+                gh_pool: gh_pools::linux_amd_1es(),
+                ado_pool: Some(ado_pools::linux_amd_1es()),
                 label: "x64-linux-amd-kvm",
                 target: CommonTriple::X86_64_LINUX_GNU,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
@@ -1348,11 +1374,13 @@ impl IntoPipeline for CheckinGatesCli {
                 nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 needs_prep_run: false,
+                hugetlb_2mb_overcommit_pages: Some(HUGETLB_2MB_OVERCOMMIT_PAGES),
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::linux_mshv_1es(),
+                gh_pool: gh_pools::linux_mshv_1es(),
+                ado_pool: None,
                 label: "x64-linux-intel-mshv",
                 target: CommonTriple::X86_64_LINUX_MUSL,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_mshv_x86,
@@ -1360,11 +1388,13 @@ impl IntoPipeline for CheckinGatesCli {
                 nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 needs_prep_run: false,
+                hugetlb_2mb_overcommit_pages: None,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::Aarch64,
-                gh_pool: crate::pipelines_shared::gh_pools::windows_arm_self_hosted_baremetal(),
+                gh_pool: gh_pools::windows_arm_self_hosted_baremetal(),
+                ado_pool: None,
                 label: "aarch64-windows",
                 target: CommonTriple::AARCH64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_aarch64,
@@ -1377,18 +1407,14 @@ impl IntoPipeline for CheckinGatesCli {
                     KnownTestArtifacts::VmgsWith16kTpm,
                 ],
                 needs_prep_run: false,
+                hugetlb_2mb_overcommit_pages: None,
             },
         ] {
-            // Skip ARM64/CVM/MSHV jobs entirely for ADO backend (no native ARM64/CVM/MSHV pools in ADO)
-            if matches!(backend_hint, PipelineBackendHint::Ado) {
-                if matches!(arch, FlowArch::Aarch64)
-                    || label.contains("tdx")
-                    || label.contains("snp")
-                    || label.contains("mshv")
-                {
-                    continue;
-                }
+            // Skip unsupported jobs on ADO backend
+            if matches!(backend_hint, PipelineBackendHint::Ado) && ado_pool.is_none() {
+                continue;
             }
+
             let test_label = format!("{label}-vmm-tests");
 
             let pub_vmm_tests_results = if matches!(backend_hint, PipelineBackendHint::Local) {
@@ -1409,24 +1435,8 @@ impl IntoPipeline for CheckinGatesCli {
                 .new_job(platform, arch, format!("run vmm-tests [{label}]"))
                 .gh_set_pool(gh_pool);
 
-            // Only add ADO pool for x86_64 jobs that have a matching ADO pool
-            if matches!(arch, FlowArch::X86_64) {
-                let ado_pool = match platform {
-                    FlowPlatform::Windows => Some(
-                        crate::pipelines_shared::ado_pools::default_x86_pool(FlowPlatform::Windows),
-                    ),
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => {
-                        Some(crate::pipelines_shared::ado_pools::default_x86_pool(
-                            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                        ))
-                    }
-                    // No ADO pool for AzureLinux (MSHV jobs are GH-only)
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux) => None,
-                    _ => anyhow::bail!("unsupported platform"),
-                };
-                if let Some(pool) = ado_pool {
-                    vmm_tests_run_job = vmm_tests_run_job.ado_set_pool(pool);
-                }
+            if let Some(pool) = ado_pool {
+                vmm_tests_run_job = vmm_tests_run_job.ado_set_pool(pool);
             }
 
             vmm_tests_run_job = vmm_tests_run_job.dep_on(|ctx| {
@@ -1441,6 +1451,7 @@ impl IntoPipeline for CheckinGatesCli {
                     fail_job_on_test_fail: true,
                     artifact_dir: pub_vmm_tests_results.map(|x| ctx.publish_artifact(x)),
                     needs_prep_run,
+                    hugetlb_2mb_overcommit_pages,
                     done: ctx.new_done_handle(),
                 }
             });
@@ -1466,13 +1477,13 @@ impl IntoPipeline for CheckinGatesCli {
                         FlowArch::X86_64,
                         "test flowey local backend",
                     )
-                    .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
-                    .dep_on(
-                        |ctx| flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm::Request {
+                    .gh_set_pool(gh_pools::linux_x64_gh())
+                    .side_effect(|done| {
+                        flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm::Request {
                             base_recipe: OpenhclIgvmRecipe::X64,
-                            done: ctx.new_done_handle(),
-                        },
-                    )
+                            done,
+                        }
+                    })
                     .finish();
                 all_jobs.push(job);
             }
@@ -1507,10 +1518,8 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "build openhcl (mi-secure) [x64-linux]",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_1es())
-                .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
+                .gh_set_pool(gh_pools::default_linux())
+                .ado_set_pool(ado_pools::default_linux())
                 .dep_on(|ctx| {
                     flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
                         igvm_files: [
@@ -1568,10 +1577,8 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "run vmm-tests [x64-windows-intel-mi-secure]",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::windows_intel_1es())
-                .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
-                    FlowPlatform::Windows,
-                ))
+                .gh_set_pool(gh_pools::windows_intel_1es())
+                .ado_set_pool(ado_pools::windows_intel_1es())
                 .dep_on(|ctx| {
                     flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::Params {
                         junit_test_label: mi_secure_test_label,
@@ -1586,6 +1593,7 @@ impl IntoPipeline for CheckinGatesCli {
                         fail_job_on_test_fail: true,
                         artifact_dir: pub_mi_secure_test_results.map(|x| ctx.publish_artifact(x)),
                         needs_prep_run: false,
+                        hugetlb_2mb_overcommit_pages: None,
                         done: ctx.new_done_handle(),
                     }
                 });
@@ -1628,13 +1636,13 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "openvmm checkin gates",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
+                .gh_set_pool(gh_pools::linux_x64_gh())
                 // always run this job, regardless whether or not any previous jobs failed
                 .gh_dangerous_override_if("always() && github.event.pull_request.draft == false")
                 .gh_dangerous_global_env_var("ANY_JOBS_FAILED", "${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}")
-                .dep_on(|ctx| flowey_lib_hvlite::_jobs::all_good_job::Params {
+                .side_effect(|done| flowey_lib_hvlite::_jobs::all_good_job::Params {
                     did_fail_env_var: "ANY_JOBS_FAILED".into(),
-                    done: ctx.new_done_handle(),
+                    done,
                 })
                 .finish();
 
@@ -1656,7 +1664,7 @@ impl IntoPipeline for CheckinGatesCli {
                     GhPermission::Contents,
                     GhPermissionValue::Write,
                 )])
-                .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
+                .gh_set_pool(gh_pools::linux_x64_gh())
                 .dep_on(
                     |ctx| flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release::Request {
                         vmgstools: vmgstools

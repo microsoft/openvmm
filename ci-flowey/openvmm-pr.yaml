@@ -25,8 +25,8 @@ jobs:
   displayName: quick check [fmt, clippy x64-linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64-256gb
-    name: openvmm-ado-intel-centralus
+    - ImageOverride -equals ubuntu2404-amd64
+    name: openvmm-ado-amd-westus2
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
   variables:
@@ -182,12 +182,8 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 0 flowey_lib_hvlite::_jobs::check_xtask_fmt 0
       $(FLOWEY_BIN) e 0 flowey_lib_hvlite::init_cross_build 0
-    displayName: run xtask fmt
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 0 flowey_lib_common::run_cargo_clippy 1
       $(FLOWEY_BIN) e 0 flowey_lib_hvlite::init_cross_build 1
-    displayName: cargo clippy
+    displayName: run xtask fmt
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 0 flowey_lib_common::run_cargo_build 0
@@ -207,7 +203,7 @@ jobs:
     displayName: cargo clippy
   - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::run_cargo_clippy 3
     displayName: cargo clippy
-  - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::run_cargo_clippy 4
+  - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::run_cargo_clippy 1
     displayName: cargo clippy
   - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::cache 3
     displayName: 'validate cache entry: gh-release-download'
@@ -220,8 +216,8 @@ jobs:
   displayName: build openhcl (mi-secure) [x64-linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64-256gb
-    name: openvmm-ado-intel-centralus
+    - ImageOverride -equals ubuntu2404-amd64
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -479,8 +475,8 @@ jobs:
   displayName: clippy [x64-linux-musl, misc nostd], unit tests [x64-linux-musl]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64-256gb
-    name: openvmm-ado-intel-centralus
+    - ImageOverride -equals ubuntu2404-amd64
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -774,8 +770,8 @@ jobs:
   displayName: clippy [macos], unit tests [x64-linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64-256gb
-    name: openvmm-ado-intel-centralus
+    - ImageOverride -equals ubuntu2404-amd64
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -821,14 +817,14 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 11 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 11 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar10
+      $FLOWEY_BIN v 11 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:319:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46 write-to-env ado floweyvar9
       $FLOWEY_BIN v 11 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:320:46' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
     fetchTags: false
     fetchDepth: 1
-    persistCredentials: $(floweyvar10)
+    persistCredentials: $(floweyvar9)
     submodules: recursive
     displayName: checkout repo openvmm
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
@@ -844,13 +840,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 11 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 11 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar8
-      $FLOWEY_BIN v 11 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar9
+      $FLOWEY_BIN v 11 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar7
+      $FLOWEY_BIN v 11 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar8
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar9)
-      path: $(floweyvar8)
+      key: $(floweyvar8)
+      path: $(floweyvar7)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
@@ -899,13 +895,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 11 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 11 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar6
-      $FLOWEY_BIN v 11 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar7
+      $FLOWEY_BIN v 11 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 11 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar6
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar7)
-      path: $(floweyvar6)
+      key: $(floweyvar6)
+      path: $(floweyvar5)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
@@ -925,58 +921,18 @@ jobs:
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::init_cross_build 0
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_cargo_nextest_run 0
     displayName: installing cargo-nextest
-  - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 2
-    displayName: generate nextest command
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_nextest_run 4
-      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_nextest_run 5
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_nextest_unit_tests 3
-      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 5
-      $(FLOWEY_BIN) e 11 flowey_lib_common::ado_task_publish_test_results 6
-      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 4
-      $FLOWEY_BIN v 11 'flowey_lib_common::ado_task_publish_test_results:6:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env ado floweyvar4
-      $FLOWEY_BIN v 11 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'unit-tests crypto (openssl)' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar4)
-      testRunTitle: x64-linux-unit-tests-unit-tests crypto (openssl)
-    displayName: 'publish test results: x64-linux-unit-tests-unit-tests crypto (openssl) (JUnit XML)'
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 3
-    displayName: generate nextest command
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_nextest_run 6
-      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_nextest_run 7
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_nextest_unit_tests 4
-      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 7
-      $(FLOWEY_BIN) e 11 flowey_lib_common::ado_task_publish_test_results 8
-      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 6
-      $FLOWEY_BIN v 11 'flowey_lib_common::ado_task_publish_test_results:8:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env ado floweyvar5
-      $FLOWEY_BIN v 11 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'unit-tests crypto (symcrypt)' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar5)
-      testRunTitle: x64-linux-unit-tests-unit-tests crypto (symcrypt)
-    displayName: 'publish test results: x64-linux-unit-tests-unit-tests crypto (symcrypt) (JUnit XML)'
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 0
     displayName: generate nextest command
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_nextest_unit_tests 5
-      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 9
+      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_nextest_unit_tests 4
+      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 5
       $(FLOWEY_BIN) e 11 flowey_lib_common::ado_task_publish_test_results 2
-      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 8
-      $FLOWEY_BIN v 11 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env ado floweyvar2
-      $FLOWEY_BIN v 11 'flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 4
+      $FLOWEY_BIN v 11 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env ado floweyvar2
+      $FLOWEY_BIN v 11 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env ado FLOWEY_CONDITION
     displayName: run 'unit-tests crypto (all)' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -999,18 +955,18 @@ jobs:
     displayName: split debug symbols
   - bash: $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_nextest_unit_tests 0
     displayName: determine unit test exclusions
-  - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 4
+  - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 3
     displayName: generate nextest command
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_nextest_run 8
-      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_nextest_run 9
+      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_nextest_run 6
+      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_nextest_run 7
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_nextest_unit_tests 1
-      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 1
+      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 7
       $(FLOWEY_BIN) e 11 flowey_lib_common::ado_task_publish_test_results 0
-      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 11 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 11 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 6
+      $FLOWEY_BIN v 11 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env ado floweyvar1
+      $FLOWEY_BIN v 11 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env ado FLOWEY_CONDITION
     displayName: run 'unit-tests' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -1026,11 +982,11 @@ jobs:
       $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_nextest_run 2
       $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_nextest_run 3
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_nextest_unit_tests 2
-      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 3
+      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 11 flowey_lib_common::ado_task_publish_test_results 4
-      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 2
-      $FLOWEY_BIN v 11 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env ado floweyvar3
-      $FLOWEY_BIN v 11 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 0
+      $FLOWEY_BIN v 11 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env ado floweyvar3
+      $FLOWEY_BIN v 11 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env ado FLOWEY_CONDITION
     displayName: run 'unit-tests crypto (none)' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -1039,9 +995,29 @@ jobs:
       testRunTitle: x64-linux-unit-tests-unit-tests crypto (none)
     displayName: 'publish test results: x64-linux-unit-tests-unit-tests crypto (none) (JUnit XML)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 2
+    displayName: generate nextest command
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_nextest_unit_tests 6
+      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_nextest_run 4
+      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_nextest_run 5
+      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_nextest_unit_tests 3
+      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 3
+      $(FLOWEY_BIN) e 11 flowey_lib_common::ado_task_publish_test_results 6
+      $(FLOWEY_BIN) e 11 flowey_lib_common::publish_test_results 2
+      $FLOWEY_BIN v 11 'flowey_lib_common::ado_task_publish_test_results:6:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env ado floweyvar4
+      $FLOWEY_BIN v 11 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env ado FLOWEY_CONDITION
+    displayName: run 'unit-tests crypto (openssl)' nextest tests
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar4)
+      testRunTitle: x64-linux-unit-tests-unit-tests crypto (openssl)
+    displayName: 'publish test results: x64-linux-unit-tests-unit-tests crypto (openssl) (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_nextest_unit_tests 5
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 11 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0
@@ -1055,7 +1031,7 @@ jobs:
   pool:
     demands:
     - ImageOverride -equals win-amd64
-    name: openvmm-ado-intel-centralus
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -1306,8 +1282,8 @@ jobs:
   displayName: build openhcl [x64-linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64-256gb
-    name: openvmm-ado-intel-centralus
+    - ImageOverride -equals ubuntu2404-amd64
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -1739,8 +1715,8 @@ jobs:
   displayName: build openhcl [aarch64-linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64-256gb
-    name: openvmm-ado-intel-centralus
+    - ImageOverride -equals ubuntu2404-amd64
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -1997,8 +1973,8 @@ jobs:
   displayName: build artifacts [x64-linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64-256gb
-    name: openvmm-ado-intel-centralus
+    - ImageOverride -equals ubuntu2404-amd64
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -2310,8 +2286,8 @@ jobs:
   displayName: build artifacts [aarch64-linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64-256gb
-    name: openvmm-ado-intel-centralus
+    - ImageOverride -equals ubuntu2404-amd64
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -2572,7 +2548,7 @@ jobs:
   pool:
     demands:
     - ImageOverride -equals win-amd64
-    name: openvmm-ado-intel-centralus
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -2863,8 +2839,8 @@ jobs:
   displayName: run vmm-tests [x64-linux-amd-kvm]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64-256gb
-    name: openvmm-ado-intel-centralus
+    - ImageOverride -equals ubuntu2404-amd64
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   - job5
@@ -2947,8 +2923,10 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-tmks" | $FLOWEY_BIN v 15 'artifact_use_from_x64-tmks' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-pipette" | $FLOWEY_BIN v 15 'artifact_use_from_x64-windows-pipette' --is-raw-string update
     displayName: 🌼🛫 Initialize job
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 1
     displayName: ensure hypervisor device is accessible
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 2
+    displayName: ensure 2 MiB hugetlb pages are available
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 0
@@ -3049,9 +3027,10 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::init_vmm_tests_env 0
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_nextest_run 1
       $(FLOWEY_BIN) e 15 flowey_core::pipeline::artifact::resolve 5
-      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 1
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 3
     displayName: setting up vmm_tests env
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 0
     displayName: generate nextest command
@@ -3362,7 +3341,7 @@ jobs:
   pool:
     demands:
     - ImageOverride -equals win-amd64
-    name: openvmm-ado-intel-centralus
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   - job5
@@ -3902,7 +3881,7 @@ jobs:
   pool:
     demands:
     - ImageOverride -equals win-amd64
-    name: openvmm-ado-intel-centralus
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -4103,7 +4082,7 @@ jobs:
   pool:
     demands:
     - ImageOverride -equals win-amd64
-    name: openvmm-ado-intel-centralus
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -4390,7 +4369,7 @@ jobs:
   pool:
     demands:
     - ImageOverride -equals win-amd64
-    name: openvmm-ado-intel-centralus
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -4587,7 +4566,7 @@ jobs:
   pool:
     demands:
     - ImageOverride -equals win-amd64
-    name: openvmm-ado-intel-centralus
+    name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))

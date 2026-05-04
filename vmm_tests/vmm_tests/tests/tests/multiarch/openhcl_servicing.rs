@@ -28,6 +28,7 @@ use nvme_resources::fault::PciFaultConfig;
 use nvme_test::command_match::CommandMatchBuilder;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::VpciDeviceConfig;
+use petri::MemoryConfig;
 use petri::OpenHclServicingFlags;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVm;
@@ -149,6 +150,37 @@ async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
         config.with_openhcl_command_line(
             "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
         ),
+        igvm_file,
+        flags,
+        DEFAULT_SERVICING_COUNT,
+    )
+    .await
+}
+
+/// Test servicing an OpenHCL VM with a multi-NUMA pool split.
+/// The pool is split across NUMA nodes via `OPENHCL_VTL2_GPA_POOL_NUMA=split`,
+/// and pool ranges must be preserved identically across the service boundary.
+#[openvmm_test(openhcl_linux_direct_x64[LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_numa_private_pool<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> anyhow::Result<()> {
+    let mut flags = config.default_servicing_flags();
+    flags.override_version_checks = true;
+    openhcl_servicing_core(
+        config
+            .with_processor_topology(ProcessorTopology {
+                vp_count: 4,
+                vps_per_socket: Some(2),
+                ..Default::default()
+            })
+            .with_memory(MemoryConfig {
+                numa_mem_sizes: Some(vec![2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024]),
+                ..Default::default()
+            })
+            .with_openhcl_command_line(
+                "OPENHCL_VTL2_GPA_POOL_NUMA=split OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
+            ),
         igvm_file,
         flags,
         DEFAULT_SERVICING_COUNT,

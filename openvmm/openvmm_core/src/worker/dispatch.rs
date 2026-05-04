@@ -866,13 +866,40 @@ impl InitializedVm {
         };
 
         // Choose the memory layout of the VM.
-        let mem_layout = MemoryLayout::new(
-            cfg.memory.mem_size,
-            &cfg.memory.mmio_gaps,
-            &cfg.memory.pci_ecam_gaps,
-            &cfg.memory.pci_mmio_gaps,
-            vtl2_range,
-        )
+        let mem_layout = if let Some(ref sizes) = cfg.memory.numa_mem_sizes {
+            // When numa_mem_sizes is set, distribute guest RAM across vNUMA nodes
+            // for ACPI SRAT / FDT reporting.
+            //
+            // TODO: The vNUMA nodes reported are meant for test usage only, as they
+            // are not aligned to any physical NUMA node. There is more work to do
+            // to support useful vNUMA reporting.
+            let total: u64 = sizes
+                .iter()
+                .copied()
+                .try_fold(0u64, |acc, s| acc.checked_add(s))
+                .context("numa memory sizes overflow")?;
+            anyhow::ensure!(
+                total == cfg.memory.mem_size,
+                "numa_mem_sizes total ({total:#x}) does not match mem_size ({:#x})",
+                cfg.memory.mem_size
+            );
+
+            MemoryLayout::new_with_numa(
+                sizes,
+                &cfg.memory.mmio_gaps,
+                &cfg.memory.pci_ecam_gaps,
+                &cfg.memory.pci_mmio_gaps,
+                vtl2_range,
+            )
+        } else {
+            MemoryLayout::new(
+                cfg.memory.mem_size,
+                &cfg.memory.mmio_gaps,
+                &cfg.memory.pci_ecam_gaps,
+                &cfg.memory.pci_mmio_gaps,
+                vtl2_range,
+            )
+        }
         .context("invalid memory configuration")?;
 
         if mem_layout.end_of_layout() > 1 << physical_address_size {
@@ -892,6 +919,12 @@ impl InitializedVm {
                 .then_some(1 << (physical_address_size - 1))
         });
 
+        if let Some(size) = cfg.memory.hugepage_size
+            && !cfg.memory.hugepages
+        {
+            anyhow::bail!("hugepage_size={size} requires hugepages=on");
+        }
+
         let mut memory_builder = GuestMemoryBuilder::new();
         memory_builder = memory_builder
             .existing_backing(shared_memory)
@@ -902,6 +935,9 @@ impl InitializedVm {
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
             );
+        if cfg.memory.hugepages {
+            memory_builder = memory_builder.hugepages(cfg.memory.hugepage_size);
+        }
 
         #[cfg(all(windows, feature = "virt_whp"))]
         if !cfg.vpci_resources.is_empty() {

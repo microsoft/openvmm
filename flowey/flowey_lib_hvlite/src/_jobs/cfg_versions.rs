@@ -24,14 +24,14 @@ pub const GH_CLI: &str = "2.52.0";
 pub const MDBOOK: &str = "0.4.40";
 pub const MDBOOK_ADMONISH: &str = "1.18.0";
 pub const MDBOOK_MERMAID: &str = "0.14.0";
-pub const MU_MSVM: &str = "26.0.0";
+pub const MU_MSVM: &str = "26.0.1";
 pub const NEXTEST: &str = "0.9.101";
 pub const NODEJS: &str = "24.x";
 // N.B. Kernel version numbers for dev and stable branches are not directly
 //      comparable. They originate from separate branches, and the fourth digit
 //      increases with each release from the respective branch.
-pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.12.52.12";
-pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.52.11";
+pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.18.0.2";
+pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.0.2";
 pub const OPENVMM_DEPS: &str = "0.1.0-20260427.3";
 pub const PROTOC: &str = "27.1";
 
