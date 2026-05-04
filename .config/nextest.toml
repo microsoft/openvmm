@@ -86,3 +86,10 @@ filter = 'package(~vmm_tests)'
 # VMM tests contain their own watchdog timer, but keep an extra long timer
 # here as a backup.
 slow-timeout = { period = "10m", terminate-after = 2 }
+
+[[profile.default.overrides]]
+# use fuzzy-matching for the package() to allow out-of-tree tests to use the
+# same profile
+filter = 'package(~vmm_tests)'
+# Use the same slow timeout as ci, but never terminate
+slow-timeout = { period = "10m" }

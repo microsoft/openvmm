@@ -300,6 +300,13 @@ pub struct ErasedArtifactHandle {
     artifact_id_str: &'static str,
 }
 
+// used to serialize the artifact handle for vmm-tests-run
+impl ToString for ErasedArtifactHandle {
+    fn to_string(&self) -> String {
+        self.artifact_id_str.to_string()
+    }
+}
+
 impl std::fmt::Debug for ErasedArtifactHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // the `declare_artifacts!` macro uses `module_path!` under-the-hood to
@@ -593,4 +600,13 @@ impl TestArtifacts {
         self.try_get_source(artifact.erase())
             .unwrap_or_else(|| panic!("Artifact not initially required: {:?}", artifact.erase()))
     }
+}
+
+/// JSON output format for `--list-required-artifacts`.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct ArtifactListOutput {
+    /// List of unique required artifact IDs across all matching tests.
+    pub required: Vec<String>,
+    /// List of unique optional artifact IDs across all matching tests.
+    pub optional: Vec<String>,
 }

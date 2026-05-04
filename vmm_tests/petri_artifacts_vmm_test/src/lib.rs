@@ -273,6 +273,11 @@ pub mod artifacts {
         }
     }
 
+    /// Azure storage account where test VHDs, ISOs, and VMGS files are stored
+    pub const STORAGE_ACCOUNT: &str = "hvlitetestvhds";
+    /// Azure container where test VHDs, ISOs, and VMGS files are stored
+    pub const CONTAINER: &str = "vhds";
+
     /// Test VHD artifacts
     pub mod test_vhd {
         use crate::tags::IsHostedOnHvliteAzureBlobStore;

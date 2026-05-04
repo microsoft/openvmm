@@ -380,15 +380,6 @@ struct Options {
     inner: libtest_mimic::Arguments,
 }
 
-/// JSON output format for `--list-required-artifacts`.
-#[derive(serde::Serialize)]
-struct ArtifactListOutput {
-    /// List of unique required artifact IDs across all matching tests.
-    required: Vec<String>,
-    /// List of unique optional artifact IDs across all matching tests.
-    optional: Vec<String>,
-}
-
 /// Entry point for test binaries.
 pub fn test_main(
     resolve: fn(&str, TestArtifactRequirements) -> anyhow::Result<TestArtifacts>,
@@ -430,19 +421,18 @@ pub fn test_main(
 
             if matches {
                 for artifact in test.artifact_requirements.required_artifacts() {
-                    required_set.insert(format!("{artifact:?}"));
+                    required_set.insert(artifact.to_string());
                 }
                 for artifact in test.artifact_requirements.optional_artifacts() {
-                    optional_set.insert(format!("{artifact:?}"));
+                    optional_set.insert(artifact.to_string());
                 }
             }
         }
 
         // Remove from optional any artifacts that are required
-        let optional_set: BTreeSet<String> =
-            optional_set.difference(&required_set).cloned().collect();
+        let optional_set: BTreeSet<_> = optional_set.difference(&required_set).cloned().collect();
 
-        let output = ArtifactListOutput {
+        let output = petri_artifacts_core::ArtifactListOutput {
             required: required_set.into_iter().collect(),
             optional: optional_set.into_iter().collect(),
         };

@@ -19,6 +19,9 @@ use petri_artifacts_core::AsArtifactHandle;
 use petri_artifacts_core::ErasedArtifactHandle;
 use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
 
+pub use petri_artifacts_vmm_test::artifacts::CONTAINER;
+pub use petri_artifacts_vmm_test::artifacts::STORAGE_ACCOUNT;
+
 /// The VHDs currently stored in Azure Blob Storage.
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[cfg_attr(feature = "clap", clap(rename_all = "verbatim"))]

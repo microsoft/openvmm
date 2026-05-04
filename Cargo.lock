@@ -2131,6 +2131,9 @@ dependencies = [
  "flowey_lib_common",
  "flowey_lib_hvlite",
  "log",
+ "petri_artifacts_common",
+ "petri_artifacts_core",
+ "petri_artifacts_vmm_test",
  "serde",
  "serde_json",
  "target-lexicon",
@@ -6055,6 +6058,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "paste",
+ "serde",
 ]
 
 [[package]]
