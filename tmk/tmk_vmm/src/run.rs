@@ -3,26 +3,16 @@
 
 //! Support for running a VM's VPs.
 
-#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
-use crate::HypervisorOpt;
 use crate::Options;
 use crate::load;
 use anyhow::Context as _;
-#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
-use core::ops::Range;
 use futures::StreamExt as _;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
-#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
-use memory_range::MemoryRange;
-#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
-use nix::sys::mman::{MapFlags, ProtFlags, mmap};
 use pal_async::DefaultDriver;
-#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
-use std::fs::OpenOptions;
-#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
-use std::num::NonZeroUsize;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use user_driver::DmaClient;
 use virt::PartitionCapabilities;
 use virt::Processor;
 use virt::StopVpSource;
@@ -30,8 +20,6 @@ use virt::VpIndex;
 use virt::io::CpuIo;
 use virt::vp::AccessVpState as _;
 use vm_topology::memory::MemoryLayout;
-#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
-use vm_topology::memory::MemoryRangeWithNode;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
 use vmcore::vmtime::VmTime;
@@ -41,11 +29,72 @@ use zerocopy::TryFromBytes as _;
 
 pub const COMMAND_ADDRESS: u64 = 0xffff_0000;
 
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+mod cca {
+    use super::DmaClient;
+    use super::{MemoryLayout, Options};
+    use crate::HypervisorOpt;
+    use anyhow::Context as _;
+    use core::ops::Range;
+    use memory_range::MemoryRange;
+    use std::sync::Arc;
+    use user_driver::lockmem::LockedMemorySpawner;
+    use user_driver::memory::MemoryBlock;
+    use user_driver::memory::PAGE_SIZE64;
+    use vm_topology::memory::MemoryRangeWithNode;
+
+    pub(super) struct CcaState {
+        pub(super) private_dma_client: Arc<dyn DmaClient>,
+        pub(super) _guest_ram_backing: MemoryBlock,
+    }
+
+    pub(super) fn build(
+        opts: &Options,
+        memory_layout: &mut MemoryLayout,
+        ram_size: u64,
+    ) -> anyhow::Result<Option<CcaState>> {
+        let hv = opts.hv.expect("hv must have an finalized value");
+        match hv {
+            HypervisorOpt::Cca => {
+                let map_size = ram_size as usize;
+                let private_dma_client: Arc<dyn DmaClient> = Arc::new(LockedMemorySpawner);
+                let private_memory = private_dma_client
+                    .allocate_dma_buffer(map_size)
+                    .context("failed to allocate private CCA RAM")?;
+                private_memory.write_zeros(0, private_memory.len());
+
+                let pa = private_memory.pfns()[0] * PAGE_SIZE64;
+
+                const ALIGN: u64 = PAGE_SIZE64 * 8;
+                let start = (pa + ALIGN - 1) & !(ALIGN - 1);
+                let end = (pa + map_size as u64 / 2) & !(ALIGN - 1);
+
+                *memory_layout = MemoryLayout::new_from_ranges(
+                    &[MemoryRangeWithNode {
+                        range: MemoryRange::new(Range { start, end }),
+                        vnode: 0,
+                    }],
+                    &[],
+                )
+                .context("bad memory layout")?;
+
+                Ok(Some(CcaState {
+                    private_dma_client,
+                    _guest_ram_backing: private_memory,
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
 pub struct CommonState {
     pub driver: DefaultDriver,
     pub opts: Options,
     pub processor_topology: ProcessorTopology,
     pub memory_layout: MemoryLayout,
+    #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+    cca: Option<cca::CcaState>,
 }
 
 pub struct RunContext<'a> {
@@ -65,6 +114,18 @@ pub enum TestResult {
 }
 
 impl CommonState {
+    #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+    pub fn cca_private_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
+        self.cca
+            .as_ref()
+            .map(|cca| cca.private_dma_client.clone() as Arc<dyn DmaClient>)
+    }
+
+    #[cfg(not(all(target_os = "linux", guest_arch = "aarch64")))]
+    pub fn cca_private_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
+        None
+    }
+
     pub async fn new(driver: DefaultDriver, opts: Options) -> anyhow::Result<Self> {
         #[cfg(guest_arch = "x86_64")]
         let processor_topology = TopologyBuilder::new_x86()
@@ -92,66 +153,16 @@ impl CommonState {
         #[cfg_attr(guest_arch = "x86_64", allow(unused_mut))]
         let mut memory_layout =
             MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
-
         #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
-        let hv = opts.hv.expect("hv must have an finalized value");
-        #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
-        match hv {
-            #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
-            HypervisorOpt::Cca => {
-                let map_size = ram_size;
-                let non_zero_size = NonZeroUsize::new(map_size as usize)
-                    .expect("Size was already checked to be non-zero");
-                let file = OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open("/dev/zero")?;
-                #[allow(unsafe_code)]
-                let addr = unsafe {
-                    mmap(
-                        None,
-                        non_zero_size,
-                        ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
-                        MapFlags::MAP_SHARED,
-                        &file,
-                        0,
-                    )
-                }
-                .context("Failed to memory-map bytes")?;
-
-                #[allow(unsafe_code)]
-                unsafe {
-                    std::ptr::write_bytes(addr.as_ptr() as *mut u8, 0, map_size as usize);
-                }
-
-                #[allow(unsafe_code)]
-                let pa = unsafe { load::virt_to_phys(addr.as_ptr() as u64) }
-                    .map_err(anyhow::Error::msg)
-                    .context("failed to get page physical address")?;
-
-                const PAGE: u64 = 4096;
-                const ALIGN: u64 = PAGE * 8;
-
-                let start = (pa + ALIGN - 1) & !(ALIGN - 1);
-                let end = (pa + map_size / 2) & !(ALIGN - 1);
-
-                memory_layout = MemoryLayout::new_from_ranges(
-                    &[MemoryRangeWithNode {
-                        range: MemoryRange::new(Range { start, end }),
-                        vnode: 0,
-                    }],
-                    &[],
-                )
-                .context("bad memory layout")?;
-            }
-            _ => {}
-        }
+        let cca = cca::build(&opts, &mut memory_layout, ram_size)?;
 
         Ok(Self {
             driver,
             opts,
             processor_topology,
             memory_layout,
+            #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+            cca,
         })
     }
 

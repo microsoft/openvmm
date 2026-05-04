@@ -16,8 +16,6 @@ use object::Object;
 use object::ObjectSection;
 use object::ObjectSegment as _;
 use std::fmt::Debug;
-#[cfg(guest_arch = "aarch64")]
-use std::os::unix::fs::FileExt;
 use std::sync::Arc;
 use virt::VpIndex;
 use vm_topology::memory::MemoryLayout;
@@ -234,72 +232,4 @@ pub fn enumerate_tests(tmk: &File) -> anyhow::Result<Vec<TestInfo>> {
     }
 
     Ok(tests)
-}
-
-/// For a given virtual address, finds the corresponding Physical Frame Number (PFN).
-///
-/// This function reads the `/proc/self/pagemap` file to translate a virtual address
-/// from the current process's address space into a physical frame number.
-///
-/// # Arguments
-/// * `vaddr` - The virtual address to look up, provided as a `u64`.
-///
-/// # Returns
-/// A `Result` containing the Physical Frame Number (PFN) as a `u64`,
-/// or a `String` with a descriptive error message on failure.
-///
-/// # Safety
-/// This function is `unsafe` because:
-/// 1. It directly interacts with the low-level `/proc/self/pagemap` interface.
-/// 2. The caller must ensure `vaddr` is a valid virtual address within the process's
-///    address space. An invalid address may still produce a result, but it will be
-///    for an unrelated page.
-/// 3. Reading `/proc/self/pagemap` typically requires `CAP_SYS_ADMIN` privileges.
-#[cfg(guest_arch = "aarch64")]
-#[allow(unsafe_code)]
-pub unsafe fn virt_to_phys(vaddr: u64) -> Result<u64, String> {
-    // Constants based on the kernel's pagemap documentation.
-    const PFN_BITS: u64 = 55;
-    const PFN_MASK: u64 = (1 << PFN_BITS) - 1;
-    const PAGE_PRESENT_BIT: u64 = 1 << 63;
-    const PAGEMAP_ENTRY_SIZE: u64 = size_of::<u64>() as u64;
-
-    // Get the system's page size. This is more reliable than using a hardcoded value.
-    let page_size = nix::unistd::sysconf(nix::unistd::SysconfVar::PAGE_SIZE)
-        .unwrap()
-        .unwrap() as u64;
-    if page_size == 0 {
-        return Err("Could not determine system page size".to_string());
-    }
-
-    // Open the pagemap file for the current process.
-    let pagemap_file = std::fs::File::open("/proc/self/pagemap").map_err(|e| {
-        format!("Failed to open /proc/self/pagemap (requires root or CAP_SYS_ADMIN): {e}")
-    })?;
-
-    // Each entry in pagemap is 8 bytes. Calculate the offset for the desired page.
-    // Virtual Page Number = Virtual Address / Page Size
-    // Offset = Virtual Page Number * Entry Size
-    let offset = (vaddr / page_size) * PAGEMAP_ENTRY_SIZE;
-
-    let mut entry_bytes = [0u8; 8];
-    // Use `read_exact_at` to perform an atomic seek-and-read. This is safer than
-    // separate lseek() and read() calls, especially in multithreaded programs.
-    pagemap_file
-        .read_exact_at(&mut entry_bytes, offset)
-        .map_err(|e| format!("Failed to read from /proc/self/pagemap at offset {offset}: {e}"))?;
-
-    let pagemap_entry = u64::from_ne_bytes(entry_bytes);
-
-    // According to the kernel documentation, bit 63 indicates if the page is present in RAM.
-    // If it's not present, the PFN bits are invalid (they may contain swap info).
-    if (pagemap_entry & PAGE_PRESENT_BIT) == 0 {
-        return Err(format!(
-            "Page for virtual address {vaddr:#x} is not present in RAM (swapped out or not mapped)"
-        ));
-    }
-
-    // The lower 55 bits contain the PFN.
-    let pfn = pagemap_entry & PFN_MASK;
-    Ok(pfn * page_size)
 }

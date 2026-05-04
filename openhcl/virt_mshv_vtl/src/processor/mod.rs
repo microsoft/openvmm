@@ -278,7 +278,6 @@ pub(crate) struct BackingSharedParams<'a> {
     pub cpuid: &'a virt::CpuidLeafSet,
     pub hcl: &'a Hcl,
     pub guest_vsm_available: bool,
-    #[cfg(guest_arch = "x86_64")]
     pub lower_vtl_timer_virt_available: bool,
 }
 

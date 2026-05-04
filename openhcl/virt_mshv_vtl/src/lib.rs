@@ -492,7 +492,6 @@ struct UhCvmPartitionState {
     #[inspect(with = "inspect::iter_by_index")]
     vps: Vec<UhCvmVpInner>,
     shared_memory: GuestMemory,
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(skip)]
     isolated_memory_protector: Arc<dyn ProtectIsolatedMemory>,
     #[cfg(guest_arch = "x86_64")]
@@ -607,7 +606,6 @@ struct TscReferenceTimeSource {
     tsc_scale: u64,
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 impl TscReferenceTimeSource {
     fn new(tsc_frequency: u64) -> Self {
         TscReferenceTimeSource {
@@ -793,7 +791,6 @@ struct TlbLockInfo {
     sleeping: AtomicBool,
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
 impl TlbLockInfo {
     fn new(vp_count: usize) -> Self {
         Self {
@@ -1997,7 +1994,6 @@ impl<'a> UhProtoPartition<'a> {
             None
         };
 
-        #[cfg(guest_arch = "x86_64")]
         let lower_vtl_timer_virt_available =
             hcl.supports_lower_vtl_timer_virt() && !params.disable_lower_vtl_timer_virt;
 
@@ -2010,7 +2006,6 @@ impl<'a> UhProtoPartition<'a> {
                 cpuid: &cpuid,
                 hcl: &hcl,
                 guest_vsm_available,
-                #[cfg(guest_arch = "x86_64")]
                 lower_vtl_timer_virt_available,
             },
         )?;

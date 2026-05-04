@@ -37,7 +37,6 @@ impl RunContext<'_> {
             // TODO: match openhcl defaults when TDX is supported.
             disable_lower_vtl_timer_virt: true,
         };
-
         let p = virt_mshv_vtl::UhProtoPartition::new(params, |_| self.state.driver.clone())?;
 
         let m = underhill_mem::init(&underhill_mem::Init {
@@ -70,7 +69,7 @@ impl RunContext<'_> {
                     shared_gm: m.cvm_memory().unwrap().shared_gm.clone(),
                     isolated_memory_protector: m.cvm_memory().unwrap().protector.clone(),
                     shared_dma_client: None,
-                    private_dma_client: None,
+                    private_dma_client: self.state.cca_private_dma_client(),
                 }),
                 vmbus_relay: false,
             })

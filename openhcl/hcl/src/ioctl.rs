@@ -1488,7 +1488,7 @@ enum BackingState {
         vtl1_apic_page: MemoryBlock,
     },
     Cca {
-        // TODO: CCA: add vGIC backing here
+        plane_run: MemoryBlock,
     },
 }
 
@@ -1567,7 +1567,12 @@ impl HclVp {
                     .allocate_dma_buffer(HV_PAGE_SIZE as usize)
                     .map_err(Error::AllocVp)?,
             },
-            IsolationType::Cca => BackingState::Cca {},
+            IsolationType::Cca => BackingState::Cca {
+                plane_run: private_dma_client
+                    .ok_or(Error::MissingPrivateMemory)?
+                    .allocate_dma_buffer(HV_PAGE_SIZE as usize)
+                    .map_err(Error::AllocVp)?,
+            },
         };
 
         Ok(Self {
