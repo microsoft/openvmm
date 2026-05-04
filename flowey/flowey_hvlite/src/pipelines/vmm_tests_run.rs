@@ -96,6 +96,11 @@ pub struct VmmTestsRunCli {
     /// use the nextest CI profile rather than the default one
     #[clap(long)]
     ci_profile: bool,
+
+    /// Don't reuse prepped vhds, even if they already exist.
+    /// Use when making changes to prep_steps
+    #[clap(long)]
+    no_reuse_prepped_vhds: bool,
 }
 
 struct CargoNextestListRequest<'a> {
@@ -153,6 +158,7 @@ impl IntoPipeline for VmmTestsRunCli {
             custom_kernel,
             custom_uefi_firmware,
             ci_profile,
+            no_reuse_prepped_vhds,
         } = self;
 
         let target = resolve_target(target, backend_hint)?;
@@ -334,6 +340,7 @@ impl IntoPipeline for VmmTestsRunCli {
                     } else {
                         flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Default
                     },
+                    reuse_prepped_vhds: !no_reuse_prepped_vhds,
                     done: ctx.new_done_handle(),
                 }
             });

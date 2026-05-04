@@ -102,6 +102,8 @@ flowey_request! {
 
         pub nextest_profile: crate::run_cargo_nextest_run::NextestProfile,
 
+        pub reuse_prepped_vhds: bool,
+
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -151,6 +153,7 @@ impl SimpleFlowNode for Node {
             custom_kernel,
             skip_vhd_prompt,
             nextest_profile,
+            reuse_prepped_vhds,
             done,
         } = request;
 
@@ -706,6 +709,7 @@ impl SimpleFlowNode for Node {
             release_igvm_files,
             use_relative_paths: build_only,
             disable_remote_artifacts: false,
+            reuse_prepped_vhds,
         });
 
         let mut side_effects = Vec::new();
