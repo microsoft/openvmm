@@ -119,7 +119,7 @@ pub trait CreateNvmeDriver: Inspect + Send + Sync {
 /// Returns whether the given PCI ID corresponds to an NVMe device that is
 /// compatible with the keepalive.
 /// DEV_NOTE: This is a heuristic based on the PCI vendor ID, which is not ideal but is necessary
-pub fn is_nvme_keepalive_compatible(pci_id: &str) -> bool {
+pub(crate) fn is_nvme_keepalive_compatible(pci_id: &str) -> bool {
     pci_id
         .to_ascii_lowercase()
         .starts_with(KEEPALIVE_COMPATIBLE_PCI_VENDOR_PREFIX)

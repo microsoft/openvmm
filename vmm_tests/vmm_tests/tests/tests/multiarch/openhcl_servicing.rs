@@ -1172,7 +1172,7 @@ async fn servicing_keepalive_slow_create_io_queue(
 /// Verifies the per-device NVMe keepalive gate.
 ///
 /// Two NVMe controllers are attached to a single VM:
-/// * An "ASAP" device whose VPCI instance ID has `data2 = 0xc05b`, which
+/// * A "c05b" device whose VPCI instance ID has `data2 = 0xc05b`, which
 ///   makes its derived pci_id start with `c05b:` (matching the
 ///   keepalive-compatible heuristic). Keepalive must be honored for
 ///   this device — its controller is not reset across servicing, so
@@ -1197,32 +1197,32 @@ async fn servicing_keepalive_per_device_gate(
     // VPCI instance IDs. The pci_id seen by the NVMe driver is derived
     // as `format!("{:04x}:00:00.0", instance_id.data2)` (see
     // `vpci_path` in `dispatch/vtl2_settings_worker.rs`), so `data2`
-    // controls the prefix of the pci_id. For ASAP we set data2 = 0xc05b
+    // controls the prefix of the pci_id. For the device with keepalive we set data2 = 0xc05b
     // so its pci_id is `c05b:00:00.0`.
-    const ASAP_NVME_INSTANCE: Guid = guid::guid!("00000000-c05b-0000-0000-000000000001");
-    const ND2_NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+    const WITH_KEEPALIVE_NVME_INSTANCE: Guid = guid::guid!("00000000-c05b-0000-0000-000000000001");
+    const NO_KEEPALIVE_NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
 
-    const ASAP_NSID: u32 = KEEPALIVE_VTL2_NSID;
-    const ND2_NSID: u32 = KEEPALIVE_VTL2_NSID + 1;
-    const ASAP_LUN: u32 = VTL0_NVME_LUN;
-    const ND2_LUN: u32 = VTL0_NVME_LUN + 1;
+    const WITH_KEEPALIVE_NSID: u32 = KEEPALIVE_VTL2_NSID;
+    const NO_KEEPALIVE_NSID: u32 = KEEPALIVE_VTL2_NSID + 1;
+    const WITH_KEEPALIVE_LUN: u32 = VTL0_NVME_LUN;
+    const NO_KEEPALIVE_LUN: u32 = VTL0_NVME_LUN + 1;
 
     // Two independent fault start cells — one per device.
-    let mut asap_fault_updater = CellUpdater::new(false);
-    let mut nd2_fault_updater = CellUpdater::new(false);
+    let mut with_keepalive_fault_updater = CellUpdater::new(false);
+    let mut no_keepalive_fault_updater = CellUpdater::new(false);
 
-    let (nd2_create_seen_send, nd2_create_seen_recv) = mesh::oneshot::<()>();
+    let (no_keepalive_create_seen_send, no_keepalive_create_seen_recv) = mesh::oneshot::<()>();
 
-    // ASAP (c05b) device: keepalive must be honored — fail loudly if any
+    // c05b device: keepalive must be honored — fail loudly if any
     // CREATE_IO_COMPLETION_QUEUE is observed after the fault is armed.
-    let asap_fault_config = FaultConfiguration::new(asap_fault_updater.cell())
+    let with_keepalive_fault_config = FaultConfiguration::new(with_keepalive_fault_updater.cell())
         .with_admin_queue_fault(
             AdminQueueFaultConfig::new().with_submission_queue_fault(
                 CommandMatchBuilder::new()
                     .match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
                     .build(),
                 AdminQueueFaultBehavior::Panic(
-                    "ASAP (c05b) device received CREATE_IO_COMPLETION_QUEUE after servicing — \
+                    "c05b device received CREATE_IO_COMPLETION_QUEUE after servicing — \
                      keepalive should have been honored for this device but the controller \
                      was reset."
                         .to_string(),
@@ -1232,13 +1232,13 @@ async fn servicing_keepalive_per_device_gate(
 
     // Non c05b device: keepalive must be downgraded —
     // verify CREATE_IO_COMPLETION_QUEUE IS issued after servicing.
-    let nd2_fault_config = FaultConfiguration::new(nd2_fault_updater.cell())
+    let no_keepalive_fault_config = FaultConfiguration::new(no_keepalive_fault_updater.cell())
         .with_admin_queue_fault(
             AdminQueueFaultConfig::new().with_submission_queue_fault(
                 CommandMatchBuilder::new()
                     .match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
                     .build(),
-                AdminQueueFaultBehavior::Verify(Some(nd2_create_seen_send)),
+                AdminQueueFaultBehavior::Verify(Some(no_keepalive_create_seen_send)),
             ),
         );
 
@@ -1253,13 +1253,13 @@ async fn servicing_keepalive_per_device_gate(
             b.with_custom_config(move |c| {
                 c.vpci_devices.push(VpciDeviceConfig {
                     vtl: DeviceVtl::Vtl2,
-                    instance_id: ASAP_NVME_INSTANCE,
+                    instance_id: WITH_KEEPALIVE_NVME_INSTANCE,
                     resource: NvmeFaultControllerHandle {
                         subsystem_id: Guid::new_random(),
                         msix_count: 10,
                         max_io_queues: 10,
                         namespaces: vec![NamespaceDefinition {
-                            nsid: ASAP_NSID,
+                            nsid: WITH_KEEPALIVE_NSID,
                             read_only: false,
                             disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                                 len: Some(DEFAULT_DISK_SIZE),
@@ -1267,20 +1267,20 @@ async fn servicing_keepalive_per_device_gate(
                             })
                             .into_resource(),
                         }],
-                        fault_config: asap_fault_config,
+                        fault_config: with_keepalive_fault_config,
                         enable_tdisp_tests: false,
                     }
                     .into_resource(),
                 });
                 c.vpci_devices.push(VpciDeviceConfig {
                     vtl: DeviceVtl::Vtl2,
-                    instance_id: ND2_NVME_INSTANCE,
+                    instance_id: NO_KEEPALIVE_NVME_INSTANCE,
                     resource: NvmeFaultControllerHandle {
                         subsystem_id: Guid::new_random(),
                         msix_count: 10,
                         max_io_queues: 10,
                         namespaces: vec![NamespaceDefinition {
-                            nsid: ND2_NSID,
+                            nsid: NO_KEEPALIVE_NSID,
                             read_only: false,
                             disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                                 len: Some(DEFAULT_DISK_SIZE),
@@ -1288,7 +1288,7 @@ async fn servicing_keepalive_per_device_gate(
                             })
                             .into_resource(),
                         }],
-                        fault_config: nd2_fault_config,
+                        fault_config: no_keepalive_fault_config,
                         enable_tdisp_tests: false,
                     }
                     .into_resource(),
@@ -1300,20 +1300,20 @@ async fn servicing_keepalive_per_device_gate(
                 .with_instance_id(scsi_instance)
                 .add_lun(
                     Vtl2LunBuilder::disk()
-                        .with_location(ASAP_LUN)
+                        .with_location(WITH_KEEPALIVE_LUN)
                         .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
                             ControllerType::Nvme,
-                            ASAP_NVME_INSTANCE,
-                            ASAP_NSID,
+                            WITH_KEEPALIVE_NVME_INSTANCE,
+                            WITH_KEEPALIVE_NSID,
                         )),
                 )
                 .add_lun(
                     Vtl2LunBuilder::disk()
-                        .with_location(ND2_LUN)
+                        .with_location(NO_KEEPALIVE_LUN)
                         .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
                             ControllerType::Nvme,
-                            ND2_NVME_INSTANCE,
-                            ND2_NSID,
+                            NO_KEEPALIVE_NVME_INSTANCE,
+                            NO_KEEPALIVE_NSID,
                         )),
                 )
                 .build(),
@@ -1325,8 +1325,8 @@ async fn servicing_keepalive_per_device_gate(
 
     // Arm both faults BEFORE servicing so that the post-servicing
     // CREATE_IO_COMPLETION_QUEUE is what each fault matches.
-    asap_fault_updater.set(true).await;
-    nd2_fault_updater.set(true).await;
+    with_keepalive_fault_updater.set(true).await;
+    no_keepalive_fault_updater.set(true).await;
 
     vm.restart_openhcl(igvm_file.clone(), flags).await?;
 
@@ -1336,7 +1336,7 @@ async fn servicing_keepalive_per_device_gate(
     // servicing because its keepalive was downgraded to reset.
     CancelContext::new()
         .with_timeout(Duration::from_secs(60))
-        .until_cancelled(nd2_create_seen_recv)
+        .until_cancelled(no_keepalive_create_seen_recv)
         .await
         .expect(
             "non-c05b NVMe device did not issue CREATE_IO_COMPLETION_QUEUE within 60s after \
@@ -1348,8 +1348,8 @@ async fn servicing_keepalive_per_device_gate(
     // If the c05b device had received CREATE_IO_COMPLETION_QUEUE, the
     // panic fault would have crashed the VM and failed this test. We
     // disarm the faults defensively before tearing down.
-    asap_fault_updater.set(false).await;
-    nd2_fault_updater.set(false).await;
+    with_keepalive_fault_updater.set(false).await;
+    no_keepalive_fault_updater.set(false).await;
 
     Ok(())
 }
