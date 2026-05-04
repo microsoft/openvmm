@@ -465,6 +465,9 @@ impl NvmeManagerWorker {
         let mut restored_devices: HashMap<String, NvmeDriverManager> = HashMap::new();
 
         for disk in &saved_state.nvme_disks {
+            // Only restore disks that are known to be keepalive compatible.
+            // This should gracefully tear down state for non-keepalive devices
+            // before using the device.
             let pci_id = disk.pci_id.clone();
             let nvme_driver = self
                 .context
@@ -473,7 +476,7 @@ impl NvmeManagerWorker {
                     &self.context.driver_source,
                     &pci_id,
                     saved_state.cpu_count,
-                    save_restore_supported,
+                    save_restore_supported && is_nvme_keepalive_compatible(&pci_id),
                     Some(&disk.driver_state),
                 )
                 .await?;
