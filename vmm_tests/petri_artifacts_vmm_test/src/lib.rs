@@ -504,7 +504,8 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Ubuntu2404ServerAarch64Vhd";
         }
 
-        declare_blob_artifacts! {
+        // blob disk does not support VHDX files
+        declare_artifacts! {
             /// Windows 11 Enterprise ARM64 24H2
             WINDOWS_11_ENTERPRISE_AARCH64
         }

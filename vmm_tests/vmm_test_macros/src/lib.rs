@@ -865,7 +865,6 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
         let petri_vm_config = quote!(#petri_vm_config::new(params, artifacts, &driver)?);
         let unstable = config.unstable.to_token_stream();
 
-        // note that `remote_access` is used within the guest artifact in the firmware tokens
         let test = quote! {
             #cfg_conditions
             ::petri::SimpleTest::new(

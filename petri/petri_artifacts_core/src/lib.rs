@@ -187,7 +187,7 @@ impl<A> ResolvedArtifactSource<A> {
 /// resolve them to paths.
 pub struct ArtifactResolver<'a> {
     inner: ArtifactResolverInner<'a>,
-    remote_policy: Option<RemoteAccess>,
+    remote_policy: RemoteAccess,
 }
 
 impl<'a> ArtifactResolver<'a> {
@@ -195,20 +195,17 @@ impl<'a> ArtifactResolver<'a> {
     /// `PETRI_REMOTE_ARTIFACTS` environment variable.
     ///
     /// Set `PETRI_REMOTE_ARTIFACTS=0` to force all artifacts to be resolved
-    /// locally, even if `RemoteAccess::Allow` is specified per-call.
+    /// locally, even if `RemoteAccess::Allow` is specified per-call or per-test.
     pub fn set_remote_policy(&mut self, test_policy: RemoteAccess) {
-        self.remote_policy = Some(
-            if matches!(test_policy, RemoteAccess::LocalOnly)
-                || matches!(
-                    std::env::var("PETRI_REMOTE_ARTIFACTS").as_deref(),
-                    Ok("0") | Ok("false")
-                )
-            {
-                RemoteAccess::LocalOnly
-            } else {
-                RemoteAccess::Allow
-            },
-        )
+        self.remote_policy = if matches!(test_policy, RemoteAccess::LocalOnly)
+            || matches!(
+                std::env::var("PETRI_REMOTE_ARTIFACTS").as_deref(),
+                Ok("0") | Ok("false")
+            ) {
+            RemoteAccess::LocalOnly
+        } else {
+            RemoteAccess::Allow
+        };
     }
 
     /// Returns a resolver to collect requirements; the artifact objects returned by
@@ -216,7 +213,7 @@ impl<'a> ArtifactResolver<'a> {
     pub fn collector(requirements: &'a mut TestArtifactRequirements) -> Self {
         ArtifactResolver {
             inner: ArtifactResolverInner::Collecting(RefCell::new(requirements)),
-            remote_policy: None,
+            remote_policy: RemoteAccess::LocalOnly,
         }
     }
 
@@ -224,18 +221,14 @@ impl<'a> ArtifactResolver<'a> {
     pub fn resolver(artifacts: &'a TestArtifacts) -> Self {
         ArtifactResolver {
             inner: ArtifactResolverInner::Resolving(artifacts),
-            remote_policy: None,
+            remote_policy: RemoteAccess::LocalOnly,
         }
     }
 
     /// Returns the effective remote access for a given per-call policy,
     /// respecting the resolver-wide policy.
     fn effective_remote<A: ArtifactId>(&self, per_call: RemoteAccess) -> RemoteAccess {
-        if matches!(
-            self.remote_policy.expect("remote_policy not populated"),
-            RemoteAccess::LocalOnly
-        ) || !A::SUPPORTS_BLOB_DISK
-        {
+        if matches!(self.remote_policy, RemoteAccess::LocalOnly) || !A::SUPPORTS_BLOB_DISK {
             RemoteAccess::LocalOnly
         } else {
             per_call
