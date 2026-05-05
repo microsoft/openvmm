@@ -10,7 +10,10 @@ rust-version.workspace = true
 # Enable profiler support
 profiler = ["dep:profiler_worker", "diag_server/profiler"]
 # Enable profiler tracing (heap profiling) support
-mem-profile-tracing = ["dep:mem_profile_tracing", "diag_server/mem-profile-tracing"]
+mem-profile-tracing = [
+    "dep:mem_profile_tracing",
+    "diag_server/mem-profile-tracing",
+]
 
 # Enable gdbstub support
 gdb = ["debug_worker_defs", "vmm_core/gdb", "virt_mshv_vtl/gdb"]
@@ -59,7 +62,10 @@ hyperv_ic_resources.workspace = true
 hyperv_secure_boot_templates.workspace = true
 hyperv_uefi_custom_vars_json.workspace = true
 framebuffer.workspace = true
-hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect", "save_restore"] }
+hcl_compat_uefi_nvram_storage = { workspace = true, features = [
+    "inspect",
+    "save_restore",
+] }
 get_helpers.workspace = true
 get_protocol.workspace = true
 guest_emulation_transport.workspace = true
@@ -138,7 +144,7 @@ x86defs.workspace = true
 safe_intrinsics.workspace = true
 debug_ptr.workspace = true
 guid.workspace = true
-crypto = { workspace = true, features = ["vendored", "openssl"] }
+crypto = { workspace = true, features = ["openssl"] }
 inspect.workspace = true
 kmsg.workspace = true
 local_clock.workspace = true
