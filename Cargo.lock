@@ -3061,6 +3061,7 @@ dependencies = [
  "open_enum",
  "pal",
  "parking_lot",
+ "rsi",
  "safe_intrinsics",
  "sidecar_client",
  "signal-hook",
@@ -6567,6 +6568,7 @@ dependencies = [
  "memory_range",
  "open_enum",
  "tracing",
+ "zerocopy",
 ]
 
 [[package]]

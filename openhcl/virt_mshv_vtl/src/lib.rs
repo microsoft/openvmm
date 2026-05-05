@@ -47,7 +47,7 @@ use hv1_emulator::hv::ProcessorVtlHv;
 pub use processor::Backing;
 pub use processor::UhProcessor;
 
-use hcl::GuestVtl;
+use crate::processor::HardwareIsolatedBacking;
 use anyhow::Context as AnyhowContext;
 use bitfield_struct::bitfield;
 use bitvec::boxed::BitBox;
@@ -55,6 +55,7 @@ use bitvec::vec::BitVec;
 use cvm_tracing::CVM_ALLOWED;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryBackingError;
+use hcl::GuestVtl;
 use hcl::ioctl::Hcl;
 use hcl::ioctl::SetVsmPartitionConfigError;
 use hv1_emulator::hv::GlobalHv;
@@ -82,8 +83,6 @@ use hvdef::hypercall::HvGuestOsId;
 use hvdef::hypercall::HvInputVtl;
 use hvdef::hypercall::HvInterceptParameters;
 use hvdef::hypercall::HvInterceptType;
-use user_driver::memory::MemoryBlock;
-use std::collections::HashMap;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
@@ -97,6 +96,7 @@ use parking_lot::RwLock;
 use processor::BackingSharedParams;
 use processor::SidecarExitReason;
 use sidecar_client::NewSidecarClientError;
+use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
@@ -109,6 +109,7 @@ use std::sync::atomic::Ordering;
 use std::task::Waker;
 use thiserror::Error;
 use user_driver::DmaClient;
+use user_driver::memory::MemoryBlock;
 use virt::IsolationType;
 use virt::PartitionCapabilities;
 use virt::VpIndex;
@@ -131,7 +132,6 @@ use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
-use crate::processor::HardwareIsolatedBacking;
 
 /// General error returned by operations.
 #[derive(Error, Debug)]
@@ -1168,18 +1168,14 @@ impl virt::synic::SynicMonitor for UhPartitionInner {
             Some(
                 private_dma_client
                     .allocate_dma_buffer(HV_PAGE_SIZE_USIZE)
-                    .map_err(Error::AllocateSharedVisOverlay)?
+                    .map_err(Error::AllocateSharedVisOverlay)?,
             )
         } else {
             None
         };
 
-        let gpn = if let Some(v) = &block {
-            v.pfns()[0]
-        } else {
-            0
-        };
-        
+        let gpn = if let Some(v) = &block { v.pfns()[0] } else { 0 };
+
         *allocated_block = block;
         let gpa = gpn << HV_PAGE_SHIFT;
         let old_gpa = self.monitor_page.set_gpa(Some(gpa));
@@ -1725,7 +1721,7 @@ impl<'a> UhProtoPartition<'a> {
         let privs = hcl
             .get_privileges_and_features_info()
             .map_err(Error::GetReg)?;
-        
+
         let guest_vsm_available = {
             let privs = hcl
                 .get_privileges_and_features_info()
