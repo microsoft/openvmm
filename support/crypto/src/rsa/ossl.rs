@@ -8,6 +8,7 @@ fn err(err: openssl::error::ErrorStack, op: &'static str) -> RsaError {
     RsaError(crate::BackendError(err, op))
 }
 
+#[repr(transparent)] // Needed for the transmute in as_pub.
 pub struct RsaKeyPairInner(pub(crate) openssl::pkey::PKey<openssl::pkey::Private>);
 
 impl RsaKeyPairInner {
@@ -70,6 +71,7 @@ impl RsaKeyPairInner {
     }
 }
 
+#[repr(transparent)] // Needed for the transmute in as_pub.
 pub struct RsaPublicKeyInner(pub(crate) openssl::pkey::PKey<openssl::pkey::Public>);
 
 impl RsaPublicKeyInner {

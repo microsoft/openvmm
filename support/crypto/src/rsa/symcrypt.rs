@@ -15,6 +15,7 @@ fn der_err(err: der::Error, op: &'static str) -> RsaError {
     RsaError(crate::BackendError::EncodingError(err, op))
 }
 
+#[repr(transparent)] // Needed for the transmute in as_pub.
 pub struct RsaKeyPairInner(RsaKey);
 
 impl RsaKeyPairInner {
@@ -89,6 +90,7 @@ impl RsaKeyPairInner {
     }
 }
 
+#[repr(transparent)] // Needed for the transmute in as_pub.
 pub struct RsaPublicKeyInner(RsaKey);
 
 impl RsaPublicKeyInner {

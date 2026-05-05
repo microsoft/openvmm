@@ -32,6 +32,7 @@ pub enum HashAlgorithm {
 }
 
 /// An RSA private key (key pair).
+#[repr(transparent)] // Needed for the transmute in deref.
 pub struct RsaKeyPair(pub(crate) sys::RsaKeyPairInner);
 
 impl RsaKeyPair {
@@ -70,6 +71,7 @@ impl RsaKeyPair {
 }
 
 /// An RSA public key.
+#[repr(transparent)] // Needed for the transmute in deref.
 pub struct RsaPublicKey(pub(crate) sys::RsaPublicKeyInner);
 
 impl RsaPublicKey {
