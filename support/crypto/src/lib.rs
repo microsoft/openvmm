@@ -46,7 +46,12 @@ pub struct BackendError(#[source] windows_result::Error, &'static str);
 #[cfg(symcrypt)]
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("symcrypt error during {1}")]
-pub struct BackendError(#[source] symcrypt::errors::SymCryptError, &'static str);
+pub enum BackendError {
+    /// An error from the SymCrypt library, with the operation being performed when the error occurred.
+    SymCryptError(#[source] symcrypt::errors::SymCryptError, &'static str),
+    /// An error from encoding or decoding, with the operation being performed when the error occurred.
+    EncodingError(#[source] der::Error, &'static str),
+}
 
 #[cfg(all(native, target_os = "macos"))]
 pub use mac::BackendError;

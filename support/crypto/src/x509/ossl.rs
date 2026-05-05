@@ -25,13 +25,13 @@ impl X509CertificateInner {
             .map_err(|e| err(e, "extracting public key"))?;
         assert_eq!(pkey.id(), openssl::pkey::Id::RSA);
         Ok(crate::rsa::RsaPublicKey(
-            crate::rsa::ossl::RsaPublicKeyInner::from_pkey(pkey),
+            crate::rsa::ossl::RsaPublicKeyInner(pkey),
         ))
     }
 
     pub fn verify(&self, issuer_public_key: &crate::rsa::RsaPublicKey) -> Result<bool, X509Error> {
         self.cert
-            .verify(&issuer_public_key.0.pkey)
+            .verify(&issuer_public_key.0.0)
             .map_err(|e| err(e, "verifying certificate signature"))
     }
 
@@ -72,10 +72,8 @@ impl X509BuilderInner {
         &mut self,
         key_pair: &crate::rsa::RsaKeyPair,
     ) -> Result<(), X509Error> {
-        let pkey = openssl::pkey::PKey::from_rsa(key_pair.0.rsa.clone())
-            .map_err(|e| err(e, "converting RSA key to PKey"))?;
         self.builder
-            .set_pubkey(&pkey)
+            .set_pubkey(&key_pair.0.0)
             .map_err(|e| err(e, "setting public key"))
     }
 
@@ -125,10 +123,8 @@ impl X509BuilderInner {
         mut self,
         key_pair: &crate::rsa::RsaKeyPair,
     ) -> Result<X509CertificateInner, X509Error> {
-        let pkey = openssl::pkey::PKey::from_rsa(key_pair.0.rsa.clone())
-            .map_err(|e| err(e, "converting RSA key for signing"))?;
         self.builder
-            .sign(&pkey, openssl::hash::MessageDigest::sha256())
+            .sign(&key_pair.0.0, openssl::hash::MessageDigest::sha256())
             .map_err(|e| err(e, "signing certificate"))?;
         Ok(X509CertificateInner {
             cert: self.builder.build(),
