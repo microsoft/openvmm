@@ -431,7 +431,7 @@ impl IntoPipeline for CheckinGatesCli {
             .new_job(
                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 FlowArch::X86_64,
-                format!("build artifacts (shared VMM tests) [linux]"),
+                "build artifacts (shared VMM tests) [linux]".to_string(),
             )
             .gh_set_pool(gh_pools::default_linux())
             .ado_set_pool(ado_pools::default_linux());
