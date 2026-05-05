@@ -444,16 +444,17 @@ impl LoadedVm {
                         capabilities_flags,
                     } = message;
 
-                    // If the host provided timeout hint is >= uint16::max
-                    // seconds, we treat that as a signal from the host that no
+                    // If the host provided timeout hint is >= 59 seconds,
+                    // we treat that as a signal from the host that no
                     // timeout duration was set. We instead limit servicing to
-                    // 200s in that case.
-                    let timeout_hint = if timeout_hint >= Duration::from_secs(u16::MAX as u64) {
+                    // 59s in that case.
+                    let timeout_hint = if timeout_hint >= Duration::from_secs(59) {
                         tracing::info!(
                             CVM_ALLOWED,
-                            "host provided UINT16_MAX timeout hint, defaulting to 200s"
+                            host_timeout_hint_ms = timeout_hint.as_millis() as u64,
+                            "host provided timeout hint > 59s, defaulting to 59s"
                         );
-                        Duration::from_secs(200)
+                        Duration::from_secs(59)
                     } else {
                         timeout_hint
                     };

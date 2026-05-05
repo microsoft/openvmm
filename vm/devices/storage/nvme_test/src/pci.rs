@@ -137,10 +137,21 @@ impl NvmeFaultController {
                 BarMemoryKind::Intercept(register_mmio.new_io_region("msix", msix.bar_len())),
             );
 
+        // Apply any hardware-config fault overrides for the IDs reported in
+        // PCI configuration space, falling back to the real values when no
+        // override is configured.
+        let hardware_config_fault = fault_configuration.hardware_config_fault.take();
+        let vendor_id = hardware_config_fault
+            .and_then(|f| f.vendor_id)
+            .unwrap_or(VENDOR_ID);
+        let device_id = hardware_config_fault
+            .and_then(|f| f.device_id)
+            .unwrap_or(0x00a9);
+
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
-                vendor_id: VENDOR_ID,
-                device_id: 0x00a9,
+                vendor_id,
+                device_id,
                 revision_id: 0,
                 prog_if: ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
                 sub_class: Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY,

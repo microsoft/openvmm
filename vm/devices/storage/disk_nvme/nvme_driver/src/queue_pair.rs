@@ -93,11 +93,12 @@ impl PendingCommands {
     const MAX_CIDS: usize = 1 << Self::CID_KEY_BITS;
     const CID_SEQ_OFFSET: Wrapping<u16> = Wrapping(1 << Self::CID_KEY_BITS);
 
-    fn new(qid: u16) -> Self {
+    fn new(qid: u16, device_id: String) -> Self {
         Self {
             commands: Slab::new(),
             next_cid_high_bits: Wrapping(0),
             qid,
+            device_id,
         }
     }
 
@@ -124,7 +125,19 @@ impl PendingCommands {
         entry.insert(PendingCommand {
             command: *command,
             respond,
-            submitted_at: (self.qid == 0).then(Instant::now),
+            submitted_at: (self.qid == 0).then(|| {
+                tracing::info!(
+                    pci_id = %self.device_id,
+                    ?cid,
+                    opcode = ?command.cdw0.opcode(),
+                    opname = ?spec::AdminOpcode(command.cdw0.opcode()),
+                    nsid = ?command.nsid,
+                    cdw10 = command.cdw10,
+                    cdw11 = command.cdw11,
+                    "inserted admin command",
+                );
+                Instant::now()
+            }),
         });
     }
 
@@ -140,6 +153,19 @@ impl PendingCommands {
             self.qid,
             command.command.cdw0.opcode(),
         );
+        if let Some(submitted_at) = command.submitted_at {
+            tracing::info!(
+                pci_id = %self.device_id,
+                ?cid,
+                opcode = ?command.command.cdw0.opcode(),
+                opname = ?spec::AdminOpcode(command.command.cdw0.opcode()),
+                nsid = ?command.command.nsid,
+                cdw10 = command.command.cdw10,
+                cdw11 = command.command.cdw11,
+                elapsed = ?submitted_at.elapsed(),
+                "completed admin command",
+            );
+        }
         command.respond
     }
 
@@ -161,7 +187,11 @@ impl PendingCommands {
     }
 
     /// Restore pending commands from the saved state.
-    pub fn restore(saved_state: &PendingCommandsSavedState, qid: u16) -> anyhow::Result<Self> {
+    pub fn restore(
+        saved_state: &PendingCommandsSavedState,
+        qid: u16,
+        device_id: String,
+    ) -> anyhow::Result<Self> {
         let PendingCommandsSavedState {
             commands,
             next_cid_high_bits,
@@ -188,6 +218,7 @@ impl PendingCommands {
                 .collect::<Slab<PendingCommand>>(),
             next_cid_high_bits: Wrapping(*next_cid_high_bits),
             qid,
+            device_id,
         })
     }
 }
@@ -508,7 +539,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
                 QueueHandler {
                     sq: SubmissionQueue::new(qid, sq_entries, sq_mem_block),
                     cq: CompletionQueue::new(qid, cq_entries, cq_mem_block),
-                    commands: PendingCommands::new(qid),
+                    commands: PendingCommands::new(qid, device_id.into()),
                     stats: Default::default(),
                     drain_after_restore,
                     aer_handler,
@@ -947,6 +978,7 @@ struct PendingCommands {
     #[inspect(hex)]
     next_cid_high_bits: Wrapping<u16>,
     qid: u16,
+    device_id: String,
 }
 
 #[derive(Inspect)]
@@ -1360,7 +1392,7 @@ impl<A: AerHandler> QueueHandler<A> {
         Ok(Self {
             sq: SubmissionQueue::restore(sq_mem_block, sq_state)?,
             cq: CompletionQueue::restore(cq_mem_block, cq_state)?,
-            commands: PendingCommands::restore(pending_cmds, sq_state.sqid)?,
+            commands: PendingCommands::restore(pending_cmds, sq_state.sqid, device_id.into())?,
             stats: Default::default(),
             // Only drain pending commands for I/O queues.
             // Admin queue is expected to have pending Async Event requests.
