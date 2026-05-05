@@ -2,8 +2,10 @@
 // Licensed under the MIT License.
 
 use super::RsaError;
-use pkcs1::der::Decode;
-use pkcs1::der::Encode;
+use rsa::pkcs8::DecodePrivateKey;
+use rsa::pkcs8::EncodePrivateKey;
+use rsa::traits::PrivateKeyParts;
+use rsa::traits::PublicKeyParts;
 use symcrypt::rsa::RsaKey;
 use symcrypt::rsa::RsaKeyUsage;
 
@@ -11,8 +13,12 @@ fn err(err: symcrypt::errors::SymCryptError, op: &'static str) -> RsaError {
     RsaError(crate::BackendError::SymCryptError(err, op))
 }
 
-fn der_err(err: der::Error, op: &'static str) -> RsaError {
-    RsaError(crate::BackendError::EncodingError(err, op))
+fn pkcs8_err(err: rsa::pkcs8::Error, op: &'static str) -> RsaError {
+    RsaError(crate::BackendError::Pkcs8EncodingError(err, op))
+}
+
+fn rsa_err(err: rsa::Error, op: &'static str) -> RsaError {
+    RsaError(crate::BackendError::RsaError(err, op))
 }
 
 #[repr(transparent)] // Needed for the transmute in as_pub.
@@ -26,13 +32,20 @@ impl RsaKeyPairInner {
     }
 
     pub fn from_pkcs8_der(der: &[u8]) -> Result<Self, RsaError> {
-        let parsed =
-            pkcs1::RsaPrivateKey::from_der(der).map_err(|e| der_err(e, "parsing RSA key"))?;
+        let parsed = rsa::RsaPrivateKey::from_pkcs8_der(der)
+            .map_err(|e| pkcs8_err(e, "parsing PKCS#8 DER"))?;
+        let primes = parsed.primes();
+        if primes.len() != 2 {
+            return Err(RsaError(crate::BackendError::Pkcs8EncodingError(
+                rsa::pkcs8::Error::KeyMalformed(rsa::pkcs8::KeyError::Invalid),
+                "multiprime RSA keys not supported",
+            )));
+        }
         let rsa = RsaKey::set_key_pair(
-            parsed.modulus.as_bytes(),
-            parsed.public_exponent.as_bytes(),
-            parsed.prime1.as_bytes(),
-            parsed.prime2.as_bytes(),
+            &parsed.n().to_be_bytes_trimmed_vartime(),
+            &parsed.e().to_be_bytes_trimmed_vartime(),
+            &primes[0].to_be_bytes_trimmed_vartime(),
+            &primes[1].to_be_bytes_trimmed_vartime(),
             RsaKeyUsage::SignAndEncrypt,
         )
         .map_err(|e| err(e, "setting RSA key pair"))?;
@@ -44,24 +57,21 @@ impl RsaKeyPairInner {
             .0
             .export_key_pair_blob()
             .map_err(|e| err(e, "exporting RSA key blob"))?;
-        let pkcs1 = pkcs1::RsaPrivateKey {
-            modulus: pkcs1::UintRef::new(&blob.modulus)
-                .map_err(|e| der_err(e, "converting modulus"))?,
-            public_exponent: pkcs1::UintRef::new(&blob.pub_exp)
-                .map_err(|e| der_err(e, "converting public exponent"))?,
-            private_exponent: pkcs1::UintRef::new(&blob.private_exp)
-                .map_err(|e| der_err(e, "converting private exponent"))?,
-            prime1: pkcs1::UintRef::new(&blob.p).map_err(|e| der_err(e, "converting prime1"))?,
-            prime2: pkcs1::UintRef::new(&blob.q).map_err(|e| der_err(e, "converting prime2"))?,
-            exponent1: pkcs1::UintRef::new(&blob.d_p)
-                .map_err(|e| der_err(e, "converting exponent1"))?,
-            exponent2: pkcs1::UintRef::new(&blob.d_q)
-                .map_err(|e| der_err(e, "converting exponent2"))?,
-            coefficient: pkcs1::UintRef::new(&blob.crt_coefficient)
-                .map_err(|e| der_err(e, "converting coefficient"))?,
-            other_prime_infos: None,
-        };
-        pkcs1.to_der().map_err(|e| der_err(e, "encoding RSA key"))
+        let rsa = rsa::RsaPrivateKey::from_components(
+            rsa::BoxedUint::from_be_slice_vartime(&blob.modulus),
+            rsa::BoxedUint::from_be_slice_vartime(&blob.pub_exp),
+            rsa::BoxedUint::from_be_slice_vartime(&blob.private_exp),
+            vec![
+                rsa::BoxedUint::from_be_slice_vartime(&blob.p),
+                rsa::BoxedUint::from_be_slice_vartime(&blob.q),
+            ],
+        )
+        .map_err(|e| rsa_err(e, "converting RSA key"))?;
+        Ok(rsa
+            .to_pkcs8_der()
+            .map_err(|e| pkcs8_err(e, "converting to DER"))?
+            .as_bytes()
+            .to_vec())
     }
 
     pub fn oaep_decrypt(
