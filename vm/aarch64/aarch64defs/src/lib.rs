@@ -906,26 +906,22 @@ open_enum! {
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub struct Vendor(pub [u8; 12]);
+pub struct Vendor(pub u32);
 
-#[cfg(feature = "arbitrary")]
-impl<'a> arbitrary::Arbitrary<'a> for Vendor {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        // 25% of the time generate a random vendor
-        if u.ratio(1, 4)? {
-            Ok(Self(u.arbitrary()?))
-        } else {
-            Ok(*u.choose(&[Self::INTEL, Self::AMD, Self::HYGON])?)
-        }
+impl Vendor {
+    pub const ARM: Self = Self(0x0010);
+
+    pub fn is_arm_compatible(&self) -> bool {
+        *self == Self::ARM
     }
 }
 
 impl Display for Vendor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        if let Ok(s) = core::str::from_utf8(&self.0) {
-            f.pad(s)
+        if self.is_arm_compatible() {
+            f.pad("Arm")
         } else {
-            core::fmt::Debug::fmt(&self.0, f)
+            write!(f, "{:#x}", self.0)
         }
     }
 }

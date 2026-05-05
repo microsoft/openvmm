@@ -138,7 +138,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
         let caps = Aarch64PartitionCapabilities {
             supports_aarch32_el0: false,
-            vendor: Vendor([0; 12]),
+            vendor: Vendor::ARM,
         };
 
         let inner = Arc::new(MshvPartitionInner {

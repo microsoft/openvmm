@@ -761,7 +761,7 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                 pfr0 & 0xf == 2
             };
             PartitionCapabilities {
-                vendor: Vendor([0; 12]),
+                vendor: Vendor::ARM,
                 supports_aarch32_el0,
             }
         };
