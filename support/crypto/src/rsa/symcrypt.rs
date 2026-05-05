@@ -17,10 +17,6 @@ fn pkcs8_err(err: rsa::pkcs8::Error, op: &'static str) -> RsaError {
     RsaError(crate::BackendError::Pkcs8EncodingError(err, op))
 }
 
-fn rsa_err(err: rsa::Error, op: &'static str) -> RsaError {
-    RsaError(crate::BackendError::RsaError(err, op))
-}
-
 #[repr(transparent)] // Needed for the transmute in as_pub.
 pub struct RsaKeyPairInner(RsaKey);
 
@@ -66,7 +62,7 @@ impl RsaKeyPairInner {
                 rsa::BoxedUint::from_be_slice_vartime(&blob.q),
             ],
         )
-        .map_err(|e| rsa_err(e, "converting RSA key"))?;
+        .unwrap();
         Ok(rsa
             .to_pkcs8_der()
             .map_err(|e| pkcs8_err(e, "converting to DER"))?

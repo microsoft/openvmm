@@ -51,8 +51,6 @@ pub enum BackendError {
     SymCryptError(#[source] symcrypt::errors::SymCryptError, &'static str),
     /// An error from encoding or decoding PKCS#8, with the operation being performed when the error occurred.
     Pkcs8EncodingError(#[source] ::rsa::pkcs8::Error, &'static str),
-    /// An error from the rsa crate, with the operation being performed when the error occurred.
-    RsaError(#[source] ::rsa::Error, &'static str),
 }
 
 #[cfg(all(native, target_os = "macos"))]
