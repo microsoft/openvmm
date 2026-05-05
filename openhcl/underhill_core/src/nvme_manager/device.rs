@@ -334,8 +334,6 @@ enum NvmeDriverRequest {
 pub struct NvmeDriverManager {
     task: Task<()>,
     pci_id: String,
-    /// Whether the underlying device is compatible with NVMe keepalive
-    /// (cached at construction time so callers don't have to re-read sysfs).
     keepalive_compatible: bool,
     client: NvmeDriverManagerClient,
 }

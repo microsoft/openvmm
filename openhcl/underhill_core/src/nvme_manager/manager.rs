@@ -361,9 +361,6 @@ impl NvmeManagerWorker {
                 match guard.entry(pci_id.clone()) {
                     hash_map::Entry::Occupied(_) => unreachable!(), // We checked above that this entry does not exist.
                     hash_map::Entry::Vacant(entry) => {
-                        // Read the PCI vendor/device IDs once and cache the
-                        // resulting keepalive compatibility flag on the
-                        // `NvmeDriverManager` for later save/shutdown queries.
                         let keepalive_compatible = is_nvme_keepalive_compatible(&pci_id);
 
                         let driver = NvmeDriverManager::new(
@@ -472,9 +469,6 @@ impl NvmeManagerWorker {
         let mut restored_devices: HashMap<String, NvmeDriverManager> = HashMap::new();
 
         for disk in &saved_state.nvme_disks {
-            // Only restore disks that are known to be keepalive compatible.
-            // This should gracefully tear down state for non-keepalive devices
-            // before using the device.
             let pci_id = disk.pci_id.clone();
 
             // Read the PCI vendor/device IDs once and cache the resulting
