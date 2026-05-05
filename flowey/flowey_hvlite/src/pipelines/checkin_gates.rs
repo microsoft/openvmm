@@ -342,7 +342,7 @@ impl IntoPipeline for CheckinGatesCli {
             .new_job(
                 FlowPlatform::Windows,
                 FlowArch::X86_64,
-                format!("build artifacts (shared VMM tests) [windows]"),
+                "build artifacts (shared VMM tests) [windows]".to_string(),
             )
             .gh_set_pool(gh_pools::default_windows())
             .ado_set_pool(ado_pools::default_windows());
