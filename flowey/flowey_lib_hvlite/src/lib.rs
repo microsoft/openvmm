@@ -6,11 +6,6 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
-// Satisfy xtask fmt by using serde here
-// It is included in flowey's prelude module, but that is not detected.
-#[expect(unused_imports)]
-use serde::Serialize;
-
 pub mod _jobs;
 pub mod artifact_openhcl_igvm_from_recipe;
 pub mod artifact_openhcl_igvm_from_recipe_extras;

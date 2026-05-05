@@ -148,11 +148,10 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
         // Fall back to remote URL for artifacts hosted on Azure Blob Storage,
         // but only for formats the blob disk backend supports (fixed VHD1 and flat).
         if let Some(artifact) = KnownTestArtifacts::from_handle(id) {
-            let filename = artifact.filename();
-            if filename.ends_with(".vhd") || filename.ends_with(".iso") {
+            if artifact.supports_blob_disk() {
                 let url = format!(
                     "https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/{}",
-                    filename
+                    artifact.filename()
                 );
                 return Ok(ArtifactSource::Remote { url });
             }
@@ -261,7 +260,7 @@ fn get_test_artifact_path(artifact: KnownTestArtifacts) -> Result<PathBuf, anyho
                 "guest-test",
                 "download-image",
                 "--artifacts",
-                &artifact.name(),
+                artifact.name(),
             ],
             description: "test artifact",
         },

@@ -248,7 +248,7 @@ impl IntoPipeline for VmmTestsRunCli {
                 }
             }
 
-            resolved.downloads.clear();
+            resolved.downloads.retain(|a| !a.supports_blob_disk());
 
             if hyperv_tests == 0 {
                 log::info!("Lazy fetch enabled: disk images will be streamed on demand via HTTP");
@@ -437,14 +437,14 @@ fn parse_nextest_output(stdout: &str) -> anyhow::Result<BTreeMap<String, RustSui
             .and_then(|t| t.as_object())
             .context("no testcases object")?
             .iter()
-            .filter_map(|(test_name, test_info)| {
+            .filter(|(_, test_info)| {
                 test_info
                     .get("filter-match")
                     .and_then(|fm| fm.get("status"))
                     .and_then(|s| s.as_str())
                     .is_some_and(|s| s == "matches")
-                    .then(|| test_name.to_owned())
             })
+            .map(|(test_name, _)| test_name.to_owned())
             .collect();
 
         if !testcases.is_empty() {

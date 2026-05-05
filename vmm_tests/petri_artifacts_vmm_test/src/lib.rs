@@ -288,6 +288,7 @@ pub mod artifacts {
         use petri_artifacts_common::tags::MachineArch;
         use petri_artifacts_common::tags::OsFlavor;
         use petri_artifacts_core::declare_artifacts;
+        use petri_artifacts_core::declare_blob_artifacts;
 
         declare_artifacts! {
             /// guest_test_uefi.img, built for x86_64 from the in-tree `guest_test_uefi` codebase.
@@ -310,7 +311,7 @@ pub mod artifacts {
         // built just-in-time, using the code that is present in-tree, under
         // `guest_test_uefi`.
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Generation 1 windows test image
             GEN1_WINDOWS_DATA_CENTER_CORE2022_X64
         }
@@ -327,7 +328,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Gen1WindowsDataCenterCore2022X64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Generation 2 windows test image
             GEN2_WINDOWS_DATA_CENTER_CORE2022_X64
         }
@@ -344,7 +345,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Gen2WindowsDataCenterCore2022X64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Generation 2 windows test image
             GEN2_WINDOWS_DATA_CENTER_CORE2025_X64
         }
@@ -368,7 +369,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Gen2WindowsDataCenterCore2025X64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// FreeBSD 13.2
             FREE_BSD_13_2_X64
         }
@@ -391,7 +392,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "FreeBsd13_2X64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Ubuntu 24.04 Server X64
             UBUNTU_2404_SERVER_X64
         }
@@ -413,7 +414,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Ubuntu2404ServerX64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Ubuntu 25.04 Server X64
             UBUNTU_2504_SERVER_X64
         }
@@ -435,7 +436,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Ubuntu2504ServerX64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Alpine Linux 3.23.2 x64 UEFI nocloud cloud-init
             /// NOTE: The image on the alpine website is qcow2 and must be converted to a fixed vhd.
             ALPINE_3_23_X64
@@ -458,7 +459,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Alpine323X64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Alpine Linux 3.23.2 aarch64 UEFI nocloud cloud-init
             /// NOTE: The image on the alpine website is qcow2 and must be converted to a fixed vhd.
             ALPINE_3_23_AARCH64
@@ -481,7 +482,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Alpine323Aarch64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Ubuntu 24.04 Server Aarch64
             UBUNTU_2404_SERVER_AARCH64
         }
@@ -503,7 +504,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Ubuntu2404ServerAarch64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Windows 11 Enterprise ARM64 24H2
             WINDOWS_11_ENTERPRISE_AARCH64
         }
@@ -552,9 +553,9 @@ pub mod artifacts {
         use petri_artifacts_common::tags::IsTestIso;
         use petri_artifacts_common::tags::MachineArch;
         use petri_artifacts_common::tags::OsFlavor;
-        use petri_artifacts_core::declare_artifacts;
+        use petri_artifacts_core::declare_blob_artifacts;
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// FreeBSD 13.2
             FREE_BSD_13_2_X64
         }
@@ -584,6 +585,8 @@ pub mod artifacts {
         use petri_artifacts_common::tags::IsTestVmgs;
         use petri_artifacts_core::declare_artifacts;
 
+        // These could support blob disk in some cases, but Petri doesn't support
+        // remote VMGS files and they are small, so just disable it for now.
         declare_artifacts! {
             /// VMGS file containing a UEFI boot entry
             ///

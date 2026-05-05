@@ -15,6 +15,7 @@
 
 #![forbid(unsafe_code)]
 
+use petri_artifacts_core::ArtifactId;
 use petri_artifacts_core::AsArtifactHandle;
 use petri_artifacts_core::ErasedArtifactHandle;
 use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
@@ -50,6 +51,7 @@ struct KnownTestArtifactMeta {
     filename: &'static str,
     size: u64,
     download_name: &'static str,
+    supports_blob_disk: bool,
 }
 
 const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = {
@@ -82,7 +84,7 @@ const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = {
     ]
 };
 
-const fn meta<T: IsHostedOnHvliteAzureBlobStore>(
+const fn meta<T: ArtifactId + IsHostedOnHvliteAzureBlobStore>(
     variant: KnownTestArtifacts,
 ) -> KnownTestArtifactMeta {
     KnownTestArtifactMeta {
@@ -91,6 +93,7 @@ const fn meta<T: IsHostedOnHvliteAzureBlobStore>(
         filename: T::FILENAME,
         size: T::SIZE,
         download_name: T::DOWNLOAD_NAME,
+        supports_blob_disk: T::SUPPORTS_BLOB_DISK,
     }
 }
 
@@ -138,5 +141,10 @@ impl KnownTestArtifacts {
             .iter()
             .find(|m| (m.handle_fn)() == id)
             .map(|m| m.variant)
+    }
+
+    /// Whether this artifact supports blob disk
+    pub fn supports_blob_disk(&self) -> bool {
+        self.meta().supports_blob_disk
     }
 }
