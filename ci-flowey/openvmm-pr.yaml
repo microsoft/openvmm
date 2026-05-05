@@ -2923,8 +2923,10 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-tmks" | $FLOWEY_BIN v 15 'artifact_use_from_x64-tmks' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-pipette" | $FLOWEY_BIN v 15 'artifact_use_from_x64-windows-pipette' --is-raw-string update
     displayName: 🌼🛫 Initialize job
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 1
     displayName: ensure hypervisor device is accessible
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 2
+    displayName: ensure 2 MiB hugetlb pages are available
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 0
@@ -3025,9 +3027,10 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::init_vmm_tests_env 0
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_nextest_run 1
       $(FLOWEY_BIN) e 15 flowey_core::pipeline::artifact::resolve 5
-      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 1
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 3
     displayName: setting up vmm_tests env
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 0
     displayName: generate nextest command

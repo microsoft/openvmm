@@ -2,8 +2,6 @@
 // Licensed under the MIT License.
 
 use super::*;
-use ::symcrypt::cipher::BlockCipherType;
-use ::symcrypt::errors::SymCryptError;
 use ::symcrypt::gcm::GcmExpandedKey;
 
 pub struct Aes256GcmInner {
@@ -18,18 +16,13 @@ pub struct Aes256GcmDecCtxInner<'a> {
     key: &'a GcmExpandedKey,
 }
 
-fn err(e: SymCryptError, op: &'static str) -> Aes256GcmError {
+fn err(e: ::symcrypt::errors::SymCryptError, op: &'static str) -> Aes256GcmError {
     Aes256GcmError(crate::BackendError(e, op))
-}
-
-fn nonce(iv: &[u8], op: &'static str) -> Result<[u8; 12], Aes256GcmError> {
-    iv.try_into()
-        .map_err(|_| err(SymCryptError::WrongNonceSize, op))
 }
 
 impl Aes256GcmInner {
     pub fn new(key: &[u8; KEY_LEN]) -> Result<Self, Aes256GcmError> {
-        let key = GcmExpandedKey::new(key, BlockCipherType::AesBlock)
+        let key = GcmExpandedKey::new(key, ::symcrypt::cipher::BlockCipherType::AesBlock)
             .map_err(|e| err(e, "expanding gcm key"))?;
         Ok(Self { key })
     }
@@ -46,13 +39,12 @@ impl Aes256GcmInner {
 impl Aes256GcmEncCtxInner<'_> {
     pub fn cipher(
         &mut self,
-        iv: &[u8],
+        iv: &[u8; IV_LEN],
         data: &[u8],
         tag: &mut [u8],
     ) -> Result<Vec<u8>, Aes256GcmError> {
-        let nonce = nonce(iv, "setting iv for encryption")?;
         let mut output = data.to_vec();
-        self.key.encrypt_in_place(&nonce, &[], &mut output, tag);
+        self.key.encrypt_in_place(iv, &[], &mut output, tag);
         Ok(output)
     }
 }
@@ -60,14 +52,13 @@ impl Aes256GcmEncCtxInner<'_> {
 impl Aes256GcmDecCtxInner<'_> {
     pub fn cipher(
         &mut self,
-        iv: &[u8],
+        iv: &[u8; IV_LEN],
         data: &[u8],
         tag: &[u8],
     ) -> Result<Vec<u8>, Aes256GcmError> {
-        let nonce = nonce(iv, "setting iv for decryption")?;
         let mut output = data.to_vec();
         self.key
-            .decrypt_in_place(&nonce, &[], &mut output, tag)
+            .decrypt_in_place(iv, &[], &mut output, tag)
             .map_err(|e| err(e, "decrypting data"))?;
         Ok(output)
     }

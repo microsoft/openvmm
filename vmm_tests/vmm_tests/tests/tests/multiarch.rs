@@ -112,6 +112,34 @@ async fn boot_private_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
     Ok(())
 }
 
+/// Boot Linux with guest memory backed by explicit 2 MiB hugetlb pages.
+#[cfg(target_os = "linux")]
+#[openvmm_test(linux_direct_x64)]
+#[openvmm_test(linux_direct_aarch64)]
+async fn hugetlb_memory_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    const RAM_BYTES: u64 = 1024 * 1024 * 1024;
+
+    let required_pages = RAM_BYTES / petri::openvmm::HUGETLB_2MB_PAGE_SIZE;
+    if !petri::openvmm::ensure_2mb_hugetlb_pages(required_pages)? {
+        return Ok(());
+    }
+
+    let (vm, agent) = config
+        .with_memory(MemoryConfig {
+            startup_bytes: RAM_BYTES,
+            ..Default::default()
+        })
+        .modify_backend(|b| b.with_hugepages(Some(petri::openvmm::HUGETLB_2MB_PAGE_SIZE)))
+        .run()
+        .await?;
+
+    agent.ping().await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
 /// Basic boot test for images that require small amounts of ram, like alpine.
 #[vmm_test(
     openvmm_uefi_x64(vhd(alpine_3_23_x64)),

@@ -35,6 +35,8 @@ flowey_request! {
         /// any tests. (e.g: to allow for some ambient packages / dependencies
         /// to get installed).
         pub pre_run_deps: Vec<ReadVar<SideEffect>>,
+        /// If set, configure this 2 MiB hugetlb surplus page overcommit limit before running tests.
+        pub hugetlb_2mb_overcommit_pages: Option<u64>,
         /// Results of running the tests
         pub results: WriteVar<TestResults>,
     }
@@ -58,10 +60,18 @@ impl SimpleFlowNode for Node {
             nextest_config_file,
             nextest_bin,
             target,
-            extra_env,
+            mut extra_env,
             mut pre_run_deps,
+            hugetlb_2mb_overcommit_pages,
             results,
         } = request;
+
+        if hugetlb_2mb_overcommit_pages.is_some() {
+            extra_env = extra_env.map(ctx, |mut env| {
+                env.insert("OPENVMM_REQUIRE_2MB_HUGETLB".into(), "1".into());
+                env
+            });
+        }
 
         if !matches!(ctx.backend(), FlowBackend::Local)
             && matches!(ctx.platform(), FlowPlatform::Linux(_))
@@ -81,6 +91,51 @@ impl SimpleFlowNode for Node {
                     }
                 })
             });
+
+            if let Some(overcommit_pages) = hugetlb_2mb_overcommit_pages {
+                pre_run_deps.push({
+                    ctx.emit_rust_step("ensure 2 MiB hugetlb pages are available", move |_| {
+                        move |rt| {
+                            let hugepages_dir =
+                                Path::new("/sys/kernel/mm/hugepages/hugepages-2048kB");
+
+                            let read_counter = |name: &str| -> anyhow::Result<u64> {
+                                let path = hugepages_dir.join(name);
+                                let value = fs_err::read_to_string(&path)?;
+                                Ok(value.trim().parse()?)
+                            };
+
+                            let write_overcommit_script = format!(
+                                "echo {overcommit_pages} | sudo tee {path}",
+                                path = hugepages_dir.join("nr_overcommit_hugepages").display(),
+                            );
+                            flowey::shell_cmd!(rt, "sh -c {write_overcommit_script}").run()?;
+
+                            let nr_hugepages = read_counter("nr_hugepages")?;
+                            let free_hugepages = read_counter("free_hugepages")?;
+                            let nr_overcommit_hugepages = read_counter("nr_overcommit_hugepages")?;
+                            let surplus_hugepages = read_counter("surplus_hugepages")?;
+
+                            log::info!("2 MiB hugetlb nr_hugepages={nr_hugepages}");
+                            log::info!("2 MiB hugetlb free_hugepages={free_hugepages}");
+                            log::info!(
+                                "2 MiB hugetlb nr_overcommit_hugepages={nr_overcommit_hugepages}"
+                            );
+                            log::info!("2 MiB hugetlb surplus_hugepages={surplus_hugepages}");
+
+                            if nr_overcommit_hugepages < overcommit_pages {
+                                anyhow::bail!(
+                                    "2 MiB hugetlb overcommit remains {}, below requested {}",
+                                    nr_overcommit_hugepages,
+                                    overcommit_pages
+                                );
+                            }
+
+                            Ok(())
+                        }
+                    })
+                });
+            }
         }
 
         let nextest_archive = nextest_archive_file.map(ctx, |x| x.archive_file);

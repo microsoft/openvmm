@@ -5,6 +5,7 @@ use crate::nvme_manager::CreateNvmeDriver;
 use crate::nvme_manager::device::NvmeDriverManager;
 use crate::nvme_manager::device::NvmeDriverManagerClient;
 use crate::nvme_manager::device::NvmeDriverShutdownOptions;
+use crate::nvme_manager::is_nvme_keepalive_compatible;
 use crate::nvme_manager::save_restore::NvmeManagerSavedState;
 use crate::nvme_manager::save_restore::NvmeSavedDiskConfig;
 use crate::servicing::NvmeSavedState;
@@ -301,12 +302,17 @@ impl NvmeManagerWorker {
 
         async {
             join_all(devices_to_shutdown.into_iter().map(|(pci_id, driver)| {
+                let keepalive_compatible = driver.keepalive_compatible();
                 driver
                     .shutdown(NvmeDriverShutdownOptions {
                         // nvme_keepalive is received from host but it is only valid
                         // when memory pool allocator supports save/restore.
-                        do_not_reset: nvme_keepalive && self.context.save_restore_supported,
-                        skip_device_shutdown: nvme_keepalive && self.context.save_restore_supported,
+                        do_not_reset: nvme_keepalive
+                            && self.context.save_restore_supported
+                            && keepalive_compatible,
+                        skip_device_shutdown: nvme_keepalive
+                            && self.context.save_restore_supported
+                            && keepalive_compatible,
                     })
                     .instrument(tracing::info_span!("shutdown_nvme_driver", %pci_id))
             }))
@@ -355,11 +361,14 @@ impl NvmeManagerWorker {
                 match guard.entry(pci_id.clone()) {
                     hash_map::Entry::Occupied(_) => unreachable!(), // We checked above that this entry does not exist.
                     hash_map::Entry::Vacant(entry) => {
+                        let keepalive_compatible = is_nvme_keepalive_compatible(&pci_id);
+
                         let driver = NvmeDriverManager::new(
                             &context.driver_source,
                             &pci_id,
                             context.vp_count,
-                            context.save_restore_supported,
+                            context.save_restore_supported && keepalive_compatible,
+                            keepalive_compatible,
                             None, // No device yet,
                             context.nvme_driver_spawner.clone(),
                         )?;
@@ -419,12 +428,24 @@ impl NvmeManagerWorker {
     /// Saves NVMe device's states into buffer during servicing.
     pub async fn save(&mut self) -> anyhow::Result<NvmeManagerSavedState> {
         let mut nvme_disks: Vec<NvmeSavedDiskConfig> = Vec::new();
+        // Only save state for devices known to be keepalive-compatible.
         let mut devices_to_save: HashMap<String, NvmeDriverManagerClient> = self
             .context
             .devices
             .write()
             .iter()
-            .map(|(pci_id, driver)| (pci_id.clone(), driver.client().clone()))
+            .filter_map(|(pci_id, driver)| {
+                if driver.keepalive_compatible() {
+                    Some((pci_id.clone(), driver.client().clone()))
+                } else {
+                    tracing::info!(
+                        %pci_id,
+                        "skipping save of nvme device; \
+                         keepalive disabled for this device"
+                    );
+                    None
+                }
+            })
             .collect();
         for (pci_id, client) in devices_to_save.iter_mut() {
             nvme_disks.push(NvmeSavedDiskConfig {
@@ -449,6 +470,11 @@ impl NvmeManagerWorker {
 
         for disk in &saved_state.nvme_disks {
             let pci_id = disk.pci_id.clone();
+
+            // Read the PCI vendor/device IDs once and cache the resulting
+            // keepalive compatibility flag on the `NvmeDriverManager`.
+            let keepalive_compatible = is_nvme_keepalive_compatible(&pci_id);
+
             let nvme_driver = self
                 .context
                 .nvme_driver_spawner
@@ -456,7 +482,7 @@ impl NvmeManagerWorker {
                     &self.context.driver_source,
                     &pci_id,
                     saved_state.cpu_count,
-                    save_restore_supported,
+                    save_restore_supported && keepalive_compatible,
                     Some(&disk.driver_state),
                 )
                 .await?;
@@ -468,6 +494,7 @@ impl NvmeManagerWorker {
                     &pci_id,
                     self.context.vp_count,
                     true, // save_restore_supported is always `true` when restoring.
+                    keepalive_compatible,
                     Some(nvme_driver),
                     self.context.nvme_driver_spawner.clone(),
                 )?,
@@ -1068,9 +1095,16 @@ mod tests {
         ));
 
         // Create a driver manager
-        let driver_manager =
-            NvmeDriverManager::new(&driver_source, "0000:00:04.0", 4, false, None, spawner)
-                .unwrap();
+        let driver_manager = NvmeDriverManager::new(
+            &driver_source,
+            "0000:00:04.0",
+            4,
+            false,
+            false,
+            None,
+            spawner,
+        )
+        .unwrap();
 
         let client = driver_manager.client().clone();
 
@@ -1154,6 +1188,7 @@ mod tests {
             "0000:00:05.0",
             4,
             true, // save_restore_supported
+            true,
             None,
             spawner,
         )
