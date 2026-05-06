@@ -167,12 +167,14 @@ impl IgvmAttestRequestHeader {
 /// Bitmap of additional Igvm request attributes.
 /// 0 - error_code: Requesting IGVM Agent Error code
 /// 1 - retry: Retry preference
+/// 2 - skip_hw_unsealing: Skip hardware unsealing in case key release request fails
 #[bitfield(u32)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct IgvmCapabilityBitMap {
     pub error_code: bool,
     pub retry: bool,
-    #[bits(30)]
+    pub skip_hw_unsealing: bool,
+    #[bits(29)]
     _reserved: u32,
 }
 
@@ -228,12 +230,14 @@ impl IgvmAttestRequestDataExt {
 }
 
 /// Bitmap indicates a signal to requestor
-/// 0 - IGVM_SIGNAL_RETRY_RCOMMENDED_BIT: Retry recommendation
+/// 0 - IGVM_SIGNAL_RETRY_RECOMMENDED_BIT: Retry recommendation
+/// 1 - IGVM_SIGNAL_SKIP_HW_UNSEALING_RECOMMENDED_BIT: Skip hardware unsealing
 #[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmSignal {
     pub retry: bool,
-    #[bits(31)]
+    pub skip_hw_unsealing: bool,
+    #[bits(30)]
     _reserved: u32,
 }
 
