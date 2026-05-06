@@ -1379,7 +1379,7 @@ async fn test_vlan_mixed_batch(driver: DefaultDriver) {
             .vlan
             .expect("RX should carry VLAN")
             .priority,
-            0
+        0
     );
     assert_eq!(
         rx_meta[1]
