@@ -8,8 +8,8 @@ let
          else if system == "aarch64-linux" then "AARCH64-CLANGPDB"
          else "X64-VS2022";
   hash = {
-    "AARCH64-CLANGPDB" = "sha256-ujHL96/irxRaITtIAxhocbrX+iBQuqNNWDDx8MYQ8i8=";
-    "X64-VS2022" = "sha256-3NJ4wNA7HXLiMIAVbQXS0cralheCok4rJ8CaedduN9I=";
+    "AARCH64-CLANGPDB" = "sha256-L1xRlkfek0cajN55neRPnaBjFQnz/G3liZPLzIf2WD4=";
+    "X64-VS2022" = "sha256-yThByWhaSWNPAdUyBrqzdY1VT/QIzf+yopFumoigajc=";
   }.${archToolchain};
 
 in stdenv.mkDerivation {
