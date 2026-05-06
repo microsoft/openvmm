@@ -35,7 +35,11 @@ pub trait AsyncRun<S>: 'static + Send {
     ///
     /// If the function instead returns `Err(Cancelled)`, this indicates that
     /// the task's work is not complete, and it should be restarted after
-    /// handling any incoming events.
+    /// handling any incoming events. Implementations that choose to use
+    /// [`StopTask::until_stopped`] must be cancel-tolerant: because
+    /// [`StopTask::until_stopped`] drops the inner future when a stop
+    /// is signaled, implementations must ensure no in-flight work is silently
+    /// lost across a cancellation.
     fn run(
         &mut self,
         stop: &mut StopTask<'_>,
@@ -140,18 +144,11 @@ impl Future for StopTask<'_> {
 /// Pairs a task implementation `T: AsyncRun<S>` with transient state `S`.
 /// Execution is cancelled when [`stop`](Self::stop) is invoked.
 ///
-/// Cancellation is cooperative: implementations are expected to wrap
-/// futures in [`StopTask::until_stopped`], which drops the inner future and
-/// returns `Err(Cancelled)` when a stop is signaled. `T::run` should
-/// propagate `Err(Cancelled)` so `TaskControl` regains control.
-///
-/// Implementations of `T: AsyncRun<S>` are expected to be cancel-tolerant. Outside of
-/// an actual [`stop`](Self::stop), `TaskControl` also raises the stop
-/// signal to fulfill [`update_with`](Self::update_with) and
+/// Outside of an actual [`stop`](Self::stop), `TaskControl` also raises the
+/// stop signal to fulfill [`update_with`](Self::update_with) and
 /// [`Inspect`]/[`InspectMut`] calls, after which `run` is re-invoked with
-/// the (possibly updated) state. Because `until_stopped` discards the
-/// inner future on cancellation, implementations must ensure no in-flight
-/// work is silently lost.
+/// the (possibly updated) state. See [`AsyncRun`] for the cancel-tolerance
+/// requirements this places on implementations.
 pub struct TaskControl<T, S> {
     inner: Inner<T, S>,
 }
