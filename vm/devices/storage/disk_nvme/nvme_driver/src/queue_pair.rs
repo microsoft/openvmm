@@ -347,8 +347,8 @@ impl DrainAfterRestore {
 struct QueueHandlerLoop<A: AerHandler, D: DeviceBacking> {
     queue_handler: QueueHandler<A>,
     registers: Arc<DeviceRegisters<D>>,
-    recv_req: mesh::Receiver<Req>,
-    recv_cmd: mesh::Receiver<Cmd>,
+    recv_req: Option<mesh::Receiver<Req>>,
+    recv_cmd: Option<mesh::Receiver<Cmd>>,
     interrupt: DeviceInterrupt,
 }
 
@@ -362,8 +362,8 @@ impl<A: AerHandler, D: DeviceBacking> AsyncRun<()> for QueueHandlerLoop<A, D> {
             self.queue_handler
                 .run(
                     &self.registers,
-                    &mut self.recv_req,
-                    &mut self.recv_cmd,
+                    self.recv_req.take().unwrap(),
+                    self.recv_cmd.take().unwrap(),
                     &mut self.interrupt,
                 )
                 .await;
@@ -523,8 +523,8 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
         let mut task = TaskControl::new(QueueHandlerLoop {
             queue_handler,
             registers,
-            recv_req,
-            recv_cmd,
+            recv_req: Some(recv_req),
+            recv_cmd: Some(recv_cmd),
             interrupt,
         });
         task.insert(spawner, "nvme-queue", ());
@@ -1159,13 +1159,11 @@ struct QueueStats {
 }
 
 impl<A: AerHandler> QueueHandler<A> {
-    /// Run the queue handler loop. This needs to be cancel safe because the
-    /// task can be stopped at any time and restarted.
     async fn run(
         &mut self,
         registers: &DeviceRegisters<impl DeviceBacking>,
-        recv_req: &mut mesh::Receiver<Req>,
-        recv_cmd: &mut mesh::Receiver<Cmd>,
+        mut recv_req: mesh::Receiver<Req>,
+        mut recv_cmd: mesh::Receiver<Cmd>,
         interrupt: &mut DeviceInterrupt,
     ) {
         if matches!(
@@ -1249,7 +1247,7 @@ impl<A: AerHandler> QueueHandler<A> {
                 Event::Request(req) => match req {
                     Req::Save(queue_state) => {
                         tracing::info!(pci_id = ?self.device_id, qid = ?self.qid, "received save request, shutting down ...");
-                        queue_state.complete(self.save());
+                        queue_state.complete(self.save().await);
                         // Do not allow any more processing after save completed.
                         break;
                     }
@@ -1312,7 +1310,7 @@ impl<A: AerHandler> QueueHandler<A> {
     }
 
     /// Save queue data for servicing.
-    pub fn save(&self) -> anyhow::Result<QueueHandlerSavedState> {
+    pub async fn save(&self) -> anyhow::Result<QueueHandlerSavedState> {
         // Log pending admin command wait durations at save time.
         if self.qid == 0 {
             for (_index, cmd) in self.commands.commands.iter() {
