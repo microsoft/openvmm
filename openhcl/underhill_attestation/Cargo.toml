@@ -28,6 +28,7 @@ serde_json = { workspace = true, features = ["std"] }
 static_assertions.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 disklayer_ram.workspace = true
