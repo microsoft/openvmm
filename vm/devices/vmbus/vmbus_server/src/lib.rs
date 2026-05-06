@@ -1834,9 +1834,8 @@ impl ServerTaskInner {
 
             (Some(guest_event_port), interrupt)
         } else {
-            // Use a dummy interrupt which does nothing, but make sure it has an event to avoid
-            // proxy_integration from trying to wrap it.
-            (None, Interrupt::null_event())
+            // Use a dummy interrupt which does nothing.
+            (None, Interrupt::null())
         };
 
         // Delete any previously reserved state.

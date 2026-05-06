@@ -19,7 +19,6 @@ pci_resources.workspace = true
 vfio_sys.workspace = true
 vfio-bindings.workspace = true
 vfio_assigned_device_resources.workspace = true
-virt.workspace = true
 vm_resource.workspace = true
 vmcore.workspace = true
 

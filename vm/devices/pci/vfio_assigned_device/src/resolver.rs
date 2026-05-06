@@ -70,10 +70,6 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             .await
             .context("VFIO container manager failed")?;
 
-        let irqfd = input
-            .irqfd
-            .context("partition does not support irqfd (required for VFIO)")?;
-
         let memory_mapper = input
             .shared_mem_mapper
             .context("memory mapper is required for VFIO device assignment")?;
@@ -84,7 +80,6 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             input.driver_source,
             input.register_mmio,
             input.msi_target,
-            irqfd,
             memory_mapper,
         )
         .await?;

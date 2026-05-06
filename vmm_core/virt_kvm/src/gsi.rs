@@ -226,11 +226,7 @@ impl IrqFd for KvmIrqFdState {
             .partition
             .new_route(Some(event.clone()))
             .context("no free GSIs available for irqfd")?;
-        Ok(Box::new(KvmIrqFdRoute {
-            route,
-            event,
-            last_entry: Mutex::new(None),
-        }))
+        Ok(Box::new(KvmIrqFdRoute { route, event }))
     }
 }
 
@@ -241,9 +237,6 @@ impl IrqFd for KvmIrqFdState {
 struct KvmIrqFdRoute {
     route: GsiRoute,
     event: Event,
-    /// The last routing entry configured via `set_msi`, used to restore
-    /// routing on `unmask`.
-    last_entry: Mutex<Option<kvm::RoutingEntry>>,
 }
 
 impl IrqFdRoute for KvmIrqFdRoute {
@@ -251,7 +244,7 @@ impl IrqFdRoute for KvmIrqFdRoute {
         &self.event
     }
 
-    fn set_msi(&self, address: u64, data: u32) -> anyhow::Result<()> {
+    fn enable(&self, address: u64, data: u32) {
         let crate::arch::KvmMsi {
             address_lo,
             address_hi,
@@ -262,29 +255,14 @@ impl IrqFdRoute for KvmIrqFdRoute {
             address_hi,
             data,
         };
-        *self.last_entry.lock() = Some(entry);
         self.route.enable(entry);
-        Ok(())
     }
 
-    fn clear_msi(&self) -> anyhow::Result<()> {
-        *self.last_entry.lock() = None;
+    fn disable(&self) {
+        // Just disarm the irqfd. The routing entry is inert without an
+        // armed eventfd, so there's no need to remove it and trigger an
+        // expensive KVM_SET_GSI_ROUTING ioctl. On re-enable, if the
+        // address/data haven't changed, set_entry will be a no-op.
         self.route.disable();
-        self.route.set_entry(None);
-        Ok(())
-    }
-
-    fn mask(&self) -> anyhow::Result<()> {
-        // Disable the irqfd but preserve the last routing entry for unmask.
-        self.route.disable();
-        Ok(())
-    }
-
-    fn unmask(&self) -> anyhow::Result<()> {
-        // Re-enable the irqfd with the previously configured routing entry.
-        if let Some(entry) = *self.last_entry.lock() {
-            self.route.enable(entry);
-        }
-        Ok(())
     }
 }

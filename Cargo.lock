@@ -8736,7 +8736,6 @@ dependencies = [
  "vfio-bindings",
  "vfio_assigned_device_resources",
  "vfio_sys",
- "virt",
  "vm_resource",
  "vmcore",
 ]
