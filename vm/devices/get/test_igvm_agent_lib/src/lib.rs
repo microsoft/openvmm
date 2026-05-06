@@ -99,6 +99,8 @@ pub enum KeyReleaseError {
 /// Test IGVM agent includes states that need to be persisted.
 #[derive(Debug, Clone, Default)]
 pub struct TestIgvmAgent {
+    /// VM name for log correlation.
+    vm_name: String,
     /// Optional RSA private key used for attestation.
     secret_key: Option<RsaPrivateKey>,
     /// Optional DES key
@@ -116,8 +118,14 @@ pub enum IgvmAgentAction {
     RespondSuccess,
     /// Emit a response that indicates a protocol error.
     RespondFailure,
-    /// Skip responding to simulate a timeout.
+    /// Emit a response that indicates a protocol error with skip_hw_unsealing signal.
+    RespondFailureSkipHwUnsealing,
+    /// Skip responding to simulate a timeout (consumed once).
     NoResponse,
+    /// Skip responding for this and all subsequent requests of the same type.
+    /// Unlike [`NoResponse`](Self::NoResponse), this action is never consumed
+    /// from the queue.
+    AlwaysNoResponse,
 }
 
 /// IGVM Agent test plan specifying scripted actions for a request type.
@@ -161,10 +169,75 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
                 ]),
             );
         }
+        IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended => {
+            // Hyper-V VMs go through an `initial_reboot` and may generate
+            // multiple background AK_CERT_REQUEST calls during the initial
+            // boot and the reboot.  Six failures ensure the SUCCESS action
+            // is never consumed during boot, so it remains available for
+            // the guest test.
+            plan.insert(
+                IgvmAttestRequestType::AK_CERT_REQUEST,
+                VecDeque::from([
+                    IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::RespondSuccess,
+                ]),
+            );
+        }
         IgvmAttestTestConfig::AkCertPersistentAcrossBoot => {
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
-                VecDeque::from([IgvmAgentAction::RespondSuccess, IgvmAgentAction::NoResponse]),
+                VecDeque::from([
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::AlwaysNoResponse,
+                ]),
+            );
+        }
+        IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended => {
+            // Hyper-V VMs go through an `initial_reboot` that can consume
+            // the first success action.  The extra RespondSuccess ensures
+            // the cert is still provisioned after the reboot, so the
+            // subsequent boot can validate that the cert is served from
+            // the persistent cache.
+            plan.insert(
+                IgvmAttestRequestType::AK_CERT_REQUEST,
+                VecDeque::from([
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::AlwaysNoResponse,
+                ]),
+            );
+        }
+        IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing => {
+            // Hyper-V VMs go through an `initial_reboot`, consuming two
+            // KEY_RELEASE requests (one during initial boot, one during
+            // reboot) before the test code starts.
+            plan.insert(
+                IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+                VecDeque::from([
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::RespondFailureSkipHwUnsealing,
+                    IgvmAgentAction::AlwaysNoResponse,
+                ]),
+            );
+        }
+        IgvmAttestTestConfig::KeyReleaseFailure => {
+            // Hyper-V VMs go through an `initial_reboot`, consuming two
+            // KEY_RELEASE requests (one during initial boot, one during
+            // reboot) before the test code starts.
+            plan.insert(
+                IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+                VecDeque::from([
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::AlwaysNoResponse,
+                ]),
             );
         }
     }
@@ -173,9 +246,13 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
 }
 
 impl TestIgvmAgent {
-    /// Create an instance.
-    pub fn new() -> Self {
+    /// Create an instance associated with the given VM name.
+    ///
+    /// The `vm_name` is included in all tracing output so that log
+    /// messages from the library can be correlated with a specific VM.
+    pub fn new(vm_name: impl Into<String>) -> Self {
         Self {
+            vm_name: vm_name.into(),
             secret_key: None,
             des_key: None,
             plan: None,
@@ -191,7 +268,7 @@ impl TestIgvmAgent {
             return;
         }
 
-        tracing::info!("install the scripted plan for test IGVM Agent");
+        tracing::info!(vm_name = %self.vm_name, "install the scripted plan for test IGVM Agent");
 
         match setting {
             IgvmAgentTestSetting::TestPlan(plan) => {
@@ -206,17 +283,73 @@ impl TestIgvmAgent {
     }
 
     /// Take the next scripted action for the given request type, if any.
+    ///
+    /// [`IgvmAgentAction::AlwaysNoResponse`] is sticky: it is returned but
+    /// never removed from the queue, so every subsequent call for the same
+    /// request type will keep returning it.
     pub fn take_next_action(
         &mut self,
         request_type: IgvmAttestRequestType,
     ) -> Option<IgvmAgentAction> {
         // Fast path: no plan installed.
         let plan = self.plan.as_mut()?;
-        plan.get_mut(&request_type)?.pop_front()
+        let queue = plan.get_mut(&request_type)?;
+        match queue.front()? {
+            IgvmAgentAction::AlwaysNoResponse => Some(IgvmAgentAction::AlwaysNoResponse),
+            _ => queue.pop_front(),
+        }
+    }
+
+    /// Build a failure response for any request type with the given
+    /// `error_code` and `igvm_signal`.
+    fn build_failure_response(
+        request_type: IgvmAttestRequestType,
+        error_code: u32,
+        igvm_signal: IgvmSignal,
+    ) -> Result<(Vec<u8>, u32), Error> {
+        let error_info = IgvmErrorInfo {
+            error_code,
+            http_status_code: 400,
+            igvm_signal,
+            reserved: [0; 3],
+        };
+
+        let payload = match request_type {
+            IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
+                let header = IgvmAttestWrappedKeyResponseHeader {
+                    data_size: size_of::<IgvmAttestWrappedKeyResponseHeader>() as u32,
+                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                    error_info,
+                };
+                header.as_bytes().to_vec()
+            }
+            IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
+                let header = IgvmAttestKeyReleaseResponseHeader {
+                    data_size: size_of::<IgvmAttestKeyReleaseResponseHeader>() as u32,
+                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                    error_info,
+                };
+                header.as_bytes().to_vec()
+            }
+            IgvmAttestRequestType::AK_CERT_REQUEST => {
+                let header = IgvmAttestAkCertResponseHeader {
+                    data_size: size_of::<IgvmAttestAkCertResponseHeader>() as u32,
+                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                    error_info,
+                };
+                header.as_bytes().to_vec()
+            }
+            ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
+        };
+
+        let payload_len = payload.len() as u32;
+        Ok((payload, payload_len))
     }
 
     /// Request handler.
     pub fn handle_request(&mut self, request_bytes: &[u8]) -> Result<(Vec<u8>, u32), Error> {
+        let _span = tracing::info_span!("igvm_agent", vm_name = %self.vm_name).entered();
+
         let request = IgvmAttestRequestBase::read_from_prefix(request_bytes)
             .map_err(|_| Error::InvalidIgvmAttestRequest)?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
@@ -248,10 +381,10 @@ impl TestIgvmAgent {
         let (response, length) = if let Some(action) =
             self.take_next_action(request.header.request_type)
         {
-            // If a plan is provided and has a queued action for this request type,
+            // If a plan is installed and has a queued action for this request type,
             // execute it. This allows tests to force success/no-response, etc.
             match action {
-                IgvmAgentAction::NoResponse => {
+                IgvmAgentAction::NoResponse | IgvmAgentAction::AlwaysNoResponse => {
                     tracing::info!(?request.header.request_type, "Test plan: NoResponse");
                     (vec![], 0)
                 }
@@ -315,62 +448,28 @@ impl TestIgvmAgent {
                 }
                 IgvmAgentAction::RespondFailure => {
                     tracing::info!(?request.header.request_type, "Test plan: RespondFailure");
-                    match request.header.request_type {
-                        IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
-                            let header = IgvmAttestWrappedKeyResponseHeader {
-                                data_size: size_of::<IgvmAttestWrappedKeyResponseHeader>() as u32,
-                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                                error_info: IgvmErrorInfo {
-                                    error_code: 0x1234,
-                                    http_status_code: 400,
-                                    igvm_signal: IgvmSignal::default().with_retry(false),
-                                    reserved: [0; 3],
-                                },
-                            };
-                            let payload = header.as_bytes().to_vec();
-                            let payload_len = payload.len() as u32;
-
-                            (payload, payload_len)
-                        }
-                        IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
-                            let header = IgvmAttestKeyReleaseResponseHeader {
-                                data_size: size_of::<IgvmAttestKeyReleaseResponseHeader>() as u32,
-                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                                error_info: IgvmErrorInfo {
-                                    error_code: 0x1234,
-                                    http_status_code: 400,
-                                    igvm_signal: IgvmSignal::default().with_retry(false),
-                                    reserved: [0; 3],
-                                },
-                            };
-                            let payload = header.as_bytes().to_vec();
-                            let payload_len = payload.len() as u32;
-
-                            (payload, payload_len)
-                        }
-                        IgvmAttestRequestType::AK_CERT_REQUEST => {
-                            let header = IgvmAttestAkCertResponseHeader {
-                                data_size: size_of::<IgvmAttestAkCertResponseHeader>() as u32,
-                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                                error_info: IgvmErrorInfo {
-                                    error_code: 0x1234,
-                                    http_status_code: 400,
-                                    igvm_signal: IgvmSignal::default().with_retry(false),
-                                    reserved: [0; 3],
-                                },
-                            };
-                            let payload = header.as_bytes().to_vec();
-                            let payload_len = payload.len() as u32;
-
-                            (payload.clone(), payload_len)
-                        }
-                        ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
-                    }
+                    Self::build_failure_response(
+                        request.header.request_type,
+                        0x1234,
+                        IgvmSignal::default().with_retry(false),
+                    )?
+                }
+                IgvmAgentAction::RespondFailureSkipHwUnsealing => {
+                    tracing::info!(?request.header.request_type, "Test plan: RespondFailureSkipHwUnsealing");
+                    Self::build_failure_response(
+                        request.header.request_type,
+                        0x5678,
+                        IgvmSignal::default()
+                            .with_retry(false)
+                            .with_skip_hw_unsealing(true),
+                    )?
                 }
             }
         } else {
-            // If no plan is provided, fall back to the default behavior that
-            // always return valid responses.
+            // No scripted action for this request type (either no plan is
+            // installed, or the plan does not cover this request type / is
+            // exhausted).  Fall back to the default behavior that always
+            // returns valid responses.
             match request.header.request_type {
                 IgvmAttestRequestType::AK_CERT_REQUEST => {
                     tracing::info!("Send a response for AK_CERT_REQUEST");

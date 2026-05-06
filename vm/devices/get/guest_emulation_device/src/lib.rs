@@ -271,7 +271,7 @@ impl GuestEmulationDevice {
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
             igvm_agent_setting,
-            igvm_agent: TestIgvmAgent::new(),
+            igvm_agent: TestIgvmAgent::new("openvmm"),
             test_gsp_by_id,
         }
     }

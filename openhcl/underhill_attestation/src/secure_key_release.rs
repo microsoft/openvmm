@@ -198,6 +198,7 @@ pub async fn request_vmgs_encryption_keys(
                         igvm_error_code,
                         http_status_code,
                         retry_signal,
+                        ..
                     },
                 ),
             ),
@@ -219,6 +220,7 @@ pub async fn request_vmgs_encryption_keys(
                         igvm_error_code,
                         http_status_code,
                         retry_signal,
+                        skip_hw_unsealing_signal,
                     },
                 ),
             ),
@@ -228,6 +230,7 @@ pub async fn request_vmgs_encryption_keys(
                 igvm_error_code = &igvm_error_code,
                 igvm_http_status_code = &http_status_code,
                 retry_signal = &retry_signal,
+                skip_hw_unsealing_signal = &skip_hw_unsealing_signal,
                 error = &key_release_attest_error as &dyn std::error::Error,
                 "VMGS key-encryption failed due to igvm attest error"
             );

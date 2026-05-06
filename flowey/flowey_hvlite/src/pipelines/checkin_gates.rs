@@ -1177,7 +1177,7 @@ impl IntoPipeline for CheckinGatesCli {
             .map_err(|missing| {
                 anyhow::anyhow!("missing required windows-amd vmm_tests artifact: {missing}")
             })?;
-        let vmm_tests_artifacts_windows_amd_snp_x86 = vmm_tests_artifacts_windows_x86
+        let _vmm_tests_artifacts_windows_amd_snp_x86 = vmm_tests_artifacts_windows_x86
             .clone()
             .finish()
             .map_err(|missing| {
@@ -1349,19 +1349,20 @@ impl IntoPipeline for CheckinGatesCli {
                 needs_prep_run: false,
                 hugetlb_2mb_overcommit_pages: None,
             },
-            VmmTestJobParams {
-                platform: FlowPlatform::Windows,
-                arch: FlowArch::X86_64,
-                gh_pool: gh_pools::windows_snp_self_hosted_baremetal(),
-                ado_pool: None,
-                label: "x64-windows-amd-snp",
-                target: CommonTriple::X86_64_WINDOWS_MSVC,
-                resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_snp_x86,
-                nextest_filter_expr: cvm_filter("snp"),
-                test_artifacts: cvm_x64_test_artifacts,
-                needs_prep_run: true,
-                hugetlb_2mb_overcommit_pages: None,
-            },
+            // TODO: re-enable SNP tests once test machines are back online
+            // VmmTestJobParams {
+            //     platform: FlowPlatform::Windows,
+            //     arch: FlowArch::X86_64,
+            //     gh_pool: gh_pools::windows_snp_self_hosted_baremetal(),
+            //     ado_pool: None,
+            //     label: "x64-windows-amd-snp",
+            //     target: CommonTriple::X86_64_WINDOWS_MSVC,
+            //     resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_snp_x86,
+            //     nextest_filter_expr: cvm_filter("snp"),
+            //     test_artifacts: cvm_x64_test_artifacts,
+            //     needs_prep_run: true,
+            //     hugetlb_2mb_overcommit_pages: None,
+            // },
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
