@@ -82,9 +82,9 @@ openvmm_core = { path = "openvmm/openvmm_core" }
 openvmm_defs = { path = "openvmm/openvmm_defs" }
 openvmm_entry = { path = "openvmm/openvmm_entry" }
 openvmm_helpers = { path = "openvmm/openvmm_helpers" }
+openvmm_hypervisors = { path = "openvmm/openvmm_hypervisors" }
 openvmm_pcat_locator = { path = "openvmm/openvmm_pcat_locator" }
 openvmm_resources = { path = "openvmm/openvmm_resources" }
-openvmm_hypervisors = { path = "openvmm/openvmm_hypervisors" }
 openvmm_ttrpc_vmservice = { path = "openvmm/openvmm_ttrpc_vmservice" }
 hypervisor_resources = { path = "openvmm/hypervisor_resources" }
 membacking = { path = "openvmm/membacking" }
@@ -190,11 +190,14 @@ hcl_mapper = { path = "openhcl/hcl_mapper" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }
 kmsg_defs = { path = "openhcl/kmsg_defs" }
 lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
+mem_profile_tracing = { path = "openhcl/mem_profile_tracing" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
 minimal_rt_reloc = { path = "openhcl/minimal_rt_reloc" }
-mem_profile_tracing = { path = "openhcl/mem_profile_tracing" }
+openhcl_attestation_protocol = { path = "openhcl/openhcl_attestation_protocol" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
+openhcl_tdisp = { path = "openhcl/openhcl_tdisp" }
+openvmm_hcl_resources = { path = "openhcl/openvmm_hcl_resources" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
 tee_call = { path = "openhcl/tee_call" }
@@ -206,9 +209,6 @@ underhill_dump = { path = "openhcl/underhill_dump" }
 underhill_entry = { path = "openhcl/underhill_entry" }
 underhill_init = { path = "openhcl/underhill_init" }
 underhill_mem = { path = "openhcl/underhill_mem" }
-openhcl_attestation_protocol = { path = "openhcl/openhcl_attestation_protocol" }
-openvmm_hcl_resources = { path = "openhcl/openvmm_hcl_resources" }
-openhcl_tdisp = { path = "openhcl/openhcl_tdisp" }
 underhill_threadpool = { path = "openhcl/underhill_threadpool" }
 virt_mshv_vtl = { path = "openhcl/virt_mshv_vtl" }
 
@@ -413,16 +413,16 @@ vmcore = { path = "vm/vmcore" }
 # vmm_core
 state_unit = { path = "vmm_core/state_unit" }
 virt = { path = "vmm_core/virt" }
-virt_kvm = { path = "vmm_core/virt_kvm" }
 virt_hvf = { path = "vmm_core/virt_hvf" }
+virt_kvm = { path = "vmm_core/virt_kvm" }
 virt_mshv = { path = "vmm_core/virt_mshv" }
 virt_support_aarch64emu = { path = "vmm_core/virt_support_aarch64emu" }
 virt_support_apic = { path = "vmm_core/virt_support_apic" }
 virt_support_gic = { path = "vmm_core/virt_support_gic" }
 virt_support_x86emu = { path = "vmm_core/virt_support_x86emu" }
 virt_whp = { path = "vmm_core/virt_whp" }
-vm_manifest_builder = { path = "vmm_core/vm_manifest_builder" }
 vm_loader = { path = "vmm_core/vm_loader" }
+vm_manifest_builder = { path = "vmm_core/vm_manifest_builder" }
 vmm_core = { path = "vmm_core" }
 vmm_core_defs = { path = "vmm_core/vmm_core_defs" }
 vmotherboard = { path = "vmm_core/vmotherboard" }
@@ -432,65 +432,165 @@ chipset_device_worker = { path = "workers/chipset_device_worker" }
 chipset_device_worker_defs = { path = "workers/chipset_device_worker_defs" }
 debug_worker = { path = "workers/debug_worker" }
 debug_worker_defs = { path = "workers/debug_worker_defs" }
+profiler_worker = { path = "openhcl/profiler_worker" }
+vnc = { path = "workers/vnc_worker/vnc" }
 vnc_worker = { path = "workers/vnc_worker" }
 vnc_worker_defs = { path = "workers/vnc_worker_defs" }
-vnc = { path = "workers/vnc_worker/vnc" }
-profiler_worker = { path = "openhcl/profiler_worker" }
 
 # crates.io
+
+# --- Error handling ---
 anyhow = "1.0"
-arbitrary = "1.3"
-arrayvec = { version = "0.7", default-features = false }
+thiserror = { version = "2", default-features = false }
+
+# --- Logging / tracing ---
+env_logger = "0.11.7"
+log = "0.4"
+tracing = "0.1"
+tracing-subscriber = "0.3.20"
+
+# --- Async / futures ---
 async-channel = "2.3"
 async-task = "4.4"
 async-trait = "0.1"
-base64 = "0.22.1"
-base64-serde = "0.8"
-bitfield-struct = "0.11.0"
-bitvec = { version = "1.1", default-features = false }
 blocking = "1.2"
-caps = "0.5"
-cargo_toml = "0.22"
-cc = "1.2.34"
-cfg-if = "1"
-clap = "4.2"
-constant_time_eq = "0.3"
-crc32fast = { version = "1.3.2", default-features = false }
-criterion = { version = "0.7", default-features = false }
-crossterm = { version = "0.29.0", default-features = false }
-ctrlc = "3.4.0"
-der = "0.8"
-dhat = "0.3.3"
-dirs = "6.0"
-elfcore = "2.0.1"
-embed-resource = "3.0.2"
-env_logger = "0.11.7"
 event-listener = "5.3"
-expect-test = "1.5"
-fatfs = { version = "0.3.6", default-features = false }
-filepath = "0.2"
-flate2 = "1.1"
-fs-err = "3.1"
-fscommon = "0.1.1"
 futures = "0.3.31"
 futures-concurrency = "7.6.3"
-gdbstub = "0.6"
-gdbstub_arch = "0.2"
-getrandom = "0.3"
-glob = "0.3"
-gptman = "2.0"
-grep-regex = "0.1"
-grep-searcher = "0.1"
-h2 = "0.4"
-heapless = { version = "0.8", default-features = false }
+stackfuture = "0.3"
+unicycle = "0.10.2"
+
+# --- Synchronization primitives ---
+once_cell = "1.7"
+parking_lot = "0.12"
+spin = "0.10.0"
+
+# --- Memory allocators ---
+linked_list_allocator = "0.10.5"
+mimalloc = { version = "0.1.39", default-features = false }
+
+# --- Procedural macros & code generation ---
+paste = "1.0"
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = "2"
+
+# --- Build-time utilities ---
+cc = "1.2.34"
+cfg-if = "1"
+embed-resource = "3.0.2"
+linkme = "0.3.9"
+static_assertions = "1.1"
+target-lexicon = "0.13.2"
+
+# --- Serialization / encoding ---
+cargo_toml = "0.22"
+base64 = "0.22.1"
+base64-serde = "0.8"
 heck = "0.5"
 hex = "0.4"
+pbjson = "0.5"
+pbjson-build = "0.5"
+pbjson-types = "0.5"
+prost = "0.11"
+prost-build = "0.11"
+prost-types = "0.11"
+roxmltree = "0.20.0"
+serde = { version = "1.0.185", default-features = false }
+serde_json = { version = "1.0", default-features = false }
+serde_yaml = "0.9"
+toml_edit = "0.23"
+urlencoding = "2.1.3"
+wchar = "0.11"
+widestring = "1.0"
+# We add the derive feature here since the vast majority of our crates use it.
+zerocopy = { version = "0.8.25", features = ["derive"]}
+
+# --- Compression / checksums ---
+crc32fast = { version = "1.3.2", default-features = false }
+flate2 = "1.1"
+
+# --- Cryptography & secure computing ---
+constant_time_eq = "0.3"
+der = "0.8"
+getrandom = "0.3"
+ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
+openssl = "0.10.72"
+openssl-sys = "0.9"
+rsa = { version = "0.10.0-rc.17", default-features = false }
+sha2 = { version = "0.11.0", default-features = false }
+symcrypt = { version = "0.6.0", git = "https://github.com/microsoft/rust-symcrypt.git", branch = "release/0.6.0" }
+
+# --- Process sandboxing ---
+landlock = "0.4.1"
+seccompiler = "0.5"
+
+# --- Data structures / collections ---
+arrayvec = { version = "0.7", default-features = false }
+bitfield-struct = "0.11.0"
+bitvec = { version = "1.1", default-features = false }
+heapless = { version = "0.8", default-features = false }
+petgraph = "0.8.0"
+range_map_vec = "0.2.0"
+rustc-hash = "2.1.1"
+slab = "0.4"
+smallbox = "0.8"
+smallvec = "1.8"
+
+# --- CLI / shell / terminal ---
+clap = "4.2"
+crossterm = { version = "0.29.0", default-features = false }
+ctrlc = "3.4.0"
+rustyline = "17"
+shell-words = "1.1"
+xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshell/issues/63
+xshell-macros = "0.2"
+
+# --- Filesystem & paths ---
+dirs = "6.0"
+fatfs = { version = "0.3.6", default-features = false }
+filepath = "0.2"
+fs-err = "3.1"
+fscommon = "0.1.1"
+glob = "0.3"
+gptman = "2.0"
+home = "0.5.9"
+ignore = "0.4"
+tempfile = "3.2"
+typed-path = "0.11"
+walkdir = "2.3"
+which = "8"
+
+# --- Text search ---
+grep-regex = "0.1"
+grep-searcher = "0.1"
+
+# --- Networking / HTTP ---
+h2 = "0.4"
 http = "1"
 http-body-util = "0.1"
 hyper = "1.4"
 hyper-tls = "0.6"
 hyper-util = "0.1"
-home = "0.5.9"
+pcap-file = "2.0.0"
+resolv-conf = "0.7"
+smoltcp = { version = "0.12.0", default-features = false }
+socket2 = "0.6"
+
+# --- Time ---
+jiff = "0.2.14"
+
+# --- Image / media ---
+image = { version = "0.25.1", default-features = false }
+
+# --- Database ---
+rusqlite = "0.37"
+
+# --- Binary parsing ---
+elfcore = "2.0.1"
+object = { version = "0.37.3", default-features = false }
+
+# --- Virtualization / hypervisor / firmware ---
 # iced has negative features, which aren't how features are supposed to work, but disable them here along with default features.
 iced-x86 = { version = "1.17", default-features = false, features = [
   "no_vex",
@@ -498,84 +598,38 @@ iced-x86 = { version = "1.17", default-features = false, features = [
   "no_xop",
   "no_d3now",
 ] }
-ignore = "0.4"
 igvm = "0.4.0"
 igvm_defs = { version = "0.4.0", default-features = false }
-image = { version = "0.25.1", default-features = false }
-io-uring = "0.7.11"
-jiff = "0.2.14"
 kvm-bindings = "0.14.0"
-# Use of these specific REPO will go away when changes are taken upstream.
-landlock = "0.4.1"
-libc = "0.2"
-libfuzzer-sys = "0.4"
-libtest-mimic = "0.8"
-linked_list_allocator = "0.10.5"
-linkme = "0.3.9"
-log = "0.4"
-loom = "0.7.2"
-mimalloc = { version = "0.1.39", default-features = false }
-ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
 mshv-bindings = "0.6.8"
 mshv-ioctls = "0.6.8"
-nix = { version = "0.30.1", default-features = false }
-ntapi = "0.4"
-object = { version = "0.37.3", default-features = false }
-once_cell = "1.7"
-openssl = "0.10.72"
-openssl-sys = "0.9"
-parking_lot = "0.12"
-paste = "1.0"
-pbjson = "0.5"
-pbjson-build = "0.5"
-pbjson-types = "0.5"
-pcap-file = "2.0.0"
-petgraph = "0.8.0"
-proc-macro2 = "1.0"
-prost = "0.11"
-prost-build = "0.11"
-prost-types = "0.11"
-quote = "1.0"
-range_map_vec = "0.2.0"
-resolv-conf = "0.7"
-rlimit = "0.10.1"
-roxmltree = "0.20.0"
-rsa = { version = "0.10.0-rc.17", default-features = false }
-rusqlite = "0.37"
-rustc-hash = "2.1.1"
-rustyline = "17"
-seccompiler = "0.5"
-serde = { version = "1.0.185", default-features = false }
-serde_json = { version = "1.0", default-features = false }
-serde_yaml = "0.9"
-sha2 = { version = "0.11.0", default-features = false }
-shell-words = "1.1"
-signal-hook = { version = "0.3", default-features = false }
-slab = "0.4"
-smallbox = "0.8"
-smallvec = "1.8"
-smoltcp = { version = "0.12.0", default-features = false }
-socket2 = "0.6"
-spin = "0.10.0"
-stackfuture = "0.3"
-static_assertions = "1.1"
-symcrypt = { version = "0.6.0", git = "https://github.com/microsoft/rust-symcrypt.git", branch = "release/0.6.0" }
-syn = "2"
-target-lexicon = "0.13.2"
-tempfile = "3.2"
-thiserror = { version = "2", default-features = false }
-toml_edit = "0.23"
-tracing = "0.1"
-tracing-subscriber = "0.3.20"
-typed-path = "0.11"
 uefi = "0.35.0"
-unicycle = "0.10.2"
-urlencoding = "2.1.3"
 vfio-bindings = "0.4.0"
-walkdir = "2.3"
-wchar = "0.11"
-which = "8"
-widestring = "1.0"
+x86_64 = { version = "0.15.2", default-features = false }
+
+# --- Debugging / profiling ---
+dhat = "0.3.3"
+gdbstub = "0.6"
+gdbstub_arch = "0.2"
+
+# --- Testing / fuzzing / benchmarking ---
+arbitrary = "1.3"
+criterion = { version = "0.7", default-features = false }
+expect-test = "1.5"
+libfuzzer-sys = "0.4"
+libtest-mimic = "0.8"
+loom = "0.7.2"
+
+# --- Linux / Unix bindings ---
+caps = "0.5"
+io-uring = "0.7.11"
+libc = "0.2"
+nix = { version = "0.30.1", default-features = false }
+rlimit = "0.10.1"
+signal-hook = { version = "0.3", default-features = false }
+
+# --- Windows bindings ---
+ntapi = "0.4"
 win_etw_provider = "0.1.11"
 win_etw_tracing = "0.1.4"
 winapi = "0.3"
@@ -584,11 +638,6 @@ windows-result = "0.4"
 windows-service = "0.8"
 windows-sys = "0.61"
 windows-version = "0.1.4"
-x86_64 = { version = "0.15.2", default-features = false }
-xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshell/issues/63
-xshell-macros = "0.2"
-# We add the derive feature here since the vast majority of our crates use it.
-zerocopy = { version = "0.8.25", features = ["derive"]}
 
 [profile.release]
 panic = 'abort'
