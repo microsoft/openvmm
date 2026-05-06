@@ -33,7 +33,6 @@ zerocopy.workspace = true
 chipset_device.workspace = true
 gdma.workspace = true
 page_pool_alloc.workspace = true
-parking_lot.workspace = true
 pci_core.workspace = true
 test_with_tracing.workspace = true
 user_driver_emulated_mock.workspace = true

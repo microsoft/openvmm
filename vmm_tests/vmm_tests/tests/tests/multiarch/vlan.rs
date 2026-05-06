@@ -69,9 +69,10 @@ async fn vlan_guest_config(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     // Ensure the parent interface is up.
     cmd!(sh, "ip link set {nic_name} up").run().await?;
 
-    // Load the 8021q kernel module for VLAN support. This is a no-op if the
-    // module is already loaded or built into the kernel.
-    cmd!(sh, "modprobe 8021q").run().await?;
+    // Load the 8021q kernel module for VLAN support. This will actually get
+    // put to the test with the following `ip` commands, so modprobe is only
+    // a best-effort action.
+    cmd!(sh, "modprobe 8021q").ignore_status().run().await?;
 
     // Create a VLAN sub-interface with VLAN ID 100.
     let vlan_id = "100";
@@ -119,22 +120,29 @@ async fn vlan_guest_config(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     // TX smoke test: send traffic through the VLAN interface. This exercises
     // the netvsc → netvsp path with VLAN PPI metadata. The ping will fail
     // (consomme doesn't handle VLAN-tagged ARP), but the TX must not crash.
+    let baseline_tx_packets: u64 =
+        cmd!(sh, "cat /sys/class/net/{vlan_iface}/statistics/tx_packets")
+            .read()
+            .await?
+            .trim()
+            .parse()
+            .context("failed to parse tx_packets")?;
+
     let _ = cmd!(sh, "ping -I {vlan_iface} -c 1 -W 2 10.100.0.1")
         .read()
         .await;
 
     // Verify that at least one packet was transmitted through the VLAN
     // interface (the ARP request for the ping target).
-    let tx_packets = cmd!(sh, "cat /sys/class/net/{vlan_iface}/statistics/tx_packets")
+    let tx_packets: u64 = cmd!(sh, "cat /sys/class/net/{vlan_iface}/statistics/tx_packets")
         .read()
-        .await?;
-    let tx_count: u64 = tx_packets
+        .await?
         .trim()
         .parse()
         .context("failed to parse tx_packets")?;
-    tracing::info!(tx_count, "TX packets through VLAN interface");
+
     assert!(
-        tx_count > 0,
+        tx_packets > baseline_tx_packets,
         "expected at least one TX packet through the VLAN interface"
     );
 
