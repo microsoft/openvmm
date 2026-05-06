@@ -1038,3 +1038,158 @@ fn get_queue_stats(queue_stats: Option<&dyn net_backend::BackendQueueStats>) -> 
         ..Default::default()
     }
 }
+
+use crate::ManaQueue;
+use gdma_defs::CqeParams;
+use gdma_defs::bnic::ManaTxCompOob;
+use mana_driver::mana::ResourceArena;
+use page_pool_alloc::PagePoolAllocator;
+use zerocopy::FromZeros;
+
+type TestEmulatedDevice = EmulatedDevice<gdma::GdmaDevice, PagePoolAllocator>;
+
+/// Sets up the full device stack and returns a [`ManaQueue`] ready for
+/// direct `handle_tx_cqe` testing along with the resources needed for
+/// teardown.
+async fn new_test_queue(
+    driver: &DefaultDriver,
+) -> (
+    ManaQueue<TestEmulatedDevice>,
+    ResourceArena,
+    ManaEndpoint<TestEmulatedDevice>,
+) {
+    let pages = 256;
+    let mem = DeviceTestMemory::new(pages * 2, true, "test queue");
+    let msi_conn = MsiConnection::new();
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        msi_conn.target(),
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(LoopbackEndpoint::new()),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let device = EmulatedDevice::new(device, msi_conn, mem.dma_client());
+    let dev_config = ManaQueryDeviceCfgResp {
+        pf_cap_flags1: 0.into(),
+        pf_cap_flags2: 0,
+        pf_cap_flags3: 0,
+        pf_cap_flags4: 0,
+        max_num_vports: 1,
+        reserved: 0,
+        max_num_eqs: 64,
+        adapter_mtu: 0,
+        reserved2: 0,
+        adapter_link_speed_mbps: 0,
+    };
+    let thing = ManaDevice::new(driver, device, 1, 1, None).await.unwrap();
+    let vport = thing.new_vport(0, None, &dev_config).await.unwrap();
+    let mut endpoint = ManaEndpoint::new(driver.clone(), vport, GuestDmaMode::DirectDma).await;
+    let tx_config = endpoint.vport.config_tx().await.unwrap();
+
+    let mut arena = ResourceArena::new();
+    let (queue, _resources) = endpoint.new_queue(&tx_config, &mut arena, 0).await.unwrap();
+
+    (queue, arena, endpoint)
+}
+
+#[async_test]
+#[should_panic(expected = "TX CQE arrived with no matching posted TX")]
+async fn tx_spurious_cqe_panics(driver: DefaultDriver) {
+    use gdma_defs::bnic::CQE_TX_OKAY;
+
+    let (mut queue, _arena, _endpoint) = new_test_queue(&driver).await;
+
+    assert!(queue.posted_tx.is_empty());
+    let mut oob = ManaTxCompOob::new_zeroed();
+    oob.cqe_hdr.set_cqe_type(CQE_TX_OKAY);
+
+    let _ = queue.handle_tx_cqe(&oob, CqeParams::new(), 8);
+}
+
+#[async_test]
+async fn tx_cqe_gdma_err_returns_try_restart(driver: DefaultDriver) {
+    use crate::PostedTx;
+    use gdma_defs::bnic::CQE_TX_GDMA_ERR;
+    use net_backend::TxError;
+
+    let (mut queue, arena, endpoint) = new_test_queue(&driver).await;
+
+    queue.posted_tx.push_back(PostedTx {
+        id: TxId(42),
+        wqe_len: 0,
+        bounced_len_with_padding: 0,
+    });
+
+    let mut oob = ManaTxCompOob::new_zeroed();
+    oob.cqe_hdr.set_cqe_type(CQE_TX_GDMA_ERR);
+
+    // CQE_TX_GDMA_ERR returns TryRestart without popping posted_tx.
+    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8);
+    assert!(
+        matches!(result, Err(TxError::TryRestart(_))),
+        "expected TryRestart, got {result:?}"
+    );
+    assert_eq!(queue.stats.tx_errors.get(), 1);
+    assert_eq!(queue.stats.tx_stuck.get(), 1);
+    assert_eq!(queue.posted_tx.len(), 1);
+
+    drop(queue);
+    endpoint.vport.destroy(arena).await;
+    endpoint.stop().await;
+}
+
+#[async_test]
+async fn tx_cqe_invalid_oob_completes_packet(driver: DefaultDriver) {
+    use crate::PostedTx;
+    use gdma_defs::bnic::CQE_TX_INVALID_OOB;
+
+    let (mut queue, arena, endpoint) = new_test_queue(&driver).await;
+
+    queue.posted_tx.push_back(PostedTx {
+        id: TxId(7),
+        wqe_len: 0,
+        bounced_len_with_padding: 0,
+    });
+
+    let mut oob = ManaTxCompOob::new_zeroed();
+    oob.cqe_hdr.set_cqe_type(CQE_TX_INVALID_OOB);
+
+    // CQE_TX_INVALID_OOB logs an error but still pops posted_tx.
+    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8);
+    assert_eq!(result.unwrap().0, 7);
+    assert_eq!(queue.stats.tx_errors.get(), 1);
+    assert!(queue.posted_tx.is_empty());
+
+    drop(queue);
+    endpoint.vport.destroy(arena).await;
+    endpoint.stop().await;
+}
+
+#[async_test]
+async fn tx_cqe_okay_completes_packet(driver: DefaultDriver) {
+    use crate::PostedTx;
+    use gdma_defs::bnic::CQE_TX_OKAY;
+
+    let (mut queue, arena, endpoint) = new_test_queue(&driver).await;
+
+    queue.posted_tx.push_back(PostedTx {
+        id: TxId(99),
+        wqe_len: 0,
+        bounced_len_with_padding: 0,
+    });
+
+    let mut oob = ManaTxCompOob::new_zeroed();
+    oob.cqe_hdr.set_cqe_type(CQE_TX_OKAY);
+
+    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8);
+    assert_eq!(result.unwrap().0, 99);
+    assert_eq!(queue.stats.tx_packets.get(), 1);
+    assert!(queue.posted_tx.is_empty());
+
+    drop(queue);
+    endpoint.vport.destroy(arena).await;
+    endpoint.stop().await;
+}
