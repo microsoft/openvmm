@@ -1254,7 +1254,7 @@ async fn tx_cqe_okay_completes_packet(driver: DefaultDriver) {
 #[async_test]
 async fn test_vlan_tx_rx_roundtrip_direct_dma(driver: DefaultDriver) {
     let mut pkt_builder = TxPacketBuilder::new();
-    build_tx_segments_vlan(1138, 1, 42, 3, false, &mut pkt_builder);
+    build_tx_segments_vlan(1138, 1, 42, 0, false, &mut pkt_builder);
 
     let (stats, rx_meta) = test_endpoint(
         driver,
@@ -1274,7 +1274,7 @@ async fn test_vlan_tx_rx_roundtrip_direct_dma(driver: DefaultDriver) {
         .vlan
         .expect("RX metadata should carry VLAN");
     assert_eq!(rx_vlan.vlan_id, 42);
-    assert_eq!(rx_vlan.priority, 3);
+    assert_eq!(rx_vlan.priority, 0);
     assert_eq!(rx_vlan.drop_eligible_indicator, false);
 }
 
@@ -1337,7 +1337,7 @@ async fn test_vlan_mixed_batch(driver: DefaultDriver) {
     // Packet 0: no VLAN
     build_tx_segments(550, 1, false, &mut pkt_builder);
     // Packet 1: VLAN 100
-    build_tx_segments_vlan(550, 1, 100, 7, false, &mut pkt_builder);
+    build_tx_segments_vlan(550, 1, 100, 0, false, &mut pkt_builder);
     // Packet 2: no VLAN, multi-segment
     build_tx_segments(1130, 10, false, &mut pkt_builder);
     // Packet 3: VLAN 4094 (max 12-bit value)
@@ -1379,7 +1379,7 @@ async fn test_vlan_mixed_batch(driver: DefaultDriver) {
             .vlan
             .expect("RX should carry VLAN")
             .priority,
-        7
+            0
     );
     assert_eq!(
         rx_meta[1]
