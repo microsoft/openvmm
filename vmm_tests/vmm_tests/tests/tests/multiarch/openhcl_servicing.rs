@@ -1300,7 +1300,7 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
         .await?;
 
     tracing::info!("vm inspected {}", vm_inspect.json());
-    let entries = match vm_inspect {
+    let entries = match &vm_inspect {
         inspect::Node::Dir(entries) => entries,
         _ => {
             panic!(
