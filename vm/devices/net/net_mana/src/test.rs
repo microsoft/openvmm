@@ -1115,7 +1115,7 @@ async fn tx_cqe_gdma_err_returns_try_restart(driver: DefaultDriver) {
     use gdma_defs::bnic::CQE_TX_GDMA_ERR;
     use net_backend::TxError;
 
-    let (mut queue, arena, endpoint) = new_test_queue(&driver).await;
+    let (mut queue, arena, mut endpoint) = new_test_queue(&driver).await;
 
     queue.posted_tx.push_back(PostedTx {
         id: TxId(42),
@@ -1146,7 +1146,7 @@ async fn tx_cqe_invalid_oob_completes_packet(driver: DefaultDriver) {
     use crate::PostedTx;
     use gdma_defs::bnic::CQE_TX_INVALID_OOB;
 
-    let (mut queue, arena, endpoint) = new_test_queue(&driver).await;
+    let (mut queue, arena, mut endpoint) = new_test_queue(&driver).await;
 
     queue.posted_tx.push_back(PostedTx {
         id: TxId(7),
@@ -1173,7 +1173,7 @@ async fn tx_cqe_okay_completes_packet(driver: DefaultDriver) {
     use crate::PostedTx;
     use gdma_defs::bnic::CQE_TX_OKAY;
 
-    let (mut queue, arena, endpoint) = new_test_queue(&driver).await;
+    let (mut queue, arena, mut endpoint) = new_test_queue(&driver).await;
 
     queue.posted_tx.push_back(PostedTx {
         id: TxId(99),
