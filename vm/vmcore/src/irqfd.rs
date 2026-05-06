@@ -49,13 +49,15 @@ pub trait IrqFdRoute: Send + Sync {
 
     /// Sets the MSI routing for this irqfd's GSI.
     ///
-    /// `address` and `data` are the x86 MSI address and data values that the
-    /// kernel will use when injecting the interrupt into the guest.
+    /// `address` and `data` are the MSI address and data values that the
+    /// hypervisor will use when injecting the interrupt into the guest.
     fn enable(&self, address: u64, data: u32);
 
     /// Disables the MSI routing for this irqfd's GSI.
     ///
-    /// The irqfd remains registered but interrupt delivery is disabled until
-    /// a new route is configured via [`enable`](IrqFdRoute::enable).
+    /// Disarms the irqfd so that signaling the event no longer injects an
+    /// interrupt. Interrupts that arrive while disabled remain pending on
+    /// the event and will be delivered when [`enable`](IrqFdRoute::enable)
+    /// is called, or can be drained by waiting on the event directly.
     fn disable(&self);
 }

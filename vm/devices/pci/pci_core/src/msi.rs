@@ -40,14 +40,16 @@ impl MsiRoute {
 
     /// Configures the MSI address and data for this route.
     ///
-    /// `address` and `data` are the x86 MSI address and data values that
+    /// `address` and `data` are the MSI address and data values that
     /// the hypervisor will use when injecting the interrupt.
     pub fn enable(&self, address: u64, data: u32) {
         self.0.enable(address, data)
     }
 
-    /// Disables the MSI route, preventing interrupt injection until
-    /// a new configuration is set via [`enable`](Self::enable).
+    /// Disables the MSI route. Interrupts that arrive while disabled
+    /// remain pending on the event and will be delivered when
+    /// [`enable`](Self::enable) is called, or can be drained via
+    /// [`consume_pending`](Self::consume_pending).
     pub fn disable(&self) {
         self.0.disable()
     }

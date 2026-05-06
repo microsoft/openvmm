@@ -115,7 +115,7 @@ pub struct GsiRoute {
     gsi: u32,
     irqfd_event: Option<Event>,
     enabled: AtomicBool,
-    enable_mutex: Mutex<()>, // used to serialize enable/disable calls
+    enable_mutex: Mutex<()>, // serializes route updates and enable/disable calls
 }
 
 impl Drop for GsiRoute {
@@ -142,8 +142,8 @@ impl GsiRoute {
 
     /// Enables the route and associated irqfd.
     pub fn enable(&self, entry: kvm::RoutingEntry) {
-        let partition = self.set_entry(Some(entry));
         let _lock = self.enable_mutex.lock();
+        let partition = self.set_entry(Some(entry));
         if !self.enabled.load(Ordering::Relaxed) {
             if let (Some(partition), Some(event)) = (&partition, &self.irqfd_event) {
                 partition

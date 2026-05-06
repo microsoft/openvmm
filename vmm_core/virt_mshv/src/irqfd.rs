@@ -217,24 +217,11 @@ struct MshvIrqFdRoute {
     gsi: u32,
     event: Event,
     /// Whether the irqfd is currently armed (registered with the kernel).
-    /// Serializes arm/disarm ioctls and route updates to prevent races.
+    /// Serializes route updates and arm/disarm ioctls to prevent races.
     armed: Mutex<bool>,
 }
 
 impl MshvIrqFdRoute {
-    fn arm(&self) {
-        let mut armed = self.armed.lock();
-        if !*armed {
-            // SAFETY: `self.event` is owned by this struct and will outlive
-            // the registration (unregistered in `disarm` or `Drop`).
-            if let Err(e) = unsafe { self.partition.register_irqfd(&self.event, self.gsi) } {
-                tracelimit::warn_ratelimited!(error = ?e, gsi = self.gsi, "failed to register irqfd");
-                return;
-            }
-            *armed = true;
-        }
-    }
-
     fn disarm(&self) {
         let mut armed = self.armed.lock();
         if *armed {
@@ -254,6 +241,7 @@ impl IrqFdRoute for MshvIrqFdRoute {
     }
 
     fn enable(&self, address: u64, data: u32) {
+        let mut armed = self.armed.lock();
         let route = MsiRoute {
             address_lo: address as u32,
             address_hi: (address >> 32) as u32,
@@ -261,8 +249,17 @@ impl IrqFdRoute for MshvIrqFdRoute {
         };
         if let Err(e) = self.partition.set_gsi_route(self.gsi, Some(route)) {
             tracelimit::warn_ratelimited!(error = ?e, gsi = self.gsi, "failed to set GSI route");
+            return;
         }
-        self.arm();
+        if !*armed {
+            // SAFETY: `self.event` is owned by this struct and will outlive
+            // the registration (unregistered in `disarm` or `Drop`).
+            if let Err(e) = unsafe { self.partition.register_irqfd(&self.event, self.gsi) } {
+                tracelimit::warn_ratelimited!(error = ?e, gsi = self.gsi, "failed to register irqfd");
+                return;
+            }
+            *armed = true;
+        }
     }
 
     fn disable(&self) {
