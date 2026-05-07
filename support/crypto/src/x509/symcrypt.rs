@@ -46,9 +46,15 @@ impl X509CertificateInner {
     }
 
     pub fn verify(&self, issuer_public_key: &crate::rsa::RsaPublicKey) -> Result<bool, X509Error> {
-        let hash = match self.0.signature_algorithm().oid {
+        let oid = self.0.signature_algorithm().oid;
+        let hash = match oid {
             ::rsa::sha2::Sha256::OID => symcrypt::hash::HashAlgorithm::Sha256,
-            _ => unreachable!(),
+            _ => {
+                return Err(der_err(
+                    der::ErrorKind::OidUnknown { oid }.to_error(),
+                    "unrecognized signature algorithm OID",
+                ));
+            }
         };
 
         let tbs_der = self
@@ -141,8 +147,7 @@ impl X509CertificateInner {
 
         let serial_number = x509_cert::serial_number::SerialNumber::from(1u32);
         let validity = x509_cert::time::Validity::new(
-            der::asn1::GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(0))
-                .unwrap()
+            der::asn1::GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(0))?
                 .into(),
             x509_cert::time::Time::INFINITY,
         );
