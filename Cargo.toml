@@ -484,9 +484,9 @@ static_assertions = "1.1"
 target-lexicon = "0.13.2"
 
 # --- Serialization / encoding ---
-cargo_toml = "0.22"
 base64 = "0.22.1"
 base64-serde = "0.8"
+cargo_toml = "0.22"
 heck = "0.5"
 hex = "0.4"
 pbjson = "0.5"
@@ -520,10 +520,6 @@ openssl-sys = "0.9"
 rsa = { version = "0.10.0-rc.17", default-features = false }
 sha2 = { version = "0.11.0", default-features = false }
 symcrypt = { version = "0.6.0", git = "https://github.com/microsoft/rust-symcrypt.git", branch = "release/0.6.0" }
-
-# --- Process sandboxing ---
-landlock = "0.4.1"
-seccompiler = "0.5"
 
 # --- Data structures / collections ---
 arrayvec = { version = "0.7", default-features = false }
@@ -620,8 +616,12 @@ libfuzzer-sys = "0.4"
 libtest-mimic = "0.8"
 loom = "0.7.2"
 
-# --- Linux / Unix bindings ---
+# --- Linux process sandboxing ---
 caps = "0.5"
+landlock = "0.4.1"
+seccompiler = "0.5"
+
+# --- Linux / Unix bindings ---
 io-uring = "0.7.11"
 libc = "0.2"
 nix = { version = "0.30.1", default-features = false }
