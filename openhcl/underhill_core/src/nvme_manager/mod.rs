@@ -73,7 +73,7 @@ const KEEPALIVE_INCOMPATIBLE_VENDOR_ID: &str = "0x1414";
 
 /// PCI device ID, as it appears in the sysfs `device` file (e.g. `0x0100`),
 /// for NVMe devices that are incompatible with keepalive.
-const KEEPALIVE_INCOMPATIBLE_DEVICE_ID: &str = "0x0000";
+const KEEPALIVE_INCOMPATIBLE_DEVICE_ID: &str = "0xb111";
 
 #[derive(Debug, Error)]
 pub enum NvmeSpawnerError {
