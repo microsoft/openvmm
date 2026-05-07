@@ -64,17 +64,10 @@ impl X509CertificateInner {
             .map_err(|e| der_err(e, "encoding TBS certificate"))?;
         let signature = self.0.signature().raw_bytes();
 
-        // The symcrypt `pkcs1_verify` operates on a pre-computed digest of the
-        // signed message, so hash the TBS bytes here.
-        let digest = match hash {
-            symcrypt::hash::HashAlgorithm::Sha256 => symcrypt::hash::sha256(&tbs_der).to_vec(),
-            _ => unreachable!(),
-        };
-
         issuer_public_key
             .0
             .0
-            .pkcs1_verify(&digest, signature, hash)
+            .pkcs1_verify(&tbs_der, signature, hash)
             .map_err(|e| err(e, "verifying certificate signature"))?;
         Ok(true)
     }
