@@ -284,10 +284,25 @@ async fn try_unlock_vmgs(
         Ok(VmgsEncryptionKeys::default())
     };
 
-    let retry = match skr_response {
+    let retry = match &skr_response {
         Ok(_) => false,
-        Err((_, r)) => r,
+        Err((_, r)) => *r,
     };
+
+    let skip_hw_unsealing = matches!(
+        &skr_response,
+        Err((
+            secure_key_release::RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
+                igvm_attest::key_release::KeyReleaseError::ParseHeader(
+                    igvm_attest::Error::Attestation {
+                        skip_hw_unsealing_signal: true,
+                        ..
+                    },
+                ),
+            ),
+            _,
+        ))
+    );
 
     let VmgsEncryptionKeys {
         ingress_rsa_kek,
@@ -350,6 +365,7 @@ async fn try_unlock_vmgs(
         tcb_version,
         guest_state_encryption_policy,
         strict_encryption_policy,
+        skip_hw_unsealing,
     )
     .await
     .map_err(|e| {
@@ -691,6 +707,7 @@ async fn get_derived_keys(
     tcb_version: Option<u64>,
     guest_state_encryption_policy: GuestStateEncryptionPolicy,
     strict_encryption_policy: bool,
+    skip_hw_unsealing: bool,
 ) -> Result<DerivedKeyResult, GetDerivedKeysError> {
     tracing::info!(
         CVM_ALLOWED,
@@ -911,7 +928,36 @@ async fn get_derived_keys(
                 }
             });
 
-            (hardware_key_protector, hardware_derived_keys)
+            // When the IGVM agent signals skip_hw_unsealing, set both
+            // hardware_key_protector and hardware_derived_keys to None
+            // so the code falls through to the scheme-specific error below.
+            // When hardware sealing keys were actually available, additionally
+            // emit a warning and a host event that make the skip visible.
+            if skip_hw_unsealing {
+                if hardware_key_protector.is_some() && hardware_derived_keys.is_some() {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        "Skipping hardware unsealing of VMGS DEK as signaled by IGVM agent"
+                    );
+                    get.event_log_fatal(
+                        guest_emulation_transport::api::EventLogId::DEK_HARDWARE_UNSEALING_SKIPPED,
+                    )
+                    .await;
+
+                    (None, None)
+                } else {
+                    tracing::info!(
+                        CVM_ALLOWED,
+                        hardware_key_protector = hardware_key_protector.is_some(),
+                        hardware_derived_keys = hardware_derived_keys.is_some(),
+                        "skip_hw_unsealing signaled but hardware key data not available, \
+                         falling through to scheme-specific error"
+                    );
+                    (None, None)
+                }
+            } else {
+                (hardware_key_protector, hardware_derived_keys)
+            }
         } else {
             (None, None)
         };
@@ -940,12 +986,12 @@ async fn get_derived_keys(
             });
         } else {
             if no_kek && found_dek {
-                Err(GetDerivedKeysError::GetIngressKeyFromKpFailed)?
+                return Err(GetDerivedKeysError::GetIngressKeyFromKpFailed);
             } else if no_gsp && requires_gsp {
-                Err(GetDerivedKeysError::GetIngressKeyFromKGspFailed)?
+                return Err(GetDerivedKeysError::GetIngressKeyFromKGspFailed);
             } else {
                 // no_gsp_by_id && requires_gsp_by_id
-                Err(GetDerivedKeysError::GetIngressKeyFromKGspByIdFailed)?
+                return Err(GetDerivedKeysError::GetIngressKeyFromKGspByIdFailed);
             }
         }
     }
@@ -2569,6 +2615,90 @@ mod tests {
 
         // VMGS should remain encrypted
         assert!(vmgs.encrypted());
+    }
+
+    #[async_test]
+    async fn init_sec_secure_key_release_skip_hw_unsealing(driver: DefaultDriver) {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        // IGVM attest is required
+        // KEY_RELEASE succeeds on first boot, fails with skip_hw_unsealing on second boot.
+        // WRAPPED_KEY is not in the plan, so it falls back to default (success) every time.
+        let mut plan = IgvmAgentTestPlan::default();
+        plan.insert(
+            IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+            VecDeque::from([
+                IgvmAgentAction::RespondSuccess,
+                IgvmAgentAction::RespondFailureSkipHwUnsealing,
+            ]),
+        );
+
+        let get_pair = new_test_get(driver, true, Some(plan)).await;
+
+        let bios_guid = Guid::new_random();
+        let att_cfg = new_attestation_vm_config();
+
+        // Ensure VMGS is not encrypted and agent data is empty before the call
+        assert!(!vmgs.encrypted());
+
+        // Obtain a LocalDriver briefly, then run the async flow under the pool executor
+        let tee = MockTeeCall::new(0x1234);
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        let res = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver.clone(),
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+
+        // VMGS is now encrypted and HWKP is updated.
+        assert!(vmgs.encrypted());
+        assert!(!hardware_key_protector_is_empty(&mut vmgs).await);
+        // Agent data should be the same as `key_reference` in the WRAPPED_KEY response.
+        let key_reference = serde_json::json!({
+            "key_info": {
+                "host": "name"
+            },
+            "attestation_info": {
+                "host": "attestation_name"
+            }
+        });
+        let key_reference = serde_json::to_string(&key_reference).unwrap();
+        let key_reference = key_reference.as_bytes();
+        let mut expected_agent_data = [0u8; AGENT_DATA_MAX_SIZE];
+        expected_agent_data[..key_reference.len()].copy_from_slice(key_reference);
+        assert_eq!(res.agent_data.unwrap(), expected_agent_data.to_vec());
+        // Secure key should be None without pre-provisioning
+        assert!(res.guest_secret_key.is_none());
+
+        // Second call: KEY_RELEASE fails with skip_hw_unsealing signal.
+        // The skip_hw_unsealing signal causes the hardware unsealing fallback to be
+        // skipped, so VMGS unlock should fail.
+        // NOTE: The test relies on the test GED to return failing KEY_RELEASE response
+        // with retry recommendation as false so the retry loop terminates immediately.
+        // Otherwise, the test will get stuck on timer.sleep() as the driver is not
+        // progressed.
+        let result = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver,
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await;
+
+        assert!(result.is_err());
     }
 
     #[async_test]

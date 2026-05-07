@@ -174,11 +174,11 @@ impl ToTokens for PcatGuest {
         tokens.extend(match self {
             PcatGuest::Vhd(known_vhd) => {
                 let vhd = known_vhd.image_artifact.clone();
-                quote!(::petri::PcatGuest::Vhd(petri::BootImageConfig::from_vhd(resolver.require_source(#vhd, remote_access))))
+                quote!(::petri::PcatGuest::Vhd(petri::BootImageConfig::from_vhd(resolver.require_source(#vhd, ::petri::RemoteAccess::Allow))))
             }
             PcatGuest::Iso(known_iso) => {
                 let iso = known_iso.image_artifact.clone();
-                quote!(::petri::PcatGuest::Iso(petri::BootImageConfig::from_iso(resolver.require_source(#iso, remote_access))))
+                quote!(::petri::PcatGuest::Iso(petri::BootImageConfig::from_iso(resolver.require_source(#iso, ::petri::RemoteAccess::Allow))))
             }
         });
     }
@@ -199,7 +199,7 @@ impl ToTokens for UefiGuest {
         tokens.extend(match self {
             UefiGuest::Vhd(known_vhd) => {
                 let v = known_vhd.image_artifact.clone();
-                quote!(::petri::UefiGuest::Vhd(petri::BootImageConfig::from_vhd(resolver.require_source(#v, remote_access))))
+                quote!(::petri::UefiGuest::Vhd(petri::BootImageConfig::from_vhd(resolver.require_source(#v, ::petri::RemoteAccess::Allow))))
             }
             UefiGuest::GuestTestUefi(arch) => {
                 let arch_tokens = arch_to_tokens(*arch);
@@ -870,7 +870,6 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
             ::petri::SimpleTest::new(
                 #name,
                 |resolver| {
-                    let remote_access = #remote_access;
                     let firmware = #firmware;
                     let arch = #arch;
                     let extra_deps = (#(resolver.require(#extra_deps),)*);
@@ -885,6 +884,7 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
                 },
                 Some(#requirements),
                 #unstable,
+                #remote_access,
             ).into(),
         };
 

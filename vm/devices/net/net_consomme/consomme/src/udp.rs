@@ -591,10 +591,8 @@ impl<T: Client> Access<'_, T> {
 
         let request = DnsRequest {
             flow: DnsFlow {
-                src_addr,
-                dst_addr,
-                src_port: udp.src_port(),
-                dst_port: udp.dst_port(),
+                src: SocketAddr::new(src_addr.into(), udp.src_port()),
+                dst: SocketAddr::new(dst_addr.into(), udp.dst_port()),
                 gateway_mac: self.inner.state.params.gateway_mac,
                 client_mac: frame.src_addr,
                 transport: crate::dns_resolver::DnsTransport::Udp,
@@ -623,19 +621,17 @@ impl<T: Client> Access<'_, T> {
     fn send_dns_response(&mut self, response: &DnsResponse) -> Result<(), DropReason> {
         tracing::debug!(
             response_len = response.response_data.len(),
-            src = %response.flow.src_addr,
-            dst = %response.flow.dst_addr,
-            src_port = response.flow.src_port,
-            dst_port = response.flow.dst_port,
+            src = %response.flow.src,
+            dst = %response.flow.dst,
             "Sending UDP DNS response"
         );
 
         let buffer = &mut self.inner.state.buffer;
 
         // Determine header length based on IP version
-        let (ip_header_len, checksum_state) = match response.flow.src_addr {
-            IpAddress::Ipv4(_) => (IPV4_HEADER_LEN, ChecksumState::UDP4),
-            IpAddress::Ipv6(_) => (IPV6_HEADER_LEN, ChecksumState::NONE),
+        let (ip_header_len, checksum_state) = match response.flow.src.ip() {
+            IpAddr::V4(_) => (IPV4_HEADER_LEN, ChecksumState::UDP4),
+            IpAddr::V6(_) => (IPV6_HEADER_LEN, ChecksumState::NONE),
         };
 
         let payload_offset = ETHERNET_HEADER_LEN + ip_header_len + UDP_HEADER_LEN;
@@ -650,10 +646,10 @@ impl<T: Client> Access<'_, T> {
         let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer[..]);
         let frame_len = build_udp_packet(
             &mut eth_frame,
-            response.flow.dst_addr,
-            response.flow.src_addr,
-            response.flow.dst_port,
-            response.flow.src_port,
+            response.flow.dst.ip().into(),
+            response.flow.src.ip().into(),
+            response.flow.dst.port(),
+            response.flow.src.port(),
             response.response_data.len(),
             response.flow.gateway_mac,
             response.flow.client_mac,

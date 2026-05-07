@@ -18,19 +18,23 @@ openssl = ["dep:openssl", "dep:openssl_kdf"]
 # Use Symcrypt instead of any native backend.
 # Note that the symcrypt backend does not support vendoring, enabling both
 # `symcrypt` and `vendored` will trigger a compile error
-symcrypt = ["dep:symcrypt", "symcrypt/sha1"]
+symcrypt = ["dep:symcrypt", "symcrypt/sha1", "dep:rsa"]
 
 [dependencies]
 openssl_kdf = { workspace = true, optional = true }
 openssl = { workspace = true, optional = true }
 
 symcrypt = { workspace = true, optional = true }
+rsa = { workspace = true, optional = true, features = ["std", "encoding"] }
 
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 wchar.workspace = true
-windows = { workspace = true, features = ["Win32_Foundation","Win32_Security_Cryptography"] }
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+] }
 windows-result.workspace = true
 zerocopy.workspace = true
 

@@ -76,7 +76,7 @@ fn pkcs11_rsa_aes_key_unwrap(
     unwrapping_rsa_key: &RsaKeyPair,
     wrapped_key_blob: &[u8],
 ) -> Result<RsaKeyPair, Pkcs11RsaAesKeyUnwrapError> {
-    use crypto::rsa::OaepHashAlgorithm;
+    use crypto::rsa::HashAlgorithm;
 
     let modulus_size = unwrapping_rsa_key.modulus_size();
 
@@ -92,7 +92,7 @@ fn pkcs11_rsa_aes_key_unwrap(
     }
 
     let unwrapped_aes_key = unwrapping_rsa_key
-        .oaep_decrypt(wrapped_aes_key, OaepHashAlgorithm::Sha1)
+        .oaep_decrypt(wrapped_aes_key, HashAlgorithm::Sha1)
         .map_err(Pkcs11RsaAesKeyUnwrapError::RsaUnwrap)?;
     let unwrapped_rsa_key = crypto::aes_key_wrap::AesKeyWrap::new(&unwrapped_aes_key)
         .and_then(|kw| kw.unwrapper()?.unwrap(wrapped_rsa_key))
@@ -198,6 +198,7 @@ pub async fn request_vmgs_encryption_keys(
                         igvm_error_code,
                         http_status_code,
                         retry_signal,
+                        ..
                     },
                 ),
             ),
@@ -219,6 +220,7 @@ pub async fn request_vmgs_encryption_keys(
                         igvm_error_code,
                         http_status_code,
                         retry_signal,
+                        skip_hw_unsealing_signal,
                     },
                 ),
             ),
@@ -228,6 +230,7 @@ pub async fn request_vmgs_encryption_keys(
                 igvm_error_code = &igvm_error_code,
                 igvm_http_status_code = &http_status_code,
                 retry_signal = &retry_signal,
+                skip_hw_unsealing_signal = &skip_hw_unsealing_signal,
                 error = &key_release_attest_error as &dyn std::error::Error,
                 "VMGS key-encryption failed due to igvm attest error"
             );
@@ -382,7 +385,6 @@ async fn make_igvm_attest_requests(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crypto::rsa::OaepHashAlgorithm;
 
     #[test]
     fn fail_to_unwrap_pkcs11_rsa_aes_with_undersized_wrapped_key_blob() {
@@ -417,7 +419,7 @@ mod tests {
 
         let wrapping_rsa_key = RsaKeyPair::generate(2048).unwrap();
         let wrapped_aes_key = wrapping_rsa_key
-            .oaep_encrypt(&wrapping_aes_key, OaepHashAlgorithm::Sha1)
+            .oaep_encrypt(&wrapping_aes_key, crypto::rsa::HashAlgorithm::Sha1)
             .unwrap();
         let wrapped_target_key = crypto::aes_key_wrap::AesKeyWrap::new(&wrapping_aes_key)
             .unwrap()
@@ -429,8 +431,8 @@ mod tests {
         let unwrapped_target_key =
             pkcs11_rsa_aes_key_unwrap(&wrapping_rsa_key, wrapped_key_blob.as_slice()).unwrap();
         assert_eq!(
-            unwrapped_target_key.to_private_key_der().unwrap(),
-            target_key.to_private_key_der().unwrap()
+            unwrapped_target_key.to_pkcs8_der().unwrap(),
+            target_key.to_pkcs8_der().unwrap()
         );
     }
 }

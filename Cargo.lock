@@ -1042,6 +1042,7 @@ dependencies = [
  "hex",
  "openssl",
  "openssl_kdf",
+ "rsa",
  "symcrypt",
  "thiserror 2.0.16",
  "wchar",
@@ -2131,6 +2132,9 @@ dependencies = [
  "flowey_lib_common",
  "flowey_lib_hvlite",
  "log",
+ "petri_artifacts_common",
+ "petri_artifacts_core",
+ "petri_artifacts_vmm_test",
  "serde",
  "serde_json",
  "target-lexicon",
@@ -6055,6 +6059,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "paste",
+ "serde",
 ]
 
 [[package]]
@@ -6167,9 +6172,9 @@ dependencies = [
 
 [[package]]
 name = "pkcs8"
-version = "0.11.0-rc.11"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12922b6296c06eb741b02d7b5161e3aaa22864af38dfa025a1a3ba3f68c84577"
+checksum = "451913da69c775a56034ea8d9003d27ee8948e12443eae7c038ba100a4f21cb7"
 dependencies = [
  "der",
  "spki",
@@ -6539,9 +6544,9 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rsa"
-version = "0.10.0-rc.17"
+version = "0.10.0-rc.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87ed3e93fc7e473e464b9726f4759659e72bc8665e4b8ea227547024f416d905"
+checksum = "30b2aa4ba0d89f73d1e332df05be0eeab8840351c36ca5654341dfdb57bb3caf"
 dependencies = [
  "const-oid",
  "crypto-bigint",
@@ -10042,6 +10047,7 @@ dependencies = [
  "get_resources",
  "guid",
  "hyperv_ic_resources",
+ "inspect",
  "jiff",
  "kmsg",
  "memory_range",

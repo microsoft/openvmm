@@ -45,13 +45,11 @@ impl Pkcs7SignedDataInner {
         key_pair: &crate::rsa::RsaKeyPair,
         data: &[u8],
     ) -> Result<Self, Pkcs7Error> {
-        let pkey = openssl::pkey::PKey::from_rsa(key_pair.0.rsa.clone())
-            .map_err(|e| err(e, "converting RSA key for pkcs7 signing"))?;
         let certs =
             openssl::stack::Stack::new().map_err(|e| err(e, "creating empty certificate stack"))?;
         let pkcs7 = openssl::pkcs7::Pkcs7::sign(
             &cert.0.cert,
-            &pkey,
+            &key_pair.0.0,
             &certs,
             data,
             openssl::pkcs7::Pkcs7Flags::empty(),

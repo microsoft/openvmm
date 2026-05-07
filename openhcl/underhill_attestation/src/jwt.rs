@@ -39,7 +39,7 @@ pub(crate) enum JwtError {
     #[error("failed to validate certificate chain")]
     CertificateChainValidation(#[from] CertificateChainValidationError),
     #[error("failed to verify JWT signature")]
-    JwtSignatureVerification(#[from] JwtSignatureVerificationError),
+    JwtSignatureVerification(#[source] JwtSignatureVerificationError),
 }
 
 #[derive(Debug, Error)]
@@ -167,11 +167,8 @@ impl<B: DeserializeOwned> JwtHelper<B> {
     pub fn verify_signature(&self) -> Result<bool, JwtError> {
         let alg = &self.jwt.header.alg;
         let pkey = validate_cert_chain(&self.cert_chain()?)?;
-
-        let result =
-            verify_jwt_signature(alg, &pkey, self.payload.as_bytes(), &self.jwt.signature)?;
-
-        Ok(result)
+        verify_jwt_signature(alg, &pkey, self.payload.as_bytes(), &self.jwt.signature)
+            .map_err(JwtError::JwtSignatureVerification)
     }
 }
 
@@ -222,13 +219,11 @@ fn verify_jwt_signature(
     payload: &[u8],
     signature: &[u8],
 ) -> Result<bool, JwtSignatureVerificationError> {
-    let result = match alg {
+    match alg {
         JwtAlgorithm::RS256 => pkey
-            .verify_pkcs1_sha256(payload, signature)
-            .map_err(JwtSignatureVerificationError::VerifySignature)?,
-    };
-
-    Ok(result)
+            .pkcs1_verify(payload, signature, crypto::rsa::HashAlgorithm::Sha256)
+            .map_err(JwtSignatureVerificationError::VerifySignature),
+    }
 }
 
 /// Helper function for x509 certificate chain validation.
@@ -396,7 +391,9 @@ mod tests {
         let rsa_key = RsaKeyPair::generate(2048).unwrap();
 
         let payload = "test";
-        let signature = rsa_key.sign_pkcs1_sha256(payload.as_bytes()).unwrap();
+        let signature = rsa_key
+            .pkcs1_sign(payload.as_bytes(), crypto::rsa::HashAlgorithm::Sha256)
+            .unwrap();
 
         let cert = crate::test_helpers::generate_x509(&rsa_key);
         let public = cert.public_key().unwrap();
