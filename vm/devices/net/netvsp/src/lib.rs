@@ -5569,8 +5569,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     // the subchannels plus the primary channel must fit within the max_queues value,
                     // which means subchannels + 1 ≤ max_queues, so the subchannel count must be
                     // strictly less than max_queues.
+                    let num_queues = request.num_sub_channels + 1;
                     let status = if request.operation == protocol::SubchannelOperation::ALLOCATE
                         && request.num_sub_channels < self.adapter.max_queues.into()
+                        && RxBufferRanges::validate_params(buffers.recv_buffer.count, num_queues)
+                            .is_ok()
                     {
                         subchannel_count = request.num_sub_channels;
                         protocol::Status::SUCCESS
@@ -5579,6 +5582,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             operation = ?request.operation,
                             request_sub_channels = request.num_sub_channels,
                             max_supported_sub_channels = self.adapter.max_queues - 1,
+                            recv_buffer_count = buffers.recv_buffer.count,
                             "Subchannel request failed: either operation is not supported or requested more subchannels than supported"
                         );
                         protocol::Status::FAILURE
