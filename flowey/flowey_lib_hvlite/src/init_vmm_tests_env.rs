@@ -259,15 +259,20 @@ impl SimpleFlowNode for Node {
                 }
 
                 if let Some(temp_dir) = converted_temp_dir {
-                    if !temp_dir.exists() {
-                        fs_err::create_dir_all(&temp_dir)?
-                    };
                     match rt.platform().kind() {
                         FlowPlatformKind::Windows => {
+                            if !temp_dir.exists() {
+                                fs_err::create_dir_all(&temp_dir)?
+                            };
                             env.insert("TEMP".into(), make_portable_path(temp_dir.clone())?);
                             env.insert("TMP".into(), make_portable_path(temp_dir)?);
                         }
                         FlowPlatformKind::Unix => {
+                            // on linux, we need to be sudo to create the temp dir
+                            if !temp_dir.exists() {
+                                flowey::shell_cmd!(rt, "sudo mkdir -p {temp_dir}");
+                                flowey::shell_cmd!(rt, "sudo chmod 777 {temp_dir}");
+                            };
                             env.insert("TMPDIR".into(), make_portable_path(temp_dir.clone())?);
                         }
                     }
