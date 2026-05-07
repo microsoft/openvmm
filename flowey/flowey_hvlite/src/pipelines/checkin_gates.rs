@@ -1365,8 +1365,6 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::VmgsWith16kTpm,
         ];
 
-        let temp_dir_from = |work_folder: &str| Some(PathBuf::from(work_folder).join("temp"));
-
         for VmmTestJobParams {
             platform,
             arch,
@@ -1386,7 +1384,7 @@ impl IntoPipeline for CheckinGatesCli {
                 arch: FlowArch::X86_64,
                 gh_pool: gh_pools::windows_intel_1es(),
                 ado_pool: Some(ado_pools::windows_intel_1es()),
-                temp_dir: temp_dir_from(gh_pools::WINDOWS_WORK_FOLDER),
+                temp_dir: Some(gh_pools::WINDOWS_TEMP_1ES.into()),
                 label: "x64-windows-intel",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_x86,
@@ -1414,14 +1412,12 @@ impl IntoPipeline for CheckinGatesCli {
                 arch: FlowArch::X86_64,
                 gh_pool: gh_pools::windows_amd_1es(),
                 ado_pool: Some(ado_pools::windows_amd_1es()),
-                temp_dir: temp_dir_from(gh_pools::WINDOWS_WORK_FOLDER),
+                temp_dir: Some(gh_pools::WINDOWS_TEMP_1ES.into()),
                 label: "x64-windows-amd",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
                 // tmk and sidecar requires x2apic, which causes our amd nested runners to crash
-                nextest_filter_expr: format!(
-                    "{standard_filter} & !(test(hyperv_openhcl) & (test(sidecar) + test(tmk)))"
-                ),
+                nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 needs_prep_run: false,
                 hugetlb_2mb_overcommit_pages: None,
@@ -1446,7 +1442,7 @@ impl IntoPipeline for CheckinGatesCli {
                 arch: FlowArch::X86_64,
                 gh_pool: gh_pools::linux_amd_1es(),
                 ado_pool: Some(ado_pools::linux_amd_1es()),
-                temp_dir: temp_dir_from(gh_pools::LINUX_WORK_FOLDER),
+                temp_dir: Some(gh_pools::LINUX_TEMP_1ES.into()),
                 label: "x64-linux-amd-kvm",
                 target: CommonTriple::X86_64_LINUX_GNU,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
@@ -1676,7 +1672,7 @@ impl IntoPipeline for CheckinGatesCli {
                         artifact_dir: pub_mi_secure_test_results.map(|x| ctx.publish_artifact(x)),
                         needs_prep_run: false,
                         hugetlb_2mb_overcommit_pages: None,
-                        temp_dir: temp_dir_from(gh_pools::WINDOWS_WORK_FOLDER),
+                        temp_dir: Some(gh_pools::WINDOWS_TEMP_1ES.into()),
                         done: ctx.new_done_handle(),
                     }
                 });
