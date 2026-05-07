@@ -132,7 +132,7 @@ impl BootCommandLineOptions {
             confidential_debug: false,
             enable_vtl2_gpa_pool: Vtl2GpaPoolConfig::Heuristics(Vtl2GpaPoolLookupTable::Release), // use the release config by default
             sidecar: SidecarOptions::default(),
-            disable_nvme_keep_alive: false,
+            disable_nvme_keep_alive: true,
             vtl2_gpa_pool_numa_split: false,
         }
     }
@@ -142,7 +142,7 @@ impl BootCommandLineOptions {
     /// Parse arguments from a command line.
     pub fn parse(&mut self, cmdline: &str) {
         // Workaround for a host side issue: disable NVMe keepalive by default.
-        self.disable_nvme_keep_alive = false;
+        self.disable_nvme_keep_alive = true;
 
         let mut override_vtl2_gpa_pool: Option<Vtl2GpaPoolConfig> = None;
         for arg in cmdline.split_whitespace() {
