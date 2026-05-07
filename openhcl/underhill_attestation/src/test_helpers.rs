@@ -16,13 +16,15 @@ pub const CIPHERTEXT: &str = "test";
 
 /// Generate a self-signed X.509 certificate for testing.
 pub fn generate_x509(key_pair: &RsaKeyPair) -> X509Certificate {
-    let mut builder = crypto::x509::X509Builder::new().unwrap();
-    builder.set_pubkey_from_rsa_key_pair(key_pair).unwrap();
-    builder
-        .set_subject_and_issuer_name("US", "Washington", "Redmond", "Example INC", "example.com")
-        .unwrap();
-    builder.set_validity_days(365).unwrap();
-    builder.sign_and_build(key_pair).unwrap()
+    X509Certificate::build_self_signed(
+        key_pair,
+        "US",
+        "Washington",
+        "Redmond",
+        "Example INC",
+        "example.com",
+    )
+    .unwrap()
 }
 
 /// Generate an X.509 certificate chain for testing.

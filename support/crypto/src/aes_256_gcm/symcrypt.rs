@@ -17,7 +17,7 @@ pub struct Aes256GcmDecCtxInner<'a> {
 }
 
 fn err(e: ::symcrypt::errors::SymCryptError, op: &'static str) -> Aes256GcmError {
-    Aes256GcmError(crate::BackendError::SymCryptError(e, op))
+    Aes256GcmError(crate::BackendError::SymCrypt(e, op))
 }
 
 impl Aes256GcmInner {

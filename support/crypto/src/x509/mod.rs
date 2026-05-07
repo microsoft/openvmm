@@ -3,12 +3,17 @@
 
 //! X.509 certificate operations.
 
-#![cfg(openssl)]
+#![cfg(any(openssl, symcrypt))]
 
 #[cfg(openssl)]
 mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
+
+#[cfg(symcrypt)]
+mod symcrypt;
+#[cfg(symcrypt)]
+use symcrypt as sys;
 
 use thiserror::Error;
 
@@ -27,13 +32,14 @@ impl X509Certificate {
     }
 
     /// Extract the public key from this certificate.
-    pub fn public_key(&self) -> Result<super::rsa::RsaPublicKey, X509Error> {
+    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, X509Error> {
         self.0.public_key()
     }
 
     /// Verify the signature of this certificate against the given issuer's
     /// public key.
-    pub fn verify(&self, issuer_public_key: &super::rsa::RsaPublicKey) -> Result<bool, X509Error> {
+    /// Different backends may return Ok(false) or an error if the signature is invalid, but all return an error for other failures.
+    pub fn verify(&self, issuer_public_key: &crate::rsa::RsaPublicKey) -> Result<bool, X509Error> {
         self.0.verify(issuer_public_key)
     }
 
@@ -46,48 +52,24 @@ impl X509Certificate {
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
         self.0.to_der()
     }
-}
 
-/// Builder for creating self-signed X.509 certificates (for testing).
-pub struct X509Builder(sys::X509BuilderInner);
-
-impl X509Builder {
-    /// Create a new X.509 certificate builder.
-    pub fn new() -> Result<Self, X509Error> {
-        sys::X509BuilderInner::new().map(Self)
-    }
-
-    /// Set the public key from an RSA key pair.
-    pub fn set_pubkey_from_rsa_key_pair(
-        &mut self,
-        key_pair: &super::rsa::RsaKeyPair,
-    ) -> Result<(), X509Error> {
-        self.0.set_pubkey_from_rsa_key_pair(key_pair)
-    }
-
-    /// Set the subject and issuer name with common certificate fields (for self-signed certificates).
-    pub fn set_subject_and_issuer_name(
-        &mut self,
+    /// Build a self-signed never-expiring X.509 certificate (for testing).
+    pub fn build_self_signed(
+        key: &crate::rsa::RsaKeyPair,
         country: &str,
         state: &str,
         locality: &str,
         organization: &str,
         common_name: &str,
-    ) -> Result<(), X509Error> {
-        self.0
-            .set_subject_and_issuer_name(country, state, locality, organization, common_name)
-    }
-
-    /// Set the validity period in days from now.
-    pub fn set_validity_days(&mut self, days: u32) -> Result<(), X509Error> {
-        self.0.set_validity_days(days)
-    }
-
-    /// Sign the certificate with the given RSA private key and build it.
-    pub fn sign_and_build(
-        self,
-        key_pair: &super::rsa::RsaKeyPair,
-    ) -> Result<X509Certificate, X509Error> {
-        self.0.sign_and_build(key_pair).map(X509Certificate)
+    ) -> anyhow::Result<Self> {
+        sys::X509CertificateInner::build_self_signed(
+            key,
+            country,
+            state,
+            locality,
+            organization,
+            common_name,
+        )
+        .map(Self)
     }
 }

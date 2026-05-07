@@ -517,9 +517,10 @@ getrandom = "0.3"
 ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
 openssl = "0.10.72"
 openssl-sys = "0.9"
-rsa = { version = "0.10.0-rc.17", default-features = false }
+rsa = { version = "0.10.0-rc.18", default-features = false }
 sha2 = { version = "0.11.0", default-features = false }
 symcrypt = { version = "0.6.0", git = "https://github.com/microsoft/rust-symcrypt.git", branch = "release/0.6.0" }
+x509-cert = { version = "0.3.0-rc.4", default-features = false }
 
 # --- Process sandboxing ---
 landlock = "0.4.1"
