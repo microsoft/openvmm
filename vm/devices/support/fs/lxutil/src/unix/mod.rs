@@ -48,6 +48,10 @@ impl LxVolume {
         true
     }
 
+    pub fn is_sandbox(&self) -> bool {
+        false
+    }
+
     pub fn lstat(&self, path: &Path) -> lx::Result<StatEx> {
         let parent = util::Parent::new(&self.root, path)?;
         util::stat_at(parent.directory(), parent.name)

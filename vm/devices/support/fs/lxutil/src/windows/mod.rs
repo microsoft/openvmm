@@ -134,6 +134,10 @@ impl LxVolume {
             .supports_stable_file_id()
     }
 
+    pub fn is_sandbox(&self) -> bool {
+        self.state.options.sandbox
+    }
+
     fn check_sandbox_enforcement(&self, path: &Path) -> lx::Result<()> {
         if !self.state.options.sandbox {
             return Ok(());

@@ -110,6 +110,13 @@ impl LxVolume {
         self.inner.supports_stable_file_id()
     }
 
+    /// Returns whether Windows sandbox restrictions are enabled.
+    ///
+    /// Always returns false on Unix, where volume options are ignored.
+    pub fn is_sandbox(&self) -> bool {
+        self.inner.is_sandbox()
+    }
+
     /// Retrieves the attributes of a file. Symlinks are not followed.
     pub fn lstat(&self, path: impl AsRef<Path>) -> lx::Result<lx::Stat> {
         self.inner.lstat(path.as_ref()).map(|x| x.into())

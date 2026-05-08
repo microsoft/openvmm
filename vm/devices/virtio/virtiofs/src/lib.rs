@@ -1060,6 +1060,7 @@ mod tests {
     use fuse::Request;
     use fuse::protocol::*;
     use test_with_tracing::test;
+    use zerocopy::FromBytes;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
 
@@ -1073,6 +1074,183 @@ mod tests {
         let mut bytes = header.as_bytes().to_vec();
         bytes.extend_from_slice(b".\0");
         Request::new(bytes.as_slice()).unwrap()
+    }
+
+    #[test]
+    fn plain_readdir_preserves_inodes_without_lookups() {
+        for aggregate in [false, true] {
+            for size in [32, 4096] {
+                let root = tempfile::tempdir().unwrap();
+                for i in 0..70 {
+                    std::fs::write(root.path().join(format!("f{i:03}")), b"data").unwrap();
+                }
+                let fs = if aggregate {
+                    let fs = VirtioFs::new_aggregate();
+                    fs.add_child("share", root.path(), None).unwrap();
+                    fs
+                } else {
+                    VirtioFs::new(root.path(), None).unwrap()
+                };
+                let node_id = if aggregate {
+                    fs.lookup_synthetic_root("share".as_ref()).unwrap().nodeid
+                } else {
+                    FUSE_ROOT_ID
+                };
+                let inode = fs.get_inode(node_id).unwrap();
+                let file = std::sync::Arc::clone(&inode)
+                    .open(lx::O_RDONLY | lx::O_DIRECTORY)
+                    .unwrap();
+                let initial_inodes = fs.inner.inodes.read().inodes_by_node_id.values.len();
+                let mut offset = 0;
+                let mut names = std::collections::HashSet::new();
+                loop {
+                    let data = file.read_dir(&fs, offset, size, false).unwrap();
+                    if data.is_empty() {
+                        break;
+                    }
+                    let mut remaining = data.as_slice();
+                    while !remaining.is_empty() {
+                        let (entry, rest) = fuse_dirent::read_from_prefix(remaining).unwrap();
+                        let name = lx::LxStr::from_bytes(&rest[..entry.namelen as usize]);
+                        let expected_ino = if name == "." || name == ".." {
+                            inode.guest_inode_nr()
+                        } else {
+                            inode.lookup_child(name).unwrap().1.ino
+                        };
+                        assert_eq!(entry.ino, expected_ino, "{name:?}");
+                        assert!(names.insert(name.to_owned()), "duplicate entry {name:?}");
+                        offset = entry.off;
+                        remaining = &remaining[fuse_dirent_align(
+                            size_of::<fuse_dirent>() + entry.namelen as usize,
+                        )..];
+                    }
+                }
+                assert_eq!(
+                    names
+                        .iter()
+                        .filter(|name| *name != "." && *name != "..")
+                        .count(),
+                    70
+                );
+                assert_eq!(
+                    fs.inner.inodes.read().inodes_by_node_id.values.len(),
+                    initial_inodes
+                );
+                assert_eq!(
+                    file.read_dir(&fs, 0, 0, false).unwrap_err(),
+                    lx::Error::EINVAL
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plain_readdir_does_not_increment_existing_lookup() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let inode = fs.get_inode(FUSE_ROOT_ID).unwrap();
+        let entry = fs.lookup_helper(&inode, "file".as_ref()).unwrap();
+        let file = inode.open(lx::O_RDONLY | lx::O_DIRECTORY).unwrap();
+        for _ in 0..2 {
+            assert!(!file.read_dir(&fs, 0, 4096, false).unwrap().is_empty());
+        }
+        fs.forget(entry.nodeid, 1);
+        assert!(fs.inner.inodes.read().get(entry.nodeid).is_none());
+    }
+
+    #[test]
+    fn readdirplus_retains_lookup_references() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let inode = fs.get_inode(FUSE_ROOT_ID).unwrap();
+        let entry = fs.lookup_helper(&inode, "file".as_ref()).unwrap();
+        let file = inode.open(lx::O_RDONLY | lx::O_DIRECTORY).unwrap();
+        let data = file.read_dir(&fs, 0, 4096, true).unwrap();
+        let mut remaining = data.as_slice();
+        let mut found = false;
+        while !remaining.is_empty() {
+            let (dirent, rest) = fuse_direntplus::read_from_prefix(remaining).unwrap();
+            if &rest[..dirent.dirent.namelen as usize] == b"file" {
+                assert_eq!(dirent.entry_out.nodeid, entry.nodeid);
+                assert_eq!(dirent.dirent.ino, entry.attr.ino);
+                found = true;
+            }
+            remaining = &remaining[fuse_dirent_align(
+                size_of::<fuse_direntplus>() + dirent.dirent.namelen as usize,
+            )..];
+        }
+        assert!(found);
+        fs.forget(entry.nodeid, 1);
+        assert!(fs.inner.inodes.read().get(entry.nodeid).is_some());
+        fs.forget(entry.nodeid, 1);
+        assert!(fs.inner.inodes.read().get(entry.nodeid).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn readdir_respects_sandbox() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN;
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("allowed"), b"data").unwrap();
+        std::fs::write(root.path().join("blocked.exe"), b"data").unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .attributes(FILE_ATTRIBUTE_HIDDEN)
+            .open(root.path().join("hidden"))
+            .unwrap();
+        for sandbox in [false, true] {
+            let mut options = super::LxVolumeOptions::new();
+            options
+                .sandbox(sandbox)
+                .sandbox_disallowed_extensions(vec!["exe"]);
+            let fs = VirtioFs::new(root.path(), Some(&options)).unwrap();
+            let file = fs
+                .get_inode(FUSE_ROOT_ID)
+                .unwrap()
+                .open(lx::O_RDONLY | lx::O_DIRECTORY)
+                .unwrap();
+            for plus in [false, true] {
+                let initial_inodes = fs.inner.inodes.read().inodes_by_node_id.values.len();
+                let data = file.read_dir(&fs, 0, 4096, plus).unwrap();
+                if !plus {
+                    assert_eq!(
+                        fs.inner.inodes.read().inodes_by_node_id.values.len(),
+                        initial_inodes
+                    );
+                }
+                let mut remaining = data.as_slice();
+                let mut names = Vec::new();
+                while !remaining.is_empty() {
+                    let (entry, rest) = if plus {
+                        let (entry, rest) = fuse_direntplus::read_from_prefix(remaining).unwrap();
+                        (entry.dirent, rest)
+                    } else {
+                        fuse_dirent::read_from_prefix(remaining).unwrap()
+                    };
+                    names.push(rest[..entry.namelen as usize].to_vec());
+                    let header_size = if plus {
+                        size_of::<fuse_direntplus>()
+                    } else {
+                        size_of::<fuse_dirent>()
+                    };
+                    remaining =
+                        &remaining[fuse_dirent_align(header_size + entry.namelen as usize)..];
+                }
+                assert!(names.iter().any(|name| name == b"allowed"));
+                for name in [b"blocked.exe".as_slice(), b"hidden"] {
+                    assert_eq!(
+                        names.iter().any(|entry| entry == name),
+                        !sandbox,
+                        "sandbox={sandbox}, plus={plus}, name={name:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
