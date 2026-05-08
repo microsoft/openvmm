@@ -153,7 +153,7 @@ struct RunArgs {
     data_disk_size_gib: u64,
 
     /// Test file size in MiB for the virtio_fs test.
-    #[arg(long, default_value = "128")]
+    #[arg(long, default_value = "512")]
     virtiofs_file_size_mib: u64,
 }
 

@@ -27,9 +27,12 @@ use petri::pipette::cmd;
 use petri_artifacts_common::tags::MachineArch;
 use std::path::PathBuf;
 
-/// Test file size in MiB. Big enough that page-cache effects don't fully
-/// hide host I/O, small enough to fit comfortably in the guest tmpfs.
-const TEST_FILE_MIB: u64 = 128;
+/// Test file size in MiB. Must be large enough relative to guest RAM that
+/// sequential reads cannot be served entirely from page cache during the
+/// measurement window. With 1 GB guest RAM and ramp_time=0, a single
+/// sequential pass through 512 MiB takes long enough that the FUSE path
+/// dominates.
+const TEST_FILE_MIB: u64 = 512;
 
 /// Tag used for the virtio-fs device. Any string matches between host and
 /// guest.
@@ -247,18 +250,19 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
         let mut recorder = crate::harness::PerfRecorder::new(self.perf_dir.as_deref(), pid)?;
         let size_mib = self.file_size_mib;
 
-        // Each fio job: 10s runtime + 5s ramp = 15s.
-        // For sequential modes we only extract BW; for random modes we
-        // extract both BW and IOPS from a single fio run.
-        let fio_jobs: &[(&str, &str)] = &[
-            // (fio_rw_mode, primary_field)
-            ("read", "read"),
-            ("write", "write"),
-            ("randread", "read"),
-            ("randwrite", "write"),
+        // Each fio job: 10s runtime, no ramp (ramp_time=0 so reads start
+        // cold against the FUSE path rather than warming the page cache).
+        // Sequential tests use 128k blocks to exercise zero-copy and
+        // max-pages; random tests use 4k blocks for IOPS measurement.
+        let fio_jobs: &[(&str, &str, &str)] = &[
+            // (fio_rw_mode, primary_field, block_size)
+            ("read", "read", "128k"),
+            ("write", "write", "128k"),
+            ("randread", "read", "4k"),
+            ("randwrite", "write", "4k"),
         ];
 
-        for &(rw_mode, field) in fio_jobs {
+        for &(rw_mode, field, bs) in fio_jobs {
             let is_random = rw_mode.starts_with("rand");
             let phase = if is_random {
                 rw_mode.strip_prefix("rand").unwrap()
@@ -270,7 +274,7 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
             let perf_label = format!("fio_virtiofs_{prefix}_{phase}");
             recorder.start(&perf_label)?;
 
-            let json = run_fio_job(&state.agent, rw_mode, size_mib)
+            let json = run_fio_job(&state.agent, rw_mode, bs, size_mib)
                 .await
                 .with_context(|| format!("fio {rw_mode} failed"))?;
 
@@ -298,19 +302,34 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
 /// Run a single fio job against the virtio-fs test file and return the raw
 /// JSON output.
 ///
-/// Note: `--ioengine=io_uring` is used to match the disk_io test. virtio-fs
-/// supports it transparently because the guest sees a regular file. We cap
-/// the job size at the pre-allocated file size so fio doesn't try to extend
-/// the file mid-run.
+/// Before each job we invalidate the guest page cache so that reads exercise
+/// the full FUSE request path rather than being served from guest RAM.
+/// `ramp_time=0` ensures the measurement window starts cold; the harness's
+/// warmup iteration handles VM-level warm-up. `--end_fsync=1` flushes
+/// buffered writes through FUSE before fio reports results.
+///
+/// Unlike `disk_io` which uses `--direct=1` (O_DIRECT on a block device),
+/// we use `--direct=0` because Linux FUSE does not support O_DIRECT unless
+/// the server negotiates `FOPEN_DIRECT_IO`. Instead we rely on explicit
+/// cache invalidation to ensure I/O hits the FUSE path.
 async fn run_fio_job(
     agent: &petri::pipette::PipetteClient,
     rw_mode: &str,
+    bs: &str,
     size_mib: u64,
 ) -> anyhow::Result<String> {
+    // Drop guest page caches so reads go through the FUSE path.
+    let drop_sh = agent.unix_shell();
+    let drop_script = "echo 3 > /proc/sys/vm/drop_caches";
+    cmd!(drop_sh, "sh -c {drop_script}")
+        .read()
+        .await
+        .context("failed to drop guest page caches")?;
+
     let mut sh = agent.unix_shell();
     sh.chroot("/perf");
     let size_arg = format!("{size_mib}M");
-    let output: String = cmd!(sh, "fio --name=test --filename=/tmp/vfs/test.dat --rw={rw_mode} --bs=4k --ioengine=io_uring --direct=0 --runtime=10 --ramp_time=5 --iodepth=32 --numjobs=1 --size={size_arg} --output-format=json")
+    let output: String = cmd!(sh, "fio --name=test --filename=/tmp/vfs/test.dat --rw={rw_mode} --bs={bs} --ioengine=io_uring --direct=0 --runtime=10 --ramp_time=0 --iodepth=32 --numjobs=1 --size={size_arg} --invalidate=1 --end_fsync=1 --output-format=json")
         .read()
         .await
         .with_context(|| format!("fio {rw_mode} on virtio-fs failed"))?;
