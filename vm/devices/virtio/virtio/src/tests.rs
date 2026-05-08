@@ -1401,7 +1401,12 @@ impl VirtioPciTestDevice {
                 DeviceTraits {
                     device_id: VirtioDeviceType::CONSOLE,
                     device_features: VirtioDeviceFeatures::new()
-                        .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                        .with_bank(
+                            0,
+                            TEST_DEVICE_FEATURE_BIT
+                                | VIRTIO_F_RING_INDIRECT_DESC
+                                | VIRTIO_F_RING_EVENT_IDX,
+                        )
                         .with_bank(1, VIRTIO_F_RING_PACKED),
                     max_queues: num_queues,
                     device_register_length: 12,
@@ -1454,7 +1459,12 @@ async fn verify_chipset_config(driver: DefaultDriver) {
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                    .with_bank(
+                        0,
+                        TEST_DEVICE_FEATURE_BIT
+                            | VIRTIO_F_RING_INDIRECT_DESC
+                            | VIRTIO_F_RING_EVENT_IDX,
+                    )
                     .with_bank(1, VIRTIO_F_RING_PACKED),
                 max_queues: 1,
                 device_register_length: 0,
@@ -1619,7 +1629,12 @@ async fn verify_transport_features_access_platform_mmio(driver: DefaultDriver) {
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                    .with_bank(
+                        0,
+                        TEST_DEVICE_FEATURE_BIT
+                            | VIRTIO_F_RING_INDIRECT_DESC
+                            | VIRTIO_F_RING_EVENT_IDX,
+                    )
                     .with_bank(1, VIRTIO_F_RING_PACKED),
                 max_queues: 1,
                 device_register_length: 0,
@@ -1661,7 +1676,12 @@ async fn verify_transport_features_no_access_platform_mmio(driver: DefaultDriver
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                    .with_bank(
+                        0,
+                        TEST_DEVICE_FEATURE_BIT
+                            | VIRTIO_F_RING_INDIRECT_DESC
+                            | VIRTIO_F_RING_EVENT_IDX,
+                    )
                     .with_bank(1, VIRTIO_F_RING_PACKED),
                 max_queues: 1,
                 device_register_length: 0,
@@ -1680,10 +1700,7 @@ async fn verify_transport_features_no_access_platform_mmio(driver: DefaultDriver
 
     // device feature (bank 1) should NOT include ACCESS_PLATFORM
     dev.write_u32(20, 1);
-    assert_eq!(
-        dev.read_u32(16),
-        VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED
-    );
+    assert_eq!(dev.read_u32(16), VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
 }
 
 #[async_test]
@@ -1699,7 +1716,12 @@ async fn verify_transport_features_access_platform_pci(driver: DefaultDriver) {
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                    .with_bank(
+                        0,
+                        TEST_DEVICE_FEATURE_BIT
+                            | VIRTIO_F_RING_INDIRECT_DESC
+                            | VIRTIO_F_RING_EVENT_IDX,
+                    )
                     .with_bank(1, VIRTIO_F_RING_PACKED),
                 max_queues: 1,
                 device_register_length: 12,
@@ -1740,7 +1762,12 @@ async fn verify_transport_features_no_access_platform_pci(driver: DefaultDriver)
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                    .with_bank(
+                        0,
+                        TEST_DEVICE_FEATURE_BIT
+                            | VIRTIO_F_RING_INDIRECT_DESC
+                            | VIRTIO_F_RING_EVENT_IDX,
+                    )
                     .with_bank(1, VIRTIO_F_RING_PACKED),
                 max_queues: 1,
                 device_register_length: 12,
@@ -1759,10 +1786,7 @@ async fn verify_transport_features_no_access_platform_pci(driver: DefaultDriver)
 
     // device feature (bank 1) should NOT include ACCESS_PLATFORM
     dev.write_u32(0, 1); // select bank 1
-    assert_eq!(
-        dev.read_u32(4),
-        VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED
-    );
+    assert_eq!(dev.read_u32(4), VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
 }
 
 #[async_test]
@@ -2968,7 +2992,10 @@ async fn verify_device_packed_multi_queue_pci(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     let guest = VirtioTestGuest::new_packed(&driver, &test_mem, num_queues, 2, true);
     let features = VirtioDeviceFeatures::new()
-        .with_bank(0, VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | TEST_DEVICE_FEATURE_BIT)
+        .with_bank(
+            0,
+            VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | TEST_DEVICE_FEATURE_BIT,
+        )
         .with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
     verify_device_multi_queue_pci_inner(test_mem, guest, num_queues, features).await;
 }
@@ -2983,8 +3010,10 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
         Box::new(FailingTestDevice {
             traits: DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                device_features: VirtioDeviceFeatures::new().with_bank(
+                    0,
+                    TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX,
+                ),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -3036,8 +3065,10 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
         Box::new(FailingTestDevice {
             traits: DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                device_features: VirtioDeviceFeatures::new().with_bank(
+                    0,
+                    TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX,
+                ),
                 max_queues: 1,
                 device_register_length: 12,
                 ..Default::default()
@@ -3723,8 +3754,10 @@ impl PartialFailTestDevice {
         Self {
             traits: DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                device_features: VirtioDeviceFeatures::new().with_bank(
+                    0,
+                    TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX,
+                ),
                 max_queues,
                 device_register_length: 0,
                 ..Default::default()
@@ -4114,8 +4147,10 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
             &driver_source,
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                device_features: VirtioDeviceFeatures::new().with_bank(
+                    0,
+                    TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX,
+                ),
                 max_queues: 1,
                 device_register_length: 12,
                 ..Default::default()
@@ -4295,8 +4330,10 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
             &driver_source,
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                device_features: VirtioDeviceFeatures::new().with_bank(
+                    0,
+                    TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX,
+                ),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -4331,8 +4368,10 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
             &driver_source,
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                device_features: VirtioDeviceFeatures::new().with_bank(
+                    0,
+                    TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX,
+                ),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -4545,8 +4584,10 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
             &driver_source,
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                device_features: VirtioDeviceFeatures::new().with_bank(
+                    0,
+                    TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX,
+                ),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -4583,8 +4624,10 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
             &driver_source,
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                device_features: VirtioDeviceFeatures::new().with_bank(
+                    0,
+                    TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX,
+                ),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
