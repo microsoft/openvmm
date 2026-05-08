@@ -34,15 +34,12 @@ impl X509CertificateInner {
     }
 
     pub fn issued(&self, subject: &X509CertificateInner) -> Result<bool, X509Error> {
-        let result = self.0.issued(&subject.0);
-        match result {
-            openssl::x509::X509VerifyResult::OK => Ok(true),
-            openssl::x509::X509VerifyResult::APPLICATION_VERIFICATION => Ok(false),
-            _ => Err(err(
-                openssl::error::ErrorStack::get(),
-                "checking if certificate was issued by issuer",
-            )),
-        }
+        // `X509_check_issued` only performs deterministic comparisons on
+        // already-parsed data (name, AKID/SKID, serial, KeyUsage) and cannot
+        // fail with internal errors. Per the OpenSSL docs, every non-OK
+        // result is an `X509_V_ERR*` constant "indicating why the issuer
+        // does not match" — i.e., a legitimate `Ok(false)`.
+        Ok(self.0.issued(&subject.0) == openssl::x509::X509VerifyResult::OK)
     }
 
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
