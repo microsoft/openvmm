@@ -121,13 +121,16 @@ impl X509CertificateInner {
                     return Ok(false);
                 }
             }
-            if let Some(gens) = &akid.authority_cert_issuer
-                && let Some(dn) = gens.iter().find_map(|g| match g {
-                    GeneralName::DirectoryName(n) => Some(n),
-                    _ => None,
-                })
-            {
-                if dn != issuer_tbs.subject() {
+            if let Some(gens) = &akid.authority_cert_issuer {
+                let mut has_dn = false;
+                let has_matching_dn = gens.iter().any(|g| match g {
+                    GeneralName::DirectoryName(dn) => {
+                        has_dn = true;
+                        dn == issuer_tbs.subject()
+                    }
+                    _ => false,
+                });
+                if has_dn && !has_matching_dn {
                     return Ok(false);
                 }
             }
