@@ -24,6 +24,7 @@ use gdma_defs::bnic::MANA_SHORT_PKT_FMT;
 use gdma_defs::bnic::ManaQueryStatisticsResponse;
 use gdma_defs::bnic::ManaRxcompOob;
 use gdma_defs::bnic::ManaTxCompOob;
+use gdma_defs::bnic::ManaTxLongOob;
 use gdma_defs::bnic::ManaTxOob;
 use gdma_defs::bnic::ManaTxShortOob;
 use guestmem::GuestMemory;
@@ -829,6 +830,27 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     short_vp_offset = tx_s_oob.short_vp_offset(),
                     "tx s_oob"
                 );
+
+                if tx_s_oob.pkt_fmt() == MANA_LONG_PKT_FMT {
+                    let l_oob_offset = wqe_offset + (header_size + s_oob_size) as u32;
+                    let l_oob_bytes = self.tx_wq.read(l_oob_offset, size_of::<ManaTxLongOob>());
+                    match ManaTxLongOob::read_from_prefix(&l_oob_bytes) {
+                        Ok((tx_l_oob, _)) => {
+                            tracelimit::event_ratelimited!(
+                                tracing_level,
+                                inject_vlan_pri_tag = tx_l_oob.inject_vlan_pri_tag(),
+                                vlan_id = tx_l_oob.vlan_id(),
+                                pcp = tx_l_oob.pcp(),
+                                dei = tx_l_oob.dei(),
+                                long_vp_offset = tx_l_oob.long_vp_offset(),
+                                "tx l_oob"
+                            );
+                        }
+                        Err(_) => {
+                            tracelimit::error_ratelimited!("failed to read tx l_oob");
+                        }
+                    }
+                }
             }
             Err(_) => {
                 tracelimit::error_ratelimited!("failed to read tx s_oob");
@@ -1002,6 +1024,8 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                             vendor_err = rx_oob.cqe_hdr.vendor_err(),
                             rx_cq_id = self.rx_cq.id(),
                             rx_wq_id = self.rx_wq.id(),
+                            rx_vlantag_present = rx_oob.flags.rx_vlantag_present(),
+                            rx_vlan_id = rx_oob.flags.rx_vlan_id(),
                             "invalid rx cqe type"
                         );
                         self.trace_rx_wqe_from_offset(rx_oob.rx_wqe_offset);
