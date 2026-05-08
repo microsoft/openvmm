@@ -318,9 +318,11 @@ async fn run_fio_job(
     bs: &str,
     size_mib: u64,
 ) -> anyhow::Result<String> {
-    // Drop guest page caches so reads go through the FUSE path.
+    // Flush dirty pages then drop guest page caches so reads go through
+    // the FUSE path. `sync` first ensures writeback is complete, making
+    // cache state deterministic between fio jobs.
     let drop_sh = agent.unix_shell();
-    let drop_script = "echo 3 > /proc/sys/vm/drop_caches";
+    let drop_script = "sync; echo 3 > /proc/sys/vm/drop_caches";
     cmd!(drop_sh, "sh -c {drop_script}")
         .read()
         .await
@@ -329,7 +331,7 @@ async fn run_fio_job(
     let mut sh = agent.unix_shell();
     sh.chroot("/perf");
     let size_arg = format!("{size_mib}M");
-    let output: String = cmd!(sh, "fio --name=test --filename=/tmp/vfs/test.dat --rw={rw_mode} --bs={bs} --ioengine=io_uring --direct=0 --runtime=10 --ramp_time=0 --iodepth=32 --numjobs=1 --size={size_arg} --invalidate=1 --end_fsync=1 --output-format=json")
+    let output: String = cmd!(sh, "fio --name=test --filename=/tmp/vfs/test.dat --rw={rw_mode} --bs={bs} --ioengine=io_uring --direct=0 --runtime=10 --time_based=1 --ramp_time=0 --iodepth=32 --numjobs=1 --size={size_arg} --invalidate=1 --end_fsync=1 --output-format=json")
         .read()
         .await
         .with_context(|| format!("fio {rw_mode} on virtio-fs failed"))?;
