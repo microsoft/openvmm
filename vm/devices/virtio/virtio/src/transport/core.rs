@@ -96,12 +96,15 @@ pub(crate) struct VirtioTransportCore {
 }
 
 impl VirtioTransportCore {
-    /// Create a new transport core, spawning the device task.
-    pub fn new(
+    /// Create a new transport core, merging caller-supplied transport
+    /// features (e.g. `VIRTIO_F_VERSION_1`, `VIRTIO_F_ACCESS_PLATFORM`)
+    /// with the device-specific features.
+    pub(crate) fn new_with_transport_features(
         device: Box<dyn DynVirtioDevice>,
         driver: &impl Spawn,
         guest_memory: GuestMemory,
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
+        transport_features: VirtioDeviceFeatures,
     ) -> std::io::Result<Self> {
         let traits = device.traits();
         let queues: Vec<QueueData> = (0..traits.max_queues)
@@ -121,7 +124,9 @@ impl VirtioTransportCore {
             })
             .collect::<std::io::Result<Vec<_>>>()?;
 
-        let device_feature = traits.device_features.with_version_1(true);
+        let device_feature = VirtioDeviceFeatures::from_bits(
+            traits.device_features.into_bits() | transport_features.into_bits(),
+        );
         let supports_save_restore = device.supports_save_restore();
 
         let (sender, receiver) = mesh::channel();

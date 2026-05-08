@@ -10,6 +10,7 @@ use crate::DynVirtioDevice;
 use crate::MAX_QUEUE_SIZE;
 use crate::spec::VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE;
 use crate::spec::VIRTIO_MMIO_INTERRUPT_STATUS_USED_BUFFER;
+use crate::spec::VirtioDeviceFeatures;
 use crate::spec::mmio::VirtioMmioRegister;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
@@ -105,6 +106,8 @@ impl fmt::Debug for VirtioMmioDevice {
 }
 
 impl VirtioMmioDevice {
+    /// Create a new MMIO transport with default transport features
+    /// (`VIRTIO_F_VERSION_1`).
     pub fn new(
         device: Box<dyn DynVirtioDevice>,
         driver: &impl Spawn,
@@ -114,13 +117,43 @@ impl VirtioMmioDevice {
         mmio_gpa: u64,
         mmio_len: u64,
     ) -> std::io::Result<Self> {
+        Self::new_with_transport_features(
+            device,
+            driver,
+            guest_memory,
+            interrupt,
+            doorbell_registration,
+            mmio_gpa,
+            mmio_len,
+            VirtioDeviceFeatures::new().with_version_1(true),
+        )
+    }
+
+    /// Create a new MMIO transport, merging caller-supplied transport
+    /// features with the device-specific features.
+    pub fn new_with_transport_features(
+        device: Box<dyn DynVirtioDevice>,
+        driver: &impl Spawn,
+        guest_memory: GuestMemory,
+        interrupt: LineInterrupt,
+        doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
+        mmio_gpa: u64,
+        mmio_len: u64,
+        transport_features: VirtioDeviceFeatures,
+    ) -> std::io::Result<Self> {
         let traits = device.traits();
         let interrupt_state = Arc::new(Mutex::new(InterruptState {
             interrupt,
             status: 0,
         }));
 
-        let core = VirtioTransportCore::new(device, driver, guest_memory, doorbell_registration)?;
+        let core = VirtioTransportCore::new_with_transport_features(
+            device,
+            driver,
+            guest_memory,
+            doorbell_registration,
+            transport_features,
+        )?;
 
         Ok(Self {
             core,

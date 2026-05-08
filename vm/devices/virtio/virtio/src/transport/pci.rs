@@ -11,6 +11,7 @@ use super::task::defer_config_read;
 use super::task::defer_config_write;
 use crate::DynVirtioDevice;
 use crate::MAX_QUEUE_SIZE;
+use crate::spec::VirtioDeviceFeatures;
 use crate::spec::pci::VIRTIO_PCI_COMMON_CFG_SIZE;
 use crate::spec::pci::VIRTIO_PCI_DEVICE_ID_BASE;
 use crate::spec::pci::VIRTIO_VENDOR_ID;
@@ -145,7 +146,32 @@ pub struct VirtioPciDevice {
 }
 
 impl VirtioPciDevice {
+    /// Create a new PCI transport with default transport features
+    /// (`VIRTIO_F_VERSION_1`).
     pub fn new(
+        device: Box<dyn DynVirtioDevice>,
+        driver: &impl Spawn,
+        guest_memory: GuestMemory,
+        interrupt_model: PciInterruptModel<'_>,
+        doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
+        mmio_registration: &mut dyn RegisterMmioIntercept,
+        shared_mem_mapper: Option<&dyn MemoryMapper>,
+    ) -> io::Result<Self> {
+        Self::new_with_transport_features(
+            device,
+            driver,
+            guest_memory,
+            interrupt_model,
+            doorbell_registration,
+            mmio_registration,
+            shared_mem_mapper,
+            VirtioDeviceFeatures::new().with_version_1(true),
+        )
+    }
+
+    /// Create a new PCI transport, merging caller-supplied transport
+    /// features with the device-specific features.
+    pub fn new_with_transport_features(
         mut device: Box<dyn DynVirtioDevice>,
         driver: &impl Spawn,
         guest_memory: GuestMemory,
@@ -153,6 +179,7 @@ impl VirtioPciDevice {
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
         mmio_registration: &mut dyn RegisterMmioIntercept,
         shared_mem_mapper: Option<&dyn MemoryMapper>,
+        transport_features: VirtioDeviceFeatures,
     ) -> io::Result<Self> {
         let traits = device.traits();
 
@@ -266,7 +293,13 @@ impl VirtioPciDevice {
             }
         };
 
-        let core = VirtioTransportCore::new(device, driver, guest_memory, doorbell_registration)?;
+        let core = VirtioTransportCore::new_with_transport_features(
+            device,
+            driver,
+            guest_memory,
+            doorbell_registration,
+            transport_features,
+        )?;
 
         Ok(VirtioPciDevice {
             core,

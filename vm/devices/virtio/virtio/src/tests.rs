@@ -1604,6 +1604,87 @@ async fn verify_chipset_config(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn verify_transport_features_access_platform_mmio(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
+    let mem = GuestMemory::new("test", test_mem);
+    let interrupt = LineInterrupt::detached();
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+
+    let mut dev = VirtioMmioDevice::new_with_transport_features(
+        Box::new(TestDevice::new(
+            &driver_source,
+            DeviceTraits {
+                device_id: VirtioDeviceType::CONSOLE,
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                    .with_bank(1, VIRTIO_F_RING_PACKED),
+                max_queues: 1,
+                device_register_length: 0,
+                ..Default::default()
+            },
+            None,
+        )),
+        &driver_source.simple(),
+        mem.clone(),
+        interrupt,
+        Some(doorbell_registration),
+        0,
+        1,
+        VirtioDeviceFeatures::new()
+            .with_version_1(true)
+            .with_access_platform(true),
+    )
+    .unwrap();
+
+    // device feature (bank 1) should include ACCESS_PLATFORM
+    dev.write_u32(20, 1);
+    assert_eq!(
+        dev.read_u32(16),
+        VIRTIO_F_VERSION_1 | VIRTIO_F_ACCESS_PLATFORM | VIRTIO_F_RING_PACKED
+    );
+}
+
+#[async_test]
+async fn verify_transport_features_no_access_platform_mmio(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
+    let mem = GuestMemory::new("test", test_mem);
+    let interrupt = LineInterrupt::detached();
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+
+    let mut dev = VirtioMmioDevice::new(
+        Box::new(TestDevice::new(
+            &driver_source,
+            DeviceTraits {
+                device_id: VirtioDeviceType::CONSOLE,
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                    .with_bank(1, VIRTIO_F_RING_PACKED),
+                max_queues: 1,
+                device_register_length: 0,
+                ..Default::default()
+            },
+            None,
+        )),
+        &driver_source.simple(),
+        mem.clone(),
+        interrupt,
+        Some(doorbell_registration),
+        0,
+        1,
+    )
+    .unwrap();
+
+    // device feature (bank 1) should NOT include ACCESS_PLATFORM
+    dev.write_u32(20, 1);
+    assert_eq!(
+        dev.read_u32(16),
+        VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED
+    );
+}
+
+#[async_test]
 async fn verify_pci_config(driver: DefaultDriver) {
     let mut pci_test_device =
         VirtioPciTestDevice::new(&driver, 1, &VirtioTestMemoryAccess::new(), None);
