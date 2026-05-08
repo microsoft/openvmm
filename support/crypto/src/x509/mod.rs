@@ -44,7 +44,7 @@ impl X509Certificate {
     }
 
     /// Check if this certificate (acting as issuer) issued `subject`.
-    pub fn issued(&self, subject: &X509Certificate) -> bool {
+    pub fn issued(&self, subject: &X509Certificate) -> Result<bool, X509Error> {
         self.0.issued(&subject.0)
     }
 

@@ -58,6 +58,8 @@ pub(crate) enum CertificateChainValidationError {
     VerifyChildSignatureWithParentPublicKey(#[source] crypto::x509::X509Error),
     #[error("cert chain validation failed -- signature mismatch")]
     CertChainSignatureMismatch,
+    #[error("failed to check if the certificate was issued by the issuer")]
+    CheckCertificateIssuedByIssuer(#[source] crypto::x509::X509Error),
     #[error("cert chain validation failed -- subject and issuer mismatch")]
     CertChainSubjectIssuerMismatch,
 }
@@ -251,7 +253,9 @@ fn validate_cert_chain(
                 Err(CertificateChainValidationError::CertChainSignatureMismatch)?
             }
 
-            let issued = parent.issued(child);
+            let issued = parent
+                .issued(child)
+                .map_err(CertificateChainValidationError::CheckCertificateIssuedByIssuer)?;
             if !issued {
                 Err(CertificateChainValidationError::CertChainSubjectIssuerMismatch)?
             }

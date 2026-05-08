@@ -33,9 +33,16 @@ impl X509CertificateInner {
             .map_err(|e| err(e, "verifying certificate signature"))
     }
 
-    pub fn issued(&self, subject: &X509CertificateInner) -> bool {
+    pub fn issued(&self, subject: &X509CertificateInner) -> Result<bool, X509Error> {
         let result = self.0.issued(&subject.0);
-        result == openssl::x509::X509VerifyResult::OK
+        match result {
+            openssl::x509::X509VerifyResult::OK => Ok(true),
+            openssl::x509::X509VerifyResult::APPLICATION_VERIFICATION => Ok(false),
+            _ => Err(err(
+                openssl::error::ErrorStack::get(),
+                "checking if certificate was issued by issuer",
+            )),
+        }
     }
 
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
