@@ -159,20 +159,19 @@ mod tests {
     }
 
     /// A signature truncated to less than the modulus size must be
-    /// rejected without panicking.
+    /// rejected with `Ok(false)` (and must not panic or surface as
+    /// `Err`). This keeps malformed signatures in the "bad signature"
+    /// bucket rather than conflating them with infrastructure failures.
     #[test]
     fn pkcs1_verify_rejects_truncated_signature() {
         let key = RsaKeyPair::generate(2048).unwrap();
         let message = b"original message";
         let mut signature = key.pkcs1_sign(message, HashAlgorithm::Sha256).unwrap();
         signature.truncate(signature.len() - 1);
-        // `Ok(false)` or `Err` are both acceptable outcomes per the API
-        // contract — the only forbidden behavior is panicking or a false
-        // accept (Ok(true)).
-        match key.pkcs1_verify(message, &signature, HashAlgorithm::Sha256) {
-            Ok(false) | Err(_) => {}
-            Ok(true) => panic!("truncated signature must not verify"),
-        }
+        let valid = key
+            .pkcs1_verify(message, &signature, HashAlgorithm::Sha256)
+            .unwrap();
+        assert!(!valid);
     }
 
     #[test]

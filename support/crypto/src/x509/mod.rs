@@ -122,12 +122,8 @@ mod tests {
         .unwrap()
         .public_key()
         .unwrap();
-        // The contract allows either `Ok(false)` or `Err`, but not
-        // `Ok(true)` and not a panic.
-        match cert.verify(&other_pubkey) {
-            Ok(false) | Err(_) => {}
-            Ok(true) => panic!("verification must reject signatures from other keys"),
-        }
+        // Invalid signatures must be reported as `Ok(false)`, not `Err`.
+        assert_eq!(cert.verify(&other_pubkey), Ok(false));
     }
 
     /// DER round-trip preserves the cert and its signature.
