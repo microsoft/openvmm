@@ -533,3 +533,44 @@ async fn init_negotiates_direct_io_allow_mmap(driver: DefaultDriver) {
         "VirtioFs should request FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 when kernel advertises it"
     );
 }
+
+#[async_test]
+async fn num_request_queues_default_is_clamped(driver: DefaultDriver) {
+    let tmpdir = tempfile::tempdir().unwrap();
+    let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let device = VirtioFsDevice::new(&driver_source, "testfs", fs, 0, None, None);
+
+    let traits = device.traits();
+    // num_request_queues should be at least 1 and at most MAX (16).
+    // max_queues = num_request_queues + 1 (hiprio queue).
+    assert!(traits.max_queues >= 2, "at least 1 request queue + hiprio");
+    assert!(
+        traits.max_queues <= 17,
+        "at most 16 request queues + hiprio"
+    );
+}
+
+#[async_test]
+async fn num_request_queues_explicit_zero_is_clamped_to_one(driver: DefaultDriver) {
+    let tmpdir = tempfile::tempdir().unwrap();
+    let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let device = VirtioFsDevice::new(&driver_source, "testfs", fs, 0, None, Some(0));
+
+    let traits = device.traits();
+    // Some(0) should be clamped to 1 → max_queues = 2
+    assert_eq!(traits.max_queues, 2);
+}
+
+#[async_test]
+async fn num_request_queues_explicit_overflow_is_clamped(driver: DefaultDriver) {
+    let tmpdir = tempfile::tempdir().unwrap();
+    let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let device = VirtioFsDevice::new(&driver_source, "testfs", fs, 0, None, Some(100));
+
+    let traits = device.traits();
+    // Some(100) should be clamped to MAX_REQUEST_QUEUES (16) → max_queues = 17
+    assert_eq!(traits.max_queues, 17);
+}

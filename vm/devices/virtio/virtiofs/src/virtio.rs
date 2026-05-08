@@ -77,12 +77,13 @@ impl VirtioFsDevice {
     where
         Fs: 'static + fuse::Fuse + Send + Sync,
     {
-        let num_request_queues = num_request_queues.unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get() as u32)
-                .unwrap_or(1)
-                .clamp(1, MAX_REQUEST_QUEUES)
-        });
+        let num_request_queues = num_request_queues
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|n| n.get() as u32)
+                    .unwrap_or(1)
+            })
+            .clamp(1, MAX_REQUEST_QUEUES);
 
         let mut config = VirtioFsDeviceConfig {
             tag: [0; 36],
