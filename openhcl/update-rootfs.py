@@ -64,6 +64,28 @@ def run_and_get_stdout(command: str) -> str:
     return result.stdout.decode("utf-8").strip()
 
 
+def strip_rpmdb_from_layer(layer_path: str, temp_dir: str, layer_idx: int) -> str:
+    """Return a path to a copy of `layer_path` with /var/lib/rpm filtered out.
+
+    The openvmm-deps build intentionally ships /var/lib/rpm inside the
+    interactive cpio.gz layers so its upstream pipeline can run syft against
+    them and emit SPDX SBOMs. The RPM database has no purpose at runtime in
+    the VTL2 initrd and just costs RAM, so filter it on the way in.
+
+    Pipes the gzipped cpio through bsdtar with --exclude in a single pass --
+    no extract/repack to a tempdir. If the layer contains no /var/lib/rpm
+    entries (today's NuGet, which still strips upstream), the output is
+    bit-identical to the input minus gzip framing.
+    """
+    stripped = os.path.join(temp_dir, f"layer_{layer_idx}_stripped.cpio.gz")
+    run_inside_shell_and_check(
+        f'gunzip -c "{layer_path}" '
+        f'| bsdtar -c --format=newc '
+        f'    --exclude="./var/lib/rpm" --exclude="./var/lib/rpm/*" "@-" '
+        f'| {Config.GZIP} > "{stripped}"')
+    return stripped
+
+
 def append_to_rootfs(initial_dir: str, file_to_append: str, existing_cpio_gz_path: str):
     command = f'cd {initial_dir}; ' + \
               f'echo {file_to_append} | ' + \
@@ -120,7 +142,8 @@ def process(temp_dir: str, underhill_path: str, kernel_path: str,
         append_file(underhill_cpio_gz_file_name, temp_file_name)
         os.unlink(temp_file_name)
 
-    for layer in additional_layers:
+    for idx, layer in enumerate(additional_layers):
+        layer = strip_rpmdb_from_layer(layer, temp_dir, idx)
         layer_size = os.path.getsize(layer)
         eprint(f"Adding layer {layer}, size: {layer_size} bytes")
         append_file(underhill_cpio_gz_file_name, layer)
