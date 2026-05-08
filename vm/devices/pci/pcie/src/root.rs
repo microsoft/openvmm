@@ -1103,4 +1103,55 @@ mod tests {
         let result = rc2.restore(saved_state);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_bus_range_updated_on_cfg_write() {
+        use crate::bus_range::AssignedBusRange;
+
+        const SECONDARY_BUS_NUM_REG: u64 = 0x19;
+        const SUBORDINATE_BUS_NUM_REG: u64 = 0x1A;
+
+        let mut rc = instantiate_root_complex(0, 255, 1);
+
+        let endpoint = TestPcieEndpoint::new(
+            |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
+            |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
+        );
+
+        let bus_range = AssignedBusRange::new();
+        assert_eq!(bus_range.bus_range(), (0, 0));
+
+        rc.add_pcie_device(0, "ep", Box::new(endpoint), Some(bus_range.clone()))
+            .unwrap();
+
+        // Program secondary=5, subordinate=10 via ECAM MMIO writes.
+        rc.mmio_write(SECONDARY_BUS_NUM_REG, &[5]).unwrap();
+        rc.mmio_write(SUBORDINATE_BUS_NUM_REG, &[10]).unwrap();
+
+        // The shared AssignedBusRange should reflect the new values.
+        assert_eq!(bus_range.bus_range(), (5, 10));
+
+        // compose_its_devid should produce (segment << 16 | secondary << 8)
+        // for a single-function device (devid=None).
+        let segment = 2u16;
+        let devid = bus_range.compose_its_devid(segment, None);
+        assert_eq!(devid, Some((2 << 16) | (5 << 8)));
+
+        // With a specific BDF within range: bus=7, dev=1, fn=2
+        let bdf: u32 = (7 << 8) | (1 << 3) | 2;
+        let devid = bus_range.compose_its_devid(segment, Some(bdf));
+        assert_eq!(devid, Some((2 << 16) | bdf));
+
+        // BDF outside range should return None.
+        let out_of_range_bdf: u32 = 11 << 8; // bus=11, beyond subordinate=10
+        assert_eq!(
+            bus_range.compose_its_devid(segment, Some(out_of_range_bdf)),
+            None
+        );
+
+        // Reprogram bus numbers and verify tracking follows.
+        rc.mmio_write(SECONDARY_BUS_NUM_REG, &[20]).unwrap();
+        rc.mmio_write(SUBORDINATE_BUS_NUM_REG, &[30]).unwrap();
+        assert_eq!(bus_range.bus_range(), (20, 30));
+    }
 }

@@ -1860,7 +1860,7 @@ impl InitializedVm {
             let parent_segment = port_segments
                 .get(switch.parent_port.as_str())
                 .copied()
-                .unwrap_or(0);
+                .expect("switch parent port must be a known downstream port");
             for i in 0..switch.num_downstream_ports {
                 let port_name: Arc<str> = format!("{}-downstream-{}", switch.name, i).into();
                 port_segments.insert(port_name, parent_segment);
@@ -1928,7 +1928,10 @@ impl InitializedVm {
             async move {
                 let port_name: Arc<str> = dev_cfg.port_name.into();
                 let bus_range = pcie::bus_range::AssignedBusRange::new();
-                let segment = port_segments.get(&port_name).copied().unwrap_or(0);
+                let segment = port_segments
+                    .get(&port_name)
+                    .copied()
+                    .expect("device port must be a known downstream port");
 
                 // When ITS is active, wrap the partition's SignalMsi
                 // and IrqFd to inject the device identity. Otherwise
