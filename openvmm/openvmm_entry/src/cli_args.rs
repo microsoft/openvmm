@@ -386,6 +386,11 @@ options:
     #[clap(long, default_value = "auto", value_parser = parse_x2apic)]
     pub x2apic: X2ApicConfig,
 
+    /// configure PCIe MSI controller for aarch64 (auto | its | v2m)
+    #[cfg(guest_arch = "aarch64")]
+    #[clap(long, default_value = "auto")]
+    pub gic_msi: GicMsiCli,
+
     /// COM1 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com1: Option<SerialConfigCli>,
@@ -2062,6 +2067,18 @@ pub enum Vtl0LateMapPolicyCli {
     Log,
     Halt,
     Exception,
+}
+
+/// PCIe MSI controller selection for aarch64.
+#[derive(Debug, Copy, Clone, Default, ValueEnum)]
+pub enum GicMsiCli {
+    /// Use ITS when available, fall back to GICv2m.
+    #[default]
+    Auto,
+    /// Force GICv3 ITS (LPI-based MSIs).
+    Its,
+    /// Force GICv2m (SPI-based MSIs).
+    V2m,
 }
 
 #[derive(Debug, Copy, Clone, ValueEnum)]

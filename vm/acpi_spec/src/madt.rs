@@ -43,6 +43,7 @@ open_enum! {
         GICC = 0xb,
         GICD = 0xc,
         GIC_MSI_FRAME = 0xd,
+        GIC_ITS = 0xf,
     }
 }
 
@@ -265,6 +266,33 @@ impl MadtGicMsiFrame {
             flags: GIC_MSI_FRAME_FLAGS_SPI_SELECT,
             spi_count,
             spi_base,
+        }
+    }
+}
+
+/// ACPI 6.5 MADT GIC ITS structure (Table 5-68).
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
+pub struct MadtGicIts {
+    pub typ: MadtType,
+    pub length: u8,
+    pub reserved: u16,
+    pub gic_its_id: u32,
+    pub base_address: u64,
+    pub reserved2: u32,
+}
+
+const_assert_eq!(size_of::<MadtGicIts>(), 20);
+
+impl MadtGicIts {
+    pub fn new(gic_its_id: u32, base_address: u64) -> Self {
+        Self {
+            typ: MadtType::GIC_ITS,
+            length: size_of::<Self>() as u8,
+            reserved: 0,
+            gic_its_id,
+            base_address,
+            reserved2: 0,
         }
     }
 }

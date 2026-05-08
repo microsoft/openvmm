@@ -142,7 +142,7 @@ impl FuzzRootComplex {
         name: impl AsRef<str>,
         dev: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Arc<str>> {
-        self.rc.add_pcie_device(port, name, dev)
+        self.rc.add_pcie_device(port, name, dev, None)
     }
 
     pub fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> Result<(), IoError> {

@@ -25,6 +25,7 @@ pub use self::chipset::DynamicDeviceUnit;
 // _all_ device instantiation into `vmotherboard` itself.
 pub use self::chipset::ChipsetBuilder;
 pub use self::chipset::backing::arc_mutex::device::ArcMutexChipsetDeviceBuilder;
+pub use pcie::bus_range::AssignedBusRange;
 
 use chipset_device::ChipsetDevice;
 use inspect::InspectMut;

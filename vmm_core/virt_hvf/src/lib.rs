@@ -96,6 +96,7 @@ impl virt::Hypervisor for HvfHypervisor {
         virt::PlatformInfo {
             platform_gsiv: None,
             supports_gic_v3: true,
+            supports_its: false,
         }
     }
 

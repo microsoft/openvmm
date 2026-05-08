@@ -3,6 +3,7 @@
 
 //! Common PCIe port implementation shared between different port types.
 
+use crate::bus_range::AssignedBusRange;
 use anyhow::bail;
 use chipset_device::io::IoResult;
 use inspect::Inspect;
@@ -30,6 +31,12 @@ pub struct PcieDownstreamPort {
     /// The connected device, if any.
     #[inspect(skip)]
     pub link: Option<(Arc<str>, Box<dyn GenericPciBusDevice>)>,
+
+    /// Shared PCI device identity for the downstream device, used to
+    /// update the device's RID when the secondary bus number changes.
+    /// Also available for SMMU stream ID mapping.
+    #[inspect(skip)]
+    bus_range: Option<AssignedBusRange>,
 }
 
 impl PcieDownstreamPort {
@@ -76,6 +83,45 @@ impl PcieDownstreamPort {
             name: port_name,
             cfg_space,
             link: None,
+            bus_range: None,
+        }
+    }
+
+    /// Sets the shared bus range for the downstream device.
+    ///
+    /// The port will update this bus range when the guest programs the
+    /// secondary bus number. The same bus range is shared with MSI/irqfd
+    /// wrappers so that interrupt delivery uses the correct requester ID.
+    ///
+    /// The bus range is immediately initialized from the port's current
+    /// config space so that hotplugged devices see already-assigned bus
+    /// numbers without waiting for a guest write.
+    pub fn set_bus_range(&mut self, bus_range: AssignedBusRange) {
+        let secondary = *self.cfg_space.assigned_bus_range().start();
+        let subordinate = *self.cfg_space.assigned_bus_range().end();
+        bus_range.set_bus_range(secondary, subordinate);
+        self.bus_range = Some(bus_range);
+    }
+
+    /// Writes to the port's config space and handles any side effects
+    /// (e.g., bus number changes affecting downstream device identity).
+    pub fn write_cfg(&mut self, offset: u16, value: u32) -> IoResult {
+        let old_secondary = *self.cfg_space.assigned_bus_range().start();
+        let old_subordinate = *self.cfg_space.assigned_bus_range().end();
+        let result = self.cfg_space.write_u32(offset, value);
+        let new_secondary = *self.cfg_space.assigned_bus_range().start();
+        let new_subordinate = *self.cfg_space.assigned_bus_range().end();
+        if old_secondary != new_secondary || old_subordinate != new_subordinate {
+            self.on_bus_range_changed(new_secondary, new_subordinate);
+        }
+        result
+    }
+
+    /// Called when the bus range has changed. Updates the downstream
+    /// device's bus range to match.
+    fn on_bus_range_changed(&self, secondary_bus: u8, subordinate_bus: u8) {
+        if let Some(bus_range) = &self.bus_range {
+            bus_range.set_bus_range(secondary_bus, subordinate_bus);
         }
     }
 

@@ -12,6 +12,7 @@ use crate::PAGE_SHIFT;
 use crate::PAGE_SIZE64;
 use crate::ROOT_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
+use crate::bus_range::AssignedBusRange;
 use crate::port::PcieDownstreamPort;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
@@ -140,11 +141,16 @@ impl GenericPcieRootComplex {
     }
 
     /// Attach the provided `GenericPciBusDevice` to the port identified.
+    ///
+    /// `device_id` is an optional shared identity that the port will update
+    /// with the device's RID when the guest programs the secondary bus number.
+    /// Pass `None` when device identity tracking is not needed.
     pub fn add_pcie_device(
         &mut self,
         port: u8,
         name: impl AsRef<str>,
         dev: Box<dyn GenericPciBusDevice>,
+        device_id: Option<AssignedBusRange>,
     ) -> Result<(), Arc<str>> {
         let (_port_name, root_port) = self.ports.get_mut(&port).ok_or_else(|| -> Arc<str> {
             tracing::error!(
@@ -155,7 +161,7 @@ impl GenericPcieRootComplex {
             format!("Port {:#x} not found", port).into()
         })?;
 
-        match root_port.connect_device(name, dev) {
+        match root_port.connect_device(name, dev, device_id) {
             Ok(()) => Ok(()),
             Err(existing_device) => {
                 tracing::warn!(
@@ -180,17 +186,23 @@ impl GenericPcieRootComplex {
     }
 
     /// Hot-add a device to a named port.
+    ///
+    /// `device_id` is an optional shared identity for RID/device ID tracking.
     pub fn hotplug_add_device(
         &mut self,
         port_name: &str,
         device_name: &str,
         device: Box<dyn GenericPciBusDevice>,
+        device_id: Option<AssignedBusRange>,
     ) -> anyhow::Result<()> {
         let (_, (_, root_port)) = self
             .ports
             .iter_mut()
             .find(|(_, (name, _))| name.as_ref() == port_name)
             .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
+        if let Some(id) = device_id {
+            root_port.port.set_bus_range(id);
+        }
         root_port.port.hotplug_add_device(device_name, device)
     }
 
@@ -382,7 +394,7 @@ impl MmioIntercept for GenericPcieRootComplex {
                 tracelimit::warn_ratelimited!("unroutable config space access");
             }
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
-                check_result!(port.port.cfg_space.write_u32(cfg_offset, write_dword));
+                check_result!(port.port.write_cfg(cfg_offset, write_dword));
             }
             DecodedEcamAccess::DownstreamPort(port, bus_number, function, cfg_offset) => {
                 check_result!(port.forward_cfg_write(
@@ -447,12 +459,18 @@ impl RootPort {
         &mut self,
         name: impl AsRef<str>,
         dev: Box<dyn GenericPciBusDevice>,
+        device_id: Option<AssignedBusRange>,
     ) -> Result<(), Arc<str>> {
         let device_name = name.as_ref();
         let port_name = self.port.name.clone();
 
         match self.port.add_pcie_device(&port_name, device_name, dev) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if let Some(id) = device_id {
+                    self.port.set_bus_range(id);
+                }
+                Ok(())
+            }
             Err(_error) => {
                 // If the connection failed, it means the port is already occupied
                 // We need to get the name of the existing device
@@ -766,9 +784,10 @@ mod tests {
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
         );
 
-        rc.add_pcie_device(0, "ep1", Box::new(endpoint1)).unwrap();
+        rc.add_pcie_device(0, "ep1", Box::new(endpoint1), None)
+            .unwrap();
 
-        match rc.add_pcie_device(0, "ep2", Box::new(endpoint2)) {
+        match rc.add_pcie_device(0, "ep2", Box::new(endpoint2), None) {
             Ok(()) => panic!("should have failed"),
             Err(name) => {
                 assert_eq!(name, "ep1".into());
@@ -823,7 +842,7 @@ mod tests {
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
         );
 
-        rc.add_pcie_device(0, "test-ep", Box::new(endpoint))
+        rc.add_pcie_device(0, "test-ep", Box::new(endpoint), None)
             .unwrap();
 
         // The secondary bus behind root port 0 has been assigned bus number

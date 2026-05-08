@@ -918,9 +918,15 @@ mod weak_mutex_pci {
             port: u8,
             name: Arc<str>,
             dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+            device_id: Option<pcie::bus_range::AssignedBusRange>,
         ) -> Result<(), PcieConflict> {
             self.lock()
-                .add_pcie_device(port, name.clone(), Box::new(WeakMutexPciDeviceWrapper(dev)))
+                .add_pcie_device(
+                    port,
+                    name.clone(),
+                    Box::new(WeakMutexPciDeviceWrapper(dev)),
+                    device_id,
+                )
                 .map_err(|existing_dev_name| PcieConflict {
                     reason: PcieConflictReason::ExistingDev(existing_dev_name),
                     conflict_dev: name,
@@ -939,9 +945,15 @@ mod weak_mutex_pci {
             port: u8,
             name: Arc<str>,
             dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+            device_id: Option<pcie::bus_range::AssignedBusRange>,
         ) -> Result<(), PcieConflict> {
             self.lock()
-                .add_pcie_device(port, &name, Box::new(WeakMutexPciDeviceWrapper(dev)))
+                .add_pcie_device(
+                    port,
+                    &name,
+                    Box::new(WeakMutexPciDeviceWrapper(dev)),
+                    device_id,
+                )
                 .map_err(|err| PcieConflict {
                     reason: PcieConflictReason::ExistingDev(err.to_string().into()),
                     conflict_dev: name,

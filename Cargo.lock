@@ -5893,6 +5893,7 @@ dependencies = [
  "memory_range",
  "mesh",
  "pal_async",
+ "pal_event",
  "parking_lot",
  "pci_bus",
  "pci_core",

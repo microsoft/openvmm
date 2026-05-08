@@ -243,6 +243,7 @@ impl<'a> ChipsetBuilder<'a> {
         bus_id_port: BusIdPcieDownstreamPort,
         name: Arc<str>,
         dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+        device_id: Option<pcie::bus_range::AssignedBusRange>,
     ) {
         self.inner
             .lock()
@@ -253,6 +254,7 @@ impl<'a> ChipsetBuilder<'a> {
                 bus_id_port,
                 name,
                 dev,
+                device_id,
             });
     }
 

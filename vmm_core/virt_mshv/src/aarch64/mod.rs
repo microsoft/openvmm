@@ -57,6 +57,7 @@ impl virt::Hypervisor for LinuxMshv {
             platform_gsiv: None,
             // TODO: query from hypervisor
             supports_gic_v3: true,
+            supports_its: false,
         }
     }
 
@@ -192,7 +193,7 @@ impl virt::Partition for MshvPartition {
     }
 
     fn request_msi(&self, _vtl: Vtl, request: MsiRequest) {
-        self.inner.signal_msi(0, request.address, request.data);
+        self.inner.signal_msi(None, request.address, request.data);
     }
 
     fn request_yield(&self, vp_index: VpIndex) {
@@ -294,7 +295,7 @@ impl virt::DeviceBuilder for MshvPartition {
 }
 
 impl SignalMsi for MshvPartitionInner {
-    fn signal_msi(&self, _rid: u32, _address: u64, data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, _address: u64, data: u32) {
         self.set_spi_irq(data, true);
     }
 }

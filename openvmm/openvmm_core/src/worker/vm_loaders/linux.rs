@@ -161,6 +161,7 @@ fn build_dt(
 
     let num_cpus = processor_topology.vps().len();
 
+    use vm_topology::processor::aarch64::GicMsiController;
     use vm_topology::processor::aarch64::GicVersion;
 
     let gic_dist_base: u64 = processor_topology.gic_distributor_base();
@@ -237,6 +238,7 @@ fn build_dt(
     const PHANDLE_GIC: u32 = 1;
     const PHANDLE_APB_PCLK: u32 = 2;
     const PHANDLE_V2M: u32 = 3;
+    const PHANDLE_ITS: u32 = 4;
 
     const GIC_SPI: u32 = 0;
     const GIC_PPI: u32 = 1;
@@ -311,8 +313,9 @@ fn build_dt(
 
     // ARM64 Generic Interrupt Controller.
     // GICv3 uses "arm,gic-v3"; GICv2 uses "arm,cortex-a15-gic".
-    // Both versions can have a v2m child for SPI-based MSIs (PCIe).
-    let v2m_info = processor_topology.gic_v2m();
+    // GICv3 can have an ITS child for LPI-based MSIs; v2m is the
+    // fallback for SPI-based MSIs (GICv2 or GICv3 without ITS).
+    let gic_msi = processor_topology.gic_msi();
     let gic_compatible = match processor_topology.gic_version() {
         GicVersion::V3 { .. } => "arm,gic-v3",
         GicVersion::V2 { .. } => "arm,cortex-a15-gic",
@@ -335,8 +338,16 @@ fn build_dt(
         .add_null(p_interrupt_controller)?
         .add_u32(p_phandle, PHANDLE_GIC)?
         .add_null(p_ranges)?;
-    root_builder = if let Some(v2m) = v2m_info {
-        gic_node
+    root_builder = match gic_msi {
+        GicMsiController::Its(its) => gic_node
+            .start_node(format!("its@{:x}", its.its_base).as_str())?
+            .add_str(p_compatible, "arm,gic-v3-its")?
+            .add_null(p_msi_controller)?
+            .add_u64_array(p_reg, &[its.its_base, openvmm_defs::config::GIC_ITS_SIZE])?
+            .add_u32(p_phandle, PHANDLE_ITS)?
+            .end_node()?
+            .end_node()?,
+        GicMsiController::V2m(v2m) => gic_node
             .start_node(format!("v2m@{:x}", v2m.frame_base).as_str())?
             .add_str(p_compatible, "arm,gic-v2m-frame")?
             .add_null(p_msi_controller)?
@@ -348,9 +359,8 @@ fn build_dt(
             .add_u32(p_arm_msi_num_spis, v2m.spi_count)?
             .add_u32(p_phandle, PHANDLE_V2M)?
             .end_node()?
-            .end_node()?
-    } else {
-        gic_node.end_node()?
+            .end_node()?,
+        GicMsiController::None => gic_node.end_node()?,
     };
 
     // ARM64 Architectural Timer.
@@ -424,7 +434,7 @@ fn build_dt(
         }
 
         // No interrupt-map is provided because all devices use MSIs via the
-        // v2m frame; legacy INTx routing is not supported.
+        // ITS or v2m frame; legacy INTx routing is not supported.
         let mut node = root_builder
             .start_node(name.as_str())?
             .add_str(p_compatible, "pci-host-ecam-generic")?
@@ -439,8 +449,14 @@ fn build_dt(
             .add_u32(p_size_cells, 2)?
             .add_u32(p_interrupt_parent, PHANDLE_GIC)?
             .add_u32_array(p_ranges, &ranges)?;
-        if v2m_info.is_some() {
-            node = node.add_u32(p_msi_parent, PHANDLE_V2M)?;
+        match gic_msi {
+            GicMsiController::Its(_) => {
+                node = node.add_u32(p_msi_parent, PHANDLE_ITS)?;
+            }
+            GicMsiController::V2m(_) => {
+                node = node.add_u32(p_msi_parent, PHANDLE_V2M)?;
+            }
+            GicMsiController::None => {}
         }
         root_builder = node.end_node()?;
     }

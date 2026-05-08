@@ -300,7 +300,7 @@ impl GenericPcieSwitch {
         value: u32,
     ) -> Option<IoResult> {
         if let Some((_, downstream_port)) = self.downstream_ports.get_mut(&function) {
-            Some(downstream_port.port.cfg_space.write_u32(cfg_offset, value))
+            Some(downstream_port.port.write_cfg(cfg_offset, value))
         } else {
             // No downstream switch port found for this device function
             None
@@ -366,11 +366,14 @@ impl GenericPcieSwitch {
     }
 
     /// Attach the provided `GenericPciBusDevice` to the port identified.
+    ///
+    /// `device_id` is an optional shared identity for RID/device ID tracking.
     pub fn add_pcie_device(
         &mut self,
         port: u8,
         name: &str,
         dev: Box<dyn GenericPciBusDevice>,
+        device_id: Option<crate::bus_range::AssignedBusRange>,
     ) -> anyhow::Result<()> {
         // Find the specific downstream port that matches the port number
         if let Some((port_name, downstream_port)) = self.downstream_ports.get_mut(&port) {
@@ -379,6 +382,9 @@ impl GenericPcieSwitch {
                 .port
                 .add_pcie_device(port_name.as_ref(), name, dev)
                 .context("failed to add PCIe device to downstream port")?;
+            if let Some(id) = device_id {
+                downstream_port.port.set_bus_range(id);
+            }
             Ok(())
         } else {
             // No downstream port found with matching port number
@@ -750,7 +756,8 @@ mod tests {
                 .add_pcie_device(
                     0, // Port number instead of port name
                     "downstream-dev",
-                    Box::new(downstream_device)
+                    Box::new(downstream_device),
+                    None,
                 )
                 .is_ok()
         );
@@ -760,7 +767,7 @@ mod tests {
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
         );
-        let result = switch.add_pcie_device(99, "invalid-dev", Box::new(invalid_device)); // Use invalid port number
+        let result = switch.add_pcie_device(99, "invalid-dev", Box::new(invalid_device), None); // Use invalid port number
         assert!(result.is_err());
         // add_pcie_device returns an anyhow::Error on failure,
         // so we just verify that the connection failed
@@ -783,7 +790,7 @@ mod tests {
         // This tests that the switch can accept device connections (routing capability)
         let test_device =
             TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
-        let add_result = switch.add_pcie_device(0, "test-device", Box::new(test_device));
+        let add_result = switch.add_pcie_device(0, "test-device", Box::new(test_device), None);
         // Should succeed for port 0 (first downstream port)
         assert!(add_result.is_ok());
 
