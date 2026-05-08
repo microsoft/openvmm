@@ -15,6 +15,8 @@ use crate::KvmPartitionInner;
 use crate::KvmProcessorBinder;
 use crate::KvmRunVpError;
 use crate::gsi::GsiRouting;
+use crate::gsi::KvmIrqFdState;
+use crate::gsi::MsiRouteBuilder;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
@@ -459,7 +461,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         let partition = KvmPartition {
             synic_ports: Arc::new(virt::synic::SynicPorts::new(partition.clone())),
-            irqfd_state: Arc::new(crate::gsi::KvmIrqFdState::new(partition.clone())),
+            irqfd_state: Arc::new(KvmIrqFdState::new(partition.clone())),
             inner: partition,
         };
 
@@ -772,8 +774,12 @@ pub(crate) struct KvmMsi {
 }
 
 impl KvmMsi {
-    pub(crate) fn new(request: MsiRequest) -> Self {
+    pub(crate) fn new(request: MsiRequest) -> Option<Self> {
+        // TODO: validate the high bits of the request as well, across the codebase.
         let request_address = MsiAddress::from(request.address as u32);
+        if request_address.address() != x86defs::msi::MSI_ADDRESS {
+            return None;
+        }
         let request_data = MsiData::from(request.data);
 
         // Although architecturally the destination mode bit is only supposed to
@@ -796,21 +802,29 @@ impl KvmMsi {
             .with_vector(request_data.vector())
             .into();
 
-        Self {
+        Some(Self {
             address_lo,
             address_hi,
             data,
-        }
+        })
     }
 }
 
 impl KvmPartitionInner {
     fn request_msi(&self, request: MsiRequest) {
-        let KvmMsi {
+        let Some(KvmMsi {
             address_lo,
             address_hi,
             data,
-        } = KvmMsi::new(request);
+        }) = KvmMsi::new(request)
+        else {
+            tracelimit::warn_ratelimited!(
+                address = request.address,
+                data = request.data,
+                "invalid MSI address"
+            );
+            return;
+        };
         if let Err(err) = self.kvm.request_msi(&kvm::kvm_msi {
             address_lo,
             address_hi,
@@ -829,20 +843,59 @@ impl KvmPartitionInner {
     }
 }
 
+struct KvmX86MsiRouteBuilder;
+
+impl MsiRouteBuilder for KvmX86MsiRouteBuilder {
+    fn routing_entry(
+        &self,
+        _partition: &KvmPartitionInner,
+        address: u64,
+        data: u32,
+    ) -> Option<kvm::RoutingEntry> {
+        let KvmMsi {
+            address_lo,
+            address_hi,
+            data,
+        } = KvmMsi::new(MsiRequest { address, data })?;
+        Some(kvm::RoutingEntry::Msi {
+            address_lo,
+            address_hi,
+            data,
+        })
+    }
+}
+
+impl virt::irqfd::IrqFd for KvmIrqFdState {
+    fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn virt::irqfd::IrqFdRoute>> {
+        Ok(Box::new(self.new_irqfd_route(KvmX86MsiRouteBuilder)?))
+    }
+}
+
 impl IoApicRouting for KvmPartitionInner {
     fn set_irq_route(&self, irq: u8, request: Option<MsiRequest>) {
-        let entry = request.map(|request| {
-            let KvmMsi {
-                address_lo,
-                address_hi,
-                data,
-            } = KvmMsi::new(request);
-            kvm::RoutingEntry::Msi {
-                address_lo,
-                address_hi,
-                data,
-            }
-        });
+        let entry = match request {
+            Some(request) => match KvmMsi::new(request) {
+                Some(KvmMsi {
+                    address_lo,
+                    address_hi,
+                    data,
+                }) => Some(kvm::RoutingEntry::Msi {
+                    address_lo,
+                    address_hi,
+                    data,
+                }),
+                None => {
+                    tracelimit::warn_ratelimited!(
+                        irq,
+                        address = request.address,
+                        data = request.data,
+                        "invalid MSI address for IO-APIC route"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
         let mut gsi_routing = self.gsi_routing.lock();
         if gsi_routing.set(irq as u32, entry) {
             gsi_routing.update_routes(&self.kvm);

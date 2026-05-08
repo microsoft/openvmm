@@ -3,9 +3,11 @@
 
 //! Traits for working with MSI interrupts.
 
-use inspect::Inspect;
+use pal_event::Event;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use vmcore::irqfd::IrqFd;
+use vmcore::irqfd::IrqFdRoute;
 
 /// An object that can signal MSI interrupts.
 pub trait SignalMsi: Send + Sync {
@@ -13,6 +15,50 @@ pub trait SignalMsi: Send + Sync {
     ///
     /// `rid` is the requester ID of the PCI device sending the interrupt.
     fn signal_msi(&self, rid: u32, address: u64, data: u32);
+}
+
+/// A kernel-mediated MSI interrupt route for a single vector.
+///
+/// Each route has an associated event. Signaling the event causes the
+/// hypervisor to inject the configured MSI into the guest without a
+/// userspace transition. This is used for device passthrough (VFIO)
+/// where the physical device signals the event on interrupt.
+pub struct MsiRoute(Box<dyn IrqFdRoute>);
+
+impl MsiRoute {
+    /// Wraps a boxed [`IrqFdRoute`] into a concrete route.
+    pub fn new(backing: Box<dyn IrqFdRoute>) -> Self {
+        Self(backing)
+    }
+
+    /// Returns the event that triggers interrupt injection when signaled.
+    ///
+    /// Pass this to VFIO `map_msix` or any other interrupt source.
+    pub fn event(&self) -> &Event {
+        self.0.event()
+    }
+
+    /// Configures the MSI address and data for this route.
+    ///
+    /// `address` and `data` are the MSI address and data values that
+    /// the hypervisor will use when injecting the interrupt.
+    pub fn enable(&self, address: u64, data: u32) {
+        self.0.enable(address, data)
+    }
+
+    /// Disables the MSI route. Interrupts that arrive while disabled
+    /// remain pending on the event and will be delivered when
+    /// [`enable`](Self::enable) is called, or can be drained via
+    /// [`consume_pending`](Self::consume_pending).
+    pub fn disable(&self) {
+        self.0.disable()
+    }
+
+    /// Drains pending interrupt state and returns whether an interrupt
+    /// was pending while the route was masked.
+    pub fn consume_pending(&self) -> bool {
+        self.event().try_wait()
+    }
 }
 
 struct DisconnectedMsiTarget;
@@ -30,10 +76,18 @@ pub struct MsiConnection {
 }
 
 /// An MSI target that can be used to signal MSI interrupts.
-#[derive(Inspect, Debug, Clone)]
-#[inspect(skip)]
+#[derive(Clone)]
 pub struct MsiTarget {
     inner: Arc<RwLock<MsiTargetInner>>,
+    irqfd: Option<Arc<dyn IrqFd>>,
+}
+
+impl std::fmt::Debug for MsiTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MsiTarget")
+            .field("has_irqfd", &self.irqfd.is_some())
+            .finish()
+    }
 }
 
 struct MsiTargetInner {
@@ -55,6 +109,23 @@ impl MsiConnection {
                 inner: Arc::new(RwLock::new(MsiTargetInner {
                     signal_msi: Arc::new(DisconnectedMsiTarget),
                 })),
+                irqfd: None,
+            },
+        }
+    }
+
+    /// Creates a new disconnected MSI target connection with an
+    /// [`IrqFd`] for kernel-mediated MSI route allocation.
+    ///
+    /// When present, [`MsiTarget::new_route`] can create [`MsiRoute`]
+    /// instances for direct interrupt delivery.
+    pub fn with_irqfd(irqfd: Arc<dyn IrqFd>) -> Self {
+        Self {
+            target: MsiTarget {
+                inner: Arc::new(RwLock::new(MsiTargetInner {
+                    signal_msi: Arc::new(DisconnectedMsiTarget),
+                })),
+                irqfd: Some(irqfd),
             },
         }
     }
@@ -78,5 +149,21 @@ impl MsiTarget {
     pub fn signal_msi(&self, rid: u32, address: u64, data: u32) {
         let inner = self.inner.read();
         inner.signal_msi.signal_msi(rid, address, data);
+    }
+
+    /// Creates a new kernel-mediated MSI route for direct interrupt
+    /// delivery.
+    ///
+    /// Returns `None` if this target was not configured with an
+    /// [`IrqFd`].
+    pub fn new_route(&self) -> Option<anyhow::Result<MsiRoute>> {
+        self.irqfd
+            .as_ref()
+            .map(|fd| Ok(MsiRoute::new(fd.new_irqfd_route()?)))
+    }
+
+    /// Returns whether this target supports direct MSI routes.
+    pub fn supports_direct_msi(&self) -> bool {
+        self.irqfd.is_some()
     }
 }

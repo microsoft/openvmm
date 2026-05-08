@@ -448,13 +448,15 @@ mod tests {
         let intermediate = crate::test_helpers::generate_x509(&rsa_key);
 
         // Build root cert with different subject name
-        let mut root_builder = crypto::x509::X509Builder::new().unwrap();
-        root_builder.set_pubkey_from_rsa_key_pair(&rsa_key).unwrap();
-        root_builder
-            .set_subject_and_issuer_name("US", "Washington", "Redmond", "ACME INC", "acme.com")
-            .unwrap();
-        root_builder.set_validity_days(365).unwrap();
-        let root = root_builder.sign_and_build(&rsa_key).unwrap();
+        let root = X509Certificate::build_self_signed(
+            &rsa_key,
+            "US",
+            "Washington",
+            "Redmond",
+            "ACME INC",
+            "acme.com",
+        )
+        .unwrap();
 
         let cert_chain = vec![cert, intermediate, root];
 

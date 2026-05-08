@@ -48,7 +48,7 @@ impl Pkcs7SignedDataInner {
         let certs =
             openssl::stack::Stack::new().map_err(|e| err(e, "creating empty certificate stack"))?;
         let pkcs7 = openssl::pkcs7::Pkcs7::sign(
-            &cert.0.cert,
+            &cert.0.0,
             &key_pair.0.0,
             &certs,
             data,

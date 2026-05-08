@@ -10,15 +10,15 @@ use symcrypt::rsa::RsaKey;
 use symcrypt::rsa::RsaKeyUsage;
 
 fn err(err: symcrypt::errors::SymCryptError, op: &'static str) -> RsaError {
-    RsaError(crate::BackendError::SymCryptError(err, op))
+    RsaError(crate::BackendError::SymCrypt(err, op))
 }
 
 fn pkcs8_err(err: rsa::pkcs8::Error, op: &'static str) -> RsaError {
-    RsaError(crate::BackendError::Pkcs8EncodingError(err, op))
+    RsaError(crate::BackendError::Pkcs8Encoding(err, op))
 }
 
 #[repr(transparent)] // Needed for the transmute in as_pub.
-pub struct RsaKeyPairInner(RsaKey);
+pub struct RsaKeyPairInner(pub(crate) RsaKey);
 
 impl RsaKeyPairInner {
     pub fn generate(bits: u32) -> Result<Self, RsaError> {
@@ -32,7 +32,7 @@ impl RsaKeyPairInner {
             .map_err(|e| pkcs8_err(e, "parsing PKCS#8 DER"))?;
         let primes = parsed.primes();
         if primes.len() != 2 {
-            return Err(RsaError(crate::BackendError::Pkcs8EncodingError(
+            return Err(RsaError(crate::BackendError::Pkcs8Encoding(
                 rsa::pkcs8::Error::KeyMalformed(rsa::pkcs8::KeyError::Invalid),
                 "multiprime RSA keys not supported",
             )));
@@ -97,7 +97,7 @@ impl RsaKeyPairInner {
 }
 
 #[repr(transparent)] // Needed for the transmute in as_pub.
-pub struct RsaPublicKeyInner(RsaKey);
+pub struct RsaPublicKeyInner(pub(crate) RsaKey);
 
 impl RsaPublicKeyInner {
     pub fn oaep_encrypt(
