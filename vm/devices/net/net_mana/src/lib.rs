@@ -650,12 +650,14 @@ struct PostedTx {
 struct QueueStats {
     tx_events: Counter,
     tx_packets: Counter,
+    tx_vlan_packets: Counter,
     tx_errors: Counter,
     tx_dropped: Counter,
     tx_stuck: Counter,
 
     rx_events: Counter,
     rx_packets: Counter,
+    rx_vlan_packets: Counter,
     rx_errors: Counter,
 
     interrupts: Counter,
@@ -1015,6 +1017,9 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                             pool.write_data(rx.id, &data);
                         }
                         self.stats.rx_packets.increment();
+                        if vlantag.is_some() {
+                            self.stats.rx_vlan_packets.increment();
+                        }
                         packets[i] = rx.id;
                         i += 1;
                     }
@@ -1223,6 +1228,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
             oob.l_oob.set_vlan_id(vlan.vlan_id);
             oob.l_oob.set_pcp(vlan.priority);
             oob.l_oob.set_dei(vlan.drop_eligible_indicator);
+            self.stats.tx_vlan_packets.increment();
         }
         let short_format = self.vp_offset <= 0xff && meta.vlan.is_none();
         if short_format {

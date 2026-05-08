@@ -547,6 +547,7 @@ struct QueueStats {
     tx_lso_packets: Counter,
     tx_checksum_packets: Counter,
     tx_vlan_packets: Counter,
+    rx_vlan_packets: Counter,
     tx_invalid_lso_packets: Counter,
     tx_packets_per_wake: Histogram<10>,
     rx_packets_per_wake: Histogram<10>,
@@ -5375,11 +5376,13 @@ impl<T: 'static + RingMem> NetChannel<T> {
         let n = epqueue
             .rx_poll(pool, &mut data.rx_ready)
             .map_err(WorkerError::Endpoint)?;
+
         if n == 0 {
             return Ok(false);
         }
 
         state.stats.rx_packets_per_wake.add_sample(n as u64);
+        state.stats.rx_vlan_packets.add(pool.take_rx_vlan_count());
 
         if self.packet_filter == rndisprot::NDIS_PACKET_TYPE_NONE {
             tracing::trace!(

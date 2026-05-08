@@ -54,15 +54,25 @@ pub struct GuestBuffers {
 /// suballocations.
 pub struct BufferPool {
     buffers: Arc<GuestBuffers>,
+    rx_vlan_count: u64,
 }
 
 impl BufferPool {
     pub fn new(buffers: Arc<GuestBuffers>) -> Self {
-        Self { buffers }
+        Self {
+            buffers,
+            rx_vlan_count: 0,
+        }
     }
 
     fn offset(&self, id: RxId) -> u32 {
         id.0 * self.buffers.sub_allocation_size
+    }
+
+    /// Returns and resets the number of RX packets with VLAN metadata
+    /// observed since the last call.
+    pub fn take_rx_vlan_count(&mut self) -> u64 {
+        std::mem::take(&mut self.rx_vlan_count)
     }
 }
 
@@ -231,6 +241,7 @@ impl BufferAccess for BufferPool {
         };
 
         let vlan = if let Some(vlan_info) = metadata.vlan {
+            self.rx_vlan_count += 1;
             ppi_count += 1;
             Some(PerPacketInfo {
                 header: rndisprot::PerPacketInfo {
