@@ -107,10 +107,13 @@ impl X509CertificateInner {
                 let skid = issuer_tbs
                     .get_extension::<SubjectKeyIdentifier>()
                     .map_err(|e| der_err(e, "parsing SubjectKeyIdentifier extension"))?;
-                if let Some((_crit, ski)) = skid {
-                    if akid_key_id != &ski.0 {
-                        return Ok(false);
+                match skid {
+                    Some((_crit, ski)) => {
+                        if akid_key_id != &ski.0 {
+                            return Ok(false);
+                        }
                     }
+                    None => return Ok(false),
                 }
             }
             if let Some(akid_serial) = &akid.authority_cert_serial_number {
@@ -124,7 +127,7 @@ impl X509CertificateInner {
                     _ => None,
                 })
             {
-                if dn != issuer_tbs.issuer() {
+                if dn != issuer_tbs.subject() {
                     return Ok(false);
                 }
             }
