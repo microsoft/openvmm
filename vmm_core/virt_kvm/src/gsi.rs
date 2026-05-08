@@ -159,7 +159,7 @@ impl GsiRouteInner {
     /// Disables the associated irqfd.
     ///
     /// This actually leaves the route configured, but it disables the irqfd and
-    /// clears the `enabled` bool so that `signal` won't.
+    /// clears the `enabled` flag.
     pub fn disable(&self, partition: &KvmPartitionInner) {
         let _lock = self.enable_mutex.lock();
         if self.enabled.load(Ordering::Relaxed) {
