@@ -344,6 +344,7 @@ impl NvmeManagerWorker {
         // Note: `client` exists outside of the devices write lock. This is safe:
         // the mesh client will fail appropriately if shutdown comes in between inserting
         // this entry and the call to `load_driver()`.
+        let keepalive_compatible = is_nvme_keepalive_compatible(&pci_id);
         let client = {
             let mut guard = context.devices.write();
 
@@ -361,8 +362,6 @@ impl NvmeManagerWorker {
                 match guard.entry(pci_id.clone()) {
                     hash_map::Entry::Occupied(_) => unreachable!(), // We checked above that this entry does not exist.
                     hash_map::Entry::Vacant(entry) => {
-                        let keepalive_compatible = is_nvme_keepalive_compatible(&pci_id);
-
                         let driver = NvmeDriverManager::new(
                             &context.driver_source,
                             &pci_id,
@@ -496,7 +495,7 @@ impl NvmeManagerWorker {
                     &self.context.driver_source,
                     &pci_id,
                     self.context.vp_count,
-                    keepalive_compatible, // save_restore support is no longer guaraneteed
+                    keepalive_compatible, // save_restore support is no longer guaranteed
                     keepalive_compatible,
                     Some(nvme_driver),
                     self.context.nvme_driver_spawner.clone(),
