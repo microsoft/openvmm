@@ -842,9 +842,8 @@ impl virt::Partition for KvmPartition {
     }
 
     fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
-        if self.inner.gic_v2m.is_none() {
-            return None;
-        }
+        // The irqfd implementation requires a GICv2m frame to be present.
+        self.inner.gic_v2m?;
         Some(self.irqfd_state.clone())
     }
 
