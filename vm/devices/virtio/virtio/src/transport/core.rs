@@ -124,6 +124,10 @@ impl VirtioTransportCore {
             })
             .collect::<std::io::Result<Vec<_>>>()?;
 
+        // Always enforce VERSION_1 — both PCI-modern and MMIO v2 transports
+        // require it, and omitting it would be a caller bug.
+        let transport_features = transport_features.with_version_1(true);
+
         let device_feature = VirtioDeviceFeatures::from_bits(
             traits.device_features.into_bits() | transport_features.into_bits(),
         );

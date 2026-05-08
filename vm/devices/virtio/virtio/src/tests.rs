@@ -61,10 +61,12 @@ use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 
 // Device features - first bank
+const TEST_DEVICE_FEATURE_BIT: u32 = 2; // arbitrary device-specific feature for testing
 const VIRTIO_F_RING_INDIRECT_DESC: u32 = 0x10000000;
 const VIRTIO_F_RING_EVENT_IDX: u32 = 0x20000000;
 // Device features - second bank
 const VIRTIO_F_VERSION_1: u32 = 1;
+const VIRTIO_F_ACCESS_PLATFORM: u32 = 2;
 const VIRTIO_F_RING_PACKED: u32 = 4;
 
 // Device status
@@ -1399,7 +1401,7 @@ impl VirtioPciTestDevice {
                 DeviceTraits {
                     device_id: VirtioDeviceType::CONSOLE,
                     device_features: VirtioDeviceFeatures::new()
-                        .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                        .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
                         .with_bank(1, VIRTIO_F_RING_PACKED),
                     max_queues: num_queues,
                     device_register_length: 12,
@@ -1452,7 +1454,7 @@ async fn verify_chipset_config(driver: DefaultDriver) {
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
                     .with_bank(1, VIRTIO_F_RING_PACKED),
                 max_queues: 1,
                 device_register_length: 0,
@@ -1479,7 +1481,7 @@ async fn verify_chipset_config(driver: DefaultDriver) {
     // device feature (bank 0)
     assert_eq!(
         dev.read_u32(16),
-        VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | 2
+        VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | TEST_DEVICE_FEATURE_BIT
     );
     // device feature bank index
     assert_eq!(dev.read_u32(20), 0);
@@ -1497,7 +1499,7 @@ async fn verify_chipset_config(driver: DefaultDriver) {
     dev.write_u32(32, 0xffffffff);
     assert_eq!(
         dev.read_u32(32),
-        VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | 2
+        VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | TEST_DEVICE_FEATURE_BIT
     );
     // driver feature bank index
     assert_eq!(dev.read_u32(36), 0);
@@ -1617,7 +1619,7 @@ async fn verify_transport_features_access_platform_mmio(driver: DefaultDriver) {
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
                     .with_bank(1, VIRTIO_F_RING_PACKED),
                 max_queues: 1,
                 device_register_length: 0,
@@ -1659,7 +1661,7 @@ async fn verify_transport_features_no_access_platform_mmio(driver: DefaultDriver
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
                     .with_bank(1, VIRTIO_F_RING_PACKED),
                 max_queues: 1,
                 device_register_length: 0,
@@ -1680,6 +1682,85 @@ async fn verify_transport_features_no_access_platform_mmio(driver: DefaultDriver
     dev.write_u32(20, 1);
     assert_eq!(
         dev.read_u32(16),
+        VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED
+    );
+}
+
+#[async_test]
+async fn verify_transport_features_access_platform_pci(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
+    let msi_conn = MsiConnection::new();
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+
+    let mut dev = VirtioPciDevice::new_with_transport_features(
+        Box::new(TestDevice::new(
+            &driver_source,
+            DeviceTraits {
+                device_id: VirtioDeviceType::CONSOLE,
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                    .with_bank(1, VIRTIO_F_RING_PACKED),
+                max_queues: 1,
+                device_register_length: 12,
+                ..Default::default()
+            },
+            None,
+        )),
+        &driver_source.simple(),
+        GuestMemory::new("test", test_mem),
+        PciInterruptModel::Msix(msi_conn.target()),
+        Some(doorbell_registration),
+        &mut ExternallyManagedMmioIntercepts,
+        None,
+        VirtioDeviceFeatures::new()
+            .with_version_1(true)
+            .with_access_platform(true),
+    )
+    .unwrap();
+
+    // device feature (bank 1) should include ACCESS_PLATFORM
+    dev.write_u32(0, 1); // select bank 1
+    assert_eq!(
+        dev.read_u32(4),
+        VIRTIO_F_VERSION_1 | VIRTIO_F_ACCESS_PLATFORM | VIRTIO_F_RING_PACKED
+    );
+}
+
+#[async_test]
+async fn verify_transport_features_no_access_platform_pci(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
+    let msi_conn = MsiConnection::new();
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+
+    let mut dev = VirtioPciDevice::new(
+        Box::new(TestDevice::new(
+            &driver_source,
+            DeviceTraits {
+                device_id: VirtioDeviceType::CONSOLE,
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                    .with_bank(1, VIRTIO_F_RING_PACKED),
+                max_queues: 1,
+                device_register_length: 12,
+                ..Default::default()
+            },
+            None,
+        )),
+        &driver_source.simple(),
+        GuestMemory::new("test", test_mem),
+        PciInterruptModel::Msix(msi_conn.target()),
+        Some(doorbell_registration),
+        &mut ExternallyManagedMmioIntercepts,
+        None,
+    )
+    .unwrap();
+
+    // device feature (bank 1) should NOT include ACCESS_PLATFORM
+    dev.write_u32(0, 1); // select bank 1
+    assert_eq!(
+        dev.read_u32(4),
         VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED
     );
 }
@@ -1867,7 +1948,7 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     // device feature (bank 0)
     assert_eq!(
         pci_test_device.read_u32(bar_address1 + 4),
-        VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | 2
+        VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | TEST_DEVICE_FEATURE_BIT
     );
     // device feature (bank 1)
     pci_test_device.write_u32(bar_address1, 1);
@@ -1889,7 +1970,7 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     pci_test_device.write_u32(bar_address1 + 12, 0xffffffff);
     assert_eq!(
         pci_test_device.read_u32(bar_address1 + 12),
-        VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | 2
+        VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | TEST_DEVICE_FEATURE_BIT
     );
     // driver feature (bank 1)
     pci_test_device.write_u32(bar_address1 + 8, 1);
@@ -2696,7 +2777,7 @@ async fn verify_device_split_queue_simple(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 2, true);
     let features = VirtioDeviceFeatures::new()
-        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | 2)
+        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | TEST_DEVICE_FEATURE_BIT)
         .with_bank(1, VIRTIO_F_VERSION_1);
     verify_device_queue_simple_inner(test_mem, guest, features).await;
 }
@@ -2705,7 +2786,7 @@ async fn verify_device_packed_queue_simple(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     let guest = VirtioTestGuest::new_packed(&driver, &test_mem, 1, 2, true);
     let features = VirtioDeviceFeatures::new()
-        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | 2)
+        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | TEST_DEVICE_FEATURE_BIT)
         .with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
     verify_device_queue_simple_inner(test_mem, guest, features).await;
 }
@@ -2797,7 +2878,7 @@ async fn verify_device_split_multi_queue(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     let guest = VirtioTestGuest::new_split(&driver, &test_mem, num_queues, 2, true);
     let features = VirtioDeviceFeatures::new()
-        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | 2)
+        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | TEST_DEVICE_FEATURE_BIT)
         .with_bank(1, VIRTIO_F_VERSION_1);
     verify_device_multi_queue_inner(test_mem, guest, num_queues, features).await;
 }
@@ -2807,7 +2888,7 @@ async fn verify_device_packed_multi_queue(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     let guest = VirtioTestGuest::new_packed(&driver, &test_mem, num_queues, 2, true);
     let features = VirtioDeviceFeatures::new()
-        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | 2)
+        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | TEST_DEVICE_FEATURE_BIT)
         .with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
     verify_device_multi_queue_inner(test_mem, guest, num_queues, features).await;
 }
@@ -2877,7 +2958,7 @@ async fn verify_device_split_multi_queue_pci(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     let guest = VirtioTestGuest::new_split(&driver, &test_mem, num_queues, 2, true);
     let features = VirtioDeviceFeatures::new()
-        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | 2)
+        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | TEST_DEVICE_FEATURE_BIT)
         .with_bank(1, VIRTIO_F_VERSION_1);
     verify_device_multi_queue_pci_inner(test_mem, guest, num_queues, features).await;
 }
@@ -2887,7 +2968,7 @@ async fn verify_device_packed_multi_queue_pci(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     let guest = VirtioTestGuest::new_packed(&driver, &test_mem, num_queues, 2, true);
     let features = VirtioDeviceFeatures::new()
-        .with_bank(0, VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | 2)
+        .with_bank(0, VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | TEST_DEVICE_FEATURE_BIT)
         .with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
     verify_device_multi_queue_pci_inner(test_mem, guest, num_queues, features).await;
 }
@@ -2903,7 +2984,7 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
             traits: DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -2956,7 +3037,7 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
             traits: DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues: 1,
                 device_register_length: 12,
                 ..Default::default()
@@ -3643,7 +3724,7 @@ impl PartialFailTestDevice {
             traits: DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues,
                 device_register_length: 0,
                 ..Default::default()
@@ -4034,7 +4115,7 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues: 1,
                 device_register_length: 12,
                 ..Default::default()
@@ -4215,7 +4296,7 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -4251,7 +4332,7 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -4292,7 +4373,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     let mut dev = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
     // Negotiate features including the device-specific bit (bank 0, bit 1).
     let mut driver_features = guest.queue_features();
-    driver_features.set_bank(0, driver_features.bank(0) | 2);
+    driver_features.set_bank(0, driver_features.bank(0) | TEST_DEVICE_FEATURE_BIT);
     guest.setup_pci_device(&mut dev, driver_features).await;
 
     dev.pci_device.stop().await;
@@ -4465,7 +4546,7 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -4503,7 +4584,7 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new()
-                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                    .with_bank(0, TEST_DEVICE_FEATURE_BIT | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
