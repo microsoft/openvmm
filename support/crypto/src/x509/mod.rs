@@ -123,7 +123,7 @@ mod tests {
         .public_key()
         .unwrap();
         // Invalid signatures must be reported as `Ok(false)`, not `Err`.
-        assert_eq!(cert.verify(&other_pubkey), Ok(false));
+        assert!(matches!(cert.verify(&other_pubkey), Ok(false)));
     }
 
     /// DER round-trip preserves the cert and its signature.
