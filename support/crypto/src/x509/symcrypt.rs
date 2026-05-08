@@ -26,6 +26,9 @@ impl X509CertificateInner {
     }
 
     pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, X509Error> {
+        // Currently we only expect RSA public keys.
+        // If someday we need to support other public key types, the return
+        // type of this function will need to change.
         let parsed = ::rsa::pkcs1::RsaPublicKey::from_der(
             self.0
                 .tbs_certificate()
@@ -48,7 +51,7 @@ impl X509CertificateInner {
     pub fn verify(&self, issuer_public_key: &crate::rsa::RsaPublicKey) -> Result<bool, X509Error> {
         let oid = self.0.signature_algorithm().oid;
         let hash = match oid {
-            ::rsa::sha2::Sha256::OID => symcrypt::hash::HashAlgorithm::Sha256,
+            ::rsa::sha2::Sha256::OID => crate::rsa::HashAlgorithm::Sha256,
             _ => {
                 return Err(der_err(
                     der::ErrorKind::OidUnknown { oid }.to_error(),
@@ -65,11 +68,8 @@ impl X509CertificateInner {
         let signature = self.0.signature().raw_bytes();
 
         issuer_public_key
-            .0
-            .0
             .pkcs1_verify(&tbs_der, signature, hash)
-            .map_err(|e| err(e, "verifying certificate signature"))?;
-        Ok(true)
+            .map_err(|e| X509Error(e.0))
     }
 
     pub fn issued(&self, subject: &X509CertificateInner) -> bool {

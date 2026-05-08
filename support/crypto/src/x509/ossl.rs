@@ -21,7 +21,11 @@ impl X509CertificateInner {
             .0
             .public_key()
             .map_err(|e| err(e, "extracting public key"))?;
-        assert_eq!(pkey.id(), openssl::pkey::Id::RSA);
+        // Currently we only expect RSA public keys, so verify the type.
+        // If someday we need to support other public key types, the return
+        // type of this function will need to change.
+        pkey.rsa()
+            .map_err(|e| err(e, "extracting RSA public key"))?;
         Ok(crate::rsa::RsaPublicKey(
             crate::rsa::ossl::RsaPublicKeyInner(pkey),
         ))

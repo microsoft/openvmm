@@ -151,7 +151,7 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
         )
         .map_err(HardwareKeySealingError::HmacBeforeDecrypt)?;
 
-        if hmac != self.hmac {
+        if !constant_time_eq::constant_time_eq_32(&hmac, &self.hmac) {
             Err(HardwareKeySealingError::HardwareKeyProtectorHmacVerificationFailed)?
         }
 
