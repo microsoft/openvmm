@@ -270,8 +270,8 @@ impl SimpleFlowNode for Node {
                         FlowPlatformKind::Unix => {
                             // on linux, we need to be sudo to create the temp dir
                             if !temp_dir.exists() {
-                                flowey::shell_cmd!(rt, "sudo mkdir -p {temp_dir}");
-                                flowey::shell_cmd!(rt, "sudo chmod 777 {temp_dir}");
+                                flowey::shell_cmd!(rt, "sudo mkdir -p {temp_dir}").run()?;
+                                flowey::shell_cmd!(rt, "sudo chmod 777 {temp_dir}").run()?;
                             };
                             env.insert("TMPDIR".into(), make_portable_path(temp_dir.clone())?);
                         }
