@@ -71,7 +71,7 @@ impl TestHarness {
 
         let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-        let device = VirtioFsDevice::new(&driver_source, "testfs", fs, 0, None);
+        let device = VirtioFsDevice::new(&driver_source, "testfs", fs, 0, None, Some(1));
 
         let queue_event = Event::new();
         let interrupt_event = Event::new();

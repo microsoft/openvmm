@@ -30,6 +30,9 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+/// Maximum number of request queues to advertise.
+const MAX_REQUEST_QUEUES: u32 = 16;
+
 /// PCI configuration space values for virtio-fs devices.
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout)]
@@ -58,19 +61,32 @@ pub struct VirtioFsDevice {
 
 impl VirtioFsDevice {
     /// Creates a new `VirtioFsDevice` with the specified mount tag.
+    ///
+    /// `num_request_queues` controls how many virtio request queues the device
+    /// advertises. The Linux guest kernel (≥6.11) distributes I/O across
+    /// queues on a per-CPU basis. If `None`, defaults to the number of
+    /// available CPUs (capped at 16).
     pub fn new<Fs>(
         driver_source: &VmTaskDriverSource,
         tag: &str,
         fs: Fs,
         shmem_size: u64,
         notify_corruption: Option<Arc<dyn Fn() + Sync + Send>>,
+        num_request_queues: Option<u32>,
     ) -> Self
     where
         Fs: 'static + fuse::Fuse + Send + Sync,
     {
+        let num_request_queues = num_request_queues.unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get() as u32)
+                .unwrap_or(1)
+                .clamp(1, MAX_REQUEST_QUEUES)
+        });
+
         let mut config = VirtioFsDeviceConfig {
             tag: [0; 36],
-            num_request_queues: 1,
+            num_request_queues,
         };
 
         let notify_corruption = if let Some(notify) = notify_corruption {
@@ -104,7 +120,7 @@ impl VirtioDevice for VirtioFsDevice {
                 .with_ring_event_idx(true)
                 .with_ring_indirect_desc(true)
                 .with_ring_packed(true),
-            max_queues: 2,
+            max_queues: self.config.num_request_queues as u16 + 1,
             device_register_length: self.config.as_bytes().len() as u32,
             shared_memory: DeviceTraitsSharedMemory {
                 id: 0,

@@ -44,6 +44,7 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
                 )?,
                 0,
                 None,
+                None,
             ),
             #[cfg(windows)]
             VirtioFsBackend::SectionFs { root_path } => {
@@ -52,6 +53,7 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
                     &resource.tag,
                     crate::SectionFs::new(root_path)?,
                     8 * 1024 * 1024 * 1024, // 8GB of shared memory,
+                    None,
                     None,
                 )
             }
