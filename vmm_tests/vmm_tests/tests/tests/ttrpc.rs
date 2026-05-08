@@ -13,6 +13,7 @@ use pal_async::task::Spawn;
 use petri::ResolvedArtifact;
 use petri_artifacts_vmm_test::artifacts;
 use std::io::Read;
+use std::process::ExitStatus;
 use std::process::Stdio;
 use unix_socket::UnixStream;
 
@@ -41,10 +42,12 @@ fn test_ttrpc_interface(
 
     let (stderr_read, stderr_write) = pal::pipe_pair()?;
     let mut child = std::process::Command::new(openvmm)
-        .arg("--ttrpc")
-        .arg(&socket_path)
+        .arg("serve")
+        .arg("--transport")
+        .arg("ttrpc")
         .arg("--pidfile")
         .arg(&pidfile_path)
+        .arg(&socket_path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(stderr_write)
@@ -63,9 +66,9 @@ fn test_ttrpc_interface(
         "pidfile should contain the child PID"
     );
 
-    DefaultPool::run_with(async |driver| {
+    let status = DefaultPool::run_with(async |driver| -> anyhow::Result<ExitStatus> {
         let driver = driver;
-        let _stderr_task = driver.spawn(
+        let stderr_task = driver.spawn(
             "stderr",
             petri::log_task(
                 params.logger.log_file("stderr").unwrap(),
@@ -182,10 +185,23 @@ fn test_ttrpc_interface(
                 _ => unreachable!(),
             }
         }
-    });
 
-    child.wait()?;
+        let (status_send, status_recv) = mesh::oneshot();
+        std::thread::Builder::new()
+            .name("wait-openvmm".into())
+            .spawn(move || status_send.send(child.wait()))
+            .context("failed to spawn openvmm wait thread")?;
+
+        let status = status_recv
+            .await
+            .context("openvmm wait thread exited without status")??;
+        stderr_task.await?;
+        Ok(status)
+    })?;
+
     let _ = std::fs::remove_file(&socket_path);
+
+    assert!(status.success(), "openvmm exited with {status}");
 
     // Verify the pidfile was cleaned up on exit.
     assert!(

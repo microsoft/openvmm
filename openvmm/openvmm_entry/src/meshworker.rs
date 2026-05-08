@@ -77,6 +77,12 @@ impl VmmMesh {
         Ok(host)
     }
 
+    pub fn process_mesh(&self) -> anyhow::Result<&Mesh> {
+        self.mesh
+            .as_ref()
+            .context("external mesh listeners require process mesh")
+    }
+
     pub async fn shutdown(self) {
         if let Some(mesh) = self.mesh {
             mesh.shutdown().await;

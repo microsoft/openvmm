@@ -5,10 +5,9 @@
 
 #![cfg(any(feature = "ttrpc", feature = "grpc"))]
 
-use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
 use crate::vm_controller::InspectTarget;
-use crate::vm_controller::VmController;
+use crate::vm_controller::ServerVmStartParams;
 use crate::vm_controller::VmControllerEvent;
 use crate::vm_controller::VmControllerRpc;
 use anyhow::Context;
@@ -42,7 +41,6 @@ use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::rpc::VmRpc;
-use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
 use openvmm_helpers::disk::OpenDiskOptions;
 use openvmm_helpers::disk::open_disk_type;
@@ -70,6 +68,8 @@ use vm_resource::kind::VmbusDeviceHandleKind;
 pub struct Parameters {
     pub listener: UnixListener,
     pub transport: RpcTransport,
+    pub vm_controller: mesh::Sender<VmControllerRpc>,
+    pub vm_controller_events: mesh::Receiver<VmControllerEvent>,
 }
 
 #[derive(Copy, Clone, mesh::MeshPayload)]
@@ -98,6 +98,8 @@ enum ResolvedTransport {
 pub struct TtrpcWorker {
     listener: UnixListener,
     transport: ResolvedTransport,
+    vm_controller: mesh::Sender<VmControllerRpc>,
+    vm_controller_events: mesh::Receiver<VmControllerEvent>,
 }
 
 pub const TTRPC_WORKER: WorkerId<Parameters> = WorkerId::new("TtrpcWorker");
@@ -119,6 +121,8 @@ impl Worker for TtrpcWorker {
                 #[allow(unreachable_patterns)]
                 transport => bail!("unsupported transport {transport}"),
             },
+            vm_controller: parameters.vm_controller,
+            vm_controller_events: parameters.vm_controller_events,
         })
     }
 
@@ -131,16 +135,14 @@ impl Worker for TtrpcWorker {
             let mut service = VmService {
                 driver,
                 vm: None,
-                vm_controller: None,
-                vm_controller_events: None,
-                controller_task: None,
+                vm_controller: self.vm_controller,
+                vm_controller_events: Some(self.vm_controller_events),
                 wait_vm_response: None,
                 halted: false,
                 rpc_tasks: Vec::new(),
                 transport: self.transport,
             };
-            service.run(self.listener, recv).await?;
-            Ok(())
+            service.run(self.listener, recv).await
         })
     }
 }
@@ -257,7 +259,7 @@ impl VmService {
                     break false;
                 }
                 Action::ControllerEvent(Some(event)) => {
-                    self.handle_controller_event(event);
+                    self.handle_controller_event(event).await;
                 }
                 Action::ControllerEvent(None) => {} // handled above
                 Action::WaitVmCancelled(reason) => {
@@ -269,14 +271,8 @@ impl VmService {
             }
         };
 
-        // If the controller is still alive (non-Quit exit), shut it down.
         if !quit {
-            if let Some(controller) = self.vm_controller.take() {
-                controller.send(VmControllerRpc::Quit);
-            }
-        }
-        if let Some(task) = self.controller_task.take() {
-            task.await;
+            self.vm_controller.send(VmControllerRpc::Quit);
         }
 
         // Complete any pending WaitVm with an error.
@@ -321,9 +317,8 @@ struct Vm {
 struct VmService {
     driver: DefaultDriver,
     vm: Option<Arc<Vm>>,
-    vm_controller: Option<mesh::Sender<VmControllerRpc>>,
+    vm_controller: mesh::Sender<VmControllerRpc>,
     vm_controller_events: Option<mesh::Receiver<VmControllerEvent>>,
-    controller_task: Option<Task<()>>,
     wait_vm_response: Option<(mesh::CancelContext, mesh::OneshotSender<Result<(), Status>>)>,
     /// Set when the guest has halted, so that a later `WaitVm` completes
     /// immediately instead of blocking forever. Cleared on `CreateVm`.
@@ -371,13 +366,7 @@ impl VmService {
                 response.send(map_grpc(self.teardown_vm().await))
             }
             vmservice::Vm::Quit((), response) => {
-                // Shut down the controller (which stops and joins the worker).
-                if let Some(controller) = self.vm_controller.take() {
-                    controller.send(VmControllerRpc::Quit);
-                }
-                if let Some(task) = self.controller_task.take() {
-                    task.await;
-                }
+                self.vm_controller.send(VmControllerRpc::Quit);
                 self.vm.take();
                 self.vm_controller_events.take();
                 if let Some((_, wait_response)) = self.wait_vm_response.take() {
@@ -452,9 +441,8 @@ impl VmService {
         let mut inspection = InspectionBuilder::new(&request.path)
             .depth(Some(request.depth as usize))
             .inspect(inspect::adhoc(|req| {
-                if let Some(controller) = &self.vm_controller {
-                    controller.send(VmControllerRpc::Inspect(InspectTarget::Host, req.defer()));
-                }
+                self.vm_controller
+                    .send(VmControllerRpc::Inspect(InspectTarget::Host, req.defer()));
             }));
         async move {
             let _ = ctx
@@ -476,9 +464,8 @@ impl VmService {
             &request.path,
             &request.value,
             inspect::adhoc(|req| {
-                if let Some(controller) = &self.vm_controller {
-                    controller.send(VmControllerRpc::Inspect(InspectTarget::Host, req.defer()));
-                }
+                self.vm_controller
+                    .send(VmControllerRpc::Inspect(InspectTarget::Host, req.defer()));
             }),
         );
         async move {
@@ -677,77 +664,44 @@ impl VmService {
         let (send, recv) = mesh::channel();
         let (notify_send, notify_recv) = mesh::channel();
 
-        // Create a VmmMesh for local/in-process workers.
-        let mesh = VmmMesh::new(&self.driver, true)?;
-        let vm_host = mesh
-            .make_host("vm", None)
-            .await
-            .context("spawning vm process failed")?;
-
-        let worker = vm_host
-            .launch_worker(
-                VM_WORKER,
-                VmWorkerParameters {
-                    hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
-                    cfg: config,
-                    saved_state: None,
-                    shared_memory: None,
-                    rpc: recv,
-                    notify: notify_send,
-                },
+        let handles = self
+            .vm_controller
+            .call(
+                VmControllerRpc::CreateVm,
+                Box::new(ServerVmStartParams {
+                    worker_params: VmWorkerParameters {
+                        hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
+                        cfg: config,
+                        saved_state: None,
+                        shared_memory: None,
+                        rpc: recv,
+                        notify: notify_send,
+                    },
+                    vm_rpc: send,
+                    notify_recv,
+                    scsi_rpc,
+                    memory: config_mem_size,
+                    processors: config_proc_count,
+                }),
             )
-            .await?;
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|r| Ok(r?))?;
 
-        let memory = config_mem_size;
-        let processors = config_proc_count;
-
-        // Create channels for VmController.
-        let (vm_controller_send, vm_controller_recv) = mesh::channel();
-        let (event_send, event_recv) = mesh::channel();
-
-        // Build VmController with no paravisor-specific fields.
-        let controller = VmController {
-            mesh,
-            vm_worker: worker,
-            vnc_worker: None,
-            gdb_worker: None,
-            diag_inspector: None,
-            vtl2_settings: None,
-            ged_rpc: None,
-            vm_rpc: send.clone(),
-            paravisor_diag: None,
-            igvm_path: None,
-            memory_backing_file: None,
-            memory,
-            processors,
-            log_file: None,
-        };
-
-        // Spawn the controller task.
-        let controller_task = self.driver.spawn(
-            "vm-controller",
-            controller.run(vm_controller_recv, event_send, notify_recv),
-        );
-
-        self.vm_controller = Some(vm_controller_send);
-        self.vm_controller_events = Some(event_recv);
-        self.controller_task = Some(controller_task);
         self.vm = Some(Arc::new(Vm {
-            scsi_rpc,
-            worker_rpc: send,
+            scsi_rpc: handles.scsi_rpc,
+            worker_rpc: handles.vm_rpc,
         }));
         Ok(())
     }
 
     async fn teardown_vm(&mut self) -> anyhow::Result<()> {
-        let controller = self.vm_controller.take().context("vm not created")?;
-        controller.send(VmControllerRpc::Quit);
-        drop(controller);
-        if let Some(task) = self.controller_task.take() {
-            task.await;
-        }
+        self.vm_controller
+            .call(VmControllerRpc::TeardownVm, ())
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|r| Ok(r?))?;
         self.vm.take();
-        self.vm_controller_events.take();
         if let Some((_, response)) = self.wait_vm_response.take() {
             response.send(Err(grpc_error(anyhow!("VM torn down"))));
         }
@@ -764,7 +718,7 @@ impl VmService {
         async move { recv.await.map(drop).context("resume failed") }
     }
 
-    fn handle_controller_event(&mut self, event: VmControllerEvent) {
+    async fn handle_controller_event(&mut self, event: VmControllerEvent) {
         match event {
             VmControllerEvent::GuestHalt(reason) => {
                 tracing::info!(%reason, "guest halted (via controller)");
@@ -787,10 +741,7 @@ impl VmService {
                     };
                     response.send(Err(status));
                 }
-                // Clear VM state since the worker is gone. The controller
-                // task will be awaited during final cleanup.
                 self.vm.take();
-                self.vm_controller.take();
             }
             VmControllerEvent::VncWorkerStopped { error } => {
                 if let Some(err) = &error {

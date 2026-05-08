@@ -390,6 +390,12 @@ pub(crate) struct ReplResources {
     pub kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     pub console_in: Option<Box<dyn AsyncWrite + Send + Unpin>>,
     pub has_vtl2: bool,
+    pub quit_behavior: ReplQuitBehavior,
+}
+
+pub(crate) enum ReplQuitBehavior {
+    QuitVm,
+    Detach,
 }
 
 /// Run the interactive REPL.
@@ -407,6 +413,7 @@ pub(crate) async fn run_repl(
         kvp_ic,
         console_in,
         has_vtl2,
+        quit_behavior,
     } = resources;
 
     let (console_command_send, console_command_recv) = mesh::channel();
@@ -1315,12 +1322,21 @@ pub(crate) async fn run_repl(
                 }
             }
             InteractiveCommand::Quit => {
-                tracing::info!("quitting");
-                // Work around the detached SCSI task holding up worker stop.
-                // TODO: Fix the underlying bug
-                drop(scsi_rpc.take());
-                drop(nvme_vtl2_rpc.take());
-                vm_controller.send(VmControllerRpc::Quit);
+                match quit_behavior {
+                    ReplQuitBehavior::QuitVm => {
+                        tracing::info!("quitting");
+                        // Work around the detached SCSI task holding up worker stop.
+                        // TODO: Fix the underlying bug
+                        drop(scsi_rpc.take());
+                        drop(nvme_vtl2_rpc.take());
+                        vm_controller.send(VmControllerRpc::Quit);
+                        break;
+                    }
+                    ReplQuitBehavior::Detach => {
+                        tracing::info!("detaching");
+                        break;
+                    }
+                }
             }
             InteractiveCommand::ReadMemory { gpa, size, file } => {
                 let size = size as usize;
