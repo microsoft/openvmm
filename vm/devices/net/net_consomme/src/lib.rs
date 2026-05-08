@@ -32,18 +32,59 @@ use pal_async::driver::Driver;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::net::IpAddr;
+use std::net::Ipv4Addr;
+use std::net::SocketAddr;
+use std::net::SocketAddrV4;
+use std::net::SocketAddrV6;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
 
+/// Creates and binds a socket for the given protocol, address, and port.
+///
+/// When `ip_addr` is `None`, binds to `0.0.0.0` (IPv4 only).
+pub fn create_bound_socket(
+    protocol: &IpProtocol,
+    ip_addr: Option<IpAddr>,
+    port: u16,
+) -> std::io::Result<socket2::Socket> {
+    let bind_addr: SocketAddr = match ip_addr {
+        Some(IpAddr::V4(ip)) => SocketAddr::V4(SocketAddrV4::new(ip, port)),
+        Some(IpAddr::V6(ip)) => SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0)),
+        None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
+    };
+    let domain = match bind_addr {
+        SocketAddr::V4(_) => socket2::Domain::IPV4,
+        SocketAddr::V6(_) => socket2::Domain::IPV6,
+    };
+    let (sock_type, sock_protocol) = match protocol {
+        IpProtocol::Tcp => (socket2::Type::STREAM, socket2::Protocol::TCP),
+        IpProtocol::Udp => (socket2::Type::DGRAM, socket2::Protocol::UDP),
+    };
+    let socket = socket2::Socket::new(domain, sock_type, Some(sock_protocol))?;
+    socket.bind(&bind_addr.into())?;
+    Ok(socket)
+}
+
 pub struct ConsommeEndpoint {
     endpoint_state: Arc<Mutex<Option<EndpointState>>>,
+}
+
+/// Configuration for a port to forward from the host to the guest.
+pub struct PortForwardConfig {
+    /// The protocol to forward.
+    pub protocol: IpProtocol,
+    /// An already-bound host socket to forward traffic from.
+    pub socket: socket2::Socket,
+    /// The port traffic is forwarded to on the guest.
+    pub guest_port: u16,
 }
 
 struct EndpointState {
     consomme: Consomme,
     recv: Option<mesh::Receiver<ConsommeMessage>>,
+    port_forwards: Vec<PortForwardConfig>,
 }
 
 impl ConsommeEndpoint {
@@ -52,6 +93,18 @@ impl ConsommeEndpoint {
             endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
                 consomme: Consomme::new(state),
                 recv: None,
+                port_forwards: Vec::new(),
+            }))),
+        }
+    }
+
+    /// Creates a new endpoint with ports to forward once the queue starts.
+    pub fn new_with_ports(state: ConsommeParams, ports: Vec<PortForwardConfig>) -> Self {
+        Self {
+            endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
+                consomme: Consomme::new(state),
+                recv: None,
+                port_forwards: ports,
             }))),
         }
     }
@@ -64,6 +117,7 @@ impl ConsommeEndpoint {
                 endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
                     consomme,
                     recv: Some(recv),
+                    port_forwards: Vec::new(),
                 }))),
             },
             ConsommeControl { send },
@@ -93,27 +147,30 @@ pub enum ConsommeMessageError {
     #[error("communication error")]
     Mesh(RpcError),
     /// Error executing request on current network instance.
-    #[error("network err")]
-    Network(consomme::DropReason),
+    #[error("bind error")]
+    Bind(consomme::BindError),
 }
 
 /// Callback to modify network state dynamically.
 pub type ConsommeParamsUpdateFn = Box<dyn Fn(&mut ConsommeParams) + Send>;
 
+#[derive(Debug, Clone, Copy)]
 pub enum IpProtocol {
     Tcp,
     Udp,
 }
 
-struct MessageBindPort {
+/// Configuration for unbinding a previously forwarded port.
+struct PortUnbindConfig {
+    /// The protocol that was forwarded.
     protocol: IpProtocol,
-    address: Option<IpAddr>,
-    port: u16,
+    /// The guest port that was forwarded.
+    guest_port: u16,
 }
 
 enum ConsommeMessage {
-    BindPort(Rpc<MessageBindPort, Result<(), consomme::DropReason>>),
-    UnbindPort(Rpc<MessageBindPort, Result<(), consomme::DropReason>>),
+    BindPort(Rpc<PortForwardConfig, Result<(), consomme::BindError>>),
+    UnbindPort(Rpc<PortUnbindConfig, Result<(), consomme::BindError>>),
     UpdateState(Rpc<ConsommeParamsUpdateFn, ()>),
 }
 
@@ -125,18 +182,27 @@ impl ConsommeControl {
         ip_addr: Option<IpAddr>,
         port: u16,
     ) -> Result<(), ConsommeMessageError> {
+        let socket = create_bound_socket(&protocol, ip_addr, port)
+            .map_err(|e| ConsommeMessageError::Bind(consomme::BindError::Io(e)))?;
+        let host_addr = socket.local_addr().ok().and_then(|a| a.as_socket());
+        tracing::info!(
+            ?protocol,
+            host_addr = %host_addr.map(|a| a.to_string()).unwrap_or_default(),
+            guest_port = %port,
+            "port forward socket created"
+        );
         self.send
             .call(
                 ConsommeMessage::BindPort,
-                MessageBindPort {
+                PortForwardConfig {
                     protocol,
-                    address: ip_addr,
-                    port,
+                    socket,
+                    guest_port: port,
                 },
             )
             .await
             .map_err(ConsommeMessageError::Mesh)?
-            .map_err(ConsommeMessageError::Network)
+            .map_err(ConsommeMessageError::Bind)
     }
 
     /// Unbinds a port previously reserved with bind_port()
@@ -148,15 +214,14 @@ impl ConsommeControl {
         self.send
             .call(
                 ConsommeMessage::UnbindPort,
-                MessageBindPort {
+                PortUnbindConfig {
                     protocol,
-                    address: None,
-                    port,
+                    guest_port: port,
                 },
             )
             .await
             .map_err(ConsommeMessageError::Mesh)?
-            .map_err(ConsommeMessageError::Network)
+            .map_err(ConsommeMessageError::Bind)
     }
 
     /// Updates dynamic network state
@@ -197,7 +262,35 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             stats: Default::default(),
             driver: config.driver,
         });
-        queue.with_consomme_no_pool(|c| c.refresh_driver());
+        let port_forwards =
+            std::mem::take(&mut queue.endpoint_state.as_mut().unwrap().port_forwards);
+        let bind_result: Result<Vec<_>, _> = queue.with_consomme_no_pool(|c| {
+            c.refresh_driver();
+            let mut bound: Vec<(IpProtocol, u16)> = Vec::new();
+            for fwd in port_forwards {
+                let protocol = fwd.protocol;
+                let guest_port = fwd.guest_port;
+                let result = match protocol {
+                    IpProtocol::Tcp => c.bind_tcp_port(fwd.socket, guest_port),
+                    IpProtocol::Udp => c.bind_udp_port(fwd.socket, guest_port),
+                };
+                match result {
+                    Ok(()) => bound.push((protocol, guest_port)),
+                    Err(err) => {
+                        // Roll back successful binds before returning error.
+                        for (prev_protocol, prev_guest_port) in &bound {
+                            let _ = match prev_protocol {
+                                IpProtocol::Tcp => c.unbind_tcp_port(*prev_guest_port),
+                                IpProtocol::Udp => c.unbind_udp_port(*prev_guest_port),
+                            };
+                        }
+                        return Err(err);
+                    }
+                }
+            }
+            Ok(bound)
+        });
+        bind_result.map_err(|err| anyhow::anyhow!(err).context("failed to bind port forward"))?;
         queues.push(queue);
         Ok(())
     }
@@ -314,14 +407,18 @@ fn process_message(
     match message {
         ConsommeMessage::BindPort(rpc) => {
             rpc.handle_sync(|bind_message| match bind_message.protocol {
-                IpProtocol::Tcp => consomme.bind_tcp_port(bind_message.address, bind_message.port),
-                IpProtocol::Udp => consomme.bind_udp_port(bind_message.address, bind_message.port),
+                IpProtocol::Tcp => {
+                    consomme.bind_tcp_port(bind_message.socket, bind_message.guest_port)
+                }
+                IpProtocol::Udp => {
+                    consomme.bind_udp_port(bind_message.socket, bind_message.guest_port)
+                }
             });
         }
         ConsommeMessage::UnbindPort(rpc) => {
-            rpc.handle_sync(|bind_message| match bind_message.protocol {
-                IpProtocol::Tcp => consomme.unbind_tcp_port(bind_message.port),
-                IpProtocol::Udp => consomme.unbind_udp_port(bind_message.port),
+            rpc.handle_sync(|unbind_message| match unbind_message.protocol {
+                IpProtocol::Tcp => consomme.unbind_tcp_port(unbind_message.guest_port),
+                IpProtocol::Udp => consomme.unbind_udp_port(unbind_message.guest_port),
             });
         }
         ConsommeMessage::UpdateState(rpc) => {
@@ -385,7 +482,6 @@ impl net_backend::Queue for ConsommeQueue {
                     | consomme::DropReason::FragmentedPacket
                     | consomme::DropReason::IpLengthMismatch
                     | consomme::DropReason::MalformedPacket => self.stats.tx_errors.increment(),
-                    consomme::DropReason::PortNotBound => unreachable!(),
                 }
             }
 

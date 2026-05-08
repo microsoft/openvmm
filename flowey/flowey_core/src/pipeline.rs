@@ -1300,6 +1300,31 @@ impl PipelineJob<'_> {
         self
     }
 
+    /// Add a flow node whose request publishes a typed artifact.
+    ///
+    /// This is a shortcut for the common pattern of calling
+    /// [`PipelineJobCtx::publish_typed_artifact`] inside a [`Self::dep_on`]
+    /// closure and passing the resulting [`WriteVar`] into a request.
+    pub fn publish<T: Artifact, R: IntoRequest + 'static>(
+        self,
+        artifact: PublishTypedArtifact<T>,
+        f: impl FnOnce(WriteVar<T>) -> R,
+    ) -> Self {
+        self.dep_on(|ctx| f(ctx.publish_typed_artifact(artifact)))
+    }
+
+    /// Add a flow node whose request is run purely for its side effect.
+    ///
+    /// This is a shortcut for the common pattern of calling
+    /// [`PipelineJobCtx::new_done_handle`] inside a [`Self::dep_on`]
+    /// closure and passing the resulting [`WriteVar`] into a request.
+    pub fn side_effect<R: IntoRequest + 'static>(
+        self,
+        f: impl FnOnce(WriteVar<crate::node::SideEffect>) -> R,
+    ) -> Self {
+        self.dep_on(|ctx| f(ctx.new_done_handle()))
+    }
+
     /// Set config on a node for this job.
     ///
     /// This is the pipeline-level equivalent of [`NodeCtx::config`]. Config

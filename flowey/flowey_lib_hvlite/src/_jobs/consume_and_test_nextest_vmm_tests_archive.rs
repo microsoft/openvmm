@@ -56,6 +56,8 @@ flowey_request! {
         pub test_artifacts: Vec<KnownTestArtifacts>,
         /// Whether the prep steps should be run before the tests
         pub needs_prep_run: bool,
+        /// If set, configure this 2 MiB hugetlb surplus page overcommit limit before running tests.
+        pub hugetlb_2mb_overcommit_pages: Option<u64>,
 
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
@@ -96,6 +98,7 @@ impl SimpleFlowNode for Node {
             test_artifacts,
             fail_job_on_test_fail,
             needs_prep_run,
+            hugetlb_2mb_overcommit_pages,
             artifact_dir,
             done,
         } = request;
@@ -189,6 +192,7 @@ impl SimpleFlowNode for Node {
             release_igvm_files,
             use_relative_paths: false,
             disable_remote_artifacts: true,
+            reuse_prepped_vhds: false,
         });
 
         // Start the test_igvm_agent_rpc_server before running tests (Windows only).
@@ -223,6 +227,7 @@ impl SimpleFlowNode for Node {
             target: None,
             extra_env,
             pre_run_deps,
+            hugetlb_2mb_overcommit_pages,
             results: v,
         });
 

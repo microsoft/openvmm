@@ -70,6 +70,8 @@ flowey_request! {
         /// Disable lazy remote artifact fetching (set PETRI_REMOTE_ARTIFACTS=0).
         /// Should be true in CI where all images are pre-downloaded.
         pub disable_remote_artifacts: bool,
+        /// Whether to reuse VHDs created with prep_steps
+        pub reuse_prepped_vhds: bool,
     }
 }
 
@@ -107,6 +109,7 @@ impl SimpleFlowNode for Node {
             release_igvm_files,
             use_relative_paths,
             disable_remote_artifacts,
+            reuse_prepped_vhds,
         } = request;
 
         let arch = CommonArch::from_architecture(vmm_tests_target.architecture)?;
@@ -252,6 +255,10 @@ impl SimpleFlowNode for Node {
 
                 if disable_remote_artifacts {
                     env.insert("PETRI_REMOTE_ARTIFACTS".into(), "0".into());
+                }
+
+                if reuse_prepped_vhds {
+                    env.insert("PETRI_REUSE_PREPPED_VHDS".into(), "1".into());
                 }
 
                 if let Some(openvmm) = openvmm {

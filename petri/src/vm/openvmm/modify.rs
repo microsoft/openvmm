@@ -87,8 +87,11 @@ impl PetriVmConfigOpenVmm {
     ///
     /// Uses a mana emulator and the paravisor if a paravisor is present.
     pub fn with_nic(mut self) -> Self {
-        let endpoint =
-            net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
+        let endpoint = net_backend_resources::consomme::ConsommeHandle {
+            cidr: None,
+            ports: Vec::new(),
+        }
+        .into_resource();
         if let Some(vtl2_settings) = self.runtime_config.vtl2_settings.as_mut() {
             self.config.vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl2,
@@ -128,8 +131,11 @@ impl PetriVmConfigOpenVmm {
 
     /// Add a PCIe NIC to the VM using the MANA emulator.
     pub fn with_pcie_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
-        let endpoint =
-            net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
+        let endpoint = net_backend_resources::consomme::ConsommeHandle {
+            cidr: None,
+            ports: Vec::new(),
+        }
+        .into_resource();
         self.config.pcie_devices.push(PcieDeviceConfig {
             port_name: port_name.to_string(),
             resource: GdmaDeviceHandle {
@@ -174,8 +180,11 @@ impl PetriVmConfigOpenVmm {
     /// This exposes a virtio-net device on a PCIe root port, suitable for
     /// guests running virtio drivers (e.g. Linux with UEFI boot).
     pub fn with_virtio_nic(mut self, port_name: &str) -> Self {
-        let endpoint =
-            net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
+        let endpoint = net_backend_resources::consomme::ConsommeHandle {
+            cidr: None,
+            ports: Vec::new(),
+        }
+        .into_resource();
 
         self.config.pcie_devices.push(PcieDeviceConfig {
             port_name: port_name.to_string(),
@@ -212,6 +221,13 @@ impl PetriVmConfigOpenVmm {
     /// this file, which persists across snapshot save/restore.
     pub fn with_memory_backing_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.memory_backing_file = Some(path.into());
+        self
+    }
+
+    /// Use explicit hugetlb-backed guest memory.
+    pub fn with_hugepages(mut self, hugepage_size: Option<u64>) -> Self {
+        self.config.memory.hugepages = true;
+        self.config.memory.hugepage_size = hugepage_size;
         self
     }
 

@@ -27,3 +27,7 @@ powershell_builder.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.xtask.unused-deps]
+# Pulled in via prelude
+ignored = ["serde"]

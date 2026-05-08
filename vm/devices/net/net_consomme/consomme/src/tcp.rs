@@ -5,6 +5,7 @@ mod assembler;
 mod ring;
 
 use super::Access;
+use super::BindError;
 use super::Client;
 use super::DropReason;
 use crate::ChecksumState;
@@ -16,6 +17,7 @@ use futures::AsyncRead;
 use futures::AsyncWrite;
 use inspect::Inspect;
 use inspect::InspectMut;
+use pal_async::driver::Driver;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PollReady;
 use pal_async::socket::PolledSocket;
@@ -46,8 +48,6 @@ use std::io::ErrorKind;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::net::IpAddr;
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
 use std::net::Shutdown;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
@@ -385,7 +385,7 @@ impl<T: Client> Access<'_, T> {
                 src: SocketAddr::V6(SocketAddrV6::new(addresses.src_addr, tcp.src_port, 0, 0)),
             },
         };
-        trace_tcp_packet(&tcp, tcp.payload.len(), "recv");
+        trace_tcp_packet(&ft, &tcp, tcp.payload.len(), "recv");
 
         let is_dns_tcp =
             is_gateway_dns_tcp(&ft, &self.inner.state.params, self.inner.dns.is_some());
@@ -439,48 +439,27 @@ impl<T: Client> Access<'_, T> {
 
     /// Binds to the specified host IP and port for listening for incoming
     /// connections.
-    pub fn bind_tcp_port(&mut self, ip_addr: Option<IpAddr>, port: u16) -> Result<(), DropReason> {
-        let ip_addr = match ip_addr {
-            Some(IpAddr::V4(ip)) => SocketAddr::V4(SocketAddrV4::new(ip, port)),
-            Some(IpAddr::V6(ip)) => SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0)),
-            None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
-        };
-        match self.inner.tcp.listeners.entry(port) {
+    pub fn bind_tcp_port(&mut self, socket: Socket, guest_port: u16) -> Result<(), BindError> {
+        match self.inner.tcp.listeners.entry(guest_port) {
             hash_map::Entry::Occupied(_) => {
-                tracing::warn!(port, "Duplicate TCP bind for port");
+                return Err(BindError::PortAlreadyBound(guest_port));
             }
             hash_map::Entry::Vacant(e) => {
-                let ft = match ip_addr {
-                    SocketAddr::V4(ip) => FourTuple {
-                        dst: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
-                        src: SocketAddr::V4(ip),
-                    },
-                    SocketAddr::V6(ip) => FourTuple {
-                        dst: SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0)),
-                        src: SocketAddr::V6(ip),
-                    },
-                };
-                let mut sender = Sender {
-                    ft: &ft,
-                    client: self.client,
-                    state: &mut self.inner.state,
-                };
-
-                let listener = TcpListener::new(&mut sender)?;
+                let listener = TcpListener::from_socket(self.client.driver(), socket)?;
                 e.insert(listener);
             }
-        }
+        };
         Ok(())
     }
 
     /// Unbinds from the specified host port.
-    pub fn unbind_tcp_port(&mut self, port: u16) -> Result<(), DropReason> {
+    pub fn unbind_tcp_port(&mut self, port: u16) -> Result<(), BindError> {
         match self.inner.tcp.listeners.entry(port) {
             hash_map::Entry::Occupied(e) => {
                 e.remove();
                 Ok(())
             }
-            hash_map::Entry::Vacant(_) => Err(DropReason::PortNotBound),
+            hash_map::Entry::Vacant(_) => Err(BindError::PortNotBound),
         }
     }
 }
@@ -569,7 +548,7 @@ impl<T: Client> Sender<'_, T> {
             payload: &[],
         };
 
-        trace_tcp_packet(&tcp, 0, "rst xmit");
+        trace_tcp_packet(self.ft, &tcp, 0, "rst xmit");
 
         self.send_packet(&tcp, None);
     }
@@ -709,10 +688,8 @@ impl TcpConnection {
         inner.initialize_from_first_client_packet(tcp)?;
 
         let flow = crate::dns_resolver::DnsFlow {
-            src_addr: sender.ft.src.ip().into(),
-            dst_addr: sender.ft.dst.ip().into(),
-            src_port: sender.ft.src.port(),
-            dst_port: sender.ft.dst.port(),
+            src: sender.ft.src,
+            dst: sender.ft.dst,
             gateway_mac: sender.state.params.gateway_mac,
             client_mac: sender.state.params.client_mac,
             transport: crate::dns_resolver::DnsTransport::Tcp,
@@ -769,6 +746,13 @@ impl TcpConnectionInner {
         // Propagate guest FIN before the tx path so that poll_read can
         // detect EOF on the same iteration.
         if self.state.rx_fin() && !dns_handler.guest_fin() {
+            tracing::trace!(
+                src = %sender.ft.src,
+                dst = %sender.ft.dst,
+                tx_buffer_len = self.tx_buffer.len(),
+                tx_buffer_full = self.tx_buffer.is_full(),
+                "tcp: guest FIN received, signaling EOF to DNS handler",
+            );
             dns_handler.set_guest_fin();
         }
 
@@ -787,6 +771,14 @@ impl TcpConnectionInner {
                         break;
                     }
                     self.tx_buffer.extend_by(n);
+                    tracing::trace!(
+                        src = %sender.ft.src,
+                        dst = %sender.ft.dst,
+                        n,
+                        tx_buffer_len = self.tx_buffer.len(),
+                        tx_buffer_full = self.tx_buffer.is_full(),
+                        "tcp: response from DNS handler into tx_buffer",
+                    );
                 }
                 Poll::Ready(Err(_)) => {
                     sender.rst(self.tx_send, Some(self.rx_seq));
@@ -839,7 +831,11 @@ impl TcpConnectionInner {
                         return false;
                     }
 
-                    tracing::debug!("connection established");
+                    tracing::debug!(
+                        src = %sender.ft.src,
+                        dst = %sender.ft.dst,
+                        "connection established",
+                    );
                     self.state = TcpState::SynReceived;
                 }
                 Poll::Pending => return true,
@@ -955,7 +951,12 @@ impl TcpConnectionInner {
             // Avoid resetting so that the guest doesn't think there is a
             // responding TCP stack at this address. The guest will time out on
             // its own.
-            tracing::debug!(error = &err as &dyn std::error::Error, "connect timed out");
+            tracing::debug!(
+                src = %sender.ft.src,
+                dst = %sender.ft.dst,
+                error = &err as &dyn std::error::Error,
+                "connect timed out",
+            );
         } else {
             log_connect_error(&err);
             sender.rst(self.tx_send, Some(self.rx_seq));
@@ -1082,7 +1083,7 @@ impl TcpConnectionInner {
             assert!(tx_next <= tx_end);
             assert!(self.needs_ack || tx_next > self.tx_send);
 
-            trace_tcp_packet(&tcp, payload_len, "xmit");
+            trace_tcp_packet(sender.ft, &tcp, payload_len, "xmit");
 
             let payload = self
                 .tx_buffer
@@ -1137,7 +1138,7 @@ impl TcpConnectionInner {
             payload: &[],
         };
 
-        trace_tcp_packet(&tcp, 0, "ack");
+        trace_tcp_packet(sender.ft, &tcp, 0, "ack");
 
         sender.send_packet(&tcp, None);
     }
@@ -1384,28 +1385,18 @@ impl TcpConnectionInner {
 }
 
 impl TcpListener {
-    pub fn new(sender: &mut Sender<'_, impl Client>) -> Result<Self, DropReason> {
-        let socket = match sender.ft.src {
-            SocketAddr::V4(_) => Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)),
-            SocketAddr::V6(_) => Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP)),
-        }
-        .map_err(DropReason::Io)?;
-
-        let socket = PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?;
-        if let Err(err) = socket.get().bind(&sender.ft.src.into()) {
-            tracing::warn!(
-                address = ?sender.ft.src,
-                error = &err as &dyn std::error::Error,
-                "socket bind error"
-            );
-            return Err(DropReason::Io(err));
-        }
+    /// Creates a `TcpListener` from an already-bound `socket2::Socket`.
+    ///
+    /// The socket must already be bound to an address. This method will call
+    /// `listen` on it.
+    pub fn from_socket(driver: &dyn Driver, socket: Socket) -> Result<Self, BindError> {
+        let socket = PolledSocket::new(driver, socket).map_err(BindError::Io)?;
         if let Err(err) = socket.listen(10) {
             tracing::warn!(
                 error = &err as &dyn std::error::Error,
                 "socket listen error"
             );
-            return Err(DropReason::Io(err));
+            return Err(BindError::Io(err));
         }
         Ok(Self { socket })
     }
@@ -1439,9 +1430,11 @@ impl TcpListener {
 /// Logs protocol-relevant fields (flags, seq, ack, window, payload length)
 /// as individual tracing fields instead of dumping the full `TcpRepr` Debug
 /// output which includes raw payload bytes.
-fn trace_tcp_packet(tcp: &TcpRepr<'_>, payload_len: usize, label: &str) {
+fn trace_tcp_packet(ft: &FourTuple, tcp: &TcpRepr<'_>, payload_len: usize, label: &str) {
     tracing::trace!(
         label,
+        src = %ft.src,
+        dst = %ft.dst,
         flags = match tcp.control {
             TcpControl::Syn => Some("SYN"),
             TcpControl::Fin => Some("FIN"),

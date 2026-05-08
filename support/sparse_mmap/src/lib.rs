@@ -17,6 +17,7 @@ pub use sys::Mappable;
 pub use sys::MappableRef;
 pub use sys::SparseMapping;
 pub use sys::alloc_shared_memory;
+pub use sys::alloc_shared_memory_hugetlb;
 pub use sys::new_mappable_from_file;
 
 use std::mem::MaybeUninit;
@@ -195,6 +196,39 @@ mod tests {
         test_with(0x200000 + SparseMapping::page_size());
         test_with(0x40000000);
         test_with(0x40000000 + SparseMapping::page_size());
+    }
+
+    #[test]
+    fn test_sparse_mapping_minimum_alignment() {
+        SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), 0).unwrap_err();
+
+        let mapping =
+            SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), 1).unwrap();
+        assert_eq!(mapping.as_ptr() as usize % SparseMapping::page_size(), 0);
+
+        let alignment = 0x10000;
+        let mapping =
+            SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
+                .unwrap();
+        assert_eq!(mapping.as_ptr() as usize % alignment, 0);
+
+        let alignment = 0x200000;
+
+        #[cfg(unix)]
+        {
+            let mapping =
+                SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
+                    .unwrap();
+            assert_eq!(mapping.as_ptr() as usize % alignment, 0);
+        }
+
+        #[cfg(windows)]
+        {
+            let error =
+                SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
+                    .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        }
     }
 
     #[test]

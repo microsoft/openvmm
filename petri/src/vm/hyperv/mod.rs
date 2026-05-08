@@ -221,8 +221,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
         }
 
-        // Map SCSI
-        let mut scsi_controllers = HashMap::new();
+        // Map VMBus storage controllers (SCSI and NVMe).
+        let mut storage_controllers = HashMap::new();
         for (
             vsid,
             VmbusStorageController {
@@ -232,10 +232,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
             },
         ) in config.vmbus_storage_controllers.iter()
         {
-            if !matches!(controller_type, crate::VmbusStorageType::Scsi) {
-                todo!("other storage types for hyper-v")
-            }
-
             let mut hyperv_drives = HashMap::new();
             for (lun, Drive { disk, is_dvd }) in drives {
                 hyperv_drives.insert(
@@ -246,9 +242,32 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     },
                 );
             }
-            scsi_controllers.insert(
+
+            let vmbus_controller_type = match controller_type {
+                crate::VmbusStorageType::Scsi => powershell::HyperVVmbusStorageType::Scsi,
+                crate::VmbusStorageType::Nvme => {
+                    for (nsid, drive) in &hyperv_drives {
+                        if drive.is_dvd {
+                            anyhow::bail!("NVMe emulator does not support DVD drives");
+                        }
+                        if drive.disk.is_none() {
+                            anyhow::bail!("NVMe drive cannot be empty (NSID {})", nsid);
+                        }
+                    }
+                    powershell::HyperVVmbusStorageType::Nvme
+                }
+                _ => {
+                    todo!(
+                        "storage type {:?} not yet supported for hyper-v",
+                        controller_type
+                    )
+                }
+            };
+
+            storage_controllers.insert(
                 *vsid,
-                powershell::HyperVScsiController {
+                powershell::HyperVVmbusStorageController {
+                    controller_type: vmbus_controller_type,
                     target_vtl: *target_vtl,
                     drives: hyperv_drives,
                 },
@@ -276,6 +295,13 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 }
             }
         }
+
+        let nvme_disk_paths: Vec<PathBuf> = storage_controllers
+            .values()
+            .filter(|c| matches!(c.controller_type, powershell::HyperVVmbusStorageType::Nvme))
+            .flat_map(|c| c.drives.values())
+            .filter_map(|drive| drive.disk.clone())
+            .collect();
 
         // Attempt to enable COM3 and use that to get KMSG logs, otherwise
         // fall back to use diag_client.
@@ -338,8 +364,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             firmware_file: igvm_file.clone(),
             firmware_parameters: openhcl_command_line,
             guest_state_path,
-            scsi_controllers,
-            ide_controllers,
+            storage_controllers,
             com_3: supports_com3,
             imc_hiv,
             management_vtl_settings,
@@ -354,7 +379,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             let local_path = igvm_file.as_ref().unwrap();
             fs_err::copy(config.firmware.openhcl_firmware().unwrap(), local_path)
                 .context("failed to copy igvm file")?;
-            acl_read_for_vm(local_path, Some(*vm.vmid()))
+            acl_for_vm(local_path, Some(*vm.vmid()), false)
                 .context("failed to set ACL for igvm file")?;
 
             let openhcl_log_file = log_source.log_file("openhcl")?;
@@ -381,6 +406,11 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     ),
                 ));
             }
+        }
+
+        // Grant the VM access to NVMe VHDs
+        for path in &nvme_disk_paths {
+            acl_for_vm(path, Some(*vm.vmid()), true).context("failed to set ACL for nvme VHD")?;
         }
 
         let serial_pipe_path = vm.get_vm_com_port_path(1);
@@ -570,14 +600,15 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     }
 }
 
-fn acl_read_for_vm(path: &Path, id: Option<Guid>) -> anyhow::Result<()> {
+fn acl_for_vm(path: &Path, id: Option<Guid>, write: bool) -> anyhow::Result<()> {
     let sid_arg = format!(
-        "NT VIRTUAL MACHINE\\{name}:R",
+        "NT VIRTUAL MACHINE\\{name}:{perm}",
         name = if let Some(id) = id {
             format!("{id:X}")
         } else {
             "Virtual Machines".to_string()
-        }
+        },
+        perm = if write { 'M' } else { 'R' }
     );
     let output = std::process::Command::new("icacls.exe")
         .arg(path)

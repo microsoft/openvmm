@@ -54,8 +54,9 @@ impl Aes256CbcInner {
 }
 
 impl Aes256CbcEncCtxInner<'_> {
-    pub fn cipher(&mut self, iv: &[u8], data: &[u8]) -> Result<Vec<u8>, Aes256CbcError> {
-        let mut output = vec![0u8; data.len() + 16]; // block size padding room
+    pub fn cipher(&mut self, iv: &[u8; IV_LEN], data: &[u8]) -> Result<Vec<u8>, Aes256CbcError> {
+        let mut output =
+            vec![0u8; data.len() + openssl::cipher::Cipher::aes_256_cbc().block_size()]; // block size padding room
         self.ctx
             .encrypt_init(None, None, Some(iv))
             .map_err(|e| err(e, "setting iv for encryption"))?;
@@ -73,8 +74,9 @@ impl Aes256CbcEncCtxInner<'_> {
 }
 
 impl Aes256CbcDecCtxInner<'_> {
-    pub fn cipher(&mut self, iv: &[u8], data: &[u8]) -> Result<Vec<u8>, Aes256CbcError> {
-        let mut output = vec![0u8; data.len() + 16]; // block size padding room
+    pub fn cipher(&mut self, iv: &[u8; IV_LEN], data: &[u8]) -> Result<Vec<u8>, Aes256CbcError> {
+        let mut output =
+            vec![0u8; data.len() + openssl::cipher::Cipher::aes_256_cbc().block_size()]; // block size padding room
         self.ctx
             .decrypt_init(None, None, Some(iv))
             .map_err(|e| err(e, "setting iv for decryption"))?;

@@ -1135,8 +1135,8 @@ impl ConfigSpaceType1Emulator {
     }
 
     fn decode_memory_range(&self, base_register: u16, limit_register: u16) -> (u32, u32) {
-        let base_addr = ((base_register & !0b1111) as u32) << 16;
-        let limit_addr = ((limit_register & !0b1111) as u32) << 16 | 0xF_FFFF;
+        let base_addr = u32::from(base_register) << 16;
+        let limit_addr = (u32::from(limit_register) << 16) | 0xF_FFFF;
         (base_addr, limit_addr)
     }
 
@@ -1196,13 +1196,15 @@ impl ConfigSpaceType1Emulator {
             }
             HeaderType01::SEC_STATUS_IO_RANGE => 0,
             HeaderType01::MEMORY_RANGE => {
-                (self.state.memory_limit as u32) << 16 | self.state.memory_base as u32
+                from_low_high(self.state.memory_base, self.state.memory_limit)
             }
             HeaderType01::PREFETCH_RANGE => {
                 // Set the low bit in both the limit and base registers to indicate
                 // support for 64-bit addressing.
-                ((self.state.prefetch_limit | 0b0001) as u32) << 16
-                    | (self.state.prefetch_base | 0b0001) as u32
+                from_low_high(
+                    self.state.prefetch_base | cfg_space::PREFETCH_MEMORY_BASE_LIMIT_64BIT,
+                    self.state.prefetch_limit | cfg_space::PREFETCH_MEMORY_BASE_LIMIT_64BIT,
+                )
             }
             HeaderType01::PREFETCH_BASE_UPPER => self.state.prefetch_base_upper,
             HeaderType01::PREFETCH_LIMIT_UPPER => self.state.prefetch_limit_upper,
@@ -1247,12 +1249,14 @@ impl ConfigSpaceType1Emulator {
                 self.state.primary_bus_number = val as u8;
             }
             HeaderType01::MEMORY_RANGE => {
-                self.state.memory_base = val as u16;
-                self.state.memory_limit = (val >> 16) as u16;
+                let (base, limit) = to_low_high(val);
+                self.state.memory_base = base & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
+                self.state.memory_limit = limit & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
             }
             HeaderType01::PREFETCH_RANGE => {
-                self.state.prefetch_base = val as u16;
-                self.state.prefetch_limit = (val >> 16) as u16;
+                let (base, limit) = to_low_high(val);
+                self.state.prefetch_base = base & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
+                self.state.prefetch_limit = limit & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
             }
             HeaderType01::PREFETCH_BASE_UPPER => {
                 self.state.prefetch_base_upper = val;
@@ -1311,6 +1315,14 @@ impl ConfigSpaceType1Emulator {
     pub fn capabilities_mut(&mut self) -> &mut [Box<dyn PciCapability>] {
         self.common.capabilities_mut()
     }
+}
+
+fn from_low_high(low: u16, high: u16) -> u32 {
+    (u32::from(high) << 16) | u32::from(low)
+}
+
+fn to_low_high(value: u32) -> (u16, u16) {
+    (value as u16, (value >> 16) as u16)
 }
 
 mod save_restore {
@@ -1548,10 +1560,10 @@ mod save_restore {
                 subordinate_bus_number,
                 secondary_bus_number,
                 primary_bus_number,
-                memory_base,
-                memory_limit,
-                prefetch_base,
-                prefetch_limit,
+                memory_base: memory_base & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK,
+                memory_limit: memory_limit & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK,
+                prefetch_base: prefetch_base & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK,
+                prefetch_limit: prefetch_limit & cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK,
                 prefetch_base_upper,
                 prefetch_limit_upper,
                 bridge_control,
@@ -1740,6 +1752,19 @@ mod tests {
     }
 
     #[test]
+    fn test_type1_memory_range_register_masks_reserved_bits() {
+        const MMIO_ENABLED: u32 = 0x0000_0002;
+
+        let mut emu = create_type1_emulator(vec![]);
+
+        emu.write_u32(0x20, 0x567f_123f).unwrap();
+        assert_eq!(read_cfg(&emu, 0x20), 0x5670_1230);
+
+        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        assert_eq!(emu.assigned_memory_range(), Some(0x1230_0000..=0x567f_ffff));
+    }
+
+    #[test]
     fn test_type1_prefetch_assignment() {
         const MMIO_ENABLED: u32 = 0x0000_0002;
         const MMIO_DISABLED: u32 = 0x0000_0000;
@@ -1791,6 +1816,49 @@ mod tests {
         );
         emu.write_u32(0x4, MMIO_DISABLED).unwrap();
         assert!(emu.assigned_prefetch_range().is_none());
+    }
+
+    #[test]
+    fn test_type1_prefetch_range_register_masks_reserved_bits_and_reports_64_bit() {
+        const MMIO_ENABLED: u32 = 0x0000_0002;
+
+        let mut emu = create_type1_emulator(vec![]);
+
+        emu.write_u32(0x24, 0x567e_123e).unwrap();
+        assert_eq!(read_cfg(&emu, 0x24), 0x5671_1231);
+
+        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        assert_eq!(
+            emu.assigned_prefetch_range(),
+            Some(0x1230_0000..=0x567f_ffff)
+        );
+    }
+
+    #[test]
+    fn test_type1_restore_masks_bridge_memory_range_reserved_bits() {
+        use vmcore::save_restore::SaveRestore;
+
+        const MMIO_ENABLED: u32 = 0x0000_0002;
+
+        let mut source = create_type1_emulator(vec![]);
+        source.write_u32(0x4, MMIO_ENABLED).unwrap();
+        source.state.memory_base = 0x123f;
+        source.state.memory_limit = 0x567f;
+        source.state.prefetch_base = 0x234e;
+        source.state.prefetch_limit = 0x678e;
+
+        let saved_state = source.save().expect("save should succeed");
+
+        let mut emu = create_type1_emulator(vec![]);
+        emu.restore(saved_state).expect("restore should succeed");
+
+        assert_eq!(read_cfg(&emu, 0x20), 0x5670_1230);
+        assert_eq!(read_cfg(&emu, 0x24), 0x6781_2341);
+        assert_eq!(emu.assigned_memory_range(), Some(0x1230_0000..=0x567f_ffff));
+        assert_eq!(
+            emu.assigned_prefetch_range(),
+            Some(0x2340_0000..=0x678f_ffff)
+        );
     }
 
     #[test]

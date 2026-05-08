@@ -1308,32 +1308,29 @@ impl<D: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<D> {
         stop: &mut task_control::StopTask<'_>,
         state: &mut WorkerState,
     ) -> Result<(), task_control::Cancelled> {
-        let r = stop
-            .until_stopped(async {
-                loop {
-                    match self.recv.next().await {
-                        Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
-                            rpc.handle(async |cpu| self.create_io_issuer(state, cpu).await)
-                                .await
-                        }
-                        Some(NvmeWorkerRequest::Save(rpc)) => {
-                            rpc.handle(async |span| {
-                                let child_span = tracing::info_span!(
-                                    parent: &span,
-                                    "nvme_worker_save",
-                                    pci_id = %self.device.id()
-                                );
-                                self.save(state).instrument(child_span).await
-                            })
-                            .await
-                        }
-                        None => break,
-                    }
+        loop {
+            let cmd = stop.until_stopped(self.recv.next()).await?;
+            match cmd {
+                Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
+                    rpc.handle(async |cpu| self.create_io_issuer(state, cpu).await)
+                        .await
                 }
-            })
-            .await;
-        tracing::info!(pci_id = %self.device.id(), "nvme worker task exiting");
-        r
+                Some(NvmeWorkerRequest::Save(rpc)) => {
+                    rpc.handle(async |span| {
+                        let child_span = tracing::info_span!(
+                            parent: &span,
+                            "nvme_worker_save",
+                            pci_id = %self.device.id()
+                        );
+                        self.save(state).instrument(child_span).await
+                    })
+                    .await
+                }
+                None => break,
+            }
+        }
+        tracing::info!(pci_id = %self.device.id(), "nvme worker task exiting cleanly");
+        Ok(())
     }
 }
 

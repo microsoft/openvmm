@@ -18,7 +18,7 @@ pub mod whp;
 
 // Register probes for auto-detection (checked in this order).
 openvmm_core::register_hypervisor_probes! {
-    #[cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native, guest_arch = "x86_64"))]
+    #[cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native))]
     mshv::MshvProbe,
 
     #[cfg(all(target_os = "linux", feature = "virt_kvm", guest_is_native))]

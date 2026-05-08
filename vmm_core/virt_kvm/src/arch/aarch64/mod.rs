@@ -14,7 +14,11 @@ use crate::KvmError;
 use crate::KvmPartition;
 use crate::KvmPartitionInner;
 use crate::KvmRunVpError;
+use crate::gsi::GsiRouting;
+use crate::gsi::KvmIrqFdState;
+use crate::gsi::MsiRouteBuilder;
 use aarch64defs::SystemReg;
+use aarch64defs::gic::GicV2mRegister;
 use bitfield_struct::bitfield;
 use core::panic;
 use hvdef::Vtl;
@@ -33,6 +37,7 @@ use kvm::kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V2;
 use kvm::kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3;
 use kvm::kvm_regs;
 use kvm::user_pt_regs;
+use parking_lot::Mutex;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -779,6 +784,7 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                     eval: false.into(),
                 })
                 .collect(),
+            gsi_routing: Mutex::new(GsiRouting::new()),
             caps,
             _gic_device: gic_device,
             gic_v2m: self.config.processor_topology.gic_v2m(),
@@ -788,6 +794,7 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
 
         let partition = KvmPartition {
             synic_ports: Arc::new(virt::synic::SynicPorts::new(partition.clone())),
+            irqfd_state: Arc::new(KvmIrqFdState::new(partition.clone())),
             inner: partition,
         };
 
@@ -832,6 +839,12 @@ impl virt::Partition for KvmPartition {
         Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
             v2m, irqcon,
         )))
+    }
+
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        // The irqfd implementation requires a GICv2m frame to be present.
+        self.inner.gic_v2m?;
+        Some(self.irqfd_state.clone())
     }
 
     fn request_yield(&self, vp_index: VpIndex) {
@@ -899,6 +912,42 @@ impl virt::Aarch64Partition for KvmPartition {
     fn control_gic(&self, vtl: Vtl) -> Arc<dyn virt::irqcon::ControlGic> {
         assert!(vtl == Vtl::Vtl0);
         self.inner.clone()
+    }
+}
+
+struct KvmGicV2mRouteBuilder;
+
+impl MsiRouteBuilder for KvmGicV2mRouteBuilder {
+    fn routing_entry(
+        &self,
+        partition: &KvmPartitionInner,
+        address: u64,
+        data: u32,
+    ) -> Option<kvm::RoutingEntry> {
+        let v2m = partition
+            .gic_v2m
+            .as_ref()
+            .expect("partition does not expose a GICv2m MSI frame");
+        let setspi_addr = v2m.frame_base + GicV2mRegister::SETSPI_NS.0 as u64;
+        if address != setspi_addr {
+            return None;
+        }
+        if !(v2m.spi_base..v2m.spi_base + v2m.spi_count).contains(&data) {
+            return None;
+        }
+        // KVM expects the data to be the GIC SPI number, not the interrupt ID.
+        // TODO: centralize this constant.
+        Some(kvm::RoutingEntry::Irqchip { pin: data - 32 })
+    }
+}
+
+impl virt::irqfd::IrqFd for KvmIrqFdState {
+    fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn virt::irqfd::IrqFdRoute>> {
+        assert!(
+            self.partition.gic_v2m.is_some(),
+            "GICv2m is required for irqfd support"
+        );
+        Ok(Box::new(self.new_irqfd_route(KvmGicV2mRouteBuilder)?))
     }
 }
 

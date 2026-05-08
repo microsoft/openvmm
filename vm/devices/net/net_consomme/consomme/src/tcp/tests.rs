@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use super::*;
+use crate::BindError;
 use crate::ChecksumState;
 use crate::Client;
 use crate::Consomme;
@@ -13,6 +14,8 @@ use parking_lot::Mutex;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Repr;
+use std::net::Ipv4Addr;
+use std::net::SocketAddrV4;
 use std::sync::Arc;
 
 // ── Mock client ────────────────────────────────────────────────────
@@ -32,7 +35,7 @@ impl TestClient {
 }
 
 impl Client for TestClient {
-    fn driver(&self) -> &dyn pal_async::driver::Driver {
+    fn driver(&self) -> &dyn Driver {
         &self.driver
     }
 
@@ -554,5 +557,109 @@ async fn test_tcp_overlapping_retransmit(driver: DefaultDriver) {
         &received[5..7] == b"##" || &received[5..7] == b"BB",
         "overlap region should be from one segment or the other, got {:?}",
         &received[5..7]
+    );
+}
+
+/// Test that `bind_tcp_port` registers a listener and that an external
+/// TCP connection is forwarded to the guest as a SYN packet.
+#[pal_async::async_test]
+async fn test_tcp_bind_port_forward(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut client = TestClient::new(driver.clone());
+
+    let guest_port = 7777;
+    let received = client.received_packets.clone();
+
+    // Create and bind a TCP socket.
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+    socket
+        .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+        .unwrap();
+    let host_addr = socket.local_addr().unwrap().as_socket().unwrap();
+
+    {
+        let mut access = consomme.access(&mut client);
+        access
+            .bind_tcp_port(socket, guest_port)
+            .expect("bind should succeed");
+
+        assert!(
+            access.inner.tcp.listeners.contains_key(&guest_port),
+            "listener should be registered"
+        );
+    }
+
+    // Connect from a host-side client to trigger the listener.
+    let connector = std::net::TcpStream::connect(host_addr).unwrap();
+    connector.set_nonblocking(true).unwrap();
+
+    // Poll until consomme delivers a SYN to the guest.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        std::future::poll_fn(|cx| {
+            consomme.access(&mut client).poll(cx);
+            Poll::Ready(())
+        })
+        .await;
+
+        let has_syn = received.lock().iter().any(|p| {
+            TcpTestHarness::is_tcp_packet(p)
+                .is_some_and(|t| t.control == TcpControl::Syn && t.dst_port == guest_port)
+        });
+        if has_syn {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for forwarded TCP SYN"
+        );
+        pal_async::timer::PolledTimer::new(&driver)
+            .sleep(std::time::Duration::from_millis(10))
+            .await;
+    }
+
+    // Verify the SYN targets the correct guest port.
+    let packets = received.lock();
+    let syn_pkt = packets
+        .iter()
+        .find(|p| {
+            TcpTestHarness::is_tcp_packet(p)
+                .is_some_and(|t| t.control == TcpControl::Syn && t.dst_port == guest_port)
+        })
+        .expect("should have received a SYN");
+    let (_, _, tcp) = parse_tcp_packet(syn_pkt);
+    assert_eq!(tcp.dst_port, guest_port);
+    assert_eq!(tcp.control, TcpControl::Syn);
+}
+
+/// Test that binding the same guest port twice returns `PortAlreadyBound`.
+#[pal_async::async_test]
+async fn test_tcp_bind_duplicate_port(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut client = TestClient::new(driver);
+
+    let guest_port = 8888;
+
+    let socket1 = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+    socket1
+        .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+        .unwrap();
+
+    let socket2_inst = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+    socket2_inst
+        .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+        .unwrap();
+
+    let mut access = consomme.access(&mut client);
+    access
+        .bind_tcp_port(socket1, guest_port)
+        .expect("first bind should succeed");
+
+    let err = access
+        .bind_tcp_port(socket2_inst, guest_port)
+        .expect_err("duplicate bind should fail");
+    assert!(
+        matches!(err, BindError::PortAlreadyBound(_)),
+        "error should be PortAlreadyBound"
     );
 }

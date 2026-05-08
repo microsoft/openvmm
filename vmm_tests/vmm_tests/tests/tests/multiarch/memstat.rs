@@ -405,6 +405,7 @@ async fn idle_test<T: PetriVmmBackend>(
                 startup_bytes: 16 * (1024 * 1024 * 1024),
                 dynamic_memory_range: None,
                 mmio_gaps: petri::MmioConfig::Platform,
+                numa_mem_sizes: None,
             }
         })
         .with_openhcl_log_levels(OpenvmmLogConfig::BuiltInDefault)

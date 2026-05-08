@@ -336,7 +336,7 @@ pub struct HvPartitionSyntheticProcessorFeatures {
     _reserved_z36: bool,
     pub wake_vps: bool,
     pub access_vp_regs: bool,
-    _reserved_z39: bool,
+    pub sync_context: bool,
     pub management_vtl_synic_support: bool,
     pub proxy_interrupt_doorbell_support: bool,
     _reserved_z42: bool,

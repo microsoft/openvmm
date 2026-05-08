@@ -307,6 +307,13 @@ pub mod cfg_space {
 
     pub const HEADER_TYPE_01_SIZE: u16 = 0x40;
 
+    /// The low 4 bits of the memory base/limit registers are reserved.
+    pub const MEMORY_BASE_LIMIT_ADDRESS_MASK: u16 = 0xFFF0;
+
+    /// The low bit of the prefetchable memory base/limit registers indicates
+    /// whether the range is 64-bit or 32-bit.
+    pub const PREFETCH_MEMORY_BASE_LIMIT_64BIT: u16 = 0x1;
+
     /// BAR in-band encoding bits.
     ///
     /// The low bits of the BAR are not actually part of the address.

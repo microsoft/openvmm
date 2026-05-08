@@ -121,9 +121,9 @@ impl IntoPipeline for BuildDocsCli {
                 FlowArch::X86_64,
                 "build mdbook guide",
             )
-            .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
-            .dep_on(|ctx| flowey_lib_hvlite::build_guide::Request {
-                built_guide: ctx.publish_typed_artifact(pub_guide),
+            .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh())
+            .publish(pub_guide, |built_guide| {
+                flowey_lib_hvlite::build_guide::Request { built_guide }
             })
             .finish();
 
@@ -137,13 +137,13 @@ impl IntoPipeline for BuildDocsCli {
             (
                 CommonTriple::X86_64_WINDOWS_MSVC,
                 FlowPlatform::Windows,
-                crate::pipelines_shared::gh_pools::gh_hosted_x64_windows(),
+                crate::pipelines_shared::gh_pools::windows_x64_gh(),
                 pub_rustdoc_win,
             ),
             (
                 CommonTriple::X86_64_LINUX_GNU,
                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                crate::pipelines_shared::gh_pools::gh_hosted_x64_linux(),
+                crate::pipelines_shared::gh_pools::linux_x64_gh(),
                 pub_rustdoc_linux,
             ),
         ] {
@@ -154,9 +154,11 @@ impl IntoPipeline for BuildDocsCli {
                     format!("build and check docs [x64-{platform}]"),
                 )
                 .gh_set_pool(pool)
-                .dep_on(|ctx| flowey_lib_hvlite::build_rustdoc::Request {
-                    target_triple: target.as_triple(),
-                    docs: ctx.publish_typed_artifact(pub_rustdoc),
+                .publish(pub_rustdoc, |docs| {
+                    flowey_lib_hvlite::build_rustdoc::Request {
+                        target_triple: target.as_triple(),
+                        docs,
+                    }
                 })
                 .finish();
 
@@ -174,7 +176,7 @@ impl IntoPipeline for BuildDocsCli {
 
             let job = pipeline
                 .new_job(FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu), FlowArch::X86_64, "publish openvmm.dev")
-                .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
+                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh())
                 .dep_on(
                     |ctx| flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages::Params {
                         rustdoc_linux: ctx.use_typed_artifact(&use_rustdoc_linux),
@@ -212,13 +214,13 @@ impl IntoPipeline for BuildDocsCli {
                     FlowArch::X86_64,
                     "openvmm build docs gates",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
+                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh())
                 // always run this job, regardless whether or not any previous jobs failed
                 .gh_dangerous_override_if("always() && github.event.pull_request.draft == false")
                 .gh_dangerous_global_env_var("ANY_JOBS_FAILED", "${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}")
-                .dep_on(|ctx| flowey_lib_hvlite::_jobs::all_good_job::Params {
+                .side_effect(|done| flowey_lib_hvlite::_jobs::all_good_job::Params {
                     did_fail_env_var: "ANY_JOBS_FAILED".into(),
-                    done: ctx.new_done_handle(),
+                    done,
                 })
                 .finish();
 

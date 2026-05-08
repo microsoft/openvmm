@@ -397,23 +397,57 @@ impl RxBufferRange {
     }
 }
 
+#[derive(Debug, Error)]
+enum RxBufferConfigError {
+    #[error("queue_count must be at least 1")]
+    ZeroQueueCount,
+    #[error("buffer_count must be >= RX_RESERVED_CONTROL_BUFFERS")]
+    InsufficientBuffers,
+    #[error("buffers_per_queue must not be 0")]
+    ZeroBuffersPerQueue,
+}
+
 struct RxBufferRanges {
     buffers_per_queue: u32,
     buffer_id_send: Vec<mpsc::UnboundedSender<u32>>,
 }
 
 impl RxBufferRanges {
-    fn new(buffer_count: u32, queue_count: u32) -> (Self, Vec<mpsc::UnboundedReceiver<u32>>) {
+    /// Validates that the given parameters produce a valid RX buffer configuration.
+    fn validate_params(buffer_count: u32, queue_count: u32) -> Result<u32, WorkerError> {
+        if queue_count == 0 {
+            return Err(WorkerError::InvalidRxBufferConfig(
+                RxBufferConfigError::ZeroQueueCount,
+            ));
+        }
+        if buffer_count < RX_RESERVED_CONTROL_BUFFERS {
+            return Err(WorkerError::InvalidRxBufferConfig(
+                RxBufferConfigError::InsufficientBuffers,
+            ));
+        }
         let buffers_per_queue = (buffer_count - RX_RESERVED_CONTROL_BUFFERS) / queue_count;
+        if buffers_per_queue == 0 {
+            return Err(WorkerError::InvalidRxBufferConfig(
+                RxBufferConfigError::ZeroBuffersPerQueue,
+            ));
+        }
+        Ok(buffers_per_queue)
+    }
+
+    fn new(
+        buffer_count: u32,
+        queue_count: u32,
+    ) -> Result<(Self, Vec<mpsc::UnboundedReceiver<u32>>), WorkerError> {
+        let buffers_per_queue = Self::validate_params(buffer_count, queue_count)?;
         #[expect(clippy::disallowed_methods)] // TODO
         let (send, recv): (Vec<_>, Vec<_>) = (0..queue_count).map(|_| mpsc::unbounded()).unzip();
-        (
+        Ok((
             Self {
                 buffers_per_queue,
                 buffer_id_send: send,
             },
             recv,
-        )
+        ))
     }
 }
 
@@ -1988,8 +2022,8 @@ enum WorkerError {
     MissingTransactionId,
     #[error("invalid gpadl")]
     InvalidGpadl(#[source] guestmem::InvalidGpn),
-    #[error("gpadl error")]
-    GpadlError(#[source] GuestMemoryError),
+    #[error("guest buffers error")]
+    GuestBuffers(#[source] buffers::GuestBuffersError),
     #[error("gpa direct error")]
     GpaDirectError(#[source] GuestMemoryError),
     #[error("endpoint")]
@@ -2014,6 +2048,8 @@ enum WorkerError {
     EndpointRequiresQueueRestart(#[source] anyhow::Error),
     #[error("Failed to send message to coordinator")]
     CoordinatorMessageSendFailed(#[source] TrySendError<CoordinatorMessage>),
+    #[error("invalid rx buffer configuration: {0}")]
+    InvalidRxBufferConfig(#[source] RxBufferConfigError),
 }
 
 impl From<task_control::Cancelled> for WorkerError {
@@ -3597,7 +3633,7 @@ impl Adapter {
         if params.hash_secret_key_size != 40 {
             return Err(OidError::InvalidInput("hash_secret_key_size"));
         }
-        if params.indirection_table_size % 4 != 0 {
+        if params.indirection_table_size % 4 != 0 || params.indirection_table_size == 0 {
             return Err(OidError::InvalidInput("indirection_table_size"));
         }
         let indirection_table_size =
@@ -4431,6 +4467,57 @@ impl Coordinator {
     }
 
     async fn restart_queues(&mut self, c_state: &mut CoordinatorState) -> Result<(), WorkerError> {
+        // Pre-compute the active queue count and validate the rx buffer configuration
+        // before continuing with the queue restart work in this function.
+        // Invalid configurations are returned to the caller as errors.
+        let (num_queues, active_queues, active_queue_count) = if let Some(state) = self.workers[0]
+            .state()
+            .and_then(|worker| worker.state.ready())
+        {
+            let num_queues = state.state.primary.as_ref().unwrap().requested_num_queues;
+            let mut active_queues = Vec::new();
+            let active_queue_count = if let Some(rss_state) =
+                state.state.primary.as_ref().unwrap().rss_state.as_ref()
+            {
+                active_queues.clone_from(&rss_state.indirection_table);
+                active_queues.sort();
+                active_queues.dedup();
+                active_queues = active_queues
+                    .into_iter()
+                    .filter(|&index| index < num_queues)
+                    .collect::<Vec<_>>();
+                if !active_queues.is_empty() {
+                    active_queues.len() as u16
+                } else {
+                    tracelimit::warn_ratelimited!(
+                        num_queues,
+                        indirection_table_len = rss_state.indirection_table.len(),
+                        "RSS indirection table has no entries within the valid queue range, falling back to num_queues",
+                    );
+                    num_queues
+                }
+            } else {
+                num_queues
+            };
+
+            RxBufferRanges::validate_params(
+                state.buffers.recv_buffer.count,
+                active_queue_count.into(),
+            )?;
+
+            GuestBuffers::validate_config(
+                &state.buffers.recv_buffer.gpadl,
+                state.buffers.recv_buffer.sub_allocation_size,
+                state.buffers.ndis_config.mtu,
+            )
+            .map_err(WorkerError::GuestBuffers)?;
+
+            (num_queues, active_queues, active_queue_count)
+        } else {
+            // No ready state; restart_queues will return Ok(()).
+            (0, Vec::new(), 0)
+        };
+
         // Drop all the queues and stop the endpoint. Collect the worker drivers to pass to the queues.
         let drivers = self
             .workers
@@ -4464,31 +4551,9 @@ impl Coordinator {
         // Save the channel buffers for use in the subchannel workers.
         self.buffers = Some(state.buffers.clone());
 
-        let num_queues = state.state.primary.as_ref().unwrap().requested_num_queues;
-        let mut active_queues = Vec::new();
-        let active_queue_count =
-            if let Some(rss_state) = state.state.primary.as_ref().unwrap().rss_state.as_ref() {
-                // Active queue count is computed as the number of unique entries in the indirection table
-                active_queues.clone_from(&rss_state.indirection_table);
-                active_queues.sort();
-                active_queues.dedup();
-                active_queues = active_queues
-                    .into_iter()
-                    .filter(|&index| index < num_queues)
-                    .collect::<Vec<_>>();
-                if !active_queues.is_empty() {
-                    active_queues.len() as u16
-                } else {
-                    tracelimit::warn_ratelimited!("Invalid RSS indirection table");
-                    num_queues
-                }
-            } else {
-                num_queues
-            };
-
         // Distribute the rx buffers to only the active queues.
         let (ranges, mut remote_buffer_id_recvs) =
-            RxBufferRanges::new(state.buffers.recv_buffer.count, active_queue_count.into());
+            RxBufferRanges::new(state.buffers.recv_buffer.count, active_queue_count.into())?;
         let ranges = Arc::new(ranges);
 
         let mut queues = Vec::new();
@@ -4504,7 +4569,7 @@ impl Coordinator {
                     buffers.recv_buffer.sub_allocation_size,
                     buffers.ndis_config.mtu,
                 )
-                .map_err(WorkerError::GpadlError)?,
+                .map_err(WorkerError::GuestBuffers)?,
             );
 
             // Get the list of free rx buffers from each task, then partition
@@ -5504,8 +5569,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     // the subchannels plus the primary channel must fit within the max_queues value,
                     // which means subchannels + 1 ≤ max_queues, so the subchannel count must be
                     // strictly less than max_queues.
+                    let num_queues = request.num_sub_channels + 1;
                     let status = if request.operation == protocol::SubchannelOperation::ALLOCATE
                         && request.num_sub_channels < self.adapter.max_queues.into()
+                        && RxBufferRanges::validate_params(buffers.recv_buffer.count, num_queues)
+                            .is_ok()
                     {
                         subchannel_count = request.num_sub_channels;
                         protocol::Status::SUCCESS
@@ -5514,6 +5582,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             operation = ?request.operation,
                             request_sub_channels = request.num_sub_channels,
                             max_supported_sub_channels = self.adapter.max_queues - 1,
+                            recv_buffer_count = buffers.recv_buffer.count,
                             "Subchannel request failed: either operation is not supported or requested more subchannels than supported"
                         );
                         protocol::Status::FAILURE

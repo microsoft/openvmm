@@ -3,12 +3,17 @@
 
 //! SHA-256 hashing.
 
-#![cfg(openssl)]
+#![cfg(any(openssl, symcrypt))]
 
 #[cfg(openssl)]
 mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
+
+#[cfg(symcrypt)]
+mod symcrypt;
+#[cfg(symcrypt)]
+use symcrypt as sys;
 
 /// Compute the SHA-256 hash of `data`.
 pub fn sha_256(data: &[u8]) -> [u8; 32] {

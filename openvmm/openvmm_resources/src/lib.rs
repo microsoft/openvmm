@@ -117,7 +117,7 @@ mesh_worker::register_workers! {
 
 // Hypervisor backend resolvers.
 vm_resource::register_static_resolvers! {
-    #[cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native, guest_arch = "x86_64"))]
+    #[cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native))]
     openvmm_hypervisors::mshv::MshvResolver,
 
     #[cfg(all(target_os = "linux", feature = "virt_kvm", guest_is_native))]

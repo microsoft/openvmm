@@ -7,7 +7,6 @@ use crate::build_nextest_unit_tests::BuildNextestUnitTestMode;
 use crate::common::CommonProfile;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
-use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Params {
@@ -34,7 +33,6 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<flowey_lib_common::publish_test_results::Node>();
         ctx.import::<crate::build_nextest_unit_tests::Node>();
     }
 
@@ -49,36 +47,27 @@ impl SimpleFlowNode for Node {
             done,
         } = request;
 
+        let (publish_done, publish_done_write) = ctx.new_var();
         let results = ctx.reqv(|v| crate::build_nextest_unit_tests::Request {
             profile,
             target,
             build_mode: BuildNextestUnitTestMode::ImmediatelyRun {
                 nextest_profile,
+                junit_test_label,
+                artifact_dir,
                 results: v,
+                publish_done: publish_done_write,
             },
         });
 
-        let mut side_effects = Vec::new();
-
-        let junit_xml = results.map(ctx, |r| r.junit_xml);
-        let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
-            junit_xml,
-            test_label: junit_test_label,
-            attachments: BTreeMap::new(),
-            output_dir: artifact_dir,
-            done: v,
-        });
-
-        side_effects.push(reported_results);
-
         ctx.emit_rust_step("report test results to overall pipeline status", |ctx| {
-            side_effects.claim(ctx);
+            publish_done.claim(ctx);
             done.claim(ctx);
 
             let results = results.clone().claim(ctx);
             move |rt| {
                 let results = rt.read(results);
-                if results.all_tests_passed {
+                if results.iter().all(|r| r.all_tests_passed) {
                     log::info!("all tests passed!");
                 } else {
                     if fail_job_on_test_fail {

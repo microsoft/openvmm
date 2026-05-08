@@ -8,10 +8,10 @@
 //! in `MshvPartitionInner`. These accessors must only be called while VPs
 //! are stopped (e.g., during reset or save/restore).
 
-use super::Error;
-use super::VcpuFdExt;
+use crate::Error;
 use crate::ErrorInner;
 use crate::MshvPartition;
+use crate::VcpuFdExt;
 use hvdef::HvPartitionPropertyCode;
 use hvdef::HvX64RegisterName;
 use hvdef::hypercall::HvRegisterAssoc;

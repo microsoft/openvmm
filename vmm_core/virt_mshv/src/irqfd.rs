@@ -204,7 +204,7 @@ impl IrqFd for MshvIrqFd {
             partition: self.partition.clone(),
             gsi,
             event,
-            last_route: Mutex::new(None),
+            armed: Mutex::new(true),
         }))
     }
 }
@@ -216,9 +216,23 @@ struct MshvIrqFdRoute {
     partition: Arc<MshvPartitionInner>,
     gsi: u32,
     event: Event,
-    /// The last MSI route configured via `set_msi`, used to restore routing
-    /// on `unmask`.
-    last_route: Mutex<Option<MsiRoute>>,
+    /// Whether the irqfd is currently armed (registered with the kernel).
+    /// Serializes route updates and arm/disarm ioctls to prevent races.
+    armed: Mutex<bool>,
+}
+
+impl MshvIrqFdRoute {
+    fn disarm(&self) {
+        let mut armed = self.armed.lock();
+        if *armed {
+            // SAFETY: `self.event` is the same event passed to `register_irqfd`.
+            if let Err(e) = unsafe { self.partition.unregister_irqfd(&self.event, self.gsi) } {
+                tracelimit::warn_ratelimited!(error = ?e, gsi = self.gsi, "failed to unregister irqfd");
+                return;
+            }
+            *armed = false;
+        }
+    }
 }
 
 impl IrqFdRoute for MshvIrqFdRoute {
@@ -226,54 +240,44 @@ impl IrqFdRoute for MshvIrqFdRoute {
         &self.event
     }
 
-    fn set_msi(&self, address: u64, data: u32) -> anyhow::Result<()> {
+    fn enable(&self, address: u64, data: u32) {
+        let mut armed = self.armed.lock();
         let route = MsiRoute {
             address_lo: address as u32,
             address_hi: (address >> 32) as u32,
             data,
         };
-        self.partition.set_gsi_route(self.gsi, Some(route))?;
-        *self.last_route.lock() = Some(route);
-        Ok(())
-    }
-
-    fn clear_msi(&self) -> anyhow::Result<()> {
-        self.partition.set_gsi_route(self.gsi, None)?;
-        *self.last_route.lock() = None;
-        Ok(())
-    }
-
-    fn mask(&self) -> anyhow::Result<()> {
-        // Disable the GSI route so the kernel stops injecting interrupts.
-        // The eventfd remains registered — any signals while masked can be
-        // consumed via consume_pending(). The last route is preserved so it
-        // can be restored on unmask.
-        self.partition.set_gsi_route(self.gsi, None)
-    }
-
-    fn unmask(&self) -> anyhow::Result<()> {
-        // Restore the previously configured MSI route.
-        let route = *self.last_route.lock();
-        if let Some(route) = route {
-            self.partition.set_gsi_route(self.gsi, Some(route))?;
+        if let Err(e) = self.partition.set_gsi_route(self.gsi, Some(route)) {
+            tracelimit::warn_ratelimited!(error = ?e, gsi = self.gsi, "failed to set GSI route");
+            return;
         }
-        Ok(())
+        if !*armed {
+            // SAFETY: `self.event` is owned by this struct and will outlive
+            // the registration (unregistered in `disarm` or `Drop`).
+            if let Err(e) = unsafe { self.partition.register_irqfd(&self.event, self.gsi) } {
+                tracelimit::warn_ratelimited!(error = ?e, gsi = self.gsi, "failed to register irqfd");
+                return;
+            }
+            *armed = true;
+        }
+    }
+
+    fn disable(&self) {
+        // Just disarm the irqfd. The routing entry is inert without an
+        // armed eventfd, so there's no need to remove it and trigger an
+        // expensive MSHV_SET_MSI_ROUTING ioctl. On re-enable, if the
+        // address/data haven't changed, set_gsi_route will be a no-op.
+        self.disarm();
     }
 }
 
 impl Drop for MshvIrqFdRoute {
     fn drop(&mut self) {
+        self.disarm();
+
         self.partition
             .set_gsi_route(self.gsi, None)
             .expect("failed to clear GSI route on drop");
-
-        // SAFETY: `self.event` is the same event passed to `register_irqfd`
-        // and is about to be dropped, so this is the last use.
-        unsafe {
-            self.partition
-                .unregister_irqfd(&self.event, self.gsi)
-                .expect("failed to unregister irqfd on drop");
-        }
 
         self.partition.free_gsi(self.gsi);
     }
