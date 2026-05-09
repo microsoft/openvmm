@@ -648,6 +648,8 @@ struct PostedTx {
     bounced_len_with_padding: u32,
     /// GPA of the first data segment, used for error tracing.
     head_gpa: u64,
+    /// Length of the first data segment, used for error tracing.
+    head_len: u32,
 }
 
 #[derive(Default, Inspect)]
@@ -876,6 +878,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
         // Determine the location of the first SGE. If `bounced_len_with_padding` > 0,
         // some part of the packet was bounced.
         let head_gpa = packet.head_gpa;
+        let head_len = packet.head_len;
         if packet.bounced_len_with_padding > 0 {
             // Look for the head SGE in the bounce buffer.
             let found_in_bounce_buffer = trace_tx_eth_frame_from_bounce_buffer(
@@ -886,10 +889,13 @@ impl<T: DeviceBacking> ManaQueue<T> {
             );
             // In DirectDma tail-coalesce path, the head segment is not always bounced.
             // If not found in the bounce buffer, read it from guest memory.
-            if !found_in_bounce_buffer {
+            // Only attempt tracing when the head segment is at least an Ethernet II header
+            // long. Otherwise the EtherType must be in a later segment. Not walking the SGL,
+            // as that should be rare.
+            if !found_in_bounce_buffer && head_len as usize >= MIN_ETH_HEADER_LEN {
                 trace_tx_eth_frame_from_guest_memory(tracing_level, head_gpa, guest_memory);
             }
-        } else {
+        } else if head_len as usize >= MIN_ETH_HEADER_LEN {
             trace_tx_eth_frame_from_guest_memory(tracing_level, head_gpa, guest_memory);
         }
     }
@@ -1136,7 +1142,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         while i < done.len() {
             let id = if let Some(cqe) = self.tx_cq.pop() {
                 let tx_oob = ManaTxCompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-                self.handle_tx_cqe(&tx_oob, cqe.params, done.len())?
+                self.handle_tx_cqe(&tx_oob, cqe.params, done.len(), pool.guest_memory())?
             } else if let Some(id) = self.dropped_tx.pop_front() {
                 self.stats.tx_dropped.increment();
                 id
@@ -1193,6 +1199,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
         tx_oob: &ManaTxCompOob,
         cqe_params: CqeParams,
         done_len: usize,
+        guest_memory: &GuestMemory,
     ) -> Result<TxId, TxError> {
         match tx_oob.cqe_hdr.cqe_type() {
             CQE_TX_OKAY => {
@@ -1218,8 +1225,8 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 // Non-fatal: only the individual packet is dropped, the queue continues.
                 self.stats.tx_errors.increment();
                 let wqe_offset = tx_oob.offsets.tx_wqe_offset();
-                self.trace_tx(tracing::Level::WARN, cqe.params, tx_oob, done.len());
-                self.trace_tx_eth_frame(tracing::Level::WARN, wqe_offset, pool.guest_memory());
+                self.trace_tx(tracing::Level::WARN, cqe_params, tx_oob, done_len);
+                self.trace_tx_eth_frame(tracing::Level::WARN, wqe_offset, guest_memory);
             }
             ty => {
                 tracelimit::error_ratelimited!(
@@ -1503,6 +1510,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
             wqe_len,
             bounced_len_with_padding: bounce_buffer.commit(),
             head_gpa: head.gpa,
+            head_len: head.len,
         };
         Ok(Some(tx))
     }
@@ -1692,6 +1700,9 @@ fn log_eth_type(tracing_level: tracing::Level, eth_type_bytes: [u8; 2]) {
 /// the 6-byte destination MAC and 6-byte source MAC addresses).
 const ETH_TYPE_OFFSET: usize = 12;
 
+/// Minimum length of an Ethernet II header (dst MAC 6 + src MAC 6 + EtherType 2).
+const MIN_ETH_HEADER_LEN: usize = 14;
+
 /// Attempts to read the first SGE from a TX WQE and log the EtherType
 /// from the bounce buffer. Returns `true` if the EtherType was found and logged.
 fn trace_tx_eth_frame_from_bounce_buffer(
@@ -1700,10 +1711,12 @@ fn trace_tx_eth_frame_from_bounce_buffer(
     tracing_level: tracing::Level,
     wqe_offset: u32,
 ) -> bool {
-    // Reading 64 bytes
-    // WQE header (8) + largest inline client OOB (32, padded to 48) + the first SGE (16).
-    // Reading in two 32-byte (WQE_ALIGNMENT) chunks to handle ring-buffer wrap-around.
-    // Wq::read does not wrap, so each read must stay within a single alignment slot.
+    // Reading 64 bytes total: two 32-byte (WQE_ALIGNMENT) chunks. This covers
+    // the 8-byte WQE header plus up to 56 bytes after it, which is enough to
+    // reach the first 16-byte SGE even when the inline client OOB consumes up
+    // to 40 bytes after the header.
+    // Reading in two chunks handles ring-buffer wrap-around because Wq::read
+    // does not wrap, so each read must stay within a single alignment slot.
     let mut bytes = tx_wq.read(wqe_offset, WQE_ALIGNMENT);
     bytes.extend_from_slice(&tx_wq.read(wqe_offset.wrapping_add(1), WQE_ALIGNMENT));
     let Ok((wqe_header, _)) = WqeHeader::read_from_prefix(&bytes) else {
@@ -1722,8 +1735,6 @@ fn trace_tx_eth_frame_from_bounce_buffer(
         return false;
     };
 
-    /// Minimum length of an Ethernet II header (dst MAC 6 + src MAC 6 + EtherType 2).
-    const MIN_ETH_HEADER_LEN: usize = 14;
     if (sge.size as usize) < MIN_ETH_HEADER_LEN {
         return false;
     }

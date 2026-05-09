@@ -1161,7 +1161,8 @@ async fn tx_spurious_cqe_panics(driver: DefaultDriver) {
     let mut oob = ManaTxCompOob::new_zeroed();
     oob.cqe_hdr.set_cqe_type(CQE_TX_OKAY);
 
-    let _ = queue.handle_tx_cqe(&oob, CqeParams::new(), 8);
+    let guest_memory = guestmem::GuestMemory::allocate(4096);
+    let _ = queue.handle_tx_cqe(&oob, CqeParams::new(), 8, &guest_memory);
 }
 
 #[async_test]
@@ -1176,13 +1177,16 @@ async fn tx_cqe_gdma_err_returns_try_restart(driver: DefaultDriver) {
         id: TxId(42),
         wqe_len: 0,
         bounced_len_with_padding: 0,
+        head_gpa: 0,
+        head_len: 0,
     });
 
     let mut oob = ManaTxCompOob::new_zeroed();
     oob.cqe_hdr.set_cqe_type(CQE_TX_GDMA_ERR);
 
     // CQE_TX_GDMA_ERR returns TryRestart without popping posted_tx.
-    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8);
+    let guest_memory = guestmem::GuestMemory::allocate(4096);
+    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8, &guest_memory);
     assert!(
         matches!(result, Err(TxError::TryRestart(_))),
         "expected TryRestart, got {result:?}"
@@ -1207,13 +1211,16 @@ async fn tx_cqe_invalid_oob_completes_packet(driver: DefaultDriver) {
         id: TxId(7),
         wqe_len: 0,
         bounced_len_with_padding: 0,
+        head_gpa: 0,
+        head_len: 0,
     });
 
     let mut oob = ManaTxCompOob::new_zeroed();
     oob.cqe_hdr.set_cqe_type(CQE_TX_INVALID_OOB);
 
     // CQE_TX_INVALID_OOB logs an error but still pops posted_tx.
-    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8);
+    let guest_memory = guestmem::GuestMemory::allocate(4096);
+    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8, &guest_memory);
     assert_eq!(result.unwrap().0, 7);
     assert_eq!(queue.stats.tx_errors.get(), 1);
     assert!(queue.posted_tx.is_empty());
@@ -1234,14 +1241,69 @@ async fn tx_cqe_okay_completes_packet(driver: DefaultDriver) {
         id: TxId(99),
         wqe_len: 0,
         bounced_len_with_padding: 0,
+        head_gpa: 0,
+        head_len: 0,
     });
 
     let mut oob = ManaTxCompOob::new_zeroed();
     oob.cqe_hdr.set_cqe_type(CQE_TX_OKAY);
 
-    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8);
+    let guest_memory = guestmem::GuestMemory::allocate(4096);
+    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8, &guest_memory);
     assert_eq!(result.unwrap().0, 99);
     assert_eq!(queue.stats.tx_packets.get(), 1);
+    assert!(queue.posted_tx.is_empty());
+
+    drop(queue);
+    endpoint.vport.destroy(arena).await;
+    endpoint.stop().await;
+}
+
+#[async_test]
+async fn tx_cqe_invalid_eth_type_completes_packet(driver: DefaultDriver) {
+    use crate::PostedTx;
+    use gdma_defs::bnic::CQE_TX_INVALID_ETH_TYPE;
+
+    let (mut queue, arena, mut endpoint) = new_test_queue(&driver).await;
+
+    // Place an Ethernet header with EtherType 0x88CC (LLDP) at GPA 0 in
+    // guest memory; the CQE_TX_INVALID_ETH_TYPE arm will attempt to read
+    // it via `trace_tx_eth_frame` -> `trace_tx_eth_frame_from_guest_memory`.
+    let guest_memory = guestmem::GuestMemory::allocate(4096);
+    let mut eth_header = [0u8; 14];
+    eth_header[12] = 0x88;
+    eth_header[13] = 0xCC;
+    guest_memory.write_at(0, &eth_header).unwrap();
+
+    queue.posted_tx.push_back(PostedTx {
+        id: TxId(123),
+        wqe_len: 0,
+        bounced_len_with_padding: 0,
+        head_gpa: 0,
+        head_len: 14,
+    });
+
+    let mut oob = ManaTxCompOob::new_zeroed();
+    oob.cqe_hdr.set_cqe_type(CQE_TX_INVALID_ETH_TYPE);
+
+    // CQE_TX_INVALID_ETH_TYPE logs a warning, attempts to trace the
+    // EtherType, and pops posted_tx like a normal completion.
+    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8, &guest_memory);
+    assert_eq!(result.unwrap().0, 123);
+    assert_eq!(queue.stats.tx_errors.get(), 1);
+    assert!(queue.posted_tx.is_empty());
+
+    // A short head segment must skip the guest-memory read without panicking.
+    queue.posted_tx.push_back(PostedTx {
+        id: TxId(124),
+        wqe_len: 0,
+        bounced_len_with_padding: 0,
+        head_gpa: 0,
+        head_len: 4, // shorter than MIN_ETH_HEADER_LEN (14)
+    });
+    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8, &guest_memory);
+    assert_eq!(result.unwrap().0, 124);
+    assert_eq!(queue.stats.tx_errors.get(), 2);
     assert!(queue.posted_tx.is_empty());
 
     drop(queue);
