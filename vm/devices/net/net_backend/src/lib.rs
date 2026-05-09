@@ -188,6 +188,12 @@ pub trait BackendQueueStats {
     fn tx_errors(&self) -> Counter;
     fn rx_packets(&self) -> Counter;
     fn tx_packets(&self) -> Counter;
+    fn tx_vlan_packets(&self) -> Counter {
+        Counter::new()
+    }
+    fn rx_vlan_packets(&self) -> Counter {
+        Counter::new()
+    }
 }
 
 /// A single TX/RX data path for sending and receiving network packets.

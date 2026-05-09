@@ -1140,6 +1140,12 @@ impl BackendQueueStats for QueueStats {
     fn tx_packets(&self) -> Counter {
         self.tx_packets.clone()
     }
+    fn tx_vlan_packets(&self) -> Counter {
+        self.tx_vlan_packets.clone()
+    }
+    fn rx_vlan_packets(&self) -> Counter {
+        self.rx_vlan_packets.clone()
+    }
 }
 
 impl<T: DeviceBacking> ManaQueue<T> {

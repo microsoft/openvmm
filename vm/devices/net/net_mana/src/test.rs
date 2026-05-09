@@ -1086,6 +1086,8 @@ fn get_queue_stats(queue_stats: Option<&dyn net_backend::BackendQueueStats>) -> 
         tx_errors: queue_stats.tx_errors(),
         rx_packets: queue_stats.rx_packets(),
         tx_packets: queue_stats.tx_packets(),
+        tx_vlan_packets: queue_stats.tx_vlan_packets(),
+        rx_vlan_packets: queue_stats.rx_vlan_packets(),
         ..Default::default()
     }
 }
@@ -1268,6 +1270,8 @@ async fn test_vlan_tx_rx_roundtrip_direct_dma(driver: DefaultDriver) {
 
     assert_eq!(stats.tx_packets.get(), 1);
     assert_eq!(stats.rx_packets.get(), 1);
+    assert_eq!(stats.tx_vlan_packets.get(), 1);
+    assert_eq!(stats.rx_vlan_packets.get(), 1);
 
     let rx_vlan = rx_meta[0]
         .expect("RX metadata should be present")
@@ -1296,6 +1300,8 @@ async fn test_vlan_tx_rx_roundtrip_bounce_buffer(driver: DefaultDriver) {
 
     assert_eq!(stats.tx_packets.get(), 1);
     assert_eq!(stats.rx_packets.get(), 1);
+    assert_eq!(stats.tx_vlan_packets.get(), 1);
+    assert_eq!(stats.rx_vlan_packets.get(), 1);
 
     let rx_vlan = rx_meta[0]
         .expect("RX metadata should be present")
@@ -1312,7 +1318,7 @@ async fn test_no_vlan_rx_metadata_when_untagged(driver: DefaultDriver) {
     let mut pkt_builder = TxPacketBuilder::new();
     build_tx_segments(1138, 1, false, &mut pkt_builder);
 
-    let (_, rx_meta) = test_endpoint(
+    let (stats, rx_meta) = test_endpoint(
         driver,
         GuestDmaMode::DirectDma,
         &pkt_builder,
@@ -1321,6 +1327,9 @@ async fn test_no_vlan_rx_metadata_when_untagged(driver: DefaultDriver) {
         ManaTestConfiguration::default(),
     )
     .await;
+
+    assert_eq!(stats.tx_vlan_packets.get(), 0);
+    assert_eq!(stats.rx_vlan_packets.get(), 0);
 
     let rx = rx_meta[0].expect("RX metadata should be present");
     assert!(
@@ -1355,6 +1364,8 @@ async fn test_vlan_mixed_batch(driver: DefaultDriver) {
 
     assert_eq!(stats.tx_packets.get(), 4);
     assert_eq!(stats.rx_packets.get(), 4);
+    assert_eq!(stats.tx_vlan_packets.get(), 2);
+    assert_eq!(stats.rx_vlan_packets.get(), 2);
 
     // Packet 0: no VLAN
     assert!(

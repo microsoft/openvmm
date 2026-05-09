@@ -6086,6 +6086,11 @@ async fn rndis_send_tcp_checksum_packet_with_vlan_ppi(driver: DefaultDriver) {
         metadata.l3_len, 20,
         "VLAN-tagged IPv4 packets must keep a 20-byte L3 header"
     );
+    assert_eq!(
+        read_netvsp_counter(&nic.channel, "queues/0/tx_vlan_packets").await,
+        1,
+        "netvsp should count 1 VLAN TX packet"
+    );
 }
 
 #[async_test]
@@ -6155,6 +6160,11 @@ async fn rndis_send_lso_packet_with_vlan_ppi(driver: DefaultDriver) {
         "VLAN-tagged IPv4 packets must keep a 20-byte L3 header"
     );
     assert_eq!(metadata.max_segment_size, 1460);
+    assert_eq!(
+        read_netvsp_counter(&nic.channel, "queues/0/tx_vlan_packets").await,
+        1,
+        "netvsp should count 1 VLAN TX packet"
+    );
 }
 
 /// Helper to initialize RNDIS and set the packet filter on a channel so
@@ -6263,9 +6273,9 @@ async fn rndis_rx_vlan_packet(driver: DefaultDriver) {
         0,
     );
 
-    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
-    nic.start_vmbus_channel();
-    let mut channel = nic.connect_vmbus_channel().await;
+    let mut nic_dev = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic_dev.start_vmbus_channel();
+    let mut channel = nic_dev.connect_vmbus_channel().await;
     channel
         .initialize(0, protocol::NdisConfigCapabilities::new())
         .await;
@@ -6293,6 +6303,11 @@ async fn rndis_rx_vlan_packet(driver: DefaultDriver) {
     assert!(
         ppi.checksum.is_some(),
         "checksum PPI should always be present"
+    );
+    assert_eq!(
+        read_netvsp_counter(&nic_dev.channel, "queues/0/rx_vlan_packets").await,
+        1,
+        "netvsp should count 1 VLAN RX packet"
     );
 }
 
@@ -6344,6 +6359,11 @@ async fn rndis_rx_vlan_packet_with_tcp_checksum(driver: DefaultDriver) {
     assert!(csum.tcp_checksum_succeeded());
     assert!(csum.ip_checksum_succeeded());
     assert!(!csum.tcp_checksum_failed());
+    assert_eq!(
+        read_netvsp_counter(&nic.channel, "queues/0/rx_vlan_packets").await,
+        1,
+        "netvsp should count 1 VLAN RX packet"
+    );
 }
 
 #[async_test]
@@ -6383,6 +6403,11 @@ async fn rndis_rx_packet_no_vlan(driver: DefaultDriver) {
         ppi.checksum.is_some(),
         "checksum PPI should always be present"
     );
+    assert_eq!(
+        read_netvsp_counter(&nic.channel, "queues/0/rx_vlan_packets").await,
+        0,
+        "netvsp should count 0 VLAN RX packets for untagged traffic"
+    );
 }
 
 #[async_test]
@@ -6397,9 +6422,9 @@ async fn rndis_rx_vlan_preserves_packet_data(driver: DefaultDriver) {
         0,
     );
 
-    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
-    nic.start_vmbus_channel();
-    let mut channel = nic.connect_vmbus_channel().await;
+    let mut nic_dev = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic_dev.start_vmbus_channel();
+    let mut channel = nic_dev.connect_vmbus_channel().await;
     channel
         .initialize(0, protocol::NdisConfigCapabilities::new())
         .await;
@@ -6440,6 +6465,13 @@ async fn rndis_rx_vlan_preserves_packet_data(driver: DefaultDriver) {
         })
         .await
         .expect("RX data packet");
+
+    // Verify netvsp's internal counters via inspect.
+    assert_eq!(
+        read_netvsp_counter(&nic_dev.channel, "queues/0/rx_vlan_packets").await,
+        1,
+        "netvsp should count 1 RX packet"
+    );
 }
 
 /// Helper: builds an RSS-enable parameter block that the set_rss_parameter
@@ -7002,4 +7034,152 @@ fn rx_buffer_ranges_valid() {
     assert_eq!(ranges.buffers_per_queue, 2);
     assert_eq!(recvs.len(), queue_count as usize);
     assert_eq!(ranges.buffer_id_send.len(), queue_count as usize);
+}
+
+/// Read a counter value from the running Nic via the inspect framework.
+/// The `path` is slash-separated following the Nic's inspect tree.
+async fn read_netvsp_counter(channel: &ChannelHandle<Nic>, path: &str) -> u64 {
+    let mut inspection = inspect::InspectionBuilder::new(path)
+        .depth(Some(usize::MAX))
+        .inspect(channel);
+    inspection.resolve().await;
+    match inspection.results() {
+        inspect::Node::Value(v) => match v.kind {
+            inspect::ValueKind::Unsigned(n) => n,
+            inspect::ValueKind::Signed(n) => n as u64,
+            other => panic!("unexpected value kind for counter at '{path}': {other:?}"),
+        },
+        other => panic!("unexpected inspect node for '{path}': {other:?}"),
+    }
+}
+
+#[async_test]
+async fn vlan_tx_counter_increments(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic_dev = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic_dev.start_vmbus_channel();
+    let mut channel = nic_dev.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    // Send a VLAN-tagged packet.
+    let data = build_vlan_ipv4_tcp_packet(42);
+    let vlan_info = rndisprot::EthVlanInfo(42u32 << 4);
+    channel
+        .send_rndis_packet_offload_with_vlan(&data, true, false, false, vlan_info)
+        .await;
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
+
+    // Send a non-VLAN packet.
+    channel
+        .send_rndis_packet_offload(&data, true, false, false)
+        .await;
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
+
+    // Verify netvsp's internal counters via inspect.
+    assert_eq!(
+        read_netvsp_counter(&nic_dev.channel, "queues/0/tx_packets").await,
+        2,
+        "netvsp should count 2 TX packets"
+    );
+    assert_eq!(
+        read_netvsp_counter(&nic_dev.channel, "queues/0/tx_vlan_packets").await,
+        1,
+        "netvsp should count 1 VLAN TX packet"
+    );
+}
+
+#[async_test]
+async fn vlan_rx_counter_increments(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic_dev = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic_dev.start_vmbus_channel();
+    let mut channel = nic_dev.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_for_rx(&mut channel).await;
+
+    let parser = channel.rndis_message_parser();
+
+    // Inject a VLAN-tagged RX packet.
+    let vlan_data = vec![0xAA; 60];
+    let vlan_metadata = RxMetadata {
+        len: vlan_data.len(),
+        vlan: Some(net_backend::VlanMetadata {
+            priority: 3,
+            drop_eligible_indicator: false,
+            vlan_id: 42,
+        }),
+        ..Default::default()
+    };
+    let ppi = inject_and_parse_rx(
+        &mut channel,
+        &endpoint_state,
+        &parser,
+        vlan_data,
+        vlan_metadata,
+    )
+    .await;
+    assert!(ppi.vlan.is_some(), "VLAN PPI should be present");
+
+    // Inject a non-VLAN RX packet.
+    let plain_data = vec![0xBB; 60];
+    let plain_metadata = RxMetadata {
+        len: plain_data.len(),
+        ..Default::default()
+    };
+    let ppi = inject_and_parse_rx(
+        &mut channel,
+        &endpoint_state,
+        &parser,
+        plain_data,
+        plain_metadata,
+    )
+    .await;
+    assert!(ppi.vlan.is_none(), "VLAN PPI should not be present");
+
+    // Verify netvsp's internal RX VLAN counter via inspect.
+    assert_eq!(
+        read_netvsp_counter(&nic_dev.channel, "queues/0/rx_vlan_packets").await,
+        1,
+        "netvsp should count 1 VLAN RX packet"
+    );
 }
