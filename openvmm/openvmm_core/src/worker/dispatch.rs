@@ -1861,10 +1861,6 @@ impl InitializedVm {
                 .get(switch.parent_port.as_str())
                 .copied()
                 .expect("switch parent port must be a known downstream port");
-            for i in 0..switch.num_downstream_ports {
-                let port_name: Arc<str> = format!("{}-downstream-{}", switch.name, i).into();
-                port_segments.insert(port_name, parent_segment);
-            }
 
             let switch_device = chipset_builder
                 .arc_mutex_device(device_name)
@@ -1877,6 +1873,12 @@ impl InitializedVm {
                     };
                     GenericPcieSwitch::new(definition)
                 })?;
+
+            // Query the switch's actual downstream port names instead of
+            // reconstructing them from the naming convention.
+            for (_, name) in switch_device.lock().downstream_ports() {
+                port_segments.insert(name, parent_segment);
+            }
 
             let bus_id = vmotherboard::BusId::new(&switch.name);
             chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(switch_device));
@@ -1915,7 +1917,7 @@ impl InitializedVm {
         //
         // Each device gets an AssignedBusRange that the root port updates when
         // the guest programs the secondary and subordinate bus numbers. When
-        // ITS is configured, wrappers compose (segment << 16 | rid) at
+        // ITS is configured, wrappers compose the RID at
         // interrupt delivery time.
         try_join_all(cfg.pcie_devices.into_iter().map(|dev_cfg| {
             let chipset_builder = &chipset_builder;
