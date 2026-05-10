@@ -34,7 +34,7 @@ fn main() {
         // Default to openssl on linux, the dependencies are also marked
         // non-optional and there is no native backend available
         if linux {
-            println!("cargo::rustc-cfg=openssl");
+            println!("cargo::rustc-cfg=rust");
         } else {
             println!("cargo::rustc-cfg=native");
         }
