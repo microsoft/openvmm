@@ -87,7 +87,7 @@ impl std::error::Error for OsStatusCode {}
 /// An error that occurred in the crypto backend.
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("{0}")]
-pub struct BackendError(BackendErrorKind);
+pub(crate) struct BackendError(BackendErrorKind);
 
 #[derive(Clone, Debug, thiserror::Error)]
 enum BackendErrorKind {

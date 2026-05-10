@@ -32,28 +32,28 @@ pub(crate) mod win;
 #[cfg(openssl)]
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("openssl error during {1}")]
-pub struct BackendError(#[source] openssl::error::ErrorStack, &'static str);
+pub(crate) struct BackendError(#[source] openssl::error::ErrorStack, &'static str);
 
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.
 #[cfg(all(native, windows))]
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("windows crypto error during {1}")]
-pub struct BackendError(#[source] windows_result::Error, &'static str);
+pub(crate) struct BackendError(#[source] windows_result::Error, &'static str);
 
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.
 #[cfg(symcrypt)]
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("symcrypt backend error during {1}")]
-pub enum BackendError {
+pub(crate) enum BackendError {
     /// An error from the SymCrypt library, with the operation being performed when the error occurred.
     SymCrypt(#[source] symcrypt::errors::SymCryptError, &'static str),
     /// An error from encoding or decoding PKCS#8, with the operation being performed when the error occurred.
-    Pkcs8Encoding(#[source] ::rsa::pkcs8::Error, &'static str),
+    Pkcs8Encoding(#[source] pkcs8::Error, &'static str),
     /// An error from DER encoding or decoding, with the operation being performed when the error occurred.
-    Der(#[source] ::der::Error, &'static str),
+    Der(#[source] der::Error, &'static str),
 }
 
 #[cfg(all(native, target_os = "macos"))]
-pub use mac::BackendError;
+pub(crate) use mac::BackendError;

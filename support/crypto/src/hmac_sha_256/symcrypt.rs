@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 use super::HmacSha256Error;
-use ::symcrypt::errors::SymCryptError;
-use ::symcrypt::hmac::hmac_sha256;
+use symcrypt::errors::SymCryptError;
+use symcrypt::hmac::hmac_sha256;
 
 fn err(e: SymCryptError, op: &'static str) -> HmacSha256Error {
     HmacSha256Error(crate::BackendError::SymCrypt(e, op))
