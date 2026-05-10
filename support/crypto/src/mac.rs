@@ -3,7 +3,7 @@
 
 //! Helpers for macOS operations, used by multiple algorithms.
 
-#![cfg(target_os = "macos")]
+#![cfg(all(native, target_os = "macos"))]
 
 use std::ffi::c_void;
 use std::fmt;
