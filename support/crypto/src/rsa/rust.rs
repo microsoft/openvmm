@@ -117,7 +117,7 @@ impl RsaPublicKeyInner {
         signature: &[u8],
         hash_algorithm: super::HashAlgorithm,
     ) -> Result<bool, RsaError> {
-        // SymCrypt's `pkcs1_verify` expects the caller-supplied buffer to already
+        // rsa's `pkcs1_verify` expects the caller-supplied buffer to already
         // be the hash digest of the message. Other backends take the raw
         // message and hash internally. Do the hash here before handing off.
         let result = match hash_algorithm {
