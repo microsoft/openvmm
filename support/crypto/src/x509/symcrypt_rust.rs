@@ -72,7 +72,7 @@ impl X509CertificateInner {
         &self,
         issuer_public_key: &crate::rsa::RsaPublicKey,
     ) -> Result<bool, crate::rsa::RsaError> {
-        use pkcs8::AssociatedOid;
+        use rsa::pkcs1v15::RsaSignatureAssociatedOid;
 
         let oid = self.0.signature_algorithm().oid;
         let hash = match oid {
