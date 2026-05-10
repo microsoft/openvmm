@@ -65,6 +65,7 @@ const VIRTIO_F_RING_INDIRECT_DESC: u32 = 0x10000000;
 const VIRTIO_F_RING_EVENT_IDX: u32 = 0x20000000;
 // Device features - second bank
 const VIRTIO_F_VERSION_1: u32 = 1;
+const VIRTIO_F_ACCESS_PLATFORM: u32 = 2;
 const VIRTIO_F_RING_PACKED: u32 = 4;
 
 // Device status
@@ -1486,7 +1487,10 @@ async fn verify_chipset_config(driver: DefaultDriver) {
     // device feature (bank 1)
     dev.write_u32(20, 1);
     assert_eq!(dev.read_u32(20), 1);
-    assert_eq!(dev.read_u32(16), VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
+    assert_eq!(
+        dev.read_u32(16),
+        VIRTIO_F_VERSION_1 | VIRTIO_F_ACCESS_PLATFORM | VIRTIO_F_RING_PACKED
+    );
     // device feature (bank 2)
     dev.write_u32(20, 2);
     assert_eq!(dev.read_u32(16), 0);
@@ -1506,7 +1510,10 @@ async fn verify_chipset_config(driver: DefaultDriver) {
     // driver feature (bank 1)
     assert_eq!(dev.read_u32(32), 0);
     dev.write_u32(32, 0xffffffff);
-    assert_eq!(dev.read_u32(32), VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
+    assert_eq!(
+        dev.read_u32(32),
+        VIRTIO_F_VERSION_1 | VIRTIO_F_ACCESS_PLATFORM | VIRTIO_F_RING_PACKED
+    );
     // driver feature (bank 2)
     dev.write_u32(36, 2);
     assert_eq!(dev.read_u32(32), 0);
@@ -1793,7 +1800,7 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     assert_eq!(pci_test_device.read_u32(bar_address1), 1);
     assert_eq!(
         pci_test_device.read_u32(bar_address1 + 4),
-        VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED
+        VIRTIO_F_VERSION_1 | VIRTIO_F_ACCESS_PLATFORM | VIRTIO_F_RING_PACKED
     );
     // device feature (bank 2)
     pci_test_device.write_u32(bar_address1, 2);
@@ -1817,7 +1824,7 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     pci_test_device.write_u32(bar_address1 + 12, 0xffffffff);
     assert_eq!(
         pci_test_device.read_u32(bar_address1 + 12),
-        VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED
+        VIRTIO_F_VERSION_1 | VIRTIO_F_ACCESS_PLATFORM | VIRTIO_F_RING_PACKED
     );
     // driver feature (bank 2)
     pci_test_device.write_u32(bar_address1 + 8, 2);
