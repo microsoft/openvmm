@@ -87,6 +87,9 @@ fn test_ttrpc_interface(
             let mut console_path = std::env::temp_dir();
             console_path.push(Guid::new_random().to_string());
 
+            let virtiofs_root = std::env::temp_dir().join(Guid::new_random().to_string());
+            std::fs::create_dir_all(&virtiofs_root).unwrap();
+
             // On iteration 0, test serial `connect: true` by pre-creating a
             // listener that the VM will connect to. On other iterations, test
             // the default `connect: false` (VM creates the socket).
@@ -142,6 +145,10 @@ fn test_ttrpc_interface(
                                     socket_path: console_path.to_string_lossy().into(),
                                     connect: false,
                                 }),
+                                virtiofs_config: vec![vmservice::VirtioFsConfig {
+                                    tag: "testfs".to_string(),
+                                    root_path: virtiofs_root.to_string_lossy().into(),
+                                }],
                                 ..Default::default()
                             }),
                             ..Default::default()

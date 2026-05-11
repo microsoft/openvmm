@@ -665,7 +665,7 @@ impl VmService {
                         resource: VirtioPciDeviceHandle(resource).into_resource(),
                     });
                 } else {
-                    config.virtio_devices.push((VirtioBus::Pci, resource));
+                    config.virtio_devices.push((VirtioBus::Mmio, resource));
                 }
             }
 
@@ -688,7 +688,7 @@ impl VmService {
                             resource: VirtioPciDeviceHandle(resource).into_resource(),
                         });
                     } else {
-                        config.virtio_devices.push((VirtioBus::Pci, resource));
+                        config.virtio_devices.push((VirtioBus::Mmio, resource));
                     }
                 }
             }
