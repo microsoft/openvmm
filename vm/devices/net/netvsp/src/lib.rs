@@ -2664,7 +2664,7 @@ impl<T: RingMem> NetChannel<T> {
                 }
             }
 
-            // TODO: USO support is not present.
+            // Issue #3453: USO support is not present. (https://github.com/microsoft/openvmm/issues/3453)
         }
 
         let start = segments.len();

@@ -290,6 +290,10 @@ impl BufferAccess for BufferPool {
         if let Some(vlan_ppi) = vlan {
             self.buffers.write_at(offset, vlan_ppi.as_bytes());
         }
+        debug_assert!(
+            (size_of::<Header>() + 2 * size_of::<PerPacketInfo>()) < RX_HEADER_LEN as usize,
+            "The RNDIS header only has so much room."
+        );
     }
 }
 
