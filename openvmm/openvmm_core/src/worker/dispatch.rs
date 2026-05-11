@@ -2880,7 +2880,10 @@ impl LoadedVm {
                                 })
                                 .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
 
-                            let msi_conn = pci_core::msi::MsiConnection::new();
+                            let msi_conn = match self.inner.partition.irqfd() {
+                                Some(fd) => pci_core::msi::MsiConnection::with_irqfd(fd),
+                                None => pci_core::msi::MsiConnection::new(),
+                            };
                             let signal_msi = self.inner.partition.as_signal_msi(Vtl::Vtl0);
 
                             let (unit, device) = self.inner.chipset_devices.add_dyn_device(
@@ -2898,7 +2901,6 @@ impl LoadedVm {
                                                 guest_memory: &self.inner.gm,
                                                 doorbell_registration: self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0),
                                                 shared_mem_mapper: None,
-                                                irqfd: self.inner.partition.irqfd(),
                                             },
                                         )
                                         .await

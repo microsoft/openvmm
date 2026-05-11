@@ -192,6 +192,7 @@ impl SimpleFlowNode for Node {
             release_igvm_files,
             use_relative_paths: false,
             disable_remote_artifacts: true,
+            reuse_prepped_vhds: false,
         });
 
         // Start the test_igvm_agent_rpc_server before running tests (Windows only).

@@ -138,7 +138,10 @@ pub async fn resolve_and_add_pci_device(
     mapper: Option<&dyn guestmem::MemoryMapper>,
     irqfd: Option<Arc<dyn IrqFd>>,
 ) -> anyhow::Result<(Arc<CloseableMutex<ErasedChipsetDevice>>, MsiConnection)> {
-    let msi_conn = MsiConnection::new();
+    let msi_conn = match irqfd {
+        Some(fd) => MsiConnection::with_irqfd(fd),
+        None => MsiConnection::new(),
+    };
 
     let device = {
         device_builder
@@ -153,7 +156,6 @@ pub async fn resolve_and_add_pci_device(
                             guest_memory,
                             doorbell_registration,
                             shared_mem_mapper: mapper,
-                            irqfd,
                         },
                     )
                     .await

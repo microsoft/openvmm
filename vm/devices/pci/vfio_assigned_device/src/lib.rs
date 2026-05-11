@@ -35,8 +35,6 @@ use pci_core::spec::cfg_space;
 use pci_core::spec::cfg_space::HeaderType00;
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
-use std::sync::Arc;
-use virt::irqfd::IrqFd;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -118,10 +116,6 @@ pub(crate) struct VfioAssignedPciDevice {
     #[inspect(skip)]
     vfio_device: vfio_sys::Device,
 
-    /// irqfd routing interface for registering eventfds with the hypervisor.
-    #[inspect(skip)]
-    irqfd: Arc<dyn IrqFd>,
-
     /// Offset into the VFIO device fd where the PCI config region starts.
     #[inspect(hex)]
     config_offset: u64,
@@ -188,7 +182,6 @@ impl VfioAssignedPciDevice {
         driver_source: &VmTaskDriverSource,
         register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
         msi_target: &MsiTarget,
-        irqfd: Arc<dyn IrqFd>,
         memory_mapper: &dyn MemoryMapper,
     ) -> anyhow::Result<Self> {
         let driver = driver_source.simple();
@@ -352,7 +345,6 @@ impl VfioAssignedPciDevice {
         Ok(Self {
             pci_id,
             vfio_device,
-            irqfd,
             config_offset,
             config_size,
             bar_masks,
@@ -427,10 +419,11 @@ impl VfioAssignedPciDevice {
 
     /// Set up irqfd-backed MSI-X interrupt delivery when the guest enables MSI-X.
     ///
-    /// Tells the emulator to create irqfd routes and passes the resulting
+    /// Gets an interrupt for each vector and triggers lazy irqfd route
+    /// creation by requesting the backing event. Passes the resulting
     /// events to VFIO so the physical device signals them on interrupt.
     fn msix_enable(&mut self) -> anyhow::Result<()> {
-        let msix = self.msix.as_mut().expect("msix must be present");
+        let msix = self.msix.as_ref().expect("msix must be present");
         let count = msix.vector_count;
 
         // VFIO map_msix has a hard limit of 256 eventfds per call.
@@ -439,12 +432,21 @@ impl VfioAssignedPciDevice {
             "MSI-X vector count ({count}) exceeds VFIO limit of 256"
         );
 
-        let vfio_device = &self.vfio_device;
-        msix.emulator.enable_irqfd(self.irqfd.as_ref(), |events| {
-            vfio_device
-                .map_msix(0, events)
-                .context("VFIO map_msix failed")
-        })?;
+        // Get an interrupt for each vector and trigger lazy irqfd route
+        // creation by requesting the backing event.
+        let interrupts: Vec<_> = (0..count)
+            .map(|i| msix.emulator.interrupt(i).expect("vector in range"))
+            .collect();
+
+        let events: Vec<_> = interrupts
+            .iter()
+            .map(|int| int.event())
+            .collect::<Option<Vec<_>>>()
+            .context("failed to allocate irqfd routes for MSI-X vectors")?;
+
+        self.vfio_device
+            .map_msix(0, &events)
+            .context("VFIO map_msix failed")?;
 
         tracing::info!(
             count,
@@ -456,8 +458,11 @@ impl VfioAssignedPciDevice {
 
     /// Tear down VFIO MSI-X eventfd mapping when the guest disables MSI-X.
     fn msix_disable(&mut self) {
-        let msix = self.msix.as_mut().expect("msix must be present");
-        let count = msix.vector_count;
+        let count = self
+            .msix
+            .as_ref()
+            .expect("msix must be present")
+            .vector_count;
 
         if let Err(e) = self.vfio_device.unmap_msix(0, count as u32) {
             tracing::warn!(
@@ -467,7 +472,6 @@ impl VfioAssignedPciDevice {
             );
         }
 
-        msix.emulator.disable_irqfd();
         tracing::info!(
             pci_id = self.pci_id.as_str(),
             "MSI-X disabled: unmapped vectors"
@@ -778,7 +782,6 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
         let Self {
             pci_id,
             vfio_device,
-            irqfd: _,         // handle — no reset needed
             config_offset: _, // immutable device geometry
             config_size: _,   // immutable device geometry
             bar_masks: _,     // immutable device geometry
@@ -915,7 +918,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                             // Install irqfd routes BEFORE writing the
                             // capability, so that when the capability
                             // processes the enable transition it can call
-                            // set_msi() on the already-installed routes.
+                            // enable() on the already-installed routes.
                             match self.msix_enable() {
                                 Ok(()) => {
                                     let msix = self.msix.as_mut().unwrap();

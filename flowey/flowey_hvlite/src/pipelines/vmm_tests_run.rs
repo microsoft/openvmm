@@ -12,16 +12,20 @@
 use anyhow::Context as _;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
+use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::BuildSelections;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelections;
-use flowey_lib_hvlite::artifact_to_build_mapping::ResolvedArtifactSelections;
-use flowey_lib_hvlite::common::CommonArch;
 use flowey_lib_hvlite::common::CommonTriple;
 use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelections;
+use petri_artifacts_core::ArtifactId;
+use petri_artifacts_core::ArtifactListOutput;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
+use vmm_test_images::KnownTestArtifacts;
 
 /// Build and run VMM tests with automatic artifact discovery
 #[derive(clap::Args)]
@@ -32,9 +36,13 @@ pub struct VmmTestsRunCli {
     #[clap(long)]
     target: Option<VmmTestTargetCli>,
 
-    /// Directory for the output artifacts
+    /// Directory for the output artifacts.
+    ///
+    /// If not specified, defaults to `target/vmm_tests`.
+    /// WSL-to-Windows runs still require explicitly overriding this to a
+    /// Windows-accessible output directory.
     #[clap(long)]
-    dir: PathBuf,
+    dir: Option<PathBuf>,
 
     /// Test filter (nextest filter expression)
     ///
@@ -88,6 +96,48 @@ pub struct VmmTestsRunCli {
     /// downloaded release. Path to a locally-built MSVM.fd file.
     #[clap(long)]
     custom_uefi_firmware: Option<PathBuf>,
+
+    /// use the nextest CI profile rather than the default one
+    #[clap(long)]
+    ci_profile: bool,
+
+    /// Don't reuse prepped vhds, even if they already exist.
+    /// Use when making changes to prep_steps
+    #[clap(long)]
+    no_reuse_prepped_vhds: bool,
+}
+
+struct CargoNextestListRequest<'a> {
+    repo_root: &'a Path,
+    target: &'a str,
+    filter: &'a str,
+    release: bool,
+    include_ignored: bool,
+}
+
+struct RustSuite {
+    binary_path: PathBuf,
+    testcases: Vec<String>,
+}
+
+/// Result of resolving artifact requirements to build/download selections
+struct ResolvedArtifactSelections {
+    /// What to build
+    build: BuildSelections,
+    /// What to download
+    downloads: BTreeSet<KnownTestArtifacts>,
+    /// Whether any tests need release IGVM files from GitHub
+    needs_release_igvm: bool,
+}
+
+impl Default for ResolvedArtifactSelections {
+    fn default() -> Self {
+        Self {
+            build: BuildSelections::none(),
+            downloads: BTreeSet::new(),
+            needs_release_igvm: false,
+        }
+    }
 }
 
 impl IntoPipeline for VmmTestsRunCli {
@@ -111,80 +161,108 @@ impl IntoPipeline for VmmTestsRunCli {
             custom_kernel_modules,
             custom_kernel,
             custom_uefi_firmware,
+            ci_profile,
+            no_reuse_prepped_vhds,
         } = self;
 
-        // 1. Resolve target
         let target = resolve_target(target, backend_hint)?;
         let target_os = target.as_triple().operating_system;
-        let target_architecture = target.as_triple().architecture;
+        let target_architecture = target.common_arch()?;
         let target_str = target.as_triple().to_string();
 
-        // 2. Validate output directory for WSL
-        validate_output_dir(&dir, target_os)?;
-        std::fs::create_dir_all(&dir).context("failed to create output directory")?;
-
-        // 3. Run artifact discovery inline at pipeline construction time
-        log::info!("Step 1: Discovering required artifacts...");
         let repo_root = crate::repo_root();
-        let (artifacts_json, test_names, test_binary) =
-            discover_artifacts(&repo_root, &target_str, &filter, release, build_only)
-                .context("during artifact discovery")?;
 
-        // 4. Resolve to build selections
-        let mut resolved = ResolvedArtifactSelections::from_artifact_list_json(
-            &artifacts_json,
-            target_architecture,
-            target_os,
-        )
-        .context("failed to parse discovered artifacts")?;
+        // Validate output directory for WSL
+        validate_output_dir(dir.as_deref(), target_os)?;
+        let test_content_dir = dir.unwrap_or_else(|| repo_root.join("target").join("vmm_tests"));
+        std::fs::create_dir_all(&test_content_dir).context("failed to create output directory")?;
 
-        if !resolved.unknown.is_empty() {
-            anyhow::bail!(
-                "Unknown artifacts found (mapping needs to be updated):\n  {}",
-                resolved.unknown.join("\n  ")
-            );
+        // Run artifact discovery inline at pipeline construction time since
+        // flowey doesn't support conditional requests yet
+        log::info!(
+            "Discovering artifacts for filter: {} (target: {})",
+            filter,
+            target
+        );
+
+        // Determine which tests match the filter
+        let suites = run_cargo_nextest_list(CargoNextestListRequest {
+            repo_root: &repo_root,
+            target: &target_str,
+            filter: &filter,
+            release,
+            // When using build-only mode, we need to enumerate tests that could be
+            // run on any system so that we build all necessary dependencies. By default
+            // petri marks incompatible tests as ignored.
+            include_ignored: build_only,
+        })?;
+
+        if suites.is_empty() {
+            anyhow::bail!("No tests found for the given filter");
         }
 
-        // 5. Determine lazy fetch mode.
+        // Query for the required artifacts
+        let mut artifacts = Vec::new();
+        for suite in suites.values() {
+            artifacts.append(&mut query_test_binary_artifacts(suite)?);
+        }
+
+        // Resolve to build selections
+        let mut resolved = ResolvedArtifactSelections::default();
+        for artifact in artifacts {
+            resolved.resolve_artifact(&artifact)?;
+        }
+
+        // Determine lazy fetch mode.
         //
         // By default, VHD/ISO downloads are skipped and disk images are
         // streamed on demand via HTTP (with local SQLite caching). This
         // avoids multi-GB upfront downloads for dev-inner-loop scenarios.
         //
-        // Lazy fetch is disabled when:
-        //   - The user passes --no-lazy-fetch
-        //   - Any Hyper-V test is selected (Hyper-V requires local files)
+        // Lazy fetch is disabled for all downloads when the user passes
+        // --no-lazy-fetch and for any downloads that are used by a selected
+        // Hyper-V test.
         //
         // When both Hyper-V and non-Hyper-V tests are selected, only the
         // artifacts required by Hyper-V tests are downloaded upfront; the
         // rest are lazy-fetched.
         if no_lazy_fetch {
-            log::info!("Lazy fetch disabled by --no-lazy-fetch");
+            log::info!("Lazy fetch disabled");
         } else {
-            let hyperv_names: Vec<_> = test_names
-                .iter()
-                .filter(|name| name.contains("hyperv_"))
-                .cloned()
-                .collect();
+            let mut hyperv_tests: usize = 0;
+            let mut hyperv_artifacts = Vec::new();
+            for (_, suite) in suites.iter() {
+                let hyperv_testcases: Vec<_> = suite
+                    .testcases
+                    .iter()
+                    .filter(|name| name.contains("hyperv_"))
+                    .cloned()
+                    .collect();
 
-            if hyperv_names.is_empty() {
+                if !hyperv_testcases.is_empty() {
+                    hyperv_tests += hyperv_testcases.len();
+                    hyperv_artifacts.append(&mut query_test_binary_artifacts(&RustSuite {
+                        binary_path: suite.binary_path.clone(),
+                        testcases: hyperv_testcases,
+                    })?);
+                }
+            }
+
+            resolved.downloads.retain(|a| !a.supports_blob_disk());
+
+            if hyperv_tests == 0 {
                 log::info!("Lazy fetch enabled: disk images will be streamed on demand via HTTP");
-                resolved.downloads.clear();
             } else {
                 log::info!(
                     "Downloading disk images required by {} Hyper-V tests",
-                    hyperv_names.len()
+                    hyperv_tests
                 );
-                let hyperv_json =
-                    query_test_binary_artifacts(&test_binary, &hyperv_names, &target_str)
-                        .context("during Hyper-V artifact discovery")?;
-                let hyperv_resolved = ResolvedArtifactSelections::from_artifact_list_json(
-                    &hyperv_json,
-                    target_architecture,
-                    target_os,
-                )
-                .context("failed to parse Hyper-V artifacts")?;
-                resolved.downloads = hyperv_resolved.downloads;
+            }
+
+            // Re-add only the downloads needed for hyper-v. Other selections should
+            // remain the same since resolve_artifact can only add selections
+            for artifact in hyperv_artifacts {
+                resolved.resolve_artifact(&artifact)?;
             }
         }
 
@@ -194,44 +272,103 @@ impl IntoPipeline for VmmTestsRunCli {
             resolved.downloads.iter().collect::<Vec<_>>()
         );
 
-        let selections = selections_from_resolved(filter, resolved, target_os);
+        let openvmm_repo = flowey_lib_common::git_checkout::RepoSource::ExistingClone(
+            ReadVar::from_static(repo_root),
+        );
 
-        // 6. Construct and return the pipeline
-        log::info!("Step 2: Building and running tests...");
-        build_vmm_tests_pipeline(
-            backend_hint,
-            target,
-            selections,
-            dir,
-            VmmTestsPipelineOptions {
-                verbose,
-                install_missing_deps,
-                unstable_whp,
-                release,
-                build_only,
-                copy_extras,
-                skip_vhd_prompt,
-                custom_kernel_modules,
-                custom_kernel,
-                custom_uefi_firmware,
-            },
-        )
+        let mut pipeline = Pipeline::new();
+
+        let mut job = pipeline.new_job(
+            FlowPlatform::host(backend_hint),
+            FlowArch::host(backend_hint),
+            "build all dependencies and run vmm tests",
+        );
+
+        job = job.dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init);
+
+        // Override kernel with local paths if both kernel and modules are specified
+        if let (Some(kernel_path), Some(modules_path)) =
+            (custom_kernel.clone(), custom_kernel_modules.clone())
+        {
+            job =
+                job.dep_on(
+                    move |_| flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalKernel {
+                        arch: target_architecture,
+                        kernel: ReadVar::from_static(kernel_path),
+                        modules: ReadVar::from_static(modules_path),
+                    },
+                );
+        }
+
+        // Override UEFI firmware with a local MSVM.fd path
+        if let Some(fw_path) = custom_uefi_firmware {
+            job = job.dep_on(move |_| {
+                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalUefi(
+                    target_architecture,
+                    ReadVar::from_static(fw_path),
+                )
+            });
+        }
+
+        job = job
+            .dep_on(
+                |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
+                    hvlite_repo_source: openvmm_repo.clone(),
+                },
+            )
+            .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_common::Params {
+                local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
+                    interactive: true,
+                    auto_install: install_missing_deps,
+                    ignore_rust_version: true,
+                }),
+                verbose: ReadVar::from_static(verbose),
+                locked: false,
+                deny_warnings: false,
+                no_incremental: false,
+            })
+            .dep_on(|ctx| {
+                flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::Params {
+                    target,
+                    test_content_dir,
+                    selections: selections_from_resolved(filter, resolved, target_os),
+                    unstable_whp,
+                    release,
+                    build_only,
+                    copy_extras,
+                    custom_kernel_modules,
+                    custom_kernel,
+                    skip_vhd_prompt,
+                    nextest_profile: if ci_profile {
+                        flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci
+                    } else {
+                        flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Default
+                    },
+                    reuse_prepped_vhds: !no_reuse_prepped_vhds,
+                    done: ctx.new_done_handle(),
+                }
+            });
+
+        job.finish();
+
+        Ok(pipeline)
     }
 }
 
-/// Run artifact discovery by invoking `cargo nextest list` and the test
-/// binary's `--list-required-artifacts` flag.
-///
-/// Returns the raw JSON string describing required/optional artifacts, the
-/// list of matching test names (used for backend detection), and the path
-/// to the test binary (for follow-up queries).
-fn discover_artifacts(
-    repo_root: &Path,
-    target: &str,
-    filter: &str,
-    release: bool,
-    ignore_host_requirements: bool,
-) -> anyhow::Result<(String, Vec<String>, PathBuf)> {
+/// Get test binaries and associated matching tests for a given nextest filter.
+// TODO: this function should really be a flowey node without automatic
+// dependency installation, but that would require conditional requests.
+fn run_cargo_nextest_list<'a>(
+    req: CargoNextestListRequest<'a>,
+) -> anyhow::Result<BTreeMap<String, RustSuite>> {
+    let CargoNextestListRequest {
+        repo_root,
+        target,
+        filter,
+        release,
+        include_ignored,
+    } = req;
+
     // Check that cargo-nextest is available
     let nextest_check = Command::new("cargo")
         .args(["nextest", "--version"])
@@ -240,14 +377,10 @@ fn discover_artifacts(
         .status();
     match nextest_check {
         Ok(status) if status.success() => {}
-        _ => anyhow::bail!("cargo-nextest not found. Run 'cargo xflowey restore-packages' first."),
+        _ => anyhow::bail!(
+            "cargo-nextest not found. Run 'cargo install --locked cargo-nextest' first."
+        ),
     }
-
-    log::info!(
-        "Discovering artifacts for filter: {} (target: {})",
-        filter,
-        target
-    );
 
     // Step 1: Use nextest to resolve the filter expression to test names and
     // get the binary path
@@ -268,59 +401,78 @@ fn discover_artifacts(
     if release {
         cmd.arg("--release");
     }
-    // When using build-only mode, we need to enumerate tests that could be
-    // run on any system so that we build all necessary dependencies. By default
-    // petri marks incompatible tests as ignored.
-    if ignore_host_requirements {
+    if include_ignored {
         cmd.args(["--run-ignored", "all"]);
     }
     let nextest_output = cmd.output().context("failed to run cargo nextest list")?;
     anyhow::ensure!(nextest_output.status.success(), "cargo nextest list failed",);
     let nextest_stdout = String::from_utf8(nextest_output.stdout)
         .map_err(|e| anyhow::anyhow!("nextest output is not valid UTF-8: {}", e))?;
-    let (test_binary, test_names) = parse_nextest_output(&nextest_stdout)?;
 
-    if test_names.is_empty() {
-        log::warn!("No tests match the filter: {}", filter);
-        let empty_output = serde_json::json!({
-            "target": target,
-            "required": [],
-            "optional": []
-        });
-        return Ok((
-            serde_json::to_string_pretty(&empty_output)?,
-            Vec::new(),
-            test_binary,
-        ));
-    }
-
-    log::info!("Found {} matching tests", test_names.len());
-    for name in &test_names {
-        log::debug!("  - {}", name);
-    }
-
-    // Step 2: Query petri for artifacts of each matching test
-    let json = query_test_binary_artifacts(&test_binary, &test_names, target)?;
-    Ok((json, test_names, test_binary))
+    parse_nextest_output(&nextest_stdout)
 }
 
-/// Query the test binary for required artifacts given a list of test names.
-///
-/// This invokes the binary with `--list-required-artifacts --tests-from-stdin`
-/// and returns the resulting JSON as a string after processing it to inject
-/// the `target` field.
-fn query_test_binary_artifacts(
-    test_binary: &Path,
-    test_names: &[String],
-    target: &str,
-) -> anyhow::Result<String> {
-    log::info!("Using test binary: {}", test_binary.display());
-    log::info!("Querying artifacts for {} tests", test_names.len());
-    let stdin_data = test_names
+/// Parse `cargo nextest list --message-format json` output to extract test
+/// names and binary path.
+fn parse_nextest_output(stdout: &str) -> anyhow::Result<BTreeMap<String, RustSuite>> {
+    let json: serde_json::Value = serde_json::from_str(stdout)
+        .map_err(|e| anyhow::anyhow!("failed to parse nextest JSON output: {}", e))?;
+
+    let mut suites = BTreeMap::new();
+
+    for (name, suite) in json
+        .get("rust-suites")
+        .and_then(|s| s.as_object())
+        .context("no rust-suites object")?
+    {
+        let binary_path = PathBuf::from(
+            suite
+                .get("binary-path")
+                .and_then(|v| v.as_str())
+                .context("no binary-path str")?,
+        );
+
+        let testcases: Vec<_> = suite
+            .get("testcases")
+            .and_then(|t| t.as_object())
+            .context("no testcases object")?
+            .iter()
+            .filter(|(_, test_info)| {
+                test_info
+                    .get("filter-match")
+                    .and_then(|fm| fm.get("status"))
+                    .and_then(|s| s.as_str())
+                    .is_some_and(|s| s == "matches")
+            })
+            .map(|(test_name, _)| test_name.to_owned())
+            .collect();
+
+        if !testcases.is_empty() {
+            suites.insert(
+                name.to_owned(),
+                RustSuite {
+                    binary_path,
+                    testcases,
+                },
+            );
+        }
+    }
+
+    Ok(suites)
+}
+
+/// Runs the test binary with `--list-required-artifacts --tests-from-stdin`
+/// and returns all the required and optional artifacts for all test defined
+/// in the RustSuite.
+fn query_test_binary_artifacts(suite: &RustSuite) -> anyhow::Result<Vec<String>> {
+    log::info!("Using test binary: {}", suite.binary_path.display());
+    log::info!("Querying artifacts for {} tests", suite.testcases.len());
+    let stdin_data = suite
+        .testcases
         .iter()
         .map(|n| format!("{n}\n"))
         .collect::<String>();
-    let mut child = Command::new(test_binary)
+    let mut child = Command::new(&suite.binary_path)
         .args(["--list-required-artifacts", "--tests-from-stdin"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -346,86 +498,17 @@ fn query_test_binary_artifacts(
     let artifact_stdout = String::from_utf8(artifact_output.stdout)
         .map_err(|e| anyhow::anyhow!("test output is not valid UTF-8: {}", e))?;
 
-    parse_artifacts_output(&artifact_stdout, target)
-}
-
-/// Parse `cargo nextest list --message-format json` output to extract test
-/// names and binary path.
-fn parse_nextest_output(stdout: &str) -> anyhow::Result<(PathBuf, Vec<String>)> {
-    let json: serde_json::Value = serde_json::from_str(stdout)
-        .map_err(|e| anyhow::anyhow!("failed to parse nextest JSON output: {}", e))?;
-
-    let mut test_names = Vec::new();
-    let mut binary_path = None;
-
-    // Navigate to rust-suites -> vmm_tests::tests -> testcases
-    if let Some(vmm_tests) = json
-        .get("rust-suites")
-        .and_then(|s| s.get("vmm_tests::tests"))
-    {
-        if let Some(path) = vmm_tests.get("binary-path").and_then(|v| v.as_str()) {
-            binary_path = Some(PathBuf::from(path));
-        }
-
-        if let Some(testcases_obj) = vmm_tests.get("testcases").and_then(|t| t.as_object()) {
-            for (test_name, test_info) in testcases_obj {
-                let matches = test_info
-                    .get("filter-match")
-                    .and_then(|fm| fm.get("status"))
-                    .and_then(|s| s.as_str())
-                    == Some("matches");
-
-                if matches {
-                    test_names.push(test_name.clone());
-                }
-            }
-        }
-    }
-
-    let binary_path = binary_path
-        .ok_or_else(|| anyhow::anyhow!("Could not find test binary path in nextest output"))?;
-
-    Ok((binary_path, test_names))
-}
-
-/// Parse test binary `--list-required-artifacts` JSON output and add target
-/// info.
-fn parse_artifacts_output(stdout: &str, target: &str) -> anyhow::Result<String> {
-    let json: serde_json::Value = serde_json::from_str(stdout)
+    let ArtifactListOutput {
+        mut required,
+        mut optional,
+    } = serde_json::from_str(&artifact_stdout)
         .map_err(|e| anyhow::anyhow!("failed to parse test output JSON: {}", e))?;
 
-    let required = json
-        .get("required")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str())
-                .map(String::from)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    let optional = json
-        .get("optional")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str())
-                .map(String::from)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    let output = serde_json::json!({
-        "target": target,
-        "required": required,
-        "optional": optional,
-    });
-
-    Ok(serde_json::to_string_pretty(&output)?)
+    let mut artifacts = Vec::new();
+    artifacts.append(&mut required);
+    artifacts.append(&mut optional);
+    Ok(artifacts)
 }
-
-// Target resolution and pipeline construction helpers
 
 #[derive(clap::ValueEnum, Copy, Clone)]
 enum VmmTestTargetCli {
@@ -470,19 +553,26 @@ fn resolve_target(
 /// requires VHDs to reside on a Windows filesystem. On native Windows or Linux
 /// this check is a no-op.
 fn validate_output_dir(
-    dir: &Path,
+    dir: Option<&Path>,
     target_os: target_lexicon::OperatingSystem,
 ) -> anyhow::Result<()> {
-    if flowey_cli::running_in_wsl()
-        && matches!(target_os, target_lexicon::OperatingSystem::Windows)
-        && !flowey_cli::is_wsl_windows_path(dir)
+    if flowey_cli::running_in_wsl() && matches!(target_os, target_lexicon::OperatingSystem::Windows)
     {
-        anyhow::bail!(
-            "When targeting Windows from WSL, --dir must be a path on Windows \
-                 (i.e., on a DrvFs mount like /mnt/c/vmm_tests). \
-                 Got: {}",
-            dir.display()
-        );
+        if let Some(dir) = dir {
+            if !flowey_cli::is_wsl_windows_path(dir) {
+                anyhow::bail!(
+                    "When targeting Windows from WSL, --dir must be a path on Windows \
+                        (i.e., on a DrvFs mount like /mnt/c/vmm_tests). \
+                        Got: {}",
+                    dir.display()
+                );
+            }
+        } else {
+            anyhow::bail!(
+                "An output directory on the Windows filesystem \
+                    must be specified when targeting Windows from WSL."
+            )
+        }
     }
     Ok(())
 }
@@ -510,105 +600,189 @@ fn selections_from_resolved(
     }
 }
 
-struct VmmTestsPipelineOptions {
-    verbose: bool,
-    install_missing_deps: bool,
-    unstable_whp: bool,
-    release: bool,
-    build_only: bool,
-    copy_extras: bool,
-    skip_vhd_prompt: bool,
-    custom_kernel_modules: Option<PathBuf>,
-    custom_kernel: Option<PathBuf>,
-    custom_uefi_firmware: Option<PathBuf>,
-}
-
-/// Construct the pipeline job for building and running VMM tests.
-fn build_vmm_tests_pipeline(
-    backend_hint: PipelineBackendHint,
-    target: CommonTriple,
-    selections: VmmTestSelections,
-    dir: PathBuf,
-    opts: VmmTestsPipelineOptions,
-) -> anyhow::Result<Pipeline> {
-    let target_architecture = target.as_triple().architecture;
-    let recipe_arch = match target_architecture {
-        target_lexicon::Architecture::X86_64 => CommonArch::X86_64,
-        target_lexicon::Architecture::Aarch64(_) => CommonArch::Aarch64,
-        _ => anyhow::bail!("Unsupported architecture: {:?}", target_architecture),
-    };
-
-    let openvmm_repo = flowey_lib_common::git_checkout::RepoSource::ExistingClone(
-        ReadVar::from_static(crate::repo_root()),
-    );
-
-    let mut pipeline = Pipeline::new();
-
-    let mut job = pipeline.new_job(
-        FlowPlatform::host(backend_hint),
-        FlowArch::host(backend_hint),
-        "build vmm test dependencies",
-    );
-
-    job = job.dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init);
-
-    if let (Some(kernel_path), Some(modules_path)) = (
-        opts.custom_kernel.clone(),
-        opts.custom_kernel_modules.clone(),
-    ) {
-        job = job.dep_on(
-            move |_| flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalKernel {
-                arch: recipe_arch,
-                kernel: ReadVar::from_static(kernel_path),
-                modules: ReadVar::from_static(modules_path),
-            },
-        );
-    }
-
-    // Override UEFI firmware with a local MSVM.fd path
-    if let Some(fw_path) = opts.custom_uefi_firmware {
-        job = job.dep_on(move |_| {
-            flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalUefi(
-                recipe_arch,
-                ReadVar::from_static(fw_path),
-            )
-        });
-    }
-
-    job = job
-        .dep_on(
-            |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
-                hvlite_repo_source: openvmm_repo.clone(),
-            },
-        )
-        .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_common::Params {
-            local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
-                interactive: true,
-                auto_install: opts.install_missing_deps,
-                ignore_rust_version: true,
-            }),
-            verbose: ReadVar::from_static(opts.verbose),
-            locked: false,
-            deny_warnings: false,
-            no_incremental: false,
-        })
-        .side_effect(|done| {
-            flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::Params {
-                target,
-                test_content_dir: dir,
-                selections,
-                unstable_whp: opts.unstable_whp,
-                release: opts.release,
-                build_only: opts.build_only,
-                copy_extras: opts.copy_extras,
-                custom_kernel_modules: opts.custom_kernel_modules,
-                custom_kernel: opts.custom_kernel,
-                skip_vhd_prompt: opts.skip_vhd_prompt,
-                done,
+impl ResolvedArtifactSelections {
+    /// Resolve a single artifact ID and update selections.
+    fn resolve_artifact(&mut self, id: &str) -> anyhow::Result<()> {
+        match id {
+            // OpenVMM binary
+            petri_artifacts_vmm_test::artifacts::OPENVMM_WIN_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::OPENVMM_LINUX_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::OPENVMM_WIN_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::OPENVMM_LINUX_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::OPENVMM_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.openvmm = true;
             }
-        });
 
-    job.finish();
+            // OpenVMM vhost binary (Linux only)
+            petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_LINUX_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_LINUX_AARCH64 ::GLOBAL_UNIQUE_ID => {
+                self.build.openvmm_vhost = true;
+            }
 
-    Ok(pipeline)
+            // OpenHCL IGVM files
+            petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_CVM_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64::GLOBAL_UNIQUE_ID =>
+            {
+                self.build.openhcl = true;
+            }
+
+            // Release IGVM files (downloaded, not built)
+            petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_STANDARD_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_LINUX_DIRECT_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_STANDARD_AARCH64::GLOBAL_UNIQUE_ID =>
+            {
+                // These are downloaded from GitHub releases, not built
+                self.needs_release_igvm = true;
+            }
+
+            // Guest test UEFI
+            petri_artifacts_vmm_test::artifacts::test_vhd::GUEST_TEST_UEFI_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::test_vhd::GUEST_TEST_UEFI_AARCH64 ::GLOBAL_UNIQUE_ID => {
+                self.build.guest_test_uefi = true;
+            }
+
+            // TMKs
+            petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_AARCH64 ::GLOBAL_UNIQUE_ID => {
+                self.build.tmks = true;
+            }
+
+            // TMK VMM
+            petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_WIN_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_WIN_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.tmk_vmm_windows = true;
+            }
+            petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_X64_MUSL::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_AARCH64_MUSL::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.tmk_vmm_linux = true;
+            }
+
+            // VmgsTool
+            petri_artifacts_vmm_test::artifacts::VMGSTOOL_WIN_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::VMGSTOOL_WIN_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.vmgstool = true;
+            }
+            petri_artifacts_vmm_test::artifacts::VMGSTOOL_LINUX_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::VMGSTOOL_LINUX_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::VMGSTOOL_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.vmgstool = true;
+            }
+
+            // TPM guest tests
+            petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64::GLOBAL_UNIQUE_ID => {
+                self.build.tpm_guest_tests_windows = true;
+            }
+            petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64::GLOBAL_UNIQUE_ID => {
+                self.build.tpm_guest_tests_linux = true;
+            }
+
+            // Host tools
+            petri_artifacts_vmm_test::artifacts::host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64::GLOBAL_UNIQUE_ID =>
+            {
+                self.build.test_igvm_agent_rpc_server = true;
+            }
+
+            // Loadable firmware artifacts (these come from deps, not built)
+            petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_AARCH64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::loadable::PCAT_FIRMWARE_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::loadable::SVGA_FIRMWARE_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_AARCH64::GLOBAL_UNIQUE_ID => {
+                // These are resolved from OpenVMM deps, always available
+            }
+
+            // Test VHDs
+            petri_artifacts_vmm_test::artifacts::test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64::GLOBAL_UNIQUE_ID =>
+            {
+                self.downloads
+                    .insert(KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd);
+            }
+            petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::GLOBAL_UNIQUE_ID =>
+            {
+                self.downloads
+                    .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
+            }
+            petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::GLOBAL_UNIQUE_ID =>
+            {
+                self.downloads
+                    .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
+            }
+            petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED::GLOBAL_UNIQUE_ID =>
+            {
+                self.build.prep_steps = true;
+            }
+            petri_artifacts_vmm_test::artifacts::test_vhd::FREE_BSD_13_2_X64::GLOBAL_UNIQUE_ID => {
+                self.downloads.insert(KnownTestArtifacts::FreeBsd13_2X64Vhd);
+            }
+            petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64::GLOBAL_UNIQUE_ID => {
+                self.downloads.insert(KnownTestArtifacts::Alpine323X64Vhd);
+            }
+            petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.downloads
+                    .insert(KnownTestArtifacts::Alpine323Aarch64Vhd);
+            }
+            petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64::GLOBAL_UNIQUE_ID => {
+                self.downloads
+                    .insert(KnownTestArtifacts::Ubuntu2404ServerX64Vhd);
+            }
+            petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2504_SERVER_X64::GLOBAL_UNIQUE_ID => {
+                self.downloads
+                    .insert(KnownTestArtifacts::Ubuntu2504ServerX64Vhd);
+            }
+            petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.downloads
+                    .insert(KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd);
+            }
+            petri_artifacts_vmm_test::artifacts::test_vhd::WINDOWS_11_ENTERPRISE_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.downloads
+                    .insert(KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx);
+            }
+
+            // Test ISOs (downloaded)
+            petri_artifacts_vmm_test::artifacts::test_iso::FREE_BSD_13_2_X64::GLOBAL_UNIQUE_ID => {
+                self.downloads.insert(KnownTestArtifacts::FreeBsd13_2X64Iso);
+            }
+
+            // Test VMGS files
+            petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY::GLOBAL_UNIQUE_ID => {
+                self.downloads.insert(KnownTestArtifacts::VmgsWithBootEntry);
+            }
+            petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_16K_TPM::GLOBAL_UNIQUE_ID => {
+                self.downloads.insert(KnownTestArtifacts::VmgsWith16kTpm);
+            }
+
+            // OpenHCL usermode binaries (built as part of IGVM)
+            petri_artifacts_vmm_test::artifacts::openhcl_igvm::um_bin::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::um_dbg::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID =>
+            {
+                self.build.openhcl = true;
+            }
+
+            // Common artifacts (always available, no build needed)
+            petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY::GLOBAL_UNIQUE_ID => {}
+
+            // Pipette binaries (from petri_artifacts_common)
+            petri_artifacts_common::artifacts::PIPETTE_LINUX_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.pipette_linux = true;
+            }
+            petri_artifacts_common::artifacts::PIPETTE_WINDOWS_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_common::artifacts::PIPETTE_WINDOWS_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.pipette_windows = true;
+            }
+
+            _ => anyhow::bail!("unknown artifact: {id}"),
+        };
+        Ok(())
+    }
 }

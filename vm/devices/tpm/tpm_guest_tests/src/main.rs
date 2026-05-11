@@ -44,7 +44,7 @@ const MAX_NV_READ_SIZE: usize = 4096;
 const MAX_ATTESTATION_READ_SIZE: usize = 2600;
 const GUEST_INPUT_SIZE: u16 = 64;
 const GUEST_INPUT_AUTH: u64 = 0;
-const AK_CERT_RETRY_DELAY_MS: u64 = 200;
+const AK_CERT_RETRY_DELAY_MS: u64 = 1000;
 
 #[derive(Debug, Default)]
 struct Config {

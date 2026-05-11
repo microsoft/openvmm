@@ -92,7 +92,15 @@ fn run(
             .replace(".vhd", "-prepped.vhd"),
     );
     if result_disk.exists() {
-        tracing::warn!("Result disk already exists, recreating it.");
+        if std::env::var("PETRI_REUSE_PREPPED_VHDS")
+            .ok()
+            .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        {
+            tracing::info!("Result disk already exists, skipping...");
+            return Ok(());
+        } else {
+            tracing::warn!("Result disk already exists, recreating it.");
+        }
     } else {
         tracing::info!("Copying source disk to result disk.");
     }

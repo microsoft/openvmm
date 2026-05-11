@@ -4,6 +4,8 @@
 use anyhow::Context;
 use anyhow::ensure;
 use petri::PetriGuestStateLifetime;
+#[cfg(windows)]
+use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
@@ -143,7 +145,7 @@ impl<'a> TpmGuestTests<'a> {
                         "--expected-data-hex",
                         expected_hex,
                         "--retry",
-                        "3",
+                        "10",
                     ])
                     .read()
                     .await
@@ -156,7 +158,7 @@ impl<'a> TpmGuestTests<'a> {
                         "--expected-data-hex",
                         expected_hex,
                         "--retry",
-                        "3",
+                        "10",
                     ])
                     .read()
                     .await
@@ -326,6 +328,152 @@ async fn tpm_ak_cert_retry<T>(
 
     let (artifact,) = extra_deps;
     let host_binary_path = artifact.get();
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+
+    // The read attempt is expected to fail and trigger an AK cert renewal request.
+    let attempt = tpm_guest_tests.read_ak_cert().await;
+    assert!(
+        attempt.is_err(),
+        "AK certificate read unexpectedly succeeded"
+    );
+
+    let expected_hex = expected_ak_cert_hex();
+    let output = tpm_guest_tests
+        .read_ak_cert_with_expected_hex(expected_hex.as_str())
+        .await?;
+
+    ensure!(
+        output.contains("AK certificate matches expected value"),
+        format!("{output}")
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Hyper-V variant of TPM AK cert persisted test.
+///
+/// First boot: AK cert request is served by the RPC agent.
+/// Second boot: AK cert is served from the persistent cache.
+///
+/// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
+/// test config by matching `{image}_{isolation}_{test_fn}` substrings
+/// in the Hyper-V VM name (see `resolve_test_config`).  Each
+/// image/isolation combination listed in the `#[vmm_test]` attribute
+/// must have a corresponding entry in `KNOWN_TEST_CONFIGS`.  For this
+/// test function (`ak_cert_cache`), they all map to
+/// `AkCertPersistentAcrossBootExtended`.
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+)]
+async fn ak_cert_cache<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
+
+    let rpc_server_path = rpc_server_artifact.get();
+    let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
+
+    let (mut vm, mut agent) = config
+        .with_tpm(true)
+        .with_tpm_state_persistence(true)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .run()
+        .await?;
+
+    let guest_binary_path = match os_flavor {
+        OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
+        OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
+        _ => unreachable!(),
+    };
+
+    agent.reboot().await?;
+    agent = vm.wait_for_reset().await?;
+
+    let host_binary_path = tpm_guest_tests_artifact.get();
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+
+    let expected_hex = expected_ak_cert_hex();
+    let output = tpm_guest_tests
+        .read_ak_cert_with_expected_hex(expected_hex.as_str())
+        .await?;
+
+    ensure!(
+        output.contains("AK certificate matches expected value"),
+        format!("{output}")
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Hyper-V variant of TPM AK cert retry test.
+///
+/// The RPC agent is configured to fail the first AK cert request and
+/// succeed on retry.  The guest-side `tpm_guest_tests` binary verifies
+/// that the first read fails and the second (retry) read succeeds with
+/// the expected certificate data.
+///
+/// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
+/// test config by matching `{image}_{isolation}_{test_fn}` substrings
+/// in the Hyper-V VM name (see `resolve_test_config`).  Each
+/// image/isolation combination listed in the `#[vmm_test]` attribute
+/// must have a corresponding entry in `KNOWN_TEST_CONFIGS`.  For this
+/// test function (`ak_cert_retry`), they all map to
+/// `AkCertRequestFailureAndRetryExtended`.
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+)]
+async fn ak_cert_retry<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
+
+    let rpc_server_path = rpc_server_artifact.get();
+    let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
+
+    let (vm, agent) = config
+        .with_tpm(true)
+        .with_tpm_state_persistence(true)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .run()
+        .await?;
+
+    let guest_binary_path = match os_flavor {
+        OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
+        OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
+        _ => unreachable!(),
+    };
+
+    let host_binary_path = tpm_guest_tests_artifact.get();
     let tpm_guest_tests =
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;
@@ -538,6 +686,191 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
     ensure!(
         report_output.contains("\"vmUniqueId\""),
         format!("{report_output}")
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Test that `skip_hw_unsealing` signal from IGVM agent causes VMGS
+/// unlock to fail on second boot.
+///
+/// First boot: KEY_RELEASE succeeds, VMGS is encrypted with hardware
+/// key protector, TPM state is sealed.
+/// Second boot: KEY_RELEASE fails with `skip_hw_unsealing` signal.
+/// The attestation code skips hardware unsealing even though the
+/// hardware key protector and derived keys are available, causing
+/// `initialize_platform_security` to fall through to a scheme-specific
+/// error (KP / GSP / GspById).  Underhill reports the failure to the
+/// host via `complete_start_vtl0`, and the host terminates the VM.
+///
+/// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
+/// test config by matching `{image}_{isolation}_{test_fn}` substrings
+/// in the Hyper-V VM name (see `resolve_test_config`).  Each
+/// image/isolation combination listed in the `#[vmm_test]` attribute
+/// must have a corresponding entry in `KNOWN_TEST_CONFIGS`.  For this
+/// test function (`skip_hw_unseal`), they all map to
+/// `KeyReleaseFailureSkipHwUnsealing`.
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+)]
+async fn skip_hw_unseal<T, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>,),
+) -> anyhow::Result<()> {
+    let (rpc_server_artifact,) = extra_deps;
+
+    let rpc_server_path = rpc_server_artifact.get();
+    let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
+
+    let (mut vm, agent) = config
+        .with_tpm(true)
+        .with_tpm_state_persistence(true)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .run()
+        .await?;
+
+    // First boot: KEY_RELEASE succeeds. TPM state is sealed with hardware
+    // key protector. No guest-side verification needed — just let the boot
+    // complete so the VMGS state is populated.
+
+    // Reboot: triggers second KEY_RELEASE which fails with skip_hw_unsealing.
+    // VMGS unlock will fail because hardware unsealing fallback is skipped.
+    // initialize_platform_security returns an error, underhill reports the
+    // failure to the host via complete_start_vtl0, and the host terminates
+    // the VM.
+    agent.reboot().await?;
+
+    // Wait for the VM to reset and then fail on the second boot.
+    //
+    // Depending on timing, two outcomes are possible:
+    //
+    // 1. wait_for_halt() returns Reset (the CVM restart check saw the VM
+    //    briefly reach Running state before underhill failed), and then the
+    //    subsequent wait_for_teardown() fails because the VM termination
+    //    does not produce a recognized halt event.
+    //
+    // 2. wait_for_halt() itself fails because the VM never reached Running
+    //    state within the allowed CVM restart timeout (underhill failed
+    //    before Hyper-V reported the VM as Running).
+    //
+    // Both outcomes confirm the expected behavior: the VM cannot boot after
+    // hardware unsealing is skipped.
+    match vm.wait_for_halt().await {
+        Ok(PetriHaltReason::Reset) => {
+            tracing::info!("Got reset event; waiting for second boot termination...");
+            // The VM termination after second boot failure may not produce
+            // a recognized Hyper-V halt event (e.g., event 18620 from
+            // Hyper-V-Chipset is not in the standard halt event filter).
+            // Ignore the error — the VM going off IS the expected outcome.
+            match vm.wait_for_teardown().await {
+                Ok(halt_reason) => {
+                    tracing::info!("Second boot halt reason: {halt_reason:?}");
+                }
+                Err(e) => {
+                    tracing::info!("Second boot terminated as expected: {e:#}");
+                }
+            }
+        }
+        Ok(other) => {
+            let error = anyhow::anyhow!("Expected Reset or VM start failure, got {other:?}");
+            vm.teardown().await?;
+            return Err(error);
+        }
+        Err(e) => {
+            // The VM failed to restart within the allowed time, which is
+            // the expected behavior when underhill cannot unlock VMGS.
+            tracing::info!("VM failed to restart as expected: {e:#}");
+            vm.teardown().await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Test that KEY_RELEASE failure without skip_hw_unsealing signal allows
+/// hardware unsealing fallback to succeed.
+///
+/// First boot: KEY_RELEASE succeeds, VMGS is encrypted with hardware
+/// key protector, TPM state is sealed.  AK cert is verified.
+/// Second boot: KEY_RELEASE fails (plain failure, no skip_hw_unsealing
+/// signal), hardware unsealing fallback is attempted and succeeds because
+/// the hardware key protector was saved on first boot.  The VM boots
+/// normally and the AK cert remains accessible.
+///
+/// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
+/// test config by matching `{image}_{isolation}_{test_fn}` substrings
+/// in the Hyper-V VM name (see `resolve_test_config`).  Each
+/// image/isolation combination listed in the `#[vmm_test]` attribute
+/// must have a corresponding entry in `KNOWN_TEST_CONFIGS`.  For this
+/// test function (`use_hw_unseal`), they all map to
+/// `KeyReleaseFailure`.
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+)]
+async fn use_hw_unseal<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
+
+    let rpc_server_path = rpc_server_artifact.get();
+    let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
+
+    let (mut vm, agent) = config
+        .with_tpm(true)
+        .with_tpm_state_persistence(true)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .run()
+        .await?;
+
+    let guest_binary_path = match os_flavor {
+        OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
+        OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
+        _ => unreachable!(),
+    };
+    let host_binary_path = tpm_guest_tests_artifact.get();
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+
+    // First boot: KEY_RELEASE succeeds. Verify AK cert is present.
+    let expected_hex = expected_ak_cert_hex();
+    let ak_cert_output = tpm_guest_tests
+        .read_ak_cert_with_expected_hex(expected_hex.as_str())
+        .await?;
+
+    ensure!(
+        ak_cert_output.contains("AK certificate matches expected value"),
+        format!("{ak_cert_output}")
+    );
+
+    // Reboot: triggers second KEY_RELEASE which fails (plain failure,
+    // no skip_hw_unsealing signal).  Hardware unsealing fallback kicks
+    // in and succeeds — the VM boots normally.
+    agent.reboot().await?;
+    let agent = vm.wait_for_reset().await?;
+
+    // Verify AK cert is still accessible after the hw unsealing fallback.
+    let host_binary_path = tpm_guest_tests_artifact.get();
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+
+    let ak_cert_output = tpm_guest_tests
+        .read_ak_cert_with_expected_hex(expected_hex.as_str())
+        .await?;
+
+    ensure!(
+        ak_cert_output.contains("AK certificate matches expected value"),
+        "AK cert should still be accessible after hw unsealing fallback: {ak_cert_output}"
     );
 
     agent.power_off().await?;

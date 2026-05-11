@@ -36,7 +36,7 @@ pub trait IrqFd: Send + Sync {
 ///
 /// Each route represents a single GSI with an associated event. When the
 /// event is signaled (e.g., by VFIO on a device interrupt), the kernel injects
-/// the MSI configured via [`set_msi`](IrqFdRoute::set_msi) into the guest.
+/// the MSI configured via [`enable`](IrqFdRoute::enable) into the guest.
 ///
 /// Dropping this handle unregisters the irqfd and frees the GSI.
 pub trait IrqFdRoute: Send + Sync {
@@ -49,37 +49,15 @@ pub trait IrqFdRoute: Send + Sync {
 
     /// Sets the MSI routing for this irqfd's GSI.
     ///
-    /// `address` and `data` are the x86 MSI address and data values that the
-    /// kernel will use when injecting the interrupt into the guest.
-    fn set_msi(&self, address: u64, data: u32) -> anyhow::Result<()>;
+    /// `address` and `data` are the MSI address and data values that the
+    /// hypervisor will use when injecting the interrupt into the guest.
+    fn enable(&self, address: u64, data: u32);
 
-    /// Clears the MSI routing for this irqfd's GSI.
+    /// Disables the MSI routing for this irqfd's GSI.
     ///
-    /// The irqfd remains registered but interrupt delivery is disabled until
-    /// a new route is configured via [`set_msi`](IrqFdRoute::set_msi).
-    fn clear_msi(&self) -> anyhow::Result<()>;
-
-    /// Masks the route.
-    ///
-    /// While masked, interrupts arriving on the event are not injected into
-    /// the guest. The caller should use [`consume_pending`](IrqFdRoute::consume_pending)
-    /// to check whether an interrupt arrived while masked and store the
-    /// result in the MSI-X PBA. On unmask, the caller should deliver any
-    /// pending interrupt from the PBA before re-enabling the route.
-    fn mask(&self) -> anyhow::Result<()>;
-
-    /// Unmasks the route and re-enables interrupt injection.
-    fn unmask(&self) -> anyhow::Result<()>;
-
-    /// Drains the pending interrupt state and returns whether an interrupt
-    /// was pending.
-    ///
-    /// This atomically reads and clears the event's counter. The caller
-    /// should store the result in the MSI-X PBA (Pending Bit Array).
-    /// Repeated calls after the first drain will return `false` until a
-    /// new interrupt arrives, so the caller must persist the pending state
-    /// externally (e.g., in the MSI-X emulator's PBA bits).
-    fn consume_pending(&self) -> bool {
-        self.event().try_wait()
-    }
+    /// Disarms the irqfd so that signaling the event no longer injects an
+    /// interrupt. Interrupts that arrive while disabled remain pending on
+    /// the event and will be delivered when [`enable`](IrqFdRoute::enable)
+    /// is called, or can be drained by waiting on the event directly.
+    fn disable(&self);
 }

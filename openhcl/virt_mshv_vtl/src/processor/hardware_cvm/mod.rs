@@ -2659,6 +2659,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                             is_shared,
                             ?extra_info,
                             ?access_type,
+                            vp = self.vp_index().index(),
                             "guest accessed inaccessible gpa, injecting MC"
                         );
                         // TODO: Implement IA32_MCG_STATUS MSR for more reporting

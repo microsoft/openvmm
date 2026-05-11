@@ -1039,14 +1039,18 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 name = "crypto"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
+ "der",
  "hex",
  "openssl",
  "openssl_kdf",
+ "rsa",
  "symcrypt",
  "thiserror 2.0.16",
  "wchar",
  "windows 0.62.0",
  "windows-result 0.4.0",
+ "x509-cert",
  "zerocopy",
 ]
 
@@ -1205,6 +1209,7 @@ checksum = "71fd89660b2dc699704064e59e9dba0147b903e85319429e131620d022be411b"
 dependencies = [
  "const-oid",
  "der_derive",
+ "flagset",
  "pem-rfc7468",
  "zeroize",
 ]
@@ -2024,6 +2029,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
+name = "flagset"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
+
+[[package]]
 name = "flate2"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2131,6 +2142,9 @@ dependencies = [
  "flowey_lib_common",
  "flowey_lib_hvlite",
  "log",
+ "petri_artifacts_common",
+ "petri_artifacts_core",
+ "petri_artifacts_vmm_test",
  "serde",
  "serde_json",
  "target-lexicon",
@@ -4628,6 +4642,7 @@ dependencies = [
  "mana_driver",
  "mesh",
  "net_backend",
+ "page_pool_alloc",
  "pal_async",
  "pci_core",
  "safeatomic",
@@ -6055,6 +6070,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "paste",
+ "serde",
 ]
 
 [[package]]
@@ -6167,9 +6183,9 @@ dependencies = [
 
 [[package]]
 name = "pkcs8"
-version = "0.11.0-rc.11"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12922b6296c06eb741b02d7b5161e3aaa22864af38dfa025a1a3ba3f68c84577"
+checksum = "451913da69c775a56034ea8d9003d27ee8948e12443eae7c038ba100a4f21cb7"
 dependencies = [
  "der",
  "spki",
@@ -6539,9 +6555,9 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rsa"
-version = "0.10.0-rc.17"
+version = "0.10.0-rc.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87ed3e93fc7e473e464b9726f4759659e72bc8665e4b8ea227547024f416d905"
+checksum = "30b2aa4ba0d89f73d1e332df05be0eeab8840351c36ca5654341dfdb57bb3caf"
 dependencies = [
  "const-oid",
  "crypto-bigint",
@@ -6550,6 +6566,7 @@ dependencies = [
  "pkcs1",
  "pkcs8",
  "rand_core",
+ "sha2",
  "signature",
  "spki",
  "zeroize",
@@ -7065,6 +7082,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
 name = "sha2"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7168,9 +7196,9 @@ dependencies = [
 
 [[package]]
 name = "signature"
-version = "3.0.0-rc.10"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f1880df446116126965eeec169136b2e0251dba37c6223bcc819569550edea3"
+checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
 dependencies = [
  "digest",
  "rand_core",
@@ -8736,7 +8764,6 @@ dependencies = [
  "vfio-bindings",
  "vfio_assigned_device_resources",
  "vfio_sys",
- "virt",
  "vm_resource",
  "vmcore",
 ]
@@ -10042,6 +10069,7 @@ dependencies = [
  "get_resources",
  "guid",
  "hyperv_ic_resources",
+ "inspect",
  "jiff",
  "kmsg",
  "memory_range",
@@ -10933,6 +10961,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
+]
+
+[[package]]
+name = "x509-cert"
+version = "0.3.0-rc.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e21aad3a769f25f3d2d0cbf30ea8b50a1d602354bd6ab687fad112821608ba6"
+dependencies = [
+ "const-oid",
+ "der",
+ "sha1",
+ "signature",
+ "spki",
 ]
 
 [[package]]

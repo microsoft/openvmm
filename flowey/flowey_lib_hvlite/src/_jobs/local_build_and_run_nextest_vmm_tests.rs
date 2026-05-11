@@ -53,30 +53,7 @@ pub struct BuildSelections {
     pub test_igvm_agent_rpc_server: bool,
 }
 
-// Build everything we can by default
-impl Default for BuildSelections {
-    fn default() -> Self {
-        Self {
-            prep_steps: true,
-            openhcl: true,
-            openvmm: true,
-            openvmm_vhost: true,
-            pipette_windows: true,
-            pipette_linux: true,
-            guest_test_uefi: true,
-            tmks: true,
-            tmk_vmm_windows: true,
-            tmk_vmm_linux: true,
-            vmgstool: true,
-            tpm_guest_tests_windows: true,
-            tpm_guest_tests_linux: true,
-            test_igvm_agent_rpc_server: true,
-        }
-    }
-}
-
 impl BuildSelections {
-    /// No selections (build nothing)
     pub fn none() -> Self {
         Self {
             prep_steps: false,
@@ -122,6 +99,10 @@ flowey_request! {
 
         /// Skip the interactive VHD download prompt
         pub skip_vhd_prompt: bool,
+
+        pub nextest_profile: crate::run_cargo_nextest_run::NextestProfile,
+
+        pub reuse_prepped_vhds: bool,
 
         pub done: WriteVar<SideEffect>,
     }
@@ -171,6 +152,8 @@ impl SimpleFlowNode for Node {
             custom_kernel_modules,
             custom_kernel,
             skip_vhd_prompt,
+            nextest_profile,
+            reuse_prepped_vhds,
             done,
         } = request;
 
@@ -726,6 +709,7 @@ impl SimpleFlowNode for Node {
             release_igvm_files,
             use_relative_paths: build_only,
             disable_remote_artifacts: false,
+            reuse_prepped_vhds,
         });
 
         let mut side_effects = Vec::new();
@@ -781,8 +765,6 @@ impl SimpleFlowNode for Node {
                 Ok(())
             }
         }));
-
-        let nextest_profile = crate::run_cargo_nextest_run::NextestProfile::Default;
 
         let nextest_run_cmd = ctx.reqv(|v| flowey_lib_common::gen_cargo_nextest_run_cmd::Request {
             run_kind_deps: RunKindDeps::RunFromArchive {
