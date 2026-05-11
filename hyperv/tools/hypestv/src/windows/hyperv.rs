@@ -45,7 +45,7 @@ pub fn hvc_output(
 }
 
 pub fn powershell_script(script: &str, args: &[&str]) -> anyhow::Result<String> {
-    let mut cmd = std::process::Command::new("powershell.exe");
+    let mut cmd = std::process::Command::new("pwsh.exe");
     cmd.arg("-NoProfile")
         .arg("-Command")
         .arg(format!("&{{{script}}}"))
