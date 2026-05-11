@@ -533,11 +533,12 @@ impl VmService {
             let pc = ports
                 .get_mut(port.port as usize)
                 .context("invalid serial port")?;
-            let (serial_fn, serial_action) = if port.connect {
-                (connect_serial, "connect to")
+            let serial_fn = if port.connect {
+                connect_serial
             } else {
-                (bind_serial, "bind to")
+                bind_serial
             };
+            let serial_action = if port.connect { "connect to" } else { "bind" };
             *pc = Some(serial_fn(port.socket_path.as_ref()).with_context(|| {
                 format!(
                     "failed to {} serial socket: {}",
@@ -898,16 +899,6 @@ impl VmService {
     }
 }
 
-// On platforms without platform-specific NIC backends (e.g., macOS), the
-// platform-gated match arms are unreachable. Consomme is always available.
-#[cfg_attr(
-    not(any(windows, target_os = "linux")),
-    expect(
-        unreachable_code,
-        unused_variables,
-        reason = "platform-specific NIC backends not available"
-    )
-)]
 fn parse_nic_config(
     nic: vmservice::NicConfig,
 ) -> anyhow::Result<(DeviceVtl, Resource<VmbusDeviceHandleKind>)> {
