@@ -576,7 +576,8 @@ impl crate::harness::WarmPerfTest for VirtioFsReaddirTest {
         let mut metrics = Vec::new();
         let pid = state.vm.backend().pid();
         let mut recorder = crate::harness::PerfRecorder::new(self.perf_dir.as_deref(), pid)?;
-        let file_count = state.file_count as f64;
+        // +2 for the `.` and `..` entries that `ls -f` includes.
+        let entry_count = state.file_count as f64 + 2.0;
 
         // Drop all caches before each iteration so readdir goes through FUSE.
         let sh = state.agent.unix_shell();
@@ -600,7 +601,7 @@ impl crate::harness::WarmPerfTest for VirtioFsReaddirTest {
         {
             let mut sh = state.agent.unix_shell();
             sh.chroot("/perf");
-            cmd!(sh, "ls -f /tmp/vfs/readdir_bench")
+            cmd!(sh, "ls -f /tmp/vfs/readdir_bench > /dev/null")
                 .read()
                 .await
                 .context("plain readdir priming pass failed")?;
@@ -629,7 +630,7 @@ impl crate::harness::WarmPerfTest for VirtioFsReaddirTest {
 
         let total_plain_secs = parse_elapsed(&plain_output, "plain readdir")?;
         let plain_secs = total_plain_secs / loops as f64;
-        let plain_entries_per_sec = file_count / plain_secs;
+        let plain_entries_per_sec = entry_count / plain_secs;
         tracing::info!(
             total_plain_secs,
             loops,
@@ -677,7 +678,7 @@ impl crate::harness::WarmPerfTest for VirtioFsReaddirTest {
         recorder.stop()?;
 
         let plus_secs = parse_elapsed(&plus_output, "readdirplus")?;
-        let plus_entries_per_sec = file_count / plus_secs;
+        let plus_entries_per_sec = entry_count / plus_secs;
         tracing::info!(plus_secs, plus_entries_per_sec, "readdirplus complete");
         metrics.push(MetricResult {
             name: "virtiofs_readdir_plus_time".to_string(),
