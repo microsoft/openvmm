@@ -6622,7 +6622,6 @@ dependencies = [
  "pkcs1",
  "pkcs8",
  "rand_core",
- "sha1",
  "sha2",
  "signature",
  "spki",
