@@ -379,13 +379,13 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                 all_stats.extend(stats);
             }
             TestName::VirtioFsReaddir => {
-                let test = tests::virtio_fs_readdir::VirtioFsReaddirTest {
+                let test = tests::virtio_fs::VirtioFsReaddirTest {
                     diag: args.diag,
                     perf_dir: args.perf_dir.clone(),
                     file_count: args.readdir_file_count,
                 };
 
-                let artifacts = resolve_artifacts(tests::virtio_fs_readdir::register_artifacts)?;
+                let artifacts = resolve_artifacts(tests::virtio_fs::register_artifacts)?;
                 let resolver = petri::ArtifactResolver::resolver(&artifacts);
 
                 let stats = pal_async::DefaultPool::run_with(async |driver| {
@@ -425,7 +425,6 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
         tests::network::register_artifacts,
         tests::disk_io::register_artifacts,
         tests::virtio_fs::register_artifacts,
-        tests::virtio_fs_readdir::register_artifacts,
     ];
 
     let mut requirements = petri::TestArtifactRequirements::new();
