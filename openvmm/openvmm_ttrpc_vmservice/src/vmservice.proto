@@ -100,7 +100,7 @@ message VirtioConsoleConfig {
     string socket_path = 1;
     // When true, connect to an existing pipe/socket at socket_path as a client
     // instead of creating a new server listener. Used when the host has already
-    // created the pipe (e.g., for DmesgCollector integration).
+    // created the socket/pipe.
     bool connect = 2;
 }
 
