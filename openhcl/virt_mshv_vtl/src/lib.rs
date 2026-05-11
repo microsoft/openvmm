@@ -2025,14 +2025,25 @@ impl UhPartition {
         #[cfg(guest_arch = "x86_64")]
         const LINT_INDEX_1: u8 = 1;
         #[cfg(guest_arch = "x86_64")]
-        match self.inner.isolation {
-            IsolationType::Snp => {
-                tracing::error!(?_vtl, "Debug interrupts cannot be injected into SNP VMs",);
+        {
+            // For SNP CVMs, only deliver the debug NMI when the host CPU
+            // supports virtual NMI (CPUID Fn8000_000A_EDX[V_NMI]). Without
+            // V_NMI, injecting multiple NMIs can corrupt the NMI stack in the
+            // guest.
+            if self.inner.isolation == IsolationType::Snp {
+                let vnmi = match &self.inner.backing_shared {
+                    BackingShared::Snp(snp) => snp.vnmi,
+                    _ => false,
+                };
+                if !vnmi {
+                    tracelimit::warn_ratelimited!(
+                        "debug interrupt is not supported on SNP without virtual NMI"
+                    );
+                    return;
+                }
             }
-            _ => {
-                let bsp_index = VpIndex::new(0);
-                self.pulse_lint(bsp_index, Vtl::try_from(_vtl).unwrap(), LINT_INDEX_1)
-            }
+            let bsp_index = VpIndex::new(0);
+            self.pulse_lint(bsp_index, Vtl::try_from(_vtl).unwrap(), LINT_INDEX_1);
         }
     }
 

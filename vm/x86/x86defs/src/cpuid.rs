@@ -673,6 +673,42 @@ pub struct ExtendedSvmVersionAndFeaturesEax {
 }
 
 #[bitfield(u32)]
+pub struct ExtendedSvmVersionAndFeaturesEdx {
+    pub np: bool,
+    pub lbr_virt: bool,
+    pub svml: bool,
+    pub nrips: bool,
+    pub tsc_rate_msr: bool,
+    pub vmcb_clean: bool,
+    pub flush_by_asid: bool,
+    pub decode_assists: bool,
+    #[bits(2)]
+    _reserved1: u32,
+    pub pause_filter: bool,
+    _reserved2: bool,
+    pub pause_filter_threshold: bool,
+    pub avic: bool,
+    _reserved3: bool,
+    pub vmsave_virt: bool,
+    pub vgif: bool,
+    pub gmet: bool,
+    pub x2avic: bool,
+    pub ssscheck: bool,
+    pub spec_ctrl: bool,
+    pub rogpt: bool,
+    _reserved4: bool,
+    pub host_mce_override: bool,
+    pub tlbi_ctl: bool,
+    pub vnmi: bool,
+    pub ibs_virt: bool,
+    pub ext_lvt_avic: bool,
+    _reserved5: bool,
+    pub nested_virt_snp_msr: bool,
+    #[bits(2)]
+    _reserved6: u32,
+}
+
+#[bitfield(u32)]
 pub struct ExtendedOptimizationIdentifiersEax {
     pub fp128: bool,
     pub mov_u: bool,
