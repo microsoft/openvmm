@@ -2623,7 +2623,16 @@ impl<T: RingMem> NetChannel<T> {
             if metadata.flags.offload_tcp_checksum() || metadata.flags.offload_udp_checksum() {
                 // The offset must be set if we're handling checksums; we already know from the above logic
                 // that the L4 checksum-type will match the L4 protocol.
-                if (metadata.transport_header_offset < metadata.l2_len as u16)
+                if metadata.transport_header_offset == 0 {
+                    metadata.l3_len = if metadata.flags.is_ipv4() {
+                        net_backend::IPV4_MIN_HEADER_LEN
+                    } else if metadata.flags.is_ipv6() {
+                        net_backend::IPV6_MIN_HEADER_LEN
+                    } else {
+                        unreachable!("this packet is neither v4 nor v6?");
+                    };
+                    tracelimit::warn_ratelimited!("metadata.transport_header_offset was unset")
+                } else if (metadata.transport_header_offset < metadata.l2_len as u16)
                     || (metadata.flags.is_ipv4()
                         && metadata.transport_header_offset
                             < (metadata.l2_len as u16 + net_backend::IPV4_MIN_HEADER_LEN))
