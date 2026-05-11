@@ -211,9 +211,9 @@ impl IoHandler {
             })
             .await;
 
-            let io_result = match event {
-                Event::Io(io_result) => io_result,
-                Event::CompletionReady(r) => r?,
+            let (io_result, decrement_io_count) = match event {
+                Event::Io(io_result) => (io_result, true),
+                Event::CompletionReady(r) => (r?, false),
                 Event::Deleted(sq_idx) => {
                     let sq = state.sqs.remove(sq_idx);
                     self.admin_response.send(sq.sqid);
@@ -250,11 +250,16 @@ impl IoHandler {
                         continue;
                     }
 
-                    IoResult {
-                        cid,
-                        sq_idx,
-                        result: spec::Status::INVALID_NAMESPACE_OR_FORMAT.into(),
-                    }
+                    // Invalid namespace — complete inline without
+                    // incrementing io_count.
+                    (
+                        IoResult {
+                            cid,
+                            sq_idx,
+                            result: spec::Status::INVALID_NAMESPACE_OR_FORMAT.into(),
+                        },
+                        false,
+                    )
                 }
             };
 
@@ -283,7 +288,9 @@ impl IoHandler {
                 }
             }
 
-            sq.io_count -= 1;
+            if decrement_io_count {
+                sq.io_count -= 1;
+            }
         }
     }
 }

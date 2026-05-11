@@ -9,6 +9,7 @@ use crate::PAGE_SIZE64;
 use crate::command_match::CommandMatchBuilder;
 use crate::prp::PrpRange;
 use crate::spec;
+use crate::spec::nvm;
 use crate::tests::test_helpers::read_completion_from_queue;
 use crate::tests::test_helpers::test_memory;
 use crate::tests::test_helpers::write_command_to_queue;
@@ -373,4 +374,133 @@ async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
 
     assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
     assert_eq!(cqe.cid, 10); // The CID should have been overwritten by the fault.
+}
+
+/// Test that an I/O command targeting an invalid (non-existent) namespace
+/// completes with INVALID_NAMESPACE_OR_FORMAT instead of panicking.
+///
+/// This is a regression test for a bug where the I/O path created an inline
+/// completion for invalid-namespace commands without incrementing `io_count`,
+/// but the completion-processing code unconditionally decremented `io_count`,
+/// causing a subtraction overflow panic.
+#[async_test]
+async fn test_io_command_invalid_namespace(driver: DefaultDriver) {
+    // Memory layout:
+    //   0x0000..0x0FFF = admin CQ
+    //   0x1000..0x1FFF = admin SQ
+    //   0x4000..0x4FFF = I/O CQ
+    //   0x5000..0x5FFF = I/O SQ
+    let admin_cq_buf = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let admin_sq_buf = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(false).cell());
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &admin_cq_buf,
+        64,
+        &admin_sq_buf,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+        fault_configuration,
+    )
+    .await;
+
+    let mut backoff = Backoff::new(&driver);
+    let io_cq_base: u64 = 0x4000;
+    let io_sq_base: u64 = 0x5000;
+    let mut admin_slot = 0u32;
+
+    // --- Create I/O Completion Queue (QID=1) ---
+    let mut command = Command::new_zeroed();
+    command
+        .cdw0
+        .set_opcode(spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0);
+    command.cdw10 = spec::Cdw10CreateIoQueue::new()
+        .with_qid(1)
+        .with_qsize_z(16)
+        .into();
+    command.cdw11 = spec::Cdw11CreateIoCompletionQueue::new()
+        .with_pc(true)
+        .with_ien(true)
+        .with_iv(1)
+        .into();
+    command.dptr[0] = io_cq_base;
+    command.cdw0.set_cid(20);
+
+    write_command_to_queue(&gm, &admin_sq_buf, admin_slot as usize, &command);
+    nvmec
+        .write_bar0(0x1000, (admin_slot + 1).as_bytes())
+        .unwrap();
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+    backoff.back_off().await;
+    let cqe = read_completion_from_queue(&gm, &admin_cq_buf, admin_slot as usize);
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+    assert_eq!(cqe.cid, 20);
+    admin_slot += 1;
+
+    // --- Create I/O Submission Queue (QID=1, CQID=1) ---
+    let mut command = Command::new_zeroed();
+    command
+        .cdw0
+        .set_opcode(spec::AdminOpcode::CREATE_IO_SUBMISSION_QUEUE.0);
+    command.cdw10 = spec::Cdw10CreateIoQueue::new()
+        .with_qid(1)
+        .with_qsize_z(16)
+        .into();
+    command.cdw11 = spec::Cdw11CreateIoSubmissionQueue::new()
+        .with_pc(true)
+        .with_qprio(0)
+        .with_cqid(1)
+        .into();
+    command.dptr[0] = io_sq_base;
+    command.cdw0.set_cid(21);
+
+    write_command_to_queue(&gm, &admin_sq_buf, admin_slot as usize, &command);
+    nvmec
+        .write_bar0(0x1000, (admin_slot + 1).as_bytes())
+        .unwrap();
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+    backoff.back_off().await;
+    let cqe = read_completion_from_queue(&gm, &admin_cq_buf, admin_slot as usize);
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+    assert_eq!(cqe.cid, 21);
+
+    // Set up MSI-X for I/O CQ (vector 1).
+    write_msix_table_entry(&mut nvmec, 1, 0xfeed0000, 0x2222, false);
+
+    // --- Send an NVM Read command to NSID=0xFFFF (invalid) on I/O SQ 1 ---
+    // The controller has no namespaces, so any NSID is invalid.
+    // Before the fix, this would panic: "attempt to subtract with overflow"
+    // on `sq.io_count -= 1`.
+    let mut io_cmd = Command::new_zeroed();
+    io_cmd.cdw0.set_opcode(nvm::NvmOpcode::READ.0);
+    io_cmd.cdw0.set_cid(42);
+    io_cmd.nsid = 0xFFFF; // non-existent namespace
+
+    let io_cq_buf = PrpRange::new(vec![io_cq_base], 0, PAGE_SIZE64).unwrap();
+    let io_sq_buf = PrpRange::new(vec![io_sq_base], 0, PAGE_SIZE64).unwrap();
+    write_command_to_queue(&gm, &io_sq_buf, 0, &io_cmd);
+
+    // Ring the I/O SQ doorbell. I/O SQ 1's doorbell is at offset
+    // 0x1000 + (2*1 + 1) * 4 = 0x100C (SQ doorbells are at odd indices).
+    // Actually per NVMe spec: doorbell stride = 4 bytes, SQ1 doorbell at
+    // 0x1000 + (2*1) * 4 = 0x1008, CQ1 doorbell at 0x1000 + (2*1+1)*4 = 0x100C.
+    nvmec.write_bar0(0x1008, 1u32.as_bytes()).unwrap();
+
+    // Wait for the completion interrupt on vector 1.
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x2222).await;
+    backoff.back_off().await;
+
+    // Read the completion from the I/O CQ.
+    let cqe = read_completion_from_queue(&gm, &io_cq_buf, 0);
+    assert_eq!(cqe.cid, 42);
+    assert_eq!(
+        cqe.status.status(),
+        spec::Status::INVALID_NAMESPACE_OR_FORMAT.0,
+        "command to invalid namespace should return INVALID_NAMESPACE_OR_FORMAT"
+    );
 }
