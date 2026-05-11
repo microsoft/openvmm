@@ -536,10 +536,7 @@ impl VmService {
                 .context("invalid serial port")?;
             let (serial_fn, action) = open_socket_backend(port.connect);
             *pc = Some(serial_fn(port.socket_path.as_ref()).with_context(|| {
-                format!(
-                    "failed to {} serial socket: {}",
-                    action, port.socket_path
-                )
+                format!("failed to {} serial socket: {}", action, port.socket_path)
             })?);
         }
 
