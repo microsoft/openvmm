@@ -10,9 +10,15 @@
 //!
 //! The PR that removes per-entry `lookup_helper()` calls from the plain
 //! readdir path should show a significant improvement in the
-//! `virtiofs_readdir_plain` metric (entries/s), while `virtiofs_readdir_plus`
-//! (which still requires per-entry lookups for dentry pre-population) should
-//! remain roughly unchanged.
+//! `virtiofs_readdir_plain_entries_per_sec` metric, while
+//! `virtiofs_readdir_plus_entries_per_sec` (which still requires per-entry
+//! lookups for dentry pre-population) should remain roughly unchanged.
+//!
+//! Reported metrics:
+//! - `virtiofs_readdir_plain_time` — per-pass plain readdir time (s)
+//! - `virtiofs_readdir_plain_entries_per_sec` — plain readdir throughput
+//! - `virtiofs_readdir_plus_time` — readdirplus time (s)
+//! - `virtiofs_readdir_plus_entries_per_sec` — readdirplus throughput
 //!
 //! Layout inside the guest (same as the fio-based virtio_fs test):
 //!
@@ -225,7 +231,7 @@ impl crate::harness::WarmPerfTest for VirtioFsReaddirTest {
         agent
             .mount(VFS_TAG, "/perf/tmp/vfs", "virtiofs", 0, true)
             .await
-            .context("failed to mount virtio-fs")?;
+            .context("failed to mount virtio-fs (guest kernel may need CONFIG_VIRTIO_FS=y)")?;
 
         Ok(VirtioFsReaddirState {
             vm,
@@ -257,9 +263,20 @@ impl crate::harness::WarmPerfTest for VirtioFsReaddirTest {
         // lists directory entries without sorting or stat'ing. This is
         // the workload that triggers FUSE READDIR (not READDIRPLUS) via
         // the kernel's READDIRPLUS_AUTO fallback after the first pass.
-        // We loop multiple times: pass 1 uses READDIRPLUS (priming),
-        // subsequent passes use plain READDIR — the path the PR optimizes.
+        //
+        // Do one unmeasured priming pass first: the kernel starts with
+        // READDIRPLUS and switches to plain READDIR once it sees the
+        // entries aren't being stat'd. Then measure `loops` iterations
+        // of pure plain READDIR.
         let loops = PLAIN_READDIR_LOOPS;
+        {
+            let mut sh = state.agent.unix_shell();
+            sh.chroot("/perf");
+            cmd!(sh, "ls -f /tmp/vfs/readdir_bench")
+                .read()
+                .await
+                .context("plain readdir priming pass failed")?;
+        }
         recorder.start("virtiofs_readdir_plain")?;
         let plain_output = {
             let mut sh = state.agent.unix_shell();
