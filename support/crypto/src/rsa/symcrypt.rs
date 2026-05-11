@@ -131,7 +131,17 @@ impl RsaPublicKeyInner {
             .pkcs1_verify(&digest, signature, conv_hash(hash_algorithm))
         {
             Ok(()) => Ok(true),
-            Err(symcrypt::errors::SymCryptError::SignatureVerificationFailure) => Ok(false),
+            // `SignatureVerificationFailure` is the expected error for an
+            // invalid signature. `InvalidArgument` can also occur when the
+            // signature bytes, interpreted as an integer, are >= the modulus
+            // or otherwise don't decode to a valid PKCS#1 v1.5 encoding —
+            // which happens probabilistically when verifying a signature
+            // against the wrong public key. Both indicate "signature does
+            // not verify", not a backend bug.
+            Err(
+                symcrypt::errors::SymCryptError::SignatureVerificationFailure
+                | symcrypt::errors::SymCryptError::InvalidArgument,
+            ) => Ok(false),
             Err(e) => Err(err(e, "PKCS#1 signature verification")),
         }
     }
