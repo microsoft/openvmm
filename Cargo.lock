@@ -9078,6 +9078,7 @@ version = "0.0.0"
 dependencies = [
  "aarch64defs",
  "aarch64emu",
+ "cvm_tracing",
  "guestmem",
  "hvdef",
  "thiserror 2.0.16",
@@ -9123,6 +9124,7 @@ dependencies = [
 name = "virt_support_x86emu"
 version = "0.0.0"
 dependencies = [
+ "cvm_tracing",
  "guestmem",
  "hvdef",
  "iced-x86",
