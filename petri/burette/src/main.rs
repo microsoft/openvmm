@@ -53,6 +53,8 @@ enum TestName {
     DiskIo,
     /// virtio-fs file server throughput via fio.
     VirtioFs,
+    /// virtio-fs directory listing (readdir) performance.
+    VirtioFsReaddir,
 }
 
 /// Global log source for petri, initialized once.
@@ -155,6 +157,10 @@ struct RunArgs {
     /// Test file size in MiB for the virtio_fs test.
     #[arg(long, default_value = "512")]
     virtiofs_file_size_mib: u64,
+
+    /// Number of files to create for the virtio_fs_readdir test.
+    #[arg(long, default_value = "10000")]
+    readdir_file_count: u32,
 }
 
 #[derive(clap::Args)]
@@ -259,6 +265,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
         TestName::Network,
         TestName::DiskIo,
         TestName::VirtioFs,
+        TestName::VirtioFsReaddir,
     ];
     let tests_to_run: Vec<TestName> = if let Some(name) = args.test {
         vec![name]
@@ -371,6 +378,22 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                 .context("virtio_fs test failed")?;
                 all_stats.extend(stats);
             }
+            TestName::VirtioFsReaddir => {
+                let test = tests::virtio_fs_readdir::VirtioFsReaddirTest {
+                    diag: args.diag,
+                    perf_dir: args.perf_dir.clone(),
+                    file_count: args.readdir_file_count,
+                };
+
+                let artifacts = resolve_artifacts(tests::virtio_fs_readdir::register_artifacts)?;
+                let resolver = petri::ArtifactResolver::resolver(&artifacts);
+
+                let stats = pal_async::DefaultPool::run_with(async |driver| {
+                    harness::run_warm_test(&test, &resolver, &driver, args.iterations).await
+                })
+                .context("virtio_fs_readdir test failed")?;
+                all_stats.extend(stats);
+            }
         }
     }
 
@@ -402,6 +425,7 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
         tests::network::register_artifacts,
         tests::disk_io::register_artifacts,
         tests::virtio_fs::register_artifacts,
+        tests::virtio_fs_readdir::register_artifacts,
     ];
 
     let mut requirements = petri::TestArtifactRequirements::new();
