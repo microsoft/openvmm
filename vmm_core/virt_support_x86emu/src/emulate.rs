@@ -312,10 +312,10 @@ pub async fn emulate<T: EmulatorSupport>(
             efer,
             cr0,
             ?rflags,
-            ?gpa,
+            gpa,
             ?initial_translation,
-            ?int_pend,
-            ?gpa_mapped,
+            int_pend,
+            gpa_mapped,
             "emulation failed"
         );
         let gps = [

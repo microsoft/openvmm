@@ -188,10 +188,10 @@ pub async fn emulate<T: EmulatorSupport>(
                 pc,
                 sp,
                 ?cpsr,
-                ?gpa,
+                gpa,
                 ?initial_translation,
                 int_pend,
-                ?gpa_mapped,
+                gpa_mapped,
                 "emulation failed"
             );
             let xs = (0..=30).map(|i| (i, support.x(i))).collect::<Vec<_>>();
