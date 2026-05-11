@@ -42,6 +42,7 @@ pub mod download_openvmm_vmm_tests_artifacts;
 pub mod download_release_igvm_files_from_gh;
 pub mod download_uefi_mu_msvm;
 pub mod git_checkout_openvmm_repo;
+pub mod harden_powershell_event_log;
 pub mod init_cross_build;
 pub mod init_openvmm_cargo_config_deny_warnings;
 pub mod init_openvmm_magicpath_openhcl_sysroot;

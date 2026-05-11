@@ -77,6 +77,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe::resolve::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
+        ctx.import::<crate::harden_powershell_event_log::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
@@ -167,6 +168,15 @@ impl SimpleFlowNode for Node {
         };
 
         let mut pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_deps::Request::Install)];
+
+        // On Windows CI runners, disable Windows PowerShell engine event
+        // logging before running tests. This avoids transient
+        // AccessViolationException crashes in powershell.exe startup that
+        // surface as `exit code 0xDEAD` from petri's Hyper-V cmdlet calls.
+        if matches!(ctx.platform(), FlowPlatform::Windows) {
+            pre_run_deps
+                .push(ctx.reqv(|done| crate::harden_powershell_event_log::Request { done }));
+        }
 
         let (test_log_path, get_test_log_path) = ctx.new_var();
 
