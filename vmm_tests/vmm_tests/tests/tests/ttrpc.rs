@@ -14,6 +14,7 @@ use petri::ResolvedArtifact;
 use petri_artifacts_vmm_test::artifacts;
 use std::io::Read;
 use std::process::Stdio;
+use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 
 petri::test!(test_ttrpc_interface, |resolver| {
@@ -83,6 +84,19 @@ fn test_ttrpc_interface(
             let mut com1_path = std::env::temp_dir();
             com1_path.push(Guid::new_random().to_string());
 
+            let mut console_path = std::env::temp_dir();
+            console_path.push(Guid::new_random().to_string());
+
+            // On iteration 0, test serial `connect: true` by pre-creating a
+            // listener that the VM will connect to. On other iterations, test
+            // the default `connect: false` (VM creates the socket).
+            let use_serial_connect = i == 0;
+            let com1_listener = if use_serial_connect {
+                Some(UnixListener::bind(&com1_path).unwrap())
+            } else {
+                None
+            };
+
             client
                 .call()
                 .start(
@@ -110,7 +124,25 @@ fn test_ttrpc_interface(
                                 ports: vec![vmservice::serial_config::Config {
                                     port: 0,
                                     socket_path: com1_path.to_string_lossy().into(),
+                                    connect: use_serial_connect,
                                 }],
+                            }),
+                            devices_config: Some(vmservice::DevicesConfig {
+                                nic_config: vec![vmservice::NicConfig {
+                                    nic_id: Guid::new_random().to_string(),
+                                    mac_address: "00-15-5D-12-12-12".to_string(),
+                                    backend: Some(vmservice::nic_config::Backend::Consomme(
+                                        vmservice::ConsommeBackend {
+                                            cidr: String::new(),
+                                        },
+                                    )),
+                                    ..Default::default()
+                                }],
+                                virtio_console: Some(vmservice::VirtioConsoleConfig {
+                                    socket_path: console_path.to_string_lossy().into(),
+                                    connect: false,
+                                }),
+                                ..Default::default()
                             }),
                             ..Default::default()
                         }),
@@ -120,7 +152,14 @@ fn test_ttrpc_interface(
                 .await
                 .unwrap();
 
-            let com1 = UnixStream::connect(&com1_path).unwrap();
+            // Get the serial connection - either by accepting on our listener
+            // (connect: true) or connecting to the VM's socket (connect: false).
+            let com1 = if let Some(listener) = com1_listener {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+            } else {
+                UnixStream::connect(&com1_path).unwrap()
+            };
 
             let _com1_task = driver.spawn(
                 "com1",
@@ -128,6 +167,17 @@ fn test_ttrpc_interface(
                     params.logger.log_file("linux").unwrap(),
                     PolledSocket::new(&driver, com1).unwrap(),
                     "linux com1",
+                ),
+            );
+
+            // Verify the virtio console socket was created and is connectable.
+            let console = UnixStream::connect(&console_path).unwrap();
+            let _console_task = driver.spawn(
+                "console",
+                petri::log_task(
+                    params.logger.log_file("virtio-console").unwrap(),
+                    PolledSocket::new(&driver, console).unwrap(),
+                    "virtio console",
                 ),
             );
 
