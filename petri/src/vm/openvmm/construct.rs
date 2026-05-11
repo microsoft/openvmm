@@ -852,12 +852,10 @@ impl PetriVmConfigSetupCore<'_> {
                         // Set UNDERHILL_SERIAL_WAIT_FOR_RTS=1 so that we don't pull serial data
                         // until the guest is ready. Otherwise, Linux will drop the input serial
                         // data on the floor during boot.
-                        // N.B. VTL2 currently still unconditionally uses vmbus for vsock, so always
-                        //      blacklist virtio_vsock_init to prevent conflicts.
                         append_cmdline(
                             &mut cmdline,
                             format!(
-                                "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh {VIRTIO_VSOCK_BLACKLIST}\""
+                                "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh {vsock_blacklist}\""
                             ),
                         );
                         false
