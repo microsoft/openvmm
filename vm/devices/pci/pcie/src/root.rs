@@ -49,6 +49,17 @@ pub struct GenericPcieRootComplex {
     ports: HashMap<u8, (Arc<str>, RootPort)>,
 }
 
+/// Information about a downstream port in a PCIe topology.
+pub struct DownstreamPortInfo {
+    /// The port number (device/function index).
+    pub port_number: u8,
+    /// The port name.
+    pub name: Arc<str>,
+    /// Shared bus range, updated by the config space emulator when the
+    /// guest programs secondary/subordinate bus numbers.
+    pub bus_range: AssignedBusRange,
+}
+
 /// A description of a generic PCIe root port.
 pub struct GenericPcieRootPortDefinition {
     /// The name of the root port.
@@ -141,16 +152,11 @@ impl GenericPcieRootComplex {
     }
 
     /// Attach the provided `GenericPciBusDevice` to the port identified.
-    ///
-    /// `bus_range` is an optional shared bus range that the port will update
-    /// when the guest programs the secondary bus number. Pass `None` when
-    /// bus range tracking is not needed.
     pub fn add_pcie_device(
         &mut self,
         port: u8,
         name: impl AsRef<str>,
         dev: Box<dyn GenericPciBusDevice>,
-        bus_range: Option<AssignedBusRange>,
     ) -> Result<(), Arc<str>> {
         let (_port_name, root_port) = self.ports.get_mut(&port).ok_or_else(|| -> Arc<str> {
             tracing::error!(
@@ -161,7 +167,7 @@ impl GenericPcieRootComplex {
             format!("Port {:#x} not found", port).into()
         })?;
 
-        match root_port.connect_device(name, dev, bus_range) {
+        match root_port.connect_device(name, dev) {
             Ok(()) => Ok(()),
             Err(existing_device) => {
                 tracing::warn!(
@@ -175,35 +181,29 @@ impl GenericPcieRootComplex {
     }
 
     /// Enumerate the downstream ports of the root complex.
-    pub fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
-        let ports: Vec<(u8, Arc<str>)> = self
-            .ports
+    pub fn downstream_ports(&self) -> Vec<DownstreamPortInfo> {
+        self.ports
             .iter()
-            .map(|(port, (name, _))| (*port, name.clone()))
-            .collect();
-
-        ports
+            .map(|(port, (name, rp))| DownstreamPortInfo {
+                port_number: *port,
+                name: name.clone(),
+                bus_range: rp.port.bus_range(),
+            })
+            .collect()
     }
 
     /// Hot-add a device to a named port.
-    ///
-    /// `bus_range` is an optional shared bus range for tracking the device's
-    /// assigned bus numbers.
     pub fn hotplug_add_device(
         &mut self,
         port_name: &str,
         device_name: &str,
         device: Box<dyn GenericPciBusDevice>,
-        bus_range: Option<AssignedBusRange>,
     ) -> anyhow::Result<()> {
         let (_, (_, root_port)) = self
             .ports
             .iter_mut()
             .find(|(_, (name, _))| name.as_ref() == port_name)
             .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
-        if let Some(br) = bus_range {
-            root_port.port.set_bus_range(br);
-        }
         root_port.port.hotplug_add_device(device_name, device)
     }
 
@@ -395,7 +395,7 @@ impl MmioIntercept for GenericPcieRootComplex {
                 tracelimit::warn_ratelimited!("unroutable config space access");
             }
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
-                check_result!(port.port.write_cfg(cfg_offset, write_dword));
+                check_result!(port.port.cfg_space.write_u32(cfg_offset, write_dword));
             }
             DecodedEcamAccess::DownstreamPort(port, bus_number, function, cfg_offset) => {
                 check_result!(port.forward_cfg_write(
@@ -460,18 +460,12 @@ impl RootPort {
         &mut self,
         name: impl AsRef<str>,
         dev: Box<dyn GenericPciBusDevice>,
-        bus_range: Option<AssignedBusRange>,
     ) -> Result<(), Arc<str>> {
         let device_name = name.as_ref();
         let port_name = self.port.name.clone();
 
         match self.port.add_pcie_device(&port_name, device_name, dev) {
-            Ok(()) => {
-                if let Some(br) = bus_range {
-                    self.port.set_bus_range(br);
-                }
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(_error) => {
                 // If the connection failed, it means the port is already occupied
                 // We need to get the name of the existing device
@@ -785,10 +779,9 @@ mod tests {
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
         );
 
-        rc.add_pcie_device(0, "ep1", Box::new(endpoint1), None)
-            .unwrap();
+        rc.add_pcie_device(0, "ep1", Box::new(endpoint1)).unwrap();
 
-        match rc.add_pcie_device(0, "ep2", Box::new(endpoint2), None) {
+        match rc.add_pcie_device(0, "ep2", Box::new(endpoint2)) {
             Ok(()) => panic!("should have failed"),
             Err(name) => {
                 assert_eq!(name, "ep1".into());
@@ -843,7 +836,7 @@ mod tests {
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
         );
 
-        rc.add_pcie_device(0, "test-ep", Box::new(endpoint), None)
+        rc.add_pcie_device(0, "test-ep", Box::new(endpoint))
             .unwrap();
 
         // The secondary bus behind root port 0 has been assigned bus number
@@ -1107,8 +1100,6 @@ mod tests {
 
     #[test]
     fn test_bus_range_updated_on_cfg_write() {
-        use crate::bus_range::AssignedBusRange;
-
         const SECONDARY_BUS_NUM_REG: u64 = 0x19;
         const SUBORDINATE_BUS_NUM_REG: u64 = 0x1A;
 
@@ -1119,11 +1110,11 @@ mod tests {
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
         );
 
-        let bus_range = AssignedBusRange::new();
+        // Get the bus_range from the port before attaching a device.
+        let bus_range = rc.downstream_ports().into_iter().next().unwrap().bus_range;
         assert_eq!(bus_range.bus_range(), (0, 0));
 
-        rc.add_pcie_device(0, "ep", Box::new(endpoint), Some(bus_range.clone()))
-            .unwrap();
+        rc.add_pcie_device(0, "ep", Box::new(endpoint)).unwrap();
 
         // Program secondary=5, subordinate=10 via ECAM MMIO writes.
         rc.mmio_write(SECONDARY_BUS_NUM_REG, &[5]).unwrap();

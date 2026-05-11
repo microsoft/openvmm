@@ -198,13 +198,11 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
     pub fn register_static_pcie(
         &mut self,
         bus_id: BusIdPcieDownstreamPort,
-        bus_range: Option<pcie::bus_range::AssignedBusRange>,
     ) {
         self.builder.register_weak_mutex_pcie_device(
             bus_id,
             self.dev_name.clone(),
             self.dev.clone(),
-            bus_range,
         );
     }
 

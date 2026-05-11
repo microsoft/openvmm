@@ -1097,6 +1097,9 @@ pub struct ConfigSpaceType1Emulator {
     common: ConfigSpaceCommonHeaderEmulatorType1,
     /// Type 1 specific state
     state: ConfigSpaceType1EmulatorState,
+    /// Shared bus range, synced automatically on writes, reset, and restore.
+    #[inspect(skip)]
+    bus_range: crate::bus_range::AssignedBusRange,
 }
 
 impl ConfigSpaceType1Emulator {
@@ -1108,6 +1111,7 @@ impl ConfigSpaceType1Emulator {
         Self {
             common,
             state: ConfigSpaceType1EmulatorState::new(),
+            bus_range: crate::bus_range::AssignedBusRange::new(),
         }
     }
 
@@ -1115,6 +1119,7 @@ impl ConfigSpaceType1Emulator {
     pub fn reset(&mut self) {
         self.common.reset();
         self.state = ConfigSpaceType1EmulatorState::new();
+        self.sync_bus_range();
     }
 
     /// Set the multi-function bit for this device.
@@ -1132,6 +1137,23 @@ impl ConfigSpaceType1Emulator {
         } else {
             0..=0
         }
+    }
+
+    /// Returns a clone of the shared bus range.
+    ///
+    /// The returned handle shares the same underlying atomic — bus number
+    /// changes from writes, resets, and restores are reflected automatically.
+    pub fn bus_range(&self) -> crate::bus_range::AssignedBusRange {
+        self.bus_range.clone()
+    }
+
+    /// Pushes the current secondary/subordinate bus numbers into the shared
+    /// atomic so that consumers (ITS wrappers, SMMU) see the latest values.
+    fn sync_bus_range(&self) {
+        self.bus_range.set_bus_range(
+            self.state.secondary_bus_number,
+            self.state.subordinate_bus_number,
+        );
     }
 
     fn decode_memory_range(&self, base_register: u16, limit_register: u16) -> (u32, u32) {
@@ -1247,6 +1269,7 @@ impl ConfigSpaceType1Emulator {
                 self.state.subordinate_bus_number = (val >> 16) as u8;
                 self.state.secondary_bus_number = (val >> 8) as u8;
                 self.state.primary_bus_number = val as u8;
+                self.sync_bus_range();
             }
             HeaderType01::MEMORY_RANGE => {
                 let (base, limit) = to_low_high(val);
@@ -1568,6 +1591,8 @@ mod save_restore {
                 prefetch_limit_upper,
                 bridge_control,
             };
+
+            self.sync_bus_range();
 
             // Pad base_addresses to 6 elements for common header (Type 1 uses 2 BARs)
             let mut full_base_addresses = [0u32; 6];

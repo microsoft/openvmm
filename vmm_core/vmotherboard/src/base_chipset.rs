@@ -918,14 +918,12 @@ mod weak_mutex_pci {
             port: u8,
             name: Arc<str>,
             dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
-            bus_range: Option<pcie::bus_range::AssignedBusRange>,
         ) -> Result<(), PcieConflict> {
             self.lock()
                 .add_pcie_device(
                     port,
                     name.clone(),
                     Box::new(WeakMutexPciDeviceWrapper(dev)),
-                    bus_range,
                 )
                 .map_err(|existing_dev_name| PcieConflict {
                     reason: PcieConflictReason::ExistingDev(existing_dev_name),
@@ -933,7 +931,7 @@ mod weak_mutex_pci {
                 })
         }
 
-        fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+        fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo> {
             self.lock().downstream_ports()
         }
     }
@@ -945,14 +943,12 @@ mod weak_mutex_pci {
             port: u8,
             name: Arc<str>,
             dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
-            bus_range: Option<pcie::bus_range::AssignedBusRange>,
         ) -> Result<(), PcieConflict> {
             self.lock()
                 .add_pcie_device(
                     port,
                     &name,
                     Box::new(WeakMutexPciDeviceWrapper(dev)),
-                    bus_range,
                 )
                 .map_err(|err| PcieConflict {
                     reason: PcieConflictReason::ExistingDev(err.to_string().into()),
@@ -960,7 +956,7 @@ mod weak_mutex_pci {
                 })
         }
 
-        fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+        fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo> {
             self.lock().downstream_ports()
         }
     }

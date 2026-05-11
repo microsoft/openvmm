@@ -75,7 +75,6 @@ pub struct ArcMutexChipsetDeviceBuilder<'a, 'b, T> {
     pci_addr: Option<(u8, u8, u8)>,
     pci_bus_id: Option<BusIdPci>,
     pcie_port: Option<BusIdPcieDownstreamPort>,
-    pcie_bus_range: Option<pcie::bus_range::AssignedBusRange>,
     external_pci: bool,
 }
 
@@ -103,7 +102,6 @@ where
             pci_addr: None,
             pci_bus_id: None,
             pcie_port: None,
-            pcie_bus_range: None,
             external_pci: false,
         }
     }
@@ -130,14 +128,6 @@ where
     /// For PCIe devices: place the device on the specified downstream port
     pub fn on_pcie_port(mut self, id: BusIdPcieDownstreamPort) -> Self {
         self.pcie_port = Some(id);
-        self
-    }
-
-    /// For PCIe devices: set the shared bus range for tracking the device's
-    /// assigned bus numbers. The downstream port will update this when the
-    /// guest programs the secondary bus number.
-    pub fn with_pcie_bus_range(mut self, bus_range: pcie::bus_range::AssignedBusRange) -> Self {
-        self.pcie_bus_range = Some(bus_range);
         self
     }
 
@@ -186,7 +176,7 @@ where
 
                 if let Some(bus_id_port) = self.pcie_port {
                     self.services
-                        .register_static_pcie(bus_id_port, self.pcie_bus_range.take());
+                        .register_static_pcie(bus_id_port);
                 } else {
                     // static pci registration
                     let bdf = match (self.pci_addr, dev.suggested_bdf()) {

@@ -102,16 +102,11 @@ pub async fn build_pcie_device(
     mapper: Option<&dyn guestmem::MemoryMapper>,
     interrupt_target: Option<Arc<dyn SignalMsi>>,
     irqfd: Option<Arc<dyn IrqFd>>,
-    bus_range: Option<vmotherboard::AssignedBusRange>,
 ) -> anyhow::Result<()> {
     let dev_name = format!("pcie:{}-{}", port_name, resource.id());
-    let mut device_builder = chipset_builder
+    let device_builder = chipset_builder
         .arc_mutex_device(dev_name)
         .on_pcie_port(vmotherboard::BusId::new(&port_name));
-
-    if let Some(br) = bus_range {
-        device_builder = device_builder.with_pcie_bus_range(br);
-    }
 
     let (_, msi_conn) = resolve_and_add_pci_device(
         device_builder,

@@ -1838,18 +1838,31 @@ impl InitializedVm {
             (pcie_host_bridges, pcie_root_complexes)
         };
 
-        // Build a port-name→segment map covering all ports in the PCIe
-        // topology (root complex ports and switch downstream ports). This
-        // is used for ITS device ID composition where the segment is part
-        // of the 32-bit device ID.
-        let mut port_segments: std::collections::HashMap<Arc<str>, u16> = pcie_host_bridges
+        // Build a port-name→(segment, bus_range) map covering all ports in
+        // the PCIe topology (root complex ports and switch downstream ports).
+        // The segment is used for ITS device ID composition; the bus_range is
+        // a shared atomic that the config space emulator updates when the
+        // guest programs secondary/subordinate bus numbers.
+        struct PortInfo {
+            segment: u16,
+            bus_range: pcie::bus_range::AssignedBusRange,
+        }
+        let mut port_info: std::collections::HashMap<Arc<str>, PortInfo> = pcie_host_bridges
             .iter()
             .zip(pcie_root_complexes.iter())
             .flat_map(|(hb, rc)| {
                 rc.lock()
                     .downstream_ports()
                     .into_iter()
-                    .map(move |(_, name)| (name, hb.segment))
+                    .map(move |p| {
+                        (
+                            p.name,
+                            PortInfo {
+                                segment: hb.segment,
+                                bus_range: p.bus_range,
+                            },
+                        )
+                    })
             })
             .collect();
 
@@ -1857,10 +1870,10 @@ impl InitializedVm {
             let device_name = format!("pcie-switch:{}", switch.name);
 
             // Inherit the segment from the switch's parent port.
-            let parent_segment = port_segments
+            let parent_segment = port_info
                 .get(switch.parent_port.as_str())
-                .copied()
-                .expect("switch parent port must be a known downstream port");
+                .expect("switch parent port must be a known downstream port")
+                .segment;
 
             let switch_device = chipset_builder
                 .arc_mutex_device(device_name)
@@ -1876,8 +1889,14 @@ impl InitializedVm {
 
             // Query the switch's actual downstream port names instead of
             // reconstructing them from the naming convention.
-            for (_, name) in switch_device.lock().downstream_ports() {
-                port_segments.insert(name, parent_segment);
+            for p in switch_device.lock().downstream_ports() {
+                port_info.insert(
+                    p.name,
+                    PortInfo {
+                        segment: parent_segment,
+                        bus_range: p.bus_range,
+                    },
+                );
             }
 
             let bus_id = vmotherboard::BusId::new(&switch.name);
@@ -1915,12 +1934,10 @@ impl InitializedVm {
 
         // Resolve PCIe devices concurrently.
         //
-        // Each device gets an AssignedBusRange (an Arc<AtomicU16>) that is
-        // cloned into two places: the ITS wrapper (ItsSignalMsi / ItsIrqFd)
-        // and the downstream port (via set_bus_range). When the guest
-        // programs the secondary/subordinate bus numbers, the port writes
-        // the new values into the shared atomic, and the ITS wrapper reads
-        // them at interrupt delivery time to compose the full device ID.
+        // Each port's ConfigSpaceType1Emulator owns an AssignedBusRange
+        // (Arc<AtomicU16>). We clone it into the ITS wrappers so that when
+        // the guest programs bus numbers, the emulator writes the new values
+        // and the ITS wrapper reads them at interrupt delivery time.
         try_join_all(cfg.pcie_devices.into_iter().map(|dev_cfg| {
             let chipset_builder = &chipset_builder;
             let driver_source = &driver_source;
@@ -1928,13 +1945,11 @@ impl InitializedVm {
             let gm = &gm;
             let partition = &partition;
             let mapper = &mapper;
-            let port_segments = &port_segments;
+            let port_info = &port_info;
             async move {
                 let port_name: Arc<str> = dev_cfg.port_name.into();
-                let bus_range = pcie::bus_range::AssignedBusRange::new();
-                let segment = port_segments
+                let pi = port_info
                     .get(&port_name)
-                    .copied()
                     .expect("device port must be a known downstream port");
 
                 // When ITS is active, wrap the partition's SignalMsi
@@ -1942,16 +1957,22 @@ impl InitializedVm {
                 // pass through directly.
                 let signal_msi = partition.as_signal_msi(Vtl::Vtl0).map(|s| {
                     if use_its {
-                        Arc::new(pcie::its::ItsSignalMsi::new(s, bus_range.clone(), segment))
-                            as Arc<dyn pci_core::msi::SignalMsi>
+                        Arc::new(pcie::its::ItsSignalMsi::new(
+                            s,
+                            pi.bus_range.clone(),
+                            pi.segment,
+                        )) as Arc<dyn pci_core::msi::SignalMsi>
                     } else {
                         s
                     }
                 });
                 let irqfd = partition.irqfd().map(|fd| {
                     if use_its {
-                        Arc::new(pcie::its::ItsIrqFd::new(fd, bus_range.clone(), segment))
-                            as Arc<dyn vmcore::irqfd::IrqFd>
+                        Arc::new(pcie::its::ItsIrqFd::new(
+                            fd,
+                            pi.bus_range.clone(),
+                            pi.segment,
+                        )) as Arc<dyn vmcore::irqfd::IrqFd>
                     } else {
                         fd
                     }
@@ -1968,7 +1989,6 @@ impl InitializedVm {
                     Some(mapper),
                     signal_msi,
                     irqfd,
-                    Some(bus_range),
                 )
                 .await
             }
@@ -2979,7 +2999,7 @@ impl LoadedVm {
                             let (rc_idx, rc) = self.inner.pcie_root_complexes.iter()
                                 .enumerate()
                                 .find(|(_, rc)| {
-                                    rc.lock().downstream_ports().iter().any(|(_, name)| name.as_ref() == port_name.as_str())
+                                    rc.lock().downstream_ports().iter().any(|p| p.name.as_ref() == port_name.as_str())
                                 })
                                 .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
 
@@ -2991,9 +3011,13 @@ impl LoadedVm {
                             #[cfg(not(guest_arch = "aarch64"))]
                             let use_its = false;
 
-                            // See the boot-time comment above: the bus_range
-                            // is shared between the ITS wrapper and the port.
-                            let bus_range = pcie::bus_range::AssignedBusRange::new();
+                            // Get the bus_range from the port's config space emulator.
+                            let bus_range = rc.lock()
+                                .downstream_ports()
+                                .into_iter()
+                                .find(|p| p.name.as_ref() == port_name.as_str())
+                                .expect("port was just found above")
+                                .bus_range;
 
                             let signal_msi = self.inner.partition.as_signal_msi(Vtl::Vtl0).map(|s| {
                                 if use_its {
@@ -3066,13 +3090,10 @@ impl LoadedVm {
                             self.state_units.start_stopped_units().await;
 
                             // Now attach the device and notify the guest.
-                            // The bus_range is passed so the port can track
-                            // bus number assignments for ITS/SMMU.
                             if let Err(e) = rc.lock().hotplug_add_device(
                                 &port_name,
                                 "hotplug-device",
                                 bus_device,
-                                Some(bus_range),
                             ) {
                                 // Clean up the device unit on failure
                                 let (_, unit, _) = self.inner.pcie_hotplug_devices.pop().unwrap();
@@ -3099,7 +3120,7 @@ impl LoadedVm {
                             // Find the root complex containing the target port
                             let rc = self.inner.pcie_root_complexes.iter()
                                 .find(|rc| {
-                                    rc.lock().downstream_ports().iter().any(|(_, name)| name.as_ref() == port_name.as_str())
+                                    rc.lock().downstream_ports().iter().any(|p| p.name.as_ref() == port_name.as_str())
                                 })
                                 .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
 

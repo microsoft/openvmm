@@ -224,16 +224,15 @@ impl<'a> ChipsetBuilder<'a> {
             bus_id
         );
 
-        for (port_number, port_name) in downstream_ports {
-            let existing = inner
-                .bus_resolver
-                .pcie
-                .ports
-                .insert(BusId::new(&port_name), (port_number, bus_id.clone()));
+        for port_info in downstream_ports {
+            let existing = inner.bus_resolver.pcie.ports.insert(
+                BusId::new(&port_info.name),
+                (port_info.port_number, bus_id.clone()),
+            );
             assert!(
                 existing.is_none(),
                 "duplicate pcie port ID: {:?}",
-                port_name
+                port_info.name
             );
         }
     }
@@ -243,7 +242,6 @@ impl<'a> ChipsetBuilder<'a> {
         bus_id_port: BusIdPcieDownstreamPort,
         name: Arc<str>,
         dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
-        bus_range: Option<pcie::bus_range::AssignedBusRange>,
     ) {
         self.inner
             .lock()
@@ -254,7 +252,6 @@ impl<'a> ChipsetBuilder<'a> {
                 bus_id_port,
                 name,
                 dev,
-                bus_range,
             });
     }
 
