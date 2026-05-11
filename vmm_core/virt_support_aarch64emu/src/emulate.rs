@@ -190,7 +190,7 @@ pub async fn emulate<T: EmulatorSupport>(
                 ?cpsr,
                 ?gpa,
                 ?initial_translation,
-                ?int_pend,
+                int_pend,
                 ?gpa_mapped,
                 "emulation failed"
             );
