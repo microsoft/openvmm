@@ -54,7 +54,7 @@ getrandom = { workspace = true, optional = true, features = ["sys_rng"] }
 pkcs1 = { workspace = true, optional = true }
 pkcs8 = { workspace = true, optional = true }
 rsa = { workspace = true, optional = true, features = ["encoding", "sha2"] }
-sha1 = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true, features = ["oid"] }
 sha2 = { workspace = true, optional = true }
 x509-cert = { workspace = true, optional = true, features = ["builder"] }
 
