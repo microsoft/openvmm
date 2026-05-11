@@ -85,8 +85,12 @@ impl RsaKeyPairInner {
         data: &[u8],
         hash_algorithm: super::HashAlgorithm,
     ) -> Result<Vec<u8>, RsaError> {
+        // SymCrypt's `pkcs1_sign` expects the caller-supplied buffer to already
+        // be the hash digest of the message. Other backends take the raw
+        // message and hash internally. Do the hash here before handing off.
+        let digest = hash_message(data, hash_algorithm);
         self.0
-            .pkcs1_sign(data, conv_hash(hash_algorithm))
+            .pkcs1_sign(&digest, conv_hash(hash_algorithm))
             .map_err(|e| err(e, "PKCS#1 signing"))
     }
 
@@ -116,10 +120,18 @@ impl RsaPublicKeyInner {
         signature: &[u8],
         hash_algorithm: super::HashAlgorithm,
     ) -> Result<bool, RsaError> {
-        self.0
-            .pkcs1_verify(data, signature, conv_hash(hash_algorithm))
-            .map_err(|e| err(e, "PKCS#1 signature verification"))?;
-        Ok(true)
+        // SymCrypt's `pkcs1_verify` expects the caller-supplied buffer to already
+        // be the hash digest of the message. Other backends take the raw
+        // message and hash internally. Do the hash here before handing off.
+        let digest = hash_message(data, hash_algorithm);
+        match self
+            .0
+            .pkcs1_verify(&digest, signature, conv_hash(hash_algorithm))
+        {
+            Ok(()) => Ok(true),
+            Err(symcrypt::errors::SymCryptError::SignatureVerificationFailure) => Ok(false),
+            Err(e) => Err(err(e, "PKCS#1 signature verification")),
+        }
     }
 
     pub fn modulus_size(&self) -> usize {
@@ -141,5 +153,12 @@ fn conv_hash(hash_algorithm: super::HashAlgorithm) -> symcrypt::hash::HashAlgori
     match hash_algorithm {
         super::HashAlgorithm::Sha1 => symcrypt::hash::HashAlgorithm::Sha1,
         super::HashAlgorithm::Sha256 => symcrypt::hash::HashAlgorithm::Sha256,
+    }
+}
+
+fn hash_message(data: &[u8], hash_algorithm: super::HashAlgorithm) -> Vec<u8> {
+    match hash_algorithm {
+        super::HashAlgorithm::Sha1 => symcrypt::hash::sha1(data).to_vec(),
+        super::HashAlgorithm::Sha256 => symcrypt::hash::sha256(data).to_vec(),
     }
 }

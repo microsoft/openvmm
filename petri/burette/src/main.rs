@@ -51,6 +51,8 @@ enum TestName {
     Network,
     /// Block I/O throughput via fio (Alpine VM + data disk).
     DiskIo,
+    /// virtio-fs file server throughput via fio.
+    VirtioFs,
 }
 
 /// Global log source for petri, initialized once.
@@ -149,6 +151,10 @@ struct RunArgs {
     /// Data disk size in GiB for the disk_io test.
     #[arg(long, default_value = "4")]
     data_disk_size_gib: u64,
+
+    /// Test file size in MiB for the virtio_fs test.
+    #[arg(long, default_value = "512")]
+    virtiofs_file_size_mib: u64,
 }
 
 #[derive(clap::Args)]
@@ -252,6 +258,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
         TestName::Memory,
         TestName::Network,
         TestName::DiskIo,
+        TestName::VirtioFs,
     ];
     let tests_to_run: Vec<TestName> = if let Some(name) = args.test {
         vec![name]
@@ -348,6 +355,22 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                 .context("disk_io test failed")?;
                 all_stats.extend(stats);
             }
+            TestName::VirtioFs => {
+                let test = tests::virtio_fs::VirtioFsTest {
+                    diag: args.diag,
+                    perf_dir: args.perf_dir.clone(),
+                    file_size_mib: args.virtiofs_file_size_mib,
+                };
+
+                let artifacts = resolve_artifacts(tests::virtio_fs::register_artifacts)?;
+                let resolver = petri::ArtifactResolver::resolver(&artifacts);
+
+                let stats = pal_async::DefaultPool::run_with(async |driver| {
+                    harness::run_warm_test(&test, &resolver, &driver, args.iterations).await
+                })
+                .context("virtio_fs test failed")?;
+                all_stats.extend(stats);
+            }
         }
     }
 
@@ -378,6 +401,7 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
         tests::memory::register_artifacts,
         tests::network::register_artifacts,
         tests::disk_io::register_artifacts,
+        tests::virtio_fs::register_artifacts,
     ];
 
     let mut requirements = petri::TestArtifactRequirements::new();

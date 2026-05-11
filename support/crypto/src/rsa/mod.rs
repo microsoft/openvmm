@@ -20,7 +20,7 @@ use thiserror::Error;
 /// An error for RSA operations.
 #[derive(Debug, Error)]
 #[error("RSA error")]
-pub struct RsaError(#[source] super::BackendError);
+pub struct RsaError(#[source] pub(crate) super::BackendError);
 
 /// Hash algorithm for RSA operations.
 #[derive(Debug, Clone, Copy)]
@@ -84,8 +84,9 @@ impl RsaPublicKey {
         self.0.oaep_encrypt(input, hash_algorithm)
     }
 
-    /// Verify an RSA PKCS#1 v1.5 signature with the specified hash algorithm. Returns `Ok(true)` if the signature is valid.
-    /// Different backends may return Ok(false) or an error if the signature is invalid, but all return an error for other failures.
+    /// Verify an RSA PKCS#1 v1.5 signature with the specified hash algorithm.
+    /// Returns `Ok(true)` if the signature is valid, `Ok(false)` if the
+    /// signature is invalid, or an error for other failures.
     pub fn pkcs1_verify(
         &self,
         message: &[u8],
@@ -117,5 +118,89 @@ impl std::ops::Deref for RsaKeyPair {
     fn deref(&self) -> &Self::Target {
         // SAFETY: RsaPublicKey is just a wrapper around RsaPublicKeyInner.
         unsafe { std::mem::transmute::<&sys::RsaPublicKeyInner, &RsaPublicKey>(self.0.as_pub()) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sign and verify a message of arbitrary (i.e. not pre-hashed) length.
+    /// Both backends must hash the message internally before applying the
+    /// PKCS#1 v1.5 RSA signature, so this test guards against the
+    /// hash-vs-raw-message confusion that would otherwise produce
+    /// different signatures and/or false rejections across backends.
+    #[test]
+    fn pkcs1_sign_verify_roundtrip_sha256() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let message = b"the message that needs to be hashed before signing";
+        let signature = key.pkcs1_sign(message, HashAlgorithm::Sha256).unwrap();
+        let valid = key
+            .pkcs1_verify(message, &signature, HashAlgorithm::Sha256)
+            .unwrap();
+        assert!(valid);
+    }
+
+    /// A tampered message must fail verification with `Ok(false)` (and
+    /// must not panic or surface as `Err`). This guards against a backend
+    /// silently treating verification failures as internal errors —
+    /// which would prevent callers from distinguishing "bad signature"
+    /// from "infrastructure failure".
+    #[test]
+    fn pkcs1_verify_rejects_tampered_message() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let message = b"original message";
+        let signature = key.pkcs1_sign(message, HashAlgorithm::Sha256).unwrap();
+        let tampered = b"tampered message";
+        let valid = key
+            .pkcs1_verify(tampered, &signature, HashAlgorithm::Sha256)
+            .unwrap();
+        assert!(!valid);
+    }
+
+    /// A signature truncated to less than the modulus size must be
+    /// rejected with `Ok(false)` (and must not panic or surface as
+    /// `Err`). This keeps malformed signatures in the "bad signature"
+    /// bucket rather than conflating them with infrastructure failures.
+    #[test]
+    fn pkcs1_verify_rejects_truncated_signature() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let message = b"original message";
+        let mut signature = key.pkcs1_sign(message, HashAlgorithm::Sha256).unwrap();
+        signature.truncate(signature.len() - 1);
+        let valid = key
+            .pkcs1_verify(message, &signature, HashAlgorithm::Sha256)
+            .unwrap();
+        assert!(!valid);
+    }
+
+    #[test]
+    fn pkcs8_der_roundtrip() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let der = key.to_pkcs8_der().unwrap();
+        let imported = RsaKeyPair::from_pkcs8_der(&der).unwrap();
+        assert_eq!(key.modulus(), imported.modulus());
+        assert_eq!(key.public_exponent(), imported.public_exponent());
+
+        // Sign with the original and verify with the imported, to confirm
+        // the private-key components survived the round-trip.
+        let message = b"roundtrip";
+        let signature = key.pkcs1_sign(message, HashAlgorithm::Sha256).unwrap();
+        let valid = imported
+            .pkcs1_verify(message, &signature, HashAlgorithm::Sha256)
+            .unwrap();
+        assert!(valid);
+    }
+
+    /// OAEP encrypt/decrypt round-trip with both supported hash algorithms.
+    #[test]
+    fn oaep_roundtrip() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let payload = b"a secret message";
+        for alg in [HashAlgorithm::Sha1, HashAlgorithm::Sha256] {
+            let ct = key.oaep_encrypt(payload, alg).unwrap();
+            let pt = key.oaep_decrypt(&ct, alg).unwrap();
+            assert_eq!(pt, payload);
+        }
     }
 }

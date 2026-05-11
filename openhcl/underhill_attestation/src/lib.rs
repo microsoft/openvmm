@@ -603,7 +603,7 @@ async fn unlock_vmgs_data_store(
         return Ok(());
     };
 
-    if !constant_time_eq::constant_time_eq(&new_ingress_key, &new_egress_key) {
+    if !constant_time_eq::constant_time_eq_32(&new_ingress_key, &new_egress_key) {
         tracing::trace!(CVM_ALLOWED, "EgressKey is different than IngressKey");
         new_key = true;
     }

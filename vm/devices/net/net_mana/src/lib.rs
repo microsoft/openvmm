@@ -752,7 +752,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
         &mut self,
         tracing_level: tracing::Level,
         cqe_params: CqeParams,
-        tx_oob: ManaTxCompOob,
+        tx_oob: &ManaTxCompOob,
         done_length: usize,
     ) {
         tracelimit::event_ratelimited!(
@@ -1068,40 +1068,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         while i < done.len() {
             let id = if let Some(cqe) = self.tx_cq.pop() {
                 let tx_oob = ManaTxCompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-                match tx_oob.cqe_hdr.cqe_type() {
-                    CQE_TX_OKAY => {
-                        self.stats.tx_packets.increment();
-                    }
-                    CQE_TX_GDMA_ERR => {
-                        // Hardware hit an error with the packet coming from the Guest.
-                        // CQE_TX_GDMA_ERR is how the Hardware indicates that it has disabled the queue.
-                        self.stats.tx_errors.increment();
-                        self.stats.tx_stuck.increment();
-                        self.trace_tx(tracing::Level::ERROR, cqe.params, tx_oob, done.len());
-                        // Return a TryRestart error to indicate that the queue needs to be restarted.
-                        return Err(TxError::TryRestart(anyhow::anyhow!("TX GDMA error")));
-                    }
-                    CQE_TX_INVALID_OOB => {
-                        // Invalid OOB means the metadata didn't match how the hardware parsed the packet.
-                        // This is somewhat common, usually due to encapsulation, and only affects the specific packet.
-                        self.stats.tx_errors.increment();
-                        self.trace_tx(tracing::Level::WARN, cqe.params, tx_oob, done.len());
-                    }
-                    ty => {
-                        tracelimit::error_ratelimited!(
-                            ty,
-                            vendor_error = tx_oob.cqe_hdr.vendor_err(),
-                            "tx completion error"
-                        );
-                        self.stats.tx_errors.increment();
-                    }
-                }
-                let packet = self.posted_tx.pop_front().unwrap();
-                self.tx_wq.advance_head(packet.wqe_len);
-                if packet.bounced_len_with_padding > 0 {
-                    self.tx_bounce_buffer.free(packet.bounced_len_with_padding);
-                }
-                packet.id
+                self.handle_tx_cqe(&tx_oob, cqe.params, done.len())?
             } else if let Some(id) = self.dropped_tx.pop_front() {
                 self.stats.tx_dropped.increment();
                 id
@@ -1140,6 +1107,60 @@ impl BackendQueueStats for QueueStats {
 }
 
 impl<T: DeviceBacking> ManaQueue<T> {
+    /// Handle a single TX completion entry, or CQE. Advance the TX work queue
+    /// and free the bounce buffer slot for the corresponding posted TX.
+    ///
+    /// Returns the `TxId` of the completed packet on success, or
+    /// `TxError::TryRestart` if the queue must be torn down and rebuilt
+    /// due to a hardware-reported queue-disabling error.
+    /// Explicitly panics if a CQE is received with no matching posted TX.
+    fn handle_tx_cqe(
+        &mut self,
+        tx_oob: &ManaTxCompOob,
+        cqe_params: CqeParams,
+        done_len: usize,
+    ) -> Result<TxId, TxError> {
+        match tx_oob.cqe_hdr.cqe_type() {
+            CQE_TX_OKAY => {
+                self.stats.tx_packets.increment();
+            }
+            CQE_TX_GDMA_ERR => {
+                // Hardware hit an error with the packet coming from the Guest.
+                // CQE_TX_GDMA_ERR is how the Hardware indicates that it has disabled the queue.
+                self.stats.tx_errors.increment();
+                self.stats.tx_stuck.increment();
+                self.trace_tx(tracing::Level::ERROR, cqe_params, tx_oob, done_len);
+                // Return a TryRestart error to indicate that the queue needs to be restarted.
+                return Err(TxError::TryRestart(anyhow::anyhow!("TX GDMA error")));
+            }
+            CQE_TX_INVALID_OOB => {
+                // Invalid OOB means the metadata didn't match how the hardware parsed the packet.
+                // This is somewhat common, usually due to encapsulation, and only affects the specific packet.
+                self.stats.tx_errors.increment();
+                self.trace_tx(tracing::Level::WARN, cqe_params, tx_oob, done_len);
+            }
+            ty => {
+                tracelimit::error_ratelimited!(
+                    ty,
+                    vendor_error = tx_oob.cqe_hdr.vendor_err(),
+                    "tx completion error"
+                );
+                self.stats.tx_errors.increment();
+            }
+        }
+        let Some(packet) = self.posted_tx.pop_front() else {
+            // A CQE arrived with no matching posted TX.
+            // We don't know how far to advance the tx_wq.
+            self.trace_tx(tracing::Level::ERROR, cqe_params, tx_oob, done_len);
+            panic!("TX CQE arrived with no matching posted TX");
+        };
+        self.tx_wq.advance_head(packet.wqe_len);
+        if packet.bounced_len_with_padding > 0 {
+            self.tx_bounce_buffer.free(packet.bounced_len_with_padding);
+        }
+        Ok(packet.id)
+    }
+
     fn handle_tx(
         &mut self,
         segments: &[TxSegment],

@@ -9,3 +9,4 @@ pub mod memory;
 pub mod network;
 pub mod platform;
 pub mod scale_boot;
+pub mod virtio_fs;

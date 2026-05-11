@@ -72,11 +72,8 @@ impl Pkcs7SignedData {
     ///
     /// Consumes the store, since the backend may need to finalize it.
     ///
-    /// Returns `Ok(true)` when verification succeeds and `Ok(false)` when the
-    /// signature check fails. `Err` is reserved for internal backend failures
-    /// (e.g. allocation, malformed inputs that the backend cannot parse); all
-    /// signature/chain/policy failures map to `Ok(false)` so that callers
-    /// processing untrusted signed data do not have to distinguish them.
+    /// Returns `Ok(true)` when verification succeeds. Different backends may
+    /// return `Ok(false)` or an `Err` when the signature check fails.
     ///
     /// No certificate revocation checking is performed.
     ///
