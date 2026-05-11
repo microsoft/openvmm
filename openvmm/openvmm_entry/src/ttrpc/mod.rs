@@ -533,13 +533,16 @@ impl VmService {
             let pc = ports
                 .get_mut(port.port as usize)
                 .context("invalid serial port")?;
-            let serial_fn = if port.connect {
-                connect_serial
+            let (serial_fn, serial_action) = if port.connect {
+                (connect_serial, "connect to")
             } else {
-                bind_serial
+                (bind_serial, "bind to")
             };
             *pc = Some(serial_fn(port.socket_path.as_ref()).with_context(|| {
-                format!("failed to bind to serial socket: {}", port.socket_path)
+                format!(
+                    "failed to {} serial socket: {}",
+                    serial_action, port.socket_path
+                )
             })?);
         }
 
@@ -679,11 +682,16 @@ impl VmService {
                     } else {
                         bind_serial
                     };
+                    let operation = if virtio_console.connect {
+                        "connect to"
+                    } else {
+                        "bind"
+                    };
                     let backend =
                         serial_fn(virtio_console.socket_path.as_ref()).with_context(|| {
                             format!(
-                                "failed to bind virtio console socket: {}",
-                                virtio_console.socket_path
+                                "failed to {} virtio console socket: {}",
+                                operation, virtio_console.socket_path
                             )
                         })?;
                     let resource: Resource<VirtioDeviceHandle> =
