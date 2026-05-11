@@ -1915,10 +1915,12 @@ impl InitializedVm {
 
         // Resolve PCIe devices concurrently.
         //
-        // Each device gets an AssignedBusRange that the root port updates when
-        // the guest programs the secondary and subordinate bus numbers. When
-        // ITS is configured, wrappers compose the RID at
-        // interrupt delivery time.
+        // Each device gets an AssignedBusRange (an Arc<AtomicU16>) that is
+        // cloned into two places: the ITS wrapper (ItsSignalMsi / ItsIrqFd)
+        // and the downstream port (via set_bus_range). When the guest
+        // programs the secondary/subordinate bus numbers, the port writes
+        // the new values into the shared atomic, and the ITS wrapper reads
+        // them at interrupt delivery time to compose the full device ID.
         try_join_all(cfg.pcie_devices.into_iter().map(|dev_cfg| {
             let chipset_builder = &chipset_builder;
             let driver_source = &driver_source;
@@ -2989,6 +2991,8 @@ impl LoadedVm {
                             #[cfg(not(guest_arch = "aarch64"))]
                             let use_its = false;
 
+                            // See the boot-time comment above: the bus_range
+                            // is shared between the ITS wrapper and the port.
                             let bus_range = pcie::bus_range::AssignedBusRange::new();
 
                             let signal_msi = self.inner.partition.as_signal_msi(Vtl::Vtl0).map(|s| {
@@ -3062,8 +3066,8 @@ impl LoadedVm {
                             self.state_units.start_stopped_units().await;
 
                             // Now attach the device and notify the guest.
-                            // The device_id is passed so the port can track
-                            // the device's RID for ITS/SMMU.
+                            // The bus_range is passed so the port can track
+                            // bus number assignments for ITS/SMMU.
                             if let Err(e) = rc.lock().hotplug_add_device(
                                 &port_name,
                                 "hotplug-device",

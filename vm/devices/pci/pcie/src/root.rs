@@ -142,15 +142,15 @@ impl GenericPcieRootComplex {
 
     /// Attach the provided `GenericPciBusDevice` to the port identified.
     ///
-    /// `device_id` is an optional shared identity that the port will update
-    /// with the device's RID when the guest programs the secondary bus number.
-    /// Pass `None` when device identity tracking is not needed.
+    /// `bus_range` is an optional shared bus range that the port will update
+    /// when the guest programs the secondary bus number. Pass `None` when
+    /// bus range tracking is not needed.
     pub fn add_pcie_device(
         &mut self,
         port: u8,
         name: impl AsRef<str>,
         dev: Box<dyn GenericPciBusDevice>,
-        device_id: Option<AssignedBusRange>,
+        bus_range: Option<AssignedBusRange>,
     ) -> Result<(), Arc<str>> {
         let (_port_name, root_port) = self.ports.get_mut(&port).ok_or_else(|| -> Arc<str> {
             tracing::error!(
@@ -161,7 +161,7 @@ impl GenericPcieRootComplex {
             format!("Port {:#x} not found", port).into()
         })?;
 
-        match root_port.connect_device(name, dev, device_id) {
+        match root_port.connect_device(name, dev, bus_range) {
             Ok(()) => Ok(()),
             Err(existing_device) => {
                 tracing::warn!(
@@ -187,21 +187,22 @@ impl GenericPcieRootComplex {
 
     /// Hot-add a device to a named port.
     ///
-    /// `device_id` is an optional shared identity for RID/device ID tracking.
+    /// `bus_range` is an optional shared bus range for tracking the device's
+    /// assigned bus numbers.
     pub fn hotplug_add_device(
         &mut self,
         port_name: &str,
         device_name: &str,
         device: Box<dyn GenericPciBusDevice>,
-        device_id: Option<AssignedBusRange>,
+        bus_range: Option<AssignedBusRange>,
     ) -> anyhow::Result<()> {
         let (_, (_, root_port)) = self
             .ports
             .iter_mut()
             .find(|(_, (name, _))| name.as_ref() == port_name)
             .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
-        if let Some(id) = device_id {
-            root_port.port.set_bus_range(id);
+        if let Some(br) = bus_range {
+            root_port.port.set_bus_range(br);
         }
         root_port.port.hotplug_add_device(device_name, device)
     }
@@ -459,15 +460,15 @@ impl RootPort {
         &mut self,
         name: impl AsRef<str>,
         dev: Box<dyn GenericPciBusDevice>,
-        device_id: Option<AssignedBusRange>,
+        bus_range: Option<AssignedBusRange>,
     ) -> Result<(), Arc<str>> {
         let device_name = name.as_ref();
         let port_name = self.port.name.clone();
 
         match self.port.add_pcie_device(&port_name, device_name, dev) {
             Ok(()) => {
-                if let Some(id) = device_id {
-                    self.port.set_bus_range(id);
+                if let Some(br) = bus_range {
+                    self.port.set_bus_range(br);
                 }
                 Ok(())
             }

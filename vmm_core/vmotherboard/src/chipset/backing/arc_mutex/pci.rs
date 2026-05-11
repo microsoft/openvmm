@@ -84,7 +84,7 @@ pub trait RegisterWeakMutexPcie: Send {
         port: u8,
         name: Arc<str>,
         device: Weak<CloseableMutex<dyn ChipsetDevice>>,
-        device_id: Option<pcie::bus_range::AssignedBusRange>,
+        bus_range: Option<pcie::bus_range::AssignedBusRange>,
     ) -> Result<(), PcieConflict>;
 
     /// Enumerate the downstream ports.
@@ -95,7 +95,7 @@ pub struct WeakMutexPcieDeviceEntry {
     pub bus_id_port: BusIdPcieDownstreamPort,
     pub name: Arc<str>,
     pub dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
-    pub device_id: Option<pcie::bus_range::AssignedBusRange>,
+    pub bus_range: Option<pcie::bus_range::AssignedBusRange>,
 }
 
 #[derive(Default)]
@@ -113,7 +113,7 @@ impl BusResolverWeakMutexPcie {
             bus_id_port,
             name,
             dev,
-            device_id,
+            bus_range,
         } in self.devices
         {
             let (port_number, bus_id_enumerator) = match self.ports.get(&bus_id_port) {
@@ -138,7 +138,7 @@ impl BusResolverWeakMutexPcie {
                 }
             };
 
-            match enumerator.add_pcie_device(*port_number, name, dev, device_id) {
+            match enumerator.add_pcie_device(*port_number, name, dev, bus_range) {
                 Ok(()) => {}
                 Err(conflict) => {
                     errs.push(conflict);

@@ -367,13 +367,14 @@ impl GenericPcieSwitch {
 
     /// Attach the provided `GenericPciBusDevice` to the port identified.
     ///
-    /// `device_id` is an optional shared identity for RID/device ID tracking.
+    /// `bus_range` is an optional shared bus range for tracking the device's
+    /// assigned bus numbers.
     pub fn add_pcie_device(
         &mut self,
         port: u8,
         name: &str,
         dev: Box<dyn GenericPciBusDevice>,
-        device_id: Option<crate::bus_range::AssignedBusRange>,
+        bus_range: Option<crate::bus_range::AssignedBusRange>,
     ) -> anyhow::Result<()> {
         // Find the specific downstream port that matches the port number
         if let Some((port_name, downstream_port)) = self.downstream_ports.get_mut(&port) {
@@ -382,8 +383,8 @@ impl GenericPcieSwitch {
                 .port
                 .add_pcie_device(port_name.as_ref(), name, dev)
                 .context("failed to add PCIe device to downstream port")?;
-            if let Some(id) = device_id {
-                downstream_port.port.set_bus_range(id);
+            if let Some(br) = bus_range {
+                downstream_port.port.set_bus_range(br);
             }
             Ok(())
         } else {
