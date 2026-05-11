@@ -65,6 +65,7 @@ use virtio_resources::VirtioPciDeviceHandle;
 use vm_manifest_builder::VmManifestBuilder;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
+use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 
@@ -533,16 +534,11 @@ impl VmService {
             let pc = ports
                 .get_mut(port.port as usize)
                 .context("invalid serial port")?;
-            let serial_fn = if port.connect {
-                connect_serial
-            } else {
-                bind_serial
-            };
-            let serial_action = if port.connect { "connect to" } else { "bind" };
+            let (serial_fn, action) = open_socket_backend(port.connect);
             *pc = Some(serial_fn(port.socket_path.as_ref()).with_context(|| {
                 format!(
                     "failed to {} serial socket: {}",
-                    serial_action, port.socket_path
+                    action, port.socket_path
                 )
             })?);
         }
@@ -678,21 +674,12 @@ impl VmService {
 
             if let Some(virtio_console) = devices_config.virtio_console {
                 if !virtio_console.socket_path.is_empty() {
-                    let serial_fn = if virtio_console.connect {
-                        connect_serial
-                    } else {
-                        bind_serial
-                    };
-                    let operation = if virtio_console.connect {
-                        "connect to"
-                    } else {
-                        "bind"
-                    };
+                    let (serial_fn, action) = open_socket_backend(virtio_console.connect);
                     let backend =
                         serial_fn(virtio_console.socket_path.as_ref()).with_context(|| {
                             format!(
                                 "failed to {} virtio console socket: {}",
-                                operation, virtio_console.socket_path
+                                action, virtio_console.socket_path
                             )
                         })?;
                     let resource: Resource<VirtioDeviceHandle> =
@@ -896,6 +883,22 @@ impl VmService {
                 anyhow::bail!("processor and memory resources not supported")
             }
         }
+    }
+}
+
+/// Returns the appropriate serial backend open function and a human-readable
+/// action verb for error messages, based on whether we should connect to an
+/// existing socket or bind a new listener.
+fn open_socket_backend(
+    connect: bool,
+) -> (
+    fn(&std::path::Path) -> std::io::Result<Resource<SerialBackendHandle>>,
+    &'static str,
+) {
+    if connect {
+        (connect_serial, "connect to")
+    } else {
+        (bind_serial, "bind")
     }
 }
 
