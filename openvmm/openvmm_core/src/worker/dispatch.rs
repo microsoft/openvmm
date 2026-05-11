@@ -1851,18 +1851,15 @@ impl InitializedVm {
             .iter()
             .zip(pcie_root_complexes.iter())
             .flat_map(|(hb, rc)| {
-                rc.lock()
-                    .downstream_ports()
-                    .into_iter()
-                    .map(move |p| {
-                        (
-                            p.name,
-                            PortInfo {
-                                segment: hb.segment,
-                                bus_range: p.bus_range,
-                            },
-                        )
-                    })
+                rc.lock().downstream_ports().into_iter().map(move |p| {
+                    (
+                        p.name,
+                        PortInfo {
+                            segment: hb.segment,
+                            bus_range: p.bus_range,
+                        },
+                    )
+                })
             })
             .collect();
 
@@ -1872,7 +1869,13 @@ impl InitializedVm {
             // Inherit the segment from the switch's parent port.
             let parent_segment = port_info
                 .get(switch.parent_port.as_str())
-                .expect("switch parent port must be a known downstream port")
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "switch '{}' parent port '{}' not found in any root complex",
+                        switch.name,
+                        switch.parent_port
+                    )
+                })?
                 .segment;
 
             let switch_device = chipset_builder
@@ -1948,9 +1951,12 @@ impl InitializedVm {
             let port_info = &port_info;
             async move {
                 let port_name: Arc<str> = dev_cfg.port_name.into();
-                let pi = port_info
-                    .get(&port_name)
-                    .expect("device port must be a known downstream port");
+                let pi = port_info.get(&port_name).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "device port '{}' not found in any root complex or switch",
+                        port_name
+                    )
+                })?;
 
                 // When ITS is active, wrap the partition's SignalMsi
                 // and IrqFd to inject the device identity. Otherwise
