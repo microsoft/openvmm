@@ -90,12 +90,18 @@ fn test_ttrpc_interface(
             let virtiofs_root = std::env::temp_dir().join(Guid::new_random().to_string());
             std::fs::create_dir_all(&virtiofs_root).unwrap();
 
-            // On iteration 0, test serial `connect: true` by pre-creating a
-            // listener that the VM will connect to. On other iterations, test
-            // the default `connect: false` (VM creates the socket).
-            let use_serial_connect = i == 0;
-            let com1_listener = if use_serial_connect {
+            // On iteration 0, test `connect: true` for both serial and
+            // virtio console by pre-creating listeners that the VM will
+            // connect to. On other iterations, test the default
+            // `connect: false` (VM creates the socket).
+            let use_connect = i == 0;
+            let com1_listener = if use_connect {
                 Some(UnixListener::bind(&com1_path).unwrap())
+            } else {
+                None
+            };
+            let console_listener = if use_connect {
+                Some(UnixListener::bind(&console_path).unwrap())
             } else {
                 None
             };
@@ -127,7 +133,7 @@ fn test_ttrpc_interface(
                                 ports: vec![vmservice::serial_config::Config {
                                     port: 0,
                                     socket_path: com1_path.to_string_lossy().into(),
-                                    connect: use_serial_connect,
+                                    connect: use_connect,
                                 }],
                             }),
                             devices_config: Some(vmservice::DevicesConfig {
@@ -143,7 +149,7 @@ fn test_ttrpc_interface(
                                 }],
                                 virtio_console: Some(vmservice::VirtioConsoleConfig {
                                     socket_path: console_path.to_string_lossy().into(),
-                                    connect: false,
+                                    connect: use_connect,
                                 }),
                                 virtiofs_config: vec![vmservice::VirtioFsConfig {
                                     tag: "testfs".to_string(),
@@ -168,6 +174,14 @@ fn test_ttrpc_interface(
                 UnixStream::connect(&com1_path).unwrap()
             };
 
+            // Get the console connection the same way.
+            let console = if let Some(listener) = console_listener {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+            } else {
+                UnixStream::connect(&console_path).unwrap()
+            };
+
             let _com1_task = driver.spawn(
                 "com1",
                 petri::log_task(
@@ -177,8 +191,6 @@ fn test_ttrpc_interface(
                 ),
             );
 
-            // Verify the virtio console socket was created and is connectable.
-            let console = UnixStream::connect(&console_path).unwrap();
             let _console_task = driver.spawn(
                 "console",
                 petri::log_task(
@@ -238,6 +250,11 @@ fn test_ttrpc_interface(
                 }
                 _ => unreachable!(),
             }
+
+            // Clean up temp files from this iteration.
+            let _ = std::fs::remove_file(&com1_path);
+            let _ = std::fs::remove_file(&console_path);
+            let _ = std::fs::remove_dir_all(&virtiofs_root);
         }
     });
 
