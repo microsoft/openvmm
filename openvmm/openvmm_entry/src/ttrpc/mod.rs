@@ -650,6 +650,7 @@ impl VmService {
                         root_path: virtiofs.root_path,
                         mount_options: String::new(),
                     },
+                    num_request_queues: None,
                 }
                 .into_resource();
                 // Use VPCI when possible (currently only on Windows and macOS due

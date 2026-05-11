@@ -49,6 +49,9 @@ pub mod fs {
     pub struct VirtioFsHandle {
         pub tag: String,
         pub fs: VirtioFsBackend,
+        /// Number of request queues to advertise. If `None`, defaults to the
+        /// number of available CPUs (capped at 16).
+        pub num_request_queues: Option<u32>,
     }
 
     #[derive(MeshPayload)]
