@@ -145,8 +145,12 @@ burette run --test virtio-fs-readdir --readdir-file-count 30000
 
 Reported metrics:
 
-- `virtiofs_readdir_plain_time` / `virtiofs_readdir_plain_entries_per_sec` — plain READDIR path (no per-entry lookups)
-- `virtiofs_readdir_plus_time` / `virtiofs_readdir_plus_entries_per_sec` — READDIRPLUS path (with per-entry lookups)
+- `virtiofs_readdir_plain_time` /
+  `virtiofs_readdir_plain_entries_per_sec` —
+  plain READDIR path (no per-entry lookups)
+- `virtiofs_readdir_plus_time` /
+  `virtiofs_readdir_plus_entries_per_sec` —
+  READDIRPLUS path (with per-entry lookups)
 
 ## Comparing Reports
 
