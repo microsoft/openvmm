@@ -242,7 +242,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_generic_psp: _, // not actually a device... yet
             deps_hyperv_firmware_pcat,
             deps_hyperv_framebuffer,
-            deps_hyperv_guest_watchdog,
             deps_hyperv_ide,
             deps_hyperv_vga,
             deps_piix4_cmos_rtc,
@@ -992,7 +991,6 @@ pub mod options {
 
             hyperv_firmware_pcat:        dev::HyperVFirmwarePcat,
             hyperv_framebuffer:          dev::HyperVFramebufferDeps,
-            hyperv_guest_watchdog:       dev::HyperVGuestWatchdogDeps,
             hyperv_ide:                  dev::HyperVIdeDeps,
             hyperv_vga:                  dev::HyperVVgaDeps,
 
@@ -1050,12 +1048,6 @@ pub mod options {
             };
         }
 
-        /// PIIX4 PCI-ISA bridge (fixed pci address: 0:7.0)
-        pub struct Piix4PciIsaBridgeDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
-        }
-
         /// Hyper-V IDE controller (fixed pci address: 0:7.1)
         // TODO: this device needs to be broken down further, into a PIIX4 IDE
         // device (without the Hyper-V enlightenments), and then a Generic IDE
@@ -1063,10 +1055,6 @@ pub mod options {
         pub struct HyperVIdeDeps {
             /// `vmotherboard` bus identifier
             pub attached_to: BusIdPci,
-            /// Drives attached to the primary IDE channel
-            pub primary_channel_drives: [Option<ide::DriveMedia>; 2],
-            /// Drives attached to the secondary IDE channel
-            pub secondary_channel_drives: [Option<ide::DriveMedia>; 2],
         }
 
         /// Generic dual 8237A ISA DMA controllers

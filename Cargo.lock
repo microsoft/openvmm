@@ -10369,6 +10369,7 @@ dependencies = [
  "futures",
  "generation_id",
  "guestmem",
+ "ide",
  "inspect",
  "inspect_counters",
  "mesh",

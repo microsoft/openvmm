@@ -382,7 +382,6 @@ impl VmManifestBuilder {
                     with_generic_psp: false,
                     with_hyperv_firmware_pcat: true,
                     with_hyperv_framebuffer: !self.proxy_vga,
-                    with_hyperv_guest_watchdog: false,
                     with_hyperv_ide: true,
                     with_hyperv_vga: !self.proxy_vga,
                     with_piix4_cmos_rtc: true,
@@ -422,11 +421,6 @@ impl VmManifestBuilder {
                     result.attach_generic_ioapic();
                 }
                 result.capabilities.with_psp = self.psp;
-                if is_x86 {
-                    result.attach_pic();
-                    result.attach_pit();
-                    result.attach_hyperv_power_management(self.platform_pm_timer_assist);
-                }
                 result
                     .maybe_attach_arch_serial(
                         self.arch,
@@ -434,7 +428,7 @@ impl VmManifestBuilder {
                         true,
                         self.serial,
                     )?
-                    .attach_missing_arch_ports(self.arch, false);
+                    .attach_missing_arch_ports(self.arch, true);
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }
@@ -455,16 +449,19 @@ impl VmManifestBuilder {
                     with_hyperv_vga: false,
                     with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
-
                     with_underhill_vga_proxy: false,
                     with_winbond_super_io_and_floppy_stub: false,
                     with_winbond_super_io_and_floppy_full: false,
                 };
                 if is_x86 {
                     result.attach_generic_ioapic();
-                    result.attach_hyperv_power_management(self.platform_pm_timer_assist);
                 }
                 result.capabilities.with_psp = self.psp;
+                if is_x86 {
+                    result.attach_pic();
+                    result.attach_pit();
+                    result.attach_hyperv_power_management(self.platform_pm_timer_assist);
+                }
                 result
                     .maybe_attach_arch_serial(
                         self.arch,
@@ -472,7 +469,7 @@ impl VmManifestBuilder {
                         true,
                         self.serial,
                     )?
-                    .attach_missing_arch_ports(self.arch, true);
+                    .attach_missing_arch_ports(self.arch, false);
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }

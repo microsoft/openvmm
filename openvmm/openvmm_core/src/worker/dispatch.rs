@@ -1602,16 +1602,8 @@ impl InitializedVm {
             }
         });
 
-        let deps_piix4_pci_isa_bridge =
-            (cfg.chipset.with_piix4_pci_isa_bridge).then_some(dev::Piix4PciIsaBridgeDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-            });
-
-        let [primary_channel_drives, secondary_channel_drives] = ide_drives;
         let deps_hyperv_ide = (cfg.chipset.with_hyperv_ide).then_some(dev::HyperVIdeDeps {
             attached_to: pci_bus_id_piix4.clone(),
-            primary_channel_drives,
-            secondary_channel_drives,
         });
 
         let base_chipset_devices = {
@@ -1622,7 +1614,6 @@ impl InitializedVm {
                 deps_generic_psp,
                 deps_hyperv_firmware_pcat,
                 deps_hyperv_framebuffer,
-                deps_hyperv_guest_watchdog,
                 deps_hyperv_ide,
                 deps_hyperv_vga,
                 deps_piix4_cmos_rtc,
