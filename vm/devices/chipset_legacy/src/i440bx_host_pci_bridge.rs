@@ -94,6 +94,7 @@ impl HostPciBridge {
                 type0_sub_system_id: 0,
             },
             Vec::new(),
+            Vec::new(),
             DeviceBars::new(),
         );
 

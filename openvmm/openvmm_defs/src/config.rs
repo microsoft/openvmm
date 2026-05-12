@@ -233,6 +233,7 @@ pub struct PcieRootComplexConfig {
 pub struct PcieRootPortConfig {
     pub name: String,
     pub hotplug: bool,
+    pub acs_capabilities_supported: Option<u16>,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -241,6 +242,7 @@ pub struct PcieSwitchConfig {
     pub num_downstream_ports: u8,
     pub parent_port: String,
     pub hotplug: bool,
+    pub acs_capabilities_supported: Option<u16>,
 }
 
 #[derive(Debug, MeshPayload)]

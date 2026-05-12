@@ -441,6 +441,7 @@ pub mod caps {
     }
 
     open_enum::open_enum! {
+
         /// PCIe Extended Capability IDs (offsets 0x100+ in config space).
         ///
         /// Sources: PCI Express Base Specification
@@ -449,6 +450,7 @@ pub mod caps {
         /// variants on an as-needed basis!
         pub enum ExtendedCapabilityId: u16 {
             #![expect(missing_docs)] // self explanatory variants
+            ACS   = 0x0D,
             ARI   = 0x0E,
             SRIOV = 0x10,
             REBAR = 0x15,
@@ -457,6 +459,10 @@ pub mod caps {
 
     /// Starting offset of the PCIe extended capability region in config space.
     pub const EXT_CAP_START: u16 = 0x100;
+    /// Ending offset (exclusive) of the PCIe extended capability region in config space.
+    pub const EXT_CAP_END: u16 = 0x1000;
+    /// Ending offset (exclusive) of the common config header region.
+    pub const COMMON_HEADER_END: u16 = 0x40;
 
     /// MSI
     #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
@@ -1100,6 +1106,66 @@ pub mod caps {
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct SlotStatus2 {
             #[bits(16)]
+            _reserved: u16,
+        }
+    }
+
+    /// Access Control Services (ACS) extended capability
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod acs {
+        use bitfield_struct::bitfield;
+        use inspect::Inspect;
+        use zerocopy::FromBytes;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        /// Default ACS capability mask: SV, TB, RR, CR, UF, DT (no egress control vector).
+        pub const DEFAULT_ACS_CAP_MASK: u16 = 0x005f;
+
+        open_enum::open_enum! {
+            /// Offsets into the ACS Extended Capability structure.
+            ///
+            /// | Offset    | Bits 31-16                | Bits 15-0               |
+            /// |-----------|---------------------------|-------------------------|
+            /// | Ext + 0x0 | Next Cap Ptr + Version    | Extended Capability ID  |
+            /// | Ext + 0x4 | ACS Control Register      | ACS Capability Register |
+            /// | Ext + 0x8 | Egress Control Vector (DWORD 0, if required)        |
+            /// | Ext + 0xC | Egress Control Vector (additional DWORDs, optional) |
+            pub enum AcsExtendedCapabilityHeader: u16 {
+                HEADER = 0x00,
+                CAPS_CONTROL = 0x04,
+                EGRESS_CONTROL_VECTOR = 0x08,
+            }
+        }
+
+        /// Access Control Services Capability register.
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct AcsCapabilities {
+            pub source_validation: bool,
+            pub translation_blocking: bool,
+            pub p2p_request_redirect: bool,
+            pub p2p_completion_redirect: bool,
+            pub upstream_forwarding: bool,
+            pub p2p_egress_control: bool,
+            pub direct_translated_p2p: bool,
+            #[bits(9)]
+            _reserved: u16,
+        }
+
+        /// Access Control Services Control register.
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct AcsControl {
+            pub source_validation_enable: bool,
+            pub translation_blocking_enable: bool,
+            pub p2p_request_redirect_enable: bool,
+            pub p2p_completion_redirect_enable: bool,
+            pub upstream_forwarding_enable: bool,
+            pub p2p_egress_control_enable: bool,
+            pub direct_translated_p2p_enable: bool,
+            #[bits(9)]
             _reserved: u16,
         }
     }

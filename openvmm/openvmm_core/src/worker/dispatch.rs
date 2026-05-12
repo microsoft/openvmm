@@ -77,6 +77,8 @@ use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pci_core::PciInterruptPin;
+use pci_core::spec::caps::acs::DEFAULT_ACS_CAP_MASK;
+use pcie::PciePortSettings;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
@@ -1800,6 +1802,11 @@ impl InitializedVm {
                                 .map(|rp_cfg| GenericPcieRootPortDefinition {
                                     name: rp_cfg.name.into(),
                                     hotplug: rp_cfg.hotplug,
+                                    settings: PciePortSettings {
+                                        acs_capabilities_supported: rp_cfg
+                                            .acs_capabilities_supported
+                                            .unwrap_or(DEFAULT_ACS_CAP_MASK),
+                                    },
                                 })
                                 .collect();
 
@@ -1917,6 +1924,11 @@ impl InitializedVm {
                         downstream_port_count: switch.num_downstream_ports,
                         hotplug: switch.hotplug,
                         msi_target,
+                        dsp_settings: PciePortSettings {
+                            acs_capabilities_supported: switch
+                                .acs_capabilities_supported
+                                .unwrap_or(DEFAULT_ACS_CAP_MASK),
+                        },
                     };
                     GenericPcieSwitch::new(definition)
                 })?;

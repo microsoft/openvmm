@@ -222,6 +222,7 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
             num_downstream_ports: switch_cli.num_downstream_ports,
             parent_port: switch_cli.port_name.clone(),
             hotplug: switch_cli.hotplug,
+            acs_capabilities_supported: switch_cli.acs_capabilities_supported,
         })
         .collect()
 }
@@ -753,6 +754,7 @@ async fn vm_config_from_command_line(
             .map(|port_cli| PcieRootPortConfig {
                 name: port_cli.name.clone(),
                 hotplug: port_cli.hotplug,
+                acs_capabilities_supported: port_cli.acs_capabilities_supported,
             })
             .collect();
 
