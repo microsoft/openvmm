@@ -772,7 +772,9 @@ fn build_config_patches(
     patches.insert(
         HeaderType00::BIST_HEADER.0,
         ConfigPatch {
-            mask: cfg_space::BistHeader::new().with_multi_function(true).into(),
+            mask: cfg_space::BistHeader::new()
+                .with_multi_function(true)
+                .into(),
             value: 0,
         },
     );
@@ -863,7 +865,10 @@ fn parse_extended_capabilities(
 
         // Validate the next pointer: must be within extended config space
         // (>= 0x100), DWORD-aligned, and within the config region.
-        if cap_next < caps::EXT_CAP_START || cap_next & 0x3 != 0 || cap_next as u64 + 4 > config_size {
+        if cap_next < caps::EXT_CAP_START
+            || cap_next & 0x3 != 0
+            || cap_next as u64 + 4 > config_size
+        {
             tracing::warn!(
                 cap_next = format_args!("{cap_next:#x}"),
                 offset = format_args!("{offset:#x}"),
