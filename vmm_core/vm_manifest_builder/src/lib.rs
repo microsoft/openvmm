@@ -372,8 +372,6 @@ impl VmManifestBuilder {
                 );
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: false,
-                    with_generic_isa_dma: true,
-                    with_generic_ioapic: true,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: false,
@@ -401,8 +399,6 @@ impl VmManifestBuilder {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
-                    with_generic_isa_dma: false,
-                    with_generic_ioapic: is_x86,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: self.psp,
@@ -445,8 +441,6 @@ impl VmManifestBuilder {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
-                    with_generic_isa_dma: false,
-                    with_generic_ioapic: is_x86,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: self.psp,

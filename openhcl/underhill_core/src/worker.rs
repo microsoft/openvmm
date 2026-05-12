@@ -2807,20 +2807,6 @@ async fn new_underhill_vm(
         None
     };
 
-    let deps_generic_isa_dma = chipset
-        .with_generic_isa_dma
-        .then_some(dev::GenericIsaDmaDeps);
-
-    let deps_piix4_power_management =
-        chipset
-            .with_piix4_power_management
-            .then(|| dev::Piix4PowerManagementDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-                pm_timer_assist: Some(Box::new(UnderhillPmTimerAssist {
-                    partition: Arc::downgrade(&partition),
-                })),
-            });
-
     let deps_winbond_super_io_and_floppy_stub = chipset
         .with_winbond_super_io_and_floppy_stub
         .then_some(dev::WinbondSuperIoAndFloppyStubDeps);
@@ -2985,8 +2971,6 @@ async fn new_underhill_vm(
     let devices = BaseChipsetDevices {
         deps_generic_cmos_rtc,
         deps_generic_psp,
-        deps_generic_isa_dma,
-        deps_hyperv_power_management,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
         deps_hyperv_firmware_pcat,

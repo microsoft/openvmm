@@ -5,27 +5,13 @@
 
 #![forbid(unsafe_code)]
 
-/// ISA DMA transfer direction
-#[derive(PartialEq, Debug)]
-pub enum IsaDmaDirection {
-    /// Device is writing data to the buffer
-    Write,
-    /// Device is reading data from the buffer
-    Read,
-}
-
-/// Location of DMA buffer in guest memory
-#[derive(Debug)]
-pub struct IsaDmaBuffer {
-    /// GPA of the DMA buffer
-    pub address: u64,
-    /// Size of the DMA buffer
-    pub size: usize,
-}
+// Re-export DMA types from chipset_device to avoid duplicate definitions.
+pub use chipset_device::isa_dma::IsaDmaTransferBuffer as IsaDmaBuffer;
+pub use chipset_device::isa_dma::IsaDmaTransferDirection as IsaDmaDirection;
 
 /// A handle to an ISA DMA channel.
 ///
-/// This trait does not "leak" which partiuclar ISA DMA channel a device is
+/// This trait does not "leak" which particular ISA DMA channel a device is
 /// connected to.
 ///
 /// Devices that use ISA DMA should simply accept an instance of `Box<dyn

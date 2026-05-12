@@ -12,7 +12,7 @@ use crate::chipset::backing::arc_mutex::device::AddDeviceError;
 use crate::chipset::backing::arc_mutex::services::ArcMutexChipsetServices;
 use chipset::*;
 use chipset_device::ChipsetDevice;
-use chipset_device::interrupt::LineInterruptTarget;
+use chipset_device::isa_dma::IsaDmaController;
 use chipset_device_resources::ConfigureChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
@@ -230,8 +230,6 @@ impl<'a> BaseChipsetBuilder<'a> {
         // oh boy, time to build all the devices!
         let options::BaseChipsetDevices {
             deps_generic_cmos_rtc,
-            deps_generic_isa_dma,
-            deps_generic_ioapic,
             deps_generic_isa_floppy,
             deps_generic_pci_bus,
             deps_generic_psp: _, // not actually a device... yet
@@ -993,8 +991,6 @@ pub mod options {
 
         devices {
             generic_cmos_rtc:            dev::GenericCmosRtcDeps,
-            generic_isa_dma:             dev::GenericIsaDmaDeps,
-            generic_ioapic:              dev::GenericIoApicDeps,
             generic_isa_floppy:          dev::GenericIsaFloppyDeps,
             generic_pci_bus:             dev::GenericPciBusDeps,
             generic_psp:                 dev::GenericPspDeps,
@@ -1071,24 +1067,6 @@ pub mod options {
 
         /// Generic dual 8237A ISA DMA controllers
         pub struct GenericIsaDmaDeps;
-
-        /// PIIX4 power management device (fixed pci address: 0:7.3)
-        pub struct Piix4PowerManagementDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
-            /// Interface to enable/disable PM timer assist
-            pub pm_timer_assist: Option<Box<dyn pm::PmTimerAssist>>,
-        }
-
-        /// Hyper-V specific ACPI-compatible power management device
-        pub struct HyperVPowerManagementDeps {
-            /// IRQ line triggered on ACPI power event
-            pub acpi_irq: u32,
-            /// Base port io address of the device's register region
-            pub pio_base: u16,
-            /// Interface to enable/disable PM timer assist
-            pub pm_timer_assist: Option<Box<dyn pm::PmTimerAssist>>,
-        }
 
         /// AMD Platform Security Processor (PSP)
         pub struct GenericPspDeps;
