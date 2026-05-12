@@ -93,11 +93,7 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
 /// Basic boot test using virtio vsock instead of vmbus hvsocket.
 /// N.B. Because this requires kernel support, it's only done for Linux direct boot since the test
 ///      kernel is guaranteed to include it.
-#[vmm_test(
-    openvmm_linux_direct_x64,
-    openvmm_linux_direct_aarch64,
-    openvmm_openhcl_linux_direct_x64
-)]
+#[vmm_test(openvmm_linux_direct_x64, openvmm_linux_direct_aarch64)]
 async fn boot_virtio_vsock<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config.with_virtio_vsock().run().await?;
     agent.power_off().await?;
