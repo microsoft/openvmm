@@ -40,6 +40,7 @@ mod cca {
     use std::sync::Arc;
     use user_driver::lockmem::LockedMemorySpawner;
     use user_driver::memory::MemoryBlock;
+    use user_driver::memory::PAGE_SIZE;
     use user_driver::memory::PAGE_SIZE64;
     use vm_topology::memory::MemoryRangeWithNode;
 
@@ -56,18 +57,60 @@ mod cca {
         let hv = opts.hv.expect("hv must have an finalized value");
         match hv {
             HypervisorOpt::Cca => {
-                let map_size = ram_size as usize;
+                let mut map_size = ram_size as usize;
                 let private_dma_client: Arc<dyn DmaClient> = Arc::new(LockedMemorySpawner);
-                let private_memory = private_dma_client
-                    .allocate_dma_buffer(map_size)
-                    .context("failed to allocate private CCA RAM")?;
+
+                let (private_memory, private_ram_pfn) = {
+                    const BITMAP_ALIGNMENT: u64 = PAGE_SIZE64 * 8;
+                    const MAX_ALLOC_ATTEMPTS: usize = 4;
+                    let mut selected = None;
+
+                    for _attempt in 0..MAX_ALLOC_ATTEMPTS {
+                        let private_memory = private_dma_client
+                            .allocate_dma_buffer(map_size)
+                            .with_context(|| {
+                                format!(
+                                    "failed to allocate private CCA RAM buffer of size {map_size}"
+                                )
+                            })?;
+
+                        let asking_size = ram_size
+                            .checked_add(BITMAP_ALIGNMENT - PAGE_SIZE64)
+                            .context("private CCA RAM search size overflowed")?;
+                        if let Some(pfns) = private_memory.contiguous_subpfns(asking_size as usize)
+                        {
+                            let page_count = (ram_size as usize).div_ceil(PAGE_SIZE);
+                            if let Some(start_index) = pfns
+                                .iter()
+                                .position(|pfn| {
+                                    (pfn * PAGE_SIZE64).is_multiple_of(BITMAP_ALIGNMENT)
+                                })
+                                .filter(|&start_index| pfns.len() - start_index >= page_count)
+                            {
+                                selected = Some((private_memory, pfns[start_index]));
+                                break;
+                            }
+                        }
+
+                        map_size = map_size
+                            .checked_mul(2)
+                            .context("private CCA RAM allocation size overflowed while retrying")?;
+                    }
+
+                    selected.with_context(|| {
+                        format!(
+                            "failed to allocate private CCA RAM with {ram_size} contiguous bytes after {MAX_ALLOC_ATTEMPTS} attempts"
+                        )
+                    })?
+                };
+
                 private_memory.write_zeros(0, private_memory.len());
 
-                let pa = private_memory.pfns()[0] * PAGE_SIZE64;
-
-                const ALIGN: u64 = PAGE_SIZE64 * 8;
-                let start = (pa + ALIGN - 1) & !(ALIGN - 1);
-                let end = (pa + map_size as u64 / 2) & !(ALIGN - 1);
+                let pa = private_ram_pfn * PAGE_SIZE64;
+                let start = pa;
+                let end = pa
+                    .checked_add(ram_size)
+                    .context("private CCA RAM range overflowed")?;
 
                 *memory_layout = MemoryLayout::new_from_ranges(
                     &[MemoryRangeWithNode {
