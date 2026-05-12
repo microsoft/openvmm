@@ -17,6 +17,7 @@ use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend as _;
 use std::collections::HashMap;
 use std::fs::File;
+use std::os::unix::prelude::*;
 use std::sync::Arc;
 
 /// Implements [`membacking::DmaTarget`] for VFIO type1 IOMMU containers.
@@ -453,6 +454,184 @@ impl VfioContainerManager {
     pub(crate) fn client(&mut self) -> VfioManagerClient {
         VfioManagerClient {
             sender: self.recv.sender(),
+        }
+    }
+}
+
+// --- iommufd / cdev support ---
+
+/// Implements [`membacking::DmaTarget`] for iommufd IOAS-based DMA mapping.
+///
+/// Like `VfioType1DmaTarget`, this uses host virtual addresses for mapping,
+/// but calls `IOMMU_IOAS_MAP`/`IOMMU_IOAS_UNMAP` on the iommufd fd instead
+/// of `VFIO_IOMMU_MAP_DMA`/`VFIO_IOMMU_UNMAP_DMA` on a VFIO container fd.
+struct IommufdDmaTarget {
+    ctx: Arc<vfio_sys::iommufd::IommufdCtx>,
+    ioas_id: u32,
+}
+
+impl membacking::DmaTarget for IommufdDmaTarget {
+    unsafe fn map_dma(
+        &self,
+        range: memory_range::MemoryRange,
+        host_va: Option<*const u8>,
+        _mappable: &membacking::Mappable,
+        _file_offset: u64,
+    ) -> anyhow::Result<()> {
+        let vaddr =
+            host_va.expect("iommufd IOAS map requires host VA (registered with needs_va=true)");
+        let iova = range.start();
+        let user_va = vaddr as u64;
+        let length = range.len();
+        // SAFETY: The caller (DmaMapper in membacking) guarantees that the
+        // host VA is backed and stable via ensure_mapped + VaMapper lifetime.
+        unsafe {
+            self.ctx
+                .ioas_map(self.ioas_id, iova, user_va, length)
+                .with_context(|| {
+                    format!(
+                        "iommufd IOAS DMA map failed: iova={iova:#x} user_va={user_va:#x} \
+                         length={length:#x} ioas_id={}",
+                        self.ioas_id
+                    )
+                })
+        }
+    }
+
+    fn unmap_dma(&self, range: memory_range::MemoryRange) -> anyhow::Result<()> {
+        let _span = tracing::info_span!("iommufd unmap", %range).entered();
+        self.ctx
+            .ioas_unmap(self.ioas_id, range.start(), range.len())
+            .context("iommufd IOAS DMA unmap failed")?;
+        Ok(())
+    }
+}
+
+/// Binding for a VFIO device opened via the cdev + iommufd path.
+///
+/// Analogous to [`VfioDeviceBinding`] for the legacy group path, but
+/// uses iommufd for DMA mapping instead of a VFIO type1 container.
+///
+/// The device is bound to iommufd and attached to an IOAS. When this
+/// binding is dropped, the device is automatically detached and the
+/// iommufd binding is released (the kernel cleans up when the cdev fd
+/// closes).
+#[derive(Inspect)]
+pub(crate) struct VfioCdevBinding {
+    /// PCI BDF address on the host.
+    pci_id: String,
+    /// VFIO cdev device — provides config space, BAR, IRQ ioctls.
+    /// The cdev fd owns the iommufd binding (released on close).
+    #[inspect(skip)]
+    device: vfio_sys::Device,
+    /// iommufd device ID (from `VFIO_DEVICE_BIND_IOMMUFD`).
+    iommufd_devid: u32,
+    /// IOAS ID this device is attached to.
+    ioas_id: u32,
+    /// DMA mapper registration — removes the mapper on drop.
+    #[inspect(skip)]
+    _dma_handle: membacking::DmaMapperHandle,
+}
+
+impl VfioCdevBinding {
+    /// Open a VFIO cdev device, bind to iommufd, allocate an IOAS, attach
+    /// the device, and register the IOAS as a DMA mapper.
+    pub async fn new(
+        pci_id: String,
+        cdev_file: File,
+        iommufd_file: File,
+        dma_mapper_client: &DmaMapperClient,
+    ) -> anyhow::Result<Self> {
+        let ctx = Arc::new(vfio_sys::iommufd::IommufdCtx::from_file(iommufd_file));
+        let cdev = vfio_sys::cdev::CdevDevice::from_file(cdev_file);
+
+        // Allocate an IOAS for this device's DMA.
+        let ioas_id = ctx
+            .ioas_alloc()
+            .context("failed to allocate iommufd IOAS")?;
+
+        // Bind the cdev device to iommufd.
+        let devid = cdev
+            .bind_iommufd(ctx.as_raw_fd())
+            .context("failed to bind VFIO cdev to iommufd")?;
+
+        // Attach the device to the IOAS.
+        cdev.attach_ioas(ioas_id)
+            .context("failed to attach cdev device to IOAS")?;
+
+        tracing::info!(
+            pci_id,
+            iommufd_devid = devid,
+            ioas_id,
+            "VFIO cdev device bound to iommufd"
+        );
+
+        // Register the IOAS as a DMA target — the region manager will
+        // replay all existing guest RAM mappings into it.
+        let dma_target: Arc<dyn membacking::DmaTarget> = Arc::new(IommufdDmaTarget {
+            ctx: ctx.clone(),
+            ioas_id,
+        });
+        let dma_handle = dma_mapper_client
+            .add_dma_mapper(dma_target, true)
+            .await
+            .context("failed to register iommufd IOAS with region manager")?;
+
+        let device = cdev.into_device();
+
+        Ok(Self {
+            pci_id,
+            device,
+            iommufd_devid: devid,
+            ioas_id,
+            _dma_handle: dma_handle,
+        })
+    }
+
+    /// Consume the binding and split into the `Device` (for constructing
+    /// `VfioAssignedPciDevice`) and the remaining binding state (for
+    /// lifetime management).
+    pub fn into_parts(self) -> (vfio_sys::Device, VfioCdevBindingState) {
+        (
+            self.device,
+            VfioCdevBindingState {
+                _pci_id: self.pci_id,
+                _iommufd_devid: self.iommufd_devid,
+                _ioas_id: self.ioas_id,
+                _dma_handle: self._dma_handle,
+            },
+        )
+    }
+}
+
+/// The iommufd-related state from a [`VfioCdevBinding`], kept alive for
+/// the lifetime of the assigned device.
+///
+/// Dropping this removes the DMA mapper from the region manager and
+/// allows the kernel to clean up iommufd objects.
+#[derive(Inspect)]
+pub(crate) struct VfioCdevBindingState {
+    _pci_id: String,
+    _iommufd_devid: u32,
+    _ioas_id: u32,
+    #[inspect(skip)]
+    _dma_handle: membacking::DmaMapperHandle,
+}
+
+/// Wrapper enum for either legacy group or cdev iommufd binding.
+///
+/// Kept as a field on `VfioAssignedPciDevice` to hold the underlying
+/// fd/handle resources alive for the device's lifetime.
+pub(crate) enum VfioBinding {
+    Group(VfioDeviceBinding),
+    Cdev(VfioCdevBindingState),
+}
+
+impl Inspect for VfioBinding {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        match self {
+            VfioBinding::Group(b) => b.inspect(req),
+            VfioBinding::Cdev(b) => b.inspect(req),
         }
     }
 }

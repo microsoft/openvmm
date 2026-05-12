@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use membacking::DmaMapperClient;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
+use vfio_assigned_device_resources::VfioCdevDeviceHandle;
 use vfio_assigned_device_resources::VfioDeviceHandle;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceResolver;
@@ -78,6 +79,68 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             binding,
             pci_id,
             input.driver_source,
+            input.register_mmio,
+            input.msi_target,
+            memory_mapper,
+        )
+        .await?;
+
+        Ok(device.into())
+    }
+}
+
+/// Resource resolver for [`VfioCdevDeviceHandle`] (cdev + iommufd path).
+///
+/// Unlike the legacy group resolver, cdev devices are self-contained —
+/// each device has its own `/dev/vfio/devices/vfioN` fd and its own
+/// iommufd fd. There's no shared container manager; each device gets
+/// its own IOAS.
+pub struct VfioCdevDeviceResolver {
+    dma_mapper_client: DmaMapperClient,
+}
+
+impl VfioCdevDeviceResolver {
+    /// Create a new cdev resolver.
+    pub fn new(dma_mapper_client: DmaMapperClient) -> Self {
+        Self { dma_mapper_client }
+    }
+}
+
+#[async_trait]
+impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCdevDeviceResolver {
+    type Output = ResolvedPciDevice;
+    type Error = anyhow::Error;
+
+    async fn resolve(
+        &self,
+        _resolver: &ResourceResolver,
+        resource: VfioCdevDeviceHandle,
+        input: ResolvePciDeviceHandleParams<'_>,
+    ) -> Result<Self::Output, Self::Error> {
+        let VfioCdevDeviceHandle {
+            pci_id,
+            cdev,
+            iommufd,
+        } = resource;
+
+        tracing::info!(pci_id, "opening VFIO cdev device with iommufd");
+
+        let cdev_binding = crate::manager::VfioCdevBinding::new(
+            pci_id.clone(),
+            cdev,
+            iommufd,
+            &self.dma_mapper_client,
+        )
+        .await
+        .context("failed to set up VFIO cdev + iommufd binding")?;
+
+        let memory_mapper = input
+            .shared_mem_mapper
+            .context("memory mapper is required for VFIO device assignment")?;
+
+        let device = VfioAssignedPciDevice::from_cdev(
+            cdev_binding,
+            pci_id,
             input.register_mmio,
             input.msi_target,
             memory_mapper,

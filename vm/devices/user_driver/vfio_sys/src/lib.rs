@@ -6,6 +6,9 @@
 // UNSAFETY: Manual memory management with mmap and vfio ioctls.
 #![expect(unsafe_code)]
 
+pub mod cdev;
+pub mod iommufd;
+
 use anyhow::Context;
 use bitfield_struct::bitfield;
 use headervec::HeaderVec;

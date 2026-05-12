@@ -904,18 +904,34 @@ Assign a host PCI device to the guest via Linux VFIO.
 The device must be bound to vfio-pci on the host before starting the VM.
 
 Examples:
-    # Assign NVMe controller to root port rp0
-    --vfio rp0:0000:01:00.0
+    --vfio host=0000:01:00.0,port=rp0
+    --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
 
-Syntax: <port_name>:<pci_bdf>
-
-    port_name    Root port or downstream switch port name
-    pci_bdf      PCI domain:bus:device.function of the VFIO device on
-                 the host (use lspci -D to find it)
+Keys:
+    host=<pci_bdf>    (required) PCI address on the host
+    port=<name>       (required) Root port or downstream switch port name
+    iommu=<id>        (optional) Reference to an --iommu object. When present,
+                      uses VFIO cdev + iommufd instead of the legacy group path.
 "#)]
     #[cfg(target_os = "linux")]
     #[clap(long, conflicts_with("pcat"))]
     pub vfio: Vec<VfioDeviceCli>,
+
+    /// Create an iommufd context for VFIO cdev device assignment
+    #[clap(long_help = r#"
+Create an iommufd context. Opens /dev/iommu and allocates an IOAS.
+Referenced by --vfio devices via the iommu=<id> key.
+
+Requires Linux kernel >= 6.6 with iommufd support.
+
+Examples:
+    --iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
+
+Syntax: id=<name>
+"#)]
+    #[cfg(target_os = "linux")]
+    #[clap(long, conflicts_with("pcat"))]
+    pub iommu: Vec<IommuCli>,
 }
 
 impl Options {
@@ -2427,6 +2443,8 @@ impl FromStr for PcieRemoteCli {
 }
 
 /// CLI configuration for a VFIO-assigned PCI device.
+///
+/// Syntax: `host=<bdf>,port=<name>[,iommu=<id>]`
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug)]
 pub struct VfioDeviceCli {
@@ -2434,6 +2452,9 @@ pub struct VfioDeviceCli {
     pub port_name: String,
     /// PCI BDF address of the device on the host (e.g., "0000:01:00.0").
     pub pci_id: String,
+    /// Optional iommufd context ID. When set, uses VFIO cdev + iommufd
+    /// instead of the legacy group/container path.
+    pub iommu: Option<String>,
 }
 
 #[cfg(target_os = "linux")]
@@ -2441,16 +2462,30 @@ impl FromStr for VfioDeviceCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (port_name, pci_id) = s
-            .split_once(':')
-            .context("expected <port_name>:<pci_bdf> (e.g., rp0:0000:01:00.0)")?;
+        let mut host = None;
+        let mut port = None;
+        let mut iommu = None;
 
-        if port_name.is_empty() {
-            anyhow::bail!("port name cannot be empty");
+        for kv in s.split(',') {
+            let (key, value) = kv
+                .split_once('=')
+                .context("expected key=value pair (e.g., host=0000:01:00.0,port=rp0)")?;
+            match key {
+                "host" => host = Some(value.to_string()),
+                "port" => port = Some(value.to_string()),
+                "iommu" => iommu = Some(value.to_string()),
+                _ => anyhow::bail!("unknown --vfio key: '{key}'"),
+            }
         }
 
+        let pci_id = host.context("--vfio: 'host=' is required")?;
+        let port_name = port.context("--vfio: 'port=' is required")?;
+
         if pci_id.is_empty() {
-            anyhow::bail!("PCI address cannot be empty");
+            anyhow::bail!("host PCI address cannot be empty");
+        }
+        if port_name.is_empty() {
+            anyhow::bail!("port name cannot be empty");
         }
 
         // Reject path separators to prevent sysfs path traversal via Path::join.
@@ -2459,8 +2494,39 @@ impl FromStr for VfioDeviceCli {
         }
 
         Ok(VfioDeviceCli {
-            port_name: port_name.to_string(),
-            pci_id: pci_id.to_string(),
+            port_name,
+            pci_id,
+            iommu,
+        })
+    }
+}
+
+/// CLI configuration for an iommufd context.
+///
+/// Syntax: `id=<name>`
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug)]
+pub struct IommuCli {
+    /// Unique identifier for this iommufd context.
+    pub id: String,
+}
+
+#[cfg(target_os = "linux")]
+impl FromStr for IommuCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (key, value) = s
+            .split_once('=')
+            .context("expected id=<name> (e.g., id=iommu0)")?;
+        if key != "id" {
+            anyhow::bail!("expected 'id=<name>', got '{key}=...'");
+        }
+        if value.is_empty() {
+            anyhow::bail!("iommu id cannot be empty");
+        }
+        Ok(IommuCli {
+            id: value.to_string(),
         })
     }
 }

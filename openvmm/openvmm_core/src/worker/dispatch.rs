@@ -1954,9 +1954,10 @@ impl InitializedVm {
         // internally to share containers across assigned devices.
         #[cfg(target_os = "linux")]
         let vfio_inspect = {
+            let dma_mapper_client = memory_manager.dma_mapper_client();
             let vfio_resolver = vfio_assigned_device::resolver::VfioDeviceResolver::new(
                 driver_source.builder().build("vfio-container-mgr"),
-                memory_manager.dma_mapper_client(),
+                dma_mapper_client.clone(),
             );
             let handle = vfio_resolver.inspect_handle();
             resolver.add_async_resolver::<
@@ -1965,6 +1966,18 @@ impl InitializedVm {
                 vfio_assigned_device_resources::VfioDeviceHandle,
                 _,
             >(vfio_resolver);
+
+            // Register the VFIO cdev + iommufd resolver for devices opened
+            // via the cdev interface.
+            let cdev_resolver =
+                vfio_assigned_device::resolver::VfioCdevDeviceResolver::new(dma_mapper_client);
+            resolver.add_async_resolver::<
+                vm_resource::kind::PciDeviceHandleKind,
+                _,
+                vfio_assigned_device_resources::VfioCdevDeviceHandle,
+                _,
+            >(cdev_resolver);
+
             Some(handle)
         };
 
