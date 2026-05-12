@@ -824,6 +824,7 @@ async fn vm_config_from_command_line(
                             pci_id: cli_cfg.pci_id.clone(),
                             cdev,
                             iommufd,
+                            iommu_id: iommu_id.clone(),
                         }
                         .into_resource(),
                     })

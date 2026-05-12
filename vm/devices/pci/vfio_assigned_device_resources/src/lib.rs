@@ -41,6 +41,9 @@ pub struct VfioCdevDeviceHandle {
     pub cdev: File,
     /// Pre-opened iommufd file descriptor (`/dev/iommu`).
     pub iommufd: File,
+    /// The `--iommu` context ID this device belongs to. All devices
+    /// sharing the same ID share a single IOAS (one set of page tables).
+    pub iommu_id: String,
 }
 
 impl ResourceId<PciDeviceHandleKind> for VfioCdevDeviceHandle {

@@ -1968,9 +1968,12 @@ impl InitializedVm {
             >(vfio_resolver);
 
             // Register the VFIO cdev + iommufd resolver for devices opened
-            // via the cdev interface.
-            let cdev_resolver =
-                vfio_assigned_device::resolver::VfioCdevDeviceResolver::new(dma_mapper_client);
+            // via the cdev interface. Spawns a VfioCdevManager task that
+            // shares IOAS contexts across devices with the same --iommu ID.
+            let cdev_resolver = vfio_assigned_device::resolver::VfioCdevDeviceResolver::new(
+                driver_source.builder().build("vfio-cdev-mgr"),
+                dma_mapper_client,
+            );
             resolver.add_async_resolver::<
                 vm_resource::kind::PciDeviceHandleKind,
                 _,

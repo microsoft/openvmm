@@ -507,98 +507,336 @@ impl membacking::DmaTarget for IommufdDmaTarget {
     }
 }
 
+/// Shared iommufd IOAS context for a single `--iommu` instance.
+///
+/// All VFIO cdev devices referencing the same `--iommu id=<name>` share
+/// one IOAS — one set of IOMMU page tables, one DMA mapper registration.
+/// This matches the legacy path's container-sharing behavior and QEMU's
+/// iommufd backend model.
+struct IoasEntry {
+    ctx: Arc<vfio_sys::iommufd::IommufdCtx>,
+    ioas_id: u32,
+    /// Keeps the DMA mapper registered with the region manager.
+    _dma_handle: membacking::DmaMapperHandle,
+    /// Number of devices currently using this IOAS.
+    device_count: u64,
+}
+
+/// Tracks a cdev device for inspect and cleanup.
+struct CdevDeviceEntry {
+    id: u64,
+    pci_id: String,
+    iommu_id: String,
+}
+
+/// RPC messages for the cdev manager task.
+pub(crate) enum VfioCdevManagerRpc {
+    /// Bind a cdev device to an IOAS (creating the IOAS if this is the
+    /// first device for the given iommu ID). Returns the opened
+    /// `vfio_sys::Device` and metadata needed for `VfioCdevBindingState`.
+    PrepareDevice(FailableRpc<CdevPrepareRequest, CdevPrepareResponse>),
+    /// Notify that a device has been dropped.
+    RemoveDevice(u64),
+    /// Inspect.
+    Inspect(inspect::Deferred),
+}
+
+/// Request payload for `PrepareDevice`.
+pub(crate) struct CdevPrepareRequest {
+    pub pci_id: String,
+    pub cdev: File,
+    pub iommufd: File,
+    pub iommu_id: String,
+}
+
+/// Response payload for `PrepareDevice`.
+pub(crate) struct CdevPrepareResponse {
+    pub device: vfio_sys::Device,
+    pub iommufd_devid: u32,
+    pub ioas_id: u32,
+    pub device_id: u64,
+}
+
+/// Manages iommufd IOAS contexts and cdev device bindings.
+///
+/// Analogous to [`VfioContainerManager`] for the legacy group path.
+/// Shares a single IOAS (and DMA mapper registration) across all devices
+/// referencing the same `--iommu` ID.
+#[derive(InspectMut)]
+#[inspect(extra = "Self::inspect_topology")]
+pub(crate) struct VfioCdevManager {
+    /// IOAS contexts keyed by `--iommu` ID.
+    #[inspect(skip)]
+    ioas_entries: HashMap<String, IoasEntry>,
+    /// Active devices.
+    #[inspect(skip)]
+    devices: Vec<CdevDeviceEntry>,
+    /// Next device ID.
+    #[inspect(skip)]
+    next_device_id: u64,
+    /// DMA mapper client for registering new IOAS contexts.
+    #[inspect(skip)]
+    dma_mapper_client: DmaMapperClient,
+    #[inspect(skip)]
+    recv: mesh::Receiver<VfioCdevManagerRpc>,
+}
+
+/// Client handle for the [`VfioCdevManager`] task.
+#[derive(Clone)]
+pub struct VfioCdevManagerClient {
+    sender: mesh::Sender<VfioCdevManagerRpc>,
+}
+
+impl Inspect for VfioCdevManagerClient {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        self.sender.send(VfioCdevManagerRpc::Inspect(req.defer()));
+    }
+}
+
+impl VfioCdevManagerClient {
+    pub(crate) async fn prepare_device(
+        &self,
+        req: CdevPrepareRequest,
+    ) -> anyhow::Result<CdevPrepareResponse> {
+        Ok(self
+            .sender
+            .call_failable(VfioCdevManagerRpc::PrepareDevice, req)
+            .await?)
+    }
+
+    /// Returns a clone of the sender for passing to `VfioCdevBinding`.
+    pub(crate) fn sender(&self) -> mesh::Sender<VfioCdevManagerRpc> {
+        self.sender.clone()
+    }
+}
+
+impl VfioCdevManager {
+    /// Create a new cdev manager.
+    pub fn new(dma_mapper_client: DmaMapperClient) -> Self {
+        Self {
+            ioas_entries: HashMap::new(),
+            devices: Vec::new(),
+            next_device_id: 0,
+            dma_mapper_client,
+            recv: mesh::Receiver::new(),
+        }
+    }
+
+    /// Run the cdev manager task, processing RPCs until the channel closes.
+    pub async fn run(mut self) {
+        while let Ok(rpc) = self.recv.recv().await {
+            match rpc {
+                VfioCdevManagerRpc::PrepareDevice(rpc) => {
+                    rpc.handle_failable(async |req| self.prepare_device(req).await)
+                        .await
+                }
+                VfioCdevManagerRpc::RemoveDevice(device_id) => {
+                    self.remove_device(device_id);
+                }
+                VfioCdevManagerRpc::Inspect(deferred) => deferred.inspect(&mut self),
+            }
+        }
+    }
+
+    async fn prepare_device(
+        &mut self,
+        req: CdevPrepareRequest,
+    ) -> anyhow::Result<CdevPrepareResponse> {
+        let CdevPrepareRequest {
+            pci_id,
+            cdev: cdev_file,
+            iommufd: iommufd_file,
+            iommu_id,
+        } = req;
+
+        tracing::info!(pci_id, iommu_id, "cdev manager: preparing device");
+
+        // Get or create the IOAS for this iommu ID.
+        if !self.ioas_entries.contains_key(&iommu_id) {
+            let ctx = Arc::new(vfio_sys::iommufd::IommufdCtx::from_file(iommufd_file));
+            let ioas_id = ctx
+                .ioas_alloc()
+                .context("failed to allocate iommufd IOAS")?;
+
+            let dma_target: Arc<dyn membacking::DmaTarget> = Arc::new(IommufdDmaTarget {
+                ctx: ctx.clone(),
+                ioas_id,
+            });
+            let dma_handle = self
+                .dma_mapper_client
+                .add_dma_mapper(dma_target, true)
+                .await
+                .context("failed to register iommufd IOAS with region manager")?;
+
+            tracing::info!(
+                iommu_id,
+                ioas_id,
+                "created shared iommufd IOAS for iommu context"
+            );
+
+            self.ioas_entries.insert(
+                iommu_id.clone(),
+                IoasEntry {
+                    ctx,
+                    ioas_id,
+                    _dma_handle: dma_handle,
+                    device_count: 0,
+                },
+            );
+        }
+
+        let entry = self.ioas_entries.get_mut(&iommu_id).unwrap();
+        let cdev = vfio_sys::cdev::CdevDevice::from_file(cdev_file);
+
+        // Bind the cdev device to this iommu context's iommufd.
+        let devid = cdev
+            .bind_iommufd(entry.ctx.as_raw_fd())
+            .context("failed to bind VFIO cdev to iommufd")?;
+
+        // Attach the device to the shared IOAS.
+        cdev.attach_ioas(entry.ioas_id)
+            .context("failed to attach cdev device to IOAS")?;
+
+        let device_id = self.next_device_id;
+        self.next_device_id += 1;
+        entry.device_count += 1;
+
+        self.devices.push(CdevDeviceEntry {
+            id: device_id,
+            pci_id: pci_id.clone(),
+            iommu_id: iommu_id.clone(),
+        });
+
+        tracing::info!(
+            pci_id,
+            iommu_id,
+            iommufd_devid = devid,
+            ioas_id = entry.ioas_id,
+            device_id,
+            "VFIO cdev device attached to shared IOAS"
+        );
+
+        Ok(CdevPrepareResponse {
+            device: cdev.into_device(),
+            iommufd_devid: devid,
+            ioas_id: entry.ioas_id,
+            device_id,
+        })
+    }
+
+    fn remove_device(&mut self, device_id: u64) {
+        if let Some(pos) = self.devices.iter().position(|d| d.id == device_id) {
+            let entry = self.devices.swap_remove(pos);
+            tracing::info!(
+                device_id,
+                pci_id = entry.pci_id,
+                iommu_id = entry.iommu_id,
+                "removing cdev device"
+            );
+
+            if let Some(ioas) = self.ioas_entries.get_mut(&entry.iommu_id) {
+                ioas.device_count -= 1;
+                if ioas.device_count == 0 {
+                    tracing::info!(
+                        iommu_id = entry.iommu_id,
+                        "closing iommufd IOAS (no remaining devices)"
+                    );
+                    self.ioas_entries.remove(&entry.iommu_id);
+                }
+            }
+        }
+    }
+
+    fn inspect_topology(&self, resp: &mut inspect::Response<'_>) {
+        resp.child("ioas", |req| {
+            let mut resp = req.respond();
+            for (iommu_id, entry) in &self.ioas_entries {
+                resp.child(iommu_id, |req| {
+                    let mut resp = req.respond();
+                    resp.field("ioas_id", entry.ioas_id);
+                    resp.field("device_count", entry.device_count);
+                    resp.child("device", |req| {
+                        let mut resp = req.respond();
+                        for dev in &self.devices {
+                            if dev.iommu_id == *iommu_id {
+                                resp.field(&dev.pci_id, ());
+                            }
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    pub(crate) fn client(&mut self) -> VfioCdevManagerClient {
+        VfioCdevManagerClient {
+            sender: self.recv.sender(),
+        }
+    }
+}
+
 /// Binding for a VFIO device opened via the cdev + iommufd path.
 ///
-/// Analogous to [`VfioDeviceBinding`] for the legacy group path, but
-/// uses iommufd for DMA mapping instead of a VFIO type1 container.
-///
-/// The device is bound to iommufd and attached to an IOAS. When this
-/// binding is dropped, the device is automatically detached and the
-/// iommufd binding is released (the kernel cleans up when the cdev fd
-/// closes).
+/// Analogous to [`VfioDeviceBinding`] for the legacy group path.
+/// Notifies the cdev manager on drop so device counts stay accurate
+/// and IOAS contexts are cleaned up when the last device is removed.
 #[derive(Inspect)]
 pub(crate) struct VfioCdevBinding {
     /// PCI BDF address on the host.
     pci_id: String,
     /// VFIO cdev device — provides config space, BAR, IRQ ioctls.
-    /// The cdev fd owns the iommufd binding (released on close).
     #[inspect(skip)]
     device: vfio_sys::Device,
     /// iommufd device ID (from `VFIO_DEVICE_BIND_IOMMUFD`).
     iommufd_devid: u32,
     /// IOAS ID this device is attached to.
     ioas_id: u32,
-    /// DMA mapper registration — removes the mapper on drop.
+    /// Device ID assigned by the manager (for drop notification).
     #[inspect(skip)]
-    _dma_handle: membacking::DmaMapperHandle,
+    device_id: u64,
+    /// Sender to notify the manager on drop.
+    #[inspect(skip)]
+    sender: mesh::Sender<VfioCdevManagerRpc>,
 }
 
 impl VfioCdevBinding {
-    /// Open a VFIO cdev device, bind to iommufd, allocate an IOAS, attach
-    /// the device, and register the IOAS as a DMA mapper.
-    pub async fn new(
+    /// Create from a manager response.
+    pub(crate) fn from_response(
+        resp: CdevPrepareResponse,
         pci_id: String,
-        cdev_file: File,
-        iommufd_file: File,
-        dma_mapper_client: &DmaMapperClient,
-    ) -> anyhow::Result<Self> {
-        let ctx = Arc::new(vfio_sys::iommufd::IommufdCtx::from_file(iommufd_file));
-        let cdev = vfio_sys::cdev::CdevDevice::from_file(cdev_file);
-
-        // Allocate an IOAS for this device's DMA.
-        let ioas_id = ctx
-            .ioas_alloc()
-            .context("failed to allocate iommufd IOAS")?;
-
-        // Bind the cdev device to iommufd.
-        let devid = cdev
-            .bind_iommufd(ctx.as_raw_fd())
-            .context("failed to bind VFIO cdev to iommufd")?;
-
-        // Attach the device to the IOAS.
-        cdev.attach_ioas(ioas_id)
-            .context("failed to attach cdev device to IOAS")?;
-
-        tracing::info!(
+        sender: mesh::Sender<VfioCdevManagerRpc>,
+    ) -> Self {
+        Self {
             pci_id,
-            iommufd_devid = devid,
-            ioas_id,
-            "VFIO cdev device bound to iommufd"
-        );
-
-        // Register the IOAS as a DMA target — the region manager will
-        // replay all existing guest RAM mappings into it.
-        let dma_target: Arc<dyn membacking::DmaTarget> = Arc::new(IommufdDmaTarget {
-            ctx: ctx.clone(),
-            ioas_id,
-        });
-        let dma_handle = dma_mapper_client
-            .add_dma_mapper(dma_target, true)
-            .await
-            .context("failed to register iommufd IOAS with region manager")?;
-
-        let device = cdev.into_device();
-
-        Ok(Self {
-            pci_id,
-            device,
-            iommufd_devid: devid,
-            ioas_id,
-            _dma_handle: dma_handle,
-        })
+            device: resp.device,
+            iommufd_devid: resp.iommufd_devid,
+            ioas_id: resp.ioas_id,
+            device_id: resp.device_id,
+            sender,
+        }
     }
 
     /// Consume the binding and split into the `Device` (for constructing
     /// `VfioAssignedPciDevice`) and the remaining binding state (for
-    /// lifetime management).
+    /// lifetime management). The state's `Drop` impl notifies the manager
+    /// when the device is released.
     pub fn into_parts(self) -> (vfio_sys::Device, VfioCdevBindingState) {
+        let Self {
+            pci_id,
+            device,
+            iommufd_devid,
+            ioas_id,
+            device_id,
+            sender,
+        } = self;
         (
-            self.device,
+            device,
             VfioCdevBindingState {
-                _pci_id: self.pci_id,
-                _iommufd_devid: self.iommufd_devid,
-                _ioas_id: self.ioas_id,
-                _dma_handle: self._dma_handle,
+                _pci_id: pci_id,
+                _iommufd_devid: iommufd_devid,
+                _ioas_id: ioas_id,
+                _device_id: device_id,
+                _sender: sender,
             },
         )
     }
@@ -607,15 +845,24 @@ impl VfioCdevBinding {
 /// The iommufd-related state from a [`VfioCdevBinding`], kept alive for
 /// the lifetime of the assigned device.
 ///
-/// Dropping this removes the DMA mapper from the region manager and
-/// allows the kernel to clean up iommufd objects.
+/// Notifies the cdev manager on drop so device counts and IOAS contexts
+/// are cleaned up.
 #[derive(Inspect)]
 pub(crate) struct VfioCdevBindingState {
     _pci_id: String,
     _iommufd_devid: u32,
     _ioas_id: u32,
     #[inspect(skip)]
-    _dma_handle: membacking::DmaMapperHandle,
+    _device_id: u64,
+    #[inspect(skip)]
+    _sender: mesh::Sender<VfioCdevManagerRpc>,
+}
+
+impl Drop for VfioCdevBindingState {
+    fn drop(&mut self) {
+        self._sender
+            .send(VfioCdevManagerRpc::RemoveDevice(self._device_id));
+    }
 }
 
 /// Wrapper enum for either legacy group or cdev iommufd binding.

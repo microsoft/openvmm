@@ -91,18 +91,29 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
 
 /// Resource resolver for [`VfioCdevDeviceHandle`] (cdev + iommufd path).
 ///
-/// Unlike the legacy group resolver, cdev devices are self-contained —
-/// each device has its own `/dev/vfio/devices/vfioN` fd and its own
-/// iommufd fd. There's no shared container manager; each device gets
-/// its own IOAS.
+/// Spawns a [`VfioCdevManager`](crate::manager::VfioCdevManager) task
+/// internally and communicates with it via RPC to share IOAS contexts
+/// across devices referencing the same `--iommu` ID.
 pub struct VfioCdevDeviceResolver {
-    dma_mapper_client: DmaMapperClient,
+    client: crate::manager::VfioCdevManagerClient,
+    _task: pal_async::task::Task<()>,
 }
 
 impl VfioCdevDeviceResolver {
-    /// Create a new cdev resolver.
-    pub fn new(dma_mapper_client: DmaMapperClient) -> Self {
-        Self { dma_mapper_client }
+    /// Create a new cdev resolver, spawning the cdev manager task.
+    pub fn new(spawner: impl pal_async::task::Spawn, dma_mapper_client: DmaMapperClient) -> Self {
+        let mut manager = crate::manager::VfioCdevManager::new(dma_mapper_client);
+        let client = manager.client();
+        let task = spawner.spawn("vfio-cdev-mgr", manager.run());
+        Self {
+            client,
+            _task: task,
+        }
+    }
+
+    /// Returns a handle for the VM's inspect tree.
+    pub fn inspect_handle(&self) -> crate::manager::VfioCdevManagerClient {
+        self.client.clone()
     }
 }
 
@@ -121,18 +132,27 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             pci_id,
             cdev,
             iommufd,
+            iommu_id,
         } = resource;
 
-        tracing::info!(pci_id, "opening VFIO cdev device with iommufd");
+        tracing::info!(pci_id, iommu_id, "opening VFIO cdev device with iommufd");
 
-        let cdev_binding = crate::manager::VfioCdevBinding::new(
+        let resp = self
+            .client
+            .prepare_device(crate::manager::CdevPrepareRequest {
+                pci_id: pci_id.clone(),
+                cdev,
+                iommufd,
+                iommu_id,
+            })
+            .await
+            .context("VFIO cdev manager failed")?;
+
+        let cdev_binding = crate::manager::VfioCdevBinding::from_response(
+            resp,
             pci_id.clone(),
-            cdev,
-            iommufd,
-            &self.dma_mapper_client,
-        )
-        .await
-        .context("failed to set up VFIO cdev + iommufd binding")?;
+            self.client.sender(),
+        );
 
         let memory_mapper = input
             .shared_mem_mapper
