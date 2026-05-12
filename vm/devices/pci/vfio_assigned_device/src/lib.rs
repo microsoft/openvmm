@@ -31,6 +31,7 @@ use pci_core::bar_mapping::BarMappings;
 use pci_core::capabilities::PciCapability;
 use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::msi::MsiTarget;
+use pci_core::spec::caps;
 use pci_core::spec::cfg_space;
 use pci_core::spec::cfg_space::HeaderType00;
 use std::collections::BTreeMap;
@@ -699,7 +700,7 @@ fn discover_msix(
         let cap_id = (header & 0xFF) as u8;
         let next_ptr = ((header >> 8) & 0xFC) as u16;
 
-        if cap_id == pci_core::spec::caps::CapabilityId::MSIX.0 {
+        if cap_id == caps::CapabilityId::MSIX.0 {
             // Message Control is in the upper 16 bits of the first DWORD.
             let msg_ctrl = (header >> 16) as u16;
             let table_count = (msg_ctrl & 0x7FF) + 1;
@@ -751,19 +752,6 @@ fn discover_msix(
     None
 }
 
-/// Extended PCI capability IDs that should be hidden from the guest.
-///
-/// These capabilities either don't make sense in a virtual topology or could
-/// confuse the guest OS/firmware.
-mod extended_cap_id {
-    /// SR-IOV — VF BARs confuse firmware/OS; SR-IOV is managed by the host.
-    pub const SRIOV: u16 = 0x10;
-    /// ARI — requires next-function virtualization the VMM doesn't implement.
-    pub const ARI: u16 = 0x0E;
-    /// Resizable BAR — BARs are virtualized; resize would desync guest/host.
-    pub const REBAR: u16 = 0x15;
-}
-
 /// Build the config-space patch table for a VFIO assigned device.
 ///
 /// This walks the standard and extended capability chains and inserts patches
@@ -781,12 +769,11 @@ fn build_config_patches(
 ) -> BTreeMap<u16, ConfigPatch> {
     let mut patches = BTreeMap::new();
 
-    // Clear multi-function bit: bit 7 of Header Type byte (byte 0x0E),
-    // which is bit 23 of the DWORD at offset 0x0C.
+    // Clear multi-function bit so the device appears as single-function.
     patches.insert(
-        0x0C,
+        HeaderType00::BIST_HEADER.0,
         ConfigPatch {
-            mask: 0x0080_0000,
+            mask: cfg_space::BistHeader::new().with_multi_function(true).into(),
             value: 0,
         },
     );
@@ -855,15 +842,12 @@ fn parse_extended_capabilities(
     config_size: u64,
     patches: &mut BTreeMap<u16, ConfigPatch>,
 ) {
-    // Extended capabilities start at offset 0x100 in PCIe config space.
-    const EXT_CAP_START: u16 = 0x100;
-
     // Config space must be large enough for extended capabilities.
-    if config_size <= EXT_CAP_START as u64 {
+    if config_size <= caps::EXT_CAP_START as u64 {
         return;
     }
 
-    let mut offset = EXT_CAP_START;
+    let mut offset = caps::EXT_CAP_START;
     let mut iterations = 0usize;
 
     loop {
@@ -896,10 +880,14 @@ fn parse_extended_capabilities(
             "discovered extended PCI capability"
         );
 
+        let cap_id = caps::ExtendedCapabilityId(cap_id);
+
         match cap_id {
-            extended_cap_id::SRIOV | extended_cap_id::ARI | extended_cap_id::REBAR => {
+            caps::ExtendedCapabilityId::SRIOV
+            | caps::ExtendedCapabilityId::ARI
+            | caps::ExtendedCapabilityId::REBAR => {
                 tracing::info!(
-                    cap_id,
+                    ?cap_id,
                     offset,
                     "filtering extended capability from guest view"
                 );
@@ -918,6 +906,17 @@ fn parse_extended_capabilities(
         }
 
         if cap_next == 0 {
+            return;
+        }
+
+        // Validate the next pointer: must be within extended config space
+        // (>= 0x100), DWORD-aligned, and within the config region.
+        if cap_next < caps::EXT_CAP_START || cap_next & 0x3 != 0 || cap_next as u64 + 4 > config_size {
+            tracing::warn!(
+                cap_next,
+                offset,
+                "malformed extended capability next pointer, aborting walk"
+            );
             return;
         }
 
