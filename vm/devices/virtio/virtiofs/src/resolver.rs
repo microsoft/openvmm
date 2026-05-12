@@ -35,25 +35,29 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
             VirtioFsBackend::HostFs {
                 root_path,
                 mount_options,
-            } => VirtioFsDevice::new(
-                input.driver_source,
-                &resource.tag,
-                VirtioFs::new(
-                    root_path,
-                    Some(&LxVolumeOptions::from_option_string(mount_options)),
-                )?,
-                0,
-                None,
-                resource.num_request_queues,
-            ),
+            } => {
+                let notify_corruption = None;
+                VirtioFsDevice::new(
+                    input.driver_source,
+                    &resource.tag,
+                    VirtioFs::new(
+                        root_path,
+                        Some(&LxVolumeOptions::from_option_string(mount_options)),
+                    )?,
+                    0,
+                    notify_corruption,
+                    resource.num_request_queues,
+                )
+            }
             #[cfg(windows)]
             VirtioFsBackend::SectionFs { root_path } => {
+                let notify_corruption = None;
                 VirtioFsDevice::new(
                     input.driver_source,
                     &resource.tag,
                     crate::SectionFs::new(root_path)?,
                     8 * 1024 * 1024 * 1024, // 8GB of shared memory,
-                    None,
+                    notify_corruption,
                     resource.num_request_queues,
                 )
             }

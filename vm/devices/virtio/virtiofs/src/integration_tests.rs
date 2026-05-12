@@ -8,6 +8,7 @@
 //! as a guest kernel would.
 
 use crate::VirtioFs;
+use crate::virtio::MAX_REQUEST_QUEUES;
 use crate::virtio::VirtioFsDevice;
 use fuse::protocol::*;
 use guestmem::GuestMemory;
@@ -542,12 +543,12 @@ async fn num_request_queues_default_is_clamped(driver: DefaultDriver) {
     let device = VirtioFsDevice::new(&driver_source, "testfs", fs, 0, None, None);
 
     let traits = device.traits();
-    // num_request_queues should be at least 1 and at most MAX (16).
+    // num_request_queues should be at least 1 and at most MAX_REQUEST_QUEUES.
     // max_queues = num_request_queues + 1 (hiprio queue).
     assert!(traits.max_queues >= 2, "at least 1 request queue + hiprio");
     assert!(
-        traits.max_queues <= 17,
-        "at most 16 request queues + hiprio"
+        traits.max_queues <= MAX_REQUEST_QUEUES as u16 + 1,
+        "at most MAX_REQUEST_QUEUES request queues + hiprio"
     );
 }
 
@@ -571,6 +572,6 @@ async fn num_request_queues_explicit_overflow_is_clamped(driver: DefaultDriver) 
     let device = VirtioFsDevice::new(&driver_source, "testfs", fs, 0, None, Some(100));
 
     let traits = device.traits();
-    // Some(100) should be clamped to MAX_REQUEST_QUEUES (16) → max_queues = 17
-    assert_eq!(traits.max_queues, 17);
+    // Some(100) should be clamped to MAX_REQUEST_QUEUES → max_queues = MAX + 1
+    assert_eq!(traits.max_queues, MAX_REQUEST_QUEUES as u16 + 1);
 }

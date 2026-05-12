@@ -31,7 +31,7 @@ use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
 /// Maximum number of request queues to advertise.
-const MAX_REQUEST_QUEUES: u32 = 16;
+pub(crate) const MAX_REQUEST_QUEUES: u32 = 16;
 
 /// PCI configuration space values for virtio-fs devices.
 #[repr(C)]
@@ -66,7 +66,8 @@ impl VirtioFsDevice {
     /// advertises. The Linux guest kernel (≥6.11) distributes I/O across
     /// queues on a per-CPU basis, so this is best set to the guest vCPU count.
     /// If `None`, defaults to the number of host CPUs (capped at
-    /// `MAX_REQUEST_QUEUES`). Values are clamped to `1..=MAX_REQUEST_QUEUES`.
+    /// `MAX_REQUEST_QUEUES`). All values (including `Some(0)`) are clamped
+    /// to `1..=MAX_REQUEST_QUEUES`.
     pub fn new<Fs>(
         driver_source: &VmTaskDriverSource,
         tag: &str,
