@@ -2419,6 +2419,16 @@ impl Firmware {
         }
     }
 
+    /// Constructs a [`Firmware::LinuxDirect`] configuration that uses a
+    /// compressed bzImage kernel instead of an uncompressed ELF.
+    pub fn linux_direct_bzimage(resolver: &ArtifactResolver<'_>) -> Self {
+        use petri_artifacts_vmm_test::artifacts::loadable::*;
+        Firmware::LinuxDirect {
+            kernel: resolver.require(LINUX_DIRECT_TEST_BZIMAGE_X64).erase(),
+            initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_X64).erase(),
+        }
+    }
+
     /// Constructs a standard [`Firmware::OpenhclLinuxDirect`] configuration.
     pub fn openhcl_linux_direct(resolver: &ArtifactResolver<'_>, arch: MachineArch) -> Self {
         use petri_artifacts_vmm_test::artifacts::openhcl_igvm::*;

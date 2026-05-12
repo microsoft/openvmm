@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OpenvmmDepFile {
     LinuxTestKernel,
+    LinuxTestBzImage,
     LinuxTestInitrd,
     OpenhclCpioDbgrd,
     OpenhclCpioShell,
@@ -25,6 +26,7 @@ impl OpenvmmDepFile {
                 CommonArch::X86_64 => "vmlinux",
                 CommonArch::Aarch64 => "Image",
             },
+            Self::LinuxTestBzImage => "bzImage",
             Self::LinuxTestInitrd => "initrd",
             Self::OpenhclCpioDbgrd => "dbgrd.cpio.gz",
             Self::OpenhclCpioShell => "shell.cpio.gz",

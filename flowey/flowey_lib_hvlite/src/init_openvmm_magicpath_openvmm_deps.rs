@@ -35,6 +35,8 @@ struct DepFile {
     /// Destination filename (relative to `underhill-deps-private/{arch}/`).
     /// When arch-dependent, use a closure; when fixed, the `_arch` is ignored.
     dest_filename: fn(CommonArch) -> &'static str,
+    /// If set, only copy this dep for the given architecture.
+    only_arch: Option<CommonArch>,
 }
 
 /// The table of dep files to copy. To add a new dep, add an entry here.
@@ -47,14 +49,22 @@ fn dep_files() -> Vec<DepFile> {
                 CommonArch::Aarch64 => "Image",
                 CommonArch::X86_64 => "vmlinux",
             },
+            only_arch: None,
+        },
+        DepFile {
+            dep: OpenvmmDepFile::LinuxTestBzImage,
+            dest_filename: |_arch| "bzImage",
+            only_arch: Some(CommonArch::X86_64),
         },
         DepFile {
             dep: OpenvmmDepFile::LinuxTestInitrd,
             dest_filename: |_arch| "initrd",
+            only_arch: None,
         },
         DepFile {
             dep: OpenvmmDepFile::PetritoolsErofs,
             dest_filename: |_arch| "petritools.erofs",
+            only_arch: None,
         },
     ]
 }
@@ -81,6 +91,11 @@ impl FlowNode for Node {
             // Resolve all dep files for this arch.
             let resolved: Vec<(ReadVar<PathBuf>, &'static str)> = dep_files()
                 .into_iter()
+                .filter(|dep_file| {
+                    dep_file
+                        .only_arch
+                        .is_none_or(|only| only == arch)
+                })
                 .map(|dep_file| {
                     let src = ctx
                         .reqv(|v| crate::resolve_openvmm_deps::Request::Get(dep_file.dep, arch, v));
