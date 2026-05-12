@@ -1143,14 +1143,6 @@ pub mod options {
             pub enlightened_interrupts: bool,
         }
 
-        /// Generic IO Advanced Programmable Interrupt Controller (IOAPIC)
-        pub struct GenericIoApicDeps {
-            /// Number of IO-APIC entries
-            pub num_entries: u8,
-            /// Trait allowing the IO-APIC device to assert VM interrupts.
-            pub routing: Box<dyn ioapic::IoApicRouting>,
-        }
-
         /// Hyper-V specific ACPI-compatible battery device
         pub struct HyperVBatteryDeps {
             /// Base MMIO address for the battery device

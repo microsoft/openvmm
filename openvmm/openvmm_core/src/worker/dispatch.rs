@@ -1626,7 +1626,8 @@ impl InitializedVm {
         let mut chipset_device_handles = cfg.chipset_devices;
 
         // Emit CMOS RTC device handles based on load mode / architecture.
-        // PCAT uses the PIIX4 variant; other x86 configurations use the generic variant.
+        // PCAT uses the PIIX4 variant; all other configurations (including
+        // non-x86 architectures) use the generic variant.
         if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {
             let initial_rtc_cmos = Some(firmware_pcat::default_cmos_values(&mem_layout));
             chipset_device_handles.push(ChipsetDeviceHandle {
@@ -1641,7 +1642,7 @@ impl InitializedVm {
                 }
                 .into_resource(),
             });
-        } else if cfg!(guest_arch = "x86_64") {
+        } else {
             chipset_device_handles.push(ChipsetDeviceHandle {
                 name: "rtc".to_owned(),
                 resource: GenericCmosRtcDeviceHandle {

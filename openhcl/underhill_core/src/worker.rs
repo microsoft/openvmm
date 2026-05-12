@@ -64,7 +64,6 @@ use chipset_device::ChipsetDevice;
 use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
 use chipset_resources::CmosRtcTimeSourceHandleKind;
 use chipset_resources::ResolvedCmosRtcTimeSource;
-#[cfg(guest_arch = "x86_64")]
 use chipset_resources::cmos_rtc::GenericCmosRtcDeviceHandle;
 #[cfg(guest_arch = "x86_64")]
 use chipset_resources::cmos_rtc::Piix4CmosRtcDeviceHandle;
@@ -2924,6 +2923,8 @@ async fn new_underhill_vm(
     let deps_generic_psp = { chipset.with_generic_psp.then_some(dev::GenericPspDeps {}) };
 
     // Emit CMOS RTC device handles based on firmware type / architecture.
+    // PCAT (x86-only) gets the PIIX4 variant; all other configurations
+    // (including non-x86 architectures) get the generic RTC.
     #[cfg(guest_arch = "x86_64")]
     if firmware_type == FirmwareType::Pcat {
         chipset_devices.push(ChipsetDeviceHandle {
@@ -2947,6 +2948,18 @@ async fn new_underhill_vm(
             .into_resource(),
         });
     }
+
+    #[cfg(not(guest_arch = "x86_64"))]
+    chipset_devices.push(ChipsetDeviceHandle {
+        name: "rtc".to_owned(),
+        resource: GenericCmosRtcDeviceHandle {
+            irq: 8,
+            century_reg_idx: 0x32,
+            initial_cmos: None,
+            time_source: PlatformResource.into_resource(),
+        }
+        .into_resource(),
+    });
 
     if dps.general.tpm_enabled {
         let no_persistent_secrets =
@@ -3038,7 +3051,6 @@ async fn new_underhill_vm(
 
     let devices = BaseChipsetDevices {
         deps_generic_cmos_rtc,
-        deps_generic_ioapic,
         deps_generic_psp,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
