@@ -1109,11 +1109,11 @@ impl IntoPipeline for CheckinGatesCli {
                 )
                 .finish();
 
+            all_jobs.push(local_build_job);
+
             // TODO: Use the check_reproducible_build.rs node to validate that
             // the two builds produce the same output. This isn't running yet becaues
             // they don't produce bit-for-bit identical builds
-
-            all_jobs.push(local_build_job);
         }
 
         // Emit clippy + unit-test jobs
