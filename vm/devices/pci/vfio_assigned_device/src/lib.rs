@@ -33,6 +33,7 @@ use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::msi::MsiTarget;
 use pci_core::spec::cfg_space;
 use pci_core::spec::cfg_space::HeaderType00;
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
 use vmcore::device_state::ChangeDeviceState;
@@ -69,6 +70,25 @@ struct BarDirectMap {
     bar_range: MemoryRange,
     /// Whether this sub-region is currently mapped into guest GPA space.
     mapping: Option<MemoryRange>,
+}
+
+/// A patch to apply to a DWORD-aligned PCI config space read.
+///
+/// When reading config space, if the DWORD-aligned offset has an entry in the
+/// patch table, the hardware value is blended with the patch:
+/// `(hw_value & !mask) | (value & mask)`.
+///
+/// This allows hiding capabilities (by zeroing their ID), rewriting chain
+/// pointers, or injecting fully synthetic capability data.
+#[derive(Debug, Clone, Copy, Inspect)]
+struct ConfigPatch {
+    /// Bitmask selecting which bits to replace. Set bits come from `value`;
+    /// clear bits come from hardware.
+    #[inspect(hex)]
+    mask: u32,
+    /// Replacement bits for the masked positions.
+    #[inspect(hex)]
+    value: u32,
 }
 
 /// MSI-X emulation state, discovered from the physical device's capabilities.
@@ -164,6 +184,14 @@ pub(crate) struct VfioAssignedPciDevice {
     /// access without VM exits. When MMIO is disabled, they are unmapped.
     #[inspect(iter_by_index)]
     bar_direct_maps: Vec<BarDirectMap>,
+
+    /// Patch-on-read table for config space filtering. Keyed by
+    /// DWORD-aligned config space offset. Built at init from capability
+    /// parsing; immutable thereafter.
+    #[inspect(
+        with = "|m| inspect::iter_by_key(m.iter().map(|(k, v)| (format!(\"{k:#06x}\"), v)))"
+    )]
+    config_patches: BTreeMap<u16, ConfigPatch>,
 
     /// VFIO container/group binding. Keeps the container and group fds alive
     /// and notifies the container manager on drop.
@@ -280,6 +308,10 @@ impl VfioAssignedPciDevice {
         // exclude the MSI-X table/PBA regions.
         let msix = discover_msix(vfio_device.as_ref(), config_offset, config_size, msi_target);
 
+        // Build the config space patch table: hides extended capabilities
+        // (SR-IOV, ARI, Resizable BAR) and clears the multi-function bit.
+        let config_patches = build_config_patches(vfio_device.as_ref(), config_offset, config_size);
+
         // Cache whether the device supports VFIO_DEVICE_RESET so we can skip
         // the ioctl on every VM reset for devices that don't support it.
         let supports_reset = vfio_device
@@ -357,6 +389,7 @@ impl VfioAssignedPciDevice {
             msix,
             supports_reset,
             bar_direct_maps,
+            config_patches,
             binding,
         })
     }
@@ -718,6 +751,180 @@ fn discover_msix(
     None
 }
 
+/// Extended PCI capability IDs that should be hidden from the guest.
+///
+/// These capabilities either don't make sense in a virtual topology or could
+/// confuse the guest OS/firmware.
+mod extended_cap_id {
+    /// SR-IOV — VF BARs confuse firmware/OS; SR-IOV is managed by the host.
+    pub const SRIOV: u16 = 0x10;
+    /// ARI — requires next-function virtualization the VMM doesn't implement.
+    pub const ARI: u16 = 0x0E;
+    /// Resizable BAR — BARs are virtualized; resize would desync guest/host.
+    pub const REBAR: u16 = 0x15;
+}
+
+/// Build the config-space patch table for a VFIO assigned device.
+///
+/// This walks the standard and extended capability chains and inserts patches
+/// to:
+/// - Clear the multi-function bit in the Header Type register
+/// - Null out extended capabilities that don't make sense in a virtual topology
+///   (SR-IOV, ARI, Resizable BAR)
+///
+/// The resulting patches are applied on every config read via
+/// `(hw_value & !mask) | (value & mask)`.
+fn build_config_patches(
+    device_file: &std::fs::File,
+    config_offset: u64,
+    config_size: u64,
+) -> BTreeMap<u16, ConfigPatch> {
+    let mut patches = BTreeMap::new();
+
+    // Clear multi-function bit: bit 7 of Header Type byte (byte 0x0E),
+    // which is bit 23 of the DWORD at offset 0x0C.
+    patches.insert(
+        0x0C,
+        ConfigPatch {
+            mask: 0x0080_0000,
+            value: 0,
+        },
+    );
+
+    // Walk the standard capability chain and log each capability found.
+    // No filtering of standard caps beyond what MSI-X discovery already does,
+    // but the walk unifies discovery and provides useful diagnostics.
+    parse_standard_capabilities(device_file, config_offset, config_size);
+
+    // Walk the extended capability chain (starting at offset 0x100) and
+    // insert patches to null out capabilities the guest shouldn't see.
+    parse_extended_capabilities(device_file, config_offset, config_size, &mut patches);
+
+    patches
+}
+
+/// Walk the standard PCI capability chain and log each capability found.
+///
+/// This is purely diagnostic for now — standard capability filtering (beyond
+/// MSI-X, which is handled separately) is not yet implemented.
+fn parse_standard_capabilities(device_file: &std::fs::File, config_offset: u64, config_size: u64) {
+    let Ok(cap_ptr_dword) = read_config_u32(
+        device_file,
+        config_offset,
+        config_size,
+        HeaderType00::RESERVED_CAP_PTR.0,
+    ) else {
+        return;
+    };
+    let mut cap_ptr = (cap_ptr_dword & 0xFC) as u16;
+    let mut iterations = 0usize;
+
+    while cap_ptr != 0 {
+        const MAX_CAPS: usize = 48;
+        if iterations >= MAX_CAPS {
+            tracing::warn!("standard capability list exceeded {MAX_CAPS} entries, aborting walk");
+            return;
+        }
+        iterations += 1;
+
+        let Ok(header) = read_config_u32(device_file, config_offset, config_size, cap_ptr) else {
+            return;
+        };
+        let cap_id = (header & 0xFF) as u8;
+        let next_ptr = ((header >> 8) & 0xFC) as u16;
+
+        tracing::debug!(
+            cap_id,
+            offset = cap_ptr,
+            "discovered standard PCI capability"
+        );
+
+        cap_ptr = next_ptr;
+    }
+}
+
+/// Walk the PCIe extended capability chain (offsets 0x100+) and insert patches
+/// to null out capabilities that should be hidden from the guest.
+///
+/// Hidden capabilities have their cap ID zeroed (mask=0x0000_FFFF, value=0),
+/// which makes them appear as a null capability. The next-pointer field is
+/// preserved so the chain remains walkable.
+fn parse_extended_capabilities(
+    device_file: &std::fs::File,
+    config_offset: u64,
+    config_size: u64,
+    patches: &mut BTreeMap<u16, ConfigPatch>,
+) {
+    // Extended capabilities start at offset 0x100 in PCIe config space.
+    const EXT_CAP_START: u16 = 0x100;
+
+    // Config space must be large enough for extended capabilities.
+    if config_size <= EXT_CAP_START as u64 {
+        return;
+    }
+
+    let mut offset = EXT_CAP_START;
+    let mut iterations = 0usize;
+
+    loop {
+        // Guard against malformed chains.
+        const MAX_EXT_CAPS: usize = 256;
+        if iterations >= MAX_EXT_CAPS {
+            tracing::warn!(
+                "extended capability list exceeded {MAX_EXT_CAPS} entries, aborting walk"
+            );
+            return;
+        }
+        iterations += 1;
+
+        let Ok(header) = read_config_u32(device_file, config_offset, config_size, offset) else {
+            return;
+        };
+
+        // A header of 0 means end of list (no capability at this offset).
+        if header == 0 {
+            return;
+        }
+
+        let cap_id = (header & 0xFFFF) as u16;
+        let cap_next = ((header >> 20) & 0xFFF) as u16;
+
+        tracing::debug!(
+            cap_id,
+            offset,
+            next = cap_next,
+            "discovered extended PCI capability"
+        );
+
+        match cap_id {
+            extended_cap_id::SRIOV | extended_cap_id::ARI | extended_cap_id::REBAR => {
+                tracing::info!(
+                    cap_id,
+                    offset,
+                    "filtering extended capability from guest view"
+                );
+                // Zero the cap ID field (low 16 bits) to make this a null
+                // capability. Preserve the version and next-pointer (high
+                // 16 bits) so the chain remains walkable.
+                patches.insert(
+                    offset,
+                    ConfigPatch {
+                        mask: 0x0000_FFFF,
+                        value: 0,
+                    },
+                );
+            }
+            _ => {}
+        }
+
+        if cap_next == 0 {
+            return;
+        }
+
+        offset = cap_next;
+    }
+}
+
 /// Read from the MSI-X emulator at the given offset, handling sub-DWORD
 /// accesses by aligning to u32 boundaries.
 fn read_msix_emulator(emulator: &MsixEmulator, offset: u64, data: &mut [u8]) {
@@ -794,7 +1001,8 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             bar_regions: _,       // immutable device geometry
             msix,
             supports_reset,
-            binding: _, // lifetime handle — no reset needed
+            config_patches: _, // immutable — built at init
+            binding: _,        // lifetime handle — no reset needed
         } = self;
 
         // Reset emulated MSI-X table and capability to power-on defaults
@@ -858,8 +1066,16 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                 // high 16 bits from emulator (message control).
                 (hw & 0xFFFF) | (emu & 0xFFFF0000)
             }
-            // Everything else: read from physical device.
-            _ => self.read_phys_config(offset),
+            // Everything else: read from physical device, applying any
+            // config space patches.
+            _ => {
+                let hw = self.read_phys_config(offset);
+                if let Some(patch) = self.config_patches.get(&offset) {
+                    (hw & !patch.mask) | (patch.value & patch.mask)
+                } else {
+                    hw
+                }
+            }
         };
 
         IoResult::Ok
