@@ -175,8 +175,7 @@ where
                 }
 
                 if let Some(bus_id_port) = self.pcie_port {
-                    self.services
-                        .register_static_pcie(bus_id_port);
+                    self.services.register_static_pcie(bus_id_port);
                 } else {
                     // static pci registration
                     let bdf = match (self.pci_addr, dev.suggested_bdf()) {
