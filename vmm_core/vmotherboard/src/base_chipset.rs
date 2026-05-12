@@ -1080,12 +1080,6 @@ pub mod options {
             };
         }
 
-        /// PIIX4 PCI-ISA bridge (fixed pci address: 0:7.0)
-        pub struct Piix4PciIsaBridgeDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
-        }
-
         /// Hyper-V IDE controller (fixed pci address: 0:7.1)
         // TODO: this device needs to be broken down further, into a PIIX4 IDE
         // device (without the Hyper-V enlightenments), and then a Generic IDE

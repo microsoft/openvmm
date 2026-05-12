@@ -100,8 +100,6 @@ use memory_range::MemoryRange;
 use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::rpc::RpcSend;
-use scsi_core::ResolveScsiDeviceHandleParams;
-use scsidisk::atapi_scsi::AtapiScsiDisk;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
@@ -118,6 +116,8 @@ use pal_async::DefaultPool;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
+use scsi_core::ResolveScsiDeviceHandleParams;
+use scsidisk::atapi_scsi::AtapiScsiDisk;
 use socket2::Socket;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
@@ -2926,6 +2926,9 @@ async fn new_underhill_vm(
         enlightened_interrupts: true, // As advertised by the PCAT BIOS.
     });
 
+    // OpenHCL builds the IDE controller inline (via deps_hyperv_ide) using the
+    // pre-resolved drives, so that the storvsp accelerator can Arc-share the same
+    // disk instance. This avoids the VTL2 NVMe double-open regression.
     let [primary_channel_drives, secondary_channel_drives] = ide_drives;
     let deps_hyperv_ide = if chipset.with_hyperv_ide {
         Some(dev::HyperVIdeDeps {
