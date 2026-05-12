@@ -1847,21 +1847,21 @@ impl InitializedVm {
             segment: u16,
             bus_range: pcie::bus_range::AssignedBusRange,
         }
-        let mut port_info: std::collections::HashMap<Arc<str>, PortInfo> = pcie_host_bridges
-            .iter()
-            .zip(pcie_root_complexes.iter())
-            .flat_map(|(hb, rc)| {
-                rc.lock().downstream_ports().into_iter().map(move |p| {
-                    (
-                        p.name,
-                        PortInfo {
-                            segment: hb.segment,
-                            bus_range: p.bus_range,
-                        },
-                    )
-                })
-            })
-            .collect();
+        let mut port_info: std::collections::HashMap<Arc<str>, PortInfo> =
+            std::collections::HashMap::new();
+        for (hb, rc) in pcie_host_bridges.iter().zip(pcie_root_complexes.iter()) {
+            for p in rc.lock().downstream_ports() {
+                if let Some(_existing) = port_info.insert(
+                    p.name.clone(),
+                    PortInfo {
+                        segment: hb.segment,
+                        bus_range: p.bus_range,
+                    },
+                ) {
+                    anyhow::bail!("duplicate PCIe port name '{}'", p.name);
+                }
+            }
+        }
 
         for switch in cfg.pcie_switches {
             let device_name = format!("pcie-switch:{}", switch.name);
@@ -1893,13 +1893,15 @@ impl InitializedVm {
             // Query the switch's actual downstream port names instead of
             // reconstructing them from the naming convention.
             for p in switch_device.lock().downstream_ports() {
-                port_info.insert(
-                    p.name,
+                if let Some(_existing) = port_info.insert(
+                    p.name.clone(),
                     PortInfo {
                         segment: parent_segment,
                         bus_range: p.bus_range,
                     },
-                );
+                ) {
+                    anyhow::bail!("duplicate PCIe port name '{}'", p.name);
+                }
             }
 
             let bus_id = vmotherboard::BusId::new(&switch.name);
