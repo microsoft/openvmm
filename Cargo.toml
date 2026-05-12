@@ -650,7 +650,7 @@ inherits = 'release'
 codegen-units = 1
 lto = 'fat'
 
-# Each LTO setting leads to different symptom that leads to non-reproducibility
+# Each LTO setting leads to different symptoms that lead to non-reproducibility
 # It's likely that LTO isn't to blame here, but this profile makes it easy to 
 # experiment 
 [profile.underhill-ship-reproducible]

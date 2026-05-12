@@ -1112,7 +1112,7 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(local_build_job);
 
             // TODO: Use the check_reproducible_build.rs node to validate that
-            // the two builds produce the same output. This isn't running yet becaues
+            // the two builds produce the same output. This isn't running yet because
             // they don't produce bit-for-bit identical builds
         }
 
