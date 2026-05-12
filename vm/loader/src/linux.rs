@@ -129,6 +129,8 @@ pub enum FlatLoaderError {
 pub enum Error {
     #[error("elf loader error")]
     ElfLoader(#[source] crate::elf::Error),
+    #[error("bzImage extraction error")]
+    BzImage(#[source] crate::bzimage::Error),
     #[error("flat loader error")]
     FlatLoader(#[source] FlatLoaderError),
     #[error("Address is not page aligned")]
@@ -267,10 +269,14 @@ fn import_initrd<R: GuestArch>(
 /// Load only a Linux kernel and optional initrd to VTL0.
 /// This does not setup register state or any other config information.
 ///
+/// The kernel image may be either an uncompressed ELF (`vmlinux`) or a
+/// compressed bzImage. If a bzImage is detected, the embedded vmlinux
+/// ELF is automatically extracted before loading.
+///
 /// # Arguments
 ///
 /// * `importer` - The importer to use.
-/// * `kernel_image` - Uncompressed ELF image for the kernel.
+/// * `kernel_image` - Kernel image (uncompressed ELF or bzImage).
 /// * `kernel_minimum_start_address` - The minimum address the kernel can load at.
 ///   It cannot contain an entrypoint or program headers that refer to memory below this address.
 /// * `initrd` - The initrd config, optional.
@@ -284,20 +290,42 @@ where
     F: Read + Seek,
 {
     tracing::trace!(kernel_minimum_start_address, "loading x86_64 kernel");
+
+    // Check if the kernel image is a bzImage and extract the ELF if so.
+    let bzimage_elf = if crate::bzimage::is_bzimage(kernel_image).map_err(Error::BzImage)? {
+        tracing::info!("detected bzImage format, extracting embedded vmlinux ELF");
+        Some(crate::bzimage::extract_vmlinux(kernel_image).map_err(Error::BzImage)?)
+    } else {
+        None
+    };
+
+    let elf_load_info = match bzimage_elf {
+        Some(mut elf_cursor) => load_static_elf(
+            importer,
+            &mut elf_cursor,
+            kernel_minimum_start_address,
+            0,
+            false,
+            BootPageAcceptance::Exclusive,
+            "linux-kernel",
+        ),
+        None => load_static_elf(
+            importer,
+            kernel_image,
+            kernel_minimum_start_address,
+            0,
+            false,
+            BootPageAcceptance::Exclusive,
+            "linux-kernel",
+        ),
+    }
+    .map_err(Error::ElfLoader)?;
+
     let crate::elf::LoadInfo {
         minimum_address_used: min_addr,
         next_available_address: next_addr,
         entrypoint,
-    } = load_static_elf(
-        importer,
-        kernel_image,
-        kernel_minimum_start_address,
-        0,
-        false,
-        BootPageAcceptance::Exclusive,
-        "linux-kernel",
-    )
-    .map_err(Error::ElfLoader)?;
+    } = elf_load_info;
     tracing::trace!(min_addr, next_addr, entrypoint, "loaded kernel");
 
     let initrd_info = import_initrd(initrd, next_addr, importer)?;
@@ -446,10 +474,14 @@ pub fn load_config(
 
 /// Load a Linux kernel into VTL0.
 ///
+/// The kernel image may be either an uncompressed ELF (`vmlinux`) or a
+/// compressed bzImage. If a bzImage is detected, the embedded vmlinux
+/// ELF is automatically extracted before loading.
+///
 /// # Arguments
 ///
 /// * `importer` - The importer to use.
-/// * `kernel_image` - Uncompressed ELF image for the kernel.
+/// * `kernel_image` - Kernel image (uncompressed ELF or bzImage).
 /// * `kernel_minimum_start_address` - The minimum address the kernel can load at.
 ///   It cannot contain an entrypoint or program headers that refer to memory below this address.
 /// * `initrd` - The initrd config, optional.

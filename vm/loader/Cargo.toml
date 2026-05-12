@@ -21,6 +21,7 @@ guid.workspace = true
 anyhow.workspace = true
 bitfield-struct.workspace = true
 crc32fast.workspace = true
+flate2.workspace = true
 object = { workspace = true, features = ["elf", "std", "read_core"] }
 open_enum.workspace = true
 thiserror.workspace = true

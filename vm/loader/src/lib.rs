@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 #[warn(missing_docs)]
+pub mod bzimage;
 pub mod common;
 pub mod cpuid;
 pub mod elf;
