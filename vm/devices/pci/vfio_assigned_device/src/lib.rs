@@ -754,8 +754,7 @@ fn discover_msix(
 
 /// Build the config-space patch table for a VFIO assigned device.
 ///
-/// This walks the standard and extended capability chains and inserts patches
-/// to:
+/// This walks the extended capability chain and inserts patches to:
 /// - Clear the multi-function bit in the Header Type register
 /// - Null out extended capabilities that don't make sense in a virtual topology
 ///   (SR-IOV, ARI, Resizable BAR)
@@ -778,56 +777,11 @@ fn build_config_patches(
         },
     );
 
-    // Walk the standard capability chain and log each capability found.
-    // No filtering of standard caps beyond what MSI-X discovery already does,
-    // but the walk unifies discovery and provides useful diagnostics.
-    parse_standard_capabilities(device_file, config_offset, config_size);
-
     // Walk the extended capability chain (starting at offset 0x100) and
     // insert patches to null out capabilities the guest shouldn't see.
     parse_extended_capabilities(device_file, config_offset, config_size, &mut patches);
 
     patches
-}
-
-/// Walk the standard PCI capability chain and log each capability found.
-///
-/// This is purely diagnostic for now — standard capability filtering (beyond
-/// MSI-X, which is handled separately) is not yet implemented.
-fn parse_standard_capabilities(device_file: &std::fs::File, config_offset: u64, config_size: u64) {
-    let Ok(cap_ptr_dword) = read_config_u32(
-        device_file,
-        config_offset,
-        config_size,
-        HeaderType00::RESERVED_CAP_PTR.0,
-    ) else {
-        return;
-    };
-    let mut cap_ptr = (cap_ptr_dword & 0xFC) as u16;
-    let mut iterations = 0usize;
-
-    while cap_ptr != 0 {
-        const MAX_CAPS: usize = 48;
-        if iterations >= MAX_CAPS {
-            tracing::warn!("standard capability list exceeded {MAX_CAPS} entries, aborting walk");
-            return;
-        }
-        iterations += 1;
-
-        let Ok(header) = read_config_u32(device_file, config_offset, config_size, cap_ptr) else {
-            return;
-        };
-        let cap_id = (header & 0xFF) as u8;
-        let next_ptr = ((header >> 8) & 0xFC) as u16;
-
-        tracing::debug!(
-            cap_id,
-            offset = cap_ptr,
-            "discovered standard PCI capability"
-        );
-
-        cap_ptr = next_ptr;
-    }
 }
 
 /// Walk the PCIe extended capability chain (offsets 0x100+) and insert patches
@@ -870,17 +824,15 @@ fn parse_extended_capabilities(
             return;
         }
 
-        let cap_id = (header & 0xFFFF) as u16;
+        let cap_id = caps::ExtendedCapabilityId((header & 0xFFFF) as u16);
         let cap_next = ((header >> 20) & 0xFFF) as u16;
 
         tracing::debug!(
-            cap_id,
+            ?cap_id,
             offset,
             next = cap_next,
             "discovered extended PCI capability"
         );
-
-        let cap_id = caps::ExtendedCapabilityId(cap_id);
 
         match cap_id {
             caps::ExtendedCapabilityId::SRIOV
@@ -888,7 +840,7 @@ fn parse_extended_capabilities(
             | caps::ExtendedCapabilityId::REBAR => {
                 tracing::info!(
                     ?cap_id,
-                    offset,
+                    offset = format_args!("{offset:#x}"),
                     "filtering extended capability from guest view"
                 );
                 // Zero the cap ID field (low 16 bits) to make this a null
@@ -913,8 +865,8 @@ fn parse_extended_capabilities(
         // (>= 0x100), DWORD-aligned, and within the config region.
         if cap_next < caps::EXT_CAP_START || cap_next & 0x3 != 0 || cap_next as u64 + 4 > config_size {
             tracing::warn!(
-                cap_next,
-                offset,
+                cap_next = format_args!("{cap_next:#x}"),
+                offset = format_args!("{offset:#x}"),
                 "malformed extended capability next pointer, aborting walk"
             );
             return;
@@ -1070,7 +1022,14 @@ impl PciConfigSpace for VfioAssignedPciDevice {
             _ => {
                 let hw = self.read_phys_config(offset);
                 if let Some(patch) = self.config_patches.get(&offset) {
-                    (hw & !patch.mask) | (patch.value & patch.mask)
+                    let patched = (hw & !patch.mask) | (patch.value & patch.mask);
+                    tracing::trace!(
+                        offset = format_args!("{offset:#x}"),
+                        hw = format_args!("{hw:#010x}"),
+                        patched = format_args!("{patched:#010x}"),
+                        "applied config space patch"
+                    );
+                    patched
                 } else {
                     hw
                 }
