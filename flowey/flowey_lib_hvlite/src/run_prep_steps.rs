@@ -47,7 +47,7 @@ impl SimpleFlowNode for Node {
                     let vms = powershell_builder::PowerShellBuilder::new()
                         .cmdlet("Get-VM")
                         .finish()
-                        .output()?;
+                        .output(|_| {})?;
                     log::info!(
                         "removing any existing VMs: {}",
                         String::from_utf8_lossy(&vms.stdout)
@@ -59,7 +59,7 @@ impl SimpleFlowNode for Node {
                         .cmdlet("Stop-VM")
                         .flag("TurnOff")
                         .finish()
-                        .output()?;
+                        .output(|_| {})?;
 
                     powershell_builder::PowerShellBuilder::new()
                         .cmdlet("Get-VM")
@@ -67,7 +67,7 @@ impl SimpleFlowNode for Node {
                         .cmdlet("Remove-VM")
                         .flag("Force")
                         .finish()
-                        .output()?;
+                        .output(|_| {})?;
                 }
 
                 let binary_path = match &prep_steps {

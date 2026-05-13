@@ -81,7 +81,7 @@ pub enum CommandError {
 pub async fn run_host_cmd(mut cmd: Command) -> Result<String, CommandError> {
     cmd.stderr(Stdio::piped()).stdin(Stdio::null());
     let cmd_debug = format!("{cmd:?}");
-    run_and_log(cmd_debug, move || cmd.output()).await
+    run_and_log(move || Ok((cmd_debug, cmd.output()?))).await
 }
 
 /// Run a PowerShell command on the host and return the output. Transient
@@ -89,23 +89,27 @@ pub async fn run_host_cmd(mut cmd: Command) -> Result<String, CommandError> {
 /// [`powershell_builder::PowerShellBuilder::output`].
 #[cfg(windows)]
 pub async fn run_host_ps(
-    mut builder: powershell_builder::PowerShellBuilder,
+    builder: powershell_builder::PowerShellBuilder,
 ) -> Result<String, CommandError> {
-    builder
-        .command()
-        .stderr(Stdio::piped())
-        .stdin(Stdio::null());
-    let cmd_debug = format!("{:?}", builder.command());
-    run_and_log(cmd_debug, move || builder.output()).await
+    run_and_log(move || {
+        // The `Command` is owned by the builder, so we capture its debug
+        // representation from inside the configure closure.
+        let mut cmd_debug = String::new();
+        let output = builder.output(|cmd| {
+            cmd.stderr(Stdio::piped()).stdin(Stdio::null());
+            cmd_debug = format!("{cmd:?}");
+        })?;
+        Ok((cmd_debug, output))
+    })
+    .await
 }
 
-async fn run_and_log<F>(cmd_debug: String, run: F) -> Result<String, CommandError>
+async fn run_and_log<F>(run: F) -> Result<String, CommandError>
 where
-    F: FnOnce() -> std::io::Result<std::process::Output> + Send + 'static,
+    F: FnOnce() -> std::io::Result<(String, std::process::Output)> + Send + 'static,
 {
-    ::tracing::debug!(cmd = cmd_debug, "executing command");
     let start = Timestamp::now();
-    let output = blocking::unblock(run).await?;
+    let (cmd_debug, output) = blocking::unblock(run).await?;
     let time_elapsed = Timestamp::now() - start;
 
     let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
