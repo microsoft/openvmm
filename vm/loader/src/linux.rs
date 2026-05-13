@@ -51,9 +51,23 @@ pub fn build_zero_page(
     cmdline_config: &CommandLineConfig<'_>,
     initrd_base: u32,
     initrd_size: u32,
+    bzimage_header: Option<&defs::setup_header>,
 ) -> defs::boot_params {
-    let mut p = defs::boot_params {
-        hdr: defs::setup_header {
+    // Start with the bzImage setup header if available, otherwise build a minimal one.
+    let hdr = match bzimage_header {
+        Some(orig) => {
+            let mut hdr = *orig;
+            // Update fields that the bootloader is responsible for setting.
+            hdr.type_of_loader = 0xff;
+            hdr.cmd_line_ptr = cmdline_config.address.try_into().expect("must fit in u32");
+            hdr.cmdline_size = (cmdline_config.cmdline.as_bytes().len() as u64)
+                .try_into()
+                .expect("must fit in u32");
+            hdr.ramdisk_image = (initrd_base).into();
+            hdr.ramdisk_size = (initrd_size).into();
+            hdr
+        }
+        None => defs::setup_header {
             type_of_loader: 0xff,
             boot_flag: 0xaa55.into(),
             header: 0x53726448.into(),
@@ -66,6 +80,10 @@ pub fn build_zero_page(
             kernel_alignment: 0x100000.into(),
             ..FromZeros::new_zeroed()
         },
+    };
+
+    let mut p = defs::boot_params {
+        hdr,
         ..FromZeros::new_zeroed()
     };
 
@@ -139,6 +157,8 @@ pub enum Error {
     Importer(#[source] anyhow::Error),
     #[error("failed to import initrd")]
     ImportInitrd(#[source] ImportFileRegionError),
+    #[error("failed to import bzImage payload")]
+    ImportBzImage(#[source] ImportFileRegionError),
     #[error("PageTableBuilder: {0}")]
     PageTableBuilder(#[from] page_table::Error),
 }
@@ -214,6 +234,10 @@ pub struct LoadInfo {
     pub initrd: Option<InitrdInfo>,
     /// The information about the device tree blob loaded.
     pub dtb: Option<std::ops::Range<u64>>,
+    /// If a bzImage was loaded, the original setup header from the image.
+    /// This must be placed into the zero page so the kernel's startup code
+    /// can read its own configuration.
+    pub bzimage_setup_header: Option<defs::setup_header>,
 }
 
 /// Check if an address is aligned to a page.
@@ -270,8 +294,9 @@ fn import_initrd<R: GuestArch>(
 /// This does not setup register state or any other config information.
 ///
 /// The kernel image may be either an uncompressed ELF (`vmlinux`) or a
-/// compressed bzImage. If a bzImage is detected, the embedded vmlinux
-/// ELF is automatically extracted before loading.
+/// compressed bzImage. If a bzImage is detected, the protected-mode code
+/// is loaded as a flat binary and the kernel's own decompressor runs at
+/// boot time.
 ///
 /// # Arguments
 ///
@@ -291,34 +316,20 @@ where
 {
     tracing::trace!(kernel_minimum_start_address, "loading x86_64 kernel");
 
-    // Check if the kernel image is a bzImage and extract the ELF if so.
-    let bzimage_elf = if crate::bzimage::is_bzimage(kernel_image).map_err(Error::BzImage)? {
-        tracing::info!("detected bzImage format, extracting embedded vmlinux ELF");
-        Some(crate::bzimage::extract_vmlinux(kernel_image).map_err(Error::BzImage)?)
-    } else {
-        None
-    };
-
-    let elf_load_info = match bzimage_elf {
-        Some(mut elf_cursor) => load_static_elf(
-            importer,
-            &mut elf_cursor,
-            kernel_minimum_start_address,
-            0,
-            false,
-            BootPageAcceptance::Exclusive,
-            "linux-kernel",
-        ),
-        None => load_static_elf(
-            importer,
-            kernel_image,
-            kernel_minimum_start_address,
-            0,
-            false,
-            BootPageAcceptance::Exclusive,
-            "linux-kernel",
-        ),
+    if crate::bzimage::is_bzimage(kernel_image).map_err(Error::BzImage)? {
+        tracing::info!("detected bzImage format, loading protected-mode code directly");
+        return load_bzimage(importer, kernel_image, kernel_minimum_start_address, initrd);
     }
+
+    let elf_load_info = load_static_elf(
+        importer,
+        kernel_image,
+        kernel_minimum_start_address,
+        0,
+        false,
+        BootPageAcceptance::Exclusive,
+        "linux-kernel",
+    )
     .map_err(Error::ElfLoader)?;
 
     let crate::elf::LoadInfo {
@@ -338,6 +349,66 @@ where
         },
         initrd: initrd_info,
         dtb: None,
+        bzimage_setup_header: None,
+    })
+}
+
+/// Load a bzImage by placing the protected-mode code directly into guest
+/// memory and letting the kernel's built-in decompressor handle the rest.
+fn load_bzimage(
+    importer: &mut dyn ImageLoad<X86Register>,
+    kernel_image: &mut (impl Read + Seek),
+    kernel_start_address: u64,
+    initrd: Option<InitrdConfig<'_>>,
+) -> Result<LoadInfo, Error> {
+    let info = crate::bzimage::parse_bzimage(kernel_image).map_err(Error::BzImage)?;
+
+    check_address_alignment(kernel_start_address)?;
+
+    let payload_offset = (info.setup_sects as u64 + 1) * 512;
+    let payload_len = info.protected_mode_size;
+    let payload_memory_len = align_up_to_page_size(payload_len);
+    let entrypoint = kernel_start_address + info.entry_offset;
+
+    tracing::info!(
+        kernel_start_address = format_args!("{:#x}", kernel_start_address),
+        payload_offset,
+        payload_len,
+        entrypoint = format_args!("{:#x}", entrypoint),
+        "loading bzImage protected-mode code"
+    );
+
+    ChunkBuf::new()
+        .import_file_region(
+            importer,
+            ImportFileRegion {
+                file: kernel_image,
+                file_offset: payload_offset,
+                file_length: payload_len,
+                gpa: kernel_start_address,
+                memory_length: payload_memory_len,
+                acceptance: BootPageAcceptance::Exclusive,
+                tag: "linux-kernel",
+            },
+        )
+        .map_err(Error::ImportBzImage)?;
+
+    // Place initrd after the kernel's init_size region to avoid being
+    // overwritten during decompression.
+    let next_addr = kernel_start_address + payload_memory_len;
+    let init_end = kernel_start_address + info.init_size as u64;
+    let next_addr = next_addr.max(init_end);
+    let initrd_info = import_initrd(initrd, next_addr, importer)?;
+
+    Ok(LoadInfo {
+        kernel: KernelInfo {
+            gpa: kernel_start_address,
+            size: payload_memory_len,
+            entrypoint,
+        },
+        initrd: initrd_info,
+        dtb: None,
+        bzimage_setup_header: Some(info.setup_header),
     })
 }
 
@@ -430,6 +501,7 @@ pub fn load_config(
         &command_line,
         load_info.initrd.as_ref().map(|info| info.gpa).unwrap_or(0) as u32,
         load_info.initrd.as_ref().map(|info| info.size).unwrap_or(0) as u32,
+        load_info.bzimage_setup_header.as_ref(),
     );
     importer
         .import_pages(
@@ -717,6 +789,7 @@ where
         },
         initrd: initrd_info,
         dtb,
+        bzimage_setup_header: None,
     })
 }
 

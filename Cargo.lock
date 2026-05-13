@@ -3977,7 +3977,6 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "build_rs_guest_arch",
  "crc32fast",
- "flate2",
  "guid",
  "hvdef",
  "igvm",
