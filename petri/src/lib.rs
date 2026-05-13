@@ -77,41 +77,44 @@ pub enum CommandError {
     Command(std::process::ExitStatus, String),
 }
 
-/// Run a command on the host and return the output.
+/// Run a command on the host and return the output
 pub async fn run_host_cmd(mut cmd: Command) -> Result<String, CommandError> {
     cmd.stderr(Stdio::piped()).stdin(Stdio::null());
     let cmd_debug = format!("{cmd:?}");
-    run_and_log(move || Ok((cmd_debug, cmd.output()?))).await
+    ::tracing::debug!(cmd = cmd_debug, "executing command");
+    let start = Timestamp::now();
+    let output = blocking::unblock(move || cmd.output()).await?;
+    log_and_check(&cmd_debug, start, output)
 }
 
 /// Run a PowerShell command on the host and return the output. Transient
 /// Windows PowerShell 5.1 startup crashes are retried automatically by
-/// [`powershell_builder::PowerShellBuilder::output`].
+/// [`powershell_builder::PowerShellBuilder::output_with`].
 #[cfg(windows)]
 pub async fn run_host_ps(
     builder: powershell_builder::PowerShellBuilder,
 ) -> Result<String, CommandError> {
-    run_and_log(move || {
-        // The `Command` is owned by the builder, so we capture its debug
-        // representation from inside the configure closure.
+    let start = Timestamp::now();
+    // The `Command` is owned by the builder, so capture its debug
+    // representation from inside the configure closure.
+    let (cmd_debug, output) = blocking::unblock(move || {
         let mut cmd_debug = String::new();
         let output = builder.output_with(|cmd| {
             cmd.stderr(Stdio::piped()).stdin(Stdio::null());
             cmd_debug = format!("{cmd:?}");
         })?;
-        Ok((cmd_debug, output))
+        std::io::Result::Ok((cmd_debug, output))
     })
-    .await
+    .await?;
+    log_and_check(&cmd_debug, start, output)
 }
 
-async fn run_and_log<F>(run: F) -> Result<String, CommandError>
-where
-    F: FnOnce() -> std::io::Result<(String, std::process::Output)> + Send + 'static,
-{
-    let start = Timestamp::now();
-    let (cmd_debug, output) = blocking::unblock(run).await?;
+fn log_and_check(
+    cmd_debug: &str,
+    start: Timestamp,
+    output: std::process::Output,
+) -> Result<String, CommandError> {
     let time_elapsed = Timestamp::now() - start;
-
     let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
     ::tracing::debug!(
