@@ -832,11 +832,11 @@ impl VfioCdevBinding {
         (
             device,
             VfioCdevBindingState {
-                _pci_id: pci_id,
-                _iommufd_devid: iommufd_devid,
-                _ioas_id: ioas_id,
-                _device_id: device_id,
-                _sender: sender,
+                pci_id,
+                iommufd_devid,
+                ioas_id,
+                device_id,
+                sender,
             },
         )
     }
@@ -849,19 +849,19 @@ impl VfioCdevBinding {
 /// are cleaned up.
 #[derive(Inspect)]
 pub(crate) struct VfioCdevBindingState {
-    _pci_id: String,
-    _iommufd_devid: u32,
-    _ioas_id: u32,
+    pci_id: String,
+    iommufd_devid: u32,
+    ioas_id: u32,
     #[inspect(skip)]
-    _device_id: u64,
+    device_id: u64,
     #[inspect(skip)]
-    _sender: mesh::Sender<VfioCdevManagerRpc>,
+    sender: mesh::Sender<VfioCdevManagerRpc>,
 }
 
 impl Drop for VfioCdevBindingState {
     fn drop(&mut self) {
-        self._sender
-            .send(VfioCdevManagerRpc::RemoveDevice(self._device_id));
+        self.sender
+            .send(VfioCdevManagerRpc::RemoveDevice(self.device_id));
     }
 }
 
