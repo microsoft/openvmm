@@ -3,12 +3,17 @@
 
 //! SHA-256 hashing.
 
-#![cfg(any(openssl, symcrypt))]
+#![cfg(any(openssl, rust, symcrypt))]
 
 #[cfg(openssl)]
 mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
+
+#[cfg(rust)]
+mod rust;
+#[cfg(rust)]
+use rust as sys;
 
 #[cfg(symcrypt)]
 mod symcrypt;

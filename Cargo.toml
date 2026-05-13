@@ -513,11 +513,14 @@ flate2 = "1.1"
 # --- Cryptography & secure computing ---
 constant_time_eq = "0.3"
 der = "0.8"
-getrandom = "0.3"
+getrandom = "0.4"
 ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
 openssl = "0.10.72"
 openssl-sys = "0.9"
+pkcs1 = "0.8.0-rc.4"
+pkcs8 = "0.11.0"
 rsa = { version = "0.10.0-rc.18", default-features = false }
+sha1 = { version = "0.11.0", default-features = false }
 sha2 = { version = "0.11.0", default-features = false }
 symcrypt = { version = "0.6.0", git = "https://github.com/microsoft/rust-symcrypt.git", branch = "release/0.6.0" }
 x509-cert = { version = "0.3.0-rc.4", default-features = false }

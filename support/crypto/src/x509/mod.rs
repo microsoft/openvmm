@@ -3,24 +3,31 @@
 
 //! X.509 certificate operations.
 
-#![cfg(any(openssl, symcrypt))]
+#![cfg(any(openssl, rust, symcrypt))]
 
 #[cfg(openssl)]
 mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
 
-#[cfg(symcrypt)]
-mod symcrypt;
-#[cfg(symcrypt)]
-use symcrypt as sys;
+#[cfg(any(rust, symcrypt))]
+mod symcrypt_rust;
+#[cfg(any(rust, symcrypt))]
+use symcrypt_rust as sys;
 
 use thiserror::Error;
 
 /// An error for X.509 operations.
+#[cfg(not(rust))]
 #[derive(Debug, Error)]
 #[error("X.509 error")]
 pub struct X509Error(#[source] super::BackendError);
+
+/// An error for X.509 operations.
+#[cfg(rust)]
+#[derive(Debug, Error)]
+#[error("X.509 error during {1}")]
+pub struct X509Error(#[source] der::Error, &'static str);
 
 /// An X.509 certificate.
 pub struct X509Certificate(pub(crate) sys::X509CertificateInner);
@@ -40,7 +47,10 @@ impl X509Certificate {
     /// public key.
     /// Returns `Ok(true)` if the signature is valid, `Ok(false)` if the
     /// signature is invalid, or an error for other failures.
-    pub fn verify(&self, issuer_public_key: &crate::rsa::RsaPublicKey) -> Result<bool, X509Error> {
+    pub fn verify(
+        &self,
+        issuer_public_key: &crate::rsa::RsaPublicKey,
+    ) -> Result<bool, crate::rsa::RsaError> {
         self.0.verify(issuer_public_key)
     }
 

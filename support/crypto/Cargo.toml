@@ -23,7 +23,23 @@ symcrypt = [
     "symcrypt/sha1",
     # The Symcrypt backend uses RustCrypto crates for de/serialization only.
     "dep:der",
+    "dep:pkcs1",
+    "dep:pkcs8",
     "dep:rsa",
+    "dep:x509-cert",
+]
+
+# Use RustCrypto crates instead of any native backend.
+# Note that some of these crates have known security issues.
+# This backend should not be used in production scenarios.
+rust = [
+    "dep:der",
+    "dep:getrandom",
+    "dep:pkcs1",
+    "dep:pkcs8",
+    "dep:rsa",
+    "dep:sha1",
+    "dep:sha2",
     "dep:x509-cert",
 ]
 
@@ -34,7 +50,12 @@ openssl = { workspace = true, optional = true }
 symcrypt = { workspace = true, optional = true }
 
 der = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true, features = ["sys_rng"] }
+pkcs1 = { workspace = true, optional = true }
+pkcs8 = { workspace = true, optional = true }
 rsa = { workspace = true, optional = true, features = ["encoding", "sha2"] }
+sha1 = { workspace = true, optional = true, features = ["oid"] }
+sha2 = { workspace = true, optional = true }
 x509-cert = { workspace = true, optional = true, features = ["builder"] }
 
 anyhow.workspace = true

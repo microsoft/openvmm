@@ -55,7 +55,7 @@ pub(crate) enum CertificateChainValidationError {
     #[error("failed to get public key from the certificate")]
     GetPublicKeyFromCertificate(#[source] crypto::x509::X509Error),
     #[error("failed to verify the child certificate signature with parent public key")]
-    VerifyChildSignatureWithParentPublicKey(#[source] crypto::x509::X509Error),
+    VerifyChildSignatureWithParentPublicKey(#[source] crypto::rsa::RsaError),
     #[error("cert chain validation failed -- signature mismatch")]
     CertChainSignatureMismatch,
     #[error("failed to check if the certificate was issued by the issuer")]
