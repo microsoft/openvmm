@@ -22,8 +22,14 @@ use vmcore::irqfd::IrqFdRoute;
 /// producing the ITS device ID.
 ///
 /// When `devid` is `Some(bdf)`, the ITS device ID is
-/// `(segment << 16) | (bdf & 0xFFFF)`. When `devid` is `None` (bus
-/// not yet assigned), the MSI is silently dropped.
+/// `(segment << 16) | (bdf & 0xFFFF)`.
+///
+/// In the normal flow this wrapper is invoked via
+/// [`MsiTarget::signal_msi`](pci_core::msi::MsiTarget::signal_msi),
+/// which always resolves a `Some(bdf)` from the device's default BDF
+/// before reaching this layer, so the `None` arm is unreachable.
+/// It is retained as a defensive guard for direct trait callers that
+/// have no BDF to provide.
 pub struct ItsSignalMsi {
     inner: Arc<dyn SignalMsi>,
     segment: u16,
