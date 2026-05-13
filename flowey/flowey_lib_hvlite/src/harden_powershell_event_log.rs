@@ -60,7 +60,7 @@ impl SimpleFlowNode for Node {
                 // exist and overwrites the value if it does. Failures are
                 // logged but non-fatal: the worst case is we fall back to the
                 // original (occasionally flaky) behavior.
-                let output = std::process::Command::new("reg.exe")
+                let output = match std::process::Command::new("reg.exe")
                     .args([
                         "add",
                         r"HKLM\Software\Microsoft\PowerShell\1\PowerShellEngine",
@@ -72,12 +72,22 @@ impl SimpleFlowNode for Node {
                         "0",
                         "/f",
                     ])
-                    .output()?;
+                    .output()
+                {
+                    Ok(output) => output,
+                    Err(e) => {
+                        log::warn!(
+                            "failed to spawn reg.exe to harden PowerShell event log (continuing): {e}"
+                        );
+                        return Ok(());
+                    }
+                };
 
                 if !output.status.success() {
                     log::warn!(
-                        "failed to harden PowerShell event log (continuing): {}",
-                        String::from_utf8_lossy(&output.stderr)
+                        "failed to harden PowerShell event log (continuing): stdout={} stderr={}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr),
                     );
                 } else {
                     log::info!("disabled Windows PowerShell engine event logging on this runner");
