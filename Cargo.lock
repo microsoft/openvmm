@@ -6269,6 +6269,7 @@ version = "0.0.0"
 dependencies = [
  "guid",
  "jiff",
+ "tracing",
 ]
 
 [[package]]

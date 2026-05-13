@@ -14,6 +14,42 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::process::Output;
+
+/// Run a PowerShell `Command` and return its output, retrying on the
+/// well-known transient Windows PowerShell 5.1 startup crash (exit code
+/// `0xDEAD` with an `AccessViolationException` thrown from
+/// `EventLogLogProvider` during session initialization).
+///
+/// The crash happens in `InitialSessionState.Bind_LoadProviders` *before*
+/// the user's command is dispatched, so retrying is idempotent. Up to 2
+/// retries (3 total attempts) are made.
+///
+/// Each call to [`Command::output`] spawns a fresh process, so the same
+/// `Command` value can be reused across attempts.
+pub fn output_with_av_retry(cmd: &mut Command) -> std::io::Result<Output> {
+    const MAX_RETRIES: u32 = 2;
+    let mut attempt = 0u32;
+    loop {
+        let output = cmd.output()?;
+        let is_wps_eventlog_av =
+            !output.status.success() && output.status.code() == Some(0xDEAD) && {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                stderr.contains("System.AccessViolationException")
+                    && stderr.contains("EventLogLogProvider")
+            };
+        if is_wps_eventlog_av && attempt < MAX_RETRIES {
+            attempt += 1;
+            tracing::warn!(
+                cmd = ?cmd,
+                attempt,
+                "retrying command after Windows PowerShell EventLog AV crash"
+            );
+            continue;
+        }
+        return Ok(output);
+    }
+}
 
 /// A PowerShell script builder
 pub struct PowerShellBuilder(Command);

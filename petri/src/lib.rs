@@ -77,7 +77,7 @@ pub enum CommandError {
     Command(std::process::ExitStatus, String),
 }
 
-/// Run a command on the host and return the output
+/// Run a command on the host and return the output.
 pub async fn run_host_cmd(mut cmd: Command) -> Result<String, CommandError> {
     cmd.stderr(Stdio::piped()).stdin(Stdio::null());
 
@@ -85,7 +85,19 @@ pub async fn run_host_cmd(mut cmd: Command) -> Result<String, CommandError> {
     ::tracing::debug!(cmd = cmd_debug, "executing command");
 
     let start = Timestamp::now();
-    let output = blocking::unblock(move || cmd.output()).await?;
+    let output = blocking::unblock(move || {
+        // Retry on the WPS 5.1 EventLog AV crash. For non-PowerShell
+        // commands the signature never matches, so this is a no-op.
+        #[cfg(windows)]
+        {
+            powershell_builder::output_with_av_retry(&mut cmd)
+        }
+        #[cfg(not(windows))]
+        {
+            cmd.output()
+        }
+    })
+    .await?;
     let time_elapsed = Timestamp::now() - start;
 
     let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();

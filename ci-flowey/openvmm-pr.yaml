@@ -4018,8 +4018,6 @@ jobs:
     displayName: generate nextest command
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_hvlite::install_vmm_tests_deps 0
     displayName: install vmm tests deps (windows)
-  - bash: $(FLOWEY_BIN) e 19 flowey_lib_hvlite::harden_powershell_event_log 0
-    displayName: harden Windows PowerShell event log
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
     displayName: starting test_igvm_agent_rpc_server
   - bash: |-
@@ -4521,8 +4519,6 @@ jobs:
     displayName: generate nextest command
   - bash: $(FLOWEY_BIN) e 16 flowey_lib_hvlite::install_vmm_tests_deps 0
     displayName: install vmm tests deps (windows)
-  - bash: $(FLOWEY_BIN) e 16 flowey_lib_hvlite::harden_powershell_event_log 0
-    displayName: harden Windows PowerShell event log
   - bash: $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
     displayName: starting test_igvm_agent_rpc_server
   - bash: |-
@@ -4794,8 +4790,6 @@ jobs:
     displayName: generate nextest command
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::install_vmm_tests_deps 0
     displayName: install vmm tests deps (windows)
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::harden_powershell_event_log 0
-    displayName: harden Windows PowerShell event log
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
     displayName: starting test_igvm_agent_rpc_server
   - bash: |-

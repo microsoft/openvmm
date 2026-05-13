@@ -3019,9 +3019,6 @@ jobs:
     - name: install vmm tests deps (windows)
       run: flowey.exe e 18 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
-    - name: harden Windows PowerShell event log
-      run: flowey.exe e 18 flowey_lib_hvlite::harden_powershell_event_log 0
-      shell: bash
     - name: starting test_igvm_agent_rpc_server
       run: flowey.exe e 18 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
       shell: bash
@@ -3288,9 +3285,6 @@ jobs:
       shell: bash
     - name: install vmm tests deps (windows)
       run: flowey.exe e 19 flowey_lib_hvlite::install_vmm_tests_deps 0
-      shell: bash
-    - name: harden Windows PowerShell event log
-      run: flowey.exe e 19 flowey_lib_hvlite::harden_powershell_event_log 0
       shell: bash
     - name: starting test_igvm_agent_rpc_server
       run: |-
@@ -3747,9 +3741,6 @@ jobs:
     - name: install vmm tests deps (windows)
       run: flowey.exe e 20 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
-    - name: harden Windows PowerShell event log
-      run: flowey.exe e 20 flowey_lib_hvlite::harden_powershell_event_log 0
-      shell: bash
     - name: starting test_igvm_agent_rpc_server
       run: flowey.exe e 20 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
       shell: bash
@@ -4016,9 +4007,6 @@ jobs:
       shell: bash
     - name: install vmm tests deps (windows)
       run: flowey.exe e 21 flowey_lib_hvlite::install_vmm_tests_deps 0
-      shell: bash
-    - name: harden Windows PowerShell event log
-      run: flowey.exe e 21 flowey_lib_hvlite::harden_powershell_event_log 0
       shell: bash
     - name: starting test_igvm_agent_rpc_server
       run: |-
@@ -4891,9 +4879,6 @@ jobs:
     - name: install vmm tests deps (windows)
       run: flowey.exe e 24 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
-    - name: harden Windows PowerShell event log
-      run: flowey.exe e 24 flowey_lib_hvlite::harden_powershell_event_log 0
-      shell: bash
     - name: starting test_igvm_agent_rpc_server
       run: flowey.exe e 24 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
       shell: bash
@@ -5509,9 +5494,6 @@ jobs:
       shell: bash
     - name: install vmm tests deps (windows)
       run: flowey.exe e 27 flowey_lib_hvlite::install_vmm_tests_deps 0
-      shell: bash
-    - name: harden Windows PowerShell event log
-      run: flowey.exe e 27 flowey_lib_hvlite::harden_powershell_event_log 0
       shell: bash
     - name: starting test_igvm_agent_rpc_server
       run: flowey.exe e 27 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
