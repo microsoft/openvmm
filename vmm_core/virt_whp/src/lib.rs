@@ -14,6 +14,8 @@ pub mod device;
 mod emu;
 mod hypercalls;
 mod memory;
+#[cfg(guest_arch = "x86_64")]
+mod nested_virt;
 mod regs;
 mod synic;
 mod vm_state;
@@ -125,6 +127,10 @@ struct WhpPartitionInner {
     #[inspect(skip)]
     gic_msi: vm_topology::processor::aarch64::GicMsiController,
     synic_ports: virt::synic::SynicPortMap,
+    /// What the host WHP implementation reports about its nested-virt
+    /// support. Probed once at partition creation. Diagnostic-only.
+    #[cfg(guest_arch = "x86_64")]
+    nested_virt_capability: nested_virt::NestedVirtCapability,
 }
 
 #[derive(Inspect)]
@@ -1169,6 +1175,8 @@ impl WhpPartitionInner {
             #[cfg(guest_arch = "aarch64")]
             gic_msi: proto_config.processor_topology.gic_msi(),
             synic_ports: Default::default(),
+            #[cfg(guest_arch = "x86_64")]
+            nested_virt_capability: nested_virt::nested_virt_capability()?,
         };
 
         Ok(inner)

@@ -189,6 +189,8 @@ pub const WHvPartitionPropertyCodeExceptionExitBitmap: WHV_PARTITION_PROPERTY_CO
     WHV_PARTITION_PROPERTY_CODE(0x00000002);
 pub const WHvPartitionPropertyCodeSeparateSecurityDomain: WHV_PARTITION_PROPERTY_CODE =
     WHV_PARTITION_PROPERTY_CODE(0x00000003);
+pub const WHvPartitionPropertyCodeNestedVirtualization: WHV_PARTITION_PROPERTY_CODE =
+    WHV_PARTITION_PROPERTY_CODE(0x00000004);
 #[cfg(target_arch = "x86_64")]
 pub const WHvPartitionPropertyCodeX64MsrExitBitmap: WHV_PARTITION_PROPERTY_CODE =
     WHV_PARTITION_PROPERTY_CODE(0x00000005);
