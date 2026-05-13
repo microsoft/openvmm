@@ -152,7 +152,7 @@ struct PidfileGuard(Option<PathBuf>);
 impl Drop for PidfileGuard {
     fn drop(&mut self) {
         if let Some(path) = &self.0 {
-            fs_err::remove_file(path).unwrap();
+            let _ = fs_err::remove_file(path);
         }
     }
 }
