@@ -58,7 +58,6 @@ use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::SerialInformation;
-use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
@@ -491,19 +490,20 @@ impl PetriVmConfigOpenVmm {
             chipset_devices.push(tpm);
         }
 
-        // Set up virtio devices
-        let mut virtio_devices = Vec::new();
+        // Set up virtio-vsock if enabled.
         if properties.use_virtio_vsock {
-            virtio_devices.push((
-                // Use the MMIO bus because PCI is not available on Linux direct boot configurations.
-                VirtioBus::Mmio,
-                VirtioVsockHandle {
-                    guest_cid: 0x3,
-                    base_path: vsock_path_string.to_string(),
-                    listener: vsock_listener.take().unwrap(),
-                }
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: "s0rc0rp0".to_string(),
+                resource: VirtioPciDeviceHandle(
+                    VirtioVsockHandle {
+                        guest_cid: 0x3,
+                        base_path: vsock_path_string.to_string(),
+                        listener: vsock_listener.take().unwrap(),
+                    }
+                    .into_resource(),
+                )
                 .into_resource(),
-            ));
+            });
         }
 
         let config = Config {
@@ -568,7 +568,7 @@ impl PetriVmConfigOpenVmm {
             kernel_vmnics: vec![],
             input: mesh::Receiver::new(),
             vtl2_gfx: false,
-            virtio_devices,
+            virtio_devices: vec![],
             #[cfg(windows)]
             vpci_resources: vec![],
             debugger_rpc: None,
