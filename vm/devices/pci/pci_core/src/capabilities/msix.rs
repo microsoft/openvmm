@@ -151,11 +151,11 @@ impl Debug for MsiInterruptInner {
 
 impl MsiInterruptInner {
     fn signal_msi(&self) {
-        self.target.signal_msi(None, self.address, self.data);
+        self.target.signal_msi(self.address, self.data);
     }
 
     fn enable_route(&self, route: &MsiRoute) {
-        route.enable(self.address, self.data, None);
+        route.enable(self.address, self.data);
     }
 }
 

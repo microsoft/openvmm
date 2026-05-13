@@ -40,13 +40,22 @@ impl MsiRoute {
         self.inner.event()
     }
 
-    /// Configures the MSI address and data for this route.
-    ///
-    /// `devid` is an optional segment-local BDF override. When `None`,
-    /// the default BDF (from the port's bus range) is used.
-    pub fn enable(&self, address: u64, data: u32, devid: Option<u32>) {
-        let resolved = devid.unwrap_or_else(|| resolve_default_bdf(&self.default_bdf));
+    /// Configures the MSI address and data for this route, using
+    /// the route's default BDF as the requester ID.
+    pub fn enable(&self, address: u64, data: u32) {
+        let resolved = resolve_default_bdf(&self.default_bdf);
         self.inner.enable(address, data, Some(resolved))
+    }
+
+    /// Configures the MSI address and data for this route, using
+    /// an explicit segment-local BDF (`rid`) as the requester ID.
+    ///
+    /// Use this for multi-function devices whose functions span
+    /// multiple buses: the caller composes the full `(bus << 8) | devfn`
+    /// itself from whatever bus range it owns. The route's own
+    /// default BDF is bypassed entirely.
+    pub fn enable_with_rid(&self, rid: u16, address: u64, data: u32) {
+        self.inner.enable(address, data, Some(rid.into()))
     }
 
     /// Disables the MSI route. Interrupts that arrive while disabled
@@ -74,8 +83,8 @@ impl SignalMsi for DisconnectedMsiTarget {
 
 /// Default BDF source for MSI device identification.
 ///
-/// [`MsiTarget::signal_msi`] resolves `devid = None` to
-/// the port's secondary bus combined with the configured `devfn`.
+/// [`MsiTarget::signal_msi`] uses this to compose the requester ID
+/// from the port's secondary bus combined with the configured `devfn`.
 #[derive(Clone, Debug)]
 struct DefaultBdf {
     bus_range: AssignedBusRange,
@@ -148,9 +157,9 @@ impl MsiConnection {
     /// Creates a new disconnected MSI target connection.
     ///
     /// `bus_range` and `devfn` configure the default BDF identity
-    /// for this connection. When a device signals an MSI with
-    /// `devid = None`, the BDF is resolved from the bus range's
-    /// secondary bus and the given `devfn`.
+    /// for this connection. When a device signals an MSI via
+    /// [`MsiTarget::signal_msi`], the BDF is resolved from the bus
+    /// range's secondary bus and the given `devfn`.
     pub fn new(bus_range: AssignedBusRange, devfn: u8) -> Self {
         Self {
             target: MsiTarget {
@@ -213,23 +222,32 @@ impl MsiTarget {
         }
     }
 
-    /// Signals an MSI interrupt to this target.
-    ///
-    /// `devid` is an optional segment-local BDF override for
-    /// multi-function devices. When `None`, the default BDF (from the
-    /// port's bus range) is used.
-    pub fn signal_msi(&self, devid: Option<u32>, address: u64, data: u32) {
-        let resolved = devid.unwrap_or_else(|| resolve_default_bdf(&self.default_bdf));
+    /// Signals an MSI interrupt to this target, using this target's
+    /// default BDF as the requester ID.
+    pub fn signal_msi(&self, address: u64, data: u32) {
+        let resolved = resolve_default_bdf(&self.default_bdf);
         let inner = self.inner.read();
         inner.signal_msi.signal_msi(Some(resolved), address, data);
+    }
+
+    /// Signals an MSI interrupt to this target, using an explicit
+    /// segment-local BDF (`rid`) as the requester ID.
+    ///
+    /// Use this for multi-function devices whose functions span
+    /// multiple buses: the caller composes the full `(bus << 8) | devfn`
+    /// itself from whatever bus range it owns. This target's own
+    /// default BDF is bypassed entirely.
+    pub fn signal_msi_with_rid(&self, rid: u16, address: u64, data: u32) {
+        let inner = self.inner.read();
+        inner.signal_msi.signal_msi(Some(rid.into()), address, data);
     }
 
     /// Creates a new kernel-mediated MSI route for direct interrupt
     /// delivery.
     ///
     /// The route inherits this target's default BDF source so that
-    /// [`MsiRoute::enable`] with `devid = None` resolves the BDF
-    /// the same way [`signal_msi`](Self::signal_msi) does.
+    /// [`MsiRoute::enable`] resolves the BDF the same way
+    /// [`signal_msi`](Self::signal_msi) does.
     ///
     /// Returns `None` if no [`IrqFd`] has been connected.
     pub fn new_route(&self) -> Option<anyhow::Result<MsiRoute>> {
@@ -242,7 +260,8 @@ impl MsiTarget {
         })
     }
 
-    /// Returns the default BDF that will be used when `devid` is `None`.
+    /// Returns the default BDF that will be used by
+    /// [`signal_msi`](Self::signal_msi) and [`MsiRoute::enable`].
     pub fn default_bdf(&self) -> u32 {
         resolve_default_bdf(&self.default_bdf)
     }
