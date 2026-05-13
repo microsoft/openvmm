@@ -1838,10 +1838,22 @@ impl Hcl {
         //
         // FUTURE: the kernel driver should probably tell us this, especially
         // since the kernel ABI is different for different isolation types.
-        let supported_isolation = if cfg!(guest_arch = "x86_64") {
+        let validate_isolation = |supported_isolation| {
+            if isolation != supported_isolation {
+                Err(Error::MismatchedIsolation {
+                    supported: supported_isolation,
+                    requested: isolation,
+                })
+            } else {
+                Ok(())
+            }
+        };
+
+        #[cfg(guest_arch = "x86_64")]
+        {
             // xtask-fmt allow-target-arch cpu-intrinsic
             #[cfg(target_arch = "x86_64")]
-            {
+            let supported_isolation = {
                 let result = safe_intrinsics::cpuid(
                     hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION,
                     0,
@@ -1853,24 +1865,12 @@ impl Hcl {
                     3 => IsolationType::Tdx,
                     ty => panic!("unknown isolation type {ty:#x}"),
                 }
-            }
+            };
             // xtask-fmt allow-target-arch cpu-intrinsic
             #[cfg(not(target_arch = "x86_64"))]
-            {
-                unreachable!()
-            }
-        } else if cfg!(all(guest_arch = "aarch64", target_os = "linux")) {
-            // TODO: we should check if the underlying arm64 arhcitecture extension support CCA
-            IsolationType::Cca
-        } else {
-            IsolationType::None
-        };
+            let supported_isolation = unreachable!();
 
-        if isolation != supported_isolation {
-            return Err(Error::MismatchedIsolation {
-                supported: supported_isolation,
-                requested: isolation,
-            });
+            validate_isolation(supported_isolation)?;
         }
 
         let supports_vtl_ret_action = mshv_fd.check_extension(HCL_CAP_VTL_RETURN_ACTION)?;
@@ -1886,6 +1886,31 @@ impl Hcl {
         );
 
         let vtl_fd = mshv_fd.create_vtl()?;
+
+        #[cfg(guest_arch = "aarch64")]
+        {
+            let supported_isolation = match isolation {
+                IsolationType::Cca => {
+                    // Realm-visible ID registers can be sanitized, so use the
+                    // HCL/RMM path to validate that CCA is actually available.
+                    if vtl_fd.get_realm_config().is_ok() {
+                        IsolationType::Cca
+                    } else {
+                        IsolationType::None
+                    }
+                }
+                _ => IsolationType::None,
+            };
+
+            validate_isolation(supported_isolation)?;
+        }
+
+        #[cfg(not(any(guest_arch = "x86_64", guest_arch = "aarch64")))]
+        {
+            let supported_isolation = IsolationType::None;
+
+            validate_isolation(supported_isolation)?;
+        }
 
         // Open the hypercall pseudo-device
         let mshv_hvcall = MshvHvcall::new()?;
