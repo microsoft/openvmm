@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! X.509 certificate parsing and verification using the `x509-cert` RustCrypto crate.
+
 use super::X509Error;
 use der::Decode;
 use der::Encode;

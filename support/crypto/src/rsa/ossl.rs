@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! RSA implementation using OpenSSL.
+
 use super::HashAlgorithm;
 use super::RsaError;
 

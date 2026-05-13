@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! AES-256-CBC implementation using SymCrypt.
+
 use super::Aes256CbcError;
 use super::IV_LEN;
 use super::KEY_LEN;

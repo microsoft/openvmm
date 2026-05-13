@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! X.509 certificate parsing and verification using OpenSSL.
+
 use super::X509Error;
 
 fn err(err: openssl::error::ErrorStack, op: &'static str) -> X509Error {

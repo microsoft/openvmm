@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! AES-256-GCM implementation using SymCrypt.
+
 use super::Aes256GcmError;
 use super::IV_LEN;
 use super::KEY_LEN;

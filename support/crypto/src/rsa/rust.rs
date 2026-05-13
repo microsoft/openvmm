@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! RSA implementation using the `rsa` RustCrypto crate.
+
 use super::RsaError;
 use getrandom::SysRng;
 use pkcs8::DecodePrivateKey;

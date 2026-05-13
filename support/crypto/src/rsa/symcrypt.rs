@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! RSA implementation using SymCrypt.
+
 use super::RsaError;
 use symcrypt::rsa::RsaKey;
 use symcrypt::rsa::RsaKeyUsage;
