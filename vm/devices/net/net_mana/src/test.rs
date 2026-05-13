@@ -1061,7 +1061,7 @@ async fn new_test_queue(
 ) {
     let pages = 256;
     let mem = DeviceTestMemory::new(pages * 2, true, "test queue");
-    let msi_conn = MsiConnection::new();
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
