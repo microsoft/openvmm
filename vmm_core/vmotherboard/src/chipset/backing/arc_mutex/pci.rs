@@ -88,10 +88,34 @@ pub trait RegisterWeakMutexPcie: Send {
 
     /// Enumerate the downstream ports.
     fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo>;
+
+    /// Try to add a Root Complex Integrated Endpoint (RCiEP) at the given
+    /// device/function on the start bus of the root complex.
+    ///
+    /// Not all enumerators support RCiEPs — only root complexes do.
+    /// The default implementation returns an error.
+    fn add_rciep(
+        &mut self,
+        _device: u8,
+        name: Arc<str>,
+        _device_handle: Weak<CloseableMutex<dyn ChipsetDevice>>,
+    ) -> Result<(), PcieConflict> {
+        Err(PcieConflict {
+            conflict_dev: name,
+            reason: PcieConflictReason::RciepNotSupported,
+        })
+    }
 }
 
 pub struct WeakMutexPcieDeviceEntry {
     pub bus_id_port: BusIdPcieDownstreamPort,
+    pub name: Arc<str>,
+    pub dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+}
+
+pub struct WeakMutexPcieRciepEntry {
+    pub bus_id_enumerator: BusIdPcieEnumerator,
+    pub device: u8,
     pub name: Arc<str>,
     pub dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
 }
@@ -101,6 +125,7 @@ pub struct BusResolverWeakMutexPcie {
     pub enumerators: HashMap<BusIdPcieEnumerator, Box<dyn RegisterWeakMutexPcie>>,
     pub ports: HashMap<BusIdPcieDownstreamPort, (u8, BusIdPcieEnumerator)>,
     pub devices: Vec<WeakMutexPcieDeviceEntry>,
+    pub rcieps: Vec<WeakMutexPcieRciepEntry>,
 }
 
 impl BusResolverWeakMutexPcie {
@@ -136,6 +161,33 @@ impl BusResolverWeakMutexPcie {
             };
 
             match enumerator.add_pcie_device(*port_number, name, dev) {
+                Ok(()) => {}
+                Err(conflict) => {
+                    errs.push(conflict);
+                    continue;
+                }
+            };
+        }
+
+        for WeakMutexPcieRciepEntry {
+            bus_id_enumerator,
+            device,
+            name,
+            dev,
+        } in self.rcieps
+        {
+            let enumerator = match self.enumerators.get_mut(&bus_id_enumerator) {
+                Some(enumerator) => enumerator,
+                None => {
+                    errs.push(PcieConflict {
+                        conflict_dev: name.clone(),
+                        reason: PcieConflictReason::MissingEnumerator,
+                    });
+                    continue;
+                }
+            };
+
+            match enumerator.add_rciep(device, name, dev) {
                 Ok(()) => {}
                 Err(conflict) => {
                     errs.push(conflict);

@@ -129,15 +129,10 @@ impl FuzzRootComplex {
             .collect();
         let msi_conn =
             pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        let rc = GenericPcieRootComplex::new(
-            &mut register_mmio,
-            START_BUS,
-            END_BUS,
-            None,
-            ecam_range,
-            port_defs,
-            msi_conn.target(),
-        );
+        let rc =
+            GenericPcieRootComplex::builder(&mut register_mmio, START_BUS..=END_BUS, ecam_range)
+                .root_ports(port_defs, msi_conn.target())
+                .build();
         Self { rc }
     }
 
@@ -264,7 +259,7 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
 
     let mut rc = FuzzRootComplex::new(&topology, ecam_range);
 
-    // Port keys: port 0 = device_number 0, port 1 = device_number 8 (1 << 3)
+    // Port keys: device number 0, 1, etc.
     let port0_key: u8 = 0;
 
     match topology {

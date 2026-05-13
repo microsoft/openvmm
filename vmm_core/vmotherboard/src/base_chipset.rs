@@ -838,6 +838,24 @@ mod weak_mutex_pci {
         fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo> {
             self.lock().downstream_ports()
         }
+
+        fn add_rciep(
+            &mut self,
+            device: u8,
+            name: Arc<str>,
+            dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+        ) -> Result<(), PcieConflict> {
+            self.lock()
+                .add_rciep(
+                    device,
+                    name.clone(),
+                    Box::new(WeakMutexPciDeviceWrapper(dev)),
+                )
+                .map_err(|existing_dev_name| PcieConflict {
+                    reason: PcieConflictReason::ExistingDev(existing_dev_name),
+                    conflict_dev: name,
+                })
+        }
     }
 
     // wiring to enable using the PCIe switch alongside the Arc+CloseableMutex device infra

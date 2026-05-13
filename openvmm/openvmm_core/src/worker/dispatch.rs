@@ -1888,15 +1888,14 @@ impl InitializedVm {
                                 .map(build_root_port_definition)
                                 .collect();
 
-                            GenericPcieRootComplex::new(
+                            GenericPcieRootComplex::builder(
                                 &mut services.register_mmio(),
-                                rc.start_bus,
-                                rc.end_bus,
-                                chbcr_range,
+                                rc.start_bus..=rc.end_bus,
                                 ranges.ecam_range,
-                                root_port_definitions,
-                                msi_conn.target(),
                             )
+                            .root_ports(root_port_definitions, msi_conn.target())
+                            .chbcr_range(chbcr_range)
+                            .build()
                         })?;
 
                 if let Some(signal_msi) = partition.as_signal_msi(Vtl::Vtl0) {
