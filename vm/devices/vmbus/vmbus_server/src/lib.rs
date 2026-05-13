@@ -1669,8 +1669,12 @@ impl Notifier for ServerTaskInner {
     fn inspect(&self, version: Option<VersionInfo>, offer_id: OfferId, req: inspect::Request<'_>) {
         let channel = self.channels.get(&offer_id).expect("should exist");
         let mut resp = req.respond();
-        if let ChannelState::Open(state) = &channel.state {
-            let mem = self.get_gm_for_channel(version.expect("must be connected"), channel);
+        // Only inspect ring buffers if we have an active connection; during
+        // disconnect/reset, `version` may be None even if an individual channel
+        // is still in the Open state, and we must not panic during inspect
+        // (e.g., timeout diagnostics rely on inspect succeeding).
+        if let (ChannelState::Open(state), Some(version)) = (&channel.state, version) {
+            let mem = self.get_gm_for_channel(version, channel);
             inspect_rings(
                 &mut resp,
                 mem,
