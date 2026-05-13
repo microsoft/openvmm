@@ -215,8 +215,12 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs,pcie_port=rp0
 ```
 
-**VFIO device assignment** (Linux only): `--vfio`
+**VFIO device assignment** (Linux only): `--vfio` (and optional `--iommu`)
 
 ```sh
---vfio rp0:0000:01:00.0
+# Legacy VFIO group/container path:
+--vfio host=0000:01:00.0,port=rp0
+
+# Modern VFIO cdev + iommufd path (Linux >= 6.6):
+--iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
 ```

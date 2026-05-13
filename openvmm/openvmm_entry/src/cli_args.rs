@@ -919,8 +919,9 @@ Keys:
 
     /// Create an iommufd context for VFIO cdev device assignment
     #[clap(long_help = r#"
-Create an iommufd context. Opens /dev/iommu and allocates an IOAS.
-Referenced by --vfio devices via the iommu=<id> key.
+Declare an iommufd context. Opens /dev/iommu so it can be referenced by
+--vfio devices via the iommu=<id> key. The associated IOAS is allocated
+the first time a --vfio device referring to this id is opened.
 
 Requires Linux kernel >= 6.6 with iommufd support.
 
@@ -2462,31 +2463,42 @@ impl FromStr for VfioDeviceCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut host = None;
-        let mut port = None;
-        let mut iommu = None;
+        let mut host: Option<String> = None;
+        let mut port: Option<String> = None;
+        let mut iommu: Option<String> = None;
 
         for kv in s.split(',') {
             let (key, value) = kv
                 .split_once('=')
                 .context("expected key=value pair (e.g., host=0000:01:00.0,port=rp0)")?;
+            if value.is_empty() {
+                anyhow::bail!("--vfio: '{key}=' value cannot be empty");
+            }
             match key {
-                "host" => host = Some(value.to_string()),
-                "port" => port = Some(value.to_string()),
-                "iommu" => iommu = Some(value.to_string()),
+                "host" => {
+                    if host.is_some() {
+                        anyhow::bail!("duplicate --vfio key: 'host'");
+                    }
+                    host = Some(value.to_string());
+                }
+                "port" => {
+                    if port.is_some() {
+                        anyhow::bail!("duplicate --vfio key: 'port'");
+                    }
+                    port = Some(value.to_string());
+                }
+                "iommu" => {
+                    if iommu.is_some() {
+                        anyhow::bail!("duplicate --vfio key: 'iommu'");
+                    }
+                    iommu = Some(value.to_string());
+                }
                 _ => anyhow::bail!("unknown --vfio key: '{key}'"),
             }
         }
 
         let pci_id = host.context("--vfio: 'host=' is required")?;
         let port_name = port.context("--vfio: 'port=' is required")?;
-
-        if pci_id.is_empty() {
-            anyhow::bail!("host PCI address cannot be empty");
-        }
-        if port_name.is_empty() {
-            anyhow::bail!("port name cannot be empty");
-        }
 
         // Reject path separators to prevent sysfs path traversal via Path::join.
         if pci_id.contains('/') || pci_id.contains("..") {
@@ -3899,5 +3911,66 @@ mod tests {
     fn test_pidfile_option_parsed() {
         let opt = Options::try_parse_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
         assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_vfio_device_cli_parse() {
+        // Required keys only.
+        let v = VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0").unwrap();
+        assert_eq!(v.pci_id, "0000:01:00.0");
+        assert_eq!(v.port_name, "rp0");
+        assert_eq!(v.iommu, None);
+
+        // With optional iommu= key. Keys may appear in any order.
+        let v = VfioDeviceCli::from_str("port=rp1,iommu=iommu0,host=0000:02:00.0").unwrap();
+        assert_eq!(v.pci_id, "0000:02:00.0");
+        assert_eq!(v.port_name, "rp1");
+        assert_eq!(v.iommu.as_deref(), Some("iommu0"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_vfio_device_cli_errors() {
+        // Missing required keys.
+        assert!(VfioDeviceCli::from_str("port=rp0").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0").is_err());
+
+        // Unknown key.
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,foo=bar").is_err());
+
+        // Duplicate keys are rejected.
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,host=0000:02:00.0,port=rp0").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,port=rp1").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,iommu=a,iommu=b").is_err());
+
+        // Empty values are rejected.
+        assert!(VfioDeviceCli::from_str("host=,port=rp0").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,iommu=").is_err());
+
+        // Missing '=' separator.
+        assert!(VfioDeviceCli::from_str("host").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,iommu").is_err());
+
+        // Path-traversal characters in the host BDF are rejected.
+        assert!(VfioDeviceCli::from_str("host=../../etc/passwd,port=rp0").is_err());
+        assert!(VfioDeviceCli::from_str("host=foo/bar,port=rp0").is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_iommu_cli_parse() {
+        let c = IommuCli::from_str("id=iommu0").unwrap();
+        assert_eq!(c.id, "iommu0");
+
+        // Wrong key.
+        assert!(IommuCli::from_str("name=iommu0").is_err());
+
+        // Missing '=' separator.
+        assert!(IommuCli::from_str("iommu0").is_err());
+
+        // Empty id.
+        assert!(IommuCli::from_str("id=").is_err());
     }
 }

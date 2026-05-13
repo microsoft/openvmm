@@ -83,40 +83,6 @@ pub struct CdevDevice {
 }
 
 impl CdevDevice {
-    /// Open a VFIO cdev device by its sysfs PCI address.
-    ///
-    /// Looks up the device's cdev node via
-    /// `/sys/bus/pci/devices/<pci_id>/vfio-dev/` and opens the corresponding
-    /// `/dev/vfio/devices/vfioN` character device.
-    pub fn open(pci_id: &str) -> anyhow::Result<Self> {
-        let vfio_dev_dir = std::path::Path::new("/sys/bus/pci/devices")
-            .join(pci_id)
-            .join("vfio-dev");
-
-        // The vfio-dev/ directory contains a single entry like "vfio0"
-        let entry = fs::read_dir(&vfio_dev_dir)
-            .with_context(|| {
-                format!(
-                    "failed to read {}: is the device bound to vfio-pci?",
-                    vfio_dev_dir.display()
-                )
-            })?
-            .next()
-            .context("no vfio-dev entry found")?
-            .context("failed to read vfio-dev entry")?;
-
-        let dev_name = entry.file_name();
-        let dev_path = std::path::Path::new("/dev/vfio/devices").join(&dev_name);
-
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&dev_path)
-            .with_context(|| format!("failed to open {}", dev_path.display()))?;
-
-        Ok(Self { file })
-    }
-
     /// Wrap a pre-opened VFIO cdev file descriptor.
     pub fn from_file(file: fs::File) -> Self {
         Self { file }
@@ -143,8 +109,8 @@ impl CdevDevice {
 
     /// Attach the device to an IOAS or HWPT by its iommufd object ID.
     ///
-    /// For Phase 4 (identity DMA), pass an IOAS ID. For Phase 5+ (nested
-    /// translation), pass a HWPT ID.
+    /// Pass an IOAS ID for identity DMA translation, or a HWPT ID for
+    /// nested translation.
     ///
     /// Returns the attached page table ID (may differ from input if the
     /// kernel auto-created a HWPT for the IOAS).

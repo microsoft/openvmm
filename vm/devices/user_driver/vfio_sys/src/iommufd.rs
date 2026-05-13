@@ -4,9 +4,8 @@
 //! Bindings for the Linux iommufd subsystem (`/dev/iommu`).
 //!
 //! Provides safe wrappers around `IOMMU_IOAS_ALLOC`, `IOMMU_IOAS_MAP`,
-//! `IOMMU_IOAS_UNMAP`, and `IOMMU_DESTROY` ioctls. These are the Phase 4
-//! (identity DMA mapping) operations. Phase 5+ will add nested HWPT,
-//! vIOMMU, vDevice, and vEVENTQ operations.
+//! `IOMMU_IOAS_UNMAP`, and `IOMMU_DESTROY` ioctls, which together support
+//! identity DMA mapping via an IOAS.
 
 use anyhow::Context as _;
 use std::fs;
@@ -105,7 +104,7 @@ pub struct IommuIoasUnmap {
 /// An open iommufd file descriptor (`/dev/iommu`).
 ///
 /// Wraps the fd and provides safe methods for the iommufd ioctls needed
-/// for Phase 4 (identity DMA mapping via IOAS).
+/// to allocate an IOAS and map/unmap host memory into it.
 pub struct IommufdCtx {
     file: fs::File,
 }

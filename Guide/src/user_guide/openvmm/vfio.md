@@ -104,7 +104,7 @@ Use the `--vfio` flag to assign the device to a PCIe root port. You also need to
 sudo openvmm \
   --pcie-root-complex rc0 \
   --pcie-root-port rc0:rp0 \
-  --vfio rp0:0000:01:00.0 \
+  --vfio host=0000:01:00.0,port=rp0 \
   --kernel /path/to/vmlinux \
   --initrd /path/to/initrd \
   --cmdline "console=ttyS0" \
@@ -113,19 +113,46 @@ sudo openvmm \
   --processors 2
 ```
 
-The `--vfio` syntax is `<port_name>:<pci_bdf>`:
+The `--vfio` value is a comma-separated list of `key=value` pairs:
 
-- `rp0` — the name of the PCIe root port to attach the device to (must match a `--pcie-root-port` name)
-- `0000:01:00.0` — the PCI BDF of the VFIO device on the host
+- `host=<pci_bdf>` (required) — the PCI BDF of the VFIO device on the host (e.g., `0000:01:00.0`)
+- `port=<name>` (required) — the name of the PCIe root port to attach the device to (must match a `--pcie-root-port` name)
+- `iommu=<id>` (optional) — reference to an `--iommu` context; see [Using iommufd (cdev path)](#using-iommufd-cdev-path) below
 
 ```admonish tip
 You can assign multiple devices by adding more root ports and `--vfio` flags:
 
     --pcie-root-port rc0:rp0 \
     --pcie-root-port rc0:rp1 \
-    --vfio rp0:0000:01:00.0 \
-    --vfio rp1:334c:00:00.0
+    --vfio host=0000:01:00.0,port=rp0 \
+    --vfio host=334c:00:00.0,port=rp1
 ```
+
+### Using iommufd (cdev path)
+
+By default, `--vfio` uses the legacy VFIO group/container interface with the
+Type1v2 IOMMU driver. On hosts with Linux kernel 6.6 or newer, OpenVMM can
+instead use the modern VFIO cdev (per-device fd) + iommufd interface. Enable
+it by declaring an `--iommu` context and referencing it from each `--vfio`
+device with the `iommu=` key:
+
+```bash
+sudo openvmm \
+  --pcie-root-complex rc0 \
+  --pcie-root-port rc0:rp0 \
+  --iommu id=iommu0 \
+  --vfio host=0000:01:00.0,port=rp0,iommu=iommu0 \
+  ...
+```
+
+The `--iommu` syntax is `id=<name>`. All `--vfio` devices that reference the
+same `id` share a single iommufd IOAS (one set of IOMMU page tables and one
+DMA mapper registration). The IOAS is allocated on demand the first time a
+device referencing the id is opened.
+
+Devices opened via the cdev path read their device node from
+`/sys/bus/pci/devices/<pci_id>/vfio-dev/vfioN` and open
+`/dev/vfio/devices/vfioN` instead of `/dev/vfio/<group>`.
 
 ## Step 6: Verify in the guest
 
@@ -164,7 +191,7 @@ Then request hugepage-backed RAM with the `--memory` option:
 sudo openvmm \
   --pcie-root-complex rc0 \
   --pcie-root-port rc0:rp0 \
-  --vfio rp0:0000:01:00.0 \
+  --vfio host=0000:01:00.0,port=rp0 \
   --kernel /path/to/vmlinux \
   --initrd /path/to/initrd \
   --cmdline "console=ttyS0" \
