@@ -465,13 +465,14 @@ impl VersionInfo {
 
         let feature_flags = FeatureFlags::from(self.feature_flags);
         let supported_flags = if version >= Version::Copper {
+            let mut flags = SUPPORTED_FEATURE_FLAGS.with_confidential_channels(trusted);
             // Limit feature flags to those supported by the server's
             // compatibility version, if specified.
-            let max_flags = max_version.map_or(FeatureFlags::from_bits(u32::MAX), |max_version| {
-                max_version.feature_flags
-            });
+            if let Some(max_version) = max_version {
+                flags &= max_version.feature_flags;
+            }
 
-            SUPPORTED_FEATURE_FLAGS.with_confidential_channels(trusted) & max_flags
+            flags
         } else {
             // Earlier protocol versions don't have feature flags.
             FeatureFlags::new()
