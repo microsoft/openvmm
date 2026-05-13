@@ -47,7 +47,6 @@ impl SimpleFlowNode for Node {
                     let vms = powershell_builder::PowerShellBuilder::new()
                         .cmdlet("Get-VM")
                         .finish()
-                        .build()
                         .output()?;
                     log::info!(
                         "removing any existing VMs: {}",
@@ -60,7 +59,6 @@ impl SimpleFlowNode for Node {
                         .cmdlet("Stop-VM")
                         .flag("TurnOff")
                         .finish()
-                        .build()
                         .output()?;
 
                     powershell_builder::PowerShellBuilder::new()
@@ -69,7 +67,6 @@ impl SimpleFlowNode for Node {
                         .cmdlet("Remove-VM")
                         .flag("Force")
                         .finish()
-                        .build()
                         .output()?;
                 }
 

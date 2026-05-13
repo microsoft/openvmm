@@ -80,24 +80,32 @@ pub enum CommandError {
 /// Run a command on the host and return the output.
 pub async fn run_host_cmd(mut cmd: Command) -> Result<String, CommandError> {
     cmd.stderr(Stdio::piped()).stdin(Stdio::null());
-
     let cmd_debug = format!("{cmd:?}");
-    ::tracing::debug!(cmd = cmd_debug, "executing command");
+    run_and_log(cmd_debug, move || cmd.output()).await
+}
 
+/// Run a PowerShell command on the host and return the output. Transient
+/// Windows PowerShell 5.1 startup crashes are retried automatically by
+/// [`powershell_builder::PowerShellBuilder::output`].
+#[cfg(windows)]
+pub async fn run_host_ps(
+    mut builder: powershell_builder::PowerShellBuilder,
+) -> Result<String, CommandError> {
+    builder
+        .command()
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null());
+    let cmd_debug = format!("{:?}", builder.command());
+    run_and_log(cmd_debug, move || builder.output()).await
+}
+
+async fn run_and_log<F>(cmd_debug: String, run: F) -> Result<String, CommandError>
+where
+    F: FnOnce() -> std::io::Result<std::process::Output> + Send + 'static,
+{
+    ::tracing::debug!(cmd = cmd_debug, "executing command");
     let start = Timestamp::now();
-    let output = blocking::unblock(move || {
-        // Retry on the WPS 5.1 EventLog AV crash. For non-PowerShell
-        // commands the signature never matches, so this is a no-op.
-        #[cfg(windows)]
-        {
-            powershell_builder::output_with_av_retry(&mut cmd)
-        }
-        #[cfg(not(windows))]
-        {
-            cmd.output()
-        }
-    })
-    .await?;
+    let output = blocking::unblock(run).await?;
     let time_elapsed = Timestamp::now() - start;
 
     let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();

@@ -8,7 +8,7 @@ use crate::OpenHclServicingFlags;
 use crate::PetriVmConfig;
 use crate::PetriVmProperties;
 use crate::VmScreenshotMeta;
-use crate::run_host_cmd;
+use crate::run_host_ps;
 use crate::vm::append_cmdline;
 use anyhow::Context;
 use core::str;
@@ -149,7 +149,7 @@ pub struct HyperVNewVMArgs<'a> {
 
 /// Runs New-VM with the given arguments.
 pub async fn run_new_vm(args: HyperVNewVMArgs<'_>) -> anyhow::Result<Guid> {
-    let vmid = run_host_cmd(
+    let vmid = run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("New-VM")
             .arg("Name", args.name)
@@ -166,8 +166,7 @@ pub async fn run_new_vm(args: HyperVNewVMArgs<'_>) -> anyhow::Result<Guid> {
             .pipeline()
             .cmdlet("Select-Object")
             .arg("ExpandProperty", "Guid")
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .context("new_vm")?;
@@ -723,7 +722,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
         .positional(ps_mod)
         .next();
 
-    let vmid = run_host_cmd(
+    let vmid = run_host_ps(
         builder
             .cmdlet("New-CustomVM")
             .arg("VMName", args.name)
@@ -770,8 +769,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
                 "ManagementVtlSettings",
                 args.management_vtl_settings.as_ref().map(|f| f.path()),
             )
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .context("new_customvm")?;
@@ -781,15 +779,14 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
 
 /// Runs New-VM with the given arguments.
 pub async fn run_remove_vm(vmid: &Guid) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
             .pipeline()
             .cmdlet("Remove-VM")
             .flag("Force")
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -839,7 +836,7 @@ pub async fn run_set_vm_processor(
     vmid: &Guid,
     args: &HyperVSetVMProcessorArgs,
 ) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
@@ -849,8 +846,7 @@ pub async fn run_set_vm_processor(
             .arg_opt("ApicMode", args.apic_mode)
             .arg_opt("HwThreadCountPerCore", args.hw_thread_count_per_core)
             .arg_opt("MaximumCountPerNumaNode", args.maximum_count_per_numa_node)
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -875,7 +871,7 @@ pub struct HyperVSetVMMemoryArgs {
 
 /// Runs Set-VMMemory with the given arguments.
 pub async fn run_set_vm_memory(vmid: &Guid, args: &HyperVSetVMMemoryArgs) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
@@ -885,8 +881,7 @@ pub async fn run_set_vm_memory(vmid: &Guid, args: &HyperVSetVMMemoryArgs) -> any
             .arg_opt("MaximumBytes", args.maximum_bytes)
             .arg_opt("MinimumBytes", args.minimum_bytes)
             .arg_opt("StartupBytes", args.startup_bytes)
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -940,7 +935,7 @@ impl ps::AsVal for ControllerType {
 pub async fn run_add_vm_hard_disk_drive(
     args: HyperVAddVMHardDiskDriveArgs<'_>,
 ) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", args.vmid)
@@ -950,8 +945,7 @@ pub async fn run_add_vm_hard_disk_drive(
             .arg_opt("ControllerLocation", args.controller_location)
             .arg_opt("ControllerNumber", args.controller_number)
             .arg_opt("Path", args.path)
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -977,7 +971,7 @@ pub struct HyperVAddVMDvdDriveArgs<'a> {
 
 /// Runs Add-VMDvdDrive with the given arguments.
 pub async fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", args.vmid)
@@ -986,8 +980,7 @@ pub async fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::
             .arg_opt("ControllerLocation", args.controller_location)
             .arg_opt("ControllerNumber", args.controller_number)
             .arg_opt("Path", args.path)
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1001,7 +994,7 @@ pub async fn run_add_vm_scsi_controller_with_id(
     vsid: &Guid,
     target_vtl: u32,
 ) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1012,8 +1005,7 @@ pub async fn run_add_vm_scsi_controller_with_id(
             .cmdlet("Add-VmScsiControllerWithId")
             .arg("Vsid", vsid)
             .arg("TargetVtl", target_vtl)
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1031,7 +1023,7 @@ pub async fn run_set_vm_drive_scsi(
     dvd: bool,
     allow_modify_existing: bool,
 ) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1045,8 +1037,7 @@ pub async fn run_set_vm_drive_scsi(
             .arg_opt("DiskPath", disk_path)
             .flag_opt(dvd.then_some("Dvd"))
             .flag_opt(allow_modify_existing.then_some("AllowModifyExisting"))
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1064,7 +1055,7 @@ pub async fn run_set_vm_drive_ide(
     dvd: bool,
     allow_modify_existing: bool,
 ) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1078,8 +1069,7 @@ pub async fn run_set_vm_drive_ide(
             .arg_opt("DiskPath", disk_path)
             .flag_opt(dvd.then_some("Dvd"))
             .flag_opt(allow_modify_existing.then_some("AllowModifyExisting"))
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1090,7 +1080,7 @@ pub async fn run_set_vm_drive_ide(
 ///
 /// Returns the controller number and controller instance guid.
 pub async fn run_add_vm_scsi_controller(ps_mod: &Path, vmid: &Guid) -> anyhow::Result<(u32, Guid)> {
-    let output = run_host_cmd(
+    let output = run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1102,8 +1092,7 @@ pub async fn run_add_vm_scsi_controller(ps_mod: &Path, vmid: &Guid) -> anyhow::R
             .flag("Passthru")
             .pipeline()
             .cmdlet("Get-VmScsiControllerProperties")
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .context("add_vm_scsi_controller")?;
@@ -1130,7 +1119,7 @@ pub async fn run_set_vm_scsi_controller_target_vtl(
     controller_number: u32,
     target_vtl: u32,
 ) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1141,8 +1130,7 @@ pub async fn run_set_vm_scsi_controller_target_vtl(
             .cmdlet("Set-VMScsiControllerTargetVtl")
             .arg("ControllerNumber", controller_number)
             .arg("TargetVtl", target_vtl)
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1151,12 +1139,11 @@ pub async fn run_set_vm_scsi_controller_target_vtl(
 
 /// Runs Dismount-VHD with the given arguments.
 pub async fn run_dismount_vhd(path: &Path) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Dismount-VHD")
             .arg("Path", path)
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1178,7 +1165,7 @@ pub struct HyperVSetVMFirmwareArgs<'a> {
 
 /// Runs Set-VMFirmware with the given arguments.
 pub async fn run_set_vm_firmware(args: HyperVSetVMFirmwareArgs<'_>) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", args.vmid)
@@ -1195,8 +1182,7 @@ pub async fn run_set_vm_firmware(args: HyperVSetVMFirmwareArgs<'_>) -> anyhow::R
                 }),
             )
             .arg_opt("SecureBootTemplate", args.secure_boot_template)
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1210,7 +1196,7 @@ pub async fn run_set_openhcl_firmware(
     igvm_file: &Path,
     increase_vtl2_memory: bool,
 ) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1221,8 +1207,7 @@ pub async fn run_set_openhcl_firmware(
             .cmdlet("Set-OpenHCLFirmware")
             .arg("IgvmFile", igvm_file)
             .flag_opt(increase_vtl2_memory.then_some("IncreaseVtl2Memory"))
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1235,7 +1220,7 @@ pub async fn run_set_vm_command_line(
     ps_mod: &Path,
     command_line: impl AsRef<str>,
 ) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1245,8 +1230,7 @@ pub async fn run_set_vm_command_line(
             .pipeline()
             .cmdlet("Set-VmCommandLine")
             .arg("CommandLine", command_line.as_ref())
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1259,7 +1243,7 @@ pub async fn run_set_initial_machine_configuration(
     ps_mod: &Path,
     imc_hive: &Path,
 ) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1269,8 +1253,7 @@ pub async fn run_set_initial_machine_configuration(
             .pipeline()
             .cmdlet("Set-InitialMachineConfiguration")
             .arg("ImcHive", imc_hive)
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1279,7 +1262,7 @@ pub async fn run_set_initial_machine_configuration(
 
 /// Enables the specified vm com port and binds it to the named pipe path
 pub async fn run_set_vm_com_port(vmid: &Guid, port: u8, path: &Path) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
@@ -1287,8 +1270,7 @@ pub async fn run_set_vm_com_port(vmid: &Guid, port: u8, path: &Path) -> anyhow::
             .cmdlet("Set-VMComPort")
             .arg("Number", port)
             .arg("Path", path)
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1301,7 +1283,7 @@ pub async fn run_set_vmbus_redirect(
     ps_mod: &Path,
     enable: bool,
 ) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1311,8 +1293,7 @@ pub async fn run_set_vmbus_redirect(
             .pipeline()
             .cmdlet("Set-VMBusRedirect")
             .arg("Enable", enable)
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1332,7 +1313,7 @@ pub async fn run_restart_openhcl(
             "enable_nvme_keepalive is not yet supported for HyperV VMs"
         ));
     }
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1348,8 +1329,7 @@ pub async fn run_restart_openhcl(
                     .then_some("OverrideVersionChecks"),
             )
             .flag_opt((!flags.enable_nvme_keepalive).then_some("DisableNvmeKeepalive"))
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1421,15 +1401,14 @@ pub async fn run_get_winevent(
         ps::Value::new("Message"),
     ]);
 
-    let output = run_host_cmd(
+    let output = run_host_ps(
         builder
             .cmdlet("Select-Object")
             .positional(props)
             .next()
             .cmdlet("ConvertTo-Json")
             .arg("InputObject", ps::Array::new([&output_var]))
-            .finish()
-            .build(),
+            .finish(),
     )
     .await;
 
@@ -1568,7 +1547,7 @@ pub async fn hyperv_halt_events(
 
 /// Get the IDs of the VM(s) with the specified name
 pub async fn vm_id_from_name(name: &str) -> anyhow::Result<Vec<Guid>> {
-    let output = run_host_cmd(
+    let output = run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Name", name)
@@ -1578,8 +1557,7 @@ pub async fn vm_id_from_name(name: &str) -> anyhow::Result<Vec<Guid>> {
             .pipeline()
             .cmdlet("Select-Object")
             .arg("ExpandProperty", "Guid")
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .context("vm_id_from_name")?;
@@ -1610,7 +1588,7 @@ pub enum VmShutdownIcStatus {
 
 /// Get the VM's shutdown IC status
 pub async fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcStatus> {
-    let status = run_host_cmd(
+    let status = run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
@@ -1620,8 +1598,7 @@ pub async fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcSt
             .pipeline()
             .cmdlet("Select-Object")
             .arg("ExpandProperty", "PrimaryStatusDescription")
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .context("vm_shutdown_ic_status")?;
@@ -1639,14 +1616,13 @@ pub async fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcSt
 
 /// Runs Remove-VmNetworkAdapter to remove all network adapters from a VM.
 pub async fn run_remove_vm_network_adapter(vmid: &Guid) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
             .pipeline()
             .cmdlet("Remove-VMNetworkAdapter")
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1658,7 +1634,7 @@ pub async fn run_remove_vm_scsi_controller(
     vmid: &Guid,
     controller_number: u32,
 ) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
@@ -1667,8 +1643,7 @@ pub async fn run_remove_vm_scsi_controller(
             .arg("ControllerNumber", controller_number)
             .pipeline()
             .cmdlet("Remove-VMScsiController")
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1683,7 +1658,7 @@ pub async fn run_get_vm_screenshot(
     temp_bin_path: &Path,
 ) -> anyhow::Result<VmScreenshotMeta> {
     // execute wmi via powershell
-    let output = run_host_cmd(
+    let output = run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1693,8 +1668,7 @@ pub async fn run_get_vm_screenshot(
             .pipeline()
             .cmdlet("Get-VmScreenshot")
             .arg("Path", temp_bin_path)
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .context("get_vm_screenshot")?;
@@ -1746,7 +1720,7 @@ pub async fn run_set_turn_off_on_guest_restart(
     ps_mod: &Path,
     enable: bool,
 ) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1756,8 +1730,7 @@ pub async fn run_set_turn_off_on_guest_restart(
             .pipeline()
             .cmdlet("Set-TurnOffOnGuestRestart")
             .arg("Enable", enable)
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1790,15 +1763,14 @@ where
 
 /// Gets the VM host information and returns the output string
 pub async fn run_get_vm_host() -> anyhow::Result<HyperVGetVmHost> {
-    let output = run_host_cmd(
+    let output = run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-VMHost")
             .pipeline()
             .cmdlet("ConvertTo-Json")
             .arg("Depth", 3)
             .flag("Compress")
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .context("get_vm_host")?;
@@ -1809,7 +1781,7 @@ pub async fn run_get_vm_host() -> anyhow::Result<HyperVGetVmHost> {
 
 /// Get available vssd properties
 pub async fn run_get_vssd_properties() -> anyhow::Result<Vec<String>> {
-    let output = run_host_cmd(
+    let output = run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-CimClass")
             .arg("Namespace", "root\\virtualization\\v2")
@@ -1820,8 +1792,7 @@ pub async fn run_get_vssd_properties() -> anyhow::Result<Vec<String>> {
             .pipeline()
             .cmdlet("Select-Object")
             .arg("ExpandProperty", "Name")
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .context("get_vssd_properties")?;
@@ -1831,7 +1802,7 @@ pub async fn run_get_vssd_properties() -> anyhow::Result<Vec<String>> {
 
 /// Runs Get-GuestStateFile with the given arguments.
 pub async fn run_get_guest_state_file(vmid: &Guid, ps_mod: &Path) -> anyhow::Result<PathBuf> {
-    let output = run_host_cmd(
+    let output = run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1840,8 +1811,7 @@ pub async fn run_get_guest_state_file(vmid: &Guid, ps_mod: &Path) -> anyhow::Res
             .arg("Id", vmid)
             .pipeline()
             .cmdlet("Get-GuestStateFile")
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .context("get_guest_state_file")?;
@@ -1871,7 +1841,7 @@ pub async fn run_set_base_vtl2_settings(
 
     tracing::trace!(?tempfile, ?vtl2_settings, ?vmid, "set base vtl2 settings");
 
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1880,8 +1850,7 @@ pub async fn run_set_base_vtl2_settings(
             .arg("VmId", vmid)
             .arg("SettingsFile", tempfile.path())
             .arg("Namespace", "Base")
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1917,7 +1886,7 @@ pub async fn run_set_guest_state_isolation_mode(
 ) -> anyhow::Result<()> {
     tracing::trace!(?mode, ?vmid, "set guest state isolation mode");
 
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1927,8 +1896,7 @@ pub async fn run_set_guest_state_isolation_mode(
             .pipeline()
             .cmdlet("Set-GuestStateIsolationMode")
             .arg("Mode", mode)
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1937,14 +1905,13 @@ pub async fn run_set_guest_state_isolation_mode(
 
 /// Runs Enable-VMTPM
 pub async fn run_enable_vmtpm(vmid: &Guid) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
             .pipeline()
             .cmdlet("Enable-VMTPM")
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())
@@ -1953,14 +1920,13 @@ pub async fn run_enable_vmtpm(vmid: &Guid) -> anyhow::Result<()> {
 
 /// Runs Disable-VMTPM
 pub async fn run_disable_vmtpm(vmid: &Guid) -> anyhow::Result<()> {
-    run_host_cmd(
+    run_host_ps(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
             .pipeline()
             .cmdlet("Disable-VMTPM")
-            .finish()
-            .build(),
+            .finish(),
     )
     .await
     .map(|_| ())

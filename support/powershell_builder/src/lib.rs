@@ -16,18 +16,16 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
 
-/// Run a PowerShell `Command` and return its output, retrying on the
-/// well-known transient Windows PowerShell 5.1 startup crash (exit code
-/// `0xDEAD` with an `AccessViolationException` thrown from
-/// `EventLogLogProvider` during session initialization).
+/// Run `cmd` (a `powershell.exe` invocation built by [`PowerShellBuilder`])
+/// and return its output, retrying on the well-known transient Windows
+/// PowerShell 5.1 startup crash (exit code `0xDEAD` with an
+/// `AccessViolationException` thrown from `EventLogLogProvider` during
+/// session initialization).
 ///
 /// The crash happens in `InitialSessionState.Bind_LoadProviders` *before*
 /// the user's command is dispatched, so retrying is idempotent. Up to 2
 /// retries (3 total attempts) are made.
-///
-/// Each call to [`Command::output`] spawns a fresh process, so the same
-/// `Command` value can be reused across attempts.
-pub fn output_with_av_retry(cmd: &mut Command) -> std::io::Result<Output> {
+fn run_with_av_retry(cmd: &mut Command) -> std::io::Result<Output> {
     const MAX_RETRIES: u32 = 2;
     let mut attempt = 0u32;
     loop {
@@ -40,8 +38,10 @@ pub fn output_with_av_retry(cmd: &mut Command) -> std::io::Result<Output> {
             };
         if is_wps_eventlog_av && attempt < MAX_RETRIES {
             attempt += 1;
+            // Log only the program name (not the full `Command` debug,
+            // which can include arguments/env that may be sensitive).
             tracing::warn!(
-                cmd = ?cmd,
+                program = ?cmd.get_program(),
                 attempt,
                 "retrying command after Windows PowerShell EventLog AV crash"
             );
@@ -80,9 +80,24 @@ impl PowerShellBuilder {
             .cmdlet(cmdlet)
     }
 
-    /// Finish building the powershell script and return the inner `Command`
-    pub fn build(self) -> Command {
-        self.0
+    /// Access the underlying `Command` for configuration (e.g. stdio,
+    /// environment) before running it via [`PowerShellBuilder::output`]
+    /// or [`PowerShellBuilder::status`].
+    pub fn command(&mut self) -> &mut Command {
+        &mut self.0
+    }
+
+    /// Run the built command and return its output. Transient Windows
+    /// PowerShell 5.1 startup crashes (`AccessViolationException` in
+    /// `EventLogLogProvider`) are retried automatically.
+    pub fn output(mut self) -> std::io::Result<Output> {
+        run_with_av_retry(&mut self.0)
+    }
+
+    /// Run the built command and return its exit status. Transient
+    /// Windows PowerShell 5.1 startup crashes are retried automatically.
+    pub fn status(self) -> std::io::Result<std::process::ExitStatus> {
+        Ok(self.output()?.status)
     }
 }
 
