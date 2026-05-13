@@ -120,8 +120,9 @@ fn parse_bzimage_inner(kernel_image: &mut (impl Read + Seek)) -> Result<BzImageI
 
     // The setup_header in boot_params starts at offset 0x1F1 relative to
     // the start of the boot sector.
-    let hdr = defs::setup_header::read_from_bytes(&buf[0x1f1..0x1f1 + size_of::<defs::setup_header>()])
-        .expect("buf is large enough");
+    let hdr =
+        defs::setup_header::read_from_bytes(&buf[0x1f1..0x1f1 + size_of::<defs::setup_header>()])
+            .expect("buf is large enough");
 
     let version: u16 = hdr.version.into();
     if version < MIN_PROTOCOL_VERSION {
@@ -138,7 +139,11 @@ fn parse_bzimage_inner(kernel_image: &mut (impl Read + Seek)) -> Result<BzImageI
         return Err(Error::No64BitEntry);
     }
 
-    let setup_sects = if hdr.setup_sects == 0 { 4 } else { hdr.setup_sects };
+    let setup_sects = if hdr.setup_sects == 0 {
+        4
+    } else {
+        hdr.setup_sects
+    };
     let protected_mode_offset = (setup_sects as u64 + 1) * 512;
 
     // Get total file size to determine protected-mode code size.
