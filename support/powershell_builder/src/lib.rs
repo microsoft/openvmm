@@ -58,32 +58,36 @@ impl PowerShellBuilder {
     /// before running it, allowing callers to configure stdio,
     /// environment, etc.
     ///
-    /// Retries on the well-known transient Windows PowerShell 5.1 startup
-    /// crash (exit code `0xDEAD` with an `AccessViolationException` thrown
-    /// from `EventLogLogProvider` during session initialization). The
-    /// crash happens in `InitialSessionState.Bind_LoadProviders` *before*
-    /// the user's command is dispatched, so retrying is idempotent. Up to
-    /// 2 retries (3 total attempts) are made.
+    /// Retries on the well-known transient Windows PowerShell 5.1 native
+    /// crash (exit code `0xDEAD` with an `AccessViolationException`
+    /// reported on stderr). Two variants have been observed on the CI
+    /// runners and both happen *before* the user's command runs against
+    /// any external state, so retrying is idempotent:
+    ///
+    /// * `EventLogLogProvider.LogProviderLifecycleEvent` during
+    ///   `InitialSessionState.Bind_LoadProviders` (session startup).
+    /// * `System.Management.Automation.Interpreter.FuncCallInstruction`
+    ///   while the interpreter is compiling the cmdlet pipeline.
+    ///
+    /// Up to 2 retries (3 total attempts) are made.
     pub fn output_with(mut self, configure: impl FnOnce(&mut Command)) -> std::io::Result<Output> {
         const MAX_RETRIES: u32 = 2;
         configure(&mut self.0);
         let mut attempt = 0u32;
         loop {
             let output = self.0.output()?;
-            let is_wps_eventlog_av =
-                !output.status.success() && output.status.code() == Some(0xDEAD) && {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    stderr.contains("System.AccessViolationException")
-                        && stderr.contains("EventLogLogProvider")
-                };
-            if is_wps_eventlog_av && attempt < MAX_RETRIES {
+            let is_wps_av = !output.status.success() && output.status.code() == Some(0xDEAD) && {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                stderr.contains("System.AccessViolationException")
+            };
+            if is_wps_av && attempt < MAX_RETRIES {
                 attempt += 1;
                 // Log only the program name (not the full `Command` debug,
                 // which can include arguments/env that may be sensitive).
                 tracing::warn!(
                     program = ?self.0.get_program(),
                     attempt,
-                    "retrying command after Windows PowerShell EventLog AV crash"
+                    "retrying command after Windows PowerShell AccessViolationException"
                 );
                 continue;
             }
