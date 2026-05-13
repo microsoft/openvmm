@@ -609,6 +609,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     /// Use virtio vsock instead of VMBus-based hvsocket for guest communication.
+    /// The virtio-vsock device will use PCIe, so a PCIe root topology must be
+    /// configured.
     ///
     /// When enabled, a virtio-vsock device is added to the VM. This device uses
     /// the same Unix socket relay path that hvsocket would otherwise use, so
