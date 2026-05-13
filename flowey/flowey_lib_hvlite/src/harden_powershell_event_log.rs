@@ -49,36 +49,29 @@ impl SimpleFlowNode for Node {
                     return Ok(());
                 }
 
-                // Disable Windows PowerShell engine event logging. The key may
-                // not pre-exist on all runner images, so create it first.
-                // Failures are logged but non-fatal: the worst case is we fall
-                // back to the original (occasionally flaky) behavior.
-                let script = r#"
-                    $ErrorActionPreference = 'Continue'
-                    $key = 'HKLM:\Software\Microsoft\PowerShell\1\PowerShellEngine'
-                    if (-not (Test-Path $key)) {
-                        New-Item -Path $key -Force | Out-Null
-                    }
-                    Set-ItemProperty -Path $key -Name 'EnableEventLogging' -Value 0 -Type DWord -Force
-                    # Ensure the 'Windows PowerShell' Event Log source exists with
-                    # the right registration so any path that still tries to use
-                    # it doesn't fault.
-                    try {
-                        if (-not [System.Diagnostics.EventLog]::SourceExists('PowerShell')) {
-                            [System.Diagnostics.EventLog]::CreateEventSource('PowerShell','Windows PowerShell')
-                        }
-                    } catch {
-                        Write-Host "warn: could not verify PowerShell event source: $_"
-                    }
-                "#;
-
-                let output = std::process::Command::new("powershell.exe")
-                    .arg("-NoProfile")
-                    .arg("-NonInteractive")
-                    .arg("-ExecutionPolicy")
-                    .arg("Bypass")
-                    .arg("-Command")
-                    .arg(script)
+                // Disable Windows PowerShell engine event logging by writing
+                // the per-machine registry switch directly via `reg.exe`. We
+                // intentionally avoid `powershell.exe` here because the whole
+                // point of this step is to harden against PowerShell startup
+                // crashes -- using PowerShell to apply the mitigation would
+                // re-introduce the very flake we're trying to avoid.
+                //
+                // `reg.exe add ... /f` creates the key if it doesn't already
+                // exist and overwrites the value if it does. Failures are
+                // logged but non-fatal: the worst case is we fall back to the
+                // original (occasionally flaky) behavior.
+                let output = std::process::Command::new("reg.exe")
+                    .args([
+                        "add",
+                        r"HKLM\Software\Microsoft\PowerShell\1\PowerShellEngine",
+                        "/v",
+                        "EnableEventLogging",
+                        "/t",
+                        "REG_DWORD",
+                        "/d",
+                        "0",
+                        "/f",
+                    ])
                     .output()?;
 
                 if !output.status.success() {
