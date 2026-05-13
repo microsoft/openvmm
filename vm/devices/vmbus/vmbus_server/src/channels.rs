@@ -2446,10 +2446,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         assert!(version >= Version::Copper || feature_flags == FeatureFlags::new());
         if feature_flags.into_bits() != request.feature_flags {
-            tracelimit::warn_ratelimited!(
+            // This is a common occurrence, especially with the difference between flags that may
+            // be supported by Hyper-V, OpenVMM, and OpenHCL, so this does not need to be a warning.
+            tracelimit::info_ratelimited!(
                 supported = feature_flags.into_bits(),
                 requested = request.feature_flags,
-                "Guest requested unsupported feature flags."
+                "guest requested unsupported feature flags."
             );
         }
 
