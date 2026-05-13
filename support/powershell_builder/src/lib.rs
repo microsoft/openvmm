@@ -45,9 +45,17 @@ impl PowerShellBuilder {
             .cmdlet(cmdlet)
     }
 
+    /// Run the built command and return its output.
+    ///
+    /// See [`PowerShellBuilder::output_with`] for the retry behavior and
+    /// for configuring the underlying `Command` before it runs.
+    pub fn output(self) -> std::io::Result<Output> {
+        self.output_with(|_| {})
+    }
+
     /// Run the built command and return its output. The provided closure
     /// is invoked with a mutable reference to the underlying `Command`
-    /// before each attempt, allowing callers to configure stdio,
+    /// before running it, allowing callers to configure stdio,
     /// environment, etc.
     ///
     /// Retries on the well-known transient Windows PowerShell 5.1 startup
@@ -56,7 +64,7 @@ impl PowerShellBuilder {
     /// crash happens in `InitialSessionState.Bind_LoadProviders` *before*
     /// the user's command is dispatched, so retrying is idempotent. Up to
     /// 2 retries (3 total attempts) are made.
-    pub fn output(mut self, configure: impl FnOnce(&mut Command)) -> std::io::Result<Output> {
+    pub fn output_with(mut self, configure: impl FnOnce(&mut Command)) -> std::io::Result<Output> {
         const MAX_RETRIES: u32 = 2;
         configure(&mut self.0);
         let mut attempt = 0u32;

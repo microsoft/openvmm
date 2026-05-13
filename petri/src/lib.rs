@@ -95,7 +95,7 @@ pub async fn run_host_ps(
         // The `Command` is owned by the builder, so we capture its debug
         // representation from inside the configure closure.
         let mut cmd_debug = String::new();
-        let output = builder.output(|cmd| {
+        let output = builder.output_with(|cmd| {
             cmd.stderr(Stdio::piped()).stdin(Stdio::null());
             cmd_debug = format!("{cmd:?}");
         })?;
