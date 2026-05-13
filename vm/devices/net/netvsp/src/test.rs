@@ -6002,6 +6002,227 @@ async fn rndis_send_tcp_checksum_packet(driver: DefaultDriver) {
     assert_eq!(completion.status, protocol::Status::SUCCESS);
 }
 
+/// Send a TCP checksum offload packet with a specific `tcp_header_offset`
+/// value in the PPI and return the captured `TxMetadata`.
+async fn send_checksum_packet_with_header_offset(
+    channel: &mut TestNicChannel<'_>,
+    endpoint_state: &Arc<parking_lot::Mutex<TestNicEndpointState>>,
+    is_ipv4: bool,
+    tcp_header_offset: u16,
+) -> net_backend::TxMetadata {
+    let checksum_info = rndisprot::TxTcpIpChecksumInfo::new_zeroed()
+        .set_is_ipv4(is_ipv4)
+        .set_is_ipv6(!is_ipv4)
+        .set_tcp_checksum(true)
+        .set_ip_header_checksum(is_ipv4)
+        .set_tcp_header_offset(tcp_header_offset);
+
+    let ppi_header = rndisprot::PerPacketInfo {
+        size: size_of::<rndisprot::PerPacketInfo>() as u32
+            + size_of::<rndisprot::TxTcpIpChecksumInfo>() as u32,
+        typ: rndisprot::PPI_TCP_IP_CHECKSUM,
+        per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+    };
+
+    let per_packet_info_offset = size_of::<rndisprot::Packet>() as u32;
+    let per_packet_info_length = ppi_header.size;
+
+    let data = vec![0xCC; 60];
+    let message_length = size_of::<rndisprot::MessageHeader>()
+        + size_of::<rndisprot::Packet>()
+        + per_packet_info_length as usize
+        + data.len();
+
+    let mem = channel.nic.mock_vmbus.memory.clone();
+    let gpadl_view = channel
+        .gpadl_map
+        .clone()
+        .view()
+        .map(channel.send_buf_id)
+        .unwrap();
+    let mut buf_writer = PagedRanges::new(&*gpadl_view).writer(&mem);
+
+    buf_writer
+        .write(
+            rndisprot::MessageHeader {
+                message_type: rndisprot::MESSAGE_TYPE_PACKET_MSG,
+                message_length: message_length as u32,
+            }
+            .as_bytes(),
+        )
+        .unwrap();
+
+    buf_writer
+        .write(
+            rndisprot::Packet {
+                data_offset: per_packet_info_offset + per_packet_info_length,
+                data_length: data.len() as u32,
+                oob_data_offset: 0,
+                oob_data_length: 0,
+                num_oob_data_elements: 0,
+                per_packet_info_offset,
+                per_packet_info_length,
+                vc_handle: 0,
+                reserved: 0,
+            }
+            .as_bytes(),
+        )
+        .unwrap();
+
+    buf_writer.write(ppi_header.as_bytes()).unwrap();
+    buf_writer.write(checksum_info.as_bytes()).unwrap();
+    buf_writer.write(&data).unwrap();
+
+    let message = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET,
+        },
+        data: protocol::Message1SendRndisPacket {
+            channel_type: protocol::DATA_CHANNEL_TYPE,
+            send_buffer_section_index: 0xffffffff,
+            send_buffer_section_size: 0,
+        },
+        padding: &[],
+    };
+
+    let gpadl_map_view = channel
+        .gpadl_map
+        .clone()
+        .view()
+        .map(channel.send_buf_id)
+        .unwrap();
+    let gpa_range = gpadl_map_view.first().unwrap().subrange(0, message_length);
+    channel
+        .write(OutgoingPacket {
+            transaction_id: channel.transaction_id,
+            packet_type: OutgoingPacketType::GpaDirect(&[gpa_range]),
+            payload: &message.payload(),
+        })
+        .await;
+    channel.transaction_id += 1;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
+
+    endpoint_state
+        .lock()
+        .tx_metadata
+        .last()
+        .cloned()
+        .expect("packet metadata should be captured")
+}
+
+/// Regression test: when a guest sends a TCP checksum offload packet with
+/// `tcp_header_offset` set to 0, the code must fall back to the minimum
+/// IPv4 header length instead of panicking or computing an invalid offset.
+#[async_test]
+async fn rndis_send_tcp_checksum_packet_zero_transport_header_offset_ipv4(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+    let init: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(init.status, rndisprot::STATUS_SUCCESS);
+
+    let metadata =
+        send_checksum_packet_with_header_offset(&mut channel, &endpoint_state, true, 0).await;
+
+    assert!(metadata.flags.offload_tcp_checksum());
+    assert!(metadata.flags.is_ipv4());
+    assert_eq!(
+        metadata.l2_len,
+        net_backend::ETHERNET_HEADER_LEN as u8,
+        "non-VLAN packets must use a 14-byte L2 header"
+    );
+    assert_eq!(
+        metadata.l3_len,
+        net_backend::IPV4_MIN_HEADER_LEN,
+        "transport_header_offset=0 must fall back to IPv4 minimum header length (20)"
+    );
+}
+
+/// Regression test: same as the IPv4 variant but for IPv6 — when a guest
+/// sends a TCP checksum offload packet with `tcp_header_offset` set to 0,
+/// the code must fall back to the minimum IPv6 header length (40).
+#[async_test]
+async fn rndis_send_tcp_checksum_packet_zero_transport_header_offset_ipv6(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+    let init: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(init.status, rndisprot::STATUS_SUCCESS);
+
+    let metadata =
+        send_checksum_packet_with_header_offset(&mut channel, &endpoint_state, false, 0).await;
+
+    assert!(metadata.flags.offload_tcp_checksum());
+    assert!(metadata.flags.is_ipv6());
+    assert!(!metadata.flags.is_ipv4());
+    assert_eq!(
+        metadata.l2_len,
+        net_backend::ETHERNET_HEADER_LEN as u8,
+        "non-VLAN packets must use a 14-byte L2 header"
+    );
+    assert_eq!(
+        metadata.l3_len,
+        net_backend::IPV6_MIN_HEADER_LEN,
+        "transport_header_offset=0 must fall back to IPv6 minimum header length (40)"
+    );
+}
+
 fn build_vlan_ipv4_tcp_packet(vlan_id: u16) -> Vec<u8> {
     let mut data = vec![0u8; 60];
 
