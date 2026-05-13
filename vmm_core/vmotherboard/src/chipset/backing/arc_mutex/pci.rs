@@ -87,7 +87,7 @@ pub trait RegisterWeakMutexPcie: Send {
     ) -> Result<(), PcieConflict>;
 
     /// Enumerate the downstream ports.
-    fn downstream_ports(&self) -> Vec<(u8, Arc<str>)>;
+    fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo>;
 }
 
 pub struct WeakMutexPcieDeviceEntry {

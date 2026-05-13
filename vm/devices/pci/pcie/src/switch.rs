@@ -208,10 +208,14 @@ impl GenericPcieSwitch {
     }
 
     /// Enumerate the downstream ports of the switch.
-    pub fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+    pub fn downstream_ports(&self) -> Vec<crate::root::DownstreamPortInfo> {
         self.downstream_ports
             .iter()
-            .map(|(port, (name, _))| (*port, name.clone()))
+            .map(|(port, (name, dsp))| crate::root::DownstreamPortInfo {
+                port_number: *port,
+                name: name.clone(),
+                bus_range: dsp.port.bus_range(),
+            })
             .collect()
     }
 
@@ -708,14 +712,14 @@ mod tests {
         // Verify downstream port names (HashMap doesn't guarantee order, so check each one exists)
         let ports = switch.downstream_ports();
         let port_names: std::collections::HashSet<_> =
-            ports.iter().map(|(_, name)| name.as_ref()).collect();
+            ports.iter().map(|p| p.name.as_ref()).collect();
         assert!(port_names.contains("test-switch-downstream-0"));
         assert!(port_names.contains("test-switch-downstream-1"));
         assert!(port_names.contains("test-switch-downstream-2"));
 
         // Verify port numbers
         let port_numbers: std::collections::HashSet<_> =
-            ports.iter().map(|(num, _)| *num).collect();
+            ports.iter().map(|p| p.port_number).collect();
         assert!(port_numbers.contains(&0));
         assert!(port_numbers.contains(&1));
         assert!(port_numbers.contains(&2));
@@ -750,7 +754,7 @@ mod tests {
                 .add_pcie_device(
                     0, // Port number instead of port name
                     "downstream-dev",
-                    Box::new(downstream_device)
+                    Box::new(downstream_device),
                 )
                 .is_ok()
         );
@@ -972,7 +976,8 @@ mod tests {
         let multi_port_switch = GenericPcieSwitch::new(multi_port_definition);
 
         // Verify each downstream port has the multi-function bit set
-        for (port_num, _) in multi_port_switch.downstream_ports() {
+        for p in multi_port_switch.downstream_ports() {
+            let port_num = p.port_number;
             if let Some((_, downstream_port)) = multi_port_switch.downstream_ports.get(&port_num) {
                 let mut header_type_value: u32 = 0;
                 downstream_port
@@ -1010,7 +1015,8 @@ mod tests {
         let single_port_switch = GenericPcieSwitch::new(single_port_definition);
 
         // Verify the single downstream port does NOT have the multi-function bit set
-        for (port_num, _) in single_port_switch.downstream_ports() {
+        for p in single_port_switch.downstream_ports() {
+            let port_num = p.port_number;
             if let Some((_, downstream_port)) = single_port_switch.downstream_ports.get(&port_num) {
                 let mut header_type_value: u32 = 0;
                 downstream_port

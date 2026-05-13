@@ -55,9 +55,9 @@ OpenVMM synthesizes a minimal set of EFI structures in guest memory:
 2. **EFI Memory Map** — describes the EFI metadata region, ACPI tables, and
    conventional RAM.
 3. **ACPI Tables** — FADT (with `HW_REDUCED_ACPI`), MADT (GIC distributor, GICv3
-   redistributors or GICv2 CPU interfaces, optional v2m MSI frame), GTDT
+   redistributors or GICv2 CPU interfaces, GICv3 ITS or v2m MSI frame), GTDT
    (virtual timer), DSDT (VMBus, serial UARTs), and optionally MCFG/SSDT for
-   PCIe.
+   PCIe and IORT for PCIe interrupt routing via the ITS.
 
 A **stub device tree** is then built. Unlike a full device tree, it contains
 no hardware nodes — no CPUs, GIC, timer, or devices. Its only purpose is a

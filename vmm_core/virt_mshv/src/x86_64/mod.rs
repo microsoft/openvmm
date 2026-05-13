@@ -479,7 +479,7 @@ impl MshvPartitionInner {
 }
 
 impl SignalMsi for MshvPartitionInner {
-    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         self.request_msi(MsiRequest { address, data });
     }
 }

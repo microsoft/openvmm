@@ -2958,11 +2958,16 @@ dependencies = [
 name = "guest_watchdog"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "chipset_device",
+ "chipset_device_resources",
+ "chipset_resources",
  "inspect",
  "mesh",
  "open_enum",
+ "thiserror 2.0.16",
  "tracelimit",
+ "vm_resource",
  "vmcore",
  "watchdog_core",
 ]
@@ -5468,6 +5473,7 @@ dependencies = [
  "chipset_legacy",
  "debug_worker",
  "disk_striped",
+ "guest_watchdog",
  "hyperv_ic",
  "mesh_worker",
  "missing_dev",
@@ -5557,6 +5563,7 @@ dependencies = [
  "guest_crash_device",
  "guest_emulation_device",
  "guest_emulation_log",
+ "guest_watchdog",
  "hyperv_ic",
  "mesh_worker",
  "missing_dev",
@@ -5894,6 +5901,7 @@ dependencies = [
  "memory_range",
  "mesh",
  "pal_async",
+ "pal_event",
  "parking_lot",
  "pci_bus",
  "pci_core",
@@ -8060,16 +8068,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracing-serde"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
-dependencies = [
- "serde",
- "tracing-core",
-]
-
-[[package]]
 name = "tracing-subscriber"
 version = "0.3.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8079,15 +8077,12 @@ dependencies = [
  "nu-ansi-term",
  "once_cell",
  "regex-automata",
- "serde",
- "serde_json",
  "sharded-slab",
  "smallvec",
  "thread_local",
  "tracing",
  "tracing-core",
  "tracing-log",
- "tracing-serde",
 ]
 
 [[package]]
@@ -9078,6 +9073,7 @@ version = "0.0.0"
 dependencies = [
  "aarch64defs",
  "aarch64emu",
+ "cvm_tracing",
  "guestmem",
  "hvdef",
  "thiserror 2.0.16",
@@ -9123,6 +9119,7 @@ dependencies = [
 name = "virt_support_x86emu"
 version = "0.0.0"
 dependencies = [
+ "cvm_tracing",
  "guestmem",
  "hvdef",
  "iced-x86",
@@ -9983,6 +9980,7 @@ dependencies = [
  "cache_topology",
  "chipset",
  "chipset_device_resources",
+ "chipset_resources",
  "closeable_mutex",
  "cvm_tracing",
  "futures",
@@ -10128,7 +10126,6 @@ dependencies = [
  "framebuffer",
  "futures",
  "generation_id",
- "guest_watchdog",
  "guestmem",
  "ide",
  "inspect",
@@ -10415,8 +10412,10 @@ dependencies = [
  "inspect",
  "mesh",
  "pal_async",
+ "parking_lot",
  "thiserror 2.0.16",
  "tracing",
+ "vm_resource",
  "vmcore",
  "watchdog_vmgs_format",
 ]

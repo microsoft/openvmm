@@ -1314,7 +1314,7 @@ struct UhInterruptTarget {
 }
 
 impl pci_core::msi::SignalMsi for UhInterruptTarget {
-    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         self.partition
             .request_msi(self.vtl, MsiRequest { address, data });
     }

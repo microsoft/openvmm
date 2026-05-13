@@ -7,6 +7,7 @@ use anyhow::bail;
 use chipset_device::io::IoResult;
 use inspect::Inspect;
 use pci_bus::GenericPciBusDevice;
+use pci_core::bus_range::AssignedBusRange;
 use pci_core::capabilities::msi_cap::MsiCapability;
 use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
@@ -77,6 +78,14 @@ impl PcieDownstreamPort {
             cfg_space,
             link: None,
         }
+    }
+
+    /// Returns a clone of the config space emulator's shared bus range.
+    ///
+    /// The returned handle shares the same underlying atomic as the
+    /// emulator — writes, resets, and restores are reflected automatically.
+    pub fn bus_range(&self) -> AssignedBusRange {
+        self.cfg_space.bus_range()
     }
 
     /// Notify the guest of a hotplug event via MSI.

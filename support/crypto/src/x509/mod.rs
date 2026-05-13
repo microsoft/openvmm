@@ -45,7 +45,7 @@ impl X509Certificate {
     }
 
     /// Check if this certificate (acting as issuer) issued `subject`.
-    pub fn issued(&self, subject: &X509Certificate) -> bool {
+    pub fn issued(&self, subject: &X509Certificate) -> Result<bool, X509Error> {
         self.0.issued(&subject.0)
     }
 
@@ -102,7 +102,7 @@ mod tests {
         let cert = build_test_cert(&key);
         let pubkey = cert.public_key().unwrap();
         assert!(cert.verify(&pubkey).unwrap());
-        assert!(cert.issued(&cert));
+        assert!(cert.issued(&cert).unwrap());
     }
 
     /// A cert signed by one key must NOT verify against an unrelated key.

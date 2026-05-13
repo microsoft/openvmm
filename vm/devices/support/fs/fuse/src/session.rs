@@ -24,6 +24,7 @@ const DEFAULT_FLAGS: u32 = FUSE_ASYNC_READ
     | FUSE_ASYNC_DIO
     | FUSE_ATOMIC_O_TRUNC
     | FUSE_BIG_WRITES
+    | FUSE_MAX_PAGES
     | FUSE_INIT_EXT;
 
 // Default flags2 to negotiate when FUSE_INIT_EXT is supported.

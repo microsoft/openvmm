@@ -113,6 +113,13 @@ pub const DEFAULT_GIC_V2M_SPI_BASE: u32 = 512;
 /// Number of SPIs reserved for PCIe MSIs.
 pub const DEFAULT_GIC_V2M_SPI_COUNT: u32 = 64;
 
+/// Base address of the GICv3 ITS MMIO region. Must be 64 KiB aligned,
+/// below the v2m frame address, and not overlap other devices.
+/// The region extends from this base to base + GIC_ITS_SIZE (128 KiB).
+pub const DEFAULT_GIC_ITS_BASE: u64 = 0xEFFC_0000;
+/// Size of the ITS MMIO region (control frame + translation frame, 2×64 KiB).
+pub const GIC_ITS_SIZE: u64 = 0x2_0000;
+
 /// Default virtual timer PPI (GIC INTID). PPI 4 = INTID 16 + 4 = 20.
 /// This is the EL1 virtual timer interrupt used across Hyper-V, KVM, and HVF.
 pub const DEFAULT_VIRT_TIMER_PPI: u32 = 20;
@@ -291,10 +298,24 @@ pub enum PmuGsivConfig {
     Disabled,
 }
 
+/// MSI controller selection for aarch64 PCIe interrupt delivery.
+#[derive(Debug, Protobuf, Default, Clone)]
+pub enum GicMsiConfig {
+    /// Automatically select the best available MSI controller:
+    /// ITS when the hypervisor supports it, otherwise GICv2m.
+    #[default]
+    Auto,
+    /// Force GICv3 ITS for MSI delivery via LPIs.
+    Its,
+    /// Force GICv2m for MSI delivery via SPIs.
+    V2m,
+}
+
 #[derive(Debug, Protobuf, Default, Clone)]
 pub struct Aarch64TopologyConfig {
     pub gic_config: Option<GicConfig>,
     pub pmu_gsiv: PmuGsivConfig,
+    pub gic_msi: GicMsiConfig,
 }
 
 /// GIC configuration for the virtual machine.

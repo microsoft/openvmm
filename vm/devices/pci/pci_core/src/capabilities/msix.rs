@@ -174,7 +174,7 @@ impl MsiInterrupt {
         }
 
         if state.pending {
-            state.target.signal_msi(0, address, data);
+            state.target.signal_msi(address, data);
             state.pending = false;
         }
     }
@@ -210,7 +210,7 @@ impl InterruptTarget for MsiInterruptTarget {
     fn deliver(&self) {
         let mut state = self.0.lock();
         if state.enabled {
-            state.target.signal_msi(0, state.address, state.data);
+            state.target.signal_msi(state.address, state.data);
         } else {
             state.pending = true;
         }
@@ -675,7 +675,7 @@ mod tests {
             &self.event
         }
 
-        fn enable(&self, address: u64, data: u32) {
+        fn enable(&self, address: u64, data: u32, _devid: Option<u32>) {
             self.calls.lock().push(RouteCall::SetMsi { address, data });
         }
 

@@ -12,6 +12,7 @@ use crate::PAGE_SHIFT;
 use crate::PAGE_SIZE64;
 use crate::ROOT_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
+use crate::bus_range::AssignedBusRange;
 use crate::port::PcieDownstreamPort;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
@@ -46,6 +47,17 @@ pub struct GenericPcieRootComplex {
     /// Map of root ports attached to the root complex, indexed by combined device and function numbers.
     #[inspect(with = "|x| inspect::iter_by_key(x).map_value(|(_, v)| v)")]
     ports: HashMap<u8, (Arc<str>, RootPort)>,
+}
+
+/// Information about a downstream port in a PCIe topology.
+pub struct DownstreamPortInfo {
+    /// The port number (device/function index).
+    pub port_number: u8,
+    /// The port name.
+    pub name: Arc<str>,
+    /// Shared bus range, updated by the config space emulator when the
+    /// guest programs secondary/subordinate bus numbers.
+    pub bus_range: AssignedBusRange,
 }
 
 /// A description of a generic PCIe root port.
@@ -169,14 +181,15 @@ impl GenericPcieRootComplex {
     }
 
     /// Enumerate the downstream ports of the root complex.
-    pub fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
-        let ports: Vec<(u8, Arc<str>)> = self
-            .ports
+    pub fn downstream_ports(&self) -> Vec<DownstreamPortInfo> {
+        self.ports
             .iter()
-            .map(|(port, (name, _))| (*port, name.clone()))
-            .collect();
-
-        ports
+            .map(|(port, (name, rp))| DownstreamPortInfo {
+                port_number: *port,
+                name: name.clone(),
+                bus_range: rp.port.bus_range(),
+            })
+            .collect()
     }
 
     /// Hot-add a device to a named port.
@@ -1083,5 +1096,54 @@ mod tests {
         // Restore should fail because port counts don't match
         let result = rc2.restore(saved_state);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_bus_range_updated_on_cfg_write() {
+        const SECONDARY_BUS_NUM_REG: u64 = 0x19;
+        const SUBORDINATE_BUS_NUM_REG: u64 = 0x1A;
+
+        let mut rc = instantiate_root_complex(0, 255, 1);
+
+        let endpoint = TestPcieEndpoint::new(
+            |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
+            |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
+        );
+
+        // Get the bus_range from the port before attaching a device.
+        let bus_range = rc.downstream_ports().into_iter().next().unwrap().bus_range;
+        assert_eq!(bus_range.bus_range(), (0, 0));
+
+        rc.add_pcie_device(0, "ep", Box::new(endpoint)).unwrap();
+
+        // Program secondary=5, subordinate=10 via ECAM MMIO writes.
+        rc.mmio_write(SECONDARY_BUS_NUM_REG, &[5]).unwrap();
+        rc.mmio_write(SUBORDINATE_BUS_NUM_REG, &[10]).unwrap();
+
+        // The shared AssignedBusRange should reflect the new values.
+        assert_eq!(bus_range.bus_range(), (5, 10));
+
+        // compose_its_devid should produce (segment << 16 | secondary << 8)
+        // for a single-function device (devid=None).
+        let segment = 2u16;
+        let devid = bus_range.compose_its_devid(segment, None);
+        assert_eq!(devid, Some((2 << 16) | (5 << 8)));
+
+        // With a specific BDF within range: bus=7, dev=1, fn=2
+        let bdf: u32 = (7 << 8) | (1 << 3) | 2;
+        let devid = bus_range.compose_its_devid(segment, Some(bdf));
+        assert_eq!(devid, Some((2 << 16) | bdf));
+
+        // BDF outside range should return None.
+        let out_of_range_bdf: u32 = 11 << 8; // bus=11, beyond subordinate=10
+        assert_eq!(
+            bus_range.compose_its_devid(segment, Some(out_of_range_bdf)),
+            None
+        );
+
+        // Reprogram bus numbers and verify tracking follows.
+        rc.mmio_write(SECONDARY_BUS_NUM_REG, &[20]).unwrap();
+        rc.mmio_write(SUBORDINATE_BUS_NUM_REG, &[30]).unwrap();
+        assert_eq!(bus_range.bus_range(), (20, 30));
     }
 }

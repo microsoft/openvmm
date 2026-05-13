@@ -20,7 +20,10 @@ use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
+use chipset_resources::hyperv_guest_watchdog::DEFAULT_WDAT_PORT_BASE;
+use chipset_resources::hyperv_guest_watchdog::HyperVGuestWatchdogDeviceHandle;
 use chipset_resources::i8042::I8042DeviceHandle;
+use chipset_resources::ioapic::GenericIoApicDeviceHandle;
 use chipset_resources::pic::PicDeviceHandle;
 use chipset_resources::piix4_pci_isa_bridge::PIIX4_PCI_ISA_BRIDGE_BDF;
 use chipset_resources::piix4_pci_isa_bridge::Piix4PciIsaBridgeDeviceHandle;
@@ -36,6 +39,7 @@ use serial_pl011_resources::SerialPl011DeviceHandle;
 use std::iter::zip;
 use thiserror::Error;
 use vm_resource::IntoResource;
+use vm_resource::PlatformResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::kind::SerialBackendHandle;
@@ -230,6 +234,7 @@ impl VmManifestBuilder {
                 with_pic: false,
                 with_pit: false,
                 with_psp: false,
+                with_guest_watchdog: false,
             },
         };
 
@@ -256,7 +261,6 @@ impl VmManifestBuilder {
                 );
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: false,
-                    with_generic_ioapic: true,
                     with_generic_isa_dma: true,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
@@ -264,7 +268,6 @@ impl VmManifestBuilder {
                     with_hyperv_firmware_pcat: true,
                     with_hyperv_firmware_uefi: false,
                     with_hyperv_framebuffer: !self.proxy_vga,
-                    with_hyperv_guest_watchdog: false,
                     with_hyperv_ide: true,
                     with_hyperv_power_management: false,
                     with_hyperv_vga: !self.proxy_vga,
@@ -276,7 +279,7 @@ impl VmManifestBuilder {
                     with_winbond_super_io_and_floppy_stub: self.stub_floppy,
                     with_winbond_super_io_and_floppy_full: !self.stub_floppy,
                 };
-                result.capabilities.with_ioapic = true;
+                result.attach_generic_ioapic();
                 result.attach_pic();
                 result.attach_pit();
                 result.attach_missing_arch_ports(self.arch, false);
@@ -288,7 +291,6 @@ impl VmManifestBuilder {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
-                    with_generic_ioapic: is_x86,
                     with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
@@ -296,7 +298,6 @@ impl VmManifestBuilder {
                     with_hyperv_firmware_pcat: false,
                     with_hyperv_firmware_uefi: false,
                     with_hyperv_framebuffer: self.framebuffer,
-                    with_hyperv_guest_watchdog: self.guest_watchdog,
                     with_hyperv_ide: false,
                     with_hyperv_power_management: is_x86,
                     with_hyperv_vga: false,
@@ -308,7 +309,9 @@ impl VmManifestBuilder {
                     with_winbond_super_io_and_floppy_stub: false,
                     with_winbond_super_io_and_floppy_full: false,
                 };
-                result.capabilities.with_ioapic = is_x86;
+                if is_x86 {
+                    result.attach_generic_ioapic();
+                }
                 result.capabilities.with_psp = self.psp;
                 if is_x86 {
                     result.attach_pic();
@@ -325,12 +328,14 @@ impl VmManifestBuilder {
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }
+                if self.guest_watchdog {
+                    result.attach_guest_watchdog();
+                }
             }
             BaseChipsetType::HypervGen2Uefi | BaseChipsetType::HyperVGen2LinuxDirect => {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
-                    with_generic_ioapic: is_x86,
                     with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
@@ -338,7 +343,6 @@ impl VmManifestBuilder {
                     with_hyperv_firmware_pcat: false,
                     with_hyperv_firmware_uefi: matches!(self.ty, BaseChipsetType::HypervGen2Uefi),
                     with_hyperv_framebuffer: self.framebuffer,
-                    with_hyperv_guest_watchdog: self.guest_watchdog,
                     with_hyperv_ide: false,
                     with_hyperv_power_management: is_x86,
                     with_hyperv_vga: false,
@@ -350,7 +354,9 @@ impl VmManifestBuilder {
                     with_winbond_super_io_and_floppy_stub: false,
                     with_winbond_super_io_and_floppy_full: false,
                 };
-                result.capabilities.with_ioapic = is_x86;
+                if is_x86 {
+                    result.attach_generic_ioapic();
+                }
                 result.capabilities.with_psp = self.psp;
                 result
                     .maybe_attach_arch_serial(
@@ -362,6 +368,9 @@ impl VmManifestBuilder {
                     .attach_missing_arch_ports(self.arch, true);
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
+                }
+                if self.guest_watchdog {
+                    result.attach_guest_watchdog();
                 }
             }
             BaseChipsetType::HclHost => {
@@ -415,6 +424,22 @@ impl VmChipsetResult {
         self
     }
 
+    fn attach_generic_ioapic(&mut self) -> &mut Self {
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            // Use "ioapic" (not GenericIoApicDeviceHandle::ID) to match the
+            // device unit name used by the old inline construction path. This
+            // is required for servicing compatibility (upgrade from old ->
+            // new OpenHCL).
+            name: "ioapic".to_owned(),
+            resource: GenericIoApicDeviceHandle {
+                routing: PlatformResource.into_resource(),
+            }
+            .into_resource(),
+        });
+        self.capabilities.with_ioapic = true;
+        self
+    }
+
     fn attach_battery(
         &mut self,
         arch: MachineArch,
@@ -454,6 +479,18 @@ impl VmChipsetResult {
             pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
             bdf: PIIX4_PCI_ISA_BRIDGE_BDF,
         });
+        self
+    }
+
+    fn attach_guest_watchdog(&mut self) -> &mut Self {
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "guest-watchdog".to_owned(),
+            resource: HyperVGuestWatchdogDeviceHandle {
+                port_base: DEFAULT_WDAT_PORT_BASE,
+            }
+            .into_resource(),
+        });
+        self.capabilities.with_guest_watchdog = true;
         self
     }
 

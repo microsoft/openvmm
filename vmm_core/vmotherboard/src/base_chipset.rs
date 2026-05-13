@@ -215,7 +215,6 @@ impl<'a> BaseChipsetBuilder<'a> {
         // oh boy, time to build all the devices!
         let options::BaseChipsetDevices {
             deps_generic_cmos_rtc,
-            deps_generic_ioapic,
             deps_generic_isa_dma,
             deps_generic_isa_floppy,
             deps_generic_pci_bus,
@@ -223,7 +222,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_hyperv_firmware_pcat,
             deps_hyperv_firmware_uefi,
             deps_hyperv_framebuffer,
-            deps_hyperv_guest_watchdog,
             deps_hyperv_ide,
             deps_hyperv_power_management,
             deps_hyperv_vga,
@@ -235,17 +233,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_winbond_super_io_and_floppy_stub,
             deps_winbond_super_io_and_floppy_full,
         } = devices;
-
-        if let Some(options::dev::GenericIoApicDeps {
-            num_entries,
-            routing,
-        }) = deps_generic_ioapic
-        {
-            builder.arc_mutex_device("ioapic").add(|services| {
-                services.add_line_target(IRQ_LINE_SET, 0..=num_entries as u32 - 1, 0);
-                ioapic::IoApicDevice::new(num_entries, routing)
-            })?;
-        }
 
         if let Some(options::dev::GenericPciBusDeps {
             bus_id,
@@ -523,28 +510,6 @@ impl<'a> BaseChipsetBuilder<'a> {
                     }
                     pm
                 })?;
-        }
-
-        if let Some(options::dev::HyperVGuestWatchdogDeps {
-            watchdog_platform,
-            port_base: pio_wdat_port,
-        }) = deps_hyperv_guest_watchdog
-        {
-            builder
-                .arc_mutex_device("guest-watchdog")
-                .add_async(async |services| {
-                    let vmtime = services.register_vmtime();
-                    let mut register_pio = services.register_pio();
-                    guest_watchdog::GuestWatchdogServices::new(
-                        vmtime.access("guest-watchdog-time"),
-                        watchdog_platform,
-                        &mut register_pio,
-                        pio_wdat_port,
-                        foundation.is_restoring,
-                    )
-                    .await
-                })
-                .await?;
         }
 
         if let Some(options::dev::HyperVFirmwareUefi {
@@ -927,7 +892,7 @@ mod weak_mutex_pci {
                 })
         }
 
-        fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+        fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo> {
             self.lock().downstream_ports()
         }
     }
@@ -948,7 +913,7 @@ mod weak_mutex_pci {
                 })
         }
 
-        fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+        fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo> {
             self.lock().downstream_ports()
         }
     }
@@ -1111,7 +1076,6 @@ pub mod options {
 
         devices {
             generic_cmos_rtc:            dev::GenericCmosRtcDeps,
-            generic_ioapic:              dev::GenericIoApicDeps,
             generic_isa_dma:             dev::GenericIsaDmaDeps,
             generic_isa_floppy:          dev::GenericIsaFloppyDeps,
             generic_pci_bus:             dev::GenericPciBusDeps,
@@ -1120,7 +1084,6 @@ pub mod options {
             hyperv_firmware_pcat:        dev::HyperVFirmwarePcat,
             hyperv_firmware_uefi:        dev::HyperVFirmwareUefi,
             hyperv_framebuffer:          dev::HyperVFramebufferDeps,
-            hyperv_guest_watchdog:       dev::HyperVGuestWatchdogDeps,
             hyperv_ide:                  dev::HyperVIdeDeps,
             hyperv_power_management:     dev::HyperVPowerManagementDeps,
             hyperv_vga:                  dev::HyperVVgaDeps,
@@ -1149,6 +1112,8 @@ pub mod options {
         pub with_pit: bool,
         /// Whether the VM exposes a PSP.
         pub with_psp: bool,
+        /// Whether the VM exposes the Hyper-V guest watchdog device.
+        pub with_guest_watchdog: bool,
     }
 
     /// Device specific dependencies
@@ -1297,14 +1262,6 @@ pub mod options {
             }
         }
 
-        /// Generic IO Advanced Programmable Interrupt Controller (IOAPIC)
-        pub struct GenericIoApicDeps {
-            /// Number of IO-APIC entries
-            pub num_entries: u8,
-            /// Trait allowing the IO-APIC device to assert VM interrupts.
-            pub routing: Box<dyn ioapic::IoApicRouting>,
-        }
-
         /// Generic MC146818A compatible RTC + CMOS device
         pub struct GenericCmosRtcDeps {
             /// IRQ line to signal RTC device events
@@ -1338,15 +1295,6 @@ pub mod options {
             pub line_interrupt_no: u32,
             /// Channel to receive updated battery state
             pub battery_status_recv: mesh::Receiver<HostBatteryUpdate>,
-        }
-
-        /// Hyper-V specific Guest Watchdog device
-        pub struct HyperVGuestWatchdogDeps {
-            /// Port io address of the device's register region
-            pub port_base: u16,
-            /// Device-specific functions the platform must provide in order to
-            /// use this device.
-            pub watchdog_platform: Box<dyn watchdog_core::platform::WatchdogPlatform>,
         }
 
         /// Hyper-V specific UEFI Helper Device

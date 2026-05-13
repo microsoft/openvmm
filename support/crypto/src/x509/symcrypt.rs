@@ -72,8 +72,71 @@ impl X509CertificateInner {
             .map_err(|e| X509Error(e.0))
     }
 
-    pub fn issued(&self, subject: &X509CertificateInner) -> bool {
-        self.0.tbs_certificate().subject() == subject.0.tbs_certificate().issuer()
+    pub fn issued(&self, subject: &X509CertificateInner) -> Result<bool, X509Error> {
+        use x509_cert::ext::pkix::AuthorityKeyIdentifier;
+        use x509_cert::ext::pkix::KeyUsage;
+        use x509_cert::ext::pkix::SubjectKeyIdentifier;
+        use x509_cert::ext::pkix::name::GeneralName;
+
+        let issuer_tbs = self.0.tbs_certificate();
+        let subject_tbs = subject.0.tbs_certificate();
+
+        // The subject's issuer name must match the issuer's subject name.
+        if subject_tbs.issuer() != issuer_tbs.subject() {
+            return Ok(false);
+        }
+
+        // If this certificate has a KeyUsage extension, it must permit
+        // signing other certificates.
+        let ku = issuer_tbs
+            .get_extension::<KeyUsage>()
+            .map_err(|e| der_err(e, "parsing KeyUsage extension"))?;
+        if let Some((_crit, ku)) = ku
+            && !ku.key_cert_sign()
+        {
+            return Ok(false);
+        }
+
+        // If the subject carries an AuthorityKeyIdentifier, validate its
+        // populated fields against this certificate (the candidate issuer).
+        let akid = subject_tbs
+            .get_extension::<AuthorityKeyIdentifier>()
+            .map_err(|e| der_err(e, "parsing AuthorityKeyIdentifier extension"))?;
+        if let Some((_crit, akid)) = akid {
+            if let Some(akid_key_id) = &akid.key_identifier {
+                let skid = issuer_tbs
+                    .get_extension::<SubjectKeyIdentifier>()
+                    .map_err(|e| der_err(e, "parsing SubjectKeyIdentifier extension"))?;
+                match skid {
+                    Some((_crit, ski)) => {
+                        if akid_key_id != &ski.0 {
+                            return Ok(false);
+                        }
+                    }
+                    None => return Ok(false),
+                }
+            }
+            if let Some(akid_serial) = &akid.authority_cert_serial_number {
+                if akid_serial != issuer_tbs.serial_number() {
+                    return Ok(false);
+                }
+            }
+            if let Some(gens) = &akid.authority_cert_issuer {
+                let mut has_dn = false;
+                let has_matching_dn = gens.iter().any(|g| match g {
+                    GeneralName::DirectoryName(dn) => {
+                        has_dn = true;
+                        dn == issuer_tbs.subject()
+                    }
+                    _ => false,
+                });
+                if has_dn && !has_matching_dn {
+                    return Ok(false);
+                }
+            }
+        }
+
+        Ok(true)
     }
 
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {

@@ -51,7 +51,9 @@ pub trait IrqFdRoute: Send + Sync {
     ///
     /// `address` and `data` are the MSI address and data values that the
     /// hypervisor will use when injecting the interrupt into the guest.
-    fn enable(&self, address: u64, data: u32);
+    /// `devid` is an optional device identity used by backends that need a
+    /// device ID for MSI routing (e.g., GICv3 ITS).
+    fn enable(&self, address: u64, data: u32, devid: Option<u32>);
 
     /// Disables the MSI routing for this irqfd's GSI.
     ///

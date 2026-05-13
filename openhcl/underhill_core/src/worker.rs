@@ -141,6 +141,7 @@ use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::vfio::VfioDmaClients;
 use virt::Partition;
 use virt::VpIndex;
+#[cfg(guest_arch = "x86_64")]
 use virt::X86Partition;
 use virt::state::HvRegisterState;
 use virt_mshv_vtl::UhPartition;
@@ -188,11 +189,11 @@ use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
+use watchdog_core::resources::StaticWatchdogPlatformResolver;
 use zerocopy::FromZeros;
 
 pub(crate) const PM_BASE: u16 = 0x400;
 pub(crate) const SYSTEM_IRQ_ACPI: u32 = 9;
-pub(crate) const WDAT_PORT: u16 = 0x30;
 
 pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new("UnderhillWorker");
 
@@ -2207,6 +2208,10 @@ async fn new_underhill_vm(
     let halt_vps = Arc::new(halt_vps);
 
     resolver.add_resolver(vmm_core::platform_resolvers::HaltResolver(halt_vps.clone()));
+    #[cfg(guest_arch = "x86_64")]
+    resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
+        partition.ioapic_routing(),
+    ));
 
     let bounce_buffer_tracker = {
         let size = {
@@ -2402,7 +2407,7 @@ async fn new_underhill_vm(
                 cache_topology: None,
                 pcie_host_bridges: &vec![],
                 arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
-                    with_ioapic: true, // openhcl always runs with ioapic
+                    with_ioapic: capabilities.with_ioapic,
                     with_pic: capabilities.with_pic,
                     with_pit: capabilities.with_pit,
                     with_psp: dps.general.psp_enabled,
@@ -2714,15 +2719,7 @@ async fn new_underhill_vm(
     }
 
     let emuplat_adjust_gpa_range;
-
     let synic = virt::Hv1::synic(partition.as_ref());
-
-    let deps_generic_ioapic = chipset.with_generic_ioapic.then(|| dev::GenericIoApicDeps {
-        num_entries: virt::irqcon::IRQ_LINES as u8,
-        routing: Box::new(vmm_core::emuplat::ioapic::IoApicRouting(
-            partition.ioapic_routing(),
-        )),
-    });
 
     use vmotherboard::options::dev;
 
@@ -2825,34 +2822,29 @@ async fn new_underhill_vm(
                 register_host_io_fastpath: Box::new(UhRegisterHostIoFastPath(partition.clone())),
             });
 
-    let deps_hyperv_guest_watchdog = if chipset.with_hyperv_guest_watchdog {
-        Some(dev::HyperVGuestWatchdogDeps {
-            port_base: WDAT_PORT,
-            watchdog_platform: {
-                let store = if let Some(vmgs_client) = vmgs_client.as_ref() {
-                    vmgs_client
-                        .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
-                        .context("failed to instantiate guest watchdog store")?
-                } else {
-                    EphemeralNonVolatileStore::new_boxed()
-                };
+    if capabilities.with_guest_watchdog {
+        let store = if let Some(vmgs_client) = vmgs_client.as_ref() {
+            vmgs_client
+                .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
+                .context("failed to instantiate guest watchdog store")?
+        } else {
+            EphemeralNonVolatileStore::new_boxed()
+        };
 
-                let watchdog_callback = WatchdogTimeoutReset {
-                    halt_vps: halt_vps.clone(),
-                    watchdog_send: None, // This is not the UEFI watchdog, so no need to send
-                                         // watchdog notifications.
-                };
+        let watchdog_callback = WatchdogTimeoutReset {
+            halt_vps: halt_vps.clone(),
+            watchdog_send: None, // This is not the UEFI watchdog, so no need to send
+                                 // watchdog notifications.
+        };
 
-                let mut underhill_watchdog_platform =
-                    UnderhillWatchdogPlatform::new(store, get_client.clone()).await?;
-                underhill_watchdog_platform.add_callback(Box::new(watchdog_callback));
+        let mut underhill_watchdog_platform =
+            UnderhillWatchdogPlatform::new(store, get_client.clone()).await?;
+        underhill_watchdog_platform.add_callback(Box::new(watchdog_callback));
 
-                Box::new(underhill_watchdog_platform)
-            },
-        })
-    } else {
-        None
-    };
+        resolver.add_resolver(StaticWatchdogPlatformResolver::new(Box::new(
+            underhill_watchdog_platform,
+        )));
+    }
 
     let deps_generic_psp = { chipset.with_generic_psp.then_some(dev::GenericPspDeps {}) };
 
@@ -2960,10 +2952,8 @@ async fn new_underhill_vm(
 
     let devices = BaseChipsetDevices {
         deps_generic_cmos_rtc,
-        deps_generic_ioapic,
         deps_generic_psp,
         deps_hyperv_firmware_uefi,
-        deps_hyperv_guest_watchdog,
         deps_hyperv_power_management,
         deps_generic_isa_dma,
         deps_generic_isa_floppy: None,
