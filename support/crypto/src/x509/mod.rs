@@ -102,7 +102,7 @@ mod tests {
         let cert = build_test_cert(&key);
         let pubkey = cert.public_key().unwrap();
         assert!(cert.verify(&pubkey).unwrap());
-        assert!(cert.issued(&cert));
+        assert!(cert.issued(&cert).unwrap());
     }
 
     /// A cert signed by one key must NOT verify against an unrelated key.
