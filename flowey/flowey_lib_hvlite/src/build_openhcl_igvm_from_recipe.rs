@@ -424,7 +424,8 @@ impl SimpleFlowNode for Node {
                                 crate::build_sidecar::SidecarBuildProfile::Debug
                             }
                             OpenvmmHclBuildProfile::Release
-                            | OpenvmmHclBuildProfile::OpenvmmHclShip => {
+                            | OpenvmmHclBuildProfile::OpenvmmHclShip
+                            | OpenvmmHclBuildProfile::OpenvmmHclShipReproducible => {
                                 crate::build_sidecar::SidecarBuildProfile::Release
                             }
                         },
@@ -504,6 +505,9 @@ impl SimpleFlowNode for Node {
                         OpenvmmHclBuildProfile::Release
                         | OpenvmmHclBuildProfile::OpenvmmHclShip => {
                             crate::build_openhcl_boot::OpenhclBootBuildProfile::Release
+                        }
+                        OpenvmmHclBuildProfile::OpenvmmHclShipReproducible => {
+                            crate::build_openhcl_boot::OpenhclBootBuildProfile::ReleaseReproducible
                         }
                     },
                 },

@@ -18,6 +18,7 @@ pub struct OpenhclBootOutput {
 pub enum OpenhclBootBuildProfile {
     Debug,
     Release,
+    ReleaseReproducible,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -70,6 +71,9 @@ impl FlowNode for Node {
             let profile = match profile {
                 OpenhclBootBuildProfile::Debug => BuildProfile::BootDev,
                 OpenhclBootBuildProfile::Release => BuildProfile::BootRelease,
+                OpenhclBootBuildProfile::ReleaseReproducible => {
+                    BuildProfile::BootReleaseReproducible
+                }
             };
 
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {

@@ -164,8 +164,10 @@ in pkgs.mkShell {
   CARGO_PROFILE_DEV_TRIM_PATHS = "object";
   CARGO_PROFILE_RELEASE_TRIM_PATHS = "object";
   CARGO_PROFILE_UNDERHILL_SHIP_TRIM_PATHS = "object";
+  CARGO_PROFILE_UNDERHILL_SHIP_REPRODUCIBLE_TRIM_PATHS = "object";
   CARGO_PROFILE_BOOT_DEV_TRIM_PATHS = "object";
   CARGO_PROFILE_BOOT_RELEASE_TRIM_PATHS = "object";
+  CARGO_PROFILE_BOOT_RELEASE_REPRODUCIBLE_TRIM_PATHS = "object";
 
   shellHook = ''
     # Create a temp bin directory with symlinks using the expected gcc names.
