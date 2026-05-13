@@ -53,8 +53,24 @@ impl MsiRoute {
     /// Use this for multi-function devices whose functions span
     /// multiple buses: the caller composes the full `(bus << 8) | devfn`
     /// itself from whatever bus range it owns. The route's own
-    /// default BDF is bypassed entirely.
+    /// default `devfn` is bypassed.
+    ///
+    /// The bus portion of `rid` is validated against the route's
+    /// assigned bus range; if it falls outside the range the route
+    /// is left disabled and a ratelimited warning is emitted.
     pub fn enable_with_rid(&self, rid: u16, address: u64, data: u32) {
+        let bus = (rid >> 8) as u8;
+        if !self.default_bdf.bus_range.contains_bus(bus) {
+            let (secondary, subordinate) = self.default_bdf.bus_range.bus_range();
+            tracelimit::warn_ratelimited!(
+                rid,
+                secondary,
+                subordinate,
+                "refusing to enable MSI route: rid bus outside assigned bus range"
+            );
+            self.inner.disable();
+            return;
+        }
         self.inner.enable(address, data, Some(rid.into()))
     }
 
@@ -236,8 +252,23 @@ impl MsiTarget {
     /// Use this for multi-function devices whose functions span
     /// multiple buses: the caller composes the full `(bus << 8) | devfn`
     /// itself from whatever bus range it owns. This target's own
-    /// default BDF is bypassed entirely.
+    /// default `devfn` is bypassed.
+    ///
+    /// The bus portion of `rid` is validated against this target's
+    /// assigned bus range; if it falls outside the range the MSI is
+    /// dropped and a ratelimited warning is emitted.
     pub fn signal_msi_with_rid(&self, rid: u16, address: u64, data: u32) {
+        let bus = (rid >> 8) as u8;
+        if !self.default_bdf.bus_range.contains_bus(bus) {
+            let (secondary, subordinate) = self.default_bdf.bus_range.bus_range();
+            tracelimit::warn_ratelimited!(
+                rid,
+                secondary,
+                subordinate,
+                "dropping MSI: rid bus outside assigned bus range"
+            );
+            return;
+        }
         let inner = self.inner.read();
         inner.signal_msi.signal_msi(Some(rid.into()), address, data);
     }

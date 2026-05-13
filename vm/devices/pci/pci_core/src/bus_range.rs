@@ -54,4 +54,11 @@ impl AssignedBusRange {
         let v = self.0.load(Ordering::Relaxed);
         ((v >> 8) as u8, v as u8)
     }
+
+    /// Returns whether `bus` falls within the current bus range
+    /// (inclusive on both ends).
+    pub fn contains_bus(&self, bus: u8) -> bool {
+        let (secondary, subordinate) = self.bus_range();
+        bus >= secondary && bus <= subordinate
+    }
 }
