@@ -8,11 +8,13 @@ use crate::NvmeControllerCaps;
 use crate::PAGE_SIZE64;
 use crate::prp::PrpRange;
 use crate::spec;
+use crate::spec::nvm;
 use crate::tests::test_helpers::read_completion_from_queue;
 use crate::tests::test_helpers::test_memory;
 use crate::tests::test_helpers::write_command_to_queue;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
+use disklayer_ram::ram_disk;
 use guestmem::GuestMemory;
 use guid::Guid;
 use pal_async::DefaultDriver;
@@ -325,4 +327,424 @@ async fn test_send_identify(driver: DefaultDriver) {
 
     let cqe = read_completion_from_queue(&gm, &dm1, 0);
     assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+}
+
+// =============================================================================
+// Regression tests for the I/O worker `io_count` accounting.
+//
+// Each I/O queue worker (one per I/O CQ) tracks `sq.io_count` — the number of
+// dispatched I/Os that have not yet been credited back. Every dispatched I/O
+// must increment exactly once and decrement exactly once over its lifetime,
+// regardless of whether the completion is posted directly to the CQ or first
+// queued in `state.completions` (because the CQ was full) and posted later.
+// Two failure modes have historically lived in this code:
+//
+//   * Inline completions for commands targeting an invalid namespace are
+//     synthesized without incrementing `io_count`. If the decrement path
+//     decrements anyway, `io_count` underflows and panics.
+//
+//   * Dispatched I/Os that hit a full CQ get re-queued in `state.completions`
+//     and drained later as `Event::CompletionReady`. If the decrement is
+//     skipped for that drain path, `io_count` leaks; after enough leaks it
+//     exceeds `MAX_IO_QUEUE_DEPTH` and the SQ is permanently throttled.
+//
+// The tests below exercise both shapes through the real `NvmeController`.
+
+/// Helper: create an I/O completion queue and an I/O submission queue bound
+/// to it via admin commands, draining the admin completions as it goes.
+/// Returns the next free admin slot.
+#[expect(clippy::too_many_arguments)]
+async fn create_io_queue_pair(
+    nvmec: &mut NvmeController,
+    gm: &GuestMemory,
+    admin_cq_buf: &PrpRange,
+    admin_sq_buf: &PrpRange,
+    int_controller: &TestPciInterruptController,
+    driver: DefaultDriver,
+    starting_admin_slot: u32,
+    qid: u16,
+    cq_gpa: u64,
+    sq_gpa: u64,
+    cq_qsize_z: u16,
+    sq_qsize_z: u16,
+    cq_iv: u16,
+) -> u32 {
+    let mut admin_slot = starting_admin_slot;
+
+    // CREATE_IO_COMPLETION_QUEUE
+    let mut command = spec::Command::new_zeroed();
+    command
+        .cdw0
+        .set_opcode(spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0);
+    command.cdw10 = spec::Cdw10CreateIoQueue::new()
+        .with_qid(qid)
+        .with_qsize_z(cq_qsize_z)
+        .into();
+    command.cdw11 = spec::Cdw11CreateIoCompletionQueue::new()
+        .with_pc(true)
+        .with_ien(true)
+        .with_iv(cq_iv)
+        .into();
+    command.dptr[0] = cq_gpa;
+    command.cdw0.set_cid(0xc100 + qid);
+
+    write_command_to_queue(gm, admin_sq_buf, admin_slot as usize, &command);
+    nvmec
+        .write_bar0(0x1000, (admin_slot + 1).as_bytes())
+        .unwrap();
+    wait_for_msi(driver.clone(), int_controller, 1000, 0xfeed0000, 0x1111).await;
+    let cqe = read_completion_from_queue(gm, admin_cq_buf, admin_slot as usize);
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+    assert_eq!(cqe.cid, 0xc100 + qid);
+    admin_slot += 1;
+
+    // CREATE_IO_SUBMISSION_QUEUE bound to the CQ just created.
+    let mut command = spec::Command::new_zeroed();
+    command
+        .cdw0
+        .set_opcode(spec::AdminOpcode::CREATE_IO_SUBMISSION_QUEUE.0);
+    command.cdw10 = spec::Cdw10CreateIoQueue::new()
+        .with_qid(qid)
+        .with_qsize_z(sq_qsize_z)
+        .into();
+    command.cdw11 = spec::Cdw11CreateIoSubmissionQueue::new()
+        .with_pc(true)
+        .with_qprio(0)
+        .with_cqid(qid)
+        .into();
+    command.dptr[0] = sq_gpa;
+    command.cdw0.set_cid(0xc200 + qid);
+
+    write_command_to_queue(gm, admin_sq_buf, admin_slot as usize, &command);
+    nvmec
+        .write_bar0(0x1000, (admin_slot + 1).as_bytes())
+        .unwrap();
+    wait_for_msi(driver.clone(), int_controller, 1000, 0xfeed0000, 0x1111).await;
+    let cqe = read_completion_from_queue(gm, admin_cq_buf, admin_slot as usize);
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+    assert_eq!(cqe.cid, 0xc200 + qid);
+    admin_slot + 1
+}
+
+/// Doorbell offset for SQ `qid`. NVMe doorbell stride is 4 bytes and the
+/// admin SQ is at offset `0x1000`; SQ `qid` is at `0x1000 + (2*qid)*4`.
+const fn sq_db(qid: u16) -> u64 {
+    0x1000 + (2 * qid as u64) * 4
+}
+
+/// Doorbell offset for CQ `qid`. CQ `qid` is at `0x1000 + (2*qid + 1)*4`.
+const fn cq_db(qid: u16) -> u64 {
+    0x1000 + (2 * qid as u64 + 1) * 4
+}
+
+/// Smoke test: an I/O command targeting a non-existent namespace must
+/// complete with INVALID_NAMESPACE_OR_FORMAT instead of panicking.
+///
+/// The original bug here was an unconditional `sq.io_count -= 1` at the
+/// bottom of the I/O worker loop, which underflowed because the inline
+/// invalid-namespace completion never incremented `io_count`.
+#[async_test]
+async fn test_io_command_invalid_namespace(driver: DefaultDriver) {
+    let admin_cq_buf = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let admin_sq_buf = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &admin_cq_buf,
+        64,
+        &admin_sq_buf,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    // Set up MSI-X for the I/O CQ (vector 1).
+    write_msix_table_entry(&mut nvmec, 1, 0xfeed0000, 0x2222, false);
+
+    let io_cq_gpa: u64 = 0x4000;
+    let io_sq_gpa: u64 = 0x5000;
+    let _admin_slot = create_io_queue_pair(
+        &mut nvmec,
+        &gm,
+        &admin_cq_buf,
+        &admin_sq_buf,
+        &int_controller,
+        driver.clone(),
+        0,
+        /* qid = */ 1,
+        io_cq_gpa,
+        io_sq_gpa,
+        /* cq_qsize_z = */ 16,
+        /* sq_qsize_z = */ 16,
+        /* cq_iv = */ 1,
+    )
+    .await;
+
+    // Send a READ to NSID=0xFFFF (no namespaces are attached, so any NSID
+    // is invalid).
+    let mut io_cmd = spec::Command::new_zeroed();
+    io_cmd.cdw0.set_opcode(nvm::NvmOpcode::READ.0);
+    io_cmd.cdw0.set_cid(42);
+    io_cmd.nsid = 0xFFFF;
+
+    let io_sq_buf = PrpRange::new(vec![io_sq_gpa], 0, PAGE_SIZE64).unwrap();
+    let io_cq_buf = PrpRange::new(vec![io_cq_gpa], 0, PAGE_SIZE64).unwrap();
+    write_command_to_queue(&gm, &io_sq_buf, 0, &io_cmd);
+    nvmec.write_bar0(sq_db(1), 1u32.as_bytes()).unwrap();
+
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x2222).await;
+
+    let cqe = read_completion_from_queue(&gm, &io_cq_buf, 0);
+    assert_eq!(cqe.cid, 42);
+    assert_eq!(
+        cqe.status.status(),
+        spec::Status::INVALID_NAMESPACE_OR_FORMAT.0,
+        "command to invalid namespace should return INVALID_NAMESPACE_OR_FORMAT"
+    );
+}
+
+/// Regression test: when multiple invalid-namespace inline completions are
+/// queued in `state.completions` (because the CQ is full) and the SQ is then
+/// deleted before they drain, `delete_sq` must not decrement `io_count` for
+/// them — those completions never incremented it.
+///
+/// Pre-fix, `delete_sq` unconditionally decremented `io_count` for every
+/// queued completion belonging to the SQ being deleted. Because inline
+/// invalid-namespace completions never incremented `io_count`, this
+/// underflowed (the worker had `io_count == 0`) and panicked. The panic
+/// killed the admin worker task, so the DELETE_SQ completion would never
+/// be posted and this test would time out waiting for its admin MSI.
+#[async_test]
+async fn test_invalid_namespace_queued_then_delete_sq(driver: DefaultDriver) {
+    let admin_cq_buf = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let admin_sq_buf = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &admin_cq_buf,
+        64,
+        &admin_sq_buf,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    // Set up MSI-X for the I/O CQ (vector 1).
+    write_msix_table_entry(&mut nvmec, 1, 0xfeed0000, 0x2222, false);
+
+    // Create a tiny I/O CQ (qsize_z=1 → 2 entries, only 1 usable before
+    // `cq.write` returns `Ok(false)` and pushes onto `state.completions`),
+    // and a comfortably-sized I/O SQ.
+    let io_cq_gpa: u64 = 0x4000;
+    let io_sq_gpa: u64 = 0x5000;
+    let mut admin_slot = create_io_queue_pair(
+        &mut nvmec,
+        &gm,
+        &admin_cq_buf,
+        &admin_sq_buf,
+        &int_controller,
+        driver.clone(),
+        0,
+        /* qid = */ 1,
+        io_cq_gpa,
+        io_sq_gpa,
+        /* cq_qsize_z = */ 1,
+        /* sq_qsize_z = */ 16,
+        /* cq_iv = */ 1,
+    )
+    .await;
+
+    let io_sq_buf = PrpRange::new(vec![io_sq_gpa], 0, PAGE_SIZE64).unwrap();
+
+    // Submit four invalid-NS READs without consuming any CQ completions.
+    // The first one fills the CQ; the remaining three are queued in
+    // `state.completions` with `decrement_io_count: false`.
+    for i in 0..4u16 {
+        let mut io_cmd = spec::Command::new_zeroed();
+        io_cmd.cdw0.set_opcode(nvm::NvmOpcode::READ.0);
+        io_cmd.cdw0.set_cid(100 + i);
+        io_cmd.nsid = 0xFFFF; // invalid
+        write_command_to_queue(&gm, &io_sq_buf, i as usize, &io_cmd);
+    }
+    nvmec.write_bar0(sq_db(1), 4u32.as_bytes()).unwrap();
+
+    // Wait for the single CQ slot to be filled (the first interrupt), so we
+    // know the worker has had a chance to process the SQ entries and queue
+    // the rest in `state.completions`. (We deliberately do *not* bump the
+    // CQ head doorbell — leaving the queued completions in place for
+    // `delete_sq` to encounter.)
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x2222).await;
+    // Let the worker finish queueing the rest before we issue DELETE_SQ.
+    let mut backoff = Backoff::new(&driver);
+    backoff.back_off().await;
+
+    // DELETE_IO_SUBMISSION_QUEUE for our SQ. Pre-fix, `delete_sq` would
+    // panic on `sq.io_count -= 1` while retaining `state.completions`
+    // (io_count was zero throughout because invalid-NS never increments
+    // it). The admin worker would die and we'd never see this completion.
+    let mut command = spec::Command::new_zeroed();
+    command
+        .cdw0
+        .set_opcode(spec::AdminOpcode::DELETE_IO_SUBMISSION_QUEUE.0);
+    command.cdw10 = spec::Cdw10DeleteIoQueue::new().with_qid(1).into();
+    command.cdw0.set_cid(50);
+    write_command_to_queue(&gm, &admin_sq_buf, admin_slot as usize, &command);
+    nvmec
+        .write_bar0(0x1000, (admin_slot + 1).as_bytes())
+        .unwrap();
+
+    // We expect the admin completion for DELETE_SQ to come back. If the
+    // worker panicked, this will time out.
+    wait_for_msi(driver.clone(), &int_controller, 5000, 0xfeed0000, 0x1111).await;
+    let cqe = read_completion_from_queue(&gm, &admin_cq_buf, admin_slot as usize);
+    assert_eq!(
+        cqe.status.status(),
+        spec::Status::SUCCESS.0,
+        "DELETE_SQ should complete cleanly even with inline invalid-NS \
+         completions queued in state.completions"
+    );
+    assert_eq!(cqe.cid, 50);
+    admin_slot += 1;
+
+    // Sanity check: the controller is still healthy enough to accept
+    // another admin command (a panicked admin worker would not respond).
+    let mut command = spec::Command::new_zeroed();
+    command.cdw0.set_opcode(spec::AdminOpcode::IDENTIFY.0);
+    command.cdw10 = u32::from(spec::Cdw10Identify::new().with_cns(spec::Cns::CONTROLLER.0));
+    command.dptr[0] = 0x6000;
+    command.cdw0.set_cid(51);
+    write_command_to_queue(&gm, &admin_sq_buf, admin_slot as usize, &command);
+    nvmec
+        .write_bar0(0x1000, (admin_slot + 1).as_bytes())
+        .unwrap();
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+    let cqe = read_completion_from_queue(&gm, &admin_cq_buf, admin_slot as usize);
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+    assert_eq!(cqe.cid, 51);
+}
+
+/// Regression test: dispatched I/Os whose completion hits a full CQ are
+/// re-queued in `state.completions`. When drained later as
+/// `Event::CompletionReady`, the dispatch-side `io_count += 1` must still
+/// be balanced by a `-= 1`; otherwise `io_count` leaks and eventually
+/// exceeds `MAX_IO_QUEUE_DEPTH`, permanently throttling the SQ.
+///
+/// Setup: a 2-entry I/O CQ (one usable slot) and a 16-entry SQ filled
+/// with FLUSH commands against a ram-disk-backed namespace. With the
+/// tiny CQ, dispatched completions almost immediately back up into
+/// `state.completions`. With a working accounting scheme, the worker
+/// drains all 16 as the test bumps the CQ head doorbell. With a broken
+/// scheme, only the first ~9 dispatch and complete; the remaining SQ
+/// entries are abandoned because `io_count` stays at `MAX_IO_QUEUE_DEPTH`,
+/// and waiting for those completions times out.
+#[async_test]
+async fn test_full_cq_does_not_leak_io_count(driver: DefaultDriver) {
+    let admin_cq_buf = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let admin_sq_buf = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &admin_cq_buf,
+        64,
+        &admin_sq_buf,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    // Attach a 1 MiB ram disk as nsid=1 so FLUSHes on it actually exercise
+    // the dispatched-I/O code path (rather than the inline invalid-NS
+    // path). FLUSH on a ram disk is effectively a no-op, so it completes
+    // quickly and predictably.
+    let disk = ram_disk(1 << 20, /* read_only = */ false).unwrap();
+    nvmec.client().add_namespace(1, disk).await.unwrap();
+
+    // Set up MSI-X for the I/O CQ (vector 1).
+    write_msix_table_entry(&mut nvmec, 1, 0xfeed0000, 0x2222, false);
+
+    // Tiny CQ (qsize_z=1 → 2 entries, capacity 1), generous SQ.
+    let io_cq_gpa: u64 = 0x4000;
+    let io_sq_gpa: u64 = 0x5000;
+    let _admin_slot = create_io_queue_pair(
+        &mut nvmec,
+        &gm,
+        &admin_cq_buf,
+        &admin_sq_buf,
+        &int_controller,
+        driver.clone(),
+        0,
+        /* qid = */ 1,
+        io_cq_gpa,
+        io_sq_gpa,
+        /* cq_qsize_z = */ 1,
+        /* sq_qsize_z = */ 31,
+        /* cq_iv = */ 1,
+    )
+    .await;
+
+    let io_sq_buf = PrpRange::new(vec![io_sq_gpa], 0, PAGE_SIZE64).unwrap();
+    let io_cq_buf = PrpRange::new(vec![io_cq_gpa], 0, PAGE_SIZE64).unwrap();
+
+    // Submit 16 FLUSH commands. With CQ capacity 1, the worker can only
+    // post one completion directly; the rest must be queued in
+    // `state.completions` and drained as we bump the CQ head doorbell.
+    const N: u16 = 16;
+    for i in 0..N {
+        let mut io_cmd = spec::Command::new_zeroed();
+        io_cmd.cdw0.set_opcode(nvm::NvmOpcode::FLUSH.0);
+        io_cmd.cdw0.set_cid(200 + i);
+        io_cmd.nsid = 1;
+        write_command_to_queue(&gm, &io_sq_buf, i as usize, &io_cmd);
+    }
+    nvmec.write_bar0(sq_db(1), (N as u32).as_bytes()).unwrap();
+
+    // Drain all N completions. Each iteration: wait for the next CQ MSI,
+    // read the entry at the current CQ slot, bump the CQ head doorbell to
+    // free the slot. The worker must refill the slot from
+    // `state.completions` (and dispatch more SQ entries as its `io_count`
+    // drops below `MAX_IO_QUEUE_DEPTH`). With a leaking `io_count`, the
+    // SQ stalls and not all N will arrive.
+    let mut received = std::collections::BTreeSet::new();
+    for i in 0..N as usize {
+        // CQ has 2 slots (qsize_z=1 → len 2), so the producer's tail
+        // alternates between slots 0 and 1 as it wraps.
+        let slot = i % 2;
+        wait_for_msi(driver.clone(), &int_controller, 5000, 0xfeed0000, 0x2222).await;
+        let cqe = read_completion_from_queue(&gm, &io_cq_buf, slot);
+        assert_eq!(
+            cqe.status.status(),
+            spec::Status::SUCCESS.0,
+            "FLUSH #{} (cid={}) returned status {:#x}",
+            i,
+            cqe.cid,
+            cqe.status.status()
+        );
+        assert!(
+            received.insert(cqe.cid),
+            "duplicate completion for cid {}",
+            cqe.cid
+        );
+        // Advance the head doorbell past the slot we just consumed.
+        let new_head = (((i + 1) % 2) as u32).to_le();
+        nvmec.write_bar0(cq_db(1), new_head.as_bytes()).unwrap();
+    }
+
+    // Every submitted command must have completed exactly once.
+    let expected: std::collections::BTreeSet<u16> = (200..200 + N).collect();
+    assert_eq!(
+        received, expected,
+        "missing FLUSH completions — likely io_count leak throttled the SQ"
+    );
 }

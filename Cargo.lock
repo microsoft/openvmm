@@ -4848,6 +4848,7 @@ dependencies = [
  "chipset_device",
  "device_emulators",
  "disk_backend",
+ "disklayer_ram",
  "futures",
  "futures-concurrency",
  "guestmem",

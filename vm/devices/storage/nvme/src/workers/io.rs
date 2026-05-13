@@ -211,9 +211,9 @@ impl IoHandler {
             })
             .await;
 
-            let (io_result, decrement_io_count) = match event {
-                Event::Io(io_result) => (io_result, true),
-                Event::CompletionReady(r) => (r?, false),
+            let io_result = match event {
+                Event::Io(io_result) => io_result,
+                Event::CompletionReady(r) => r?,
                 Event::Deleted(sq_idx) => {
                     let sq = state.sqs.remove(sq_idx);
                     self.admin_response.send(sq.sqid);
@@ -222,6 +222,7 @@ impl IoHandler {
                 Event::Sq(sq_idx, r) => {
                     let command = r?;
                     let cid = command.cdw0.cid();
+                    state.sqs[sq_idx].io_count += 1;
 
                     if let Some(ns) = state.namespaces.get(&command.nsid) {
                         let ns = ns.clone();
@@ -246,20 +247,18 @@ impl IoHandler {
                             }
                         });
                         state.ios.push(io);
-                        state.sqs[sq_idx].io_count += 1;
                         continue;
                     }
 
-                    // Invalid namespace — complete inline without
-                    // incrementing io_count.
-                    (
-                        IoResult {
-                            cid,
-                            sq_idx,
-                            result: spec::Status::INVALID_NAMESPACE_OR_FORMAT.into(),
-                        },
-                        false,
-                    )
+                    // Invalid namespace — synthesize the completion inline.
+                    // `io_count` was already incremented above so the
+                    // unconditional decrement on the completion-posting path
+                    // (or in `delete_sq`/`state.completions` drain) balances.
+                    IoResult {
+                        cid,
+                        sq_idx,
+                        result: spec::Status::INVALID_NAMESPACE_OR_FORMAT.into(),
+                    }
                 }
             };
 
@@ -288,9 +287,7 @@ impl IoHandler {
                 }
             }
 
-            if decrement_io_count {
-                sq.io_count -= 1;
-            }
+            sq.io_count -= 1;
         }
     }
 }
