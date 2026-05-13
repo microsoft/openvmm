@@ -1294,6 +1294,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Sets the UEFI diagnostics log level filter.
+    ///
+    /// By default only ERROR and WARN level entries are forwarded to the
+    /// host tracing infrastructure. Use this to also surface INFO (or all)
+    /// entries when a test needs to observe them.
+    pub fn with_efi_diagnostics_log_level(mut self, level: EfiDiagnosticsLogLevel) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("EFI diagnostics log level is only supported for UEFI firmware.")
+            .efi_diagnostics_log_level = level;
+        self
+    }
+
     /// Sets whether UEFI should always attempt a default boot.
     pub fn with_default_boot_always_attempt(mut self, enable: bool) -> Self {
         self.config
@@ -2158,6 +2172,8 @@ pub struct UefiConfig {
     pub default_boot_always_attempt: bool,
     /// Enable vPCI boot (for NVMe)
     pub enable_vpci_boot: bool,
+    /// EFI diagnostics log level filter
+    pub efi_diagnostics_log_level: EfiDiagnosticsLogLevel,
 }
 
 impl Default for UefiConfig {
@@ -2168,8 +2184,24 @@ impl Default for UefiConfig {
             disable_frontpage: true,
             default_boot_always_attempt: false,
             enable_vpci_boot: false,
+            efi_diagnostics_log_level: EfiDiagnosticsLogLevel::Default,
         }
     }
+}
+
+/// EFI diagnostics log level filter.
+///
+/// Controls which UEFI diagnostics log entries are forwarded to the host
+/// tracing infrastructure (and thus visible via kmsg / test output).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EfiDiagnosticsLogLevel {
+    /// Default log level (ERROR and WARN only).
+    #[default]
+    Default,
+    /// Include INFO logs (ERROR, WARN, and INFO).
+    Info,
+    /// All log levels.
+    Full,
 }
 
 /// Control the logging configuration of OpenVMM/OpenHCL.

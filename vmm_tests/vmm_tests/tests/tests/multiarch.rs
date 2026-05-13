@@ -5,6 +5,7 @@
 
 use anyhow::Context;
 use futures::StreamExt;
+use petri::EfiDiagnosticsLogLevel;
 use petri::MemoryConfig;
 use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
@@ -478,6 +479,33 @@ async fn efi_diagnostics_no_boot<T: PetriVmmBackend>(
     }
 
     anyhow::bail!("Did not find expected message in kmsg");
+}
+
+/// Test EFI diagnostics with INFO-level logging enabled
+#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
+async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let vm = config
+        .with_uefi_frontpage(true)
+        .with_efi_diagnostics_log_level(EfiDiagnosticsLogLevel::Info)
+        .run_without_agent()
+        .await?;
+
+    const INFO_MSG: &str = "DXE IPL Entry";
+
+    let mut kmsg = vm.kmsg().await?;
+
+    while let Some(data) = kmsg.next().await {
+        let data = data.context("reading kmsg")?;
+        let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
+        let raw = msg.message.as_raw();
+        if raw.contains(INFO_MSG) {
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!("Did not find expected INFO-level UEFI diagnostics message {INFO_MSG:?} in kmsg");
 }
 
 /// Boot our guest-test UEFI image, which will run some tests,

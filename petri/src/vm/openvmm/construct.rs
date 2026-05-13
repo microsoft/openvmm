@@ -7,6 +7,7 @@
 use super::PetriVmConfigOpenVmm;
 use super::PetriVmResourcesOpenVmm;
 use crate::Drive;
+use crate::EfiDiagnosticsLogLevel;
 use crate::Firmware;
 use crate::IsolationType;
 use crate::MemoryConfig;
@@ -552,7 +553,21 @@ impl PetriVmConfigOpenVmm {
             debugger_rpc: None,
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
-            efi_diagnostics_log_level: Default::default(), // TODO: Add config for tests
+            efi_diagnostics_log_level: match firmware
+                .uefi_config()
+                .map(|c| c.efi_diagnostics_log_level)
+                .unwrap_or_default()
+            {
+                EfiDiagnosticsLogLevel::Default => {
+                    openvmm_defs::config::EfiDiagnosticsLogLevelType::Default
+                }
+                EfiDiagnosticsLogLevel::Info => {
+                    openvmm_defs::config::EfiDiagnosticsLogLevelType::Info
+                }
+                EfiDiagnosticsLogLevel::Full => {
+                    openvmm_defs::config::EfiDiagnosticsLogLevelType::Full
+                }
+            },
         };
 
         // Make the pipette connection listener.
@@ -774,6 +789,7 @@ impl PetriVmConfigSetupCore<'_> {
                             disable_frontpage,
                             default_boot_always_attempt,
                             enable_vpci_boot,
+                            efi_diagnostics_log_level: _, // applied to top-level Config below
                         },
                 },
             ) => {
@@ -933,6 +949,7 @@ impl PetriVmConfigSetupCore<'_> {
                 disable_frontpage,
                 default_boot_always_attempt,
                 enable_vpci_boot,
+                efi_diagnostics_log_level,
             },
             OpenHclConfig { vmbus_redirect, .. },
         ) = match self.firmware {
@@ -985,7 +1002,17 @@ impl PetriVmConfigSetupCore<'_> {
             no_persistent_secrets: self.tpm_config.as_ref().is_some_and(|c| c.no_persistent_secrets),
             igvm_attest_test_config: None,
             test_gsp_by_id,
-            efi_diagnostics_log_level: Default::default(), // TODO: make configurable
+            efi_diagnostics_log_level: match efi_diagnostics_log_level {
+                EfiDiagnosticsLogLevel::Default => {
+                    get_resources::ged::EfiDiagnosticsLogLevelType::Default
+                }
+                EfiDiagnosticsLogLevel::Info => {
+                    get_resources::ged::EfiDiagnosticsLogLevelType::Info
+                }
+                EfiDiagnosticsLogLevel::Full => {
+                    get_resources::ged::EfiDiagnosticsLogLevelType::Full
+                }
+            },
             hv_sint_enabled: false,
         };
 
