@@ -303,3 +303,270 @@ impl MsiTarget {
         inner.irqfd.is_some()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus_range::AssignedBusRange;
+    use pal_event::Event;
+    use parking_lot::Mutex;
+    use std::collections::VecDeque;
+
+    /// A [`SignalMsi`] mock that records `(devid, address, data)`.
+    struct RecordingSignalMsi {
+        calls: Mutex<VecDeque<(Option<u32>, u64, u32)>>,
+    }
+
+    impl RecordingSignalMsi {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(VecDeque::new()),
+            })
+        }
+
+        fn pop(&self) -> Option<(Option<u32>, u64, u32)> {
+            self.calls.lock().pop_front()
+        }
+    }
+
+    impl SignalMsi for RecordingSignalMsi {
+        fn signal_msi(&self, devid: Option<u32>, address: u64, data: u32) {
+            self.calls.lock().push_back((devid, address, data));
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum RouteCall {
+        Enable {
+            address: u64,
+            data: u32,
+            devid: Option<u32>,
+        },
+        Disable,
+    }
+
+    struct MockIrqFdRoute {
+        event: Event,
+        calls: Arc<Mutex<Vec<RouteCall>>>,
+    }
+
+    impl IrqFdRoute for MockIrqFdRoute {
+        fn event(&self) -> &Event {
+            &self.event
+        }
+
+        fn enable(&self, address: u64, data: u32, devid: Option<u32>) {
+            self.calls.lock().push(RouteCall::Enable {
+                address,
+                data,
+                devid,
+            });
+        }
+
+        fn disable(&self) {
+            self.calls.lock().push(RouteCall::Disable);
+        }
+    }
+
+    fn mock_irqfd(count: usize) -> (Arc<dyn IrqFd>, Vec<Arc<Mutex<Vec<RouteCall>>>>) {
+        let mut call_logs = Vec::new();
+        let route_params = Arc::new(Mutex::new(Vec::new()));
+        for _ in 0..count {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            call_logs.push(calls.clone());
+            route_params.lock().push(calls);
+        }
+
+        struct MockIrqFd {
+            routes: Mutex<Vec<Arc<Mutex<Vec<RouteCall>>>>>,
+        }
+        impl IrqFd for MockIrqFd {
+            fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn IrqFdRoute>> {
+                let calls = self.routes.lock().remove(0);
+                Ok(Box::new(MockIrqFdRoute {
+                    event: Event::new(),
+                    calls,
+                }))
+            }
+        }
+
+        (
+            Arc::new(MockIrqFd {
+                routes: Mutex::new(call_logs.clone()),
+            }),
+            call_logs,
+        )
+    }
+
+    #[test]
+    fn signal_msi_resolves_default_bdf() {
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(5, 10);
+        let msi_conn = MsiConnection::new(bus_range, 0x18); // devfn = dev 3, fn 0
+        let recorder = RecordingSignalMsi::new();
+        msi_conn.connect(recorder.clone());
+
+        msi_conn.target().signal_msi(0xFEE0_0000, 42);
+
+        let (devid, addr, data) = recorder.pop().unwrap();
+        assert_eq!(devid, Some((5 << 8) | 0x18));
+        assert_eq!(addr, 0xFEE0_0000);
+        assert_eq!(data, 42);
+    }
+
+    #[test]
+    fn signal_msi_with_rid_accepts_bus_in_range() {
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(5, 10);
+        let msi_conn = MsiConnection::new(bus_range, 0);
+        let recorder = RecordingSignalMsi::new();
+        msi_conn.connect(recorder.clone());
+
+        // RID with bus=7, devfn=0x0A → within [5, 10]
+        let rid: u16 = (7 << 8) | 0x0A;
+        msi_conn.target().signal_msi_with_rid(rid, 0xABCD, 99);
+
+        let (devid, addr, data) = recorder.pop().unwrap();
+        assert_eq!(devid, Some(rid as u32));
+        assert_eq!(addr, 0xABCD);
+        assert_eq!(data, 99);
+    }
+
+    #[test]
+    fn signal_msi_with_rid_drops_bus_outside_range() {
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(5, 10);
+        let msi_conn = MsiConnection::new(bus_range, 0);
+        let recorder = RecordingSignalMsi::new();
+        msi_conn.connect(recorder.clone());
+
+        // bus=11, above subordinate=10 → dropped
+        let rid_above: u16 = 11 << 8;
+        msi_conn.target().signal_msi_with_rid(rid_above, 0xABCD, 1);
+        assert!(recorder.pop().is_none());
+
+        // bus=4, below secondary=5 → dropped
+        let rid_below: u16 = 4 << 8;
+        msi_conn.target().signal_msi_with_rid(rid_below, 0xABCD, 2);
+        assert!(recorder.pop().is_none());
+    }
+
+    #[test]
+    fn signal_msi_with_rid_accepts_boundary_buses() {
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(5, 10);
+        let msi_conn = MsiConnection::new(bus_range, 0);
+        let recorder = RecordingSignalMsi::new();
+        msi_conn.connect(recorder.clone());
+
+        // Exactly at secondary bus (5)
+        msi_conn.target().signal_msi_with_rid(5 << 8, 0x1000, 10);
+        assert!(recorder.pop().is_some());
+
+        // Exactly at subordinate bus (10)
+        msi_conn.target().signal_msi_with_rid(10 << 8, 0x2000, 20);
+        assert!(recorder.pop().is_some());
+    }
+
+    #[test]
+    fn route_enable_resolves_default_bdf() {
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(3, 8);
+        let (irqfd, calls) = mock_irqfd(1);
+        let msi_conn = MsiConnection::new(bus_range, 0x10); // devfn = dev 2, fn 0
+        msi_conn.connect_irqfd(irqfd);
+
+        let route = msi_conn.target().new_route().unwrap().unwrap();
+        route.enable(0xFEE0_0000, 55);
+
+        let log = calls[0].lock();
+        assert_eq!(log.len(), 1);
+        assert_eq!(
+            log[0],
+            RouteCall::Enable {
+                address: 0xFEE0_0000,
+                data: 55,
+                devid: Some((3 << 8) | 0x10),
+            }
+        );
+    }
+
+    #[test]
+    fn route_enable_with_rid_accepts_bus_in_range() {
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(5, 10);
+        let (irqfd, calls) = mock_irqfd(1);
+        let msi_conn = MsiConnection::new(bus_range, 0);
+        msi_conn.connect_irqfd(irqfd);
+
+        let route = msi_conn.target().new_route().unwrap().unwrap();
+        let rid: u16 = (7 << 8) | 0x0A;
+        route.enable_with_rid(rid, 0xBEEF, 77);
+
+        let log = calls[0].lock();
+        assert_eq!(log.len(), 1);
+        assert_eq!(
+            log[0],
+            RouteCall::Enable {
+                address: 0xBEEF,
+                data: 77,
+                devid: Some(rid as u32),
+            }
+        );
+    }
+
+    #[test]
+    fn route_enable_with_rid_disables_when_bus_outside_range() {
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(5, 10);
+        let (irqfd, calls) = mock_irqfd(1);
+        let msi_conn = MsiConnection::new(bus_range, 0);
+        msi_conn.connect_irqfd(irqfd);
+
+        let route = msi_conn.target().new_route().unwrap().unwrap();
+        // bus=11, above subordinate → should disable
+        let rid: u16 = 11 << 8;
+        route.enable_with_rid(rid, 0xBEEF, 77);
+
+        let log = calls[0].lock();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0], RouteCall::Disable);
+    }
+
+    #[test]
+    fn with_devfn_derives_target_with_new_devfn() {
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(2, 5);
+        let msi_conn = MsiConnection::new(bus_range, 0);
+        let recorder = RecordingSignalMsi::new();
+        msi_conn.connect(recorder.clone());
+
+        let derived = msi_conn.target().with_devfn(0x18); // dev 3, fn 0
+        derived.signal_msi(0x1000, 1);
+
+        let (devid, _, _) = recorder.pop().unwrap();
+        assert_eq!(devid, Some((2 << 8) | 0x18));
+    }
+
+    #[test]
+    fn with_bus_range_derives_target_with_new_range() {
+        let parent_range = AssignedBusRange::new();
+        parent_range.set_bus_range(1, 20);
+        let msi_conn = MsiConnection::new(parent_range, 0);
+        let recorder = RecordingSignalMsi::new();
+        msi_conn.connect(recorder.clone());
+
+        let child_range = AssignedBusRange::new();
+        child_range.set_bus_range(10, 15);
+        let derived = msi_conn.target().with_bus_range(child_range, 0x08);
+        derived.signal_msi(0x2000, 2);
+
+        let (devid, _, _) = recorder.pop().unwrap();
+        // secondary=10, devfn=0x08 → BDF = (10 << 8) | 0x08
+        assert_eq!(devid, Some((10 << 8) | 0x08));
+
+        // Validation uses the child range, not the parent
+        derived.signal_msi_with_rid(16 << 8, 0x3000, 3);
+        assert!(recorder.pop().is_none()); // bus 16 > subordinate 15
+    }
+}
