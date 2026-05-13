@@ -102,6 +102,7 @@ pub async fn run_host_ps(
         let output = builder.output_with(|cmd| {
             cmd.stderr(Stdio::piped()).stdin(Stdio::null());
             cmd_debug = format!("{cmd:?}");
+            ::tracing::debug!(cmd = cmd_debug, "executing command");
         })?;
         std::io::Result::Ok((cmd_debug, output))
     })
@@ -109,6 +110,8 @@ pub async fn run_host_ps(
     log_and_check(&cmd_debug, start, output)
 }
 
+/// Log the result of a host command run and map its exit status to
+/// [`CommandError::Command`] on failure.
 fn log_and_check(
     cmd_debug: &str,
     start: Timestamp,
