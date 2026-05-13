@@ -23,6 +23,7 @@ use inspect::InspectMut;
 use pci_bus::GenericPciBusDevice;
 use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
+use pci_core::msi::MsiTarget;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
@@ -92,10 +93,12 @@ impl DownstreamSwitchPort {
     /// * `name` - The name for this downstream switch port
     /// * `multi_function` - Whether this port should have the multi-function flag set (default: false)
     /// * `hotplug_slot_number` - The slot number for hotplug support. `Some(slot_number)` enables hotplug, `None` disables it
+    /// * `msi_target` - MSI target for interrupt delivery
     pub fn new(
         name: impl Into<Arc<str>>,
         multi_function: Option<bool>,
         hotplug_slot_number: Option<u32>,
+        msi_target: &MsiTarget,
     ) -> Self {
         let multi_function = multi_function.unwrap_or(false);
         let hardware_ids = HardwareIds {
@@ -109,15 +112,13 @@ impl DownstreamSwitchPort {
             type0_sub_system_id: 0,
         };
 
-        // TODO: Wire MSI for switch downstream ports to enable hotplug.
-        let disconnected = pci_core::msi::MsiConnection::new();
         let port = PcieDownstreamPort::new(
             name.into().to_string(),
             hardware_ids,
             DevicePortType::DownstreamSwitchPort,
             multi_function,
             hotplug_slot_number,
-            disconnected.target(),
+            msi_target,
         );
 
         Self { port }
@@ -143,6 +144,9 @@ pub struct GenericPcieSwitchDefinition {
     pub downstream_port_count: u8,
     /// Whether hotplug is enabled for this switch's downstream ports.
     pub hotplug: bool,
+    /// MSI target from the parent connection. The switch re-derives
+    /// per-port targets using the upstream port's bus range.
+    pub msi_target: MsiTarget,
 }
 
 /// A PCI Express switch emulator that implements a complete switch with upstream and downstream ports.
@@ -172,6 +176,14 @@ impl GenericPcieSwitch {
         // If there are multiple downstream ports, they need the multi-function flag set
         let multi_function = definition.downstream_port_count > 1;
 
+        // Derive per-port MSI targets from the parent's target, using
+        // the upstream port's bus range. When the guest programs the
+        // upstream port's secondary bus, all downstream port MSI RIDs
+        // automatically update.
+        let switch_msi_target = definition
+            .msi_target
+            .with_bus_range(upstream_port.cfg_space().bus_range(), 0);
+
         let downstream_ports = (0..definition.downstream_port_count)
             .map(|i| {
                 let port_name = format!("{}-downstream-{}", definition.name, i);
@@ -181,10 +193,12 @@ impl GenericPcieSwitch {
                 } else {
                     None
                 };
+                let port_msi_target = switch_msi_target.with_devfn(i);
                 let port = DownstreamSwitchPort::new(
                     port_name.clone(),
                     Some(multi_function),
                     hotplug_slot_number,
+                    &port_msi_target,
                 );
                 (i, (port_name.into(), port))
             })
@@ -599,6 +613,8 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pci_core::bus_range::AssignedBusRange;
+    use pci_core::msi::MsiConnection;
 
     #[test]
     fn test_upstream_switch_port_creation() {
@@ -613,7 +629,12 @@ mod tests {
 
     #[test]
     fn test_downstream_switch_port_creation() {
-        let port = DownstreamSwitchPort::new("test-downstream-port", None, None);
+        let port = DownstreamSwitchPort::new(
+            "test-downstream-port",
+            None,
+            None,
+            &MsiTarget::disconnected(),
+        );
         assert!(port.port.link.is_none());
 
         // Verify that we can read the vendor/device ID from config space
@@ -629,7 +650,8 @@ mod tests {
     #[test]
     fn test_downstream_switch_port_multi_function_options() {
         // Test with default multi_function (false)
-        let port_default = DownstreamSwitchPort::new("test-port-default", None, None);
+        let port_default =
+            DownstreamSwitchPort::new("test-port-default", None, None, &MsiTarget::disconnected());
         let mut header_type_value: u32 = 0;
         port_default
             .cfg_space()
@@ -643,7 +665,12 @@ mod tests {
         );
 
         // Test with explicit multi_function false
-        let port_false = DownstreamSwitchPort::new("test-port-false", Some(false), None);
+        let port_false = DownstreamSwitchPort::new(
+            "test-port-false",
+            Some(false),
+            None,
+            &MsiTarget::disconnected(),
+        );
         let mut header_type_value_false: u32 = 0;
         port_false
             .cfg_space()
@@ -657,7 +684,12 @@ mod tests {
         );
 
         // Test with explicit multi_function true
-        let port_true = DownstreamSwitchPort::new("test-port-true", Some(true), None);
+        let port_true = DownstreamSwitchPort::new(
+            "test-port-true",
+            Some(true),
+            None,
+            &MsiTarget::disconnected(),
+        );
         let mut header_type_value_true: u32 = 0;
         port_true
             .cfg_space()
@@ -674,7 +706,12 @@ mod tests {
     #[test]
     fn test_downstream_switch_port_hotplug_options() {
         // Test with hotplug disabled (None)
-        let port_no_hotplug = DownstreamSwitchPort::new("test-port-no-hotplug", None, None);
+        let port_no_hotplug = DownstreamSwitchPort::new(
+            "test-port-no-hotplug",
+            None,
+            None,
+            &MsiTarget::disconnected(),
+        );
         // We can't easily verify hotplug is disabled without accessing internal state,
         // but we can verify the port was created successfully
         let mut vendor_device_id: u32 = 0;
@@ -686,7 +723,12 @@ mod tests {
         assert_eq!(vendor_device_id, expected);
 
         // Test with hotplug enabled (Some(slot_number))
-        let port_with_hotplug = DownstreamSwitchPort::new("test-port-hotplug", None, Some(42));
+        let port_with_hotplug = DownstreamSwitchPort::new(
+            "test-port-hotplug",
+            None,
+            Some(42),
+            &MsiTarget::disconnected(),
+        );
         let mut vendor_device_id_hotplug: u32 = 0;
         port_with_hotplug
             .cfg_space()
@@ -703,6 +745,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 3,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let switch = GenericPcieSwitch::new(definition);
 
@@ -734,6 +777,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -780,6 +824,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -813,6 +858,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 4,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -842,6 +888,7 @@ mod tests {
             name: "default-switch".into(),
             downstream_port_count: 4,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let switch = GenericPcieSwitch::new(definition);
         assert_eq!(switch.name().as_ref(), "default-switch");
@@ -854,6 +901,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 16,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let switch = GenericPcieSwitch::new(definition);
         assert_eq!(switch.downstream_ports().len(), 16);
@@ -865,6 +913,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 3,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -908,6 +957,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -933,6 +983,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -972,6 +1023,7 @@ mod tests {
             name: "multi-port-switch".into(),
             downstream_port_count: 3,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let multi_port_switch = GenericPcieSwitch::new(multi_port_definition);
 
@@ -1011,6 +1063,7 @@ mod tests {
             name: "single-port-switch".into(),
             downstream_port_count: 1,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let single_port_switch = GenericPcieSwitch::new(single_port_definition);
 
@@ -1053,6 +1106,7 @@ mod tests {
             name: "test-switch-no-hotplug".into(),
             downstream_port_count: 1,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let switch_no_hotplug = GenericPcieSwitch::new(definition_no_hotplug);
         assert_eq!(switch_no_hotplug.name().as_ref(), "test-switch-no-hotplug");
@@ -1062,6 +1116,7 @@ mod tests {
             name: "test-switch-with-hotplug".into(),
             downstream_port_count: 1,
             hotplug: true,
+            msi_target: MsiTarget::disconnected(),
         };
         let switch_with_hotplug = GenericPcieSwitch::new(definition_with_hotplug);
         assert_eq!(
@@ -1079,6 +1134,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 3,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -1091,6 +1147,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch2 = GenericPcieSwitch::new(definition2);
 
@@ -1107,6 +1164,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -1121,6 +1179,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch2 = GenericPcieSwitch::new(definition2);
         switch2
@@ -1136,6 +1195,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 3,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -1164,6 +1224,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 3,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch2 = GenericPcieSwitch::new(definition2);
 
@@ -1190,6 +1251,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -1224,6 +1286,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch2 = GenericPcieSwitch::new(definition2);
 
@@ -1310,7 +1373,7 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
-        let msi_conn = pci_core::msi::MsiConnection::new();
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
         let mut port = PcieDownstreamPort::new(
             "root-port",
             hardware_ids,
@@ -1330,6 +1393,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
             hotplug: false,
+            msi_target: MsiTarget::disconnected(),
         });
 
         port.link = Some(("switch".into(), Box::new(SwitchAdapter(switch))));

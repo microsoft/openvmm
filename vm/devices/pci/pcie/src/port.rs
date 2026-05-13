@@ -386,7 +386,7 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
-        let msi_conn = pci_core::msi::MsiConnection::new();
+        let msi_conn = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
@@ -437,7 +437,7 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
-        let msi_conn = pci_core::msi::MsiConnection::new();
+        let msi_conn = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
@@ -471,7 +471,7 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
-        let msi_conn = pci_core::msi::MsiConnection::new();
+        let msi_conn = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
@@ -526,7 +526,7 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
-        let msi_conn = pci_core::msi::MsiConnection::new();
+        let msi_conn = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,

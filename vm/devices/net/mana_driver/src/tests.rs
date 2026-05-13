@@ -16,6 +16,7 @@ use gdma_defs::GdmaQueueType;
 use net_backend::null::NullEndpoint;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use pci_core::bus_range::AssignedBusRange;
 use pci_core::msi::MsiConnection;
 use std::sync::Arc;
 use test_with_tracing::test;
@@ -29,7 +30,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 #[async_test]
 async fn test_gdma(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
-    let msi_conn = MsiConnection::new();
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
@@ -167,7 +168,7 @@ async fn test_gdma(driver: DefaultDriver) {
 #[async_test]
 async fn test_gdma_save_restore(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
-    let msi_conn = MsiConnection::new();
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
@@ -207,7 +208,7 @@ async fn test_gdma_save_restore(driver: DefaultDriver) {
 #[async_test]
 async fn test_adapter_link_speed_default(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_adapter_link_speed_default");
-    let msi_conn = MsiConnection::new();
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
@@ -255,7 +256,7 @@ async fn test_adapter_link_speed_default(driver: DefaultDriver) {
 /// and `link_speed_bps()` converts it correctly.
 async fn verify_adapter_link_speed_expected(driver: DefaultDriver, link_speed_mbps: u32) {
     let mem = DeviceTestMemory::new(128, false, "test_adapter_link_speed_expected");
-    let msi_conn = MsiConnection::new();
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
     let device = gdma::GdmaDevice::new_with_config(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
@@ -315,7 +316,7 @@ async fn test_adapter_link_speed_expected(driver: DefaultDriver) {
 #[async_test]
 async fn test_gdma_reconfig_vf(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
-    let msi_conn = MsiConnection::new();
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),

@@ -5,7 +5,6 @@
 
 #![forbid(unsafe_code)]
 
-pub mod bus_range;
 pub mod its;
 pub(crate) mod port;
 pub mod root;

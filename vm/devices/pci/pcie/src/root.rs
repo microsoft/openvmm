@@ -12,7 +12,6 @@ use crate::PAGE_SHIFT;
 use crate::PAGE_SIZE64;
 use crate::ROOT_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
-use crate::bus_range::AssignedBusRange;
 use crate::port::PcieDownstreamPort;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
@@ -24,6 +23,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
+use pci_core::bus_range::AssignedBusRange;
 use pci_core::msi::MsiTarget;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::ClassCode;
@@ -137,8 +137,13 @@ impl GenericPcieRootComplex {
                 } else {
                     None
                 };
-                let root_port =
-                    RootPort::new(definition.name.clone(), hotplug_slot_number, msi_target);
+                // Derive a per-port MSI target with this port's devfn.
+                let port_msi_target = msi_target.with_devfn(device_number);
+                let root_port = RootPort::new(
+                    definition.name.clone(),
+                    hotplug_slot_number,
+                    &port_msi_target,
+                );
                 (device_number, (definition.name, root_port))
             })
             .collect();
@@ -651,7 +656,9 @@ mod tests {
 
         let mut register_mmio = TestPcieMmioRegistration {};
         let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
-        let msi_conn = pci_core::msi::MsiConnection::new();
+        let rc_bus_range = AssignedBusRange::new();
+        rc_bus_range.set_bus_range(start_bus, end_bus);
+        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
         GenericPcieRootComplex::new(
             &mut register_mmio,
             start_bus,
@@ -907,7 +914,7 @@ mod tests {
     fn test_root_port_hotplug_options() {
         // Test with hotplug disabled (None)
         let root_port_no_hotplug = {
-            let c = pci_core::msi::MsiConnection::new();
+            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
             RootPort::new("test-port-no-hotplug", None, c.target())
         };
         // We can't easily verify hotplug is disabled without accessing internal state,
@@ -923,7 +930,7 @@ mod tests {
 
         // Test with hotplug enabled (Some(slot_number))
         let root_port_with_hotplug = {
-            let c = pci_core::msi::MsiConnection::new();
+            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
             RootPort::new("test-port-hotplug", Some(5), c.target())
         };
         let mut vendor_device_id_hotplug: u32 = 0;
@@ -940,7 +947,7 @@ mod tests {
     #[test]
     fn test_root_port_invalid_bus_range_handling() {
         let mut root_port = {
-            let c = pci_core::msi::MsiConnection::new();
+            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
             RootPort::new("test-port", None, c.target())
         };
 
@@ -1122,24 +1129,6 @@ mod tests {
 
         // The shared AssignedBusRange should reflect the new values.
         assert_eq!(bus_range.bus_range(), (5, 10));
-
-        // compose_its_devid should produce (segment << 16 | secondary << 8)
-        // for a single-function device (devid=None).
-        let segment = 2u16;
-        let devid = bus_range.compose_its_devid(segment, None);
-        assert_eq!(devid, Some((2 << 16) | (5 << 8)));
-
-        // With a specific BDF within range: bus=7, dev=1, fn=2
-        let bdf: u32 = (7 << 8) | (1 << 3) | 2;
-        let devid = bus_range.compose_its_devid(segment, Some(bdf));
-        assert_eq!(devid, Some((2 << 16) | bdf));
-
-        // BDF outside range should return None.
-        let out_of_range_bdf: u32 = 11 << 8; // bus=11, beyond subordinate=10
-        assert_eq!(
-            bus_range.compose_its_devid(segment, Some(out_of_range_bdf)),
-            None
-        );
 
         // Reprogram bus numbers and verify tracking follows.
         rc.mmio_write(SECONDARY_BUS_NUM_REG, &[20]).unwrap();

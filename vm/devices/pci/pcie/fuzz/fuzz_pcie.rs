@@ -13,6 +13,7 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
+use pci_core::msi::MsiTarget;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
@@ -124,7 +125,8 @@ impl FuzzRootComplex {
                 hotplug,
             })
             .collect();
-        let msi_conn = pci_core::msi::MsiConnection::new();
+        let msi_conn =
+            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
         let rc = GenericPcieRootComplex::new(
             &mut register_mmio,
             START_BUS,
@@ -280,6 +282,7 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
                 name: "sw0".into(),
                 downstream_port_count: 2,
                 hotplug: false,
+                msi_target: MsiTarget::disconnected(),
             });
             rc.add_pcie_device(port0_key, "sw0", Box::new(SwitchAdapter(switch)))
                 .map_err(|_| arbitrary::Error::IncorrectFormat)?;
