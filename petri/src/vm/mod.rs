@@ -2421,6 +2421,8 @@ impl Firmware {
 
     /// Constructs a [`Firmware::LinuxDirect`] configuration that uses a
     /// compressed bzImage kernel instead of an uncompressed ELF.
+    ///
+    /// This is x86_64-only, as bzImage is an x86-specific format.
     pub fn linux_direct_bzimage(resolver: &ArtifactResolver<'_>) -> Self {
         use petri_artifacts_vmm_test::artifacts::loadable::*;
         Firmware::LinuxDirect {

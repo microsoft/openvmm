@@ -73,10 +73,12 @@ pub fn is_bzimage(kernel_image: &mut (impl Read + Seek)) -> Result<bool, Error> 
     kernel_image.seek(SeekFrom::Start(0)).map_err(Error::Io)?;
 
     let mut buf = [0u8; MIN_HEADER_SIZE];
-    let n = kernel_image.read(&mut buf).map_err(Error::Io)?;
+    let result = kernel_image.read(&mut buf);
 
+    // Always restore position before checking the read result.
     kernel_image.seek(SeekFrom::Start(0)).map_err(Error::Io)?;
 
+    let n = result.map_err(Error::Io)?;
     if n < MIN_HEADER_SIZE {
         return Ok(false);
     }
@@ -97,7 +99,13 @@ pub fn is_bzimage(kernel_image: &mut (impl Read + Seek)) -> Result<bool, Error> 
 /// both success and error.
 pub fn extract_vmlinux(kernel_image: &mut (impl Read + Seek)) -> Result<Cursor<Vec<u8>>, Error> {
     kernel_image.seek(SeekFrom::Start(0)).map_err(Error::Io)?;
+    let result = extract_vmlinux_inner(kernel_image);
+    // Always restore file position, even on error.
+    let _ = kernel_image.seek(SeekFrom::Start(0));
+    result
+}
 
+fn extract_vmlinux_inner(kernel_image: &mut (impl Read + Seek)) -> Result<Cursor<Vec<u8>>, Error> {
     let mut buf = [0u8; MIN_HEADER_SIZE];
     kernel_image.read_exact(&mut buf).map_err(Error::Io)?;
 
@@ -111,7 +119,6 @@ pub fn extract_vmlinux(kernel_image: &mut (impl Read + Seek)) -> Result<Cursor<V
 
     let version = u16::from_le_bytes([buf[0x206], buf[0x207]]);
     if version < MIN_PROTOCOL_VERSION_FOR_PAYLOAD {
-        kernel_image.seek(SeekFrom::Start(0)).map_err(Error::Io)?;
         return Err(Error::ProtocolTooOld { version });
     }
 
@@ -137,9 +144,6 @@ pub fn extract_vmlinux(kernel_image: &mut (impl Read + Seek)) -> Result<Cursor<V
 
     let mut payload = vec![0u8; payload_length as usize];
     kernel_image.read_exact(&mut payload).map_err(Error::Io)?;
-
-    // Restore file position.
-    kernel_image.seek(SeekFrom::Start(0)).map_err(Error::Io)?;
 
     // Decompress.
     let elf_data = decompress_payload(&payload)?;
