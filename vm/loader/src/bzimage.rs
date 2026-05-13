@@ -46,7 +46,9 @@ pub enum Error {
     #[error("I/O error reading bzImage")]
     Io(#[source] std::io::Error),
     /// The bzImage boot protocol version is too old to have payload offset/length fields.
-    #[error("bzImage boot protocol version {version:#06x} is too old (need >= 2.08 for payload fields)")]
+    #[error(
+        "bzImage boot protocol version {version:#06x} is too old (need >= 2.08 for payload fields)"
+    )]
     ProtocolTooOld {
         /// The detected protocol version.
         version: u16,
@@ -93,19 +95,19 @@ pub fn is_bzimage(kernel_image: &mut (impl Read + Seek)) -> Result<bool, Error> 
 ///
 /// The file position of `kernel_image` is restored to the beginning on
 /// both success and error.
-pub fn extract_vmlinux(
-    kernel_image: &mut (impl Read + Seek),
-) -> Result<Cursor<Vec<u8>>, Error> {
+pub fn extract_vmlinux(kernel_image: &mut (impl Read + Seek)) -> Result<Cursor<Vec<u8>>, Error> {
     kernel_image.seek(SeekFrom::Start(0)).map_err(Error::Io)?;
 
     let mut buf = [0u8; MIN_HEADER_SIZE];
-    kernel_image
-        .read_exact(&mut buf)
-        .map_err(Error::Io)?;
+    kernel_image.read_exact(&mut buf).map_err(Error::Io)?;
 
     // Parse setup header fields.
     let setup_sects = buf[0x1f1];
-    let setup_sects: u32 = if setup_sects == 0 { 4 } else { setup_sects as u32 };
+    let setup_sects: u32 = if setup_sects == 0 {
+        4
+    } else {
+        setup_sects as u32
+    };
 
     let version = u16::from_le_bytes([buf[0x206], buf[0x207]]);
     if version < MIN_PROTOCOL_VERSION_FOR_PAYLOAD {
@@ -113,10 +115,8 @@ pub fn extract_vmlinux(
         return Err(Error::ProtocolTooOld { version });
     }
 
-    let payload_offset =
-        u32::from_le_bytes([buf[0x248], buf[0x249], buf[0x24a], buf[0x24b]]);
-    let payload_length =
-        u32::from_le_bytes([buf[0x24c], buf[0x24d], buf[0x24e], buf[0x24f]]);
+    let payload_offset = u32::from_le_bytes([buf[0x248], buf[0x249], buf[0x24a], buf[0x24b]]);
+    let payload_length = u32::from_le_bytes([buf[0x24c], buf[0x24d], buf[0x24e], buf[0x24f]]);
 
     // The protected-mode code starts after (setup_sects + 1) 512-byte sectors.
     let protected_mode_offset = (setup_sects + 1) as u64 * 512;
@@ -136,9 +136,7 @@ pub fn extract_vmlinux(
         .map_err(Error::Io)?;
 
     let mut payload = vec![0u8; payload_length as usize];
-    kernel_image
-        .read_exact(&mut payload)
-        .map_err(Error::Io)?;
+    kernel_image.read_exact(&mut payload).map_err(Error::Io)?;
 
     // Restore file position.
     kernel_image.seek(SeekFrom::Start(0)).map_err(Error::Io)?;

@@ -128,17 +128,17 @@ impl SimpleFlowNode for Node {
                 v,
             )
         });
-        let test_linux_bzimage = if matches!(arch, CommonArch::X86_64) {
-            Some(ctx.reqv(|v| {
-                crate::resolve_openvmm_deps::Request::Get(
-                    crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestBzImage,
-                    arch,
-                    v,
-                )
-            }))
-        } else {
-            None
-        };
+        let test_linux_bzimage = crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestBzImage
+            .is_available_for(arch)
+            .then(|| {
+                ctx.reqv(|v| {
+                    crate::resolve_openvmm_deps::Request::Get(
+                        crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestBzImage,
+                        arch,
+                        v,
+                    )
+                })
+            });
 
         let uefi =
             ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v });

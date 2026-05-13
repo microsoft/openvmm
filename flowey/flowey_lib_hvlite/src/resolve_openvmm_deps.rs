@@ -34,6 +34,14 @@ impl OpenvmmDepFile {
             Self::PetritoolsErofs => "petritools.erofs",
         }
     }
+
+    /// Whether this dep file is available for the given architecture.
+    pub fn is_available_for(self, arch: CommonArch) -> bool {
+        match self {
+            Self::LinuxTestBzImage => matches!(arch, CommonArch::X86_64),
+            _ => true,
+        }
+    }
 }
 
 flowey_config! {
