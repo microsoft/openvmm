@@ -52,12 +52,21 @@ as well as the generated CLI help (via `cargo run -- --help`).
   * `user_mode_apic` — use the user-mode APIC emulator instead of WHP's
     in-hypervisor APIC
   * `no_enlightenments` — disable in-hypervisor Hyper-V enlightenment support
+  * `nested_virt` — expose VMX/SVM to the guest so it can run its own
+    hypervisor (Hyper-V, KVM, etc.). Requires the in-hypervisor APIC
+    (i.e. must not be combined with `user_mode_apic`) and a host WHP
+    implementation that advertises nested-virt support. The Hyper-V
+    VM hosting OpenVMM must also have virtualization extensions exposed
+    to it — on Windows hosts, this typically means running
+    `Set-VMProcessor -VMName <name> -ExposeVirtualizationExtensions $true`
+    while the VM is off.
 
   Examples:
   ```bash
   --hypervisor whp
   --hypervisor whp:user_mode_apic
   --hypervisor whp:user_mode_apic,no_enlightenments
+  --hypervisor whp:nested_virt
   --hypervisor kvm
   ```
 * `--uefi`: Boot using `mu_msvm` UEFI

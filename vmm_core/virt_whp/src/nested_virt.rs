@@ -108,3 +108,31 @@ pub(crate) fn nested_virt_capability() -> Result<NestedVirtCapability, Error> {
         vendor,
     })
 }
+
+/// Probe the host's nested-virt capability and validate a caller's
+/// nested-virt request against it.
+///
+/// Always returns the capability (so the partition can expose it through
+/// `inspect` regardless of whether nested-virt was requested). If
+/// `requested` is `true`, also fails when the request can't be honored:
+///
+/// - `NestedVirtIncompatibleWithUserModeApic` if `user_mode_apic` is set
+///   (WHP refuses `NestedVirtualization=TRUE` together with
+///   `LocalApicEmulationMode=None`).
+/// - `NestedVirtUnsupported` if the host's WHP does not expose the
+///   `WHvPartitionPropertyCodeNestedVirtualization` property.
+pub(crate) fn validate(
+    requested: bool,
+    user_mode_apic: bool,
+) -> Result<NestedVirtCapability, Error> {
+    let capability = nested_virt_capability()?;
+    if requested {
+        if user_mode_apic {
+            return Err(Error::NestedVirtIncompatibleWithUserModeApic);
+        }
+        if !capability.property_supported {
+            return Err(Error::NestedVirtUnsupported);
+        }
+    }
+    Ok(capability)
+}

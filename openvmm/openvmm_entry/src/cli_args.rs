@@ -677,11 +677,16 @@ flags:
     /// WHP parameters (x86_64 guests only):
     ///   user_mode_apic       - use user-mode APIC emulator
     ///   no_enlightenments    - disable in-hypervisor enlightenments
+    ///   nested_virt          - expose VMX/SVM to the guest so it can run
+    ///                          its own hypervisor (requires
+    ///                          user_mode_apic=false and host WHP
+    ///                          support)
     ///
     /// Examples:
     ///   --hypervisor whp
     ///   --hypervisor whp:user_mode_apic
     ///   --hypervisor whp:user_mode_apic,no_enlightenments
+    ///   --hypervisor whp:nested_virt
     #[clap(long)]
     pub hypervisor: Option<String>,
 
