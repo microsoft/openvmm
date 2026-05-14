@@ -1900,7 +1900,9 @@ impl RndisMessageParser {
                     let value = u32::read_from_prefix(&ppi_bytes[payload_start..])
                         .unwrap()
                         .0;
-                    result.vlan = Some(rndisprot::EthVlanInfo(value));
+                    result.vlan = Some(
+                        rndisprot::EthVlanInfo::read_from_bytes(&value.to_le_bytes()).unwrap(),
+                    );
                 }
                 _ => {
                     // Unknown PPI type — skip.
@@ -6282,7 +6284,7 @@ async fn rndis_send_tcp_checksum_packet_with_vlan_ppi(driver: DefaultDriver) {
     assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
 
     let data = build_vlan_ipv4_tcp_packet(37);
-    let vlan_info = rndisprot::EthVlanInfo(37u32 << 4);
+    let vlan_info = rndisprot::EthVlanInfo::read_from_bytes(&(37u32 << 4).to_le_bytes()).unwrap();
     channel
         .send_rndis_packet_offload_with_vlan(&data, true, false, false, vlan_info)
         .await;
@@ -6354,7 +6356,7 @@ async fn rndis_send_lso_packet_with_vlan_ppi(driver: DefaultDriver) {
     assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
 
     let data = build_vlan_ipv4_tcp_packet(91);
-    let vlan_info = rndisprot::EthVlanInfo(91u32 << 4);
+    let vlan_info = rndisprot::EthVlanInfo::read_from_bytes(&(91u32 << 4).to_le_bytes()).unwrap();
     channel
         .send_rndis_packet_offload_with_vlan(&data, false, false, true, vlan_info)
         .await;
@@ -6506,11 +6508,12 @@ async fn rndis_rx_vlan_packet(driver: DefaultDriver) {
     let data = vec![0xAA; 60];
     let metadata = RxMetadata {
         len: data.len(),
-        vlan: Some(net_backend::VlanMetadata {
-            priority: 5,
-            drop_eligible_indicator: true,
-            vlan_id: 100,
-        }),
+        vlan: Some(
+            net_backend::VlanMetadata::new()
+                .with_priority(5)
+                .with_drop_eligible_indicator(true)
+                .with_vlan_id(100),
+        ),
         ..Default::default()
     };
 
@@ -6559,11 +6562,12 @@ async fn rndis_rx_vlan_packet_with_tcp_checksum(driver: DefaultDriver) {
         ip_checksum: RxChecksumState::Good,
         l4_checksum: RxChecksumState::Good,
         l4_protocol: L4Protocol::Tcp,
-        vlan: Some(net_backend::VlanMetadata {
-            priority: 3,
-            drop_eligible_indicator: false,
-            vlan_id: 42,
-        }),
+        vlan: Some(
+            net_backend::VlanMetadata::new()
+                .with_priority(3)
+                .with_drop_eligible_indicator(false)
+                .with_vlan_id(42),
+        ),
         ..Default::default()
     };
 
@@ -6655,11 +6659,12 @@ async fn rndis_rx_vlan_preserves_packet_data(driver: DefaultDriver) {
     let data = vec![0xDD; 60];
     let metadata = RxMetadata {
         len: data.len(),
-        vlan: Some(net_backend::VlanMetadata {
-            priority: 7,
-            drop_eligible_indicator: false,
-            vlan_id: 4094,
-        }),
+        vlan: Some(
+            net_backend::VlanMetadata::new()
+                .with_priority(7)
+                .with_drop_eligible_indicator(false)
+                .with_vlan_id(4094),
+        ),
         ..Default::default()
     };
 
@@ -7311,7 +7316,7 @@ async fn vlan_tx_counter_increments(driver: DefaultDriver) {
 
     // Send a VLAN-tagged packet.
     let data = build_vlan_ipv4_tcp_packet(42);
-    let vlan_info = rndisprot::EthVlanInfo(42u32 << 4);
+    let vlan_info = rndisprot::EthVlanInfo::read_from_bytes(&(42u32 << 4).to_le_bytes()).unwrap();
     channel
         .send_rndis_packet_offload_with_vlan(&data, true, false, false, vlan_info)
         .await;
@@ -7364,11 +7369,12 @@ async fn vlan_rx_counter_increments(driver: DefaultDriver) {
     let vlan_data = vec![0xAA; 60];
     let vlan_metadata = RxMetadata {
         len: vlan_data.len(),
-        vlan: Some(net_backend::VlanMetadata {
-            priority: 3,
-            drop_eligible_indicator: false,
-            vlan_id: 42,
-        }),
+        vlan: Some(
+            net_backend::VlanMetadata::new()
+                .with_priority(3)
+                .with_drop_eligible_indicator(false)
+                .with_vlan_id(42),
+        ),
         ..Default::default()
     };
     let ppi = inject_and_parse_rx(

@@ -709,41 +709,32 @@ impl TcpLsoInfo {
     }
 }
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct EthVlanInfo(pub u32);
+#[bitfield(u32)]
+#[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+pub struct EthVlanInfo {
+    #[bits(3)]
+    pub priority: u8,
+    pub drop_eligible_indicator: bool,
+    #[bits(12)]
+    pub vlan_id: u16,
+    _reserved: u16,
+}
 
-impl EthVlanInfo {
-    /// priority is a 3-bit field, any bits outside the lower portion of the low
-    /// nybble are ignored
-    pub fn set_priority(mut self, priority: u8) -> Self {
-        self.0 = (self.0 & !0x7) | (priority as u32 & 0x7);
-        self
+impl From<net_backend::VlanMetadata> for EthVlanInfo {
+    fn from(metadata: net_backend::VlanMetadata) -> Self {
+        EthVlanInfo::new()
+            .with_priority(metadata.priority())
+            .with_drop_eligible_indicator(metadata.drop_eligible_indicator())
+            .with_vlan_id(metadata.vlan_id())
     }
+}
 
-    pub fn priority(&self) -> u8 {
-        (self.0 as u8) & 0x7
-    }
-
-    /// In practical use this should always be false, but who knows?
-    pub fn set_drop_eligible_indicator(mut self, indicator: bool) -> Self {
-        self.0 = (self.0 & !0x8) | if indicator { 0x8 } else { 0x0 };
-        self
-    }
-
-    pub fn drop_eligible_indicator(&self) -> bool {
-        self.0 & 0x8 != 0
-    }
-
-    /// VLAN IDs are 12 bits. This will silently reject any bits outside of
-    /// the range.
-    pub fn set_vlan_id(mut self, vlan_id: u16) -> Self {
-        self.0 = (self.0 & !0xFFF0) | ((vlan_id as u32 & 0xFFF) << 4);
-        self
-    }
-
-    pub fn vlan_id(&self) -> u16 {
-        (self.0 >> 4) as u16 & 0xfff
+impl From<EthVlanInfo> for net_backend::VlanMetadata {
+    fn from(val: EthVlanInfo) -> Self {
+        net_backend::VlanMetadata::new()
+            .with_priority(val.priority())
+            .with_drop_eligible_indicator(val.drop_eligible_indicator())
+            .with_vlan_id(val.vlan_id())
     }
 }
 

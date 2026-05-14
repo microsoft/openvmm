@@ -2603,11 +2603,7 @@ impl<T: RingMem> NetChannel<T> {
                     rndisprot::PPI_VLAN => {
                         let n: rndisprot::EthVlanInfo = d.reader(mem).read_plain()?;
 
-                        metadata.vlan = Some(net_backend::VlanMetadata {
-                            priority: n.priority(),
-                            drop_eligible_indicator: n.drop_eligible_indicator(),
-                            vlan_id: n.vlan_id(),
-                        });
+                        metadata.vlan = Some(n.into());
                     }
                     _ => {}
                 }

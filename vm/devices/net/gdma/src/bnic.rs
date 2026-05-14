@@ -142,7 +142,7 @@ impl BufferAccess for GuestBuffers {
 
         if let Some(vlan) = &metadata.vlan {
             flags.set_rx_vlantag_present(true);
-            flags.set_rx_vlan_id(vlan.vlan_id as u32);
+            flags.set_rx_vlan_id(vlan.vlan_id() as u32);
         }
 
         let packet = &mut self.rx_packets[id.0 as usize];
@@ -558,11 +558,12 @@ impl TxRxTask {
             if oob.s_oob.pkt_fmt() == MANA_LONG_PKT_FMT && oob.l_oob.inject_vlan_pri_tag() {
                 (
                     net_backend::ETHERNET_VLAN_HEADER_LEN,
-                    Some(net_backend::VlanMetadata {
-                        priority: oob.l_oob.pcp(),
-                        drop_eligible_indicator: oob.l_oob.dei(),
-                        vlan_id: oob.l_oob.vlan_id(),
-                    }),
+                    Some(
+                        net_backend::VlanMetadata::new()
+                            .with_priority(oob.l_oob.pcp())
+                            .with_drop_eligible_indicator(oob.l_oob.dei())
+                            .with_vlan_id(oob.l_oob.vlan_id()),
+                    ),
                 )
             } else {
                 (net_backend::ETHERNET_HEADER_LEN, None)

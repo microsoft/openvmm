@@ -243,17 +243,14 @@ impl BufferAccess for BufferPool {
         let vlan = if let Some(vlan_info) = metadata.vlan {
             self.rx_vlan_count += 1;
             ppi_count += 1;
+
             Some(PerPacketInfo {
                 header: rndisprot::PerPacketInfo {
                     size: size_of::<PerPacketInfo>() as u32,
                     typ: rndisprot::PPI_VLAN,
                     per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
                 },
-                payload: rndisprot::EthVlanInfo::new_zeroed()
-                    .set_priority(vlan_info.priority)
-                    .set_drop_eligible_indicator(vlan_info.drop_eligible_indicator)
-                    .set_vlan_id(vlan_info.vlan_id)
-                    .0,
+                payload: Into::<rndisprot::EthVlanInfo>::into(vlan_info).into(),
             })
         } else {
             None
