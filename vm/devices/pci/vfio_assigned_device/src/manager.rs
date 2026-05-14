@@ -798,27 +798,21 @@ impl VfioCdevManager {
         req: CdevPrepareRequest,
         respond: FailableRpc<(), CdevPrepareResponse>,
     ) -> Result<(), (anyhow::Error, FailableRpc<(), CdevPrepareResponse>)> {
-        let sender = if let Some(sender) = self.managers.get(&req.iommu_id) {
+        let CdevPrepareRequest {
+            pci_id,
+            cdev,
+            iommufd,
+            iommu_id,
+        } = req;
+
+        let sender = if let Some(sender) = self.managers.get(&iommu_id) {
             sender.clone()
         } else {
-            let iommu_id = req.iommu_id.clone();
             let mut ioas_recv: mesh::Receiver<IoasManagerRpc> = mesh::Receiver::new();
             let sender = ioas_recv.sender();
 
             let dma_mapper_client = self.dma_mapper_client.clone();
             let iommu_id2 = iommu_id.clone();
-            // The iommufd fd from this first request initializes the manager.
-            // Subsequent requests' iommufd fds (dup'd from the same underlying
-            // fd) are carried along but ignored by the per-iommu manager.
-            let iommufd = match req.iommufd.try_clone() {
-                Ok(f) => f,
-                Err(e) => {
-                    return Err((
-                        anyhow::Error::new(e).context("failed to dup iommufd fd"),
-                        respond,
-                    ));
-                }
-            };
             let task = self
                 .spawner
                 .spawn(format!("vfio-ioas-{iommu_id}"), async move {
@@ -841,8 +835,8 @@ impl VfioCdevManager {
         };
 
         sender.send(IoasManagerRpc::PrepareDevice {
-            pci_id: req.pci_id,
-            cdev: req.cdev,
+            pci_id,
+            cdev,
             respond,
         });
         Ok(())
