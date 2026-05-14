@@ -42,6 +42,10 @@ pub struct BuildSelections {
     pub openhcl_cvm: bool,
     pub openhcl_linux_direct: bool,
     pub openvmm: bool,
+    /// Build a statically-linked Linux openvmm binary suitable for use
+    /// as an in-guest VMM (e.g. as L1's VMM in nested-virt tests).
+    /// Targets `<arch>-unknown-linux-musl`.
+    pub openvmm_guest_linux: bool,
     pub openvmm_vhost: bool,
     pub pipette_windows: bool,
     pub pipette_linux: bool,
@@ -167,6 +171,7 @@ impl SimpleFlowNode for Node {
             needs_release_igvm,
         } = selections;
 
+<<<<<<< HEAD
         let build_openhcl = build.openhcl_standard
             || build.openhcl_standard_dev
             || build.openhcl_cvm
@@ -177,8 +182,10 @@ impl SimpleFlowNode for Node {
             && (build_openhcl
                 || build.pipette_linux
                 || build.openvmm_vhost
+                || build.openvmm_guest_linux
                 || build.tmk_vmm_linux
-                || build.tpm_guest_tests_linux)
+                || build.tpm_guest_tests_linux
+                || build.test_igvm_agent_rpc_server)
         {
             anyhow::bail!(
                 "Selected tests require artifacts that can only be built on linux. Try building from WSL2."
@@ -320,6 +327,34 @@ impl SimpleFlowNode for Node {
                         Some(match x {
                             crate::build_openvmm::OpenvmmOutput::WindowsBin { exe: _, pdb } => pdb,
                             crate::build_openvmm::OpenvmmOutput::LinuxBin { bin: _, dbg } => dbg,
+                        })
+                    }),
+                ));
+            }
+            output
+        });
+
+        let register_openvmm_guest_linux = build.openvmm_guest_linux.then(|| {
+            let output = ctx.reqv(|v| crate::build_openvmm::Request {
+                params: crate::build_openvmm::OpenvmmBuildParams {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::LinuxMusl,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    // Default features are sufficient for the in-guest
+                    // VMM use case; nothing extra is wired up here.
+                    features: BTreeSet::new(),
+                },
+                openvmm: v,
+            });
+            if copy_extras {
+                copy_to_dir.push((
+                    extras_dir.to_owned(),
+                    output.map(ctx, |x| {
+                        Some(match x {
+                            crate::build_openvmm::OpenvmmOutput::LinuxBin { bin: _, dbg } => dbg,
+                            _ => unreachable!(),
                         })
                     }),
                 ));
@@ -686,6 +721,7 @@ impl SimpleFlowNode for Node {
             test_content_dir: ReadVar::from_static(test_content_dir.clone()),
             vmm_tests_target: target_triple.clone(),
             register_openvmm,
+            register_openvmm_guest_linux,
             register_openvmm_vhost,
             register_pipette_windows,
             register_pipette_linux_musl,

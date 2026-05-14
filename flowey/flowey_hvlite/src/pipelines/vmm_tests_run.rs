@@ -620,6 +620,12 @@ impl ResolvedArtifactSelections {
                 self.build.openvmm = true;
             }
 
+            // OpenVMM in-guest VMM binary (Linux musl, used by nested-virt tests)
+            petri_artifacts_vmm_test::artifacts::OPENVMM_GUEST_LINUX_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::OPENVMM_GUEST_LINUX_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.openvmm_guest_linux = true;
+            }
+
             // OpenVMM vhost binary (Linux only)
             petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_LINUX_X64::GLOBAL_UNIQUE_ID
             | petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_LINUX_AARCH64 ::GLOBAL_UNIQUE_ID => {
