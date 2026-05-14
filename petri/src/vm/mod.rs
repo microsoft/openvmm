@@ -1582,15 +1582,22 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         T::default_servicing_flags()
     }
 
-    /// Get the backend-specific config builder
+    /// Get the backend-specific config builder.
+    ///
+    /// May be called multiple times; closures compose in call order. This
+    /// lets helpers such as `with_nested_l2` — which call `modify_backend`
+    /// internally — coexist with explicit per-test calls without panicking.
     pub fn modify_backend(
         mut self,
         f: impl FnOnce(T::VmmConfig) -> T::VmmConfig + 'static + Send,
-    ) -> Self {
-        if self.modify_vmm_config.is_some() {
-            panic!("only one modify_backend allowed");
-        }
-        self.modify_vmm_config = Some(ModifyFn(Box::new(f)));
+    ) -> Self
+    where
+        T::VmmConfig: 'static,
+    {
+        self.modify_vmm_config = Some(match self.modify_vmm_config.take() {
+            Some(prev) => ModifyFn(Box::new(move |c| f(prev.0(c)))),
+            None => ModifyFn(Box::new(f)),
+        });
         self
     }
 }

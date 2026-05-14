@@ -146,10 +146,9 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
     /// [`NestedL2Builder::launch`] then mounts the share inside L1 and
     /// spawns the in-L1 openvmm.
     ///
-    /// Note: this internally calls [`PetriVmBuilder::modify_backend`], so
-    /// it conflicts with any other caller that has already invoked
-    /// `modify_backend` on the builder. Composition with other
-    /// backend-modifying helpers is left to the caller for now.
+    /// Internally calls [`PetriVmBuilder::modify_backend`] (which composes
+    /// across calls) and `with_nested_virt`, so the L1 is configured to
+    /// expose nested-virtualization extensions to the guest.
     pub fn with_nested_l2(self, cfg: NestedL2Config) -> anyhow::Result<(Self, NestedL2Builder)> {
         let staging_dir = tempfile::Builder::new()
             .prefix("petri-nested-l2-")
@@ -171,7 +170,8 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
         let staging_root_path = staging_dir.path().to_string_lossy().into_owned();
 
         let builder = self.modify_backend(move |b| {
-            b.with_pcie_root_topology(1, 1, 1)
+            b.with_nested_virt()
+                .with_pcie_root_topology(1, 1, 1)
                 .with_custom_config(move |c| {
                     c.pcie_devices.push(PcieDeviceConfig {
                         port_name: "s0rc0rp0".into(),

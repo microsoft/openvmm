@@ -48,6 +48,27 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Expose nested-virtualization extensions (VMX/SVM) to the guest so it
+    /// can itself host a nested VM.
+    ///
+    /// Currently a no-op for the openvmm/KVM L1 path: KVM enables nested
+    /// virtualization at the kernel-module level (`kvm_intel.nested=1` /
+    /// `kvm_amd.nested=1`) and openvmm forwards VMX/SVM CPUID through to
+    /// the guest by default. For the openvmm/WHP L1 path this method will
+    /// flip the WHP `NestedVirtualization` partition property once that
+    /// plumbing lands in `virt_whp`.
+    ///
+    /// The method exists today so tests that require nested virt can
+    /// declare their intent uniformly via `.modify_backend(|b|
+    /// b.with_nested_virt())`, regardless of which backend ultimately
+    /// runs them.
+    pub fn with_nested_virt(self) -> Self {
+        // TODO: when WHP plumbing lands, flip the partition property
+        // here for the WHP backend. For now the KVM L1 path needs no
+        // openvmm-side action.
+        self
+    }
+
     /// Enable the battery for the VM.
     pub fn with_battery(mut self) -> Self {
         if self.resources.properties.is_openhcl {
