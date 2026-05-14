@@ -6,11 +6,14 @@
 #![forbid(unsafe_code)]
 
 pub mod process;
+mod relay;
 mod send;
 pub mod shell;
 
 pub use pipette_protocol::PIPETTE_PORT;
 pub use pipette_protocol::PIPETTE_READY_MARKER;
+
+pub use crate::relay::PipeDuplex;
 
 use crate::send::PipetteSender;
 use anyhow::Context;

@@ -6481,6 +6481,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicycle",
+ "unix_socket",
  "vmsocket",
  "windows-service",
  "windows-sys 0.61.0",
