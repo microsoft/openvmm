@@ -37,16 +37,14 @@ pub(crate) enum JwtError {
     #[error("failed to convert raw bytes into X509 struct")]
     RawBytesToX509(#[source] crypto::x509::X509Error),
     #[error("failed to validate certificate chain")]
-    CertificateChainValidation(#[from] CertificateChainValidationError),
+    CertificateChainValidation(#[source] CertificateChainValidationError),
     #[error("failed to verify JWT signature")]
     JwtSignatureVerification(#[source] JwtSignatureVerificationError),
 }
 
 #[derive(Debug, Error)]
-pub(crate) enum JwtSignatureVerificationError {
-    #[error("RSA signature verification failed")]
-    VerifySignature(#[source] crypto::rsa::RsaError),
-}
+#[error("RSA signature verification failed")]
+pub(crate) struct JwtSignatureVerificationError(#[source] crypto::rsa::RsaError);
 
 #[derive(Debug, Error)]
 pub(crate) enum CertificateChainValidationError {
@@ -168,7 +166,8 @@ impl<B: DeserializeOwned> JwtHelper<B> {
     /// or Err indicate an invalid signature or other error.
     pub fn verify_signature(&self) -> Result<bool, JwtError> {
         let alg = &self.jwt.header.alg;
-        let pkey = validate_cert_chain(&self.cert_chain()?)?;
+        let pkey = validate_cert_chain(&self.cert_chain()?)
+            .map_err(JwtError::CertificateChainValidation)?;
         verify_jwt_signature(alg, &pkey, self.payload.as_bytes(), &self.jwt.signature)
             .map_err(JwtError::JwtSignatureVerification)
     }
@@ -224,7 +223,7 @@ fn verify_jwt_signature(
     match alg {
         JwtAlgorithm::RS256 => pkey
             .pkcs1_verify(payload, signature, crypto::HashAlgorithm::Sha256)
-            .map_err(JwtSignatureVerificationError::VerifySignature),
+            .map_err(JwtSignatureVerificationError),
     }
 }
 
@@ -233,7 +232,7 @@ fn validate_cert_chain(
     cert_chain: &[X509Certificate],
 ) -> Result<RsaPublicKey, CertificateChainValidationError> {
     if cert_chain.is_empty() {
-        Err(CertificateChainValidationError::CertChainIsEmpty)?
+        return Err(CertificateChainValidationError::CertChainIsEmpty);
     }
 
     // Only validate the subject-issuer pair and signature (without validity)
@@ -250,14 +249,14 @@ fn validate_cert_chain(
                 CertificateChainValidationError::VerifyChildSignatureWithParentPublicKey,
             )?;
             if !verified {
-                Err(CertificateChainValidationError::CertChainSignatureMismatch)?
+                return Err(CertificateChainValidationError::CertChainSignatureMismatch);
             }
 
             let issued = parent
                 .issued(child)
                 .map_err(CertificateChainValidationError::CheckCertificateIssuedByIssuer)?;
             if !issued {
-                Err(CertificateChainValidationError::CertChainSubjectIssuerMismatch)?
+                return Err(CertificateChainValidationError::CertChainSubjectIssuerMismatch);
             }
         }
     }

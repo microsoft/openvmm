@@ -60,7 +60,7 @@ pub fn parse_response(
     let minimum_payload_size = CIPHER_TEXT_KEY.len() + wrapped_key_base64_url_size - 1;
 
     if payload.len() < minimum_payload_size {
-        Err(KeyReleaseError::PayloadSizeTooSmall)?
+        return Err(KeyReleaseError::PayloadSizeTooSmall);
     }
     let data_utf8 = String::from_utf8_lossy(payload);
     let wrapped_key = match serde_json::from_str::<akv::AkvKeyReleaseKeyBlob>(&data_utf8) {
@@ -79,7 +79,7 @@ pub fn parse_response(
                     .verify_signature()
                     .map_err(KeyReleaseError::VerifyAkvJwtSignature)?
                 {
-                    Err(KeyReleaseError::VerifyAkvJwtSignatureFailed)?
+                    return Err(KeyReleaseError::VerifyAkvJwtSignatureFailed);
                 }
             }
             get_wrapped_key_blob(result)?

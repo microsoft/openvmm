@@ -61,7 +61,7 @@ pub(crate) struct WriteToVmgsError {
 
 /// Read Key Protector data from the VMGS file. If [`FileId::KEY_PROTECTOR`] doesn't exist yet,
 /// locally initialize a key_protector instance that can be written to.
-pub async fn read_key_protector(
+pub(crate) async fn read_key_protector(
     vmgs: &mut Vmgs,
     dek_minimal_size: usize,
 ) -> Result<KeyProtector, ReadFromVmgsError> {
@@ -71,19 +71,19 @@ pub async fn read_key_protector(
     match vmgs.read_file(file_id).await {
         Ok(data) => {
             if data.len() < dek_minimal_size {
-                Err(ReadFromVmgsError::EntrySizeTooSmall {
+                return Err(ReadFromVmgsError::EntrySizeTooSmall {
                     file_id,
                     size: data.len(),
                     minimal_size: dek_minimal_size,
-                })?
+                });
             }
 
             if data.len() > KEY_PROTECTOR_SIZE {
-                Err(ReadFromVmgsError::EntrySizeTooLarge {
+                return Err(ReadFromVmgsError::EntrySizeTooLarge {
                     file_id,
                     size: data.len(),
                     maximum_size: KEY_PROTECTOR_SIZE,
-                })?
+                });
             }
 
             let data = if data.len() < KEY_PROTECTOR_SIZE {
@@ -106,7 +106,7 @@ pub async fn read_key_protector(
 }
 
 /// Write Key Protector data to the VMGS file.
-pub async fn write_key_protector(
+pub(crate) async fn write_key_protector(
     key_protector: &KeyProtector,
     vmgs: &mut Vmgs,
 ) -> Result<(), WriteToVmgsError> {
@@ -117,7 +117,7 @@ pub async fn write_key_protector(
 }
 
 /// Read Key Protector ID from the VMGS file.
-pub async fn read_key_protector_by_id(
+pub(crate) async fn read_key_protector_by_id(
     vmgs: &mut Vmgs,
 ) -> Result<KeyProtectorById, ReadFromVmgsError> {
     // This file could include state data following the GUID.
@@ -152,7 +152,7 @@ pub async fn read_key_protector_by_id(
 ///
 /// Write if `bios_guid` is different from the one held in `key_protector_by_id` (which
 /// will be set to `bios_guid` before write) or `force_write` is `true`.
-pub async fn write_key_protector_by_id(
+pub(crate) async fn write_key_protector_by_id(
     key_protector_by_id: &mut KeyProtectorById,
     vmgs: &mut Vmgs,
     force_write: bool,
@@ -171,16 +171,18 @@ pub async fn write_key_protector_by_id(
 
 /// Read the security profile from the VMGS file. If [`FileId::ATTEST`] doesn't exist yet,
 /// return an empty vector.
-pub async fn read_security_profile(vmgs: &mut Vmgs) -> Result<SecurityProfile, ReadFromVmgsError> {
+pub(crate) async fn read_security_profile(
+    vmgs: &mut Vmgs,
+) -> Result<SecurityProfile, ReadFromVmgsError> {
     let file_id = FileId::ATTEST;
     match vmgs.read_file(file_id).await {
         Ok(data) => {
             if data.len() > AGENT_DATA_MAX_SIZE {
-                Err(ReadFromVmgsError::EntrySizeTooLarge {
+                return Err(ReadFromVmgsError::EntrySizeTooLarge {
                     file_id,
                     size: data.len(),
                     maximum_size: AGENT_DATA_MAX_SIZE,
-                })?
+                });
             }
 
             let data = if data.len() < AGENT_DATA_MAX_SIZE {
@@ -198,12 +200,12 @@ pub async fn read_security_profile(vmgs: &mut Vmgs) -> Result<SecurityProfile, R
                 .0) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         }
         Err(vmgs::Error::FileInfoNotAllocated(_)) => Ok(SecurityProfile::new_zeroed()),
-        Err(vmgs_err) => Err(ReadFromVmgsError::ReadFromVmgs { file_id, vmgs_err })?,
+        Err(vmgs_err) => Err(ReadFromVmgsError::ReadFromVmgs { file_id, vmgs_err }),
     }
 }
 
 /// Read the hardware key protector from the VMGS file.
-pub async fn read_hardware_key_protector(
+pub(crate) async fn read_hardware_key_protector(
     vmgs: &mut Vmgs,
 ) -> Result<HardwareKeyProtector, ReadFromVmgsError> {
     use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
@@ -220,11 +222,11 @@ pub async fn read_hardware_key_protector(
     };
 
     if data.len() != HW_KEY_PROTECTOR_SIZE {
-        Err(ReadFromVmgsError::EntrySizeUnexpected {
+        return Err(ReadFromVmgsError::EntrySizeUnexpected {
             file_id,
             size: data.len(),
             expected_size: HW_KEY_PROTECTOR_SIZE,
-        })?
+        });
     }
 
     HardwareKeyProtector::read_from_prefix(&data)
@@ -233,7 +235,7 @@ pub async fn read_hardware_key_protector(
 }
 
 /// Write Key Protector Id (current Id) to the VMGS file.
-pub async fn write_hardware_key_protector(
+pub(crate) async fn write_hardware_key_protector(
     hardware_key_protector: &HardwareKeyProtector,
     vmgs: &mut Vmgs,
 ) -> Result<(), WriteToVmgsError> {
@@ -244,16 +246,18 @@ pub async fn write_hardware_key_protector(
 }
 
 /// Read the guest secret key from VMGS file.
-pub async fn read_guest_secret_key(vmgs: &mut Vmgs) -> Result<GuestSecretKey, ReadFromVmgsError> {
+pub(crate) async fn read_guest_secret_key(
+    vmgs: &mut Vmgs,
+) -> Result<GuestSecretKey, ReadFromVmgsError> {
     let file_id = FileId::GUEST_SECRET_KEY;
     match vmgs.read_file(file_id).await {
         Ok(data) => {
             if data.len() > GUEST_SECRET_KEY_MAX_SIZE {
-                Err(ReadFromVmgsError::EntrySizeTooLarge {
+                return Err(ReadFromVmgsError::EntrySizeTooLarge {
                     file_id,
                     size: data.len(),
                     maximum_size: GUEST_SECRET_KEY_MAX_SIZE,
-                })?
+                });
             }
 
             let data = if data.len() < GUEST_SECRET_KEY_MAX_SIZE {
@@ -282,17 +286,13 @@ mod tests {
     use disklayer_ram::ram_disk;
     use openhcl_attestation_protocol::vmgs::AES_CBC_IV_LENGTH;
     use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
-    use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
-    use openhcl_attestation_protocol::vmgs::DekKp;
     use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
-    use openhcl_attestation_protocol::vmgs::GspKp;
     use openhcl_attestation_protocol::vmgs::HMAC_SHA_256_KEY_LENGTH;
     use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
     use openhcl_attestation_protocol::vmgs::HardwareKeyProtectorHeader;
     use openhcl_attestation_protocol::vmgs::KEY_PROTECTOR_SIZE;
     use openhcl_attestation_protocol::vmgs::KeyProtector;
     use openhcl_attestation_protocol::vmgs::KeyProtectorById;
-    use openhcl_attestation_protocol::vmgs::NUMBER_KP;
     use pal_async::async_test;
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
@@ -322,28 +322,7 @@ mod tests {
     }
 
     fn new_key_protector() -> KeyProtector {
-        // Ingress and egress KPs are assumed to be the only two KPs, therefore `NUMBER_KP` should be 2
-        assert_eq!(NUMBER_KP, 2);
-
-        let ingress_dek = DekKp {
-            dek_buffer: [1; DEK_BUFFER_SIZE],
-        };
-        let egress_dek = DekKp {
-            dek_buffer: [2; DEK_BUFFER_SIZE],
-        };
-        let ingress_gsp = GspKp {
-            gsp_length: GSP_BUFFER_SIZE as u32,
-            gsp_buffer: [3; GSP_BUFFER_SIZE],
-        };
-        let egress_gsp = GspKp {
-            gsp_length: GSP_BUFFER_SIZE as u32,
-            gsp_buffer: [4; GSP_BUFFER_SIZE],
-        };
-        KeyProtector {
-            dek: [ingress_dek, egress_dek],
-            gsp: [ingress_gsp, egress_gsp],
-            active_kp: u32::MAX,
-        }
+        crate::test_helpers::new_key_protector(u32::MAX)
     }
 
     #[async_test]
@@ -379,22 +358,28 @@ mod tests {
         .unwrap();
         let found_key_protector_result =
             read_key_protector(&mut vmgs, key_protector_bytes.len()).await;
-        assert!(found_key_protector_result.is_err());
-        assert_eq!(
-            found_key_protector_result.unwrap_err().to_string(),
-            "KEY_PROTECTOR valid bytes 2059 smaller than the minimal size 2060"
-        );
+        assert!(matches!(
+            found_key_protector_result,
+            Err(ReadFromVmgsError::EntrySizeTooSmall {
+                file_id: FileId::KEY_PROTECTOR,
+                size: 2059,
+                minimal_size: 2060,
+            })
+        ));
 
         // Read an oversized key protector
         vmgs.write_file(FileId::KEY_PROTECTOR, &[1; KEY_PROTECTOR_SIZE + 1])
             .await
             .unwrap();
         let found_key_protector_result = read_key_protector(&mut vmgs, KEY_PROTECTOR_SIZE).await;
-        assert!(found_key_protector_result.is_err());
-        assert_eq!(
-            found_key_protector_result.unwrap_err().to_string(),
-            "KEY_PROTECTOR valid bytes 2061 larger than the maximum size 2060"
-        );
+        assert!(matches!(
+            found_key_protector_result,
+            Err(ReadFromVmgsError::EntrySizeTooLarge {
+                file_id: FileId::KEY_PROTECTOR,
+                size: 2061,
+                maximum_size: 2060,
+            })
+        ));
 
         // Read a key protector that is equal to the `dek_minimal_size` and smaller than the `KEY_PROTECTOR_SIZE`
         // so that padding is added
@@ -430,11 +415,10 @@ mod tests {
 
         // Try to read the `key_protector_by_id` from the VMGS file which doesn't have a `key_protector_by_id` entry
         let found_key_protector_by_id_result = read_key_protector_by_id(&mut vmgs).await;
-        assert!(found_key_protector_by_id_result.is_err());
-        assert_eq!(
-            found_key_protector_by_id_result.unwrap_err().to_string(),
-            "entry does not exist, file id: VM_UNIQUE_ID"
-        );
+        assert!(matches!(
+            found_key_protector_by_id_result,
+            Err(ReadFromVmgsError::EntryNotFound(FileId::VM_UNIQUE_ID))
+        ));
 
         // Populate the VMGS file with `key_protector_by_id`
         write_key_protector_by_id(&mut key_protector_by_id, &mut vmgs, true, kp_guid)
@@ -506,11 +490,14 @@ mod tests {
             .await
             .unwrap();
         let found_security_profile_result = read_security_profile(&mut vmgs).await;
-        assert!(found_security_profile_result.is_err());
-        assert_eq!(
-            found_security_profile_result.unwrap_err().to_string(),
-            "ATTEST valid bytes 2049 larger than the maximum size 2048"
-        );
+        assert!(matches!(
+            found_security_profile_result,
+            Err(ReadFromVmgsError::EntrySizeTooLarge {
+                file_id: FileId::ATTEST,
+                size: 2049,
+                maximum_size: AGENT_DATA_MAX_SIZE,
+            })
+        ));
 
         // Write a security profile smaller than the maximum size to the VMGS and observe that it is padded with zeros
         let undersized_security_profile = [7u8; AGENT_DATA_MAX_SIZE - 10];
@@ -558,11 +545,14 @@ mod tests {
             .await
             .unwrap();
         let found_hardware_key_protector_result = read_hardware_key_protector(&mut vmgs).await;
-        assert!(found_hardware_key_protector_result.is_err());
-        assert_eq!(
-            found_hardware_key_protector_result.unwrap_err().to_string(),
-            "HW_KEY_PROTECTOR valid bytes 105, expected 104"
-        );
+        assert!(matches!(
+            found_hardware_key_protector_result,
+            Err(ReadFromVmgsError::EntrySizeUnexpected {
+                file_id: FileId::HW_KEY_PROTECTOR,
+                size: 105,
+                expected_size: HW_KEY_PROTECTOR_SIZE,
+            })
+        ));
     }
 
     #[async_test]
@@ -571,11 +561,10 @@ mod tests {
 
         // When no guest secret key exists, an error should be returned
         let found_guest_secret_key_result = read_guest_secret_key(&mut vmgs).await;
-        assert!(found_guest_secret_key_result.is_err());
-        assert_eq!(
-            found_guest_secret_key_result.unwrap_err().to_string(),
-            "entry does not exist, file id: GUEST_SECRET_KEY"
-        );
+        assert!(matches!(
+            found_guest_secret_key_result,
+            Err(ReadFromVmgsError::EntryNotFound(FileId::GUEST_SECRET_KEY))
+        ));
 
         // Write a guest secret key to the VMGS
         let guest_secret_key = GuestSecretKey {
@@ -596,11 +585,14 @@ mod tests {
             .await
             .unwrap();
         let found_guest_secret_key_result = read_guest_secret_key(&mut vmgs).await;
-        assert!(found_guest_secret_key_result.is_err());
-        assert_eq!(
-            found_guest_secret_key_result.unwrap_err().to_string(),
-            "GUEST_SECRET_KEY valid bytes 2049 larger than the maximum size 2048"
-        );
+        assert!(matches!(
+            found_guest_secret_key_result,
+            Err(ReadFromVmgsError::EntrySizeTooLarge {
+                file_id: FileId::GUEST_SECRET_KEY,
+                size: 2049,
+                maximum_size: GUEST_SECRET_KEY_MAX_SIZE,
+            })
+        ));
 
         // Write a guest secret smaller than the maximum size to the VMGS and observe that it is padded with zeros
         let undersized_guest_secret_key = [7u8; GUEST_SECRET_KEY_MAX_SIZE - 10];

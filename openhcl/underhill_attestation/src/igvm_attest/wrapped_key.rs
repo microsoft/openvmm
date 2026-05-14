@@ -23,6 +23,11 @@ pub(crate) enum WrappedKeyError {
     ParseHeader(#[source] CommonError),
     #[error("invalid response header version: {0}")]
     InvalidResponseVersion(u32),
+    #[error("response data_size {data_size} is smaller than header size {header_size}")]
+    InvalidDataSize {
+        data_size: usize,
+        header_size: usize,
+    },
 }
 
 /// Return value of the [`parse_response`].
@@ -56,10 +61,17 @@ pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, W
         IgvmAttestResponseVersion::VERSION_2 => size_of::<IgvmAttestWrappedKeyResponseHeader>(),
         invalid_version => return Err(WrappedKeyError::InvalidResponseVersion(invalid_version.0)),
     };
-    let payload = &response[header_size..header.data_size as usize];
+    let data_size = header.data_size as usize;
+    if data_size < header_size {
+        return Err(WrappedKeyError::InvalidDataSize {
+            data_size,
+            header_size,
+        });
+    }
+    let payload = &response[header_size..data_size];
 
     if payload.len() < MINIMUM_PAYLOAD_SIZE {
-        Err(WrappedKeyError::PayloadSizeTooSmall)?
+        return Err(WrappedKeyError::PayloadSizeTooSmall);
     }
     let payload = String::from_utf8_lossy(payload);
     let payload: cps::VmmdBlob = serde_json::from_str(&payload).map_err(|json_err| {
