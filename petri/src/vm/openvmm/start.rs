@@ -45,6 +45,7 @@ impl PetriVmConfigOpenVmm {
             framebuffer_view,
 
             pending_iommu,
+            skip_save_restore_check,
         } = self;
 
         // Resolve deferred IOMMU assignments.
@@ -155,8 +156,11 @@ impl PetriVmConfigOpenVmm {
         tracing::info!("Resuming VM");
         vm.resume().await?;
 
-        // Run basic save/restore test if it is supported
-        if supports_save_restore && !is_minimal {
+        // Run basic save/restore test if it is supported and the test has
+        // not explicitly opted out (e.g. because it attaches a device whose
+        // backend cannot round-trip through save/restore, such as
+        // virtio-fs).
+        if supports_save_restore && !is_minimal && !skip_save_restore_check {
             tracing::info!("Testing save/restore");
             vm.verify_save_restore().await?;
         }

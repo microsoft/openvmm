@@ -719,6 +719,7 @@ impl PetriVmConfigOpenVmm {
             framebuffer_view,
 
             pending_iommu: Vec::new(),
+            skip_save_restore_check: false,
         })
     }
 }
