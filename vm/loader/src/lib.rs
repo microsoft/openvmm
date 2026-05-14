@@ -4,8 +4,8 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
-#[warn(missing_docs)]
 pub mod bzimage;
+#[warn(missing_docs)]
 pub mod common;
 pub mod cpuid;
 pub mod elf;

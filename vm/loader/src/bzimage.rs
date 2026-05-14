@@ -29,9 +29,12 @@ const BOOT_FLAG: u16 = 0xAA55;
 /// Minimum boot protocol version that supports 64-bit boot (version 2.12+).
 const MIN_PROTOCOL_VERSION: u16 = 0x020C;
 
-/// Minimum number of bytes we need to read to cover the full setup header
-/// through the `handover_offset` field at offset 0x264.
-const MIN_HEADER_SIZE: usize = 0x268;
+/// Offset of the `setup_header` struct within the boot sector.
+const SETUP_HEADER_OFFSET: usize = 0x1F1;
+
+/// Minimum number of bytes we need to read to cover the full setup header.
+/// Derived from the struct layout so it stays correct if `setup_header` changes.
+const MIN_HEADER_SIZE: usize = SETUP_HEADER_OFFSET + size_of::<defs::setup_header>();
 
 /// The `loadflags` bit indicating the protected-mode code should be loaded high (at 0x100000).
 const LOADED_HIGH: u8 = 0x01;
@@ -145,9 +148,10 @@ fn parse_bzimage_inner(kernel_image: &mut (impl Read + Seek)) -> Result<BzImageI
 
     // The setup_header in boot_params starts at offset 0x1F1 relative to
     // the start of the boot sector.
-    let hdr =
-        defs::setup_header::read_from_bytes(&buf[0x1f1..0x1f1 + size_of::<defs::setup_header>()])
-            .expect("buf is large enough");
+    let hdr = defs::setup_header::read_from_bytes(
+        &buf[SETUP_HEADER_OFFSET..SETUP_HEADER_OFFSET + size_of::<defs::setup_header>()],
+    )
+    .expect("buf is large enough: MIN_HEADER_SIZE is derived from setup_header size");
 
     let version: u16 = hdr.version.into();
     if version < MIN_PROTOCOL_VERSION {
