@@ -150,7 +150,7 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     /// Function to modify the VMM-specific configuration
     modify_vmm_config: Option<ModifyFn<T::VmmConfig>>,
     /// VMM-agnostic resources
-    resources: PetriVmResources,
+    pub(crate) resources: PetriVmResources,
 
     // VMM-specific quirks for the configured firmware
     guest_quirks: GuestQuirksInner,
@@ -303,8 +303,8 @@ pub struct PetriVmRuntimeConfig {
 /// Resources used by a Petri VM during contruction and runtime
 #[derive(Debug)]
 pub struct PetriVmResources {
-    driver: DefaultDriver,
-    log_source: PetriLogSource,
+    pub(crate) driver: DefaultDriver,
+    pub(crate) log_source: PetriLogSource,
 }
 
 /// Trait for VMM-specific contruction and runtime resources
