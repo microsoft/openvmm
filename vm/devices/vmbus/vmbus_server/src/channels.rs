@@ -510,6 +510,14 @@ enum ChannelState {
 
     /// The guest has released the channel, but there is still a pending open
     /// request to the device.
+    ///
+    /// This variant is currently unconstructed: `client_release_channel`
+    /// force-releases `Opening` channels directly to `ClientReleased` to
+    /// avoid deadlocking the vmbus reset on a device task that has been
+    /// stopped (and so will never deliver an open response). The variant is
+    /// retained for now to preserve match-arm coverage in callers that
+    /// continue to handle the state defensively.
+    #[expect(dead_code)]
     OpeningClientRelease,
 }
 
@@ -3257,7 +3265,21 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 true
             }
             ChannelState::Opening { .. } => {
-                channel.state = ChannelState::OpeningClientRelease;
+                // The device has not yet opened the channel. There is no
+                // device-side state to tear down, so release immediately
+                // rather than waiting for the in-flight open response. The
+                // pending `Action::Open` RPC may complete later (or be
+                // dropped by the device task when it is reset); any late
+                // response will hit the `invalid open complete` branch of
+                // `open_complete` and be ignored.
+                //
+                // Waiting here would deadlock if the device task has been
+                // stopped (e.g. during `pulse_save_restore`) before it could
+                // process the open: the device pends `ChannelRequest::Open`
+                // until restart, but the state-unit reset blocks behind this
+                // vmbus reset, which in turn blocks behind the never-arriving
+                // open response.
+                channel.state = ChannelState::ClientReleased;
                 false
             }
             ChannelState::Open { .. } => {
