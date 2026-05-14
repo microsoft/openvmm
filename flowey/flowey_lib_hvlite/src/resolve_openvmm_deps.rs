@@ -139,7 +139,7 @@ impl FlowNodeWithConfig for Node {
                 repo_name: "openvmm-deps".into(),
                 needs_auth: false,
                 tag: version.clone(),
-                file_name: format!("openvmm-deps.{arch_str}.{version}.tar.bz2"),
+                file_name: format!("openvmm-deps.{arch_str}.{version}.tar.gz"),
                 path: v,
             })
         };
