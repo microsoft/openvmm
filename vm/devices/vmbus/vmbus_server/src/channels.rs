@@ -510,14 +510,6 @@ enum ChannelState {
 
     /// The guest has released the channel, but there is still a pending open
     /// request to the device.
-    ///
-    /// This variant is currently unconstructed: `client_release_channel`
-    /// force-releases `Opening` channels directly to `ClientReleased` to
-    /// avoid deadlocking the vmbus reset on a device task that has been
-    /// stopped (and so will never deliver an open response). The variant is
-    /// retained for now to preserve match-arm coverage in callers that
-    /// continue to handle the state defensively.
-    #[expect(dead_code)]
     OpeningClientRelease,
 }
 
@@ -2067,6 +2059,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         &mut self.inner.assigned_channels,
                         &mut self.inner.assigned_monitors,
                         None,
+                        false,
                     ) {
                         self.inner.channels.remove(offer_id);
                     }
@@ -2554,6 +2547,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
                     None,
+                    vm_reset,
                 )
         });
 
@@ -3208,6 +3202,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         assigned_channels: &mut AssignedChannels,
         assigned_monitors: &mut AssignedMonitors,
         info: Option<&ConnectionInfo>,
+        vm_reset: bool,
     ) -> bool {
         tracelimit::info_ratelimited!(?offer_id, key = %channel.offer.key(), "client released channel");
         // Release any GPADLs that remain for this channel.
@@ -3265,21 +3260,28 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 true
             }
             ChannelState::Opening { .. } => {
-                // The device has not yet opened the channel. There is no
-                // device-side state to tear down, so release immediately
-                // rather than waiting for the in-flight open response. The
-                // pending `Action::Open` RPC may complete later (or be
-                // dropped by the device task when it is reset); any late
-                // response will hit the `invalid open complete` branch of
-                // `open_complete` and be ignored.
+                // Normally we transition to `OpeningClientRelease` and wait
+                // for the device to deliver an `open_complete`, then close
+                // the channel. During a VM reset, however, channel device
+                // tasks may already be stopped (state-unit reset stops them
+                // in reverse-dependency order, before the vmbus unit), in
+                // which case the in-flight `Action::Open` has been pended
+                // in the device task's stopped-state queue and will never
+                // be answered. Waiting would deadlock the vmbus reset,
+                // which in turn blocks the channel-unit reset that would
+                // drain the queue.
                 //
-                // Waiting here would deadlock if the device task has been
-                // stopped (e.g. during `pulse_save_restore`) before it could
-                // process the open: the device pends `ChannelRequest::Open`
-                // until restart, but the state-unit reset blocks behind this
-                // vmbus reset, which in turn blocks behind the never-arriving
-                // open response.
-                channel.state = ChannelState::ClientReleased;
+                // Force-release directly to `ClientReleased` in that case.
+                // The device has not opened the channel yet, so there is
+                // no resource to tear down. Any late `Action::Open`
+                // response that does arrive (for a still-running device
+                // that races us) is caught by the `invalid open complete`
+                // branch of `open_complete` and ignored.
+                if vm_reset {
+                    channel.state = ChannelState::ClientReleased;
+                } else {
+                    channel.state = ChannelState::OpeningClientRelease;
+                }
                 false
             }
             ChannelState::Open { .. } => {
@@ -3330,6 +3332,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
                     self.inner.state.get_connected_info(),
+                    false,
                 ) {
                     self.inner.channels.remove(offer_id);
                 }
