@@ -216,6 +216,21 @@ impl SimpleFlowNode for Node {
             done: v,
         }));
 
+        // Always test the pure rust backend.
+        reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
+            in_folder: openvmm_repo_path.clone(),
+            package: CargoPackage::Crate("crypto".into()),
+            profile: profile.clone(),
+            features: CargoFeatureSet::Specific(vec!["rust".into()]),
+            target: target.clone(),
+            extra_env: None,
+            exclude: ReadVar::from_static(None),
+            keep_going: true,
+            all_targets: true,
+            pre_build_deps: pre_build_deps.clone(),
+            done: v,
+        }));
+
         // Then on linux test the openssl & symcrypt backends, and ensure that --all-features works properly.
         // We could test openssl on non-linux targets too, but setting up builds for them is a pain.
         if matches!(

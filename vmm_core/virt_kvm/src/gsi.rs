@@ -216,6 +216,7 @@ pub(crate) trait MsiRouteBuilder: Send + Sync {
         partition: &KvmPartitionInner,
         address: u64,
         data: u32,
+        devid: Option<u32>,
     ) -> Option<kvm::RoutingEntry>;
 }
 
@@ -224,9 +225,9 @@ impl<T: MsiRouteBuilder> IrqFdRoute for KvmIrqFdRoute<T> {
         &self.event
     }
 
-    fn enable(&self, address: u64, data: u32) {
+    fn enable(&self, address: u64, data: u32, devid: Option<u32>) {
         if let Some(partition) = self.route.partition.upgrade() {
-            if let Some(entry) = self.builder.routing_entry(&partition, address, data) {
+            if let Some(entry) = self.builder.routing_entry(&partition, address, data, devid) {
                 self.route.inner.enable(&partition, entry);
             } else {
                 tracelimit::warn_ratelimited!(

@@ -892,7 +892,7 @@ mod weak_mutex_pci {
                 })
         }
 
-        fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+        fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo> {
             self.lock().downstream_ports()
         }
     }
@@ -913,7 +913,7 @@ mod weak_mutex_pci {
                 })
         }
 
-        fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+        fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo> {
             self.lock().downstream_ports()
         }
     }

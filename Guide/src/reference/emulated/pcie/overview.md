@@ -77,6 +77,26 @@ hotplug, PME, AER, and other PCIe features rather than
 ACPI-based fallbacks. Linux assumes native control regardless,
 but Windows requires `_OSC` to enable native hotplug.
 
+### MSI Interrupt Routing (aarch64)
+
+On aarch64, PCIe MSI/MSI-X interrupts are routed through either
+a GICv3 ITS or a GICv2m MSI frame, depending on the platform:
+
+- **GICv3 ITS** (default on KVM with GICv3): The VMM creates a
+  KVM in-kernel ITS device. Each PCIe device gets a 32-bit
+  device ID composed as `(segment << 16) | BDF`, injected
+  transparently by per-device wrappers in the interrupt path.
+  ACPI boots emit an IORT with an ITS Group node and per-root-
+  complex ID mappings. The device tree includes an `its` child
+  node under the GIC with `msi-controller`.
+
+- **GICv2m**: MSI writes map to a fixed pool of 64 SPIs via
+  a v2m doorbell register. The MADT includes a GICv2m MSI
+  frame entry.
+
+The MSI controller can be overridden with the `--gic-msi`
+CLI option (`auto`, `its`, or `v2m`).
+
 ### Implementation notes
 
 ```admonish note title="No Command Completed support"

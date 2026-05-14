@@ -13,8 +13,11 @@ use vmcore::irqfd::IrqFdRoute;
 pub trait SignalMsi: Send + Sync {
     /// Signals a message-signaled interrupt at the specified address with the specified data.
     ///
-    /// `rid` is the requester ID of the PCI device sending the interrupt.
-    fn signal_msi(&self, rid: u32, address: u64, data: u32);
+    /// `devid` is an optional device identity. Its meaning is layer-dependent:
+    /// at the device layer it is a BDF for multi-function devices (`None` for
+    /// single-function); at the ITS wrapper layer it is the fully composed ITS
+    /// device ID; backends that don't need it ignore it.
+    fn signal_msi(&self, devid: Option<u32>, address: u64, data: u32);
 }
 
 /// A kernel-mediated MSI interrupt route for a single vector.
@@ -43,7 +46,16 @@ impl MsiRoute {
     /// `address` and `data` are the MSI address and data values that
     /// the hypervisor will use when injecting the interrupt.
     pub fn enable(&self, address: u64, data: u32) {
-        self.0.enable(address, data)
+        self.0.enable(address, data, None)
+    }
+
+    /// Configures the MSI address and data for this route.
+    ///
+    /// `rid` is the PCIe requester ID (RID) of the device that will signal the
+    /// interrupt. `address` and `data` are the MSI address and data values that
+    /// the hypervisor will use when injecting the interrupt.
+    pub fn enable_with_rid(&self, address: u64, data: u32, rid: u16) {
+        self.0.enable(address, data, Some(rid.into()))
     }
 
     /// Disables the MSI route. Interrupts that arrive while disabled
@@ -64,7 +76,7 @@ impl MsiRoute {
 struct DisconnectedMsiTarget;
 
 impl SignalMsi for DisconnectedMsiTarget {
-    fn signal_msi(&self, _rid: u32, _address: u64, _data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, _address: u64, _data: u32) {
         tracelimit::warn_ratelimited!("dropped MSI interrupt to disconnected target");
     }
 }
@@ -143,12 +155,16 @@ impl MsiConnection {
 }
 
 impl MsiTarget {
-    /// Signals an MSI interrupt to this target from the specified RID.
-    ///
-    /// A single-RID device should use `0` as the RID.
-    pub fn signal_msi(&self, rid: u32, address: u64, data: u32) {
+    /// Signals an MSI interrupt to this target.
+    pub fn signal_msi(&self, address: u64, data: u32) {
         let inner = self.inner.read();
-        inner.signal_msi.signal_msi(rid, address, data);
+        inner.signal_msi.signal_msi(None, address, data);
+    }
+
+    /// Signals an MSI interrupt to this target from a specific RID.
+    pub fn signal_msi_with_rid(&self, rid: u16, address: u64, data: u32) {
+        let inner = self.inner.read();
+        inner.signal_msi.signal_msi(Some(rid.into()), address, data);
     }
 
     /// Creates a new kernel-mediated MSI route for direct interrupt

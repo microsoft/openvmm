@@ -1539,8 +1539,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
 
         // Add the queue pair before aliasing its memory with the device so
         // that it can be torn down correctly on failure.
-        self.io.push(IoQueue { queue, iv, cpu });
-        let io_queue = self.io.last_mut().unwrap();
+        let io_queue = self.io.push_mut(IoQueue { queue, iv, cpu });
 
         let admin = self.admin.as_ref().unwrap().issuer().as_ref();
         let pci_id_str = self.device.id().to_owned();

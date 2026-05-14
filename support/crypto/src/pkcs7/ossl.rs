@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! PKCS#7 signature verification using OpenSSL.
+
 use super::*;
 
 pub struct Pkcs7SignedDataInner(openssl::pkcs7::Pkcs7);

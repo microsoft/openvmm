@@ -3,7 +3,7 @@
 
 //! Helpers for Windows operations, used by multiple algorithms.
 
-#![cfg(windows)]
+#![cfg(all(native, windows))]
 
 use windows::Win32::Security::Cryptography::BCRYPT_ALG_HANDLE;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_HANDLE;

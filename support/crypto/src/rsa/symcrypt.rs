@@ -1,11 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! RSA implementation using SymCrypt.
+
 use super::RsaError;
-use rsa::pkcs8::DecodePrivateKey;
-use rsa::pkcs8::EncodePrivateKey;
-use rsa::traits::PrivateKeyParts;
-use rsa::traits::PublicKeyParts;
 use symcrypt::rsa::RsaKey;
 use symcrypt::rsa::RsaKeyUsage;
 
@@ -13,7 +11,7 @@ fn err(err: symcrypt::errors::SymCryptError, op: &'static str) -> RsaError {
     RsaError(crate::BackendError::SymCrypt(err, op))
 }
 
-fn pkcs8_err(err: rsa::pkcs8::Error, op: &'static str) -> RsaError {
+fn pkcs8_err(err: pkcs8::Error, op: &'static str) -> RsaError {
     RsaError(crate::BackendError::Pkcs8Encoding(err, op))
 }
 
@@ -28,12 +26,16 @@ impl RsaKeyPairInner {
     }
 
     pub fn from_pkcs8_der(der: &[u8]) -> Result<Self, RsaError> {
+        use pkcs8::DecodePrivateKey;
+        use rsa::traits::PrivateKeyParts;
+        use rsa::traits::PublicKeyParts;
+
         let parsed = rsa::RsaPrivateKey::from_pkcs8_der(der)
             .map_err(|e| pkcs8_err(e, "parsing PKCS#8 DER"))?;
         let primes = parsed.primes();
         if primes.len() != 2 {
             return Err(RsaError(crate::BackendError::Pkcs8Encoding(
-                rsa::pkcs8::Error::KeyMalformed(rsa::pkcs8::KeyError::Invalid),
+                pkcs8::Error::KeyMalformed(pkcs8::KeyError::Invalid),
                 "multiprime RSA keys not supported",
             )));
         }
@@ -49,6 +51,8 @@ impl RsaKeyPairInner {
     }
 
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
+        use pkcs8::EncodePrivateKey;
+
         let blob = self
             .0
             .export_key_pair_blob()
@@ -129,7 +133,17 @@ impl RsaPublicKeyInner {
             .pkcs1_verify(&digest, signature, conv_hash(hash_algorithm))
         {
             Ok(()) => Ok(true),
-            Err(symcrypt::errors::SymCryptError::SignatureVerificationFailure) => Ok(false),
+            // `SignatureVerificationFailure` is the expected error for an
+            // invalid signature. `InvalidArgument` can also occur when the
+            // signature bytes, interpreted as an integer, are >= the modulus
+            // or otherwise don't decode to a valid PKCS#1 v1.5 encoding —
+            // which happens probabilistically when verifying a signature
+            // against the wrong public key. Both indicate "signature does
+            // not verify", not a backend bug.
+            Err(
+                symcrypt::errors::SymCryptError::SignatureVerificationFailure
+                | symcrypt::errors::SymCryptError::InvalidArgument,
+            ) => Ok(false),
             Err(e) => Err(err(e, "PKCS#1 signature verification")),
         }
     }

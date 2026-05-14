@@ -145,14 +145,26 @@ use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vnc_worker_defs::VncParameters;
 
+/// RAII guard that removes the pidfile when dropped. Ensures the pidfile is
+/// cleaned up even if [`do_main`] panics.
+struct PidfileGuard(Option<PathBuf>);
+
+impl Drop for PidfileGuard {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = fs_err::remove_file(path);
+        }
+    }
+}
+
 pub fn openvmm_main() {
     // Save the current state of the terminal so we can restore it back to
     // normal before exiting.
     #[cfg(unix)]
     let orig_termios = io::stderr().is_terminal().then(term::get_termios);
 
-    let mut pidfile_path = None;
-    let exit_code = match do_main(&mut pidfile_path) {
+    let mut pidfile_guard = PidfileGuard(None);
+    let exit_code = match do_main(&mut pidfile_guard.0) {
         Ok(_) => 0,
         Err(err) => {
             eprintln!("fatal error: {:?}", err);
@@ -168,9 +180,7 @@ pub fn openvmm_main() {
 
     // Clean up the pidfile before terminating, since pal::process::terminate
     // skips destructors.
-    if let Some(ref path) = pidfile_path {
-        let _ = std::fs::remove_file(path);
-    }
+    drop(pidfile_guard);
 
     // Terminate the process immediately without graceful shutdown of DLLs or
     // C++ destructors or anything like that. This is all unnecessary and saves
@@ -1316,6 +1326,11 @@ async fn vm_config_from_command_line(
             // TODO: allow this to be configured from the command line
             gic_config: None,
             pmu_gsiv: openvmm_defs::config::PmuGsivConfig::Platform,
+            gic_msi: match opt.gic_msi {
+                cli_args::GicMsiCli::Auto => openvmm_defs::config::GicMsiConfig::Auto,
+                cli_args::GicMsiCli::Its => openvmm_defs::config::GicMsiConfig::Its,
+                cli_args::GicMsiCli::V2m => openvmm_defs::config::GicMsiConfig::V2m,
+            },
         },
     );
     #[cfg(guest_arch = "x86_64")]

@@ -380,6 +380,7 @@ struct UhCvmVpState {
     /// Hypervisor enlightenment emulator state.
     hv: VtlArray<ProcessorVtlHv, 2>,
     /// LAPIC state.
+    #[inspect(safe)]
     lapics: VtlArray<LapicState, 2>,
     /// Guest VSM state for this vp. Some when VTL 1 is enabled.
     vtl1: Option<GuestVsmVpState>,
@@ -1314,7 +1315,7 @@ struct UhInterruptTarget {
 }
 
 impl pci_core::msi::SignalMsi for UhInterruptTarget {
-    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         self.partition
             .request_msi(self.vtl, MsiRequest { address, data });
     }

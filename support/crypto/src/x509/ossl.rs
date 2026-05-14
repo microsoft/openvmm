@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! X.509 certificate parsing and verification using OpenSSL.
+
 use super::X509Error;
 
 fn err(err: openssl::error::ErrorStack, op: &'static str) -> X509Error {
@@ -31,15 +33,22 @@ impl X509CertificateInner {
         ))
     }
 
-    pub fn verify(&self, issuer_public_key: &crate::rsa::RsaPublicKey) -> Result<bool, X509Error> {
-        self.0
-            .verify(&issuer_public_key.0.0)
-            .map_err(|e| err(e, "verifying certificate signature"))
+    pub fn verify(
+        &self,
+        issuer_public_key: &crate::rsa::RsaPublicKey,
+    ) -> Result<bool, crate::rsa::RsaError> {
+        self.0.verify(&issuer_public_key.0.0).map_err(|e| {
+            crate::rsa::RsaError(crate::BackendError(e, "verifying certificate signature"))
+        })
     }
 
-    pub fn issued(&self, subject: &X509CertificateInner) -> bool {
-        let result = self.0.issued(&subject.0);
-        result == openssl::x509::X509VerifyResult::OK
+    pub fn issued(&self, subject: &X509CertificateInner) -> Result<bool, X509Error> {
+        // `X509_check_issued` only performs deterministic comparisons on
+        // already-parsed data (name, AKID/SKID, serial, KeyUsage) and cannot
+        // fail with internal errors. Per the OpenSSL docs, every non-OK
+        // result is an `X509_V_ERR*` constant "indicating why the issuer
+        // does not match" — i.e., a legitimate `Ok(false)`.
+        Ok(self.0.issued(&subject.0) == openssl::x509::X509VerifyResult::OK)
     }
 
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {

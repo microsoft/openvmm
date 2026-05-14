@@ -184,8 +184,18 @@ fn test_ttrpc_interface(
         }
     });
 
-    child.wait()?;
+    let exit_status = child.wait()?;
     let _ = std::fs::remove_file(&socket_path);
+
+    // Surface the OpenVMM exit status so that abnormal exits (e.g. an abort
+    // from a panic — the workspace uses `panic = 'abort'`) are visible in
+    // test logs alongside any pidfile/cleanup assertion below.
+    tracing::info!(?exit_status, "openvmm exited");
+    assert!(
+        exit_status.success(),
+        "openvmm exited abnormally: {:?}",
+        exit_status
+    );
 
     // Verify the pidfile was cleaned up on exit.
     assert!(

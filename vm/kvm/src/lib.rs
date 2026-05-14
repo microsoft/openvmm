@@ -520,24 +520,37 @@ impl Partition {
             entries: [Default::default(); MAX_ROUTES],
         };
         for (i, route) in routes.iter().enumerate() {
-            let (type_, u) = match route.1 {
+            let (type_, flags, u) = match route.1 {
                 RoutingEntry::Msi {
                     address_lo,
                     address_hi,
                     data,
-                } => (
-                    KVM_IRQ_ROUTING_MSI,
-                    kvm_irq_routing_entry__bindgen_ty_1 {
-                        msi: kvm_irq_routing_msi {
-                            address_lo,
-                            address_hi,
-                            data,
-                            __bindgen_anon_1: Default::default(),
+                    devid,
+                } => {
+                    let (flags, anon) = if let Some(devid) = devid {
+                        (
+                            KVM_MSI_VALID_DEVID,
+                            kvm_irq_routing_msi__bindgen_ty_1 { devid },
+                        )
+                    } else {
+                        (0, Default::default())
+                    };
+                    (
+                        KVM_IRQ_ROUTING_MSI,
+                        flags,
+                        kvm_irq_routing_entry__bindgen_ty_1 {
+                            msi: kvm_irq_routing_msi {
+                                address_lo,
+                                address_hi,
+                                data,
+                                __bindgen_anon_1: anon,
+                            },
                         },
-                    },
-                ),
+                    )
+                }
                 RoutingEntry::HvSint { vp, sint } => (
                     KVM_IRQ_ROUTING_HV_SINT,
+                    0,
                     kvm_irq_routing_entry__bindgen_ty_1 {
                         hv_sint: kvm_irq_routing_hv_sint {
                             vcpu: vp,
@@ -547,6 +560,7 @@ impl Partition {
                 ),
                 RoutingEntry::Irqchip { pin } => (
                     KVM_IRQ_ROUTING_IRQCHIP,
+                    0,
                     kvm_irq_routing_entry__bindgen_ty_1 {
                         irqchip: kvm_irq_routing_irqchip { pin, irqchip: 0 },
                     },
@@ -555,7 +569,7 @@ impl Partition {
             kvm_routes.entries[i] = kvm_irq_routing_entry {
                 gsi: route.0,
                 type_,
-                flags: 0,
+                flags,
                 pad: 0,
                 u,
             };
@@ -719,6 +733,7 @@ pub enum RoutingEntry {
         address_lo: u32,
         address_hi: u32,
         data: u32,
+        devid: Option<u32>,
     },
     HvSint {
         vp: u32,

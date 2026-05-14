@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! PKCS#7 signature verification using the Windows CryptoAPI.
+
 use super::*;
 use std::ptr;
 use windows::Win32::Foundation::CRYPT_E_NOT_FOUND;

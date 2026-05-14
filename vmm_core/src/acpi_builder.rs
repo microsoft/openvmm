@@ -89,6 +89,15 @@ pub const OEM_INFO: acpi::builder::OemInfo = acpi::builder::OemInfo {
 pub trait AcpiTopology: ArchTopology + Inspect + Sized {
     fn extend_srat(topology: &ProcessorTopology<Self>, srat: &mut Vec<u8>);
     fn extend_madt(topology: &ProcessorTopology<Self>, madt: &mut Vec<u8>);
+    fn needs_iort(_topology: &ProcessorTopology<Self>) -> bool {
+        false
+    }
+    /// If the platform has an ITS, return its identifier for the IORT ITS
+    /// Group node. Returns `None` when no ITS is present (root complex
+    /// nodes will have no ID mappings).
+    fn iort_its_id(_topology: &ProcessorTopology<Self>) -> Option<u32> {
+        None
+    }
 }
 
 /// The maximum ID that can be used for a legacy APIC ID in an ACPI table.
@@ -188,7 +197,7 @@ impl AcpiTopology for Aarch64Topology {
         }
 
         // GIC v2m MSI frame for PCIe MSI support.
-        if let Some(v2m) = topology.gic_v2m() {
+        if let vm_topology::processor::aarch64::GicMsiController::V2m(v2m) = topology.gic_msi() {
             madt.extend_from_slice(
                 acpi_spec::madt::MadtGicMsiFrame::new(
                     0,
@@ -198,6 +207,22 @@ impl AcpiTopology for Aarch64Topology {
                 )
                 .as_bytes(),
             );
+        }
+
+        // GICv3 ITS for PCIe MSI routing via LPIs.
+        if let vm_topology::processor::aarch64::GicMsiController::Its(its) = topology.gic_msi() {
+            madt.extend_from_slice(acpi_spec::madt::MadtGicIts::new(0, its.its_base).as_bytes());
+        }
+    }
+
+    fn needs_iort(_topology: &ProcessorTopology<Self>) -> bool {
+        true
+    }
+
+    fn iort_its_id(topology: &ProcessorTopology<Self>) -> Option<u32> {
+        match topology.gic_msi() {
+            vm_topology::processor::aarch64::GicMsiController::Its(_) => Some(0),
+            _ => None,
         }
     }
 }
@@ -322,6 +347,62 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             &acpi_spec::mcfg::McfgHeader::new(),
             &[mcfg_extra.as_slice()],
         ))
+    }
+
+    fn with_iort<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&acpi::builder::Table<'_>) -> R,
+    {
+        use acpi_spec::iort;
+
+        let its_id = T::iort_its_id(self.processor_topology);
+        let has_its = its_id.is_some();
+        let its_node_count: u32 = if has_its { 1 } else { 0 };
+        let node_count = its_node_count + self.pcie_host_bridges.len() as u32;
+        let mapping_count: u32 = if has_its { 1 } else { 0 };
+
+        let mut iort_extra: Vec<u8> = Vec::new();
+
+        // ITS Group node comes first so root complexes can reference it.
+        // The ITS Group node offset (from table start) is IORT_NODE_OFFSET.
+        let its_group_offset = iort::IORT_NODE_OFFSET;
+        if let Some(id) = its_id {
+            iort_extra.extend_from_slice(iort::IortItsGroup::new(0, 1).as_bytes());
+            // Followed by the ITS identifier (u32).
+            iort_extra.extend_from_slice(&id.to_ne_bytes());
+        }
+
+        for bridge in self.pcie_host_bridges {
+            let rc = iort::IortPciRootComplex::new(bridge.index, bridge.segment, mapping_count);
+            iort_extra.extend_from_slice(rc.as_bytes());
+
+            if has_its {
+                // Single ID mapping: full RID range → ITS Group node.
+                // output_base uses (segment << 16) so device IDs in the
+                // ITS namespace are unique across PCI segments.
+                iort_extra.extend_from_slice(
+                    iort::IortIdMapping::new(
+                        0,                             // input_base
+                        0xFFFF, // id_count (full 16-bit BDF range, minus 1 per IORT spec)
+                        (bridge.segment as u32) << 16, // output_base
+                        its_group_offset, // output_reference
+                        0,      // flags
+                    )
+                    .as_bytes(),
+                );
+            }
+        }
+
+        (f)(&acpi::builder::Table::new_dyn(
+            iort::IORT_REVISION,
+            None,
+            &iort::Iort::new(node_count),
+            &[iort_extra.as_slice()],
+        ))
+    }
+
+    fn should_build_iort(&self) -> bool {
+        T::needs_iort(self.processor_topology) && !self.pcie_host_bridges.is_empty()
     }
 
     fn with_pptt<F, R>(&self, f: F) -> R
@@ -658,6 +739,10 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         if !self.pcie_host_bridges.is_empty() {
             self.with_mcfg(|t| b.append(t));
 
+            if self.should_build_iort() {
+                self.with_iort(|t| b.append(t));
+            }
+
             let mut ssdt = Ssdt::new();
             for bridge in self.pcie_host_bridges {
                 ssdt.add_pcie(
@@ -702,6 +787,13 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
     /// ACPI tables.
     pub fn build_mcfg(&self) -> Vec<u8> {
         self.with_mcfg(|t| t.to_vec(&OEM_INFO))
+    }
+
+    /// Helper method to construct an IORT without constructing the rest of the
+    /// ACPI tables. Returns `None` if IORT is not needed for this configuration.
+    pub fn build_iort(&self) -> Option<Vec<u8>> {
+        self.should_build_iort()
+            .then(|| self.with_iort(|t| t.to_vec(&OEM_INFO)))
     }
 
     /// Helper method to construct a PPTT without constructing the rest of the
@@ -872,5 +964,176 @@ mod test {
             _ => panic!("only expected two MCFG segment bus range entries"),
         })
         .unwrap();
+    }
+
+    fn new_aarch64_its_topology() -> ProcessorTopology<Aarch64Topology> {
+        use vm_topology::processor::aarch64::Aarch64PlatformConfig;
+        use vm_topology::processor::aarch64::GicItsInfo;
+        use vm_topology::processor::aarch64::GicMsiController;
+        use vm_topology::processor::aarch64::GicVersion;
+
+        TopologyBuilder::new_aarch64(Aarch64PlatformConfig {
+            gic_distributor_base: 0xffff0000,
+            gic_version: GicVersion::V3 {
+                redistributors_base: 0xefff0000,
+            },
+            gic_msi: GicMsiController::Its(GicItsInfo {
+                its_base: 0xeffc0000,
+            }),
+            pmu_gsiv: None,
+            virt_timer_ppi: 20,
+            gic_nr_irqs: 992,
+        })
+        .build(2)
+        .unwrap()
+    }
+
+    fn new_aarch64_builder<'a>(
+        mem_layout: &'a MemoryLayout,
+        processor_topology: &'a ProcessorTopology<Aarch64Topology>,
+        pcie_host_bridges: &'a Vec<PcieHostBridge>,
+    ) -> AcpiTablesBuilder<'a, Aarch64Topology> {
+        AcpiTablesBuilder {
+            processor_topology,
+            mem_layout,
+            cache_topology: None,
+            pcie_host_bridges,
+            arch: AcpiArchConfig::Aarch64 {
+                hypervisor_vendor_identity: 0,
+                virt_timer_ppi: 20,
+            },
+        }
+    }
+
+    fn u32_at(data: &[u8], offset: usize) -> u32 {
+        u32::from_ne_bytes(data[offset..offset + 4].try_into().unwrap())
+    }
+
+    fn checksum(data: &[u8]) -> u8 {
+        data.iter().fold(0, |sum, byte| sum.wrapping_add(*byte))
+    }
+
+    fn contains_signature(data: &[u8], signature: &[u8; 4]) -> bool {
+        data.windows(signature.len())
+            .any(|window| window == signature)
+    }
+
+    #[test]
+    fn test_aarch64_iort_with_its() {
+        use acpi_spec::iort;
+
+        let mem = new_mem();
+        let topology = new_aarch64_its_topology();
+        let pcie_host_bridges = vec![
+            PcieHostBridge {
+                index: 0,
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                ecam_range: MemoryRange::new(0..256 * 256 * 4096),
+                low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
+                high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+            },
+            PcieHostBridge {
+                index: 7,
+                segment: 3,
+                start_bus: 32,
+                end_bus: 63,
+                ecam_range: MemoryRange::new(5 * GB..5 * GB + 32 * 256 * 4096),
+                low_mmio: MemoryRange::new(0xe0000000..0xe4000000),
+                high_mmio: MemoryRange::new(0x1040000000..0x1080000000),
+            },
+        ];
+        let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
+
+        let data = builder.build_iort().unwrap();
+
+        // IORT header
+        assert_eq!(&data[0..4], b"IORT");
+        assert_eq!(u32_at(&data, 4) as usize, data.len());
+        assert_eq!(checksum(&data), 0);
+
+        // 3 nodes: 1 ITS Group + 2 Root Complexes
+        assert_eq!(u32_at(&data, 36), 3);
+        assert_eq!(u32_at(&data, 40), iort::IORT_NODE_OFFSET);
+
+        // First node: ITS Group at IORT_NODE_OFFSET
+        let its_node = iort::IORT_NODE_OFFSET as usize;
+        assert_eq!(data[its_node], iort::IORT_NODE_TYPE_ITS_GROUP);
+        // its_count = 1
+        assert_eq!(u32_at(&data, its_node + 16), 1);
+        // ITS identifier = 0
+        assert_eq!(u32_at(&data, its_node + 20), 0);
+
+        // Second node: Root Complex 0 (after ITS Group: 20 + 4 = 24 bytes)
+        let rc0 = its_node + 24;
+        assert_eq!(data[rc0], iort::IORT_NODE_TYPE_PCI_ROOT_COMPLEX);
+        assert_eq!(u32_at(&data, rc0 + 4), 0); // identifier
+        assert_eq!(u32_at(&data, rc0 + 8), 1); // mapping_count
+        // pci_segment_number at offset 28 from node start
+        assert_eq!(u32_at(&data, rc0 + 28), 0);
+        // ID mapping follows the root complex node (36 bytes in)
+        let mapping0 = rc0 + 36;
+        assert_eq!(u32_at(&data, mapping0), 0); // input_base
+        assert_eq!(u32_at(&data, mapping0 + 4), 0xFFFF); // id_count
+        assert_eq!(u32_at(&data, mapping0 + 8), 0); // output_base (seg 0 << 16)
+        assert_eq!(u32_at(&data, mapping0 + 12), iort::IORT_NODE_OFFSET); // -> ITS group
+
+        // Third node: Root Complex 7
+        let rc1 = mapping0 + 20;
+        assert_eq!(data[rc1], iort::IORT_NODE_TYPE_PCI_ROOT_COMPLEX);
+        assert_eq!(u32_at(&data, rc1 + 4), 7); // identifier
+        assert_eq!(u32_at(&data, rc1 + 28), 3); // pci_segment_number
+        let mapping1 = rc1 + 36;
+        assert_eq!(u32_at(&data, mapping1 + 8), 3 << 16); // output_base (seg 3 << 16)
+    }
+
+    #[test]
+    fn test_iort_not_built_for_x86() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(1).unwrap();
+        let pcie_host_bridges = vec![PcieHostBridge {
+            index: 0,
+            segment: 0,
+            start_bus: 0,
+            end_bus: 255,
+            ecam_range: MemoryRange::new(0..256 * 256 * 4096),
+            low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
+            high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+        }];
+        let builder = new_builder(&mem, &topology, &pcie_host_bridges);
+        assert!(builder.build_iort().is_none());
+
+        let tables = builder.build_acpi_tables(0x100000, |_, _| {});
+        assert!(!contains_signature(&tables.tables, b"IORT"));
+    }
+
+    #[test]
+    fn test_iort_not_built_without_pcie() {
+        let mem = new_mem();
+        let topology = new_aarch64_its_topology();
+        let empty: Vec<PcieHostBridge> = Vec::new();
+        let builder = new_aarch64_builder(&mem, &topology, &empty);
+        assert!(builder.build_iort().is_none());
+    }
+
+    #[test]
+    fn test_aarch64_acpi_tables_include_iort() {
+        let mem = new_mem();
+        let topology = new_aarch64_its_topology();
+        let pcie_host_bridges = vec![PcieHostBridge {
+            index: 0,
+            segment: 0,
+            start_bus: 0,
+            end_bus: 255,
+            ecam_range: MemoryRange::new(0..256 * 256 * 4096),
+            low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
+            high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+        }];
+        let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
+
+        let tables = builder.build_acpi_tables(0x100000, |_, _| {});
+        assert!(contains_signature(&tables.tables, b"MCFG"));
+        assert!(contains_signature(&tables.tables, b"IORT"));
     }
 }
