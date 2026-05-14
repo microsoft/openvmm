@@ -17,22 +17,20 @@
 //!   via [`PipetteClient::relay_unix_socket`], and brings up a second
 //!   [`PipetteClient`] connected to the L2 pipette.
 
+use crate::PetriLogSource;
 use crate::PetriVmBuilder;
 use crate::vm::openvmm::OpenVmmPetriBackend;
 use anyhow::Context as _;
-use futures::AsyncReadExt as _;
 use openvmm_defs::config::PcieDeviceConfig;
 use pal_async::DefaultDriver;
 use pal_async::task::Spawn as _;
 use pal_async::task::Task;
-use parking_lot::Mutex;
 use pipette_client::PIPETTE_VSOCK_PORT;
 use pipette_client::PipetteClient;
 use pipette_client::process::Child;
 use pipette_client::process::ExitStatus;
 use pipette_client::process::Stdio;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tempfile::TempDir;
 use vm_resource::IntoResource as _;
 
@@ -100,21 +98,23 @@ impl NestedL2Config {
 pub struct NestedL2Builder {
     staging_dir: TempDir,
     driver: DefaultDriver,
-    output_dir: PathBuf,
+    log_source: PetriLogSource,
     vp_count: u32,
     memory_bytes: u64,
     extra_cmdline: Vec<String>,
 }
 
 /// Runtime handle returned by [`NestedL2Builder::launch`]. Owns the L2
-/// pipette client, the in-L1 openvmm child process, the captured L2
-/// serial log, and the staging tempdir (transferred from the builder).
+/// pipette client, the in-L1 openvmm child process, and the staging
+/// tempdir (transferred from the builder). The L2 serial console output
+/// is logged through petri's standard log-file plumbing to
+/// `nested-l2-console.log`; the in-L1 openvmm's diagnostic output is
+/// logged to `nested-l2-openvmm.log`.
 pub struct NestedL2 {
     l2_agent: PipetteClient,
     child: Child,
-    serial_log: Arc<Mutex<Vec<u8>>>,
-    _serial_task: Task<()>,
-    _stderr_task: Task<()>,
+    _serial_task: Task<anyhow::Result<()>>,
+    _stderr_task: Task<anyhow::Result<()>>,
     _staging_dir: TempDir,
 }
 
@@ -127,11 +127,6 @@ impl NestedL2 {
     /// Wait for the in-L1 openvmm process to exit and return its status.
     pub async fn wait_for_exit(&mut self) -> Result<ExitStatus, mesh::RecvError> {
         self.child.wait().await
-    }
-
-    /// Snapshot of the captured L2 serial (com1) output so far.
-    pub fn serial_log_snapshot(&self) -> Vec<u8> {
-        self.serial_log.lock().clone()
     }
 }
 
@@ -166,11 +161,16 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
             .context("failed to stage L2 initrd")?;
 
         let driver = self.resources.driver.clone();
-        let output_dir = self.resources.log_source.output_dir().to_owned();
+        let log_source = self.resources.log_source.clone();
         let staging_root_path = staging_dir.path().to_string_lossy().into_owned();
 
         let builder = self.modify_backend(move |b| {
+            // virtio-fs holds host-side filesystem state that cannot be
+            // round-tripped through save/restore, so opt out of the
+            // framework's default save/restore smoke check. See
+            // `PetriVmConfigOpenVmm::without_save_restore_check`.
             b.with_nested_virt()
+                .without_save_restore_check()
                 .with_pcie_root_topology(1, 1, 1)
                 .with_custom_config(move |c| {
                     c.pcie_devices.push(PcieDeviceConfig {
@@ -195,7 +195,7 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
             NestedL2Builder {
                 staging_dir,
                 driver,
-                output_dir,
+                log_source,
                 vp_count: cfg.vp_count,
                 memory_bytes: cfg.memory_bytes,
                 extra_cmdline: cfg.extra_cmdline,
@@ -291,9 +291,12 @@ impl NestedL2Builder {
             .await
             .context("failed to spawn in-L1 openvmm")?;
 
-        // 5. Capture the L2 serial console (stdout) and openvmm diagnostic
-        //    output (stderr) into the serial log buffer.
-        let serial_log = Arc::new(Mutex::new(Vec::<u8>::new()));
+        // 5. Mirror the L2 serial console (the in-L1 openvmm's stdout,
+        //    which is routed to com1 by `--com1 console`) and the in-L1
+        //    openvmm's diagnostic output (its stderr) into petri log
+        //    files so that failures - especially early L2 launch
+        //    failures, where the L2 pipette never comes up - leave a
+        //    diagnosable trace.
         let stdout = child
             .stdout
             .take()
@@ -302,37 +305,47 @@ impl NestedL2Builder {
             .stderr
             .take()
             .context("in-L1 openvmm child had no stderr pipe")?;
-        let serial_task = self.driver.spawn("nested-l2-serial", {
-            let serial_log = serial_log.clone();
-            async move {
-                let mut pipe = stdout;
-                let mut buf = [0u8; 4096];
-                loop {
-                    match pipe.read(&mut buf).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => serial_log.lock().extend_from_slice(&buf[..n]),
-                    }
-                }
-            }
-        });
-        let stderr_task = self.driver.spawn("nested-l2-openvmm-stderr", {
-            let serial_log = serial_log.clone();
-            async move {
-                let mut pipe = stderr;
-                let mut buf = [0u8; 4096];
-                loop {
-                    match pipe.read(&mut buf).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => serial_log.lock().extend_from_slice(&buf[..n]),
-                    }
-                }
-            }
-        });
+        let serial_task = self.driver.spawn(
+            "nested-l2-serial",
+            crate::log_task(
+                self.log_source.log_file("nested-l2-console")?,
+                stdout,
+                "nested-l2-console",
+            ),
+        );
+        let stderr_task = self.driver.spawn(
+            "nested-l2-openvmm-stderr",
+            crate::log_task(
+                self.log_source.log_file("nested-l2-openvmm")?,
+                stderr,
+                "nested-l2-openvmm",
+            ),
+        );
 
         // 6. Bring up the L2 pipette client over the relayed unix socket.
-        let l2_agent = PipetteClient::new(&self.driver, duplex, &self.output_dir)
-            .await
-            .context("failed to set up L2 PipetteClient")?;
+        //    Race the pipette handshake against the in-L1 openvmm exiting
+        //    so that if the L2 fails to launch (or crashes early before
+        //    its pipette can connect) we fail fast with the child's exit
+        //    status instead of hanging.
+        let l2_agent = {
+            let pipette_fut =
+                PipetteClient::new(&self.driver, duplex, self.log_source.output_dir());
+            let wait_fut = child.wait();
+            futures::pin_mut!(pipette_fut, wait_fut);
+            match futures::future::select(pipette_fut, wait_fut).await {
+                futures::future::Either::Left((res, _)) => {
+                    res.context("failed to set up L2 PipetteClient")?
+                }
+                futures::future::Either::Right((status, _)) => {
+                    let status =
+                        status.context("waiting for in-L1 openvmm to report exit status")?;
+                    anyhow::bail!(
+                        "in-L1 openvmm exited before L2 pipette connected: {status:?} \
+                         (see nested-l2-console.log and nested-l2-openvmm.log)"
+                    );
+                }
+            }
+        };
 
         // 7. Confirm the L2 pipette is responsive.
         l2_agent.ping().await.context("L2 pipette ping failed")?;
@@ -340,7 +353,6 @@ impl NestedL2Builder {
         Ok(NestedL2 {
             l2_agent,
             child,
-            serial_log,
             _serial_task: serial_task,
             _stderr_task: stderr_task,
             _staging_dir: self.staging_dir,
