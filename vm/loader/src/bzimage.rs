@@ -45,6 +45,9 @@ pub enum Error {
     /// An I/O error occurred while reading the bzImage.
     #[error("I/O error reading bzImage")]
     Io(#[source] std::io::Error),
+    /// The image is not a valid bzImage (missing boot flag or HdrS magic).
+    #[error("not a valid bzImage (missing boot flag or HdrS magic)")]
+    NotBzImage,
     /// The bzImage boot protocol version is too old.
     #[error(
         "bzImage boot protocol version {version:#06x} is too old (need >= 2.12 for 64-bit boot)"
@@ -59,6 +62,15 @@ pub enum Error {
     /// The kernel does not have a 64-bit entry point.
     #[error("bzImage does not support 64-bit boot (XLF_KERNEL_64 not set in xloadflags)")]
     No64BitEntry,
+    /// The bzImage is truncated — the protected-mode code is too small to
+    /// contain the 64-bit entry point.
+    #[error("bzImage is truncated: protected-mode size ({size}) is too small for entry offset ({entry_offset})")]
+    Truncated {
+        /// The size of the protected-mode code.
+        size: u64,
+        /// The required entry point offset.
+        entry_offset: u64,
+    },
 }
 
 /// Information parsed from a bzImage setup header, needed for loading.
@@ -109,7 +121,8 @@ pub fn is_bzimage(kernel_image: &mut (impl Read + Seek)) -> Result<bool, Error> 
 /// Parse the bzImage setup header and return information needed for loading.
 ///
 /// The file position of `kernel_image` is restored to the beginning on
-/// both success and error.
+/// success. On error, restoration is best-effort (the seek-back is
+/// attempted but its failure is ignored in favor of the parse error).
 pub fn parse_bzimage(kernel_image: &mut (impl Read + Seek)) -> Result<BzImageInfo, Error> {
     kernel_image.seek(SeekFrom::Start(0)).map_err(Error::Io)?;
     let result = parse_bzimage_inner(kernel_image);
@@ -120,6 +133,13 @@ pub fn parse_bzimage(kernel_image: &mut (impl Read + Seek)) -> Result<BzImageInf
 fn parse_bzimage_inner(kernel_image: &mut (impl Read + Seek)) -> Result<BzImageInfo, Error> {
     let mut buf = [0u8; MIN_HEADER_SIZE];
     kernel_image.read_exact(&mut buf).map_err(Error::Io)?;
+
+    // Validate the bzImage identifying markers before parsing fields.
+    let boot_flag = u16::from_le_bytes([buf[0x1fe], buf[0x1ff]]);
+    let header_magic = u32::from_le_bytes([buf[0x202], buf[0x203], buf[0x204], buf[0x205]]);
+    if boot_flag != BOOT_FLAG || header_magic != HDRS_MAGIC {
+        return Err(Error::NotBzImage);
+    }
 
     // The setup_header in boot_params starts at offset 0x1F1 relative to
     // the start of the boot sector.
@@ -149,13 +169,26 @@ fn parse_bzimage_inner(kernel_image: &mut (impl Read + Seek)) -> Result<BzImageI
     };
     let protected_mode_offset = (setup_sects as u64 + 1) * 512;
 
-    // Get total file size to determine protected-mode code size.
-    let file_size = kernel_image.seek(SeekFrom::End(0)).map_err(Error::Io)?;
-    let protected_mode_size = file_size.saturating_sub(protected_mode_offset);
+    // Use the syssize field from the header (size in 16-byte paragraphs)
+    // for a precise payload size. Fall back to file size if syssize is zero.
+    let syssize: u32 = hdr.syssize.into();
+    let protected_mode_size = if syssize != 0 {
+        syssize as u64 * 16
+    } else {
+        let file_size = kernel_image.seek(SeekFrom::End(0)).map_err(Error::Io)?;
+        file_size.saturating_sub(protected_mode_offset)
+    };
 
     // For 64-bit boot protocol, the 64-bit entry point is at offset 0x200
     // from the beginning of the protected-mode code.
-    let entry_offset = 0x200;
+    let entry_offset: u64 = 0x200;
+    if protected_mode_size <= entry_offset {
+        return Err(Error::Truncated {
+            size: protected_mode_size,
+            entry_offset,
+        });
+    }
+
     let init_size: u32 = hdr.init_size.into();
 
     tracing::debug!(
@@ -205,6 +238,9 @@ mod tests {
         image[0x236..0x238].copy_from_slice(&XLF_KERNEL_64.to_le_bytes());
         // pref_address at 0x258 = 0x1000000 (16MB)
         image[0x258..0x260].copy_from_slice(&0x1000000u64.to_le_bytes());
+        // syssize at 0x1f4 = pm_code size in 16-byte paragraphs
+        let syssize = (pm_code.len() as u32) / 16;
+        image[0x1f4..0x1f8].copy_from_slice(&syssize.to_le_bytes());
         // init_size at 0x260 = 0x1000000 (16MB)
         image[0x260..0x264].copy_from_slice(&0x1000000u32.to_le_bytes());
 
