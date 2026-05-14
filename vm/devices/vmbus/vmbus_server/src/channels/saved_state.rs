@@ -1147,9 +1147,9 @@ impl ChannelState {
 
             super::ChannelState::Revoked => ChannelState::Revoked,
             super::ChannelState::Reoffered => ChannelState::Revoked,
-            super::ChannelState::ClientReleased | super::ChannelState::ClosingClientRelease => {
-                return None;
-            }
+            super::ChannelState::ClientReleased
+            | super::ChannelState::ClosingClientRelease
+            | super::ChannelState::OpeningClientRelease => return None,
         })
     }
 

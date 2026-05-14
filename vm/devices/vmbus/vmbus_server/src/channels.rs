@@ -507,6 +507,18 @@ enum ChannelState {
     /// The guest has released the channel but there is still a pending close
     /// request to the device.
     ClosingClientRelease,
+
+    /// The guest has released the channel, but there is still a pending open
+    /// request to the device.
+    ///
+    /// This variant is currently unconstructed: `client_release_channel`
+    /// force-releases `Opening` channels directly to `ClientReleased` to
+    /// avoid deadlocking the vmbus reset on a device task that has been
+    /// stopped (and so will never deliver an open response). The variant is
+    /// retained for now to preserve match-arm coverage in callers that
+    /// continue to handle the state defensively.
+    #[expect(dead_code)]
+    OpeningClientRelease,
 }
 
 impl ChannelState {
@@ -522,7 +534,9 @@ impl ChannelState {
             | ChannelState::Revoked
             | ChannelState::Reoffered => false,
 
-            ChannelState::ClientReleased | ChannelState::ClosingClientRelease => true,
+            ChannelState::ClientReleased
+            | ChannelState::ClosingClientRelease
+            | ChannelState::OpeningClientRelease => true,
         }
     }
 
@@ -537,7 +551,8 @@ impl ChannelState {
             | ChannelState::Open { .. }
             | ChannelState::Closing { .. }
             | ChannelState::ClosingReopen { .. }
-            | ChannelState::ClosingClientRelease => false,
+            | ChannelState::ClosingClientRelease
+            | ChannelState::OpeningClientRelease => false,
         }
     }
 
@@ -565,7 +580,8 @@ impl ChannelState {
             | ChannelState::ClosingReopen { .. }
             | ChannelState::Revoked
             | ChannelState::Reoffered
-            | ChannelState::ClosingClientRelease => false,
+            | ChannelState::ClosingClientRelease
+            | ChannelState::OpeningClientRelease => false,
         }
     }
 }
@@ -582,6 +598,7 @@ impl Display for ChannelState {
             Self::Revoked => "Revoked",
             Self::Reoffered => "Reoffered",
             Self::ClosingClientRelease => "ClosingClientRelease",
+            Self::OpeningClientRelease => "OpeningClientRelease",
         };
         write!(f, "{}", state)
     }
@@ -795,6 +812,7 @@ impl Channel {
             ChannelState::Revoked => "revoked",
             ChannelState::Reoffered => "reoffered",
             ChannelState::ClosingClientRelease => "closing_client_release",
+            ChannelState::OpeningClientRelease => "opening_client_release",
         };
         let restore_state = match self.restore_state {
             RestoreState::New => "new",
@@ -1476,7 +1494,9 @@ impl Server {
             ChannelState::ClientReleased | ChannelState::Reoffered => {
                 return Err(RestoreError::MissingChannel(channel.offer.key()));
             }
-            ChannelState::Revoked | ChannelState::ClosingClientRelease => unreachable!(),
+            ChannelState::Revoked
+            | ChannelState::ClosingClientRelease
+            | ChannelState::OpeningClientRelease => unreachable!(),
         };
 
         Ok(OpenParams::from_request(
@@ -1582,7 +1602,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 ChannelState::ClientReleased | ChannelState::Reoffered => {
                     return Err(RestoreError::MissingChannel(channel.offer.key()));
                 }
-                ChannelState::Revoked | ChannelState::ClosingClientRelease => unreachable!(),
+                ChannelState::Revoked
+                | ChannelState::ClosingClientRelease
+                | ChannelState::OpeningClientRelease => unreachable!(),
             };
         } else {
             match channel.state {
@@ -1636,7 +1658,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 ChannelState::ClientReleased => {
                     return Err(RestoreError::MissingChannel(channel.offer.key()));
                 }
-                ChannelState::Revoked | ChannelState::ClosingClientRelease => unreachable!(),
+                ChannelState::Revoked
+                | ChannelState::ClosingClientRelease
+                | ChannelState::OpeningClientRelease => unreachable!(),
             }
         }
 
@@ -1915,6 +1939,22 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     ChannelState::Closed
                 };
             }
+            ChannelState::OpeningClientRelease => {
+                tracing::info!(
+                    offer_id = offer_id.0,
+                    key = %channel.offer.key(),
+                    result,
+                    "opened channel (client released)"
+                );
+
+                if result >= 0 {
+                    channel.state = ChannelState::ClosingClientRelease;
+                    self.notifier.notify(offer_id, Action::Close);
+                } else {
+                    channel.state = ChannelState::ClientReleased;
+                    self.check_disconnected();
+                }
+            }
 
             ChannelState::ClientReleased
             | ChannelState::Closed
@@ -2049,7 +2089,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | ChannelState::Opening { .. }
             | ChannelState::Open { .. }
             | ChannelState::Revoked
-            | ChannelState::Reoffered => {
+            | ChannelState::Reoffered
+            | ChannelState::OpeningClientRelease => {
                 tracing::error!(?offer_id, key = %channel.offer.key(), state = ?channel.state, "invalid close complete")
             }
         }
@@ -3004,7 +3045,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | ChannelState::Opening { .. }
             | ChannelState::ClosingReopen { .. } => return Err(ChannelError::ChannelAlreadyOpen),
 
-            ChannelState::ClientReleased | ChannelState::ClosingClientRelease => unreachable!(),
+            ChannelState::ClientReleased
+            | ChannelState::ClosingClientRelease
+            | ChannelState::OpeningClientRelease => unreachable!(),
         }
         Ok(())
     }
@@ -3049,7 +3092,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | ChannelState::Closing { .. }
             | ChannelState::ClosingReopen { .. } => return Err(ChannelError::ChannelNotOpen),
 
-            ChannelState::ClientReleased | ChannelState::ClosingClientRelease => unreachable!(),
+            ChannelState::ClientReleased
+            | ChannelState::ClosingClientRelease
+            | ChannelState::OpeningClientRelease => unreachable!(),
         }
 
         Ok(())
@@ -3097,7 +3142,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 return Err(ChannelError::InvalidChannelState);
             }
 
-            ChannelState::ClientReleased | ChannelState::ClosingClientRelease => unreachable!(),
+            ChannelState::ClientReleased
+            | ChannelState::ClosingClientRelease
+            | ChannelState::OpeningClientRelease => unreachable!(),
         }
         Ok(())
     }
@@ -3140,7 +3187,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | ChannelState::Closing { .. }
             | ChannelState::ClosingReopen { .. } => return Err(ChannelError::ChannelNotOpen),
 
-            ChannelState::ClientReleased | ChannelState::ClosingClientRelease => unreachable!(),
+            ChannelState::ClientReleased
+            | ChannelState::ClosingClientRelease
+            | ChannelState::OpeningClientRelease => unreachable!(),
         }
 
         Ok(())
@@ -3243,7 +3292,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 false
             }
 
-            ChannelState::ClosingClientRelease | ChannelState::ClientReleased => false,
+            ChannelState::ClosingClientRelease
+            | ChannelState::OpeningClientRelease
+            | ChannelState::ClientReleased => false,
         };
 
         assert!(channel.state.is_released());
@@ -3290,7 +3341,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | ChannelState::Open { .. }
             | ChannelState::ClosingReopen { .. } => return Err(ChannelError::InvalidChannelState),
 
-            ChannelState::ClientReleased | ChannelState::ClosingClientRelease => unreachable!(),
+            ChannelState::ClientReleased
+            | ChannelState::OpeningClientRelease
+            | ChannelState::ClosingClientRelease => unreachable!(),
         }
         Ok(())
     }
@@ -3764,7 +3817,9 @@ fn revoke<N: Notifier>(
             channel.state = ChannelState::Revoked;
             None
         }
-        ChannelState::ClientReleased | ChannelState::ClosingClientRelease => None,
+        ChannelState::ClientReleased
+        | ChannelState::OpeningClientRelease
+        | ChannelState::ClosingClientRelease => None,
         // If the channel is being dropped, it may already have been revoked explicitly.
         ChannelState::Revoked => return true,
     };
