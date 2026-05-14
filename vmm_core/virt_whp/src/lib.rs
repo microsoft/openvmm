@@ -778,6 +778,12 @@ pub enum Error {
     NestedVirtUnsupported,
     #[error("nested_virt requires the in-hypervisor APIC; pass user_mode_apic=false")]
     NestedVirtIncompatibleWithUserModeApic,
+    #[error(
+        "nested_virt cannot be combined with the Hyper-V interface (`--hv`); \
+         the Windows hypervisor refuses to install a hypercall intercept on a \
+         nested-virt-capable partition"
+    )]
+    NestedVirtIncompatibleWithHv,
 }
 
 trait WhpResultExt<T> {
@@ -826,7 +832,8 @@ impl virt::Hypervisor for Whp {
         // it via `inspect`. Nested virt is x86-only; on other arches we
         // simply reject the request without probing.
         #[cfg(guest_arch = "x86_64")]
-        let nested_virt_capability = nested_virt::validate(nested_virt, user_mode_apic)?;
+        let nested_virt_capability =
+            nested_virt::validate(nested_virt, user_mode_apic, config.hv_config.is_some())?;
         #[cfg(not(guest_arch = "x86_64"))]
         if nested_virt {
             return Err(Error::UnsupportedParameter("nested_virt"));
@@ -1531,16 +1538,20 @@ impl VtlPartition {
                         features.bank0 |= F::DirectSyntheticTimers;
                     }
 
-                    // For nested virt, opt the L1 guest into the
-                    // enlightened-VMCS fast path and allow nonzero
-                    // `IA32_DEBUGCTL` while nested. WHP's synthetic
-                    // feature banks start empty, so these would not be
-                    // advertised otherwise. Capability-gated against
-                    // the host's reported synthetic feature support so
-                    // that older Windows builds silently degrade rather
-                    // than failing partition setup.
+                    // For nested virt on Intel, opt the L1 guest into
+                    // the enlightened-VMCS fast path and allow nonzero
+                    // `IA32_DEBUGCTL` while nested. Both bits are Intel
+                    // VMX concepts (VMCS, `IA32_DEBUGCTL`), and the
+                    // hypervisor rejects partition setup with
+                    // `HV_STATUS_INVALID_PARAMETER` if either is set on
+                    // an AMD nested-capable partition. Capability-gated
+                    // so that older Windows builds silently degrade
+                    // rather than failing partition setup.
                     #[cfg(guest_arch = "x86_64")]
-                    if nested_virt {
+                    if nested_virt
+                        && whp::capabilities::processor_vendor().for_op("get processor vendor")?
+                            == whp::abi::WHvProcessorVendorIntel
+                    {
                         if supported_synth_features.bank0.is_set(F::EnlightenedVmcs) {
                             features.bank0 |= F::EnlightenedVmcs;
                         }
