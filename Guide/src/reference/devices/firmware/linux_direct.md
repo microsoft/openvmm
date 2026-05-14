@@ -17,9 +17,10 @@ useful for lightweight testing and development scenarios.
 | AArch64 | Yes | ARM64 `Image` (flat binary) | ARM64 Image boot (device tree or ACPI) |
 
 On x86_64, both uncompressed `vmlinux` ELF images and compressed `bzImage`
-(vmlinuz) files are supported. When a bzImage is detected, the loader
-automatically extracts the embedded vmlinux ELF before loading. Currently
-only gzip-compressed bzImage payloads are supported.
+(vmlinuz) files are supported. When a bzImage is detected, the loader places
+the protected-mode code directly into guest memory and relies on the kernel's
+built-in decompressor to run at boot time. All standard bzImage compression
+formats are supported since decompression is handled by the kernel itself.
 
 On AArch64, pass the uncompressed `Image` file (not `Image.gz`).
 

@@ -147,7 +147,7 @@ pub enum FlatLoaderError {
 pub enum Error {
     #[error("elf loader error")]
     ElfLoader(#[source] crate::elf::Error),
-    #[error("bzImage extraction error")]
+    #[error("bzImage parse error")]
     BzImage(#[source] crate::bzimage::Error),
     #[error("flat loader error")]
     FlatLoader(#[source] FlatLoaderError),
@@ -547,8 +547,9 @@ pub fn load_config(
 /// Load a Linux kernel into VTL0.
 ///
 /// The kernel image may be either an uncompressed ELF (`vmlinux`) or a
-/// compressed bzImage. If a bzImage is detected, the embedded vmlinux
-/// ELF is automatically extracted before loading.
+/// compressed bzImage. If a bzImage is detected, its protected-mode code
+/// is loaded directly into guest memory and the kernel's built-in
+/// decompressor handles the rest at boot time.
 ///
 /// # Arguments
 ///

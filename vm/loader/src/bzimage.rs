@@ -14,6 +14,7 @@ use loader_defs::linux as defs;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
+use std::mem::size_of;
 use thiserror::Error;
 use zerocopy::FromBytes;
 
@@ -87,14 +88,15 @@ pub fn is_bzimage(kernel_image: &mut (impl Read + Seek)) -> Result<bool, Error> 
     kernel_image.seek(SeekFrom::Start(0)).map_err(Error::Io)?;
 
     let mut buf = [0u8; MIN_HEADER_SIZE];
-    let result = kernel_image.read(&mut buf);
+    let result = kernel_image.read_exact(&mut buf);
 
     // Always restore position before checking the read result.
     kernel_image.seek(SeekFrom::Start(0)).map_err(Error::Io)?;
 
-    let n = result.map_err(Error::Io)?;
-    if n < MIN_HEADER_SIZE {
-        return Ok(false);
+    match result {
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
+        Err(e) => return Err(Error::Io(e)),
+        Ok(()) => {}
     }
 
     let boot_flag = u16::from_le_bytes([buf[0x1fe], buf[0x1ff]]);
@@ -165,7 +167,7 @@ fn parse_bzimage_inner(kernel_image: &mut (impl Read + Seek)) -> Result<BzImageI
     );
 
     Ok(BzImageInfo {
-        setup_header: hdr.clone(),
+        setup_header: hdr,
         setup_sects,
         protected_mode_size,
         entry_offset,

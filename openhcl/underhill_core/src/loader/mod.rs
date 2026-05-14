@@ -384,6 +384,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         },
         initrd: initrd_info,
         dtb: None,
+        bzimage_setup_header: None,
     };
 
     loader::linux::load_config(
