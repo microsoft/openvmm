@@ -53,34 +53,31 @@ pub fn build_zero_page(
     initrd_size: u32,
     bzimage_header: Option<&defs::setup_header>,
 ) -> defs::boot_params {
-    // Start with the bzImage setup header if available, otherwise build a minimal one.
-    let hdr = match bzimage_header {
-        Some(orig) => {
-            let mut hdr = *orig;
-            // Update fields that the bootloader is responsible for setting.
-            hdr.type_of_loader = 0xff;
-            hdr.cmd_line_ptr = cmdline_config.address.try_into().expect("must fit in u32");
-            hdr.cmdline_size = (cmdline_config.cmdline.as_bytes().len() as u64)
-                .try_into()
-                .expect("must fit in u32");
-            hdr.ramdisk_image = (initrd_base).into();
-            hdr.ramdisk_size = (initrd_size).into();
-            hdr
-        }
+    // Loader type 0xff = unregistered bootloader, used for both ELF and
+    // bzImage paths since OpenVMM does not have a registered Linux
+    // bootloader ID.
+    const LOADER_TYPE_UNREGISTERED: u8 = 0xff;
+
+    // Start with the bzImage setup header if available, otherwise build
+    // a minimal default header.
+    let mut hdr = match bzimage_header {
+        Some(orig) => *orig,
         None => defs::setup_header {
-            type_of_loader: 0xff,
             boot_flag: 0xaa55.into(),
             header: 0x53726448.into(),
-            cmd_line_ptr: cmdline_config.address.try_into().expect("must fit in u32"),
-            cmdline_size: (cmdline_config.cmdline.as_bytes().len() as u64)
-                .try_into()
-                .expect("must fit in u32"),
-            ramdisk_image: initrd_base.into(),
-            ramdisk_size: initrd_size.into(),
             kernel_alignment: 0x100000.into(),
             ..FromZeros::new_zeroed()
         },
     };
+
+    // Set bootloader-owned fields regardless of kernel format.
+    hdr.type_of_loader = LOADER_TYPE_UNREGISTERED;
+    hdr.cmd_line_ptr = cmdline_config.address.try_into().expect("must fit in u32");
+    hdr.cmdline_size = (cmdline_config.cmdline.as_bytes().len() as u64)
+        .try_into()
+        .expect("must fit in u32");
+    hdr.ramdisk_image = initrd_base.into();
+    hdr.ramdisk_size = initrd_size.into();
 
     let mut p = defs::boot_params {
         hdr,
@@ -294,9 +291,9 @@ fn import_initrd<R: GuestArch>(
 /// This does not setup register state or any other config information.
 ///
 /// The kernel image may be either an uncompressed ELF (`vmlinux`) or a
-/// compressed bzImage. If a bzImage is detected, the protected-mode code
-/// is loaded as a flat binary and the kernel's own decompressor runs at
-/// boot time.
+/// compressed bzImage. If a bzImage is detected, the bzImage payload is
+/// loaded directly into guest memory and the kernel's own decompressor
+/// runs at boot time.
 ///
 /// # Arguments
 ///
@@ -317,7 +314,7 @@ where
     tracing::trace!(kernel_minimum_start_address, "loading x86_64 kernel");
 
     if crate::bzimage::is_bzimage(kernel_image).map_err(Error::BzImage)? {
-        tracing::info!("detected bzImage format, loading protected-mode code directly");
+        tracing::info!("detected bzImage format, loading via Linux boot protocol");
         return load_bzimage(importer, kernel_image, kernel_minimum_start_address, initrd);
     }
 
@@ -353,8 +350,9 @@ where
     })
 }
 
-/// Load a bzImage by placing the protected-mode code directly into guest
-/// memory and letting the kernel's built-in decompressor handle the rest.
+/// Load a bzImage by placing its payload directly into guest memory at the
+/// load address and following the Linux boot protocol. The kernel's built-in
+/// decompressor handles the rest at boot time.
 fn load_bzimage(
     importer: &mut dyn ImageLoad<X86Register>,
     kernel_image: &mut (impl Read + Seek),
@@ -375,7 +373,7 @@ fn load_bzimage(
         payload_offset,
         payload_len,
         entrypoint = format_args!("{:#x}", entrypoint),
-        "loading bzImage protected-mode code"
+        "loading bzImage payload into guest memory"
     );
 
     ChunkBuf::new()

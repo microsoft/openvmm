@@ -1,11 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Support for loading Linux bzImage files directly.
+//! Support for loading Linux x86 bzImage files directly.
 //!
-//! A bzImage is the standard compressed kernel image format on x86. It
-//! consists of a real-mode boot sector, setup code, and a compressed
+//! A bzImage is the standard compressed kernel image format on x86/x86_64.
+//! It consists of a real-mode boot sector, setup code, and a compressed
 //! payload that the kernel's own startup stub decompresses at boot time.
+//! This format is specific to x86; AArch64 uses a different `Image` format.
 //!
 //! See the Linux kernel documentation for the boot protocol:
 //! <https://www.kernel.org/doc/html/latest/arch/x86/boot.html>
