@@ -262,6 +262,24 @@ pub mod cfg_space {
 
     pub const HEADER_TYPE_00_SIZE: u16 = 0x40;
 
+    /// The BIST / Header Type / Latency Timer / Cache Line Size DWORD
+    /// at config space offset 0x0C.
+    ///
+    /// | Bits 31-24 | Bits 23-16  | Bits 15-8       | Bits 7-0         |
+    /// |------------|-------------|-----------------|------------------|
+    /// | BIST       | Header Type | Latency Timer   | Cache Line Size  |
+    #[bitfield(u32)]
+    pub struct BistHeader {
+        pub cache_line_size: u8,
+        pub latency_timer: u8,
+        /// Header layout type (0 = standard, 1 = PCI-to-PCI bridge).
+        #[bits(7)]
+        pub header_type: u8,
+        /// When set, the device is part of a multi-function package.
+        pub multi_function: bool,
+        pub bist: u8,
+    }
+
     open_enum::open_enum! {
         /// Offsets into the type 01h configuration space header.
         ///
@@ -421,6 +439,24 @@ pub mod caps {
             MSIX            = 0x11,
         }
     }
+
+    open_enum::open_enum! {
+        /// PCIe Extended Capability IDs (offsets 0x100+ in config space).
+        ///
+        /// Sources: PCI Express Base Specification
+        ///
+        /// NOTE: this is a non-exhaustive list, so don't be afraid to add new
+        /// variants on an as-needed basis!
+        pub enum ExtendedCapabilityId: u16 {
+            #![expect(missing_docs)] // self explanatory variants
+            ARI   = 0x0E,
+            SRIOV = 0x10,
+            REBAR = 0x15,
+        }
+    }
+
+    /// Starting offset of the PCIe extended capability region in config space.
+    pub const EXT_CAP_START: u16 = 0x100;
 
     /// MSI
     #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants

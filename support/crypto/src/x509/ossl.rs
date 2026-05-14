@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! X.509 certificate parsing and verification using OpenSSL.
+
 use super::X509Error;
 
 fn err(err: openssl::error::ErrorStack, op: &'static str) -> X509Error {
@@ -31,10 +33,13 @@ impl X509CertificateInner {
         ))
     }
 
-    pub fn verify(&self, issuer_public_key: &crate::rsa::RsaPublicKey) -> Result<bool, X509Error> {
-        self.0
-            .verify(&issuer_public_key.0.0)
-            .map_err(|e| err(e, "verifying certificate signature"))
+    pub fn verify(
+        &self,
+        issuer_public_key: &crate::rsa::RsaPublicKey,
+    ) -> Result<bool, crate::rsa::RsaError> {
+        self.0.verify(&issuer_public_key.0.0).map_err(|e| {
+            crate::rsa::RsaError(crate::BackendError(e, "verifying certificate signature"))
+        })
     }
 
     pub fn issued(&self, subject: &X509CertificateInner) -> Result<bool, X509Error> {

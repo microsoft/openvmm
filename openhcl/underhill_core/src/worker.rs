@@ -3535,7 +3535,8 @@ async fn new_underhill_vm(
         state_units
             .add("partition")
             .depends_on(devices.chipset_unit())
-            .depends_on(vmtime.handle()),
+            .depends_on(vmtime.handle())
+            .inspect_sensitivity(inspect::SensitivityLevel::Safe),
         WrappedPartition(partition.clone()),
         PartitionUnitParams {
             processor_topology: &processor_topology,

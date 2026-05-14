@@ -1,8 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::*;
-use ::symcrypt::cipher::AesExpandedKey;
+//! AES-256-CBC implementation using SymCrypt.
+
+use super::Aes256CbcError;
+use super::IV_LEN;
+use super::KEY_LEN;
+use symcrypt::cipher::AesExpandedKey;
 
 pub struct Aes256CbcInner {
     key: AesExpandedKey,
@@ -16,7 +20,7 @@ pub struct Aes256CbcDecCtxInner<'a> {
     key: &'a AesExpandedKey,
 }
 
-fn err(e: ::symcrypt::errors::SymCryptError, op: &'static str) -> Aes256CbcError {
+fn err(e: symcrypt::errors::SymCryptError, op: &'static str) -> Aes256CbcError {
     Aes256CbcError(crate::BackendError::SymCrypt(e, op))
 }
 

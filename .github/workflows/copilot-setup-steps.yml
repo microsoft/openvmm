@@ -32,7 +32,7 @@ jobs:
       # flowey/flowey_lib_hvlite/src/_jobs/cfg_versions.rs
       - name: Install cargo-nextest
         run: |
-          curl -LsSf https://get.nexte.st/0.9.101/linux | tar zxf - -C "$HOME/.cargo/bin"
+          curl -LsSf https://get.nexte.st/0.9.133/linux | tar zxf - -C "$HOME/.cargo/bin"
 
       # Restore protoc and other build dependencies via the canonical
       # flowey pipeline. This compiles flowey_hvlite first, then downloads
