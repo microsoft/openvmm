@@ -92,6 +92,9 @@ impl FlowNode for Node {
                     }));
                 }
                 FlowBackend::Github => {
+                    let junit_xml_for_annotate = junit_xml.clone();
+                    let has_junit_xml_for_annotate = has_junit_xml.clone();
+
                     let junit_xml = junit_xml.map(ctx, |p| {
                         p.absolute().expect("invalid path").display().to_string()
                     });
@@ -107,6 +110,31 @@ impl FlowNode for Node {
                             .with("path", junit_xml)
                             .finish(ctx),
                     );
+
+                    // Parse JUnit XML and emit GitHub Actions annotations
+                    // and job summary for test failures.
+                    let label_for_annotate = label.clone();
+                    use_side_effects.push(ctx.emit_rust_step(
+                        format!("report failed tests: {label}"),
+                        |ctx| {
+                            let has_junit = has_junit_xml_for_annotate.claim(ctx);
+                            let junit_path = junit_xml_for_annotate.claim(ctx);
+
+                            move |rt| {
+                                if !rt.read(has_junit) {
+                                    return Ok(());
+                                }
+                                let junit_path = rt.read(junit_path);
+                                if !junit_path.exists() {
+                                    return Ok(());
+                                }
+
+                                annotate_junit_failures(&junit_path, &label_for_annotate)?;
+
+                                Ok(())
+                            }
+                        },
+                    ));
                 }
                 FlowBackend::Local => {
                     if let Some(output_dir) = output_dir.clone() {
@@ -234,4 +262,75 @@ impl FlowNode for Node {
 
         Ok(())
     }
+}
+
+/// Parse a JUnit XML file and emit GitHub Actions `::error::` annotations
+/// for each test failure, plus a Markdown summary table to
+/// `$GITHUB_STEP_SUMMARY`.
+fn annotate_junit_failures(junit_path: &Path, label: &str) -> anyhow::Result<()> {
+    let content = fs_err::read_to_string(junit_path)?;
+    let doc = roxmltree::Document::parse(&content)
+        .map_err(|e| anyhow::anyhow!("failed to parse JUnit XML: {e}"))?;
+
+    let mut failures: Vec<(String, String)> = Vec::new();
+
+    for testcase in doc.descendants().filter(|n| n.has_tag_name("testcase")) {
+        let name = testcase.attribute("name").unwrap_or("<unknown>");
+        let classname = testcase.attribute("classname").unwrap_or("");
+
+        let failure_nodes = testcase
+            .children()
+            .filter(|n| n.has_tag_name("failure") || n.has_tag_name("error"));
+
+        for failure in failure_nodes {
+            let message = failure.attribute("message").unwrap_or("test failed");
+            // Take only the first line and cap length for the annotation.
+            let short_msg: String = message
+                .lines()
+                .next()
+                .unwrap_or("test failed")
+                .chars()
+                .take(200)
+                .collect();
+
+            let full_name = if classname.is_empty() {
+                name.to_string()
+            } else {
+                format!("{classname}::{name}")
+            };
+
+            // GitHub Actions workflow command — shows as an annotation on
+            // the PR checks tab. The title must not contain "::" as that
+            // terminates the parameter section in the workflow command syntax.
+            let safe_title = full_name.replace("::", "/");
+            eprintln!("::error title={safe_title}::{short_msg}");
+
+            failures.push((full_name, short_msg));
+        }
+    }
+
+    // Write a summary table to the GitHub Actions job summary.
+    if !failures.is_empty() {
+        if let Ok(summary_path) = std::env::var("GITHUB_STEP_SUMMARY") {
+            use std::io::Write;
+
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&summary_path)?;
+
+            writeln!(f, "## Test Failures: {label}")?;
+            writeln!(f)?;
+            writeln!(f, "| Test | Error |")?;
+            writeln!(f, "|------|-------|")?;
+            for (name, msg) in &failures {
+                let escaped_name = name.replace('|', "\\|");
+                let escaped_msg = msg.replace('|', "\\|");
+                writeln!(f, "| `{escaped_name}` | {escaped_msg} |")?;
+            }
+            writeln!(f)?;
+        }
+    }
+
+    Ok(())
 }
