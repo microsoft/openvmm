@@ -240,6 +240,7 @@ impl SimpleFlowNode for Node {
             test_content_dir: test_content_dir.clone(),
             vmm_tests_target: target.clone(),
             register_openvmm,
+            register_openvmm_guest_linux: None,
             register_openvmm_vhost,
             register_pipette_windows,
             register_pipette_linux_musl,
