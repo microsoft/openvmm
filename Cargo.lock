@@ -5782,6 +5782,7 @@ dependencies = [
  "io-uring",
  "libc",
  "loan_cell",
+ "minircu",
  "once_cell",
  "pal",
  "pal_async",
