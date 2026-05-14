@@ -172,7 +172,7 @@ impl WHvError {
     pub const WHV_E_UNKNOWN_PROPERTY: Self =
         Self(NonZeroI32::new(api::WHV_E_UNKNOWN_PROPERTY).unwrap());
 
-    const WHV_E_INSUFFICIENT_BUFFER: Self =
+    pub const WHV_E_INSUFFICIENT_BUFFER: Self =
         Self(NonZeroI32::new(api::WHV_E_INSUFFICIENT_BUFFER).unwrap());
 
     const ERROR_BAD_PATHNAME: Self = Self(NonZeroI32::new(ERROR_BAD_PATHNAME as i32).unwrap());

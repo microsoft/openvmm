@@ -1671,6 +1671,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedX86> {
     ) -> Result<(), Self::Error> {
         Err(vp_state::Error::Unimplemented("synic_event_flags_page"))
     }
+
+    fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
+        Err(vp_state::Error::Unimplemented("nested_state"))
+    }
+
+    fn set_nested_state(&mut self, _value: &vp::NestedState) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("nested_state"))
+    }
 }
 
 impl hv1_hypercall::RetargetDeviceInterrupt for UhHypercallHandler<'_, '_, HypervisorBackedX86> {

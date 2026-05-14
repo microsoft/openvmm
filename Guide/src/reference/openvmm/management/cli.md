@@ -59,7 +59,10 @@ as well as the generated CLI help (via `cargo run -- --help`).
     VM hosting OpenVMM must also have virtualization extensions exposed
     to it — on Windows hosts, this typically means running
     `Set-VMProcessor -VMName <name> -ExposeVirtualizationExtensions $true`
-    while the VM is off.
+    while the VM is off. When restoring a saved state taken with
+    `nested_virt`, the restore command line must include `nested_virt`
+    as well — the partition property is set at partition-creation time
+    and must match.
 
   Examples:
   ```bash

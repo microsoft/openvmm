@@ -1150,6 +1150,7 @@ impl WhpPartitionInner {
             caps.can_freeze_time = true;
             caps.xsaves_state_bv_broken = true;
             caps.dr6_tsx_broken = true;
+            caps.nested_virt = nested_virt;
             caps
         };
         let vendor = match whp::capabilities::processor_vendor().for_op("get processor vendor")? {

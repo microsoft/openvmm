@@ -1013,6 +1013,11 @@ pub const WHvVirtualProcessorStateTypeInterruptControllerState2: WHV_VIRTUAL_PRO
     WHV_VIRTUAL_PROCESSOR_STATE_TYPE(0x00001000);
 pub const WHvVirtualProcessorStateTypeXsaveState: WHV_VIRTUAL_PROCESSOR_STATE_TYPE =
     WHV_VIRTUAL_PROCESSOR_STATE_TYPE(0x00001001);
+/// Opaque nested-virtualization state (x86-64 only). Carries the L2 VMCS/VMCB
+/// plus pending-event-ex registers that the hypervisor exposes only when the
+/// partition was created with `WHvPartitionPropertyCodeNestedVirtualization`.
+pub const WHvVirtualProcessorStateTypeNestedState: WHV_VIRTUAL_PROCESSOR_STATE_TYPE =
+    WHV_VIRTUAL_PROCESSOR_STATE_TYPE(0x00001002);
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone)]

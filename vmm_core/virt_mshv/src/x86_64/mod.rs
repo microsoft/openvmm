@@ -214,6 +214,7 @@ impl MshvProtoPartition<'_> {
             xsaves_state_bv_broken: false,
             dr6_tsx_broken: false,
             nxe_forced_on: false,
+            nested_virt: false,
         })
     }
 
