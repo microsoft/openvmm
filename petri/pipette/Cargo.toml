@@ -26,6 +26,7 @@ unicycle.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
+unix_socket.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-service.workspace = true

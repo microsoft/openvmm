@@ -53,6 +53,16 @@ pub enum PipetteRequest {
     KernelCrash(FailableRpc<(), ()>),
     /// Mounts a filesystem (Linux only).
     Mount(FailableRpc<MountRequest, ()>),
+    /// Binds a UNIX-domain listener inside the guest, accepts a single
+    /// connection, and pumps bytes between that connection and a pair of
+    /// mesh pipes (Linux only).
+    ///
+    /// This is the primitive used by nested-virt tests to reach an L2
+    /// pipette agent: the in-L1 openvmm hybrid-vsock device translates an
+    /// L2-initiated vsock connect into a UNIX-socket connect against this
+    /// listener, and pipette pumps the resulting byte stream back to the
+    /// host over the existing mesh transport.
+    RelayUnixSocket(FailableRpc<RelayUnixSocketRequest, ()>),
 }
 
 /// A request to execute a command inside the guest.
@@ -183,6 +193,28 @@ pub struct MountRequest {
     pub flags: u64,
     /// Create the target directory if it doesn't exist.
     pub mkdir_target: bool,
+}
+
+/// A request to bind a UNIX-domain listener inside the guest and relay a
+/// single accepted connection over a pair of mesh pipes.
+///
+/// The handler binds the listener synchronously (so a bind failure is
+/// reported to the caller via the RPC response) and then spawns a task that
+/// waits for exactly one connection. Bytes written to `to_socket` are
+/// forwarded to the connected peer, and bytes received from the peer are
+/// forwarded to `from_socket`. The pumps tear down when either side closes,
+/// at which point the listener and the bind-path filesystem entry are
+/// cleaned up.
+#[derive(MeshPayload)]
+pub struct RelayUnixSocketRequest {
+    /// Path inside the guest at which pipette should bind a UNIX listener.
+    /// The path must not already exist; pipette is responsible for
+    /// `unlink`ing the path once the relay tears down.
+    pub bind_path: String,
+    /// Bytes the host wants written to the accepted connection.
+    pub to_socket: ReadPipe,
+    /// Bytes read from the accepted connection, sent back to the host.
+    pub from_socket: WritePipe,
 }
 
 /// A file that the guest client wishes to be logged on the host for diagnostic purposes.
