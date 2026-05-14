@@ -64,7 +64,9 @@ pub enum Error {
     No64BitEntry,
     /// The bzImage is truncated — the protected-mode code is too small to
     /// contain the 64-bit entry point.
-    #[error("bzImage is truncated: protected-mode size ({size}) is too small for entry offset ({entry_offset})")]
+    #[error(
+        "bzImage is truncated: protected-mode size ({size}) is too small for entry offset ({entry_offset})"
+    )]
     Truncated {
         /// The size of the protected-mode code.
         size: u64,
