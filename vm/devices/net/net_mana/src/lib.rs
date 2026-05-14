@@ -991,8 +991,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                             (L4Protocol::Unknown, RxChecksumState::Unknown)
                         };
                         let vlantag = rx_oob.flags.rx_vlantag_present().then(|| {
-                            VlanMetadata::new()
-                                .with_vlan_id(rx_oob.flags.rx_vlan_id() as u16)
+                            VlanMetadata::new().with_vlan_id(rx_oob.flags.rx_vlan_id() as u16)
                         });
                         let len = rx_oob.ppi[0].pkt_len.into();
                         pool.write_header(
