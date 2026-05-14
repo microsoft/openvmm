@@ -1193,7 +1193,7 @@ jobs:
         path: ${{ env.floweyvar2 }}
       name: 'publish test results: x64-windows-unit-tests-unit-tests crypto (rust) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-windows-unit-tests-unit-tests crypto (rust)'
+    - name: 'report failed tests: x64-windows-unit-tests-unit-tests crypto (rust)'
       run: |-
         flowey.exe e 12 flowey_lib_common::publish_test_results 9
         flowey.exe e 12 flowey_lib_hvlite::init_cross_build 3
@@ -1228,7 +1228,7 @@ jobs:
         path: ${{ env.floweyvar3 }}
       name: 'publish test results: x64-windows-unit-tests-unit-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-windows-unit-tests-unit-tests'
+    - name: 'report failed tests: x64-windows-unit-tests-unit-tests'
       run: flowey.exe e 12 flowey_lib_common::publish_test_results 14
       shell: bash
     - name: generate nextest command
@@ -1252,7 +1252,7 @@ jobs:
         path: ${{ env.floweyvar1 }}
       name: 'publish test results: x64-windows-unit-tests-unit-tests crypto (none) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-windows-unit-tests-unit-tests crypto (none)'
+    - name: 'report failed tests: x64-windows-unit-tests-unit-tests crypto (none)'
       run: |-
         flowey.exe e 12 flowey_lib_common::publish_test_results 4
         flowey.exe e 12 flowey_lib_hvlite::build_nextest_unit_tests 4
@@ -1461,7 +1461,7 @@ jobs:
         path: ${{ env.floweyvar2 }}
       name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (none) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-linux-unit-tests-unit-tests crypto (none)'
+    - name: 'report failed tests: x64-linux-unit-tests-unit-tests crypto (none)'
       run: flowey e 13 flowey_lib_common::publish_test_results 9
       shell: bash
     - name: generate nextest command
@@ -1485,7 +1485,7 @@ jobs:
         path: ${{ env.floweyvar3 }}
       name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (rust) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-linux-unit-tests-unit-tests crypto (rust)'
+    - name: 'report failed tests: x64-linux-unit-tests-unit-tests crypto (rust)'
       run: flowey e 13 flowey_lib_common::publish_test_results 14
       shell: bash
     - name: generate nextest command
@@ -1509,7 +1509,7 @@ jobs:
         path: ${{ env.floweyvar4 }}
       name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (openssl) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-linux-unit-tests-unit-tests crypto (openssl)'
+    - name: 'report failed tests: x64-linux-unit-tests-unit-tests crypto (openssl)'
       run: flowey e 13 flowey_lib_common::publish_test_results 19
       shell: bash
     - name: generate nextest command
@@ -1533,7 +1533,7 @@ jobs:
         path: ${{ env.floweyvar5 }}
       name: 'publish test results: x64-linux-unit-tests-unit-tests crypto (all) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-linux-unit-tests-unit-tests crypto (all)'
+    - name: 'report failed tests: x64-linux-unit-tests-unit-tests crypto (all)'
       run: |-
         flowey e 13 flowey_lib_common::publish_test_results 24
         flowey e 13 flowey_lib_hvlite::init_cross_build 2
@@ -1573,7 +1573,7 @@ jobs:
         path: ${{ env.floweyvar1 }}
       name: 'publish test results: x64-linux-unit-tests-unit-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-linux-unit-tests-unit-tests'
+    - name: 'report failed tests: x64-linux-unit-tests-unit-tests'
       run: |-
         flowey e 13 flowey_lib_common::publish_test_results 4
         flowey e 13 flowey_lib_hvlite::build_nextest_unit_tests 6
@@ -1804,7 +1804,7 @@ jobs:
         path: ${{ env.floweyvar2 }}
       name: 'publish test results: x64-linux-musl-unit-tests-unit-tests crypto (none) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-linux-musl-unit-tests-unit-tests crypto (none)'
+    - name: 'report failed tests: x64-linux-musl-unit-tests-unit-tests crypto (none)'
       run: flowey e 14 flowey_lib_common::publish_test_results 9
       shell: bash
     - name: generate nextest command
@@ -1828,7 +1828,7 @@ jobs:
         path: ${{ env.floweyvar3 }}
       name: 'publish test results: x64-linux-musl-unit-tests-unit-tests crypto (rust) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-linux-musl-unit-tests-unit-tests crypto (rust)'
+    - name: 'report failed tests: x64-linux-musl-unit-tests-unit-tests crypto (rust)'
       run: flowey e 14 flowey_lib_common::publish_test_results 14
       shell: bash
     - name: generate nextest command
@@ -1852,7 +1852,7 @@ jobs:
         path: ${{ env.floweyvar4 }}
       name: 'publish test results: x64-linux-musl-unit-tests-unit-tests crypto (openssl) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-linux-musl-unit-tests-unit-tests crypto (openssl)'
+    - name: 'report failed tests: x64-linux-musl-unit-tests-unit-tests crypto (openssl)'
       run: flowey e 14 flowey_lib_common::publish_test_results 19
       shell: bash
     - name: generate nextest command
@@ -1876,7 +1876,7 @@ jobs:
         path: ${{ env.floweyvar5 }}
       name: 'publish test results: x64-linux-musl-unit-tests-unit-tests crypto (symcrypt) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-linux-musl-unit-tests-unit-tests crypto (symcrypt)'
+    - name: 'report failed tests: x64-linux-musl-unit-tests-unit-tests crypto (symcrypt)'
       run: flowey e 14 flowey_lib_common::publish_test_results 24
       shell: bash
     - name: generate nextest command
@@ -1900,7 +1900,7 @@ jobs:
         path: ${{ env.floweyvar6 }}
       name: 'publish test results: x64-linux-musl-unit-tests-unit-tests crypto (all) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-linux-musl-unit-tests-unit-tests crypto (all)'
+    - name: 'report failed tests: x64-linux-musl-unit-tests-unit-tests crypto (all)'
       run: |-
         flowey e 14 flowey_lib_common::publish_test_results 29
         flowey e 14 flowey_lib_hvlite::init_cross_build 1
@@ -1940,7 +1940,7 @@ jobs:
         path: ${{ env.floweyvar1 }}
       name: 'publish test results: x64-linux-musl-unit-tests-unit-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-linux-musl-unit-tests-unit-tests'
+    - name: 'report failed tests: x64-linux-musl-unit-tests-unit-tests'
       run: |-
         flowey e 14 flowey_lib_common::publish_test_results 4
         flowey e 14 flowey_lib_hvlite::build_nextest_unit_tests 7
@@ -2183,7 +2183,7 @@ jobs:
         path: ${{ env.floweyvar2 }}
       name: 'publish test results: aarch64-windows-unit-tests-unit-tests crypto (rust) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-windows-unit-tests-unit-tests crypto (rust)'
+    - name: 'report failed tests: aarch64-windows-unit-tests-unit-tests crypto (rust)'
       run: |-
         flowey.exe e 15 flowey_lib_common::publish_test_results 9
         flowey.exe e 15 flowey_lib_hvlite::init_cross_build 3
@@ -2218,7 +2218,7 @@ jobs:
         path: ${{ env.floweyvar3 }}
       name: 'publish test results: aarch64-windows-unit-tests-unit-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-windows-unit-tests-unit-tests'
+    - name: 'report failed tests: aarch64-windows-unit-tests-unit-tests'
       run: flowey.exe e 15 flowey_lib_common::publish_test_results 14
       shell: bash
     - name: generate nextest command
@@ -2242,7 +2242,7 @@ jobs:
         path: ${{ env.floweyvar1 }}
       name: 'publish test results: aarch64-windows-unit-tests-unit-tests crypto (none) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-windows-unit-tests-unit-tests crypto (none)'
+    - name: 'report failed tests: aarch64-windows-unit-tests-unit-tests crypto (none)'
       run: |-
         flowey.exe e 15 flowey_lib_common::publish_test_results 4
         flowey.exe e 15 flowey_lib_hvlite::build_nextest_unit_tests 4
@@ -2503,7 +2503,7 @@ jobs:
         path: ${{ env.floweyvar2 }}
       name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (none) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-linux-unit-tests-unit-tests crypto (none)'
+    - name: 'report failed tests: aarch64-linux-unit-tests-unit-tests crypto (none)'
       run: flowey e 16 flowey_lib_common::publish_test_results 9
       shell: bash
     - name: generate nextest command
@@ -2527,7 +2527,7 @@ jobs:
         path: ${{ env.floweyvar3 }}
       name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (rust) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-linux-unit-tests-unit-tests crypto (rust)'
+    - name: 'report failed tests: aarch64-linux-unit-tests-unit-tests crypto (rust)'
       run: flowey e 16 flowey_lib_common::publish_test_results 14
       shell: bash
     - name: generate nextest command
@@ -2551,7 +2551,7 @@ jobs:
         path: ${{ env.floweyvar4 }}
       name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (openssl) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-linux-unit-tests-unit-tests crypto (openssl)'
+    - name: 'report failed tests: aarch64-linux-unit-tests-unit-tests crypto (openssl)'
       run: flowey e 16 flowey_lib_common::publish_test_results 19
       shell: bash
     - name: generate nextest command
@@ -2575,7 +2575,7 @@ jobs:
         path: ${{ env.floweyvar5 }}
       name: 'publish test results: aarch64-linux-unit-tests-unit-tests crypto (all) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-linux-unit-tests-unit-tests crypto (all)'
+    - name: 'report failed tests: aarch64-linux-unit-tests-unit-tests crypto (all)'
       run: |-
         flowey e 16 flowey_lib_common::publish_test_results 24
         flowey e 16 flowey_lib_hvlite::init_cross_build 3
@@ -2615,7 +2615,7 @@ jobs:
         path: ${{ env.floweyvar1 }}
       name: 'publish test results: aarch64-linux-unit-tests-unit-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-linux-unit-tests-unit-tests'
+    - name: 'report failed tests: aarch64-linux-unit-tests-unit-tests'
       run: |-
         flowey e 16 flowey_lib_common::publish_test_results 4
         flowey e 16 flowey_lib_hvlite::build_nextest_unit_tests 6
@@ -2890,7 +2890,7 @@ jobs:
         path: ${{ env.floweyvar2 }}
       name: 'publish test results: aarch64-linux-musl-unit-tests-unit-tests crypto (none) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-linux-musl-unit-tests-unit-tests crypto (none)'
+    - name: 'report failed tests: aarch64-linux-musl-unit-tests-unit-tests crypto (none)'
       run: flowey e 17 flowey_lib_common::publish_test_results 9
       shell: bash
     - name: generate nextest command
@@ -2914,7 +2914,7 @@ jobs:
         path: ${{ env.floweyvar3 }}
       name: 'publish test results: aarch64-linux-musl-unit-tests-unit-tests crypto (rust) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-linux-musl-unit-tests-unit-tests crypto (rust)'
+    - name: 'report failed tests: aarch64-linux-musl-unit-tests-unit-tests crypto (rust)'
       run: flowey e 17 flowey_lib_common::publish_test_results 14
       shell: bash
     - name: generate nextest command
@@ -2938,7 +2938,7 @@ jobs:
         path: ${{ env.floweyvar4 }}
       name: 'publish test results: aarch64-linux-musl-unit-tests-unit-tests crypto (openssl) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-linux-musl-unit-tests-unit-tests crypto (openssl)'
+    - name: 'report failed tests: aarch64-linux-musl-unit-tests-unit-tests crypto (openssl)'
       run: flowey e 17 flowey_lib_common::publish_test_results 19
       shell: bash
     - name: generate nextest command
@@ -2962,7 +2962,7 @@ jobs:
         path: ${{ env.floweyvar5 }}
       name: 'publish test results: aarch64-linux-musl-unit-tests-unit-tests crypto (symcrypt) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-linux-musl-unit-tests-unit-tests crypto (symcrypt)'
+    - name: 'report failed tests: aarch64-linux-musl-unit-tests-unit-tests crypto (symcrypt)'
       run: flowey e 17 flowey_lib_common::publish_test_results 24
       shell: bash
     - name: generate nextest command
@@ -2986,7 +2986,7 @@ jobs:
         path: ${{ env.floweyvar6 }}
       name: 'publish test results: aarch64-linux-musl-unit-tests-unit-tests crypto (all) (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-linux-musl-unit-tests-unit-tests crypto (all)'
+    - name: 'report failed tests: aarch64-linux-musl-unit-tests-unit-tests crypto (all)'
       run: |-
         flowey e 17 flowey_lib_common::publish_test_results 29
         flowey e 17 flowey_lib_hvlite::init_cross_build 1
@@ -3026,7 +3026,7 @@ jobs:
         path: ${{ env.floweyvar1 }}
       name: 'publish test results: aarch64-linux-musl-unit-tests-unit-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-linux-musl-unit-tests-unit-tests'
+    - name: 'report failed tests: aarch64-linux-musl-unit-tests-unit-tests'
       run: |-
         flowey e 17 flowey_lib_common::publish_test_results 4
         flowey e 17 flowey_lib_hvlite::build_nextest_unit_tests 7
@@ -3297,7 +3297,7 @@ jobs:
         path: ${{ env.floweyvar1 }}
       name: 'publish test results: x64-windows-intel-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-windows-intel-vmm-tests'
+    - name: 'report failed tests: x64-windows-intel-vmm-tests'
       run: flowey.exe e 18 flowey_lib_common::publish_test_results 4
       shell: bash
     - name: report test results to overall pipeline status
@@ -3572,7 +3572,7 @@ jobs:
         path: ${{ env.floweyvar1 }}
       name: 'publish test results: x64-windows-intel-tdx-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-windows-intel-tdx-vmm-tests'
+    - name: 'report failed tests: x64-windows-intel-tdx-vmm-tests'
       run: flowey.exe e 19 flowey_lib_common::publish_test_results 4
       shell: bash
     - name: report test results to overall pipeline status
@@ -4025,7 +4025,7 @@ jobs:
         path: ${{ env.floweyvar1 }}
       name: 'publish test results: x64-windows-amd-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-windows-amd-vmm-tests'
+    - name: 'report failed tests: x64-windows-amd-vmm-tests'
       run: flowey.exe e 20 flowey_lib_common::publish_test_results 4
       shell: bash
     - name: report test results to overall pipeline status
@@ -4300,7 +4300,7 @@ jobs:
         path: ${{ env.floweyvar1 }}
       name: 'publish test results: x64-windows-amd-snp-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-windows-amd-snp-vmm-tests'
+    - name: 'report failed tests: x64-windows-amd-snp-vmm-tests'
       run: flowey.exe e 21 flowey_lib_common::publish_test_results 4
       shell: bash
     - name: report test results to overall pipeline status
@@ -4560,7 +4560,7 @@ jobs:
         path: ${{ env.floweyvar1 }}
       name: 'publish test results: x64-linux-amd-kvm-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-linux-amd-kvm-vmm-tests'
+    - name: 'report failed tests: x64-linux-amd-kvm-vmm-tests'
       run: flowey e 22 flowey_lib_common::publish_test_results 4
       shell: bash
     - name: report test results to overall pipeline status
@@ -4864,7 +4864,7 @@ jobs:
         path: ${{ env.floweyvar1 }}
       name: 'publish test results: x64-linux-intel-mshv-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-linux-intel-mshv-vmm-tests'
+    - name: 'report failed tests: x64-linux-intel-mshv-vmm-tests'
       run: flowey e 23 flowey_lib_common::publish_test_results 4
       shell: bash
     - name: report test results to overall pipeline status
@@ -5175,7 +5175,7 @@ jobs:
         path: ${{ env.floweyvar1 }}
       name: 'publish test results: aarch64-windows-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: aarch64-windows-vmm-tests'
+    - name: 'report failed tests: aarch64-windows-vmm-tests'
       run: flowey.exe e 24 flowey_lib_common::publish_test_results 4
       shell: bash
     - name: report test results to overall pipeline status
@@ -5794,7 +5794,7 @@ jobs:
         path: ${{ env.floweyvar1 }}
       name: 'publish test results: x64-windows-intel-mi-secure-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 'annotate test results: x64-windows-intel-mi-secure-vmm-tests'
+    - name: 'report failed tests: x64-windows-intel-mi-secure-vmm-tests'
       run: flowey.exe e 27 flowey_lib_common::publish_test_results 4
       shell: bash
     - name: report test results to overall pipeline status

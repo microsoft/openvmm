@@ -115,7 +115,7 @@ impl FlowNode for Node {
                     // and job summary for test failures.
                     let label_for_annotate = label.clone();
                     use_side_effects.push(ctx.emit_rust_step(
-                        format!("annotate test results: {label}"),
+                        format!("report failed tests: {label}"),
                         |ctx| {
                             let has_junit = has_junit_xml_for_annotate.claim(ctx);
                             let junit_path = junit_xml_for_annotate.claim(ctx);
@@ -300,8 +300,10 @@ fn annotate_junit_failures(junit_path: &Path, label: &str) -> anyhow::Result<()>
             };
 
             // GitHub Actions workflow command — shows as an annotation on
-            // the PR checks tab.
-            eprintln!("::error title=Test failure: {full_name}::{short_msg}");
+            // the PR checks tab. The title must not contain "::" as that
+            // terminates the parameter section in the workflow command syntax.
+            let safe_title = full_name.replace("::", "/");
+            eprintln!("::error title={safe_title}::{short_msg}");
 
             failures.push((full_name, short_msg));
         }
