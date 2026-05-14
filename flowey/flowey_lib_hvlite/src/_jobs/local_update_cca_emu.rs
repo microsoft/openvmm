@@ -2,7 +2,8 @@
 // Licensed under the MIT License.
 
 //! Update components in CCA emulation environment according to options specified.
-use crate::_jobs::local_install_cca_emu::{build_cca_rootfs, build_plane0_linux};
+use crate::_jobs::local_install_cca_emu::build_cca_rootfs;
+use crate::_jobs::local_install_cca_emu::build_plane0_linux;
 use flowey::node::prelude::*;
 
 #[derive(Default, Serialize, Deserialize, PartialEq, Eq)]

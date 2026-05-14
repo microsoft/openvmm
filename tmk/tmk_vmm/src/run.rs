@@ -32,7 +32,8 @@ pub const COMMAND_ADDRESS: u64 = 0xffff_0000;
 #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
 mod cca {
     use super::DmaClient;
-    use super::{MemoryLayout, Options};
+    use super::MemoryLayout;
+    use super::Options;
     use crate::HypervisorOpt;
     use anyhow::Context as _;
     use core::ops::Range;
@@ -521,10 +522,9 @@ impl RunnerBuilder {
             {
                 let virt::aarch64::Aarch64InitialRegs {
                     registers,
-                    system_registers,
+                    system_registers: _,
                 } = self.regs.as_ref();
                 state.set_registers(registers)?;
-                state.set_system_registers(system_registers)?;
             }
             state.commit()?;
         }

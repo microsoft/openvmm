@@ -127,9 +127,11 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 .instrument(tracing::info_span!("apply_vtl2_protections", CVM_ALLOWED))
                 .await?;
         } else {
+            let acceptor = acceptor.as_ref().unwrap();
+
             // Prepare VTL0 memory for mapping.
             apply_vtl0_protections(
-                acceptor.as_deref(),
+                acceptor,
                 hardware_isolated,
                 params.mem_layout,
                 Some(boot_init.accepted_regions),
@@ -137,7 +139,6 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
             // Accept the memory that was not accepted by the boot loader.
             // FUTURE: do this lazily.
-            let acceptor = acceptor.as_ref().unwrap();
             let ram = params.mem_layout.ram().iter().map(|r| r.range);
             let accepted_ranges = boot_init.accepted_regions.iter().copied();
             let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
@@ -190,7 +191,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
     } else {
         // Prepare VTL0 memory for mapping.
         apply_vtl0_protections(
-            acceptor.as_deref(),
+            acceptor.as_deref().unwrap(),
             hardware_isolated,
             params.mem_layout,
             None,
@@ -628,28 +629,26 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
     Ok(gm)
 }
 
+// Applying VTL0 protections over pages from mem_layout and previously accepted
+// pages with VTL2 only permissions
 fn apply_vtl0_protections(
-    acceptor: Option<&MemoryAcceptor>,
+    acceptor: &MemoryAcceptor,
     hardware_isolated: bool,
     mem_layout: &MemoryLayout,
-    accepted_ranges: Option<&[MemoryRange]>,
+    accepted_regions: Option<&[MemoryRange]>,
 ) -> anyhow::Result<()> {
     // VTL0 protections are only needed on hardware isolated platforms.
     if !hardware_isolated {
         return Ok(());
     }
 
-    let Some(acceptor) = acceptor else {
-        return Ok(());
-    };
-
     let ram = mem_layout.ram().iter().map(|r| r.range);
 
     // On hardware isolated platforms, accepted memory was accepted with
     // VTL2 only permissions. Provide VTL0 access here.
     tracing::debug!("Applying VTL0 protections");
-    if let Some(accepted_ranges) = accepted_ranges {
-        for range in memory_range::overlapping_ranges(ram, accepted_ranges.iter().copied()) {
+    if let Some(accepted_regions) = accepted_regions {
+        for range in memory_range::overlapping_ranges(ram, accepted_regions.iter().copied()) {
             acceptor.apply_initial_lower_vtl_protections(range)?;
         }
     } else {

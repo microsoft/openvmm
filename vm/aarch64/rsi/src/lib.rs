@@ -118,4 +118,7 @@ pub struct cca_rsi_plane_run {
     pub pad9: [u8; 0x800 - size_of::<cca_rsi_plane_exit>()],
 }
 
+const _: () = assert!(size_of::<cca_realm_config>() == 0x1000);
+const _: () = assert!(size_of::<cca_rsi_plane_entry>() == 0x300);
+const _: () = assert!(size_of::<cca_rsi_plane_exit>() == 0x400);
 const _: () = assert!(size_of::<cca_rsi_plane_run>() == 0x1000);

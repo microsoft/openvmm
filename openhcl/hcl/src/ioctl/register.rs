@@ -360,7 +360,12 @@ impl Hcl {
                 .with_proxy_interrupt_redirect_available(caps.proxy_interrupt_redirect_available()),
             // TODO: CCA: figure out what capabilities to enable here?
             // TMK seems to work without any.
-            IsolationType::Cca => hvdef::HvRegisterVsmCapabilities::new(),
+            IsolationType::Cca => {
+                tracing::info!(
+                    "cca: get_vsm_capabilities is not implemented and returning empty set now"
+                );
+                hvdef::HvRegisterVsmCapabilities::new()
+            }
         };
 
         assert_eq!(caps.dr6_shared(), self.dr6_shared());

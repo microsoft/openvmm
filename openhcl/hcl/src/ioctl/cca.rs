@@ -14,10 +14,9 @@ use crate::GuestVtl;
 use crate::ioctl::Error;
 use crate::ioctl::HvError;
 use crate::ioctl::SetRegError;
-use crate::ioctl::ioctls::mshv_realm_config;
-use crate::ioctl::ioctls::mshv_rsi_set_mem_perm;
-use crate::ioctl::ioctls::mshv_rsi_sysreg_write;
-use crate::ioctl::ioctls::{hcl_realm_config, hcl_rsi_set_mem_perm, hcl_rsi_sysreg_write};
+use crate::ioctl::ioctls::hcl_realm_config;
+use crate::ioctl::ioctls::hcl_rsi_set_mem_perm;
+use crate::ioctl::ioctls::hcl_rsi_sysreg_write;
 use aarch64defs::SystemReg;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvArm64RegisterName;
@@ -33,6 +32,48 @@ use rsi::cca_rsi_plane_run;
 use sidecar_client::SidecarVp;
 use user_driver::memory::MemoryBlock;
 
+/// CCA: Structure mirroring the data returned by RMM hhh
+/// in the RSI_REALM_CONFIG call.
+#[repr(C, align(0x1000))]
+#[derive(Clone, Copy, Default)]
+#[expect(missing_docs)]
+pub struct mshv_realm_config {
+    pub ipa_width: u64,
+    pub algorithm: u64,
+    pub num_aux_planes: u64,
+    pub gicv3_vtr: u64,
+}
+
+/// CCA: Structure (mostly) mirroring the data taken by
+/// RMM in the RSI_PLANE_SYSREG_WRITE.
+/// `vtl` is converted into plane number in kernel driver.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+#[expect(missing_docs)]
+pub struct mshv_rsi_sysreg_write {
+    pub vtl: u8,
+    pub _pad: [u8; 7],
+    pub sysreg: u64,
+    pub value: u64,
+}
+
+/// CCA: Structure mirroring the data taken by
+/// RMM in the RSI_SET_MEM_PERM.
+/// Note: we hand over the plane number here,
+/// we should probably stay consistent with `sysreg_write`.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+#[expect(missing_docs)]
+pub struct mshv_rsi_set_mem_perm {
+    pub plane: u8,
+    pub _pad: [u8; 7],
+    pub base_addr: u64,
+    pub top_addr: u64,
+}
+
+/// SystemReg is following encoding used by MSR/MRS which is different with
+/// the encoding RSI is using. The latter doesn't left shift the register
+/// number.
 const fn encode_rsi_sysreg(sysreg: SystemReg) -> u64 {
     ((sysreg.0.op0() as u64) << 14)
         | ((sysreg.0.op1() as u64) << 11)
@@ -49,8 +90,8 @@ pub struct Cca {
 impl Cca {
     /// Create new CCA runner backing.
     pub fn new(plane_run: &MemoryBlock) -> Self {
-        debug_assert_eq!(plane_run.offset_in_page(), 0);
-        debug_assert!(plane_run.len() >= size_of::<cca_rsi_plane_run>());
+        assert_eq!(plane_run.offset_in_page(), 0);
+        assert!(plane_run.len() >= size_of::<cca_rsi_plane_run>());
 
         Self {
             plane_run: plane_run.clone(),
@@ -59,7 +100,8 @@ impl Cca {
 
     fn plane_run_ref(&self) -> &cca_rsi_plane_run {
         // SAFETY: the DMA allocation remains mapped for the lifetime of the backing
-        // and is page-aligned, so it can be viewed as a `cca_rsi_plane_run`.
+        // and is page-aligned, so it can be viewed as a `cca_rsi_plane_run`. Also,
+        // 'new' validates that the allocation size is >= sizeof cca_rsi_plane_run.
         unsafe { &*self.plane_run.base().cast::<cca_rsi_plane_run>() }
     }
 
@@ -181,7 +223,7 @@ impl ProcessorRunner<'_, Cca> {
     }
 }
 
-// CCA: NOTE this implementation is lifted from the aarch64 VBS implementation
+// TODO CCA: this implementation is lifted from the aarch64 VBS implementation
 // and might need more work to make it CCA-aligned.
 impl<'a> super::BackingPrivate<'a> for Cca {
     fn new(vp: &HclVp, sidecar: Option<&SidecarVp<'_>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
@@ -204,8 +246,6 @@ impl<'a> super::BackingPrivate<'a> for Cca {
         // VTL-shared registers can be set this way: the CPU context only
         // exposes the last VTL, and if we entered VTL2 on an interrupt,
         // OpenHCL doesn't know what the last VTL is.
-        // NOTE: for VBS x18 is omitted here as it is managed by the hypervisor,
-        //       do we need to do the same here?
         match name.into() {
             HvArm64RegisterName::X0
             | HvArm64RegisterName::X1

@@ -396,7 +396,6 @@ struct UhCvmVpState {
     #[inspect(safe)]
     #[cfg(guest_arch = "x86_64")]
     lapics: VtlArray<LapicState, 2>,
-
     /// Guest VSM state for this vp. Some when VTL 1 is enabled.
     #[cfg(guest_arch = "x86_64")]
     vtl1: Option<GuestVsmVpState>,
@@ -1424,7 +1423,7 @@ fn is_restore_partition_time_available() -> bool {
 /// values used by underhill.
 fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
     if hcl.isolation() == hcl::ioctl::IsolationType::Cca {
-        // For CCA, do nothing now
+        tracing::warn!("cca: set_vtl2_vsm_partition_config: do nothing now");
         return Ok(());
     }
     // Read available capabilities to determine what to enable.
