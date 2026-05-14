@@ -779,11 +779,19 @@ pub enum Error {
     #[error("nested_virt requires the in-hypervisor APIC; pass user_mode_apic=false")]
     NestedVirtIncompatibleWithUserModeApic,
     #[error(
-        "nested_virt cannot be combined with the Hyper-V interface (`--hv`); \
-         the Windows hypervisor refuses to install a hypercall intercept on a \
-         nested-virt-capable partition"
+        "nested_virt cannot be combined with VTL2; the Windows hypervisor \
+         refuses to install a generic hypercall intercept on a \
+         nested-virt-capable partition, and the VTL2 hypercall dispatcher \
+         requires that intercept"
     )]
-    NestedVirtIncompatibleWithHv,
+    NestedVirtIncompatibleWithVtl2,
+    #[error(
+        "nested_virt cannot be combined with isolation; the Windows hypervisor \
+         refuses to install a generic hypercall intercept on a \
+         nested-virt-capable partition, and isolation hypercalls require that \
+         intercept"
+    )]
+    NestedVirtIncompatibleWithIsolation,
 }
 
 trait WhpResultExt<T> {
@@ -832,11 +840,30 @@ impl virt::Hypervisor for Whp {
         // it via `inspect`. Nested virt is x86-only; on other arches we
         // simply reject the request without probing.
         #[cfg(guest_arch = "x86_64")]
-        let nested_virt_capability =
-            nested_virt::validate(nested_virt, user_mode_apic, config.hv_config.is_some())?;
+        let nested_virt_capability = nested_virt::validate(nested_virt, user_mode_apic)?;
         #[cfg(not(guest_arch = "x86_64"))]
         if nested_virt {
             return Err(Error::UnsupportedParameter("nested_virt"));
+        }
+
+        // The Windows hypervisor refuses to install a generic hypercall
+        // intercept on a nested-virt-capable partition
+        // (`onecore/hv/hvx/im/common/ImCpuCommon.c:ImInstallHypercallIntercept`
+        // — *"For now, hypercall exits are not supported with nested."*).
+        // We avoid installing that intercept for plain `--hv` partitions
+        // (the narrower `UnknownSynicConnection` / `RetargetUnknownVpciDevice`
+        // intercepts go through a separate install path with no such
+        // restriction), but VTL2 and isolation both rely on the broader
+        // hypercall dispatcher, so reject those combinations up front.
+        if nested_virt {
+            if let Some(hv_config) = &config.hv_config {
+                if hv_config.vtl2.is_some() {
+                    return Err(Error::NestedVirtIncompatibleWithVtl2);
+                }
+            }
+            if config.isolation.is_isolated() {
+                return Err(Error::NestedVirtIncompatibleWithIsolation);
+            }
         }
 
         let vtl0 = VtlPartition::new(
@@ -1472,7 +1499,22 @@ impl VtlPartition {
 
         let mut with_overlays = false;
         if let Some(hv_config) = &config.hv_config {
-            extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::HypercallExit;
+            // The generic hypercall intercept is only needed when the
+            // VTL2 or isolation hypercall dispatchers will actually run.
+            // For plain `--hv` partitions, OpenVMM only cares about
+            // hypercalls that go through the narrower
+            // `UnknownSynicConnection` / `RetargetUnknownVpciDevice`
+            // intercepts (registered further down for the offloaded-
+            // enlightenments path), and those use a separate HV install
+            // path. The Windows hypervisor rejects the generic
+            // hypercall intercept on nested-virt-capable partitions
+            // (`onecore/hv/hvx/im/common/ImCpuCommon.c:ImInstallHypercallIntercept`
+            // — *"For now, hypercall exits are not supported with
+            // nested."*), so keeping this off when not needed is also
+            // what makes `whp:nested_virt + --hv` viable.
+            if hv_config.vtl2.is_some() || config.isolation.is_isolated() {
+                extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::HypercallExit;
+            }
             #[cfg(guest_arch = "x86_64")]
             {
                 extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::X64CpuidExit;

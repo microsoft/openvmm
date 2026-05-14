@@ -119,27 +119,25 @@ pub(crate) fn nested_virt_capability() -> Result<NestedVirtCapability, Error> {
 /// - `NestedVirtIncompatibleWithUserModeApic` if `user_mode_apic` is set
 ///   (WHP refuses `NestedVirtualization=TRUE` together with
 ///   `LocalApicEmulationMode=None`).
-/// - `NestedVirtIncompatibleWithHv` if `hv_config_present` is set. The
-///   Windows hypervisor refuses to install a hypercall intercept on a
-///   nested-virt-capable partition
-///   (`onecore/hv/hvx/im/common/ImCpuCommon.c:ImInstallHypercallIntercept`
-///   — *"For now, hypercall exits are not supported with nested."*),
-///   so combining `--hv` with `whp:nested_virt` would fail at
-///   `WHvSetupPartition` with `HV_STATUS_INVALID_PARAMETER`.
 /// - `NestedVirtUnsupported` if the host's WHP does not expose the
 ///   `WHvPartitionPropertyCodeNestedVirtualization` property.
+///
+/// VTL2 and isolation are also incompatible with nested-virt because the
+/// Windows hypervisor refuses to install a generic hypercall intercept on
+/// a nested-virt-capable partition
+/// (`onecore/hv/hvx/im/common/ImCpuCommon.c:ImInstallHypercallIntercept`
+/// — *"For now, hypercall exits are not supported with nested."*), and
+/// the VTL2 / isolation hypercall dispatchers depend on that intercept.
+/// Those checks live in the caller because they depend on
+/// `ProtoPartitionConfig` fields beyond this function's scope.
 pub(crate) fn validate(
     requested: bool,
     user_mode_apic: bool,
-    hv_config_present: bool,
 ) -> Result<NestedVirtCapability, Error> {
     let capability = nested_virt_capability()?;
     if requested {
         if user_mode_apic {
             return Err(Error::NestedVirtIncompatibleWithUserModeApic);
-        }
-        if hv_config_present {
-            return Err(Error::NestedVirtIncompatibleWithHv);
         }
         if !capability.property_supported {
             return Err(Error::NestedVirtUnsupported);
