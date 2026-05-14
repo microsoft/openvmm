@@ -9,8 +9,10 @@ use crate::manager::VfioManagerClient;
 use anyhow::Context as _;
 use async_trait::async_trait;
 use membacking::DmaMapperClient;
+use pal_async::task::Spawn as _;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
+use std::sync::Arc;
 use vfio_assigned_device_resources::VfioCdevDeviceHandle;
 use vfio_assigned_device_resources::VfioDeviceHandle;
 use vm_resource::AsyncResolveResource;
@@ -100,11 +102,16 @@ pub struct VfioCdevDeviceResolver {
 }
 
 impl VfioCdevDeviceResolver {
-    /// Create a new cdev resolver, spawning the cdev manager task.
-    pub fn new(spawner: impl pal_async::task::Spawn, dma_mapper_client: DmaMapperClient) -> Self {
-        let mut manager = crate::manager::VfioCdevManager::new(dma_mapper_client);
+    /// Create a new cdev resolver, spawning the cdev dispatcher task.
+    pub fn new(
+        spawner: impl pal_async::task::Spawn + 'static,
+        dma_mapper_client: DmaMapperClient,
+    ) -> Self {
+        // Arc the spawner so the dispatcher can spawn per-iommu manager tasks.
+        let spawner: Arc<dyn pal_async::task::Spawn> = Arc::new(spawner);
+        let mut manager = crate::manager::VfioCdevManager::new(spawner.clone(), dma_mapper_client);
         let client = manager.client();
-        let task = spawner.spawn("vfio-cdev-mgr", manager.run());
+        let task = spawner.spawn("vfio-cdev-dispatch", manager.run());
         Self {
             client,
             _task: task,
@@ -148,11 +155,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             .await
             .context("VFIO cdev manager failed")?;
 
-        let cdev_binding = crate::manager::VfioCdevBinding::from_response(
-            resp,
-            pci_id.clone(),
-            self.client.sender(),
-        );
+        let cdev_binding = crate::manager::VfioCdevBinding::from_response(resp, pci_id.clone());
 
         let memory_mapper = input
             .shared_mem_mapper

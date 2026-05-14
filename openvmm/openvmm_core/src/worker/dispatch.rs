@@ -713,6 +713,9 @@ struct LoadedVmInner {
     /// VFIO container manager inspect handle (Linux only).
     #[cfg(target_os = "linux")]
     vfio_inspect: Option<vfio_assigned_device::manager::VfioManagerClient>,
+    /// VFIO cdev + iommufd manager inspect handle (Linux only).
+    #[cfg(target_os = "linux")]
+    vfio_cdev_inspect: Option<vfio_assigned_device::manager::VfioCdevManagerClient>,
 
     // relay halt messages, intercepting reset if configured.
     halt_recv: mesh::Receiver<HaltReason>,
@@ -1953,7 +1956,7 @@ impl InitializedVm {
         // Register the VFIO resolver, which spawns a container manager task
         // internally to share containers across assigned devices.
         #[cfg(target_os = "linux")]
-        let vfio_inspect = {
+        let (vfio_inspect, vfio_cdev_inspect) = {
             let dma_mapper_client = memory_manager.dma_mapper_client();
             let vfio_resolver = vfio_assigned_device::resolver::VfioDeviceResolver::new(
                 driver_source.builder().build("vfio-container-mgr"),
@@ -1974,6 +1977,7 @@ impl InitializedVm {
                 driver_source.builder().build("vfio-cdev-mgr"),
                 dma_mapper_client,
             );
+            let cdev_handle = cdev_resolver.inspect_handle();
             resolver.add_async_resolver::<
                 vm_resource::kind::PciDeviceHandleKind,
                 _,
@@ -1981,7 +1985,7 @@ impl InitializedVm {
                 _,
             >(cdev_resolver);
 
-            Some(handle)
+            (Some(handle), Some(cdev_handle))
         };
 
         // Resolve PCIe devices concurrently.
@@ -2561,6 +2565,8 @@ impl InitializedVm {
                 vmgs_client_inspect_handle,
                 #[cfg(target_os = "linux")]
                 vfio_inspect,
+                #[cfg(target_os = "linux")]
+                vfio_cdev_inspect,
                 halt_recv,
                 client_notify_send,
                 automatic_guest_reset: cfg.automatic_guest_reset,
@@ -2953,7 +2959,8 @@ impl LoadedVm {
                             .field("resolver", &self.inner.resolver)
                             .field("vmgs", &self.inner.vmgs_client_inspect_handle);
                         #[cfg(target_os = "linux")]
-                        resp.field("vfio", &self.inner.vfio_inspect);
+                        resp.field("vfio", &self.inner.vfio_inspect)
+                            .field("vfio_cdev", &self.inner.vfio_cdev_inspect);
                     }),
                 },
                 Event::VmRpc(Err(_)) => break,

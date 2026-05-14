@@ -246,42 +246,6 @@ impl MemoryLayout {
             }
         }
 
-        // On aarch64, the physical IOMMU reserves 128MB..129MB for the MSI
-        // doorbell window. iommufd inherits this and rejects DMA mappings
-        // that overlap it. Split any RAM range that crosses this window so
-        // that the region manager never maps it.
-        //
-        // TODO: query the actual reserved ranges from iommufd at runtime
-        // via `IOMMU_IOAS_IOVA_RANGES` instead of hardcoding.
-        #[cfg(guest_arch = "aarch64")]
-        {
-            const IOMMU_MSI_RESERVED: MemoryRange = MemoryRange::new(0x800_0000..0x810_0000);
-            let mut split_ram = Vec::with_capacity(ram.len() + 2);
-            for entry in ram {
-                if !entry.range.overlaps(&IOMMU_MSI_RESERVED) {
-                    split_ram.push(entry);
-                } else {
-                    // Part before the reserved window.
-                    if entry.range.start() < IOMMU_MSI_RESERVED.start() {
-                        split_ram.push(MemoryRangeWithNode {
-                            range: MemoryRange::new(
-                                entry.range.start()..IOMMU_MSI_RESERVED.start(),
-                            ),
-                            vnode: entry.vnode,
-                        });
-                    }
-                    // Part after the reserved window.
-                    if entry.range.end() > IOMMU_MSI_RESERVED.end() {
-                        split_ram.push(MemoryRangeWithNode {
-                            range: MemoryRange::new(IOMMU_MSI_RESERVED.end()..entry.range.end()),
-                            vnode: entry.vnode,
-                        });
-                    }
-                }
-            }
-            ram = split_ram;
-        }
-
         Self::build(
             ram,
             mmio_gaps.to_vec(),
