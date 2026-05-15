@@ -701,12 +701,6 @@ jobs:
         flowey e 11 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 11 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
-    - name: checking if packages need to be installed
-      run: flowey e 11 flowey_lib_common::install_dist_pkg 0
-      shell: bash
-    - name: installing packages
-      run: flowey e 11 flowey_lib_common::install_dist_pkg 1
-      shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 11 flowey_lib_common::download_gh_release 0
       shell: bash
@@ -738,6 +732,12 @@ jobs:
       shell: bash
     - name: set '-Dwarnings' in .cargo/config.toml
       run: flowey e 11 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
+      shell: bash
+    - name: checking if packages need to be installed
+      run: flowey e 11 flowey_lib_common::install_dist_pkg 0
+      shell: bash
+    - name: installing packages
+      run: flowey e 11 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: unpack protoc
       run: flowey e 11 flowey_lib_common::resolve_protoc 0
@@ -1040,8 +1040,14 @@ jobs:
       run: flowey e 12 flowey_lib_hvlite::resolve_openhcl_kernel_package 0
       shell: bash
     - name: building openhcl initrd
+      run: flowey e 12 flowey_lib_hvlite::build_openhcl_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey e 12 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
+      shell: bash
+    - name: unpack openvmm-test-initrd archives
       run: |-
-        flowey e 12 flowey_lib_hvlite::build_openhcl_initrd 0
+        flowey e 12 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 41
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 42
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 43
@@ -1229,12 +1235,6 @@ jobs:
         flowey e 13 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 13 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
-    - name: checking if packages need to be installed
-      run: flowey e 13 flowey_lib_common::install_dist_pkg 0
-      shell: bash
-    - name: installing packages
-      run: flowey e 13 flowey_lib_common::install_dist_pkg 1
-      shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 13 flowey_lib_common::download_gh_release 0
       shell: bash
@@ -1266,6 +1266,12 @@ jobs:
       shell: bash
     - name: set '-Dwarnings' in .cargo/config.toml
       run: flowey e 13 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
+      shell: bash
+    - name: checking if packages need to be installed
+      run: flowey e 13 flowey_lib_common::install_dist_pkg 0
+      shell: bash
+    - name: installing packages
+      run: flowey e 13 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: unpack protoc
       run: flowey e 13 flowey_lib_common::resolve_protoc 0
@@ -1399,12 +1405,6 @@ jobs:
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-mi-secure-openhcl-igvm-extras"
         echo "$AgentTempDirNormal/publish_artifacts/x64-mi-secure-openhcl-igvm-extras" | flowey v 14 'artifact_publish_from_x64-mi-secure-openhcl-igvm-extras' --is-raw-string update
       shell: bash
-    - name: checking if packages need to be installed
-      run: flowey e 14 flowey_lib_common::install_dist_pkg 0
-      shell: bash
-    - name: installing packages
-      run: flowey e 14 flowey_lib_common::install_dist_pkg 1
-      shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 14 flowey_lib_common::download_gh_release 0
       shell: bash
@@ -1428,8 +1428,11 @@ jobs:
         flowey e 14 flowey_lib_common::cache 2
         flowey e 14 flowey_lib_common::download_gh_release 1
       shell: bash
-    - name: unpack openvmm-deps archive
-      run: flowey e 14 flowey_lib_hvlite::resolve_openvmm_deps 0
+    - name: unpack openvmm-test-linux archives
+      run: flowey e 14 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
+      shell: bash
+    - name: unpack openvmm-test-initrd archives
+      run: flowey e 14 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
       shell: bash
     - name: add default cargo home to path
       run: flowey e 14 flowey_lib_common::install_rust 0
@@ -1466,6 +1469,12 @@ jobs:
       shell: bash
     - name: set '-Dwarnings' in .cargo/config.toml
       run: flowey e 14 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
+      shell: bash
+    - name: checking if packages need to be installed
+      run: flowey e 14 flowey_lib_common::install_dist_pkg 0
+      shell: bash
+    - name: installing packages
+      run: flowey e 14 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: unpack protoc
       run: |-
@@ -1508,6 +1517,9 @@ jobs:
       run: |-
         flowey e 14 flowey_lib_hvlite::resolve_openhcl_kernel_package 0
         flowey e 14 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 28
+      shell: bash
+    - name: unpack openvmm-deps archive
+      run: flowey e 14 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
     - name: extract X86_64 sysroot.tar.gz
       run: |-
@@ -2305,12 +2317,6 @@ jobs:
         flowey e 17 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 17 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
-    - name: checking if packages need to be installed
-      run: flowey e 17 flowey_lib_common::install_dist_pkg 0
-      shell: bash
-    - name: installing packages
-      run: flowey e 17 flowey_lib_common::install_dist_pkg 1
-      shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 17 flowey_lib_common::download_gh_release 0
       shell: bash
@@ -2339,6 +2345,12 @@ jobs:
       shell: bash
     - name: extract X86_64 sysroot.tar.gz
       run: flowey e 17 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
+      shell: bash
+    - name: checking if packages need to be installed
+      run: flowey e 17 flowey_lib_common::install_dist_pkg 0
+      shell: bash
+    - name: installing packages
+      run: flowey e 17 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: set '-Dwarnings' in .cargo/config.toml
       run: flowey e 17 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
@@ -3530,12 +3542,6 @@ jobs:
         flowey e 20 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 20 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
-    - name: checking if packages need to be installed
-      run: flowey e 20 flowey_lib_common::install_dist_pkg 0
-      shell: bash
-    - name: installing packages
-      run: flowey e 20 flowey_lib_common::install_dist_pkg 1
-      shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 20 flowey_lib_common::download_gh_release 0
       shell: bash
@@ -3564,6 +3570,12 @@ jobs:
       shell: bash
     - name: extract Aarch64 sysroot.tar.gz
       run: flowey e 20 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
+      shell: bash
+    - name: checking if packages need to be installed
+      run: flowey e 20 flowey_lib_common::install_dist_pkg 0
+      shell: bash
+    - name: installing packages
+      run: flowey e 20 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: set '-Dwarnings' in .cargo/config.toml
       run: flowey e 20 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
@@ -4001,8 +4013,11 @@ jobs:
     - name: write to directory variables
       run: flowey.exe e 21 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-deps archive
-      run: flowey.exe e 21 flowey_lib_hvlite::resolve_openvmm_deps 0
+    - name: unpack openvmm-test-initrd archives
+      run: flowey.exe e 21 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey.exe e 21 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 21 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -4267,8 +4282,11 @@ jobs:
     - name: write to directory variables
       run: flowey.exe e 22 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-deps archive
-      run: flowey.exe e 22 flowey_lib_hvlite::resolve_openvmm_deps 0
+    - name: unpack openvmm-test-initrd archives
+      run: flowey.exe e 22 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey.exe e 22 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 22 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -4534,8 +4552,11 @@ jobs:
     - name: write to directory variables
       run: flowey.exe e 23 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-deps archive
-      run: flowey.exe e 23 flowey_lib_hvlite::resolve_openvmm_deps 0
+    - name: unpack openvmm-test-initrd archives
+      run: flowey.exe e 23 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey.exe e 23 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 23 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -4805,8 +4826,11 @@ jobs:
     - name: write to directory variables
       run: flowey.exe e 24 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-deps archive
-      run: flowey.exe e 24 flowey_lib_hvlite::resolve_openvmm_deps 0
+    - name: unpack openvmm-test-initrd archives
+      run: flowey.exe e 24 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey.exe e 24 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 24 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -5072,8 +5096,11 @@ jobs:
     - name: write to directory variables
       run: flowey.exe e 25 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-deps archive
-      run: flowey.exe e 25 flowey_lib_hvlite::resolve_openvmm_deps 0
+    - name: unpack openvmm-test-initrd archives
+      run: flowey.exe e 25 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey.exe e 25 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 25 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -5286,8 +5313,11 @@ jobs:
     - name: write to directory variables
       run: flowey e 26 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-deps archive
-      run: flowey e 26 flowey_lib_hvlite::resolve_openvmm_deps 0
+    - name: unpack openvmm-test-initrd archives
+      run: flowey e 26 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey e 26 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey e 26 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -5591,8 +5621,11 @@ jobs:
     - name: write to directory variables
       run: flowey e 27 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-deps archive
-      run: flowey e 27 flowey_lib_hvlite::resolve_openvmm_deps 0
+    - name: unpack openvmm-test-initrd archives
+      run: flowey e 27 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey e 27 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey e 27 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -5943,8 +5976,11 @@ jobs:
     - name: write to directory variables
       run: flowey.exe e 28 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-deps archive
-      run: flowey.exe e 28 flowey_lib_hvlite::resolve_openvmm_deps 0
+    - name: unpack openvmm-test-initrd archives
+      run: flowey.exe e 28 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey.exe e 28 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
       shell: bash
     - name: unpack mu_msvm package (aarch64)
       run: flowey.exe e 28 flowey_lib_hvlite::download_uefi_mu_msvm 0

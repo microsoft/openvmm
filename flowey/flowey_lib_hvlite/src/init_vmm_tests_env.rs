@@ -82,6 +82,8 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::resolve_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
+        ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
     }
@@ -114,31 +116,29 @@ impl SimpleFlowNode for Node {
 
         let arch = CommonArch::from_architecture(vmm_tests_target.architecture)?;
 
-        let test_linux_initrd = ctx.reqv(|v| {
-            crate::resolve_openvmm_deps::Request::Get(
-                crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestInitrd,
-                arch,
-                v,
-            )
-        });
+        let test_linux_initrd =
+            ctx.reqv(|v| crate::resolve_openvmm_test_initrd::Request::Get(arch, v));
         let test_linux_kernel = ctx.reqv(|v| {
-            crate::resolve_openvmm_deps::Request::Get(
-                crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestKernel,
+            crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
                 arch,
+                crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
                 v,
             )
         });
-        let test_linux_bzimage = crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestBzImage
-            .is_available_for(arch)
-            .then(|| {
-                ctx.reqv(|v| {
-                    crate::resolve_openvmm_deps::Request::Get(
-                        crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestBzImage,
-                        arch,
-                        v,
-                    )
-                })
-            });
+        let test_linux_bzimage =
+            crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::BzImage
+                .is_available_for(arch)
+                .then(|| {
+                    ctx.reqv(|v| {
+                        crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                            crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::BzImage,
+                            arch,
+                            crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
+                            v,
+                        )
+                    })
+                });
 
         let uefi =
             ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v });

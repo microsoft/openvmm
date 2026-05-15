@@ -10,9 +10,6 @@ use std::collections::BTreeMap;
 /// Which file to extract from the openvmm-deps archive.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OpenvmmDepFile {
-    LinuxTestKernel,
-    LinuxTestBzImage,
-    LinuxTestInitrd,
     OpenhclCpioDbgrd,
     OpenhclCpioShell,
     OpenhclSysroot,
@@ -20,26 +17,12 @@ pub enum OpenvmmDepFile {
 }
 
 impl OpenvmmDepFile {
-    pub fn filename(self, arch: CommonArch) -> &'static str {
+    pub fn filename(self) -> &'static str {
         match self {
-            Self::LinuxTestKernel => match arch {
-                CommonArch::X86_64 => "vmlinux",
-                CommonArch::Aarch64 => "Image",
-            },
-            Self::LinuxTestBzImage => "bzImage",
-            Self::LinuxTestInitrd => "initrd",
             Self::OpenhclCpioDbgrd => "dbgrd.cpio.gz",
             Self::OpenhclCpioShell => "shell.cpio.gz",
             Self::OpenhclSysroot => "sysroot.tar.gz",
             Self::PetritoolsErofs => "petritools.erofs",
-        }
-    }
-
-    /// Whether this dep file is available for the given architecture.
-    pub fn is_available_for(self, arch: CommonArch) -> bool {
-        match self {
-            Self::LinuxTestBzImage => matches!(arch, CommonArch::X86_64),
-            _ => true,
         }
     }
 }
@@ -124,7 +107,7 @@ impl FlowNodeWithConfig for Node {
                         let base_dir = resolved_paths.get(&arch).ok_or_else(|| {
                             anyhow::anyhow!("No local path specified for architecture {:?}", arch)
                         })?;
-                        let path = base_dir.join(dep.filename(arch));
+                        let path = base_dir.join(dep.filename());
                         rt.write_all(vars, &path)
                     }
 
@@ -135,8 +118,7 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
-        let extract_tar_bz2_deps =
-            flowey_lib_common::_util::extract::extract_tar_bz2_if_new_deps(ctx);
+        let extract_tar_gz_persistent_dir = ctx.persistent_dir();
 
         let download_archive = |arch: CommonArch, ctx: &mut NodeCtx<'_>| {
             let version = version.clone().expect("local requests handled above");
@@ -154,35 +136,36 @@ impl FlowNodeWithConfig for Node {
             })
         };
 
-        let openvmm_deps_tar_bz2_x64 =
+        let openvmm_deps_tar_gz_x64 =
             needs_arch(CommonArch::X86_64).then(|| download_archive(CommonArch::X86_64, ctx));
-        let openvmm_deps_tar_bz2_aarch64 =
+        let openvmm_deps_tar_gz_aarch64 =
             needs_arch(CommonArch::Aarch64).then(|| download_archive(CommonArch::Aarch64, ctx));
 
         ctx.emit_rust_step("unpack openvmm-deps archive", |ctx| {
-            let extract_tar_bz2_deps = extract_tar_bz2_deps.claim(ctx);
-            let openvmm_deps_tar_bz2_x64 = openvmm_deps_tar_bz2_x64.claim(ctx);
-            let openvmm_deps_tar_bz2_aarch64 = openvmm_deps_tar_bz2_aarch64.claim(ctx);
+            let extract_tar_gz_persistent_dir = extract_tar_gz_persistent_dir.claim(ctx);
+            let openvmm_deps_tar_gz_x64 = openvmm_deps_tar_gz_x64.claim(ctx);
+            let openvmm_deps_tar_gz_aarch64 = openvmm_deps_tar_gz_aarch64.claim(ctx);
             let deps = deps.claim(ctx);
             let version = version.clone().expect("local requests handled above");
             move |rt| {
-                let extract_dir_x64 = openvmm_deps_tar_bz2_x64
+                let persistent_dir = extract_tar_gz_persistent_dir.map(|d| rt.read(d));
+                let extract_dir_x64 = openvmm_deps_tar_gz_x64
                     .map(|file| {
                         let file = rt.read(file);
-                        flowey_lib_common::_util::extract::extract_tar_bz2_if_new(
+                        flowey_lib_common::_util::extract::extract_tar_gz_if_new(
                             rt,
-                            extract_tar_bz2_deps.clone(),
+                            persistent_dir.as_deref(),
                             &file,
                             &version,
                         )
                     })
                     .transpose()?;
-                let extract_dir_aarch64 = openvmm_deps_tar_bz2_aarch64
+                let extract_dir_aarch64 = openvmm_deps_tar_gz_aarch64
                     .map(|file| {
                         let file = rt.read(file);
-                        flowey_lib_common::_util::extract::extract_tar_bz2_if_new(
+                        flowey_lib_common::_util::extract::extract_tar_gz_if_new(
                             rt,
-                            extract_tar_bz2_deps.clone(),
+                            persistent_dir.as_deref(),
                             &file,
                             &version,
                         )
@@ -195,7 +178,7 @@ impl FlowNodeWithConfig for Node {
                 };
 
                 for ((dep, arch), vars) in deps {
-                    let path = base_dir(arch).join(dep.filename(arch));
+                    let path = base_dir(arch).join(dep.filename());
                     rt.write_all(vars, &path)
                 }
 
