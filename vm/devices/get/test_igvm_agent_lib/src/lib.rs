@@ -10,12 +10,10 @@
 
 //! NOTE: This is a test implementation and should not be used in production.
 
-mod test_crypto;
-
-use crate::test_crypto::DummyRng;
-use crate::test_crypto::TestSha1;
-use crate::test_crypto::aes_key_wrap_with_padding;
 use base64::Engine;
+use crypto::rsa::RsaError;
+use crypto::rsa::RsaKeyPair;
+use crypto::rsa::RsaPublicKey;
 use get_resources::ged::IgvmAttestTestConfig;
 use inspect::Inspect;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
@@ -29,13 +27,6 @@ use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmSignal;
-use rsa::Oaep;
-use rsa::RsaPrivateKey;
-use rsa::RsaPublicKey;
-use rsa::pkcs8::EncodePrivateKey;
-use rsa::rand_core::Rng;
-use rsa::rand_core::SeedableRng;
-use sha2::Sha256;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use thiserror::Error;
@@ -48,7 +39,9 @@ pub enum Error {
     #[error("unsupported igvm attest request type: {0:?}")]
     UnsupportedIgvmAttestRequestType(u32),
     #[error("failed to initialize keys for attestation")]
-    KeyInitializationFailed(#[source] rsa::Error),
+    KeyInitializationFailed(#[source] RsaError),
+    #[error("failed to generate random DES key")]
+    DesKeyRandomFailed(#[source] getrandom::Error),
     #[error("keys not initialized")]
     KeysNotInitialized,
     #[error("invalid igvm attest request version - expected {expected:?}, found {found:?}")]
@@ -68,7 +61,7 @@ pub enum Error {
 #[derive(Debug, Error)]
 pub enum WrappedKeyError {
     #[error("RSA encryption error")]
-    RsaEncryptionError(#[source] rsa::Error),
+    RsaEncryptionError(#[source] RsaError),
     #[error("JSON serialization error")]
     JsonSerializeError(#[source] serde_json::Error),
     #[error("DES key not initialized")]
@@ -85,24 +78,27 @@ pub enum KeyReleaseError {
     #[error("missing transfer key in runtime claims")]
     MissingTransferKeyInRuntimeClaims,
     #[error("failed to convert JWK RSA key")]
-    ConvertJwkRsaFailed(#[source] rsa::Error),
+    ConvertJwkRsaFailed(#[source] RsaError),
     #[error("Secret key not initialized")]
     SecretKeyNotInitialized,
     #[error("failed to convert RSA key to PKCS8 format")]
-    RsaToPkcs8Error(#[source] rsa::pkcs8::Error),
+    RsaToPkcs8Error(#[source] RsaError),
     #[error("RSA encryption error")]
-    RsaEncryptionError(#[source] rsa::Error),
+    RsaEncryptionError(#[source] RsaError),
     #[error("JSON serialization error")]
     JsonSerializeError(#[source] serde_json::Error),
+    #[error("AES key wrap error")]
+    AesKeyWrapError(#[source] crypto::aes_kwp::AesKeyWrapError),
+    #[error("failed to generate random KEK")]
+    KekRandomFailed(#[source] getrandom::Error),
 }
 
 /// Test IGVM agent includes states that need to be persisted.
-#[derive(Debug, Clone, Default)]
 pub struct TestIgvmAgent {
     /// VM name for log correlation.
     vm_name: String,
     /// Optional RSA private key used for attestation.
-    secret_key: Option<RsaPrivateKey>,
+    secret_key: Option<RsaKeyPair>,
     /// Optional DES key
     des_key: Option<[u8; 32]>,
     /// Optional scripted actions per request type for tests.
@@ -559,15 +555,11 @@ impl TestIgvmAgent {
             return Err(Error::KeysNotInitialized);
         }
 
-        let seed = 1234u64.to_le_bytes();
-        let mut rng = DummyRng::from_seed(seed);
-        let private_key =
-            RsaPrivateKey::new(&mut rng, 2048).map_err(Error::KeyInitializationFailed)?;
-        let mut des_key = [0u8; 32];
-
+        let private_key = RsaKeyPair::generate(2048).map_err(Error::KeyInitializationFailed)?;
         self.secret_key = Some(private_key);
 
-        Rng::fill_bytes(&mut rng, &mut des_key);
+        let mut des_key = [0u8; 32];
+        getrandom::fill(&mut des_key).map_err(Error::DesKeyRandomFailed)?;
         self.des_key = Some(des_key);
 
         Ok(())
@@ -589,11 +581,8 @@ impl TestIgvmAgent {
             .ok_or(WrappedKeyError::SecretKeyNotInitialized)?;
 
         // Encrypt the DES key using RSA-OAEP
-        let mut rng = DummyRng::from_seed(0xabcdu64.to_le_bytes());
-        let padding = Oaep::<Sha256>::new();
-        let rsa_public = RsaPublicKey::from(secret_key);
-        let encrypted_des = rsa_public
-            .encrypt(&mut rng, padding, &des_key)
+        let encrypted_des = secret_key
+            .oaep_encrypt(&des_key, crypto::rsa::HashAlgorithm::Sha256)
             .map_err(WrappedKeyError::RsaEncryptionError)?;
 
         let aes_info = cps::AesInfo {
@@ -664,11 +653,8 @@ impl TestIgvmAgent {
         );
 
         // Convert the JWK RSA key to a usable RSA public key
-        let rsa_public_key = RsaPublicKey::new(
-            rsa::BoxedUint::from_be_slice(&transfer_key.n, 4096 * 8).unwrap(),
-            rsa::BoxedUint::from_be_slice(&transfer_key.e, 4096 * 8).unwrap(),
-        )
-        .map_err(KeyReleaseError::ConvertJwkRsaFailed)?;
+        let rsa_public_key = RsaPublicKey::from_components(&transfer_key.n, &transfer_key.e)
+            .map_err(KeyReleaseError::ConvertJwkRsaFailed)?;
 
         // Generate the JWT response using the extracted RSA key
         self.generate_jwt_with_rsa_key(rsa_public_key)
@@ -685,20 +671,21 @@ impl TestIgvmAgent {
             .secret_key
             .as_ref()
             .ok_or(KeyReleaseError::SecretKeyNotInitialized)?;
-        let mut rng = DummyRng::from_seed(0xabcdu64.to_le_bytes());
 
-        // Generate the KEK (32 bytes) and wrap the private key using internal wrapper
+        // Generate the KEK (32 bytes) and wrap the private key
         let mut kek_bytes = [0u8; 32];
-        Rng::fill_bytes(&mut rng, &mut kek_bytes);
+        getrandom::fill(&mut kek_bytes).map_err(KeyReleaseError::KekRandomFailed)?;
+
         let priv_key_der = secret_key
             .to_pkcs8_der()
             .map_err(KeyReleaseError::RsaToPkcs8Error)?;
-        let wrapped_key = aes_key_wrap_with_padding(&kek_bytes, priv_key_der.as_bytes());
+        let wrapped_key = crypto::aes_kwp::AesKeyWrap::new(&kek_bytes)
+            .and_then(|akw| akw.wrapper()?.wrap(&priv_key_der))
+            .map_err(KeyReleaseError::AesKeyWrapError)?;
 
         // Encrypt the KEK using RSA-OAEP
-        let padding = Oaep::<TestSha1>::new();
         let encrypted_kek = public_key
-            .encrypt(&mut rng, padding, &kek_bytes)
+            .oaep_encrypt(&kek_bytes, crypto::rsa::HashAlgorithm::Sha1)
             .map_err(KeyReleaseError::RsaEncryptionError)?;
 
         // Create the PKCS#11 RSA-AES-KEY-WRAP payload: RSA-encrypted KEK + AES-wrapped key

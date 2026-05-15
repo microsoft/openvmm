@@ -90,6 +90,12 @@ impl RsaKeyPair {
 pub struct RsaPublicKey(pub(crate) sys::RsaPublicKeyInner);
 
 impl RsaPublicKey {
+    /// Construct an RSA public key from a big-endian modulus `n` and
+    /// big-endian public exponent `e`.
+    pub fn from_components(n: &[u8], e: &[u8]) -> Result<Self, RsaError> {
+        sys::RsaPublicKeyInner::from_components(n, e).map(Self)
+    }
+
     /// Encrypt `input` using RSA-OAEP with the specified hash algorithm.
     pub fn oaep_encrypt(
         &self,

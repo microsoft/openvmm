@@ -96,6 +96,15 @@ impl RsaKeyPairInner {
 pub struct RsaPublicKeyInner(pub(crate) RsaPublicKey);
 
 impl RsaPublicKeyInner {
+    pub fn from_components(n: &[u8], e: &[u8]) -> Result<Self, RsaError> {
+        let key = RsaPublicKey::new(
+            rsa::BoxedUint::from_be_slice_vartime(n),
+            rsa::BoxedUint::from_be_slice_vartime(e),
+        )
+        .map_err(|e| RsaError(e, "constructing RSA public key from components"))?;
+        Ok(Self(key))
+    }
+
     pub fn oaep_encrypt(
         &self,
         input: &[u8],

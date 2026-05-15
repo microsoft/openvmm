@@ -7701,12 +7701,12 @@ name = "test_igvm_agent_lib"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "crypto",
  "get_resources",
+ "getrandom 0.4.2",
  "inspect",
  "openhcl_attestation_protocol",
- "rsa",
  "serde_json",
- "sha2",
  "thiserror 2.0.16",
  "tracing",
  "zerocopy",
