@@ -394,7 +394,10 @@ fn load_bzimage(
     // Place initrd after the kernel's init_size region to avoid being
     // overwritten during decompression.
     let next_addr = kernel_start_address + payload_memory_len;
-    let init_end = kernel_start_address + info.init_size as u64;
+    let pref_address: u64 = info.setup_header.pref_address.into();
+    let init_end = kernel_start_address
+        .max(pref_address)
+        .saturating_add(info.init_size as u64);
     let next_addr = next_addr.max(init_end);
     let initrd_info = import_initrd(initrd, next_addr, importer)?;
 
