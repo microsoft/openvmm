@@ -20,7 +20,7 @@ pub enum AesKeyWrapError {
     InvalidKeySize(usize),
     /// A backend cryptographic error occurred.
     #[error("AES key wrap error")]
-    #[expect(private_interfaces)] // Will go away after refactoring this algo
+    #[expect(private_interfaces)]
     Backend(#[source] super::BackendError),
 }
 

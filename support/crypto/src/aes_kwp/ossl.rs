@@ -60,29 +60,26 @@ impl AesKeyWrapInner {
 
 impl AesKeyWrapCtxInner<'_> {
     pub fn wrap(&mut self, payload: &[u8]) -> Result<Vec<u8>, AesKeyWrapError> {
-        let padding = 8 - payload.len() % 8;
-        let mut output = vec![0; payload.len() + padding + 16];
-        let count = self
-            .ctx
-            .cipher_update(payload, Some(&mut output))
+        let mut output = Vec::with_capacity(payload.len() + 24);
+        self.ctx
+            .cipher_update_vec(payload, &mut output)
             .map_err(|e| err(e, "wrapping key"))?;
-        // DEVNOTE: Skip the `cipher_final()`, which is effectively a no-op for this operation
-        // according to OpenSSL implementation.
-        output.truncate(count);
+        self.ctx
+            .cipher_final_vec(&mut output)
+            .map_err(|e| err(e, "finalizing key wrap"))?;
         Ok(output)
     }
 }
 
 impl AesKeyUnwrapCtxInner<'_> {
     pub fn unwrap(&mut self, wrapped_payload: &[u8]) -> Result<Vec<u8>, AesKeyWrapError> {
-        let mut output = vec![0; wrapped_payload.len() + 16];
-        let count = self
-            .ctx
-            .cipher_update(wrapped_payload, Some(&mut output))
+        let mut output = Vec::with_capacity(wrapped_payload.len() + 16);
+        self.ctx
+            .cipher_update_vec(wrapped_payload, &mut output)
             .map_err(|e| err(e, "unwrapping key"))?;
-        // DEVNOTE: Skip the `cipher_final()`, which is effectively a no-op for this operation
-        // according to OpenSSL implementation.
-        output.truncate(count);
+        self.ctx
+            .cipher_final_vec(&mut output)
+            .map_err(|e| err(e, "finalizing key unwrap"))?;
         Ok(output)
     }
 }
