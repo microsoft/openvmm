@@ -2940,8 +2940,6 @@ async fn new_underhill_vm(
         deps_generic_cmos_rtc,
         deps_generic_psp,
         deps_hyperv_firmware_uefi,
-        deps_hyperv_power_management,
-        deps_hyperv_guest_watchdog,
         deps_generic_isa_dma,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
