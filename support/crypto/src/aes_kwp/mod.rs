@@ -3,12 +3,17 @@
 
 //! AES key wrap with padding (RFC 5649).
 
-#![cfg(openssl)]
+#![cfg(any(openssl, rust))]
 
 #[cfg(openssl)]
 mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
+
+#[cfg(rust)]
+mod rust;
+#[cfg(rust)]
+use rust as sys;
 
 use thiserror::Error;
 
@@ -19,9 +24,14 @@ pub enum AesKeyWrapError {
     #[error("invalid wrapping key size {0}")]
     InvalidKeySize(usize),
     /// A backend cryptographic error occurred.
+    #[cfg(not(rust))]
     #[error("AES key wrap error")]
     #[expect(private_interfaces)]
     Backend(#[source] super::BackendError),
+    /// A backend cryptographic error occurred.
+    #[cfg(rust)]
+    #[error("AES key wrap error during {1}: {0}")]
+    Backend(String, &'static str),
 }
 
 /// AES key wrap with padding (RFC 5649).

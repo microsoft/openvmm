@@ -60,7 +60,7 @@ impl AesKeyWrapInner {
 
 impl AesKeyWrapCtxInner<'_> {
     pub fn wrap(&mut self, payload: &[u8]) -> Result<Vec<u8>, AesKeyWrapError> {
-        let mut output = Vec::with_capacity(payload.len() + 24);
+        let mut output = Vec::with_capacity(payload.len() + 16);
         self.ctx
             .cipher_update_vec(payload, &mut output)
             .map_err(|e| err(e, "wrapping key"))?;
