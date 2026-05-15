@@ -13,11 +13,8 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
-<<<<<<< HEAD
 use pci_core::msi::MsiTarget;
-=======
 use pcie::PciePortSettings;
->>>>>>> d2facfb1 (Add ACS capability)
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
@@ -287,11 +284,8 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
                 name: "sw0".into(),
                 downstream_port_count: 2,
                 hotplug: false,
-<<<<<<< HEAD
                 msi_target: MsiTarget::disconnected(),
-=======
                 dsp_settings: PciePortSettings::default(),
->>>>>>> d2facfb1 (Add ACS capability)
             });
             rc.add_pcie_device(port0_key, "sw0", Box::new(SwitchAdapter(switch)))
                 .map_err(|_| arbitrary::Error::IncorrectFormat)?;
