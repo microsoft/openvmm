@@ -7,6 +7,8 @@ use anyhow::bail;
 use chipset_device::io::IoResult;
 use inspect::Inspect;
 use pci_bus::GenericPciBusDevice;
+use pci_core::bus_range::AssignedBusRange;
+use pci_core::capabilities::extended::acs::AcsExtendedCapability;
 use pci_core::capabilities::msi_cap::MsiCapability;
 use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
@@ -14,6 +16,36 @@ use pci_core::msi::MsiTarget;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::HardwareIds;
 use std::sync::Arc;
+
+const ACS_CAPABILITY_IMPLEMENTED_MASK: u16 = 0x00df;
+const ACS_CAPABILITY_ALLOWED_ROOT_OR_DSP_MASK: u16 = 0x00ff;
+const ACS_CAPABILITY_ALLOWED_USP_MASK: u16 = 0x0000;
+
+/// Express-level settings for a PCIe port.
+///
+/// Collects feature flags that apply uniformly to a port so that adding new
+/// capabilities does not require changing every constructor signature.
+#[derive(Debug, Default, Clone)]
+pub struct PciePortSettings {
+    /// ACS capability bits to advertise on this port. `0` means the ACS
+    /// extended capability is not present.
+    pub acs_capabilities_supported: u16,
+}
+
+pub(crate) fn filter_acs_capabilities_for_bridge(
+    port_type: &DevicePortType,
+    requested: u16,
+) -> u16 {
+    let type_mask = match port_type {
+        DevicePortType::RootPort | DevicePortType::DownstreamSwitchPort => {
+            ACS_CAPABILITY_ALLOWED_ROOT_OR_DSP_MASK
+        }
+        DevicePortType::UpstreamSwitchPort => ACS_CAPABILITY_ALLOWED_USP_MASK,
+        DevicePortType::Endpoint => 0,
+    };
+
+    requested & ACS_CAPABILITY_IMPLEMENTED_MASK & type_mask
+}
 
 /// A common PCIe downstream facing port implementation that handles device connections and configuration forwarding.
 ///
@@ -42,6 +74,7 @@ impl PcieDownstreamPort {
     /// * `multi_function` - Whether this port should have the multi-function flag set
     /// * `hotplug_slot_number` - The slot number for hotplug support. `Some(slot_number)` enables hotplug, `None` disables it
     /// * `msi_target` - MSI target for interrupt delivery
+    /// * `settings` - Express-level port settings (ACS, etc.)
     pub fn new(
         name: impl Into<String>,
         hardware_ids: HardwareIds,
@@ -49,6 +82,7 @@ impl PcieDownstreamPort {
         multi_function: bool,
         hotplug_slot_number: Option<u32>,
         msi_target: &MsiTarget,
+        settings: PciePortSettings,
     ) -> Self {
         let port_name = name.into();
 
@@ -58,6 +92,8 @@ impl PcieDownstreamPort {
         };
 
         let msi_capability = MsiCapability::new(0, true, false, msi_target);
+        let acs_supported =
+            filter_acs_capabilities_for_bridge(&port_type, settings.acs_capabilities_supported);
 
         let pcie_cap = if hotplug {
             let slot_num = slot_number.unwrap_or(0);
@@ -66,9 +102,16 @@ impl PcieDownstreamPort {
             PciExpressCapability::new(port_type, None)
         };
 
+        let extended_capabilities = if acs_supported != 0 {
+            vec![Box::new(AcsExtendedCapability::with_capabilities(acs_supported)) as _]
+        } else {
+            vec![]
+        };
+
         let cfg_space = ConfigSpaceType1Emulator::new(
             hardware_ids,
             vec![Box::new(pcie_cap), Box::new(msi_capability)],
+            extended_capabilities,
         )
         .with_multi_function_bit(multi_function);
 
@@ -77,6 +120,14 @@ impl PcieDownstreamPort {
             cfg_space,
             link: None,
         }
+    }
+
+    /// Returns a clone of the config space emulator's shared bus range.
+    ///
+    /// The returned handle shares the same underlying atomic as the
+    /// emulator — writes, resets, and restores are reflected automatically.
+    pub fn bus_range(&self) -> AssignedBusRange {
+        self.cfg_space.bus_range()
     }
 
     /// Notify the guest of a hotplug event via MSI.
@@ -377,7 +428,7 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
-        let msi_conn = pci_core::msi::MsiConnection::new();
+        let msi_conn = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
@@ -385,6 +436,7 @@ mod tests {
             false,
             Some(1), // Enable hotplug with slot number 1
             msi_conn.target(),
+            PciePortSettings::default(),
         );
 
         // Initially, presence detect state should be 0
@@ -428,7 +480,7 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
-        let msi_conn = pci_core::msi::MsiConnection::new();
+        let msi_conn = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
@@ -436,6 +488,7 @@ mod tests {
             false,
             None, // No hotplug
             msi_conn.target(),
+            PciePortSettings::default(),
         );
 
         // Add a device to the port (should not panic even without hotplug support)
@@ -462,14 +515,15 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
-        let msi_conn = pci_core::msi::MsiConnection::new();
+        let msi_target = MsiTarget::disconnected();
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
             DevicePortType::RootPort,
             false,
             None,
-            msi_conn.target(),
+            &msi_target,
+            PciePortSettings::default(),
         );
 
         port.cfg_space
@@ -517,7 +571,7 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
-        let msi_conn = pci_core::msi::MsiConnection::new();
+        let msi_conn = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
@@ -525,6 +579,7 @@ mod tests {
             false,
             None,
             msi_conn.target(),
+            PciePortSettings::default(),
         );
 
         port.cfg_space
@@ -557,5 +612,113 @@ mod tests {
             stats.forward_writes,
             vec![(1, 0, 0x10, 0xAAAA_0000), (1, 2, 0x14, 0xBBBB_0000)]
         );
+    }
+
+    #[test]
+    fn test_port_cfg_space_save_restore() {
+        use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
+        use vmcore::save_restore::SaveRestore;
+
+        let hardware_ids = HardwareIds {
+            vendor_id: 0x1234,
+            device_id: 0x5678,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+            base_class: ClassCode::BRIDGE,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        };
+
+        let msi_conn = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+        let mut port = PcieDownstreamPort::new(
+            "test-port",
+            hardware_ids,
+            DevicePortType::RootPort,
+            false,
+            None,
+            msi_conn.target(),
+            PciePortSettings::default(),
+        );
+
+        // Program bridge bus numbers (Type1 register at offset 0x18).
+        port.cfg_space.write_u32(0x18, 0x0012_1000).unwrap();
+        assert_eq!(port.cfg_space.assigned_bus_range(), 0x10..=0x12);
+
+        let saved = port.cfg_space.save().expect("save should succeed");
+
+        // Change state away from saved values.
+        port.cfg_space.write_u32(0x18, 0x0000_0000).unwrap();
+        assert_eq!(port.cfg_space.assigned_bus_range(), 0..=0);
+
+        port.cfg_space
+            .restore(saved)
+            .expect("restore should succeed");
+        assert_eq!(port.cfg_space.assigned_bus_range(), 0x10..=0x12);
+    }
+
+    #[test]
+    fn test_filter_acs_capabilities_for_bridge_type() {
+        assert_eq!(
+            filter_acs_capabilities_for_bridge(&DevicePortType::RootPort, 0x00ff),
+            0x00df
+        );
+        assert_eq!(
+            filter_acs_capabilities_for_bridge(&DevicePortType::DownstreamSwitchPort, 0x00ff),
+            0x00df
+        );
+        assert_eq!(
+            filter_acs_capabilities_for_bridge(&DevicePortType::UpstreamSwitchPort, 0x00ff),
+            0
+        );
+        assert_eq!(
+            filter_acs_capabilities_for_bridge(&DevicePortType::Endpoint, 0x00ff),
+            0
+        );
+    }
+
+    #[test]
+    fn test_root_port_adds_acs_only_when_non_zero() {
+        use pci_core::spec::caps::ExtendedCapabilityId;
+        use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
+
+        let hardware_ids = HardwareIds {
+            vendor_id: 0x1234,
+            device_id: 0x5678,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+            base_class: ClassCode::BRIDGE,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        };
+
+        let msi_target = MsiTarget::disconnected();
+        let with_acs = PcieDownstreamPort::new(
+            "with-acs",
+            hardware_ids,
+            DevicePortType::RootPort,
+            false,
+            None,
+            &msi_target,
+            PciePortSettings {
+                acs_capabilities_supported: 0x005f,
+            },
+        );
+        let mut value = 0u32;
+        with_acs.cfg_space.read_u32(0x100, &mut value).unwrap();
+        assert_eq!(value & 0xffff, ExtendedCapabilityId::ACS.0 as u32);
+
+        let without_acs = PcieDownstreamPort::new(
+            "without-acs",
+            hardware_ids,
+            DevicePortType::RootPort,
+            false,
+            None,
+            &msi_target,
+            PciePortSettings::default(),
+        );
+        without_acs.cfg_space.read_u32(0x100, &mut value).unwrap();
+        assert_eq!(value, 0xffff_ffff);
     }
 }

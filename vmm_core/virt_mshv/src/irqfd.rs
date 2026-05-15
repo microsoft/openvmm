@@ -240,7 +240,7 @@ impl IrqFdRoute for MshvIrqFdRoute {
         &self.event
     }
 
-    fn enable(&self, address: u64, data: u32) {
+    fn enable(&self, address: u64, data: u32, _devid: Option<u32>) {
         let mut armed = self.armed.lock();
         let route = MsiRoute {
             address_lo: address as u32,

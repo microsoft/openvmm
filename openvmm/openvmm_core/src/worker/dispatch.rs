@@ -77,6 +77,8 @@ use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pci_core::PciInterruptPin;
+use pci_core::spec::caps::acs::DEFAULT_ACS_CAP_MASK;
+use pcie::PciePortSettings;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
@@ -491,6 +493,7 @@ impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
                     Some(gsiv) => PmuGsivConfig::Gsiv(gsiv),
                     None => PmuGsivConfig::Disabled,
                 },
+                gic_msi: Default::default(),
             })),
         }
     }
@@ -503,6 +506,8 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
         platform_info: &virt::PlatformInfo,
     ) -> anyhow::Result<ProcessorTopology<Aarch64Topology>> {
         use vm_topology::processor::aarch64::Aarch64PlatformConfig;
+        use vm_topology::processor::aarch64::GicItsInfo;
+        use vm_topology::processor::aarch64::GicMsiController;
         use vm_topology::processor::aarch64::GicV2mInfo;
 
         let arch = match &self.arch {
@@ -510,11 +515,7 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
             Some(ArchTopologyConfig::Aarch64(arch)) => arch.clone(),
             _ => anyhow::bail!("invalid architecture config"),
         };
-        let gic_v2m = Some(GicV2mInfo {
-            frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
-            spi_base: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_BASE,
-            spi_count: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_COUNT,
-        });
+
         let pmu_gsiv = match arch.pmu_gsiv {
             PmuGsivConfig::Disabled => None,
             PmuGsivConfig::Gsiv(gsiv) => Some(gsiv),
@@ -584,10 +585,39 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
             }
         };
 
+        // Use the ITS for MSI delivery when the backend supports it
+        // (KVM with GICv3). Otherwise fall back to GICv2m (SPI-based MSIs).
+        use openvmm_defs::config::GicMsiConfig;
+        let is_gicv2 = matches!(gic_version, GicVersion::V2 { .. });
+        let use_its = match arch.gic_msi {
+            GicMsiConfig::Auto => platform_info.supports_its && !is_gicv2,
+            GicMsiConfig::Its => {
+                if is_gicv2 {
+                    anyhow::bail!("ITS is incompatible with GICv2");
+                }
+                if !platform_info.supports_its {
+                    anyhow::bail!("ITS requested but the hypervisor does not support it");
+                }
+                true
+            }
+            GicMsiConfig::V2m => false,
+        };
+        let gic_msi = if use_its {
+            GicMsiController::Its(GicItsInfo {
+                its_base: openvmm_defs::config::DEFAULT_GIC_ITS_BASE,
+            })
+        } else {
+            GicMsiController::V2m(GicV2mInfo {
+                frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
+                spi_base: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_BASE,
+                spi_count: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_COUNT,
+            })
+        };
+
         let platform = Aarch64PlatformConfig {
             gic_distributor_base,
             gic_version,
-            gic_v2m,
+            gic_msi,
             pmu_gsiv,
             virt_timer_ppi: openvmm_defs::config::DEFAULT_VIRT_TIMER_PPI,
             gic_nr_irqs: openvmm_defs::config::DEFAULT_GIC_NR_IRQS,
@@ -1737,13 +1767,31 @@ impl InitializedVm {
 
         // PCI Express topology
 
+        // Determine whether ITS wrappers are needed for PCIe MSI delivery.
+        // Only aarch64 VMs configured with a GICv3 ITS need device ID
+        // injection; all other configurations pass through directly.
+        #[cfg(guest_arch = "aarch64")]
+        let use_its = matches!(
+            processor_topology.gic_msi(),
+            vm_topology::processor::aarch64::GicMsiController::Its(_)
+        );
+        #[cfg(not(guest_arch = "aarch64"))]
+        let use_its = false;
+
         let (pcie_host_bridges, pcie_root_complexes) = {
             let mut pcie_host_bridges = Vec::new();
             let mut pcie_root_complexes = Vec::new();
 
             for rc in cfg.pcie_root_complexes {
                 let device_name = format!("pcie-root:{}", rc.name);
-                let msi_conn = pci_core::msi::MsiConnection::new();
+
+                // Create a static bus range for the root complex so that
+                // root port MSI targets can lazily resolve their BDF as
+                // (start_bus << 8) | devfn.
+                let rc_bus_range = pci_core::bus_range::AssignedBusRange::new();
+                rc_bus_range.set_bus_range(rc.start_bus, rc.end_bus);
+                let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+
                 let root_complex =
                     chipset_builder
                         .arc_mutex_device(device_name)
@@ -1754,6 +1802,11 @@ impl InitializedVm {
                                 .map(|rp_cfg| GenericPcieRootPortDefinition {
                                     name: rp_cfg.name.into(),
                                     hotplug: rp_cfg.hotplug,
+                                    settings: PciePortSettings {
+                                        acs_capabilities_supported: rp_cfg
+                                            .acs_capabilities_supported
+                                            .unwrap_or(DEFAULT_ACS_CAP_MASK),
+                                    },
                                 })
                                 .collect();
 
@@ -1768,7 +1821,17 @@ impl InitializedVm {
                         })?;
 
                 if let Some(signal_msi) = partition.as_signal_msi(Vtl::Vtl0) {
-                    msi_conn.connect(signal_msi);
+                    // When ITS is active, wrap the root complex's
+                    // SignalMsi with a segment prepender so that all
+                    // MSIs (from both root ports and child devices)
+                    // get the ITS device ID composed.
+                    if use_its {
+                        msi_conn.connect(Arc::new(pcie::its::ItsSignalMsi::new(
+                            signal_msi, rc.segment,
+                        )));
+                    } else {
+                        msi_conn.connect(signal_msi);
+                    }
                 }
 
                 pcie_host_bridges.push(PcieHostBridge {
@@ -1790,8 +1853,68 @@ impl InitializedVm {
             (pcie_host_bridges, pcie_root_complexes)
         };
 
+        // Build a port-name→(segment, bus_range) map covering all ports in
+        // the PCIe topology (root complex ports and switch downstream ports).
+        // The segment is used for ITS device ID composition; the bus_range is
+        // a shared atomic that the config space emulator updates when the
+        // guest programs secondary/subordinate bus numbers.
+        struct PortInfo {
+            segment: u16,
+            bus_range: pci_core::bus_range::AssignedBusRange,
+        }
+        let mut port_info: std::collections::HashMap<Arc<str>, PortInfo> =
+            std::collections::HashMap::new();
+        for (hb, rc) in pcie_host_bridges.iter().zip(pcie_root_complexes.iter()) {
+            for p in rc.lock().downstream_ports() {
+                if let Some(_existing) = port_info.insert(
+                    p.name.clone(),
+                    PortInfo {
+                        segment: hb.segment,
+                        bus_range: p.bus_range,
+                    },
+                ) {
+                    anyhow::bail!("duplicate PCIe port name '{}'", p.name);
+                }
+            }
+        }
+
         for switch in cfg.pcie_switches {
             let device_name = format!("pcie-switch:{}", switch.name);
+
+            // Inherit the segment from the switch's parent port.
+            let parent_segment = port_info
+                .get(switch.parent_port.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "switch '{}' parent port '{}' not found in any root complex",
+                        switch.name,
+                        switch.parent_port
+                    )
+                })?
+                .segment;
+
+            let msi_conn =
+                pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
+
+            if let Some(signal_msi) = partition.as_signal_msi(Vtl::Vtl0) {
+                if use_its {
+                    msi_conn.connect(Arc::new(pcie::its::ItsSignalMsi::new(
+                        signal_msi,
+                        parent_segment,
+                    )));
+                } else {
+                    msi_conn.connect(signal_msi);
+                }
+            }
+            if let Some(fd) = partition.irqfd() {
+                if use_its {
+                    msi_conn.connect_irqfd(Arc::new(pcie::its::ItsIrqFd::new(fd, parent_segment)));
+                } else {
+                    msi_conn.connect_irqfd(fd);
+                }
+            }
+
+            let msi_target = msi_conn.target().clone();
             let switch_device = chipset_builder
                 .arc_mutex_device(device_name)
                 .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
@@ -1800,9 +1923,29 @@ impl InitializedVm {
                         name: switch.name.clone().into(),
                         downstream_port_count: switch.num_downstream_ports,
                         hotplug: switch.hotplug,
+                        msi_target,
+                        dsp_settings: PciePortSettings {
+                            acs_capabilities_supported: switch
+                                .acs_capabilities_supported
+                                .unwrap_or(DEFAULT_ACS_CAP_MASK),
+                        },
                     };
                     GenericPcieSwitch::new(definition)
                 })?;
+
+            // Query the switch's actual downstream port names instead of
+            // reconstructing them from the naming convention.
+            for p in switch_device.lock().downstream_ports() {
+                if let Some(_existing) = port_info.insert(
+                    p.name.clone(),
+                    PortInfo {
+                        segment: parent_segment,
+                        bus_range: p.bus_range,
+                    },
+                ) {
+                    anyhow::bail!("duplicate PCIe port name '{}'", p.name);
+                }
+            }
 
             let bus_id = vmotherboard::BusId::new(&switch.name);
             chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(switch_device));
@@ -1827,6 +1970,44 @@ impl InitializedVm {
         };
 
         // Resolve PCIe devices concurrently.
+        //
+        // When ITS is active, the root complex's ITS-wrapped SignalMsi
+        // and IrqFd are shared across all devices on that complex. Each
+        // device's MsiConnection carries a default BDF derived from the
+        // port's AssignedBusRange, which the MsiTarget resolves lazily
+        // at interrupt delivery time.
+
+        // Build per-segment ITS-wrapped signal_msi and irqfd. Each root
+        // complex connection already has ITS wrapping for port MSIs; we
+        // share the same wrapped instances for child devices.
+        let its_signal_msi: std::collections::HashMap<u16, Arc<dyn pci_core::msi::SignalMsi>> =
+            if use_its {
+                let mut map = std::collections::HashMap::new();
+                if let Some(s) = partition.as_signal_msi(Vtl::Vtl0) {
+                    for hb in &pcie_host_bridges {
+                        map.entry(hb.segment).or_insert_with(|| {
+                            Arc::new(pcie::its::ItsSignalMsi::new(s.clone(), hb.segment)) as _
+                        });
+                    }
+                }
+                map
+            } else {
+                std::collections::HashMap::new()
+            };
+        let its_irqfd: std::collections::HashMap<u16, Arc<dyn vmcore::irqfd::IrqFd>> = if use_its {
+            let mut map = std::collections::HashMap::new();
+            if let Some(fd) = partition.irqfd() {
+                for hb in &pcie_host_bridges {
+                    map.entry(hb.segment).or_insert_with(|| {
+                        Arc::new(pcie::its::ItsIrqFd::new(fd.clone(), hb.segment)) as _
+                    });
+                }
+            }
+            map
+        } else {
+            std::collections::HashMap::new()
+        };
+
         try_join_all(cfg.pcie_devices.into_iter().map(|dev_cfg| {
             let chipset_builder = &chipset_builder;
             let driver_source = &driver_source;
@@ -1834,20 +2015,55 @@ impl InitializedVm {
             let gm = &gm;
             let partition = &partition;
             let mapper = &mapper;
+            let port_info = &port_info;
+            let its_signal_msi = &its_signal_msi;
+            let its_irqfd = &its_irqfd;
             async move {
+                let port_name: Arc<str> = dev_cfg.port_name.into();
+                let pi = port_info.get(&port_name).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "device port '{}' not found in any root complex or switch",
+                        port_name
+                    )
+                })?;
+
+                let msi_conn = pci_core::msi::MsiConnection::new(pi.bus_range.clone(), 0);
+
                 vmm_core::device_builder::build_pcie_device(
                     chipset_builder,
-                    dev_cfg.port_name.into(),
+                    port_name.clone(),
                     driver_source,
                     resolver,
                     gm,
                     dev_cfg.resource,
                     partition.clone().into_doorbell_registration(Vtl::Vtl0),
                     Some(mapper),
-                    partition.as_signal_msi(Vtl::Vtl0),
-                    partition.irqfd(),
+                    msi_conn.target(),
                 )
-                .await
+                .await?;
+
+                // When ITS is active, use the per-segment wrapped
+                // SignalMsi and IrqFd. The device's MsiConnection
+                // carries a default BDF from the port's bus range.
+                let signal_msi = if use_its {
+                    its_signal_msi.get(&pi.segment).cloned()
+                } else {
+                    partition.as_signal_msi(Vtl::Vtl0)
+                };
+                if let Some(target) = signal_msi {
+                    msi_conn.connect(target);
+                }
+
+                let irqfd = if use_its {
+                    its_irqfd.get(&pi.segment).cloned()
+                } else {
+                    partition.irqfd()
+                };
+                if let Some(fd) = irqfd {
+                    msi_conn.connect_irqfd(fd);
+                }
+
+                anyhow::Ok(())
             }
         }))
         .await?;
@@ -2852,19 +3068,23 @@ impl LoadedVm {
                     }
                     VmRpc::AddPcieDevice(rpc) => {
                         rpc.handle_failable(async |(port_name, resource)| {
-                            // Validate the port exists before creating the device
-                            // to avoid leaking a DynamicDeviceUnit on error.
-                            let rc = self.inner.pcie_root_complexes.iter()
-                                .find(|rc| {
-                                    rc.lock().downstream_ports().iter().any(|(_, name)| name.as_ref() == port_name.as_str())
+                            // Find the root complex and its index for the named port.
+                            let (rc_idx, rc) = self.inner.pcie_root_complexes.iter()
+                                .enumerate()
+                                .find(|(_, rc)| {
+                                    rc.lock().downstream_ports().iter().any(|p| p.name.as_ref() == port_name.as_str())
                                 })
                                 .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
 
-                            let msi_conn = match self.inner.partition.irqfd() {
-                                Some(fd) => pci_core::msi::MsiConnection::with_irqfd(fd),
-                                None => pci_core::msi::MsiConnection::new(),
-                            };
-                            let signal_msi = self.inner.partition.as_signal_msi(Vtl::Vtl0);
+                            // Get the bus_range from the port's config space emulator.
+                            let bus_range = rc.lock()
+                                .downstream_ports()
+                                .into_iter()
+                                .find(|p| p.name.as_ref() == port_name.as_str())
+                                .expect("port was just found above")
+                                .bus_range;
+
+                            let msi_conn = pci_core::msi::MsiConnection::new(bus_range, 0);
 
                             let (unit, device) = self.inner.chipset_devices.add_dyn_device(
                                 &self.inner.driver_source,
@@ -2889,8 +3109,29 @@ impl LoadedVm {
                                 },
                             ).await?;
 
-                            if let Some(target) = signal_msi {
-                                msi_conn.connect(target);
+                            // Connect the MSI target and IrqFd, wrapping
+                            // with ITS segment translation when needed.
+                            #[cfg(guest_arch = "aarch64")]
+                            let use_its = matches!(
+                                self.inner.processor_topology.gic_msi(),
+                                vm_topology::processor::aarch64::GicMsiController::Its(_)
+                            );
+                            #[cfg(not(guest_arch = "aarch64"))]
+                            let use_its = false;
+                            let segment = self.inner.pcie_host_bridges[rc_idx].segment;
+                            if let Some(s) = self.inner.partition.as_signal_msi(Vtl::Vtl0) {
+                                if use_its {
+                                    msi_conn.connect(Arc::new(pcie::its::ItsSignalMsi::new(s, segment)));
+                                } else {
+                                    msi_conn.connect(s);
+                                }
+                            }
+                            if let Some(fd) = self.inner.partition.irqfd() {
+                                if use_its {
+                                    msi_conn.connect_irqfd(Arc::new(pcie::its::ItsIrqFd::new(fd, segment)));
+                                } else {
+                                    msi_conn.connect_irqfd(fd);
+                                }
                             }
 
                             // Wrap the device as a GenericPciBusDevice for the port.
@@ -2937,7 +3178,7 @@ impl LoadedVm {
                             // Find the root complex containing the target port
                             let rc = self.inner.pcie_root_complexes.iter()
                                 .find(|rc| {
-                                    rc.lock().downstream_ports().iter().any(|(_, name)| name.as_ref() == port_name.as_str())
+                                    rc.lock().downstream_ports().iter().any(|p| p.name.as_ref() == port_name.as_str())
                                 })
                                 .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
 

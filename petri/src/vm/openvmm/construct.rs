@@ -89,6 +89,7 @@ use unix_socket::UnixStream;
 use video_core::SharedFramebufferHandle;
 use virtio_resources::VirtioPciDeviceHandle;
 use virtio_resources::blk::VirtioBlkHandle;
+use virtio_resources::vsock::VirtioVsockHandle;
 use vm_manifest_builder::VmChipsetResult;
 use vm_manifest_builder::VmManifestBuilder;
 use vm_resource::IntoResource;
@@ -140,6 +141,7 @@ impl PetriVmConfigOpenVmm {
             openvmm_path,
             uses_pipette_as_init: properties.uses_pipette_as_init,
             enable_serial: properties.enable_serial,
+            use_virtio_vsock: properties.use_virtio_vsock,
         };
 
         let mut chipset = VmManifestBuilder::new(
@@ -346,8 +348,10 @@ impl PetriVmConfigOpenVmm {
             (shutdown_ic_send, kvp_ic_send)
         };
 
-        // Make a vmbus vsock path for pipette connections
-        let (vmbus_vsock_listener, vmbus_vsock_path) = make_vsock_listener()?;
+        // Make a vmbus or virtio vsock path for pipette connections
+        let (vsock_listener, vsock_path) = make_vsock_listener()?;
+        let mut vsock_listener = Some(vsock_listener);
+        let vsock_path_string = vsock_path.to_string_lossy();
 
         let chipset = chipset
             .build()
@@ -486,6 +490,22 @@ impl PetriVmConfigOpenVmm {
             chipset_devices.push(tpm);
         }
 
+        // Set up virtio-vsock if enabled.
+        if properties.use_virtio_vsock {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: "s0rc0rp0".to_string(),
+                resource: VirtioPciDeviceHandle(
+                    VirtioVsockHandle {
+                        guest_cid: 0x3,
+                        base_path: vsock_path_string.to_string(),
+                        listener: vsock_listener.take().unwrap(),
+                    }
+                    .into_resource(),
+                )
+                .into_resource(),
+            });
+        }
+
         let config = Config {
             // Firmware
             load_mode,
@@ -512,8 +532,10 @@ impl PetriVmConfigOpenVmm {
                 },
             },
             vmbus: Some(VmbusConfig {
-                vsock_listener: Some(vmbus_vsock_listener),
-                vsock_path: Some(vmbus_vsock_path.to_string_lossy().into_owned()),
+                // If virtio vsock is enabled, the vsock_listener will have already been taken and
+                // is now None.
+                vsock_listener,
+                vsock_path: (!properties.use_virtio_vsock).then(|| vsock_path_string.to_string()),
                 vmbus_max_version: None,
                 vtl2_redirect: firmware.openhcl_config().is_some_and(|c| c.vmbus_redirect),
                 #[cfg(windows)]
@@ -556,8 +578,7 @@ impl PetriVmConfigOpenVmm {
         };
 
         // Make the pipette connection listener.
-        let path = config.vmbus.as_ref().unwrap().vsock_path.as_ref().unwrap();
-        let path = format!("{path}_{PIPETTE_VSOCK_PORT}");
+        let path = format!("{vsock_path_string}_{PIPETTE_VSOCK_PORT}");
         let pipette_listener = PolledSocket::new(
             driver,
             UnixListener::bind(path).context("failed to bind to pipette listener")?,
@@ -595,7 +616,7 @@ impl PetriVmConfigOpenVmm {
                 output_dir: log_source.output_dir().to_owned(),
                 openvmm_path: openvmm_path.clone(),
                 vtl2_vsock_path,
-                _vmbus_vsock_path: vmbus_vsock_path,
+                _vsock_path: vsock_path,
                 properties,
             },
 
@@ -620,6 +641,7 @@ struct PetriVmConfigSetupCore<'a> {
     openvmm_path: &'a ResolvedArtifact,
     uses_pipette_as_init: bool,
     enable_serial: bool,
+    use_virtio_vsock: bool,
 }
 
 struct SerialData {
@@ -705,9 +727,15 @@ impl PetriVmConfigSetupCore<'_> {
         // CONFIG_HYPERV_VSOCKETS=y built in. The kernel only allows one G2H
         // vsock transport, and virtio_vsock_init runs first, claiming the
         // slot. This causes hv_sock registration to fail with -EBUSY,
-        // breaking pipette's AF_VSOCK connection. Blacklist virtio_vsock_init
-        // so that hv_sock can register as the G2H transport.
+        // breaking pipette's AF_VSOCK connection. Blacklist either
+        // virtio_vsock_init or hv_sock_init depending on which vsock transport
+        // is being used.
         const VIRTIO_VSOCK_BLACKLIST: &str = "initcall_blacklist=virtio_vsock_init";
+        let vsock_blacklist = if self.use_virtio_vsock {
+            "initcall_blacklist=hv_sock_init"
+        } else {
+            VIRTIO_VSOCK_BLACKLIST
+        };
 
         Ok(match (self.arch, &self.firmware) {
             (arch, Firmware::LinuxDirect { kernel, initrd }) => {
@@ -734,8 +762,7 @@ impl PetriVmConfigSetupCore<'_> {
                     String::new()
                 };
 
-                let cmdline =
-                    format!("{serial_args}panic=-1 rdinit={init} {VIRTIO_VSOCK_BLACKLIST}");
+                let cmdline = format!("{serial_args}panic=-1 rdinit={init} {vsock_blacklist}");
 
                 LoadMode::Linux {
                     kernel,
@@ -828,7 +855,7 @@ impl PetriVmConfigSetupCore<'_> {
                         append_cmdline(
                             &mut cmdline,
                             format!(
-                                "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh {VIRTIO_VSOCK_BLACKLIST}\""
+                                "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh {vsock_blacklist}\""
                             ),
                         );
                         false

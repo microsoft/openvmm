@@ -181,6 +181,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     enable_screenshots: bool,
     // Pre-built initrd with pipette already injected (skips runtime injection).
     prebuilt_initrd: Option<PathBuf>,
+    // Use virtio vsock instead of VMBus-based hvsocket for guest communication.
+    use_virtio_vsock: bool,
 }
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
@@ -201,6 +203,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("enable_serial", &self.enable_serial)
             .field("enable_screenshots", &self.enable_screenshots)
             .field("prebuilt_initrd", &self.prebuilt_initrd)
+            .field("use_virtio_vsock", &self.use_virtio_vsock)
             .finish()
     }
 }
@@ -268,6 +271,8 @@ pub struct PetriVmProperties {
     pub prebuilt_initrd: Option<PathBuf>,
     /// Whether the VM has a CIDATA agent disk attached
     pub has_agent_disk: bool,
+    /// Use virtio vsock instead of VMBus-based hvsocket
+    pub use_virtio_vsock: bool,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -433,6 +438,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_serial: true,
             enable_screenshots: true,
             prebuilt_initrd: None,
+            use_virtio_vsock: false,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
@@ -506,6 +512,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_serial: false,
             enable_screenshots: true,
             prebuilt_initrd: None,
+            use_virtio_vsock: false,
         })
     }
 
@@ -598,6 +605,21 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// eliminating the "No change in framebuffer" debug log lines.
     pub fn without_screenshots(mut self) -> Self {
         self.enable_screenshots = false;
+        self
+    }
+
+    /// Use virtio vsock instead of VMBus-based hvsocket for guest communication.
+    /// The virtio-vsock device will use PCIe, so a PCIe root topology must be
+    /// configured.
+    ///
+    /// When enabled, a virtio-vsock device is added to the VM. This device uses
+    /// the same Unix socket relay path that hvsocket would otherwise use, so
+    /// pipette will connect using this.
+    ///
+    /// For Linux direct boot, this also adjusts the kernel command line to
+    /// blacklist hv_sock instead of virtio_vsock.
+    pub fn with_virtio_vsock(mut self) -> Self {
+        self.use_virtio_vsock = true;
         self
     }
 
@@ -876,6 +898,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_serial: self.enable_serial,
             prebuilt_initrd: self.prebuilt_initrd.clone(),
             has_agent_disk: self.has_agent_disk(),
+            use_virtio_vsock: self.use_virtio_vsock,
         }
     }
 

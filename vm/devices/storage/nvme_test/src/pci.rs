@@ -160,6 +160,7 @@ impl NvmeFaultController {
                 type0_sub_system_id: 0,
             },
             vec![Box::new(msix_cap)],
+            Vec::new(),
             bars,
         );
 

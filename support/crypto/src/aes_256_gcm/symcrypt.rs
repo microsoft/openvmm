@@ -1,8 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::*;
-use ::symcrypt::gcm::GcmExpandedKey;
+//! AES-256-GCM implementation using SymCrypt.
+
+use super::Aes256GcmError;
+use super::IV_LEN;
+use super::KEY_LEN;
+use symcrypt::gcm::GcmExpandedKey;
 
 pub struct Aes256GcmInner {
     key: GcmExpandedKey,
@@ -16,13 +20,13 @@ pub struct Aes256GcmDecCtxInner<'a> {
     key: &'a GcmExpandedKey,
 }
 
-fn err(e: ::symcrypt::errors::SymCryptError, op: &'static str) -> Aes256GcmError {
+fn err(e: symcrypt::errors::SymCryptError, op: &'static str) -> Aes256GcmError {
     Aes256GcmError(crate::BackendError::SymCrypt(e, op))
 }
 
 impl Aes256GcmInner {
     pub fn new(key: &[u8; KEY_LEN]) -> Result<Self, Aes256GcmError> {
-        let key = GcmExpandedKey::new(key, ::symcrypt::cipher::BlockCipherType::AesBlock)
+        let key = GcmExpandedKey::new(key, symcrypt::cipher::BlockCipherType::AesBlock)
             .map_err(|e| err(e, "expanding gcm key"))?;
         Ok(Self { key })
     }

@@ -58,6 +58,10 @@ pub struct PlatformInfo {
     /// Whether the hypervisor supports GICv3. When `false`, only
     /// GICv2 is available (e.g., Raspberry Pi 5 with GIC-400).
     pub supports_gic_v3: bool,
+    /// Whether the hypervisor supports an in-kernel GICv3 ITS for
+    /// MSI delivery via LPIs. When `true`, the topology can include
+    /// a `GicItsInfo` and the backend will create/manage the ITS device.
+    pub supports_its: bool,
 }
 
 pub trait Hypervisor: 'static {
@@ -680,7 +684,7 @@ impl MapVpciInterrupt for UnimplementedDevice {
 }
 
 impl SignalMsi for UnimplementedDevice {
-    fn signal_msi(&self, _rid: u32, _address: u64, _data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, _address: u64, _data: u32) {
         match *self {}
     }
 }

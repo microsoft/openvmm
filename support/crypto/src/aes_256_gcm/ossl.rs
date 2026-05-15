@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! AES-256-GCM implementation using OpenSSL.
+
 use super::*;
 
 pub struct Aes256GcmInner {

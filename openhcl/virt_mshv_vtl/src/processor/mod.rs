@@ -117,7 +117,7 @@ pub struct UhProcessor<'a, T: Backing> {
     // together by the compiler.
     #[inspect(skip)]
     runner: ProcessorRunner<'a, T::HclBacking<'a>>,
-    #[inspect(mut)]
+    #[inspect(mut, safe)]
     backing: T,
 }
 
@@ -157,6 +157,7 @@ impl VtlsTlbLocked {
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
 pub(crate) struct LapicState {
+    #[inspect(safe)]
     lapic: LocalApic,
     activity: MpState,
     nmi_pending: bool,

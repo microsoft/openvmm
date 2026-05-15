@@ -13,6 +13,7 @@ inspect.workspace = true
 memory_range.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
+pal_event.workspace = true
 pci_bus.workspace = true
 pci_core.workspace = true
 tracing.workspace = true

@@ -851,6 +851,7 @@ impl MsiRouteBuilder for KvmX86MsiRouteBuilder {
         _partition: &KvmPartitionInner,
         address: u64,
         data: u32,
+        _devid: Option<u32>,
     ) -> Option<kvm::RoutingEntry> {
         let KvmMsi {
             address_lo,
@@ -861,6 +862,7 @@ impl MsiRouteBuilder for KvmX86MsiRouteBuilder {
             address_lo,
             address_hi,
             data,
+            devid: None,
         })
     }
 }
@@ -883,6 +885,7 @@ impl IoApicRouting for KvmPartitionInner {
                     address_lo,
                     address_hi,
                     data,
+                    devid: None,
                 }),
                 None => {
                     tracelimit::warn_ratelimited!(
@@ -1456,7 +1459,7 @@ impl GuestEventPort for KvmGuestEventPort {
 }
 
 impl SignalMsi for KvmPartitionInner {
-    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         self.request_msi(MsiRequest { address, data });
     }
 }
