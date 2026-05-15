@@ -3,11 +3,6 @@
 
 //! Processor support for CCA Planes.
 
-// TODO: CCA: understand what the common functionality with the HV Arm64 implementation is.
-// This is one of the most stubbed parts of the CCA implementation, lots more work is needed.
-
-use std::sync::atomic::AtomicU8;
-
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
 use super::UhProcessor;
@@ -20,7 +15,6 @@ use crate::TlbFlushLockAccess;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
 use crate::UhPartitionInner;
-use crate::UhPartitionNewParams;
 use crate::processor::InterceptMessageState;
 use aarch64defs::EsrEl2;
 use aarch64defs::SystemReg;
@@ -88,25 +82,12 @@ impl CcaVtl {
 #[derive(Inspect)]
 pub struct CcaBackedShared {
     pub(crate) cvm: UhCvmPartitionState,
-    // CCA: potentially needed:
-    // The synic state used for untrusted SINTs, that is, the SINTs for which
-    // the guest thinks it is interacting directly with the untrusted
-    // hypervisor via an architecture-specific interface.
-    #[inspect(iter_by_index)]
-    active_vtl: Vec<AtomicU8>,
 }
 
 impl CcaBackedShared {
-    pub(crate) fn new(
-        partition_params: &UhPartitionNewParams<'_>,
-        params: BackingSharedParams<'_>,
-    ) -> Result<Self, Error> {
+    pub(crate) fn new(params: BackingSharedParams<'_>) -> Result<Self, Error> {
         Ok(Self {
             cvm: params.cvm_state.unwrap(),
-            // VPs start in VTL 2.
-            active_vtl: std::iter::repeat_n(2, partition_params.topology.vp_count() as usize)
-                .map(AtomicU8::new)
-                .collect(),
         })
     }
 }
@@ -281,13 +262,19 @@ impl BackingPrivate for CcaBacked {
 
                             if esr_el2.is_write() {
                                 // Handle MMIO write
-                                dev.write_mmio(
-                                    this.vp_index(),
-                                    address,
-                                    &this.runner.cca_rsi_plane_exit().gprs[esr_el2.srt() as usize]
-                                        .to_ne_bytes(),
-                                )
-                                .await;
+                                if let Some(srt) = esr_el2.srt() {
+                                    dev.write_mmio(
+                                        this.vp_index(),
+                                        address,
+                                        &this.runner.cca_rsi_plane_exit().gprs[srt as usize]
+                                            .to_ne_bytes(),
+                                    )
+                                    .await;
+                                } else {
+                                    tracing::warn!(
+                                        "MMIO write not handled, srt does have a valid value"
+                                    );
+                                }
                             } else {
                                 // Handle MMIO read
                                 todo!();

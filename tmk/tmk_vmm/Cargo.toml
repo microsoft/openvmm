@@ -18,6 +18,7 @@ vm_topology.workspace = true
 vmcore.workspace = true
 vm_loader.workspace = true
 x86defs.workspace = true
+memory_range.workspace = true
 
 pal_async.workspace = true
 mesh.workspace = true
@@ -31,8 +32,6 @@ object.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zerocopy.workspace = true
-
-memory_range.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 virt_whp.workspace = true

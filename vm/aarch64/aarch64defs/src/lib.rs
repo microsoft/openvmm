@@ -102,12 +102,12 @@ impl EsrEl2 {
             | ((self.d() as u32) << 24)
     }
 
-    pub fn srt(&self) -> u8 {
+    pub fn srt(&self) -> Option<u8> {
         // The SRT field is only valid for data aborts.
         if (ExceptionClass::DATA_ABORT_LOWER.0..ExceptionClass::DATA_ABORT.0).contains(&self.ec()) {
-            self.b_srt()
+            Some(self.b_srt())
         } else {
-            0
+            None
         }
     }
 }

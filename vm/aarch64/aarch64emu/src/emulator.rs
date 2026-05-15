@@ -183,7 +183,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             return Ok(false);
         }
 
-        let temp_iss: u32 = (syndrome.lower_iss() as u32)
+        let iss: u32 = (syndrome.lower_iss() as u32)
             | ((syndrome.wnr() as u32) << 6)
             | ((syndrome.mid_iss() as u32) << 7)
             | ((syndrome.b_srt() as u32) << 16)
@@ -191,7 +191,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             | ((syndrome.b() as u32) << 22)
             | ((syndrome.c() as u32) << 23)
             | ((syndrome.d() as u32) << 24);
-        let iss = aarch64defs::IssDataAbort::from(temp_iss);
+        let iss = aarch64defs::IssDataAbort::from(iss);
         if !iss.isv() {
             return Ok(false);
         }

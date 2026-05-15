@@ -56,18 +56,6 @@ pub struct cca_realm_config {
     pub pad1: [u8; 0x1000 - 4 * 8],
 }
 
-impl cca_realm_config {
-    pub fn empty() -> Self {
-        Self {
-            ipa_width: 0,
-            algorithm: 0,
-            num_aux_planes: 0,
-            gicv3_vtr: 0,
-            pad1: [0; 0xFE0],
-        }
-    }
-}
-
 /// Flattened RSI plane entry buffer layout.
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]

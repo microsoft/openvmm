@@ -288,10 +288,9 @@ impl BackingShared {
                 backing_shared_params,
             )?),
             #[cfg(guest_arch = "aarch64")]
-            IsolationType::Cca => BackingShared::Cca(Box::new(CcaBackedShared::new(
-                partition_params,
-                backing_shared_params,
-            )?)),
+            IsolationType::Cca => {
+                BackingShared::Cca(Box::new(CcaBackedShared::new(backing_shared_params)?))
+            }
             _ => unreachable!(),
         })
     }
