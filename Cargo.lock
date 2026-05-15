@@ -7760,6 +7760,7 @@ dependencies = [
  "cc",
  "cfg-if",
  "clap",
+ "crypto",
  "get_resources",
  "guid",
  "parking_lot",

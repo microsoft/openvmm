@@ -13,6 +13,7 @@ cfg-if.workspace = true
 clap = { workspace = true, features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
+crypto = { workspace = true, features = ["rust"] }
 guid.workspace = true
 parking_lot.workspace = true
 test_igvm_agent_lib.workspace = true
@@ -32,3 +33,7 @@ serde_json = { workspace = true, features = ["std"] }
 
 [lints]
 workspace = true
+
+[package.metadata.xtask.unused-deps]
+# keep the crypto dep so we can specify the backend feature
+ignored = ["crypto"]
