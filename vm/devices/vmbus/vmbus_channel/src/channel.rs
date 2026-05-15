@@ -16,6 +16,7 @@ use crate::gpadl::GpadlMapView;
 use anyhow::Context;
 use async_trait::async_trait;
 use futures::StreamExt;
+use futures::future::join_all;
 use futures::stream::SelectAll;
 use futures::stream::select;
 use inspect::Inspect;
@@ -513,7 +514,22 @@ impl Device {
                 }
             }
         }
-        // Revoke the channel.
+
+        // Revoke all subchannels before the primary channel, so that the
+        // guest sees the rescind for every subchannel before the rescind for
+        // the primary. Issuing `Revoke` RPCs concurrently and awaiting them
+        // all via `join_all` lets `vmbus_server` rescind the subchannels in
+        // any order, but guarantees they have all been emitted before the
+        // primary's sender is dropped below.
+        let subchannel_senders = self.server_requests.split_off(1);
+        join_all(
+            subchannel_senders
+                .into_iter()
+                .map(|s| s.call(ChannelServerRequest::Revoke, ())),
+        )
+        .await;
+
+        // Revoke the primary channel by dropping its sender.
         drop(self.server_requests);
         // Wait for the revokes to finish.
         // When vmbus (sub)channels are closed, `self.requests` ends up with stale
