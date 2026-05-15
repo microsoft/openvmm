@@ -25,6 +25,8 @@ pub enum Error {
     Loader(#[source] loader::uefi::Error),
     #[error("UEFI requires at least two MMIO ranges")]
     UnsupportedMmio,
+    #[error("failed to build PCIe ACPI tables")]
+    PcieAcpi(#[source] vmm_core::acpi_builder::PcieAcpiBuildError),
     #[cfg(guest_arch = "aarch64")]
     #[error("UEFI boot with GICv2 is not supported")]
     GicV2NotSupported,
@@ -52,7 +54,7 @@ pub fn load_uefi(
     gm: &GuestMemory,
     processor_topology: &ProcessorTopology,
     mem_layout: &MemoryLayout,
-    pcie_host_bridges: &Vec<PcieHostBridge>,
+    pcie_host_bridges: &[PcieHostBridge],
     load_settings: UefiLoadSettings,
     madt: &[u8],
     srat: &[u8],
@@ -179,19 +181,12 @@ pub fn load_uefi(
     }
 
     if !pcie_host_bridges.is_empty() {
-        let mut ssdt = acpi::ssdt::Ssdt::new();
-        for bridge in pcie_host_bridges {
-            ssdt.add_pcie(
-                bridge.index,
-                bridge.segment,
-                bridge.start_bus,
-                bridge.end_bus,
-                bridge.ecam_range,
-                bridge.low_mmio,
-                bridge.high_mmio,
-            );
+        let pcie_tables = vmm_core::acpi_builder::build_pcie_acpi_tables(pcie_host_bridges)
+            .map_err(Error::PcieAcpi)?;
+        cfg.add_raw(config::BlobStructureType::Ssdt, &pcie_tables.ssdt);
+        if let Some(cedt) = pcie_tables.cedt {
+            cfg.add_raw(config::BlobStructureType::AcpiTable, &cedt);
         }
-        cfg.add_raw(config::BlobStructureType::Ssdt, &ssdt.to_bytes());
     }
 
     if !pcie_host_bridges.is_empty() {

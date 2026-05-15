@@ -260,6 +260,7 @@ impl PetriVmConfigOpenVmm {
                         name: format!("s{}rc{}rp{}", segment, rc_index_in_segment, i),
                         hotplug: true,
                         acs_capabilities_supported: Some(0),
+                        cxl: false,
                     })
                     .collect();
 
@@ -275,6 +276,7 @@ impl PetriVmConfigOpenVmm {
                     high_mmio: PcieMmioRangeConfig::Dynamic {
                         size: HIGH_MMIO_SIZE,
                     },
+                    cxl: None,
                     ports,
                 });
             }

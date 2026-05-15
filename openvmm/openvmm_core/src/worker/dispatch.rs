@@ -15,6 +15,8 @@ use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
+use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
+use cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
@@ -59,6 +61,7 @@ use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
+use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::PmuGsivConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
@@ -112,8 +115,10 @@ use vm_resource::kind::KeyboardInputHandleKind;
 use vm_resource::kind::MouseInputHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
+use vm_topology::cxl::CfmwsWindowRestrictions;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::pcie::PcieHostBridge;
+use vm_topology::pcie::PcieHostBridgeCxlInfo;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
 use vm_topology::processor::aarch64::Aarch64Topology;
@@ -813,6 +818,34 @@ fn convert_vtl2_config(
     Ok(Some(config))
 }
 
+/// Builds root-port PCIe settings from manifest flags.
+///
+/// When CXL is enabled, emit a default Flex Bus capability advertising both
+/// cache and memory support.
+fn build_root_port_settings(rp_cfg: &PcieRootPortConfig) -> PciePortSettings {
+    PciePortSettings {
+        acs_capabilities_supported: rp_cfg
+            .acs_capabilities_supported
+            .unwrap_or(DEFAULT_ACS_CAP_MASK),
+        cxl_flex_bus_port_capability: rp_cfg.cxl.then_some(
+            CxlFlexBusPortDvsecCapability::new()
+                .with_cache_capable(true)
+                .with_mem_capable(true),
+        ),
+    }
+}
+
+/// Converts a manifest root-port entry into the runtime root-port definition.
+fn build_root_port_definition(rp_cfg: PcieRootPortConfig) -> GenericPcieRootPortDefinition {
+    let settings = build_root_port_settings(&rp_cfg);
+
+    GenericPcieRootPortDefinition {
+        name: rp_cfg.name.into(),
+        hotplug: rp_cfg.hotplug,
+        settings,
+    }
+}
+
 impl InitializedVm {
     /// Creates and initializes a VM using the given backend.
     async fn new(
@@ -942,7 +975,6 @@ impl InitializedVm {
             .iter()
             .filter(|(bus, _)| matches!(bus, VirtioBus::Mmio))
             .count();
-
         let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
             mem_size: cfg.memory.mem_size,
             numa_mem_sizes: cfg.memory.numa_mem_sizes.as_deref(),
@@ -1799,6 +1831,44 @@ impl InitializedVm {
                 .into_iter()
                 .zip(resolved_pcie_root_complex_ranges)
             {
+                let cxl_port_count = rc.ports.iter().filter(|rp_cfg| rp_cfg.cxl).count() as u64;
+                let cxl_config = rc.cxl.as_ref();
+
+                // Note that for each CXL enabled root port, they need 64K of MMIO space for the component registers.
+                // We need to ensure that the PCI MMIO range reserved is sufficient for that.
+                if cxl_port_count != 0 {
+                    let required_cxl_component_bar_mmio = cxl_port_count
+                        .checked_mul(CXL_COMPONENT_REGISTERS_SIZE_BYTES)
+                        .context("cxl component register size overflow")?;
+                    if ranges.high_mmio.len() < required_cxl_component_bar_mmio {
+                        anyhow::bail!(
+                            "invalid CXL root complex '{}': high MMIO range {:#x} is too small for {} CXL root-port BAR apertures (requires {:#x})",
+                            rc.name,
+                            ranges.high_mmio.len(),
+                            cxl_port_count,
+                            required_cxl_component_bar_mmio
+                        );
+                    }
+                }
+
+                let hdm_range = (!ranges.hdm_range.is_empty()).then_some(ranges.hdm_range);
+                let chbcr_range = (!ranges.chbcr_range.is_empty()).then_some(ranges.chbcr_range);
+
+                if cxl_port_count != 0 {
+                    if cxl_config.is_none() {
+                        anyhow::bail!(
+                            "invalid CXL root complex '{}': CXL-capable root ports require both CHBCR and HDM ranges",
+                            rc.name
+                        );
+                    }
+                    if hdm_range.is_none() || chbcr_range.is_none() {
+                        anyhow::bail!(
+                            "invalid CXL root complex '{}': configured CXL CHBCR/HDM ranges were not resolved",
+                            rc.name
+                        );
+                    }
+                }
+
                 let device_name = format!("pcie-root:{}", rc.name);
 
                 // Create a static bus range for the root complex so that
@@ -1815,21 +1885,14 @@ impl InitializedVm {
                             let root_port_definitions = rc
                                 .ports
                                 .into_iter()
-                                .map(|rp_cfg| GenericPcieRootPortDefinition {
-                                    name: rp_cfg.name.into(),
-                                    hotplug: rp_cfg.hotplug,
-                                    settings: PciePortSettings {
-                                        acs_capabilities_supported: rp_cfg
-                                            .acs_capabilities_supported
-                                            .unwrap_or(DEFAULT_ACS_CAP_MASK),
-                                    },
-                                })
+                                .map(build_root_port_definition)
                                 .collect();
 
                             GenericPcieRootComplex::new(
                                 &mut services.register_mmio(),
                                 rc.start_bus,
                                 rc.end_bus,
+                                chbcr_range,
                                 ranges.ecam_range,
                                 root_port_definitions,
                                 msi_conn.target(),
@@ -1850,6 +1913,21 @@ impl InitializedVm {
                     }
                 }
 
+                let cxl = cxl_config
+                    .map(|cxl| -> anyhow::Result<PcieHostBridgeCxlInfo> {
+                        Ok(PcieHostBridgeCxlInfo {
+                            chbcr_range: chbcr_range
+                                .context("missing CHBCR range for CXL root complex")?,
+                            hdm_range: hdm_range
+                                .context("missing HDM range for CXL root complex")?,
+                            hdm_window_restrictions: CfmwsWindowRestrictions::try_from_bits(
+                                cxl.hdm_window_restrictions,
+                            )
+                            .context("invalid CFMWS HDM window restrictions")?,
+                        })
+                    })
+                    .transpose()?;
+
                 pcie_host_bridges.push(PcieHostBridge {
                     index: rc.index,
                     segment: rc.segment,
@@ -1858,6 +1936,7 @@ impl InitializedVm {
                     ecam_range: ranges.ecam_range,
                     low_mmio: ranges.low_mmio,
                     high_mmio: ranges.high_mmio,
+                    cxl,
                 });
 
                 pcie_root_complexes.push(root_complex.clone());
@@ -1944,6 +2023,7 @@ impl InitializedVm {
                             acs_capabilities_supported: switch
                                 .acs_capabilities_supported
                                 .unwrap_or(DEFAULT_ACS_CAP_MASK),
+                            cxl_flex_bus_port_capability: None,
                         },
                     };
                     GenericPcieSwitch::new(definition)

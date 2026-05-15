@@ -30,8 +30,10 @@ name = "acpi"
 version = "0.0.0"
 dependencies = [
  "acpi_spec",
+ "cxl_spec",
  "guid",
  "memory_range",
+ "thiserror 2.0.16",
  "x86defs",
  "zerocopy",
 ]
@@ -1164,6 +1166,23 @@ version = "0.0.0"
 dependencies = [
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "cxl_spec"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "bitfield-struct 0.11.0",
+ "chipset_device",
+ "inspect",
+ "mesh",
+ "pci_core",
+ "pci_resources",
+ "thiserror 2.0.16",
+ "tracing",
+ "vm_resource",
+ "vmcore",
 ]
 
 [[package]]
@@ -5348,6 +5367,7 @@ dependencies = [
  "chipset_resources",
  "closeable_mutex",
  "crc32fast",
+ "cxl_spec",
  "debug_ptr",
  "disk_backend",
  "fdt",
@@ -5463,6 +5483,7 @@ dependencies = [
  "clap_dyn_complete",
  "console_relay",
  "crypto",
+ "cxl_spec",
  "debug_worker_defs",
  "diag_client",
  "dirs",
@@ -5634,6 +5655,7 @@ dependencies = [
  "chipset",
  "chipset_legacy",
  "chipset_resources",
+ "cxl_spec",
  "debug_worker",
  "disk_blob",
  "disk_blockdevice",
@@ -5989,6 +6011,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "cxl_spec",
  "inspect",
  "memory_range",
  "mesh",
@@ -9598,6 +9621,7 @@ dependencies = [
  "aarch64defs",
  "build_rs_guest_arch",
  "cfg-if",
+ "cxl_spec",
  "inspect",
  "memory_range",
  "mesh_protobuf",

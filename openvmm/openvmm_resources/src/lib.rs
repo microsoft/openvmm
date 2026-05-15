@@ -80,6 +80,7 @@ vm_resource::register_static_resolvers! {
     disklayer_sqlite::resolver::SqliteDiskLayerResolver,
 
     // PCI devices
+    cxl_spec::test::resolver::CxlTestDeviceResolver,
     gdma::resolver::GdmaDeviceResolver,
     nvme::resolver::NvmeControllerResolver,
     nvme_test::resolver::NvmeFaultControllerResolver,

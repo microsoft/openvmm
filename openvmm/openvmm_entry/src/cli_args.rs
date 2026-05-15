@@ -21,6 +21,7 @@
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
+use cxl_spec::spec::CfmwsWindowRestrictions;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::PcatBootDevice;
@@ -271,6 +272,10 @@ options:
 "#)]
     #[clap(long)]
     pub nvme: Vec<DiskCli>,
+
+    /// attach a CXL Type-3 test endpoint on a PCIe root port
+    #[clap(long = "cxl-test", value_name = "mem:<len>,pcie_port=<name>")]
+    pub cxl_test: Vec<CxlTestDeviceCli>,
 
     /// attach a disk via a virtio-blk controller
     #[clap(long_help = r#"
@@ -803,6 +808,9 @@ Examples:
     # Attach root complex rc0 on segment 0 with bus and MMIO ranges
     --pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255,low_mmio=4M,high_mmio=1G
 
+    # Configure HDM window size and restrictions (bitmask)
+    --pcie-root-complex rc1,hdm=2G,hdm_window_restrictions=0x21
+
 Syntax: <name>[,opt=arg,...]
 
 Options:
@@ -811,6 +819,9 @@ Options:
     `end_bus=<value>`              highest valid bus number, default 255
     `low_mmio=<size>`              low MMIO window size, default 64M
     `high_mmio=<size>`             high MMIO window size, default 1G
+    `hdm=<size>`                   HDM decoder MMIO window size (CFMWS window), default 1G
+    `hdm_window_restrictions=<m>`  CFMWS window restriction bitmask (u16, decimal or 0x-prefixed hex),
+                                   default DEVICE_COHERENT (bit 0, value 0x1)
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_complex: Vec<PcieRootComplexCli>,
@@ -831,6 +842,7 @@ Syntax: <root_complex_name>:<name>[,opt,opt=arg,...]
 Options:
     `hotplug`                      enable hotplug support for this root port
     `acs=<mask>`                   ACS capability bitmask (u16, decimal or 0x-prefixed hex)
+    `cxl`                          configure this root port as CXL-capable
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_port: Vec<PcieRootPortCli>,
@@ -1604,6 +1616,58 @@ impl FromStr for DiskCli {
     }
 }
 
+/// CLI arguments for a CXL Type-3 test endpoint.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CxlTestDeviceCli {
+    /// Size of HDM memory the test device should expose and back.
+    pub hdm_size: u64,
+    /// PCIe root port name where the device is attached.
+    pub pcie_port: String,
+}
+
+impl FromStr for CxlTestDeviceCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let mut opts = s.split(',');
+        let first = opts.next().context("expected CXL test device config")?;
+        let (kind, arg) = first
+            .split_once(':')
+            .context("expected CXL test syntax: mem:<len>")?;
+
+        if kind != "mem" {
+            anyhow::bail!("unsupported CXL test backing kind '{kind}', expected 'mem'");
+        }
+
+        let hdm_size = parse_memory(arg).context("failed to parse CXL test HDM size")?;
+        let mut pcie_port = None;
+
+        for opt in opts {
+            let mut kv = opt.split('=');
+            let key = kv.next().unwrap_or_default();
+            match key {
+                "pcie_port" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`pcie_port` requires a port name");
+                    }
+                    pcie_port = Some(val.unwrap().to_string());
+                }
+                _ => anyhow::bail!("unknown option: '{opt}'"),
+            }
+        }
+
+        let Some(pcie_port) = pcie_port else {
+            anyhow::bail!("`pcie_port=<name>` is required for `--cxl-test`");
+        };
+
+        Ok(Self {
+            hdm_size,
+            pcie_port,
+        })
+    }
+}
+
 // <kind>[,ro,s]
 #[derive(Clone)]
 pub struct IdeDiskCli {
@@ -2174,6 +2238,8 @@ pub struct PcieRootComplexCli {
     pub end_bus: u8,
     pub low_mmio: u32,
     pub high_mmio: u64,
+    pub hdm: u64,
+    pub hdm_window_restrictions: CfmwsWindowRestrictions,
 }
 
 impl FromStr for PcieRootComplexCli {
@@ -2182,6 +2248,9 @@ impl FromStr for PcieRootComplexCli {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         const DEFAULT_PCIE_CRS_LOW_SIZE: u32 = 64 * 1024 * 1024; // 64M
         const DEFAULT_PCIE_CRS_HIGH_SIZE: u64 = 1024 * 1024 * 1024; // 1G
+        const DEFAULT_PCIE_HDM_SIZE: u64 = 1024 * 1024 * 1024; // 1G
+        const DEFAULT_HDM_WINDOW_RESTRICTIONS: CfmwsWindowRestrictions =
+            CfmwsWindowRestrictions::DEVICE_COHERENT;
 
         let mut opts = s.split(',');
         let name = opts.next().context("expected root complex name")?;
@@ -2194,6 +2263,8 @@ impl FromStr for PcieRootComplexCli {
         let mut end_bus = 255;
         let mut low_mmio = DEFAULT_PCIE_CRS_LOW_SIZE;
         let mut high_mmio = DEFAULT_PCIE_CRS_HIGH_SIZE;
+        let mut hdm = DEFAULT_PCIE_HDM_SIZE;
+        let mut hdm_window_restrictions = DEFAULT_HDM_WINDOW_RESTRICTIONS;
         for opt in opts {
             let mut s = opt.split('=');
             let opt = s.next().context("expected option")?;
@@ -2222,6 +2293,18 @@ impl FromStr for PcieRootComplexCli {
                     high_mmio =
                         parse_memory(high_mmio_str).context("failed to parse high MMIO size")?;
                 }
+                "hdm" => {
+                    let hdm_str = s.next().context("expected HDM decoder size")?;
+                    hdm = parse_memory(hdm_str).context("failed to parse HDM decoder size")?;
+                }
+                "hdm_window_restrictions" => {
+                    let mask_str = s
+                        .next()
+                        .context("expected HDM window restrictions bitmask")?;
+                    hdm_window_restrictions =
+                        parse_cxl_cfmws_window_restriction_u16_bitmask(mask_str)
+                            .context("failed to parse HDM window restrictions bitmask")?;
+                }
                 opt => anyhow::bail!("unknown option: '{opt}'"),
             }
         }
@@ -2237,8 +2320,23 @@ impl FromStr for PcieRootComplexCli {
             end_bus,
             low_mmio,
             high_mmio,
+            hdm,
+            hdm_window_restrictions,
         })
     }
+}
+
+fn parse_cxl_cfmws_window_restriction_u16_bitmask(
+    s: &str,
+) -> anyhow::Result<CfmwsWindowRestrictions> {
+    let bits = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u16::from_str_radix(hex, 16).context("invalid hex bitmask")?
+    } else {
+        u16::from_str(s).context("invalid decimal bitmask")?
+    };
+
+    CfmwsWindowRestrictions::try_from_bits(bits)
+        .context("bitmask includes reserved CFMWS window restriction bits")
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2247,6 +2345,7 @@ pub struct PcieRootPortCli {
     pub name: String,
     pub hotplug: bool,
     pub acs_capabilities_supported: Option<u16>,
+    pub cxl: bool,
 }
 
 impl FromStr for PcieRootPortCli {
@@ -2269,6 +2368,7 @@ impl FromStr for PcieRootPortCli {
 
         let mut hotplug = false;
         let mut acs_capabilities_supported = None;
+        let mut cxl = false;
 
         // Parse optional flags
         for opt in opts {
@@ -2290,6 +2390,12 @@ impl FromStr for PcieRootPortCli {
                     }
                     acs_capabilities_supported = Some(parse_acs_capability_mask(value)?);
                 }
+                "cxl" => {
+                    if value.is_some() {
+                        anyhow::bail!("cxl option does not take a value")
+                    }
+                    cxl = true;
+                }
                 _ => anyhow::bail!("unexpected option: '{opt}'"),
             }
         }
@@ -2299,6 +2405,7 @@ impl FromStr for PcieRootPortCli {
             name: rp_name.to_string(),
             hotplug,
             acs_capabilities_supported,
+            cxl,
         })
     }
 }
@@ -3334,6 +3441,20 @@ mod tests {
     }
 
     #[test]
+    fn test_cxl_test_device_cli_parse_valid() {
+        let cfg = CxlTestDeviceCli::from_str("mem:1G,pcie_port=rp0").unwrap();
+        assert_eq!(cfg.hdm_size, 1024 * 1024 * 1024);
+        assert_eq!(cfg.pcie_port, "rp0");
+    }
+
+    #[test]
+    fn test_cxl_test_device_cli_parse_invalid() {
+        assert!(CxlTestDeviceCli::from_str("file:disk.img,pcie_port=rp0").is_err());
+        assert!(CxlTestDeviceCli::from_str("mem:1G").is_err());
+        assert!(CxlTestDeviceCli::from_str("mem:1G,pcie_port=").is_err());
+    }
+
+    #[test]
     fn test_fs_args_pcie_port() {
         // Without pcie_port
         let args = FsArgs::from_str("myfs,/path").unwrap();
@@ -3452,6 +3573,9 @@ mod tests {
 
         const DEFAULT_LOW_MMIO: u32 = (64 * ONE_MB) as u32;
         const DEFAULT_HIGH_MMIO: u64 = ONE_GB;
+        const DEFAULT_HDM: u64 = ONE_GB;
+        const DEFAULT_HDM_WINDOW_RESTRICTIONS: CfmwsWindowRestrictions =
+            CfmwsWindowRestrictions::DEVICE_COHERENT;
 
         assert_eq!(
             PcieRootComplexCli::from_str("rc0").unwrap(),
@@ -3462,6 +3586,8 @@ mod tests {
                 end_bus: 255,
                 low_mmio: DEFAULT_LOW_MMIO,
                 high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
             }
         );
 
@@ -3474,6 +3600,8 @@ mod tests {
                 end_bus: 255,
                 low_mmio: DEFAULT_LOW_MMIO,
                 high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
             }
         );
 
@@ -3486,6 +3614,8 @@ mod tests {
                 end_bus: 255,
                 low_mmio: DEFAULT_LOW_MMIO,
                 high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
             }
         );
 
@@ -3498,6 +3628,8 @@ mod tests {
                 end_bus: 31,
                 low_mmio: DEFAULT_LOW_MMIO,
                 high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
             }
         );
 
@@ -3510,6 +3642,8 @@ mod tests {
                 end_bus: 127,
                 low_mmio: DEFAULT_LOW_MMIO,
                 high_mmio: 2 * ONE_GB,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
             }
         );
 
@@ -3522,6 +3656,8 @@ mod tests {
                 end_bus: 127,
                 low_mmio: DEFAULT_LOW_MMIO,
                 high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
             }
         );
 
@@ -3534,6 +3670,36 @@ mod tests {
                 end_bus: 255,
                 low_mmio: ONE_MB as u32,
                 high_mmio: 64 * ONE_GB,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc7,hdm=2G").unwrap(),
+            PcieRootComplexCli {
+                name: "rc7".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: 2 * ONE_GB,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc8,hdm_window_restrictions=0x21").unwrap(),
+            PcieRootComplexCli {
+                name: "rc8".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: CfmwsWindowRestrictions::try_from_bits(0x21).unwrap(),
             }
         );
 
@@ -3549,6 +3715,11 @@ mod tests {
         assert!(PcieRootComplexCli::from_str("rc,low_mmio=aG").is_err());
         assert!(PcieRootComplexCli::from_str("rc,high_mmio=bad").is_err());
         assert!(PcieRootComplexCli::from_str("rc,high_mmio").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,hdm=bad").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,hdm").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,hdm_window_restrictions=bad").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,hdm_window_restrictions").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,cxl").is_err());
     }
 
     #[test]
@@ -3560,6 +3731,7 @@ mod tests {
                 name: "rc0rp0".to_string(),
                 hotplug: false,
                 acs_capabilities_supported: None,
+                cxl: false,
             }
         );
 
@@ -3570,6 +3742,7 @@ mod tests {
                 name: "port2".to_string(),
                 hotplug: false,
                 acs_capabilities_supported: None,
+                cxl: false,
             }
         );
 
@@ -3581,6 +3754,7 @@ mod tests {
                 name: "port2".to_string(),
                 hotplug: true,
                 acs_capabilities_supported: None,
+                cxl: false,
             }
         );
 
@@ -3591,6 +3765,7 @@ mod tests {
                 name: "port3".to_string(),
                 hotplug: false,
                 acs_capabilities_supported: Some(0),
+                cxl: false,
             }
         );
 
@@ -3601,6 +3776,18 @@ mod tests {
                 name: "port3".to_string(),
                 hotplug: false,
                 acs_capabilities_supported: Some(0x005f),
+                cxl: false,
+            }
+        );
+
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port4,cxl").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port4".to_string(),
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: true,
             }
         );
 
@@ -3610,6 +3797,7 @@ mod tests {
         assert!(PcieRootPortCli::from_str("rp0,opt").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,invalid_option").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,cxl=true").is_err());
     }
 
     #[test]

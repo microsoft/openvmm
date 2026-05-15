@@ -38,6 +38,7 @@ use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use cli_args::VmgsCli;
 use crash_dump::spawn_dump_handler;
+use cxl_spec::test::CxlTestDeviceHandle;
 use disk_backend_resources::DelayDiskHandle;
 use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::layer::DiskLayerHandle;
@@ -78,6 +79,7 @@ use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
+use openvmm_defs::config::RootComplexCxlConfig;
 use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
@@ -714,14 +716,24 @@ async fn vm_config_from_command_line(
             }),
     );
 
-    let mut pcie_root_complexes = Vec::new();
+    for cxl_test in &opt.cxl_test {
+        pcie_devices.push(PcieDeviceConfig {
+            port_name: cxl_test.pcie_port.clone(),
+            resource: CxlTestDeviceHandle {
+                hdm_size_bytes: cxl_test.hdm_size,
+            }
+            .into_resource(),
+        });
+    }
 
     #[cfg(guest_arch = "aarch64")]
     let arch = MachineArch::Aarch64;
     #[cfg(guest_arch = "x86_64")]
     let arch = MachineArch::X86_64;
+
+    let mut pcie_root_complexes = Vec::new();
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
-        let ports = opt
+        let ports: Vec<PcieRootPortConfig> = opt
             .pcie_root_port
             .iter()
             .filter(|port_cli| port_cli.root_complex_name == rc_cli.name)
@@ -729,15 +741,29 @@ async fn vm_config_from_command_line(
                 name: port_cli.name.clone(),
                 hotplug: port_cli.hotplug,
                 acs_capabilities_supported: port_cli.acs_capabilities_supported,
+                cxl: port_cli.cxl,
             })
             .collect();
 
         const ONE_MB: u64 = 1024 * 1024;
+        // Keep all PCI windows 1MB-granular to match layout and downstream placement rules.
         let low_mmio_size = (rc_cli.low_mmio as u64).next_multiple_of(ONE_MB);
         let high_mmio_size = rc_cli
             .high_mmio
             .checked_next_multiple_of(ONE_MB)
             .context("high mmio rounding error")?;
+
+        // Count CXL-capable ports under the root bus. If the root bus has CXL root ports, it needs CHBCR.
+        let cxl_port_count = ports.iter().filter(|port| port.cxl).count() as u64;
+
+        let cxl = if cxl_port_count != 0 {
+            Some(RootComplexCxlConfig {
+                hdm_size: rc_cli.hdm,
+                hdm_window_restrictions: rc_cli.hdm_window_restrictions.bits(),
+            })
+        } else {
+            None
+        };
         pcie_root_complexes.push(PcieRootComplexConfig {
             index: i as u32,
             name: rc_cli.name.clone(),
@@ -750,6 +776,7 @@ async fn vm_config_from_command_line(
             high_mmio: PcieMmioRangeConfig::Dynamic {
                 size: high_mmio_size,
             },
+            cxl,
             ports,
         });
     }

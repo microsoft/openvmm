@@ -198,6 +198,14 @@ pub enum PcieMmioRangeConfig {
 }
 
 #[derive(Debug, MeshPayload)]
+pub struct RootComplexCxlConfig {
+    /// HDM window size in bytes for this CXL root complex.
+    pub hdm_size: u64,
+    /// CFMWS HDM window restrictions bitmask.
+    pub hdm_window_restrictions: u16,
+}
+
+#[derive(Debug, MeshPayload)]
 pub struct PcieRootComplexConfig {
     pub index: u32,
     pub name: String,
@@ -207,13 +215,23 @@ pub struct PcieRootComplexConfig {
     pub low_mmio: PcieMmioRangeConfig,
     pub high_mmio: PcieMmioRangeConfig,
     pub ports: Vec<PcieRootPortConfig>,
+    /// Optional CXL configuration for root-complex CXL mode.
+    pub cxl: Option<RootComplexCxlConfig>,
 }
 
 #[derive(Debug, MeshPayload)]
 pub struct PcieRootPortConfig {
+    /// Root-port name used for topology wiring and lookup.
     pub name: String,
+    /// Enables PCIe hotplug capabilities for this root port.
     pub hotplug: bool,
+    /// Optional ACS capability bitmask to expose on this root port.
     pub acs_capabilities_supported: Option<u16>,
+    /// Marks this root port as CXL-capable.
+    ///
+    /// Runtime port construction derives required BAR/subregion layout from
+    /// this flag (currently CXL component registers for BAR0).
+    pub cxl: bool,
 }
 
 #[derive(Debug, MeshPayload)]
