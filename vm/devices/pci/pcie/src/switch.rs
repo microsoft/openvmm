@@ -122,8 +122,8 @@ impl DownstreamSwitchPort {
             DevicePortType::DownstreamSwitchPort,
             multi_function,
             hotplug_slot_number,
-            settings,
             msi_target,
+            settings,
         );
 
         Self { port }
@@ -1476,8 +1476,8 @@ mod tests {
             DevicePortType::RootPort,
             false,
             None,
-            PciePortSettings::default(),
             msi_conn.target(),
+            PciePortSettings::default(),
         );
 
         // Configure the root port's bus range: secondary=1, subordinate=10

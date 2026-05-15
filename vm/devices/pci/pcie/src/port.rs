@@ -73,16 +73,16 @@ impl PcieDownstreamPort {
     /// * `port_type` - The PCIe port type (root port, downstream switch port, etc.)
     /// * `multi_function` - Whether this port should have the multi-function flag set
     /// * `hotplug_slot_number` - The slot number for hotplug support. `Some(slot_number)` enables hotplug, `None` disables it
-    /// * `settings` - Express-level port settings (ACS, etc.)
     /// * `msi_target` - MSI target for interrupt delivery
+    /// * `settings` - Express-level port settings (ACS, etc.)
     pub fn new(
         name: impl Into<String>,
         hardware_ids: HardwareIds,
         port_type: DevicePortType,
         multi_function: bool,
         hotplug_slot_number: Option<u32>,
-        settings: PciePortSettings,
         msi_target: &MsiTarget,
+        settings: PciePortSettings,
     ) -> Self {
         let port_name = name.into();
 
@@ -435,8 +435,8 @@ mod tests {
             DevicePortType::RootPort,
             false,
             Some(1), // Enable hotplug with slot number 1
-            PciePortSettings::default(),
             msi_conn.target(),
+            PciePortSettings::default(),
         );
 
         // Initially, presence detect state should be 0
@@ -487,8 +487,8 @@ mod tests {
             DevicePortType::RootPort,
             false,
             None, // No hotplug
-            PciePortSettings::default(),
             msi_conn.target(),
+            PciePortSettings::default(),
         );
 
         // Add a device to the port (should not panic even without hotplug support)
@@ -522,8 +522,8 @@ mod tests {
             DevicePortType::RootPort,
             false,
             None,
-            PciePortSettings::default(),
             &msi_target,
+            PciePortSettings::default(),
         );
 
         port.cfg_space
@@ -578,8 +578,8 @@ mod tests {
             DevicePortType::RootPort,
             false,
             None,
-            PciePortSettings::default(),
             msi_conn.target(),
+            PciePortSettings::default(),
         );
 
         port.cfg_space
@@ -637,8 +637,8 @@ mod tests {
             DevicePortType::RootPort,
             false,
             None,
-            PciePortSettings::default(),
             msi_conn.target(),
+            PciePortSettings::default(),
         );
 
         // Program bridge bus numbers (Type1 register at offset 0x18).
@@ -700,10 +700,10 @@ mod tests {
             DevicePortType::RootPort,
             false,
             None,
+            &msi_target,
             PciePortSettings {
                 acs_capabilities_supported: 0x005f,
             },
-            &msi_target,
         );
         let mut value = 0u32;
         with_acs.cfg_space.read_u32(0x100, &mut value).unwrap();
@@ -715,8 +715,8 @@ mod tests {
             DevicePortType::RootPort,
             false,
             None,
-            PciePortSettings::default(),
             &msi_target,
+            PciePortSettings::default(),
         );
         without_acs.cfg_space.read_u32(0x100, &mut value).unwrap();
         assert_eq!(value, 0xffff_ffff);
