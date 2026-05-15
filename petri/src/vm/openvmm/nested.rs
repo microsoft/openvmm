@@ -262,7 +262,12 @@ impl NestedL2Builder {
         };
 
         let vp_count_str = self.vp_count.to_string();
-        let memory_bytes_str = self.memory_bytes.to_string();
+        // Use private, THP-eligible RAM rather than the default shared
+        // file-backed RAM: the shared backing creates a tmpfs file per
+        // VM and faults pages in one at a time, which is dramatically
+        // slower than anonymous-private + THP for a short-lived L2
+        // boot. Documented under `--memory` in openvmm.
+        let memory_arg = format!("size={},shared=off,thp=on", self.memory_bytes);
         let mut child = l1_agent
             .command(&staged_openvmm)
             .args([
@@ -272,7 +277,7 @@ impl NestedL2Builder {
                 "--processors",
                 &vp_count_str,
                 "--memory",
-                &memory_bytes_str,
+                &memory_arg,
                 "--kernel",
                 &staged_kernel,
                 "--initrd",
