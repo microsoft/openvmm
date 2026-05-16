@@ -11,7 +11,8 @@ use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
 
 const PAGE_SIZE: u64 = 4096;
-const RAM_ALIGNMENT: u64 = 1024 * 1024 * 1024;
+const TWO_MB: u64 = 2 * 1024 * 1024;
+const GB: u64 = 1024 * 1024 * 1024;
 
 pub(super) struct MemoryLayoutInput<'a> {
     pub mem_size: u64,
@@ -40,7 +41,8 @@ pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Res
         .zip(&mut ram_ranges_by_node)
         .enumerate()
     {
-        builder.ram(format!("ram[{vnode}]"), ram_ranges, ram_size, RAM_ALIGNMENT);
+        let ram_alignment = if ram_size < GB { TWO_MB } else { GB };
+        builder.ram(format!("ram[{vnode}]"), ram_ranges, ram_size, ram_alignment);
     }
 
     if let Some(vtl2_layout) = input.vtl2_layout {
@@ -141,7 +143,6 @@ mod tests {
     use super::*;
     use vm_topology::memory::AddressType;
 
-    const GB: u64 = 1024 * 1024 * 1024;
     const MB: u64 = 1024 * 1024;
 
     fn input<'a>(
@@ -223,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn ram_chunks_start_on_gb_alignment() {
+    fn gb_sized_ram_request_uses_gb_chunks() {
         let mmio = [MemoryRange::new(GB + MB..GB + 2 * MB)];
 
         let actual = resolve_memory_layout(input(2 * GB, None, &mmio, &[], &[], None)).unwrap();
@@ -232,16 +233,36 @@ mod tests {
             actual.ram(),
             &[
                 MemoryRangeWithNode {
-                    range: MemoryRange::new(0..GB + MB),
+                    range: MemoryRange::new(0..GB),
                     vnode: 0,
                 },
                 MemoryRangeWithNode {
-                    range: MemoryRange::new(2 * GB..3 * GB - MB),
+                    range: MemoryRange::new(2 * GB..3 * GB),
                     vnode: 0,
                 },
             ]
         );
-        assert!(actual.ram().iter().all(|ram| ram.range.start() % GB == 0));
+    }
+
+    #[test]
+    fn sub_gb_numa_nodes_use_two_mb_alignment() {
+        let sizes = [512 * MB, 512 * MB];
+
+        let actual = resolve_memory_layout(input(GB, Some(&sizes), &[], &[], &[], None)).unwrap();
+
+        assert_eq!(
+            actual.ram(),
+            &[
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0..512 * MB),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(512 * MB..GB),
+                    vnode: 1,
+                },
+            ]
+        );
     }
 
     #[test]

@@ -505,8 +505,11 @@ impl<'a> LayoutBuilder<'a> {
     /// Adds an ordinary RAM request to the builder.
     ///
     /// RAM is placed bottom up from GPA 0 and may split around fixed and MMIO32
-    /// ranges. The target vector is replaced with the placed RAM extents when
-    /// [`Self::allocate`] succeeds.
+    /// ranges. Each extent starts at `alignment`, and split extents that do not
+    /// satisfy the rest of the request are rounded down to `alignment` so large
+    /// aligned requests are not fragmented into smaller chunks. The target
+    /// vector is replaced with the placed RAM extents when [`Self::allocate`]
+    /// succeeds.
     pub fn ram(
         &mut self,
         tag: impl Into<String>,
@@ -749,7 +752,14 @@ fn find_lowest_splittable_fit(
         }
 
         let available = effective_end - aligned_start;
-        let allocation_size = available.min(remaining);
+        let allocation_size = if available >= remaining {
+            remaining
+        } else {
+            align_down(available, alignment)
+        };
+        if allocation_size == 0 {
+            continue;
+        }
         ranges.push(MemoryRange::new(
             aligned_start..aligned_start + allocation_size,
         ));
@@ -909,6 +919,21 @@ mod tests {
                 MemoryRange::new(GIB + MIB..2 * GIB),
                 MemoryRange::new(FOUR_GIB..FOUR_GIB + GIB + MIB),
             ]
+        );
+    }
+
+    #[test]
+    fn ram_split_chunks_round_down_to_alignment() {
+        let mut ram = Vec::new();
+        let mut builder = LayoutBuilder::new();
+        builder.fixed("fixed", MemoryRange::new(GIB + MIB..GIB + 2 * MIB));
+        builder.ram("ram", &mut ram, 2 * GIB, GIB);
+
+        builder.allocate().unwrap();
+
+        assert_eq!(
+            ram,
+            [MemoryRange::new(0..GIB), MemoryRange::new(2 * GIB..3 * GIB),]
         );
     }
 
