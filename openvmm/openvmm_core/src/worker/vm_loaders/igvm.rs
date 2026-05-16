@@ -30,7 +30,6 @@ use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use range_map_vec::RangeMap;
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::io::Read;
 use std::io::Seek;
 use thiserror::Error;
@@ -46,8 +45,8 @@ use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("command line is not a valid C string")]
-    InvalidCommandLine(#[source] std::ffi::NulError),
+    #[error("command line contains an embedded NUL byte")]
+    CommandLineContainsNul,
     #[error("failed to read igvm file")]
     Igvm(#[source] std::io::Error),
     #[error("invalid igvm file")]
@@ -256,20 +255,37 @@ pub fn vtl2_memory_layout_request(
     Ok(Vtl2MemoryLayoutRequest { size, alignment })
 }
 
-/// Build a device tree representing the whole guest partition.
-fn build_device_tree(
-    processor_topology: &ProcessorTopology<X86Topology>,
-    all_ram: &[MemoryRangeWithNode],
-    vtl2_protectable_ram: &[MemoryRange],
+/// Parameters for [`build_device_tree`].
+struct BuildDeviceTreeParams<'a> {
+    processor_topology: &'a ProcessorTopology<X86Topology>,
+    all_ram: &'a [MemoryRangeWithNode],
+    vtl2_protectable_ram: &'a [MemoryRange],
     vtl2_base_address: Vtl2BaseAddressType,
-    command_line: &str,
+    command_line: &'a str,
     with_vmbus_redirect: bool,
     com_serial: Option<SerialInformation>,
-    entropy: Option<&[u8]>,
+    entropy: Option<&'a [u8]>,
     chipset_low_mmio: Option<MemoryRange>,
     chipset_high_mmio: Option<MemoryRange>,
     vtl2_chipset_mmio: Option<MemoryRange>,
-) -> Result<Vec<u8>, fdt::builder::Error> {
+}
+
+/// Build a device tree representing the whole guest partition.
+fn build_device_tree(params: BuildDeviceTreeParams<'_>) -> Result<Vec<u8>, fdt::builder::Error> {
+    let BuildDeviceTreeParams {
+        processor_topology,
+        all_ram,
+        vtl2_protectable_ram,
+        vtl2_base_address,
+        command_line,
+        with_vmbus_redirect,
+        com_serial,
+        entropy,
+        chipset_low_mmio,
+        chipset_high_mmio,
+        vtl2_chipset_mmio,
+    } = params;
+
     let mut buf = vec![0; HV_PAGE_SIZE as usize * 256];
 
     let mut builder = fdt::builder::Builder::new(fdt::builder::BuilderConfig {
@@ -575,7 +591,12 @@ fn load_igvm_x86(
         cmdline.to_string()
     };
 
-    let command_line = CString::new(cmdline).map_err(Error::InvalidCommandLine)?;
+    // The command line is exposed to the guest as a NUL-terminated byte
+    // sequence (via the IGVM CommandLine parameter), so reject any embedded NUL
+    // bytes up front.
+    if cmdline.as_bytes().contains(&0) {
+        return Err(Error::CommandLineContainsNul);
+    }
 
     let (mask, max_vtl) = match vbs_platform_header(igvm_file)? {
         IgvmPlatformHeader::SupportedPlatform(info) => {
@@ -948,22 +969,25 @@ fn load_igvm_x86(
                 import_parameter(&mut parameter_areas, info, memory_map.as_bytes())?;
             }
             IgvmDirectiveHeader::CommandLine(ref info) => {
-                import_parameter(&mut parameter_areas, info, command_line.as_bytes_with_nul())?;
+                let mut bytes = Vec::with_capacity(cmdline.len() + 1);
+                bytes.extend_from_slice(cmdline.as_bytes());
+                bytes.push(0);
+                import_parameter(&mut parameter_areas, info, &bytes)?;
             }
             IgvmDirectiveHeader::DeviceTree(ref info) => {
-                let dt = build_device_tree(
+                let dt = build_device_tree(BuildDeviceTreeParams {
                     processor_topology,
-                    &all_ram,
-                    &vtl2_protectable_ram,
+                    all_ram: &all_ram,
+                    vtl2_protectable_ram: &vtl2_protectable_ram,
                     vtl2_base_address,
-                    &String::from_utf8_lossy(command_line.as_bytes()),
+                    command_line: &cmdline,
                     with_vmbus_redirect,
                     com_serial,
                     entropy,
                     chipset_low_mmio,
                     chipset_high_mmio,
                     vtl2_chipset_mmio,
-                )
+                })
                 .map_err(Error::DeviceTree)?;
                 import_parameter(&mut parameter_areas, info, &dt)?;
             }
