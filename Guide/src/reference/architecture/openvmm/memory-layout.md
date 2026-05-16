@@ -1,145 +1,167 @@
 # Memory Layout
 
-OpenVMM computes guest physical address layouts by combining fixed platform
-ranges, RAM requests, MMIO requests, and private implementation ranges through a
-single deterministic allocator.
-
-The memory layout is part of the VM compatibility contract. Guest operating
-systems remember RAM and device addresses across hibernation, and saved VM state
-contains device state tied to those addresses. For an existing VM, changing
-request order, placement class, or alignment policy can move guest physical
-addresses and break resume.
+OpenVMM has to decide where every byte of guest physical address space goes:
+RAM, MMIO windows for emulated and PCIe devices, paravisor private memory, and
+architectural ranges like the LAPIC or GIC. This page describes how those
+decisions are made.
 
 ```admonish warning title="Compatibility surface"
-Treat layout policy changes like VM ABI changes. A new default can be fine for
-new VMs, but existing persisted VM configuration must continue to resolve to the
-same guest physical addresses.
+Guest physical addresses are part of the VM's compatibility contract. Guests
+remember device and RAM locations across hibernation, and saved VM state
+references them. Changing request order, placement class, or alignment can
+move guest addresses and break resume on existing VMs.
+
+Treat layout policy changes like VM ABI changes: a new default may be fine
+for new VMs, but existing persisted configuration must continue to resolve
+to the same guest physical addresses.
 ```
 
-## Layers
+## Two pieces
 
-Memory layout is split across three layers:
+Layout resolution is split into two pieces that you should think about
+separately:
 
-| Layer | Responsibility |
+1. A **pure address-space allocator** in `vm_topology::layout`. It knows
+   nothing about chipsets, firmware, VTLs, PCI, or the host. Callers describe
+   what they need in terms of ranges, sizes, alignments, and a placement
+   class, and the allocator returns deterministic guest physical addresses.
+2. A **worker resolver** in `openvmm_core::worker::memory_layout`. This is
+   where OpenVMM's policy lives: which platform ranges are pinned, what
+   alignments NUMA nodes get, how PCIe ECAM is sized, and so on. The resolver
+   describes the VM to the allocator, runs it, and builds the resulting
+   [`MemoryLayout`](https://openvmm.dev/rustdoc/linux/vm_topology/memory/struct.MemoryLayout.html)
+   that the rest of the VM worker uses to look up RAM, MMIO, PCI ECAM, and
+   PCI MMIO ranges.
+
+Keeping the allocator policy-free means its behavior can be exhaustively
+tested in isolation, and the worker can be reasoned about as a list of
+requests that fully describes the VM.
+
+## The allocator
+
+[`LayoutBuilder`](https://openvmm.dev/rustdoc/linux/vm_topology/layout/struct.LayoutBuilder.html)
+accepts four kinds of input:
+
+| Input | Purpose |
 |---|---|
-| `vm_topology::layout` | Pure address-space allocation. |
-| `openvmm_core::worker::memory_layout` | Production VM policy and validation. |
-| `vm_topology::memory::MemoryLayout` | Shared validation and query API. |
+| `reserve(tag, range)` | Block allocation at this address but do not include it in the layout top. |
+| `fixed(tag, range)` | A range whose address is already decided. Blocks allocation and counts as part of the layout. |
+| `ram(tag, target, size, alignment)` | Ordinary guest RAM. The only request type that may be split across multiple extents. |
+| `request(tag, target, size, alignment, placement)` | A single contiguous range, placed dynamically. The `placement` chooses one of three phases below. |
 
-[`vm_topology::layout::LayoutBuilder`](https://openvmm.dev/rustdoc/linux/vm_topology/layout/struct.LayoutBuilder.html)
-knows only about ranges, sizes, alignments, and placement classes. It does not
-know about chipsets, firmware, VTLs, PCI, or host physical address width.
-Callers express policy by adding fixed ranges, reserved ranges, RAM requests,
-and dynamic MMIO requests.
+`reserve` and `fixed` differ only in how they affect the **layout top** —
+the address one past the highest guest-visible byte. `fixed` ranges raise
+it; `reserve` ranges do not. This matters because the layout top determines
+where post-MMIO requests (such as paravisor private memory) start: a
+reserved hole high up in the address space should not push them even
+higher.
 
-The VM worker owns the production policy. It feeds existing chipset MMIO gaps
-into the allocator as fixed occupied ranges, resolves PCIe root complex ECAM
-from an optional fixed range or the root-complex bus window, resolves PCIe low
-MMIO and high MMIO from typed intents, then asks the allocator to place RAM and
-private implementation ranges. Future work moves more MMIO consumers from
-precomputed gaps into typed dynamic requests.
+When `allocate()` runs, it processes requests in a fixed phase order. Each
+phase pulls from whatever address space the earlier phases left free:
 
-`MemoryLayout` remains the object other worker code uses to query RAM, MMIO,
-PCI ECAM, PCI MMIO, VTL2 memory, and the VTL0-visible layout top.
+1. **Reserved ranges** are removed from the free space.
+2. **Fixed ranges** are removed from the free space.
+3. **`Placement::Mmio32`** requests are packed *top down* below 4 GiB, so
+   RAM can start at GPA 0 and grow upward through the lowest free space.
+4. **RAM** requests are placed *bottom up* from GPA 0, splitting around any
+   holes left by the earlier phases. RAM is the only splittable kind.
+5. **`Placement::Mmio64`** requests are packed *bottom up* starting at the
+   end of RAM. This makes the layout top a function of requested topology
+   rather than a precomputed high MMIO bucket size.
+6. **`Placement::PostMmio`** requests are placed *after* everything else
+   (excluding reserved ranges from the "everything else"). They are for
+   ranges that should not affect the guest-visible top of memory.
 
-## Request Types
+Within `Mmio32` and `Mmio64`, requests are sorted by alignment (largest
+first), then size (largest first), then caller order. This keeps large,
+strictly-aligned device windows from being fragmented by small devices.
+RAM and `PostMmio` use caller order verbatim: RAM order is the NUMA vnode
+assignment, and `PostMmio` carries policy that should not be reordered by
+alignment.
 
-The allocator accepts these input forms:
+```admonish note
+The allocator does not take host physical-address width as an input. The
+layout is computed as a pure function of VM configuration; the worker
+checks the resulting layout top against host capabilities after the fact.
+This keeps guest physical addresses from shifting when the same VM moves
+to a host with a different physical-address width.
+```
 
-| Input | Meaning |
-|---|---|
-| `reserve(tag, range)` | Blocks allocation, but does not raise layout top. |
-| `fixed(tag, range)` | Already-known occupied range that is part of layout. |
-| `ram(tag, target, size, alignment)` | Splittable ordinary RAM request. |
-| `request(..., Placement::Mmio32)` | Single range below 4 GB, packed top down. |
-| `request(..., Placement::Mmio64)` | Single range after RAM, packed bottom up. |
-| `request(..., Placement::PostMmio)` | Single range after all VTL0 RAM and MMIO. |
+## Worker policy
 
-`reserve` is for architectural holes that must block allocation but should not
-make the VTL0 layout appear larger. A high reserved hole near the top of the
-address space, for example, should not force VTL2 or high MMIO above that hole.
+The worker resolver in
+[`openvmm_core::worker::memory_layout`](https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_core/src/worker/memory_layout.rs)
+issues requests in this order:
 
-`fixed` is for ranges that have already been resolved by policy or existing
-configuration. Fixed ranges block all dynamic allocation and are included in the
-returned placed ranges.
+1. **Architectural reserved zone.** A `reserve` request for the
+   per-architecture range containing LAPIC, IOAPIC, GIC, PL011, battery,
+   TPM, and similar fixed-address platform devices.
 
-## Allocation Order
+    | Architecture | Range |
+    |---|---|
+    | x86_64 | `0xFE00_0000..0x1_0000_0000` |
+    | aarch64 | `0xEF00_0000..0x1_0000_0000` |
 
-The allocator is deterministic for the same request list. The phase order is:
+2. **Chipset low MMIO** (`Mmio32`) — the VMOD/PCI0 `_CRS` low range for
+   VMBus relay devices and PIIX4 PCI BARs. 2 MB alignment.
+3. **Chipset high MMIO** (`Mmio64`) — the corresponding high range. 2 MB
+   alignment.
+4. **PCIe root complex ranges**, one per root complex:
+    - **ECAM** (`Mmio32`). If the config specifies a fixed ECAM range, the
+      worker uses it as `fixed`. Otherwise the size is derived from the
+      bus window as `(end_bus - start_bus + 1) * 1 MB` (32 devices × 8
+      functions × 4 KiB per config space).
+    - **Low MMIO** (`Mmio32`), 2 MB aligned.
+    - **High MMIO** (`Mmio64`), 1 GB aligned. Per-BAR alignment would
+      guarantee the entire window is usable for one large BAR, but burns
+      address space on hosts with tight physical-address widths.
+5. **Virtio-mmio slots** (`Mmio32`) — one contiguous region sized
+   `slot_count * 4 KiB`, when any slots are configured.
+6. **RAM**, in vnode order. The first request becomes vnode 0, the second
+   vnode 1, and so on. Alignment depends on request size:
 
-1. Remove reserved ranges from free space.
-2. Remove fixed ranges from free space.
-3. Allocate 32-bit MMIO below 4 GB, top down.
-4. Allocate ordinary RAM from GPA 0 upward, splitting around holes.
-5. Allocate 64-bit MMIO from the end of RAM upward.
-6. Allocate post-MMIO ranges after the VTL0-visible layout.
+    | RAM request size | Alignment |
+    |---|---|
+    | < 1 GB | 2 MB |
+    | ≥ 1 GB | 1 GB |
 
-Within MMIO phases, requests are ordered by alignment, then size, then caller
-order. RAM and post-MMIO requests use caller order because those orders carry
-policy. RAM request order assigns NUMA vnode ownership. Post-MMIO request order
-keeps private implementation ranges from being reordered by alignment.
+    Sub-GB nodes use 2 MB so small NUMA nodes do not waste a full GB of
+    address space.
+7. **VTL2 chipset MMIO** (`PostMmio`) — VTL2's own VMBus / chipset MMIO
+   region, when VTL2 is configured. Placed after VTL0 so enabling VTL2
+   does not move any VTL0 address.
+8. **VTL2 private memory** (`PostMmio`) — when the IGVM file requests
+   layout-mode VTL2 memory, the worker takes only its size and alignment
+   from the IGVM relocation header. The IGVM file's relocation min/max
+   bounds are not fed in as constraints here; they are validated later by
+   the IGVM loader against the selected base. Treating them as constraints
+   here would over-constrain layout and could put holes in VTL0 just to
+   accommodate an IGVM file we will reject anyway.
 
-## Worker Policy
+After `allocate()` succeeds, the worker collects the resolved ranges into
+the `MemoryLayout`'s MMIO, PCI ECAM, and PCI MMIO gap vectors, then checks
+`MemoryLayout::end_of_layout()` against the host's physical-address width.
 
-The VM worker resolver applies the production policy in
-`openvmm/openvmm_core/src/worker/memory_layout.rs`:
+## RAM splitting
 
-1. Validate total RAM size and optional per-vNUMA budgets.
-2. Add existing chipset MMIO gaps as fixed ranges.
-3. Add PCIe root complex ECAM and low MMIO requests as `Placement::Mmio32`.
-   A root complex with no fixed ECAM range gets an ECAM size derived from its
-   bus window.
-4. Add PCIe root complex high MMIO requests as `Placement::Mmio64`.
-5. Add RAM requests in vnode order.
-6. Add optional IGVM VTL2 memory as `Placement::PostMmio`.
-7. Allocate all ranges.
-8. Build `MemoryLayout` from resolved RAM, chipset MMIO gaps, and resolved PCIe
-   ranges.
-9. Validate the VTL0-visible layout top against host physical address width.
+RAM is the only splittable request, and the splitter has one rule worth
+calling out: the alignment passed in is also the **split granularity**.
+When a single free range cannot hold the entire request, the part placed
+in that range is rounded down to the request alignment before continuing.
 
-Host physical address width is deliberately not an allocator input. The layout
-is computed from VM configuration first, then checked against the host. That
-keeps guest physical addresses from changing just because the VM runs on a host
-with a different physical address width.
-
-## RAM Alignment
-
-Worker RAM requests use two alignment policies:
-
-| RAM request size | Alignment |
-|---|---|
-| Less than 1 GB | 2 MB |
-| At least 1 GB | 1 GB |
-
-The alignment is also split granularity. If a RAM request cannot fit entirely in
-the current free range, the allocator rounds the non-final chunk down to the
-request alignment before continuing. That prevents a tiny fixed hole from
-creating odd sub-GB RAM fragments in an otherwise GB-sized VM.
-
-Sub-GB RAM requests use 2 MB alignment so small NUMA nodes do not waste a full
-GB of guest physical address space.
-
-## VTL2 Placement
-
-IGVM files can request VTL2 memory using `Vtl2BaseAddressType::MemoryLayout`.
-The worker derives only a size and alignment from the IGVM file. It does not
-feed IGVM relocation min/max bounds into layout.
-
-VTL2 memory is allocated as `Placement::PostMmio`, after all VTL0-visible RAM
-and MMIO. Enabling VTL2 must not move VTL0 RAM or device ranges. The selected
-VTL2 base is later validated by the IGVM loader against the file's relocation
-records. Unsupported IGVM files fail there instead of reshaping the VTL0 layout.
+The practical effect is that 1 GB-aligned RAM stays in 1 GB-aligned
+chunks. A small fixed hole just above the 1 GB boundary will not cause a
+"nearly 1 GB" RAM extent to be placed in the interrupted range; instead,
+RAM resumes at the next 1 GB boundary.
 
 ## Examples
 
-The examples below use compact synthetic ranges. They describe the same policy
-that the unit tests cover in `openvmm_core::worker::memory_layout` and
-`vm_topology::layout`.
+These examples use compact synthetic configurations. Each one is covered
+by tests in `vm_topology::layout` or `openvmm_core::worker::memory_layout`.
 
-### Fixed MMIO Splits RAM
+### A fixed MMIO range splits RAM
 
-A VM with 4 GB of RAM and a fixed MMIO hole from 1 GB to 2 GB gets RAM on both
-sides of the hole.
+4 GB of RAM with a 1 GB fixed MMIO range from 1 GB to 2 GB:
 
 | Input | Range |
 |---|---|
@@ -152,12 +174,13 @@ sides of the hole.
 | MMIO | `0x4000_0000..0x8000_0000` |
 | RAM | `0x8000_0000..0x1_4000_0000` |
 
-The total RAM is still 4 GB. The fixed range is occupied address space, not RAM.
+Total RAM is still 4 GB — the fixed range is occupied address space, not
+RAM.
 
-### GB RAM Chunks Stay GB-Sized
+### GB-aligned RAM stays GB-aligned
 
-A 2 GB RAM request with a small fixed hole just above 1 GB should not create a
-nearly-1-GB chunk plus a tiny fragment.
+2 GB of RAM with a tiny fixed hole just above the 1 GB boundary should
+not produce a sub-GB RAM fragment:
 
 | Input | Range |
 |---|---|
@@ -170,14 +193,12 @@ nearly-1-GB chunk plus a tiny fragment.
 | Fixed MMIO | `0x4010_0000..0x4020_0000` |
 | RAM | `0x8000_0000..0xC000_0000` |
 
-The allocator uses the first full 1 GB chunk, skips the interrupted region, and
-continues at the next 1 GB boundary.
+The splitter places one full 1 GB chunk, refuses to use the interrupted
+sub-GB fragment, and resumes at the next 1 GB boundary.
 
-### Small NUMA Nodes Use 2 MB Alignment
+### Small NUMA nodes use 2 MB alignment
 
-For two 512 MB NUMA nodes, using 1 GB alignment would waste address space and
-make the layout harder to read. The worker uses 2 MB alignment for sub-GB RAM
-requests.
+Two 512 MB NUMA nodes:
 
 | Input | Size |
 |---|---|
@@ -189,12 +210,13 @@ requests.
 | vnode 0 RAM | `0x0000_0000..0x2000_0000` |
 | vnode 1 RAM | `0x2000_0000..0x4000_0000` |
 
-The request order is the vnode assignment order, so changing it changes the NUMA
-layout.
+With 1 GB alignment each node would burn a full GB of address space.
+Request order is the vnode assignment, so swapping the requests swaps the
+NUMA layout.
 
-### VTL2 Does Not Move VTL0
+### VTL2 does not move VTL0
 
-Start with 2 GB of VTL0 RAM and a fixed MMIO hole from 1 GB to 2 GB.
+Starting from 2 GB of VTL0 RAM and a fixed 1 GB MMIO hole:
 
 | VTL0 output | Range |
 |---|---|
@@ -202,21 +224,20 @@ Start with 2 GB of VTL0 RAM and a fixed MMIO hole from 1 GB to 2 GB.
 | MMIO | `0x4000_0000..0x8000_0000` |
 | RAM | `0x8000_0000..0xC000_0000` |
 
-If the IGVM file asks for 2 MB of VTL2 memory, the VTL0 layout stays exactly the
-same. VTL2 is placed separately after the VTL0-visible top.
+Adding a 2 MB VTL2 private-memory request leaves the VTL0 layout
+identical and places VTL2 after the VTL0-visible top:
 
 | Private output | Range |
 |---|---|
 | VTL2 | `0xC000_0000..0xC020_0000` |
 
-`MemoryLayout::end_of_layout()` reports the VTL0-visible top. VTL2 remains
-available through `MemoryLayout::vtl2_range()`.
+`MemoryLayout::end_of_layout()` reports the VTL0-visible top.
+`MemoryLayout::vtl2_range()` reports the VTL2 range separately.
 
-### Reserved High Holes Do Not Raise Layout Top
+### Reserved holes do not raise the layout top
 
-A reserved range blocks allocation, but it does not describe a guest-visible
-resource. If a VM has 2 GB of RAM and a high reserved hole, post-MMIO memory can
-still start immediately after the VTL0 layout.
+A reserved range blocks allocation but is not a guest-visible resource,
+so it does not push later post-MMIO ranges higher:
 
 | Input | Range |
 |---|---|
@@ -229,17 +250,19 @@ still start immediately after the VTL0 layout.
 | RAM | `0x0000_0000..0x8000_0000` |
 | Post-MMIO | `0x8000_0000..0x8010_0000` |
 
-The reserved hole is not returned at the end of the sorted layout because it is
-only a constraint. If a reserved range sits between returned allocations, it is
-reported so callers can inspect the occupied map.
+Trailing reserved ranges are omitted from the returned allocation list,
+but a reserved range that sits between real allocations is reported so
+callers can see the full occupied map.
 
-## Where To Update This Page
+## When to update this page
 
-Update this page when changing any of these behaviors:
+Update this page when any of these change:
 
-- placement phase order in `vm_topology::layout`
-- `reserve`, `fixed`, `ram`, or `request` semantics
-- worker RAM alignment policy
-- VTL2 `MemoryLayout` placement
-- host physical-address validation policy
+- the allocator's phase order or any phase's placement direction
+- the semantics of `reserve`, `fixed`, `ram`, or `request`
+- the architectural reserved zones or their per-architecture addresses
+- the worker's RAM alignment policy
+- PCIe ECAM sizing or per-BAR alignment policy
+- VTL2 chipset MMIO or VTL2 private-memory placement
+- the host physical-address validation step
 - `MemoryLayout::end_of_layout()` or `MemoryLayout::vtl2_range()` semantics
