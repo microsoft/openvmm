@@ -304,23 +304,23 @@ pub(super) fn resolve_memory_layout(
 
     let vtl2_range = input.vtl2_layout.map(|_| vtl2_range);
 
-    // Derive the effective MMIO gaps from the resolved allocations. These are
-    // the non-RAM, non-VTL2 ranges that MemoryLayout stores as `mmio()`. We
-    // collect chipset MMIO, PCIe, virtio-mmio, and the architectural reserved
-    // zone into sorted gap vectors so existing consumers of
-    // `MemoryLayout::mmio()` keep working.
+    // `MemoryLayout::mmio()` is a legacy positional contract preserved here
+    // exactly as callers had it pre-allocator: `[0]` = chipset low MMIO,
+    // `[1]` = chipset high MMIO, and (when VTL2 is enabled) `[2]` = the
+    // VTL2-private chipset MMIO range. Consumers (DSDT, Linux DT, UEFI,
+    // PCAT) rely on this ordering. The architectural reserved zone and
+    // virtio-mmio region were never part of this vector and remain tracked
+    // separately. `MemoryLayout::mmio()` will eventually be removed.
     let mut mmio_gaps: Vec<MemoryRange> = Vec::new();
-    mmio_gaps.push(arch_reserved);
     if input.chipset_low_mmio.is_some() {
         mmio_gaps.push(chipset_low_mmio);
     }
     if input.chipset_high_mmio.is_some() {
         mmio_gaps.push(chipset_high_mmio);
     }
-    if input.virtio_mmio_count > 0 {
-        mmio_gaps.push(virtio_mmio_region);
+    if input.vtl2_chipset_mmio.is_some() {
+        mmio_gaps.push(vtl2_chipset_mmio);
     }
-    mmio_gaps.sort();
 
     let mut pci_ecam_gaps: Vec<MemoryRange> = Vec::new();
     pci_ecam_gaps.extend(
