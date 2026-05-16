@@ -46,6 +46,7 @@ use crate::nvme_manager::device::VfioNvmeDriverSpawner;
 use crate::nvme_manager::manager::NvmeDiskConfig;
 use crate::nvme_manager::manager::NvmeDiskResolver;
 use crate::nvme_manager::manager::NvmeManager;
+use crate::options::EfiDiagnosticsLogLevelCli;
 use crate::options::GuestStateEncryptionPolicyCli;
 use crate::options::GuestStateLifetimeCli;
 use crate::options::KeepAliveConfig;
@@ -309,6 +310,8 @@ pub struct UnderhillEnvCfg {
     pub guest_state_lifetime: Option<GuestStateLifetimeCli>,
     /// Guest state encryption policy
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+    /// EFI diagnostics log level filter (overrides DPS value when set)
+    pub efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
     /// Strict guest state encryption policy
     pub strict_encryption_policy: Option<bool>,
     /// Attempt to renew the AK cert
@@ -1546,6 +1549,16 @@ async fn new_underhill_vm(
                 GuestStateEncryptionPolicyCli::GspById => GuestStateEncryptionPolicy::GspById,
                 GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
                 GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
+            };
+        }
+
+        if let Some(level) = env_cfg.efi_diagnostics_log_level {
+            tracing::info!("using HCL_EFI_DIAGNOSTICS_LOG_LEVEL={level:?} from cmdline");
+            use get_protocol::dps_json::EfiDiagnosticsLogLevelType;
+            dps.general.efi_diagnostics_log_level = match level {
+                EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::DEFAULT,
+                EfiDiagnosticsLogLevelCli::Info => EfiDiagnosticsLogLevelType::INFO,
+                EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::FULL,
             };
         }
 

@@ -482,7 +482,14 @@ async fn efi_diagnostics_no_boot<T: PetriVmmBackend>(
 }
 
 /// Test EFI diagnostics with INFO-level logging enabled
-#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
+/// TODO:
+///  - change hyperv tests to use WMI instead of env_cfg once
+///    CI runners support it
+#[vmm_test_with(noagent(
+    openvmm_openhcl_uefi_x64(none),
+    hyperv_openhcl_uefi_x64(none),
+    hyperv_openhcl_uefi_aarch64(none)
+))]
 async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {

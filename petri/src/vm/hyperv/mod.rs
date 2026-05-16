@@ -189,6 +189,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             enable_vpci_boot,
             secure_boot_enabled,
             default_boot_always_attempt,
+            efi_diagnostics_log_level,
             ..
         }) = config.firmware.uefi_config()
         {
@@ -214,6 +215,27 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     &mut openhcl_command_line,
                     "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=0",
                 );
+            }
+
+            // Plumb the EFI diagnostics log level via the OpenHCL command
+            // line. The corresponding `EfiDiagnosticsLogLevel` WMI property
+            // is not available on all hosts (e.g. rs_prerelease), so we
+            // rely on the underhill env var fallback instead.
+            //
+            // TODO: switch to the WMI property once host changes are
+            // saturated.
+            if properties.is_openhcl {
+                let cli = match efi_diagnostics_log_level {
+                    crate::EfiDiagnosticsLogLevel::Default => None,
+                    crate::EfiDiagnosticsLogLevel::Info => Some("INFO"),
+                    crate::EfiDiagnosticsLogLevel::Full => Some("FULL"),
+                };
+                if let Some(cli) = cli {
+                    append_cmdline(
+                        &mut openhcl_command_line,
+                        format!("HCL_EFI_DIAGNOSTICS_LOG_LEVEL={cli}"),
+                    );
+                }
             }
 
             if *enable_vpci_boot {
