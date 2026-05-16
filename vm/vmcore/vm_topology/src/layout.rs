@@ -4,10 +4,10 @@
 //! VM address-space layout allocator.
 //!
 //! This module provides a pure-math layout allocator that places fixed ranges,
-//! 32-bit MMIO, ordinary RAM, and 64-bit MMIO in a flat guest physical address
-//! map. It has no knowledge of specific architectures, firmware types, or
-//! chipset conventions; callers express those policies as fixed ranges and
-//! dynamic requests.
+//! 32-bit MMIO, ordinary RAM, 64-bit MMIO, and post-MMIO ranges in a flat guest
+//! physical address map. It has no knowledge of specific architectures,
+//! firmware types, or chipset conventions; callers express those policies as
+//! fixed ranges and dynamic requests.
 //!
 //! # Usage
 //!
@@ -59,6 +59,12 @@ pub enum Placement {
     Mmio32,
     /// The allocation is placed bottom up from the end of RAM.
     Mmio64,
+    /// The allocation is placed bottom up after RAM and all MMIO allocations.
+    ///
+    /// Post-MMIO requests are allocated in caller order, not sorted by size or
+    /// alignment, so they can be used for private implementation ranges that
+    /// must not perturb the guest-visible RAM/MMIO layout.
+    PostMmio,
 }
 
 /// The kind of a produced allocation.
@@ -72,6 +78,8 @@ pub enum PlacedRangeKind {
     Ram,
     /// A 64-bit MMIO allocation.
     Mmio64,
+    /// A post-MMIO allocation.
+    PostMmio,
 }
 
 /// Allocation phase reported in [`AllocateError::Exhausted`].
@@ -83,6 +91,8 @@ pub enum AllocationPhase {
     Ram,
     /// 64-bit MMIO placement.
     Mmio64,
+    /// Post-MMIO placement.
+    PostMmio,
 }
 
 /// A placed range returned by [`LayoutBuilder::allocate`].
@@ -102,6 +112,7 @@ pub struct LayoutBuilder<'a> {
     mmio32: Vec<DynamicRequest<'a>>,
     ram: Vec<RamRequest<'a>>,
     mmio64: Vec<DynamicRequest<'a>>,
+    post_mmio: Vec<DynamicRequest<'a>>,
 }
 
 struct FixedRequest<'a> {
@@ -317,6 +328,47 @@ impl AllocationState {
         Ok(())
     }
 
+    fn place_post_mmio(
+        &mut self,
+        requests: &mut [DynamicRequest<'_>],
+    ) -> Result<(), AllocateError> {
+        // These ranges are intentionally placed after all RAM/MMIO work and in
+        // caller order. They are for implementation-private ranges that should
+        // not change the VTL0-visible layout or be reordered by alignment.
+        for request in requests {
+            let layout_top = self.layout_top();
+            let Some(start) = find_lowest_fit(
+                &self.free,
+                request.size,
+                request.alignment,
+                layout_top,
+                ADDRESS_LIMIT,
+            ) else {
+                return Err(exhausted_error(
+                    request,
+                    AllocationPhase::PostMmio,
+                    &self.free,
+                    layout_top,
+                    ADDRESS_LIMIT,
+                ));
+            };
+
+            let range = MemoryRange::new(start..start + request.size);
+            *request.target = range;
+            self.allocate_range(&request.tag, PlacedRangeKind::PostMmio, range);
+        }
+
+        Ok(())
+    }
+
+    fn layout_top(&self) -> u64 {
+        self.allocations
+            .iter()
+            .map(|allocation| allocation.range.end())
+            .max()
+            .unwrap_or(0)
+    }
+
     fn record(&mut self, tag: &str, kind: PlacedRangeKind, range: MemoryRange) {
         self.allocations.push(PlacedRange {
             tag: tag.to_string(),
@@ -437,6 +489,7 @@ impl<'a> LayoutBuilder<'a> {
             mmio32: Vec::new(),
             ram: Vec::new(),
             mmio64: Vec::new(),
+            post_mmio: Vec::new(),
         }
     }
 
@@ -466,6 +519,12 @@ impl<'a> LayoutBuilder<'a> {
                 alignment,
             }),
             Placement::Mmio64 => self.mmio64.push(DynamicRequest {
+                tag: tag.into(),
+                target,
+                size,
+                alignment,
+            }),
+            Placement::PostMmio => self.post_mmio.push(DynamicRequest {
                 tag: tag.into(),
                 target,
                 size,
@@ -501,12 +560,14 @@ impl<'a> LayoutBuilder<'a> {
         validate_dynamic_requests(&self.mmio32)?;
         validate_ram_requests(&self.ram)?;
         validate_dynamic_requests(&self.mmio64)?;
+        validate_dynamic_requests(&self.post_mmio)?;
 
         let mut state = AllocationState::new();
         state.place_fixed(&mut self.fixed)?;
         state.place_mmio32(&mut self.mmio32)?;
         state.place_ram(&mut self.ram)?;
         state.place_mmio64(&mut self.mmio64)?;
+        state.place_post_mmio(&mut self.post_mmio)?;
 
         state.allocations.sort_by_key(|allocation| allocation.range);
         Ok(state.allocations)
@@ -936,6 +997,41 @@ mod tests {
         builder.allocate().unwrap();
 
         assert_eq!(mmio64, MemoryRange::new(2 * GIB + MIB..2 * GIB + 2 * MIB));
+    }
+
+    #[test]
+    fn post_mmio_uses_bottom_up_placement_after_all_mmio() {
+        let mut ram = Vec::new();
+        let mut mmio64 = MemoryRange::EMPTY;
+        let mut post_mmio = MemoryRange::EMPTY;
+        let mut builder = LayoutBuilder::new();
+        builder.ram("ram", &mut ram, 2 * GIB, PAGE_SIZE);
+        builder.request("mmio64", &mut mmio64, MIB, MIB, Placement::Mmio64);
+        builder.request("post_mmio", &mut post_mmio, MIB, MIB, Placement::PostMmio);
+
+        builder.allocate().unwrap();
+
+        assert_eq!(mmio64, MemoryRange::new(2 * GIB..2 * GIB + MIB));
+        assert_eq!(
+            post_mmio,
+            MemoryRange::new(2 * GIB + MIB..2 * GIB + 2 * MIB)
+        );
+    }
+
+    #[test]
+    fn post_mmio_preserves_request_order() {
+        let mut ram = Vec::new();
+        let mut first = MemoryRange::EMPTY;
+        let mut aligned = MemoryRange::EMPTY;
+        let mut builder = LayoutBuilder::new();
+        builder.ram("ram", &mut ram, 2 * GIB, PAGE_SIZE);
+        builder.request("first", &mut first, MIB, MIB, Placement::PostMmio);
+        builder.request("aligned", &mut aligned, MIB, GIB, Placement::PostMmio);
+
+        builder.allocate().unwrap();
+
+        assert_eq!(first, MemoryRange::new(2 * GIB..2 * GIB + MIB));
+        assert_eq!(aligned, MemoryRange::new(3 * GIB..3 * GIB + MIB));
     }
 
     #[test]

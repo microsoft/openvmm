@@ -76,16 +76,14 @@ pub enum Error {
     NoVtl2MemoryRange,
     #[error("no vtl2 memory source in igvm file")]
     Vtl2MemorySource,
-    #[error("invalid memory config")]
-    MemoryConfig(#[source] vm_topology::memory::Error),
-    #[error("not enough physical address bits to allocate vtl2 range")]
-    NotEnoughPhysicalAddressBits,
     #[error("building device tree for partition failed")]
     DeviceTree(fdt::builder::Error),
     #[error("supplied vtl2 memory {0} is not aligned to 2MB")]
     Vtl2MemoryAligned(u64),
     #[error("supplied vtl2 memory {0} is smaller than igvm file VTL2 range {1}")]
     Vtl2MemoryTooSmall(u64, u64),
+    #[error("invalid vtl2 relocation alignment {0:#x}")]
+    Vtl2RelocationAlignment(u64),
     #[error("unsupported guest architecture")]
     UnsupportedGuestArch,
     #[error("igvm file does not support vbs")]
@@ -199,17 +197,21 @@ pub fn vtl2_memory_info(igvm_file: &IgvmFile) -> Result<MemoryRange, Error> {
     }
 }
 
-/// Determine a location to allocate VTL2 memory, based on VM information and a
-/// provided `igvm_file`.
-pub fn vtl2_memory_range(
-    physical_address_size: u8,
-    mem_size: u64,
-    mmio_gaps: &[MemoryRange],
-    pci_ecam_gaps: &[MemoryRange],
-    pci_mmio_gaps: &[MemoryRange],
+/// Information needed to allocate a VTL2 memory range in the VM memory layout.
+#[derive(Debug, Clone, Copy)]
+pub struct Vtl2MemoryLayoutRequest {
+    /// The number of bytes to reserve for VTL2.
+    pub size: u64,
+    /// The required relocation alignment.
+    pub alignment: u64,
+}
+
+/// Determine the VTL2 memory allocation constraints from a provided
+/// `igvm_file`.
+pub fn vtl2_memory_layout_request(
     igvm_file: &IgvmFile,
     vtl2_size: Option<u64>,
-) -> Result<MemoryRange, Error> {
+) -> Result<Vtl2MemoryLayoutRequest, Error> {
     let (mask, _max_vtl) = match vbs_platform_header(igvm_file)? {
         IgvmPlatformHeader::SupportedPlatform(info) => {
             debug_assert_eq!(info.platform_type, IgvmPlatformType::VSM_ISOLATION);
@@ -228,6 +230,9 @@ pub fn vtl2_memory_range(
     let reloc_region = relocs.0.ok_or(Error::RelocationNotSupported)?[0].clone();
 
     let alignment = reloc_region.relocation_alignment;
+    if alignment < HV_PAGE_SIZE || !alignment.is_power_of_two() {
+        return Err(Error::Vtl2RelocationAlignment(alignment));
+    }
 
     let size = match vtl2_size {
         Some(vtl2_size) => {
@@ -248,50 +253,7 @@ pub fn vtl2_memory_range(
         }
     };
 
-    let align_base = |base| -> u64 { (base + alignment - 1) & !(alignment - 1) };
-
-    // Use one bit below the maximum possible address, as the VTL0 alias map
-    // will use the highest available bit of the physical address space.
-    let physical_address_size = physical_address_size - 1;
-
-    // Create an initial memory layout to determine the highest used address.
-    let dummy_layout = MemoryLayout::new(mem_size, mmio_gaps, pci_ecam_gaps, pci_mmio_gaps, None)
-        .map_err(Error::MemoryConfig)?;
-
-    // TODO: Underhill kernel panics if loaded at 32TB or higher. Restrict the
-    // max address to 32TB until this is fixed.
-    const MAX_ADDR_32TB: u64 = 32u64 << 40; // 0x2000_0000_0000 bytes
-    let max_physical_address = 1 << physical_address_size;
-    let max_physical_address = max_physical_address.min(MAX_ADDR_32TB);
-
-    // With more than two mmio gaps, it's harder to reason about which space is
-    // free or not in the address space to allocate a VTL2 range. Take a
-    // shortcut and place VTL2 above the end of ram or mmio.
-    let (min_addr, max_addr) = (dummy_layout.end_of_layout(), max_physical_address);
-
-    let aligned_min_addr = align_base(min_addr);
-    let aligned_max_addr = (max_addr / alignment) * alignment;
-
-    assert!(aligned_min_addr >= reloc_region.minimum_relocation_gpa);
-    assert!(aligned_max_addr <= reloc_region.maximum_relocation_gpa);
-
-    // It's possible that the min_addr is above the physical address size of the
-    // system. Fail now as mapping ram would fail later.
-    if aligned_min_addr >= aligned_max_addr {
-        return Err(Error::NotEnoughPhysicalAddressBits);
-    }
-
-    tracing::trace!(min_addr, aligned_min_addr, max_addr, aligned_max_addr);
-
-    // Select a random base within the alignment
-    let possible_bases = (aligned_max_addr - aligned_min_addr) / alignment;
-    let mut num: u64 = 0;
-    getrandom::fill(num.as_mut_bytes()).expect("crng failure");
-    let selected_base = num % (possible_bases - 1);
-    let selected_addr = aligned_min_addr + (selected_base * alignment);
-    tracing::trace!(possible_bases, selected_base, selected_addr);
-
-    Ok(MemoryRange::new(selected_addr..(selected_addr + size)))
+    Ok(Vtl2MemoryLayoutRequest { size, alignment })
 }
 
 /// Build a device tree representing the whole guest partition.

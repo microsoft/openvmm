@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::vm_loaders::igvm::Vtl2MemoryLayoutRequest;
 use anyhow::Context;
 use anyhow::bail;
 use memory_range::MemoryRange;
@@ -17,7 +18,7 @@ pub(super) struct MemoryLayoutInput<'a> {
     pub mmio_gaps: &'a [MemoryRange],
     pub pci_ecam_gaps: &'a [MemoryRange],
     pub pci_mmio_gaps: &'a [MemoryRange],
-    pub vtl2_range: Option<MemoryRange>,
+    pub vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
     pub physical_address_size: u8,
 }
 
@@ -28,6 +29,7 @@ pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Res
     let mut resolved_pci_ecam_gaps = vec![MemoryRange::EMPTY; input.pci_ecam_gaps.len()];
     let mut resolved_pci_mmio_gaps = vec![MemoryRange::EMPTY; input.pci_mmio_gaps.len()];
     let mut ram_ranges_by_node = vec![Vec::new(); ram_sizes.len()];
+    let mut vtl2_range = MemoryRange::EMPTY;
 
     let mut builder = LayoutBuilder::new();
     add_fixed_ranges(
@@ -58,6 +60,16 @@ pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Res
         builder.ram(format!("ram[{vnode}]"), ram_ranges, ram_size, PAGE_SIZE);
     }
 
+    if let Some(vtl2_layout) = input.vtl2_layout {
+        builder.request(
+            "vtl2",
+            &mut vtl2_range,
+            vtl2_layout.size,
+            vtl2_layout.alignment,
+            Placement::PostMmio,
+        );
+    }
+
     builder
         .allocate()
         .context("allocating memory layout ranges")?;
@@ -73,15 +85,14 @@ pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Res
         })
         .collect::<Vec<_>>();
 
-    // VTL2 is validated after RAM allocation rather than added as a fixed
-    // allocator range. Otherwise splittable RAM could skip over VTL2 and
-    // continue above it, which is not today's VTL2 placement contract.
+    let vtl2_range = input.vtl2_layout.map(|_| vtl2_range);
+
     let memory_layout = MemoryLayout::new_from_resolved_ranges(
         ram,
         input.mmio_gaps.to_vec(),
         input.pci_ecam_gaps.to_vec(),
         input.pci_mmio_gaps.to_vec(),
-        input.vtl2_range,
+        vtl2_range,
     )
     .context("validating resolved memory layout")?;
 
@@ -167,7 +178,7 @@ mod tests {
         mmio_gaps: &'a [MemoryRange],
         pci_ecam_gaps: &'a [MemoryRange],
         pci_mmio_gaps: &'a [MemoryRange],
-        vtl2_range: Option<MemoryRange>,
+        vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
     ) -> MemoryLayoutInput<'a> {
         MemoryLayoutInput {
             mem_size,
@@ -175,8 +186,15 @@ mod tests {
             mmio_gaps,
             pci_ecam_gaps,
             pci_mmio_gaps,
-            vtl2_range,
+            vtl2_layout,
             physical_address_size: 46,
+        }
+    }
+
+    fn vtl2_layout(size: u64) -> Vtl2MemoryLayoutRequest {
+        Vtl2MemoryLayoutRequest {
+            size,
+            alignment: PAGE_SIZE,
         }
     }
 
@@ -233,25 +251,49 @@ mod tests {
     }
 
     #[test]
-    fn vtl2_is_validated_after_ram_placement() {
+    fn vtl2_is_allocated_after_all_mmio() {
         let mmio = [MemoryRange::new(GB..2 * GB)];
-        let vtl2_range = MemoryRange::new(GB..GB + 2 * MB);
+        let pci_ecam = [MemoryRange::new(3 * GB..3 * GB + MB)];
+        let pci_mmio = [MemoryRange::new(7 * GB..8 * GB)];
 
-        let err = resolve_memory_layout(input(2 * GB, None, &mmio, &[], &[], Some(vtl2_range)))
-            .unwrap_err();
+        let actual = resolve_memory_layout(input(
+            4 * GB,
+            None,
+            &mmio,
+            &pci_ecam,
+            &pci_mmio,
+            Some(vtl2_layout(2 * MB)),
+        ))
+        .unwrap();
 
-        assert!(
-            err.to_string()
-                .contains("validating resolved memory layout")
+        assert_eq!(actual.end_of_layout(), 8 * GB);
+        assert_eq!(
+            actual.vtl2_range(),
+            Some(MemoryRange::new(8 * GB..8 * GB + 2 * MB))
         );
     }
 
     #[test]
-    fn vtl2_does_not_split_ram() {
-        let vtl2_range = MemoryRange::new(GB..2 * GB);
+    fn vtl2_does_not_change_ram_placement() {
+        let mmio = [MemoryRange::new(GB..2 * GB)];
 
-        assert!(
-            resolve_memory_layout(input(2 * GB, None, &[], &[], &[], Some(vtl2_range))).is_err()
+        let without_vtl2 =
+            resolve_memory_layout(input(2 * GB, None, &mmio, &[], &[], None)).unwrap();
+        let with_vtl2 = resolve_memory_layout(input(
+            2 * GB,
+            None,
+            &mmio,
+            &[],
+            &[],
+            Some(vtl2_layout(2 * MB)),
+        ))
+        .unwrap();
+
+        assert_eq!(with_vtl2.ram(), without_vtl2.ram());
+        assert_eq!(with_vtl2.end_of_layout(), without_vtl2.end_of_layout());
+        assert_eq!(
+            with_vtl2.vtl2_range(),
+            Some(MemoryRange::new(3 * GB..3 * GB + 2 * MB))
         );
     }
 

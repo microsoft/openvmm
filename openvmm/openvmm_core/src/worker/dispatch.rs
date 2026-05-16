@@ -866,7 +866,7 @@ impl InitializedVm {
         let physical_address_size = proto.max_physical_address_size();
 
         // Determine if a special vtl2 memory allocation should be used.
-        let vtl2_range = if let LoadMode::Igvm {
+        let vtl2_layout = if let LoadMode::Igvm {
             vtl2_base_address, ..
         } = &cfg.load_mode
         {
@@ -875,21 +875,16 @@ impl InitializedVm {
                 | Vtl2BaseAddressType::Absolute(_)
                 | Vtl2BaseAddressType::Vtl2Allocate { .. } => None,
                 Vtl2BaseAddressType::MemoryLayout { size } => {
-                    let vtl2_range = super::vm_loaders::igvm::vtl2_memory_range(
-                        physical_address_size,
-                        cfg.memory.mem_size,
-                        &cfg.memory.mmio_gaps,
-                        &cfg.memory.pci_ecam_gaps,
-                        &cfg.memory.pci_mmio_gaps,
+                    let vtl2_layout = super::vm_loaders::igvm::vtl2_memory_layout_request(
                         igvm_file
                             .as_ref()
                             .expect("igvm file should be already parsed"),
                         *size,
                     )
-                    .context("unable to determine vtl2 memory range")?;
-                    tracing::info!(?vtl2_range, "vtl2 memory range selected");
+                    .context("unable to determine vtl2 memory layout request")?;
+                    tracing::info!(?vtl2_layout, "vtl2 memory layout request selected");
 
-                    Some(vtl2_range)
+                    Some(vtl2_layout)
                 }
             }
         } else {
@@ -910,7 +905,7 @@ impl InitializedVm {
             mmio_gaps: &cfg.memory.mmio_gaps,
             pci_ecam_gaps: &cfg.memory.pci_ecam_gaps,
             pci_mmio_gaps: &cfg.memory.pci_mmio_gaps,
-            vtl2_range,
+            vtl2_layout,
             physical_address_size,
         })
         .context("invalid memory configuration")?;
