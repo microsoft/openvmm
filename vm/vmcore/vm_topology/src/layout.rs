@@ -51,7 +51,8 @@ const ADDRESS_LIMIT: u64 = MemoryRange::MAX_ADDRESS;
 pub enum Placement {
     /// The allocation must fit below the 4 GiB boundary and is placed top down.
     Mmio32,
-    /// The allocation is placed bottom up from the end of RAM.
+    /// The allocation must sit above the 4 GiB boundary and is placed bottom
+    /// up above RAM.
     Mmio64,
     /// The allocation is placed bottom up after RAM and all MMIO allocations.
     ///
@@ -250,17 +251,20 @@ impl AllocationState {
     }
 
     fn place_mmio64(&mut self, requests: &mut [DynamicRequest<'_>]) -> Result<(), AllocateError> {
-        // High MMIO is allocated bottom up from the end of RAM. The allocator
-        // intentionally does not take host physical-address width as an input;
-        // callers validate the resulting top against host capabilities later.
+        // High MMIO is allocated bottom up above RAM, but never below the
+        // 4 GiB boundary: it is "64-bit" MMIO and must not overlap the 32-bit
+        // window even when RAM is small. The allocator intentionally does not
+        // take host physical-address width as an input; callers validate the
+        // resulting top against host capabilities later.
         requests.sort_by_key(|r| r.placement_sort_key());
 
+        let floor = self.ram_end.max(FOUR_GIB);
         for request in requests {
             let Some(start) = find_lowest_fit(
                 &self.free,
                 request.size,
                 request.alignment,
-                self.ram_end,
+                floor,
                 ADDRESS_LIMIT,
             ) else {
                 return Err(exhausted_error(
@@ -269,7 +273,7 @@ impl AllocationState {
                     request.alignment,
                     AllocationPhase::Mmio64,
                     &self.free,
-                    self.ram_end,
+                    floor,
                     ADDRESS_LIMIT,
                 ));
             };
@@ -892,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn mmio64_uses_bottom_up_placement_from_end_of_ram() {
+    fn mmio64_uses_bottom_up_placement_above_four_gib() {
         let mut ram = Vec::new();
         let mut first = MemoryRange::EMPTY;
         let mut second = MemoryRange::EMPTY;
@@ -903,22 +907,41 @@ mod tests {
 
         builder.allocate().unwrap();
 
-        assert_eq!(first, MemoryRange::new(2 * GIB..2 * GIB + MIB));
-        assert_eq!(second, MemoryRange::new(2 * GIB + MIB..2 * GIB + 2 * MIB));
+        // Mmio64 is floored at 4 GiB even when RAM ends below it.
+        assert_eq!(first, MemoryRange::new(FOUR_GIB..FOUR_GIB + MIB));
+        assert_eq!(second, MemoryRange::new(FOUR_GIB + MIB..FOUR_GIB + 2 * MIB));
     }
 
     #[test]
-    fn mmio64_skips_fixed_ranges_above_ram() {
+    fn mmio64_starts_above_ram_when_ram_exceeds_four_gib() {
         let mut ram = Vec::new();
         let mut mmio64 = MemoryRange::EMPTY;
         let mut builder = LayoutBuilder::new();
-        builder.ram("ram", &mut ram, 2 * GIB, PAGE_SIZE);
-        builder.fixed("fixed", MemoryRange::new(2 * GIB..2 * GIB + MIB));
+        builder.ram("ram", &mut ram, 6 * GIB, PAGE_SIZE);
         builder.request("mmio64", &mut mmio64, MIB, MIB, Placement::Mmio64);
 
         builder.allocate().unwrap();
 
-        assert_eq!(mmio64, MemoryRange::new(2 * GIB + MIB..2 * GIB + 2 * MIB));
+        // RAM occupies [0, 4 GiB) and [4 GiB + low MMIO ..]; with no Mmio32
+        // requests, the second RAM extent starts at 4 GiB and ends at 6 GiB +
+        // (low MMIO hole) above 4 GiB. Mmio64 is placed bottom-up above RAM.
+        let ram_end = ram.iter().map(|r| r.end()).max().unwrap();
+        assert_eq!(mmio64, MemoryRange::new(ram_end..ram_end + MIB));
+        assert!(mmio64.start() >= FOUR_GIB);
+    }
+
+    #[test]
+    fn mmio64_skips_fixed_ranges_above_four_gib() {
+        let mut ram = Vec::new();
+        let mut mmio64 = MemoryRange::EMPTY;
+        let mut builder = LayoutBuilder::new();
+        builder.ram("ram", &mut ram, 2 * GIB, PAGE_SIZE);
+        builder.fixed("fixed", MemoryRange::new(FOUR_GIB..FOUR_GIB + MIB));
+        builder.request("mmio64", &mut mmio64, MIB, MIB, Placement::Mmio64);
+
+        builder.allocate().unwrap();
+
+        assert_eq!(mmio64, MemoryRange::new(FOUR_GIB + MIB..FOUR_GIB + 2 * MIB));
     }
 
     #[test]
@@ -933,10 +956,10 @@ mod tests {
 
         builder.allocate().unwrap();
 
-        assert_eq!(mmio64, MemoryRange::new(2 * GIB..2 * GIB + MIB));
+        assert_eq!(mmio64, MemoryRange::new(FOUR_GIB..FOUR_GIB + MIB));
         assert_eq!(
             post_mmio,
-            MemoryRange::new(2 * GIB + MIB..2 * GIB + 2 * MIB)
+            MemoryRange::new(FOUR_GIB + MIB..FOUR_GIB + 2 * MIB)
         );
     }
 
@@ -1076,12 +1099,13 @@ mod tests {
 
         let sorted = builder.allocate().unwrap();
 
+        // mmio32 sits just below 4 GiB; mmio64 sits at 4 GiB or above.
         assert_eq!(&*sorted[0].tag, "ram");
         assert_eq!(sorted[0].kind, PlacedRangeKind::Ram);
-        assert_eq!(&*sorted[1].tag, "mmio64");
-        assert_eq!(sorted[1].kind, PlacedRangeKind::Mmio64);
-        assert_eq!(&*sorted[2].tag, "mmio32");
-        assert_eq!(sorted[2].kind, PlacedRangeKind::Mmio32);
+        assert_eq!(&*sorted[1].tag, "mmio32");
+        assert_eq!(sorted[1].kind, PlacedRangeKind::Mmio32);
+        assert_eq!(&*sorted[2].tag, "mmio64");
+        assert_eq!(sorted[2].kind, PlacedRangeKind::Mmio64);
     }
 
     #[test]
