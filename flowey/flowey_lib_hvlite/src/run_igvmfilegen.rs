@@ -25,6 +25,8 @@ flowey_request! {
         pub manifest: ReadVar<PathBuf>,
         /// Resources required by the provided IGVM manifest
         pub resources: ReadVar<BTreeMap<ResourceType, PathBuf>>,
+        /// Whether to patch the manifest to set secure_avic to disabled
+        pub disable_secure_avic: bool,
         /// Output path of generated igvm file
         pub igvm: WriteVar<IgvmOutput>,
     }
@@ -42,6 +44,7 @@ impl SimpleFlowNode for Node {
             igvmfilegen,
             manifest,
             resources,
+            disable_secure_avic,
             igvm,
         } = request;
 
@@ -64,12 +67,19 @@ impl SimpleFlowNode for Node {
                 std::fs::write(&resources_path, serde_json::to_string_pretty(&resources)?)
                     .context("writing resources")?;
 
+                let disable_secure_avic_flag = if disable_secure_avic {
+                    "--disable-secure-avic"
+                } else {
+                    ""
+                };
+
                 flowey::shell_cmd!(
                     rt,
                     "{igvmfilegen} manifest
                             -m {manifest}
                             -r {resources_path}
                             --debug-validation
+                            {disable_secure_avic_flag}
                             -o {igvm_path}
                         "
                 )

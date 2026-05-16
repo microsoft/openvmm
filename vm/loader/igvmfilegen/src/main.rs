@@ -72,6 +72,9 @@ enum Options {
         /// Additional debug validation when building IGVM files
         #[clap(long)]
         debug_validation: bool,
+        /// Override secure AVIC to disabled for debug SNP guest configs
+        #[clap(long)]
+        disable_secure_avic: bool,
     },
 }
 
@@ -109,12 +112,24 @@ fn main() -> anyhow::Result<()> {
             resources,
             output,
             debug_validation,
+            disable_secure_avic,
         } => {
             // Read the config from the JSON manifest path.
-            let config: Config = serde_json::from_str(
+            let mut config: Config = serde_json::from_str(
                 &fs_err::read_to_string(manifest).context("reading manifest")?,
             )
             .context("parsing manifest")?;
+
+            if disable_secure_avic {
+                for guest_config in &mut config.guest_configs {
+                    if let ConfigIsolationType::Snp {
+                        secure_avic, ..
+                    } = &mut guest_config.isolation_type
+                    {
+                        *secure_avic = SecureAvicType::Disabled;
+                    }
+                }
+            }
 
             // Read resources and validate that it covers the required resources
             // from the config.
