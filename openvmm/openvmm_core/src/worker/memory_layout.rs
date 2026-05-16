@@ -73,6 +73,9 @@ pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Res
         })
         .collect::<Vec<_>>();
 
+    // VTL2 is validated after RAM allocation rather than added as a fixed
+    // allocator range. Otherwise splittable RAM could skip over VTL2 and
+    // continue above it, which is not today's VTL2 placement contract.
     let memory_layout = MemoryLayout::new_from_resolved_ranges(
         ram,
         input.mmio_gaps.to_vec(),
