@@ -1,6 +1,20 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Guest physical memory layout resolution for the VM worker.
+//!
+//! This module is the point where OpenVMM turns stable VM configuration and
+//! already-known platform ranges into the production [`MemoryLayout`]. The
+//! resulting guest physical addresses are part of the VM's compatibility surface:
+//! hibernated guests and saved VMs remember device and RAM locations, so changes
+//! to the request order, placement class, or alignment policy can break resume or
+//! restore. Keep layout policy changes deliberate and covered by tests.
+//!
+//! The resolver keeps today's MMIO inputs fixed while moving RAM and VTL2
+//! placement into `vm_topology::layout`. Fixed ranges are registered first so RAM
+//! splits around them. VTL2 is registered last as post-MMIO private memory so it
+//! does not perturb the VTL0-visible RAM/MMIO layout.
+
 use super::vm_loaders::igvm::Vtl2MemoryLayoutRequest;
 use anyhow::Context;
 use anyhow::bail;
@@ -15,12 +29,24 @@ const TWO_MB: u64 = 2 * 1024 * 1024;
 const GB: u64 = 1024 * 1024 * 1024;
 
 pub(super) struct MemoryLayoutInput<'a> {
+    /// Total VTL0 RAM size requested by the VM configuration.
     pub mem_size: u64,
+    /// Optional per-vNUMA RAM budgets. When present, these must sum to
+    /// `mem_size`, and request order is the vnode assignment order.
     pub numa_mem_sizes: Option<&'a [u64]>,
+    /// Existing resolved chipset/MMIO ranges. These are fixed for this
+    /// transition step; later commits will move individual consumers to typed
+    /// dynamic intents.
     pub mmio_gaps: &'a [MemoryRange],
+    /// Existing resolved PCI ECAM ranges, treated as fixed occupied space.
     pub pci_ecam_gaps: &'a [MemoryRange],
+    /// Existing resolved PCI MMIO ranges, treated as fixed occupied space.
     pub pci_mmio_gaps: &'a [MemoryRange],
+    /// Optional IGVM VTL2 private-memory request. This is allocated after all
+    /// VTL0-visible RAM and MMIO and is carried separately from ordinary RAM.
     pub vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
+    /// Host-supported physical address width used only after allocation. The
+    /// allocator computes the smallest layout it can; host fit is validation.
     pub physical_address_size: u8,
 }
 
@@ -35,6 +61,11 @@ pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Res
     add_fixed_ranges(&mut builder, "pci_ecam", input.pci_ecam_gaps);
     add_fixed_ranges(&mut builder, "pci_mmio", input.pci_mmio_gaps);
 
+    // RAM request order is part of the NUMA compatibility contract: the first
+    // request maps to vnode 0, the second to vnode 1, and so on. For GB-sized
+    // nodes, use GB alignment so holes do not create sub-GB RAM chunks. For
+    // sub-GB nodes, use 2 MB alignment to avoid wasting a full GB of address
+    // space per small node.
     for (vnode, (ram_size, ram_ranges)) in ram_sizes
         .iter()
         .copied()
@@ -45,6 +76,15 @@ pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Res
         builder.ram(format!("ram[{vnode}]"), ram_ranges, ram_size, ram_alignment);
     }
 
+    // VTL2 MemoryLayout mode is implementation-private memory, not a VTL0 RAM
+    // hole. Allocate it only after all VTL0-visible RAM/MMIO so enabling VTL2
+    // does not move the VTL0 layout.
+    //
+    // IGVM relocation min/max constraints are checked later by the IGVM loader
+    // against the selected base; using them as a constraint here would be
+    // overconstraining and would lead to holes in the VTL0 layout--we just
+    // don't support IGVM files with relocation sections that cannot be
+    // satisfied by the post-MMIO space.
     if let Some(vtl2_layout) = input.vtl2_layout {
         builder.request(
             "vtl2",
@@ -72,6 +112,9 @@ pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Res
 
     let vtl2_range = input.vtl2_layout.map(|_| vtl2_range);
 
+    // `MemoryLayout` remains the shared validation and query type for the rest
+    // of the worker. Construct it from resolved RAM so no later consumer repeats
+    // RAM placement or infers RAM by subtracting from MMIO gaps.
     let memory_layout = MemoryLayout::new_from_resolved_ranges(
         ram,
         input.mmio_gaps.to_vec(),
@@ -81,7 +124,11 @@ pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Res
     )
     .context("validating resolved memory layout")?;
 
-    let address_space_limit = physical_address_limit(input.physical_address_size);
+    // Host address-width validation is intentionally after allocation. The
+    // layout engine is host-width independent, which keeps the layout a pure
+    // function of VM configuration and avoids host differences changing guest
+    // physical addresses.
+    let address_space_limit = 1u64 << input.physical_address_size;
     if memory_layout.end_of_layout() > address_space_limit {
         bail!(
             "memory layout ends at {:#x}, which exceeds the address width of {} bits",
@@ -94,12 +141,18 @@ pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Res
 }
 
 fn add_fixed_ranges(builder: &mut LayoutBuilder<'_>, tag_prefix: &str, ranges: &[MemoryRange]) {
+    // These are fixed only from the allocator's point of view. Today they are
+    // already-resolved config fields; future commits will replace some of them
+    // with typed dynamic requests owned by this resolver.
     for (index, range) in ranges.iter().enumerate() {
         builder.fixed(format!("{tag_prefix}[{index}]"), *range);
     }
 }
 
 fn validate_ram_sizes(mem_size: u64, numa_mem_sizes: Option<&[u64]>) -> anyhow::Result<Vec<u64>> {
+    // Keep validation compatible with `MemoryLayout::new()` / `new_with_numa()`:
+    // RAM sizes are page-granular, nonzero, and NUMA budgets must exactly cover
+    // the configured total.
     if mem_size == 0 || !mem_size.is_multiple_of(PAGE_SIZE) {
         bail!("invalid memory size {mem_size:#x}");
     }
@@ -128,14 +181,6 @@ fn validate_ram_sizes(mem_size: u64, numa_mem_sizes: Option<&[u64]>) -> anyhow::
     }
 
     Ok(numa_mem_sizes.to_vec())
-}
-
-fn physical_address_limit(physical_address_size: u8) -> u64 {
-    if physical_address_size >= u64::BITS as u8 {
-        u64::MAX
-    } else {
-        1u64 << physical_address_size
-    }
 }
 
 #[cfg(test)]
