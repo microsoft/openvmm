@@ -737,12 +737,20 @@ mod tests {
     #[test]
     fn ecam_below_256mb_is_rejected() {
         // Force ECAM placement below 256 MiB by reserving most of the 32-bit
-        // MMIO window for low_mmio. The Mmio32 zone is ~4064 MiB on x86_64,
-        // so a 3840 MiB low_mmio request plus the default 96 MiB chipset_low
-        // pushes ECAM down to ~127 MiB. The resolver must bail because MCFG
-        // cannot represent a bus-0 base below the ECAM start.
+        // MMIO window for low_mmio. The Mmio32 zone is ~4064 MiB on x86_64
+        // and ~3824 MiB on aarch64 (the per-arch reserved zone differs), so
+        // the low_mmio request is sized per-arch to land ECAM around 127 MiB
+        // in both cases. The resolver must bail because MCFG cannot
+        // represent a bus-0 base below the ECAM start.
+        let low_mmio_size = if cfg!(guest_arch = "x86_64") {
+            3840 * MB
+        } else {
+            3600 * MB
+        };
         let root_complexes = [pcie_root_complex(
-            PcieMmioRangeConfig::Dynamic { size: 3840 * MB },
+            PcieMmioRangeConfig::Dynamic {
+                size: low_mmio_size,
+            },
             PcieMmioRangeConfig::Dynamic { size: GB },
         )];
         let mut config = input(2 * GB, None, None);
