@@ -113,6 +113,19 @@ pub(super) fn resolve_memory_layout(
 ) -> anyhow::Result<ResolvedMemoryLayout> {
     let ram_sizes = validate_ram_sizes(input.mem_size, input.numa_mem_sizes)?;
 
+    // Chipset low and high MMIO must be paired: downstream consumers (UEFI,
+    // x64 DSDT, PCAT) index `MemoryLayout::mmio()` positionally and require
+    // both entries to be present. Allowing only one to be set would silently
+    // produce a layout where consumers either fail late or, with VTL2
+    // enabled, misinterpret the VTL2 chipset MMIO range as the high gap.
+    if (input.chipset_low_mmio_size == 0) != (input.chipset_high_mmio_size == 0) {
+        bail!(
+            "chipset low and high MMIO must be both enabled or both disabled (low={:#x}, high={:#x})",
+            input.chipset_low_mmio_size,
+            input.chipset_high_mmio_size,
+        );
+    }
+
     let mut ram_ranges_by_node = vec![Vec::new(); ram_sizes.len()];
     let mut pcie_root_complex_ranges = input
         .pcie_root_complexes
@@ -190,7 +203,7 @@ pub(super) fn resolve_memory_layout(
             &root_complex.low_mmio,
             TWO_MB,
             Placement::Mmio32,
-        );
+        )?;
         // High MMIO: 1 GB aligned. Ideally we'd align it to its actual size so
         // that the full amount is always usable for a single large BAR. But
         // that burns physical address space, which is especially limited on
@@ -206,7 +219,7 @@ pub(super) fn resolve_memory_layout(
             &root_complex.high_mmio,
             GB,
             Placement::Mmio64,
-        );
+        )?;
     }
 
     // Virtio-mmio: allocate one contiguous region for all slots. Each slot is
@@ -398,16 +411,25 @@ fn add_mmio_range<'a>(
     config: &PcieMmioRangeConfig,
     alignment: u64,
     placement: Placement,
-) {
+) -> anyhow::Result<()> {
+    let tag = tag.into();
     match config {
         PcieMmioRangeConfig::Dynamic { size } => {
             builder.request(tag, target, *size, alignment, placement);
         }
         PcieMmioRangeConfig::Fixed(range) => {
+            // A fixed low-MMIO range must satisfy the Mmio32 placement contract.
+            // Without this check, an above-4 GiB range would be accepted and
+            // then silently truncated to 32 bits in the ARM64 PCI device tree
+            // (`ranges` property uses `low_start as u32`).
+            if placement == Placement::Mmio32 && range.end() > 4 * GB {
+                bail!("{tag}: fixed low MMIO range {range} must end at or below 4 GiB",);
+            }
             *target = *range;
             builder.fixed(tag, *range);
         }
     }
+    Ok(())
 }
 
 fn validate_ram_sizes(mem_size: u64, numa_mem_sizes: Option<&[u64]>) -> anyhow::Result<Vec<u64>> {
@@ -732,6 +754,42 @@ mod tests {
 
         assert!(result.chipset_low_mmio.is_none());
         assert!(result.chipset_high_mmio.is_none());
+    }
+
+    #[test]
+    fn asymmetric_chipset_mmio_is_rejected() {
+        let mut config = input(2 * GB, None, None);
+        config.chipset_high_mmio_size = 0;
+        let err = resolve_memory_layout(config).unwrap_err();
+        assert!(
+            err.to_string().contains("both enabled or both disabled"),
+            "unexpected error: {err}"
+        );
+
+        let mut config = input(2 * GB, None, None);
+        config.chipset_low_mmio_size = 0;
+        let err = resolve_memory_layout(config).unwrap_err();
+        assert!(
+            err.to_string().contains("both enabled or both disabled"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn fixed_low_mmio_above_4gb_is_rejected() {
+        let root_complexes = [pcie_root_complex(
+            // A 1 GiB fixed low MMIO range placed above 4 GiB violates the
+            // Mmio32 placement contract.
+            PcieMmioRangeConfig::Fixed(MemoryRange::new(5 * GB..6 * GB)),
+            PcieMmioRangeConfig::Dynamic { size: GB },
+        )];
+        let mut config = input(2 * GB, None, None);
+        config.pcie_root_complexes = &root_complexes;
+        let err = resolve_memory_layout(config).unwrap_err();
+        assert!(
+            err.to_string().contains("must end at or below 4 GiB"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
