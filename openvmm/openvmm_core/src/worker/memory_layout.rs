@@ -35,6 +35,15 @@ const GB: u64 = 1024 * 1024 * 1024;
 /// PCIe ECAM: 32 devices * 8 functions * 4 KiB config space = 1 MB per bus.
 const PCIE_ECAM_BYTES_PER_BUS: u64 = 32 * 8 * 4096;
 
+/// Minimum guest physical address at which an ECAM range may be placed.
+///
+/// The ACPI MCFG table reports the bus-0 base as
+/// `ecam_range.start() - start_bus * 1 MiB`. `start_bus` is a `u8`, so up to
+/// 255 MiB of headroom may be required. Rounding up to a flat 256 MiB gives a
+/// single easy-to-remember invariant that works for every legal `start_bus`
+/// value, independent of any individual root complex's configuration.
+const PCIE_ECAM_MIN_ADDRESS: u64 = 256 * 1024 * 1024;
+
 #[derive(Debug)]
 pub(super) struct ResolvedMemoryLayout {
     pub memory_layout: MemoryLayout,
@@ -262,6 +271,25 @@ pub(super) fn resolve_memory_layout(
     builder
         .allocate()
         .context("allocating memory layout ranges")?;
+
+    // Enforce the MCFG bus-0 base invariant: every ECAM range must sit at
+    // `PCIE_ECAM_MIN_ADDRESS` or above. Fail fast at VM construction with a
+    // clear error rather than letting an unrepresentable MCFG entry surface
+    // later as a panic (debug) or silent wraparound (release).
+    for (root_complex, ranges) in input
+        .pcie_root_complexes
+        .iter()
+        .zip(&pcie_root_complex_ranges)
+    {
+        if ranges.ecam_range.start() < PCIE_ECAM_MIN_ADDRESS {
+            bail!(
+                "PCIe root complex {:?}: ECAM at {:#x} is below the {:#x} minimum",
+                root_complex.name,
+                ranges.ecam_range.start(),
+                PCIE_ECAM_MIN_ADDRESS,
+            );
+        }
+    }
 
     let ram = ram_ranges_by_node
         .into_iter()
@@ -703,5 +731,24 @@ mod tests {
 
         assert!(result.chipset_low_mmio.is_none());
         assert!(result.chipset_high_mmio.is_none());
+    }
+
+    #[test]
+    fn ecam_below_256mb_is_rejected() {
+        // Force ECAM placement below 256 MiB by reserving most of the 32-bit
+        // MMIO window for low_mmio. The Mmio32 zone is ~4064 MiB on x86_64,
+        // so a 3840 MiB low_mmio request plus the default 96 MiB chipset_low
+        // pushes ECAM down to ~127 MiB. The resolver must bail because MCFG
+        // cannot represent a bus-0 base below the ECAM start.
+        let root_complexes = [pcie_root_complex(
+            PcieMmioRangeConfig::Dynamic { size: 3840 * MB },
+            PcieMmioRangeConfig::Dynamic { size: GB },
+        )];
+        let mut config = input(2 * GB, None, None);
+        config.pcie_root_complexes = &root_complexes;
+
+        let err = resolve_memory_layout(config).unwrap_err();
+
+        assert!(err.to_string().contains("ECAM"), "unexpected error: {err}");
     }
 }
