@@ -220,22 +220,30 @@ impl PetriVmmBackend for HyperVPetriBackend {
             // Plumb the EFI diagnostics log level via the OpenHCL command
             // line. The corresponding `EfiDiagnosticsLogLevel` WMI property
             // is not available on all hosts (e.g. rs_prerelease), so we
-            // rely on the underhill env var fallback instead.
+            // rely on the underhill env var fallback instead. This means
+            // we currently only support setting the level on OpenHCL-backed
+            // VMs; for plain Hyper-V UEFI VMs we fail loudly rather than
+            // silently dropping the setting.
             //
-            // TODO: switch to the WMI property once host changes are
-            // saturated.
-            if properties.is_openhcl {
-                let cli = match efi_diagnostics_log_level {
-                    crate::EfiDiagnosticsLogLevel::Default => None,
-                    crate::EfiDiagnosticsLogLevel::Info => Some("INFO"),
-                    crate::EfiDiagnosticsLogLevel::Full => Some("FULL"),
-                };
-                if let Some(cli) = cli {
-                    append_cmdline(
-                        &mut openhcl_command_line,
-                        format!("HCL_EFI_DIAGNOSTICS_LOG_LEVEL={cli}"),
+            // TODO: switch to the WMI property (which would also cover the
+            // non-OpenHCL path) once host changes are saturated.
+            let efi_diag_cli = match efi_diagnostics_log_level {
+                crate::EfiDiagnosticsLogLevel::Default => None,
+                crate::EfiDiagnosticsLogLevel::Info => Some("INFO"),
+                crate::EfiDiagnosticsLogLevel::Full => Some("FULL"),
+            };
+            if let Some(cli) = efi_diag_cli {
+                if !properties.is_openhcl {
+                    anyhow::bail!(
+                        "with_efi_diagnostics_log_level({:?}) is only supported for \
+                         OpenHCL-backed Hyper-V UEFI VMs in this code path",
+                        efi_diagnostics_log_level
                     );
                 }
+                append_cmdline(
+                    &mut openhcl_command_line,
+                    format!("HCL_EFI_DIAGNOSTICS_LOG_LEVEL={cli}"),
+                );
             }
 
             if *enable_vpci_boot {
