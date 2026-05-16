@@ -268,7 +268,7 @@ pub(super) fn resolve_memory_layout(
         );
     }
 
-    builder
+    let placed_ranges = builder
         .allocate()
         .context("allocating memory layout ranges")?;
 
@@ -352,10 +352,11 @@ pub(super) fn resolve_memory_layout(
     // function of VM configuration and avoids host differences changing guest
     // physical addresses.
     let address_space_limit = 1u64 << input.physical_address_size;
-    if memory_layout.end_of_layout() > address_space_limit {
+    let layout_top = placed_ranges.last().map(|r| r.range.end()).unwrap_or(0);
+    if layout_top > address_space_limit {
         bail!(
             "memory layout ends at {:#x}, which exceeds the address width of {} bits",
-            memory_layout.end_of_layout(),
+            layout_top,
             input.physical_address_size
         );
     }

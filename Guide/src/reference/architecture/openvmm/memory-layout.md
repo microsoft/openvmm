@@ -107,14 +107,16 @@ issues requests in this order:
 3. **Chipset high MMIO** (`Mmio64`) — the corresponding high range. 2 MB
    alignment.
 4. **PCIe root complex ranges**, one per root complex:
-    - **ECAM** (`Mmio32`). If the config specifies a fixed ECAM range, the
-      worker uses it as `fixed`. Otherwise the size is derived from the
-      bus window as `(end_bus - start_bus + 1) * 1 MB` (32 devices × 8
-      functions × 4 KiB per config space).
-    - **Low MMIO** (`Mmio32`), 2 MB aligned.
-    - **High MMIO** (`Mmio64`), 1 GB aligned. Per-BAR alignment would
-      guarantee the entire window is usable for one large BAR, but burns
-      address space on hosts with tight physical-address widths.
+    - **ECAM** (`Mmio32`). The size is derived from the bus window as
+      `(end_bus - start_bus + 1) * 1 MB` (32 devices × 8 functions ×
+      4 KiB per config space).
+    - **Low MMIO** (`Mmio32`), 2 MB aligned. A caller can pin this to a
+      fixed range instead of supplying a size, for assigned-device, IOMMU,
+      and physical-topology passthrough.
+    - **High MMIO** (`Mmio64`), 1 GB aligned. A caller can pin this to a
+      fixed range as well. Per-BAR alignment would guarantee the entire
+      window is usable for one large BAR, but burns address space on
+      hosts with tight physical-address widths.
 5. **Virtio-mmio slots** (`Mmio32`) — one contiguous region sized
    `slot_count * 4 KiB`, when any slots are configured.
 6. **RAM**, in vnode order. The first request becomes vnode 0, the second

@@ -359,18 +359,15 @@ fn build_device_tree(params: BuildDeviceTreeParams<'_>) -> Result<Vec<u8>, fdt::
 
     // Build DT ranges for VMBus devices. VTL0 gets the chipset low/high MMIO
     // ranges; VTL2 gets its own private chipset MMIO range.
-    let mut ranges_vtl0: Vec<u64> = Vec::new();
-    for range in [chipset_low_mmio, chipset_high_mmio].into_iter().flatten() {
-        ranges_vtl0.push(range.start());
-        ranges_vtl0.push(range.start());
-        ranges_vtl0.push(range.len());
-    }
-    let mut ranges_vtl2: Vec<u64> = Vec::new();
-    if let Some(range) = vtl2_chipset_mmio {
-        ranges_vtl2.push(range.start());
-        ranges_vtl2.push(range.start());
-        ranges_vtl2.push(range.len());
-    }
+    let ranges_vtl0: Vec<u64> = [chipset_low_mmio, chipset_high_mmio]
+        .into_iter()
+        .flatten()
+        .flat_map(|range| [range.start(), range.start(), range.len()])
+        .collect();
+    let ranges_vtl2: Vec<u64> = vtl2_chipset_mmio
+        .into_iter()
+        .flat_map(|range| [range.start(), range.start(), range.len()])
+        .collect();
 
     // VTL0 vmbus root device
     let vmbus_vtl0_name = if ranges_vtl0.is_empty() {
