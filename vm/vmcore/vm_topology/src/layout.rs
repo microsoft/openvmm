@@ -3,11 +3,11 @@
 
 //! VM address-space layout allocator.
 //!
-//! This module provides a pure-math layout allocator that places fixed ranges,
-//! 32-bit MMIO, ordinary RAM, 64-bit MMIO, and post-MMIO ranges in a flat guest
-//! physical address map. It has no knowledge of specific architectures,
-//! firmware types, or chipset conventions; callers express those policies as
-//! fixed ranges and dynamic requests.
+//! This module provides a pure-math layout allocator that places reserved and
+//! fixed ranges, 32-bit MMIO, ordinary RAM, 64-bit MMIO, and post-MMIO ranges in
+//! a flat guest physical address map. It has no knowledge of specific
+//! architectures, firmware types, or chipset conventions; callers express those
+//! policies as reserved/fixed ranges and dynamic requests.
 //!
 //! # Usage
 //!
@@ -70,6 +70,8 @@ pub enum Placement {
 /// The kind of a produced allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlacedRangeKind {
+    /// A reserved range supplied by the caller.
+    Reserved,
     /// A fixed allocation supplied by the caller.
     Fixed,
     /// A 32-bit MMIO allocation.
@@ -108,11 +110,17 @@ pub struct PlacedRange {
 
 /// A builder for computing a deterministic VM address-space layout.
 pub struct LayoutBuilder<'a> {
+    reserved: Vec<ReservedRequest>,
     fixed: Vec<FixedRequest<'a>>,
     mmio32: Vec<DynamicRequest<'a>>,
     ram: Vec<RamRequest<'a>>,
     mmio64: Vec<DynamicRequest<'a>>,
     post_mmio: Vec<DynamicRequest<'a>>,
+}
+
+struct ReservedRequest {
+    tag: String,
+    range: MemoryRange,
 }
 
 struct FixedRequest<'a> {
@@ -194,11 +202,7 @@ impl AllocationState {
     }
 
     fn place_fixed(&mut self, requests: &mut [FixedRequest<'_>]) -> Result<(), AllocateError> {
-        // Fixed ranges represent policy decisions made by the caller: reserved
-        // architectural/chipset zones, firmware conventions, and any other
-        // pinned addresses. They seed the free list before dynamic placement;
-        // this layer does not assign special meaning to particular fixed tags.
-        let mut fixed = requests
+        let fixed = requests
             .iter()
             .enumerate()
             .map(|(index, request)| {
@@ -209,27 +213,18 @@ impl AllocationState {
             })
             .collect::<Vec<_>>();
 
-        fixed.sort_by_key(|(range, _)| range.start());
-
-        for pair in fixed.windows(2) {
-            let (range_a, index_a) = pair[0];
-            let (range_b, index_b) = pair[1];
-            if range_a.overlaps(&range_b) {
-                return Err(AllocateError::FixedOverlap {
-                    tag_a: requests[index_a].tag.clone(),
-                    range_a,
-                    tag_b: requests[index_b].tag.clone(),
-                    range_b,
-                });
-            }
-        }
-
         for &(range, request_index) in &fixed {
             *requests[request_index].target = range;
             self.allocate_range(&requests[request_index].tag, PlacedRangeKind::Fixed, range);
         }
 
         Ok(())
+    }
+
+    fn place_reserved(&mut self, requests: &[ReservedRequest]) {
+        for request in requests {
+            self.allocate_range(&request.tag, PlacedRangeKind::Reserved, request.range);
+        }
     }
 
     fn place_mmio32(&mut self, requests: &mut [DynamicRequest<'_>]) -> Result<(), AllocateError> {
@@ -364,6 +359,7 @@ impl AllocationState {
     fn layout_top(&self) -> u64 {
         self.allocations
             .iter()
+            .filter(|allocation| allocation.kind != PlacedRangeKind::Reserved)
             .map(|allocation| allocation.range.end())
             .max()
             .unwrap_or(0)
@@ -451,16 +447,16 @@ pub enum AllocateError {
         /// The requested size.
         size: u64,
     },
-    /// Two fixed requests overlap.
-    #[error("fixed requests {tag_a} ({range_a}) and {tag_b} ({range_b}) overlap")]
+    /// Two fixed or reserved requests overlap.
+    #[error("fixed/reserved requests {tag_a} ({range_a}) and {tag_b} ({range_b}) overlap")]
     FixedOverlap {
-        /// The tag of the first fixed request.
+        /// The tag of the first request.
         tag_a: String,
-        /// The range of the first fixed request.
+        /// The range of the first request.
         range_a: MemoryRange,
-        /// The tag of the second fixed request.
+        /// The tag of the second request.
         tag_b: String,
-        /// The range of the second fixed request.
+        /// The range of the second request.
         range_b: MemoryRange,
     },
     /// A dynamic request could not be satisfied.
@@ -485,12 +481,25 @@ impl<'a> LayoutBuilder<'a> {
     /// Creates a new layout builder.
     pub fn new() -> Self {
         Self {
+            reserved: Vec::new(),
             fixed: Vec::new(),
             mmio32: Vec::new(),
             ram: Vec::new(),
             mmio64: Vec::new(),
             post_mmio: Vec::new(),
         }
+    }
+
+    /// Reserves a range so no allocation can use it.
+    ///
+    /// Reserved ranges are removed from the free list and may appear in the
+    /// returned [`PlacedRange`] list, but they do not affect post-MMIO
+    /// placement. Trailing reserved ranges are omitted from the returned list.
+    pub fn reserve(&mut self, tag: impl Into<String>, range: MemoryRange) {
+        self.reserved.push(ReservedRequest {
+            tag: tag.into(),
+            range,
+        });
     }
 
     /// Adds a single-range request to the builder.
@@ -556,13 +565,16 @@ impl<'a> LayoutBuilder<'a> {
     /// Allocates all requests, fills in each target, and returns every placed
     /// range sorted by address.
     pub fn allocate(mut self) -> Result<Vec<PlacedRange>, AllocateError> {
+        validate_reserved_requests(&self.reserved)?;
         validate_fixed_requests(&self.fixed)?;
+        validate_pinned_ranges(&self.reserved, &self.fixed)?;
         validate_dynamic_requests(&self.mmio32)?;
         validate_ram_requests(&self.ram)?;
         validate_dynamic_requests(&self.mmio64)?;
         validate_dynamic_requests(&self.post_mmio)?;
 
         let mut state = AllocationState::new();
+        state.place_reserved(&self.reserved);
         state.place_fixed(&mut self.fixed)?;
         state.place_mmio32(&mut self.mmio32)?;
         state.place_ram(&mut self.ram)?;
@@ -570,6 +582,13 @@ impl<'a> LayoutBuilder<'a> {
         state.place_post_mmio(&mut self.post_mmio)?;
 
         state.allocations.sort_by_key(|allocation| allocation.range);
+        while state
+            .allocations
+            .last()
+            .is_some_and(|allocation| allocation.kind == PlacedRangeKind::Reserved)
+        {
+            state.allocations.pop();
+        }
         Ok(state.allocations)
     }
 }
@@ -598,6 +617,28 @@ fn validate_size_alignment(tag: &str, size: u64, alignment: u64) -> Result<(), A
     Ok(())
 }
 
+fn validate_reserved_requests(requests: &[ReservedRequest]) -> Result<(), AllocateError> {
+    for request in requests {
+        validate_size_alignment(&request.tag, request.range.len(), PAGE_SIZE)?;
+        if !request.range.start().is_multiple_of(PAGE_SIZE) {
+            return Err(AllocateError::InvalidFixedAddress {
+                tag: request.tag.clone(),
+                address: request.range.start(),
+            });
+        }
+
+        if request.range.end() > ADDRESS_LIMIT {
+            return Err(AllocateError::FixedRangeOverflow {
+                tag: request.tag.clone(),
+                address: request.range.start(),
+                size: request.range.len(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_fixed_requests(requests: &[FixedRequest<'_>]) -> Result<(), AllocateError> {
     for request in requests {
         validate_size_alignment(&request.tag, request.size, request.alignment)?;
@@ -621,6 +662,39 @@ fn validate_fixed_requests(requests: &[FixedRequest<'_>]) -> Result<(), Allocate
                 tag: request.tag.clone(),
                 address: request.base,
                 size: request.size,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_pinned_ranges(
+    reserved_requests: &[ReservedRequest],
+    fixed_requests: &[FixedRequest<'_>],
+) -> Result<(), AllocateError> {
+    let mut pinned = reserved_requests
+        .iter()
+        .map(|request| (request.range, request.tag.as_str()))
+        .chain(fixed_requests.iter().map(|request| {
+            (
+                MemoryRange::new(request.base..request.base + request.size),
+                request.tag.as_str(),
+            )
+        }))
+        .collect::<Vec<_>>();
+
+    pinned.sort_by_key(|(range, _)| range.start());
+
+    for pair in pinned.windows(2) {
+        let (range_a, tag_a) = pair[0];
+        let (range_b, tag_b) = pair[1];
+        if range_a.overlaps(&range_b) {
+            return Err(AllocateError::FixedOverlap {
+                tag_a: tag_a.to_string(),
+                range_a,
+                tag_b: tag_b.to_string(),
+                range_b,
             });
         }
     }
@@ -886,6 +960,24 @@ mod tests {
     }
 
     #[test]
+    fn reserved_overlap_rejected() {
+        let mut fixed = MemoryRange::EMPTY;
+        let mut builder = LayoutBuilder::new();
+        builder.reserve("reserved", MemoryRange::new(GIB..GIB + MIB));
+        builder.request(
+            "fixed",
+            &mut fixed,
+            MIB,
+            PAGE_SIZE,
+            Placement::Fixed(GIB + PAGE_SIZE),
+        );
+
+        let error = builder.allocate().unwrap_err();
+
+        assert!(matches!(error, AllocateError::FixedOverlap { .. }));
+    }
+
+    #[test]
     fn mmio32_uses_top_down_placement_below_4_gib() {
         let mut reserved = MemoryRange::EMPTY;
         let mut first = MemoryRange::EMPTY;
@@ -1032,6 +1124,49 @@ mod tests {
 
         assert_eq!(first, MemoryRange::new(2 * GIB..2 * GIB + MIB));
         assert_eq!(aligned, MemoryRange::new(3 * GIB..3 * GIB + MIB));
+    }
+
+    #[test]
+    fn high_reserved_range_does_not_affect_post_mmio_placement() {
+        let mut ram = Vec::new();
+        let mut post_mmio = MemoryRange::EMPTY;
+        let mut builder = LayoutBuilder::new();
+        builder.ram("ram", &mut ram, 2 * GIB, PAGE_SIZE);
+        builder.reserve(
+            "high_reserved",
+            MemoryRange::new(0xFD_0000_0000..0xFD_4000_0000),
+        );
+        builder.request("post_mmio", &mut post_mmio, MIB, MIB, Placement::PostMmio);
+
+        let sorted = builder.allocate().unwrap();
+
+        assert_eq!(post_mmio, MemoryRange::new(2 * GIB..2 * GIB + MIB));
+        assert!(
+            !sorted
+                .iter()
+                .any(|allocation| allocation.kind == PlacedRangeKind::Reserved)
+        );
+    }
+
+    #[test]
+    fn reserved_range_between_allocations_is_reported() {
+        let mut ram = Vec::new();
+        let mut post_mmio = MemoryRange::EMPTY;
+        let mut builder = LayoutBuilder::new();
+        builder.ram("ram", &mut ram, 2 * GIB, PAGE_SIZE);
+        builder.reserve("reserved", MemoryRange::new(2 * GIB..2 * GIB + MIB));
+        builder.request("post_mmio", &mut post_mmio, MIB, MIB, Placement::PostMmio);
+
+        let sorted = builder.allocate().unwrap();
+
+        assert_eq!(
+            post_mmio,
+            MemoryRange::new(2 * GIB + MIB..2 * GIB + 2 * MIB)
+        );
+        assert!(sorted.iter().any(|allocation| {
+            allocation.kind == PlacedRangeKind::Reserved
+                && allocation.range == MemoryRange::new(2 * GIB..2 * GIB + MIB)
+        }));
     }
 
     #[test]
