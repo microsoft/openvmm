@@ -151,13 +151,13 @@ pub(super) fn resolve_memory_layout(
     } else {
         ARCH_RESERVED_AARCH64
     };
-    builder.reserve("arch_reserved", arch_reserved);
+    builder.reserve("arch-reserved", arch_reserved);
 
     // Chipset low MMIO (Mmio32): VMOD/PCI0 _CRS low range for VMBus
     // devices and PIIX4 PCI BARs.
     if input.chipset_low_mmio_size != 0 {
         builder.request(
-            "chipset_low_mmio",
+            "chipset-low-mmio",
             &mut chipset_low_mmio,
             input.chipset_low_mmio_size,
             TWO_MB,
@@ -168,7 +168,7 @@ pub(super) fn resolve_memory_layout(
     // Chipset high MMIO (Mmio64): VMOD/PCI0 _CRS high range.
     if input.chipset_high_mmio_size != 0 {
         builder.request(
-            "chipset_high_mmio",
+            "chipset-high-mmio",
             &mut chipset_high_mmio,
             input.chipset_high_mmio_size,
             TWO_MB,
@@ -176,11 +176,10 @@ pub(super) fn resolve_memory_layout(
         );
     }
 
-    for (index, (root_complex, ranges)) in input
+    for (root_complex, ranges) in input
         .pcie_root_complexes
         .iter()
         .zip(&mut pcie_root_complex_ranges)
-        .enumerate()
     {
         // ECAM: always dynamically allocated below 4GB (since Linux on x86_64
         // refuses to use ECAM above 4GB unless the BIOS is of a special shape).
@@ -189,7 +188,7 @@ pub(super) fn resolve_memory_layout(
         // TODO: fix the Linux loader and move this above 4GB before the layout
         // is stabilized.
         builder.request(
-            format!("pcie[{index}].ecam"),
+            format!("pcie-{}-ecam", root_complex.name),
             &mut ranges.ecam_range,
             pcie_ecam_size(root_complex)?,
             PCIE_ECAM_BYTES_PER_BUS,
@@ -198,7 +197,7 @@ pub(super) fn resolve_memory_layout(
         // Low MMIO: 2 MB aligned.
         add_mmio_range(
             &mut builder,
-            format!("pcie[{index}].low_mmio"),
+            format!("pcie-{}-low-mmio", root_complex.name),
             &mut ranges.low_mmio,
             &root_complex.low_mmio,
             TWO_MB,
@@ -214,7 +213,7 @@ pub(super) fn resolve_memory_layout(
         // reliability issues for users.
         add_mmio_range(
             &mut builder,
-            format!("pcie[{index}].high_mmio"),
+            format!("pcie-{}-high-mmio", root_complex.name),
             &mut ranges.high_mmio,
             &root_complex.high_mmio,
             GB,
@@ -227,7 +226,7 @@ pub(super) fn resolve_memory_layout(
     // request.
     if input.virtio_mmio_count > 0 {
         builder.request(
-            "virtio_mmio",
+            "virtio-mmio",
             &mut virtio_mmio_region,
             input.virtio_mmio_count as u64 * PAGE_SIZE,
             PAGE_SIZE,
@@ -247,14 +246,14 @@ pub(super) fn resolve_memory_layout(
         .enumerate()
     {
         let ram_alignment = if ram_size < GB { TWO_MB } else { GB };
-        builder.ram(format!("ram[{vnode}]"), ram_ranges, ram_size, ram_alignment);
+        builder.ram(format!("ram{vnode}"), ram_ranges, ram_size, ram_alignment);
     }
 
     // VTL2 chipset MMIO is implementation-private — placed after all
     // VTL0-visible RAM/MMIO so enabling VTL2 does not move VTL0 addresses.
     if input.vtl2_chipset_mmio_size != 0 {
         builder.request(
-            "vtl2_chipset_mmio",
+            "vtl2-chipset-mmio",
             &mut vtl2_chipset_mmio,
             input.vtl2_chipset_mmio_size,
             TWO_MB,

@@ -766,9 +766,10 @@ fn convert_vtl2_config(
 
                         // Use the size, but the base is the requested load
                         // base.
-                        LateMapVtl0AllowedRanges::Ranges(vec![MemoryRange::new(
-                            *base..(*base + range.len()),
-                        )])
+                        let allowed =
+                            MemoryRange::try_new(*base..base.wrapping_add(range.len()))
+                                .with_context(|| format!("invalid vtl2 absolute base {base:#x}"))?;
+                        LateMapVtl0AllowedRanges::Ranges(vec![allowed])
                     }
                     Vtl2BaseAddressType::MemoryLayout { .. } => {
                         LateMapVtl0AllowedRanges::MemoryLayout
