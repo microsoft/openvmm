@@ -129,6 +129,15 @@ struct DynamicRequest<'a> {
     alignment: u64,
 }
 
+impl DynamicRequest<'_> {
+    /// Sort key for the dynamic placement phases: larger alignment first, then
+    /// larger size first. Wrapping with `Reverse` makes the descending order
+    /// self-evident at the call site.
+    fn placement_sort_key(&self) -> std::cmp::Reverse<(u64, u64)> {
+        std::cmp::Reverse((self.alignment, self.size))
+    }
+}
+
 struct RamRequest<'a> {
     tag: Arc<str>,
     target: &'a mut Vec<MemoryRange>,
@@ -136,45 +145,14 @@ struct RamRequest<'a> {
     alignment: u64,
 }
 
-trait RequestDetails {
-    fn tag(&self) -> &Arc<str>;
-    fn size(&self) -> u64;
-    fn alignment(&self) -> u64;
-}
-
-impl RequestDetails for DynamicRequest<'_> {
-    fn tag(&self) -> &Arc<str> {
-        &self.tag
-    }
-
-    fn size(&self) -> u64 {
-        self.size
-    }
-
-    fn alignment(&self) -> u64 {
-        self.alignment
-    }
-}
-
-impl RequestDetails for RamRequest<'_> {
-    fn tag(&self) -> &Arc<str> {
-        &self.tag
-    }
-
-    fn size(&self) -> u64 {
-        self.size
-    }
-
-    fn alignment(&self) -> u64 {
-        self.alignment
-    }
-}
-
 struct AllocationState {
-    // Sorted, non-overlapping ranges not yet consumed by any request. Keeping
-    // free space as the primary state lets each phase update the map
-    // incrementally instead of repeatedly subtracting all allocations from the
-    // whole address space.
+    // Sorted, non-overlapping, non-empty ranges not yet consumed by any
+    // request. Keeping free space as the primary state lets each phase update
+    // the map incrementally instead of repeatedly subtracting all allocations
+    // from the whole address space.
+    //
+    // The non-empty invariant lets `remove_free_range` locate the containing
+    // free range with a single `partition_point` lookup.
     free: Vec<MemoryRange>,
     allocations: Vec<PlacedRange>,
     // Highest end address of ordinary RAM. High MMIO starts here so the layout
@@ -210,21 +188,18 @@ impl AllocationState {
         // Pack 32-bit MMIO from the top of the 4 GiB window downward so RAM can
         // start at GPA 0 and grow upward through the lowest remaining space.
         // Alignment/size ordering keeps large, constrained windows from being
-        // fragmented by small devices. `sort_by` is stable, so otherwise equal
-        // requests keep caller order.
-        requests.sort_by(|request, other_request| {
-            other_request
-                .alignment
-                .cmp(&request.alignment)
-                .then(other_request.size.cmp(&request.size))
-        });
+        // fragmented by small devices. `sort_by_key` is stable, so otherwise
+        // equal requests keep caller order.
+        requests.sort_by_key(|r| r.placement_sort_key());
 
         for request in requests {
             let Some(start) =
                 find_highest_fit(&self.free, request.size, request.alignment, 0, FOUR_GIB)
             else {
                 return Err(exhausted_error(
-                    request,
+                    &request.tag,
+                    request.size,
+                    request.alignment,
                     AllocationPhase::Mmio32,
                     &self.free,
                     0,
@@ -253,7 +228,15 @@ impl AllocationState {
                 ADDRESS_LIMIT,
             )
             .ok_or_else(|| {
-                exhausted_error(request, AllocationPhase::Ram, &self.free, 0, ADDRESS_LIMIT)
+                exhausted_error(
+                    &request.tag,
+                    request.size,
+                    request.alignment,
+                    AllocationPhase::Ram,
+                    &self.free,
+                    0,
+                    ADDRESS_LIMIT,
+                )
             })?;
 
             request.target.clear();
@@ -270,12 +253,7 @@ impl AllocationState {
         // High MMIO is allocated bottom up from the end of RAM. The allocator
         // intentionally does not take host physical-address width as an input;
         // callers validate the resulting top against host capabilities later.
-        requests.sort_by(|request, other_request| {
-            other_request
-                .alignment
-                .cmp(&request.alignment)
-                .then(other_request.size.cmp(&request.size))
-        });
+        requests.sort_by_key(|r| r.placement_sort_key());
 
         for request in requests {
             let Some(start) = find_lowest_fit(
@@ -286,7 +264,9 @@ impl AllocationState {
                 ADDRESS_LIMIT,
             ) else {
                 return Err(exhausted_error(
-                    request,
+                    &request.tag,
+                    request.size,
+                    request.alignment,
                     AllocationPhase::Mmio64,
                     &self.free,
                     self.ram_end,
@@ -319,7 +299,9 @@ impl AllocationState {
                 ADDRESS_LIMIT,
             ) else {
                 return Err(exhausted_error(
-                    request,
+                    &request.tag,
+                    request.size,
+                    request.alignment,
                     AllocationPhase::PostMmio,
                     &self.free,
                     layout_top,
@@ -344,21 +326,16 @@ impl AllocationState {
             .unwrap_or(0)
     }
 
-    fn record(&mut self, tag: &Arc<str>, kind: PlacedRangeKind, range: MemoryRange) {
+    fn allocate_range(&mut self, tag: &Arc<str>, kind: PlacedRangeKind, range: MemoryRange) {
+        self.remove_free_range(range);
         self.allocations.push(PlacedRange {
             tag: tag.clone(),
             kind,
             range,
         });
-
         if kind == PlacedRangeKind::Ram {
             self.ram_end = self.ram_end.max(range.end());
         }
-    }
-
-    fn allocate_range(&mut self, tag: &Arc<str>, kind: PlacedRangeKind, range: MemoryRange) {
-        self.remove_free_range(range);
-        self.record(tag, kind, range);
     }
 
     fn remove_free_range(&mut self, allocated: MemoryRange) {
@@ -481,25 +458,16 @@ impl<'a> LayoutBuilder<'a> {
         alignment: u64,
         placement: Placement,
     ) {
+        let request = DynamicRequest {
+            tag: tag.into(),
+            target,
+            size,
+            alignment,
+        };
         match placement {
-            Placement::Mmio32 => self.mmio32.push(DynamicRequest {
-                tag: tag.into(),
-                target,
-                size,
-                alignment,
-            }),
-            Placement::Mmio64 => self.mmio64.push(DynamicRequest {
-                tag: tag.into(),
-                target,
-                size,
-                alignment,
-            }),
-            Placement::PostMmio => self.post_mmio.push(DynamicRequest {
-                tag: tag.into(),
-                target,
-                size,
-                alignment,
-            }),
+            Placement::Mmio32 => self.mmio32.push(request),
+            Placement::Mmio64 => self.mmio64.push(request),
+            Placement::PostMmio => self.post_mmio.push(request),
         }
     }
 
@@ -529,13 +497,13 @@ impl<'a> LayoutBuilder<'a> {
     /// Allocates all requests, fills in each target, and returns every placed
     /// range sorted by address.
     pub fn allocate(mut self) -> Result<Vec<PlacedRange>, AllocateError> {
-        validate_reserved_requests(&self.reserved)?;
-        validate_fixed_requests(&self.fixed)?;
+        validate_requests(&self.reserved, |r| (&r.tag, r.range.len(), PAGE_SIZE))?;
+        validate_requests(&self.fixed, |r| (&r.tag, r.range.len(), PAGE_SIZE))?;
         validate_pinned_ranges(&self.reserved, &self.fixed)?;
-        validate_dynamic_requests(&self.mmio32)?;
-        validate_ram_requests(&self.ram)?;
-        validate_dynamic_requests(&self.mmio64)?;
-        validate_dynamic_requests(&self.post_mmio)?;
+        validate_requests(&self.mmio32, |r| (&r.tag, r.size, r.alignment))?;
+        validate_requests(&self.ram, |r| (&r.tag, r.size, r.alignment))?;
+        validate_requests(&self.mmio64, |r| (&r.tag, r.size, r.alignment))?;
+        validate_requests(&self.post_mmio, |r| (&r.tag, r.size, r.alignment))?;
 
         let mut state = AllocationState::new();
         state.place_reserved(&self.reserved);
@@ -546,6 +514,11 @@ impl<'a> LayoutBuilder<'a> {
         state.place_post_mmio(&mut self.post_mmio)?;
 
         state.allocations.sort_by_key(|allocation| allocation.range);
+        // Trailing reserved ranges sit above every guest-visible allocation and
+        // exist only to keep that space out of the free list during placement.
+        // Returning them would bloat the layout without informing any
+        // consumer, so drop them. Reserved ranges interleaved with real
+        // allocations are still reported.
         while state
             .allocations
             .last()
@@ -581,17 +554,13 @@ fn validate_size_alignment(tag: &Arc<str>, size: u64, alignment: u64) -> Result<
     Ok(())
 }
 
-fn validate_reserved_requests(requests: &[ReservedRequest]) -> Result<(), AllocateError> {
+fn validate_requests<T>(
+    requests: &[T],
+    get: impl Fn(&T) -> (&Arc<str>, u64, u64),
+) -> Result<(), AllocateError> {
     for request in requests {
-        validate_size_alignment(&request.tag, request.range.len(), PAGE_SIZE)?;
-    }
-
-    Ok(())
-}
-
-fn validate_fixed_requests(requests: &[FixedRequest]) -> Result<(), AllocateError> {
-    for request in requests {
-        validate_size_alignment(&request.tag, request.range.len(), PAGE_SIZE)?;
+        let (tag, size, alignment) = get(request);
+        validate_size_alignment(tag, size, alignment)?;
     }
 
     Ok(())
@@ -627,33 +596,19 @@ fn validate_pinned_ranges(
     Ok(())
 }
 
-fn validate_dynamic_requests(requests: &[DynamicRequest<'_>]) -> Result<(), AllocateError> {
-    for request in requests {
-        validate_size_alignment(&request.tag, request.size, request.alignment)?;
-    }
-
-    Ok(())
-}
-
-fn validate_ram_requests(requests: &[RamRequest<'_>]) -> Result<(), AllocateError> {
-    for request in requests {
-        validate_size_alignment(&request.tag, request.size, request.alignment)?;
-    }
-
-    Ok(())
-}
-
 fn exhausted_error(
-    request: &impl RequestDetails,
+    tag: &Arc<str>,
+    size: u64,
+    alignment: u64,
     phase: AllocationPhase,
     free_ranges: &[MemoryRange],
     region_start: u64,
     region_end: u64,
 ) -> AllocateError {
     AllocateError::Exhausted {
-        tag: request.tag().clone(),
-        size: request.size(),
-        alignment: request.alignment(),
+        tag: tag.clone(),
+        size,
+        alignment,
         phase,
         free_space: free_space_in_region(free_ranges, region_start, region_end),
     }
@@ -662,12 +617,17 @@ fn exhausted_error(
 fn free_space_in_region(free_ranges: &[MemoryRange], region_start: u64, region_end: u64) -> u64 {
     free_ranges
         .iter()
-        .map(|range| {
-            let effective_start = range.start().max(region_start);
-            let effective_end = range.end().min(region_end);
-            effective_end.saturating_sub(effective_start)
-        })
+        .filter_map(|range| clamp_to_region(*range, region_start, region_end))
+        .map(|(start, end)| end - start)
         .sum()
+}
+
+/// Clamps a free range to the requested placement region. Returns `None` when
+/// the intersection is empty.
+fn clamp_to_region(range: MemoryRange, region_start: u64, region_end: u64) -> Option<(u64, u64)> {
+    let start = range.start().max(region_start);
+    let end = range.end().min(region_end);
+    (start < end).then_some((start, end))
 }
 
 fn find_highest_fit(
@@ -678,15 +638,15 @@ fn find_highest_fit(
     region_end: u64,
 ) -> Option<u64> {
     for range in free_ranges.iter().rev() {
-        let effective_start = range.start().max(region_start);
-        let effective_end = range.end().min(region_end);
-
-        if effective_start >= effective_end || effective_end - effective_start < size {
+        let Some((effective_start, effective_end)) =
+            clamp_to_region(*range, region_start, region_end)
+        else {
+            continue;
+        };
+        if effective_end - effective_start < size {
             continue;
         }
-
-        let latest_start = effective_end - size;
-        let aligned_start = align_down(latest_start, alignment);
+        let aligned_start = align_down(effective_end - size, alignment);
         if aligned_start >= effective_start {
             return Some(aligned_start);
         }
@@ -703,20 +663,17 @@ fn find_lowest_fit(
     region_end: u64,
 ) -> Option<u64> {
     for range in free_ranges {
-        let effective_start = range.start().max(region_start);
-        let effective_end = range.end().min(region_end);
-
-        if effective_start >= effective_end {
+        let Some((effective_start, effective_end)) =
+            clamp_to_region(*range, region_start, region_end)
+        else {
             continue;
-        }
-
+        };
         let Some(aligned_start) = align_up(effective_start, alignment) else {
             continue;
         };
         let Some(end) = aligned_start.checked_add(size) else {
             continue;
         };
-
         if end <= effective_end {
             return Some(aligned_start);
         }
@@ -736,13 +693,11 @@ fn find_lowest_splittable_fit(
     let mut ranges = Vec::new();
 
     for range in free_ranges {
-        let effective_start = range.start().max(region_start);
-        let effective_end = range.end().min(region_end);
-
-        if effective_start >= effective_end {
+        let Some((effective_start, effective_end)) =
+            clamp_to_region(*range, region_start, region_end)
+        else {
             continue;
-        }
-
+        };
         let Some(aligned_start) = align_up(effective_start, alignment) else {
             continue;
         };
