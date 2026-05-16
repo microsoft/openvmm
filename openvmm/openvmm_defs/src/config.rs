@@ -217,15 +217,21 @@ pub enum Vtl2BaseAddressType {
 }
 
 #[derive(Debug, MeshPayload)]
+pub enum MmioRangeConfig {
+    Dynamic { size: u64 },
+    Fixed(MemoryRange),
+}
+
+#[derive(Debug, MeshPayload)]
 pub struct PcieRootComplexConfig {
     pub index: u32,
     pub name: String,
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
-    pub ecam_range: MemoryRange,
-    pub low_mmio: MemoryRange,
-    pub high_mmio: MemoryRange,
+    pub ecam_range: Option<MemoryRange>,
+    pub low_mmio: MmioRangeConfig,
+    pub high_mmio: MmioRangeConfig,
     pub ports: Vec<PcieRootPortConfig>,
 }
 
@@ -361,8 +367,6 @@ pub struct MemoryConfig {
     pub hugepages: bool,
     pub hugepage_size: Option<u64>,
     pub mmio_gaps: Vec<MemoryRange>,
-    pub pci_ecam_gaps: Vec<MemoryRange>,
-    pub pci_mmio_gaps: Vec<MemoryRange>,
     /// Test only: per-NUMA-node memory sizes. When set, RAM is distributed
     /// across vNUMA nodes according to these sizes instead of assigning all RAM
     /// to node 0. The sum must equal `mem_size`.

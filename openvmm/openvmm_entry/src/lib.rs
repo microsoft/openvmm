@@ -77,6 +77,7 @@ use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::MmioRangeConfig;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
@@ -739,12 +740,6 @@ async fn vm_config_from_command_line(
         (false, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64.into(),
     };
 
-    let mut pci_ecam_gaps = Vec::new();
-    let mut pci_mmio_gaps = Vec::new();
-
-    let mut low_mmio_start = mmio_gaps.first().context("expected mmio gap")?.start();
-    let mut high_mmio_end = mmio_gaps.last().context("expected second mmio gap")?.end();
-
     let mut pcie_root_complexes = Vec::new();
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
         let ports = opt
@@ -764,42 +759,22 @@ async fn vm_config_from_command_line(
             .high_mmio
             .checked_next_multiple_of(ONE_MB)
             .context("high mmio rounding error")?;
-        let ecam_size = (((rc_cli.end_bus - rc_cli.start_bus) as u64) + 1) * 256 * 4096;
-
-        let low_pci_mmio_start = low_mmio_start
-            .checked_sub(low_mmio_size)
-            .context("pci low mmio underflow")?;
-        let ecam_start = low_pci_mmio_start
-            .checked_sub(ecam_size)
-            .context("pci ecam underflow")?;
-        low_mmio_start = ecam_start;
-        high_mmio_end = high_mmio_end
-            .checked_add(high_mmio_size)
-            .context("pci high mmio overflow")?;
-
-        let ecam_range = MemoryRange::new(ecam_start..ecam_start + ecam_size);
-        let low_mmio = MemoryRange::new(low_pci_mmio_start..low_pci_mmio_start + low_mmio_size);
-        let high_mmio = MemoryRange::new(high_mmio_end - high_mmio_size..high_mmio_end);
-
-        pci_ecam_gaps.push(ecam_range);
-        pci_mmio_gaps.push(low_mmio);
-        pci_mmio_gaps.push(high_mmio);
-
         pcie_root_complexes.push(PcieRootComplexConfig {
             index: i as u32,
             name: rc_cli.name.clone(),
             segment: rc_cli.segment,
             start_bus: rc_cli.start_bus,
             end_bus: rc_cli.end_bus,
-            ecam_range,
-            low_mmio,
-            high_mmio,
+            ecam_range: None,
+            low_mmio: MmioRangeConfig::Dynamic {
+                size: low_mmio_size,
+            },
+            high_mmio: MmioRangeConfig::Dynamic {
+                size: high_mmio_size,
+            },
             ports,
         });
     }
-
-    pci_ecam_gaps.sort();
-    pci_mmio_gaps.sort();
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
 
@@ -1628,8 +1603,6 @@ async fn vm_config_from_command_line(
             transparent_hugepages: opt.transparent_hugepages(),
             hugepages: opt.memory.hugepages,
             hugepage_size: opt.memory.hugepage_size,
-            pci_ecam_gaps,
-            pci_mmio_gaps,
             numa_mem_sizes: opt.numa_memory.clone(),
         },
         processor_topology: ProcessorTopologyConfig {

@@ -6,6 +6,7 @@ use crate::partition::BindHvliteVp;
 use crate::partition::HvlitePartition;
 use crate::vmgs_non_volatile_store::HvLiteVmgsNonVolatileStore;
 use crate::worker::memory_layout::MemoryLayoutInput;
+use crate::worker::memory_layout::ResolvedPcieRootComplexRanges;
 use crate::worker::memory_layout::resolve_memory_layout;
 use crate::worker::rom::RomBuilder;
 use acpi::dsdt;
@@ -399,6 +400,7 @@ pub(crate) struct InitializedVm {
     gm: GuestMemory,
     cfg: Manifest,
     mem_layout: MemoryLayout,
+    resolved_pcie_root_complex_ranges: Vec<ResolvedPcieRootComplexRanges>,
     processor_topology: ProcessorTopology,
     igvm_file: Option<IgvmFile>,
     driver_source: VmTaskDriverSource,
@@ -899,16 +901,17 @@ impl InitializedVm {
         // TODO: The vNUMA nodes reported are meant for test usage only, as they
         // are not aligned to any physical NUMA node. There is more work to do
         // to support useful vNUMA reporting.
-        let mem_layout = resolve_memory_layout(MemoryLayoutInput {
+        let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
             mem_size: cfg.memory.mem_size,
             numa_mem_sizes: cfg.memory.numa_mem_sizes.as_deref(),
             mmio_gaps: &cfg.memory.mmio_gaps,
-            pci_ecam_gaps: &cfg.memory.pci_ecam_gaps,
-            pci_mmio_gaps: &cfg.memory.pci_mmio_gaps,
+            pcie_root_complexes: &cfg.pcie_root_complexes,
             vtl2_layout,
             physical_address_size,
         })
         .context("invalid memory configuration")?;
+        let mem_layout = resolved_layout.memory_layout;
+        let resolved_pcie_root_complex_ranges = resolved_layout.pcie_root_complex_ranges;
 
         // Place the alias map at the end of the address space. Newer versions
         // of OpenHCL support receiving this offset via devicetree (especially
@@ -1020,6 +1023,7 @@ impl InitializedVm {
             gm,
             cfg,
             mem_layout,
+            resolved_pcie_root_complex_ranges,
             processor_topology,
             igvm_file,
             driver_source,
@@ -1046,6 +1050,7 @@ impl InitializedVm {
             gm,
             cfg,
             mem_layout,
+            resolved_pcie_root_complex_ranges,
             processor_topology,
             igvm_file,
             driver_source,
@@ -1753,7 +1758,11 @@ impl InitializedVm {
             let mut pcie_host_bridges = Vec::new();
             let mut pcie_root_complexes = Vec::new();
 
-            for rc in cfg.pcie_root_complexes {
+            for (rc, ranges) in cfg
+                .pcie_root_complexes
+                .into_iter()
+                .zip(resolved_pcie_root_complex_ranges)
+            {
                 let device_name = format!("pcie-root:{}", rc.name);
 
                 // Create a static bus range for the root complex so that
@@ -1785,7 +1794,7 @@ impl InitializedVm {
                                 &mut services.register_mmio(),
                                 rc.start_bus,
                                 rc.end_bus,
-                                rc.ecam_range,
+                                ranges.ecam_range,
                                 root_port_definitions,
                                 msi_conn.target(),
                             )
@@ -1810,9 +1819,9 @@ impl InitializedVm {
                     segment: rc.segment,
                     start_bus: rc.start_bus,
                     end_bus: rc.end_bus,
-                    ecam_range: rc.ecam_range,
-                    low_mmio: rc.low_mmio,
-                    high_mmio: rc.high_mmio,
+                    ecam_range: ranges.ecam_range,
+                    low_mmio: ranges.low_mmio,
+                    high_mmio: ranges.high_mmio,
                 });
 
                 pcie_root_complexes.push(root_complex.clone());

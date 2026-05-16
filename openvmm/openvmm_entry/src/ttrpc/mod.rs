@@ -574,8 +574,6 @@ impl VmService {
             memory: MemoryConfig {
                 mem_size: config_mem_size,
                 mmio_gaps: DEFAULT_MMIO_GAPS_X86.into(),
-                pci_ecam_gaps: vec![],
-                pci_mmio_gaps: vec![],
                 prefetch_memory: false,
                 private_memory: false,
                 transparent_hugepages: false,

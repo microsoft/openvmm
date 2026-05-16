@@ -32,10 +32,12 @@ know about chipsets, firmware, VTLs, PCI, or host physical address width.
 Callers express policy by adding fixed ranges, reserved ranges, RAM requests,
 and dynamic MMIO requests.
 
-The VM worker owns the production policy. It currently feeds existing
-`mmio_gaps`, `pci_ecam_gaps`, and `pci_mmio_gaps` into the allocator as fixed
-occupied ranges, then asks the allocator to place RAM. Future work moves more
-MMIO consumers from precomputed gaps into typed dynamic requests.
+The VM worker owns the production policy. It feeds existing chipset MMIO gaps
+into the allocator as fixed occupied ranges, resolves PCIe root complex ECAM
+from an optional fixed range or the root-complex bus window, resolves PCIe low
+MMIO and high MMIO from typed intents, then asks the allocator to place RAM and
+private implementation ranges. Future work moves more MMIO consumers from
+precomputed gaps into typed dynamic requests.
 
 `MemoryLayout` remains the object other worker code uses to query RAM, MMIO,
 PCI ECAM, PCI MMIO, VTL2 memory, and the VTL0-visible layout top.
@@ -83,12 +85,17 @@ The VM worker resolver applies the production policy in
 `openvmm/openvmm_core/src/worker/memory_layout.rs`:
 
 1. Validate total RAM size and optional per-vNUMA budgets.
-2. Add existing MMIO, PCI ECAM, and PCI MMIO gaps as fixed ranges.
-3. Add RAM requests in vnode order.
-4. Add optional IGVM VTL2 memory as `Placement::PostMmio`.
-5. Allocate all ranges.
-6. Build `MemoryLayout` from the resolved RAM and fixed ranges.
-7. Validate the VTL0-visible layout top against host physical address width.
+2. Add existing chipset MMIO gaps as fixed ranges.
+3. Add PCIe root complex ECAM and low MMIO requests as `Placement::Mmio32`.
+   A root complex with no fixed ECAM range gets an ECAM size derived from its
+   bus window.
+4. Add PCIe root complex high MMIO requests as `Placement::Mmio64`.
+5. Add RAM requests in vnode order.
+6. Add optional IGVM VTL2 memory as `Placement::PostMmio`.
+7. Allocate all ranges.
+8. Build `MemoryLayout` from resolved RAM, chipset MMIO gaps, and resolved PCIe
+   ranges.
+9. Validate the VTL0-visible layout top against host physical address width.
 
 Host physical address width is deliberately not an allocator input. The layout
 is computed from VM configuration first, then checked against the host. That

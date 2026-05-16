@@ -396,8 +396,6 @@ impl PetriVmConfigOpenVmm {
                     }
                     MmioConfig::Custom(ranges) => ranges,
                 },
-                pci_ecam_gaps: vec![],
-                pci_mmio_gaps: vec![],
                 prefetch_memory: false,
                 private_memory: false,
                 transparent_hugepages: false,

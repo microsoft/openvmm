@@ -19,6 +19,8 @@ use super::vm_loaders::igvm::Vtl2MemoryLayoutRequest;
 use anyhow::Context;
 use anyhow::bail;
 use memory_range::MemoryRange;
+use openvmm_defs::config::MmioRangeConfig;
+use openvmm_defs::config::PcieRootComplexConfig;
 use vm_topology::layout::LayoutBuilder;
 use vm_topology::layout::Placement;
 use vm_topology::memory::MemoryLayout;
@@ -27,6 +29,22 @@ use vm_topology::memory::MemoryRangeWithNode;
 const PAGE_SIZE: u64 = 4096;
 const TWO_MB: u64 = 2 * 1024 * 1024;
 const GB: u64 = 1024 * 1024 * 1024;
+
+/// PCIe ECAM: 32 devices * 8 functions * 4 KiB config space = 1 MB per bus.
+const PCIE_ECAM_BYTES_PER_BUS: u64 = 32 * 8 * 4096;
+
+#[derive(Debug)]
+pub(super) struct ResolvedMemoryLayout {
+    pub memory_layout: MemoryLayout,
+    pub pcie_root_complex_ranges: Vec<ResolvedPcieRootComplexRanges>,
+}
+
+#[derive(Debug)]
+pub(super) struct ResolvedPcieRootComplexRanges {
+    pub ecam_range: MemoryRange,
+    pub low_mmio: MemoryRange,
+    pub high_mmio: MemoryRange,
+}
 
 pub(super) struct MemoryLayoutInput<'a> {
     /// Total VTL0 RAM size requested by the VM configuration.
@@ -38,10 +56,9 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// transition step; later commits will move individual consumers to typed
     /// dynamic intents.
     pub mmio_gaps: &'a [MemoryRange],
-    /// Existing resolved PCI ECAM ranges, treated as fixed occupied space.
-    pub pci_ecam_gaps: &'a [MemoryRange],
-    /// Existing resolved PCI MMIO ranges, treated as fixed occupied space.
-    pub pci_mmio_gaps: &'a [MemoryRange],
+    /// PCIe root complex address-space intents. These are resolved by this
+    /// worker step so front ends do not need to carve guest physical addresses.
+    pub pcie_root_complexes: &'a [PcieRootComplexConfig],
     /// Optional IGVM VTL2 private-memory request. This is allocated after all
     /// VTL0-visible RAM and MMIO and is carried separately from ordinary RAM.
     pub vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
@@ -50,16 +67,66 @@ pub(super) struct MemoryLayoutInput<'a> {
     pub physical_address_size: u8,
 }
 
-pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Result<MemoryLayout> {
+pub(super) fn resolve_memory_layout(
+    input: MemoryLayoutInput<'_>,
+) -> anyhow::Result<ResolvedMemoryLayout> {
     let ram_sizes = validate_ram_sizes(input.mem_size, input.numa_mem_sizes)?;
 
     let mut ram_ranges_by_node = vec![Vec::new(); ram_sizes.len()];
+    let mut pcie_root_complex_ranges = input
+        .pcie_root_complexes
+        .iter()
+        .map(|_| ResolvedPcieRootComplexRanges {
+            ecam_range: MemoryRange::EMPTY,
+            low_mmio: MemoryRange::EMPTY,
+            high_mmio: MemoryRange::EMPTY,
+        })
+        .collect::<Vec<_>>();
     let mut vtl2_range = MemoryRange::EMPTY;
 
     let mut builder = LayoutBuilder::new();
     add_fixed_ranges(&mut builder, "mmio", input.mmio_gaps);
-    add_fixed_ranges(&mut builder, "pci_ecam", input.pci_ecam_gaps);
-    add_fixed_ranges(&mut builder, "pci_mmio", input.pci_mmio_gaps);
+
+    for (index, (root_complex, ranges)) in input
+        .pcie_root_complexes
+        .iter()
+        .zip(&mut pcie_root_complex_ranges)
+        .enumerate()
+    {
+        add_pcie_ecam_range(
+            &mut builder,
+            format!("pcie[{index}].ecam"),
+            &mut ranges.ecam_range,
+            &root_complex.ecam_range,
+            pcie_ecam_size(root_complex)?,
+            PCIE_ECAM_BYTES_PER_BUS,
+        );
+        // Low MMIO: 2 MB aligned.
+        add_pcie_mmio_range(
+            &mut builder,
+            format!("pcie[{index}].low_mmio"),
+            &mut ranges.low_mmio,
+            &root_complex.low_mmio,
+            TWO_MB,
+            Placement::Mmio32,
+        );
+        // High MMIO: 1 GB aligned. Ideally we'd align it to its actual size so
+        // that the full amount is always usable for a single large BAR. But
+        // that burns physical address space, which is especially limited on
+        // some x86 machines.
+        //
+        // The downside of this approach is that the maximum mappable BAR size
+        // is a function of the rest of the topology, which can create
+        // reliability issues for users.
+        add_pcie_mmio_range(
+            &mut builder,
+            format!("pcie[{index}].high_mmio"),
+            &mut ranges.high_mmio,
+            &root_complex.high_mmio,
+            GB,
+            Placement::Mmio64,
+        );
+    }
 
     // RAM request order is part of the NUMA compatibility contract: the first
     // request maps to vnode 0, the second to vnode 1, and so on. For GB-sized
@@ -115,11 +182,27 @@ pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Res
     // `MemoryLayout` remains the shared validation and query type for the rest
     // of the worker. Construct it from resolved RAM so no later consumer repeats
     // RAM placement or infers RAM by subtracting from MMIO gaps.
+    let mut pci_ecam_gaps: Vec<MemoryRange> = Vec::new();
+    pci_ecam_gaps.extend(
+        pcie_root_complex_ranges
+            .iter()
+            .map(|ranges| ranges.ecam_range),
+    );
+    pci_ecam_gaps.sort();
+
+    let mut pci_mmio_gaps: Vec<MemoryRange> = Vec::new();
+    pci_mmio_gaps.extend(
+        pcie_root_complex_ranges
+            .iter()
+            .flat_map(|ranges| [ranges.low_mmio, ranges.high_mmio]),
+    );
+    pci_mmio_gaps.sort();
+
     let memory_layout = MemoryLayout::new_from_resolved_ranges(
         ram,
         input.mmio_gaps.to_vec(),
-        input.pci_ecam_gaps.to_vec(),
-        input.pci_mmio_gaps.to_vec(),
+        pci_ecam_gaps,
+        pci_mmio_gaps,
         vtl2_range,
     )
     .context("validating resolved memory layout")?;
@@ -137,7 +220,60 @@ pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Res
         );
     }
 
-    Ok(memory_layout)
+    Ok(ResolvedMemoryLayout {
+        memory_layout,
+        pcie_root_complex_ranges,
+    })
+}
+
+fn pcie_ecam_size(root_complex: &PcieRootComplexConfig) -> anyhow::Result<u64> {
+    let bus_count = root_complex
+        .end_bus
+        .checked_sub(root_complex.start_bus)
+        .with_context(|| {
+            format!(
+                "invalid PCIe bus range {}..{} for {}",
+                root_complex.start_bus, root_complex.end_bus, root_complex.name
+            )
+        })?;
+
+    Ok((u64::from(bus_count) + 1) * PCIE_ECAM_BYTES_PER_BUS)
+}
+
+fn add_pcie_ecam_range<'a>(
+    builder: &mut LayoutBuilder<'a>,
+    tag: String,
+    target: &'a mut MemoryRange,
+    config: &Option<MemoryRange>,
+    size: u64,
+    alignment: u64,
+) {
+    match config {
+        Some(range) => {
+            *target = *range;
+            builder.fixed(tag, *range);
+        }
+        None => builder.request(tag, target, size, alignment, Placement::Mmio32),
+    }
+}
+
+fn add_pcie_mmio_range<'a>(
+    builder: &mut LayoutBuilder<'a>,
+    tag: String,
+    target: &'a mut MemoryRange,
+    config: &MmioRangeConfig,
+    alignment: u64,
+    placement: Placement,
+) {
+    match config {
+        MmioRangeConfig::Dynamic { size } => {
+            builder.request(tag, target, *size, alignment, placement);
+        }
+        MmioRangeConfig::Fixed(range) => {
+            *target = *range;
+            builder.fixed(tag, *range);
+        }
+    }
 }
 
 fn add_fixed_ranges(builder: &mut LayoutBuilder<'_>, tag_prefix: &str, ranges: &[MemoryRange]) {
@@ -194,19 +330,20 @@ mod tests {
         mem_size: u64,
         numa_mem_sizes: Option<&'a [u64]>,
         mmio_gaps: &'a [MemoryRange],
-        pci_ecam_gaps: &'a [MemoryRange],
-        pci_mmio_gaps: &'a [MemoryRange],
         vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
     ) -> MemoryLayoutInput<'a> {
         MemoryLayoutInput {
             mem_size,
             numa_mem_sizes,
             mmio_gaps,
-            pci_ecam_gaps,
-            pci_mmio_gaps,
+            pcie_root_complexes: &[],
             vtl2_layout,
             physical_address_size: 46,
         }
+    }
+
+    fn resolve(input: MemoryLayoutInput<'_>) -> MemoryLayout {
+        resolve_memory_layout(input).unwrap().memory_layout
     }
 
     fn vtl2_layout(size: u64) -> Vtl2MemoryLayoutRequest {
@@ -216,18 +353,33 @@ mod tests {
         }
     }
 
+    fn pcie_root_complex(
+        ecam_range: Option<MemoryRange>,
+        low_mmio: MmioRangeConfig,
+        high_mmio: MmioRangeConfig,
+    ) -> PcieRootComplexConfig {
+        PcieRootComplexConfig {
+            index: 0,
+            name: "rc0".to_string(),
+            segment: 0,
+            start_bus: 0,
+            end_bus: 0,
+            ecam_range,
+            low_mmio,
+            high_mmio,
+            ports: Vec::new(),
+        }
+    }
+
     #[test]
     fn non_numa_matches_memory_layout_new() {
         let mmio = [
             MemoryRange::new(2 * GB..3 * GB),
             MemoryRange::new(4 * GB..5 * GB),
         ];
-        let pci_ecam = [MemoryRange::new(8 * GB..9 * GB)];
-        let pci_mmio = [MemoryRange::new(6 * GB..7 * GB)];
 
-        let actual =
-            resolve_memory_layout(input(6 * GB, None, &mmio, &pci_ecam, &pci_mmio, None)).unwrap();
-        let expected = MemoryLayout::new(6 * GB, &mmio, &pci_ecam, &pci_mmio, None).unwrap();
+        let actual = resolve(input(6 * GB, None, &mmio, None));
+        let expected = MemoryLayout::new(6 * GB, &mmio, &[], &[], None).unwrap();
 
         assert_eq!(actual.ram(), expected.ram());
         assert_eq!(actual.mmio(), expected.mmio());
@@ -241,8 +393,7 @@ mod tests {
         let mmio = [MemoryRange::new(3 * GB..4 * GB)];
         let sizes = [2 * GB, 2 * GB];
 
-        let actual =
-            resolve_memory_layout(input(4 * GB, Some(&sizes), &mmio, &[], &[], None)).unwrap();
+        let actual = resolve(input(4 * GB, Some(&sizes), &mmio, None));
         let expected = MemoryLayout::new_with_numa(&sizes, &mmio, &[], &[], None).unwrap();
 
         assert_eq!(actual.ram(), expected.ram());
@@ -250,29 +401,62 @@ mod tests {
 
     #[test]
     fn fixed_ranges_are_occupied_for_ram() {
-        let mmio = [MemoryRange::new(GB..2 * GB)];
-        let pci_ecam = [MemoryRange::new(3 * GB..3 * GB + MB)];
-        let pci_mmio = [MemoryRange::new(4 * GB..5 * GB)];
+        let mmio = [
+            MemoryRange::new(GB..2 * GB),
+            MemoryRange::new(3 * GB..3 * GB + MB),
+            MemoryRange::new(4 * GB..5 * GB),
+        ];
 
-        let actual =
-            resolve_memory_layout(input(4 * GB, None, &mmio, &pci_ecam, &pci_mmio, None)).unwrap();
+        let actual = resolve(input(4 * GB, None, &mmio, None));
 
-        assert_eq!(actual.probe_address(GB), Some(AddressType::Mmio));
-        assert_eq!(actual.probe_address(3 * GB), Some(AddressType::PciEcam));
-        assert_eq!(actual.probe_address(4 * GB), Some(AddressType::PciMmio));
         assert_eq!(actual.ram_size(), 4 * GB);
-        assert!(actual.ram().iter().all(|ram| {
-            !ram.range.overlaps(&mmio[0])
-                && !ram.range.overlaps(&pci_ecam[0])
-                && !ram.range.overlaps(&pci_mmio[0])
-        }));
+        assert!(
+            actual
+                .ram()
+                .iter()
+                .all(|ram| { mmio.iter().all(|m| !ram.range.overlaps(m)) })
+        );
+    }
+
+    #[test]
+    fn pcie_dynamic_intents_are_resolved() {
+        let mmio = [MemoryRange::new(0xf800_0000..4 * GB)];
+        let root_complexes = [pcie_root_complex(
+            None,
+            MmioRangeConfig::Dynamic { size: 64 * MB },
+            MmioRangeConfig::Dynamic { size: GB },
+        )];
+        let mut config = input(2 * GB, None, &mmio, None);
+        config.pcie_root_complexes = &root_complexes;
+
+        let actual = resolve_memory_layout(config).unwrap();
+        let ranges = &actual.pcie_root_complex_ranges[0];
+
+        assert_eq!(
+            ranges.ecam_range,
+            MemoryRange::new(0xf3f0_0000..0xf400_0000)
+        );
+        assert_eq!(ranges.low_mmio, MemoryRange::new(0xf400_0000..0xf800_0000));
+        assert_eq!(ranges.high_mmio, MemoryRange::new(2 * GB..3 * GB));
+        assert_eq!(
+            actual.memory_layout.probe_address(0xf3f0_0000),
+            Some(AddressType::PciEcam)
+        );
+        assert_eq!(
+            actual.memory_layout.probe_address(0xf400_0000),
+            Some(AddressType::PciMmio)
+        );
+        assert_eq!(
+            actual.memory_layout.probe_address(2 * GB),
+            Some(AddressType::PciMmio)
+        );
     }
 
     #[test]
     fn gb_sized_ram_request_uses_gb_chunks() {
         let mmio = [MemoryRange::new(GB + MB..GB + 2 * MB)];
 
-        let actual = resolve_memory_layout(input(2 * GB, None, &mmio, &[], &[], None)).unwrap();
+        let actual = resolve(input(2 * GB, None, &mmio, None));
 
         assert_eq!(
             actual.ram(),
@@ -293,7 +477,7 @@ mod tests {
     fn sub_gb_numa_nodes_use_two_mb_alignment() {
         let sizes = [512 * MB, 512 * MB];
 
-        let actual = resolve_memory_layout(input(GB, Some(&sizes), &[], &[], &[], None)).unwrap();
+        let actual = resolve(input(GB, Some(&sizes), &[], None));
 
         assert_eq!(
             actual.ram(),
@@ -312,19 +496,12 @@ mod tests {
 
     #[test]
     fn vtl2_is_allocated_after_all_mmio() {
-        let mmio = [MemoryRange::new(GB..2 * GB)];
-        let pci_ecam = [MemoryRange::new(3 * GB..3 * GB + MB)];
-        let pci_mmio = [MemoryRange::new(7 * GB..8 * GB)];
+        let mmio = [
+            MemoryRange::new(GB..2 * GB),
+            MemoryRange::new(7 * GB..8 * GB),
+        ];
 
-        let actual = resolve_memory_layout(input(
-            4 * GB,
-            None,
-            &mmio,
-            &pci_ecam,
-            &pci_mmio,
-            Some(vtl2_layout(2 * MB)),
-        ))
-        .unwrap();
+        let actual = resolve(input(4 * GB, None, &mmio, Some(vtl2_layout(2 * MB))));
 
         assert_eq!(actual.end_of_layout(), 8 * GB);
         assert_eq!(
@@ -337,17 +514,8 @@ mod tests {
     fn vtl2_does_not_change_ram_placement() {
         let mmio = [MemoryRange::new(GB..2 * GB)];
 
-        let without_vtl2 =
-            resolve_memory_layout(input(2 * GB, None, &mmio, &[], &[], None)).unwrap();
-        let with_vtl2 = resolve_memory_layout(input(
-            2 * GB,
-            None,
-            &mmio,
-            &[],
-            &[],
-            Some(vtl2_layout(2 * MB)),
-        ))
-        .unwrap();
+        let without_vtl2 = resolve(input(2 * GB, None, &mmio, None));
+        let with_vtl2 = resolve(input(2 * GB, None, &mmio, Some(vtl2_layout(2 * MB))));
 
         assert_eq!(with_vtl2.ram(), without_vtl2.ram());
         assert_eq!(with_vtl2.end_of_layout(), without_vtl2.end_of_layout());
@@ -363,28 +531,10 @@ mod tests {
             MemoryRange::new(GB..2 * GB),
             MemoryRange::new(5 * GB..6 * GB),
         ];
-        let pci_ecam = [MemoryRange::new(3 * GB..3 * GB + MB)];
-        let pci_mmio = [MemoryRange::new(7 * GB..8 * GB)];
         let sizes = [2 * GB, 3 * GB];
 
-        let first = resolve_memory_layout(input(
-            5 * GB,
-            Some(&sizes),
-            &mmio,
-            &pci_ecam,
-            &pci_mmio,
-            None,
-        ))
-        .unwrap();
-        let second = resolve_memory_layout(input(
-            5 * GB,
-            Some(&sizes),
-            &mmio,
-            &pci_ecam,
-            &pci_mmio,
-            None,
-        ))
-        .unwrap();
+        let first = resolve(input(5 * GB, Some(&sizes), &mmio, None));
+        let second = resolve(input(5 * GB, Some(&sizes), &mmio, None));
 
         assert_eq!(first.ram(), second.ram());
         assert_eq!(first.end_of_layout(), second.end_of_layout());
@@ -393,7 +543,7 @@ mod tests {
     #[test]
     fn host_width_validation_happens_after_allocation() {
         let mmio = [MemoryRange::new(GB..4 * GB)];
-        let mut config = input(3 * GB, None, &mmio, &[], &[], None);
+        let mut config = input(3 * GB, None, &mmio, None);
         config.physical_address_size = 32;
 
         let err = resolve_memory_layout(config).unwrap_err();
