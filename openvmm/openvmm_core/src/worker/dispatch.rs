@@ -200,9 +200,9 @@ impl Manifest {
             chipset_devices: config.chipset_devices,
             pci_chipset_devices: config.pci_chipset_devices,
             chipset_capabilities: config.chipset_capabilities,
-            chipset_low_mmio: config.chipset_low_mmio,
-            chipset_high_mmio: config.chipset_high_mmio,
-            vtl2_chipset_mmio: config.vtl2_chipset_mmio,
+            chipset_low_mmio_size: config.chipset_low_mmio_size,
+            chipset_high_mmio_size: config.chipset_high_mmio_size,
+            vtl2_chipset_mmio_size: config.vtl2_chipset_mmio_size,
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
@@ -252,9 +252,9 @@ pub struct Manifest {
     chipset_devices: Vec<ChipsetDeviceHandle>,
     pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
     chipset_capabilities: VmChipsetCapabilities,
-    chipset_low_mmio: Option<u64>,
-    chipset_high_mmio: Option<u64>,
-    vtl2_chipset_mmio: Option<u64>,
+    chipset_low_mmio_size: u64,
+    chipset_high_mmio_size: u64,
+    vtl2_chipset_mmio_size: u64,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
@@ -926,9 +926,9 @@ impl InitializedVm {
         let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
             mem_size: cfg.memory.mem_size,
             numa_mem_sizes: cfg.memory.numa_mem_sizes.as_deref(),
-            chipset_low_mmio: cfg.chipset_low_mmio,
-            chipset_high_mmio: cfg.chipset_high_mmio,
-            vtl2_chipset_mmio: cfg.vtl2_chipset_mmio,
+            chipset_low_mmio_size: cfg.chipset_low_mmio_size,
+            chipset_high_mmio_size: cfg.chipset_high_mmio_size,
+            vtl2_chipset_mmio_size: cfg.vtl2_chipset_mmio_size,
             pcie_root_complexes: &cfg.pcie_root_complexes,
             virtio_mmio_count,
             vtl2_layout,
@@ -3376,9 +3376,9 @@ impl LoadedVm {
             chipset_devices: vec![],     // TODO
             pci_chipset_devices: vec![], // TODO
             chipset_capabilities: self.inner.chipset_capabilities,
-            chipset_low_mmio: None,    // TODO
-            chipset_high_mmio: None,   // TODO
-            vtl2_chipset_mmio: None,   // TODO
+            chipset_low_mmio_size: 0,  // TODO
+            chipset_high_mmio_size: 0, // TODO
+            vtl2_chipset_mmio_size: 0, // TODO
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,

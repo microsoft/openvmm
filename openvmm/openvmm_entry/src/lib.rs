@@ -877,9 +877,9 @@ async fn vm_config_from_command_line(
         mut chipset_devices,
         pci_chipset_devices,
         capabilities,
-        chipset_low_mmio,
-        chipset_high_mmio,
-        vtl2_chipset_mmio,
+        chipset_low_mmio_size,
+        chipset_high_mmio_size,
+        vtl2_chipset_mmio_size,
     } = chipset
         .build()
         .context("failed to build chipset configuration")?;
@@ -1634,9 +1634,9 @@ async fn vm_config_from_command_line(
         chipset_devices,
         pci_chipset_devices,
         chipset_capabilities: capabilities,
-        chipset_low_mmio,
-        chipset_high_mmio,
-        vtl2_chipset_mmio,
+        chipset_low_mmio_size,
+        chipset_high_mmio_size,
+        vtl2_chipset_mmio_size,
         #[cfg(windows)]
         vpci_resources,
         vmgs,

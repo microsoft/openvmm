@@ -78,16 +78,16 @@ pub(super) struct MemoryLayoutInput<'a> {
     pub numa_mem_sizes: Option<&'a [u64]>,
     /// Chipset low MMIO size (below 4 GB). This is the VMOD/PCI0 _CRS range
     /// for VMBus devices and PIIX4 PCI BARs. The address is always allocated
-    /// dynamically. `None` disables the range.
-    pub chipset_low_mmio: Option<u64>,
+    /// dynamically. `0` disables the range.
+    pub chipset_low_mmio_size: u64,
     /// Chipset high MMIO size (above RAM). This is the VMOD/PCI0 _CRS high
     /// range for VMBus devices. The address is always allocated dynamically.
-    /// `None` disables the range.
-    pub chipset_high_mmio: Option<u64>,
+    /// `0` disables the range.
+    pub chipset_high_mmio_size: u64,
     /// VTL2-private chipset MMIO size. Placed after all VTL0-visible layout
     /// so enabling VTL2 does not move VTL0 addresses. The address is always
-    /// allocated dynamically. `None` disables the range.
-    pub vtl2_chipset_mmio: Option<u64>,
+    /// allocated dynamically. `0` disables the range.
+    pub vtl2_chipset_mmio_size: u64,
     /// PCIe root complex address-space intents. These are resolved by this
     /// worker step so front ends do not need to carve guest physical addresses.
     pub pcie_root_complexes: &'a [PcieRootComplexConfig],
@@ -142,22 +142,22 @@ pub(super) fn resolve_memory_layout(
 
     // Chipset low MMIO (Mmio32): VMOD/PCI0 _CRS low range for VMBus
     // devices and PIIX4 PCI BARs.
-    if let Some(size) = input.chipset_low_mmio {
+    if input.chipset_low_mmio_size != 0 {
         builder.request(
             "chipset_low_mmio",
             &mut chipset_low_mmio,
-            size,
+            input.chipset_low_mmio_size,
             TWO_MB,
             Placement::Mmio32,
         );
     }
 
     // Chipset high MMIO (Mmio64): VMOD/PCI0 _CRS high range.
-    if let Some(size) = input.chipset_high_mmio {
+    if input.chipset_high_mmio_size != 0 {
         builder.request(
             "chipset_high_mmio",
             &mut chipset_high_mmio,
-            size,
+            input.chipset_high_mmio_size,
             TWO_MB,
             Placement::Mmio64,
         );
@@ -239,11 +239,11 @@ pub(super) fn resolve_memory_layout(
 
     // VTL2 chipset MMIO is implementation-private — placed after all
     // VTL0-visible RAM/MMIO so enabling VTL2 does not move VTL0 addresses.
-    if let Some(size) = input.vtl2_chipset_mmio {
+    if input.vtl2_chipset_mmio_size != 0 {
         builder.request(
             "vtl2_chipset_mmio",
             &mut vtl2_chipset_mmio,
-            size,
+            input.vtl2_chipset_mmio_size,
             TWO_MB,
             Placement::PostMmio,
         );
@@ -312,13 +312,13 @@ pub(super) fn resolve_memory_layout(
     // virtio-mmio region were never part of this vector and remain tracked
     // separately. `MemoryLayout::mmio()` will eventually be removed.
     let mut mmio_gaps: Vec<MemoryRange> = Vec::new();
-    if input.chipset_low_mmio.is_some() {
+    if input.chipset_low_mmio_size != 0 {
         mmio_gaps.push(chipset_low_mmio);
     }
-    if input.chipset_high_mmio.is_some() {
+    if input.chipset_high_mmio_size != 0 {
         mmio_gaps.push(chipset_high_mmio);
     }
-    if input.vtl2_chipset_mmio.is_some() {
+    if input.vtl2_chipset_mmio_size != 0 {
         mmio_gaps.push(vtl2_chipset_mmio);
     }
 
@@ -371,9 +371,9 @@ pub(super) fn resolve_memory_layout(
         memory_layout,
         pcie_root_complex_ranges,
         virtio_mmio_region,
-        chipset_low_mmio: input.chipset_low_mmio.map(|_| chipset_low_mmio),
-        chipset_high_mmio: input.chipset_high_mmio.map(|_| chipset_high_mmio),
-        vtl2_chipset_mmio: input.vtl2_chipset_mmio.map(|_| vtl2_chipset_mmio),
+        chipset_low_mmio: (input.chipset_low_mmio_size != 0).then_some(chipset_low_mmio),
+        chipset_high_mmio: (input.chipset_high_mmio_size != 0).then_some(chipset_high_mmio),
+        vtl2_chipset_mmio: (input.vtl2_chipset_mmio_size != 0).then_some(vtl2_chipset_mmio),
     })
 }
 
@@ -462,9 +462,9 @@ mod tests {
         MemoryLayoutInput {
             mem_size,
             numa_mem_sizes,
-            chipset_low_mmio: Some(DEFAULT_CHIPSET_LOW_MMIO_SIZE_X86_64),
-            chipset_high_mmio: Some(DEFAULT_CHIPSET_HIGH_MMIO_SIZE),
-            vtl2_chipset_mmio: None,
+            chipset_low_mmio_size: DEFAULT_CHIPSET_LOW_MMIO_SIZE_X86_64,
+            chipset_high_mmio_size: DEFAULT_CHIPSET_HIGH_MMIO_SIZE,
+            vtl2_chipset_mmio_size: 0,
             pcie_root_complexes: &[],
             virtio_mmio_count: 0,
             vtl2_layout,
@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn vtl2_chipset_mmio_is_post_mmio() {
         let mut config = input(2 * GB, None, None);
-        config.vtl2_chipset_mmio = Some(DEFAULT_VTL2_CHIPSET_MMIO_SIZE);
+        config.vtl2_chipset_mmio_size = DEFAULT_VTL2_CHIPSET_MMIO_SIZE;
 
         let result = resolve_memory_layout(config).unwrap();
 
@@ -716,7 +716,7 @@ mod tests {
     fn vtl2_chipset_mmio_does_not_move_vtl0_layout() {
         let without = resolve(input(2 * GB, None, None));
         let mut config = input(2 * GB, None, None);
-        config.vtl2_chipset_mmio = Some(DEFAULT_VTL2_CHIPSET_MMIO_SIZE);
+        config.vtl2_chipset_mmio_size = DEFAULT_VTL2_CHIPSET_MMIO_SIZE;
         let with = resolve_memory_layout(config).unwrap();
 
         assert_eq!(with.memory_layout.ram(), without.ram());
@@ -725,8 +725,8 @@ mod tests {
     #[test]
     fn no_chipset_mmio_when_none() {
         let mut config = input(2 * GB, None, None);
-        config.chipset_low_mmio = None;
-        config.chipset_high_mmio = None;
+        config.chipset_low_mmio_size = 0;
+        config.chipset_high_mmio_size = 0;
 
         let result = resolve_memory_layout(config).unwrap();
 

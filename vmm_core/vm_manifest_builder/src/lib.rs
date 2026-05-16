@@ -103,17 +103,17 @@ pub struct VmChipsetResult {
     /// Derived chipset capabilities needed by firmware and table generation.
     pub capabilities: VmChipsetCapabilities,
     /// Default chipset low MMIO size (below 4 GiB) for VMOD/PCI0 _CRS.
-    /// The address is always allocated dynamically. `None` when the VM type
+    /// The address is always allocated dynamically. `0` when the VM type
     /// has no VMBus or PCI bus.
-    pub chipset_low_mmio: Option<u64>,
+    pub chipset_low_mmio_size: u64,
     /// Default chipset high MMIO size (above RAM) for VMOD/PCI0 _CRS.
-    /// The address is always allocated dynamically. `None` when the VM type
+    /// The address is always allocated dynamically. `0` when the VM type
     /// has no VMBus or PCI bus.
-    pub chipset_high_mmio: Option<u64>,
+    pub chipset_high_mmio_size: u64,
     /// Default VTL2-private chipset MMIO size for VTL2 VMBus.
-    /// The address is always allocated dynamically. `None` when the VM type
+    /// The address is always allocated dynamically. `0` when the VM type
     /// does not include VTL2.
-    pub vtl2_chipset_mmio: Option<u64>,
+    pub vtl2_chipset_mmio_size: u64,
 }
 
 /// Error type for building a VM manifest.
@@ -248,9 +248,9 @@ impl VmManifestBuilder {
                 with_psp: false,
                 with_guest_watchdog: false,
             },
-            chipset_low_mmio: None,
-            chipset_high_mmio: None,
-            vtl2_chipset_mmio: None,
+            chipset_low_mmio_size: 0,
+            chipset_high_mmio_size: 0,
+            vtl2_chipset_mmio_size: 0,
         };
 
         if let Some((backend, port)) = self.debugcon {
@@ -421,13 +421,13 @@ impl VmManifestBuilder {
             | BaseChipsetType::HypervGen2Uefi
             | BaseChipsetType::HyperVGen2LinuxDirect
             | BaseChipsetType::UnenlightenedLinuxDirect => {
-                result.chipset_low_mmio = Some(default_low);
-                result.chipset_high_mmio = Some(default_high);
+                result.chipset_low_mmio_size = default_low;
+                result.chipset_high_mmio_size = default_high;
             }
             BaseChipsetType::HclHost => {
-                result.chipset_low_mmio = Some(default_low);
-                result.chipset_high_mmio = Some(default_high);
-                result.vtl2_chipset_mmio = Some(default_vtl2);
+                result.chipset_low_mmio_size = default_low;
+                result.chipset_high_mmio_size = default_high;
+                result.vtl2_chipset_mmio_size = default_vtl2;
             }
         }
 

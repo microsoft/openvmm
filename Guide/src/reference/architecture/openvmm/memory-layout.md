@@ -63,8 +63,11 @@ phase pulls from whatever address space the earlier phases left free:
 2. **Fixed ranges** are removed from the free space.
 3. **`Placement::Mmio32`** requests are packed *top down* below 4 GiB, so
    RAM can start at GPA 0 and grow upward through the lowest free space.
-4. **RAM** requests are placed *bottom up* from GPA 0, splitting around any
-   holes left by the earlier phases. RAM is the only splittable kind.
+4. **RAM** requests are placed *bottom up*, in caller order, splitting
+   around any holes left by the earlier phases. The first request starts at
+   GPA 0; each subsequent request starts at or above the highest address
+   used by previous RAM requests, so later requests never backfill
+   fragments earlier ones skipped. RAM is the only splittable kind.
 5. **`Placement::Mmio64`** requests are packed *bottom up* starting at the
    end of RAM. This makes the layout top a function of requested topology
    rather than a precomputed high MMIO bucket size.
@@ -120,7 +123,12 @@ issues requests in this order:
 5. **Virtio-mmio slots** (`Mmio32`) — one contiguous region sized
    `slot_count * 4 KiB`, when any slots are configured.
 6. **RAM**, in vnode order. The first request becomes vnode 0, the second
-   vnode 1, and so on. Alignment depends on request size:
+   vnode 1, and so on. Each vnode starts at or above the highest address
+   used by prior vnodes; vnode N+1 never backfills a fragment that vnode
+   N skipped. This keeps vnode ordering equal to address ordering and
+   turns vnode layout into a clean compatibility surface — adding a new
+   fixed or reserved range below RAM end can only shift the first vnode
+   whose own span actually covers it. Alignment depends on request size:
 
     | RAM request size | Alignment |
     |---|---|

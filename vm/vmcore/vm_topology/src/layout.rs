@@ -220,12 +220,21 @@ impl AllocationState {
         // Ordinary RAM is the only splittable request type in this API. It is
         // placed after low MMIO so the resulting RAM extents describe the
         // actual guest-visible memory map, including holes below 4 GiB.
+        //
+        // Requests are placed in caller order, and each request starts at or
+        // above the highest address used by previous RAM requests. A later
+        // RAM request never backfills a fragment that an earlier one skipped:
+        // this keeps the flattened RAM list sorted by address (matching the
+        // invariant `MemoryLayout` validates) and turns vnode order into a
+        // clean compatibility surface, since adding new fixed or reserved
+        // ranges only shifts vnodes whose own span actually covers them.
         for request in requests {
+            let floor = self.ram_end;
             let ranges = find_lowest_splittable_fit(
                 &self.free,
                 request.size,
                 request.alignment,
-                0,
+                floor,
                 ADDRESS_LIMIT,
             )
             .ok_or_else(|| {
@@ -235,7 +244,7 @@ impl AllocationState {
                     request.alignment,
                     AllocationPhase::Ram,
                     &self.free,
-                    0,
+                    floor,
                     ADDRESS_LIMIT,
                 )
             })?;
@@ -477,12 +486,16 @@ impl<'a> LayoutBuilder<'a> {
 
     /// Adds an ordinary RAM request to the builder.
     ///
-    /// RAM is placed bottom up from GPA 0 and may split around fixed and MMIO32
-    /// ranges. Each extent starts at `alignment`, and split extents that do not
-    /// satisfy the rest of the request are rounded down to `alignment` so large
-    /// aligned requests are not fragmented into smaller chunks. The target
-    /// vector is replaced with the placed RAM extents when [`Self::allocate`]
-    /// succeeds.
+    /// RAM requests are placed in caller order. The first request is placed
+    /// bottom up from GPA 0; each subsequent request starts at or above the
+    /// highest address used by previous RAM requests, so later requests never
+    /// backfill fragments skipped by earlier ones. A single request may still
+    /// split around fixed and Mmio32 ranges encountered inside its own span;
+    /// each extent starts at `alignment`, and split extents that do not
+    /// satisfy the rest of the request are rounded down to `alignment` so
+    /// large aligned requests are not fragmented into smaller chunks. The
+    /// target vector is replaced with the placed RAM extents when
+    /// [`Self::allocate`] succeeds.
     pub fn ram(
         &mut self,
         tag: impl Into<Arc<str>>,
@@ -893,6 +906,98 @@ mod tests {
             ram,
             [MemoryRange::new(0..GIB), MemoryRange::new(2 * GIB..3 * GIB),]
         );
+    }
+
+    #[test]
+    fn ram_requests_are_placed_in_order() {
+        // Two RAM requests must not interleave: the second request starts at
+        // or above the maximum end address of the first, so the flattened
+        // RAM list is always sorted by address.
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        let mut builder = LayoutBuilder::new();
+        builder.ram("first", &mut first, 2 * GIB, PAGE_SIZE);
+        builder.ram("second", &mut second, GIB, PAGE_SIZE);
+
+        builder.allocate().unwrap();
+
+        assert_eq!(first, [MemoryRange::new(0..2 * GIB)]);
+        assert_eq!(second, [MemoryRange::new(2 * GIB..3 * GIB)]);
+    }
+
+    #[test]
+    fn ram_request_does_not_backfill_earlier_fragments() {
+        // A small fixed range below the first RAM request's end leaves an
+        // unaligned fragment that the first request skips. An earlier
+        // best-fit policy would have allowed a smaller-aligned later RAM
+        // request to backfill that fragment, producing an out-of-order RAM
+        // list. In-order placement floors each request at the previous
+        // request's end, so the fragment stays unallocated and vnode order
+        // matches address order.
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        let mut builder = LayoutBuilder::new();
+        // Carve a tiny hole inside what the first request would otherwise
+        // round down to a GiB-aligned chunk.
+        builder.fixed("hole", MemoryRange::new(GIB + MIB..GIB + 2 * MIB));
+        builder.ram("first", &mut first, 2 * GIB, GIB);
+        builder.ram("second", &mut second, 256 * MIB, PAGE_SIZE);
+        builder.allocate().unwrap();
+
+        // First request lands at [0, 1 GiB) and [2 GiB, 3 GiB); the fragment
+        // at [1 GiB + 2 MiB, 2 GiB) is left free.
+        assert_eq!(
+            first,
+            [MemoryRange::new(0..GIB), MemoryRange::new(2 * GIB..3 * GIB)]
+        );
+        // The 256 MiB second request would fit at 1 GiB + 2 MiB if backfill
+        // were allowed; instead it must come after the first request's max
+        // end (3 GiB).
+        assert_eq!(second.len(), 1);
+        assert!(
+            second[0].start() >= first.iter().map(|r| r.end()).max().unwrap(),
+            "second RAM request backfilled below first request's end: {second:?}"
+        );
+        assert_eq!(second, [MemoryRange::new(3 * GIB..3 * GIB + 256 * MIB)]);
+    }
+
+    #[test]
+    fn ram_in_order_keeps_flattened_list_sorted_with_mmio32() {
+        // Reproduces the scenario that would have produced an unsorted RAM
+        // list under best-fit: a fixed Mmio32-style range low in memory plus
+        // a small second vnode that could otherwise be placed before the
+        // first vnode's tail.
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        let mut builder = LayoutBuilder::new();
+        // A 1 MiB fixed range (e.g. a PCIe BAR) just above 1 GiB.
+        builder.fixed("pcie_bar", MemoryRange::new(0x4010_0000..0x4020_0000));
+        builder.ram("first", &mut first, 2 * GIB, PAGE_SIZE);
+        builder.ram("second", &mut second, 512 * MIB, PAGE_SIZE);
+
+        builder.allocate().unwrap();
+
+        let first_end = first.iter().map(|r| r.end()).max().unwrap();
+        assert!(
+            second.iter().all(|r| r.start() >= first_end),
+            "second vnode placed below first vnode's end: first={first:?} second={second:?}"
+        );
+
+        let mut all: Vec<_> = first.iter().chain(second.iter()).copied().collect();
+        let sorted = {
+            let mut s = all.clone();
+            s.sort_by_key(|r| r.start());
+            s
+        };
+        assert_eq!(all, sorted, "flattened RAM list must be sorted");
+        // Sanity: no overlaps either.
+        all.sort_by_key(|r| r.start());
+        for pair in all.windows(2) {
+            assert!(
+                pair[0].end() <= pair[1].start(),
+                "overlapping RAM ranges: {pair:?}"
+            );
+        }
     }
 
     #[test]
