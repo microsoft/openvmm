@@ -5,6 +5,8 @@ use crate::emuplat;
 use crate::partition::BindHvliteVp;
 use crate::partition::HvlitePartition;
 use crate::vmgs_non_volatile_store::HvLiteVmgsNonVolatileStore;
+use crate::worker::memory_layout::MemoryLayoutInput;
+use crate::worker::memory_layout::resolve_memory_layout;
 use crate::worker::rom::RomBuilder;
 use acpi::dsdt;
 use anyhow::Context;
@@ -895,49 +897,23 @@ impl InitializedVm {
         };
 
         // Choose the memory layout of the VM.
-        let mem_layout = if let Some(ref sizes) = cfg.memory.numa_mem_sizes {
-            // When numa_mem_sizes is set, distribute guest RAM across vNUMA nodes
-            // for ACPI SRAT / FDT reporting.
-            //
-            // TODO: The vNUMA nodes reported are meant for test usage only, as they
-            // are not aligned to any physical NUMA node. There is more work to do
-            // to support useful vNUMA reporting.
-            let total: u64 = sizes
-                .iter()
-                .copied()
-                .try_fold(0u64, |acc, s| acc.checked_add(s))
-                .context("numa memory sizes overflow")?;
-            anyhow::ensure!(
-                total == cfg.memory.mem_size,
-                "numa_mem_sizes total ({total:#x}) does not match mem_size ({:#x})",
-                cfg.memory.mem_size
-            );
-
-            MemoryLayout::new_with_numa(
-                sizes,
-                &cfg.memory.mmio_gaps,
-                &cfg.memory.pci_ecam_gaps,
-                &cfg.memory.pci_mmio_gaps,
-                vtl2_range,
-            )
-        } else {
-            MemoryLayout::new(
-                cfg.memory.mem_size,
-                &cfg.memory.mmio_gaps,
-                &cfg.memory.pci_ecam_gaps,
-                &cfg.memory.pci_mmio_gaps,
-                vtl2_range,
-            )
-        }
+        //
+        // When numa_mem_sizes is set, distribute guest RAM across vNUMA nodes
+        // for ACPI SRAT / FDT reporting.
+        //
+        // TODO: The vNUMA nodes reported are meant for test usage only, as they
+        // are not aligned to any physical NUMA node. There is more work to do
+        // to support useful vNUMA reporting.
+        let mem_layout = resolve_memory_layout(MemoryLayoutInput {
+            mem_size: cfg.memory.mem_size,
+            numa_mem_sizes: cfg.memory.numa_mem_sizes.as_deref(),
+            mmio_gaps: &cfg.memory.mmio_gaps,
+            pci_ecam_gaps: &cfg.memory.pci_ecam_gaps,
+            pci_mmio_gaps: &cfg.memory.pci_mmio_gaps,
+            vtl2_range,
+            physical_address_size,
+        })
         .context("invalid memory configuration")?;
-
-        if mem_layout.end_of_layout() > 1 << physical_address_size {
-            anyhow::bail!(
-                "memory layout ends at {:#x}, which exceeds the address with of {} bits",
-                mem_layout.end_of_layout(),
-                physical_address_size
-            );
-        }
 
         // Place the alias map at the end of the address space. Newer versions
         // of OpenHCL support receiving this offset via devicetree (especially
