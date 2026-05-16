@@ -18,6 +18,9 @@ mem-profile-tracing = [
 # Enable gdbstub support
 gdb = ["debug_worker_defs", "vmm_core/gdb", "virt_mshv_vtl/gdb"]
 
+# Disable secure AVIC support for SNP
+disable_secure_avic = ["virt_mshv_vtl/disable_secure_avic"]
+
 # Enable TIO support for SEV-SNP
 dev_snp_ohcl_tio_support = ["tee_call/dev_snp_ohcl_tio_support"]
 
