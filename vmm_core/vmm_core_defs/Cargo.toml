@@ -7,6 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+memory_range = { workspace = true, features = ["mesh"] }
 virt.workspace = true
 
 inspect.workspace = true

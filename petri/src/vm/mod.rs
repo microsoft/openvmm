@@ -22,7 +22,6 @@ use crate::vtl2_settings::Vtl2StorageControllerBuilder;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
-use memory_range::MemoryRange;
 use mesh::CancelContext;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use pal_async::DefaultDriver;
@@ -2130,16 +2129,6 @@ pub enum ApicMode {
     X2apicEnabled,
 }
 
-/// Mmio configuration.
-#[derive(Debug)]
-pub enum MmioConfig {
-    /// The platform provided default.
-    Platform,
-    /// Custom mmio gaps.
-    /// TODO: Not supported on all platforms (ie Hyper-V).
-    Custom(Vec<MemoryRange>),
-}
-
 /// Common memory configuration information for the VM.
 #[derive(Debug)]
 pub struct MemoryConfig {
@@ -2150,8 +2139,6 @@ pub struct MemoryConfig {
     ///
     /// Dynamic memory will be disabled if this is `None`.
     pub dynamic_memory_range: Option<(u64, u64)>,
-    /// Specifies the mmio gaps to use, either platform or custom.
-    pub mmio_gaps: MmioConfig,
     /// Per-NUMA-node memory sizes. When set, RAM is distributed across
     /// vNUMA nodes instead of assigning all RAM to node 0.
     pub numa_mem_sizes: Option<Vec<u64>>,
@@ -2162,7 +2149,6 @@ impl Default for MemoryConfig {
         Self {
             startup_bytes: 4 * 1024 * 1024 * 1024, // 4 GiB
             dynamic_memory_range: None,
-            mmio_gaps: MmioConfig::Platform,
             numa_mem_sizes: None,
         }
     }

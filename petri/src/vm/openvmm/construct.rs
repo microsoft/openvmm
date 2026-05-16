@@ -23,7 +23,6 @@ use crate::UefiConfig;
 use crate::VmbusStorageType;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 
-use crate::MmioConfig;
 use crate::SIZE_1_MB;
 use crate::VmbusStorageController;
 use crate::openvmm::memdiff_vmgs;
@@ -46,10 +45,6 @@ use mesh_process::Mesh;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use openvmm_defs::config::Config;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
@@ -361,7 +356,6 @@ impl PetriVmConfigOpenVmm {
             let MemoryConfig {
                 startup_bytes,
                 dynamic_memory_range,
-                mmio_gaps,
                 numa_mem_sizes,
             } = memory;
 
@@ -380,22 +374,6 @@ impl PetriVmConfigOpenVmm {
 
             openvmm_defs::config::MemoryConfig {
                 mem_size,
-                mmio_gaps: match mmio_gaps {
-                    MmioConfig::Platform => {
-                        if firmware.is_openhcl() {
-                            match arch {
-                                MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
-                                MachineArch::Aarch64 => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
-                            }
-                        } else {
-                            match arch {
-                                MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86.into(),
-                                MachineArch::Aarch64 => DEFAULT_MMIO_GAPS_AARCH64.into(),
-                            }
-                        }
-                    }
-                    MmioConfig::Custom(ranges) => ranges,
-                },
                 prefetch_memory: false,
                 private_memory: false,
                 transparent_hugepages: false,
@@ -481,6 +459,9 @@ impl PetriVmConfigOpenVmm {
             mut chipset_devices,
             pci_chipset_devices,
             capabilities,
+            chipset_low_mmio,
+            chipset_high_mmio,
+            vtl2_chipset_mmio,
         } = chipset;
 
         // Add the TPM
@@ -518,6 +499,9 @@ impl PetriVmConfigOpenVmm {
             chipset_devices,
             pci_chipset_devices,
             chipset_capabilities: capabilities,
+            chipset_low_mmio,
+            chipset_high_mmio,
+            vtl2_chipset_mmio,
 
             // Basic virtualization device support
             hypervisor: HypervisorConfig {

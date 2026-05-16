@@ -9,8 +9,23 @@
 pub mod debug_rpc;
 
 use inspect::Inspect;
+use memory_range::MemoryRange;
+use mesh::MeshPayload;
 use mesh::payload::Protobuf;
 use std::sync::Arc;
+
+/// Specifies an MMIO range, either by size (the resolver allocates) or by
+/// fixed location.
+#[derive(Debug, MeshPayload)]
+pub enum MmioRangeConfig {
+    /// Dynamically allocate a range of the given size.
+    Dynamic {
+        /// Size of the range in bytes.
+        size: u64,
+    },
+    /// Use the specified fixed memory range.
+    Fixed(MemoryRange),
+}
 
 /// HaltReason sent by devices and vp_set to the vmm.
 #[derive(Debug, Clone, Eq, PartialEq, Protobuf, Inspect)]

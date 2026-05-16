@@ -55,6 +55,12 @@ pub struct Config {
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
     pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
     pub chipset_capabilities: VmChipsetCapabilities,
+    /// Chipset low MMIO range (below 4 GiB) for VMOD/PCI0 _CRS.
+    pub chipset_low_mmio: Option<MmioRangeConfig>,
+    /// Chipset high MMIO range (above RAM) for VMOD/PCI0 _CRS.
+    pub chipset_high_mmio: Option<MmioRangeConfig>,
+    /// VTL2-private chipset MMIO range for VTL2 VMBus.
+    pub vtl2_chipset_mmio: Option<MmioRangeConfig>,
     pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
@@ -62,36 +68,6 @@ pub struct Config {
     pub automatic_guest_reset: bool,
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
 }
-
-// ARM64 needs a larger low gap.
-const DEFAULT_LOW_MMAP_GAP_SIZE_X86: u64 = 1024 * 1024 * 128;
-const DEFAULT_LOW_MMAP_GAP_SIZE_AARCH64: u64 = 1024 * 1024 * 512;
-
-/// Default mmio gaps for an x86 partition.
-pub const DEFAULT_MMIO_GAPS_X86: [MemoryRange; 2] = [
-    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_X86..0x1_0000_0000), // nMB just below 4GB
-    MemoryRange::new(0xF_E000_0000..0x10_0000_0000), // 512MB just below 64GB, then up to 64GB
-];
-
-/// Default mmio gaps for x86 if VTL2 is enabled.
-pub const DEFAULT_MMIO_GAPS_X86_WITH_VTL2: [MemoryRange; 3] = [
-    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_X86..0x1_0000_0000), // nMB just below 4GB
-    MemoryRange::new(0xF_E000_0000..0x20_0000_0000), // 512MB just below 64GB, then up to 128GB
-    MemoryRange::new(0x20_0000_0000..0x20_4000_0000), // 128GB to 129 GB
-];
-
-/// Default mmio gaps for an aarch64 partition.
-pub const DEFAULT_MMIO_GAPS_AARCH64: [MemoryRange; 2] = [
-    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_AARCH64..0x1_0000_0000), // nMB just below 4GB
-    MemoryRange::new(0xF_E000_0000..0x10_0000_0000), // 512MB just below 64GB, then up to 64GB
-];
-
-/// Default mmio gaps for aarch64 if VTL2 is enabled.
-pub const DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2: [MemoryRange; 3] = [
-    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_AARCH64..0x1_0000_0000), // nMB just below 4GB
-    MemoryRange::new(0xF_E000_0000..0x20_0000_0000), // 512MB just below 64GB, then up to 128GB
-    MemoryRange::new(0x20_0000_0000..0x20_4000_0000), // 128GB to 129 GB
-];
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;
 // The KVM in-kernel vGICv3 requires the distributor and redistributor bases be 64KiB aligned.
@@ -216,11 +192,7 @@ pub enum Vtl2BaseAddressType {
     Vtl2Allocate { size: Option<u64> },
 }
 
-#[derive(Debug, MeshPayload)]
-pub enum MmioRangeConfig {
-    Dynamic { size: u64 },
-    Fixed(MemoryRange),
-}
+pub use vmm_core_defs::MmioRangeConfig;
 
 #[derive(Debug, MeshPayload)]
 pub struct PcieRootComplexConfig {
@@ -366,7 +338,6 @@ pub struct MemoryConfig {
     pub transparent_hugepages: bool,
     pub hugepages: bool,
     pub hugepage_size: Option<u64>,
-    pub mmio_gaps: Vec<MemoryRange>,
     /// Test only: per-NUMA-node memory sizes. When set, RAM is distributed
     /// across vNUMA nodes according to these sizes instead of assigning all RAM
     /// to node 0. The sum must equal `mem_size`.

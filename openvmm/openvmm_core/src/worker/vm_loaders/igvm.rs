@@ -259,7 +259,6 @@ pub fn vtl2_memory_layout_request(
 /// Build a device tree representing the whole guest partition.
 fn build_device_tree(
     processor_topology: &ProcessorTopology<X86Topology>,
-    mem_layout: &MemoryLayout,
     all_ram: &[MemoryRangeWithNode],
     vtl2_protectable_ram: &[MemoryRange],
     vtl2_base_address: Vtl2BaseAddressType,
@@ -267,6 +266,9 @@ fn build_device_tree(
     with_vmbus_redirect: bool,
     com_serial: Option<SerialInformation>,
     entropy: Option<&[u8]>,
+    chipset_low_mmio: Option<MemoryRange>,
+    chipset_high_mmio: Option<MemoryRange>,
+    vtl2_chipset_mmio: Option<MemoryRange>,
 ) -> Result<Vec<u8>, fdt::builder::Error> {
     let mut buf = vec![0; HV_PAGE_SIZE as usize * 256];
 
@@ -339,26 +341,20 @@ fn build_device_tree(
         .add_u32(p_size_cells, 2)?
         .add_prop_array(p_ranges, &[])?;
 
-    // Determine how much mmio this system has. 2 or less gaps are reported to
-    // VTL0. The 3rd and/or 4th gap will be reported to VTL2. Any more are
-    // ignored.
-    let mut mmio_chunks = mem_layout.mmio().chunks(2);
-
-    let extract_ranges = |mmio: Option<&[MemoryRange]>| -> Vec<u64> {
-        let mut ranges = Vec::new();
-
-        if let Some(mmio) = mmio {
-            for entry in mmio {
-                ranges.push(entry.start());
-                ranges.push(entry.start());
-                ranges.push(entry.len());
-            }
-        }
-        ranges
-    };
-
-    let ranges_vtl0 = extract_ranges(mmio_chunks.next());
-    let ranges_vtl2 = extract_ranges(mmio_chunks.next());
+    // Build DT ranges for VMBus devices. VTL0 gets the chipset low/high MMIO
+    // ranges; VTL2 gets its own private chipset MMIO range.
+    let mut ranges_vtl0: Vec<u64> = Vec::new();
+    for range in [chipset_low_mmio, chipset_high_mmio].into_iter().flatten() {
+        ranges_vtl0.push(range.start());
+        ranges_vtl0.push(range.start());
+        ranges_vtl0.push(range.len());
+    }
+    let mut ranges_vtl2: Vec<u64> = Vec::new();
+    if let Some(range) = vtl2_chipset_mmio {
+        ranges_vtl2.push(range.start());
+        ranges_vtl2.push(range.start());
+        ranges_vtl2.push(range.len());
+    }
 
     // VTL0 vmbus root device
     let vmbus_vtl0_name = if ranges_vtl0.is_empty() {
@@ -511,6 +507,12 @@ pub struct LoadIgvmParams<'a, T: ArchTopology> {
     pub com_serial: Option<SerialInformation>,
     /// Entropy
     pub entropy: Option<&'a [u8]>,
+    /// VTL0 chipset low MMIO range for the device tree VMBus node.
+    pub chipset_low_mmio: Option<MemoryRange>,
+    /// VTL0 chipset high MMIO range for the device tree VMBus node.
+    pub chipset_high_mmio: Option<MemoryRange>,
+    /// VTL2-private chipset MMIO range for the device tree VTL2 VMBus node.
+    pub vtl2_chipset_mmio: Option<MemoryRange>,
 }
 
 pub fn load_igvm(
@@ -553,6 +555,9 @@ fn load_igvm_x86(
         with_vmbus_redirect,
         com_serial,
         entropy,
+        chipset_low_mmio,
+        chipset_high_mmio,
+        vtl2_chipset_mmio,
     } = params;
 
     let relocations_enabled = match vtl2_base_address {
@@ -930,14 +935,11 @@ fn load_igvm_x86(
                 }
             }
             IgvmDirectiveHeader::MmioRanges(ref info) => {
-                // Convert the OpenVMM format to the IGVM format
-                // Any gaps above 2 are ignored.
-                let mmio = mem_layout.mmio();
-                if mmio.len() < 2 {
-                    return Err(Error::UnsupportedMmio);
-                }
+                // Convert the chipset MMIO ranges to the IGVM format.
+                let low = chipset_low_mmio.ok_or(Error::UnsupportedMmio)?;
+                let high = chipset_high_mmio.ok_or(Error::UnsupportedMmio)?;
                 let mmio_ranges = IGVM_VHS_MMIO_RANGES {
-                    mmio_ranges: [from_memory_range(&mmio[0]), from_memory_range(&mmio[1])],
+                    mmio_ranges: [from_memory_range(&low), from_memory_range(&high)],
                 };
                 import_parameter(&mut parameter_areas, info, mmio_ranges.as_bytes())?;
             }
@@ -951,7 +953,6 @@ fn load_igvm_x86(
             IgvmDirectiveHeader::DeviceTree(ref info) => {
                 let dt = build_device_tree(
                     processor_topology,
-                    mem_layout,
                     &all_ram,
                     &vtl2_protectable_ram,
                     vtl2_base_address,
@@ -959,6 +960,9 @@ fn load_igvm_x86(
                     with_vmbus_redirect,
                     com_serial,
                     entropy,
+                    chipset_low_mmio,
+                    chipset_high_mmio,
+                    vtl2_chipset_mmio,
                 )
                 .map_err(Error::DeviceTree)?;
                 import_parameter(&mut parameter_areas, info, &dt)?;

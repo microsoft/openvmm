@@ -43,6 +43,7 @@ use vm_resource::PlatformResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::kind::SerialBackendHandle;
+use vmm_core_defs::MmioRangeConfig;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::LegacyPciChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
@@ -102,6 +103,15 @@ pub struct VmChipsetResult {
     pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
     /// Derived chipset capabilities needed by firmware and table generation.
     pub capabilities: VmChipsetCapabilities,
+    /// Default chipset low MMIO range (below 4 GiB) for VMOD/PCI0 _CRS.
+    /// `None` when the VM type has no VMBus or PCI bus.
+    pub chipset_low_mmio: Option<MmioRangeConfig>,
+    /// Default chipset high MMIO range (above RAM) for VMOD/PCI0 _CRS.
+    /// `None` when the VM type has no VMBus or PCI bus.
+    pub chipset_high_mmio: Option<MmioRangeConfig>,
+    /// Default VTL2-private chipset MMIO range for VTL2 VMBus.
+    /// `None` when the VM type does not include VTL2.
+    pub vtl2_chipset_mmio: Option<MmioRangeConfig>,
 }
 
 /// Error type for building a VM manifest.
@@ -236,6 +246,9 @@ impl VmManifestBuilder {
                 with_psp: false,
                 with_guest_watchdog: false,
             },
+            chipset_low_mmio: None,
+            chipset_high_mmio: None,
+            vtl2_chipset_mmio: None,
         };
 
         if let Some((backend, port)) = self.debugcon {
@@ -387,6 +400,32 @@ impl VmManifestBuilder {
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }
+            }
+        }
+
+        // Chipset MMIO sizing: all VM types with VMBus or a PCI bus get low +
+        // high chipset MMIO. HclHost additionally gets VTL2 chipset MMIO.
+        //
+        // x86_64: 96 MiB low (128 MiB traditional gap minus 32 MiB reserved zone).
+        // aarch64: 240 MiB low (512 MiB traditional gap minus 272 MiB reserved zone).
+        let default_low = match self.arch {
+            MachineArch::X86_64 => 96 * 1024 * 1024,
+            MachineArch::Aarch64 => 240 * 1024 * 1024,
+        };
+        let default_high: u64 = 512 * 1024 * 1024;
+        let default_vtl2: u64 = 1024 * 1024 * 1024;
+        match self.ty {
+            BaseChipsetType::HypervGen1
+            | BaseChipsetType::HypervGen2Uefi
+            | BaseChipsetType::HyperVGen2LinuxDirect
+            | BaseChipsetType::UnenlightenedLinuxDirect => {
+                result.chipset_low_mmio = Some(MmioRangeConfig::Dynamic { size: default_low });
+                result.chipset_high_mmio = Some(MmioRangeConfig::Dynamic { size: default_high });
+            }
+            BaseChipsetType::HclHost => {
+                result.chipset_low_mmio = Some(MmioRangeConfig::Dynamic { size: default_low });
+                result.chipset_high_mmio = Some(MmioRangeConfig::Dynamic { size: default_high });
+                result.vtl2_chipset_mmio = Some(MmioRangeConfig::Dynamic { size: default_vtl2 });
             }
         }
 

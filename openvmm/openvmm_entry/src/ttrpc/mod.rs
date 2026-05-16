@@ -33,7 +33,6 @@ use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use netvsp_resources::NetvspHandle;
 use openvmm_defs::config::Config;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
@@ -573,7 +572,6 @@ impl VmService {
             vpci_devices: vec![],
             memory: MemoryConfig {
                 mem_size: config_mem_size,
-                mmio_gaps: DEFAULT_MMIO_GAPS_X86.into(),
                 prefetch_memory: false,
                 private_memory: false,
                 transparent_hugepages: false,
@@ -612,6 +610,9 @@ impl VmService {
             chipset_devices: chipset.chipset_devices,
             pci_chipset_devices: chipset.pci_chipset_devices,
             chipset_capabilities: chipset.capabilities,
+            chipset_low_mmio: chipset.chipset_low_mmio,
+            chipset_high_mmio: chipset.chipset_high_mmio,
+            vtl2_chipset_mmio: chipset.vtl2_chipset_mmio,
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             automatic_guest_reset: true,

@@ -58,7 +58,6 @@ use guid::Guid;
 use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
 use io::Read;
-use memory_range::MemoryRange;
 use mesh::CancelContext;
 use mesh::CellUpdater;
 use mesh::rpc::RpcSend;
@@ -66,10 +65,6 @@ use meshworker::VmmMesh;
 use net_backend_resources::mac_address::MacAddress;
 use nvme_resources::NvmeControllerRequest;
 use openvmm_defs::config::Config;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::EfiDiagnosticsLogLevelType;
@@ -87,7 +82,6 @@ use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpciDeviceConfig;
-use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
@@ -720,27 +714,12 @@ async fn vm_config_from_command_line(
             }),
     );
 
-    // If VTL2 is enabled, and we are not in VTL2 self allocate mode, provide an
-    // mmio gap for VTL2.
-    let use_vtl2_gap = opt.vtl2
-        && !matches!(
-            opt.igvm_vtl2_relocation_type,
-            Vtl2BaseAddressType::Vtl2Allocate { .. },
-        );
+    let mut pcie_root_complexes = Vec::new();
 
     #[cfg(guest_arch = "aarch64")]
     let arch = MachineArch::Aarch64;
     #[cfg(guest_arch = "x86_64")]
     let arch = MachineArch::X86_64;
-
-    let mmio_gaps: Vec<MemoryRange> = match (use_vtl2_gap, arch) {
-        (true, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
-        (true, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
-        (false, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86.into(),
-        (false, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64.into(),
-    };
-
-    let mut pcie_root_complexes = Vec::new();
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
         let ports = opt
             .pcie_root_port
@@ -899,6 +878,9 @@ async fn vm_config_from_command_line(
         mut chipset_devices,
         pci_chipset_devices,
         capabilities,
+        chipset_low_mmio,
+        chipset_high_mmio,
+        vtl2_chipset_mmio,
     } = chipset
         .build()
         .context("failed to build chipset configuration")?;
@@ -1597,7 +1579,6 @@ async fn vm_config_from_command_line(
             } else {
                 opt.memory_size()
             },
-            mmio_gaps,
             prefetch_memory: opt.prefetch_memory(),
             private_memory: opt.private_memory(),
             transparent_hugepages: opt.transparent_hugepages(),
@@ -1654,6 +1635,9 @@ async fn vm_config_from_command_line(
         chipset_devices,
         pci_chipset_devices,
         chipset_capabilities: capabilities,
+        chipset_low_mmio,
+        chipset_high_mmio,
+        vtl2_chipset_mmio,
         #[cfg(windows)]
         vpci_resources,
         vmgs,

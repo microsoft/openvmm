@@ -57,6 +57,7 @@ use openvmm_defs::config::GicConfig;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::MmioRangeConfig;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
@@ -200,6 +201,9 @@ impl Manifest {
             chipset_devices: config.chipset_devices,
             pci_chipset_devices: config.pci_chipset_devices,
             chipset_capabilities: config.chipset_capabilities,
+            chipset_low_mmio: config.chipset_low_mmio,
+            chipset_high_mmio: config.chipset_high_mmio,
+            vtl2_chipset_mmio: config.vtl2_chipset_mmio,
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
@@ -249,6 +253,9 @@ pub struct Manifest {
     chipset_devices: Vec<ChipsetDeviceHandle>,
     pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
     chipset_capabilities: VmChipsetCapabilities,
+    chipset_low_mmio: Option<MmioRangeConfig>,
+    chipset_high_mmio: Option<MmioRangeConfig>,
+    vtl2_chipset_mmio: Option<MmioRangeConfig>,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
@@ -402,6 +409,9 @@ pub(crate) struct InitializedVm {
     mem_layout: MemoryLayout,
     resolved_pcie_root_complex_ranges: Vec<ResolvedPcieRootComplexRanges>,
     virtio_mmio_region: Option<MemoryRange>,
+    chipset_low_mmio: Option<MemoryRange>,
+    chipset_high_mmio: Option<MemoryRange>,
+    vtl2_chipset_mmio: Option<MemoryRange>,
     processor_topology: ProcessorTopology,
     igvm_file: Option<IgvmFile>,
     driver_source: VmTaskDriverSource,
@@ -686,6 +696,12 @@ struct LoadedVmInner {
     virtio_mmio_region: Option<MemoryRange>,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_irq: u32,
+    /// Chipset low MMIO range for VMOD/PCI0 _CRS.
+    chipset_low_mmio: Option<MemoryRange>,
+    /// Chipset high MMIO range for VMOD/PCI0 _CRS.
+    chipset_high_mmio: Option<MemoryRange>,
+    /// VTL2-private chipset MMIO range for VTL2 VMBus.
+    vtl2_chipset_mmio: Option<MemoryRange>,
     /// ((device, function), interrupt)
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     pci_legacy_interrupts: Vec<((u8, Option<u8>), u32)>,
@@ -911,7 +927,9 @@ impl InitializedVm {
         let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
             mem_size: cfg.memory.mem_size,
             numa_mem_sizes: cfg.memory.numa_mem_sizes.as_deref(),
-            mmio_gaps: &cfg.memory.mmio_gaps,
+            chipset_low_mmio: cfg.chipset_low_mmio.as_ref(),
+            chipset_high_mmio: cfg.chipset_high_mmio.as_ref(),
+            vtl2_chipset_mmio: cfg.vtl2_chipset_mmio.as_ref(),
             pcie_root_complexes: &cfg.pcie_root_complexes,
             virtio_mmio_count,
             vtl2_layout,
@@ -921,6 +939,9 @@ impl InitializedVm {
         let mem_layout = resolved_layout.memory_layout;
         let resolved_pcie_root_complex_ranges = resolved_layout.pcie_root_complex_ranges;
         let virtio_mmio_region = resolved_layout.virtio_mmio_region;
+        let chipset_low_mmio = resolved_layout.chipset_low_mmio;
+        let chipset_high_mmio = resolved_layout.chipset_high_mmio;
+        let vtl2_chipset_mmio = resolved_layout.vtl2_chipset_mmio;
 
         // Place the alias map at the end of the address space. Newer versions
         // of OpenHCL support receiving this offset via devicetree (especially
@@ -1034,6 +1055,9 @@ impl InitializedVm {
             mem_layout,
             resolved_pcie_root_complex_ranges,
             virtio_mmio_region,
+            chipset_low_mmio,
+            chipset_high_mmio,
+            vtl2_chipset_mmio,
             processor_topology,
             igvm_file,
             driver_source,
@@ -1062,6 +1086,9 @@ impl InitializedVm {
             mem_layout,
             resolved_pcie_root_complex_ranges,
             virtio_mmio_region,
+            chipset_low_mmio,
+            chipset_high_mmio,
+            vtl2_chipset_mmio,
             processor_topology,
             igvm_file,
             driver_source,
@@ -2529,6 +2556,9 @@ impl InitializedVm {
                 load_mode: cfg.load_mode,
                 virtio_mmio_region,
                 virtio_mmio_irq,
+                chipset_low_mmio,
+                chipset_high_mmio,
+                vtl2_chipset_mmio,
                 pci_legacy_interrupts,
                 igvm_file,
                 next_igvm_file: None,
@@ -2770,6 +2800,9 @@ impl LoadedVmInner {
                     with_vmbus_redirect: self.vmbus_redirect,
                     com_serial,
                     entropy: Some(&entropy),
+                    chipset_low_mmio: self.chipset_low_mmio,
+                    chipset_high_mmio: self.chipset_high_mmio,
+                    vtl2_chipset_mmio: self.vtl2_chipset_mmio,
                 };
                 super::vm_loaders::igvm::load_igvm(params)?
             }
@@ -3344,6 +3377,9 @@ impl LoadedVm {
             chipset_devices: vec![],     // TODO
             pci_chipset_devices: vec![], // TODO
             chipset_capabilities: self.inner.chipset_capabilities,
+            chipset_low_mmio: None,    // TODO
+            chipset_high_mmio: None,   // TODO
+            vtl2_chipset_mmio: None,   // TODO
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
