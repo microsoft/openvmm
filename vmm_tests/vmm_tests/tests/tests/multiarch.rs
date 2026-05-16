@@ -499,7 +499,11 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
         .run_without_agent()
         .await?;
 
-    const INFO_MSG: &str = "DXE IPL Entry";
+    // Marker emitted by `firmware_uefi::service::diagnostics` for every
+    // UEFI log entry tagged with `DEBUG_INFO`.
+    //
+    // Presence of this marker in the kmsg output validates that.
+    const INFO_MARKER: &str = "debug_level=INFO";
 
     let mut kmsg = vm.kmsg().await?;
 
@@ -507,12 +511,12 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
         let data = data.context("reading kmsg")?;
         let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
         let raw = msg.message.as_raw();
-        if raw.contains(INFO_MSG) {
+        if raw.contains(INFO_MARKER) {
             return Ok(());
         }
     }
 
-    anyhow::bail!("Did not find expected INFO-level UEFI diagnostics message {INFO_MSG:?} in kmsg");
+    anyhow::bail!("Did not find any INFO-level UEFI diagnostics entry ({INFO_MARKER:?}) in kmsg");
 }
 
 /// Boot our guest-test UEFI image, which will run some tests,
