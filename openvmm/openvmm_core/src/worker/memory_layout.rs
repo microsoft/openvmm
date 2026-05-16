@@ -22,6 +22,7 @@ use anyhow::bail;
 use memory_range::MemoryRange;
 use openvmm_defs::config::MmioRangeConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
+use std::sync::Arc;
 use vm_topology::layout::LayoutBuilder;
 use vm_topology::layout::Placement;
 use vm_topology::memory::MemoryLayout;
@@ -125,14 +126,14 @@ pub(super) fn resolve_memory_layout(
     } else {
         ARCH_RESERVED_AARCH64
     };
-    builder.reserve("arch_reserved".to_string(), arch_reserved);
+    builder.reserve("arch_reserved", arch_reserved);
 
     // Chipset low MMIO (Mmio32): VMOD/PCI0 _CRS low range for VMBus relay
     // devices and PIIX4 PCI BARs.
     if let Some(config) = input.chipset_low_mmio {
         add_mmio_range(
             &mut builder,
-            "chipset_low_mmio".to_string(),
+            "chipset_low_mmio",
             &mut chipset_low_mmio,
             config,
             TWO_MB,
@@ -144,7 +145,7 @@ pub(super) fn resolve_memory_layout(
     if let Some(config) = input.chipset_high_mmio {
         add_mmio_range(
             &mut builder,
-            "chipset_high_mmio".to_string(),
+            "chipset_high_mmio",
             &mut chipset_high_mmio,
             config,
             TWO_MB,
@@ -198,7 +199,7 @@ pub(super) fn resolve_memory_layout(
     // request.
     if input.virtio_mmio_count > 0 {
         builder.request(
-            "virtio_mmio".to_string(),
+            "virtio_mmio",
             &mut virtio_mmio_region,
             input.virtio_mmio_count as u64 * PAGE_SIZE,
             PAGE_SIZE,
@@ -226,7 +227,7 @@ pub(super) fn resolve_memory_layout(
     if let Some(config) = input.vtl2_chipset_mmio {
         add_mmio_range(
             &mut builder,
-            "vtl2_chipset_mmio".to_string(),
+            "vtl2_chipset_mmio",
             &mut vtl2_chipset_mmio,
             config,
             TWO_MB,
@@ -358,7 +359,7 @@ fn pcie_ecam_size(root_complex: &PcieRootComplexConfig) -> anyhow::Result<u64> {
 
 fn add_pcie_ecam_range<'a>(
     builder: &mut LayoutBuilder<'a>,
-    tag: String,
+    tag: impl Into<Arc<str>>,
     target: &'a mut MemoryRange,
     config: &Option<MemoryRange>,
     size: u64,
@@ -375,7 +376,7 @@ fn add_pcie_ecam_range<'a>(
 
 fn add_mmio_range<'a>(
     builder: &mut LayoutBuilder<'a>,
-    tag: String,
+    tag: impl Into<Arc<str>>,
     target: &'a mut MemoryRange,
     config: &MmioRangeConfig,
     alignment: u64,

@@ -39,6 +39,7 @@
 //! ```
 
 use memory_range::MemoryRange;
+use std::sync::Arc;
 use thiserror::Error;
 
 const PAGE_SIZE: u64 = 4096;
@@ -94,7 +95,7 @@ pub enum AllocationPhase {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlacedRange {
     /// The caller-supplied tag for the request.
-    pub tag: String,
+    pub tag: Arc<str>,
     /// The kind of allocation.
     pub kind: PlacedRangeKind,
     /// The placed range.
@@ -112,37 +113,37 @@ pub struct LayoutBuilder<'a> {
 }
 
 struct ReservedRequest {
-    tag: String,
+    tag: Arc<str>,
     range: MemoryRange,
 }
 
 struct FixedRequest {
-    tag: String,
+    tag: Arc<str>,
     range: MemoryRange,
 }
 
 struct DynamicRequest<'a> {
-    tag: String,
+    tag: Arc<str>,
     target: &'a mut MemoryRange,
     size: u64,
     alignment: u64,
 }
 
 struct RamRequest<'a> {
-    tag: String,
+    tag: Arc<str>,
     target: &'a mut Vec<MemoryRange>,
     size: u64,
     alignment: u64,
 }
 
 trait RequestDetails {
-    fn tag(&self) -> &str;
+    fn tag(&self) -> &Arc<str>;
     fn size(&self) -> u64;
     fn alignment(&self) -> u64;
 }
 
 impl RequestDetails for DynamicRequest<'_> {
-    fn tag(&self) -> &str {
+    fn tag(&self) -> &Arc<str> {
         &self.tag
     }
 
@@ -156,7 +157,7 @@ impl RequestDetails for DynamicRequest<'_> {
 }
 
 impl RequestDetails for RamRequest<'_> {
-    fn tag(&self) -> &str {
+    fn tag(&self) -> &Arc<str> {
         &self.tag
     }
 
@@ -343,9 +344,9 @@ impl AllocationState {
             .unwrap_or(0)
     }
 
-    fn record(&mut self, tag: &str, kind: PlacedRangeKind, range: MemoryRange) {
+    fn record(&mut self, tag: &Arc<str>, kind: PlacedRangeKind, range: MemoryRange) {
         self.allocations.push(PlacedRange {
-            tag: tag.to_string(),
+            tag: tag.clone(),
             kind,
             range,
         });
@@ -355,7 +356,7 @@ impl AllocationState {
         }
     }
 
-    fn allocate_range(&mut self, tag: &str, kind: PlacedRangeKind, range: MemoryRange) {
+    fn allocate_range(&mut self, tag: &Arc<str>, kind: PlacedRangeKind, range: MemoryRange) {
         self.remove_free_range(range);
         self.record(tag, kind, range);
     }
@@ -393,7 +394,7 @@ pub enum AllocateError {
     #[error("{tag}: invalid size {size:#x} (must be > 0 and a multiple of {PAGE_SIZE:#x})")]
     InvalidSize {
         /// The tag identifying the request.
-        tag: String,
+        tag: Arc<str>,
         /// The invalid size.
         size: u64,
     },
@@ -401,7 +402,7 @@ pub enum AllocateError {
     #[error("{tag}: invalid alignment {alignment:#x} (must be >= {PAGE_SIZE:#x} and a power of 2)")]
     InvalidAlignment {
         /// The tag identifying the request.
-        tag: String,
+        tag: Arc<str>,
         /// The invalid alignment.
         alignment: u64,
     },
@@ -409,11 +410,11 @@ pub enum AllocateError {
     #[error("fixed/reserved requests {tag_a} ({range_a}) and {tag_b} ({range_b}) overlap")]
     FixedOverlap {
         /// The tag of the first request.
-        tag_a: String,
+        tag_a: Arc<str>,
         /// The range of the first request.
         range_a: MemoryRange,
         /// The tag of the second request.
-        tag_b: String,
+        tag_b: Arc<str>,
         /// The range of the second request.
         range_b: MemoryRange,
     },
@@ -423,7 +424,7 @@ pub enum AllocateError {
     )]
     Exhausted {
         /// The tag identifying the request.
-        tag: String,
+        tag: Arc<str>,
         /// The requested size.
         size: u64,
         /// The requested alignment.
@@ -453,7 +454,7 @@ impl<'a> LayoutBuilder<'a> {
     /// Reserved ranges are removed from the free list and may appear in the
     /// returned [`PlacedRange`] list, but they do not affect post-MMIO
     /// placement. Trailing reserved ranges are omitted from the returned list.
-    pub fn reserve(&mut self, tag: impl Into<String>, range: MemoryRange) {
+    pub fn reserve(&mut self, tag: impl Into<Arc<str>>, range: MemoryRange) {
         self.reserved.push(ReservedRequest {
             tag: tag.into(),
             range,
@@ -462,7 +463,7 @@ impl<'a> LayoutBuilder<'a> {
 
     /// Adds a fixed range request to the builder.
     ///
-    pub fn fixed(&mut self, tag: impl Into<String>, range: MemoryRange) {
+    pub fn fixed(&mut self, tag: impl Into<Arc<str>>, range: MemoryRange) {
         self.fixed.push(FixedRequest {
             tag: tag.into(),
             range,
@@ -474,7 +475,7 @@ impl<'a> LayoutBuilder<'a> {
     /// The target is filled in when [`Self::allocate`] succeeds.
     pub fn request(
         &mut self,
-        tag: impl Into<String>,
+        tag: impl Into<Arc<str>>,
         target: &'a mut MemoryRange,
         size: u64,
         alignment: u64,
@@ -512,7 +513,7 @@ impl<'a> LayoutBuilder<'a> {
     /// succeeds.
     pub fn ram(
         &mut self,
-        tag: impl Into<String>,
+        tag: impl Into<Arc<str>>,
         target: &'a mut Vec<MemoryRange>,
         size: u64,
         alignment: u64,
@@ -562,17 +563,17 @@ impl Default for LayoutBuilder<'_> {
     }
 }
 
-fn validate_size_alignment(tag: &str, size: u64, alignment: u64) -> Result<(), AllocateError> {
+fn validate_size_alignment(tag: &Arc<str>, size: u64, alignment: u64) -> Result<(), AllocateError> {
     if size == 0 || !size.is_multiple_of(PAGE_SIZE) {
         return Err(AllocateError::InvalidSize {
-            tag: tag.to_string(),
+            tag: tag.clone(),
             size,
         });
     }
 
     if alignment < PAGE_SIZE || !alignment.is_power_of_two() {
         return Err(AllocateError::InvalidAlignment {
-            tag: tag.to_string(),
+            tag: tag.clone(),
             alignment,
         });
     }
@@ -602,24 +603,22 @@ fn validate_pinned_ranges(
 ) -> Result<(), AllocateError> {
     let mut pinned = reserved_requests
         .iter()
-        .map(|request| (request.range, request.tag.as_str()))
+        .map(|request| (request.range, &request.tag))
         .chain(
             fixed_requests
                 .iter()
-                .map(|request| (request.range, request.tag.as_str())),
+                .map(|request| (request.range, &request.tag)),
         )
         .collect::<Vec<_>>();
 
     pinned.sort_by_key(|(range, _)| range.start());
 
-    for pair in pinned.windows(2) {
-        let (range_a, tag_a) = pair[0];
-        let (range_b, tag_b) = pair[1];
+    for &[(range_a, tag_a), (range_b, tag_b)] in pinned.array_windows() {
         if range_a.overlaps(&range_b) {
             return Err(AllocateError::FixedOverlap {
-                tag_a: tag_a.to_string(),
+                tag_a: tag_a.clone(),
                 range_a,
-                tag_b: tag_b.to_string(),
+                tag_b: tag_b.clone(),
                 range_b,
             });
         }
@@ -652,7 +651,7 @@ fn exhausted_error(
     region_end: u64,
 ) -> AllocateError {
     AllocateError::Exhausted {
-        tag: request.tag().to_string(),
+        tag: request.tag().clone(),
         size: request.size(),
         alignment: request.alignment(),
         phase,
@@ -1122,11 +1121,11 @@ mod tests {
 
         let sorted = builder.allocate().unwrap();
 
-        assert_eq!(sorted[0].tag, "ram");
+        assert_eq!(&*sorted[0].tag, "ram");
         assert_eq!(sorted[0].kind, PlacedRangeKind::Ram);
-        assert_eq!(sorted[1].tag, "mmio64");
+        assert_eq!(&*sorted[1].tag, "mmio64");
         assert_eq!(sorted[1].kind, PlacedRangeKind::Mmio64);
-        assert_eq!(sorted[2].tag, "mmio32");
+        assert_eq!(&*sorted[2].tag, "mmio32");
         assert_eq!(sorted[2].kind, PlacedRangeKind::Mmio32);
     }
 
