@@ -37,6 +37,10 @@ const PCIE_ECAM_BYTES_PER_BUS: u64 = 32 * 8 * 4096;
 pub(super) struct ResolvedMemoryLayout {
     pub memory_layout: MemoryLayout,
     pub pcie_root_complex_ranges: Vec<ResolvedPcieRootComplexRanges>,
+    /// Contiguous MMIO region for all virtio-mmio device slots. Each slot is
+    /// 4 KiB, indexed from the start of the region. `None` when no
+    /// virtio-mmio devices are configured.
+    pub virtio_mmio_region: Option<MemoryRange>,
 }
 
 #[derive(Debug)]
@@ -59,6 +63,9 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// PCIe root complex address-space intents. These are resolved by this
     /// worker step so front ends do not need to carve guest physical addresses.
     pub pcie_root_complexes: &'a [PcieRootComplexConfig],
+    /// Number of virtio-mmio device slots to allocate in 32-bit MMIO space.
+    /// A single contiguous region of `count * 4 KiB` is allocated.
+    pub virtio_mmio_count: usize,
     /// Optional IGVM VTL2 private-memory request. This is allocated after all
     /// VTL0-visible RAM and MMIO and is carried separately from ordinary RAM.
     pub vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
@@ -83,6 +90,7 @@ pub(super) fn resolve_memory_layout(
         })
         .collect::<Vec<_>>();
     let mut vtl2_range = MemoryRange::EMPTY;
+    let mut virtio_mmio_region = MemoryRange::EMPTY;
 
     let mut builder = LayoutBuilder::new();
     add_fixed_ranges(&mut builder, "mmio", input.mmio_gaps);
@@ -125,6 +133,19 @@ pub(super) fn resolve_memory_layout(
             &root_complex.high_mmio,
             GB,
             Placement::Mmio64,
+        );
+    }
+
+    // Virtio-mmio: allocate one contiguous region for all slots. Each slot is
+    // 4 KiB, so the region is `count * 4 KiB` placed as a single Mmio32
+    // request.
+    if input.virtio_mmio_count > 0 {
+        builder.request(
+            "virtio_mmio".to_string(),
+            &mut virtio_mmio_region,
+            input.virtio_mmio_count as u64 * PAGE_SIZE,
+            PAGE_SIZE,
+            Placement::Mmio32,
         );
     }
 
@@ -220,9 +241,16 @@ pub(super) fn resolve_memory_layout(
         );
     }
 
+    let virtio_mmio_region = if input.virtio_mmio_count > 0 {
+        Some(virtio_mmio_region)
+    } else {
+        None
+    };
+
     Ok(ResolvedMemoryLayout {
         memory_layout,
         pcie_root_complex_ranges,
+        virtio_mmio_region,
     })
 }
 
@@ -337,6 +365,7 @@ mod tests {
             numa_mem_sizes,
             mmio_gaps,
             pcie_root_complexes: &[],
+            virtio_mmio_count: 0,
             vtl2_layout,
             physical_address_size: 46,
         }
@@ -549,5 +578,46 @@ mod tests {
         let err = resolve_memory_layout(config).unwrap_err();
 
         assert!(err.to_string().contains("memory layout ends at"));
+    }
+
+    #[test]
+    fn virtio_mmio_slots_are_allocated_in_mmio32() {
+        let mmio = [MemoryRange::new(0xf800_0000..4 * GB)];
+        let mut config = input(2 * GB, None, &mmio, None);
+        config.virtio_mmio_count = 3;
+
+        let result = resolve_memory_layout(config).unwrap();
+
+        let region = result
+            .virtio_mmio_region
+            .expect("should have virtio-mmio region");
+        assert_eq!(region.len(), 3 * PAGE_SIZE);
+        assert!(region.end() <= 4 * GB, "virtio-mmio should be below 4 GiB");
+        assert!(
+            !MemoryRange::new(0xf800_0000..4 * GB).overlaps(&region),
+            "virtio-mmio should not overlap with chipset MMIO gap"
+        );
+    }
+
+    #[test]
+    fn virtio_mmio_does_not_move_ram() {
+        let mmio = [MemoryRange::new(0xf800_0000..4 * GB)];
+
+        let without = resolve(input(2 * GB, None, &mmio, None));
+        let mut config = input(2 * GB, None, &mmio, None);
+        config.virtio_mmio_count = 2;
+        let with = resolve_memory_layout(config).unwrap();
+
+        assert_eq!(with.memory_layout.ram(), without.ram());
+    }
+
+    #[test]
+    fn zero_virtio_mmio_produces_no_region() {
+        let mmio = [MemoryRange::new(0xf800_0000..4 * GB)];
+        let config = input(2 * GB, None, &mmio, None);
+
+        let result = resolve_memory_layout(config).unwrap();
+
+        assert!(result.virtio_mmio_region.is_none());
     }
 }

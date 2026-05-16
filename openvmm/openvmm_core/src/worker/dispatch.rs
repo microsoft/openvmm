@@ -401,6 +401,7 @@ pub(crate) struct InitializedVm {
     cfg: Manifest,
     mem_layout: MemoryLayout,
     resolved_pcie_root_complex_ranges: Vec<ResolvedPcieRootComplexRanges>,
+    virtio_mmio_region: Option<MemoryRange>,
     processor_topology: ProcessorTopology,
     igvm_file: Option<IgvmFile>,
     driver_source: VmTaskDriverSource,
@@ -682,7 +683,7 @@ struct LoadedVmInner {
     chipset_cfg: BaseChipsetManifest,
     chipset_capabilities: VmChipsetCapabilities,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
-    virtio_mmio_count: usize,
+    virtio_mmio_region: Option<MemoryRange>,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_irq: u32,
     /// ((device, function), interrupt)
@@ -901,17 +902,25 @@ impl InitializedVm {
         // TODO: The vNUMA nodes reported are meant for test usage only, as they
         // are not aligned to any physical NUMA node. There is more work to do
         // to support useful vNUMA reporting.
+        let virtio_mmio_count = cfg
+            .virtio_devices
+            .iter()
+            .filter(|(bus, _)| matches!(bus, VirtioBus::Mmio))
+            .count();
+
         let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
             mem_size: cfg.memory.mem_size,
             numa_mem_sizes: cfg.memory.numa_mem_sizes.as_deref(),
             mmio_gaps: &cfg.memory.mmio_gaps,
             pcie_root_complexes: &cfg.pcie_root_complexes,
+            virtio_mmio_count,
             vtl2_layout,
             physical_address_size,
         })
         .context("invalid memory configuration")?;
         let mem_layout = resolved_layout.memory_layout;
         let resolved_pcie_root_complex_ranges = resolved_layout.pcie_root_complex_ranges;
+        let virtio_mmio_region = resolved_layout.virtio_mmio_region;
 
         // Place the alias map at the end of the address space. Newer versions
         // of OpenHCL support receiving this offset via devicetree (especially
@@ -1024,6 +1033,7 @@ impl InitializedVm {
             cfg,
             mem_layout,
             resolved_pcie_root_complex_ranges,
+            virtio_mmio_region,
             processor_topology,
             igvm_file,
             driver_source,
@@ -1051,6 +1061,7 @@ impl InitializedVm {
             cfg,
             mem_layout,
             resolved_pcie_root_complex_ranges,
+            virtio_mmio_region,
             processor_topology,
             igvm_file,
             driver_source,
@@ -2335,15 +2346,11 @@ impl InitializedVm {
 
         // add virtio devices
 
-        // Construct virtio devices.
-        //
-        // TODO: allocate PCI and MMIO space better.
+        // Construct virtio devices. Virtio-mmio device addresses are resolved
+        // by the memory layout allocator; each slot is a 4 KiB Mmio32
+        // allocation indexed by the order of VirtioBus::Mmio devices.
         let mut pci_device_number = 10;
-        if mem_layout.mmio().len() < 2 {
-            anyhow::bail!("at least two mmio regions are required");
-        }
-        let mut virtio_mmio_start = mem_layout.mmio()[1].end();
-        let mut virtio_mmio_count = 0;
+        let mut virtio_mmio_index = 0;
 
         // Avoid an ISA interrupt to avoid conflicts and to avoid needing to
         // configure the line as level-triggered in the MADT (necessary for
@@ -2369,8 +2376,10 @@ impl InitializedVm {
                 .await?;
             match bus {
                 VirtioBus::Mmio => {
-                    let mmio_start = virtio_mmio_start - 0x1000;
-                    virtio_mmio_start -= 0x1000;
+                    let region = virtio_mmio_region
+                        .expect("virtio_mmio_region must be allocated for Mmio devices");
+                    let mmio_start = region.start() + virtio_mmio_index as u64 * 0x1000;
+                    virtio_mmio_index += 1;
                     let id = format!("{id}-{mmio_start}");
                     let gm = gm.clone();
                     chipset_builder.arc_mutex_device(id).try_add(|services| {
@@ -2384,7 +2393,6 @@ impl InitializedVm {
                             0x1000,
                         )
                     })?;
-                    virtio_mmio_count += 1;
                 }
                 VirtioBus::Pci => {
                     let pci_inta_line = pci_inta_line.context("missing PCI INT#A line")?;
@@ -2420,8 +2428,6 @@ impl InitializedVm {
                 }
             }
         }
-
-        assert!(virtio_mmio_start >= mem_layout.mmio()[1].start());
 
         let (chipset, devices) = chipset_builder.build()?;
         let (fatal_error_send, _fatal_error_recv) = mesh::channel();
@@ -2521,7 +2527,7 @@ impl InitializedVm {
                 chipset_capabilities: cfg.chipset_capabilities,
                 firmware_event_send: cfg.firmware_event_send,
                 load_mode: cfg.load_mode,
-                virtio_mmio_count,
+                virtio_mmio_region,
                 virtio_mmio_irq,
                 pci_legacy_interrupts,
                 igvm_file,
@@ -2628,7 +2634,7 @@ impl LoadedVmInner {
                                     dsdt,
                                     &self.chipset_cfg,
                                     enable_serial,
-                                    self.virtio_mmio_count,
+                                    self.virtio_mmio_region.as_ref(),
                                     self.virtio_mmio_irq,
                                     &self.pci_legacy_interrupts,
                                 )
@@ -3380,7 +3386,7 @@ fn add_devices_to_dsdt_x64(
     dsdt: &mut dsdt::Dsdt,
     cfg: &BaseChipsetManifest,
     serial_uarts: bool,
-    virtio_mmio_count: usize,
+    virtio_mmio_region: Option<&MemoryRange>,
     virtio_mmio_irq: u32,
     pci_legacy_interrupts: &[((u8, Option<u8>), u32)], // ((device, function), interrupt)
 ) {
@@ -3406,34 +3412,26 @@ fn add_devices_to_dsdt_x64(
         "the DSDT describes two MMIO regions"
     );
     let low_mmio_gap = mem_layout.mmio()[0];
-    let mut high_mmio_space: std::ops::Range<u64> = mem_layout.mmio()[1].into();
-    // Device(\_SB.VI00)
-    // {
-    //     Name(_HID, "LNRO0005")
-    //     Name(_UID, 0)
-    //     Name(_CRS, ResourceTemplate()
-    //     {
-    //         QWORDMemory(,,,,,ReadWrite,0,0x1fffff000,0x1ffffffff,0,0x1000)
-    //         Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive)
-    //             {5}
-    //     })
-    // }
-    // TODO: manage MMIO space better than this
-    for i in 0..virtio_mmio_count {
-        high_mmio_space.end -= HV_PAGE_SIZE;
-        let mut device = dsdt::Device::new(format!("\\_SB.VI{i:02}").as_bytes());
-        device.add_object(&dsdt::NamedString::new(b"_HID", b"LNRO0005"));
-        device.add_object(&dsdt::NamedInteger::new(b"_UID", i as u64));
-        let mut crs = dsdt::CurrentResourceSettings::new();
-        crs.add_resource(&dsdt::QwordMemory::new(high_mmio_space.end, HV_PAGE_SIZE));
-        let mut intr = dsdt::Interrupt::new(virtio_mmio_irq);
-        intr.is_edge_triggered = false;
-        crs.add_resource(&intr);
-        device.add_object(&crs);
-        dsdt.add_object(&device);
-    }
+    let high_mmio_gap = mem_layout.mmio()[1];
 
-    let high_mmio_gap = MemoryRange::new(high_mmio_space);
+    // Virtio-mmio devices are allocated as a contiguous region by the memory
+    // layout resolver. Each 4 KiB slot is a separate device.
+    if let Some(region) = virtio_mmio_region {
+        let slot_count = region.len() / HV_PAGE_SIZE;
+        for i in 0..slot_count {
+            let slot_base = region.start() + i * HV_PAGE_SIZE;
+            let mut device = dsdt::Device::new(format!("\\_SB.VI{i:02}").as_bytes());
+            device.add_object(&dsdt::NamedString::new(b"_HID", b"LNRO0005"));
+            device.add_object(&dsdt::NamedInteger::new(b"_UID", i));
+            let mut crs = dsdt::CurrentResourceSettings::new();
+            crs.add_resource(&dsdt::QwordMemory::new(slot_base, HV_PAGE_SIZE));
+            let mut intr = dsdt::Interrupt::new(virtio_mmio_irq);
+            intr.is_edge_triggered = false;
+            crs.add_resource(&intr);
+            device.add_object(&crs);
+            dsdt.add_object(&device);
+        }
+    }
 
     if cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge {
         // TODO: actually plumb through legacy PCI interrupts
