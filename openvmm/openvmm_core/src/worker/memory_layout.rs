@@ -11,6 +11,7 @@ use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
 
 const PAGE_SIZE: u64 = 4096;
+const RAM_ALIGNMENT: u64 = 1024 * 1024 * 1024;
 
 pub(super) struct MemoryLayoutInput<'a> {
     pub mem_size: u64,
@@ -25,31 +26,13 @@ pub(super) struct MemoryLayoutInput<'a> {
 pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Result<MemoryLayout> {
     let ram_sizes = validate_ram_sizes(input.mem_size, input.numa_mem_sizes)?;
 
-    let mut resolved_mmio_gaps = vec![MemoryRange::EMPTY; input.mmio_gaps.len()];
-    let mut resolved_pci_ecam_gaps = vec![MemoryRange::EMPTY; input.pci_ecam_gaps.len()];
-    let mut resolved_pci_mmio_gaps = vec![MemoryRange::EMPTY; input.pci_mmio_gaps.len()];
     let mut ram_ranges_by_node = vec![Vec::new(); ram_sizes.len()];
     let mut vtl2_range = MemoryRange::EMPTY;
 
     let mut builder = LayoutBuilder::new();
-    add_fixed_ranges(
-        &mut builder,
-        "mmio",
-        input.mmio_gaps,
-        &mut resolved_mmio_gaps,
-    );
-    add_fixed_ranges(
-        &mut builder,
-        "pci_ecam",
-        input.pci_ecam_gaps,
-        &mut resolved_pci_ecam_gaps,
-    );
-    add_fixed_ranges(
-        &mut builder,
-        "pci_mmio",
-        input.pci_mmio_gaps,
-        &mut resolved_pci_mmio_gaps,
-    );
+    add_fixed_ranges(&mut builder, "mmio", input.mmio_gaps);
+    add_fixed_ranges(&mut builder, "pci_ecam", input.pci_ecam_gaps);
+    add_fixed_ranges(&mut builder, "pci_mmio", input.pci_mmio_gaps);
 
     for (vnode, (ram_size, ram_ranges)) in ram_sizes
         .iter()
@@ -57,7 +40,7 @@ pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Res
         .zip(&mut ram_ranges_by_node)
         .enumerate()
     {
-        builder.ram(format!("ram[{vnode}]"), ram_ranges, ram_size, PAGE_SIZE);
+        builder.ram(format!("ram[{vnode}]"), ram_ranges, ram_size, RAM_ALIGNMENT);
     }
 
     if let Some(vtl2_layout) = input.vtl2_layout {
@@ -108,20 +91,9 @@ pub(super) fn resolve_memory_layout(input: MemoryLayoutInput<'_>) -> anyhow::Res
     Ok(memory_layout)
 }
 
-fn add_fixed_ranges<'a>(
-    builder: &mut LayoutBuilder<'a>,
-    tag_prefix: &str,
-    ranges: &[MemoryRange],
-    targets: &'a mut [MemoryRange],
-) {
-    for (index, (range, target)) in ranges.iter().zip(targets).enumerate() {
-        builder.request(
-            format!("{tag_prefix}[{index}]"),
-            target,
-            range.len(),
-            PAGE_SIZE,
-            Placement::Fixed(range.start()),
-        );
+fn add_fixed_ranges(builder: &mut LayoutBuilder<'_>, tag_prefix: &str, ranges: &[MemoryRange]) {
+    for (index, range) in ranges.iter().enumerate() {
+        builder.fixed(format!("{tag_prefix}[{index}]"), *range);
     }
 }
 
@@ -204,7 +176,7 @@ mod tests {
             MemoryRange::new(2 * GB..3 * GB),
             MemoryRange::new(4 * GB..5 * GB),
         ];
-        let pci_ecam = [MemoryRange::new(8 * GB..8 * GB + MB)];
+        let pci_ecam = [MemoryRange::new(8 * GB..9 * GB)];
         let pci_mmio = [MemoryRange::new(6 * GB..7 * GB)];
 
         let actual =
@@ -248,6 +220,28 @@ mod tests {
                 && !ram.range.overlaps(&pci_ecam[0])
                 && !ram.range.overlaps(&pci_mmio[0])
         }));
+    }
+
+    #[test]
+    fn ram_chunks_start_on_gb_alignment() {
+        let mmio = [MemoryRange::new(GB + MB..GB + 2 * MB)];
+
+        let actual = resolve_memory_layout(input(2 * GB, None, &mmio, &[], &[], None)).unwrap();
+
+        assert_eq!(
+            actual.ram(),
+            &[
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0..GB + MB),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(2 * GB..3 * GB - MB),
+                    vnode: 0,
+                },
+            ]
+        );
+        assert!(actual.ram().iter().all(|ram| ram.range.start() % GB == 0));
     }
 
     #[test]
