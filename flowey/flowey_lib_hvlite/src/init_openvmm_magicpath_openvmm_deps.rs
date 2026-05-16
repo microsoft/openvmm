@@ -49,6 +49,10 @@ fn dep_files() -> Vec<DepFile> {
             },
         },
         DepFile {
+            dep: OpenvmmDepFile::LinuxTestBzImage,
+            dest_filename: |_arch| "bzImage",
+        },
+        DepFile {
             dep: OpenvmmDepFile::LinuxTestInitrd,
             dest_filename: |_arch| "initrd",
         },
@@ -81,6 +85,7 @@ impl FlowNode for Node {
             // Resolve all dep files for this arch.
             let resolved: Vec<(ReadVar<PathBuf>, &'static str)> = dep_files()
                 .into_iter()
+                .filter(|dep_file| dep_file.dep.is_available_for(arch))
                 .map(|dep_file| {
                     let src = ctx
                         .reqv(|v| crate::resolve_openvmm_deps::Request::Get(dep_file.dep, arch, v));

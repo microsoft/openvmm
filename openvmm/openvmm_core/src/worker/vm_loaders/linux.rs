@@ -801,14 +801,20 @@ pub fn load_linux_arm64(
 
     // Data dependencies:
     // - DeviceTree carries the start address of the initrd.
-    // - The linux loader loads the kernel, the initrd at the said address,
-    //   and the device tree into the guest memory.
+    // - The linux loader loads the kernel, the initrd at the said address, and
+    //   the device tree into the guest memory.
     //
-    // Thus, we first start with planning the memory layout where
-    // some space at the loader bottom is reserved for the initrd.
-
-    const INITRD_BASE: u64 = 16 << 20; // 16 MB
-    let initrd_start: u64 = INITRD_BASE;
+    // Place the initrd at the bottom of guest memory + 16MB, and set the
+    // minimum kernel address above it, aligned to the next 2MB boundary.
+    let mem_start = cfg
+        .mem_layout
+        .ram()
+        .first()
+        .expect("must be at least one ram range")
+        .range
+        .start();
+    const INITRD_OFFSET: u64 = 16 << 20; // 16 MB
+    let initrd_start: u64 = mem_start + INITRD_OFFSET;
     let initrd_end: u64 = initrd_start + initrd_size;
     // Align the kernel to 2MB
     let kernel_minimum_start_address: u64 = (initrd_end + 0x1fffff) & !0x1fffff;
@@ -817,13 +823,18 @@ pub fn load_linux_arm64(
         // ACPI mode: write EFI + ACPI tables into guest memory, then build a
         // minimal "stub" DT that points the kernel's EFI stub at them. The
         // kernel discovers all devices through ACPI, not the DT.
-        const EFI_BASE: u64 = 0x0080_0000; // 8 MB
+        const EFI_OFFSET: u64 = 0x0080_0000; // 8 MB
         const ACPI_TABLES_OFFSET: u64 = 0x2000;
-        const { assert!(EFI_BASE < INITRD_BASE) };
-        let rsdp_addr = EFI_BASE + ACPI_TABLES_OFFSET;
+        const { assert!(EFI_OFFSET < INITRD_OFFSET) };
+        let rsdp_addr = mem_start + EFI_OFFSET + ACPI_TABLES_OFFSET;
         let acpi_tables = build_acpi(rsdp_addr);
-        let efi_info =
-            write_efi_and_acpi_tables(gm, EFI_BASE, rsdp_addr, cfg.mem_layout, &acpi_tables)?;
+        let efi_info = write_efi_and_acpi_tables(
+            gm,
+            mem_start + EFI_OFFSET,
+            rsdp_addr,
+            cfg.mem_layout,
+            &acpi_tables,
+        )?;
         build_stub_dt(cfg.cmdline, initrd_start, initrd_end, &efi_info)
             .map_err(|e| Error::Dt(DtError(e)))?
     } else {

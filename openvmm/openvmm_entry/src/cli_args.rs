@@ -826,10 +826,11 @@ Examples:
     # Attach root port rc0rp1 to root complex rc0 with hotplug support
     --pcie-root-port rc0:rc0rp1,hotplug
 
-Syntax: <root_complex_name>:<name>[,hotplug]
+Syntax: <root_complex_name>:<name>[,opt,opt=arg,...]
 
 Options:
     `hotplug`                      enable hotplug support for this root port
+    `acs=<mask>`                   ACS capability bitmask (u16, decimal or 0x-prefixed hex)
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_port: Vec<PcieRootPortCli>,
@@ -862,6 +863,7 @@ Syntax: <port_name>:<name>[,opt,opt=arg,...]
 Options:
     `hotplug`                       enable hotplug support for all downstream switch ports
     `num_downstream_ports=<value>`  number of downstream ports, default 4
+    `acs=<mask>`                    ACS capability bitmask for downstream switch ports
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_switch: Vec<GenericPcieSwitchCli>,
@@ -1111,6 +1113,17 @@ fn parse_memory(s: &str) -> anyhow::Result<u64> {
             n.checked_mul(multi.unwrap_or(1))
         }()
         .with_context(|| format!("invalid memory size '{0}'", s))
+    }
+}
+
+fn parse_acs_capability_mask(value: &str) -> anyhow::Result<u16> {
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u16::from_str_radix(hex, 16).context("invalid ACS capability mask")
+    } else {
+        value.parse::<u16>().context("invalid ACS capability mask")
     }
 }
 
@@ -2216,6 +2229,7 @@ pub struct PcieRootPortCli {
     pub root_complex_name: String,
     pub name: String,
     pub hotplug: bool,
+    pub acs_capabilities_supported: Option<u16>,
 }
 
 impl FromStr for PcieRootPortCli {
@@ -2237,11 +2251,28 @@ impl FromStr for PcieRootPortCli {
         }
 
         let mut hotplug = false;
+        let mut acs_capabilities_supported = None;
 
         // Parse optional flags
         for opt in opts {
-            match opt {
-                "hotplug" => hotplug = true,
+            let mut kv = opt.split('=');
+            let key = kv.next().context("expected option name")?;
+            let value = kv.next();
+
+            match key {
+                "hotplug" => {
+                    if value.is_some() {
+                        anyhow::bail!("hotplug option does not take a value")
+                    }
+                    hotplug = true;
+                }
+                "acs" => {
+                    let value = value.context("acs option requires a value")?;
+                    if kv.next().is_some() {
+                        anyhow::bail!("acs option expects a single value")
+                    }
+                    acs_capabilities_supported = Some(parse_acs_capability_mask(value)?);
+                }
                 _ => anyhow::bail!("unexpected option: '{opt}'"),
             }
         }
@@ -2250,6 +2281,7 @@ impl FromStr for PcieRootPortCli {
             root_complex_name: rc_name.to_string(),
             name: rp_name.to_string(),
             hotplug,
+            acs_capabilities_supported,
         })
     }
 }
@@ -2260,6 +2292,7 @@ pub struct GenericPcieSwitchCli {
     pub name: String,
     pub num_downstream_ports: u8,
     pub hotplug: bool,
+    pub acs_capabilities_supported: Option<u16>,
 }
 
 impl FromStr for GenericPcieSwitchCli {
@@ -2282,6 +2315,7 @@ impl FromStr for GenericPcieSwitchCli {
 
         let mut num_downstream_ports = 4u8; // Default value
         let mut hotplug = false;
+        let mut acs_capabilities_supported = None;
 
         for opt in opts {
             let mut kv = opt.split('=');
@@ -2301,6 +2335,13 @@ impl FromStr for GenericPcieSwitchCli {
                     }
                     hotplug = true;
                 }
+                "acs" => {
+                    let value = kv.next().context("acs option requires a value")?;
+                    if kv.next().is_some() {
+                        anyhow::bail!("acs option expects a single value")
+                    }
+                    acs_capabilities_supported = Some(parse_acs_capability_mask(value)?);
+                }
                 _ => anyhow::bail!("unknown option: '{key}'"),
             }
         }
@@ -2310,6 +2351,7 @@ impl FromStr for GenericPcieSwitchCli {
             name: switch_name.to_string(),
             num_downstream_ports,
             hotplug,
+            acs_capabilities_supported,
         })
     }
 }
@@ -3439,6 +3481,7 @@ mod tests {
                 root_complex_name: "rc0".to_string(),
                 name: "rc0rp0".to_string(),
                 hotplug: false,
+                acs_capabilities_supported: None,
             }
         );
 
@@ -3448,6 +3491,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
                 hotplug: false,
+                acs_capabilities_supported: None,
             }
         );
 
@@ -3458,6 +3502,27 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
                 hotplug: true,
+                acs_capabilities_supported: None,
+            }
+        );
+
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port3,acs=0").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port3".to_string(),
+                hotplug: false,
+                acs_capabilities_supported: Some(0),
+            }
+        );
+
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port3,acs=0x5f").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port3".to_string(),
+                hotplug: false,
+                acs_capabilities_supported: Some(0x005f),
             }
         );
 
@@ -3478,6 +3543,7 @@ mod tests {
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
                 hotplug: false,
+                acs_capabilities_supported: None,
             }
         );
 
@@ -3488,6 +3554,7 @@ mod tests {
                 name: "my_switch".to_string(),
                 num_downstream_ports: 4,
                 hotplug: false,
+                acs_capabilities_supported: None,
             }
         );
 
@@ -3498,6 +3565,7 @@ mod tests {
                 name: "sw".to_string(),
                 num_downstream_ports: 8,
                 hotplug: false,
+                acs_capabilities_supported: None,
             }
         );
 
@@ -3509,6 +3577,7 @@ mod tests {
                 name: "child_switch".to_string(),
                 num_downstream_ports: 4,
                 hotplug: false,
+                acs_capabilities_supported: None,
             }
         );
 
@@ -3520,6 +3589,7 @@ mod tests {
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
                 hotplug: true,
+                acs_capabilities_supported: None,
             }
         );
 
@@ -3531,6 +3601,29 @@ mod tests {
                 name: "switch0".to_string(),
                 num_downstream_ports: 8,
                 hotplug: true,
+                acs_capabilities_supported: None,
+            }
+        );
+
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("rp0:switch0,acs=0").unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "rp0".to_string(),
+                name: "switch0".to_string(),
+                num_downstream_ports: 4,
+                hotplug: false,
+                acs_capabilities_supported: Some(0),
+            }
+        );
+
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("rp0:switch0,acs=95").unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "rp0".to_string(),
+                name: "switch0".to_string(),
+                num_downstream_ports: 4,
+                hotplug: false,
+                acs_capabilities_supported: Some(95),
             }
         );
 

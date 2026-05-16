@@ -47,6 +47,7 @@ enum Vmm {
 
 enum Firmware {
     LinuxDirect,
+    LinuxDirectBzImage,
     Pcat(PcatGuest),
     Uefi(UefiGuest),
     OpenhclLinuxDirect,
@@ -124,6 +125,7 @@ impl ResolvedConfig {
 
         let firmware_prefix = match &self.firmware {
             Firmware::LinuxDirect => "linux",
+            Firmware::LinuxDirectBzImage => "linux_bzimage",
             Firmware::Pcat(_) => "pcat",
             Firmware::Uefi(_) => "uefi",
             Firmware::OpenhclLinuxDirect => "openhcl_linux",
@@ -132,13 +134,16 @@ impl ResolvedConfig {
         };
 
         let guest_prefix = match &self.firmware {
-            Firmware::LinuxDirect | Firmware::OpenhclLinuxDirect => None,
+            Firmware::LinuxDirect | Firmware::LinuxDirectBzImage | Firmware::OpenhclLinuxDirect => {
+                None
+            }
             Firmware::Pcat(guest) | Firmware::OpenhclPcat(guest) => Some(guest.name_prefix()),
             Firmware::Uefi(guest) | Firmware::OpenhclUefi(_, guest) => guest.name_prefix(),
         };
 
         let options_prefix = match &self.firmware {
             Firmware::LinuxDirect
+            | Firmware::LinuxDirectBzImage
             | Firmware::Pcat(_)
             | Firmware::Uefi(_)
             | Firmware::OpenhclLinuxDirect
@@ -221,6 +226,9 @@ impl ToTokens for FirmwareAndArch {
         tokens.extend(match &self.firmware {
             Firmware::LinuxDirect => {
                 quote!(::petri::Firmware::linux_direct(resolver, #arch))
+            }
+            Firmware::LinuxDirectBzImage => {
+                quote!(::petri::Firmware::linux_direct_bzimage(resolver))
             }
             Firmware::Pcat(guest) => {
                 quote!(::petri::Firmware::pcat(resolver, #guest))
@@ -398,6 +406,7 @@ impl Parse for Config {
 
         let (arch, firmware) = match remainder {
             "linux_direct_x64" => (MachineArch::X86_64, Firmware::LinuxDirect),
+            "linux_direct_bzimage_x64" => (MachineArch::X86_64, Firmware::LinuxDirectBzImage),
             "linux_direct_aarch64" => (MachineArch::Aarch64, Firmware::LinuxDirect),
             "openhcl_linux_direct_x64" => (MachineArch::X86_64, Firmware::OpenhclLinuxDirect),
             "pcat_x64" => (
@@ -682,6 +691,7 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 ///
 /// Valid configuration options are:
 /// - `{vmm}_linux_direct_{arch}`: Our provided Linux direct image
+/// - `{vmm}_linux_direct_bzimage_x64`: Our provided Linux direct bzImage (compressed kernel, x86_64 only)
 /// - `{vmm}_openhcl_linux_direct_{arch}`: Our provided Linux direct image with OpenHCL
 /// - `{vmm}_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration
 /// - `{vmm}_uefi_{arch}(<UEFI guest>)`: A Gen 2 configuration

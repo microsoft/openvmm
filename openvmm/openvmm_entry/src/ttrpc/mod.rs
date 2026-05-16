@@ -7,6 +7,7 @@
 
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
+use crate::serial_io::connect_serial;
 use crate::vm_controller::InspectTarget;
 use crate::vm_controller::VmController;
 use crate::vm_controller::VmControllerEvent;
@@ -64,6 +65,8 @@ use virtio_resources::VirtioPciDeviceHandle;
 use vm_manifest_builder::VmManifestBuilder;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
+use vm_resource::kind::SerialBackendHandle;
+use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 
 #[derive(mesh::MeshPayload)]
@@ -531,8 +534,9 @@ impl VmService {
             let pc = ports
                 .get_mut(port.port as usize)
                 .context("invalid serial port")?;
-            *pc = Some(bind_serial(port.socket_path.as_ref()).with_context(|| {
-                format!("failed to bind to serial socket: {}", port.socket_path)
+            let (serial_fn, action) = open_socket_backend(port.connect);
+            *pc = Some(serial_fn(port.socket_path.as_ref()).with_context(|| {
+                format!("failed to {} serial socket: {}", action, port.socket_path)
             })?);
         }
 
@@ -661,7 +665,31 @@ impl VmService {
                         resource: VirtioPciDeviceHandle(resource).into_resource(),
                     });
                 } else {
-                    config.virtio_devices.push((VirtioBus::Pci, resource));
+                    config.virtio_devices.push((VirtioBus::Mmio, resource));
+                }
+            }
+
+            if let Some(virtio_console) = devices_config.virtio_console {
+                if !virtio_console.socket_path.is_empty() {
+                    let (serial_fn, action) = open_socket_backend(virtio_console.connect);
+                    let backend =
+                        serial_fn(virtio_console.socket_path.as_ref()).with_context(|| {
+                            format!(
+                                "failed to {} virtio console socket: {}",
+                                action, virtio_console.socket_path
+                            )
+                        })?;
+                    let resource: Resource<VirtioDeviceHandle> =
+                        virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
+                    if cfg!(windows) || cfg!(target_os = "macos") {
+                        config.vpci_devices.push(VpciDeviceConfig {
+                            vtl: DeviceVtl::Vtl0,
+                            instance_id: Guid::new_random(),
+                            resource: VirtioPciDeviceHandle(resource).into_resource(),
+                        });
+                    } else {
+                        config.virtio_devices.push((VirtioBus::Mmio, resource));
+                    }
                 }
             }
         }
@@ -855,19 +883,25 @@ impl VmService {
     }
 }
 
-// On platforms without NIC backends (e.g., macOS), every match arm diverges.
-#[cfg_attr(
-    not(any(windows, target_os = "linux")),
-    expect(
-        unreachable_code,
-        unused_variables,
-        reason = "no NIC backends available on this platform"
-    )
-)]
+/// Returns the appropriate serial backend open function and a human-readable
+/// action verb for error messages, based on whether we should connect to an
+/// existing socket or bind a new listener.
+fn open_socket_backend(
+    connect: bool,
+) -> (
+    fn(&std::path::Path) -> std::io::Result<Resource<SerialBackendHandle>>,
+    &'static str,
+) {
+    if connect {
+        (connect_serial, "connect to")
+    } else {
+        (bind_serial, "bind")
+    }
+}
+
 fn parse_nic_config(
     nic: vmservice::NicConfig,
 ) -> anyhow::Result<(DeviceVtl, Resource<VmbusDeviceHandleKind>)> {
-    #[cfg(any(windows, target_os = "linux"))]
     use self::vmservice::nic_config::Backend;
 
     let endpoint = match nic.backend.context("missing backend")? {
@@ -893,6 +927,15 @@ fn parse_nic_config(
                 .with_context(|| format!("failed to open TAP device '{}'", tap.name))?;
             net_backend_resources::tap::TapHandle { fd }.into_resource()
         }
+        Backend::Consomme(consomme) => net_backend_resources::consomme::ConsommeHandle {
+            cidr: if consomme.cidr.is_empty() {
+                None
+            } else {
+                Some(consomme.cidr)
+            },
+            ports: Vec::new(),
+        }
+        .into_resource(),
         _ => anyhow::bail!("unsupported backend"),
     };
     let cfg = NetvspHandle {

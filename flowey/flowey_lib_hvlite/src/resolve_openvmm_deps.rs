@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OpenvmmDepFile {
     LinuxTestKernel,
+    LinuxTestBzImage,
     LinuxTestInitrd,
     OpenhclCpioDbgrd,
     OpenhclCpioShell,
@@ -25,11 +26,20 @@ impl OpenvmmDepFile {
                 CommonArch::X86_64 => "vmlinux",
                 CommonArch::Aarch64 => "Image",
             },
+            Self::LinuxTestBzImage => "bzImage",
             Self::LinuxTestInitrd => "initrd",
             Self::OpenhclCpioDbgrd => "dbgrd.cpio.gz",
             Self::OpenhclCpioShell => "shell.cpio.gz",
             Self::OpenhclSysroot => "sysroot.tar.gz",
             Self::PetritoolsErofs => "petritools.erofs",
+        }
+    }
+
+    /// Whether this dep file is available for the given architecture.
+    pub fn is_available_for(self, arch: CommonArch) -> bool {
+        match self {
+            Self::LinuxTestBzImage => matches!(arch, CommonArch::X86_64),
+            _ => true,
         }
     }
 }
@@ -139,7 +149,7 @@ impl FlowNodeWithConfig for Node {
                 repo_name: "openvmm-deps".into(),
                 needs_auth: false,
                 tag: version.clone(),
-                file_name: format!("openvmm-deps.{arch_str}.{version}.tar.bz2"),
+                file_name: format!("openvmm-deps.{arch_str}.{version}.tar.gz"),
                 path: v,
             })
         };

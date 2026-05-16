@@ -144,6 +144,32 @@ attached to a root port to appear as PCIe devices in the guest.
 --pcie-root-complex rc0 --pcie-root-port rc0:rp0
 ```
 
+### Root port and switch options
+
+`--pcie-root-port` accepts optional comma-separated options after the port
+name:
+
+```sh
+--pcie-root-port rc0:rp0,hotplug,acs=0x005f
+```
+
+- `hotplug`: enables hotplug support for that root port.
+- `acs=<mask>`: sets the Access Control Services capability mask for the
+  root port. The value can be decimal or hexadecimal. Default is `0x005f`.
+  Use `acs=0` to disable ACS for a root port.
+
+`--pcie-switch` accepts optional comma-separated options as well:
+
+```sh
+--pcie-switch rp0:switch0,num_downstream_ports=4,acs=0x005f
+```
+
+- `num_downstream_ports=<N>`: number of downstream ports for the switch.
+- `hotplug`: enables hotplug support on all downstream switch ports.
+- `acs=<mask>`: ACS capability mask requested for downstream switch ports.
+  The upstream switch port does not expose ACS. Default is `0x005f`.
+  Use `acs=0` to disable ACS for switch downstream ports.
+
 ### Attaching devices to PCIe
 
 Several device types support the `pcie_port=<name>` option to attach to a

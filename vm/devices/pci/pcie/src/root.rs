@@ -12,8 +12,8 @@ use crate::PAGE_SHIFT;
 use crate::PAGE_SIZE64;
 use crate::ROOT_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
-use crate::bus_range::AssignedBusRange;
 use crate::port::PcieDownstreamPort;
+use crate::port::PciePortSettings;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -24,6 +24,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
+use pci_core::bus_range::AssignedBusRange;
 use pci_core::msi::MsiTarget;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::ClassCode;
@@ -66,6 +67,8 @@ pub struct GenericPcieRootPortDefinition {
     pub name: Arc<str>,
     /// Whether hotplug is enabled for this root port.
     pub hotplug: bool,
+    /// Express-level port settings (ACS, etc.).
+    pub settings: PciePortSettings,
 }
 
 /// A flat description of a PCIe switch without hierarchy.
@@ -78,6 +81,8 @@ pub struct GenericSwitchDefinition {
     pub parent_port: Arc<str>,
     /// Whether hotplug is enabled for this switch.
     pub hotplug: bool,
+    /// Express-level settings for downstream switch ports.
+    pub dsp_settings: PciePortSettings,
 }
 
 impl GenericSwitchDefinition {
@@ -87,12 +92,14 @@ impl GenericSwitchDefinition {
         num_downstream_ports: u8,
         parent_port: impl Into<Arc<str>>,
         hotplug: bool,
+        dsp_settings: PciePortSettings,
     ) -> Self {
         Self {
             name: name.into(),
             num_downstream_ports,
             parent_port: parent_port.into(),
             hotplug,
+            dsp_settings,
         }
     }
 }
@@ -137,8 +144,14 @@ impl GenericPcieRootComplex {
                 } else {
                     None
                 };
-                let root_port =
-                    RootPort::new(definition.name.clone(), hotplug_slot_number, msi_target);
+                // Derive a per-port MSI target with this port's devfn.
+                let port_msi_target = msi_target.with_devfn(device_number);
+                let root_port = RootPort::new(
+                    definition.name.clone(),
+                    hotplug_slot_number,
+                    &port_msi_target,
+                    definition.settings,
+                );
                 (device_number, (definition.name, root_port))
             })
             .collect();
@@ -425,10 +438,12 @@ impl RootPort {
     /// * `name` - The name for this root port
     /// * `hotplug_slot_number` - The slot number for hotplug support. `Some(slot_number)` enables hotplug, `None` disables it
     /// * `msi_target` - MSI target for interrupt delivery
+    /// * `settings` - Express-level port settings (ACS, etc.)
     pub fn new(
         name: impl Into<Arc<str>>,
         hotplug_slot_number: Option<u32>,
         msi_target: &MsiTarget,
+        settings: PciePortSettings,
     ) -> Self {
         let name_str = name.into();
         let hardware_ids = HardwareIds {
@@ -449,6 +464,7 @@ impl RootPort {
             false,
             hotplug_slot_number,
             msi_target,
+            settings,
         );
 
         Self { port }
@@ -646,12 +662,15 @@ mod tests {
             .map(|i| GenericPcieRootPortDefinition {
                 name: format!("test-port-{}", i).into(),
                 hotplug: false,
+                settings: PciePortSettings::default(),
             })
             .collect();
 
         let mut register_mmio = TestPcieMmioRegistration {};
         let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
-        let msi_conn = pci_core::msi::MsiConnection::new();
+        let rc_bus_range = AssignedBusRange::new();
+        rc_bus_range.set_bus_range(start_bus, end_bus);
+        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
         GenericPcieRootComplex::new(
             &mut register_mmio,
             start_bus,
@@ -907,8 +926,13 @@ mod tests {
     fn test_root_port_hotplug_options() {
         // Test with hotplug disabled (None)
         let root_port_no_hotplug = {
-            let c = pci_core::msi::MsiConnection::new();
-            RootPort::new("test-port-no-hotplug", None, c.target())
+            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+            RootPort::new(
+                "test-port-no-hotplug",
+                None,
+                c.target(),
+                PciePortSettings::default(),
+            )
         };
         // We can't easily verify hotplug is disabled without accessing internal state,
         // but we can verify the port was created successfully
@@ -923,8 +947,13 @@ mod tests {
 
         // Test with hotplug enabled (Some(slot_number))
         let root_port_with_hotplug = {
-            let c = pci_core::msi::MsiConnection::new();
-            RootPort::new("test-port-hotplug", Some(5), c.target())
+            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+            RootPort::new(
+                "test-port-hotplug",
+                Some(5),
+                c.target(),
+                PciePortSettings::default(),
+            )
         };
         let mut vendor_device_id_hotplug: u32 = 0;
         root_port_with_hotplug
@@ -940,8 +969,8 @@ mod tests {
     #[test]
     fn test_root_port_invalid_bus_range_handling() {
         let mut root_port = {
-            let c = pci_core::msi::MsiConnection::new();
-            RootPort::new("test-port", None, c.target())
+            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+            RootPort::new("test-port", None, c.target(), PciePortSettings::default())
         };
 
         // Don't configure bus numbers, so the range should be 0..=0 (invalid)
@@ -1122,24 +1151,6 @@ mod tests {
 
         // The shared AssignedBusRange should reflect the new values.
         assert_eq!(bus_range.bus_range(), (5, 10));
-
-        // compose_its_devid should produce (segment << 16 | secondary << 8)
-        // for a single-function device (devid=None).
-        let segment = 2u16;
-        let devid = bus_range.compose_its_devid(segment, None);
-        assert_eq!(devid, Some((2 << 16) | (5 << 8)));
-
-        // With a specific BDF within range: bus=7, dev=1, fn=2
-        let bdf: u32 = (7 << 8) | (1 << 3) | 2;
-        let devid = bus_range.compose_its_devid(segment, Some(bdf));
-        assert_eq!(devid, Some((2 << 16) | bdf));
-
-        // BDF outside range should return None.
-        let out_of_range_bdf: u32 = 11 << 8; // bus=11, beyond subordinate=10
-        assert_eq!(
-            bus_range.compose_its_devid(segment, Some(out_of_range_bdf)),
-            None
-        );
 
         // Reprogram bus numbers and verify tracking follows.
         rc.mmio_write(SECONDARY_BUS_NUM_REG, &[20]).unwrap();

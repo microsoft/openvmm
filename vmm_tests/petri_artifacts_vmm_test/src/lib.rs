@@ -115,6 +115,13 @@ pub mod artifacts {
             "aarch64"
         );
 
+        /// Test linux direct bzImage kernel (from OpenVMM deps) for x86_64
+        // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
+        #[cfg(target_arch = "x86_64")]
+        pub const LINUX_DIRECT_TEST_BZIMAGE_NATIVE: petri_artifacts_core::ArtifactHandle<
+            LINUX_DIRECT_TEST_BZIMAGE_X64,
+        > = petri_artifacts_core::ArtifactHandle::new();
+
         declare_artifacts! {
             /// Test linux direct kernel (from OpenVMM deps)
             LINUX_DIRECT_TEST_KERNEL_X64,
@@ -124,6 +131,8 @@ pub mod artifacts {
             LINUX_DIRECT_TEST_KERNEL_AARCH64,
             /// Test linux direct initrd (from OpenVMM deps)
             LINUX_DIRECT_TEST_INITRD_AARCH64,
+            /// Test linux direct bzImage kernel (from OpenVMM deps)
+            LINUX_DIRECT_TEST_BZIMAGE_X64,
             /// PCAT firmware DLL
             PCAT_FIRMWARE_X64,
             /// SVGA firmware DLL
@@ -148,6 +157,10 @@ pub mod artifacts {
 
         impl IsLoadable for LINUX_DIRECT_TEST_INITRD_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
+        }
+
+        impl IsLoadable for LINUX_DIRECT_TEST_BZIMAGE_X64 {
+            const ARCH: MachineArch = MachineArch::X86_64;
         }
 
         impl IsLoadable for PCAT_FIRMWARE_X64 {

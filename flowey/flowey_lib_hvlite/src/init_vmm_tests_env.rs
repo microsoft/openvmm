@@ -128,6 +128,17 @@ impl SimpleFlowNode for Node {
                 v,
             )
         });
+        let test_linux_bzimage = crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestBzImage
+            .is_available_for(arch)
+            .then(|| {
+                ctx.reqv(|v| {
+                    crate::resolve_openvmm_deps::Request::Get(
+                        crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestBzImage,
+                        arch,
+                        v,
+                    )
+                })
+            });
 
         let uefi =
             ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v });
@@ -152,11 +163,13 @@ impl SimpleFlowNode for Node {
             let openhcl_igvm_files = register_openhcl_igvm_files.claim(ctx);
             let test_linux_initrd = test_linux_initrd.claim(ctx);
             let test_linux_kernel = test_linux_kernel.claim(ctx);
+            let test_linux_bzimage = test_linux_bzimage.claim(ctx);
             let uefi = uefi.claim(ctx);
             let release_igvm_files_dir = release_igvm_files.claim(ctx);
             move |rt| {
                 let test_linux_initrd = rt.read(test_linux_initrd);
                 let test_linux_kernel = rt.read(test_linux_kernel);
+                let test_linux_bzimage = test_linux_bzimage.map(|v| rt.read(v));
                 let uefi = rt.read(uefi);
                 let release_igvm_files_dir = rt.read(release_igvm_files_dir);
                 let test_content_dir = rt.read(test_content_dir);
@@ -435,6 +448,12 @@ impl SimpleFlowNode for Node {
                     test_linux_kernel,
                     test_content_dir.join(arch_dir).join(kernel_file_name),
                 )?;
+                if let Some(bzimage_path) = test_linux_bzimage {
+                    fs_err::copy(
+                        bzimage_path,
+                        test_content_dir.join(arch_dir).join("bzImage"),
+                    )?;
+                }
 
                 let uefi_dir = test_content_dir.join(match arch {
                     CommonArch::Aarch64 => {
