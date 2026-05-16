@@ -11,7 +11,7 @@
 //! restore. Keep layout policy changes deliberate and covered by tests.
 //!
 //! The resolver owns all layout consumers: architectural reserved zones (LAPIC,
-//! IOAPIC, GIC, etc.), chipset MMIO (VMBus relay, PIIX4 PCI BARs), PCIe
+//! IOAPIC, GIC, etc.), chipset MMIO (VMBus, PIIX4 PCI BARs), PCIe
 //! ECAM/BAR pools, virtio-mmio slots, ordinary RAM, VTL2 private memory, and
 //! VTL2 chipset MMIO. Callers express sizing intent; the resolver places
 //! everything and derives the effective MMIO gaps for [`MemoryLayout`].
@@ -20,7 +20,7 @@ use super::vm_loaders::igvm::Vtl2MemoryLayoutRequest;
 use anyhow::Context;
 use anyhow::bail;
 use memory_range::MemoryRange;
-use openvmm_defs::config::MmioRangeConfig;
+use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use std::sync::Arc;
 use vm_topology::layout::LayoutBuilder;
@@ -43,7 +43,7 @@ pub(super) struct ResolvedMemoryLayout {
     /// 4 KiB, indexed from the start of the region. `None` when no
     /// virtio-mmio devices are configured.
     pub virtio_mmio_region: Option<MemoryRange>,
-    /// Chipset low MMIO range (below 4 GiB) for VMOD/PCI0 _CRS. `None` when
+    /// Chipset low MMIO range (below 4 GB) for VMOD/PCI0 _CRS. `None` when
     /// no VMBus / chipset MMIO is configured.
     pub chipset_low_mmio: Option<MemoryRange>,
     /// Chipset high MMIO range (above RAM) for VMOD/PCI0 _CRS. `None` when
@@ -67,15 +67,18 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// Optional per-vNUMA RAM budgets. When present, these must sum to
     /// `mem_size`, and request order is the vnode assignment order.
     pub numa_mem_sizes: Option<&'a [u64]>,
-    /// Chipset low MMIO range (below 4 GiB). This is the VMOD/PCI0 _CRS range
-    /// for VMBus relay devices and PIIX4 PCI BARs.
-    pub chipset_low_mmio: Option<&'a MmioRangeConfig>,
-    /// Chipset high MMIO range (above RAM). This is the VMOD/PCI0 _CRS high
-    /// range for VMBus relay devices.
-    pub chipset_high_mmio: Option<&'a MmioRangeConfig>,
-    /// VTL2-private chipset MMIO range. Placed after all VTL0-visible layout
-    /// so enabling VTL2 does not move VTL0 addresses.
-    pub vtl2_chipset_mmio: Option<&'a MmioRangeConfig>,
+    /// Chipset low MMIO size (below 4 GB). This is the VMOD/PCI0 _CRS range
+    /// for VMBus devices and PIIX4 PCI BARs. The address is always allocated
+    /// dynamically. `None` disables the range.
+    pub chipset_low_mmio: Option<u64>,
+    /// Chipset high MMIO size (above RAM). This is the VMOD/PCI0 _CRS high
+    /// range for VMBus devices. The address is always allocated dynamically.
+    /// `None` disables the range.
+    pub chipset_high_mmio: Option<u64>,
+    /// VTL2-private chipset MMIO size. Placed after all VTL0-visible layout
+    /// so enabling VTL2 does not move VTL0 addresses. The address is always
+    /// allocated dynamically. `None` disables the range.
+    pub vtl2_chipset_mmio: Option<u64>,
     /// PCIe root complex address-space intents. These are resolved by this
     /// worker step so front ends do not need to carve guest physical addresses.
     pub pcie_root_complexes: &'a [PcieRootComplexConfig],
@@ -128,26 +131,24 @@ pub(super) fn resolve_memory_layout(
     };
     builder.reserve("arch_reserved", arch_reserved);
 
-    // Chipset low MMIO (Mmio32): VMOD/PCI0 _CRS low range for VMBus relay
+    // Chipset low MMIO (Mmio32): VMOD/PCI0 _CRS low range for VMBus
     // devices and PIIX4 PCI BARs.
-    if let Some(config) = input.chipset_low_mmio {
-        add_mmio_range(
-            &mut builder,
+    if let Some(size) = input.chipset_low_mmio {
+        builder.request(
             "chipset_low_mmio",
             &mut chipset_low_mmio,
-            config,
+            size,
             TWO_MB,
             Placement::Mmio32,
         );
     }
 
     // Chipset high MMIO (Mmio64): VMOD/PCI0 _CRS high range.
-    if let Some(config) = input.chipset_high_mmio {
-        add_mmio_range(
-            &mut builder,
+    if let Some(size) = input.chipset_high_mmio {
+        builder.request(
             "chipset_high_mmio",
             &mut chipset_high_mmio,
-            config,
+            size,
             TWO_MB,
             Placement::Mmio64,
         );
@@ -159,13 +160,18 @@ pub(super) fn resolve_memory_layout(
         .zip(&mut pcie_root_complex_ranges)
         .enumerate()
     {
-        add_pcie_ecam_range(
-            &mut builder,
+        // ECAM: always dynamically allocated below 4GB (since Linux on x86_64
+        // refuses to use ECAM above 4GB unless the BIOS is of a special shape).
+        // Size is derived from the bus range.
+        //
+        // TODO: fix the Linux loader and move this above 4GB before the layout
+        // is stabilized.
+        builder.request(
             format!("pcie[{index}].ecam"),
             &mut ranges.ecam_range,
-            &root_complex.ecam_range,
             pcie_ecam_size(root_complex)?,
             PCIE_ECAM_BYTES_PER_BUS,
+            Placement::Mmio32,
         );
         // Low MMIO: 2 MB aligned.
         add_mmio_range(
@@ -224,12 +230,11 @@ pub(super) fn resolve_memory_layout(
 
     // VTL2 chipset MMIO is implementation-private — placed after all
     // VTL0-visible RAM/MMIO so enabling VTL2 does not move VTL0 addresses.
-    if let Some(config) = input.vtl2_chipset_mmio {
-        add_mmio_range(
-            &mut builder,
+    if let Some(size) = input.vtl2_chipset_mmio {
+        builder.request(
             "vtl2_chipset_mmio",
             &mut vtl2_chipset_mmio,
-            config,
+            size,
             TWO_MB,
             Placement::PostMmio,
         );
@@ -357,36 +362,19 @@ fn pcie_ecam_size(root_complex: &PcieRootComplexConfig) -> anyhow::Result<u64> {
     Ok((u64::from(bus_count) + 1) * PCIE_ECAM_BYTES_PER_BUS)
 }
 
-fn add_pcie_ecam_range<'a>(
-    builder: &mut LayoutBuilder<'a>,
-    tag: impl Into<Arc<str>>,
-    target: &'a mut MemoryRange,
-    config: &Option<MemoryRange>,
-    size: u64,
-    alignment: u64,
-) {
-    match config {
-        Some(range) => {
-            *target = *range;
-            builder.fixed(tag, *range);
-        }
-        None => builder.request(tag, target, size, alignment, Placement::Mmio32),
-    }
-}
-
 fn add_mmio_range<'a>(
     builder: &mut LayoutBuilder<'a>,
     tag: impl Into<Arc<str>>,
     target: &'a mut MemoryRange,
-    config: &MmioRangeConfig,
+    config: &PcieMmioRangeConfig,
     alignment: u64,
     placement: Placement,
 ) {
     match config {
-        MmioRangeConfig::Dynamic { size } => {
+        PcieMmioRangeConfig::Dynamic { size } => {
             builder.request(tag, target, *size, alignment, placement);
         }
-        MmioRangeConfig::Fixed(range) => {
+        PcieMmioRangeConfig::Fixed(range) => {
             *target = *range;
             builder.fixed(tag, *range);
         }
@@ -437,17 +425,6 @@ mod tests {
     const DEFAULT_CHIPSET_HIGH_MMIO_SIZE: u64 = 512 * 1024 * 1024;
     const DEFAULT_VTL2_CHIPSET_MMIO_SIZE: u64 = GB;
 
-    const DEFAULT_CHIPSET_LOW: MmioRangeConfig = MmioRangeConfig::Dynamic {
-        size: DEFAULT_CHIPSET_LOW_MMIO_SIZE_X86_64,
-    };
-    const DEFAULT_CHIPSET_HIGH: MmioRangeConfig = MmioRangeConfig::Dynamic {
-        size: DEFAULT_CHIPSET_HIGH_MMIO_SIZE,
-    };
-
-    const DEFAULT_VTL2_CHIPSET: MmioRangeConfig = MmioRangeConfig::Dynamic {
-        size: DEFAULT_VTL2_CHIPSET_MMIO_SIZE,
-    };
-
     fn input(
         mem_size: u64,
         numa_mem_sizes: Option<&[u64]>,
@@ -456,8 +433,8 @@ mod tests {
         MemoryLayoutInput {
             mem_size,
             numa_mem_sizes,
-            chipset_low_mmio: Some(&DEFAULT_CHIPSET_LOW),
-            chipset_high_mmio: Some(&DEFAULT_CHIPSET_HIGH),
+            chipset_low_mmio: Some(DEFAULT_CHIPSET_LOW_MMIO_SIZE_X86_64),
+            chipset_high_mmio: Some(DEFAULT_CHIPSET_HIGH_MMIO_SIZE),
             vtl2_chipset_mmio: None,
             pcie_root_complexes: &[],
             virtio_mmio_count: 0,
@@ -478,9 +455,8 @@ mod tests {
     }
 
     fn pcie_root_complex(
-        ecam_range: Option<MemoryRange>,
-        low_mmio: MmioRangeConfig,
-        high_mmio: MmioRangeConfig,
+        low_mmio: PcieMmioRangeConfig,
+        high_mmio: PcieMmioRangeConfig,
     ) -> PcieRootComplexConfig {
         PcieRootComplexConfig {
             index: 0,
@@ -488,7 +464,6 @@ mod tests {
             segment: 0,
             start_bus: 0,
             end_bus: 0,
-            ecam_range,
             low_mmio,
             high_mmio,
             ports: Vec::new(),
@@ -506,8 +481,8 @@ mod tests {
 
     #[test]
     fn ram_splits_around_arch_reserved_zone() {
-        // 4 GiB of RAM must split around the architectural reserved zone
-        // and the chipset MMIO allocations below 4 GiB.
+        // 4 GB of RAM must split around the architectural reserved zone
+        // and the chipset MMIO allocations below 4 GB.
         let actual = resolve(input(4 * GB, None, None));
 
         assert_eq!(actual.ram_size(), 4 * GB);
@@ -532,7 +507,7 @@ mod tests {
         // First vnode's RAM starts at 0.
         assert_eq!(actual.ram()[0].vnode, 0);
         assert_eq!(actual.ram()[0].range.start(), 0);
-        // All RAM accounts for 4 GiB total.
+        // All RAM accounts for 4 GB total.
         assert_eq!(actual.ram_size(), 4 * GB);
     }
 
@@ -548,10 +523,7 @@ mod tests {
             .expect("should have high chipset MMIO");
         assert_eq!(low.len(), DEFAULT_CHIPSET_LOW_MMIO_SIZE_X86_64);
         assert_eq!(high.len(), DEFAULT_CHIPSET_HIGH_MMIO_SIZE);
-        assert!(
-            low.end() <= 4 * GB,
-            "low chipset MMIO should be below 4 GiB"
-        );
+        assert!(low.end() <= 4 * GB, "low chipset MMIO should be below 4 GB");
         assert!(
             high.start() >= 2 * GB,
             "high chipset MMIO should be above RAM"
@@ -561,9 +533,8 @@ mod tests {
     #[test]
     fn pcie_dynamic_intents_are_resolved() {
         let root_complexes = [pcie_root_complex(
-            None,
-            MmioRangeConfig::Dynamic { size: 64 * MB },
-            MmioRangeConfig::Dynamic { size: GB },
+            PcieMmioRangeConfig::Dynamic { size: 64 * MB },
+            PcieMmioRangeConfig::Dynamic { size: GB },
         )];
         let mut config = input(2 * GB, None, None);
         config.pcie_root_complexes = &root_complexes;
@@ -573,7 +544,7 @@ mod tests {
 
         assert!(
             ranges.ecam_range.end() <= 4 * GB,
-            "ECAM should be below 4 GiB"
+            "ECAM should be below 4 GB"
         );
         assert_eq!(ranges.low_mmio.len(), 64 * MB);
         assert_eq!(ranges.high_mmio.len(), GB);
@@ -669,7 +640,7 @@ mod tests {
             .virtio_mmio_region
             .expect("should have virtio-mmio region");
         assert_eq!(region.len(), 3 * PAGE_SIZE);
-        assert!(region.end() <= 4 * GB, "virtio-mmio should be below 4 GiB");
+        assert!(region.end() <= 4 * GB, "virtio-mmio should be below 4 GB");
     }
 
     #[test]
@@ -694,7 +665,7 @@ mod tests {
     #[test]
     fn vtl2_chipset_mmio_is_post_mmio() {
         let mut config = input(2 * GB, None, None);
-        config.vtl2_chipset_mmio = Some(&DEFAULT_VTL2_CHIPSET);
+        config.vtl2_chipset_mmio = Some(DEFAULT_VTL2_CHIPSET_MMIO_SIZE);
 
         let result = resolve_memory_layout(config).unwrap();
 
@@ -716,7 +687,7 @@ mod tests {
     fn vtl2_chipset_mmio_does_not_move_vtl0_layout() {
         let without = resolve(input(2 * GB, None, None));
         let mut config = input(2 * GB, None, None);
-        config.vtl2_chipset_mmio = Some(&DEFAULT_VTL2_CHIPSET);
+        config.vtl2_chipset_mmio = Some(DEFAULT_VTL2_CHIPSET_MMIO_SIZE);
         let with = resolve_memory_layout(config).unwrap();
 
         assert_eq!(with.memory_layout.ram(), without.ram());

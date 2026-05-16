@@ -9513,7 +9513,6 @@ dependencies = [
  "serial_pl011_resources",
  "thiserror 2.0.16",
  "vm_resource",
- "vmm_core_defs",
  "vmotherboard",
 ]
 
@@ -10074,7 +10073,6 @@ name = "vmm_core_defs"
 version = "0.0.0"
 dependencies = [
  "inspect",
- "memory_range",
  "mesh",
  "virt",
 ]

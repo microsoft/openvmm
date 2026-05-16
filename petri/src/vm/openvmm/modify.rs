@@ -24,8 +24,8 @@ use nvme_resources::NvmeControllerHandle;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
-use openvmm_defs::config::MmioRangeConfig;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
@@ -269,11 +269,10 @@ impl PetriVmConfigOpenVmm {
                     segment: segment.try_into().unwrap(),
                     start_bus: start_bus.try_into().unwrap(),
                     end_bus: end_bus.try_into().unwrap(),
-                    ecam_range: None,
-                    low_mmio: MmioRangeConfig::Dynamic {
+                    low_mmio: PcieMmioRangeConfig::Dynamic {
                         size: LOW_MMIO_SIZE,
                     },
-                    high_mmio: MmioRangeConfig::Dynamic {
+                    high_mmio: PcieMmioRangeConfig::Dynamic {
                         size: HIGH_MMIO_SIZE,
                     },
                     ports,

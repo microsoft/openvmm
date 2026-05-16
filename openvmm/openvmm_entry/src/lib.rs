@@ -72,8 +72,8 @@ use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
-use openvmm_defs::config::MmioRangeConfig;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
@@ -744,11 +744,10 @@ async fn vm_config_from_command_line(
             segment: rc_cli.segment,
             start_bus: rc_cli.start_bus,
             end_bus: rc_cli.end_bus,
-            ecam_range: None,
-            low_mmio: MmioRangeConfig::Dynamic {
+            low_mmio: PcieMmioRangeConfig::Dynamic {
                 size: low_mmio_size,
             },
-            high_mmio: MmioRangeConfig::Dynamic {
+            high_mmio: PcieMmioRangeConfig::Dynamic {
                 size: high_mmio_size,
             },
             ports,

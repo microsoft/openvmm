@@ -43,7 +43,6 @@ use vm_resource::PlatformResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::kind::SerialBackendHandle;
-use vmm_core_defs::MmioRangeConfig;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::LegacyPciChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
@@ -103,15 +102,18 @@ pub struct VmChipsetResult {
     pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
     /// Derived chipset capabilities needed by firmware and table generation.
     pub capabilities: VmChipsetCapabilities,
-    /// Default chipset low MMIO range (below 4 GiB) for VMOD/PCI0 _CRS.
-    /// `None` when the VM type has no VMBus or PCI bus.
-    pub chipset_low_mmio: Option<MmioRangeConfig>,
-    /// Default chipset high MMIO range (above RAM) for VMOD/PCI0 _CRS.
-    /// `None` when the VM type has no VMBus or PCI bus.
-    pub chipset_high_mmio: Option<MmioRangeConfig>,
-    /// Default VTL2-private chipset MMIO range for VTL2 VMBus.
-    /// `None` when the VM type does not include VTL2.
-    pub vtl2_chipset_mmio: Option<MmioRangeConfig>,
+    /// Default chipset low MMIO size (below 4 GiB) for VMOD/PCI0 _CRS.
+    /// The address is always allocated dynamically. `None` when the VM type
+    /// has no VMBus or PCI bus.
+    pub chipset_low_mmio: Option<u64>,
+    /// Default chipset high MMIO size (above RAM) for VMOD/PCI0 _CRS.
+    /// The address is always allocated dynamically. `None` when the VM type
+    /// has no VMBus or PCI bus.
+    pub chipset_high_mmio: Option<u64>,
+    /// Default VTL2-private chipset MMIO size for VTL2 VMBus.
+    /// The address is always allocated dynamically. `None` when the VM type
+    /// does not include VTL2.
+    pub vtl2_chipset_mmio: Option<u64>,
 }
 
 /// Error type for building a VM manifest.
@@ -419,13 +421,13 @@ impl VmManifestBuilder {
             | BaseChipsetType::HypervGen2Uefi
             | BaseChipsetType::HyperVGen2LinuxDirect
             | BaseChipsetType::UnenlightenedLinuxDirect => {
-                result.chipset_low_mmio = Some(MmioRangeConfig::Dynamic { size: default_low });
-                result.chipset_high_mmio = Some(MmioRangeConfig::Dynamic { size: default_high });
+                result.chipset_low_mmio = Some(default_low);
+                result.chipset_high_mmio = Some(default_high);
             }
             BaseChipsetType::HclHost => {
-                result.chipset_low_mmio = Some(MmioRangeConfig::Dynamic { size: default_low });
-                result.chipset_high_mmio = Some(MmioRangeConfig::Dynamic { size: default_high });
-                result.vtl2_chipset_mmio = Some(MmioRangeConfig::Dynamic { size: default_vtl2 });
+                result.chipset_low_mmio = Some(default_low);
+                result.chipset_high_mmio = Some(default_high);
+                result.vtl2_chipset_mmio = Some(default_vtl2);
             }
         }
 

@@ -55,12 +55,15 @@ pub struct Config {
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
     pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
     pub chipset_capabilities: VmChipsetCapabilities,
-    /// Chipset low MMIO range (below 4 GiB) for VMOD/PCI0 _CRS.
-    pub chipset_low_mmio: Option<MmioRangeConfig>,
-    /// Chipset high MMIO range (above RAM) for VMOD/PCI0 _CRS.
-    pub chipset_high_mmio: Option<MmioRangeConfig>,
-    /// VTL2-private chipset MMIO range for VTL2 VMBus.
-    pub vtl2_chipset_mmio: Option<MmioRangeConfig>,
+    /// Chipset low MMIO range size (below 4 GiB) for VMOD/PCI0 _CRS.
+    /// The address is always allocated dynamically. `None` disables the range.
+    pub chipset_low_mmio: Option<u64>,
+    /// Chipset high MMIO range size (above RAM) for VMOD/PCI0 _CRS.
+    /// The address is always allocated dynamically. `None` disables the range.
+    pub chipset_high_mmio: Option<u64>,
+    /// VTL2-private chipset MMIO range size for VTL2 VMBus.
+    /// The address is always allocated dynamically. `None` disables the range.
+    pub vtl2_chipset_mmio: Option<u64>,
     pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
@@ -192,7 +195,19 @@ pub enum Vtl2BaseAddressType {
     Vtl2Allocate { size: Option<u64> },
 }
 
-pub use vmm_core_defs::MmioRangeConfig;
+/// Specifies a PCIe MMIO BAR window, either by size (the resolver allocates) or
+/// by a fixed location. Fixed locations exist for assigned-device, IOMMU, and
+/// physical-topology compatibility.
+#[derive(Debug, MeshPayload)]
+pub enum PcieMmioRangeConfig {
+    /// Dynamically allocate a range of the given size.
+    Dynamic {
+        /// Size of the range in bytes.
+        size: u64,
+    },
+    /// Use the specified fixed memory range.
+    Fixed(MemoryRange),
+}
 
 #[derive(Debug, MeshPayload)]
 pub struct PcieRootComplexConfig {
@@ -201,9 +216,8 @@ pub struct PcieRootComplexConfig {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
-    pub ecam_range: Option<MemoryRange>,
-    pub low_mmio: MmioRangeConfig,
-    pub high_mmio: MmioRangeConfig,
+    pub low_mmio: PcieMmioRangeConfig,
+    pub high_mmio: PcieMmioRangeConfig,
     pub ports: Vec<PcieRootPortConfig>,
 }
 

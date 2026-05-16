@@ -57,7 +57,6 @@ use openvmm_defs::config::GicConfig;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
-use openvmm_defs::config::MmioRangeConfig;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
@@ -253,9 +252,9 @@ pub struct Manifest {
     chipset_devices: Vec<ChipsetDeviceHandle>,
     pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
     chipset_capabilities: VmChipsetCapabilities,
-    chipset_low_mmio: Option<MmioRangeConfig>,
-    chipset_high_mmio: Option<MmioRangeConfig>,
-    vtl2_chipset_mmio: Option<MmioRangeConfig>,
+    chipset_low_mmio: Option<u64>,
+    chipset_high_mmio: Option<u64>,
+    vtl2_chipset_mmio: Option<u64>,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
@@ -927,9 +926,9 @@ impl InitializedVm {
         let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
             mem_size: cfg.memory.mem_size,
             numa_mem_sizes: cfg.memory.numa_mem_sizes.as_deref(),
-            chipset_low_mmio: cfg.chipset_low_mmio.as_ref(),
-            chipset_high_mmio: cfg.chipset_high_mmio.as_ref(),
-            vtl2_chipset_mmio: cfg.vtl2_chipset_mmio.as_ref(),
+            chipset_low_mmio: cfg.chipset_low_mmio,
+            chipset_high_mmio: cfg.chipset_high_mmio,
+            vtl2_chipset_mmio: cfg.vtl2_chipset_mmio,
             pcie_root_complexes: &cfg.pcie_root_complexes,
             virtio_mmio_count,
             vtl2_layout,
