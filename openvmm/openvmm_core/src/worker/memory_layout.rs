@@ -176,24 +176,51 @@ pub(super) fn resolve_memory_layout(
         );
     }
 
+    // Group root complexes by PCI segment so that RCs sharing a segment get a
+    // single contiguous ECAM block. This ensures the MCFG bus-0 base address
+    // is consistent for all RCs in the same segment.
+    struct SegmentEcam {
+        segment: u16,
+        min_bus: u8,
+        max_bus: u8,
+        range: MemoryRange,
+    }
+    let mut segment_ecams: Vec<SegmentEcam> = Vec::new();
+    for rc in input.pcie_root_complexes {
+        if let Some(entry) = segment_ecams.iter_mut().find(|e| e.segment == rc.segment) {
+            entry.min_bus = entry.min_bus.min(rc.start_bus);
+            entry.max_bus = entry.max_bus.max(rc.end_bus);
+        } else {
+            segment_ecams.push(SegmentEcam {
+                segment: rc.segment,
+                min_bus: rc.start_bus,
+                max_bus: rc.end_bus,
+                range: MemoryRange::EMPTY,
+            });
+        }
+    }
+
+    // ECAM: always dynamically allocated below 4GB (since Linux on x86_64
+    // refuses to use ECAM above 4GB unless the BIOS is of a special shape).
+    //
+    // TODO: fix the Linux loader and move this above 4GB before the layout
+    // is stabilized.
+    for se in &mut segment_ecams {
+        let bus_count = u64::from(se.max_bus - se.min_bus) + 1;
+        builder.request(
+            format!("pcie-seg{}-ecam", se.segment),
+            &mut se.range,
+            bus_count * PCIE_ECAM_BYTES_PER_BUS,
+            PCIE_ECAM_BYTES_PER_BUS,
+            Placement::Mmio32,
+        );
+    }
+
     for (root_complex, ranges) in input
         .pcie_root_complexes
         .iter()
         .zip(&mut pcie_root_complex_ranges)
     {
-        // ECAM: always dynamically allocated below 4GB (since Linux on x86_64
-        // refuses to use ECAM above 4GB unless the BIOS is of a special shape).
-        // Size is derived from the bus range.
-        //
-        // TODO: fix the Linux loader and move this above 4GB before the layout
-        // is stabilized.
-        builder.request(
-            format!("pcie-{}-ecam", root_complex.name),
-            &mut ranges.ecam_range,
-            pcie_ecam_size(root_complex)?,
-            PCIE_ECAM_BYTES_PER_BUS,
-            Placement::Mmio32,
-        );
         // Low MMIO: 2 MB aligned.
         add_mmio_range(
             &mut builder,
@@ -284,6 +311,23 @@ pub(super) fn resolve_memory_layout(
         .allocate()
         .context("allocating memory layout ranges")?;
 
+    // Subdivide per-segment ECAM blocks into per-RC sub-ranges.
+    for (root_complex, ranges) in input
+        .pcie_root_complexes
+        .iter()
+        .zip(&mut pcie_root_complex_ranges)
+    {
+        let se = segment_ecams
+            .iter()
+            .find(|e| e.segment == root_complex.segment)
+            .expect("segment must exist");
+        let offset = u64::from(root_complex.start_bus - se.min_bus) * PCIE_ECAM_BYTES_PER_BUS;
+        let size =
+            u64::from(root_complex.end_bus - root_complex.start_bus + 1) * PCIE_ECAM_BYTES_PER_BUS;
+        ranges.ecam_range =
+            MemoryRange::new(se.range.start() + offset..se.range.start() + offset + size);
+    }
+
     // Enforce the MCFG bus-0 base invariant: every ECAM range must sit at
     // `PCIE_ECAM_MIN_ADDRESS` or above. Fail fast at VM construction with a
     // clear error rather than letting an unrepresentable MCFG entry surface
@@ -335,11 +379,7 @@ pub(super) fn resolve_memory_layout(
     }
 
     let mut pci_ecam_gaps: Vec<MemoryRange> = Vec::new();
-    pci_ecam_gaps.extend(
-        pcie_root_complex_ranges
-            .iter()
-            .map(|ranges| ranges.ecam_range),
-    );
+    pci_ecam_gaps.extend(segment_ecams.iter().map(|se| se.range));
     pci_ecam_gaps.sort();
 
     let mut pci_mmio_gaps: Vec<MemoryRange> = Vec::new();
@@ -387,20 +427,6 @@ pub(super) fn resolve_memory_layout(
         chipset_high_mmio: (input.chipset_high_mmio_size != 0).then_some(chipset_high_mmio),
         vtl2_chipset_mmio: (input.vtl2_chipset_mmio_size != 0).then_some(vtl2_chipset_mmio),
     })
-}
-
-fn pcie_ecam_size(root_complex: &PcieRootComplexConfig) -> anyhow::Result<u64> {
-    let bus_count = root_complex
-        .end_bus
-        .checked_sub(root_complex.start_bus)
-        .with_context(|| {
-            format!(
-                "invalid PCIe bus range {}..{} for {}",
-                root_complex.start_bus, root_complex.end_bus, root_complex.name
-            )
-        })?;
-
-    Ok((u64::from(bus_count) + 1) * PCIE_ECAM_BYTES_PER_BUS)
 }
 
 fn add_mmio_range<'a>(
@@ -612,6 +638,51 @@ mod tests {
             actual.memory_layout.probe_address(ranges.high_mmio.start()),
             Some(AddressType::PciMmio)
         );
+    }
+
+    #[test]
+    fn shared_segment_gets_contiguous_ecam() {
+        // Two root complexes on the same segment with disjoint bus ranges
+        // must get ECAM sub-ranges within a single contiguous block, so
+        // that the MCFG bus-0 base address is the same for both.
+        let root_complexes = [
+            PcieRootComplexConfig {
+                index: 0,
+                name: "rc0".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 15,
+                low_mmio: PcieMmioRangeConfig::Dynamic { size: 32 * MB },
+                high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
+                ports: Vec::new(),
+            },
+            PcieRootComplexConfig {
+                index: 1,
+                name: "rc1".to_string(),
+                segment: 0,
+                start_bus: 16,
+                end_bus: 31,
+                low_mmio: PcieMmioRangeConfig::Dynamic { size: 32 * MB },
+                high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
+                ports: Vec::new(),
+            },
+        ];
+        let mut config = input(2 * GB, None, None);
+        config.pcie_root_complexes = &root_complexes;
+
+        let actual = resolve_memory_layout(config).unwrap();
+        let r0 = &actual.pcie_root_complex_ranges[0];
+        let r1 = &actual.pcie_root_complex_ranges[1];
+
+        // rc0 ends exactly where rc1 starts (contiguous).
+        assert_eq!(r0.ecam_range.end(), r1.ecam_range.start());
+
+        // Both derive the same MCFG bus-0 base.
+        let bus0_base_r0 = r0.ecam_range.start()
+            - u64::from(root_complexes[0].start_bus) * PCIE_ECAM_BYTES_PER_BUS;
+        let bus0_base_r1 = r1.ecam_range.start()
+            - u64::from(root_complexes[1].start_bus) * PCIE_ECAM_BYTES_PER_BUS;
+        assert_eq!(bus0_base_r0, bus0_base_r1);
     }
 
     #[test]
