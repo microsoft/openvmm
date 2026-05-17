@@ -38,6 +38,116 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
+    fn write_debug_vmrs() {
+        let buf = Cursor::new(Vec::new());
+        let mut w = HvsFileWriter::new(buf).unwrap();
+        w.add_int("/savedstate/VmVersion", 0x0A00);
+        w.add_array("/savedstate/RamMemoryBlock0", vec![0u8; 40]);
+        w.add_array("/savedstate/savedVM/partition_state", vec![0u8; 100]);
+        let buf = w.finish().unwrap();
+        let data = buf.into_inner();
+
+        // Verify header bytes
+        let sig = u32::from_le_bytes(data[0..4].try_into().unwrap());
+        assert_eq!(sig, 0x01282014, "bad signature");
+
+        let cksum = u32::from_le_bytes(data[4..8].try_into().unwrap());
+
+        // Verify CRC
+        let mut header_copy = data[..46].to_vec();
+        header_copy[4..8].fill(0);
+        let computed = crate::writer::crc32(&header_copy);
+        assert_eq!(computed, cksum, "header CRC mismatch");
+
+        // Dump object table entries
+        let obj_sig = u32::from_le_bytes(data[8192..8196].try_into().unwrap());
+        let obj_count = u32::from_le_bytes(data[8196..8200].try_into().unwrap());
+        eprintln!("Object table: sig=0x{obj_sig:08X} count={obj_count}");
+
+        for i in 0..obj_count as usize {
+            let base = 8200 + i * 18;
+            let obj_type = data[base];
+            let offset = u64::from_le_bytes(data[base + 5..base + 13].try_into().unwrap());
+            let size = u32::from_le_bytes(data[base + 13..base + 17].try_into().unwrap());
+            let flags = data[base + 17];
+            let type_name = match obj_type {
+                0 => "Empty",
+                1 => "ObjTbl",
+                2 => "KeyTbl",
+                3 => "FileObj",
+                4 => "Free",
+                _ => "???",
+            };
+            eprintln!("  [{i}] {type_name:7} off=0x{offset:06X} sz={size:6} flg=0x{flags:02X}");
+            // Verify offset + size doesn't exceed file
+            if obj_type != 0 {
+                assert!(
+                    (offset as usize + size as usize) <= data.len(),
+                    "entry {i}: offset 0x{offset:X} + size {size} > file size {}",
+                    data.len()
+                );
+            }
+        }
+
+        // Dump key table header at the first KeyTable entry
+        for i in 0..obj_count as usize {
+            let base = 8200 + i * 18;
+            if data[base] == 2 {
+                // KeyTable
+                let offset = u64::from_le_bytes(data[base + 5..base + 13].try_into().unwrap()) as usize;
+                let kt_sig = u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap());
+                let kt_idx = u16::from_le_bytes(data[offset + 2..offset + 4].try_into().unwrap());
+                let kt_seq = u16::from_le_bytes(data[offset + 4..offset + 6].try_into().unwrap());
+                let kt_cksum = u32::from_le_bytes(data[offset + 6..offset + 10].try_into().unwrap());
+                eprintln!("  KeyTable[{i}] at 0x{offset:X}: sig=0x{kt_sig:04X} idx={kt_idx} seq={kt_seq} cksum=0x{kt_cksum:08X}");
+
+                // Verify key table checksum
+                let mut kt_header = data[offset..offset + 10].to_vec();
+                kt_header[6..10].fill(0);
+                let kt_computed = crate::writer::crc32(&kt_header);
+                assert_eq!(kt_computed, kt_cksum, "key table {i} CRC mismatch");
+
+                // Dump first few entries
+                let mut pos = offset + 10;
+                let end = offset + 4096;
+                let mut entry_idx = 0;
+                while pos + 21 <= end && entry_idx < 10 {
+                    let entry_type = data[pos];
+                    let entry_size = u32::from_le_bytes(data[pos + 2..pos + 6].try_into().unwrap());
+                    if entry_size == 0 {
+                        break;
+                    }
+                    let parent_table = u16::from_le_bytes(data[pos + 6..pos + 8].try_into().unwrap());
+                    let parent_off = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap());
+                    let name_len = data[pos + 20];
+                    let name = if name_len > 0 && pos + 21 + name_len as usize <= end {
+                        String::from_utf8_lossy(&data[pos + 21..pos + 21 + name_len as usize - 1]).to_string()
+                    } else {
+                        "(none)".to_string()
+                    };
+                    let type_name = match entry_type {
+                        1 => "Free",
+                        3 => "Int",
+                        4 => "UInt",
+                        7 => "Array",
+                        8 => "Bool",
+                        9 => "Node",
+                        _ => "?",
+                    };
+                    eprintln!("    entry[{entry_idx}] {type_name:5} sz={entry_size:3} parent=({parent_table},{parent_off:3}) name_len={name_len} name=\"{name}\"");
+                    pos += entry_size as usize;
+                    entry_idx += 1;
+                }
+            }
+        }
+
+        // Write to temp
+        let path = std::env::temp_dir().join("hvs_debug.vmrs");
+        std::fs::write(&path, &data).unwrap();
+        eprintln!("Wrote {} bytes to {}", data.len(), path.display());
+    }
+
+    #[test]
     fn round_trip_uint() {
         let buf = Cursor::new(Vec::new());
         let mut w = HvsFileWriter::new(buf).unwrap();

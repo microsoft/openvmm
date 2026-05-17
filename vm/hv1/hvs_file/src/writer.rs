@@ -551,36 +551,40 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             self.writer.write_all(&vec![0u8; pad])?;
         }
 
-        // Write file headers
-        let header = FileHeader {
-            signature: HEADER_SIGNATURE,
-            checksum: 0,
-            sequence: 1,
-            format_version: FORMAT_VERSION_4_0,
-            data_version: 0,
-            flags: 0,
-            data_alignment_in_bytes: alignment as u32,
-            replay_log_offset_in_bytes: 0,
-            replay_log_size_in_bytes: 0,
-            replay_log_header_size_in_bytes: 0,
+        // Write file headers.
+        // The two copies must have different sequence numbers — if both are
+        // valid with the same sequence, HyperVStorage treats the file as
+        // corrupt. Write copy 0 with sequence 1 (authoritative) and copy 1
+        // with sequence 0 (stale).
+        let make_header = |seq: u16| -> Vec<u8> {
+            let header = FileHeader {
+                signature: HEADER_SIGNATURE,
+                checksum: 0,
+                sequence: seq,
+                format_version: FORMAT_VERSION_4_0,
+                data_version: 0,
+                flags: 0,
+                data_alignment_in_bytes: alignment as u32,
+                replay_log_offset_in_bytes: 0,
+                replay_log_size_in_bytes: 0,
+                replay_log_header_size_in_bytes: 0,
+            };
+            let mut header_bytes = header.as_bytes().to_vec();
+            let checksum = struct_checksum(&mut header_bytes, 4);
+            let mut final_header = header;
+            final_header.checksum = checksum;
+
+            let mut page = vec![0u8; MIN_DATA_ALIGNMENT as usize];
+            page[..size_of::<FileHeader>()].copy_from_slice(final_header.as_bytes());
+            page
         };
 
-        // Compute header checksum
-        let mut header_bytes = header.as_bytes().to_vec();
-        let checksum = struct_checksum(&mut header_bytes, 4); // checksum at offset 4
-        let mut final_header = header;
-        final_header.checksum = checksum;
-
-        // Pad header to MIN_DATA_ALIGNMENT
-        let mut header_page = vec![0u8; MIN_DATA_ALIGNMENT as usize];
-        header_page[..size_of::<FileHeader>()].copy_from_slice(final_header.as_bytes());
-
-        // Write copy 0
+        // Write copy 0 (sequence 1, authoritative)
         self.writer.seek(SeekFrom::Start(0))?;
-        self.writer.write_all(&header_page)?;
+        self.writer.write_all(&make_header(1))?;
 
-        // Write copy 1
-        self.writer.write_all(&header_page)?;
+        // Write copy 1 (sequence 0, stale)
+        self.writer.write_all(&make_header(0))?;
 
         self.writer.flush()?;
         Ok(self.writer)

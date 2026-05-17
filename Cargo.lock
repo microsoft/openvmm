@@ -3299,7 +3299,9 @@ name = "hvs_file"
 version = "0.0.0"
 dependencies = [
  "crc32fast",
+ "hvdef",
  "open_enum",
+ "pal",
  "static_assertions",
  "thiserror 2.0.16",
  "zerocopy",

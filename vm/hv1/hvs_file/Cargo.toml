@@ -13,5 +13,9 @@ static_assertions.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
 
+[dev-dependencies]
+hvdef.workspace = true
+pal.workspace = true
+
 [lints]
 workspace = true
