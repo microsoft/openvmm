@@ -175,8 +175,12 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        // On windows & mac, we can't build with all features, as many crates
-        // require openSSL for crypto, which isn't supported in CI yet.
+        // On Windows & Mac we can't build with all features since the TPM
+        // requires OpenSSL for crypto, which isn't supported in CI on those
+        // platforms today.
+        //
+        // We don't add the CI feature here, as it's used purely to exclude
+        // tests that can't run in CI. We still want those tests to be linted.
         let features = if matches!(
             target.operating_system,
             target_lexicon::OperatingSystem::Windows | target_lexicon::OperatingSystem::Darwin(_)
