@@ -3295,6 +3295,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hvs_file"
+version = "0.0.0"
+dependencies = [
+ "crc32fast",
+ "open_enum",
+ "static_assertions",
+ "thiserror 2.0.16",
+ "zerocopy",
+]
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"

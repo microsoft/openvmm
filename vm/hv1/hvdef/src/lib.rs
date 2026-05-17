@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 #![no_std]
 
+pub mod save_restore;
 pub mod vbs;
 
 use bitfield_struct::bitfield;

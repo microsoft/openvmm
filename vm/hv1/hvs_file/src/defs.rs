@@ -1,0 +1,189 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! On-disk structure definitions for the HyperV Storage file format.
+//!
+//! These types represent the binary layout of `.vmrs`, `.vmcx`, and `.vsv`
+//! files. All multi-byte integers are little-endian. Structures are packed.
+
+use core::mem::size_of;
+use open_enum::open_enum;
+use static_assertions::const_assert_eq;
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
+
+// ============================================================
+// File Header
+// ============================================================
+
+/// File header signature: 0x01282014
+pub const HEADER_SIGNATURE: u32 = 0x0128_2014;
+
+/// Object table signature: 0x01110001
+pub const OBJECT_TABLE_SIGNATURE: u32 = 0x0111_0001;
+
+/// Key table signature: 0x0002
+pub const KEY_TABLE_SIGNATURE: u16 = 0x0002;
+
+/// Default data alignment (one page).
+pub const DEFAULT_DATA_ALIGNMENT: u32 = 4096;
+
+/// Minimum data alignment (also the header copy size).
+pub const MIN_DATA_ALIGNMENT: u32 = 4096;
+
+/// Default key table size.
+pub const DEFAULT_KEY_TABLE_SIZE: u32 = 4096;
+
+/// Threshold above which values are stored as file objects.
+pub const FILE_OBJECT_THRESHOLD: u32 = 2048;
+
+/// Format version 4.0 (current).
+pub const FORMAT_VERSION_4_0: u32 = 0x0400;
+
+/// File header — stored twice at offsets 0 and 4096.
+///
+/// Size: 42 bytes (packed). Padded to `DataAlignmentInBytes` on disk.
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct FileHeader {
+    pub signature: u32,
+    pub checksum: u32,
+    pub sequence: u16,
+    pub format_version: u32,
+    pub data_version: u32,
+    pub flags: u32,
+    pub data_alignment_in_bytes: u32,
+    pub replay_log_offset_in_bytes: u64,
+    pub replay_log_size_in_bytes: u64,
+    pub replay_log_header_size_in_bytes: u32,
+}
+
+const_assert_eq!(size_of::<FileHeader>(), 46);
+
+// ============================================================
+// Object Table
+// ============================================================
+
+/// Object table header.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ObjectTableHeader {
+    pub signature: u32,
+    pub entries_count: u32,
+}
+
+const_assert_eq!(size_of::<ObjectTableHeader>(), 8);
+
+open_enum! {
+    /// Object type in an object table entry.
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum ObjectType: u8 {
+        EMPTY       = 0,
+        OBJECT_TABLE = 1,
+        KEY_TABLE   = 2,
+        FILE_OBJECT = 3,
+        FREE        = 4,
+    }
+}
+
+/// Object table entry.
+///
+/// Size: 18 bytes (packed). We use a packed repr to match the on-disk
+/// format exactly.
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ObjectTableEntry {
+    pub object_type: ObjectType,
+    pub entry_checksum: u32,
+    pub file_offset_in_bytes: u64,
+    pub size_in_bytes: u32,
+    pub flags: u8,
+}
+
+const_assert_eq!(size_of::<ObjectTableEntry>(), 18);
+
+/// Flag indicating the object is required.
+pub const OBJECT_ENTRY_FLAG_REQUIRED: u8 = 0x01;
+
+// ============================================================
+// Key Table
+// ============================================================
+
+/// Key table header.
+///
+/// Size: 10 bytes (packed). Checksum covers only this 10-byte header
+/// with the checksum field zeroed.
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct KeyTableHeader {
+    pub signature: u16,
+    pub table_index: u16,
+    pub sequence: u16,
+    pub checksum: u32,
+}
+
+const_assert_eq!(size_of::<KeyTableHeader>(), 10);
+
+open_enum! {
+    /// Key entry type.
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum KeyType: u8 {
+        FREE    = 1,
+        INT     = 3,
+        UINT    = 4,
+        DOUBLE  = 5,
+        STRING  = 6,
+        ARRAY   = 7,
+        BOOL    = 8,
+        NODE    = 9,
+    }
+}
+
+/// Key table entry header.
+///
+/// Size: 20 bytes (packed). Checksum covers the 20-byte header (with
+/// checksum zeroed) plus the name and data bytes.
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct KeyTableEntryHeader {
+    pub key_type: KeyType,
+    pub flags: u8,
+    pub size_in_bytes: u32,
+    pub parent_node_table: u16,
+    pub parent_node_offset: u32,
+    pub checksum: u32,
+    pub insertion_sequence: u32,
+    pub name_size_in_symbols: u8,
+}
+
+const_assert_eq!(size_of::<KeyTableEntryHeader>(), 21);
+
+/// Key entry flags.
+pub const KEY_FLAG_POINTS_TO_FILE_OBJECT: u8 = 0x01;
+pub const KEY_FLAG_SUBCOMPONENT: u8 = 0x02;
+pub const KEY_FLAG_SEQUENCE_CHANGE_TRACKING: u8 = 0x04;
+
+/// Node data stored inline for `KeyType::NODE` entries.
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct NodeData {
+    pub change_tracking_sequence: u64,
+    pub next_insertion_sequence: u32,
+}
+
+const_assert_eq!(size_of::<NodeData>(), 12);
+
+/// File object data pointer (stored in key entries with `PointsToFileObject` flag).
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct FileObjectData {
+    pub size_in_bytes: u32,
+    pub offset_in_bytes: u64,
+}
+
+const_assert_eq!(size_of::<FileObjectData>(), 12);
+
+/// Root node key entry — fixed 32 bytes at the start of key table 0.
+pub const ROOT_NODE_ENTRY_SIZE: usize = 32;
