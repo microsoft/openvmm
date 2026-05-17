@@ -433,8 +433,9 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             // Compute checksum: header (with checksum zeroed) + name + data
             let mut checksum_buf = Vec::with_capacity(entry_total);
             let mut header_bytes = entry.header.as_bytes().to_vec();
-            // Zero checksum field (offset 10 in the packed header)
-            header_bytes[10..14].fill(0);
+            // Zero checksum field (offset 12 in the packed header:
+            // Type(1) + Flags(1) + Size(4) + ParentNodeTable(2) + ParentNodeOffset(4) = 12)
+            header_bytes[12..16].fill(0);
             checksum_buf.extend_from_slice(&header_bytes);
             checksum_buf.extend_from_slice(&entry.name_bytes);
             checksum_buf.extend_from_slice(&entry.data_bytes);

@@ -185,5 +185,6 @@ pub struct FileObjectData {
 
 const_assert_eq!(size_of::<FileObjectData>(), 12);
 
-/// Root node key entry — fixed 32 bytes at the start of key table 0.
-pub const ROOT_NODE_ENTRY_SIZE: usize = 32;
+/// Root node key entry — fixed 33 bytes at the start of key table 0.
+/// (21-byte header + 0-byte name + 12-byte NodeData)
+pub const ROOT_NODE_ENTRY_SIZE: usize = 33;

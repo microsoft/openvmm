@@ -64,14 +64,18 @@ open_enum! {
 
 /// Header prefixed to every chunk in the partition state blob.
 ///
+/// The C definition uses `DECLSPEC_ALIGN(16)`, making `sizeof` = 16.
 /// On disk, each chunk occupies `size_of::<VmSaveChunkHeader>() + data_length`
 /// bytes — there is no alignment padding between chunks in the stream.
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VmSaveChunkHeader {
     pub id: VmSaveChunkId,
     pub data_length: u32,
+    pub _padding: [u8; 8],
 }
+
+static_assertions::const_assert_eq!(size_of::<VmSaveChunkHeader>(), 16);
 
 // ============================================================
 // VID Saved State Descriptor (blob envelope)
@@ -116,7 +120,7 @@ pub const VM_SAVE_CHUNK_TAG_UNDEFINED: u32 = 0x5054_6475; // 'duTP'
 
 /// Prolog chunk — always 4080 bytes total.
 ///
-/// `Header.DataLength` = 4080 - 8 = 4072.
+/// `Header.DataLength` = 4080 - 16 = 4064.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ObSaveChunkProlog {
@@ -125,7 +129,7 @@ pub struct ObSaveChunkProlog {
     pub is_summary_save_state: u8,
     pub _padding: [u8; 3],
     pub vendor: HvProcessorVendor,
-    pub _reserved: [u8; 4060],
+    pub _reserved: [u8; 4052],
 }
 
 pub const OB_SAVE_CHUNK_PROLOG_SIZE: usize = 4080;
@@ -152,7 +156,7 @@ pub struct VpSaveChunkVpIndices {
     pub header: VmSaveChunkHeader,
     pub bsp: u32,
     pub vp_present_map: [u8; 30],
-    pub _padding: [u8; 2],
+    pub _padding: [u8; 14],
 }
 
 // ============================================================
@@ -165,23 +169,23 @@ pub struct VpSaveChunkVpIndices {
 pub struct ObSaveChunkVp {
     pub header: VmSaveChunkHeader,
     pub vp_index: u32,
+    pub _padding: [u8; 12],
 }
 
 /// Per-VTL marker chunk within a VP.
+///
+/// Used for both `VmSaveChunkIdVpVtl` and `VmSaveChunkIdPartitionVtl`.
+/// `HV_VTL` is `UINT8`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ObSaveChunkVtl {
     pub header: VmSaveChunkHeader,
-    pub vtl: u32,
+    pub vtl: u8,
+    pub _padding: [u8; 15],
 }
 
-/// Partition-level VTL marker.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct ObSaveChunkPartitionVtl {
-    pub header: VmSaveChunkHeader,
-    pub vtl: u32,
-}
+/// Partition-level VTL marker (same layout as per-VP VTL marker).
+pub type ObSaveChunkPartitionVtl = ObSaveChunkVtl;
 
 // ============================================================
 // OsId
@@ -193,6 +197,7 @@ pub struct ObSaveChunkPartitionVtl {
 pub struct PtSaveChunkOsId {
     pub header: VmSaveChunkHeader,
     pub os_id: u64,
+    pub _padding: [u8; 8],
 }
 
 // ============================================================
@@ -266,7 +271,7 @@ pub struct VpX64SaveChunkSegmentRegisters {
     pub ldtr: HvX64SegmentRegister,
     pub tr: HvX64SegmentRegister,
     pub cpl: u8,
-    pub _padding: [u8; 7],
+    pub _padding: [u8; 15],
 }
 
 /// Table registers (x64) — IDTR and GDTR.
@@ -282,13 +287,12 @@ pub struct VpX64SaveChunkTableRegisters {
 
 /// Floating-point / SSE / MMX registers (x64).
 ///
-/// Uses `AlignedU128` for XMM and FP registers.
+/// Uses `AlignedU128` for XMM and FP registers. The 16-byte aligned
+/// `VmSaveChunkHeader` provides natural alignment for the HV_UINT128 fields.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpX64SaveChunkFpRegisters {
     pub header: VmSaveChunkHeader,
-    // 8 bytes of padding to get to 16-byte alignment for the XMM registers
-    pub _padding: [u8; 8],
     pub xmm: [AlignedU128; 16],
     pub fp_mmx: [AlignedU128; 8],
     pub fp_control_status: AlignedU128,
@@ -351,6 +355,7 @@ pub struct VpArm64SaveChunkTableRegisters {
     pub ttbr0_el1: u64,
     pub ttbr1_el1: u64,
     pub vbar_el1: u64,
+    pub _padding: [u8; 8],
 }
 
 /// Floating-point / SIMD registers (ARM64).
@@ -358,8 +363,6 @@ pub struct VpArm64SaveChunkTableRegisters {
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpArm64SaveChunkFpRegisters {
     pub header: VmSaveChunkHeader,
-    // 8 bytes of padding to get to 16-byte alignment for Q registers
-    pub _padding: [u8; 8],
     pub q: [AlignedU128; 32],
     pub fpsr: u64,
     pub fpcr: u64,
@@ -369,10 +372,18 @@ pub struct VpArm64SaveChunkFpRegisters {
 // VP VTL Control Page
 // ============================================================
 
-/// VTL control page chunk — determines which VTL is active per VP.
+/// Size of VTL control data in the VP assist page.
+pub const VSM_SAVE_VP_VTL_CONTROL_BYTES: usize = 24;
+
+/// VP VTL control page chunk.
+///
+/// Contains the VTL control contents from the VP assist page and
+/// whether the VTL is runnable.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct VpSaveChunkVtlControlPage {
+pub struct VsmSaveChunkVpVtlControlPage {
     pub header: VmSaveChunkHeader,
-    pub active_vtl: u32,
+    pub vp_assist_page_vtl_control_contents: [u8; VSM_SAVE_VP_VTL_CONTROL_BYTES],
+    pub vtl_is_runnable: u8,
+    pub _padding: [u8; 7],
 }
