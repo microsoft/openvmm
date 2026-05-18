@@ -126,16 +126,13 @@ impl<R: Read + Seek> HvsFileReader<R> {
         }
 
         // Read all key tables
-        let key_tables: Vec<(u64, u32)> = all_entries
-            .iter()
-            .filter(|e| e.object_type == ObjectType::KEY_TABLE)
-            .map(|e| (e.file_offset_in_bytes, e.size_in_bytes))
-            .collect();
-
         let mut key_table_data: Vec<Vec<u8>> = Vec::new();
-        for &(offset, size) in &key_tables {
-            reader.seek(SeekFrom::Start(offset))?;
-            let mut data = vec![0u8; size as usize];
+        for entry in &all_entries {
+            if entry.object_type != ObjectType::KEY_TABLE {
+                continue;
+            }
+            reader.seek(SeekFrom::Start(entry.file_offset_in_bytes))?;
+            let mut data = vec![0u8; entry.size_in_bytes as usize];
             reader.read_exact(&mut data)?;
             key_table_data.push(data);
         }
