@@ -93,7 +93,7 @@ impl<W: Write + Seek> VmrsWriter<W> {
         // Partition state
         let partition_state = self.partition_state.take().unwrap_or_default();
         self.hvs
-            .add_array("/savedstate/savedVM/partition_state", partition_state)?;
+            .add_array("/savedstate/savedVM/partition_state", &partition_state)?;
 
         // Memory layout: split ranges into 1 MiB blocks, streaming each
         // block through a reusable buffer.
@@ -113,7 +113,7 @@ impl<W: Write + Seek> VmrsWriter<W> {
             meta.gpa_index_start = gpa_page_start;
 
             let meta_key = format!("/savedstate/RamMemoryBlock{meta_block_idx}");
-            self.hvs.add_array(&meta_key, meta.as_bytes().to_vec())?;
+            self.hvs.add_array(&meta_key, meta.as_bytes())?;
             meta_block_idx += 1;
 
             // Stream data blocks (1 MiB each)
@@ -125,7 +125,7 @@ impl<W: Write + Seek> VmrsWriter<W> {
                 reader.read_gpa(gpa, buf)?;
 
                 let data_key = format!("/savedstate/RamBlock{data_block_idx}");
-                self.hvs.add_array(&data_key, buf.to_vec())?;
+                self.hvs.add_array(&data_key, buf)?;
                 data_block_idx += 1;
                 gpa += block_len as u64;
             }

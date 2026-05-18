@@ -125,14 +125,14 @@ impl<W: Write + Seek> HvsFileWriter<W> {
     /// Adds a binary array key.
     ///
     /// Arrays of [`FILE_OBJECT_THRESHOLD`] bytes or larger are automatically
-    /// stored as file objects.
-    pub fn add_array(&mut self, path: &str, data: Vec<u8>) -> io::Result<()> {
+    /// stored as file objects (written to disk immediately).
+    pub fn add_array(&mut self, path: &str, data: &[u8]) -> io::Result<()> {
         if data.len() >= FILE_OBJECT_THRESHOLD as usize {
-            return self.add_file_object(path, &data);
+            return self.add_file_object(path, data);
         }
         self.pending_keys.push(PendingKey {
             path: path.to_string(),
-            value: Value::Array(data),
+            value: Value::Array(data.to_vec()),
             file_object: None,
         });
         Ok(())

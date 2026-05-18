@@ -104,7 +104,7 @@ mod tests {
         let data = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03];
         let buf = Cursor::new(Vec::new());
         let mut w = HvsFileWriter::new(buf).unwrap();
-        w.add_array("/test/blob", data.clone()).unwrap();
+        w.add_array("/test/blob", &data).unwrap();
         let mut buf = w.finish().unwrap();
 
         buf.set_position(0);
@@ -118,7 +118,7 @@ mod tests {
         let data: Vec<u8> = (0..4096).map(|i| (i & 0xFF) as u8).collect();
         let buf = Cursor::new(Vec::new());
         let mut w = HvsFileWriter::new(buf).unwrap();
-        w.add_array("/savedstate/savedVM/partition_state", data.clone()).unwrap();
+        w.add_array("/savedstate/savedVM/partition_state", &data).unwrap();
         let mut buf = w.finish().unwrap();
 
         buf.set_position(0);
@@ -133,7 +133,7 @@ mod tests {
         let mut w = HvsFileWriter::new(buf).unwrap();
         w.add_uint("/savedstate/VmVersion", 0x0A00);
         w.add_string("/savedstate/type", "Normal");
-        w.add_array("/savedstate/savedVM/partition_state", blob.clone()).unwrap();
+        w.add_array("/savedstate/savedVM/partition_state", &blob).unwrap();
         w.add_bool("/savedstate/compressed", false);
         w.add_int("/savedstate/vpcount", 4);
         let mut buf = w.finish().unwrap();
@@ -206,7 +206,7 @@ mod tests {
             let name = format!("/parent/key_{i:04}");
             // Vary data size to hit different table-fill patterns.
             let data = vec![0xABu8; (i * 7) % 50];
-            w.add_array(&name, data).unwrap();
+            w.add_array(&name, &data).unwrap();
         }
         let buf = w.finish().unwrap();
         let data = buf.into_inner();
@@ -267,7 +267,7 @@ mod tests {
         for i in 0..500u32 {
             let mut block = vec![0u8; 2048];
             block[..4].copy_from_slice(&i.to_le_bytes());
-            w.add_array(&format!("/data/block{i}"), block).unwrap();
+            w.add_array(&format!("/data/block{i}"), &block).unwrap();
         }
         let mut buf = w.finish().unwrap();
 
