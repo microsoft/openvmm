@@ -121,7 +121,12 @@ impl PetriVmConfigOpenVmm {
             tpm: tpm_config,
             vmbus_storage_controllers,
             pcie_nvme_drives,
+            physical_nvme_devices,
         } = petri_vm_config;
+
+        if !physical_nvme_devices.is_empty() {
+            anyhow::bail!("Physical NVMe devices are only supported with the Hyper-V backend");
+        }
 
         tracing::debug!(?firmware, ?arch, "Petri VM firmware configuration");
 

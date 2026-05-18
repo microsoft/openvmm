@@ -4,6 +4,7 @@
 mod hvc;
 pub mod powershell;
 pub mod vm;
+
 use vmsocket::VmAddress;
 use vmsocket::VmSocket;
 
@@ -368,6 +369,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             com_3: supports_com3,
             imc_hiv,
             management_vtl_settings,
+
             ..HyperVNewCustomVMArgs::from_config(&config, &properties)?
         };
 
