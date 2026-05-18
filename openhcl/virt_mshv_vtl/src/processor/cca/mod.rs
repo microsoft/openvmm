@@ -227,7 +227,7 @@ impl BackingPrivate for CcaBacked {
         dev: &impl CpuIo,
         _stop: &mut virt::StopVp<'_>,
     ) -> Result<(), VpHaltReason> {
-        // TODO: CCA: TDX implementation handled "deliverability notifications" here,
+        // TODO: CCA: TDX implementation handled "deliverability events/interrupts" here,
         // no clue what they're about, potentially some VBS stuff?
 
         // TODO: CCA: NEXT: move this to `init`?

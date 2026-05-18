@@ -893,8 +893,12 @@ impl virt::Partition for UhPartition {
     }
 
     #[cfg(guest_arch = "aarch64")]
-    fn request_msi(&self, _vtl: Vtl, _request: MsiRequest) {
-        todo!()
+    fn request_msi(&self, vtl: Vtl, request: MsiRequest) {
+        tracelimit::warn_ratelimited!(
+            ?vtl,
+            ?request,
+            "ignoring MSI request on aarch64: MSI routing is not implemented"
+        );
     }
 
     fn request_yield(&self, _vp_index: VpIndex) {
@@ -1381,8 +1385,12 @@ impl UhPartitionInner {
     }
 
     #[cfg(guest_arch = "aarch64")]
-    fn request_msi(&self, _vtl: GuestVtl, _request: MsiRequest) {
-        todo!();
+    fn request_msi(&self, vtl: GuestVtl, request: MsiRequest) {
+        tracelimit::warn_ratelimited!(
+            ?vtl,
+            ?request,
+            "ignoring MSI request on aarch64: MSI routing is not implemented"
+        );
     }
 }
 
@@ -1695,7 +1703,7 @@ impl<'a> UhProtoPartition<'a> {
         let privs = hcl
             .get_privileges_and_features_info()
             .map_err(Error::GetReg)?;
-        let guest_vsm_available = Self::check_guest_vsm_support(Some(privs), &hcl)?;
+        let guest_vsm_available = Self::check_guest_vsm_support(privs, &hcl)?;
 
         #[cfg(guest_arch = "x86_64")]
         let cpuid = match params.isolation {
@@ -1954,28 +1962,28 @@ impl<'a> UhProtoPartition<'a> {
             .expect("registering synic intercept cannot fail");
         }
 
-        let cvm_state = if matches!(isolation, IsolationType::Snp | IsolationType::Tdx) {
-            let vsm_caps = hcl.get_vsm_capabilities().map_err(Error::GetReg)?;
-            let proxy_interrupt_redirect_available =
-                vsm_caps.proxy_interrupt_redirect_available() && !params.disable_proxy_redirect;
+        let cvm_state = match isolation {
+            IsolationType::Snp | IsolationType::Tdx => {
+                let vsm_caps = hcl.get_vsm_capabilities().map_err(Error::GetReg)?;
+                let proxy_interrupt_redirect_available =
+                    vsm_caps.proxy_interrupt_redirect_available() && !params.disable_proxy_redirect;
 
-            Some(Self::construct_cvm_state(
-                &params,
-                late_params.cvm_params.unwrap(),
-                &caps,
-                guest_vsm_available,
-                proxy_interrupt_redirect_available,
-            )?)
-        } else if isolation == IsolationType::Cca {
-            Some(Self::construct_cvm_state(
+                Some(Self::construct_cvm_state(
+                    &params,
+                    late_params.cvm_params.unwrap(),
+                    &caps,
+                    guest_vsm_available,
+                    proxy_interrupt_redirect_available,
+                )?)
+            }
+            IsolationType::Cca => Some(Self::construct_cvm_state(
                 &params,
                 late_params.cvm_params.unwrap(),
                 &caps,
                 guest_vsm_available,
                 false,
-            )?)
-        } else {
-            None
+            )?),
+            IsolationType::Vbs | IsolationType::None => None,
         };
 
         let lower_vtl_timer_virt_available =
@@ -2231,14 +2239,9 @@ impl UhPartitionInner {
 impl UhProtoPartition<'_> {
     /// Whether Guest VSM is available to the guest. If so, for hardware CVMs,
     /// it is safe to expose Guest VSM support via cpuid.
-    fn check_guest_vsm_support(
-        privs: Option<HvPartitionPrivilege>,
-        hcl: &Hcl,
-    ) -> Result<bool, Error> {
-        if let Some(p) = privs {
-            if !p.access_vsm() {
-                return Ok(false);
-            }
+    fn check_guest_vsm_support(privs: HvPartitionPrivilege, hcl: &Hcl) -> Result<bool, Error> {
+        if !privs.access_vsm() {
+            return Ok(false);
         }
 
         let guest_vsm_config = hcl
@@ -2414,11 +2417,11 @@ fn get_tsc_frequency(isolation: IsolationType) -> Result<u64, Error> {
     // Always get the frequency from the hypervisor. It's believed that, as long
     // as the hypervisor is behaving, it will provide the most precise and accurate frequency.
     #[cfg(guest_arch = "x86_64")]
-    let msr = MsrDevice::new(0).map_err(Error::OpenMsr)?;
-    #[cfg(guest_arch = "x86_64")]
-    let hv_frequency = msr
-        .read_msr(hvdef::HV_X64_MSR_TSC_FREQUENCY)
-        .map_err(Error::ReadTscFrequency)?;
+    let hv_frequency = {
+        let msr = MsrDevice::new(0).map_err(Error::OpenMsr)?;
+        msr.read_msr(hvdef::HV_X64_MSR_TSC_FREQUENCY)
+            .map_err(Error::ReadTscFrequency)?
+    };
     #[cfg(guest_arch = "aarch64")]
     let hv_frequency = read_cntfrq_el0();
 
