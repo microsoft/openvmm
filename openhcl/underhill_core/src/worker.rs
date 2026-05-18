@@ -24,6 +24,7 @@ use crate::dispatch::vtl2_settings_worker::InitialControllers;
 use crate::dispatch::vtl2_settings_worker::disk_from_disk_type;
 use crate::dispatch::vtl2_settings_worker::wait_for_mana;
 use crate::emuplat::EmuplatServicing;
+use crate::emuplat::cmos_rtc_time_source::UnderhillCmosRtcTimeSourceResolver;
 use crate::emuplat::firmware::UnderhillLogger;
 use crate::emuplat::firmware::UnderhillVsmConfig;
 use crate::emuplat::framebuffer::FramebufferRemoteControl;
@@ -65,8 +66,6 @@ use anyhow::Context;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
-use chipset_resources::CmosRtcTimeSourceHandleKind;
-use chipset_resources::ResolvedCmosRtcTimeSource;
 use closeable_mutex::CloseableMutex;
 use cvm_tracing::CVM_ALLOWED;
 use debug_ptr::DebugPtr;
@@ -155,7 +154,6 @@ use virt_mshv_vtl::UhProtoPartition;
 use vm_loader::initial_regs::initial_regs;
 use vm_resource::IntoResource;
 use vm_resource::PlatformResource;
-use vm_resource::ResolveResource;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
@@ -199,22 +197,6 @@ use watchdog_core::platform::WatchdogPlatform;
 use watchdog_core::resources::StaticWatchdogPlatformResolver;
 use zerocopy::FromZeros;
 
-struct UnderhillCmosRtcTimeSourceResolver {
-    time_source: ArcMutexUnderhillLocalClock,
-}
-
-impl ResolveResource<CmosRtcTimeSourceHandleKind, PlatformResource>
-    for UnderhillCmosRtcTimeSourceResolver
-{
-    type Output = ResolvedCmosRtcTimeSource;
-    type Error = std::convert::Infallible;
-
-    fn resolve(&self, _resource: PlatformResource, (): ()) -> Result<Self::Output, Self::Error> {
-        Ok(ResolvedCmosRtcTimeSource(Box::new(
-            self.time_source.new_linked_clock(),
-        )))
-    }
-}
 pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new("UnderhillWorker");
 
 const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;

@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+pub mod cmos_rtc_time_source;
 pub mod firmware;
 pub mod framebuffer;
 pub mod i440bx_host_pci_bridge;
