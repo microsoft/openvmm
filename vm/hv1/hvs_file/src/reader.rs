@@ -71,7 +71,7 @@ pub struct HvsFileReader<R: Read + Seek> {
 }
 
 /// A parsed key entry.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct KeyEntry {
     value_type: ValueType,
     is_file_object: bool,
@@ -353,13 +353,15 @@ impl<R: Read + Seek> HvsFileReader<R> {
 
     /// Reads an array value, transparently handling file objects.
     pub fn read_array(&mut self, path: &str) -> Result<Vec<u8>, ReadError> {
-        let entry = self.keys.get(path).ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?.clone();
+        let entry = self.keys.get(path).ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?;
         if entry.value_type != ValueType::Array {
             return Err(ReadError::WrongKeyType { expected: "Array", actual: entry.value_type });
         }
         if entry.is_file_object {
-            self.reader.seek(SeekFrom::Start(entry.file_object_offset))?;
-            let mut data = vec![0u8; entry.file_object_size as usize];
+            let offset = entry.file_object_offset;
+            let size = entry.file_object_size as usize;
+            self.reader.seek(SeekFrom::Start(offset))?;
+            let mut data = vec![0u8; size];
             self.reader.read_exact(&mut data)?;
             return Ok(data);
         }

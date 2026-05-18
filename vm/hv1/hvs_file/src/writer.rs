@@ -10,8 +10,12 @@
 use crate::defs::*;
 use crate::struct_checksum;
 use core::mem::offset_of;
+use core::mem::size_of;
 use std::io::{self, Seek, SeekFrom, Write};
 use zerocopy::IntoBytes;
+
+/// Zero buffer for writing alignment padding without allocating.
+const ZERO_PAGE: [u8; 4096] = [0u8; 4096];
 
 /// Round `size` up to a multiple of `alignment`.
 fn align_up(size: u64, alignment: u64) -> u64 {
@@ -121,7 +125,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
     /// Adds a binary array key.
     ///
     /// Arrays of [`FILE_OBJECT_THRESHOLD`] bytes or larger are automatically
-    /// stored as file objects, matching Hyper-V's `ShouldUseFileObject`.
+    /// stored as file objects.
     pub fn add_array(&mut self, path: &str, data: Vec<u8>) -> io::Result<()> {
         if data.len() >= FILE_OBJECT_THRESHOLD as usize {
             return self.add_file_object(path, &data);
@@ -149,7 +153,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         // Pad to alignment
         let pad_len = aligned_size as usize - data.len();
         if pad_len > 0 {
-            self.writer.write_all(&vec![0u8; pad_len])?;
+            self.writer.write_all(&ZERO_PAGE[..pad_len])?;
         }
 
         // Track the object table entry
@@ -412,12 +416,18 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 loc_stack.push((entry.path.clone(), current_table_index, offset_in_table as u32));
             }
 
-            // Compute entry checksum.
-            let mut checksum_buf = Vec::with_capacity(entry_total);
-            checksum_buf.extend_from_slice(entry.header.as_bytes());
-            checksum_buf.extend_from_slice(&entry.name_bytes);
-            checksum_buf.extend_from_slice(&entry.data_bytes);
-            entry.header.checksum = struct_checksum(&checksum_buf, offset_of!(KeyTableEntryHeader, checksum));
+            // Compute entry checksum using streaming CRC (no buffer allocation).
+            {
+                let header_bytes = entry.header.as_bytes();
+                let cksum_off = offset_of!(KeyTableEntryHeader, checksum);
+                let mut hasher = crc32fast::Hasher::new();
+                hasher.update(&header_bytes[..cksum_off]);
+                hasher.update(&[0u8; 4]);
+                hasher.update(&header_bytes[cksum_off + 4..]);
+                hasher.update(&entry.name_bytes);
+                hasher.update(&entry.data_bytes);
+                entry.header.checksum = hasher.finalize();
+            }
 
             current_table_buf.extend_from_slice(entry.header.as_bytes());
             current_table_buf.extend_from_slice(&entry.name_bytes);
@@ -455,7 +465,6 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 } else {
                     // Gap is too small for a Free entry. Extend the last
                     // entry's SizeInBytes to absorb the slack bytes.
-                    eprintln!("DEBUG: absorbing {remaining}-byte gap into last entry");
                     let mut pos = 0;
                     let mut last_size_offset = 0;
                     while pos + entry_header_size <= table_data.len() {
@@ -492,7 +501,6 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             let offset = key_table_base + (i as u64) * alignment;
             key_table_offsets.push(offset);
 
-            // Build the key table header
             let mut header = KeyTableHeader {
                 signature: KEY_TABLE_SIGNATURE,
                 table_index: (i + 1) as u16, // indices start at 1
@@ -501,31 +509,24 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             };
             header.checksum = struct_checksum(header.as_bytes(), offset_of!(KeyTableHeader, checksum));
 
+            // Write header + entries + padding as a single aligned block.
             self.writer.seek(SeekFrom::Start(offset))?;
             self.writer.write_all(header.as_bytes())?;
             self.writer.write_all(table_data)?;
-
-            // Pad the key table to alignment
             let written = key_table_header_size + table_data.len();
             let pad = align_up(written as u64, alignment) as usize - written;
             if pad > 0 {
-                self.writer.write_all(&vec![0u8; pad])?;
+                self.writer.write_all(&ZERO_PAGE[..pad])?;
             }
         }
 
-        let total_key_table_space = tables.len() as u64 * alignment;
-        let _final_data_end = key_table_base + total_key_table_space;
-
-        // Build object table.
-        // Fill to full capacity so the DLL doesn't try to expand it
-        // (expansion requires a write-back which fails on read-only files).
+        // Build object table, fully populated to avoid expansion on load.
         let max_entries = (alignment as usize - size_of::<ObjectTableHeader>()) / size_of::<ObjectTableEntry>();
 
         let mut obj_entries: Vec<ObjectTableEntry> = Vec::with_capacity(max_entries);
 
         // Key table entries
-        for (i, &offset) in key_table_offsets.iter().enumerate() {
-            let _ = i;
+        for &offset in &key_table_offsets {
             let mut entry = ObjectTableEntry {
                 object_type: ObjectType::KEY_TABLE,
                 entry_checksum: 0,
@@ -560,26 +561,21 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             obj_entries.push(chain_entry); // reuse the checksummed empty entry
         }
 
-        // Write object table at offset 8192.
+        // Write object table at offset 8192 as a single aligned block.
         let object_table_offset = 2 * MIN_DATA_ALIGNMENT as u64;
-
         self.writer.seek(SeekFrom::Start(object_table_offset))?;
 
         let obj_header = ObjectTableHeader {
             signature: OBJECT_TABLE_SIGNATURE,
             entries_count: obj_entries.len() as u32,
         };
-        self.writer.write_all(obj_header.as_bytes())?;
+        let mut obj_buf = Vec::with_capacity(alignment as usize);
+        obj_buf.extend_from_slice(obj_header.as_bytes());
         for entry in &obj_entries {
-            self.writer.write_all(entry.as_bytes())?;
+            obj_buf.extend_from_slice(entry.as_bytes());
         }
-
-        // Pad remainder of block to alignment
-        let obj_table_written = size_of::<ObjectTableHeader>() + obj_entries.len() * size_of::<ObjectTableEntry>();
-        let pad = align_up(obj_table_written as u64, alignment) as usize - obj_table_written;
-        if pad > 0 {
-            self.writer.write_all(&vec![0u8; pad])?;
-        }
+        obj_buf.resize(alignment as usize, 0);
+        self.writer.write_all(&obj_buf)?;
 
         // Write an empty replay log at the current data end.
         // HyperVStorage expects a valid replay log region — InitializeForLoad
@@ -609,18 +605,16 @@ impl<W: Write + Seek> HvsFileWriter<W> {
 
         self.writer.seek(SeekFrom::Start(replay_log_offset))?;
         self.writer.write_all(header.as_bytes())?;
-        // Pad to alignment
         let pad = alignment as usize - size_of::<ReplayLogHeader>();
         if pad > 0 {
-            self.writer.write_all(&vec![0u8; pad])?;
+            self.writer.write_all(&ZERO_PAGE[..pad])?;
         }
 
-        // Write file headers.
-        // The two copies must have different sequence numbers — if both are
-        // valid with the same sequence, HyperVStorage treats the file as
-        // corrupt. Write copy 0 with sequence 1 (authoritative) and copy 1
-        // with sequence 0 (stale).
-        let make_header = |seq: u16| -> Vec<u8> {
+        // Write file headers. The two copies must have different sequence
+        // numbers — identical sequences are treated as corrupt.
+        let mut page = [0u8; MIN_DATA_ALIGNMENT as usize];
+
+        for (seq, offset) in [(1u16, 0u64), (0u16, MIN_DATA_ALIGNMENT as u64)] {
             let mut header = FileHeader {
                 signature: HEADER_SIGNATURE,
                 checksum: 0,
@@ -634,18 +628,11 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 replay_log_header_size_in_bytes: replay_log_header_size,
             };
             header.checksum = struct_checksum(header.as_bytes(), offset_of!(FileHeader, checksum));
-
-            let mut page = vec![0u8; MIN_DATA_ALIGNMENT as usize];
             page[..size_of::<FileHeader>()].copy_from_slice(header.as_bytes());
-            page
-        };
-
-        // Write copy 0 (sequence 1, authoritative)
-        self.writer.seek(SeekFrom::Start(0))?;
-        self.writer.write_all(&make_header(1))?;
-
-        // Write copy 1 (sequence 0, stale)
-        self.writer.write_all(&make_header(0))?;
+            page[size_of::<FileHeader>()..].fill(0);
+            self.writer.seek(SeekFrom::Start(offset))?;
+            self.writer.write_all(&page)?;
+        }
 
         self.writer.flush()?;
         Ok(self.writer)
