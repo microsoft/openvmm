@@ -20,13 +20,13 @@ use zerocopy::KnownLayout;
 // File Header
 // ============================================================
 
-/// File header signature: 0x01282014
+/// File header signature.
 pub const HEADER_SIGNATURE: u32 = 0x0128_2014;
 
-/// Object table signature: 0x01110001
+/// Object table signature.
 pub const OBJECT_TABLE_SIGNATURE: u32 = 0x0111_0001;
 
-/// Key table signature: 0x0002
+/// Key table signature.
 pub const KEY_TABLE_SIGNATURE: u16 = 0x0002;
 
 /// Default data alignment (one page).
@@ -44,9 +44,8 @@ pub const FILE_OBJECT_THRESHOLD: u32 = 2048;
 /// Format version 4.0 (current).
 pub const FORMAT_VERSION_4_0: u32 = 0x0400;
 
-/// File header — stored twice at offsets 0 and 4096.
-///
-/// Size: 42 bytes (packed). Padded to `DataAlignmentInBytes` on disk.
+/// File header — stored twice at offsets 0 and 4096, padded to
+/// `data_alignment_in_bytes`.
 #[repr(C, packed)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FileHeader {
@@ -91,9 +90,6 @@ open_enum! {
 }
 
 /// Object table entry.
-///
-/// Size: 18 bytes (packed). We use a packed repr to match the on-disk
-/// format exactly.
 #[repr(C, packed)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ObjectTableEntry {
@@ -113,10 +109,8 @@ pub const OBJECT_ENTRY_FLAG_REQUIRED: u8 = 0x01;
 // Key Table
 // ============================================================
 
-/// Key table header.
-///
-/// Size: 10 bytes (packed). Checksum covers only this 10-byte header
-/// with the checksum field zeroed.
+/// Key table header. Checksum covers only this header with the
+/// checksum field zeroed.
 #[repr(C, packed)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct KeyTableHeader {
@@ -143,10 +137,8 @@ open_enum! {
     }
 }
 
-/// Key table entry header.
-///
-/// Size: 20 bytes (packed). Checksum covers the 20-byte header (with
-/// checksum zeroed) plus the name and data bytes.
+/// Key table entry header. Checksum covers the header (with checksum
+/// field zeroed) plus the name and data bytes.
 #[repr(C, packed)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct KeyTableEntryHeader {
@@ -179,7 +171,8 @@ pub struct NodeData {
 
 const_assert_eq!(size_of::<NodeData>(), 12);
 
-/// File object data pointer (stored in key entries with `PointsToFileObject` flag).
+/// File object data pointer, stored in lieu of inline data when the
+/// `KEY_FLAG_POINTS_TO_FILE_OBJECT` flag is set.
 #[repr(C, packed)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FileObjectData {
@@ -193,7 +186,7 @@ const_assert_eq!(size_of::<FileObjectData>(), 12);
 // Replay Log
 // ============================================================
 
-/// Replay log signature: 0x01110003
+/// Replay log signature.
 pub const REPLAY_LOG_SIGNATURE: u32 = 0x0111_0003;
 
 /// Replay log header.
