@@ -36,6 +36,18 @@ pub(crate) fn crc32(data: &[u8]) -> u32 {
     hasher.finalize()
 }
 
+/// Computes the checksum for a structure, skipping the checksum field.
+///
+/// Hashes the bytes before `checksum_offset`, then 4 zero bytes, then
+/// the bytes after — without mutating or copying the input.
+pub(crate) fn struct_checksum(bytes: &[u8], checksum_offset: usize) -> u32 {
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(&bytes[..checksum_offset]);
+    hasher.update(&[0u8; 4]);
+    hasher.update(&bytes[checksum_offset + 4..]);
+    hasher.finalize()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::reader::HvsFileReader;

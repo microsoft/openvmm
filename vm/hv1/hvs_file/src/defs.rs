@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![expect(dead_code)]
-
 //! On-disk structure definitions for the HyperV Storage file format.
 //!
 //! These types represent the binary layout of `.vmrs`, `.vmcx`, and `.vsv`
 //! files. All multi-byte integers are little-endian. Structures are packed.
+
+#![expect(dead_code)]
 
 use core::mem::size_of;
 use open_enum::open_enum;

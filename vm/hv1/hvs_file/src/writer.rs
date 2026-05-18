@@ -9,18 +9,10 @@
 
 use crate::defs::*;
 use crate::crc32;
+use crate::struct_checksum;
 use std::collections::HashMap;
 use std::io::{self, Seek, SeekFrom, Write};
 use zerocopy::IntoBytes;
-
-/// Computes the checksum for a structure, skipping the checksum field.
-fn struct_checksum(bytes: &[u8], checksum_offset: usize) -> u32 {
-    let mut hasher = crc32fast::Hasher::new();
-    hasher.update(&bytes[..checksum_offset]);
-    hasher.update(&[0u8; 4]);
-    hasher.update(&bytes[checksum_offset + 4..]);
-    hasher.finalize()
-}
 
 /// Round `size` up to a multiple of `alignment`.
 fn align_up(size: u64, alignment: u64) -> u64 {
