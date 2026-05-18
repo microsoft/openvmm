@@ -39,10 +39,12 @@ mod cca {
     use core::ops::Range;
     use memory_range::MemoryRange;
     use std::sync::Arc;
+    use underhill_mem::MemoryAcceptor;
     use user_driver::lockmem::LockedMemorySpawner;
     use user_driver::memory::MemoryBlock;
     use user_driver::memory::PAGE_SIZE;
     use user_driver::memory::PAGE_SIZE64;
+    use virt::IsolationType;
     use vm_topology::memory::MemoryRangeWithNode;
 
     pub(super) struct CcaState {
@@ -121,6 +123,13 @@ mod cca {
                     &[],
                 )
                 .context("bad memory layout")?;
+
+                // Grant GPA to Plane1 (eqv. VTL0)
+                let ram = memory_layout.ram().iter().map(|r| r.range);
+                let acceptor = MemoryAcceptor::new(IsolationType::Cca)?;
+                for range in ram {
+                    acceptor.apply_initial_lower_vtl_protections(range)?;
+                }
 
                 Ok(Some(CcaState {
                     private_dma_client,
