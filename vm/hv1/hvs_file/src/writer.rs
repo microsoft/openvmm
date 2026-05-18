@@ -10,7 +10,6 @@
 use crate::defs::*;
 use crate::crc32;
 use crate::struct_checksum;
-use std::collections::BTreeMap;
 use std::io::{self, Seek, SeekFrom, Write};
 use zerocopy::IntoBytes;
 
@@ -365,14 +364,16 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             .to_vec();
         }
 
-        // Layout entries across key tables, tracking node positions for
-        // parent pointer fixup.
+        // Layout entries across key tables. Use a stack to track the
+        // current ancestor chain's (table_index, offset) for parent
+        // pointer fixup — no map needed since nodes always precede
+        // their children.
         let usable_per_table = key_table_size - key_table_header_size;
         let mut tables: Vec<Vec<u8>> = Vec::new();
         let mut current_table_buf = Vec::with_capacity(usable_per_table);
         let mut current_table_index: u16 = 1;
-        let mut node_locations: BTreeMap<String, (u16, u32)> = BTreeMap::new();
-        node_locations.insert(String::new(), (0, 0)); // root sentinel
+        // Stack of (path, table_index, offset). Root sentinel is (0, 0).
+        let mut loc_stack: Vec<(String, u16, u32)> = Vec::new();
 
         for entry in &mut all_entries {
             let entry_total = entry.header.size_in_bytes as usize;
@@ -389,19 +390,26 @@ impl<W: Write + Seek> HvsFileWriter<W> {
 
             let offset_in_table = key_table_header_size + current_table_buf.len();
 
-            // Record node location for children to reference.
-            if entry.is_node {
-                node_locations.insert(
-                    entry.path.clone(),
-                    (current_table_index, offset_in_table as u32),
-                );
+            // Pop the stack back to this entry's parent.
+            let parent = entry.parent_path();
+            while let Some(top) = loc_stack.last() {
+                if parent.starts_with(&top.0) && (parent == top.0 || parent.len() == top.0.len()) {
+                    break;
+                }
+                loc_stack.pop();
             }
 
-            // Set parent pointer from the node_locations map.
-            let parent = entry.parent_path().to_string();
-            if let Some(&(pt, po)) = node_locations.get(&parent) {
-                entry.header.parent_node_table = pt;
-                entry.header.parent_node_offset = po;
+            // Set parent pointer from the stack top (or root sentinel).
+            let (pt, po) = loc_stack
+                .last()
+                .map(|(_, t, o)| (*t, *o))
+                .unwrap_or((0, 0));
+            entry.header.parent_node_table = pt;
+            entry.header.parent_node_offset = po;
+
+            // Push node location for children to reference.
+            if entry.is_node {
+                loc_stack.push((entry.path.clone(), current_table_index, offset_in_table as u32));
             }
 
             // Compute entry checksum.
