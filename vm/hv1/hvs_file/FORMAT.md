@@ -391,7 +391,10 @@ memory block metadata structure:
 | 16 | 8 | MbpIndexStart | Starting MBP (memory block page) index |
 | 24 | 8 | GpaIndexStart | Starting GPA page number (GPA / 4096) |
 | 32 | 4 | VirtualNode | NUMA node index |
-| 36 | 4 | KsrBlockId | KSR block ID (can be zero for debug dumps) |
+| 36 | 4 | (padding) | Reserved, must be zero |
+| 40 | 8 | KsrBlockId | KSR block ID (can be zero for debug dumps) |
+
+Total size: 48 bytes.
 
 For a simple debug dump, set `SavedStateVersion` = 3,
 `Flags` = 0, `MbpIndexStart` = cumulative page offset into the RAM
