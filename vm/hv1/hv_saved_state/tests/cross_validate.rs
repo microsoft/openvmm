@@ -13,9 +13,7 @@
 use hv_saved_state::PartitionStateBuilder;
 use hv_saved_state::ProcessorArch;
 use hv_saved_state::VmrsWriter;
-use hv_saved_state::X64VpRegisters;
-use hvdef::HvX64SegmentRegister;
-use hvdef::HvX64TableRegister;
+use hv_saved_state::X64VpState;
 use std::ffi::c_void;
 use std::io::Cursor;
 use std::path::PathBuf;
@@ -99,7 +97,7 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
     builder.set_os_id(0);
 
     for i in 0..vp_count {
-        let mut regs = X64VpRegisters::default();
+        let mut regs = virt::x86::vp::Registers::default();
         regs.rip = rip + i as u64;
         regs.rsp = 0xFFFFF780_00000000;
         regs.rax = 0xDEAD_BEEF;
@@ -107,23 +105,28 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
         regs.cr3 = cr3;
         regs.cr4 = 0x370678;
         regs.efer = 0xD01;
-        regs.cs = HvX64SegmentRegister {
+        regs.cs = virt::x86::SegmentRegister {
             base: 0,
             limit: 0xFFFFFFFF,
             selector: 0x10,
             attributes: 0x209B,
         };
-        regs.idtr = HvX64TableRegister {
-            pad: [0; 3],
-            limit: 0xFFF,
+        regs.idtr = virt::x86::TableRegister {
             base: 0xFFFFF800_00000000,
+            limit: 0xFFF,
         };
-        regs.gdtr = HvX64TableRegister {
-            pad: [0; 3],
-            limit: 0x6F,
+        regs.gdtr = virt::x86::TableRegister {
             base: 0xFFFFF800_00001000,
+            limit: 0x6F,
         };
-        builder.add_x64_vp(i, &regs);
+        builder.add_x64_vp(
+            i,
+            X64VpState {
+                registers: regs,
+                debug_registers: None,
+                xsave: None,
+            },
+        );
     }
 
     let blob = builder.finish();

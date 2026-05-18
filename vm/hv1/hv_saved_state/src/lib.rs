@@ -17,12 +17,16 @@
 //! # Usage
 //!
 //! ```rust,no_run
-//! use hv_saved_state::{PartitionStateBuilder, VmrsWriter, ProcessorArch};
+//! use hv_saved_state::{PartitionStateBuilder, VmrsWriter, ProcessorArch, X64VpState};
 //!
 //! // Build partition state from VP registers
 //! let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
 //! builder.set_os_id(0); // unenlightened guest
-//! builder.add_x64_vp(0, &Default::default());
+//! builder.add_x64_vp(0, X64VpState {
+//!     registers: Default::default(),
+//!     debug_registers: None,
+//!     xsave: None,
+//! });
 //! let blob = builder.finish();
 //!
 //! // Write complete VMRS file with streaming memory
@@ -42,9 +46,9 @@ mod defs;
 mod partition_state;
 mod vmrs_writer;
 
-pub use partition_state::Aarch64VpRegisters;
+pub use partition_state::Aarch64VpState;
 pub use partition_state::PartitionStateBuilder;
 pub use partition_state::ProcessorArch;
-pub use partition_state::X64VpRegisters;
+pub use partition_state::X64VpState;
 pub use vmrs_writer::GuestMemoryReader;
 pub use vmrs_writer::VmrsWriter;

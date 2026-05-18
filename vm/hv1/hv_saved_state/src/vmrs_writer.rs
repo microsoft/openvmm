@@ -138,9 +138,7 @@ impl<W: Write + Seek> VmrsWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PartitionStateBuilder, ProcessorArch, X64VpRegisters};
-    use hvdef::HvX64SegmentRegister;
-    use hvdef::HvX64TableRegister;
+    use crate::{PartitionStateBuilder, ProcessorArch, X64VpState};
     use hvs_file::reader::HvsFileReader;
     use std::io::Cursor;
 
@@ -172,23 +170,29 @@ mod tests {
     fn make_test_blob() -> Vec<u8> {
         let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
         builder.set_os_id(0);
-        let mut regs = X64VpRegisters::default();
+        let mut regs = virt::x86::vp::Registers::default();
         regs.rip = 0xFFFFF800_12345678;
         regs.cr3 = 0x1AD000;
         regs.cr0 = 0x80050033;
         regs.efer = 0xD01;
-        regs.cs = HvX64SegmentRegister {
+        regs.cs = virt::x86::SegmentRegister {
             base: 0,
             limit: 0xFFFFFFFF,
             selector: 0x10,
             attributes: 0x209B,
         };
-        regs.idtr = HvX64TableRegister {
-            pad: [0; 3],
-            limit: 0xFFF,
+        regs.idtr = virt::x86::TableRegister {
             base: 0xFFFFF800_00000000,
+            limit: 0xFFF,
         };
-        builder.add_x64_vp(0, &regs);
+        builder.add_x64_vp(
+            0,
+            X64VpState {
+                registers: regs,
+                debug_registers: None,
+                xsave: None,
+            },
+        );
         builder.finish()
     }
 
@@ -229,10 +233,18 @@ mod tests {
         assert!(block1.iter().all(|&b| b == 0xAB));
     }
 
+    fn make_default_x64_state() -> X64VpState {
+        X64VpState {
+            registers: virt::x86::vp::Registers::default(),
+            debug_registers: None,
+            xsave: None,
+        }
+    }
+
     #[test]
     fn multiple_memory_ranges() {
         let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
-        builder.add_x64_vp(0, &X64VpRegisters::default());
+        builder.add_x64_vp(0, make_default_x64_state());
         let blob = builder.finish();
 
         let buf = Cursor::new(Vec::new());
@@ -271,7 +283,7 @@ mod tests {
     #[test]
     fn empty_memory_produces_valid_file() {
         let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
-        builder.add_x64_vp(0, &X64VpRegisters::default());
+        builder.add_x64_vp(0, make_default_x64_state());
         let blob = builder.finish();
 
         let buf = Cursor::new(Vec::new());

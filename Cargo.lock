@@ -3293,6 +3293,8 @@ dependencies = [
  "pal",
  "static_assertions",
  "thiserror 2.0.16",
+ "virt",
+ "x86defs",
  "zerocopy",
 ]
 
