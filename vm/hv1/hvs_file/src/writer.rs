@@ -320,28 +320,44 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             });
         }
 
-        // Assign insertion sequences: count children per parent.
-        let mut child_count: BTreeMap<String, u32> = BTreeMap::new();
-        for entry in &all_entries {
-            *child_count.entry(entry.parent_path().to_string()).or_insert(0) += 1;
-        }
+        // Assign 1-based insertion sequences. Children of the same parent
+        // are contiguous, so a single counter that resets on parent change
+        // is sufficient — no map needed.
         {
-            let mut seq_counters: BTreeMap<String, u32> = BTreeMap::new();
+            let mut current_parent = String::new();
+            let mut seq: u32 = 0;
             for entry in &mut all_entries {
-                let seq = seq_counters.entry(entry.parent_path().to_string()).or_insert(0);
-                *seq += 1;
-                entry.header.insertion_sequence = *seq;
+                let parent = entry.parent_path().to_string();
+                if parent != current_parent {
+                    current_parent = parent;
+                    seq = 0;
+                }
+                seq += 1;
+                entry.header.insertion_sequence = seq;
+            }
+        }
 
-                if entry.is_node {
-                    let next_ins = child_count.get(entry.path.as_str()).copied().unwrap_or(0) + 1;
-                    entry.data_bytes = NodeData {
-                        change_tracking_sequence: 0,
-                        next_insertion_sequence: next_ins,
-                    }
-                    .as_bytes()
-                    .to_vec();
+        // Set NodeData.next_insertion_sequence for each node by counting
+        // how many subsequent entries are its direct children.
+        for i in 0..all_entries.len() {
+            if !all_entries[i].is_node {
+                continue;
+            }
+            let node_path = all_entries[i].path.clone();
+            let mut count = 0u32;
+            for j in (i + 1)..all_entries.len() {
+                if all_entries[j].parent_path() == node_path {
+                    count += 1;
+                } else if !all_entries[j].path.starts_with(&node_path) {
+                    break; // past this subtree
                 }
             }
+            all_entries[i].data_bytes = NodeData {
+                change_tracking_sequence: 0,
+                next_insertion_sequence: count + 1,
+            }
+            .as_bytes()
+            .to_vec();
         }
 
         // Layout entries across key tables, tracking node positions for
