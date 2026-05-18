@@ -8,7 +8,6 @@
 //! Bool, Node) and file objects for large binary blobs.
 
 use crate::defs::*;
-use crate::crc32;
 use crate::struct_checksum;
 use std::io::{self, Seek, SeekFrom, Write};
 use zerocopy::IntoBytes;
@@ -591,38 +590,29 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         let replay_log_header_size = alignment as u32;
         let replay_log_size = alignment;
 
-        // Replay log header (packed struct, 34 bytes):
-        //   Signature: u32             offset 0
-        //   Checksum: u32              offset 4
-        //   CurrentEntriesCount: u32   offset 8
-        //   Reserved: u8              offset 12
-        //   MaximumNumberOfEntries: u32 offset 13
-        //   ChangeTrackingEnabled: u8  offset 17
-        //   ChangeTrackingBufferOffset: u64 offset 18
-        //   ChangeTrackingBufferSize: u32   offset 26
-        //   ChangeTrackingBufferUsedSize: u32 offset 30
-        // Total: 34 bytes
-        let replay_header_struct_size = 34usize;
-        let replay_entry_header_size = 28usize; // sizeof(ReplayLogEntryHeader)
-        let max_entries = (replay_log_header_size as usize - replay_header_struct_size)
-            / replay_entry_header_size;
+        let max_entries = (replay_log_header_size as usize - size_of::<ReplayLogHeader>())
+            / size_of::<ReplayLogEntryHeader>();
 
-        let mut replay_header = vec![0u8; alignment as usize];
-        // Signature = 0x01110003
-        replay_header[0..4].copy_from_slice(&0x01110003u32.to_le_bytes());
-        // CurrentEntriesCount = 0 (already zero)
-        // MaximumNumberOfEntries at offset 13
-        replay_header[13..17].copy_from_slice(&(max_entries as u32).to_le_bytes());
-        // Compute checksum over the 34-byte header struct with checksum field zeroed
-        let checksum = {
-            let mut buf = replay_header[..replay_header_struct_size].to_vec();
-            buf[4..8].fill(0);
-            crc32(&buf)
+        let mut header = ReplayLogHeader {
+            signature: REPLAY_LOG_SIGNATURE,
+            checksum: 0,
+            current_entries_count: 0,
+            reserved: 0,
+            maximum_number_of_entries: max_entries as u32,
+            change_tracking_enabled: 0,
+            change_tracking_buffer_offset: 0,
+            change_tracking_buffer_size: 0,
+            change_tracking_buffer_used_size: 0,
         };
-        replay_header[4..8].copy_from_slice(&checksum.to_le_bytes());
+        header.checksum = struct_checksum(header.as_bytes(), 4);
 
         self.writer.seek(SeekFrom::Start(replay_log_offset))?;
-        self.writer.write_all(&replay_header)?;
+        self.writer.write_all(header.as_bytes())?;
+        // Pad to alignment
+        let pad = alignment as usize - size_of::<ReplayLogHeader>();
+        if pad > 0 {
+            self.writer.write_all(&vec![0u8; pad])?;
+        }
 
         // Write file headers.
         // The two copies must have different sequence numbers — if both are

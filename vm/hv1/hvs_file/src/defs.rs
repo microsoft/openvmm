@@ -189,3 +189,40 @@ pub struct FileObjectData {
 
 const_assert_eq!(size_of::<FileObjectData>(), 12);
 
+// ============================================================
+// Replay Log
+// ============================================================
+
+/// Replay log signature: 0x01110003
+pub const REPLAY_LOG_SIGNATURE: u32 = 0x0111_0003;
+
+/// Replay log header.
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ReplayLogHeader {
+    pub signature: u32,
+    pub checksum: u32,
+    pub current_entries_count: u32,
+    pub reserved: u8,
+    pub maximum_number_of_entries: u32,
+    pub change_tracking_enabled: u8,
+    pub change_tracking_buffer_offset: u64,
+    pub change_tracking_buffer_size: u32,
+    pub change_tracking_buffer_used_size: u32,
+}
+
+const_assert_eq!(size_of::<ReplayLogHeader>(), 34);
+
+/// Replay log entry header.
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ReplayLogEntryHeader {
+    pub header_checksum: u32,
+    pub destination_offset: u64,
+    pub destination_size: u32,
+    pub offset_inside_log: u64,
+    pub data_checksum: u32,
+}
+
+const_assert_eq!(size_of::<ReplayLogEntryHeader>(), 28);
+
