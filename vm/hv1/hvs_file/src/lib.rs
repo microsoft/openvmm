@@ -93,8 +93,7 @@ mod tests {
         }
         let file = std::fs::File::open(&path).unwrap();
         let reader = HvsFileReader::open(file).unwrap();
-        let mut keys: Vec<String> = reader.keys().map(|s| s.to_string()).collect();
-        keys.sort();
+        let keys: Vec<&str> = reader.keys().collect();
         for key in &keys {
             let type_tag = match reader.value_type(key).unwrap() {
                 crate::reader::ValueType::Int => "INT",

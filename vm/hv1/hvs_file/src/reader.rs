@@ -8,6 +8,7 @@
 
 use crate::crc32;
 use crate::defs::*;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom};
 use zerocopy::FromBytes;
@@ -62,8 +63,8 @@ pub enum ValueType {
 pub struct HvsFileReader<R: Read + Seek> {
     reader: R,
     _alignment: u64,
-    /// Flattened key entries: full path -> KeyEntry
-    keys: HashMap<String, KeyEntry>,
+    /// Key entries indexed by full path, ordered for deterministic enumeration.
+    keys: BTreeMap<String, KeyEntry>,
 }
 
 /// A parsed key entry.
@@ -147,7 +148,7 @@ impl<R: Read + Seek> HvsFileReader<R> {
         }
 
         // Parse key entries from all key tables, building a path tree
-        let mut keys = HashMap::new();
+        let mut keys = BTreeMap::new();
 
         // node_path_map: (table_index, offset) -> path
         let mut node_path_map: HashMap<(u16, u32), String> = HashMap::new();
