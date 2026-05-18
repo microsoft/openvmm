@@ -40,6 +40,11 @@ pub enum VmRpc {
     AddPcieDevice(FailableRpc<(String, Resource<PciDeviceHandleKind>), ()>),
     /// Hot-remove a PCIe device from a named port at runtime.
     RemovePcieDevice(FailableRpc<String, ()>),
+    /// Dump VM state (VP registers + memory) to a `.vmrs` file.
+    ///
+    /// The VM should be paused before calling this. The path is passed as a
+    /// `String` because `PathBuf` does not implement `MeshPayload`.
+    DumpState(FailableRpc<String, ()>),
 }
 
 #[derive(Debug, MeshPayload, thiserror::Error)]
@@ -75,6 +80,7 @@ impl fmt::Debug for VmRpc {
             VmRpc::UpdateCliParams(_) => "UpdateCliParams",
             VmRpc::AddPcieDevice(_) => "AddPcieDevice",
             VmRpc::RemovePcieDevice(_) => "RemovePcieDevice",
+            VmRpc::DumpState(_) => "DumpState",
         };
         f.pad(s)
     }

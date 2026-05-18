@@ -80,11 +80,46 @@ trait ControlVp: ProtobufSaveRestore {
 
     #[cfg(feature = "gdb")]
     fn debug(&mut self) -> &mut dyn DebugVp;
+
+    /// Get full VP state for dump generation.
+    ///
+    /// Returns register state suitable for building a `.vmrs` dump file.
+    /// Unlike the debug path, this is not gated on the `gdb` feature.
+    fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<DumpVpState>;
 }
 
 enum StopReason {
     OnRequest(VpStopped),
     Cancel,
+}
+
+/// Full VP register state for dump generation.
+///
+/// Contains all registers needed to populate a `.vmrs` dump file, using
+/// the native `virt` crate types.
+pub enum DumpVpState {
+    /// x86-64 VP state.
+    X64(DumpX64VpState),
+    /// ARM64 VP state.
+    Aarch64(DumpAarch64VpState),
+}
+
+/// x86-64 VP register state for dump generation.
+pub struct DumpX64VpState {
+    /// General-purpose, segment, table, and control registers.
+    pub registers: virt::x86::vp::Registers,
+    /// Debug registers (DR0–DR7).
+    pub debug_registers: virt::x86::vp::DebugRegisters,
+    /// XSAVE state (FP/SSE/AVX).
+    pub xsave: virt::x86::vp::Xsave,
+}
+
+/// ARM64 VP register state for dump generation.
+pub struct DumpAarch64VpState {
+    /// General-purpose registers, SP, PC, CPSR.
+    pub registers: virt::aarch64::vp::Registers,
+    /// System registers (SCTLR, TTBR, TCR, etc.).
+    pub system_registers: virt::aarch64::vp::SystemRegisters,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -246,6 +281,36 @@ where
     #[cfg(feature = "gdb")]
     fn debug(&mut self) -> &mut dyn DebugVp {
         self
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<DumpVpState> {
+        let mut access = self.vp.access_state(vtl);
+        let registers = access.registers().context("failed to get registers")?;
+        let debug_registers = access
+            .debug_regs()
+            .unwrap_or_default();
+        let xsave = access
+            .xsave()
+            .unwrap_or_default();
+        Ok(DumpVpState::X64(DumpX64VpState {
+            registers,
+            debug_registers,
+            xsave,
+        }))
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<DumpVpState> {
+        let mut access = self.vp.access_state(vtl);
+        let registers = access.registers().context("failed to get registers")?;
+        let system_registers = access
+            .system_registers()
+            .unwrap_or_default();
+        Ok(DumpVpState::Aarch64(DumpAarch64VpState {
+            registers,
+            system_registers,
+        }))
     }
 }
 
@@ -943,6 +1008,26 @@ pub struct RegisterSetError(&'static str, #[source] anyhow::Error);
 #[error("the vp runner was dropped")]
 struct RunnerGoneError(#[source] RpcError);
 
+impl VpSet {
+    /// Gets full VP state for dump generation.
+    ///
+    /// Returns all registers needed for a `.vmrs` dump file.
+    pub async fn get_dump_vp_state(
+        &self,
+        vp: VpIndex,
+        vtl: Vtl,
+    ) -> anyhow::Result<DumpVpState> {
+        self.vps[vp.index() as usize]
+            .send
+            .call(
+                |x| VpEvent::State(StateEvent::GetDumpVpState(x)),
+                vtl,
+            )
+            .await
+            .map_err(RunnerGoneError)?
+    }
+}
+
 #[cfg(feature = "gdb")]
 impl VpSet {
     /// Set the debug state for a single VP.
@@ -1049,6 +1134,8 @@ enum StateEvent {
     Restore(Rpc<SavedStateBlob, Result<(), RestoreError>>),
     Reset(mesh::rpc::FailableRpc<(), ()>),
     Scrub(mesh::rpc::FailableRpc<Vtl, ()>),
+    /// Get full VP state for dump generation (not gated on gdb).
+    GetDumpVpState(Rpc<Vtl, anyhow::Result<DumpVpState>>),
     #[cfg(feature = "gdb")]
     Debug(DebugEvent),
 }
@@ -1293,6 +1380,9 @@ impl RunnerInner {
             StateEvent::Restore(rpc) => rpc.handle_sync(|data| vp.restore(data)),
             StateEvent::Reset(rpc) => rpc.handle_failable_sync(|()| vp.reset()),
             StateEvent::Scrub(rpc) => rpc.handle_failable_sync(|vtl| vp.scrub(vtl)),
+            StateEvent::GetDumpVpState(rpc) => {
+                rpc.handle_sync(|vtl| vp.get_dump_vp_state(vtl))
+            }
             #[cfg(feature = "gdb")]
             StateEvent::Debug(event) => match event {
                 DebugEvent::SetDebugState(rpc) => {

@@ -5333,6 +5333,7 @@ dependencies = [
  "guestmem",
  "guid",
  "hcl_compat_uefi_nvram_storage",
+ "hv_saved_state",
  "hvdef",
  "hypervisor_resources",
  "ide",

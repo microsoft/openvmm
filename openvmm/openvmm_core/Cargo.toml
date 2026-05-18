@@ -31,6 +31,7 @@ aarch64defs.workspace = true
 acpi.workspace = true
 floppy_resources.workspace = true
 hvdef.workspace = true
+hv_saved_state.workspace = true
 ide_resources.workspace = true
 igvm.workspace = true
 igvm_defs.workspace = true

@@ -55,6 +55,8 @@ pub enum VmControllerRpc {
     ),
     /// Save a VM snapshot to a directory.
     SaveSnapshot(Rpc<String, Result<(), mesh::error::RemoteError>>),
+    /// Dump VM state (VP registers + memory) to a `.vmrs` file.
+    DumpState(Rpc<String, Result<(), mesh::error::RemoteError>>),
     /// Service (update) the VTL2 firmware.
     ServiceVtl2(Rpc<ServiceVtl2Params, Result<u64, mesh::error::RemoteError>>),
     /// Stop the VM and quit.
@@ -306,6 +308,11 @@ impl VmController {
                 let result = self.handle_save_snapshot(Path::new(&dir)).await;
                 req.complete(result.map_err(mesh::error::RemoteError::new));
             }
+            VmControllerRpc::DumpState(req) => {
+                let (path, req) = req.split();
+                let result = self.handle_dump_state(Path::new(&path)).await;
+                req.complete(result.map_err(mesh::error::RemoteError::new));
+            }
             VmControllerRpc::ServiceVtl2(req) => {
                 let (params, req) = req.split();
                 let result = self.handle_service_vtl2(params).await;
@@ -409,6 +416,27 @@ impl VmController {
         )?;
 
         // VM stays paused. Do NOT resume.
+        Ok(())
+    }
+
+    async fn handle_dump_state(&self, path: &Path) -> anyhow::Result<()> {
+        // Pause the VM.
+        self.vm_rpc
+            .call(VmRpc::Pause, ())
+            .await
+            .context("failed to pause VM")?;
+
+        // Dump state to the VMRS file (worker collects VP state + streams memory).
+        self.vm_rpc
+            .call_failable(VmRpc::DumpState, path.to_string_lossy().into_owned())
+            .await
+            .context("failed to dump state")?;
+
+        // Resume the VM after dump.
+        let _ = self.vm_rpc
+            .call(VmRpc::Resume, ())
+            .await;
+
         Ok(())
     }
 

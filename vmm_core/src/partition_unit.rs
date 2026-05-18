@@ -12,6 +12,9 @@ pub use vp_set::RunCancelled;
 pub use vp_set::RunnerCanceller;
 pub use vp_set::VpRunner;
 pub use vp_set::block_on_vp;
+pub use vp_set::DumpAarch64VpState;
+pub use vp_set::DumpVpState;
+pub use vp_set::DumpX64VpState;
 
 use self::vp_set::RegisterSetError;
 use async_trait::async_trait;
@@ -35,6 +38,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use virt::InitialRegs;
 use virt::PageVisibility;
+use virt::VpIndex;
 use vm_topology::processor::ProcessorTopology;
 use vmcore::save_restore::ProtobufSaveRestore;
 use vmcore::save_restore::RestoreError;
@@ -121,6 +125,8 @@ enum PartitionRequest {
     ),
     StopVps(Rpc<(), ()>),
     StartVps,
+    /// Get full VP state for dump generation.
+    GetDumpVpState(Rpc<(VpIndex, Vtl), anyhow::Result<DumpVpState>>),
 }
 
 pub struct PartitionUnitParams<'a> {
@@ -285,6 +291,20 @@ impl PartitionUnit {
             .await
             .unwrap()
     }
+
+    /// Gets the full VP state for dump generation.
+    ///
+    /// The VP must be stopped (paused) when this is called.
+    pub async fn get_dump_vp_state(
+        &mut self,
+        vp: VpIndex,
+        vtl: Vtl,
+    ) -> anyhow::Result<DumpVpState> {
+        self.req_send
+            .call(PartitionRequest::GetDumpVpState, (vp, vtl))
+            .await
+            .unwrap()
+    }
 }
 
 impl PartitionUnitRunner {
@@ -358,6 +378,12 @@ impl PartitionUnitRunner {
                     PartitionRequest::StartVps => {
                         self.vp_stop_count -= 1;
                         self.try_start();
+                    }
+                    PartitionRequest::GetDumpVpState(rpc) => {
+                        rpc.handle(async |(vp, vtl)| {
+                            self.vp_set.get_dump_vp_state(vp, vtl).await
+                        })
+                        .await
                     }
                 },
                 #[cfg(feature = "gdb")]

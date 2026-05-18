@@ -3192,6 +3192,12 @@ impl LoadedVm {
                         })
                         .await
                     }
+                    VmRpc::DumpState(rpc) => {
+                        rpc.handle_failable(async |path: String| {
+                            self.dump_state(std::path::Path::new(&path)).await
+                        })
+                        .await
+                    }
                 },
                 Event::Halt(Err(_)) => break,
                 Event::Halt(Ok(reason)) => {
@@ -3296,6 +3302,94 @@ impl LoadedVm {
         Ok(SavedState {
             units: self.state_units.save().await?,
         })
+    }
+
+    /// Dumps VM state (VP registers + memory) to a `.vmrs` file.
+    ///
+    /// The VM must already be paused before calling this.
+    async fn dump_state(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
+        use hv_saved_state::GuestMemoryReader;
+        use hv_saved_state::PartitionStateBuilder;
+        use hv_saved_state::ProcessorArch;
+        use hv_saved_state::VmrsWriter;
+        use hv_saved_state::VpState;
+        use hv_saved_state::X64VpState;
+
+        let vp_count = self.inner.processor_topology.vp_count();
+        tracing::info!(path = %path.display(), vp_count, "dumping VM state to VMRS");
+
+        // Determine architecture.
+        #[cfg(guest_arch = "x86_64")]
+        let arch = ProcessorArch::X64;
+        #[cfg(guest_arch = "aarch64")]
+        let arch = ProcessorArch::Aarch64;
+
+        let mut builder = PartitionStateBuilder::new(arch);
+        // TODO: Get guest OS ID from HV_X64_MSR_GUEST_OS_ID. For now, 0
+        // (unenlightened) works — WinDbg auto-detects from memory.
+        builder.set_os_id(0);
+
+        // Collect VP state for each VP.
+        for vp_idx in 0..vp_count {
+            let vp = VpIndex::new(vp_idx);
+            let vtl = Vtl::Vtl0;
+
+            let dump_state = self
+                .inner
+                .partition_unit
+                .get_dump_vp_state(vp, vtl)
+                .await
+                .with_context(|| format!("failed to get state for VP {vp_idx}"))?;
+
+            let vp_state = match dump_state {
+                vmm_core::partition_unit::DumpVpState::X64(x64) => {
+                    VpState::X64(X64VpState {
+                        registers: x64.registers,
+                        debug_registers: Some(x64.debug_registers),
+                        xsave: Some(x64.xsave),
+                    })
+                }
+                vmm_core::partition_unit::DumpVpState::Aarch64(aarch64) => {
+                    VpState::Aarch64(hv_saved_state::Aarch64VpState {
+                        registers: aarch64.registers,
+                        system_registers: Some(aarch64.system_registers),
+                    })
+                }
+            };
+
+            builder.add_vp(vp_idx, vec![(vtl, vp_state)], vtl);
+        }
+
+        let partition_state_blob = builder.finish();
+
+        // Create the VMRS file writer.
+        let file = File::create(path)
+            .with_context(|| format!("failed to create dump file: {}", path.display()))?;
+
+        let mut vmrs = VmrsWriter::new(file).context("failed to initialize VMRS writer")?;
+        vmrs.set_partition_state(partition_state_blob);
+
+        // Add memory ranges from the VM topology.
+        for ram_range in self.inner.mem_layout.ram() {
+            vmrs.add_memory_range(ram_range.range.start(), ram_range.range.len());
+        }
+
+        // Stream guest memory to disk.
+        let gm = self.inner.gm.clone();
+        struct GmReader(GuestMemory);
+        impl GuestMemoryReader for GmReader {
+            fn read_gpa(&mut self, gpa: u64, buf: &mut [u8]) -> std::io::Result<()> {
+                self.0
+                    .read_at(gpa, buf)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            }
+        }
+        let mut reader = GmReader(gm);
+        vmrs.finish(&mut reader)
+            .context("failed to write VMRS file")?;
+
+        tracing::info!(path = %path.display(), "VMRS dump complete");
+        Ok(())
     }
 
     /// Restore state on the VM.
