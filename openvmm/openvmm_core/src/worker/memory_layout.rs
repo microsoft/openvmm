@@ -51,16 +51,16 @@ pub(super) struct ResolvedMemoryLayout {
     /// Contiguous MMIO region for all virtio-mmio device slots. Each slot is
     /// 4 KiB, indexed from the start of the region. `None` when no
     /// virtio-mmio devices are configured.
-    pub virtio_mmio_region: Option<MemoryRange>,
+    pub virtio_mmio_region: MemoryRange,
     /// Chipset low MMIO range (below 4 GB) for VMOD/PCI0 _CRS. `None` when
     /// no VMBus / chipset MMIO is configured.
-    pub chipset_low_mmio: Option<MemoryRange>,
+    pub chipset_low_mmio: MemoryRange,
     /// Chipset high MMIO range (above RAM) for VMOD/PCI0 _CRS. `None` when
     /// no VMBus / chipset MMIO is configured.
-    pub chipset_high_mmio: Option<MemoryRange>,
+    pub chipset_high_mmio: MemoryRange,
     /// VTL2-private chipset MMIO range, reported to VTL2 VMBus via the device
     /// tree. `None` when VTL2 is not configured or has no chipset MMIO.
-    pub vtl2_chipset_mmio: Option<MemoryRange>,
+    pub vtl2_chipset_mmio: MemoryRange,
 }
 
 #[derive(Debug)]
@@ -113,19 +113,6 @@ pub(super) fn resolve_memory_layout(
 ) -> anyhow::Result<ResolvedMemoryLayout> {
     let ram_sizes = validate_ram_sizes(input.mem_size, input.numa_mem_sizes)?;
 
-    // Chipset low and high MMIO must be paired: downstream consumers (UEFI,
-    // x64 DSDT, PCAT) index `MemoryLayout::mmio()` positionally and require
-    // both entries to be present. Allowing only one to be set would silently
-    // produce a layout where consumers either fail late or, with VTL2
-    // enabled, misinterpret the VTL2 chipset MMIO range as the high gap.
-    if (input.chipset_low_mmio_size == 0) != (input.chipset_high_mmio_size == 0) {
-        bail!(
-            "chipset low and high MMIO must be both enabled or both disabled (low={:#x}, high={:#x})",
-            input.chipset_low_mmio_size,
-            input.chipset_high_mmio_size,
-        );
-    }
-
     let mut ram_ranges_by_node = vec![Vec::new(); ram_sizes.len()];
     let mut pcie_root_complex_ranges = input
         .pcie_root_complexes
@@ -136,10 +123,6 @@ pub(super) fn resolve_memory_layout(
             high_mmio: MemoryRange::EMPTY,
         })
         .collect::<Vec<_>>();
-    let mut vtl2_range = MemoryRange::EMPTY;
-    let mut virtio_mmio_region = MemoryRange::EMPTY;
-    let mut chipset_high_mmio = MemoryRange::EMPTY;
-    let mut vtl2_chipset_mmio = MemoryRange::EMPTY;
 
     let mut builder = LayoutBuilder::new();
 
@@ -162,6 +145,7 @@ pub(super) fn resolve_memory_layout(
     builder.fixed("chipset-low-mmio", chipset_low_mmio);
 
     // Chipset high MMIO (Mmio64): VMOD/PCI0 _CRS high range.
+    let mut chipset_high_mmio = MemoryRange::EMPTY;
     if input.chipset_high_mmio_size != 0 {
         builder.request(
             "chipset-high-mmio",
@@ -247,6 +231,7 @@ pub(super) fn resolve_memory_layout(
     // Virtio-mmio: allocate one contiguous region for all slots. Each slot is
     // 4 KiB, so the region is `count * 4 KiB` placed as a single Mmio32
     // request.
+    let mut virtio_mmio_region = MemoryRange::EMPTY;
     if input.virtio_mmio_count > 0 {
         builder.request(
             "virtio-mmio",
@@ -274,6 +259,7 @@ pub(super) fn resolve_memory_layout(
 
     // VTL2 chipset MMIO is implementation-private — placed after all
     // VTL0-visible RAM/MMIO so enabling VTL2 does not move VTL0 addresses.
+    let mut vtl2_chipset_mmio = MemoryRange::EMPTY;
     if input.vtl2_chipset_mmio_size != 0 {
         builder.request(
             "vtl2-chipset-mmio",
@@ -293,6 +279,7 @@ pub(super) fn resolve_memory_layout(
     // overconstraining and would lead to holes in the VTL0 layout--we just
     // don't support IGVM files with relocation sections that cannot be
     // satisfied by the post-MMIO space.
+    let mut vtl2_range = MemoryRange::EMPTY;
     if let Some(vtl2_layout) = input.vtl2_layout {
         builder.request(
             "vtl2",
@@ -367,11 +354,8 @@ pub(super) fn resolve_memory_layout(
     // The chipset low MMIO range is always present (at least the
     // architectural reserved zone) and is always reported. Hiding it would
     // leave a real allocated hole in the layout invisible to consumers.
-    let mut mmio_gaps: Vec<MemoryRange> = vec![chipset_low_mmio];
-    if input.chipset_high_mmio_size != 0 {
-        mmio_gaps.push(chipset_high_mmio);
-    }
-    if input.vtl2_chipset_mmio_size != 0 {
+    let mut mmio_gaps: Vec<MemoryRange> = vec![chipset_low_mmio, chipset_high_mmio];
+    if !vtl2_chipset_mmio.is_empty() {
         mmio_gaps.push(vtl2_chipset_mmio);
     }
 
@@ -410,19 +394,13 @@ pub(super) fn resolve_memory_layout(
         );
     }
 
-    let virtio_mmio_region = if input.virtio_mmio_count > 0 {
-        Some(virtio_mmio_region)
-    } else {
-        None
-    };
-
     Ok(ResolvedMemoryLayout {
         memory_layout,
         pcie_root_complex_ranges,
         virtio_mmio_region,
-        chipset_low_mmio: Some(chipset_low_mmio),
-        chipset_high_mmio: (input.chipset_high_mmio_size != 0).then_some(chipset_high_mmio),
-        vtl2_chipset_mmio: (input.vtl2_chipset_mmio_size != 0).then_some(vtl2_chipset_mmio),
+        chipset_low_mmio,
+        chipset_high_mmio,
+        vtl2_chipset_mmio,
     })
 }
 
@@ -596,12 +574,8 @@ mod tests {
     fn chipset_mmio_is_resolved() {
         let result = resolve_memory_layout(input(2 * GB, None, None)).unwrap();
 
-        let low = result
-            .chipset_low_mmio
-            .expect("should have low chipset MMIO");
-        let high = result
-            .chipset_high_mmio
-            .expect("should have high chipset MMIO");
+        let low = result.chipset_low_mmio;
+        let high = result.chipset_high_mmio;
         assert_eq!(low.len(), DEFAULT_CHIPSET_LOW_MMIO_SIZE);
         assert_eq!(high.len(), DEFAULT_CHIPSET_HIGH_MMIO_SIZE);
         // Chipset low MMIO is pinned to end at 4 GiB and must fully contain
@@ -788,9 +762,7 @@ mod tests {
 
         let result = resolve_memory_layout(config).unwrap();
 
-        let region = result
-            .virtio_mmio_region
-            .expect("should have virtio-mmio region");
+        let region = result.virtio_mmio_region;
         assert_eq!(region.len(), 3 * PAGE_SIZE);
         assert!(region.end() <= 4 * GB, "virtio-mmio should be below 4 GB");
     }
@@ -811,7 +783,7 @@ mod tests {
 
         let result = resolve_memory_layout(config).unwrap();
 
-        assert!(result.virtio_mmio_region.is_none());
+        assert!(result.virtio_mmio_region.is_empty());
     }
 
     #[test]
@@ -821,14 +793,10 @@ mod tests {
 
         let result = resolve_memory_layout(config).unwrap();
 
-        let vtl2_mmio = result
-            .vtl2_chipset_mmio
-            .expect("should have VTL2 chipset MMIO");
+        let vtl2_mmio = result.vtl2_chipset_mmio;
         assert_eq!(vtl2_mmio.len(), DEFAULT_VTL2_CHIPSET_MMIO_SIZE);
         // VTL2 chipset MMIO should be after all VTL0-visible ranges.
-        let chipset_high = result
-            .chipset_high_mmio
-            .expect("should have high chipset MMIO");
+        let chipset_high = result.chipset_high_mmio;
         assert!(
             vtl2_mmio.start() >= chipset_high.end(),
             "VTL2 chipset MMIO should be after VTL0 high MMIO"
@@ -858,12 +826,10 @@ mod tests {
 
         let result = resolve_memory_layout(config).unwrap();
 
-        let low = result
-            .chipset_low_mmio
-            .expect("low chipset MMIO is always present (arch reserved zone)");
+        let low = result.chipset_low_mmio;
         assert_eq!(low.end(), 4 * GB);
         assert!(low.contains(&ARCH_RESERVED));
-        assert!(result.chipset_high_mmio.is_none());
+        assert!(result.chipset_high_mmio.is_empty());
         // The reported range must appear in MemoryLayout::mmio() so that
         // RAM is not silently placed around an invisible hole.
         assert_eq!(result.memory_layout.mmio(), &[low]);

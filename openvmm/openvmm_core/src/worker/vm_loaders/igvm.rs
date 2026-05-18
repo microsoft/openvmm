@@ -91,8 +91,6 @@ pub enum Error {
     LowerVtlContext,
     #[error("missing required memory range {0}")]
     MissingRequiredMemory(MemoryRange),
-    #[error("IGVM file requires at least two mmio ranges")]
-    UnsupportedMmio,
 }
 
 fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
@@ -265,9 +263,9 @@ struct BuildDeviceTreeParams<'a> {
     with_vmbus_redirect: bool,
     com_serial: Option<SerialInformation>,
     entropy: Option<&'a [u8]>,
-    chipset_low_mmio: Option<MemoryRange>,
-    chipset_high_mmio: Option<MemoryRange>,
-    vtl2_chipset_mmio: Option<MemoryRange>,
+    chipset_low_mmio: MemoryRange,
+    chipset_high_mmio: MemoryRange,
+    vtl2_chipset_mmio: MemoryRange,
 }
 
 /// Build a device tree representing the whole guest partition.
@@ -361,13 +359,18 @@ fn build_device_tree(params: BuildDeviceTreeParams<'_>) -> Result<Vec<u8>, fdt::
     // ranges; VTL2 gets its own private chipset MMIO range.
     let ranges_vtl0: Vec<u64> = [chipset_low_mmio, chipset_high_mmio]
         .into_iter()
-        .flatten()
         .flat_map(|range| [range.start(), range.start(), range.len()])
         .collect();
-    let ranges_vtl2: Vec<u64> = vtl2_chipset_mmio
-        .into_iter()
-        .flat_map(|range| [range.start(), range.start(), range.len()])
-        .collect();
+
+    let ranges_vtl2: Vec<u64> = if vtl2_chipset_mmio.is_empty() {
+        vec![]
+    } else {
+        vec![
+            vtl2_chipset_mmio.start(),
+            vtl2_chipset_mmio.start(),
+            vtl2_chipset_mmio.len(),
+        ]
+    };
 
     // VTL0 vmbus root device
     let vmbus_vtl0_name = if ranges_vtl0.is_empty() {
@@ -521,11 +524,11 @@ pub struct LoadIgvmParams<'a, T: ArchTopology> {
     /// Entropy
     pub entropy: Option<&'a [u8]>,
     /// VTL0 chipset low MMIO range for the device tree VMBus node.
-    pub chipset_low_mmio: Option<MemoryRange>,
+    pub chipset_low_mmio: MemoryRange,
     /// VTL0 chipset high MMIO range for the device tree VMBus node.
-    pub chipset_high_mmio: Option<MemoryRange>,
+    pub chipset_high_mmio: MemoryRange,
     /// VTL2-private chipset MMIO range for the device tree VTL2 VMBus node.
-    pub vtl2_chipset_mmio: Option<MemoryRange>,
+    pub vtl2_chipset_mmio: MemoryRange,
 }
 
 pub fn load_igvm(
@@ -954,10 +957,11 @@ fn load_igvm_x86(
             }
             IgvmDirectiveHeader::MmioRanges(ref info) => {
                 // Convert the chipset MMIO ranges to the IGVM format.
-                let low = chipset_low_mmio.ok_or(Error::UnsupportedMmio)?;
-                let high = chipset_high_mmio.ok_or(Error::UnsupportedMmio)?;
                 let mmio_ranges = IGVM_VHS_MMIO_RANGES {
-                    mmio_ranges: [from_memory_range(&low), from_memory_range(&high)],
+                    mmio_ranges: [
+                        from_memory_range(&chipset_low_mmio),
+                        from_memory_range(&chipset_high_mmio),
+                    ],
                 };
                 import_parameter(&mut parameter_areas, info, mmio_ranges.as_bytes())?;
             }

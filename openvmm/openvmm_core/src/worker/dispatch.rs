@@ -407,10 +407,10 @@ pub(crate) struct InitializedVm {
     cfg: Manifest,
     mem_layout: MemoryLayout,
     resolved_pcie_root_complex_ranges: Vec<ResolvedPcieRootComplexRanges>,
-    virtio_mmio_region: Option<MemoryRange>,
-    chipset_low_mmio: Option<MemoryRange>,
-    chipset_high_mmio: Option<MemoryRange>,
-    vtl2_chipset_mmio: Option<MemoryRange>,
+    virtio_mmio_region: MemoryRange,
+    chipset_low_mmio: MemoryRange,
+    chipset_high_mmio: MemoryRange,
+    vtl2_chipset_mmio: MemoryRange,
     processor_topology: ProcessorTopology,
     igvm_file: Option<IgvmFile>,
     driver_source: VmTaskDriverSource,
@@ -692,15 +692,15 @@ struct LoadedVmInner {
     chipset_cfg: BaseChipsetManifest,
     chipset_capabilities: VmChipsetCapabilities,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
-    virtio_mmio_region: Option<MemoryRange>,
+    virtio_mmio_region: MemoryRange,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_irq: u32,
     /// Chipset low MMIO range for VMOD/PCI0 _CRS.
-    chipset_low_mmio: Option<MemoryRange>,
+    chipset_low_mmio: MemoryRange,
     /// Chipset high MMIO range for VMOD/PCI0 _CRS.
-    chipset_high_mmio: Option<MemoryRange>,
+    chipset_high_mmio: MemoryRange,
     /// VTL2-private chipset MMIO range for VTL2 VMBus.
-    vtl2_chipset_mmio: Option<MemoryRange>,
+    vtl2_chipset_mmio: MemoryRange,
     /// ((device, function), interrupt)
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     pci_legacy_interrupts: Vec<((u8, Option<u8>), u32)>,
@@ -2403,9 +2403,7 @@ impl InitializedVm {
                 .await?;
             match bus {
                 VirtioBus::Mmio => {
-                    let region = virtio_mmio_region
-                        .expect("virtio_mmio_region must be allocated for Mmio devices");
-                    let mmio_start = region.start() + virtio_mmio_index as u64 * 0x1000;
+                    let mmio_start = virtio_mmio_region.start() + virtio_mmio_index as u64 * 0x1000;
                     virtio_mmio_index += 1;
                     let id = format!("{id}-{mmio_start}");
                     let gm = gm.clone();
@@ -2664,7 +2662,7 @@ impl LoadedVmInner {
                                     dsdt,
                                     &self.chipset_cfg,
                                     enable_serial,
-                                    self.virtio_mmio_region.as_ref(),
+                                    self.virtio_mmio_region,
                                     self.virtio_mmio_irq,
                                     &self.pci_legacy_interrupts,
                                 )
@@ -3422,7 +3420,7 @@ fn add_devices_to_dsdt_x64(
     dsdt: &mut dsdt::Dsdt,
     cfg: &BaseChipsetManifest,
     serial_uarts: bool,
-    virtio_mmio_region: Option<&MemoryRange>,
+    virtio_mmio_region: MemoryRange,
     virtio_mmio_irq: u32,
     pci_legacy_interrupts: &[((u8, Option<u8>), u32)], // ((device, function), interrupt)
 ) {
@@ -3452,10 +3450,9 @@ fn add_devices_to_dsdt_x64(
 
     // Virtio-mmio devices are allocated as a contiguous region by the memory
     // layout resolver. Each 4 KiB slot is a separate device.
-    if let Some(region) = virtio_mmio_region {
-        let slot_count = region.len() / HV_PAGE_SIZE;
-        for i in 0..slot_count {
-            let slot_base = region.start() + i * HV_PAGE_SIZE;
+    {
+        for i in 0..virtio_mmio_region.page_count_4k() {
+            let slot_base = virtio_mmio_region.start() + i * HV_PAGE_SIZE;
             let mut device = dsdt::Device::new(format!("\\_SB.VI{i:02}").as_bytes());
             device.add_object(&dsdt::NamedString::new(b"_HID", b"LNRO0005"));
             device.add_object(&dsdt::NamedInteger::new(b"_UID", i));
