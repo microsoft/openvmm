@@ -9,6 +9,9 @@ use crate::common::CommonProfile;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 use std::env;
+use std::ffi::OsStr;
+use std::thread;
+use std::time::Duration;
 
 flowey_request! {
     pub struct Params {
@@ -140,50 +143,105 @@ impl SimpleFlowNode for Node {
                 let kvmtool_efi = firmware_dir.join("KVMTOOL_EFI.fd");
                 let lkvm = firmware_dir.join("lkvm");
 
-                // Build the mount/inject script
-                let mount_script = format!(
-                    r#"
-                    set -e
-                    mkdir -p mnt
-                    mount {rootfs_file} mnt
-                    mkdir -p mnt/cca
-                    cp {simple_tmk_bin} mnt/cca/
-                    cp {tmk_vmm_bin} mnt/cca/
-                    cp {guest_disk} mnt/cca/
-                    cp {plane0_linux_image} mnt/cca/
-                    cp {kvmtool_efi} mnt/cca/
-                    cp {lkvm} mnt/cca/
-                    sync
-                    umount mnt || umount -l mnt || true
-                    sync
-                    sleep 1
-                    # Try multiple times to remove the directory
-                    for i in 1 2 3 4 5; do
-                        if [ -d mnt ]; then
-                            rmdir mnt 2>/dev/null && break || sleep 0.5
-                        else
-                            break
-                        fi
-                    done
-                    # If still exists, force remove
-                    [ -d mnt ] && rm -rf mnt || true
-                    "#,
-                    rootfs_file = rootfs_file.display(),
-                    simple_tmk_bin = simple_tmk_bin.display(),
-                    tmk_vmm_bin = tmk_vmm_bin.display(),
-                    guest_disk = guest_disk.display(),
-                    plane0_linux_image = plane0_linux_image.display(),
-                    kvmtool_efi = kvmtool_efi.display(),
-                    lkvm = lkvm.display()
-                );
+                let mnt_dir = PathBuf::from("mnt");
+                let cca_dir = mnt_dir.join("cca");
 
-                let mnt_output = flowey::shell_cmd!(rt, "sudo bash -c {mount_script}")
-                    .output()
-                    .map_err(|e| anyhow::anyhow!("failed to execute mount script: {}", e))?;
+                let run_sudo = |description: &str, args: &[&OsStr]| -> anyhow::Result<()> {
+                    let status = std::process::Command::new("sudo")
+                        .args(args)
+                        .status()
+                        .with_context(|| format!("failed to execute sudo command to {description}"))?;
 
-                if !mnt_output.status.success() {
-                    anyhow::bail!("failed to mount or inject files into guest rootfs: exit status {}", mnt_output.status);
+                    if !status.success() {
+                        anyhow::bail!("failed to {description}: exit status {status}");
+                    }
+
+                    Ok(())
+                };
+
+                let mut mounted = false;
+                let inject_result = (|| -> anyhow::Result<()> {
+                    run_sudo(
+                        "create guest rootfs mount directory",
+                        &[OsStr::new("mkdir"), OsStr::new("-p"), mnt_dir.as_os_str()],
+                    )?;
+                    run_sudo(
+                        "mount guest rootfs",
+                        &[OsStr::new("mount"), rootfs_file.as_os_str(), mnt_dir.as_os_str()],
+                    )?;
+                    mounted = true;
+
+                    run_sudo(
+                        "create cca directory in guest rootfs",
+                        &[OsStr::new("mkdir"), OsStr::new("-p"), cca_dir.as_os_str()],
+                    )?;
+
+                    for file in [
+                        &simple_tmk_bin,
+                        &tmk_vmm_bin,
+                        &guest_disk,
+                        &plane0_linux_image,
+                        &kvmtool_efi,
+                        &lkvm,
+                    ] {
+                        run_sudo(
+                            &format!("copy {} into guest rootfs", file.display()),
+                            &[OsStr::new("cp"), file.as_os_str(), cca_dir.as_os_str()],
+                        )?;
+                    }
+
+                    run_sudo("sync guest rootfs writes", &[OsStr::new("sync")])?;
+
+                    Ok(())
+                })();
+
+                if mounted {
+                    if let Err(err) = run_sudo(
+                        "unmount guest rootfs",
+                        &[OsStr::new("umount"), mnt_dir.as_os_str()],
+                    )
+                    .or_else(|_| {
+                        run_sudo(
+                            "lazy unmount guest rootfs",
+                            &[OsStr::new("umount"), OsStr::new("-l"), mnt_dir.as_os_str()],
+                        )
+                    }) {
+                        log::warn!("{err:#}");
+                    }
                 }
+
+                if let Err(err) = run_sudo("sync host writes", &[OsStr::new("sync")]) {
+                    log::warn!("{err:#}");
+                }
+
+                thread::sleep(Duration::from_secs(1));
+                for _ in 0..5 {
+                    if !mnt_dir.is_dir() {
+                        break;
+                    }
+
+                    if run_sudo(
+                        "remove guest rootfs mount directory",
+                        &[OsStr::new("rmdir"), mnt_dir.as_os_str()],
+                    )
+                    .is_ok()
+                    {
+                        break;
+                    }
+
+                    thread::sleep(Duration::from_millis(500));
+                }
+
+                if mnt_dir.is_dir() {
+                    if let Err(err) = run_sudo(
+                        "force remove guest rootfs mount directory",
+                        &[OsStr::new("rm"), OsStr::new("-rf"), mnt_dir.as_os_str()],
+                    ) {
+                        log::warn!("{err:#}");
+                    }
+                }
+
+                inject_result.with_context(|| "failed to mount or inject files into guest rootfs")?;
 
                 log::info!("rootfs.ext2 updated successfully with cca firmwares, paravisor, and tests injected");
                 log::info!("launching openvmm cca tests...");
