@@ -383,14 +383,18 @@ impl<R: Read + Seek> HvsFileReader<R> {
 
     /// Returns the value type for a given path, or `None` if the key
     /// doesn't exist.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the key exists but has an unrecognized type discriminant.
     pub fn value_type(&self, path: &str) -> Option<ValueType> {
-        self.keys.get(path).and_then(|e| match e.key_type {
-            KeyType::INT => Some(ValueType::Int),
-            KeyType::UINT => Some(ValueType::UInt),
-            KeyType::STRING => Some(ValueType::String),
-            KeyType::ARRAY => Some(ValueType::Array),
-            KeyType::BOOL => Some(ValueType::Bool),
-            _ => None,
+        self.keys.get(path).map(|e| match e.key_type {
+            KeyType::INT => ValueType::Int,
+            KeyType::UINT => ValueType::UInt,
+            KeyType::STRING => ValueType::String,
+            KeyType::ARRAY => ValueType::Array,
+            KeyType::BOOL => ValueType::Bool,
+            other => panic!("unrecognized key type {other:?} for key {path:?}"),
         })
     }
 }
