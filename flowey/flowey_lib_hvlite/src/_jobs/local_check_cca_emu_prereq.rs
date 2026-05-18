@@ -3,7 +3,6 @@
 
 //! To install CCA emulation environment, we need a few tools. This job checks
 //! their existence.
-use flowey::node::prelude::RustRuntimeServices;
 use flowey::node::prelude::*;
 use std::fs;
 
@@ -15,59 +14,40 @@ flowey_request! {
 
 new_simple_flow_node!(struct Node);
 
-fn is_distro_package_installed(rt: &RustRuntimeServices<'_>, pkg: &str) -> bool {
-    match flowey::shell_cmd!(rt, "dpkg -s {pkg}").output() {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
-    }
-}
-
 impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::run_cargo_build::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params { done } = request;
 
+        let required_packages_installed = ctx.reqv(|v| {
+            flowey_lib_common::install_dist_pkg::Request::Install {
+                package_names: vec![
+                    "netcat-openbsd".into(),
+                    "python3".into(),
+                    "python3-pip".into(),
+                    "telnet".into(),
+                    "docker.io".into(),
+                    "gcc-aarch64-linux-gnu".into(),
+                    // flex and bison are needed when building linux kernel kconfig parser
+                    "flex".into(),
+                    "bison".into(),
+                    "libssl-dev".into(),
+                    "python3-venv".into(),
+                ],
+                done: v,
+            }
+        });
+
         ctx.emit_rust_step("check prerequisite of arm64 emulation environment", |ctx| {
             done.claim(ctx);
+            required_packages_installed.claim(ctx);
             move |rt| {
-                // Check if required packages are installed
-                let required_packages = vec![
-                    "netcat-openbsd",
-                    "python3",
-                    "python3-pip",
-                    "telnet",
-                    "docker.io",
-                    "gcc-aarch64-linux-gnu",
-                    "flex",  // flex and bison are needed when building linux kernel kconfig parser
-                    "bison",
-                    "libssl-dev",
-                    "python3-venv",
-                ];
-
-                let mut missing_packages = Vec::new();
-                for pkg in required_packages {
-                    if !is_distro_package_installed(rt, pkg) {
-                        missing_packages.push(pkg);
-                    }
-                }
-
-                if !missing_packages.is_empty() {
-                    eprintln!("The following required packages are NOT installed:\n");
-
-                    for pkg in &missing_packages {
-                        eprintln!("  - {}", pkg);
-                    }
-
-                    eprintln!("\nPlease install them using:");
-                    eprintln!("  sudo apt update && sudo apt install -y {}\n", missing_packages.join(" "));
-                    anyhow::bail!("Stopped emulator installation due to missing packages");
-                }
-
                 // Check if docker is setup
                 let group_name = "docker";
                 let group_file = fs::read_to_string("/etc/group").expect("Failed to read /etc/group");

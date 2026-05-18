@@ -90,6 +90,18 @@ impl IntoPipeline for CcaTestsCli {
                     FlowArch::host(backend_hint),
                     "cca-tests: check existence of emulation environment needed tools",
                 )
+                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
+                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_common::Params {
+                    local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
+                        interactive: true,
+                        auto_install: true,
+                        ignore_rust_version: true,
+                    }),
+                    verbose: ReadVar::from_static(verbose),
+                    locked: false,
+                    deny_warnings: false,
+                    no_incremental: false,
+                })
                 .dep_on(
                     |ctx| flowey_lib_hvlite::_jobs::local_check_cca_emu_prereq::Params {
                         done: ctx.new_done_handle(),
