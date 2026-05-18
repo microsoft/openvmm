@@ -1872,7 +1872,7 @@ async fn new_underhill_vm(
 
     // Construct the underhill partition instance. This contains much of the configuration of the guest deposited by
     // the host, along with additional device configuration and transports.
-    let params = UhPartitionNewParams {
+    let mut params = UhPartitionNewParams {
         lower_vtl_memory_layout: &mem_layout,
         isolation,
         topology: &processor_topology,
@@ -1888,7 +1888,7 @@ async fn new_underhill_vm(
         disable_lower_vtl_timer_virt: env_cfg.disable_lower_vtl_timer_virt,
     };
 
-    let proto_partition = UhProtoPartition::new(params, |cpu| tp.driver(cpu).clone())
+    let proto_partition = UhProtoPartition::new(&mut params, |cpu| tp.driver(cpu).clone())
         .context("failed to create prototype partition")?;
 
     let gm = underhill_mem::init(&underhill_mem::Init {

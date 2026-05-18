@@ -12,30 +12,34 @@ mod devmsr;
 cfg_if::cfg_if!(
     if #[cfg(guest_arch = "x86_64")] {
         mod cvm_cpuid;
+
+        pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
         pub use processor::snp::SnpBacked;
         pub use processor::tdx::TdxBacked;
-        pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
-        use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
+
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
-        use processor::LapicState;
+        use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use devmsr::MsrDevice;
+        use processor::LapicState;
         use processor::snp::SnpBackedShared;
         use processor::tdx::TdxBackedShared;
         use std::arch::x86_64::CpuidResult;
         use virt::CpuidLeaf;
+        use virt::X86Partition;
         use virt::state::StateElement;
         use virt::vp::MpState;
+        use virt_support_apic::LocalApicSet;
+
         /// Bitarray type for representing IRR bits in a x86-64 APIC
         /// Each bit represent the 256 possible vectors.
         type IrrBitmap = BitArray<[u32; 8], Lsb0>;
-        use virt::X86Partition;
-        use virt_support_apic::LocalApicSet;
     } else if #[cfg(guest_arch = "aarch64")] {
-        use aarch64defs::Vendor;
         pub use crate::processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
-        use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
         pub use processor::cca::CcaBacked;
+
+        use aarch64defs::Vendor;
+        use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
         use processor::cca::CcaBackedShared;
         use safe_intrinsics::read_cntfrq_el0;
     }
@@ -662,11 +666,6 @@ pub struct UhProcessorBox {
 }
 
 impl UhProcessorBox {
-    /// Return the isolation type
-    pub fn get_isolation(&self) -> IsolationType {
-        self.partition.isolation
-    }
-
     /// Returns the VP index.
     pub fn vp_index(&self) -> VpIndex {
         self.vp_info.base.vp_index
@@ -886,19 +885,9 @@ impl virt::Partition for UhPartition {
         &self.inner.caps
     }
 
-    #[cfg(guest_arch = "x86_64")]
     fn request_msi(&self, vtl: Vtl, request: MsiRequest) {
         self.inner
             .request_msi(vtl.try_into().expect("higher vtl not configured"), request)
-    }
-
-    #[cfg(guest_arch = "aarch64")]
-    fn request_msi(&self, vtl: Vtl, request: MsiRequest) {
-        tracelimit::warn_ratelimited!(
-            ?vtl,
-            ?request,
-            "ignoring MSI request on aarch64: MSI routing is not implemented"
-        );
     }
 
     fn request_yield(&self, _vp_index: VpIndex) {
@@ -1386,11 +1375,16 @@ impl UhPartitionInner {
 
     #[cfg(guest_arch = "aarch64")]
     fn request_msi(&self, vtl: GuestVtl, request: MsiRequest) {
-        tracelimit::warn_ratelimited!(
-            ?vtl,
-            ?request,
-            "ignoring MSI request on aarch64: MSI routing is not implemented"
-        );
+        match self.isolation {
+            IsolationType::Cca => {
+                tracelimit::warn_ratelimited!(
+                    ?vtl,
+                    ?request,
+                    "ignoring MSI request for CCA on aarch64: MSI routing is not implemented"
+                );
+            }
+            _ => unimplemented!("MSI routing is not implemented on aarch64"),
+        }
     }
 }
 
@@ -1457,6 +1451,7 @@ fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
 /// Configuration parameters supplied to [`UhProtoPartition::new`].
 ///
 /// These do not include runtime resources.
+#[derive(Clone, Copy)]
 pub struct UhPartitionNewParams<'a> {
     /// The isolation type for the partition.
     pub isolation: IsolationType,
@@ -1648,7 +1643,7 @@ impl<'a> UhProtoPartition<'a> {
     /// `driver(cpu)` returns the driver to use for polling the sidecar device
     /// whose base CPU is `cpu`.
     pub fn new<T: SpawnDriver>(
-        params: UhPartitionNewParams<'a>,
+        params: &mut UhPartitionNewParams<'a>,
         driver: impl FnMut(u32) -> T,
     ) -> Result<Self, Error> {
         let hcl_isolation = match params.isolation {
@@ -1739,32 +1734,20 @@ impl<'a> UhProtoPartition<'a> {
         };
 
         #[cfg(guest_arch = "aarch64")]
-        let params = if params.isolation == IsolationType::Cca && params.vtom.is_none() {
+        if params.isolation == IsolationType::Cca && params.vtom.is_none() {
             // Query vtom from realm config.
             let realm_config = hcl.get_realm_config().map_err(Error::Hcl)?;
-
-            // Update the final param stored in UhProtoPartition.
-            UhPartitionNewParams {
-                vtom: Some(1_u64 << (realm_config.ipa_width() - 1)),
-                ..params
-            }
-        } else {
-            params
-        };
+            params.vtom = Some(1_u64 << (realm_config.ipa_width() - 1));
+        }
 
         Ok(UhProtoPartition {
             hcl,
-            params,
+            params: *params,
             guest_vsm_available,
             create_partition_available: privs.create_partitions(),
             #[cfg(guest_arch = "x86_64")]
             cpuid,
         })
-    }
-
-    /// Returns the 'vtom' kept inside UhPartitionNewParams.
-    pub fn get_vtom(&self) -> Option<u64> {
-        self.params.vtom
     }
 
     /// Returns whether VSM support will be available to the guest.
