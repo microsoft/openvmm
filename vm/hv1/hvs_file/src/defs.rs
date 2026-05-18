@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(dead_code)]
+
 //! On-disk structure definitions for the HyperV Storage file format.
 //!
 //! These types represent the binary layout of `.vmrs`, `.vmcx`, and `.vsv`
@@ -163,9 +165,9 @@ const_assert_eq!(size_of::<KeyTableEntryHeader>(), 21);
 /// Key entry flag: data is a file object pointer, not inline.
 pub const KEY_FLAG_POINTS_TO_FILE_OBJECT: u8 = 0x01;
 /// Key entry flag: entry is a subcomponent.
-pub(crate) const _KEY_FLAG_SUBCOMPONENT: u8 = 0x02;
+pub const KEY_FLAG_SUBCOMPONENT: u8 = 0x02;
 /// Key entry flag: sequence change tracking enabled.
-pub(crate) const _KEY_FLAG_SEQUENCE_CHANGE_TRACKING: u8 = 0x04;
+pub const KEY_FLAG_SEQUENCE_CHANGE_TRACKING: u8 = 0x04;
 
 /// Node data stored inline for `KeyType::NODE` entries.
 #[repr(C, packed)]
