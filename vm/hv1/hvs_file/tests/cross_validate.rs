@@ -253,6 +253,28 @@ fn cross_validate_with_dll() {
         .chain(std::iter::once(0))
         .collect();
 
+    // Also try the round-tripped file (real partition state, our HVS format)
+    let roundtrip_path = std::env::temp_dir().join("hvs_roundtrip_test.vmrs");
+    if roundtrip_path.exists() {
+        let wide_rt: Vec<u16> = roundtrip_path
+            .to_str()
+            .unwrap()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            let mut h: *mut c_void = std::ptr::null_mut();
+            let hr = dll::LoadSavedStateFile(wide_rt.as_ptr(), &mut h);
+            eprintln!("Round-tripped file: HRESULT = 0x{:08X}", hr as u32);
+            if hr >= 0 && !h.is_null() {
+                let mut vp: u32 = 0;
+                dll::GetVpCount(h, &mut vp);
+                eprintln!("  VP count: {vp}");
+                dll::ReleaseSavedStateFiles(h);
+            }
+        }
+    }
+
     // Try loading the file with the DLL
     unsafe {
         let mut handle: *mut c_void = std::ptr::null_mut();
@@ -347,6 +369,63 @@ fn dll_binding_sanity_check() {
         if hr >= 0 && !handle.is_null() {
             dll::ReleaseSavedStateFiles(handle);
         }
+    }
+}
+
+/// Load the real saved state VMRS and verify the DLL parses it successfully.
+#[test]
+fn dll_loads_real_saved_state() {
+    if !setup_dll_search_path() {
+        eprintln!("SKIP: Windows SDK not found");
+        return;
+    }
+    if !dll::is_supported::LoadSavedStateFile() {
+        eprintln!("SKIP: DLL not loadable");
+        return;
+    }
+
+    let ref_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("E7E9D405-022F-4D55-9B8C-C777CC321051.VMRS");
+
+    if !ref_path.exists() {
+        eprintln!("SKIP: saved state VMRS not found at {}", ref_path.display());
+        return;
+    }
+
+    let wide_path: Vec<u16> = ref_path
+        .to_str()
+        .unwrap()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let mut handle: *mut c_void = std::ptr::null_mut();
+        let hr = dll::LoadSavedStateFile(wide_path.as_ptr(), &mut handle);
+
+        eprintln!("Saved state VMRS: HRESULT = 0x{:08X}", hr as u32);
+
+        if hr < 0 {
+            panic!("Failed to load real saved state: HRESULT 0x{:08X}", hr as u32);
+        }
+
+        let _release = defer(|| {
+            dll::ReleaseSavedStateFiles(handle);
+        });
+
+        let mut vp_count: u32 = 0;
+        let hr = dll::GetVpCount(handle, &mut vp_count);
+        assert!(hr >= 0, "GetVpCount failed: 0x{:08X}", hr as u32);
+        eprintln!("VP count: {vp_count}");
+
+        let mut arch: u32 = 0;
+        let hr = dll::GetArchitecture(handle, 0, &mut arch);
+        assert!(hr >= 0, "GetArchitecture failed: 0x{:08X}", hr as u32);
+        let arch_name = match arch { 1 => "x86", 2 => "x64", 3 => "ARM64", _ => "unknown" };
+        eprintln!("Architecture: {arch_name} ({arch})");
     }
 }
 

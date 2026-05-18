@@ -430,6 +430,34 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             tables.push(current_table_buf);
         }
 
+        // Pad each key table's entries to fill the full usable space.
+        // The key table verifier requires that entries exactly fill
+        // the data area (from sizeof(KeyTableHeader) to objectSizeInBytes).
+        // Fill remaining space with a Free entry.
+        for table_data in &mut tables {
+            if table_data.len() < usable_per_table {
+                let remaining = usable_per_table - table_data.len();
+                if remaining >= entry_header_size {
+                    // Free entries have checksum = 0 (the CalculateChecksum
+                    // method returns 0 for free entries — the CRC block is
+                    // skipped entirely).
+                    let free_header = KeyTableEntryHeader {
+                        key_type: KeyType::FREE,
+                        flags: 0,
+                        size_in_bytes: remaining as u32,
+                        parent_node_table: 0,
+                        parent_node_offset: 0,
+                        checksum: 0,
+                        insertion_sequence: 0,
+                        name_size_in_symbols: 0,
+                    };
+
+                    table_data.extend_from_slice(free_header.as_bytes());
+                    table_data.resize(usable_per_table, 0);
+                }
+            }
+        }
+
         // Update NodeData.next_insertion_sequence for each node
         // (We'd need to seek back into the table buffers — for now, the
         // insertion sequences in the node data are set to 0, which is
@@ -470,13 +498,14 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         let total_key_table_space = tables.len() as u64 * alignment;
         let _final_data_end = key_table_base + total_key_table_space;
 
-        // Build object table
-        // Entries: key tables + file objects + chain slot
+        // Build object table.
+        // Fill to full capacity so the DLL doesn't try to expand it
+        // (expansion requires a write-back which fails on read-only files).
+        let max_entries = (alignment as usize - size_of::<ObjectTableHeader>()) / size_of::<ObjectTableEntry>();
         let num_key_tables = tables.len();
         let num_file_objects = self.object_entries.len();
-        let total_entries = num_key_tables + num_file_objects + 1; // +1 for chain slot
 
-        let mut obj_entries: Vec<ObjectTableEntry> = Vec::with_capacity(total_entries);
+        let mut obj_entries: Vec<ObjectTableEntry> = Vec::with_capacity(max_entries);
 
         // Key table entries
         for (i, &offset) in key_table_offsets.iter().enumerate() {
@@ -513,6 +542,11 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         chain_entry.entry_checksum = struct_checksum(&mut chain_bytes, 1);
         obj_entries.push(chain_entry);
 
+        // Fill remaining slots with empty entries (properly checksummed)
+        while obj_entries.len() < max_entries {
+            obj_entries.push(chain_entry); // reuse the checksummed empty entry
+        }
+
         // Write object table at offset 8192.
         let object_table_offset = 2 * MIN_DATA_ALIGNMENT as u64;
 
@@ -534,6 +568,49 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             self.writer.write_all(&vec![0u8; pad])?;
         }
 
+        // Write an empty replay log at the current data end.
+        // HyperVStorage expects a valid replay log region — InitializeForLoad
+        // dereferences the header buffer and Verify checks MaximumNumberOfEntries > 0.
+        let replay_log_offset = align_up(
+            key_table_base + tables.len() as u64 * alignment,
+            alignment,
+        );
+        let replay_log_header_size = alignment as u32;
+        let replay_log_size = alignment;
+
+        // Replay log header (packed struct, 34 bytes):
+        //   Signature: u32             offset 0
+        //   Checksum: u32              offset 4
+        //   CurrentEntriesCount: u32   offset 8
+        //   Reserved: u8              offset 12
+        //   MaximumNumberOfEntries: u32 offset 13
+        //   ChangeTrackingEnabled: u8  offset 17
+        //   ChangeTrackingBufferOffset: u64 offset 18
+        //   ChangeTrackingBufferSize: u32   offset 26
+        //   ChangeTrackingBufferUsedSize: u32 offset 30
+        // Total: 34 bytes
+        let replay_header_struct_size = 34usize;
+        let replay_entry_header_size = 28usize; // sizeof(ReplayLogEntryHeader)
+        let max_entries = (replay_log_header_size as usize - replay_header_struct_size)
+            / replay_entry_header_size;
+
+        let mut replay_header = vec![0u8; alignment as usize];
+        // Signature = 0x01110003
+        replay_header[0..4].copy_from_slice(&0x01110003u32.to_le_bytes());
+        // CurrentEntriesCount = 0 (already zero)
+        // MaximumNumberOfEntries at offset 13
+        replay_header[13..17].copy_from_slice(&(max_entries as u32).to_le_bytes());
+        // Compute checksum over the 34-byte header struct with checksum field zeroed
+        let checksum = {
+            let mut buf = replay_header[..replay_header_struct_size].to_vec();
+            buf[4..8].fill(0);
+            crc32(&buf)
+        };
+        replay_header[4..8].copy_from_slice(&checksum.to_le_bytes());
+
+        self.writer.seek(SeekFrom::Start(replay_log_offset))?;
+        self.writer.write_all(&replay_header)?;
+
         // Write file headers.
         // The two copies must have different sequence numbers — if both are
         // valid with the same sequence, HyperVStorage treats the file as
@@ -548,9 +625,9 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 data_version: 0,
                 flags: 0,
                 data_alignment_in_bytes: alignment as u32,
-                replay_log_offset_in_bytes: 0,
-                replay_log_size_in_bytes: 0,
-                replay_log_header_size_in_bytes: 0,
+                replay_log_offset_in_bytes: replay_log_offset,
+                replay_log_size_in_bytes: replay_log_size,
+                replay_log_header_size_in_bytes: replay_log_header_size,
             };
             let mut header_bytes = header.as_bytes().to_vec();
             let checksum = struct_checksum(&mut header_bytes, 4);

@@ -38,6 +38,70 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
+    fn roundtrip_real_vmrs_through_writer() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("E7E9D405-022F-4D55-9B8C-C777CC321051.VMRS");
+        if !path.exists() {
+            eprintln!("SKIP: real saved state VMRS not found");
+            return;
+        }
+        
+        // Read the real file
+        let file = std::fs::File::open(&path).unwrap();
+        let mut reader = HvsFileReader::open(file).unwrap();
+        let version = reader.read_int("/savedstate/VmVersion").unwrap();
+        let ps = reader.read_file_object("/savedstate/savedVM/partition_state").unwrap();
+        
+        // Write a minimal version with just the required keys
+        let buf = Cursor::new(Vec::new());
+        let mut w = HvsFileWriter::new(buf).unwrap();
+        w.add_int("/savedstate/VmVersion", version);
+        w.add_file_object("/savedstate/savedVM/partition_state", &ps).unwrap();
+        // Add a minimal RamMemoryBlock0
+        let mut ram_meta = vec![0u8; 40];
+        ram_meta[0..4].copy_from_slice(&3u32.to_le_bytes());
+        ram_meta[16..24].copy_from_slice(&1u64.to_le_bytes());
+        w.add_array("/savedstate/RamMemoryBlock0", ram_meta);
+        // One empty RAM block
+        w.add_file_object("/savedstate/RamBlock0", &vec![0u8; 4096]).unwrap();
+        
+        let buf = w.finish().unwrap();
+        let out_path = std::env::temp_dir().join("hvs_roundtrip_test.vmrs");
+        std::fs::write(&out_path, buf.into_inner()).unwrap();
+        eprintln!("Wrote round-tripped file to {}", out_path.display());
+    }
+
+    #[test]
+    fn read_real_saved_state() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("E7E9D405-022F-4D55-9B8C-C777CC321051.VMRS");
+        if !path.exists() {
+            eprintln!("SKIP: real saved state VMRS not found");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let mut reader = HvsFileReader::open(file).unwrap();
+        
+        // Check that we can find the savedstate keys
+        assert!(reader.contains_key("/savedstate/VmVersion"), "VmVersion not found");
+        let version = reader.read_int("/savedstate/VmVersion").unwrap();
+        eprintln!("VmVersion: 0x{version:X}");
+        assert!(version > 0);
+        
+        // Check partition state exists
+        assert!(reader.contains_key("/savedstate/savedVM/partition_state"), "partition_state not found");
+        let ps = reader.read_file_object("/savedstate/savedVM/partition_state").unwrap();
+        eprintln!("partition_state size: {} bytes", ps.len());
+        assert!(!ps.is_empty());
+    }
+
+    #[test]
     fn write_debug_vmrs() {
         let buf = Cursor::new(Vec::new());
         let mut w = HvsFileWriter::new(buf).unwrap();
