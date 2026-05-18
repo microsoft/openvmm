@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-Import-Module Utilities
+ Import-Module (Join-Path -Path $PSScriptRoot -ChildPath "Utilities.psm1")
 
 #
 # Constants
