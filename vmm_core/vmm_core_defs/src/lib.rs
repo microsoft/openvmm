@@ -20,7 +20,8 @@ use mesh::payload::Protobuf;
 #[derive(Debug, Clone, MeshPayload)]
 pub struct LayoutConfig {
     /// Chipset low MMIO range size (below 4 GiB) for VMOD/PCI0 _CRS.
-    /// The address is always allocated dynamically. `0` disables the range.
+    /// The address is always allocated dynamically. `0` uses only the
+    /// architectural minimum (LAPIC, IOAPIC, GIC, etc.).
     pub chipset_low_mmio_size: u32,
     /// Chipset high MMIO range size (above RAM) for VMOD/PCI0 _CRS.
     /// The address is always allocated dynamically. `0` disables the range.

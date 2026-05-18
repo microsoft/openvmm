@@ -96,20 +96,21 @@ The worker resolver in
 [`openvmm_core::worker::memory_layout`](https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_core/src/worker/memory_layout.rs)
 issues requests in this order:
 
-1. **Architectural reserved zone.** A `reserve` request for the
-   per-architecture range containing LAPIC, IOAPIC, GIC, PL011, battery,
-   TPM, and similar fixed-address platform devices.
+1. **Chipset low MMIO** (`fixed`) — a window pinned to end at 4 GiB,
+   advertised to firmware as `\_SB.VMOD._CRS`. The window always covers
+   at least the per-architecture reserved zone (LAPIC, IOAPIC, GIC,
+   PL011, battery, TPM, etc.) so guests can arbitrate fixed-address
+   children against this window. The caller-requested size may extend it
+   lower.
 
-    | Architecture | Range |
+    | Architecture | Minimum range (architectural reserved zone) |
     |---|---|
     | x86_64 | `0xFE00_0000..0x1_0000_0000` |
     | aarch64 | `0xEF00_0000..0x1_0000_0000` |
 
-2. **Chipset low MMIO** (`Mmio32`) — the VMOD/PCI0 `_CRS` low range for
-   VMBus relay devices and PIIX4 PCI BARs. 2 MB alignment.
-3. **Chipset high MMIO** (`Mmio64`) — the corresponding high range. 2 MB
+2. **Chipset high MMIO** (`Mmio64`) — the corresponding high range. 2 MB
    alignment.
-4. **PCIe root complex ranges**, one per root complex:
+3. **PCIe root complex ranges**, one per root complex:
     - **ECAM** (`Mmio32`). The size is derived from the bus window as
       `(end_bus - start_bus + 1) * 1 MB` (32 devices × 8 functions ×
       4 KiB per config space).
@@ -120,9 +121,9 @@ issues requests in this order:
       fixed range as well. Per-BAR alignment would guarantee the entire
       window is usable for one large BAR, but burns address space on
       hosts with tight physical-address widths.
-5. **Virtio-mmio slots** (`Mmio32`) — one contiguous region sized
+4. **Virtio-mmio slots** (`Mmio32`) — one contiguous region sized
    `slot_count * 4 KiB`, when any slots are configured.
-6. **RAM**, in vnode order. The first request becomes vnode 0, the second
+5. **RAM**, in vnode order. The first request becomes vnode 0, the second
    vnode 1, and so on. Each vnode starts at or above the highest address
    used by prior vnodes; vnode N+1 never backfills a fragment that vnode
    N skipped. This keeps vnode ordering equal to address ordering and
@@ -141,10 +142,10 @@ issues requests in this order:
     cost of thousands of smaller page table entries and reducing TLB
     pressure at runtime. Sub-GB nodes use 2 MB so small NUMA nodes
     do not waste a full GB of address space.
-7. **VTL2 chipset MMIO** (`PostMmio`) — VTL2's own VMBus / chipset MMIO
+6. **VTL2 chipset MMIO** (`PostMmio`) — VTL2's own VMBus / chipset MMIO
    region, when VTL2 is configured. Placed after VTL0 so enabling VTL2
    does not move any VTL0 address.
-8. **VTL2 private memory** (`PostMmio`) — when the IGVM file requests
+7. **VTL2 private memory** (`PostMmio`) — when the IGVM file requests
    layout-mode VTL2 memory, the worker takes only its size and alignment
    from the IGVM relocation header. The IGVM file's relocation min/max
    bounds are not fed in as constraints here; they are validated later by

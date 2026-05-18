@@ -433,7 +433,12 @@ impl MemoryLayout {
     /// One past the last byte of RAM, MMIO, PCI ECAM, or PCI MMIO.
     pub fn end_of_layout(&self) -> u64 {
         [
-            self.mmio.last().map(|r| r.end()).unwrap_or(0),
+            self.mmio
+                .iter()
+                .filter(|r| !r.is_empty())
+                .map(|r| r.end())
+                .max()
+                .unwrap_or(0),
             self.end_of_ram(),
             self.pci_ecam.last().map(|r| r.end()).unwrap_or(0),
             self.pci_mmio.last().map(|r| r.end()).unwrap_or(0),
