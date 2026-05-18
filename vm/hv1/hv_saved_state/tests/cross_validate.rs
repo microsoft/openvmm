@@ -133,9 +133,17 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
     vmrs.set_partition_state(blob);
 
     // One 4K page of zeros for RAM
-    vmrs.add_memory_range(0, vec![0u8; 4096]);
+    vmrs.add_memory_range(0, 4096);
 
-    vmrs.finish().unwrap().into_inner()
+    struct ZeroReader;
+    impl hv_saved_state::GuestMemoryReader for ZeroReader {
+        fn read_gpa(&mut self, _gpa: u64, buf: &mut [u8]) -> std::io::Result<()> {
+            buf.fill(0);
+            Ok(())
+        }
+    }
+    let mut mem = ZeroReader;
+    vmrs.finish(&mut mem).unwrap().into_inner()
 }
 
 /// Load a VMRS file with the DLL and verify VP count and architecture.

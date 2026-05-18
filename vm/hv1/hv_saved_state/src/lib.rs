@@ -25,12 +25,17 @@
 //! builder.add_x64_vp(0, &Default::default());
 //! let blob = builder.finish();
 //!
-//! // Write complete VMRS file
+//! // Write complete VMRS file with streaming memory
 //! let file = std::fs::File::create("dump.vmrs").unwrap();
 //! let mut vmrs = VmrsWriter::new(file).unwrap();
 //! vmrs.set_partition_state(blob);
-//! vmrs.add_memory_range(0, vec![0u8; 4096]);
-//! vmrs.finish().unwrap();
+//! vmrs.add_memory_range(0, 4096);
+//! # struct NullReader;
+//! # impl hv_saved_state::GuestMemoryReader for NullReader {
+//! #     fn read_gpa(&mut self, _: u64, buf: &mut [u8]) -> std::io::Result<()> { buf.fill(0); Ok(()) }
+//! # }
+//! # let mut mem = NullReader;
+//! vmrs.finish(&mut mem).unwrap();
 //! ```
 
 mod defs;
@@ -41,4 +46,5 @@ pub use partition_state::Aarch64VpRegisters;
 pub use partition_state::PartitionStateBuilder;
 pub use partition_state::ProcessorArch;
 pub use partition_state::X64VpRegisters;
+pub use vmrs_writer::GuestMemoryReader;
 pub use vmrs_writer::VmrsWriter;
