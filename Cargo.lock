@@ -9513,6 +9513,7 @@ dependencies = [
  "serial_pl011_resources",
  "thiserror 2.0.16",
  "vm_resource",
+ "vmm_core_defs",
  "vmotherboard",
 ]
 

@@ -44,10 +44,10 @@ accepts four kinds of input:
 
 | Input | Purpose |
 |---|---|
-| `reserve(tag, range)` | Block allocation at this address but do not include it in the layout top. |
-| `fixed(tag, range)` | A range whose address is already decided. Blocks allocation and counts as part of the layout. |
-| `ram(tag, target, size, alignment)` | Ordinary guest RAM. The only request type that may be split across multiple extents. |
-| `request(tag, target, size, alignment, placement)` | A single contiguous range, placed dynamically. The `placement` chooses one of three phases below. |
+| `reserve(range)` | Block allocation at this address but do not include it in the layout top. |
+| `fixed(range)` | A range whose address is already decided. Blocks allocation and counts as part of the layout. |
+| `ram(size, alignment)` | Ordinary guest RAM. The only request type that may be split across multiple extents. |
+| `request(size, alignment, placement)` | A single contiguous range, placed dynamically. The `placement` chooses one of three phases below. |
 
 `reserve` and `fixed` differ only in how they affect the **layout top** —
 the address one past the highest guest-visible byte. `fixed` ranges raise
@@ -135,8 +135,12 @@ issues requests in this order:
     | < 1 GB | 2 MB |
     | ≥ 1 GB | 1 GB |
 
-    Sub-GB nodes use 2 MB so small NUMA nodes do not waste a full GB of
-    address space.
+    Alignment matters because RAM extents that start on a huge-page
+    boundary can be mapped with 2 MB or 1 GB huge pages in host and
+    guest page tables, avoiding the memory overhead and construction
+    cost of thousands of smaller page table entries and reducing TLB
+    pressure at runtime. Sub-GB nodes use 2 MB so small NUMA nodes
+    do not waste a full GB of address space.
 7. **VTL2 chipset MMIO** (`PostMmio`) — VTL2's own VMBus / chipset MMIO
    region, when VTL2 is configured. Placed after VTL0 so enabling VTL2
    does not move any VTL0 address.
@@ -150,14 +154,24 @@ issues requests in this order:
 
 After `allocate()` succeeds, the worker collects the resolved ranges into
 the `MemoryLayout`'s MMIO, PCI ECAM, and PCI MMIO gap vectors, then checks
-`MemoryLayout::end_of_layout()` against the host's physical-address width.
+the highest placed-range address (which includes VTL2 private memory and
+VTL2 chipset MMIO) against the host's physical-address width.
 
 ## RAM splitting
 
-RAM is the only splittable request, and the splitter has one rule worth
-calling out: the alignment passed in is also the **split granularity**.
-When a single free range cannot hold the entire request, the part placed
-in that range is rounded down to the request alignment before continuing.
+RAM is the only splittable request. When contiguous free space is
+available, the full requested size is placed at an aligned start address
+— alignment constrains where the extent starts, not how large it is. A
+1.5 GB request with 1 GB alignment in open space produces a single
+`[0, 1.5 GB)` extent with no wasted space.
+
+Splitting only happens when a fixed or reserved range interrupts the free
+space. In that case the alignment also acts as the **split granularity**:
+partial chunks are rounded down to the alignment before continuing. This
+keeps every RAM extent on a huge-page boundary so the host and guest can
+use large pages (reducing page table overhead and TLB pressure), and
+avoids sub-alignment fragments that would complicate the NUMA and
+compatibility surface.
 
 The practical effect is that 1 GB-aligned RAM stays in 1 GB-aligned
 chunks. A small fixed hole just above the 1 GB boundary will not cause a

@@ -348,6 +348,7 @@ impl PetriVmConfigOpenVmm {
         let mut vsock_listener = Some(vsock_listener);
         let vsock_path_string = vsock_path.to_string_lossy();
 
+        let layout_config = chipset.layout_config();
         let chipset = chipset
             .build()
             .context("failed to build chipset configuration")?;
@@ -459,9 +460,6 @@ impl PetriVmConfigOpenVmm {
             mut chipset_devices,
             pci_chipset_devices,
             capabilities,
-            chipset_low_mmio_size,
-            chipset_high_mmio_size,
-            vtl2_chipset_mmio_size,
         } = chipset;
 
         // Add the TPM
@@ -499,9 +497,7 @@ impl PetriVmConfigOpenVmm {
             chipset_devices,
             pci_chipset_devices,
             chipset_capabilities: capabilities,
-            chipset_low_mmio_size,
-            chipset_high_mmio_size,
-            vtl2_chipset_mmio_size,
+            layout: layout_config,
 
             // Basic virtualization device support
             hypervisor: HypervisorConfig {

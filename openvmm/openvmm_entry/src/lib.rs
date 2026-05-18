@@ -872,14 +872,12 @@ async fn vm_config_from_command_line(
     // TODO: load from VMGS file if it exists
     let bios_guid = Guid::new_random();
 
+    let layout_config = chipset.layout_config();
     let VmChipsetResult {
         chipset,
         mut chipset_devices,
         pci_chipset_devices,
         capabilities,
-        chipset_low_mmio_size,
-        chipset_high_mmio_size,
-        vtl2_chipset_mmio_size,
     } = chipset
         .build()
         .context("failed to build chipset configuration")?;
@@ -1634,9 +1632,7 @@ async fn vm_config_from_command_line(
         chipset_devices,
         pci_chipset_devices,
         chipset_capabilities: capabilities,
-        chipset_low_mmio_size,
-        chipset_high_mmio_size,
-        vtl2_chipset_mmio_size,
+        layout: layout_config,
         #[cfg(windows)]
         vpci_resources,
         vmgs,

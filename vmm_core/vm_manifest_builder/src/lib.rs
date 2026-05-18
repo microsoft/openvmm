@@ -43,6 +43,7 @@ use vm_resource::PlatformResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::kind::SerialBackendHandle;
+pub use vmm_core_defs::LayoutConfig;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::LegacyPciChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
@@ -102,18 +103,6 @@ pub struct VmChipsetResult {
     pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
     /// Derived chipset capabilities needed by firmware and table generation.
     pub capabilities: VmChipsetCapabilities,
-    /// Default chipset low MMIO size (below 4 GiB) for VMOD/PCI0 _CRS.
-    /// The address is always allocated dynamically. `0` when the VM type
-    /// has no VMBus or PCI bus.
-    pub chipset_low_mmio_size: u32,
-    /// Default chipset high MMIO size (above RAM) for VMOD/PCI0 _CRS.
-    /// The address is always allocated dynamically. `0` when the VM type
-    /// has no VMBus or PCI bus.
-    pub chipset_high_mmio_size: u64,
-    /// Default VTL2-private chipset MMIO size for VTL2 VMBus.
-    /// The address is always allocated dynamically. `0` when the VM type
-    /// does not include VTL2.
-    pub vtl2_chipset_mmio_size: u64,
 }
 
 /// Error type for building a VM manifest.
@@ -248,9 +237,6 @@ impl VmManifestBuilder {
                 with_psp: false,
                 with_guest_watchdog: false,
             },
-            chipset_low_mmio_size: 0,
-            chipset_high_mmio_size: 0,
-            vtl2_chipset_mmio_size: 0,
         };
 
         if let Some((backend, port)) = self.debugcon {
@@ -405,11 +391,16 @@ impl VmManifestBuilder {
             }
         }
 
-        // Chipset MMIO sizing: all VM types with VMBus or a PCI bus get low +
-        // high chipset MMIO. HclHost additionally gets VTL2 chipset MMIO.
-        //
-        // Low MMIO is a single window pinned to end at 4 GiB and advertised
-        // as `\_SB.VMOD._CRS`. The defaults match the legacy Hyper-V sizes.
+        Ok(result)
+    }
+
+    /// Returns the default memory layout sizing for this VM type and
+    /// architecture.
+    ///
+    /// This is separate from [`Self::build`] because not every consumer runs
+    /// the layout engine. In particular, OpenHCL (Underhill) receives its
+    /// memory layout from the host and does not use these defaults.
+    pub fn layout_config(&self) -> LayoutConfig {
         let default_low = match self.arch {
             MachineArch::X86_64 => 128 * 1024 * 1024,
             MachineArch::Aarch64 => 512 * 1024 * 1024,
@@ -420,18 +411,17 @@ impl VmManifestBuilder {
             BaseChipsetType::HypervGen1
             | BaseChipsetType::HypervGen2Uefi
             | BaseChipsetType::HyperVGen2LinuxDirect
-            | BaseChipsetType::UnenlightenedLinuxDirect => {
-                result.chipset_low_mmio_size = default_low;
-                result.chipset_high_mmio_size = default_high;
-            }
-            BaseChipsetType::HclHost => {
-                result.chipset_low_mmio_size = default_low;
-                result.chipset_high_mmio_size = default_high;
-                result.vtl2_chipset_mmio_size = default_vtl2;
-            }
+            | BaseChipsetType::UnenlightenedLinuxDirect => LayoutConfig {
+                chipset_low_mmio_size: default_low,
+                chipset_high_mmio_size: default_high,
+                vtl2_chipset_mmio_size: 0,
+            },
+            BaseChipsetType::HclHost => LayoutConfig {
+                chipset_low_mmio_size: default_low,
+                chipset_high_mmio_size: default_high,
+                vtl2_chipset_mmio_size: default_vtl2,
+            },
         }
-
-        Ok(result)
     }
 }
 

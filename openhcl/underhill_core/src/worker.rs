@@ -2384,7 +2384,6 @@ async fn new_underhill_vm(
         mut chipset_devices,
         pci_chipset_devices,
         capabilities,
-        ..
     } = chipset
         .build()
         .context("failed to build chipset configuration")?;

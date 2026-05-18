@@ -9,7 +9,26 @@
 pub mod debug_rpc;
 
 use inspect::Inspect;
+use mesh::MeshPayload;
 use mesh::payload::Protobuf;
+
+/// Default memory layout sizing for a VM, used by the layout engine in
+/// `openvmm_core::worker::memory_layout`.
+///
+/// Consumers that receive their memory layout from the host (such as OpenHCL /
+/// Underhill) do not use these values.
+#[derive(Debug, Clone, MeshPayload)]
+pub struct LayoutConfig {
+    /// Chipset low MMIO range size (below 4 GiB) for VMOD/PCI0 _CRS.
+    /// The address is always allocated dynamically. `0` disables the range.
+    pub chipset_low_mmio_size: u32,
+    /// Chipset high MMIO range size (above RAM) for VMOD/PCI0 _CRS.
+    /// The address is always allocated dynamically. `0` disables the range.
+    pub chipset_high_mmio_size: u64,
+    /// VTL2-private chipset MMIO range size for VTL2 VMBus.
+    /// The address is always allocated dynamically. `0` disables the range.
+    pub vtl2_chipset_mmio_size: u64,
+}
 use std::sync::Arc;
 
 /// HaltReason sent by devices and vp_set to the vmm.

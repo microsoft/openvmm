@@ -539,13 +539,15 @@ impl VmService {
             })?);
         }
 
-        let chipset = VmManifestBuilder::new(
+        let chipset_builder = VmManifestBuilder::new(
             vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
             vm_manifest_builder::MachineArch::X86_64,
         )
-        .with_serial(ports)
-        .build()
-        .context("failed to build vm configuration")?;
+        .with_serial(ports);
+        let layout_config = chipset_builder.layout_config();
+        let chipset = chipset_builder
+            .build()
+            .context("failed to build vm configuration")?;
 
         // Extract memory and processor counts for the VmController.
         let config_mem_size = req_config
@@ -610,9 +612,7 @@ impl VmService {
             chipset_devices: chipset.chipset_devices,
             pci_chipset_devices: chipset.pci_chipset_devices,
             chipset_capabilities: chipset.capabilities,
-            chipset_low_mmio_size: chipset.chipset_low_mmio_size,
-            chipset_high_mmio_size: chipset.chipset_high_mmio_size,
-            vtl2_chipset_mmio_size: chipset.vtl2_chipset_mmio_size,
+            layout: layout_config,
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             automatic_guest_reset: true,

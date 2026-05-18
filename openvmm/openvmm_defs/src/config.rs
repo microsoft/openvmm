@@ -55,15 +55,9 @@ pub struct Config {
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
     pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
     pub chipset_capabilities: VmChipsetCapabilities,
-    /// Chipset low MMIO range size (below 4 GiB) for VMOD/PCI0 _CRS.
-    /// The address is always allocated dynamically. `0` disables the range.
-    pub chipset_low_mmio_size: u32,
-    /// Chipset high MMIO range size (above RAM) for VMOD/PCI0 _CRS.
-    /// The address is always allocated dynamically. `0` disables the range.
-    pub chipset_high_mmio_size: u64,
-    /// VTL2-private chipset MMIO range size for VTL2 VMBus.
-    /// The address is always allocated dynamically. `0` disables the range.
-    pub vtl2_chipset_mmio_size: u64,
+    /// Memory layout sizing for the layout engine. Determines chipset MMIO
+    /// range sizes; addresses are allocated dynamically by the resolver.
+    pub layout: vmm_core_defs::LayoutConfig,
     pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,

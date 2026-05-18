@@ -271,12 +271,13 @@ impl MemoryLayout {
 
     /// Makes a new memory layout from already-resolved RAM and fixed ranges.
     ///
-    /// The RAM, PCI ECAM, and PCI MMIO ranges must each be in sorted order,
-    /// non-empty, and non-overlapping. MMIO gaps may contain empty placeholder
-    /// ranges to preserve positional indexing (e.g. `mmio()[0]` = low,
-    /// `mmio()[1]` = high); empty entries are ignored during validation.
-    /// The combined layout is also validated for overlaps, including the
-    /// optional VTL2 range.
+    /// Each individual range must be non-empty, but the lists themselves may
+    /// be empty (e.g. no PCIe root complexes means empty PCI ECAM/MMIO
+    /// vectors). Ranges within each list must be sorted and non-overlapping.
+    /// MMIO gaps may contain empty placeholder ranges to preserve positional
+    /// indexing (e.g. `mmio()[0]` = low, `mmio()[1]` = high); empty entries
+    /// are ignored during validation. The combined layout is also validated
+    /// for overlaps, including the optional VTL2 range.
     pub fn new_from_resolved_ranges(
         ram: Vec<MemoryRangeWithNode>,
         mmio_gaps: Vec<MemoryRange>,

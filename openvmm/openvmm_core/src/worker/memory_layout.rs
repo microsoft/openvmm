@@ -470,7 +470,7 @@ mod tests {
     #[cfg(guest_arch = "x86_64")]
     const DEFAULT_CHIPSET_LOW_MMIO_SIZE: u32 = 128 * 1024 * 1024;
     #[cfg(guest_arch = "aarch64")]
-    const DEFAULT_CHIPSET_LOW_MMIO_SIZE: u64 = 512 * 1024 * 1024;
+    const DEFAULT_CHIPSET_LOW_MMIO_SIZE: u32 = 512 * 1024 * 1024;
     #[cfg(guest_arch = "x86_64")]
     const ARCH_RESERVED: MemoryRange = ARCH_RESERVED_X86_64;
     #[cfg(guest_arch = "aarch64")]
