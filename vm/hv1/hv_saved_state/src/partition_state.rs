@@ -243,7 +243,7 @@ impl PartitionStateBuilder {
         // Prolog is 4080 bytes with a large reserved region — new_zeroed
         // is appropriate here since the struct is mostly padding.
         let mut prolog = ObSaveChunkProlog::new_zeroed();
-        prolog.header = chunk_header(VmSaveChunkId::PROLOG, OB_SAVE_CHUNK_PROLOG_SIZE - HEADER);
+        prolog.header = chunk_header_for::<ObSaveChunkProlog>(VmSaveChunkId::PROLOG);
         prolog.undefined_tag = VM_SAVE_CHUNK_TAG_UNDEFINED;
         prolog.vendor = match self.arch {
             ProcessorArch::X64 => HvProcessorVendor::INTEL,
@@ -255,7 +255,7 @@ impl PartitionStateBuilder {
     fn write_os_id(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(
             PtSaveChunkOsId {
-                header: chunk_header(VmSaveChunkId::OS_ID, size_of::<PtSaveChunkOsId>() - HEADER),
+                header: chunk_header_for::<PtSaveChunkOsId>(VmSaveChunkId::OS_ID),
                 os_id: self.os_id,
                 _padding: [0; 8],
             }
@@ -274,10 +274,7 @@ impl PartitionStateBuilder {
         }
         out.extend_from_slice(
             VpSaveChunkVpIndices {
-                header: chunk_header(
-                    VmSaveChunkId::VP_INDICES,
-                    size_of::<VpSaveChunkVpIndices>() - HEADER,
-                ),
+                header: chunk_header_for::<VpSaveChunkVpIndices>(VmSaveChunkId::VP_INDICES),
                 bsp: self.vps.first().map_or(0, |vp| vp.vp_index),
                 vp_present_map,
                 _padding: [0; 14],
@@ -289,7 +286,7 @@ impl PartitionStateBuilder {
     fn write_vp_marker(&self, out: &mut Vec<u8>, vp_index: u32) {
         out.extend_from_slice(
             ObSaveChunkVp {
-                header: chunk_header(VmSaveChunkId::VP, size_of::<ObSaveChunkVp>() - HEADER),
+                header: chunk_header_for::<ObSaveChunkVp>(VmSaveChunkId::VP),
                 vp_index,
                 _padding: [0; 12],
             }
@@ -300,10 +297,7 @@ impl PartitionStateBuilder {
     fn write_partition_vtl(&self, out: &mut Vec<u8>, vtl: u8) {
         out.extend_from_slice(
             ObSaveChunkVtl {
-                header: chunk_header(
-                    VmSaveChunkId::PARTITION_VTL,
-                    size_of::<ObSaveChunkVtl>() - HEADER,
-                ),
+                header: chunk_header_for::<ObSaveChunkVtl>(VmSaveChunkId::PARTITION_VTL),
                 vtl,
                 _padding: [0; 15],
             }
@@ -314,7 +308,7 @@ impl PartitionStateBuilder {
     fn write_vp_vtl_marker(&self, out: &mut Vec<u8>, vtl: u8) {
         out.extend_from_slice(
             ObSaveChunkVtl {
-                header: chunk_header(VmSaveChunkId::VP_VTL, size_of::<ObSaveChunkVtl>() - HEADER),
+                header: chunk_header_for::<ObSaveChunkVtl>(VmSaveChunkId::VP_VTL),
                 vtl,
                 _padding: [0; 15],
             }
@@ -325,10 +319,7 @@ impl PartitionStateBuilder {
     fn write_vp_vtl_control_page(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(
             VsmSaveChunkVpVtlControlPage {
-                header: chunk_header(
-                    VmSaveChunkId::VP_VTL_CONTROL_PAGE,
-                    size_of::<VsmSaveChunkVpVtlControlPage>() - HEADER,
-                ),
+                header: chunk_header_for::<VsmSaveChunkVpVtlControlPage>(VmSaveChunkId::VP_VTL_CONTROL_PAGE),
                 vp_assist_page_vtl_control_contents: [0; VSM_SAVE_VP_VTL_CONTROL_BYTES],
                 vtl_is_runnable: 1,
                 _padding: [0; 7],
@@ -340,7 +331,7 @@ impl PartitionStateBuilder {
     fn write_epilog(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(
             ObSaveChunkEpilog {
-                header: chunk_header(VmSaveChunkId::EPILOG, 0),
+                header: chunk_header_for::<ObSaveChunkEpilog>(VmSaveChunkId::EPILOG),
             }
             .as_bytes(),
         );
@@ -353,10 +344,7 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             VpX64SaveChunkGpRegisters {
-                header: chunk_header(
-                    VmSaveChunkId::VP_GP_REGISTERS,
-                    size_of::<VpX64SaveChunkGpRegisters>() - HEADER,
-                ),
+                header: chunk_header_for::<VpX64SaveChunkGpRegisters>(VmSaveChunkId::VP_GP_REGISTERS),
                 rax: r.rax,
                 rcx: r.rcx,
                 rdx: r.rdx,
@@ -381,10 +369,7 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             SynicX64SaveChunkControlRegisters {
-                header: chunk_header(
-                    VmSaveChunkId::VP_VTL_CONTROL_REGISTERS,
-                    size_of::<SynicX64SaveChunkControlRegisters>() - HEADER,
-                ),
+                header: chunk_header_for::<SynicX64SaveChunkControlRegisters>(VmSaveChunkId::VP_VTL_CONTROL_REGISTERS),
                 cr0: r.cr0,
                 cr2: r.cr2,
                 cr3: r.cr3,
@@ -397,10 +382,7 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             VpX64SaveChunkSegmentRegisters {
-                header: chunk_header(
-                    VmSaveChunkId::VP_SEGMENT_REGISTERS,
-                    size_of::<VpX64SaveChunkSegmentRegisters>() - HEADER,
-                ),
+                header: chunk_header_for::<VpX64SaveChunkSegmentRegisters>(VmSaveChunkId::VP_SEGMENT_REGISTERS),
                 es: r.es.into(),
                 cs: r.cs.into(),
                 ss: r.ss.into(),
@@ -417,10 +399,7 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             VpX64SaveChunkTableRegisters {
-                header: chunk_header(
-                    VmSaveChunkId::VP_TABLE_REGISTERS,
-                    size_of::<VpX64SaveChunkTableRegisters>() - HEADER,
-                ),
+                header: chunk_header_for::<VpX64SaveChunkTableRegisters>(VmSaveChunkId::VP_TABLE_REGISTERS),
                 idtr: r.idtr.into(),
                 gdtr: r.gdtr.into(),
             }
@@ -430,10 +409,7 @@ impl PartitionStateBuilder {
         if let Some(dr) = &state.debug_registers {
             out.extend_from_slice(
                 VpX64SaveChunkDebugRegisters {
-                    header: chunk_header(
-                        VmSaveChunkId::VP_DEBUG_REGISTERS,
-                        size_of::<VpX64SaveChunkDebugRegisters>() - HEADER,
-                    ),
+                    header: chunk_header_for::<VpX64SaveChunkDebugRegisters>(VmSaveChunkId::VP_DEBUG_REGISTERS),
                     dr0: dr.dr0,
                     dr1: dr.dr1,
                     dr2: dr.dr2,
@@ -493,10 +469,7 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             VpX64SaveChunkFpRegisters {
-                header: chunk_header(
-                    VmSaveChunkId::VP_FP_REGISTERS,
-                    size_of::<VpX64SaveChunkFpRegisters>() - HEADER,
-                ),
+                header: chunk_header_for::<VpX64SaveChunkFpRegisters>(VmSaveChunkId::VP_FP_REGISTERS),
                 xmm,
                 fp_mmx,
                 fp_control_status,
@@ -514,10 +487,7 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             VpArm64SaveChunkGpRegisters {
-                header: chunk_header(
-                    VmSaveChunkId::VP_GP_REGISTERS,
-                    size_of::<VpArm64SaveChunkGpRegisters>() - HEADER,
-                ),
+                header: chunk_header_for::<VpArm64SaveChunkGpRegisters>(VmSaveChunkId::VP_GP_REGISTERS),
                 x: [
                     r.x0, r.x1, r.x2, r.x3, r.x4, r.x5, r.x6, r.x7, r.x8, r.x9, r.x10, r.x11,
                     r.x12, r.x13, r.x14, r.x15, r.x16, r.x17, r.x18, r.x19, r.x20, r.x21,
@@ -542,10 +512,7 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             SynicArm64SaveChunkControlRegisters {
-                header: chunk_header(
-                    VmSaveChunkId::VP_VTL_CONTROL_REGISTERS,
-                    size_of::<SynicArm64SaveChunkControlRegisters>() - HEADER,
-                ),
+                header: chunk_header_for::<SynicArm64SaveChunkControlRegisters>(VmSaveChunkId::VP_VTL_CONTROL_REGISTERS),
                 vmpidr_el2: 0,
                 vpidr_el2: 0,
                 sctlr_el1: sys.sctlr_el1,
@@ -568,10 +535,7 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             VpArm64SaveChunkTableRegisters {
-                header: chunk_header(
-                    VmSaveChunkId::VP_TABLE_REGISTERS,
-                    size_of::<VpArm64SaveChunkTableRegisters>() - HEADER,
-                ),
+                header: chunk_header_for::<VpArm64SaveChunkTableRegisters>(VmSaveChunkId::VP_TABLE_REGISTERS),
                 ttbr0_el1: sys.ttbr0_el1,
                 ttbr1_el1: sys.ttbr1_el1,
                 vbar_el1: sys.vbar_el1,
@@ -583,10 +547,7 @@ impl PartitionStateBuilder {
         // FP/SIMD — not available in virt types
         out.extend_from_slice(
             VpArm64SaveChunkFpRegisters {
-                header: chunk_header(
-                    VmSaveChunkId::VP_FP_REGISTERS,
-                    size_of::<VpArm64SaveChunkFpRegisters>() - HEADER,
-                ),
+                header: chunk_header_for::<VpArm64SaveChunkFpRegisters>(VmSaveChunkId::VP_FP_REGISTERS),
                 q: [AlignedU128::from(0u128); 32],
                 fpsr: 0,
                 fpcr: 0,
@@ -615,11 +576,13 @@ impl PartitionStateBuilder {
     }
 }
 
-/// Creates a chunk header with the given ID and data length.
-fn chunk_header(id: VmSaveChunkId, data_length: usize) -> VmSaveChunkHeader {
+/// Creates a chunk header for a chunk struct of the given total size.
+///
+/// `data_length` is computed as `chunk_size - sizeof(VmSaveChunkHeader)`.
+fn chunk_header_for<T>(id: VmSaveChunkId) -> VmSaveChunkHeader {
     VmSaveChunkHeader {
         id,
-        data_length: data_length as u32,
+        data_length: (size_of::<T>() - HEADER) as u32,
         _padding: [0; 8],
     }
 }
