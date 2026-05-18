@@ -58,20 +58,20 @@ mod tests {
         let file = std::fs::File::open(&path).unwrap();
         let mut reader = HvsFileReader::open(file).unwrap();
         let version = reader.read_int("/savedstate/VmVersion").unwrap();
-        let ps = reader.read_file_object("/savedstate/savedVM/partition_state").unwrap();
+        let ps = reader.read_array("/savedstate/savedVM/partition_state").unwrap();
         
         // Write a minimal version with just the required keys
         let buf = Cursor::new(Vec::new());
         let mut w = HvsFileWriter::new(buf).unwrap();
         w.add_int("/savedstate/VmVersion", version);
-        w.add_file_object("/savedstate/savedVM/partition_state", &ps).unwrap();
+        w.add_array("/savedstate/savedVM/partition_state", ps).unwrap();
         // Add a minimal RamMemoryBlock0
         let mut ram_meta = vec![0u8; 40];
         ram_meta[0..4].copy_from_slice(&3u32.to_le_bytes());
         ram_meta[16..24].copy_from_slice(&1u64.to_le_bytes());
         w.add_array("/savedstate/RamMemoryBlock0", ram_meta).unwrap();
         // One empty RAM block
-        w.add_file_object("/savedstate/RamBlock0", &vec![0u8; 4096]).unwrap();
+        w.add_array("/savedstate/RamBlock0", vec![0u8; 4096]).unwrap();
         
         let buf = w.finish().unwrap();
         let out_path = std::env::temp_dir().join("hvs_roundtrip_test.vmrs");
@@ -92,17 +92,16 @@ mod tests {
             return;
         }
         let file = std::fs::File::open(&path).unwrap();
-        let mut reader = HvsFileReader::open(file).unwrap();
+        let reader = HvsFileReader::open(file).unwrap();
         let mut keys: Vec<String> = reader.keys().map(|s| s.to_string()).collect();
         keys.sort();
         for key in &keys {
-            let val = reader.read_value(key).unwrap();
-            let type_tag = match &val {
-                crate::reader::KeyValue::Int(_) => "INT",
-                crate::reader::KeyValue::UInt(_) => "UINT",
-                crate::reader::KeyValue::String(_) => "STRING",
-                crate::reader::KeyValue::Array(_) => "ARRAY",
-                crate::reader::KeyValue::Bool(_) => "BOOL",
+            let type_tag = match reader.value_type(key).unwrap() {
+                crate::reader::ValueType::Int => "INT",
+                crate::reader::ValueType::UInt => "UINT",
+                crate::reader::ValueType::String => "STRING",
+                crate::reader::ValueType::Array => "ARRAY",
+                crate::reader::ValueType::Bool => "BOOL",
             };
             eprintln!("{type_tag} {key}");
         }
@@ -131,7 +130,7 @@ mod tests {
         
         // Check partition state exists
         assert!(reader.contains_key("/savedstate/savedVM/partition_state"), "partition_state not found");
-        let ps = reader.read_file_object("/savedstate/savedVM/partition_state").unwrap();
+        let ps = reader.read_array("/savedstate/savedVM/partition_state").unwrap();
         eprintln!("partition_state size: {} bytes", ps.len());
         assert!(!ps.is_empty());
     }
@@ -307,22 +306,22 @@ mod tests {
         let mut buf = w.finish().unwrap();
 
         buf.set_position(0);
-        let r = HvsFileReader::open(buf).unwrap();
+        let mut r = HvsFileReader::open(buf).unwrap();
         assert_eq!(r.read_array("/test/blob").unwrap(), data);
     }
 
     #[test]
     fn round_trip_file_object() {
-        // Create a large-ish blob that would normally be stored as a file object
+        // Create a large blob that triggers file object storage (>= 2048)
         let data: Vec<u8> = (0..4096).map(|i| (i & 0xFF) as u8).collect();
         let buf = Cursor::new(Vec::new());
         let mut w = HvsFileWriter::new(buf).unwrap();
-        w.add_file_object("/savedstate/savedVM/partition_state", &data).unwrap();
+        w.add_array("/savedstate/savedVM/partition_state", data.clone()).unwrap();
         let mut buf = w.finish().unwrap();
 
         buf.set_position(0);
         let mut r = HvsFileReader::open(buf).unwrap();
-        assert_eq!(r.read_file_object("/savedstate/savedVM/partition_state").unwrap(), data);
+        assert_eq!(r.read_array("/savedstate/savedVM/partition_state").unwrap(), data);
     }
 
     #[test]
@@ -338,7 +337,7 @@ mod tests {
         let mut buf = w.finish().unwrap();
 
         buf.set_position(0);
-        let r = HvsFileReader::open(buf).unwrap();
+        let mut r = HvsFileReader::open(buf).unwrap();
         assert_eq!(r.read_uint("/savedstate/VmVersion").unwrap(), 0x0A00);
         assert_eq!(r.read_string("/savedstate/type").unwrap(), "Normal");
         assert_eq!(r.read_array("/savedstate/savedVM/partition_state").unwrap(), blob);
@@ -447,7 +446,7 @@ mod tests {
         }
 
         // Also verify we can read every key back.
-        let reader = HvsFileReader::open(Cursor::new(&data)).unwrap();
+        let mut reader = HvsFileReader::open(Cursor::new(&data)).unwrap();
         for i in 0..300 {
             let name = format!("/parent/key_{i:04}");
             let expected = vec![0xABu8; (i * 7) % 50];

@@ -11,6 +11,7 @@
 #![allow(unsafe_code)]
 
 use hvdef::save_restore::*;
+use hvs_file::reader::ValueType;
 use hvs_file::writer::HvsFileWriter;
 use std::ffi::c_void;
 use std::io::Cursor;
@@ -18,6 +19,21 @@ use std::mem::size_of;
 use std::path::PathBuf;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
+
+/// Read a key from `reader` and write it to `writer`, preserving its type.
+fn copy_key<R: std::io::Read + std::io::Seek, W: std::io::Write + std::io::Seek>(
+    reader: &mut hvs_file::reader::HvsFileReader<R>,
+    writer: &mut HvsFileWriter<W>,
+    key: &str,
+) {
+    match reader.value_type(key).unwrap() {
+        ValueType::Int => writer.add_int(key, reader.read_int(key).unwrap()),
+        ValueType::UInt => writer.add_uint(key, reader.read_uint(key).unwrap()),
+        ValueType::String => writer.add_string(key, &reader.read_string(key).unwrap()),
+        ValueType::Bool => writer.add_bool(key, reader.read_bool(key).unwrap()),
+        ValueType::Array => writer.add_array(key, reader.read_array(key).unwrap()).unwrap(),
+    }
+}
 
 mod dll {
     use std::ffi::c_void;
@@ -219,13 +235,13 @@ fn build_vmrs_file(rip: u64, cr3: u64) -> Vec<u8> {
     w.add_int("/configuration/properties/version", 0x0A00);
     w.add_string("/savedstate/type", "Normal");
     w.add_string("/savedstate/VmwpVersion", "0.0.0.0");
-    w.add_file_object("/savedstate/savedVM/partition_state", &partition_state)
+    w.add_array("/savedstate/savedVM/partition_state", partition_state.to_vec())
         .unwrap();
     w.add_array("/savedstate/RamMemoryBlock0", ram_meta).unwrap();
 
     // One 4K page of zeros for RamBlock0
     let ram_data = vec![0u8; 4096];
-    w.add_file_object("/savedstate/RamBlock0", &ram_data)
+    w.add_array("/savedstate/RamBlock0", ram_data)
         .unwrap();
 
     let buf = w.finish().unwrap();
@@ -252,8 +268,7 @@ fn try_with_keys(filter: impl Fn(&str) -> bool) -> i32 {
         if !filter(key) {
             continue;
         }
-        let value = reader.read_value(key).unwrap();
-        w.add_value(key, value).unwrap();
+        copy_key(&mut reader, &mut w, key);
     }
 
     let vmrs_data = w.finish().unwrap().into_inner();
@@ -565,8 +580,7 @@ fn roundtrip_real_vmrs_with_dll() {
     let mut w = HvsFileWriter::new(buf).unwrap();
 
     for key in &all_keys {
-        let value = reader.read_value(key).unwrap();
-        w.add_value(key, value).unwrap();
+        copy_key(&mut reader, &mut w, key);
     }
 
     let buf = w.finish().unwrap();

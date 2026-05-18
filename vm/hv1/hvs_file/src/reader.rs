@@ -43,19 +43,19 @@ pub enum ReadError {
     BadKeyTableSignature(u16),
 }
 
-/// A typed value read from the key-value store.
-#[derive(Clone, Debug, PartialEq)]
-pub enum KeyValue {
+/// The type of a value in the key-value store.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ValueType {
     /// Signed 64-bit integer.
-    Int(i64),
+    Int,
     /// Unsigned 64-bit integer.
-    UInt(u64),
-    /// UTF-16LE string (decoded to Rust String).
-    String(String),
-    /// Raw byte array (inline or from file object).
-    Array(Vec<u8>),
-    /// Boolean value.
-    Bool(bool),
+    UInt,
+    /// UTF-16LE string.
+    String,
+    /// Raw byte array.
+    Array,
+    /// Boolean.
+    Bool,
 }
 
 /// A read-only view of a HyperV Storage file.
@@ -367,9 +367,9 @@ impl<R: Read + Seek> HvsFileReader<R> {
         Ok(i32::from_le_bytes(entry.data[..4].try_into().unwrap_or_default()) != 0)
     }
 
-    /// Reads an array value (inline data without the length prefix).
-    pub fn read_array(&self, path: &str) -> Result<Vec<u8>, ReadError> {
-        let entry = self.keys.get(path).ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?;
+    /// Reads an array value, transparently handling file objects.
+    pub fn read_array(&mut self, path: &str) -> Result<Vec<u8>, ReadError> {
+        let entry = self.keys.get(path).ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?.clone();
         if entry.key_type != KeyType::ARRAY {
             return Err(ReadError::WrongKeyType {
                 expected: "Array",
@@ -377,8 +377,10 @@ impl<R: Read + Seek> HvsFileReader<R> {
             });
         }
         if entry.flags & KEY_FLAG_POINTS_TO_FILE_OBJECT != 0 {
-            // Read from file object
-            return self.read_file_object_data(entry.file_object_offset, entry.file_object_size);
+            self.reader.seek(SeekFrom::Start(entry.file_object_offset))?;
+            let mut data = vec![0u8; entry.file_object_size as usize];
+            self.reader.read_exact(&mut data)?;
+            return Ok(data);
         }
         // Inline: u32 size + data
         if entry.data.len() < 4 {
@@ -388,75 +390,22 @@ impl<R: Read + Seek> HvsFileReader<R> {
         Ok(entry.data[4..4 + size.min(entry.data.len() - 4)].to_vec())
     }
 
-    fn read_file_object_data(&self, _offset: u64, _size: u32) -> Result<Vec<u8>, ReadError> {
-        // We need mutable access to the reader — use interior mutability
-        // For now, this is a limitation: the caller must use read_file_object
-        Err(ReadError::Io(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "use read_file_object for file object data",
-        )))
-    }
-
-    /// Reads a file object's raw data given its path.
-    pub fn read_file_object(&mut self, path: &str) -> Result<Vec<u8>, ReadError> {
-        let entry = self.keys.get(path).ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?.clone();
-        if entry.flags & KEY_FLAG_POINTS_TO_FILE_OBJECT == 0 {
-            // Inline data
-            if entry.data.len() < 4 {
-                return Ok(Vec::new());
-            }
-            let size = u32::from_le_bytes(entry.data[..4].try_into().unwrap_or_default()) as usize;
-            return Ok(entry.data[4..4 + size.min(entry.data.len() - 4)].to_vec());
-        }
-
-        self.reader.seek(SeekFrom::Start(entry.file_object_offset))?;
-        let mut data = vec![0u8; entry.file_object_size as usize];
-        self.reader.read_exact(&mut data)?;
-        Ok(data)
-    }
-
     /// Checks if a key exists.
     pub fn contains_key(&self, path: &str) -> bool {
         self.keys.contains_key(path)
     }
 
-    /// Reads a key's value as a [`KeyValue`] enum, regardless of type.
-    ///
-    /// File objects are read transparently — the caller does not need to
-    /// know whether the value was stored inline or as a file object.
-    pub fn read_value(&mut self, path: &str) -> Result<KeyValue, ReadError> {
-        let entry = self
-            .keys
-            .get(path)
-            .ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?
-            .clone();
-        match entry.key_type {
-            KeyType::INT => Ok(KeyValue::Int(i64::from_le_bytes(
-                entry.data[..8].try_into().unwrap_or_default(),
-            ))),
-            KeyType::UINT => Ok(KeyValue::UInt(u64::from_le_bytes(
-                entry.data[..8].try_into().unwrap_or_default(),
-            ))),
-            KeyType::BOOL => Ok(KeyValue::Bool(
-                i32::from_le_bytes(entry.data[..4].try_into().unwrap_or_default()) != 0,
-            )),
-            KeyType::STRING => self.read_string(path).map(KeyValue::String),
-            KeyType::ARRAY => {
-                if entry.flags & KEY_FLAG_POINTS_TO_FILE_OBJECT != 0 {
-                    self.reader
-                        .seek(SeekFrom::Start(entry.file_object_offset))?;
-                    let mut data = vec![0u8; entry.file_object_size as usize];
-                    self.reader.read_exact(&mut data)?;
-                    Ok(KeyValue::Array(data))
-                } else {
-                    self.read_array(path).map(KeyValue::Array)
-                }
-            }
-            _ => Err(ReadError::WrongKeyType {
-                expected: "known type",
-                actual: entry.key_type.0,
-            }),
-        }
+    /// Returns the value type for a given path, or `None` if the key
+    /// doesn't exist.
+    pub fn value_type(&self, path: &str) -> Option<ValueType> {
+        self.keys.get(path).and_then(|e| match e.key_type {
+            KeyType::INT => Some(ValueType::Int),
+            KeyType::UINT => Some(ValueType::UInt),
+            KeyType::STRING => Some(ValueType::String),
+            KeyType::ARRAY => Some(ValueType::Array),
+            KeyType::BOOL => Some(ValueType::Bool),
+            _ => None,
+        })
     }
 }
 

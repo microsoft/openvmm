@@ -61,7 +61,7 @@ struct FileObjectRef {
 /// Usage:
 /// 1. Create with [`HvsFileWriter::new`]
 /// 2. Add keys with [`add_int`], [`add_uint`], [`add_string`], [`add_array`],
-///    [`add_bool`], or [`add_file_object`]
+///    [`add_bool`], or [`add_array`]
 /// 3. Call [`finish`] to write the complete file
 pub struct HvsFileWriter<W: Write + Seek> {
     writer: W,
@@ -154,7 +154,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
     /// Writes a file object for a large binary blob and adds a key
     /// referencing it. The data is written immediately to the file at the
     /// current `data_end` position.
-    pub fn add_file_object(&mut self, path: &str, data: &[u8]) -> io::Result<()> {
+    fn add_file_object(&mut self, path: &str, data: &[u8]) -> io::Result<()> {
         let offset = self.data_end;
         let actual_size = data.len() as u32;
         let aligned_size = align_up(data.len() as u64, self.alignment);
@@ -189,24 +189,6 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             }),
         });
 
-        Ok(())
-    }
-
-    /// Adds a typed value from a [`KeyValue`].
-    ///
-    /// Arrays of [`FILE_OBJECT_THRESHOLD`](crate::defs::FILE_OBJECT_THRESHOLD)
-    /// bytes or larger are automatically stored as file objects, matching the
-    /// behavior of the Hyper-V `HyperVStorage::ShouldUseFileObject` method.
-    pub fn add_value(&mut self, path: &str, value: crate::reader::KeyValue) -> io::Result<()> {
-        match value {
-            crate::reader::KeyValue::Int(v) => self.add_int(path, v),
-            crate::reader::KeyValue::UInt(v) => self.add_uint(path, v),
-            crate::reader::KeyValue::String(v) => self.add_string(path, &v),
-            crate::reader::KeyValue::Bool(v) => self.add_bool(path, v),
-            crate::reader::KeyValue::Array(data) => {
-                self.add_array(path, data)?;
-            }
-        }
         Ok(())
     }
 
