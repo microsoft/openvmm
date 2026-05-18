@@ -11,11 +11,15 @@
 //! Accepts VP register state using the `virt` crate types directly, so
 //! integration with the rest of OpenVMM is straightforward.
 
+use hvdef::AlignedU128;
 use hvdef::save_restore::*;
 use hvdef::HvX64SegmentRegister;
 use std::mem::size_of;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
+
+/// Shorthand for the chunk header size, used in data_length calculations.
+const HEADER: usize = size_of::<VmSaveChunkHeader>();
 
 /// Processor architecture for the saved state.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -237,11 +241,10 @@ impl PartitionStateBuilder {
     // ---- Framing chunks ----
 
     fn write_prolog(&self, out: &mut Vec<u8>) {
+        // Prolog is 4080 bytes with a large reserved region — new_zeroed
+        // is appropriate here since the struct is mostly padding.
         let mut prolog = ObSaveChunkProlog::new_zeroed();
-        prolog.header = chunk_header(
-            VmSaveChunkId::PROLOG,
-            OB_SAVE_CHUNK_PROLOG_SIZE - size_of::<VmSaveChunkHeader>(),
-        );
+        prolog.header = chunk_header(VmSaveChunkId::PROLOG, OB_SAVE_CHUNK_PROLOG_SIZE - HEADER);
         prolog.undefined_tag = VM_SAVE_CHUNK_TAG_UNDEFINED;
         prolog.vendor = match self.arch {
             ProcessorArch::X64 => HvProcessorVendor::INTEL,
@@ -251,77 +254,97 @@ impl PartitionStateBuilder {
     }
 
     fn write_os_id(&self, out: &mut Vec<u8>) {
-        let mut chunk = PtSaveChunkOsId::new_zeroed();
-        chunk.header = chunk_header(
-            VmSaveChunkId::OS_ID,
-            size_of::<PtSaveChunkOsId>() - size_of::<VmSaveChunkHeader>(),
+        out.extend_from_slice(
+            PtSaveChunkOsId {
+                header: chunk_header(VmSaveChunkId::OS_ID, size_of::<PtSaveChunkOsId>() - HEADER),
+                os_id: self.os_id,
+                _padding: [0; 8],
+            }
+            .as_bytes(),
         );
-        chunk.os_id = self.os_id;
-        out.extend_from_slice(chunk.as_bytes());
     }
 
     fn write_vp_indices(&self, out: &mut Vec<u8>) {
-        let mut chunk = VpSaveChunkVpIndices::new_zeroed();
-        chunk.header = chunk_header(
-            VmSaveChunkId::VP_INDICES,
-            size_of::<VpSaveChunkVpIndices>() - size_of::<VmSaveChunkHeader>(),
-        );
-        chunk.bsp = self.vps.first().map_or(0, |vp| vp.vp_index);
+        let mut vp_present_map = [0u8; 30];
         for vp in &self.vps {
             let byte_idx = vp.vp_index as usize / 8;
             let bit_idx = vp.vp_index as usize % 8;
-            if byte_idx < chunk.vp_present_map.len() {
-                chunk.vp_present_map[byte_idx] |= 1 << bit_idx;
+            if byte_idx < vp_present_map.len() {
+                vp_present_map[byte_idx] |= 1 << bit_idx;
             }
         }
-        out.extend_from_slice(chunk.as_bytes());
+        out.extend_from_slice(
+            VpSaveChunkVpIndices {
+                header: chunk_header(
+                    VmSaveChunkId::VP_INDICES,
+                    size_of::<VpSaveChunkVpIndices>() - HEADER,
+                ),
+                bsp: self.vps.first().map_or(0, |vp| vp.vp_index),
+                vp_present_map,
+                _padding: [0; 14],
+            }
+            .as_bytes(),
+        );
     }
 
     fn write_vp_marker(&self, out: &mut Vec<u8>, vp_index: u32) {
-        let mut chunk = ObSaveChunkVp::new_zeroed();
-        chunk.header = chunk_header(
-            VmSaveChunkId::VP,
-            size_of::<ObSaveChunkVp>() - size_of::<VmSaveChunkHeader>(),
+        out.extend_from_slice(
+            ObSaveChunkVp {
+                header: chunk_header(VmSaveChunkId::VP, size_of::<ObSaveChunkVp>() - HEADER),
+                vp_index,
+                _padding: [0; 12],
+            }
+            .as_bytes(),
         );
-        chunk.vp_index = vp_index;
-        out.extend_from_slice(chunk.as_bytes());
     }
 
     fn write_partition_vtl(&self, out: &mut Vec<u8>, vtl: u8) {
-        let mut chunk = ObSaveChunkVtl::new_zeroed();
-        chunk.header = chunk_header(
-            VmSaveChunkId::PARTITION_VTL,
-            size_of::<ObSaveChunkVtl>() - size_of::<VmSaveChunkHeader>(),
+        out.extend_from_slice(
+            ObSaveChunkVtl {
+                header: chunk_header(
+                    VmSaveChunkId::PARTITION_VTL,
+                    size_of::<ObSaveChunkVtl>() - HEADER,
+                ),
+                vtl,
+                _padding: [0; 15],
+            }
+            .as_bytes(),
         );
-        chunk.vtl = vtl;
-        out.extend_from_slice(chunk.as_bytes());
     }
 
     fn write_vp_vtl_marker(&self, out: &mut Vec<u8>, vtl: u8) {
-        let mut chunk = ObSaveChunkVtl::new_zeroed();
-        chunk.header = chunk_header(
-            VmSaveChunkId::VP_VTL,
-            size_of::<ObSaveChunkVtl>() - size_of::<VmSaveChunkHeader>(),
+        out.extend_from_slice(
+            ObSaveChunkVtl {
+                header: chunk_header(VmSaveChunkId::VP_VTL, size_of::<ObSaveChunkVtl>() - HEADER),
+                vtl,
+                _padding: [0; 15],
+            }
+            .as_bytes(),
         );
-        chunk.vtl = vtl;
-        out.extend_from_slice(chunk.as_bytes());
     }
 
     fn write_vp_vtl_control_page(&self, out: &mut Vec<u8>) {
-        let mut chunk = VsmSaveChunkVpVtlControlPage::new_zeroed();
-        chunk.header = chunk_header(
-            VmSaveChunkId::VP_VTL_CONTROL_PAGE,
-            size_of::<VsmSaveChunkVpVtlControlPage>() - size_of::<VmSaveChunkHeader>(),
+        out.extend_from_slice(
+            VsmSaveChunkVpVtlControlPage {
+                header: chunk_header(
+                    VmSaveChunkId::VP_VTL_CONTROL_PAGE,
+                    size_of::<VsmSaveChunkVpVtlControlPage>() - HEADER,
+                ),
+                vp_assist_page_vtl_control_contents: [0; VSM_SAVE_VP_VTL_CONTROL_BYTES],
+                vtl_is_runnable: 1,
+                _padding: [0; 7],
+            }
+            .as_bytes(),
         );
-        chunk.vtl_is_runnable = 1;
-        out.extend_from_slice(chunk.as_bytes());
     }
 
     fn write_epilog(&self, out: &mut Vec<u8>) {
-        let chunk = ObSaveChunkEpilog {
-            header: chunk_header(VmSaveChunkId::EPILOG, 0),
-        };
-        out.extend_from_slice(chunk.as_bytes());
+        out.extend_from_slice(
+            ObSaveChunkEpilog {
+                header: chunk_header(VmSaveChunkId::EPILOG, 0),
+            }
+            .as_bytes(),
+        );
     }
 
     // ---- x64 register chunks ----
@@ -329,98 +352,100 @@ impl PartitionStateBuilder {
     fn write_x64_vp_chunks(&self, out: &mut Vec<u8>, state: &X64VpState) {
         let r = &state.registers;
 
-        // GP Registers
-        {
-            let mut c = VpX64SaveChunkGpRegisters::new_zeroed();
-            c.header = chunk_header(
-                VmSaveChunkId::VP_GP_REGISTERS,
-                size_of::<VpX64SaveChunkGpRegisters>() - size_of::<VmSaveChunkHeader>(),
-            );
-            c.rax = r.rax;
-            c.rcx = r.rcx;
-            c.rdx = r.rdx;
-            c.rbx = r.rbx;
-            c.rsp = r.rsp;
-            c.rbp = r.rbp;
-            c.rsi = r.rsi;
-            c.rdi = r.rdi;
-            c.r8 = r.r8;
-            c.r9 = r.r9;
-            c.r10 = r.r10;
-            c.r11 = r.r11;
-            c.r12 = r.r12;
-            c.r13 = r.r13;
-            c.r14 = r.r14;
-            c.r15 = r.r15;
-            c.rip = r.rip;
-            c.rflags = r.rflags;
-            out.extend_from_slice(c.as_bytes());
-        }
+        out.extend_from_slice(
+            VpX64SaveChunkGpRegisters {
+                header: chunk_header(
+                    VmSaveChunkId::VP_GP_REGISTERS,
+                    size_of::<VpX64SaveChunkGpRegisters>() - HEADER,
+                ),
+                rax: r.rax,
+                rcx: r.rcx,
+                rdx: r.rdx,
+                rbx: r.rbx,
+                rsp: r.rsp,
+                rbp: r.rbp,
+                rsi: r.rsi,
+                rdi: r.rdi,
+                r8: r.r8,
+                r9: r.r9,
+                r10: r.r10,
+                r11: r.r11,
+                r12: r.r12,
+                r13: r.r13,
+                r14: r.r14,
+                r15: r.r15,
+                rip: r.rip,
+                rflags: r.rflags,
+            }
+            .as_bytes(),
+        );
 
-        // Control Registers
-        {
-            let mut c = SynicX64SaveChunkControlRegisters::new_zeroed();
-            c.header = chunk_header(
-                VmSaveChunkId::VP_VTL_CONTROL_REGISTERS,
-                size_of::<SynicX64SaveChunkControlRegisters>() - size_of::<VmSaveChunkHeader>(),
-            );
-            c.cr0 = r.cr0;
-            c.cr2 = r.cr2;
-            c.cr3 = r.cr3;
-            c.cr4 = r.cr4;
-            c.cr8 = r.cr8;
-            c.efer = r.efer;
-            out.extend_from_slice(c.as_bytes());
-        }
+        out.extend_from_slice(
+            SynicX64SaveChunkControlRegisters {
+                header: chunk_header(
+                    VmSaveChunkId::VP_VTL_CONTROL_REGISTERS,
+                    size_of::<SynicX64SaveChunkControlRegisters>() - HEADER,
+                ),
+                cr0: r.cr0,
+                cr2: r.cr2,
+                cr3: r.cr3,
+                cr4: r.cr4,
+                cr8: r.cr8,
+                efer: r.efer,
+            }
+            .as_bytes(),
+        );
 
-        // Segment Registers (virt SegmentRegister has same layout as hvdef)
-        {
-            let mut c = VpX64SaveChunkSegmentRegisters::new_zeroed();
-            c.header = chunk_header(
-                VmSaveChunkId::VP_SEGMENT_REGISTERS,
-                size_of::<VpX64SaveChunkSegmentRegisters>() - size_of::<VmSaveChunkHeader>(),
-            );
-            c.es = seg_to_hvdef(r.es);
-            c.cs = seg_to_hvdef(r.cs);
-            c.ss = seg_to_hvdef(r.ss);
-            c.ds = seg_to_hvdef(r.ds);
-            c.fs = seg_to_hvdef(r.fs);
-            c.gs = seg_to_hvdef(r.gs);
-            c.ldtr = seg_to_hvdef(r.ldtr);
-            c.tr = seg_to_hvdef(r.tr);
-            c.cpl = (r.cs.selector & 3) as u8;
-            out.extend_from_slice(c.as_bytes());
-        }
+        out.extend_from_slice(
+            VpX64SaveChunkSegmentRegisters {
+                header: chunk_header(
+                    VmSaveChunkId::VP_SEGMENT_REGISTERS,
+                    size_of::<VpX64SaveChunkSegmentRegisters>() - HEADER,
+                ),
+                es: seg_to_hvdef(r.es),
+                cs: seg_to_hvdef(r.cs),
+                ss: seg_to_hvdef(r.ss),
+                ds: seg_to_hvdef(r.ds),
+                fs: seg_to_hvdef(r.fs),
+                gs: seg_to_hvdef(r.gs),
+                ldtr: seg_to_hvdef(r.ldtr),
+                tr: seg_to_hvdef(r.tr),
+                cpl: (r.cs.selector & 3) as u8,
+                _padding: [0; 15],
+            }
+            .as_bytes(),
+        );
 
-        // Table Registers (virt TableRegister → hvdef HvX64TableRegister)
-        {
-            let mut c = VpX64SaveChunkTableRegisters::new_zeroed();
-            c.header = chunk_header(
-                VmSaveChunkId::VP_TABLE_REGISTERS,
-                size_of::<VpX64SaveChunkTableRegisters>() - size_of::<VmSaveChunkHeader>(),
-            );
-            c.idtr = r.idtr.into();
-            c.gdtr = r.gdtr.into();
-            out.extend_from_slice(c.as_bytes());
-        }
+        out.extend_from_slice(
+            VpX64SaveChunkTableRegisters {
+                header: chunk_header(
+                    VmSaveChunkId::VP_TABLE_REGISTERS,
+                    size_of::<VpX64SaveChunkTableRegisters>() - HEADER,
+                ),
+                idtr: r.idtr.into(),
+                gdtr: r.gdtr.into(),
+            }
+            .as_bytes(),
+        );
 
-        // Debug Registers
         if let Some(dr) = &state.debug_registers {
-            let mut c = VpX64SaveChunkDebugRegisters::new_zeroed();
-            c.header = chunk_header(
-                VmSaveChunkId::VP_DEBUG_REGISTERS,
-                size_of::<VpX64SaveChunkDebugRegisters>() - size_of::<VmSaveChunkHeader>(),
+            out.extend_from_slice(
+                VpX64SaveChunkDebugRegisters {
+                    header: chunk_header(
+                        VmSaveChunkId::VP_DEBUG_REGISTERS,
+                        size_of::<VpX64SaveChunkDebugRegisters>() - HEADER,
+                    ),
+                    dr0: dr.dr0,
+                    dr1: dr.dr1,
+                    dr2: dr.dr2,
+                    dr3: dr.dr3,
+                    dr6: dr.dr6,
+                    dr7: dr.dr7,
+                }
+                .as_bytes(),
             );
-            c.dr0 = dr.dr0;
-            c.dr1 = dr.dr1;
-            c.dr2 = dr.dr2;
-            c.dr3 = dr.dr3;
-            c.dr6 = dr.dr6;
-            c.dr7 = dr.dr7;
-            out.extend_from_slice(c.as_bytes());
         }
 
-        // FP Registers (extracted from XSAVE data)
         if let Some(xsave) = &state.xsave {
             self.write_x64_fp_from_xsave(out, xsave);
         }
@@ -434,102 +459,141 @@ impl PartitionStateBuilder {
         use x86defs::xsave::Fxsave;
         use zerocopy::FromBytes;
 
-        let mut c = VpX64SaveChunkFpRegisters::new_zeroed();
-        c.header = chunk_header(
-            VmSaveChunkId::VP_FP_REGISTERS,
-            size_of::<VpX64SaveChunkFpRegisters>() - size_of::<VmSaveChunkHeader>(),
-        );
-
         let data = IntoBytes::as_bytes(xsave.data.as_slice());
-        if let Ok((fxsave, _)) = Fxsave::ref_from_prefix(data) {
-            for (dst, src) in c.xmm.iter_mut().zip(fxsave.xmm.iter()) {
-                *dst = AlignedU128::from_ne_bytes(*src);
-            }
-            for (dst, src) in c.fp_mmx.iter_mut().zip(fxsave.st.iter()) {
-                *dst = AlignedU128::from_ne_bytes(*src);
-            }
-            // FP control/status: pack FCW, FSW, FTW, FOP, FIP, FDP
-            let mut cs_bytes = [0u8; 16];
-            cs_bytes[0..2].copy_from_slice(&fxsave.fcw.to_le_bytes());
-            cs_bytes[2..4].copy_from_slice(&fxsave.fsw.to_le_bytes());
-            cs_bytes[4] = fxsave.ftw;
-            cs_bytes[6..8].copy_from_slice(&fxsave.fop.to_le_bytes());
-            cs_bytes[8..16].copy_from_slice(&fxsave.fip.to_le_bytes());
-            c.fp_control_status = AlignedU128::from_ne_bytes(cs_bytes);
-            // XMM control/status: MXCSR + MXCSR_MASK
-            let mut xcs_bytes = [0u8; 16];
-            xcs_bytes[0..4].copy_from_slice(&fxsave.mxcsr.to_le_bytes());
-            xcs_bytes[4..8].copy_from_slice(&fxsave.mxcsr_mask.to_le_bytes());
-            c.xmm_control_status = AlignedU128::from_ne_bytes(xcs_bytes);
-        }
 
-        out.extend_from_slice(c.as_bytes());
+        let (xmm, fp_mmx, fp_control_status, xmm_control_status) =
+            if let Ok((fxsave, _)) = Fxsave::ref_from_prefix(data) {
+                let xmm = fxsave.xmm.map(AlignedU128::from_ne_bytes);
+                let fp_mmx = fxsave.st.map(AlignedU128::from_ne_bytes);
+
+                let mut cs_bytes = [0u8; 16];
+                cs_bytes[0..2].copy_from_slice(&fxsave.fcw.to_le_bytes());
+                cs_bytes[2..4].copy_from_slice(&fxsave.fsw.to_le_bytes());
+                cs_bytes[4] = fxsave.ftw;
+                cs_bytes[6..8].copy_from_slice(&fxsave.fop.to_le_bytes());
+                cs_bytes[8..16].copy_from_slice(&fxsave.fip.to_le_bytes());
+
+                let mut xcs_bytes = [0u8; 16];
+                xcs_bytes[0..4].copy_from_slice(&fxsave.mxcsr.to_le_bytes());
+                xcs_bytes[4..8].copy_from_slice(&fxsave.mxcsr_mask.to_le_bytes());
+
+                (
+                    xmm,
+                    fp_mmx,
+                    AlignedU128::from_ne_bytes(cs_bytes),
+                    AlignedU128::from_ne_bytes(xcs_bytes),
+                )
+            } else {
+                (
+                    [AlignedU128::from(0u128); 16],
+                    [AlignedU128::from(0u128); 8],
+                    AlignedU128::from(0u128),
+                    AlignedU128::from(0u128),
+                )
+            };
+
+        out.extend_from_slice(
+            VpX64SaveChunkFpRegisters {
+                header: chunk_header(
+                    VmSaveChunkId::VP_FP_REGISTERS,
+                    size_of::<VpX64SaveChunkFpRegisters>() - HEADER,
+                ),
+                xmm,
+                fp_mmx,
+                fp_control_status,
+                xmm_control_status,
+            }
+            .as_bytes(),
+        );
     }
 
     // ---- ARM64 register chunks ----
 
     fn write_aarch64_vp_chunks(&self, out: &mut Vec<u8>, state: &Aarch64VpState) {
         let r = &state.registers;
+        let sys = state.system_registers.unwrap_or_default();
 
-        // GP Registers
-        {
-            let mut c = VpArm64SaveChunkGpRegisters::new_zeroed();
-            c.header = chunk_header(
-                VmSaveChunkId::VP_GP_REGISTERS,
-                size_of::<VpArm64SaveChunkGpRegisters>() - size_of::<VmSaveChunkHeader>(),
-            );
-            c.x = [
-                r.x0, r.x1, r.x2, r.x3, r.x4, r.x5, r.x6, r.x7, r.x8, r.x9, r.x10, r.x11,
-                r.x12, r.x13, r.x14, r.x15, r.x16, r.x17, r.x18, r.x19, r.x20, r.x21, r.x22,
-                r.x23, r.x24, r.x25, r.x26, r.x27, r.x28,
-            ];
-            c.x_fp = r.fp;
-            c.x_lr = r.lr;
-            // ELR_EL2, SPSR_EL2, etc. not available in virt types — zeroed
-            c.sp_el0 = r.sp_el0;
-            c.sp_el1 = r.sp_el1;
-            out.extend_from_slice(c.as_bytes());
-        }
-
-        // Control Registers (from SystemRegisters if available)
-        {
-            let mut c = SynicArm64SaveChunkControlRegisters::new_zeroed();
-            c.header = chunk_header(
-                VmSaveChunkId::VP_VTL_CONTROL_REGISTERS,
-                size_of::<SynicArm64SaveChunkControlRegisters>() - size_of::<VmSaveChunkHeader>(),
-            );
-            if let Some(sys) = &state.system_registers {
-                c.sctlr_el1 = sys.sctlr_el1;
-                c.tcr_el1 = sys.tcr_el1;
-                c.mair_el1 = sys.mair_el1;
+        out.extend_from_slice(
+            VpArm64SaveChunkGpRegisters {
+                header: chunk_header(
+                    VmSaveChunkId::VP_GP_REGISTERS,
+                    size_of::<VpArm64SaveChunkGpRegisters>() - HEADER,
+                ),
+                x: [
+                    r.x0, r.x1, r.x2, r.x3, r.x4, r.x5, r.x6, r.x7, r.x8, r.x9, r.x10, r.x11,
+                    r.x12, r.x13, r.x14, r.x15, r.x16, r.x17, r.x18, r.x19, r.x20, r.x21,
+                    r.x22, r.x23, r.x24, r.x25, r.x26, r.x27, r.x28,
+                ],
+                x_fp: r.fp,
+                x_lr: r.lr,
+                elr_el2: 0,
+                spsr_el2: 0,
+                esr_el1: sys.esr_el1,
+                spsr_el1: 0,
+                far_el1: sys.far_el1,
+                par_el1: 0,
+                elr_el1: sys.elr_el1,
+                sp_el0: r.sp_el0,
+                sp_el1: r.sp_el1,
+                afsr0_el1: 0,
+                afsr1_el1: 0,
             }
-            out.extend_from_slice(c.as_bytes());
-        }
+            .as_bytes(),
+        );
 
-        // Table Registers
-        {
-            let mut c = VpArm64SaveChunkTableRegisters::new_zeroed();
-            c.header = chunk_header(
-                VmSaveChunkId::VP_TABLE_REGISTERS,
-                size_of::<VpArm64SaveChunkTableRegisters>() - size_of::<VmSaveChunkHeader>(),
-            );
-            if let Some(sys) = &state.system_registers {
-                c.ttbr0_el1 = sys.ttbr0_el1;
-                c.ttbr1_el1 = sys.ttbr1_el1;
-                c.vbar_el1 = sys.vbar_el1;
+        out.extend_from_slice(
+            SynicArm64SaveChunkControlRegisters {
+                header: chunk_header(
+                    VmSaveChunkId::VP_VTL_CONTROL_REGISTERS,
+                    size_of::<SynicArm64SaveChunkControlRegisters>() - HEADER,
+                ),
+                vmpidr_el2: 0,
+                vpidr_el2: 0,
+                sctlr_el1: sys.sctlr_el1,
+                actlr_el1: 0,
+                tcr_el1: sys.tcr_el1,
+                mair_el1: sys.mair_el1,
+                tpidr_el1: 0,
+                amair_el1: 0,
+                tpidrro_el0: 0,
+                tpidr_el0: 0,
+                contextidr_el1: 0,
+                cpacr_el1: 0,
+                csselr_el1: 0,
+                cntk_ctl_el1: 0,
+                cntv_cval_el0: 0,
+                cntv_ctl_el0: 0,
             }
-            out.extend_from_slice(c.as_bytes());
-        }
+            .as_bytes(),
+        );
 
-        // FP Registers — not available in virt types, emit zeroed chunk
-        {
-            let mut c = VpArm64SaveChunkFpRegisters::new_zeroed();
-            c.header = chunk_header(
-                VmSaveChunkId::VP_FP_REGISTERS,
-                size_of::<VpArm64SaveChunkFpRegisters>() - size_of::<VmSaveChunkHeader>(),
-            );
-            out.extend_from_slice(c.as_bytes());
-        }
+        out.extend_from_slice(
+            VpArm64SaveChunkTableRegisters {
+                header: chunk_header(
+                    VmSaveChunkId::VP_TABLE_REGISTERS,
+                    size_of::<VpArm64SaveChunkTableRegisters>() - HEADER,
+                ),
+                ttbr0_el1: sys.ttbr0_el1,
+                ttbr1_el1: sys.ttbr1_el1,
+                vbar_el1: sys.vbar_el1,
+                _padding: [0; 8],
+            }
+            .as_bytes(),
+        );
+
+        // FP/SIMD — not available in virt types
+        out.extend_from_slice(
+            VpArm64SaveChunkFpRegisters {
+                header: chunk_header(
+                    VmSaveChunkId::VP_FP_REGISTERS,
+                    size_of::<VpArm64SaveChunkFpRegisters>() - HEADER,
+                ),
+                q: [AlignedU128::from(0u128); 32],
+                fpsr: 0,
+                fpcr: 0,
+            }
+            .as_bytes(),
+        );
     }
 
     /// Wraps the chunk stream in a VidSavedStateDescriptor envelope.
