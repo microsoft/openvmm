@@ -544,6 +544,66 @@ fn defer<F: FnOnce()>(f: F) -> impl Drop {
     Guard(Some(f))
 }
 
+/// Verify the DLL can load a file that requires object table chaining.
+#[test]
+fn object_table_chaining_with_dll() {
+    if !setup_dll_search_path() {
+        eprintln!("SKIP: Windows SDK not found");
+        return;
+    }
+    if !dll::is_supported::LoadSavedStateFile() {
+        eprintln!("SKIP: DLL not loadable");
+        return;
+    }
+
+    // Build a file with enough objects to overflow one object table.
+    // 250 file objects + key tables > 226 usable slots per table.
+    let partition_state = build_partition_state_blob(0xFFFFF802_00000000, 0x1AD000);
+    let mut ram_meta = vec![0u8; 48];
+    ram_meta[0..4].copy_from_slice(&3u32.to_le_bytes());
+    ram_meta[8..16].copy_from_slice(&256u64.to_le_bytes()); // 256 pages = 1 MB
+
+    let buf = Cursor::new(Vec::new());
+    let mut w = HvsFileWriter::new(buf).unwrap();
+
+    w.add_int("/savedstate/VmVersion", 0x0A00);
+    w.add_int("/configuration/properties/version", 0x0A00);
+    w.add_array("/savedstate/savedVM/partition_state", partition_state).unwrap();
+    w.add_array("/savedstate/RamMemoryBlock0", ram_meta).unwrap();
+
+    // Write 250 RAM blocks (each 1 page = 4096 bytes, triggers file objects).
+    for i in 0..250 {
+        w.add_array(&format!("/savedstate/RamBlock{i}"), vec![0u8; 4096]).unwrap();
+    }
+
+    let vmrs_data = w.finish().unwrap().into_inner();
+    let vmrs_path = std::env::temp_dir().join("hvs_chaining_test.vmrs");
+    std::fs::write(&vmrs_path, &vmrs_data).unwrap();
+    let _cleanup = defer(|| {
+        let _ = std::fs::remove_file(&vmrs_path);
+    });
+
+    let wide_path: Vec<u16> = vmrs_path
+        .to_str()
+        .unwrap()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let mut handle: *mut c_void = std::ptr::null_mut();
+        let hr = dll::LoadSavedStateFile(wide_path.as_ptr(), &mut handle);
+        if hr < 0 {
+            panic!(
+                "LoadSavedStateFile failed on chained object table file: HRESULT 0x{:08X}",
+                hr as u32,
+            );
+        }
+        dll::ReleaseSavedStateFiles(handle);
+    }
+    eprintln!("Object table chaining test PASSED");
+}
+
 /// Round-trip: read the real saved state VMRS, write it back with our writer,
 /// and verify the DLL can load the result.
 #[test]
