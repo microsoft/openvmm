@@ -284,12 +284,14 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                     Value::UInt(v) => (KeyType::UINT, 0u8, v.to_le_bytes().to_vec()),
                     Value::Bool(v) => (KeyType::BOOL, 0u8, (*v as i32).to_le_bytes().to_vec()),
                     Value::String(s) => {
-                        let utf16: Vec<u16> = s.encode_utf16().chain(core::iter::once(0)).collect();
-                        let byte_len = utf16.len() * 2;
-                        let mut data = (byte_len as u32).to_le_bytes().to_vec();
-                        for ch in &utf16 {
+                        // Length-prefixed UTF-16LE with NUL terminator.
+                        // Reserve the u32 length prefix, then fill it after encoding.
+                        let mut data = vec![0u8; 4];
+                        for ch in s.encode_utf16().chain(core::iter::once(0)) {
                             data.extend_from_slice(&ch.to_le_bytes());
                         }
+                        let byte_len = (data.len() - 4) as u32;
+                        data[..4].copy_from_slice(&byte_len.to_le_bytes());
                         (KeyType::STRING, 0u8, data)
                     }
                     Value::Array(data) => {
