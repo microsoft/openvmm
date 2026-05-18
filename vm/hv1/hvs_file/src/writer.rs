@@ -13,18 +13,13 @@ use std::collections::HashMap;
 use std::io::{self, Seek, SeekFrom, Write};
 use zerocopy::IntoBytes;
 
-/// Computes the checksum for a structure, with the checksum field zeroed.
-fn struct_checksum(bytes: &mut [u8], checksum_offset: usize) -> u32 {
-    let saved = [
-        bytes[checksum_offset],
-        bytes[checksum_offset + 1],
-        bytes[checksum_offset + 2],
-        bytes[checksum_offset + 3],
-    ];
-    bytes[checksum_offset..checksum_offset + 4].fill(0);
-    let crc = crc32(bytes);
-    bytes[checksum_offset..checksum_offset + 4].copy_from_slice(&saved);
-    crc
+/// Computes the checksum for a structure, skipping the checksum field.
+fn struct_checksum(bytes: &[u8], checksum_offset: usize) -> u32 {
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(&bytes[..checksum_offset]);
+    hasher.update(&[0u8; 4]);
+    hasher.update(&bytes[checksum_offset + 4..]);
+    hasher.finalize()
 }
 
 /// Round `size` up to a multiple of `alignment`.
@@ -534,8 +529,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 sequence: 1,
                 checksum: 0,
             };
-            let mut header_bytes = header.as_bytes().to_vec();
-            header.checksum = struct_checksum(&mut header_bytes, 6); // checksum at offset 6
+            header.checksum = struct_checksum(header.as_bytes(), 6);
 
             self.writer.seek(SeekFrom::Start(offset))?;
             self.writer.write_all(header.as_bytes())?;
@@ -569,16 +563,14 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 size_in_bytes: alignment as u32,
                 flags: OBJECT_ENTRY_FLAG_REQUIRED,
             };
-            let mut bytes = entry.as_bytes().to_vec();
-            entry.entry_checksum = struct_checksum(&mut bytes, 1);
+            entry.entry_checksum = struct_checksum(entry.as_bytes(), 1);
             obj_entries.push(entry);
         }
 
         // File object entries
         for fo in &self.object_entries {
             let mut entry = *fo;
-            let mut bytes = entry.as_bytes().to_vec();
-            entry.entry_checksum = struct_checksum(&mut bytes, 1);
+            entry.entry_checksum = struct_checksum(entry.as_bytes(), 1);
             obj_entries.push(entry);
         }
 
@@ -590,8 +582,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             size_in_bytes: 0,
             flags: 0,
         };
-        let mut chain_bytes = chain_entry.as_bytes().to_vec();
-        chain_entry.entry_checksum = struct_checksum(&mut chain_bytes, 1);
+        chain_entry.entry_checksum = struct_checksum(chain_entry.as_bytes(), 1);
         obj_entries.push(chain_entry);
 
         // Fill remaining slots with empty entries (properly checksummed)
@@ -669,7 +660,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         // corrupt. Write copy 0 with sequence 1 (authoritative) and copy 1
         // with sequence 0 (stale).
         let make_header = |seq: u16| -> Vec<u8> {
-            let header = FileHeader {
+            let mut header = FileHeader {
                 signature: HEADER_SIGNATURE,
                 checksum: 0,
                 sequence: seq,
@@ -681,13 +672,11 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 replay_log_size_in_bytes: replay_log_size,
                 replay_log_header_size_in_bytes: replay_log_header_size,
             };
-            let mut header_bytes = header.as_bytes().to_vec();
-            let checksum = struct_checksum(&mut header_bytes, 4);
-            let mut final_header = header;
-            final_header.checksum = checksum;
+            let checksum = struct_checksum(header.as_bytes(), 4);
+            header.checksum = checksum;
 
             let mut page = vec![0u8; MIN_DATA_ALIGNMENT as usize];
-            page[..size_of::<FileHeader>()].copy_from_slice(final_header.as_bytes());
+            page[..size_of::<FileHeader>()].copy_from_slice(header.as_bytes());
             page
         };
 
@@ -702,5 +691,3 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         Ok(self.writer)
     }
 }
-
-use core::mem::size_of;
