@@ -58,7 +58,7 @@ impl Pkcs7SignedDataInner {
             // - DETACHED: do not embed the content; the verifier supplies it.
             // - BINARY: do not perform text/CRLF canonicalization.
             // - NOATTR: omit signedAttrs; the signature covers the raw
-            //   encapsulated content directly per RFC 5652 §5.4.``
+            //   encapsulated content directly per RFC 5652 §5.4.
             openssl::pkcs7::Pkcs7Flags::DETACHED
                 | openssl::pkcs7::Pkcs7Flags::BINARY
                 | openssl::pkcs7::Pkcs7Flags::NOATTR,

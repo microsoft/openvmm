@@ -59,6 +59,15 @@ impl Pkcs7CertStoreInner {
 impl Pkcs7SignedDataInner {
     pub fn from_der(data: &[u8]) -> Result<Self, Pkcs7Error> {
         let ci = ContentInfo::from_der(data).map_err(|e| err(e, "parsing PKCS#7 ContentInfo"))?;
+        if ci.content_type != ID_SIGNED_DATA {
+            return Err(err(
+                der::ErrorKind::OidUnknown {
+                    oid: ci.content_type,
+                }
+                .to_error(),
+                "unrecognized content type OID",
+            ));
+        }
         let signed_data = ci
             .content
             .decode_as::<SignedData>()
