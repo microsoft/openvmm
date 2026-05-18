@@ -520,12 +520,9 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             }
         }
 
-        // Build object table, fully populated to avoid expansion on load.
-        let max_entries = (alignment as usize - size_of::<ObjectTableHeader>()) / size_of::<ObjectTableEntry>();
+        // Build object entries: key tables + file objects.
+        let mut obj_entries: Vec<ObjectTableEntry> = Vec::new();
 
-        let mut obj_entries: Vec<ObjectTableEntry> = Vec::with_capacity(max_entries);
-
-        // Key table entries
         for &offset in &key_table_offsets {
             let mut entry = ObjectTableEntry {
                 object_type: ObjectType::KEY_TABLE,
@@ -538,54 +535,98 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             obj_entries.push(entry);
         }
 
-        // File object entries
         for fo in &self.object_entries {
             let mut entry = *fo;
             entry.entry_checksum = struct_checksum(entry.as_bytes(), offset_of!(ObjectTableEntry, entry_checksum));
             obj_entries.push(entry);
         }
 
-        // Chain slot (empty — no more tables)
-        let mut chain_entry = ObjectTableEntry {
+        // Write object tables with chaining. The last entry in each table
+        // is reserved as a chain slot pointing to the next table, or empty
+        // if this is the final table.
+        let entries_per_table = (alignment as usize - size_of::<ObjectTableHeader>()) / size_of::<ObjectTableEntry>();
+        let usable_per_table = entries_per_table - 1; // last slot is chain
+
+        // Checksummed empty entry for padding and chain termination.
+        let mut empty_entry = ObjectTableEntry {
             object_type: ObjectType::EMPTY,
             entry_checksum: 0,
             file_offset_in_bytes: 0,
             size_in_bytes: 0,
             flags: 0,
         };
-        chain_entry.entry_checksum = struct_checksum(chain_entry.as_bytes(), offset_of!(ObjectTableEntry, entry_checksum));
-        obj_entries.push(chain_entry);
+        empty_entry.entry_checksum = struct_checksum(empty_entry.as_bytes(), offset_of!(ObjectTableEntry, entry_checksum));
 
-        // Fill remaining slots with empty entries (properly checksummed)
-        while obj_entries.len() < max_entries {
-            obj_entries.push(chain_entry); // reuse the checksummed empty entry
-        }
-
-        // Write object table at offset 8192 as a single aligned block.
         let object_table_offset = 2 * MIN_DATA_ALIGNMENT as u64;
-        self.writer.seek(SeekFrom::Start(object_table_offset))?;
-
-        let obj_header = ObjectTableHeader {
-            signature: OBJECT_TABLE_SIGNATURE,
-            entries_count: obj_entries.len() as u32,
-        };
-        let mut obj_buf = Vec::with_capacity(alignment as usize);
-        obj_buf.extend_from_slice(obj_header.as_bytes());
-        for entry in &obj_entries {
-            obj_buf.extend_from_slice(entry.as_bytes());
+        let mut chunks: Vec<&[ObjectTableEntry]> = obj_entries.chunks(usable_per_table).collect();
+        if chunks.is_empty() {
+            chunks.push(&[]);
         }
-        obj_buf.resize(alignment as usize, 0);
-        self.writer.write_all(&obj_buf)?;
 
-        // Write an empty replay log at the current data end.
-        // HyperVStorage expects a valid replay log region — InitializeForLoad
-        // dereferences the header buffer and Verify checks MaximumNumberOfEntries > 0.
+        // Determine where overflow tables go (after replay log).
         let replay_log_offset = align_up(
             key_table_base + tables.len() as u64 * alignment,
             alignment,
         );
-        let replay_log_header_size = alignment as u32;
         let replay_log_size = alignment;
+        let mut overflow_base = replay_log_offset + replay_log_size;
+
+        // Write each object table.
+        for (chunk_idx, chunk) in chunks.iter().enumerate() {
+            let table_offset = if chunk_idx == 0 {
+                object_table_offset
+            } else {
+                let off = overflow_base;
+                overflow_base += alignment;
+                off
+            };
+
+            let is_last = chunk_idx == chunks.len() - 1;
+
+            let mut buf = Vec::with_capacity(alignment as usize);
+            let header = ObjectTableHeader {
+                signature: OBJECT_TABLE_SIGNATURE,
+                entries_count: entries_per_table as u32,
+            };
+            buf.extend_from_slice(header.as_bytes());
+
+            for entry in *chunk {
+                buf.extend_from_slice(entry.as_bytes());
+            }
+
+            // Fill unused slots with empty entries.
+            for _ in chunk.len()..usable_per_table {
+                buf.extend_from_slice(empty_entry.as_bytes());
+            }
+
+            // Chain slot: point to next table or empty.
+            if is_last {
+                buf.extend_from_slice(empty_entry.as_bytes());
+            } else {
+                let next_offset = if chunk_idx + 1 == 1 {
+                    // Second chunk goes after replay log
+                    replay_log_offset + replay_log_size
+                } else {
+                    overflow_base
+                };
+                let mut chain = ObjectTableEntry {
+                    object_type: ObjectType::OBJECT_TABLE,
+                    entry_checksum: 0,
+                    file_offset_in_bytes: next_offset,
+                    size_in_bytes: alignment as u32,
+                    flags: 0,
+                };
+                chain.entry_checksum = struct_checksum(chain.as_bytes(), offset_of!(ObjectTableEntry, entry_checksum));
+                buf.extend_from_slice(chain.as_bytes());
+            }
+
+            buf.resize(alignment as usize, 0);
+            self.writer.seek(SeekFrom::Start(table_offset))?;
+            self.writer.write_all(&buf)?;
+        }
+
+        // Write an empty replay log.
+        let replay_log_header_size = alignment as u32;
 
         let max_entries = (replay_log_header_size as usize - size_of::<ReplayLogHeader>())
             / size_of::<ReplayLogEntryHeader>();

@@ -93,36 +93,41 @@ impl<R: Read + Seek> HvsFileReader<R> {
         let object_table_offset = 2 * MIN_DATA_ALIGNMENT as u64;
         reader.seek(SeekFrom::Start(object_table_offset))?;
 
-        let mut obj_header = ObjectTableHeader::new_zeroed();
-        reader.read_exact(obj_header.as_mut_bytes())?;
+        // Read object table entries, following the chain.
+        let mut all_entries = Vec::new();
+        let mut table_offset = object_table_offset;
+        loop {
+            reader.seek(SeekFrom::Start(table_offset))?;
+            let mut obj_header = ObjectTableHeader::new_zeroed();
+            reader.read_exact(obj_header.as_mut_bytes())?;
 
-        if obj_header.signature != OBJECT_TABLE_SIGNATURE {
-            return Err(ReadError::BadObjectTableSignature(obj_header.signature));
-        }
-
-        // Read object table entries
-        let mut entries = Vec::with_capacity(obj_header.entries_count as usize);
-        for _ in 0..obj_header.entries_count {
-            let mut entry = ObjectTableEntry::new_zeroed();
-            reader.read_exact(entry.as_mut_bytes())?;
-            entries.push(entry);
-        }
-
-        // Follow chain to additional object tables
-        let mut all_entries = entries.clone();
-        if let Some(last) = entries.last() {
-            if last.object_type == ObjectType::OBJECT_TABLE {
-                let chain_offset = last.file_offset_in_bytes;
-                reader.seek(SeekFrom::Start(chain_offset))?;
-                let mut chain_header = ObjectTableHeader::new_zeroed();
-                reader.read_exact(chain_header.as_mut_bytes())?;
-                if chain_header.signature == OBJECT_TABLE_SIGNATURE {
-                    for _ in 0..chain_header.entries_count {
-                        let mut entry = ObjectTableEntry::new_zeroed();
-                        reader.read_exact(entry.as_mut_bytes())?;
-                        all_entries.push(entry);
-                    }
+            if obj_header.signature != OBJECT_TABLE_SIGNATURE {
+                if all_entries.is_empty() {
+                    return Err(ReadError::BadObjectTableSignature(obj_header.signature));
                 }
+                break;
+            }
+
+            let mut entries = Vec::with_capacity(obj_header.entries_count as usize);
+            for _ in 0..obj_header.entries_count {
+                let mut entry = ObjectTableEntry::new_zeroed();
+                reader.read_exact(entry.as_mut_bytes())?;
+                entries.push(entry);
+            }
+
+            // Last entry is the chain slot.
+            let chain = entries.last().copied();
+            // Add all non-chain entries.
+            if entries.len() > 1 {
+                all_entries.extend_from_slice(&entries[..entries.len() - 1]);
+            }
+
+            // Follow the chain if the last entry points to another table.
+            match chain {
+                Some(e) if e.object_type == ObjectType::OBJECT_TABLE => {
+                    table_offset = e.file_offset_in_bytes;
+                }
+                _ => break,
             }
         }
 
