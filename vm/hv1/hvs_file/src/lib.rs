@@ -75,6 +75,31 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // run manually: cargo test -p hvs_file --lib -- dump_real_keys --ignored --nocapture
+    fn dump_real_keys() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("E7E9D405-022F-4D55-9B8C-C777CC321051.VMRS");
+        if !path.exists() {
+            eprintln!("SKIP: real saved state VMRS not found");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let reader = HvsFileReader::open(file).unwrap();
+        let mut keys: Vec<&str> = reader.keys().collect();
+        keys.sort();
+        for key in &keys {
+            let kt = reader.key_type(key).unwrap();
+            let is_fo = reader.is_file_object(key);
+            let fo_tag = if is_fo { " [file_object]" } else { "" };
+            eprintln!("{kt:?} {key}{fo_tag}");
+        }
+        eprintln!("\nTotal: {} keys", keys.len());
+    }
+
+    #[test]
     fn read_real_saved_state() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")

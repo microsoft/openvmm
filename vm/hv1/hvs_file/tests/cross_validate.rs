@@ -195,28 +195,63 @@ fn build_partition_state_blob(rip: u64, cr3: u64) -> Vec<u8> {
     blob
 }
 
-/// Build a .vmrs file with minimum required keys from the reference file.
-fn build_vmrs_file(_rip: u64, _cr3: u64) -> Option<Vec<u8>> {
+/// Build a complete .vmrs file in memory with fully synthetic content.
+fn build_vmrs_file(rip: u64, cr3: u64) -> Vec<u8> {
+    let partition_state = build_partition_state_blob(rip, cr3);
+
+    // MEMORY_BLOCK_OBJECT_SAVE_STRUCT_CURRENT (48 bytes):
+    //   m_SavedStateVersion: u32    offset 0
+    //   m_Flags:             u32    offset 4
+    //   m_PageCountTotal:    u64    offset 8
+    //   m_MbpIndexStart:     u64    offset 16
+    //   m_GpaIndexStart:     u64    offset 24
+    //   m_VirtualNode:       u32    offset 32
+    //   (padding):           u32    offset 36
+    //   m_KsrBlockId:        u64    offset 40
+    let mut ram_meta = vec![0u8; 48];
+    ram_meta[0..4].copy_from_slice(&3u32.to_le_bytes()); // m_SavedStateVersion = 3
+    ram_meta[8..16].copy_from_slice(&1u64.to_le_bytes()); // m_PageCountTotal = 1
+
+    let buf = Cursor::new(Vec::new());
+    let mut w = HvsFileWriter::new(buf).unwrap();
+
+    w.add_int("/savedstate/VmVersion", 0x0A00);
+    w.add_int("/configuration/properties/version", 0x0A00);
+    w.add_string("/savedstate/type", "Normal");
+    w.add_string("/savedstate/VmwpVersion", "0.0.0.0");
+    w.add_file_object("/savedstate/savedVM/partition_state", &partition_state)
+        .unwrap();
+    w.add_array("/savedstate/RamMemoryBlock0", ram_meta);
+
+    // One 4K page of zeros for RamBlock0
+    let ram_data = vec![0u8; 4096];
+    w.add_file_object("/savedstate/RamBlock0", &ram_data)
+        .unwrap();
+
+    let buf = w.finish().unwrap();
+    buf.into_inner()
+}
+
+/// Helper: write keys from the reference file, filtered by a predicate, and
+/// try loading the result with the DLL. Returns the HRESULT.
+fn try_with_keys(filter: impl Fn(&str) -> bool) -> i32 {
     let ref_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("..")
         .join("E7E9D405-022F-4D55-9B8C-C777CC321051.VMRS");
 
-    if !ref_path.exists() {
-        return None;
-    }
-
     let file = std::fs::File::open(&ref_path).unwrap();
     let mut reader = hvs_file::reader::HvsFileReader::open(file).unwrap();
-
     let all_keys: Vec<String> = reader.keys().map(|s| s.to_string()).collect();
 
     let buf = Cursor::new(Vec::new());
     let mut w = HvsFileWriter::new(buf).unwrap();
 
-    // Include ALL keys from reference
     for key in &all_keys {
+        if !filter(key) {
+            continue;
+        }
         let key_type = reader.key_type(key).unwrap();
         let is_fo = reader.is_file_object(key);
         match key_type {
@@ -231,12 +266,89 @@ fn build_vmrs_file(_rip: u64, _cr3: u64) -> Option<Vec<u8>> {
                     w.add_array(key, reader.read_array(key).unwrap());
                 }
             }
-            _ => continue,
+            _ => {},
         }
     }
 
-    let buf = w.finish().unwrap();
-    Some(buf.into_inner())
+    let vmrs_data = w.finish().unwrap().into_inner();
+    let vmrs_path = std::env::temp_dir().join("hvs_bisect_test.vmrs");
+    std::fs::write(&vmrs_path, &vmrs_data).unwrap();
+    eprintln!("  Wrote {} bytes to {}", vmrs_data.len(), vmrs_path.display());
+
+    let wide_path: Vec<u16> = vmrs_path
+        .to_str()
+        .unwrap()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let hr = unsafe {
+        let mut handle: *mut c_void = std::ptr::null_mut();
+        let hr = dll::LoadSavedStateFile(wide_path.as_ptr(), &mut handle);
+        if hr >= 0 && !handle.is_null() {
+            dll::ReleaseSavedStateFiles(handle);
+        }
+        hr
+    };
+
+    let _ = std::fs::remove_file(&vmrs_path);
+    hr
+}
+
+/// Binary-search for the minimum set of keys the DLL needs.
+#[test]
+fn bisect_required_keys() {
+    if !setup_dll_search_path() {
+        eprintln!("SKIP: Windows SDK not found");
+        return;
+    }
+    if !dll::is_supported::LoadSavedStateFile() {
+        eprintln!("SKIP: DLL not loadable");
+        return;
+    }
+
+    let ref_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("E7E9D405-022F-4D55-9B8C-C777CC321051.VMRS");
+    if !ref_path.exists() {
+        eprintln!("SKIP: reference VMRS not found");
+        return;
+    }
+
+    // All keys: should succeed
+    let hr = try_with_keys(|_| true);
+    eprintln!("All keys: 0x{:08X}", hr as u32);
+    assert!(hr >= 0, "full round-trip failed");
+
+    // Only /savedstate/*
+    let hr = try_with_keys(|k| k.starts_with("/savedstate"));
+    eprintln!("Only /savedstate/*: 0x{:08X}", hr as u32);
+
+    // Only /savedstate/* minus /savedstate/configuration/*
+    let hr = try_with_keys(|k| k.starts_with("/savedstate") && !k.starts_with("/savedstate/configuration"));
+    eprintln!("savedstate minus config: 0x{:08X}", hr as u32);
+
+    // Only the 4 essential keys + /savedstate/type + /savedstate/VmwpVersion
+    let hr = try_with_keys(|k| matches!(k,
+        "/savedstate/VmVersion" |
+        "/savedstate/VmwpVersion" |
+        "/savedstate/type" |
+        "/savedstate/savedVM/partition_state" |
+        "/savedstate/RamMemoryBlock0" |
+        "/savedstate/RamBlock0"
+    ));
+    eprintln!("6 essential keys: 0x{:08X}", hr as u32);
+
+    // Just the 4 we had before
+    let hr = try_with_keys(|k| matches!(k,
+        "/savedstate/VmVersion" |
+        "/savedstate/savedVM/partition_state" |
+        "/savedstate/RamMemoryBlock0" |
+        "/savedstate/RamBlock0"
+    ));
+    eprintln!("4 original keys: 0x{:08X}", hr as u32);
 }
 
 #[test]
@@ -254,13 +366,7 @@ fn cross_validate_with_dll() {
     let rip = 0xFFFFF802_12345678u64;
     let cr3 = 0x1AD000u64;
 
-    let vmrs_data = match build_vmrs_file(rip, cr3) {
-        Some(d) => d,
-        None => {
-            eprintln!("SKIP: reference VMRS not found");
-            return;
-        }
-    };
+    let vmrs_data = build_vmrs_file(rip, cr3);
 
     // Write to a temp file
     let vmrs_path = std::env::temp_dir().join("hvs_file_cross_validate_test.vmrs");
@@ -301,11 +407,11 @@ fn cross_validate_with_dll() {
         assert!(hr >= 0, "GetVpCount failed: HRESULT 0x{hr:08X}");
         assert_eq!(vp_count, 1, "expected 1 VP");
 
-        // Verify architecture (Arch_ARM64 = 3 for our reference file)
+        // Verify architecture (Arch_x64 = 2 for our synthetic Intel blob)
         let mut arch: u32 = 0;
         let hr = dll::GetArchitecture(handle, 0, &mut arch);
         assert!(hr >= 0, "GetArchitecture failed: HRESULT 0x{hr:08X}");
-        assert_eq!(arch, 3, "expected Arch_ARM64 (3)");
+        assert_eq!(arch, 2, "expected Arch_x64 (2)");
 
         eprintln!("Cross-validation PASSED: VP count = {vp_count}, arch = {arch}");
     }
@@ -519,6 +625,10 @@ fn roundtrip_real_vmrs_with_dll() {
 
     eprintln!("Wrote round-tripped file to {} ({} bytes)", vmrs_path.display(), vmrs_data.len());
 
+    // Always save a copy for comparison
+    let save_path = std::env::temp_dir().join("hvs_roundtrip_LATEST.vmrs");
+    std::fs::copy(&vmrs_path, &save_path).ok();
+
     let wide_path: Vec<u16> = vmrs_path
         .to_str()
         .unwrap()
@@ -533,9 +643,13 @@ fn roundtrip_real_vmrs_with_dll() {
         eprintln!("Round-trip DLL load: HRESULT = 0x{:08X}", hr as u32);
 
         if hr < 0 {
+            let debug_path = std::env::temp_dir().join("hvs_roundtrip_FAILED.vmrs");
+            std::fs::copy(&vmrs_path, &debug_path).ok();
             panic!(
-                "LoadSavedStateFile failed on round-tripped file: HRESULT 0x{:08X}",
-                hr as u32
+                "LoadSavedStateFile failed on round-tripped file: HRESULT 0x{:08X}\n\
+                 Debug copy at {}",
+                hr as u32,
+                debug_path.display(),
             );
         }
 
