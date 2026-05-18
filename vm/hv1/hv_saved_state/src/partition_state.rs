@@ -50,9 +50,11 @@ pub struct Aarch64VpState {
     pub system_registers: Option<virt::aarch64::vp::SystemRegisters>,
 }
 
-/// Per-VTL register state for a VP.
-enum VpState {
+/// Per-VP state for a single VTL, either x64 or ARM64.
+pub enum VpState {
+    /// x64 VP state.
     X64(X64VpState),
+    /// ARM64 VP state.
     Aarch64(Aarch64VpState),
 }
 
@@ -108,38 +110,16 @@ impl PartitionStateBuilder {
         self.os_id = os_id;
     }
 
-    /// Adds an x64 VP to the saved state (single-VTL, VTL 0).
-    pub fn add_x64_vp(&mut self, vp_index: u32, state: X64VpState) {
-        self.vps.push(VpEntry {
-            vp_index,
-            vtl_states: vec![VtlState {
-                vtl: 0,
-                regs: VpState::X64(state),
-            }],
-            active_vtl: 0,
-        });
-    }
-
-    /// Adds an ARM64 VP to the saved state (single-VTL, VTL 0).
-    pub fn add_aarch64_vp(&mut self, vp_index: u32, state: Aarch64VpState) {
-        self.vps.push(VpEntry {
-            vp_index,
-            vtl_states: vec![VtlState {
-                vtl: 0,
-                regs: VpState::Aarch64(state),
-            }],
-            active_vtl: 0,
-        });
-    }
-
-    /// Adds an x64 VP with multiple VTLs.
+    /// Adds a VP to the saved state.
     ///
-    /// `vtl_states` is a list of `(vtl, state)` pairs. `active_vtl` is
-    /// the VTL that was running when the dump was taken.
-    pub fn add_x64_vp_multi_vtl(
+    /// `vtl_states` is a list of `(vtl, state)` pairs — one entry per VTL
+    /// that has register state. For single-VTL VMs, pass a single `(0, state)`.
+    ///
+    /// `active_vtl` is the VTL that was running when the dump was taken.
+    pub fn add_vp(
         &mut self,
         vp_index: u32,
-        vtl_states: Vec<(u8, X64VpState)>,
+        vtl_states: Vec<(u8, VpState)>,
         active_vtl: u8,
     ) {
         for &(vtl, _) in &vtl_states {
@@ -151,39 +131,7 @@ impl PartitionStateBuilder {
 
         let states = vtl_states
             .into_iter()
-            .map(|(vtl, state)| VtlState {
-                vtl,
-                regs: VpState::X64(state),
-            })
-            .collect();
-
-        self.vps.push(VpEntry {
-            vp_index,
-            vtl_states: states,
-            active_vtl,
-        });
-    }
-
-    /// Adds an ARM64 VP with multiple VTLs.
-    pub fn add_aarch64_vp_multi_vtl(
-        &mut self,
-        vp_index: u32,
-        vtl_states: Vec<(u8, Aarch64VpState)>,
-        active_vtl: u8,
-    ) {
-        for &(vtl, _) in &vtl_states {
-            if !self.vtls.contains(&vtl) {
-                self.vtls.push(vtl);
-            }
-        }
-        self.vtls.sort();
-
-        let states = vtl_states
-            .into_iter()
-            .map(|(vtl, state)| VtlState {
-                vtl,
-                regs: VpState::Aarch64(state),
-            })
+            .map(|(vtl, regs)| VtlState { vtl, regs })
             .collect();
 
         self.vps.push(VpEntry {
@@ -573,10 +521,14 @@ mod tests {
         }
     }
 
+    fn add_x64_vp(builder: &mut PartitionStateBuilder, vp_index: u32, state: X64VpState) {
+        builder.add_vp(vp_index, vec![(0, VpState::X64(state))], 0);
+    }
+
     #[test]
     fn build_minimal_x64_blob() {
         let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
-        builder.add_x64_vp(0, make_x64_state(0xFFFFF800_12345678, 0x1AD000));
+        add_x64_vp(&mut builder, 0, make_x64_state(0xFFFFF800_12345678, 0x1AD000));
 
         let blob = builder.finish();
         let desc = VidSavedStateDescriptor::read_from_prefix(blob.as_slice())
@@ -603,12 +555,16 @@ mod tests {
             ttbr0_el1: 0x40000,
             ..Default::default()
         };
-        builder.add_aarch64_vp(
+        builder.add_vp(
             0,
-            Aarch64VpState {
-                registers: regs,
-                system_registers: Some(sys),
-            },
+            vec![(
+                0,
+                VpState::Aarch64(Aarch64VpState {
+                    registers: regs,
+                    system_registers: Some(sys),
+                }),
+            )],
+            0,
         );
 
         let blob = builder.finish();
@@ -627,7 +583,7 @@ mod tests {
     fn multi_vp_blob() {
         let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
         for i in 0..4u32 {
-            builder.add_x64_vp(i, make_x64_state(0x1000 + i as u64, 0x1AD000));
+            add_x64_vp(&mut builder, i, make_x64_state(0x1000 + i as u64, 0x1AD000));
         }
 
         let blob = builder.finish();
@@ -657,8 +613,7 @@ mod tests {
     #[test]
     fn x64_register_values_roundtrip() {
         let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
-        let state = make_x64_state(0xFFFFF800_12345678, 0x1AD000);
-        builder.add_x64_vp(0, state);
+        add_x64_vp(&mut builder, 0, make_x64_state(0xFFFFF800_12345678, 0x1AD000));
 
         let blob = builder.finish();
         let desc = VidSavedStateDescriptor::read_from_prefix(blob.as_slice())
@@ -685,11 +640,11 @@ mod tests {
     #[test]
     fn multi_vtl_chunk_structure() {
         let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
-        builder.add_x64_vp_multi_vtl(
+        builder.add_vp(
             0,
             vec![
-                (0, make_x64_state(0x1000, 0x1AD000)),
-                (1, make_x64_state(0x2000, 0x2AD000)),
+                (0, VpState::X64(make_x64_state(0x1000, 0x1AD000))),
+                (1, VpState::X64(make_x64_state(0x2000, 0x2AD000))),
             ],
             0,
         );

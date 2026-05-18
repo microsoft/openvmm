@@ -13,6 +13,7 @@
 use hv_saved_state::PartitionStateBuilder;
 use hv_saved_state::ProcessorArch;
 use hv_saved_state::VmrsWriter;
+use hv_saved_state::VpState;
 use hv_saved_state::X64VpState;
 use std::ffi::c_void;
 use std::io::Cursor;
@@ -119,13 +120,17 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
             base: 0xFFFFF800_00001000,
             limit: 0x6F,
         };
-        builder.add_x64_vp(
+        builder.add_vp(
             i,
-            X64VpState {
-                registers: regs,
-                debug_registers: None,
-                xsave: None,
-            },
+            vec![(
+                0,
+                VpState::X64(X64VpState {
+                    registers: regs,
+                    debug_registers: None,
+                    xsave: None,
+                }),
+            )],
+            0,
         );
     }
 
