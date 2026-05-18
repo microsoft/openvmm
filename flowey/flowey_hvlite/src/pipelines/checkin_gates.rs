@@ -1470,7 +1470,8 @@ impl IntoPipeline for CheckinGatesCli {
                 label: "x64-windows-amd",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
-                nextest_filter_expr: standard_filter.clone(),
+                // TODO: remove servicing exclusion once we return to using updated runners
+                nextest_filter_expr: format!("{standard_filter} & !test(servicing)"),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 needs_prep_run: false,
                 hugetlb_2mb_overcommit_pages: None,

@@ -10,6 +10,7 @@ pub const INTEL_POOL_1ES: &str = "openvmm-gh-intel-westus3";
 pub const ARM_POOL_1ES: &str = "openvmm-gh-arm-westus2";
 
 // temporarily revert to the older image to mitigate powershell issues.
+// TODO: return to using updated runner image
 pub const WINDOWS_IMAGE_AMD64: &str = "HvLite-CI-Win-Ge-Image-256GB";
 pub const WINDOWS_IMAGE_ARM64: &str = "win-arm64";
 pub const LINUX_IMAGE_AMD64: &str = "ubuntu2404-amd64";
