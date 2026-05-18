@@ -232,3 +232,122 @@ fn dll_validates_multi_vp() {
     load_and_verify(&vmrs, 4, "multi_vp");
     eprintln!("Multi-VP validation PASSED");
 }
+
+/// Test with enough memory blocks to force object table chaining.
+/// 500 × 1 MiB blocks = 500 file objects + key tables → requires 3
+/// chained object tables (226 usable entries per table).
+#[test]
+fn dll_validates_large_memory() {
+    if !setup_dll_search_path() {
+        eprintln!("SKIP: Windows SDK not found");
+        return;
+    }
+    if !dll::is_supported::LoadSavedStateFile() {
+        eprintln!("SKIP: VmSavedStateDumpProvider.dll not loadable");
+        return;
+    }
+
+    let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
+    builder.set_os_id(0);
+
+    let mut regs = virt::x86::vp::Registers::default();
+    regs.rip = 0xFFFFF800_12345678;
+    regs.cr3 = 0x1AD000;
+    regs.cr0 = 0x80050033;
+    regs.efer = 0xD01;
+    regs.cs = virt::x86::SegmentRegister {
+        base: 0,
+        limit: 0xFFFFFFFF,
+        selector: 0x10,
+        attributes: 0x209B,
+    };
+    builder.add_vp(
+        0,
+        vec![(
+            Vtl::Vtl0,
+            VpState::X64(X64VpState {
+                registers: regs,
+                debug_registers: None,
+                xsave: None,
+            }),
+        )],
+        Vtl::Vtl0,
+    );
+    let blob = builder.finish();
+
+    let buf = Cursor::new(Vec::new());
+    let mut vmrs = VmrsWriter::new(buf).unwrap();
+    vmrs.set_partition_state(blob);
+
+    // 500 MiB of memory at GPA 0 — 500 × 1 MiB blocks.
+    const BLOCK_COUNT: u64 = 500;
+    const MIB: u64 = 1_048_576;
+    vmrs.add_memory_range(0, BLOCK_COUNT * MIB);
+
+    /// Reader that fills each block with a stamp derived from the GPA.
+    struct StampReader;
+    impl hv_saved_state::GuestMemoryReader for StampReader {
+        fn read_gpa(&mut self, gpa: u64, buf: &mut [u8]) -> std::io::Result<()> {
+            buf.fill(0);
+            // Stamp the first 8 bytes with the GPA for verification.
+            let stamp = gpa.to_le_bytes();
+            buf[..8].copy_from_slice(&stamp);
+            Ok(())
+        }
+    }
+
+    let mut mem = StampReader;
+    let vmrs_data = vmrs.finish(&mut mem).unwrap().into_inner();
+    eprintln!(
+        "Built large VMRS: {} bytes ({} MiB, {} blocks)",
+        vmrs_data.len(),
+        vmrs_data.len() / 1_048_576,
+        BLOCK_COUNT
+    );
+
+    // Verify round-trip through our reader: spot-check a few blocks.
+    {
+        let mut reader =
+            hvs_file::reader::HvsFileReader::open(Cursor::new(&vmrs_data)).unwrap();
+        for i in [0u64, 1, 249, 250, 499] {
+            let data = reader
+                .read_array(&format!("/savedstate/RamBlock{i}"))
+                .unwrap();
+            assert_eq!(data.len(), MIB as usize, "RamBlock{i} wrong size");
+            let stamp = u64::from_le_bytes(data[..8].try_into().unwrap());
+            assert_eq!(stamp, i * MIB, "RamBlock{i} GPA stamp mismatch");
+        }
+    }
+
+    // Verify the DLL can load the file.
+    let vmrs_path = std::env::temp_dir().join("hv_saved_state_large_memory.vmrs");
+    std::fs::write(&vmrs_path, &vmrs_data).unwrap();
+
+    let wide_path: Vec<u16> = vmrs_path
+        .to_str()
+        .unwrap()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let mut handle: *mut c_void = std::ptr::null_mut();
+        let hr = dll::LoadSavedStateFile(wide_path.as_ptr(), &mut handle);
+        assert!(
+            hr >= 0,
+            "LoadSavedStateFile failed on large file: 0x{:08X}",
+            hr as u32
+        );
+        assert!(!handle.is_null());
+
+        let mut vp_count = 0u32;
+        let hr = dll::GetVpCount(handle, &mut vp_count);
+        assert!(hr >= 0, "GetVpCount failed: 0x{:08X}", hr as u32);
+        assert_eq!(vp_count, 1);
+
+        dll::ReleaseSavedStateFiles(handle);
+    }
+
+    let _ = std::fs::remove_file(&vmrs_path);
+    eprintln!("Large memory ({BLOCK_COUNT} blocks) validation PASSED");
+}
