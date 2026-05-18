@@ -138,64 +138,29 @@ pub(super) fn resolve_memory_layout(
         .collect::<Vec<_>>();
     let mut vtl2_range = MemoryRange::EMPTY;
     let mut virtio_mmio_region = MemoryRange::EMPTY;
-    let mut chipset_low_mmio = MemoryRange::EMPTY;
+    let chipset_low_mmio;
     let mut chipset_high_mmio = MemoryRange::EMPTY;
     let mut vtl2_chipset_mmio = MemoryRange::EMPTY;
 
     let mut builder = LayoutBuilder::new();
 
-    // Architectural reserved zone — pinned addresses that no dynamic consumer
-    // may overlap (LAPIC, IOAPIC, GIC, PL011, battery, TPM, etc.).
-    //
-    // When chipset low MMIO is enabled, this zone lives *inside*
-    // `chipset_low_mmio` (pinned at the `(4 GiB - size) .. 4 GiB` tail; see
-    // below). The two together form the single window advertised to the
-    // guest via `\_SB.VMOD._CRS`, which guests use to arbitrate the
-    // resources of fixed-address child devices such as the TPM2 CRB at
-    // `0xFED4_0000`. In that case we must *not* also `reserve()` the zone
-    // here, since the allocator rejects overlapping fixed/reserved ranges.
-    //
-    // When chipset low MMIO is disabled there is no enclosing fixed range,
-    // so the reservation is needed explicitly to keep LAPIC/IOAPIC/etc.
-    // off-limits to dynamic placements.
+    // Chipset low MMIO (Mmio32): a fixed window pinned to the top of 32-bit
+    // address space, advertised to firmware as `\_SB.VMOD._CRS`. Always at
+    // least the architectural reserved zone (LAPIC, IOAPIC, TPM, ...) so
+    // guests can arbitrate fixed-address children like TPM2 against this
+    // window; the caller-requested size may extend it lower.
     let arch_reserved = if cfg!(guest_arch = "x86_64") {
         ARCH_RESERVED_X86_64
     } else {
         ARCH_RESERVED_AARCH64
     };
-    if input.chipset_low_mmio_size == 0 {
-        builder.reserve("arch-reserved", arch_reserved);
+    let four_gb = 4 * GB;
+    let low_mmio_size = input.chipset_low_mmio_size.max(arch_reserved.len());
+    if low_mmio_size > four_gb {
+        bail!("chipset low MMIO size {low_mmio_size:#x} exceeds 4 GiB");
     }
-
-    // Chipset low MMIO (Mmio32): VMOD/PCI0 _CRS low range. Pinned to the
-    // `(4 GiB - size) .. 4 GiB` tail so it always fully contains the
-    // architectural reserved zone (LAPIC, IOAPIC, TPM, ...).
-    //
-    // This is part of the guest-visible contract: this range is what
-    // firmware advertises in `\_SB.VMOD._CRS`, and OS resource arbiters
-    // require fixed-address child devices (e.g. the TPM2 CRB declared as
-    // `Memory32Fixed` at `0xFED4_0000`) to fall inside that window. If the
-    // window did not cover the reserved zone, Windows `tpm.sys` would fail
-    // to claim the TPM with `TBS_E_INTERNAL_ERROR`.
-    if input.chipset_low_mmio_size != 0 {
-        let size = input.chipset_low_mmio_size;
-        let four_gb = 4 * GB;
-        if size > four_gb {
-            bail!("chipset low MMIO size {:#x} exceeds 4 GiB", size,);
-        }
-        if size < arch_reserved.len() {
-            bail!(
-                "chipset low MMIO size {:#x} is too small to cover the \
-                 architectural reserved zone {:#x}..{:#x} ({:#x} bytes)",
-                size,
-                arch_reserved.start(),
-                arch_reserved.end(),
-                arch_reserved.len(),
-            );
-        }
-        chipset_low_mmio = MemoryRange::new(four_gb - size..four_gb);
-        builder.fixed("chipset-low-mmio", chipset_low_mmio);
-    }
+    chipset_low_mmio = MemoryRange::new(four_gb - low_mmio_size..four_gb);
+    builder.fixed("chipset-low-mmio", chipset_low_mmio);
 
     // Chipset high MMIO (Mmio64): VMOD/PCI0 _CRS high range.
     if input.chipset_high_mmio_size != 0 {
@@ -529,7 +494,15 @@ mod tests {
     use vm_topology::memory::AddressType;
 
     const MB: u64 = 1024 * 1024;
-    const DEFAULT_CHIPSET_LOW_MMIO_SIZE_X86_64: u64 = 128 * 1024 * 1024;
+    // Match the production defaults from `vm_manifest_builder`.
+    #[cfg(guest_arch = "x86_64")]
+    const DEFAULT_CHIPSET_LOW_MMIO_SIZE: u64 = 128 * 1024 * 1024;
+    #[cfg(guest_arch = "aarch64")]
+    const DEFAULT_CHIPSET_LOW_MMIO_SIZE: u64 = 512 * 1024 * 1024;
+    #[cfg(guest_arch = "x86_64")]
+    const ARCH_RESERVED: MemoryRange = ARCH_RESERVED_X86_64;
+    #[cfg(guest_arch = "aarch64")]
+    const ARCH_RESERVED: MemoryRange = ARCH_RESERVED_AARCH64;
     const DEFAULT_CHIPSET_HIGH_MMIO_SIZE: u64 = 512 * 1024 * 1024;
     const DEFAULT_VTL2_CHIPSET_MMIO_SIZE: u64 = GB;
 
@@ -541,7 +514,7 @@ mod tests {
         MemoryLayoutInput {
             mem_size,
             numa_mem_sizes,
-            chipset_low_mmio_size: DEFAULT_CHIPSET_LOW_MMIO_SIZE_X86_64,
+            chipset_low_mmio_size: DEFAULT_CHIPSET_LOW_MMIO_SIZE,
             chipset_high_mmio_size: DEFAULT_CHIPSET_HIGH_MMIO_SIZE,
             vtl2_chipset_mmio_size: 0,
             pcie_root_complexes: &[],
@@ -595,7 +568,7 @@ mod tests {
 
         assert_eq!(actual.ram_size(), 4 * GB);
         // RAM must not overlap the architectural reserved zone.
-        let reserved = ARCH_RESERVED_X86_64;
+        let reserved = ARCH_RESERVED;
         for ram in actual.ram() {
             assert!(
                 !ram.range.overlaps(&reserved),
@@ -629,12 +602,12 @@ mod tests {
         let high = result
             .chipset_high_mmio
             .expect("should have high chipset MMIO");
-        assert_eq!(low.len(), DEFAULT_CHIPSET_LOW_MMIO_SIZE_X86_64);
+        assert_eq!(low.len(), DEFAULT_CHIPSET_LOW_MMIO_SIZE);
         assert_eq!(high.len(), DEFAULT_CHIPSET_HIGH_MMIO_SIZE);
         // Chipset low MMIO is pinned to end at 4 GiB and must fully contain
         // the architectural reserved zone (LAPIC, IOAPIC, TPM, ...).
         assert_eq!(low.end(), 4 * GB);
-        assert!(low.contains(&ARCH_RESERVED_X86_64));
+        assert!(low.contains(&ARCH_RESERVED));
         assert!(
             high.start() >= 2 * GB,
             "high chipset MMIO should be above RAM"
@@ -922,16 +895,16 @@ mod tests {
 
     #[test]
     fn ecam_below_256mb_is_rejected() {
-        // Force ECAM placement below 256 MiB by reserving most of the 32-bit
-        // MMIO window for low_mmio. The Mmio32 zone is ~4064 MiB on x86_64
-        // and ~3824 MiB on aarch64 (the per-arch reserved zone differs), so
-        // the low_mmio request is sized per-arch to land ECAM around 127 MiB
-        // in both cases. The resolver must bail because MCFG cannot
+        // Force ECAM placement below 256 MiB by reserving most of the free
+        // Mmio32 window for low_mmio. The fixed chipset_low_mmio at the top
+        // of 32-bit space leaves 3968 MiB on x86_64 and 3584 MiB on aarch64
+        // for dynamic Mmio32 requests; size low_mmio to push ECAM near
+        // 127 MiB on both. The resolver must bail because MCFG cannot
         // represent a bus-0 base below the ECAM start.
         let low_mmio_size = if cfg!(guest_arch = "x86_64") {
             3840 * MB
         } else {
-            3600 * MB
+            3456 * MB
         };
         let root_complexes = [pcie_root_complex(
             PcieMmioRangeConfig::Dynamic {

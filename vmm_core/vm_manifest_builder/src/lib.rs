@@ -408,15 +408,8 @@ impl VmManifestBuilder {
         // Chipset MMIO sizing: all VM types with VMBus or a PCI bus get low +
         // high chipset MMIO. HclHost additionally gets VTL2 chipset MMIO.
         //
-        // The low MMIO window is a single block pinned to end at 4 GiB,
-        // fully containing the architectural reserved zone (LAPIC, IOAPIC,
-        // TPM, etc.). This shape is part of the guest-visible contract:
-        // firmware advertises it as `\_SB.VMOD._CRS`, and OS resource
-        // arbiters (e.g. Windows `tpm.sys`) require fixed-address devices
-        // like the TPM2 CRB at `0xFED4_0000` to fall inside that window.
-        //
-        // x86_64: 128 MiB ending at 4 GiB (includes the 32 MiB arch zone).
-        // aarch64: 512 MiB ending at 4 GiB (includes the 272 MiB arch zone).
+        // Low MMIO is a single window pinned to end at 4 GiB and advertised
+        // as `\_SB.VMOD._CRS`. The defaults match the legacy Hyper-V sizes.
         let default_low = match self.arch {
             MachineArch::X86_64 => 128 * 1024 * 1024,
             MachineArch::Aarch64 => 512 * 1024 * 1024,
