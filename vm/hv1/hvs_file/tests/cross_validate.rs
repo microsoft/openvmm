@@ -267,46 +267,18 @@ fn cross_validate_with_dll() {
         .chain(std::iter::once(0))
         .collect();
 
-    // Also try the round-tripped file (real partition state, our HVS format)
-    let roundtrip_path = std::env::temp_dir().join("hvs_roundtrip_test.vmrs");
-    if roundtrip_path.exists() {
-        let wide_rt: Vec<u16> = roundtrip_path
-            .to_str()
-            .unwrap()
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-        unsafe {
-            let mut h: *mut c_void = std::ptr::null_mut();
-            let hr = dll::LoadSavedStateFile(wide_rt.as_ptr(), &mut h);
-            eprintln!("Round-tripped file: HRESULT = 0x{:08X}", hr as u32);
-            if hr >= 0 && !h.is_null() {
-                let mut vp: u32 = 0;
-                dll::GetVpCount(h, &mut vp);
-                eprintln!("  VP count: {vp}");
-                dll::ReleaseSavedStateFiles(h);
-            }
-        }
-    }
-
     // Try loading the file with the DLL
     unsafe {
         let mut handle: *mut c_void = std::ptr::null_mut();
         let hr = dll::LoadSavedStateFile(wide_path.as_ptr(), &mut handle);
         if hr < 0 {
-            // Save the file for manual inspection
             let debug_path = std::env::temp_dir().join("hvs_file_FAILED.vmrs");
             std::fs::copy(&vmrs_path, &debug_path).ok();
-            // The synthetic partition state blob and memory metadata don't
-            // yet satisfy all the DLL's requirements. The round-trip test
-            // (roundtrip_real_vmrs_with_dll) proves the HVS format is correct.
-            // This test will pass once hv_saved_state builds proper content.
-            eprintln!(
-                "LoadSavedStateFile returned HRESULT 0x{hr:08X} (expected — \
-                 synthetic content not yet complete). \
-                 Format is validated by roundtrip_real_vmrs_with_dll."
+            panic!(
+                "LoadSavedStateFile returned HRESULT 0x{hr:08X}\n\
+                 File saved to {} for manual inspection.",
+                debug_path.display()
             );
-            return;
         }
 
         let _release = defer(|| {
@@ -536,10 +508,6 @@ fn roundtrip_real_vmrs_with_dll() {
     });
 
     eprintln!("Wrote round-tripped file to {} ({} bytes)", vmrs_path.display(), vmrs_data.len());
-
-    // Save a debug copy before attempting DLL load
-    let debug_path = std::env::temp_dir().join("hvs_roundtrip_full_DEBUG.vmrs");
-    std::fs::copy(&vmrs_path, &debug_path).ok();
 
     let wide_path: Vec<u16> = vmrs_path
         .to_str()
