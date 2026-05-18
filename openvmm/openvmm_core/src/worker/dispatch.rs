@@ -252,7 +252,7 @@ pub struct Manifest {
     chipset_devices: Vec<ChipsetDeviceHandle>,
     pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
     chipset_capabilities: VmChipsetCapabilities,
-    chipset_low_mmio_size: u64,
+    chipset_low_mmio_size: u32,
     chipset_high_mmio_size: u64,
     vtl2_chipset_mmio_size: u64,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,

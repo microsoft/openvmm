@@ -105,7 +105,7 @@ pub struct VmChipsetResult {
     /// Default chipset low MMIO size (below 4 GiB) for VMOD/PCI0 _CRS.
     /// The address is always allocated dynamically. `0` when the VM type
     /// has no VMBus or PCI bus.
-    pub chipset_low_mmio_size: u64,
+    pub chipset_low_mmio_size: u32,
     /// Default chipset high MMIO size (above RAM) for VMOD/PCI0 _CRS.
     /// The address is always allocated dynamically. `0` when the VM type
     /// has no VMBus or PCI bus.

@@ -271,9 +271,12 @@ impl MemoryLayout {
 
     /// Makes a new memory layout from already-resolved RAM and fixed ranges.
     ///
-    /// The RAM, MMIO, PCI ECAM, and PCI MMIO ranges must each be in sorted
-    /// order, non-empty, and non-overlapping. The combined layout is also
-    /// validated for overlaps, including the optional VTL2 range.
+    /// The RAM, PCI ECAM, and PCI MMIO ranges must each be in sorted order,
+    /// non-empty, and non-overlapping. MMIO gaps may contain empty placeholder
+    /// ranges to preserve positional indexing (e.g. `mmio()[0]` = low,
+    /// `mmio()[1]` = high); empty entries are ignored during validation.
+    /// The combined layout is also validated for overlaps, including the
+    /// optional VTL2 range.
     pub fn new_from_resolved_ranges(
         ram: Vec<MemoryRangeWithNode>,
         mmio_gaps: Vec<MemoryRange>,
@@ -282,7 +285,14 @@ impl MemoryLayout {
         vtl2_range: Option<MemoryRange>,
     ) -> Result<Self, Error> {
         validate_ranges_with_metadata(&ram)?;
-        validate_ranges(&mmio_gaps)?;
+        // MMIO gaps may include empty placeholders for positional indexing;
+        // validate only the non-empty entries.
+        let non_empty_mmio: Vec<_> = mmio_gaps
+            .iter()
+            .copied()
+            .filter(|r| !r.is_empty())
+            .collect();
+        validate_ranges(&non_empty_mmio)?;
         validate_ranges(&pci_ecam_gaps)?;
         validate_ranges(&pci_mmio_gaps)?;
 
@@ -299,6 +309,9 @@ impl MemoryLayout {
         pci_mmio: Vec<MemoryRange>,
         vtl2_range: Option<MemoryRange>,
     ) -> Result<Self, Error> {
+        // Filter out empty placeholder ranges before validation and overlap
+        // checks — they carry no physical meaning and exist only for
+        // positional indexing in the stored mmio vector.
         let mut all_ranges = ram
             .iter()
             .map(|x| &x.range)
@@ -307,6 +320,7 @@ impl MemoryLayout {
             .chain(&pci_ecam)
             .chain(&pci_mmio)
             .copied()
+            .filter(|r| !r.is_empty())
             .collect::<Vec<_>>();
 
         all_ranges.sort();
