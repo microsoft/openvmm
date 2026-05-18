@@ -420,22 +420,45 @@ impl VmController {
     }
 
     async fn handle_dump_state(&self, path: &Path) -> anyhow::Result<()> {
+        // Write to a temporary file in the same directory, then rename into
+        // place so readers never see a partially-written dump.
+        let mut tmp_path = path.to_path_buf();
+        tmp_path.set_extension("vmrs.tmp");
+        let file = fs_err::File::create(&tmp_path)
+            .with_context(|| format!("failed to create temp file: {}", tmp_path.display()))?;
+
         // Pause the VM.
         self.vm_rpc
             .call(VmRpc::Pause, ())
             .await
             .context("failed to pause VM")?;
 
-        // Dump state to the VMRS file (worker collects VP state + streams memory).
-        self.vm_rpc
-            .call_failable(VmRpc::DumpState, path.to_string_lossy().into_owned())
+        // Dump state to the temp file (worker collects VP state + streams memory).
+        let result = self
+            .vm_rpc
+            .call_failable(VmRpc::DumpState, file.into())
             .await
-            .context("failed to dump state")?;
+            .context("failed to dump state");
 
-        // Resume the VM after dump.
-        let _ = self.vm_rpc
-            .call(VmRpc::Resume, ())
-            .await;
+        // Resume the VM regardless of dump success.
+        let _ = self.vm_rpc.call(VmRpc::Resume, ()).await;
+
+        // Clean up the temp file on failure, rename on success.
+        match result {
+            Ok(()) => {
+                std::fs::rename(&tmp_path, path).with_context(|| {
+                    format!(
+                        "failed to rename {} to {}",
+                        tmp_path.display(),
+                        path.display()
+                    )
+                })?;
+            }
+            Err(err) => {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(err);
+            }
+        }
 
         Ok(())
     }

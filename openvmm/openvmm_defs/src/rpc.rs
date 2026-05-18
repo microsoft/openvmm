@@ -42,9 +42,10 @@ pub enum VmRpc {
     RemovePcieDevice(FailableRpc<String, ()>),
     /// Dump VM state (VP registers + memory) to a `.vmrs` file.
     ///
-    /// The VM should be paused before calling this. The path is passed as a
-    /// `String` because `PathBuf` does not implement `MeshPayload`.
-    DumpState(FailableRpc<String, ()>),
+    /// The VM should be paused before calling this. The caller provides an
+    /// open file handle to write to (typically a temporary file that gets
+    /// renamed into place on success).
+    DumpState(FailableRpc<File, ()>),
 }
 
 #[derive(Debug, MeshPayload, thiserror::Error)]

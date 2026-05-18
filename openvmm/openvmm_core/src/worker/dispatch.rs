@@ -3193,8 +3193,8 @@ impl LoadedVm {
                         .await
                     }
                     VmRpc::DumpState(rpc) => {
-                        rpc.handle_failable(async |path: String| {
-                            self.dump_state(std::path::Path::new(&path)).await
+                        rpc.handle_failable(async |file: File| {
+                            self.dump_state(file).await
                         })
                         .await
                     }
@@ -3307,7 +3307,7 @@ impl LoadedVm {
     /// Dumps VM state (VP registers + memory) to a `.vmrs` file.
     ///
     /// The VM must already be paused before calling this.
-    async fn dump_state(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
+    async fn dump_state(&mut self, file: File) -> anyhow::Result<()> {
         use hv_saved_state::GuestMemoryReader;
         use hv_saved_state::PartitionStateBuilder;
         use hv_saved_state::ProcessorArch;
@@ -3316,7 +3316,7 @@ impl LoadedVm {
         use hv_saved_state::X64VpState;
 
         let vp_count = self.inner.processor_topology.vp_count();
-        tracing::info!(path = %path.display(), vp_count, "dumping VM state to VMRS");
+        tracing::info!(vp_count, "dumping VM state to VMRS");
 
         // Determine architecture.
         #[cfg(guest_arch = "x86_64")]
@@ -3360,10 +3360,7 @@ impl LoadedVm {
 
         let partition_state_blob = builder.finish();
 
-        // Create the VMRS file writer.
-        let file = File::create(path)
-            .with_context(|| format!("failed to create dump file: {}", path.display()))?;
-
+        // Write the VMRS file.
         let mut vmrs = VmrsWriter::new(file).context("failed to initialize VMRS writer")?;
         vmrs.set_partition_state(partition_state_blob);
 
@@ -3386,7 +3383,7 @@ impl LoadedVm {
         vmrs.finish(&mut reader)
             .context("failed to write VMRS file")?;
 
-        tracing::info!(path = %path.display(), "VMRS dump complete");
+        tracing::info!("VMRS dump complete");
         Ok(())
     }
 
