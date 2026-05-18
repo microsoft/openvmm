@@ -147,18 +147,19 @@ impl PartitionStateBuilder {
         self.write_prolog(&mut blob);
         self.write_os_id(&mut blob);
 
-        // Collect the set of VTLs across all VPs.
-        let multi_vtl = self.vps.iter().any(|vp| vp.vtl_states.len() > 1);
+        // Determine which VTLs are present across all VPs (bitmask, VTL 0-2).
+        let mut vtl_mask = 0u8;
+        for vp in &self.vps {
+            for s in &vp.vtl_states {
+                vtl_mask |= 1 << s.vtl;
+            }
+        }
+        let multi_vtl = vtl_mask.count_ones() > 1;
         if multi_vtl {
-            let mut vtls: Vec<u8> = self
-                .vps
-                .iter()
-                .flat_map(|vp| vp.vtl_states.iter().map(|s| s.vtl))
-                .collect();
-            vtls.sort();
-            vtls.dedup();
-            for vtl in vtls {
-                self.write_partition_vtl(&mut blob, vtl);
+            for vtl in 0..3u8 {
+                if vtl_mask & (1 << vtl) != 0 {
+                    self.write_partition_vtl(&mut blob, vtl);
+                }
             }
         }
 
