@@ -7,8 +7,12 @@
 //! memory ranges, using [`hvs_file::writer::HvsFileWriter`] for the
 //! underlying HyperV Storage file format.
 
+use hvdef::save_restore::MemoryBlockSaveStruct;
+use hvdef::save_restore::WPMM_MB_SAVE_STATE_VERSION_3;
 use hvs_file::writer::HvsFileWriter;
 use std::io::{self, Seek, Write};
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// VM version used for dump files (v10.0 / Iron).
 const VM_VERSION_IRON: i64 = 0x0A00;
@@ -18,37 +22,6 @@ const GMO_BLOCK_SIZE_BYTES: usize = 1_048_576;
 
 /// Size of one guest memory block in 4K pages.
 const GMO_BLOCK_SIZE_PAGES: u64 = 256;
-
-/// Memory block metadata (MEMORY_BLOCK_OBJECT_SAVE_STRUCT_CURRENT).
-///
-/// 48 bytes with padding for alignment.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct MemoryBlockMeta {
-    saved_state_version: u32, // WPMM_MB_SAVE_STATE_VERSION_3 = 3
-    flags: u32,
-    page_count_total: u64,
-    mbp_index_start: u64,
-    gpa_index_start: u64,
-    virtual_node: u32,
-    _padding: u32,
-    ksr_block_id: u64,
-}
-
-impl MemoryBlockMeta {
-    fn as_bytes(&self) -> Vec<u8> {
-        let mut buf = vec![0u8; 48];
-        buf[0..4].copy_from_slice(&self.saved_state_version.to_le_bytes());
-        buf[4..8].copy_from_slice(&self.flags.to_le_bytes());
-        buf[8..16].copy_from_slice(&self.page_count_total.to_le_bytes());
-        buf[16..24].copy_from_slice(&self.mbp_index_start.to_le_bytes());
-        buf[24..32].copy_from_slice(&self.gpa_index_start.to_le_bytes());
-        buf[32..36].copy_from_slice(&self.virtual_node.to_le_bytes());
-        buf[36..40].copy_from_slice(&self._padding.to_le_bytes());
-        buf[40..48].copy_from_slice(&self.ksr_block_id.to_le_bytes());
-        buf
-    }
-}
 
 /// A contiguous GPA range to include in the dump.
 struct MemoryRange {
@@ -120,19 +93,14 @@ impl<W: Write + Seek> VmrsWriter<W> {
             let gpa_page_start = gpa_start / 4096;
 
             // Write metadata for this contiguous range
-            let meta = MemoryBlockMeta {
-                saved_state_version: 3,
-                flags: 0,
-                page_count_total: total_pages,
-                mbp_index_start: data_block_idx * GMO_BLOCK_SIZE_PAGES,
-                gpa_index_start: gpa_page_start,
-                virtual_node: 0,
-                _padding: 0,
-                ksr_block_id: 0,
-            };
+            let mut meta = MemoryBlockSaveStruct::new_zeroed();
+            meta.saved_state_version = WPMM_MB_SAVE_STATE_VERSION_3;
+            meta.page_count_total = total_pages;
+            meta.mbp_index_start = data_block_idx * GMO_BLOCK_SIZE_PAGES;
+            meta.gpa_index_start = gpa_page_start;
 
             let meta_key = format!("/savedstate/RamMemoryBlock{meta_block_idx}");
-            self.hvs.add_array(&meta_key, meta.as_bytes())?;
+            self.hvs.add_array(&meta_key, meta.as_bytes().to_vec())?;
             meta_block_idx += 1;
 
             // Write data blocks (1 MiB each)

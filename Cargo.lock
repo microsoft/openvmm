@@ -3285,6 +3285,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hv_saved_state"
+version = "0.0.0"
+dependencies = [
+ "hvdef",
+ "hvs_file",
+ "pal",
+ "thiserror 2.0.16",
+ "zerocopy",
+]
+
+[[package]]
 name = "hvdef"
 version = "0.0.0"
 dependencies = [
