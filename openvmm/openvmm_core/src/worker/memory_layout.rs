@@ -138,7 +138,6 @@ pub(super) fn resolve_memory_layout(
         .collect::<Vec<_>>();
     let mut vtl2_range = MemoryRange::EMPTY;
     let mut virtio_mmio_region = MemoryRange::EMPTY;
-    let chipset_low_mmio;
     let mut chipset_high_mmio = MemoryRange::EMPTY;
     let mut vtl2_chipset_mmio = MemoryRange::EMPTY;
 
@@ -159,7 +158,7 @@ pub(super) fn resolve_memory_layout(
     if low_mmio_size > four_gb {
         bail!("chipset low MMIO size {low_mmio_size:#x} exceeds 4 GiB");
     }
-    chipset_low_mmio = MemoryRange::new(four_gb - low_mmio_size..four_gb);
+    let chipset_low_mmio = MemoryRange::new(four_gb - low_mmio_size..four_gb);
     builder.fixed("chipset-low-mmio", chipset_low_mmio);
 
     // Chipset high MMIO (Mmio64): VMOD/PCI0 _CRS high range.
@@ -361,13 +360,14 @@ pub(super) fn resolve_memory_layout(
     // exactly as callers had it pre-allocator: `[0]` = chipset low MMIO,
     // `[1]` = chipset high MMIO, and (when VTL2 is enabled) `[2]` = the
     // VTL2-private chipset MMIO range. Consumers (DSDT, Linux DT, UEFI,
-    // PCAT) rely on this ordering. The architectural reserved zone and
-    // virtio-mmio region were never part of this vector and remain tracked
-    // separately. `MemoryLayout::mmio()` will eventually be removed.
-    let mut mmio_gaps: Vec<MemoryRange> = Vec::new();
-    if input.chipset_low_mmio_size != 0 {
-        mmio_gaps.push(chipset_low_mmio);
-    }
+    // PCAT) rely on this ordering. The virtio-mmio region was never part of
+    // this vector and remains tracked separately. `MemoryLayout::mmio()` will
+    // eventually be removed.
+    //
+    // The chipset low MMIO range is always present (at least the
+    // architectural reserved zone) and is always reported. Hiding it would
+    // leave a real allocated hole in the layout invisible to consumers.
+    let mut mmio_gaps: Vec<MemoryRange> = vec![chipset_low_mmio];
     if input.chipset_high_mmio_size != 0 {
         mmio_gaps.push(chipset_high_mmio);
     }
@@ -420,7 +420,7 @@ pub(super) fn resolve_memory_layout(
         memory_layout,
         pcie_root_complex_ranges,
         virtio_mmio_region,
-        chipset_low_mmio: (input.chipset_low_mmio_size != 0).then_some(chipset_low_mmio),
+        chipset_low_mmio: Some(chipset_low_mmio),
         chipset_high_mmio: (input.chipset_high_mmio_size != 0).then_some(chipset_high_mmio),
         vtl2_chipset_mmio: (input.vtl2_chipset_mmio_size != 0).then_some(vtl2_chipset_mmio),
     })
@@ -846,15 +846,27 @@ mod tests {
     }
 
     #[test]
-    fn no_chipset_mmio_when_none() {
+    fn disabled_chipset_mmio_still_reports_arch_reserved() {
+        // Even when the caller does not request any chipset MMIO, the
+        // architectural reserved zone (LAPIC, IOAPIC, TPM, ...) is still
+        // carved out of RAM at the top of 4 GiB. That range must be
+        // reported so consumers see the same layout the allocator
+        // produced.
         let mut config = input(2 * GB, None, None);
         config.chipset_low_mmio_size = 0;
         config.chipset_high_mmio_size = 0;
 
         let result = resolve_memory_layout(config).unwrap();
 
-        assert!(result.chipset_low_mmio.is_none());
+        let low = result
+            .chipset_low_mmio
+            .expect("low chipset MMIO is always present (arch reserved zone)");
+        assert_eq!(low.end(), 4 * GB);
+        assert!(low.contains(&ARCH_RESERVED));
         assert!(result.chipset_high_mmio.is_none());
+        // The reported range must appear in MemoryLayout::mmio() so that
+        // RAM is not silently placed around an invisible hole.
+        assert_eq!(result.memory_layout.mmio(), &[low]);
     }
 
     #[test]
