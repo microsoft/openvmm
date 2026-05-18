@@ -7,8 +7,8 @@
 //! memory ranges, using [`hvs_file::writer::HvsFileWriter`] for the
 //! underlying HyperV Storage file format.
 
-use hvdef::save_restore::MemoryBlockSaveStruct;
-use hvdef::save_restore::WPMM_MB_SAVE_STATE_VERSION_3;
+use crate::defs::MemoryBlockSaveStruct;
+use crate::defs::WPMM_MB_SAVE_STATE_VERSION_3;
 use hvs_file::writer::HvsFileWriter;
 use std::io::{self, Seek, Write};
 use zerocopy::FromZeros;

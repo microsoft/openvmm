@@ -3291,6 +3291,7 @@ dependencies = [
  "hvdef",
  "hvs_file",
  "pal",
+ "static_assertions",
  "thiserror 2.0.16",
  "zerocopy",
 ]

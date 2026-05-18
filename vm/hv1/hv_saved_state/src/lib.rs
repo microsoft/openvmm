@@ -33,6 +33,7 @@
 //! vmrs.finish().unwrap();
 //! ```
 
+mod defs;
 mod partition_state;
 mod vmrs_writer;
 
