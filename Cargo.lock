@@ -3285,21 +3285,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hv_saved_state"
-version = "0.0.0"
-dependencies = [
- "hvdef",
- "hvs_file",
- "pal",
- "static_assertions",
- "tempfile",
- "thiserror 2.0.16",
- "virt",
- "x86defs",
- "zerocopy",
-]
-
-[[package]]
 name = "hvdef"
 version = "0.0.0"
 dependencies = [
@@ -3397,6 +3382,21 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "hyperv_dump"
+version = "0.0.0"
+dependencies = [
+ "hvdef",
+ "hvs_file",
+ "pal",
+ "static_assertions",
+ "tempfile",
+ "thiserror 2.0.16",
+ "virt",
+ "x86defs",
+ "zerocopy",
 ]
 
 [[package]]
@@ -5334,8 +5334,8 @@ dependencies = [
  "guestmem",
  "guid",
  "hcl_compat_uefi_nvram_storage",
- "hv_saved_state",
  "hvdef",
+ "hyperv_dump",
  "hypervisor_resources",
  "ide",
  "ide_resources",

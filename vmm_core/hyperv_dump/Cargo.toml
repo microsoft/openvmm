@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "hv_saved_state"
+name = "hyperv_dump"
 edition.workspace = true
 rust-version.workspace = true
 

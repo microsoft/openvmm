@@ -10,11 +10,11 @@
 #![cfg(windows)]
 #![allow(unsafe_code)]
 
-use hv_saved_state::PartitionStateBuilder;
-use hv_saved_state::ProcessorArch;
-use hv_saved_state::VmrsWriter;
-use hv_saved_state::VpState;
-use hv_saved_state::X64VpState;
+use hyperv_dump::PartitionStateBuilder;
+use hyperv_dump::ProcessorArch;
+use hyperv_dump::VmrsWriter;
+use hyperv_dump::VpState;
+use hyperv_dump::X64VpState;
 use hvdef::Vtl;
 use std::ffi::c_void;
 use std::io::Cursor;
@@ -149,7 +149,7 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
     vmrs.add_memory_range(0, 4096);
 
     struct ZeroReader;
-    impl hv_saved_state::GuestMemoryReader for ZeroReader {
+    impl hyperv_dump::GuestMemoryReader for ZeroReader {
         fn read_gpa(&mut self, _gpa: u64, buf: &mut [u8]) -> std::io::Result<()> {
             buf.fill(0);
             Ok(())
@@ -293,7 +293,7 @@ fn dll_validates_large_memory() {
 
     /// Reader that fills each block with a stamp derived from the GPA.
     struct StampReader;
-    impl hv_saved_state::GuestMemoryReader for StampReader {
+    impl hyperv_dump::GuestMemoryReader for StampReader {
         fn read_gpa(&mut self, gpa: u64, buf: &mut [u8]) -> std::io::Result<()> {
             buf.fill(0);
             // Stamp the first 8 bytes with the GPA for verification.

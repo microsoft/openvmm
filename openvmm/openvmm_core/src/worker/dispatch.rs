@@ -3308,12 +3308,12 @@ impl LoadedVm {
     ///
     /// The VM must already be paused before calling this.
     async fn dump_state(&mut self, file: File) -> anyhow::Result<()> {
-        use hv_saved_state::GuestMemoryReader;
-        use hv_saved_state::PartitionStateBuilder;
-        use hv_saved_state::ProcessorArch;
-        use hv_saved_state::VmrsWriter;
-        use hv_saved_state::VpState;
-        use hv_saved_state::X64VpState;
+        use hyperv_dump::GuestMemoryReader;
+        use hyperv_dump::PartitionStateBuilder;
+        use hyperv_dump::ProcessorArch;
+        use hyperv_dump::VmrsWriter;
+        use hyperv_dump::VpState;
+        use hyperv_dump::X64VpState;
 
         let vp_count = self.inner.processor_topology.vp_count();
         tracing::info!(vp_count, "dumping VM state to VMRS");
@@ -3349,7 +3349,7 @@ impl LoadedVm {
                     })
                 }
                 vmm_core::partition_unit::DumpVpState::Aarch64(aarch64) => {
-                    VpState::Aarch64(hv_saved_state::Aarch64VpState {
+                    VpState::Aarch64(hyperv_dump::Aarch64VpState {
                         registers: aarch64.registers,
                         system_registers: Some(aarch64.system_registers),
                     })

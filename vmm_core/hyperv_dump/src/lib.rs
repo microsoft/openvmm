@@ -17,7 +17,7 @@
 //! # Usage
 //!
 //! ```rust,no_run
-//! use hv_saved_state::{PartitionStateBuilder, VmrsWriter, ProcessorArch, VpState, X64VpState};
+//! use hyperv_dump::{PartitionStateBuilder, VmrsWriter, ProcessorArch, VpState, X64VpState};
 //! use hvdef::Vtl;
 //!
 //! # fn example(regs: virt::x86::vp::Registers, debug_regs: virt::x86::vp::DebugRegisters, xsave: virt::x86::vp::Xsave, xcr0: u64) {
@@ -38,7 +38,7 @@
 //! vmrs.set_partition_state(blob);
 //! vmrs.add_memory_range(0, 4096);
 //! # struct NullReader;
-//! # impl hv_saved_state::GuestMemoryReader for NullReader {
+//! # impl hyperv_dump::GuestMemoryReader for NullReader {
 //! #     fn read_gpa(&mut self, _: u64, buf: &mut [u8]) -> std::io::Result<()> { buf.fill(0); Ok(()) }
 //! # }
 //! # let mut mem = NullReader;
