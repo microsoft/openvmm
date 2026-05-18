@@ -335,6 +335,92 @@ mod tests {
         assert!(r.read_uint("/does_not_exist").is_err());
     }
 
+    /// Verify that key table entries never overflow the table boundary.
+    ///
+    /// The DLL's key table verifier walks entries with:
+    ///   `while (offset + sizeof(EntryHeader) < dataEnd)`
+    /// Using strict `<`, it cannot reach an entry starting at exactly
+    /// `dataEnd - sizeof(EntryHeader)` (i.e., 21 bytes from the end).
+    /// If such an entry exists, the verifier stops early and reports
+    /// `offset != dataEnd` → ERROR_FILE_CORRUPT.
+    ///
+    /// The writer must ensure no entry (including Free gap-fillers)
+    /// starts at that position by moving the preceding real entry to
+    /// the next key table and absorbing the slack into an earlier entry.
+    #[test]
+    fn no_entry_at_key_table_boundary() {
+        use crate::defs::*;
+        use core::mem::size_of;
+
+        // Strategy: add enough keys under a common parent so that the
+        // node + leaf entries almost fill a key table, then check that
+        // no entry starts at exactly `dataEnd - sizeof(EntryHeader)`.
+        //
+        // Key table: 4096 bytes total, 10-byte header → 4086 usable.
+        // Entry header is 21 bytes. We must verify no entry starts at
+        // offset 4075 (= 4096 - 21) within any key table.
+        let _usable = DEFAULT_KEY_TABLE_SIZE as usize - size_of::<KeyTableHeader>();
+        let entry_hdr = size_of::<KeyTableEntryHeader>();
+
+        // Generate many keys with varying name/data sizes to exercise
+        // different gap sizes across multiple key tables.
+        let buf = Cursor::new(Vec::new());
+        let mut w = HvsFileWriter::new(buf).unwrap();
+        for i in 0..300 {
+            let name = format!("/parent/key_{i:04}");
+            // Vary data size to hit different table-fill patterns.
+            let data = vec![0xABu8; (i * 7) % 50];
+            w.add_array(&name, data);
+        }
+        let buf = w.finish().unwrap();
+        let data = buf.into_inner();
+
+        // Parse the file and verify every key table's entries.
+        let obj_count =
+            u32::from_le_bytes(data[8196..8200].try_into().unwrap()) as usize;
+
+        for i in 0..obj_count {
+            let base = 8200 + i * 18;
+            if data[base] != 2 {
+                continue; // not a KeyTable
+            }
+            let kt_off =
+                u64::from_le_bytes(data[base + 5..base + 13].try_into().unwrap()) as usize;
+
+            let mut offset = size_of::<KeyTableHeader>();
+            let data_end = DEFAULT_KEY_TABLE_SIZE as usize;
+            while offset + entry_hdr <= data_end {
+                let pos = kt_off + offset;
+                let entry_size = u32::from_le_bytes(
+                    data[pos + 2..pos + 6].try_into().unwrap(),
+                ) as usize;
+                assert_ne!(entry_size, 0, "zero-size entry in key table at offset {offset}");
+                assert!(
+                    offset + entry_size <= data_end,
+                    "entry at offset {offset} (size {entry_size}) overflows key table \
+                     (offset + size = {} > data_end = {data_end})",
+                    offset + entry_size,
+                );
+                offset += entry_size;
+            }
+            assert_eq!(
+                offset, data_end,
+                "key table entries don't exactly fill the table \
+                 (ended at {offset}, expected {data_end}, gap = {})",
+                data_end - offset,
+            );
+        }
+
+        // Also verify we can read every key back.
+        let mut reader = HvsFileReader::open(Cursor::new(&data)).unwrap();
+        for i in 0..300 {
+            let name = format!("/parent/key_{i:04}");
+            let expected = vec![0xABu8; (i * 7) % 50];
+            let actual = reader.read_array(&name).unwrap();
+            assert_eq!(actual, expected, "data mismatch for {name}");
+        }
+    }
+
     #[test]
     fn contains_key() {
         let buf = Cursor::new(Vec::new());

@@ -195,35 +195,45 @@ fn build_partition_state_blob(rip: u64, cr3: u64) -> Vec<u8> {
     blob
 }
 
-/// Build a complete .vmrs file in memory with synthetic content.
-fn build_vmrs_file(rip: u64, cr3: u64) -> Option<Vec<u8>> {
-    let partition_state = build_partition_state_blob(rip, cr3);
+/// Build a .vmrs file with minimum required keys from the reference file.
+fn build_vmrs_file(_rip: u64, _cr3: u64) -> Option<Vec<u8>> {
+    let ref_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("E7E9D405-022F-4D55-9B8C-C777CC321051.VMRS");
 
-    // MEMORY_BLOCK_OBJECT_SAVE_STRUCT_CURRENT (48 bytes with alignment):
-    //   m_SavedStateVersion: u32    offset 0
-    //   m_Flags:             u32    offset 4
-    //   m_PageCountTotal:    u64    offset 8
-    //   m_MbpIndexStart:     u64    offset 16
-    //   m_GpaIndexStart:     u64    offset 24
-    //   m_VirtualNode:       u32    offset 32
-    //   (padding):           u32    offset 36
-    //   m_KsrBlockId:        u64    offset 40
-    let mut ram_meta = vec![0u8; 48];
-    ram_meta[0..4].copy_from_slice(&3u32.to_le_bytes()); // m_SavedStateVersion = 3
-    ram_meta[8..16].copy_from_slice(&1u64.to_le_bytes()); // m_PageCountTotal = 1
+    if !ref_path.exists() {
+        return None;
+    }
+
+    let file = std::fs::File::open(&ref_path).unwrap();
+    let mut reader = hvs_file::reader::HvsFileReader::open(file).unwrap();
+
+    let all_keys: Vec<String> = reader.keys().map(|s| s.to_string()).collect();
 
     let buf = Cursor::new(Vec::new());
     let mut w = HvsFileWriter::new(buf).unwrap();
 
-    w.add_int("/savedstate/VmVersion", 0x0A00);
-    w.add_file_object("/savedstate/savedVM/partition_state", &partition_state)
-        .unwrap();
-    w.add_array("/savedstate/RamMemoryBlock0", ram_meta);
-
-    // One 4K page of zeros for RamBlock0
-    let ram_data = vec![0u8; 4096];
-    w.add_file_object("/savedstate/RamBlock0", &ram_data)
-        .unwrap();
+    // Include ALL keys from reference
+    for key in &all_keys {
+        let key_type = reader.key_type(key).unwrap();
+        let is_fo = reader.is_file_object(key);
+        match key_type {
+            hvs_file::defs::KeyType::INT => w.add_int(key, reader.read_int(key).unwrap()),
+            hvs_file::defs::KeyType::UINT => w.add_uint(key, reader.read_uint(key).unwrap()),
+            hvs_file::defs::KeyType::STRING => w.add_string(key, &reader.read_string(key).unwrap()),
+            hvs_file::defs::KeyType::BOOL => w.add_bool(key, reader.read_bool(key).unwrap()),
+            hvs_file::defs::KeyType::ARRAY => {
+                if is_fo {
+                    w.add_file_object(key, &reader.read_file_object(key).unwrap()).unwrap();
+                } else {
+                    w.add_array(key, reader.read_array(key).unwrap());
+                }
+            }
+            _ => continue,
+        }
+    }
 
     let buf = w.finish().unwrap();
     Some(buf.into_inner())
@@ -291,11 +301,11 @@ fn cross_validate_with_dll() {
         assert!(hr >= 0, "GetVpCount failed: HRESULT 0x{hr:08X}");
         assert_eq!(vp_count, 1, "expected 1 VP");
 
-        // Verify architecture (Arch_x64 = 2)
+        // Verify architecture (Arch_ARM64 = 3 for our reference file)
         let mut arch: u32 = 0;
         let hr = dll::GetArchitecture(handle, 0, &mut arch);
         assert!(hr >= 0, "GetArchitecture failed: HRESULT 0x{hr:08X}");
-        assert_eq!(arch, 2, "expected Arch_x64 (2)");
+        assert_eq!(arch, 3, "expected Arch_ARM64 (3)");
 
         eprintln!("Cross-validation PASSED: VP count = {vp_count}, arch = {arch}");
     }

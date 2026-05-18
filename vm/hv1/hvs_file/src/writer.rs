@@ -195,6 +195,9 @@ impl<W: Write + Seek> HvsFileWriter<W> {
     pub fn finish(mut self) -> io::Result<W> {
         let alignment = self.alignment;
 
+        // Sort pending keys by path for deterministic key table layout.
+        self.pending_keys.sort_by(|a, b| a.path.cmp(&b.path));
+
         // Collect all unique node paths from the pending keys
         let mut node_paths: Vec<String> = Vec::new();
         node_paths.push(String::new()); // root node (empty path)
@@ -385,7 +388,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             // exactly fill the table, so any gap must be >= entry_header_size.
             let remaining_after = usable_per_table.saturating_sub(current_table_buf.len() + entry_total);
             let would_overflow = current_table_buf.len() + entry_total > usable_per_table;
-            let would_leave_small_gap = remaining_after > 0 && remaining_after < entry_header_size;
+            let would_leave_small_gap = remaining_after > 0 && remaining_after <= entry_header_size;
 
             if (would_overflow || would_leave_small_gap) && !current_table_buf.is_empty() {
                 // Start a new key table
@@ -461,7 +464,8 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         // Pad each key table's entries to fill the full usable space.
         // The key table verifier requires that entries exactly fill
         // the data area (from sizeof(KeyTableHeader) to objectSizeInBytes).
-        // Fill remaining space with a Free entry.
+        // Fill remaining space with a Free entry, or if remaining < 21
+        // bytes (minimum Free entry), extend the last entry to absorb it.
         for table_data in &mut tables {
             if table_data.len() < usable_per_table {
                 let remaining = usable_per_table - table_data.len();
@@ -481,6 +485,32 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                     };
 
                     table_data.extend_from_slice(free_header.as_bytes());
+                    table_data.resize(usable_per_table, 0);
+                } else {
+                    // Gap is too small for a Free entry. Extend the last
+                    // entry's SizeInBytes to absorb the slack bytes.
+                    eprintln!("DEBUG: absorbing {remaining}-byte gap into last entry");
+                    let mut pos = 0;
+                    let mut last_size_offset = 0;
+                    while pos + entry_header_size <= table_data.len() {
+                        let entry_size = u32::from_le_bytes(
+                            table_data[pos + 2..pos + 6].try_into().unwrap(),
+                        ) as usize;
+                        if entry_size == 0 || pos + entry_size >= table_data.len() {
+                            last_size_offset = pos + 2;
+                            break;
+                        }
+                        last_size_offset = pos + 2;
+                        pos += entry_size;
+                    }
+                    let old_size = u32::from_le_bytes(
+                        table_data[last_size_offset..last_size_offset + 4]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    let new_size = old_size + remaining as u32;
+                    table_data[last_size_offset..last_size_offset + 4]
+                        .copy_from_slice(&new_size.to_le_bytes());
                     table_data.resize(usable_per_table, 0);
                 }
             }
