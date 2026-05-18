@@ -186,8 +186,8 @@ async fn pcie_root_emulation_single_segment(
 
     assert_eq!(root_port_count, 16);
 
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
+    drop(agent);
+    vm.teardown().await?;
     Ok(())
 }
 
