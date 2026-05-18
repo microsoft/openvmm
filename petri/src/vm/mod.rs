@@ -253,7 +253,7 @@ pub struct PhysicalNvmeDevice {
     pub vsid: Guid,
     /// NVMe namespace ID.
     pub nsid: u32,
-    /// Namespace size in MiB 
+    /// Namespace size in MiB
     pub namespace_size_mib: u64,
 }
 
