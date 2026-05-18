@@ -429,8 +429,13 @@ impl PartitionStateBuilder {
     /// Extracts FP/SSE register values from XSAVE data and emits the
     /// FP registers chunk. Uses [`x86defs::xsave::Fxsave`] to parse the
     /// legacy region.
+    ///
+    /// The FXSAVE layout maps directly to the chunk fields:
+    /// - bytes 0x00..0x10: FP control/status (FCW, FSW, FTW, FOP, FIP)
+    /// - bytes 0x10..0x20: XMM control/status (FDP, MXCSR, MXCSR_MASK)
+    /// - bytes 0x20..0xA0: ST0–ST7 / MM0–MM7
+    /// - bytes 0xA0..0x1A0: XMM0–XMM15
     fn write_x64_fp_from_xsave(&self, out: &mut Vec<u8>, xsave: &virt::x86::vp::Xsave) {
-        use hvdef::AlignedU128;
         use x86defs::xsave::Fxsave;
         use zerocopy::FromBytes;
 
@@ -438,25 +443,12 @@ impl PartitionStateBuilder {
 
         let (xmm, fp_mmx, fp_control_status, xmm_control_status) =
             if let Ok((fxsave, _)) = Fxsave::ref_from_prefix(data) {
-                let xmm = fxsave.xmm.map(AlignedU128::from_ne_bytes);
-                let fp_mmx = fxsave.st.map(AlignedU128::from_ne_bytes);
-
-                let mut cs_bytes = [0u8; 16];
-                cs_bytes[0..2].copy_from_slice(&fxsave.fcw.to_le_bytes());
-                cs_bytes[2..4].copy_from_slice(&fxsave.fsw.to_le_bytes());
-                cs_bytes[4] = fxsave.ftw;
-                cs_bytes[6..8].copy_from_slice(&fxsave.fop.to_le_bytes());
-                cs_bytes[8..16].copy_from_slice(&fxsave.fip.to_le_bytes());
-
-                let mut xcs_bytes = [0u8; 16];
-                xcs_bytes[0..4].copy_from_slice(&fxsave.mxcsr.to_le_bytes());
-                xcs_bytes[4..8].copy_from_slice(&fxsave.mxcsr_mask.to_le_bytes());
-
+                let fxsave_bytes = fxsave.as_bytes();
                 (
-                    xmm,
-                    fp_mmx,
-                    AlignedU128::from_ne_bytes(cs_bytes),
-                    AlignedU128::from_ne_bytes(xcs_bytes),
+                    fxsave.xmm.map(AlignedU128::from_ne_bytes),
+                    fxsave.st.map(AlignedU128::from_ne_bytes),
+                    AlignedU128::from_ne_bytes(fxsave_bytes[0x00..0x10].try_into().unwrap()),
+                    AlignedU128::from_ne_bytes(fxsave_bytes[0x10..0x20].try_into().unwrap()),
                 )
             } else {
                 (
