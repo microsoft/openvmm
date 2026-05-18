@@ -148,19 +148,17 @@ impl PartitionStateBuilder {
         self.write_prolog(&mut blob);
         self.write_os_id(&mut blob);
 
-        // Determine which VTLs are present across all VPs (bitmask, VTL 0-2).
+        // Emit PartitionVtl chunks for every VTL present across all VPs.
+        // The hypervisor always emits these, even for VTL0-only VMs.
         let mut vtl_mask = 0u8;
         for vp in &self.vps {
             for s in &vp.vtl_states {
                 vtl_mask |= 1 << s.vtl as u8;
             }
         }
-        let multi_vtl = vtl_mask.count_ones() > 1;
-        if multi_vtl {
-            for vtl in [Vtl::Vtl0, Vtl::Vtl1, Vtl::Vtl2] {
-                if vtl_mask & (1 << vtl as u8) != 0 {
-                    self.write_partition_vtl(&mut blob, vtl);
-                }
+        for vtl in [Vtl::Vtl0, Vtl::Vtl1, Vtl::Vtl2] {
+            if vtl_mask & (1 << vtl as u8) != 0 {
+                self.write_partition_vtl(&mut blob, vtl);
             }
         }
 
@@ -169,14 +167,15 @@ impl PartitionStateBuilder {
         for vp in &self.vps {
             self.write_vp_marker(&mut blob, vp.vp_index);
 
+            // VpVtlControlPage is emitted when multiple VTLs are present.
             if vp.vtl_states.len() > 1 {
                 self.write_vp_vtl_control_page(&mut blob);
-                for vtl_state in &vp.vtl_states {
-                    self.write_vp_vtl_marker(&mut blob, vtl_state.vtl);
-                    self.write_vp_chunks(&mut blob, &vtl_state.regs);
-                }
-            } else {
-                self.write_vp_chunks(&mut blob, &vp.vtl_states[0].regs);
+            }
+
+            // Per-VTL register chunks, each preceded by a VpVtl marker.
+            for vtl_state in &vp.vtl_states {
+                self.write_vp_vtl_marker(&mut blob, vtl_state.vtl);
+                self.write_vp_chunks(&mut blob, &vtl_state.regs);
             }
         }
 
@@ -608,7 +607,8 @@ mod tests {
 
         assert_eq!(chunk_ids[0], VmSaveChunkId::PROLOG);
         assert_eq!(chunk_ids[1], VmSaveChunkId::OS_ID);
-        assert_eq!(chunk_ids[2], VmSaveChunkId::VP_INDICES);
+        assert_eq!(chunk_ids[2], VmSaveChunkId::PARTITION_VTL);
+        assert_eq!(chunk_ids[3], VmSaveChunkId::VP_INDICES);
         assert_eq!(*chunk_ids.last().unwrap(), VmSaveChunkId::EPILOG);
     }
 
