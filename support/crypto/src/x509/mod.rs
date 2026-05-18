@@ -21,13 +21,13 @@ use thiserror::Error;
 #[cfg(not(rust))]
 #[derive(Debug, Error)]
 #[error("X.509 error")]
-pub struct X509Error(#[source] super::BackendError);
+pub struct X509Error(#[source] pub(crate) super::BackendError);
 
 /// An error for X.509 operations.
 #[cfg(rust)]
 #[derive(Debug, Error)]
 #[error("X.509 error during {1}")]
-pub struct X509Error(#[source] der::Error, &'static str);
+pub struct X509Error(#[source] pub(crate) der::Error, pub(crate) &'static str);
 
 /// An X.509 certificate.
 pub struct X509Certificate(pub(crate) sys::X509CertificateInner);
