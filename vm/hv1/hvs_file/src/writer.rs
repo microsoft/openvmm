@@ -326,13 +326,13 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             if !all_entries[i].is_node {
                 continue;
             }
-            let node_path = all_entries[i].path.clone();
             let mut count = 0u32;
-            for j in (i + 1)..all_entries.len() {
-                if all_entries[j].parent_path() == node_path {
+            let rest = &all_entries[i + 1..];
+            for other in rest {
+                if other.parent_path() == all_entries[i].path {
                     count += 1;
-                } else if !all_entries[j].path.starts_with(&node_path) {
-                    break; // past this subtree
+                } else if !other.path.starts_with(&all_entries[i].path) {
+                    break;
                 }
             }
             all_entries[i].data_bytes = NodeData {
