@@ -9,6 +9,8 @@ members = [
   "openvmm/openvmm",
   # hvs_file (HyperV Storage file format library)
   "vm/hv1/hvs_file",
+  # hv_saved_state (VMRS dump file builder)
+  "vm/hv1/hv_saved_state",
   # openvmm_vhost
   "openvmm_vhost/openvmm_vhost",
   # repo tooling
@@ -384,6 +386,7 @@ hv1_emulator = { path = "vm/hv1/hv1_emulator" }
 hv1_hypercall = { path = "vm/hv1/hv1_hypercall" }
 hv1_structs = { path = "vm/hv1/hv1_structs" }
 hvdef = { path = "vm/hv1/hvdef" }
+hv_saved_state = { path = "vm/hv1/hv_saved_state" }
 hvs_file = { path = "vm/hv1/hvs_file" }
 vhd1_defs = { path = "vm/vhd1_defs" }
 kvm = { path = "vm/kvm" }
