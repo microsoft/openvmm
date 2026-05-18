@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom};
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// Error type for reader operations.
 #[derive(Debug, thiserror::Error)]
@@ -90,10 +92,8 @@ impl<R: Read + Seek> HvsFileReader<R> {
         let object_table_offset = 2 * MIN_DATA_ALIGNMENT as u64;
         reader.seek(SeekFrom::Start(object_table_offset))?;
 
-        let mut obj_header_bytes = [0u8; size_of::<ObjectTableHeader>()];
-        reader.read_exact(&mut obj_header_bytes)?;
-        let obj_header = ObjectTableHeader::read_from_bytes(&obj_header_bytes)
-            .map_err(|_| ReadError::BadObjectTableSignature(0))?;
+        let mut obj_header = ObjectTableHeader::new_zeroed();
+        reader.read_exact(obj_header.as_mut_bytes())?;
 
         if obj_header.signature != OBJECT_TABLE_SIGNATURE {
             return Err(ReadError::BadObjectTableSignature(obj_header.signature));
@@ -102,10 +102,8 @@ impl<R: Read + Seek> HvsFileReader<R> {
         // Read object table entries
         let mut entries = Vec::with_capacity(obj_header.entries_count as usize);
         for _ in 0..obj_header.entries_count {
-            let mut entry_bytes = [0u8; 18]; // size_of::<ObjectTableEntry>()
-            reader.read_exact(&mut entry_bytes)?;
-            let entry = ObjectTableEntry::read_from_bytes(&entry_bytes)
-                .map_err(|_| ReadError::BadObjectTableSignature(0))?;
+            let mut entry = ObjectTableEntry::new_zeroed();
+            reader.read_exact(entry.as_mut_bytes())?;
             entries.push(entry);
         }
 
@@ -113,20 +111,15 @@ impl<R: Read + Seek> HvsFileReader<R> {
         let mut all_entries = entries.clone();
         if let Some(last) = entries.last() {
             if last.object_type == ObjectType::OBJECT_TABLE {
-                // Follow the chain (simplified — one level only for now)
                 let chain_offset = last.file_offset_in_bytes;
                 reader.seek(SeekFrom::Start(chain_offset))?;
-                let mut chain_header_bytes = [0u8; size_of::<ObjectTableHeader>()];
-                reader.read_exact(&mut chain_header_bytes)?;
-                if let Ok(chain_header) = ObjectTableHeader::read_from_bytes(&chain_header_bytes) {
-                    if chain_header.signature == OBJECT_TABLE_SIGNATURE {
-                        for _ in 0..chain_header.entries_count {
-                            let mut entry_bytes = [0u8; 18];
-                            reader.read_exact(&mut entry_bytes)?;
-                            if let Ok(entry) = ObjectTableEntry::read_from_bytes(&entry_bytes) {
-                                all_entries.push(entry);
-                            }
-                        }
+                let mut chain_header = ObjectTableHeader::new_zeroed();
+                reader.read_exact(chain_header.as_mut_bytes())?;
+                if chain_header.signature == OBJECT_TABLE_SIGNATURE {
+                    for _ in 0..chain_header.entries_count {
+                        let mut entry = ObjectTableEntry::new_zeroed();
+                        reader.read_exact(entry.as_mut_bytes())?;
+                        all_entries.push(entry);
                     }
                 }
             }
@@ -259,23 +252,21 @@ impl<R: Read + Seek> HvsFileReader<R> {
     }
 
     fn read_best_header(reader: &mut R) -> Result<FileHeader, ReadError> {
-        let header_size = size_of::<FileHeader>();
-
         // Read header copy 0
         reader.seek(SeekFrom::Start(0))?;
-        let mut buf0 = vec![0u8; header_size];
-        reader.read_exact(&mut buf0)?;
-        let h0 = FileHeader::read_from_prefix(&buf0).map(|(h, _)| h).ok();
+        let mut h0 = FileHeader::new_zeroed();
+        reader.read_exact(h0.as_mut_bytes())?;
 
         // Read header copy 1
         reader.seek(SeekFrom::Start(MIN_DATA_ALIGNMENT as u64))?;
-        let mut buf1 = vec![0u8; header_size];
-        reader.read_exact(&mut buf1)?;
-        let h1 = FileHeader::read_from_prefix(&buf1).map(|(h, _)| h).ok();
+        let mut h1 = FileHeader::new_zeroed();
+        reader.read_exact(h1.as_mut_bytes())?;
 
         // Pick the valid one with higher sequence
-        let valid0 = h0.filter(|h| h.signature == HEADER_SIGNATURE && Self::verify_header_checksum(&buf0));
-        let valid1 = h1.filter(|h| h.signature == HEADER_SIGNATURE && Self::verify_header_checksum(&buf1));
+        let valid0 = (h0.signature == HEADER_SIGNATURE && Self::verify_header_checksum(&h0))
+            .then_some(h0);
+        let valid1 = (h1.signature == HEADER_SIGNATURE && Self::verify_header_checksum(&h1))
+            .then_some(h1);
 
         match (valid0, valid1) {
             (Some(a), Some(b)) => {
@@ -284,23 +275,20 @@ impl<R: Read + Seek> HvsFileReader<R> {
             (Some(a), None) => Ok(a),
             (None, Some(b)) => Ok(b),
             (None, None) => {
-                if let Some(_h) = h0 {
+                if h0.signature == HEADER_SIGNATURE {
                     Err(ReadError::BadHeaderChecksum)
                 } else {
-                    Err(ReadError::BadHeaderSignature(
-                        u32::from_le_bytes(buf0[..4].try_into().unwrap_or_default()),
-                    ))
+                    Err(ReadError::BadHeaderSignature(h0.signature))
                 }
             }
         }
     }
 
-    fn verify_header_checksum(buf: &[u8]) -> bool {
-        let mut check_buf = buf.to_vec();
-        // Checksum is at offset 4
-        let expected = u32::from_le_bytes(check_buf[4..8].try_into().unwrap_or_default());
-        check_buf[4..8].fill(0);
-        crc32(&check_buf) == expected
+    fn verify_header_checksum(header: &FileHeader) -> bool {
+        let mut buf = header.as_bytes().to_vec();
+        let expected = u32::from_le_bytes(buf[4..8].try_into().unwrap_or_default());
+        buf[4..8].fill(0);
+        crc32(&buf) == expected
     }
 
     /// Returns all key paths in the file.
@@ -409,5 +397,3 @@ impl<R: Read + Seek> HvsFileReader<R> {
         })
     }
 }
-
-use core::mem::size_of;
