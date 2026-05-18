@@ -5,9 +5,9 @@
 
 #![forbid(unsafe_code)]
 
-pub mod bus_range;
 pub mod its;
 pub(crate) mod port;
+pub use port::PciePortSettings;
 pub mod root;
 pub mod switch;
 

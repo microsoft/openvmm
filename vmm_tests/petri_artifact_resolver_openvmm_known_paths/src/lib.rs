@@ -66,6 +66,7 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == OPENVMM_VHOST_NATIVE => openvmm_vhost_native_executable_path(),
 
             _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64 => linux_direct_x64_test_kernel_path(),
+            _ if id == loadable::LINUX_DIRECT_TEST_BZIMAGE_X64 => linux_direct_x64_test_bzimage_path(),
             _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => linux_direct_arm_image_path(),
             _ if id == loadable::LINUX_DIRECT_TEST_INITRD_X64 => linux_direct_test_initrd_path(MachineArch::X86_64),
             _ if id == loadable::LINUX_DIRECT_TEST_INITRD_AARCH64 => linux_direct_test_initrd_path(MachineArch::Aarch64),
@@ -187,6 +188,7 @@ pub fn resolve_bundle_name(id: ErasedArtifactHandle) -> Option<&'static str> {
             "openvmm"
         }),
         _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64 => Some("x64/vmlinux"),
+        _ if id == loadable::LINUX_DIRECT_TEST_BZIMAGE_X64 => Some("x64/bzImage"),
         _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => Some("aarch64/Image"),
         _ if id == loadable::LINUX_DIRECT_TEST_INITRD_X64 => Some("x64/initrd"),
         _ if id == loadable::LINUX_DIRECT_TEST_INITRD_AARCH64 => Some("aarch64/initrd"),
@@ -433,6 +435,18 @@ fn linux_direct_x64_test_kernel_path() -> anyhow::Result<PathBuf> {
         resolve_bundle_name(loadable::LINUX_DIRECT_TEST_KERNEL_X64.erase()).unwrap(),
         MissingCommand::Restore {
             description: "linux direct test kernel",
+        },
+    )
+}
+
+/// Path to our packaged linux direct test bzImage.
+fn linux_direct_x64_test_bzimage_path() -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::loadable;
+    get_path(
+        ".packages/underhill-deps-private",
+        resolve_bundle_name(loadable::LINUX_DIRECT_TEST_BZIMAGE_X64.erase()).unwrap(),
+        MissingCommand::Restore {
+            description: "linux direct test bzImage",
         },
     )
 }

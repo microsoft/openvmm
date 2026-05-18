@@ -55,24 +55,10 @@ impl AssignedBusRange {
         ((v >> 8) as u8, v as u8)
     }
 
-    /// Composes an ITS device ID from the current bus range, segment, and
-    /// an optional per-device BDF override.
-    ///
-    /// Returns `None` if the secondary bus has not been assigned yet (still 0).
-    /// When `devid` is `None`, defaults to `(secondary_bus, dev 0, fn 0)`.
-    /// Logs a rate-limited warning and returns `None` if the BDF's bus
-    /// number falls outside the port's assigned range.
-    pub fn compose_its_devid(&self, segment: u16, devid: Option<u32>) -> Option<u32> {
+    /// Returns whether `bus` falls within the current bus range
+    /// (inclusive on both ends).
+    pub fn contains_bus(&self, bus: u8) -> bool {
         let (secondary, subordinate) = self.bus_range();
-        if secondary == 0 {
-            return None;
-        }
-        let bdf = devid.unwrap_or((secondary as u32) << 8);
-        let bus = (bdf >> 8) as u8;
-        if bus < secondary || bus > subordinate {
-            tracelimit::warn_ratelimited!(bus, secondary, subordinate, "BDF out of port bus range");
-            return None;
-        }
-        Some((segment as u32) << 16 | (bdf & 0xFFFF))
+        bus >= secondary && bus <= subordinate
     }
 }

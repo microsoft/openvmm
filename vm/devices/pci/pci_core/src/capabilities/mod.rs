@@ -3,12 +3,14 @@
 
 //! PCI capabilities.
 
+pub use self::extended::PciExtendedCapability;
 pub use self::read_only::ReadOnlyCapability;
 
 use crate::spec::caps::CapabilityId;
 use inspect::Inspect;
 use vmcore::save_restore::ProtobufSaveRestore;
 
+pub mod extended;
 pub mod msi_cap;
 pub mod msix;
 pub mod pci_express;

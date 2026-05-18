@@ -511,11 +511,11 @@ crc32fast = { version = "1.3.2", default-features = false }
 flate2 = "1.1"
 
 # --- Cryptography & secure computing ---
-constant_time_eq = "0.3"
+constant_time_eq = "0.5"
 der = "0.8"
 getrandom = "0.4"
 ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
-openssl = "0.10.72"
+openssl = "0.10.79"
 openssl-sys = "0.9"
 pkcs1 = "0.8.0-rc.4"
 pkcs8 = "0.11.0"

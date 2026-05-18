@@ -29,10 +29,12 @@ use net_backend::BufferAccess;
 use net_backend::DisconnectableEndpoint;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
+use net_backend::L4Protocol;
 use net_backend::MultiQueueSupport;
 use net_backend::Queue as NetQueue;
 use net_backend::QueueConfig;
-use net_backend::RxBufferSegment;
+use net_backend::RxChecksumState;
+use net_backend::RxMetadata;
 use net_backend::TxError;
 use net_backend::TxOffloadSupport;
 use net_backend::null::NullEndpoint;
@@ -140,11 +142,12 @@ struct TestNicEndpointState {
     pub vf_state: Option<TestVirtualFunctionState>,
     pub stop_endpoint_counter: usize,
     pub link_status_updater: Option<mesh::Sender<VecDeque<bool>>>,
-    pub queues: Vec<mesh::Sender<Vec<u8>>>,
+    pub queues: Vec<mesh::Sender<(Vec<u8>, RxMetadata)>>,
     /// When true (default), `TestNicQueue::tx_avail` returns `(true, N)` so
     /// TX packets are completed synchronously.  When false it returns
     /// `(false, N)`, leaving packets in-flight.
     pub sync_tx: bool,
+    pub tx_metadata: Vec<net_backend::TxMetadata>,
 }
 
 impl TestNicEndpointState {
@@ -158,6 +161,7 @@ impl TestNicEndpointState {
             link_status_updater: None,
             queues: Vec::new(),
             sync_tx: true,
+            tx_metadata: Vec::new(),
         }))
     }
 
@@ -166,6 +170,20 @@ impl TestNicEndpointState {
         let link_status_updater = locked_self.link_status_updater.as_ref().unwrap();
         let status_vec = link_status.iter().copied().collect::<VecDeque<bool>>();
         link_status_updater.send(status_vec);
+    }
+
+    /// Send an RX packet on the given queue with default (no offload) metadata.
+    pub fn send_rx(&self, queue_idx: usize, data: Vec<u8>) {
+        let metadata = RxMetadata {
+            len: data.len(),
+            ..Default::default()
+        };
+        self.queues[queue_idx].send((data, metadata));
+    }
+
+    /// Send an RX packet on the given queue with explicit metadata.
+    pub fn send_rx_with_metadata(&self, queue_idx: usize, data: Vec<u8>, metadata: RxMetadata) {
+        self.queues[queue_idx].send((data, metadata));
     }
 }
 
@@ -244,7 +262,12 @@ impl net_backend::Endpoint for TestNicEndpoint {
             .into_iter()
             .map(|config| {
                 let (tx, rx) = mesh::channel();
-                queues.push(Box::new(TestNicQueue::new(config, rx, sync_tx)));
+                queues.push(Box::new(TestNicQueue::new(
+                    config,
+                    rx,
+                    sync_tx,
+                    inner.endpoint_state.clone(),
+                )));
                 tx
             })
             .collect::<Vec<_>>();
@@ -336,21 +359,27 @@ struct TestNicQueue {
     #[inspect(skip)]
     rx_ids: VecDeque<RxId>,
     #[inspect(skip)]
-    rx: mesh::Receiver<Vec<u8>>,
-    next_rx_packet: Option<Vec<u8>>,
-    sync_tx: bool,
+    rx: mesh::Receiver<(Vec<u8>, RxMetadata)>,
     #[inspect(skip)]
-    scratch_segments: Vec<RxBufferSegment>,
+    endpoint_state: Option<Arc<parking_lot::Mutex<TestNicEndpointState>>>,
+    #[inspect(skip)]
+    next_rx_packet: Option<(Vec<u8>, RxMetadata)>,
+    sync_tx: bool,
 }
 
 impl TestNicQueue {
-    pub fn new(_config: QueueConfig, rx: mesh::Receiver<Vec<u8>>, sync_tx: bool) -> Self {
+    pub fn new(
+        _config: QueueConfig,
+        rx: mesh::Receiver<(Vec<u8>, RxMetadata)>,
+        sync_tx: bool,
+        endpoint_state: Option<Arc<parking_lot::Mutex<TestNicEndpointState>>>,
+    ) -> Self {
         Self {
             rx_ids: VecDeque::new(),
             rx,
+            endpoint_state,
             next_rx_packet: None,
             sync_tx,
-            scratch_segments: Vec::new(),
         }
     }
 }
@@ -392,29 +421,24 @@ impl NetQueue for TestNicQueue {
             self.next_rx_packet = self.rx.try_recv().ok();
         }
 
-        if let Some(packet) = self.next_rx_packet.take() {
-            let len = packet.len();
-            assert!(len > 0);
+        if let Some((packet, metadata)) = self.next_rx_packet.take() {
+            assert!(!packet.is_empty(), "test RX packets must not be empty");
+            assert_eq!(
+                metadata.len,
+                packet.len(),
+                "RxMetadata.len must match actual packet length"
+            );
             let rx_id = self.rx_ids.pop_front().unwrap();
-            tracing::info!(rx_id = rx_id.0, ?packet, "returning packet on receive path");
-            let mut packet = &packet[..];
-            self.scratch_segments.clear();
-            pool.push_guest_addresses(rx_id, &mut self.scratch_segments);
-            let guest_memory = pool.guest_memory();
-            for seg in &self.scratch_segments {
-                // N.B. The packet data is written after the implicit header,
-                //      which is 256 bytes long. The header can be written with
-                //      self.pool.write_header(...) if desired.
-                let write_len = packet.len().min(seg.len as usize);
-                tracing::info!(seg.gpa, write_len, "writing packet to guest memory");
-                guest_memory
-                    .write_at(seg.gpa, &packet[..write_len])
-                    .unwrap();
-                packet = &packet[write_len..];
-                if packet.is_empty() {
-                    break;
-                }
-            }
+            assert!(
+                packet.len() <= pool.capacity(rx_id) as usize,
+                "test RX packet exceeds buffer capacity"
+            );
+            tracing::info!(
+                rx_id = rx_id.0,
+                len = packet.len(),
+                "returning packet on receive path"
+            );
+            pool.write_packet(rx_id, &metadata, &packet);
             packets[0] = rx_id;
             Ok(1)
         } else {
@@ -427,6 +451,18 @@ impl NetQueue for TestNicQueue {
         _pool: &mut dyn BufferAccess,
         packets: &[TxSegment],
     ) -> anyhow::Result<(bool, usize)> {
+        if let Some(endpoint_state) = &self.endpoint_state {
+            let mut endpoint_state = endpoint_state.lock();
+            endpoint_state
+                .tx_metadata
+                .extend(packets.iter().filter_map(|packet| {
+                    if let net_backend::TxSegmentType::Head(metadata) = &packet.ty {
+                        Some(metadata.clone())
+                    } else {
+                        None
+                    }
+                }));
+        }
         Ok((self.sync_tx, packets.len()))
     }
 
@@ -1526,6 +1562,143 @@ impl<'a> TestNicChannel<'a> {
         self.transaction_id += 1;
     }
 
+    pub async fn send_rndis_packet_offload_with_vlan(
+        &mut self,
+        data: &[u8],
+        tcp_checksum: bool,
+        udp_checksum: bool,
+        lso: bool,
+        vlan_info: rndisprot::EthVlanInfo,
+    ) {
+        let mem = self.nic.mock_vmbus.memory.clone();
+        let gpadl_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
+        let mut buf_writer = PagedRanges::new(&*gpadl_view).writer(&mem);
+
+        assert!(lso || tcp_checksum || udp_checksum);
+        let per_packet_info_offset = size_of::<rndisprot::Packet>() as u32;
+        let mut per_packet_info_length = 0u32;
+        if tcp_checksum || udp_checksum {
+            per_packet_info_length += size_of::<rndisprot::PerPacketInfo>() as u32
+                + size_of::<rndisprot::TxTcpIpChecksumInfo>() as u32;
+            assert!(!lso);
+        }
+        if lso {
+            per_packet_info_length += size_of::<rndisprot::PerPacketInfo>() as u32
+                + size_of::<rndisprot::TcpLsoInfo>() as u32;
+            assert!(!(tcp_checksum || udp_checksum));
+        }
+        per_packet_info_length += size_of::<rndisprot::PerPacketInfo>() as u32
+            + size_of::<rndisprot::EthVlanInfo>() as u32;
+
+        let message_length = size_of::<rndisprot::MessageHeader>()
+            + size_of::<rndisprot::Packet>()
+            + per_packet_info_length as usize
+            + data.len();
+
+        buf_writer
+            .write(
+                rndisprot::MessageHeader {
+                    message_type: rndisprot::MESSAGE_TYPE_PACKET_MSG,
+                    message_length: message_length as u32,
+                }
+                .as_bytes(),
+            )
+            .unwrap();
+
+        let packet = rndisprot::Packet {
+            data_offset: per_packet_info_offset + per_packet_info_length,
+            data_length: data.len() as u32,
+            oob_data_offset: 0,
+            oob_data_length: 0,
+            num_oob_data_elements: 0,
+            per_packet_info_offset,
+            per_packet_info_length,
+            vc_handle: 0,
+            reserved: 0,
+        };
+
+        buf_writer.write(packet.as_bytes()).unwrap();
+
+        const VLAN_TCP_HEADER_OFFSET: u16 = 38; // Ethernet (18) + IPv4 (20)
+        if tcp_checksum || udp_checksum {
+            let checksum_info = rndisprot::TxTcpIpChecksumInfo::new_zeroed()
+                .set_is_ipv4(true)
+                .set_tcp_checksum(tcp_checksum)
+                .set_udp_checksum(udp_checksum)
+                .set_ip_header_checksum(true)
+                .set_tcp_header_offset(VLAN_TCP_HEADER_OFFSET);
+
+            buf_writer
+                .write(
+                    rndisprot::PerPacketInfo {
+                        size: size_of::<rndisprot::PerPacketInfo>() as u32
+                            + size_of::<rndisprot::TxTcpIpChecksumInfo>() as u32,
+                        typ: rndisprot::PPI_TCP_IP_CHECKSUM,
+                        per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+                    }
+                    .as_bytes(),
+                )
+                .unwrap();
+            buf_writer.write(checksum_info.as_bytes()).unwrap();
+        }
+
+        if lso {
+            const NORMAL_MTU: u32 = 1460;
+            let lso_info =
+                rndisprot::TcpLsoInfo(NORMAL_MTU | ((VLAN_TCP_HEADER_OFFSET as u32) << 20));
+
+            buf_writer
+                .write(
+                    rndisprot::PerPacketInfo {
+                        size: size_of::<rndisprot::PerPacketInfo>() as u32
+                            + size_of::<rndisprot::TcpLsoInfo>() as u32,
+                        typ: rndisprot::PPI_LSO,
+                        per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+                    }
+                    .as_bytes(),
+                )
+                .unwrap();
+            buf_writer.write(lso_info.as_bytes()).unwrap();
+        }
+
+        buf_writer
+            .write(
+                rndisprot::PerPacketInfo {
+                    size: size_of::<rndisprot::PerPacketInfo>() as u32
+                        + size_of::<rndisprot::EthVlanInfo>() as u32,
+                    typ: rndisprot::PPI_VLAN,
+                    per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+                }
+                .as_bytes(),
+            )
+            .unwrap();
+        buf_writer.write(vlan_info.as_bytes()).unwrap();
+
+        buf_writer.write(data).unwrap();
+
+        let message = NvspMessage {
+            header: protocol::MessageHeader {
+                message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET,
+            },
+            data: protocol::Message1SendRndisPacket {
+                channel_type: protocol::DATA_CHANNEL_TYPE,
+                send_buffer_section_index: 0xffffffff,
+                send_buffer_section_size: 0,
+            },
+            padding: &[],
+        };
+
+        let gpadl_map_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
+        let gpa_range = gpadl_map_view.first().unwrap().subrange(0, message_length);
+        self.write(OutgoingPacket {
+            transaction_id: self.transaction_id,
+            packet_type: OutgoingPacketType::GpaDirect(&[gpa_range]),
+            payload: &message.payload(),
+        })
+        .await;
+        self.transaction_id += 1;
+    }
+
     pub async fn connect_subchannel(&mut self, idx: u32) {
         self.subchannels
             .insert(idx, self.nic.connect_vmbus_subchannel(idx).await);
@@ -1667,6 +1840,85 @@ impl RndisMessageParser {
         assert!(reader.skip(RX_HEADER_LEN).is_ok());
         reader.read_plain::<T>().unwrap()
     }
+
+    /// Parse the per-packet info (PPI) entries from an RX data message.
+    /// Walks the PPI chain using the Packet header's offset/length fields,
+    /// matching each entry by type.
+    pub fn parse_rx_ppi(&self, external_ranges: &MultiPagedRangeBuf) -> RxPpiInfo {
+        let mut reader = PagedRanges::new(external_ranges.iter()).reader(&self.mem);
+        // Skip the MessageHeader to read the Packet struct.
+        assert!(reader.skip(size_of::<rndisprot::MessageHeader>()).is_ok());
+        let packet: rndisprot::Packet = reader.read_plain().unwrap();
+
+        let ppi_offset = packet.per_packet_info_offset as usize;
+        let ppi_length = packet.per_packet_info_length as usize;
+
+        if ppi_length == 0 {
+            return RxPpiInfo::default();
+        }
+
+        // Seek to the PPI area (relative to after MessageHeader).
+        let mut reader = PagedRanges::new(external_ranges.iter()).reader(&self.mem);
+        let ppi_start = size_of::<rndisprot::MessageHeader>() + ppi_offset;
+        assert!(reader.skip(ppi_start).is_ok());
+
+        let mut ppi_bytes = vec![0u8; ppi_length];
+        reader.read(&mut ppi_bytes).unwrap();
+
+        let mut result = RxPpiInfo::default();
+        let mut offset = 0usize;
+        while offset < ppi_length {
+            assert!(
+                offset + size_of::<rndisprot::PerPacketInfo>() <= ppi_length,
+                "PPI header extends past PPI region"
+            );
+            let header = rndisprot::PerPacketInfo::read_from_prefix(&ppi_bytes[offset..])
+                .unwrap()
+                .0;
+            assert!(
+                header.size as usize >= size_of::<rndisprot::PerPacketInfo>(),
+                "PPI entry size too small"
+            );
+            assert!(
+                offset + header.size as usize <= ppi_length,
+                "PPI entry extends past PPI region"
+            );
+
+            let payload_start = offset + header.per_packet_information_offset as usize;
+            assert!(
+                payload_start + 4 <= offset + header.size as usize,
+                "PPI offset results in invalid reads"
+            );
+            match header.typ {
+                rndisprot::PPI_TCP_IP_CHECKSUM => {
+                    let value = u32::read_from_prefix(&ppi_bytes[payload_start..])
+                        .unwrap()
+                        .0;
+                    result.checksum = Some(rndisprot::RxTcpIpChecksumInfo(value));
+                }
+                rndisprot::PPI_VLAN => {
+                    let value = u32::read_from_prefix(&ppi_bytes[payload_start..])
+                        .unwrap()
+                        .0;
+                    result.vlan = Some(
+                        rndisprot::EthVlanInfo::read_from_bytes(&value.to_le_bytes()).unwrap(),
+                    );
+                }
+                _ => {
+                    // Unknown PPI type — skip.
+                }
+            }
+            offset += header.size as usize;
+        }
+        result
+    }
+}
+
+/// Parsed per-packet info from an RX RNDIS message.
+#[derive(Default, Debug)]
+struct RxPpiInfo {
+    pub checksum: Option<rndisprot::RxTcpIpChecksumInfo>,
+    pub vlan: Option<rndisprot::EthVlanInfo>,
 }
 
 enum TestVirtualFunctionStateChange {
@@ -4248,8 +4500,8 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
     // Send a packet on every queue.
     {
         let locked_state = endpoint_state.lock();
-        for (idx, queue) in locked_state.queues.iter().enumerate() {
-            queue.send(vec![idx as u8]);
+        for idx in 0..locked_state.queues.len() {
+            locked_state.send_rx(idx, vec![idx as u8]);
         }
     }
 
@@ -4288,8 +4540,8 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
     // Send a packet on every queue.
     {
         let locked_state = endpoint_state.lock();
-        for (idx, queue) in locked_state.queues.iter().enumerate() {
-            queue.send(vec![idx as u8]);
+        for idx in 0..locked_state.queues.len() {
+            locked_state.send_rx(idx, vec![idx as u8]);
         }
     }
 
@@ -4357,8 +4609,8 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
     // Test sending packets with the filter set to None.
     for _ in 0..2 {
         let locked_state = endpoint_state.lock();
-        for (idx, queue) in locked_state.queues.iter().enumerate() {
-            queue.send(vec![idx as u8]);
+        for idx in 0..locked_state.queues.len() {
+            locked_state.send_rx(idx, vec![idx as u8]);
         }
     }
 
@@ -5143,8 +5395,8 @@ async fn set_rss_parameter_bufs_not_evenly_divisible(driver: DefaultDriver) {
     // Receive a packet on every queue.
     {
         let locked_state = endpoint_state.lock();
-        for (idx, queue) in locked_state.queues.iter().enumerate() {
-            queue.send(vec![idx as u8]);
+        for idx in 0..locked_state.queues.len() {
+            locked_state.send_rx(idx, vec![idx as u8]);
         }
     }
 
@@ -5752,6 +6004,702 @@ async fn rndis_send_tcp_checksum_packet(driver: DefaultDriver) {
     assert_eq!(completion.status, protocol::Status::SUCCESS);
 }
 
+/// Send a TCP checksum offload packet with a specific `tcp_header_offset`
+/// value in the PPI and return the captured `TxMetadata`.
+async fn send_checksum_packet_with_header_offset(
+    channel: &mut TestNicChannel<'_>,
+    endpoint_state: &Arc<parking_lot::Mutex<TestNicEndpointState>>,
+    is_ipv4: bool,
+    tcp_header_offset: u16,
+) -> net_backend::TxMetadata {
+    let checksum_info = rndisprot::TxTcpIpChecksumInfo::new_zeroed()
+        .set_is_ipv4(is_ipv4)
+        .set_is_ipv6(!is_ipv4)
+        .set_tcp_checksum(true)
+        .set_ip_header_checksum(is_ipv4)
+        .set_tcp_header_offset(tcp_header_offset);
+
+    let ppi_header = rndisprot::PerPacketInfo {
+        size: size_of::<rndisprot::PerPacketInfo>() as u32
+            + size_of::<rndisprot::TxTcpIpChecksumInfo>() as u32,
+        typ: rndisprot::PPI_TCP_IP_CHECKSUM,
+        per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+    };
+
+    let per_packet_info_offset = size_of::<rndisprot::Packet>() as u32;
+    let per_packet_info_length = ppi_header.size;
+
+    let data = vec![0xCC; 60];
+    let message_length = size_of::<rndisprot::MessageHeader>()
+        + size_of::<rndisprot::Packet>()
+        + per_packet_info_length as usize
+        + data.len();
+
+    let mem = channel.nic.mock_vmbus.memory.clone();
+    let gpadl_view = channel
+        .gpadl_map
+        .clone()
+        .view()
+        .map(channel.send_buf_id)
+        .unwrap();
+    let mut buf_writer = PagedRanges::new(&*gpadl_view).writer(&mem);
+
+    buf_writer
+        .write(
+            rndisprot::MessageHeader {
+                message_type: rndisprot::MESSAGE_TYPE_PACKET_MSG,
+                message_length: message_length as u32,
+            }
+            .as_bytes(),
+        )
+        .unwrap();
+
+    buf_writer
+        .write(
+            rndisprot::Packet {
+                data_offset: per_packet_info_offset + per_packet_info_length,
+                data_length: data.len() as u32,
+                oob_data_offset: 0,
+                oob_data_length: 0,
+                num_oob_data_elements: 0,
+                per_packet_info_offset,
+                per_packet_info_length,
+                vc_handle: 0,
+                reserved: 0,
+            }
+            .as_bytes(),
+        )
+        .unwrap();
+
+    buf_writer.write(ppi_header.as_bytes()).unwrap();
+    buf_writer.write(checksum_info.as_bytes()).unwrap();
+    buf_writer.write(&data).unwrap();
+
+    let message = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET,
+        },
+        data: protocol::Message1SendRndisPacket {
+            channel_type: protocol::DATA_CHANNEL_TYPE,
+            send_buffer_section_index: 0xffffffff,
+            send_buffer_section_size: 0,
+        },
+        padding: &[],
+    };
+
+    let gpadl_map_view = channel
+        .gpadl_map
+        .clone()
+        .view()
+        .map(channel.send_buf_id)
+        .unwrap();
+    let gpa_range = gpadl_map_view.first().unwrap().subrange(0, message_length);
+    channel
+        .write(OutgoingPacket {
+            transaction_id: channel.transaction_id,
+            packet_type: OutgoingPacketType::GpaDirect(&[gpa_range]),
+            payload: &message.payload(),
+        })
+        .await;
+    channel.transaction_id += 1;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
+
+    endpoint_state
+        .lock()
+        .tx_metadata
+        .last()
+        .cloned()
+        .expect("packet metadata should be captured")
+}
+
+/// Regression test: when a guest sends a TCP checksum offload packet with
+/// `tcp_header_offset` set to 0, the code must fall back to the minimum
+/// IPv4 header length instead of panicking or computing an invalid offset.
+#[async_test]
+async fn rndis_send_tcp_checksum_packet_zero_transport_header_offset_ipv4(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+    let init: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(init.status, rndisprot::STATUS_SUCCESS);
+
+    let metadata =
+        send_checksum_packet_with_header_offset(&mut channel, &endpoint_state, true, 0).await;
+
+    assert!(metadata.flags.offload_tcp_checksum());
+    assert!(metadata.flags.is_ipv4());
+    assert_eq!(
+        metadata.l2_len,
+        net_backend::ETHERNET_HEADER_LEN as u8,
+        "non-VLAN packets must use a 14-byte L2 header"
+    );
+    assert_eq!(
+        metadata.l3_len,
+        net_backend::IPV4_MIN_HEADER_LEN,
+        "transport_header_offset=0 must fall back to IPv4 minimum header length (20)"
+    );
+}
+
+/// Regression test: same as the IPv4 variant but for IPv6 — when a guest
+/// sends a TCP checksum offload packet with `tcp_header_offset` set to 0,
+/// the code must fall back to the minimum IPv6 header length (40).
+#[async_test]
+async fn rndis_send_tcp_checksum_packet_zero_transport_header_offset_ipv6(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+    let init: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(init.status, rndisprot::STATUS_SUCCESS);
+
+    let metadata =
+        send_checksum_packet_with_header_offset(&mut channel, &endpoint_state, false, 0).await;
+
+    assert!(metadata.flags.offload_tcp_checksum());
+    assert!(metadata.flags.is_ipv6());
+    assert!(!metadata.flags.is_ipv4());
+    assert_eq!(
+        metadata.l2_len,
+        net_backend::ETHERNET_HEADER_LEN as u8,
+        "non-VLAN packets must use a 14-byte L2 header"
+    );
+    assert_eq!(
+        metadata.l3_len,
+        net_backend::IPV6_MIN_HEADER_LEN,
+        "transport_header_offset=0 must fall back to IPv6 minimum header length (40)"
+    );
+}
+
+fn build_vlan_ipv4_tcp_packet(vlan_id: u16) -> Vec<u8> {
+    let mut data = vec![0u8; 60];
+
+    data[..6].copy_from_slice(&[0x10, 0x11, 0x12, 0x13, 0x14, 0x15]);
+    data[6..12].copy_from_slice(&[0x20, 0x21, 0x22, 0x23, 0x24, 0x25]);
+    data[12..14].copy_from_slice(&0x8100u16.to_be_bytes());
+    data[14..16].copy_from_slice(&(vlan_id & 0x0fff).to_be_bytes());
+    data[16..18].copy_from_slice(&0x0800u16.to_be_bytes());
+
+    data[18] = 0x45; // IPv4, 20-byte header
+    data[20..22].copy_from_slice(&(42u16).to_be_bytes());
+    data[26] = 64; // TTL
+    data[27] = 6; // TCP
+
+    data[38 + 12] = 0x50; // TCP data offset = 5 (20 bytes)
+
+    data
+}
+
+#[async_test]
+async fn rndis_send_tcp_checksum_packet_with_vlan_ppi(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let initialize_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(initialize_complete.request_id, 123);
+    assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
+
+    let data = build_vlan_ipv4_tcp_packet(37);
+    let vlan_info = rndisprot::EthVlanInfo::read_from_bytes(&(37u32 << 4).to_le_bytes()).unwrap();
+    channel
+        .send_rndis_packet_offload_with_vlan(&data, true, false, false, vlan_info)
+        .await;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
+
+    let metadata = endpoint_state
+        .lock()
+        .tx_metadata
+        .last()
+        .cloned()
+        .expect("packet metadata should be captured");
+    assert!(metadata.flags.offload_tcp_checksum());
+    assert!(metadata.flags.offload_ip_header_checksum());
+    assert!(metadata.flags.is_ipv4());
+    assert_eq!(
+        metadata.l2_len, 18,
+        "VLAN-tagged packets must use an 18-byte L2 header"
+    );
+    assert_eq!(
+        metadata.l3_len, 20,
+        "VLAN-tagged IPv4 packets must keep a 20-byte L3 header"
+    );
+    assert_eq!(
+        read_netvsp_counter(&nic.channel, "queues/0/tx_vlan_packets").await,
+        1,
+        "netvsp should count 1 VLAN TX packet"
+    );
+}
+
+#[async_test]
+async fn rndis_send_lso_packet_with_vlan_ppi(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let initialize_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(initialize_complete.request_id, 123);
+    assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
+
+    let data = build_vlan_ipv4_tcp_packet(91);
+    let vlan_info = rndisprot::EthVlanInfo::read_from_bytes(&(91u32 << 4).to_le_bytes()).unwrap();
+    channel
+        .send_rndis_packet_offload_with_vlan(&data, false, false, true, vlan_info)
+        .await;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
+
+    let metadata = endpoint_state
+        .lock()
+        .tx_metadata
+        .last()
+        .cloned()
+        .expect("packet metadata should be captured");
+    assert!(metadata.flags.offload_tcp_segmentation());
+    assert!(metadata.flags.offload_tcp_checksum());
+    assert!(metadata.flags.offload_ip_header_checksum());
+    assert!(metadata.flags.is_ipv4());
+    assert_eq!(
+        metadata.l2_len, 18,
+        "VLAN-tagged packets must use an 18-byte L2 header"
+    );
+    assert_eq!(
+        metadata.l3_len, 20,
+        "VLAN-tagged IPv4 packets must keep a 20-byte L3 header"
+    );
+    assert_eq!(metadata.max_segment_size, 1460);
+    assert_eq!(
+        read_netvsp_counter(&nic.channel, "queues/0/tx_vlan_packets").await,
+        1,
+        "netvsp should count 1 VLAN TX packet"
+    );
+}
+
+/// Helper to initialize RNDIS and set the packet filter on a channel so
+/// that RX packets will be delivered to the guest.
+async fn initialize_rndis_for_rx(channel: &mut TestNicChannel<'_>) {
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let init_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(init_complete.status, rndisprot::STATUS_SUCCESS);
+
+    // Set packet filter so RX packets are delivered to the guest.
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 2,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NPROTO_PACKET_FILTER.to_le_bytes(),
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+}
+
+/// Helper to inject an RX packet on queue 0, read it from the guest channel,
+/// parse the RNDIS PPI, and complete the transfer.
+async fn inject_and_parse_rx(
+    channel: &mut TestNicChannel<'_>,
+    endpoint_state: &Arc<parking_lot::Mutex<TestNicEndpointState>>,
+    parser: &RndisMessageParser,
+    data: Vec<u8>,
+    metadata: RxMetadata,
+) -> RxPpiInfo {
+    {
+        let locked_state = endpoint_state.lock();
+        locked_state.send_rx_with_metadata(0, data, metadata);
+    }
+
+    let (ppi, txid) = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(data) => {
+                let (_, external_ranges) = parser.parse_data_message(data);
+                let ppi = parser.parse_rx_ppi(&external_ranges);
+                let txid = data
+                    .transaction_id()
+                    .expect("data packets should have txid");
+                (ppi, txid)
+            }
+            _ => panic!("Unexpected packet type on RX"),
+        })
+        .await
+        .expect("RX data packet");
+
+    // Complete the transfer so the buffer is returned.
+    channel
+        .write(OutgoingPacket {
+            transaction_id: txid,
+            packet_type: OutgoingPacketType::Completion,
+            payload: &NvspMessage {
+                header: protocol::MessageHeader {
+                    message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                },
+                data: protocol::Message1SendRndisPacketComplete {
+                    status: protocol::Status::SUCCESS,
+                },
+                padding: &[],
+            }
+            .payload(),
+        })
+        .await;
+
+    ppi
+}
+
+#[async_test]
+async fn rndis_rx_vlan_packet(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic_dev = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic_dev.start_vmbus_channel();
+    let mut channel = nic_dev.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_for_rx(&mut channel).await;
+
+    let parser = channel.rndis_message_parser();
+    let data = vec![0xAA; 60];
+    let metadata = RxMetadata {
+        len: data.len(),
+        vlan: Some(
+            net_backend::VlanMetadata::new()
+                .with_priority(5)
+                .with_drop_eligible_indicator(true)
+                .with_vlan_id(100),
+        ),
+        ..Default::default()
+    };
+
+    let ppi = inject_and_parse_rx(&mut channel, &endpoint_state, &parser, data, metadata).await;
+
+    let vlan = ppi.vlan.expect("VLAN PPI should be present");
+    assert_eq!(vlan.vlan_id(), 100);
+    assert_eq!(vlan.priority(), 5);
+    assert_eq!(vlan.drop_eligible_indicator(), true);
+    // Checksum PPI should also be present (always emitted).
+    assert!(
+        ppi.checksum.is_some(),
+        "checksum PPI should always be present"
+    );
+    assert_eq!(
+        read_netvsp_counter(&nic_dev.channel, "queues/0/rx_vlan_packets").await,
+        1,
+        "netvsp should count 1 VLAN RX packet"
+    );
+}
+
+#[async_test]
+async fn rndis_rx_vlan_packet_with_tcp_checksum(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_for_rx(&mut channel).await;
+
+    let parser = channel.rndis_message_parser();
+    let data = vec![0xBB; 60];
+    let metadata = RxMetadata {
+        len: data.len(),
+        ip_checksum: RxChecksumState::Good,
+        l4_checksum: RxChecksumState::Good,
+        l4_protocol: L4Protocol::Tcp,
+        vlan: Some(
+            net_backend::VlanMetadata::new()
+                .with_priority(3)
+                .with_drop_eligible_indicator(false)
+                .with_vlan_id(42),
+        ),
+        ..Default::default()
+    };
+
+    let ppi = inject_and_parse_rx(&mut channel, &endpoint_state, &parser, data, metadata).await;
+
+    // Verify VLAN PPI.
+    let vlan = ppi.vlan.expect("VLAN PPI should be present");
+    assert_eq!(vlan.vlan_id(), 42);
+    assert_eq!(vlan.priority(), 3);
+    assert_eq!(vlan.drop_eligible_indicator(), false);
+
+    // Verify checksum PPI reports TCP checksum succeeded.
+    let csum = ppi.checksum.expect("checksum PPI should be present");
+    assert!(csum.tcp_checksum_succeeded());
+    assert!(csum.ip_checksum_succeeded());
+    assert!(!csum.tcp_checksum_failed());
+    assert_eq!(
+        read_netvsp_counter(&nic.channel, "queues/0/rx_vlan_packets").await,
+        1,
+        "netvsp should count 1 VLAN RX packet"
+    );
+}
+
+#[async_test]
+async fn rndis_rx_packet_no_vlan(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_for_rx(&mut channel).await;
+
+    let parser = channel.rndis_message_parser();
+    let data = vec![0xCC; 60];
+    let metadata = RxMetadata {
+        len: data.len(),
+        ..Default::default()
+    };
+
+    let ppi = inject_and_parse_rx(&mut channel, &endpoint_state, &parser, data, metadata).await;
+
+    assert!(
+        ppi.vlan.is_none(),
+        "VLAN PPI should not be present when no VLAN metadata is set"
+    );
+    assert!(
+        ppi.checksum.is_some(),
+        "checksum PPI should always be present"
+    );
+    assert_eq!(
+        read_netvsp_counter(&nic.channel, "queues/0/rx_vlan_packets").await,
+        0,
+        "netvsp should count 0 VLAN RX packets for untagged traffic"
+    );
+}
+
+#[async_test]
+async fn rndis_rx_vlan_preserves_packet_data(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic_dev = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic_dev.start_vmbus_channel();
+    let mut channel = nic_dev.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_for_rx(&mut channel).await;
+
+    let parser = channel.rndis_message_parser();
+    let data = vec![0xDD; 60];
+    let metadata = RxMetadata {
+        len: data.len(),
+        vlan: Some(
+            net_backend::VlanMetadata::new()
+                .with_priority(7)
+                .with_drop_eligible_indicator(false)
+                .with_vlan_id(4094),
+        ),
+        ..Default::default()
+    };
+
+    {
+        let locked_state = endpoint_state.lock();
+        locked_state.send_rx_with_metadata(0, data.clone(), metadata);
+    }
+
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(data_packet) => {
+                let (_, external_ranges) = parser.parse_data_message(data_packet);
+                // Verify the packet data is intact after the 256-byte RNDIS header.
+                let received: [u8; 60] = parser.get_data_packet_content(&external_ranges);
+                assert_eq!(&received[..], &data[..], "packet data should be preserved");
+
+                // Also verify the VLAN PPI.
+                let ppi = parser.parse_rx_ppi(&external_ranges);
+                let vlan = ppi.vlan.expect("VLAN PPI should be present");
+                assert_eq!(vlan.vlan_id(), 4094);
+                assert_eq!(vlan.priority(), 7);
+            }
+            _ => panic!("Unexpected packet type on RX"),
+        })
+        .await
+        .expect("RX data packet");
+
+    // Verify netvsp's internal counters via inspect.
+    assert_eq!(
+        read_netvsp_counter(&nic_dev.channel, "queues/0/rx_vlan_packets").await,
+        1,
+        "netvsp should count 1 RX packet"
+    );
+}
+
 /// Helper: builds an RSS-enable parameter block that the set_rss_parameter
 /// OID path accepts.
 fn build_rss_enable_params() -> Vec<u8> {
@@ -6312,4 +7260,153 @@ fn rx_buffer_ranges_valid() {
     assert_eq!(ranges.buffers_per_queue, 2);
     assert_eq!(recvs.len(), queue_count as usize);
     assert_eq!(ranges.buffer_id_send.len(), queue_count as usize);
+}
+
+/// Read a counter value from the running Nic via the inspect framework.
+/// The `path` is slash-separated following the Nic's inspect tree.
+async fn read_netvsp_counter(channel: &ChannelHandle<Nic>, path: &str) -> u64 {
+    let mut inspection = inspect::InspectionBuilder::new(path)
+        .depth(Some(usize::MAX))
+        .inspect(channel);
+    inspection.resolve().await;
+    match inspection.results() {
+        inspect::Node::Value(v) => match v.kind {
+            inspect::ValueKind::Unsigned(n) => n,
+            inspect::ValueKind::Signed(n) => n as u64,
+            other => panic!("unexpected value kind for counter at '{path}': {other:?}"),
+        },
+        other => panic!("unexpected inspect node for '{path}': {other:?}"),
+    }
+}
+
+#[async_test]
+async fn vlan_tx_counter_increments(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic_dev = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic_dev.start_vmbus_channel();
+    let mut channel = nic_dev.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    // Send a VLAN-tagged packet.
+    let data = build_vlan_ipv4_tcp_packet(42);
+    let vlan_info = rndisprot::EthVlanInfo::read_from_bytes(&(42u32 << 4).to_le_bytes()).unwrap();
+    channel
+        .send_rndis_packet_offload_with_vlan(&data, true, false, false, vlan_info)
+        .await;
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
+
+    // Send a non-VLAN packet.
+    channel
+        .send_rndis_packet_offload(&data, true, false, false)
+        .await;
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
+
+    // Verify netvsp's internal counters via inspect.
+    assert_eq!(
+        read_netvsp_counter(&nic_dev.channel, "queues/0/tx_packets").await,
+        2,
+        "netvsp should count 2 TX packets"
+    );
+    assert_eq!(
+        read_netvsp_counter(&nic_dev.channel, "queues/0/tx_vlan_packets").await,
+        1,
+        "netvsp should count 1 VLAN TX packet"
+    );
+}
+
+#[async_test]
+async fn vlan_rx_counter_increments(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic_dev = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic_dev.start_vmbus_channel();
+    let mut channel = nic_dev.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_for_rx(&mut channel).await;
+
+    let parser = channel.rndis_message_parser();
+
+    // Inject a VLAN-tagged RX packet.
+    let vlan_data = vec![0xAA; 60];
+    let vlan_metadata = RxMetadata {
+        len: vlan_data.len(),
+        vlan: Some(
+            net_backend::VlanMetadata::new()
+                .with_priority(3)
+                .with_drop_eligible_indicator(false)
+                .with_vlan_id(42),
+        ),
+        ..Default::default()
+    };
+    let ppi = inject_and_parse_rx(
+        &mut channel,
+        &endpoint_state,
+        &parser,
+        vlan_data,
+        vlan_metadata,
+    )
+    .await;
+    assert!(ppi.vlan.is_some(), "VLAN PPI should be present");
+
+    // Inject a non-VLAN RX packet.
+    let plain_data = vec![0xBB; 60];
+    let plain_metadata = RxMetadata {
+        len: plain_data.len(),
+        ..Default::default()
+    };
+    let ppi = inject_and_parse_rx(
+        &mut channel,
+        &endpoint_state,
+        &parser,
+        plain_data,
+        plain_metadata,
+    )
+    .await;
+    assert!(ppi.vlan.is_none(), "VLAN PPI should not be present");
+
+    // Verify netvsp's internal RX VLAN counter via inspect.
+    assert_eq!(
+        read_netvsp_counter(&nic_dev.channel, "queues/0/rx_vlan_packets").await,
+        1,
+        "netvsp should count 1 VLAN RX packet"
+    );
 }

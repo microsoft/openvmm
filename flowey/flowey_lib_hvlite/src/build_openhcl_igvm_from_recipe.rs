@@ -272,6 +272,8 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_sidecar::Node>();
         ctx.import::<crate::resolve_openhcl_kernel_package::Node>();
         ctx.import::<crate::resolve_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
+        ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::run_igvmfilegen::Node>();
@@ -378,9 +380,10 @@ impl SimpleFlowNode for Node {
             } else {
                 match typ {
                     Vtl0KernelType::Example => ctx.reqv(|v| {
-                        crate::resolve_openvmm_deps::Request::Get(
-                            crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestKernel,
+                        crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                            crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
                             arch,
+                            crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
                             v,
                         )
                     }),
@@ -389,11 +392,7 @@ impl SimpleFlowNode for Node {
             };
 
             let initrd = ctx.reqv(|v| {
-                crate::resolve_openvmm_deps::Request::Get(
-                    crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestInitrd,
-                    arch,
-                    v,
-                )
+                crate::resolve_openvmm_test_initrd::Request::Get(arch, v)
             });
 
             Vtl0KernelResource { kernel, initrd }

@@ -288,6 +288,7 @@ impl PetriVmConfigOpenVmm {
                     .map(|i| PcieRootPortConfig {
                         name: format!("s{}rc{}rp{}", segment, rc_index_in_segment, i),
                         hotplug: true,
+                        acs_capabilities_supported: Some(0),
                     })
                     .collect();
 
@@ -321,6 +322,7 @@ impl PetriVmConfigOpenVmm {
             num_downstream_ports: port_count,
             parent_port: port_name.to_string(),
             hotplug,
+            acs_capabilities_supported: Some(0),
         });
         self
     }

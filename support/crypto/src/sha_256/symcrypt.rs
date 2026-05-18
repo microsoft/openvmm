@@ -3,6 +3,20 @@
 
 //! SHA-256 implementation using SymCrypt.
 
-pub fn sha_256(data: &[u8]) -> [u8; 32] {
-    symcrypt::hash::sha256(data)
+use symcrypt::hash::HashState;
+
+pub struct Sha256(symcrypt::hash::Sha256State);
+
+impl Sha256 {
+    pub fn new() -> Self {
+        Self(symcrypt::hash::Sha256State::new())
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        self.0.append(data);
+    }
+
+    pub fn finish(mut self) -> [u8; 32] {
+        self.0.result()
+    }
 }

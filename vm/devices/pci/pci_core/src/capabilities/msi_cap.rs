@@ -16,7 +16,7 @@ use std::sync::Arc;
 use vmcore::interrupt::Interrupt;
 
 /// MSI capability implementation for PCI configuration space.
-#[derive(Debug, Inspect)]
+#[derive(Debug, Clone, Inspect)]
 pub struct MsiCapability {
     #[inspect(with = "|x| inspect::adhoc(|req| x.lock().inspect_mut(req))")]
     state: Arc<Mutex<MsiCapabilityState>>,
@@ -378,12 +378,13 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus_range::AssignedBusRange;
     use crate::msi::MsiConnection;
     use crate::test_helpers::TestPciInterruptController;
 
     #[test]
     fn msi_check() {
-        let msi_conn = MsiConnection::new();
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
         let mut cap = MsiCapability::new(2, true, false, msi_conn.target()); // 4 messages max, 64-bit, no masking
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
@@ -420,7 +421,7 @@ mod tests {
 
     #[test]
     fn msi_32bit_check() {
-        let msi_conn = MsiConnection::new();
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
         let mut cap = MsiCapability::new(1, false, false, msi_conn.target()); // 2 messages max, 32-bit, no masking
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
@@ -440,7 +441,7 @@ mod tests {
     fn test_msi_save_restore() {
         use vmcore::save_restore::SaveRestore;
 
-        let msi_conn = MsiConnection::new();
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
         let mut cap = MsiCapability::new(2, true, false, msi_conn.target()); // 4 messages max, 64-bit, no masking
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
@@ -481,7 +482,7 @@ mod tests {
     fn test_msi_save_restore_32bit_with_masking() {
         use vmcore::save_restore::SaveRestore;
 
-        let msi_conn = MsiConnection::new();
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
         let mut cap = MsiCapability::new(3, false, true, msi_conn.target()); // 8 messages max, 32-bit, with masking
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
@@ -531,7 +532,7 @@ mod tests {
     fn test_msi_save_restore_mme_clamping() {
         use vmcore::save_restore::SaveRestore;
 
-        let msi_conn = MsiConnection::new();
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
         let mut cap = MsiCapability::new(1, true, false, msi_conn.target()); // Only 2 messages max (MMC=1)
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
