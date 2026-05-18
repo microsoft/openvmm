@@ -392,6 +392,19 @@ impl<R: Read + Seek> HvsFileReader<R> {
     pub fn contains_key(&self, path: &str) -> bool {
         self.keys.contains_key(path)
     }
+
+    /// Returns the key type for a given path, or None if the key doesn't exist.
+    pub fn key_type(&self, path: &str) -> Option<KeyType> {
+        self.keys.get(path).map(|e| e.key_type)
+    }
+
+    /// Returns true if the key points to a file object.
+    pub fn is_file_object(&self, path: &str) -> bool {
+        self.keys
+            .get(path)
+            .map(|e| e.flags & KEY_FLAG_POINTS_TO_FILE_OBJECT != 0)
+            .unwrap_or(false)
+    }
 }
 
 use core::mem::size_of;

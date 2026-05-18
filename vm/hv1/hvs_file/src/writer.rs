@@ -251,7 +251,11 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             };
 
             let parent_loc = node_locations.get(parent_path).copied().unwrap_or((0, key_table_header_size as u32));
-            let parent_ins_seq = self.insertion_sequences.entry(parent_path.to_string()).or_insert(0);
+            // Insertion sequences must be 1-based. The DLL's AddChild treats
+            // InsertionSequence == 0 as "uninitialized" and reassigns it,
+            // which triggers DataChanged and causes Commit() to fail on
+            // read-only files.
+            let parent_ins_seq = self.insertion_sequences.entry(parent_path.to_string()).or_insert(1);
             let ins_seq = *parent_ins_seq;
             *parent_ins_seq += 1;
 
@@ -296,7 +300,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             };
 
             let parent_loc = node_locations.get(&parent_path).copied().unwrap_or((0, key_table_header_size as u32));
-            let parent_ins_seq = self.insertion_sequences.entry(parent_path.clone()).or_insert(0);
+            let parent_ins_seq = self.insertion_sequences.entry(parent_path.clone()).or_insert(1);
             let ins_seq = *parent_ins_seq;
             *parent_ins_seq += 1;
 
@@ -348,6 +352,23 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             });
         }
 
+        // Update NodeData.next_insertion_sequence for each node to match
+        // the actual child count. The DLL's CompleteMapUpdate verifies
+        // that each node's NextInsertionSequence >= max child
+        // InsertionSequence + 1; if not, it updates the node data and
+        // marks the key table dirty, which causes Commit() to fail on
+        // read-only files.
+        let num_node_entries = node_paths.len() - 1; // root is virtual
+        for i in 0..num_node_entries {
+            let node_path = &node_paths[i + 1];
+            let next_ins = self.insertion_sequences.get(node_path.as_str()).copied().unwrap_or(0);
+            let node_data = NodeData {
+                change_tracking_sequence: 0,
+                next_insertion_sequence: next_ins,
+            };
+            all_entries[i].data_bytes = node_data.as_bytes().to_vec();
+        }
+
         // Now layout the entries across key tables, computing offsets
         // Also fix up node_locations as we go
         let usable_per_table = key_table_size - key_table_header_size;
@@ -359,7 +380,14 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         for (i, entry) in all_entries.iter_mut().enumerate() {
             let entry_total = entry.header.size_in_bytes as usize;
 
-            if current_table_buf.len() + entry_total > usable_per_table && !current_table_buf.is_empty() {
+            // Check if adding this entry would leave a gap too small for a
+            // Free entry (< 21 bytes). The DLL's Verify requires that entries
+            // exactly fill the table, so any gap must be >= entry_header_size.
+            let remaining_after = usable_per_table.saturating_sub(current_table_buf.len() + entry_total);
+            let would_overflow = current_table_buf.len() + entry_total > usable_per_table;
+            let would_leave_small_gap = remaining_after > 0 && remaining_after < entry_header_size;
+
+            if (would_overflow || would_leave_small_gap) && !current_table_buf.is_empty() {
                 // Start a new key table
                 tables.push(current_table_buf);
                 current_table_buf = Vec::with_capacity(usable_per_table);
@@ -458,11 +486,6 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             }
         }
 
-        // Update NodeData.next_insertion_sequence for each node
-        // (We'd need to seek back into the table buffers — for now, the
-        // insertion sequences in the node data are set to 0, which is
-        // acceptable for read-only dump files.)
-
         // Now write everything to the file
 
         // Write key tables right after the data_end reserved for file objects
@@ -502,8 +525,6 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         // Fill to full capacity so the DLL doesn't try to expand it
         // (expansion requires a write-back which fails on read-only files).
         let max_entries = (alignment as usize - size_of::<ObjectTableHeader>()) / size_of::<ObjectTableEntry>();
-        let num_key_tables = tables.len();
-        let num_file_objects = self.object_entries.len();
 
         let mut obj_entries: Vec<ObjectTableEntry> = Vec::with_capacity(max_entries);
 
