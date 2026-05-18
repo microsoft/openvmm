@@ -17,6 +17,7 @@ zerocopy.workspace = true
 
 [dev-dependencies]
 pal.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

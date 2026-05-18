@@ -19,6 +19,7 @@ use hvdef::Vtl;
 use std::ffi::c_void;
 use std::io::Cursor;
 use std::path::PathBuf;
+use tempfile::NamedTempFile;
 
 mod dll {
     use std::ffi::c_void;
@@ -156,10 +157,14 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
 }
 
 /// Load a VMRS file with the DLL and verify VP count and architecture.
-fn load_and_verify(vmrs_data: &[u8], expected_vp_count: u32, test_name: &str) {
-    let vmrs_path = std::env::temp_dir().join(format!("hv_saved_state_{test_name}.vmrs"));
-    std::fs::write(&vmrs_path, vmrs_data).unwrap();
+fn load_and_verify(vmrs_data: &[u8], expected_vp_count: u32, _test_name: &str) {
+    let mut tmp = tempfile::Builder::new()
+        .suffix(".vmrs")
+        .tempfile()
+        .unwrap();
+    std::io::Write::write_all(&mut tmp, vmrs_data).unwrap();
 
+    let vmrs_path = tmp.path();
     let wide_path: Vec<u16> = vmrs_path
         .to_str()
         .unwrap()
@@ -195,8 +200,7 @@ fn load_and_verify(vmrs_data: &[u8], expected_vp_count: u32, test_name: &str) {
 
         dll::ReleaseSavedStateFiles(handle);
     }
-
-    let _ = std::fs::remove_file(&vmrs_path);
+    // tmp is dropped here, cleaning up the file automatically
 }
 
 #[test]
@@ -320,9 +324,13 @@ fn dll_validates_large_memory() {
     }
 
     // Verify the DLL can load the file.
-    let vmrs_path = std::env::temp_dir().join("hv_saved_state_large_memory.vmrs");
-    std::fs::write(&vmrs_path, &vmrs_data).unwrap();
+    let mut tmp = tempfile::Builder::new()
+        .suffix(".vmrs")
+        .tempfile()
+        .unwrap();
+    std::io::Write::write_all(&mut tmp, &vmrs_data).unwrap();
 
+    let vmrs_path = tmp.path();
     let wide_path: Vec<u16> = vmrs_path
         .to_str()
         .unwrap()
@@ -348,6 +356,5 @@ fn dll_validates_large_memory() {
         dll::ReleaseSavedStateFiles(handle);
     }
 
-    let _ = std::fs::remove_file(&vmrs_path);
     eprintln!("Large memory ({BLOCK_COUNT} blocks) validation PASSED");
 }

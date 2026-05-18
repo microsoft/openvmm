@@ -3292,6 +3292,7 @@ dependencies = [
  "hvs_file",
  "pal",
  "static_assertions",
+ "tempfile",
  "thiserror 2.0.16",
  "virt",
  "x86defs",

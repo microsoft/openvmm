@@ -422,10 +422,9 @@ impl VmController {
     async fn handle_dump_state(&self, path: &Path) -> anyhow::Result<()> {
         // Write to a temporary file in the same directory, then rename into
         // place so readers never see a partially-written dump.
-        let mut tmp_path = path.to_path_buf();
-        tmp_path.set_extension("vmrs.tmp");
-        let file = fs_err::File::create(&tmp_path)
-            .with_context(|| format!("failed to create temp file: {}", tmp_path.display()))?;
+        let parent = path.parent().unwrap_or(Path::new("."));
+        let tmp_file = tempfile::NamedTempFile::new_in(parent)
+            .context("failed to create temp file for dump")?;
 
         // Pause the VM.
         self.vm_rpc
@@ -436,29 +435,23 @@ impl VmController {
         // Dump state to the temp file (worker collects VP state + streams memory).
         let result = self
             .vm_rpc
-            .call_failable(VmRpc::DumpState, file.into())
+            .call_failable(VmRpc::DumpState, tmp_file.as_file().try_clone()?.into())
             .await
             .context("failed to dump state");
 
         // Resume the VM regardless of dump success.
         let _ = self.vm_rpc.call(VmRpc::Resume, ()).await;
 
-        // Clean up the temp file on failure, rename on success.
-        match result {
-            Ok(()) => {
-                std::fs::rename(&tmp_path, path).with_context(|| {
-                    format!(
-                        "failed to rename {} to {}",
-                        tmp_path.display(),
-                        path.display()
-                    )
-                })?;
-            }
-            Err(err) => {
-                let _ = std::fs::remove_file(&tmp_path);
-                return Err(err);
-            }
-        }
+        result?;
+
+        // Persist the temp file to the final path.
+        tmp_file.persist(path).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to rename temp file to {}: {}",
+                path.display(),
+                e.error
+            )
+        })?;
 
         Ok(())
     }
