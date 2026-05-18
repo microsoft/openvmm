@@ -233,30 +233,10 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         // Track node locations: path -> (table_index, offset_within_table)
         let mut node_locations: HashMap<String, (u16, u32)> = HashMap::new();
 
-        // Root node entry (always first, 32 bytes)
-        let root_name = Vec::new();
-        let root_data = NodeData {
-            change_tracking_sequence: 0,
-            next_insertion_sequence: 0,
-        };
-        let root_data_bytes = root_data.as_bytes().to_vec();
-        let root_total_size = entry_header_size + root_name.len() + root_data_bytes.len();
-        all_entries.push(EntryData {
-            header: KeyTableEntryHeader {
-                key_type: KeyType::NODE,
-                flags: 0,
-                size_in_bytes: root_total_size as u32,
-                parent_node_table: 0,
-                parent_node_offset: 0,
-                checksum: 0,
-                insertion_sequence: 0,
-                name_size_in_symbols: 0,
-            },
-            name_bytes: root_name,
-            data_bytes: root_data_bytes,
-        });
-        // Root is at table 0, offset = key_table_header_size (right after header)
-        node_locations.insert(String::new(), (0, key_table_header_size as u32));
+        // The root node is virtual — it lives in memory as m_RootNode, not
+        // in any key table. Parent reference (0, 0) is the sentinel for
+        // "child of root". Key table indices start at 1.
+        node_locations.insert(String::new(), (0, 0));
 
         // Add node entries for intermediate directories
         for node_path in &node_paths[1..] {
@@ -373,7 +353,8 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         let usable_per_table = key_table_size - key_table_header_size;
         let mut tables: Vec<Vec<u8>> = Vec::new();
         let mut current_table_buf = Vec::with_capacity(usable_per_table);
-        let mut current_table_index: u16 = 0;
+        // Key table indices start at 1 (0 is reserved for the virtual root)
+        let mut current_table_index: u16 = 1;
 
         for (i, entry) in all_entries.iter_mut().enumerate() {
             let entry_total = entry.header.size_in_bytes as usize;
@@ -387,34 +368,32 @@ impl<W: Write + Seek> HvsFileWriter<W> {
 
             let offset_in_table = key_table_header_size + current_table_buf.len();
 
-            // Fix up parent references for nodes that were added before
-            // their offsets were known
-            if entry.header.key_type == KeyType::NODE && i > 0 {
-                // Find the node path (entry i corresponds to node_paths[i] for nodes)
-                // Nodes are entries 0..node_paths.len(), leaves follow
-                if i < node_paths.len() {
-                    let path = &node_paths[i];
+            // Fix up node locations for node entries
+            if entry.header.key_type == KeyType::NODE {
+                // Node entries correspond to node_paths[1..] (index 0 is root, not stored)
+                // In all_entries, node entries come first (indices 0..node_paths.len()-1)
+                let node_idx = i + 1; // +1 because root (index 0) is virtual
+                if node_idx < node_paths.len() {
+                    let path = &node_paths[node_idx];
                     node_locations.insert(path.clone(), (current_table_index, offset_in_table as u32));
 
                     // Fix parent reference
                     let parent_path = if let Some(pos) = path[1..].rfind('/') {
                         &path[..pos + 1]
                     } else {
-                        ""
+                        "" // parent is root
                     };
                     if let Some(&(pt, po)) = node_locations.get(parent_path) {
                         entry.header.parent_node_table = pt;
                         entry.header.parent_node_offset = po;
                     }
                 }
-            } else if entry.header.key_type == KeyType::NODE && i == 0 {
-                node_locations.insert(String::new(), (current_table_index, offset_in_table as u32));
             }
 
-            // Fix parent references for leaf entries too (they were set to
-            // preliminary values)
-            if i >= node_paths.len() {
-                let key_idx = i - node_paths.len();
+            // Fix parent references for leaf entries
+            let num_node_entries = node_paths.len() - 1; // root is virtual
+            if i >= num_node_entries {
+                let key_idx = i - num_node_entries;
                 if key_idx < self.pending_keys.len() {
                     let key = &self.pending_keys[key_idx];
                     let parts: Vec<&str> = key.path.trim_start_matches('/').split('/').collect();
@@ -469,7 +448,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             // Build the key table header
             let mut header = KeyTableHeader {
                 signature: KEY_TABLE_SIGNATURE,
-                table_index: i as u16,
+                table_index: (i + 1) as u16, // indices start at 1
                 sequence: 1,
                 checksum: 0,
             };
@@ -507,10 +486,10 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 entry_checksum: 0,
                 file_offset_in_bytes: offset,
                 size_in_bytes: alignment as u32,
-                flags: 0,
+                flags: OBJECT_ENTRY_FLAG_REQUIRED,
             };
             let mut bytes = entry.as_bytes().to_vec();
-            entry.entry_checksum = struct_checksum(&mut bytes, 1); // checksum at offset 1
+            entry.entry_checksum = struct_checksum(&mut bytes, 1);
             obj_entries.push(entry);
         }
 
@@ -523,16 +502,20 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         }
 
         // Chain slot (empty — no more tables)
-        obj_entries.push(ObjectTableEntry {
+        let mut chain_entry = ObjectTableEntry {
             object_type: ObjectType::EMPTY,
             entry_checksum: 0,
             file_offset_in_bytes: 0,
             size_in_bytes: 0,
             flags: 0,
-        });
+        };
+        let mut chain_bytes = chain_entry.as_bytes().to_vec();
+        chain_entry.entry_checksum = struct_checksum(&mut chain_bytes, 1);
+        obj_entries.push(chain_entry);
 
-        // Write object table at offset 8192
+        // Write object table at offset 8192.
         let object_table_offset = 2 * MIN_DATA_ALIGNMENT as u64;
+
         self.writer.seek(SeekFrom::Start(object_table_offset))?;
 
         let obj_header = ObjectTableHeader {
@@ -544,7 +527,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             self.writer.write_all(entry.as_bytes())?;
         }
 
-        // Pad object table to alignment
+        // Pad remainder of block to alignment
         let obj_table_written = size_of::<ObjectTableHeader>() + obj_entries.len() * size_of::<ObjectTableEntry>();
         let pad = align_up(obj_table_written as u64, alignment) as usize - obj_table_written;
         if pad > 0 {

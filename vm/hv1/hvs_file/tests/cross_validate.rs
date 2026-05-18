@@ -294,6 +294,62 @@ fn cross_validate_with_dll() {
     }
 }
 
+/// Sanity check: load the reference config VMRS (which is NOT a saved state
+/// file) and confirm the DLL returns `VM_SAVED_STATE_DUMP_E_PARTITION_STATE_NOT_FOUND`
+/// (0xC0370500). This proves the Rust DLL binding works correctly — the DLL
+/// successfully opens and parses the HVS file, then fails because there's no
+/// partition state blob.
+#[test]
+fn dll_binding_sanity_check() {
+    if !setup_dll_search_path() {
+        eprintln!("SKIP: Windows SDK not found");
+        return;
+    }
+    if !dll::is_supported::LoadSavedStateFile() {
+        eprintln!("SKIP: DLL not loadable");
+        return;
+    }
+
+    // The reference config VMRS checked into the repo
+    let ref_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("88D07DD7-705E-4A4F-BDAF-3418782784ED.VMRS");
+
+    if !ref_path.exists() {
+        eprintln!("SKIP: reference VMRS not found at {}", ref_path.display());
+        return;
+    }
+
+    let wide_path: Vec<u16> = ref_path
+        .to_str()
+        .unwrap()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let mut handle: *mut c_void = std::ptr::null_mut();
+        let hr = dll::LoadSavedStateFile(wide_path.as_ptr(), &mut handle);
+
+        eprintln!("Reference config VMRS: HRESULT = 0x{:08X}", hr as u32);
+
+        // Expected: 0xC0370500 = VM_SAVED_STATE_DUMP_E_PARTITION_STATE_NOT_FOUND
+        // This means the DLL successfully opened and parsed the HVS file
+        // structure, but didn't find the /savedstate/savedVM/partition_state key.
+        assert_eq!(
+            hr as u32, 0xC0370500,
+            "Expected VM_SAVED_STATE_DUMP_E_PARTITION_STATE_NOT_FOUND, got 0x{:08X}",
+            hr as u32
+        );
+
+        if hr >= 0 && !handle.is_null() {
+            dll::ReleaseSavedStateFiles(handle);
+        }
+    }
+}
+
 /// Simple scope guard for cleanup.
 fn defer<F: FnOnce()>(f: F) -> impl Drop {
     struct Guard<F: FnOnce()>(Option<F>);

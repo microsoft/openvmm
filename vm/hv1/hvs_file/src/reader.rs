@@ -124,9 +124,9 @@ impl<R: Read + Seek> HvsFileReader<R> {
 
         // node_path_map: (table_index, offset) -> path
         let mut node_path_map: HashMap<(u16, u32), String> = HashMap::new();
-        // Root node is always at (0, key_table_header_size)
+        // Root node is virtual at sentinel (0, 0)
         let key_table_header_size = size_of::<KeyTableHeader>();
-        node_path_map.insert((0, key_table_header_size as u32), String::new());
+        node_path_map.insert((0, 0), String::new());
 
         for (table_idx, table_data) in key_table_data.iter().enumerate() {
             if table_data.len() < key_table_header_size {
@@ -195,7 +195,9 @@ impl<R: Read + Seek> HvsFileReader<R> {
                 };
 
                 if entry_header.key_type == KeyType::NODE {
-                    let current_key = (table_idx as u16, pos as u32);
+                    // Use the actual table index from the header, not vector index
+                    let actual_table_idx = kt_header.as_ref().map(|h| h.table_index).unwrap_or(table_idx as u16);
+                    let current_key = (actual_table_idx, pos as u32);
                     node_path_map.insert(current_key, full_path.clone());
                 } else if entry_header.key_type != KeyType::FREE {
                     let (fo_offset, fo_size) = if entry_header.flags & KEY_FLAG_POINTS_TO_FILE_OBJECT != 0 {
