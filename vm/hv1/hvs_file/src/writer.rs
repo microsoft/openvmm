@@ -8,16 +8,10 @@
 //! Bool, Node) and file objects for large binary blobs.
 
 use crate::defs::*;
+use crate::crc32;
 use std::collections::HashMap;
 use std::io::{self, Seek, SeekFrom, Write};
 use zerocopy::IntoBytes;
-
-/// Computes CRC-32 (ISO 3309) over a byte slice.
-pub fn crc32(data: &[u8]) -> u32 {
-    let mut hasher = crc32fast::Hasher::new();
-    hasher.update(data);
-    hasher.finalize()
-}
 
 /// Computes the checksum for a structure, with the checksum field zeroed.
 fn struct_checksum(bytes: &mut [u8], checksum_offset: usize) -> u32 {
@@ -40,7 +34,7 @@ fn align_up(size: u64, alignment: u64) -> u64 {
 
 /// A typed value to write to the key-value store.
 #[derive(Clone, Debug)]
-pub enum Value {
+enum Value {
     Int(i64),
     UInt(u64),
     String(String),
@@ -141,13 +135,20 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         });
     }
 
-    /// Adds an array key with inline data (for small arrays).
-    pub fn add_array(&mut self, path: &str, data: Vec<u8>) {
+    /// Adds a binary array key.
+    ///
+    /// Arrays of [`FILE_OBJECT_THRESHOLD`] bytes or larger are automatically
+    /// stored as file objects, matching Hyper-V's `ShouldUseFileObject`.
+    pub fn add_array(&mut self, path: &str, data: Vec<u8>) -> io::Result<()> {
+        if data.len() >= FILE_OBJECT_THRESHOLD as usize {
+            return self.add_file_object(path, &data);
+        }
         self.pending_keys.push(PendingKey {
             path: path.to_string(),
             value: Value::Array(data),
             file_object: None,
         });
+        Ok(())
     }
 
     /// Writes a file object for a large binary blob and adds a key
@@ -188,6 +189,24 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             }),
         });
 
+        Ok(())
+    }
+
+    /// Adds a typed value from a [`KeyValue`].
+    ///
+    /// Arrays of [`FILE_OBJECT_THRESHOLD`](crate::defs::FILE_OBJECT_THRESHOLD)
+    /// bytes or larger are automatically stored as file objects, matching the
+    /// behavior of the Hyper-V `HyperVStorage::ShouldUseFileObject` method.
+    pub fn add_value(&mut self, path: &str, value: crate::reader::KeyValue) -> io::Result<()> {
+        match value {
+            crate::reader::KeyValue::Int(v) => self.add_int(path, v),
+            crate::reader::KeyValue::UInt(v) => self.add_uint(path, v),
+            crate::reader::KeyValue::String(v) => self.add_string(path, &v),
+            crate::reader::KeyValue::Bool(v) => self.add_bool(path, v),
+            crate::reader::KeyValue::Array(data) => {
+                self.add_array(path, data)?;
+            }
+        }
         Ok(())
     }
 

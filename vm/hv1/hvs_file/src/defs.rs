@@ -160,10 +160,12 @@ pub struct KeyTableEntryHeader {
 
 const_assert_eq!(size_of::<KeyTableEntryHeader>(), 21);
 
-/// Key entry flags.
+/// Key entry flag: data is a file object pointer, not inline.
 pub const KEY_FLAG_POINTS_TO_FILE_OBJECT: u8 = 0x01;
-pub const KEY_FLAG_SUBCOMPONENT: u8 = 0x02;
-pub const KEY_FLAG_SEQUENCE_CHANGE_TRACKING: u8 = 0x04;
+/// Key entry flag: entry is a subcomponent.
+pub(crate) const _KEY_FLAG_SUBCOMPONENT: u8 = 0x02;
+/// Key entry flag: sequence change tracking enabled.
+pub(crate) const _KEY_FLAG_SEQUENCE_CHANGE_TRACKING: u8 = 0x04;
 
 /// Node data stored inline for `KeyType::NODE` entries.
 #[repr(C, packed)]

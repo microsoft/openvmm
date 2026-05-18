@@ -221,7 +221,7 @@ fn build_vmrs_file(rip: u64, cr3: u64) -> Vec<u8> {
     w.add_string("/savedstate/VmwpVersion", "0.0.0.0");
     w.add_file_object("/savedstate/savedVM/partition_state", &partition_state)
         .unwrap();
-    w.add_array("/savedstate/RamMemoryBlock0", ram_meta);
+    w.add_array("/savedstate/RamMemoryBlock0", ram_meta).unwrap();
 
     // One 4K page of zeros for RamBlock0
     let ram_data = vec![0u8; 4096];
@@ -252,22 +252,8 @@ fn try_with_keys(filter: impl Fn(&str) -> bool) -> i32 {
         if !filter(key) {
             continue;
         }
-        let key_type = reader.key_type(key).unwrap();
-        let is_fo = reader.is_file_object(key);
-        match key_type {
-            hvs_file::defs::KeyType::INT => w.add_int(key, reader.read_int(key).unwrap()),
-            hvs_file::defs::KeyType::UINT => w.add_uint(key, reader.read_uint(key).unwrap()),
-            hvs_file::defs::KeyType::STRING => w.add_string(key, &reader.read_string(key).unwrap()),
-            hvs_file::defs::KeyType::BOOL => w.add_bool(key, reader.read_bool(key).unwrap()),
-            hvs_file::defs::KeyType::ARRAY => {
-                if is_fo {
-                    w.add_file_object(key, &reader.read_file_object(key).unwrap()).unwrap();
-                } else {
-                    w.add_array(key, reader.read_array(key).unwrap());
-                }
-            }
-            _ => {},
-        }
+        let value = reader.read_value(key).unwrap();
+        w.add_value(key, value).unwrap();
     }
 
     let vmrs_data = w.finish().unwrap().into_inner();
@@ -579,39 +565,8 @@ fn roundtrip_real_vmrs_with_dll() {
     let mut w = HvsFileWriter::new(buf).unwrap();
 
     for key in &all_keys {
-        let key_type = reader.key_type(key).unwrap();
-        let is_fo = reader.is_file_object(key);
-
-        match key_type {
-            hvs_file::defs::KeyType::INT => {
-                let v = reader.read_int(key).unwrap();
-                w.add_int(key, v);
-            }
-            hvs_file::defs::KeyType::UINT => {
-                let v = reader.read_uint(key).unwrap();
-                w.add_uint(key, v);
-            }
-            hvs_file::defs::KeyType::STRING => {
-                let v = reader.read_string(key).unwrap();
-                w.add_string(key, &v);
-            }
-            hvs_file::defs::KeyType::BOOL => {
-                let v = reader.read_bool(key).unwrap();
-                w.add_bool(key, v);
-            }
-            hvs_file::defs::KeyType::ARRAY => {
-                if is_fo {
-                    let v = reader.read_file_object(key).unwrap();
-                    w.add_file_object(key, &v).unwrap();
-                } else {
-                    let v = reader.read_array(key).unwrap();
-                    w.add_array(key, v);
-                }
-            }
-            _ => {
-                eprintln!("  Skipping key {key} with type {:?}", key_type);
-            }
-        }
+        let value = reader.read_value(key).unwrap();
+        w.add_value(key, value).unwrap();
     }
 
     let buf = w.finish().unwrap();

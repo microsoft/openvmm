@@ -5,8 +5,6 @@
 //!
 //! This crate implements the binary key-value file format used by Hyper-V
 //! for `.vmrs` (saved state), `.vmcx` (configuration), and `.vsv` files.
-
-#![expect(missing_docs)]
 //!
 //! # Usage
 //!
@@ -23,13 +21,20 @@
 //!
 //! // Read it back
 //! buf.set_position(0);
-//! let r = HvsFileReader::open(buf).unwrap();
+//! let mut r = HvsFileReader::open(buf).unwrap();
 //! assert_eq!(r.read_uint("/savedstate/VmVersion").unwrap(), 0x0A00);
 //! ```
 
-pub mod defs;
+pub(crate) mod defs;
 pub mod reader;
 pub mod writer;
+
+/// Computes CRC-32 (ISO 3309) over a byte slice.
+pub(crate) fn crc32(data: &[u8]) -> u32 {
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(data);
+    hasher.finalize()
+}
 
 #[cfg(test)]
 mod tests {
@@ -64,7 +69,7 @@ mod tests {
         let mut ram_meta = vec![0u8; 40];
         ram_meta[0..4].copy_from_slice(&3u32.to_le_bytes());
         ram_meta[16..24].copy_from_slice(&1u64.to_le_bytes());
-        w.add_array("/savedstate/RamMemoryBlock0", ram_meta);
+        w.add_array("/savedstate/RamMemoryBlock0", ram_meta).unwrap();
         // One empty RAM block
         w.add_file_object("/savedstate/RamBlock0", &vec![0u8; 4096]).unwrap();
         
@@ -87,14 +92,19 @@ mod tests {
             return;
         }
         let file = std::fs::File::open(&path).unwrap();
-        let reader = HvsFileReader::open(file).unwrap();
-        let mut keys: Vec<&str> = reader.keys().collect();
+        let mut reader = HvsFileReader::open(file).unwrap();
+        let mut keys: Vec<String> = reader.keys().map(|s| s.to_string()).collect();
         keys.sort();
         for key in &keys {
-            let kt = reader.key_type(key).unwrap();
-            let is_fo = reader.is_file_object(key);
-            let fo_tag = if is_fo { " [file_object]" } else { "" };
-            eprintln!("{kt:?} {key}{fo_tag}");
+            let val = reader.read_value(key).unwrap();
+            let type_tag = match &val {
+                crate::reader::KeyValue::Int(_) => "INT",
+                crate::reader::KeyValue::UInt(_) => "UINT",
+                crate::reader::KeyValue::String(_) => "STRING",
+                crate::reader::KeyValue::Array(_) => "ARRAY",
+                crate::reader::KeyValue::Bool(_) => "BOOL",
+            };
+            eprintln!("{type_tag} {key}");
         }
         eprintln!("\nTotal: {} keys", keys.len());
     }
@@ -131,8 +141,8 @@ mod tests {
         let buf = Cursor::new(Vec::new());
         let mut w = HvsFileWriter::new(buf).unwrap();
         w.add_int("/savedstate/VmVersion", 0x0A00);
-        w.add_array("/savedstate/RamMemoryBlock0", vec![0u8; 40]);
-        w.add_array("/savedstate/savedVM/partition_state", vec![0u8; 100]);
+        w.add_array("/savedstate/RamMemoryBlock0", vec![0u8; 40]).unwrap();
+        w.add_array("/savedstate/savedVM/partition_state", vec![0u8; 100]).unwrap();
         let buf = w.finish().unwrap();
         let data = buf.into_inner();
 
@@ -145,7 +155,7 @@ mod tests {
         // Verify CRC
         let mut header_copy = data[..46].to_vec();
         header_copy[4..8].fill(0);
-        let computed = crate::writer::crc32(&header_copy);
+        let computed = crate::crc32(&header_copy);
         assert_eq!(computed, cksum, "header CRC mismatch");
 
         // Dump object table entries
@@ -193,7 +203,7 @@ mod tests {
                 // Verify key table checksum
                 let mut kt_header = data[offset..offset + 10].to_vec();
                 kt_header[6..10].fill(0);
-                let kt_computed = crate::writer::crc32(&kt_header);
+                let kt_computed = crate::crc32(&kt_header);
                 assert_eq!(kt_computed, kt_cksum, "key table {i} CRC mismatch");
 
                 // Dump first few entries
@@ -293,7 +303,7 @@ mod tests {
         let data = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03];
         let buf = Cursor::new(Vec::new());
         let mut w = HvsFileWriter::new(buf).unwrap();
-        w.add_array("/test/blob", data.clone());
+        w.add_array("/test/blob", data.clone()).unwrap();
         let mut buf = w.finish().unwrap();
 
         buf.set_position(0);
@@ -322,7 +332,7 @@ mod tests {
         let mut w = HvsFileWriter::new(buf).unwrap();
         w.add_uint("/savedstate/VmVersion", 0x0A00);
         w.add_string("/savedstate/type", "Normal");
-        w.add_array("/savedstate/savedVM/partition_state", blob.clone());
+        w.add_array("/savedstate/savedVM/partition_state", blob.clone()).unwrap();
         w.add_bool("/savedstate/compressed", false);
         w.add_int("/savedstate/vpcount", 4);
         let mut buf = w.finish().unwrap();
@@ -395,7 +405,7 @@ mod tests {
             let name = format!("/parent/key_{i:04}");
             // Vary data size to hit different table-fill patterns.
             let data = vec![0xABu8; (i * 7) % 50];
-            w.add_array(&name, data);
+            w.add_array(&name, data).unwrap();
         }
         let buf = w.finish().unwrap();
         let data = buf.into_inner();
@@ -437,7 +447,7 @@ mod tests {
         }
 
         // Also verify we can read every key back.
-        let mut reader = HvsFileReader::open(Cursor::new(&data)).unwrap();
+        let reader = HvsFileReader::open(Cursor::new(&data)).unwrap();
         for i in 0..300 {
             let name = format!("/parent/key_{i:04}");
             let expected = vec![0xABu8; (i * 7) % 50];

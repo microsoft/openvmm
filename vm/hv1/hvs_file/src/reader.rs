@@ -6,8 +6,8 @@
 //! Opens existing `.vmrs` / `.vmcx` / `.vsv` files and provides access
 //! to the key-value store. Read-only, current format version only.
 
+use crate::crc32;
 use crate::defs::*;
-use crate::writer::crc32;
 use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom};
 use zerocopy::FromBytes;
@@ -15,20 +15,47 @@ use zerocopy::FromBytes;
 /// Error type for reader operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
+    /// An I/O error occurred while reading the file.
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
+    /// The file header signature is invalid.
     #[error("invalid header signature: {0:#x}")]
     BadHeaderSignature(u32),
+    /// The file header checksum does not match.
     #[error("header checksum mismatch")]
     BadHeaderChecksum,
+    /// The object table signature is invalid.
     #[error("invalid object table signature: {0:#x}")]
     BadObjectTableSignature(u32),
+    /// The requested key was not found in the file.
     #[error("key not found: {0}")]
     KeyNotFound(String),
+    /// The key exists but has an unexpected type.
     #[error("unexpected key type: expected {expected}, got {actual}")]
-    WrongKeyType { expected: &'static str, actual: u8 },
+    WrongKeyType {
+        /// The expected type name.
+        expected: &'static str,
+        /// The actual type discriminant.
+        actual: u8,
+    },
+    /// A key table has an invalid signature.
     #[error("invalid key table signature: {0:#x}")]
     BadKeyTableSignature(u16),
+}
+
+/// A typed value read from the key-value store.
+#[derive(Clone, Debug, PartialEq)]
+pub enum KeyValue {
+    /// Signed 64-bit integer.
+    Int(i64),
+    /// Unsigned 64-bit integer.
+    UInt(u64),
+    /// UTF-16LE string (decoded to Rust String).
+    String(String),
+    /// Raw byte array (inline or from file object).
+    Array(Vec<u8>),
+    /// Boolean value.
+    Bool(bool),
 }
 
 /// A read-only view of a HyperV Storage file.
@@ -393,17 +420,43 @@ impl<R: Read + Seek> HvsFileReader<R> {
         self.keys.contains_key(path)
     }
 
-    /// Returns the key type for a given path, or None if the key doesn't exist.
-    pub fn key_type(&self, path: &str) -> Option<KeyType> {
-        self.keys.get(path).map(|e| e.key_type)
-    }
-
-    /// Returns true if the key points to a file object.
-    pub fn is_file_object(&self, path: &str) -> bool {
-        self.keys
+    /// Reads a key's value as a [`KeyValue`] enum, regardless of type.
+    ///
+    /// File objects are read transparently — the caller does not need to
+    /// know whether the value was stored inline or as a file object.
+    pub fn read_value(&mut self, path: &str) -> Result<KeyValue, ReadError> {
+        let entry = self
+            .keys
             .get(path)
-            .map(|e| e.flags & KEY_FLAG_POINTS_TO_FILE_OBJECT != 0)
-            .unwrap_or(false)
+            .ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?
+            .clone();
+        match entry.key_type {
+            KeyType::INT => Ok(KeyValue::Int(i64::from_le_bytes(
+                entry.data[..8].try_into().unwrap_or_default(),
+            ))),
+            KeyType::UINT => Ok(KeyValue::UInt(u64::from_le_bytes(
+                entry.data[..8].try_into().unwrap_or_default(),
+            ))),
+            KeyType::BOOL => Ok(KeyValue::Bool(
+                i32::from_le_bytes(entry.data[..4].try_into().unwrap_or_default()) != 0,
+            )),
+            KeyType::STRING => self.read_string(path).map(KeyValue::String),
+            KeyType::ARRAY => {
+                if entry.flags & KEY_FLAG_POINTS_TO_FILE_OBJECT != 0 {
+                    self.reader
+                        .seek(SeekFrom::Start(entry.file_object_offset))?;
+                    let mut data = vec![0u8; entry.file_object_size as usize];
+                    self.reader.read_exact(&mut data)?;
+                    Ok(KeyValue::Array(data))
+                } else {
+                    self.read_array(path).map(KeyValue::Array)
+                }
+            }
+            _ => Err(ReadError::WrongKeyType {
+                expected: "known type",
+                actual: entry.key_type.0,
+            }),
+        }
     }
 }
 
