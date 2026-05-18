@@ -7410,3 +7410,142 @@ async fn vlan_rx_counter_increments(driver: DefaultDriver) {
         "netvsp should count 1 VLAN RX packet"
     );
 }
+
+// Helper to construct a Linux guest OS ID with a given kernel version.
+fn make_linux_guest_os_id(major: u32, minor: u32, patch: u32) -> HvGuestOsId {
+    use hvdef::hypercall::HvGuestOsOpenSource;
+    use hvdef::hypercall::HvGuestOsOpenSourceType;
+    let version = (major << 16) | (minor << 8) | patch;
+    let id: u64 = HvGuestOsOpenSource::new()
+        .with_is_open_source(true)
+        .with_os_type(HvGuestOsOpenSourceType::LINUX.0)
+        .with_version(version)
+        .into();
+    HvGuestOsId::from(id)
+}
+
+// Helper to construct a Windows guest OS ID.
+fn make_windows_guest_os_id() -> HvGuestOsId {
+    let id: u64 = HvGuestOsMicrosoft::new()
+        .with_os_id(HvGuestOsMicrosoftIds::WINDOWS_NT.0)
+        .into();
+    HvGuestOsId::from(id)
+}
+
+// Helper to construct a FreeBSD guest OS ID.
+fn make_freebsd_guest_os_id() -> HvGuestOsId {
+    use hvdef::hypercall::HvGuestOsOpenSource;
+    use hvdef::hypercall::HvGuestOsOpenSourceType;
+    let id: u64 = HvGuestOsOpenSource::new()
+        .with_is_open_source(true)
+        .with_os_type(HvGuestOsOpenSourceType::FREEBSD.0)
+        .with_version(1400097)
+        .into();
+    HvGuestOsId::from(id)
+}
+
+#[test]
+fn vf_device_delay_by_guest_os() {
+    assert_eq!(
+        vf_device_delay(None),
+        VF_DEVICE_DELAY,
+        "unknown guest OS should get conservative delay"
+    );
+    assert_eq!(
+        vf_device_delay(Some(HvGuestOsId::from(0u64))),
+        VF_DEVICE_DELAY,
+        "zero/undefined guest OS ID should get conservative delay"
+    );
+    assert_eq!(
+        vf_device_delay(Some(make_windows_guest_os_id())),
+        Duration::ZERO,
+        "Windows should not get VF delay"
+    );
+    assert_eq!(
+        vf_device_delay(Some(make_freebsd_guest_os_id())),
+        Duration::ZERO,
+        "FreeBSD should not get VF delay"
+    );
+    assert_eq!(
+        vf_device_delay(Some(make_linux_guest_os_id(6, 6, 255))),
+        VF_DEVICE_DELAY,
+        "Linux 6.6.255 should get VF delay (just before the fix)"
+    );
+    assert_eq!(
+        vf_device_delay(Some(make_linux_guest_os_id(6, 7, 0))),
+        Duration::ZERO,
+        "Linux 6.7.0 should not get VF delay (the fix version)"
+    );
+    assert_eq!(
+        vf_device_delay(Some(make_linux_guest_os_id(6, 8, 0))),
+        Duration::ZERO,
+        "Linux 6.8.0 should not get VF delay (after the fix)"
+    );
+}
+
+#[test]
+fn link_delay_by_guest_os() {
+    assert_eq!(
+        link_delay_duration(None),
+        LINK_DELAY_DURATION,
+        "unknown guest OS should get conservative link delay"
+    );
+    assert_eq!(
+        link_delay_duration(Some(HvGuestOsId::from(0u64))),
+        LINK_DELAY_DURATION,
+        "zero/undefined guest OS ID should get conservative link delay"
+    );
+    assert_eq!(
+        link_delay_duration(Some(make_windows_guest_os_id())),
+        Duration::ZERO,
+        "Windows should not get link delay"
+    );
+    assert_eq!(
+        link_delay_duration(Some(make_freebsd_guest_os_id())),
+        Duration::ZERO,
+        "FreeBSD should not get link delay"
+    );
+    assert_eq!(
+        link_delay_duration(Some(make_linux_guest_os_id(4, 19, 0))),
+        LINK_DELAY_DURATION,
+        "Linux 4.19 should get link delay (all Linux versions need it)"
+    );
+    assert_eq!(
+        link_delay_duration(Some(make_linux_guest_os_id(6, 9, 0))),
+        LINK_DELAY_DURATION,
+        "Linux 6.9 should get link delay (all Linux versions need it)"
+    );
+}
+
+#[async_test]
+async fn inspect_guest_os_delays(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let get_guest_os_id = Box::new(make_windows_guest_os_id);
+    let nic = Nic::builder().get_guest_os_id(get_guest_os_id).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic_dev = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic_dev.start_vmbus_channel();
+    let mut channel = nic_dev.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+
+    // Windows guest -> both delays should be zero.
+    assert_eq!(
+        read_netvsp_counter(&nic_dev.channel, "vf_device_delay_ms").await,
+        0,
+        "Windows guest should report 0ms VF device delay"
+    );
+    assert_eq!(
+        read_netvsp_counter(&nic_dev.channel, "link_delay_duration_ms").await,
+        0,
+        "Windows guest should report 0ms link delay"
+    );
+}

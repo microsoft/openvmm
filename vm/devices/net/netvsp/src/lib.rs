@@ -131,10 +131,48 @@ const NETVSP_MAX_SUBCHANNELS_PER_VNIC: u16 = 64;
 // could get the "eth0" name. In provisioning scenarios, the scripts will make
 // assumptions about which interface should be used, with eth0 being the
 // default.
+// This was fixed upstream in Linux 6.7 (commit d30fb712 "hv_netvsc: fix
+// race of netvsc and VF register_netdevice").
 #[cfg(not(test))]
 const VF_DEVICE_DELAY: Duration = Duration::from_secs(1);
 #[cfg(test)]
 const VF_DEVICE_DELAY: Duration = Duration::from_millis(100);
+
+/// Returns the VF device delay to apply based on the guest OS.
+///
+/// Only older Linux guests (< 6.7) are affected by the naming race.
+/// Windows, FreeBSD, and other guests do not require a delay.
+fn vf_device_delay(guest_os_id: Option<HvGuestOsId>) -> Duration {
+    let Some(guest_os_id) = guest_os_id else {
+        // Guest OS ID not available; apply the delay to be safe.
+        return VF_DEVICE_DELAY;
+    };
+
+    // A zero guest OS ID means the guest hasn't identified itself yet;
+    // Apply the delay to be safe.
+    if guest_os_id.as_u64() == 0 {
+        return VF_DEVICE_DELAY;
+    }
+
+    let Some(open_source_os) = guest_os_id.open_source() else {
+        // Guest OS is proprietary (e.g., Windows); no delay needed.
+        return Duration::ZERO;
+    };
+
+    match HvGuestOsOpenSourceType(open_source_os.os_type()) {
+        HvGuestOsOpenSourceType::LINUX => {
+            // Linux version is encoded as: ((major << 16) | (minor << 8) | patch)
+            // Linux 6.7.0 = (6 << 16) | (7 << 8) | 0 = 395008
+            if open_source_os.version() >= 395008 {
+                Duration::ZERO
+            } else {
+                VF_DEVICE_DELAY
+            }
+        }
+        // Non-Linux open-source guests don't have the race.
+        _ => Duration::ZERO,
+    }
+}
 
 // Linux guests are known to not act on link state change notifications if
 // they happen in quick succession.
@@ -142,6 +180,34 @@ const VF_DEVICE_DELAY: Duration = Duration::from_millis(100);
 const LINK_DELAY_DURATION: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const LINK_DELAY_DURATION: Duration = Duration::from_millis(333);
+
+/// Returns the link delay duration to apply based on the guest OS.
+///
+/// Linux hv_netvsc has a 2 second delay LINKCHANGE_INT.
+/// Windows, FreeBSD, and other guests do not require a delay.
+fn link_delay_duration(guest_os_id: Option<HvGuestOsId>) -> Duration {
+    let Some(guest_os_id) = guest_os_id else {
+        // Guest OS ID not available; conservatively apply the delay.
+        return LINK_DELAY_DURATION;
+    };
+
+    // A zero guest OS ID means the guest hasn't identified itself yet;
+    // conservatively apply the delay.
+    if guest_os_id.as_u64() == 0 {
+        return LINK_DELAY_DURATION;
+    }
+
+    let Some(open_source_os) = guest_os_id.open_source() else {
+        // Guest OS is proprietary (e.g., Windows); no delay needed.
+        return Duration::ZERO;
+    };
+
+    match HvGuestOsOpenSourceType(open_source_os.os_type()) {
+        HvGuestOsOpenSourceType::LINUX => LINK_DELAY_DURATION,
+        // Non-Linux open-source guests don't have this issue.
+        _ => Duration::ZERO,
+    }
+}
 
 #[derive(Default, PartialEq)]
 struct CoordinatorMessageUpdateType {
@@ -466,6 +532,7 @@ struct NetChannel<T: RingMem> {
     restart: Option<CoordinatorMessage>,
     can_use_ring_size_opt: bool,
     packet_filter: u32,
+    link_delay_duration: Duration,
 }
 
 // Use an enum to give the compiler more visibility into the packet size.
@@ -1204,6 +1271,8 @@ impl NicBuilder {
             adapter: adapter.clone(),
             virtual_function: self.virtual_function,
             pending_vf_state: CoordinatorStatePendingVfState::Ready,
+            vf_device_delay: VF_DEVICE_DELAY,
+            link_delay_duration: LINK_DELAY_DURATION,
         });
 
         Nic {
@@ -1492,8 +1561,11 @@ impl Nic {
         let raw = gpadl_channel(&driver, &self.resources, open_request, channel_idx)
             .map_err(OpenError::Ring)?;
         let mut queue = Queue::new(raw).map_err(OpenError::Queue)?;
+        // Compute Guest OS aware optimizations.
         let guest_os_id = self.adapter.get_guest_os_id.as_ref().map(|f| f());
         let can_use_ring_size_opt = can_use_ring_opt(&mut queue, guest_os_id);
+        let vf_device_delay = vf_device_delay(guest_os_id);
+        let link_delay_duration = link_delay_duration(guest_os_id);
         let worker = Worker {
             channel_idx,
             target_vp: open_request.open_data.target_vp,
@@ -1511,6 +1583,7 @@ impl Nic {
                 restart: None,
                 can_use_ring_size_opt,
                 packet_filter: coordinator.active_packet_filter,
+                link_delay_duration,
             },
             state,
             coordinator_send: self.coordinator_send.clone().unwrap(),
@@ -1524,6 +1597,12 @@ impl Nic {
         );
         if start {
             worker_task.start();
+        }
+        // Update the coordinator state delays for the primary channel.
+        if channel_idx == 0 {
+            let c_state = self.coordinator.task_mut();
+            c_state.vf_device_delay = vf_device_delay;
+            c_state.link_delay_duration = link_delay_duration;
         }
         Ok(())
     }
@@ -3956,6 +4035,8 @@ struct CoordinatorState {
     adapter: Arc<Adapter>,
     virtual_function: Option<Box<dyn VirtualFunction>>,
     pending_vf_state: CoordinatorStatePendingVfState,
+    vf_device_delay: Duration,
+    link_delay_duration: Duration,
 }
 
 impl InspectTaskMut<Coordinator> for CoordinatorState {
@@ -3993,7 +4074,17 @@ impl InspectTaskMut<Coordinator> for CoordinatorState {
                 "endpoint_max_queues",
                 self.endpoint.multiqueue_support().max_queues,
             )
-            .sensitivity_field_mut("endpoint", SensitivityLevel::Safe, self.endpoint.as_mut());
+            .sensitivity_field_mut("endpoint", SensitivityLevel::Safe, self.endpoint.as_mut())
+            .sensitivity_field(
+                "vf_device_delay_ms",
+                SensitivityLevel::Safe,
+                self.vf_device_delay.as_millis() as u64,
+            )
+            .sensitivity_field(
+                "link_delay_duration_ms",
+                SensitivityLevel::Safe,
+                self.link_delay_duration.as_millis() as u64,
+            );
 
         if let Some(coordinator) = coordinator {
             resp.sensitivity_child("queues", SensitivityLevel::Safe, |req| {
@@ -4302,7 +4393,7 @@ impl Coordinator {
                         let timer = PolledTimer::new(&c_state.adapter.driver);
                         c_state.pending_vf_state = CoordinatorStatePendingVfState::Delay {
                             timer,
-                            delay_until: Instant::now() + VF_DEVICE_DELAY,
+                            delay_until: Instant::now() + c_state.vf_device_delay,
                         };
                     }
                 }
@@ -5217,7 +5308,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 match primary.pending_link_action {
                     PendingLinkAction::Delay(_) => {
                         return Ok(CoordinatorMessage::StartTimer(
-                            Instant::now() + LINK_DELAY_DURATION,
+                            Instant::now() + self.link_delay_duration,
                         ));
                     }
                     PendingLinkAction::Active(_) => panic!("State should not be Active"),
