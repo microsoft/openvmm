@@ -322,8 +322,8 @@ pub(super) fn resolve_memory_layout(
             .find(|e| e.segment == root_complex.segment)
             .expect("segment must exist");
         let offset = u64::from(root_complex.start_bus - se.min_bus) * PCIE_ECAM_BYTES_PER_BUS;
-        let size =
-            u64::from(root_complex.end_bus - root_complex.start_bus + 1) * PCIE_ECAM_BYTES_PER_BUS;
+        let size = (u64::from(root_complex.end_bus - root_complex.start_bus) + 1)
+            * PCIE_ECAM_BYTES_PER_BUS;
         ranges.ecam_range =
             MemoryRange::new(se.range.start() + offset..se.range.start() + offset + size);
     }
@@ -683,6 +683,29 @@ mod tests {
         let bus0_base_r1 = r1.ecam_range.start()
             - u64::from(root_complexes[1].start_bus) * PCIE_ECAM_BYTES_PER_BUS;
         assert_eq!(bus0_base_r0, bus0_base_r1);
+    }
+
+    #[test]
+    fn full_bus_range_ecam_does_not_overflow() {
+        // A single RC spanning buses 0..255 requires (255 - 0 + 1) = 256
+        // buses. The bus count must be computed in u64, not u8, to avoid
+        // overflow.
+        let root_complexes = [PcieRootComplexConfig {
+            index: 0,
+            name: "rc0".to_string(),
+            segment: 0,
+            start_bus: 0,
+            end_bus: 255,
+            low_mmio: PcieMmioRangeConfig::Dynamic { size: 64 * MB },
+            high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
+            ports: Vec::new(),
+        }];
+        let mut config = input(2 * GB, None, None);
+        config.pcie_root_complexes = &root_complexes;
+
+        let actual = resolve_memory_layout(config).unwrap();
+        let ranges = &actual.pcie_root_complex_ranges[0];
+        assert_eq!(ranges.ecam_range.len(), 256 * PCIE_ECAM_BYTES_PER_BUS);
     }
 
     #[test]
