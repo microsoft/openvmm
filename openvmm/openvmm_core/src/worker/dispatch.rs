@@ -3360,7 +3360,9 @@ impl LoadedVm {
 
         let partition_state_blob = builder.finish();
 
-        // Write the VMRS file.
+        // Write the VMRS file. BufWriter reduces syscalls for the many small
+        // key table / header writes interspersed with large memory blocks.
+        let file = std::io::BufWriter::with_capacity(256 * 1024, file);
         let mut vmrs = VmrsWriter::new(file).context("failed to initialize VMRS writer")?;
         vmrs.set_partition_state(partition_state_blob);
 

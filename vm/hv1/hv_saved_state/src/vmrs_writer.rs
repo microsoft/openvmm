@@ -16,6 +16,7 @@ use crate::defs::MemoryBlockSaveStruct;
 use crate::defs::VM_VERSION_IRON;
 use crate::defs::WPMM_MB_SAVE_STATE_VERSION_3;
 use hvs_file::writer::HvsFileWriter;
+use std::fmt::Write as _;
 use std::io::{self, Seek, Write};
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -100,6 +101,7 @@ impl<W: Write + Seek> VmrsWriter<W> {
         let mut meta_block_idx = 0u32;
         let mut data_block_idx = 0u64;
         let mut block_buf = vec![0u8; GMO_BLOCK_SIZE_BYTES];
+        let mut key_buf = String::new();
 
         for range in &self.ranges {
             let total_pages = range.length / 4096;
@@ -112,8 +114,9 @@ impl<W: Write + Seek> VmrsWriter<W> {
             meta.mbp_index_start = data_block_idx * GMO_BLOCK_SIZE_PAGES;
             meta.gpa_index_start = gpa_page_start;
 
-            let meta_key = format!("/savedstate/RamMemoryBlock{meta_block_idx}");
-            self.hvs.add_array(&meta_key, meta.as_bytes())?;
+            key_buf.clear();
+            write!(key_buf, "/savedstate/RamMemoryBlock{meta_block_idx}").unwrap();
+            self.hvs.add_array(&key_buf, meta.as_bytes())?;
             meta_block_idx += 1;
 
             // Stream data blocks (1 MiB each)
@@ -124,8 +127,9 @@ impl<W: Write + Seek> VmrsWriter<W> {
                 let buf = &mut block_buf[..block_len];
                 reader.read_gpa(gpa, buf)?;
 
-                let data_key = format!("/savedstate/RamBlock{data_block_idx}");
-                self.hvs.add_array(&data_key, buf)?;
+                key_buf.clear();
+                write!(key_buf, "/savedstate/RamBlock{data_block_idx}").unwrap();
+                self.hvs.add_array(&key_buf, buf)?;
                 data_block_idx += 1;
                 gpa += block_len as u64;
             }
