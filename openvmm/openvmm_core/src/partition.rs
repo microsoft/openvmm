@@ -115,6 +115,14 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
     /// TODO: remove this.
     #[cfg(all(windows, feature = "virt_whp"))]
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Returns the guest OS ID (from `HV_X64_MSR_GUEST_OS_ID`).
+    ///
+    /// Returns 0 if the guest hasn't written the MSR (unenlightened guest)
+    /// or if the backend doesn't support reading it.
+    fn guest_os_id(&self) -> u64 {
+        0
+    }
 }
 
 pub trait BasicPartitionStateAccess: 'static + Send + Sync + Inspect {
@@ -171,7 +179,7 @@ impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
 
 impl<T> HvlitePartition for T
 where
-    T: BasicPartitionStateAccess + ArchPartition + PartitionMemoryMapper,
+    T: BasicPartitionStateAccess + ArchPartition + PartitionMemoryMapper + PartitionAccessState,
 {
     #[cfg(guest_arch = "x86_64")]
     fn into_lint_target(self: Arc<Self>, vtl: Vtl) -> Arc<dyn LineSetTarget> {
@@ -247,6 +255,13 @@ where
     #[cfg(all(windows, feature = "virt_whp"))]
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn guest_os_id(&self) -> u64 {
+        self.access_state(Vtl::Vtl0)
+            .hypercall()
+            .map_or(0, |msrs| msrs.guest_os_id)
     }
 }
 

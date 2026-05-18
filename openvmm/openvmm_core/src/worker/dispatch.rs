@@ -3325,9 +3325,7 @@ impl LoadedVm {
         let arch = ProcessorArch::Aarch64;
 
         let mut builder = PartitionStateBuilder::new(arch);
-        // TODO: Get guest OS ID from HV_X64_MSR_GUEST_OS_ID. For now, 0
-        // (unenlightened) works — WinDbg auto-detects from memory.
-        builder.set_os_id(0);
+        builder.set_os_id(self.inner.partition.guest_os_id());
 
         // Collect VP state for each VP.
         for vp_idx in 0..vp_count {
