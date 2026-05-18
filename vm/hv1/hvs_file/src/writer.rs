@@ -241,8 +241,8 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         let mut all_entries: Vec<EntryData> = Vec::new();
         let mut node_stack: Vec<String> = Vec::new();
 
-        for key in &self.pending_keys {
-            let trimmed = key.path.trim_start_matches('/');
+        for key in self.pending_keys {
+            let trimmed = key.path.trim_start_matches('/').to_string();
             let segments: Vec<&str> = trimmed.split('/').collect();
             let ancestor_segments = &segments[..segments.len().saturating_sub(1)];
 
@@ -272,20 +272,18 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             let mut name_bytes = name.as_bytes().to_vec();
             name_bytes.push(0);
 
-            let (key_type, flags, data_bytes) = if let Some(ref fo) = key.file_object {
+            let (key_type, flags, data_bytes) = if let Some(fo) = key.file_object {
                 let fo_data = FileObjectData {
                     size_in_bytes: fo.size,
                     offset_in_bytes: fo.offset,
                 };
                 (KeyType::ARRAY, KEY_FLAG_POINTS_TO_FILE_OBJECT, fo_data.as_bytes().to_vec())
             } else {
-                match &key.value {
+                match key.value {
                     Value::Int(v) => (KeyType::INT, 0u8, v.to_le_bytes().to_vec()),
                     Value::UInt(v) => (KeyType::UINT, 0u8, v.to_le_bytes().to_vec()),
-                    Value::Bool(v) => (KeyType::BOOL, 0u8, (*v as i32).to_le_bytes().to_vec()),
+                    Value::Bool(v) => (KeyType::BOOL, 0u8, (v as i32).to_le_bytes().to_vec()),
                     Value::String(s) => {
-                        // Length-prefixed UTF-16LE with NUL terminator.
-                        // Reserve the u32 length prefix, then fill it after encoding.
                         let mut data = vec![0u8; 4];
                         for ch in s.encode_utf16().chain(core::iter::once(0)) {
                             data.extend_from_slice(&ch.to_le_bytes());
@@ -296,7 +294,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                     }
                     Value::Array(data) => {
                         let mut buf = (data.len() as u32).to_le_bytes().to_vec();
-                        buf.extend_from_slice(data);
+                        buf.extend_from_slice(&data);
                         (KeyType::ARRAY, 0u8, buf)
                     }
                 }
@@ -317,7 +315,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 },
                 name_bytes,
                 data_bytes,
-                path: key.path.clone(),
+                path: key.path,
                 is_node: false,
             });
         }
