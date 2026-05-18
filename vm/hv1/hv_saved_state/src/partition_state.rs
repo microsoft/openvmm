@@ -199,35 +199,48 @@ impl PartitionStateBuilder {
     /// envelope, ready to be stored as the
     /// `/savedstate/savedVM/partition_state` array value.
     pub fn finish(&self) -> Vec<u8> {
-        let mut chunks = Vec::new();
+        let descriptor_size = size_of::<VidSavedStateDescriptor>() as u64;
+        let envelope_prefix = size_of::<VidSavedStateDescriptor>() + 16;
 
-        self.write_prolog(&mut chunks);
-        self.write_os_id(&mut chunks);
+        // Reserve space for the descriptor + alignment padding, filled in at the end.
+        let mut blob = vec![0u8; envelope_prefix];
+
+        self.write_prolog(&mut blob);
+        self.write_os_id(&mut blob);
 
         if self.vtls.len() > 1 {
             for &vtl in &self.vtls {
-                self.write_partition_vtl(&mut chunks, vtl);
+                self.write_partition_vtl(&mut blob, vtl);
             }
         }
 
-        self.write_vp_indices(&mut chunks);
+        self.write_vp_indices(&mut blob);
 
         for vp in &self.vps {
-            self.write_vp_marker(&mut chunks, vp.vp_index);
+            self.write_vp_marker(&mut blob, vp.vp_index);
 
             if vp.vtl_states.len() > 1 {
-                self.write_vp_vtl_control_page(&mut chunks);
+                self.write_vp_vtl_control_page(&mut blob);
                 for vtl_state in &vp.vtl_states {
-                    self.write_vp_vtl_marker(&mut chunks, vtl_state.vtl);
-                    self.write_vp_chunks(&mut chunks, &vtl_state.regs);
+                    self.write_vp_vtl_marker(&mut blob, vtl_state.vtl);
+                    self.write_vp_chunks(&mut blob, &vtl_state.regs);
                 }
             } else {
-                self.write_vp_chunks(&mut chunks, &vp.vtl_states[0].regs);
+                self.write_vp_chunks(&mut blob, &vp.vtl_states[0].regs);
             }
         }
 
-        self.write_epilog(&mut chunks);
-        self.wrap_envelope(chunks)
+        self.write_epilog(&mut blob);
+
+        // Patch the descriptor now that total size is known.
+        let descriptor = VidSavedStateDescriptor {
+            descriptor_size,
+            header_size: descriptor_size,
+            total_size: blob.len() as u64,
+        };
+        blob[..size_of::<VidSavedStateDescriptor>()].copy_from_slice(descriptor.as_bytes());
+
+        blob
     }
 
     fn write_vp_chunks(&self, out: &mut Vec<u8>, state: &VpState) {
@@ -548,24 +561,6 @@ impl PartitionStateBuilder {
         );
     }
 
-    /// Wraps the chunk stream in a VidSavedStateDescriptor envelope.
-    fn wrap_envelope(&self, chunks: Vec<u8>) -> Vec<u8> {
-        let descriptor_size = size_of::<VidSavedStateDescriptor>() as u64;
-        let header_size = descriptor_size;
-        let total_size = header_size + 16 + chunks.len() as u64;
-
-        let descriptor = VidSavedStateDescriptor {
-            descriptor_size,
-            header_size,
-            total_size,
-        };
-
-        let mut blob = Vec::with_capacity(total_size as usize);
-        blob.extend_from_slice(descriptor.as_bytes());
-        blob.extend_from_slice(&[0u8; 16]); // alignment padding
-        blob.extend_from_slice(&chunks);
-        blob
-    }
 }
 
 /// Creates a chunk header for a chunk struct of the given total size.
