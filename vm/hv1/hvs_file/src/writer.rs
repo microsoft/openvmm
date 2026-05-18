@@ -191,12 +191,20 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             header: KeyTableEntryHeader,
             name_bytes: Vec<u8>,
             data_bytes: Vec<u8>,
-            parent_path: String,
-            self_path: String,
+            path: String,
             is_node: bool,
         }
 
-        fn make_node_entry(path: &str, parent: &str, entry_header_size: usize) -> EntryData {
+        impl EntryData {
+            fn parent_path(&self) -> &str {
+                match self.path[1..].rfind('/') {
+                    Some(pos) => &self.path[..pos + 1],
+                    None => "",
+                }
+            }
+        }
+
+        fn make_node_entry(path: &str, entry_header_size: usize) -> EntryData {
             let name = path.rsplit('/').next().unwrap_or("");
             let mut name_bytes = name.as_bytes().to_vec();
             name_bytes.push(0);
@@ -220,47 +228,49 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 },
                 name_bytes,
                 data_bytes,
-                parent_path: parent.to_string(),
-                self_path: path.to_string(),
+                path: path.to_string(),
                 is_node: true,
             }
         }
 
         // Build all entries in a single pass over sorted pending keys.
-        // Track which node paths we've already emitted so we emit each
-        // node exactly once, before its first child.
+        // Use a stack of ancestor paths to track position in the tree.
+        // When the path diverges, pop to the common prefix and push new
+        // node entries for new segments. No set or map needed — the sorted
+        // order guarantees each node is encountered exactly once.
         let mut all_entries: Vec<EntryData> = Vec::new();
-        let mut emitted_nodes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        emitted_nodes.insert(String::new()); // root is virtual
+        let mut node_stack: Vec<String> = Vec::new();
 
         for key in &self.pending_keys {
             let trimmed = key.path.trim_start_matches('/');
             let segments: Vec<&str> = trimmed.split('/').collect();
+            let ancestor_segments = &segments[..segments.len().saturating_sub(1)];
 
-            // Ensure all ancestor nodes exist.
-            let mut ancestor = String::new();
-            for seg in &segments[..segments.len().saturating_sub(1)] {
-                let node_path = if ancestor.is_empty() {
+            // Find common prefix length with current node_stack.
+            let common = node_stack
+                .iter()
+                .zip(ancestor_segments.iter())
+                .take_while(|(stk, seg)| stk.rsplit('/').next().unwrap_or("") == **seg)
+                .count();
+
+            // Pop back to common prefix.
+            node_stack.truncate(common);
+
+            // Push new ancestor nodes, emitting node entries.
+            for seg in &ancestor_segments[common..] {
+                let node_path = if node_stack.is_empty() {
                     format!("/{seg}")
                 } else {
-                    format!("{ancestor}/{seg}")
+                    format!("{}/{seg}", node_stack.last().unwrap())
                 };
-                if emitted_nodes.insert(node_path.clone()) {
-                    all_entries.push(make_node_entry(
-                        &node_path,
-                        &ancestor,
-                        entry_header_size,
-                    ));
-                }
-                ancestor = node_path;
+                all_entries.push(make_node_entry(&node_path, entry_header_size));
+                node_stack.push(node_path);
             }
 
             // Emit the leaf entry.
             let name = segments.last().unwrap_or(&"");
             let mut name_bytes = name.as_bytes().to_vec();
             name_bytes.push(0);
-
-            let parent_path = ancestor;
 
             let (key_type, flags, data_bytes) = if let Some(ref fo) = key.file_object {
                 let fo_data = FileObjectData {
@@ -305,8 +315,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 },
                 name_bytes,
                 data_bytes,
-                parent_path,
-                self_path: key.path.clone(),
+                path: key.path.clone(),
                 is_node: false,
             });
         }
@@ -314,17 +323,17 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         // Assign insertion sequences: count children per parent.
         let mut child_count: BTreeMap<String, u32> = BTreeMap::new();
         for entry in &all_entries {
-            *child_count.entry(entry.parent_path.clone()).or_insert(0) += 1;
+            *child_count.entry(entry.parent_path().to_string()).or_insert(0) += 1;
         }
         {
-            let mut seq_counters: BTreeMap<&str, u32> = BTreeMap::new();
+            let mut seq_counters: BTreeMap<String, u32> = BTreeMap::new();
             for entry in &mut all_entries {
-                let seq = seq_counters.entry(&entry.parent_path).or_insert(0);
+                let seq = seq_counters.entry(entry.parent_path().to_string()).or_insert(0);
                 *seq += 1;
                 entry.header.insertion_sequence = *seq;
 
                 if entry.is_node {
-                    let next_ins = child_count.get(entry.self_path.as_str()).copied().unwrap_or(0) + 1;
+                    let next_ins = child_count.get(entry.path.as_str()).copied().unwrap_or(0) + 1;
                     entry.data_bytes = NodeData {
                         change_tracking_sequence: 0,
                         next_insertion_sequence: next_ins,
@@ -363,13 +372,14 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             // Record node location for children to reference.
             if entry.is_node {
                 node_locations.insert(
-                    entry.self_path.clone(),
+                    entry.path.clone(),
                     (current_table_index, offset_in_table as u32),
                 );
             }
 
             // Set parent pointer from the node_locations map.
-            if let Some(&(pt, po)) = node_locations.get(&entry.parent_path) {
+            let parent = entry.parent_path().to_string();
+            if let Some(&(pt, po)) = node_locations.get(&parent) {
                 entry.header.parent_node_table = pt;
                 entry.header.parent_node_offset = po;
             }
