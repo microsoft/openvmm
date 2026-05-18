@@ -45,8 +45,8 @@ use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("command line contains an embedded NUL byte")]
-    CommandLineContainsNul,
+    #[error("command line contains an embedded NUL byte at offset {0}")]
+    CommandLineContainsNul(usize),
     #[error("failed to read igvm file")]
     Igvm(#[source] std::io::Error),
     #[error("invalid igvm file")]
@@ -594,8 +594,8 @@ fn load_igvm_x86(
     // The command line is exposed to the guest as a NUL-terminated byte
     // sequence (via the IGVM CommandLine parameter), so reject any embedded NUL
     // bytes up front.
-    if cmdline.as_bytes().contains(&0) {
-        return Err(Error::CommandLineContainsNul);
+    if let Some(pos) = cmdline.as_bytes().iter().position(|&b| b == 0) {
+        return Err(Error::CommandLineContainsNul(pos));
     }
 
     let (mask, max_vtl) = match vbs_platform_header(igvm_file)? {

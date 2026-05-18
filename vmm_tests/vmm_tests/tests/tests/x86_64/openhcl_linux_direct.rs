@@ -415,9 +415,8 @@ async fn openhcl_linux_vtl2_mmio_self_allocate(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
     // Default chipset MMIO sizes for `HclHost` from
-    // `vm_manifest_builder::VmChipsetBuilder::build`. Keep in sync with that
-    // file.
-    const DEFAULT_LOW_MMIO_SIZE: u64 = 96 * 1024 * 1024;
+    // `vm_manifest_builder::layout_config`. Keep in sync with that file.
+    const DEFAULT_LOW_MMIO_SIZE: u64 = 128 * 1024 * 1024;
     const DEFAULT_HIGH_MMIO_SIZE: u64 = 512 * 1024 * 1024;
     const DEFAULT_VTL2_MMIO_SIZE: u64 = 1024 * 1024 * 1024;
     // `mmio-size` is hardcoded in openvmm — see

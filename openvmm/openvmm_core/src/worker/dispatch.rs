@@ -923,9 +923,7 @@ impl InitializedVm {
         let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
             mem_size: cfg.memory.mem_size,
             numa_mem_sizes: cfg.memory.numa_mem_sizes.as_deref(),
-            chipset_low_mmio_size: cfg.layout.chipset_low_mmio_size,
-            chipset_high_mmio_size: cfg.layout.chipset_high_mmio_size,
-            vtl2_chipset_mmio_size: cfg.layout.vtl2_chipset_mmio_size,
+            layout: cfg.layout.clone(),
             pcie_root_complexes: &cfg.pcie_root_complexes,
             virtio_mmio_count,
             vtl2_layout,

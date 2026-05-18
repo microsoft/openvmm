@@ -256,8 +256,10 @@ identical and places VTL2 after the VTL0-visible top:
 |---|---|
 | VTL2 | `0xC000_0000..0xC020_0000` |
 
-`MemoryLayout::end_of_layout()` reports the VTL0-visible top.
-`MemoryLayout::vtl2_range()` reports the VTL2 range separately.
+`MemoryLayout::end_of_layout()` reports the top of all stored ranges,
+including VTL2 chipset MMIO when present.
+`MemoryLayout::vtl2_range()` reports the VTL2 private memory range
+separately.
 
 ### Reserved holes do not raise the layout top
 

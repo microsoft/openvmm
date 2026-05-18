@@ -76,18 +76,8 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// Optional per-vNUMA RAM budgets. When present, these must sum to
     /// `mem_size`, and request order is the vnode assignment order.
     pub numa_mem_sizes: Option<&'a [u64]>,
-    /// Chipset low MMIO size (below 4 GB). This is the VMOD/PCI0 _CRS range
-    /// for VMBus devices and PIIX4 PCI BARs. The address is always allocated
-    /// dynamically. `0` disables the range.
-    pub chipset_low_mmio_size: u32,
-    /// Chipset high MMIO size (above RAM). This is the VMOD/PCI0 _CRS high
-    /// range for VMBus devices. The address is always allocated dynamically.
-    /// `0` disables the range.
-    pub chipset_high_mmio_size: u64,
-    /// VTL2-private chipset MMIO size. Placed after all VTL0-visible layout
-    /// so enabling VTL2 does not move VTL0 addresses. The address is always
-    /// allocated dynamically. `0` disables the range.
-    pub vtl2_chipset_mmio_size: u64,
+    /// Chipset MMIO sizing from the manifest builder.
+    pub layout: vmm_core_defs::LayoutConfig,
     /// PCIe root complex address-space intents. These are resolved by this
     /// worker step so front ends do not need to carve guest physical addresses.
     pub pcie_root_complexes: &'a [PcieRootComplexConfig],
@@ -137,7 +127,7 @@ pub(super) fn resolve_memory_layout(
         ARCH_RESERVED_AARCH64
     };
     let four_gb = 4 * GB;
-    let low_mmio_size = u64::from(input.chipset_low_mmio_size)
+    let low_mmio_size = u64::from(input.layout.chipset_low_mmio_size)
         .next_multiple_of(0x1000)
         .max(arch_reserved.len());
     let chipset_low_mmio = MemoryRange::new(four_gb - low_mmio_size..four_gb);
@@ -145,11 +135,11 @@ pub(super) fn resolve_memory_layout(
 
     // Chipset high MMIO (Mmio64): VMOD/PCI0 _CRS high range.
     let mut chipset_high_mmio = MemoryRange::EMPTY;
-    if input.chipset_high_mmio_size != 0 {
+    if input.layout.chipset_high_mmio_size != 0 {
         builder.request(
             "chipset-high-mmio",
             &mut chipset_high_mmio,
-            input.chipset_high_mmio_size,
+            input.layout.chipset_high_mmio_size,
             TWO_MB,
             Placement::Mmio64,
         );
@@ -259,11 +249,11 @@ pub(super) fn resolve_memory_layout(
     // VTL2 chipset MMIO is implementation-private — placed after all
     // VTL0-visible RAM/MMIO so enabling VTL2 does not move VTL0 addresses.
     let mut vtl2_chipset_mmio = MemoryRange::EMPTY;
-    if input.vtl2_chipset_mmio_size != 0 {
+    if input.layout.vtl2_chipset_mmio_size != 0 {
         builder.request(
             "vtl2-chipset-mmio",
             &mut vtl2_chipset_mmio,
-            input.vtl2_chipset_mmio_size,
+            input.layout.vtl2_chipset_mmio_size,
             TWO_MB,
             Placement::PostMmio,
         );
@@ -478,6 +468,12 @@ mod tests {
     const DEFAULT_CHIPSET_HIGH_MMIO_SIZE: u64 = 512 * 1024 * 1024;
     const DEFAULT_VTL2_CHIPSET_MMIO_SIZE: u64 = GB;
 
+    const DEFAULT_LAYOUT: vmm_core_defs::LayoutConfig = vmm_core_defs::LayoutConfig {
+        chipset_low_mmio_size: DEFAULT_CHIPSET_LOW_MMIO_SIZE,
+        chipset_high_mmio_size: DEFAULT_CHIPSET_HIGH_MMIO_SIZE,
+        vtl2_chipset_mmio_size: 0,
+    };
+
     fn input(
         mem_size: u64,
         numa_mem_sizes: Option<&[u64]>,
@@ -486,9 +482,7 @@ mod tests {
         MemoryLayoutInput {
             mem_size,
             numa_mem_sizes,
-            chipset_low_mmio_size: DEFAULT_CHIPSET_LOW_MMIO_SIZE,
-            chipset_high_mmio_size: DEFAULT_CHIPSET_HIGH_MMIO_SIZE,
-            vtl2_chipset_mmio_size: 0,
+            layout: DEFAULT_LAYOUT,
             pcie_root_complexes: &[],
             virtio_mmio_count: 0,
             vtl2_layout,
@@ -783,7 +777,7 @@ mod tests {
     #[test]
     fn vtl2_chipset_mmio_is_post_mmio() {
         let mut config = input(2 * GB, None, None);
-        config.vtl2_chipset_mmio_size = DEFAULT_VTL2_CHIPSET_MMIO_SIZE;
+        config.layout.vtl2_chipset_mmio_size = DEFAULT_VTL2_CHIPSET_MMIO_SIZE;
 
         let result = resolve_memory_layout(config).unwrap();
 
@@ -801,7 +795,7 @@ mod tests {
     fn vtl2_chipset_mmio_does_not_move_vtl0_layout() {
         let without = resolve(input(2 * GB, None, None));
         let mut config = input(2 * GB, None, None);
-        config.vtl2_chipset_mmio_size = DEFAULT_VTL2_CHIPSET_MMIO_SIZE;
+        config.layout.vtl2_chipset_mmio_size = DEFAULT_VTL2_CHIPSET_MMIO_SIZE;
         let with = resolve_memory_layout(config).unwrap();
 
         assert_eq!(with.memory_layout.ram(), without.ram());
@@ -815,8 +809,8 @@ mod tests {
         // reported so consumers see the same layout the allocator
         // produced.
         let mut config = input(2 * GB, None, None);
-        config.chipset_low_mmio_size = 0;
-        config.chipset_high_mmio_size = 0;
+        config.layout.chipset_low_mmio_size = 0;
+        config.layout.chipset_high_mmio_size = 0;
 
         let result = resolve_memory_layout(config).unwrap();
 
@@ -834,13 +828,13 @@ mod tests {
         // Asymmetric chipset MMIO (only low or only high) is allowed.
         // The missing range is EMPTY.
         let mut config = input(2 * GB, None, None);
-        config.chipset_high_mmio_size = 0;
+        config.layout.chipset_high_mmio_size = 0;
         let result = resolve_memory_layout(config).unwrap();
         assert!(!result.chipset_low_mmio.is_empty());
         assert!(result.chipset_high_mmio.is_empty());
 
         let mut config = input(2 * GB, None, None);
-        config.chipset_low_mmio_size = 0;
+        config.layout.chipset_low_mmio_size = 0;
         let result = resolve_memory_layout(config).unwrap();
         // Low is always at least the arch reserved zone.
         assert!(!result.chipset_low_mmio.is_empty());
