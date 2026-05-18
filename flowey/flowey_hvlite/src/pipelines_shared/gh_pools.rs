@@ -9,7 +9,7 @@ pub const AMD_POOL_1ES: &str = "openvmm-gh-amd-westus3";
 pub const INTEL_POOL_1ES: &str = "openvmm-gh-intel-westus3";
 pub const ARM_POOL_1ES: &str = "openvmm-gh-arm-westus2";
 
-pub const WINDOWS_IMAGE_AMD64: &str = "test-nvme-ge-deployment";
+pub const WINDOWS_IMAGE_AMD64: &str = "win-amd64-nvme-ge";
 pub const WINDOWS_IMAGE_ARM64: &str = "win-arm64";
 pub const LINUX_IMAGE_AMD64: &str = "ubuntu2404-amd64";
 pub const LINUX_IMAGE_ARM64: &str = "ubuntu2404-arm64";
