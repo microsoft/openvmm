@@ -87,7 +87,6 @@ struct VpEntry {
 pub struct PartitionStateBuilder {
     arch: ProcessorArch,
     os_id: u64,
-    vtls: Vec<u8>,
     vps: Vec<VpEntry>,
 }
 
@@ -97,7 +96,6 @@ impl PartitionStateBuilder {
         Self {
             arch,
             os_id: 0,
-            vtls: Vec::new(),
             vps: Vec::new(),
         }
     }
@@ -122,13 +120,6 @@ impl PartitionStateBuilder {
         vtl_states: Vec<(u8, VpState)>,
         active_vtl: u8,
     ) {
-        for &(vtl, _) in &vtl_states {
-            if !self.vtls.contains(&vtl) {
-                self.vtls.push(vtl);
-            }
-        }
-        self.vtls.sort();
-
         let states = vtl_states
             .into_iter()
             .map(|(vtl, regs)| VtlState { vtl, regs })
@@ -156,8 +147,17 @@ impl PartitionStateBuilder {
         self.write_prolog(&mut blob);
         self.write_os_id(&mut blob);
 
-        if self.vtls.len() > 1 {
-            for &vtl in &self.vtls {
+        // Collect the set of VTLs across all VPs.
+        let multi_vtl = self.vps.iter().any(|vp| vp.vtl_states.len() > 1);
+        if multi_vtl {
+            let mut vtls: Vec<u8> = self
+                .vps
+                .iter()
+                .flat_map(|vp| vp.vtl_states.iter().map(|s| s.vtl))
+                .collect();
+            vtls.sort();
+            vtls.dedup();
+            for vtl in vtls {
                 self.write_partition_vtl(&mut blob, vtl);
             }
         }
