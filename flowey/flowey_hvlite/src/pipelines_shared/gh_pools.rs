@@ -9,7 +9,8 @@ pub const AMD_POOL_1ES: &str = "openvmm-gh-amd-westus3";
 pub const INTEL_POOL_1ES: &str = "openvmm-gh-intel-westus3";
 pub const ARM_POOL_1ES: &str = "openvmm-gh-arm-westus2";
 
-pub const WINDOWS_IMAGE_AMD64: &str = "win-amd64";
+// temporarily revert to the older image to mitigate powershell issues.
+pub const WINDOWS_IMAGE_AMD64: &str = "HvLite-CI-Win-Ge-Image-256GB";
 pub const WINDOWS_IMAGE_ARM64: &str = "win-arm64";
 pub const LINUX_IMAGE_AMD64: &str = "ubuntu2404-amd64";
 pub const LINUX_IMAGE_ARM64: &str = "ubuntu2404-arm64";

@@ -819,7 +819,7 @@ jobs:
   displayName: clippy [x64-windows], unit tests [x64-windows]
   pool:
     demands:
-    - ImageOverride -equals win-amd64
+    - ImageOverride -equals HvLite-CI-Win-Ge-Image-256GB
     name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
@@ -2455,7 +2455,7 @@ jobs:
   displayName: build artifacts (for VMM tests) [x64-windows]
   pool:
     demands:
-    - ImageOverride -equals win-amd64
+    - ImageOverride -equals HvLite-CI-Win-Ge-Image-256GB
     name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
@@ -2734,7 +2734,7 @@ jobs:
   displayName: build artifacts (not for VMM tests) [x64-windows]
   pool:
     demands:
-    - ImageOverride -equals win-amd64
+    - ImageOverride -equals HvLite-CI-Win-Ge-Image-256GB
     name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
@@ -2935,7 +2935,7 @@ jobs:
   displayName: build artifacts (for VMM tests) [aarch64-windows]
   pool:
     demands:
-    - ImageOverride -equals win-amd64
+    - ImageOverride -equals HvLite-CI-Win-Ge-Image-256GB
     name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
@@ -3209,7 +3209,7 @@ jobs:
   displayName: build artifacts (not for VMM tests) [aarch64-windows]
   pool:
     demands:
-    - ImageOverride -equals win-amd64
+    - ImageOverride -equals HvLite-CI-Win-Ge-Image-256GB
     name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
@@ -3697,7 +3697,7 @@ jobs:
   displayName: build artifacts (shared VMM tests) [windows]
   pool:
     demands:
-    - ImageOverride -equals win-amd64
+    - ImageOverride -equals HvLite-CI-Win-Ge-Image-256GB
     name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
@@ -4099,7 +4099,7 @@ jobs:
   displayName: run vmm-tests [x64-windows-amd]
   pool:
     demands:
-    - ImageOverride -equals win-amd64
+    - ImageOverride -equals HvLite-CI-Win-Ge-Image-256GB
     name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
@@ -4372,7 +4372,7 @@ jobs:
   displayName: run vmm-tests [x64-windows-intel-mi-secure]
   pool:
     demands:
-    - ImageOverride -equals win-amd64
+    - ImageOverride -equals HvLite-CI-Win-Ge-Image-256GB
     name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
@@ -4645,7 +4645,7 @@ jobs:
   displayName: run vmm-tests [x64-windows-intel]
   pool:
     demands:
-    - ImageOverride -equals win-amd64
+    - ImageOverride -equals HvLite-CI-Win-Ge-Image-256GB
     name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
@@ -4918,7 +4918,7 @@ jobs:
   displayName: xtask fmt (windows)
   pool:
     demands:
-    - ImageOverride -equals win-amd64
+    - ImageOverride -equals HvLite-CI-Win-Ge-Image-256GB
     name: openvmm-ado-amd-westus2
   dependsOn:
   - job0
