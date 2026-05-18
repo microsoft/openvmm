@@ -196,51 +196,18 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             is_node: bool,
         }
 
-        // Build a unified sorted list of all entries (nodes + leaves).
-        // Collect unique node paths first — they need entries too.
-        let mut node_paths_set = std::collections::BTreeSet::new();
-        node_paths_set.insert(String::new()); // root (virtual, not emitted)
-        for key in &self.pending_keys {
-            let parts: Vec<&str> = key.path.trim_start_matches('/').split('/').collect();
-            let mut current = String::new();
-            for part in &parts[..parts.len().saturating_sub(1)] {
-                if current.is_empty() {
-                    current = format!("/{part}");
-                } else {
-                    current = format!("{current}/{part}");
-                }
-                node_paths_set.insert(current.clone());
-            }
-        }
-
-        fn parent_of(path: &str) -> String {
-            if let Some(pos) = path[1..].rfind('/') {
-                path[..pos + 1].to_string()
-            } else {
-                String::new()
-            }
-        }
-
-        // Build all entries: nodes first (sorted), then leaves (sorted).
-        // Because BTreeSet is sorted and paths sort parent-before-child,
-        // a node always appears before its children.
-        let mut all_entries: Vec<EntryData> = Vec::new();
-
-        for node_path in &node_paths_set {
-            if node_path.is_empty() {
-                continue; // root is virtual
-            }
-            let name = node_path.rsplit('/').next().unwrap_or("");
+        fn make_node_entry(path: &str, parent: &str, entry_header_size: usize) -> EntryData {
+            let name = path.rsplit('/').next().unwrap_or("");
             let mut name_bytes = name.as_bytes().to_vec();
             name_bytes.push(0);
-            let node_data = NodeData {
+            let data_bytes = NodeData {
                 change_tracking_sequence: 0,
-                next_insertion_sequence: 0, // filled in below
-            };
-            let data_bytes = node_data.as_bytes().to_vec();
+                next_insertion_sequence: 0, // filled in later
+            }
+            .as_bytes()
+            .to_vec();
             let total_size = entry_header_size + name_bytes.len() + data_bytes.len();
-
-            all_entries.push(EntryData {
+            EntryData {
                 header: KeyTableEntryHeader {
                     key_type: KeyType::NODE,
                     flags: 0,
@@ -248,28 +215,52 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                     parent_node_table: 0,
                     parent_node_offset: 0,
                     checksum: 0,
-                    insertion_sequence: 0, // filled in below
+                    insertion_sequence: 0,
                     name_size_in_symbols: name_bytes.len() as u8,
                 },
                 name_bytes,
                 data_bytes,
-                parent_path: parent_of(node_path),
-                self_path: node_path.clone(),
+                parent_path: parent.to_string(),
+                self_path: path.to_string(),
                 is_node: true,
-            });
+            }
         }
 
+        // Build all entries in a single pass over sorted pending keys.
+        // Track which node paths we've already emitted so we emit each
+        // node exactly once, before its first child.
+        let mut all_entries: Vec<EntryData> = Vec::new();
+        let mut emitted_nodes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        emitted_nodes.insert(String::new()); // root is virtual
+
         for key in &self.pending_keys {
-            let parts: Vec<&str> = key.path.trim_start_matches('/').split('/').collect();
-            let name = parts.last().unwrap_or(&"");
+            let trimmed = key.path.trim_start_matches('/');
+            let segments: Vec<&str> = trimmed.split('/').collect();
+
+            // Ensure all ancestor nodes exist.
+            let mut ancestor = String::new();
+            for seg in &segments[..segments.len().saturating_sub(1)] {
+                let node_path = if ancestor.is_empty() {
+                    format!("/{seg}")
+                } else {
+                    format!("{ancestor}/{seg}")
+                };
+                if emitted_nodes.insert(node_path.clone()) {
+                    all_entries.push(make_node_entry(
+                        &node_path,
+                        &ancestor,
+                        entry_header_size,
+                    ));
+                }
+                ancestor = node_path;
+            }
+
+            // Emit the leaf entry.
+            let name = segments.last().unwrap_or(&"");
             let mut name_bytes = name.as_bytes().to_vec();
             name_bytes.push(0);
 
-            let pp = if parts.len() > 1 {
-                format!("/{}", parts[..parts.len() - 1].join("/"))
-            } else {
-                String::new()
-            };
+            let parent_path = ancestor;
 
             let (key_type, flags, data_bytes) = if let Some(ref fo) = key.file_object {
                 let fo_data = FileObjectData {
@@ -309,24 +300,22 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                     parent_node_table: 0,
                     parent_node_offset: 0,
                     checksum: 0,
-                    insertion_sequence: 0, // filled in below
+                    insertion_sequence: 0,
                     name_size_in_symbols: name_bytes.len() as u8,
                 },
                 name_bytes,
                 data_bytes,
-                parent_path: pp,
+                parent_path,
                 self_path: key.path.clone(),
                 is_node: false,
             });
         }
 
         // Assign insertion sequences: count children per parent.
-        // First pass: count children per parent path.
         let mut child_count: BTreeMap<String, u32> = BTreeMap::new();
         for entry in &all_entries {
             *child_count.entry(entry.parent_path.clone()).or_insert(0) += 1;
         }
-        // Second pass: assign 1-based sequences and set NodeData.
         {
             let mut seq_counters: BTreeMap<&str, u32> = BTreeMap::new();
             for entry in &mut all_entries {
@@ -336,11 +325,12 @@ impl<W: Write + Seek> HvsFileWriter<W> {
 
                 if entry.is_node {
                     let next_ins = child_count.get(entry.self_path.as_str()).copied().unwrap_or(0) + 1;
-                    let node_data = NodeData {
+                    entry.data_bytes = NodeData {
                         change_tracking_sequence: 0,
                         next_insertion_sequence: next_ins,
-                    };
-                    entry.data_bytes = node_data.as_bytes().to_vec();
+                    }
+                    .as_bytes()
+                    .to_vec();
                 }
             }
         }
