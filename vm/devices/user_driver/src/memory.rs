@@ -170,31 +170,6 @@ impl MemoryBlock {
         true
     }
 
-    /// Returns a sorted contiguous subset of PFNs large enough for `asking_size`
-    /// bytes.
-    pub fn contiguous_subpfns(&self, asking_size: usize) -> Option<Vec<u64>> {
-        let page_count = asking_size.div_ceil(PAGE_SIZE);
-        if page_count == 0 {
-            return Some(Vec::new());
-        }
-
-        let mut pfns = self.pfns().to_vec();
-        pfns.sort_unstable();
-
-        let mut run_start = 0;
-        for i in 1..=pfns.len() {
-            let run_ended = i == pfns.len() || pfns[i - 1] + 1 != pfns[i];
-            if run_ended {
-                if i - run_start >= page_count {
-                    return Some(pfns[run_start..run_start + page_count].to_vec());
-                }
-                run_start = i;
-            }
-        }
-
-        None
-    }
-
     /// Gets the buffer as an atomic slice.
     pub fn as_slice(&self) -> &[AtomicU8] {
         // SAFETY: the underlying memory is valid for the lifetime of `mem`.

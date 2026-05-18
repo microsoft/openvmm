@@ -80,7 +80,8 @@ mod cca {
                         let asking_size = ram_size
                             .checked_add(BITMAP_ALIGNMENT - PAGE_SIZE64)
                             .context("private CCA RAM search size overflowed")?;
-                        if let Some(pfns) = private_memory.contiguous_subpfns(asking_size as usize)
+                        if let Some(pfns) =
+                            contiguous_subpfns(&private_memory, asking_size as usize)
                         {
                             let page_count = (ram_size as usize).div_ceil(PAGE_SIZE);
                             if let Some(start_index) = pfns
@@ -138,6 +139,32 @@ mod cca {
             }
             _ => Ok(None),
         }
+    }
+
+    /// Returns a sorted contiguous subset of PFNs large enough for `asking_size` bytes.
+    fn contiguous_subpfns(memory: &MemoryBlock, asking_size: usize) -> Option<Vec<u64>> {
+        let page_count = asking_size.div_ceil(PAGE_SIZE);
+        if page_count == 0 {
+            return Some(Vec::new());
+        }
+
+        let mut pfns = memory.pfns().to_vec();
+        pfns.sort_unstable();
+
+        let mut run_start = 0;
+        for i in 1..=pfns.len() {
+            let run_ended = i == pfns.len() || pfns[i - 1] + 1 != pfns[i];
+            if run_ended {
+                if i - run_start >= page_count {
+                    pfns.truncate(run_start + page_count);
+                    pfns.drain(..run_start);
+                    return Some(pfns);
+                }
+                run_start = i;
+            }
+        }
+
+        None
     }
 }
 
