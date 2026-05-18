@@ -58,8 +58,6 @@ pub enum HyperVGuestStateIsolationType {
     Tdx = 3,
     /// OpenHCL but no isolation
     OpenHCL = 16,
-    /// No HCL and no isolation
-    Disabled = -1,
 }
 
 impl TryFrom<i32> for HyperVGuestStateIsolationType {
@@ -67,7 +65,6 @@ impl TryFrom<i32> for HyperVGuestStateIsolationType {
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         match value {
-            -1 => Ok(HyperVGuestStateIsolationType::Disabled),
             0 => Ok(HyperVGuestStateIsolationType::TrustedLaunch),
             1 => Ok(HyperVGuestStateIsolationType::Vbs),
             2 => Ok(HyperVGuestStateIsolationType::Snp),
@@ -81,7 +78,6 @@ impl TryFrom<i32> for HyperVGuestStateIsolationType {
 impl ps::AsVal for HyperVGuestStateIsolationType {
     fn as_val(&self) -> impl '_ + AsRef<OsStr> {
         match self {
-            HyperVGuestStateIsolationType::Disabled => "-1",
             HyperVGuestStateIsolationType::TrustedLaunch => "0",
             HyperVGuestStateIsolationType::Vbs => "1",
             HyperVGuestStateIsolationType::Snp => "2",
@@ -99,8 +95,7 @@ impl HyperVGuestStateIsolationType {
             | HyperVGuestStateIsolationType::Snp
             | HyperVGuestStateIsolationType::Tdx => true,
             HyperVGuestStateIsolationType::TrustedLaunch
-            | HyperVGuestStateIsolationType::OpenHCL
-            | HyperVGuestStateIsolationType::Disabled => false,
+            | HyperVGuestStateIsolationType::OpenHCL => false,
         }
     }
 }
@@ -479,6 +474,13 @@ impl HyperVNewCustomVMArgs {
                 Some(IsolationType::Vbs) => Some(HyperVGuestStateIsolationType::Vbs),
                 Some(IsolationType::Snp) => Some(HyperVGuestStateIsolationType::Snp),
                 Some(IsolationType::Tdx) => Some(HyperVGuestStateIsolationType::Tdx),
+                // Workaround for running (UEFI only) OpenHCL tests on hosts
+                // that do not support OpenHCL isolation type
+                // TODO: query host for supported isolation types and only do
+                // this when necessary in `make_compatible`
+                None if properties.is_openhcl && !properties.is_pcat => {
+                    Some(HyperVGuestStateIsolationType::TrustedLaunch)
+                }
                 None if properties.is_openhcl => Some(HyperVGuestStateIsolationType::OpenHCL),
                 None => None,
             },
@@ -587,10 +589,7 @@ impl HyperVNewCustomVMArgs {
 pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> anyhow::Result<Guid> {
     let (guest_state_isolation_enabled, guest_state_isolation_type) = args
         .guest_state_isolation_type
-        .and_then(|isolation_type| match isolation_type {
-            HyperVGuestStateIsolationType::Disabled => None,
-            isolation_type => Some((true, isolation_type)),
-        })
+        .map(|isolation_type| (true, isolation_type))
         .unzip();
 
     let secure_boot_template_id = args.secure_boot_template.map(|t| match t {
