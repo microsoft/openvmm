@@ -65,7 +65,6 @@ pub enum ValueType {
 /// A read-only view of a HyperV Storage file.
 pub struct HvsFileReader<R: Read + Seek> {
     reader: R,
-    _alignment: u64,
     /// Key entries indexed by full path, ordered for deterministic enumeration.
     keys: BTreeMap<String, KeyEntry>,
 }
@@ -86,8 +85,7 @@ impl<R: Read + Seek> HvsFileReader<R> {
     /// Opens a HyperV Storage file for reading.
     pub fn open(mut reader: R) -> Result<Self, ReadError> {
         // Read both header copies and pick the one with higher sequence
-        let header = Self::read_best_header(&mut reader)?;
-        let alignment = header.data_alignment_in_bytes as u64;
+        let _header = Self::read_best_header(&mut reader)?;
 
         // Read object table at offset 8192
         let object_table_offset = 2 * MIN_DATA_ALIGNMENT as u64;
@@ -266,7 +264,6 @@ impl<R: Read + Seek> HvsFileReader<R> {
 
         Ok(Self {
             reader,
-            _alignment: alignment,
             keys,
         })
     }
