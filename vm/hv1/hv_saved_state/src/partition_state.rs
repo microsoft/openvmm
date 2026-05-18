@@ -13,7 +13,6 @@
 
 use hvdef::AlignedU128;
 use hvdef::save_restore::*;
-use hvdef::HvX64SegmentRegister;
 use std::mem::size_of;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -402,14 +401,14 @@ impl PartitionStateBuilder {
                     VmSaveChunkId::VP_SEGMENT_REGISTERS,
                     size_of::<VpX64SaveChunkSegmentRegisters>() - HEADER,
                 ),
-                es: seg_to_hvdef(r.es),
-                cs: seg_to_hvdef(r.cs),
-                ss: seg_to_hvdef(r.ss),
-                ds: seg_to_hvdef(r.ds),
-                fs: seg_to_hvdef(r.fs),
-                gs: seg_to_hvdef(r.gs),
-                ldtr: seg_to_hvdef(r.ldtr),
-                tr: seg_to_hvdef(r.tr),
+                es: r.es.into(),
+                cs: r.cs.into(),
+                ss: r.ss.into(),
+                ds: r.ds.into(),
+                fs: r.fs.into(),
+                gs: r.gs.into(),
+                ldtr: r.ldtr.into(),
+                tr: r.tr.into(),
                 cpl: (r.cs.selector & 3) as u8,
                 _padding: [0; 15],
             }
@@ -613,16 +612,6 @@ impl PartitionStateBuilder {
         blob.extend_from_slice(&[0u8; 16]); // alignment padding
         blob.extend_from_slice(&chunks);
         blob
-    }
-}
-
-/// Converts a virt segment register to hvdef format.
-fn seg_to_hvdef(seg: virt::x86::SegmentRegister) -> HvX64SegmentRegister {
-    HvX64SegmentRegister {
-        base: seg.base,
-        limit: seg.limit,
-        selector: seg.selector,
-        attributes: seg.attributes,
     }
 }
 
