@@ -13,6 +13,7 @@
 
 use hvdef::AlignedU128;
 use hvdef::save_restore::*;
+use hvdef::Vtl;
 use std::mem::size_of;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -59,7 +60,7 @@ pub enum VpState {
 }
 
 struct VtlState {
-    vtl: u8,
+    vtl: Vtl,
     regs: VpState,
 }
 
@@ -70,7 +71,7 @@ struct VpEntry {
     /// (the parser infers it from vtl_is_runnable), but stored for
     /// future use.
     #[allow(dead_code)]
-    active_vtl: u8,
+    active_vtl: Vtl,
 }
 
 /// Builds the partition state blob (chunk stream).
@@ -117,8 +118,8 @@ impl PartitionStateBuilder {
     pub fn add_vp(
         &mut self,
         vp_index: u32,
-        vtl_states: Vec<(u8, VpState)>,
-        active_vtl: u8,
+        vtl_states: Vec<(Vtl, VpState)>,
+        active_vtl: Vtl,
     ) {
         let states = vtl_states
             .into_iter()
@@ -151,13 +152,13 @@ impl PartitionStateBuilder {
         let mut vtl_mask = 0u8;
         for vp in &self.vps {
             for s in &vp.vtl_states {
-                vtl_mask |= 1 << s.vtl;
+                vtl_mask |= 1 << s.vtl as u8;
             }
         }
         let multi_vtl = vtl_mask.count_ones() > 1;
         if multi_vtl {
-            for vtl in 0..3u8 {
-                if vtl_mask & (1 << vtl) != 0 {
+            for vtl in [Vtl::Vtl0, Vtl::Vtl1, Vtl::Vtl2] {
+                if vtl_mask & (1 << vtl as u8) != 0 {
                     self.write_partition_vtl(&mut blob, vtl);
                 }
             }
@@ -256,22 +257,22 @@ impl PartitionStateBuilder {
         );
     }
 
-    fn write_partition_vtl(&self, out: &mut Vec<u8>, vtl: u8) {
+    fn write_partition_vtl(&self, out: &mut Vec<u8>, vtl: Vtl) {
         out.extend_from_slice(
             ObSaveChunkVtl {
                 header: chunk_header_for::<ObSaveChunkVtl>(VmSaveChunkId::PARTITION_VTL),
-                vtl,
+                vtl: vtl as u8,
                 _padding: [0; 15],
             }
             .as_bytes(),
         );
     }
 
-    fn write_vp_vtl_marker(&self, out: &mut Vec<u8>, vtl: u8) {
+    fn write_vp_vtl_marker(&self, out: &mut Vec<u8>, vtl: Vtl) {
         out.extend_from_slice(
             ObSaveChunkVtl {
                 header: chunk_header_for::<ObSaveChunkVtl>(VmSaveChunkId::VP_VTL),
-                vtl,
+                vtl: vtl as u8,
                 _padding: [0; 15],
             }
             .as_bytes(),
@@ -523,7 +524,7 @@ mod tests {
     }
 
     fn add_x64_vp(builder: &mut PartitionStateBuilder, vp_index: u32, state: X64VpState) {
-        builder.add_vp(vp_index, vec![(0, VpState::X64(state))], 0);
+        builder.add_vp(vp_index, vec![(Vtl::Vtl0, VpState::X64(state))], Vtl::Vtl0);
     }
 
     #[test]
@@ -559,13 +560,13 @@ mod tests {
         builder.add_vp(
             0,
             vec![(
-                0,
+                Vtl::Vtl0,
                 VpState::Aarch64(Aarch64VpState {
                     registers: regs,
                     system_registers: Some(sys),
                 }),
             )],
-            0,
+            Vtl::Vtl0,
         );
 
         let blob = builder.finish();
@@ -644,10 +645,10 @@ mod tests {
         builder.add_vp(
             0,
             vec![
-                (0, VpState::X64(make_x64_state(0x1000, 0x1AD000))),
-                (1, VpState::X64(make_x64_state(0x2000, 0x2AD000))),
+                (Vtl::Vtl0, VpState::X64(make_x64_state(0x1000, 0x1AD000))),
+                (Vtl::Vtl1, VpState::X64(make_x64_state(0x2000, 0x2AD000))),
             ],
-            0,
+            Vtl::Vtl0,
         );
 
         let blob = builder.finish();

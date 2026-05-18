@@ -15,6 +15,7 @@ use hv_saved_state::ProcessorArch;
 use hv_saved_state::VmrsWriter;
 use hv_saved_state::VpState;
 use hv_saved_state::X64VpState;
+use hvdef::Vtl;
 use std::ffi::c_void;
 use std::io::Cursor;
 use std::path::PathBuf;
@@ -123,14 +124,14 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
         builder.add_vp(
             i,
             vec![(
-                0,
+                Vtl::Vtl0,
                 VpState::X64(X64VpState {
                     registers: regs,
                     debug_registers: None,
                     xsave: None,
                 }),
             )],
-            0,
+            Vtl::Vtl0,
         );
     }
 

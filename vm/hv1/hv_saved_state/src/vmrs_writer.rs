@@ -139,6 +139,7 @@ impl<W: Write + Seek> VmrsWriter<W> {
 mod tests {
     use super::*;
     use crate::{PartitionStateBuilder, ProcessorArch, VpState, X64VpState};
+    use hvdef::Vtl;
     use hvs_file::reader::HvsFileReader;
     use std::io::Cursor;
 
@@ -188,14 +189,14 @@ mod tests {
         builder.add_vp(
             0,
             vec![(
-                0,
+                Vtl::Vtl0,
                 VpState::X64(X64VpState {
                     registers: regs,
                     debug_registers: None,
                     xsave: None,
                 }),
             )],
-            0,
+            Vtl::Vtl0,
         );
         builder.finish()
     }
@@ -242,14 +243,14 @@ mod tests {
         builder.add_vp(
             0,
             vec![(
-                0,
+                Vtl::Vtl0,
                 VpState::X64(X64VpState {
                     registers: Default::default(),
                     debug_registers: None,
                     xsave: None,
                 }),
             )],
-            0,
+            Vtl::Vtl0,
         );
         builder.finish()
     }
