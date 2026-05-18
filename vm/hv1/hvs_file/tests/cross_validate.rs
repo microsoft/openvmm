@@ -544,7 +544,7 @@ fn defer<F: FnOnce()>(f: F) -> impl Drop {
     Guard(Some(f))
 }
 
-/// Verify the DLL can load a file that requires object table chaining.
+/// Verify the DLL can load a file that requires double object table chaining.
 #[test]
 fn object_table_chaining_with_dll() {
     if !setup_dll_search_path() {
@@ -556,12 +556,12 @@ fn object_table_chaining_with_dll() {
         return;
     }
 
-    // Build a file with enough objects to overflow one object table.
-    // 250 file objects + key tables > 226 usable slots per table.
+    // 226 usable slots per object table. 500 file objects + key tables
+    // requires 3 chained object tables.
     let partition_state = build_partition_state_blob(0xFFFFF802_00000000, 0x1AD000);
     let mut ram_meta = vec![0u8; 48];
     ram_meta[0..4].copy_from_slice(&3u32.to_le_bytes());
-    ram_meta[8..16].copy_from_slice(&256u64.to_le_bytes()); // 256 pages = 1 MB
+    ram_meta[8..16].copy_from_slice(&500u64.to_le_bytes()); // 500 pages
 
     let buf = Cursor::new(Vec::new());
     let mut w = HvsFileWriter::new(buf).unwrap();
@@ -571,9 +571,11 @@ fn object_table_chaining_with_dll() {
     w.add_array("/savedstate/savedVM/partition_state", partition_state).unwrap();
     w.add_array("/savedstate/RamMemoryBlock0", ram_meta).unwrap();
 
-    // Write 250 RAM blocks (each 1 page = 4096 bytes, triggers file objects).
-    for i in 0..250 {
-        w.add_array(&format!("/savedstate/RamBlock{i}"), vec![0u8; 4096]).unwrap();
+    // Write 500 RAM blocks with distinct data per block.
+    for i in 0..500u32 {
+        let mut block = vec![0u8; 4096];
+        block[..4].copy_from_slice(&i.to_le_bytes());
+        w.add_array(&format!("/savedstate/RamBlock{i}"), block).unwrap();
     }
 
     let vmrs_data = w.finish().unwrap().into_inner();
@@ -583,6 +585,19 @@ fn object_table_chaining_with_dll() {
         let _ = std::fs::remove_file(&vmrs_path);
     });
 
+    // Verify round-trip through our reader: spot-check a few blocks.
+    {
+        let file = std::fs::File::open(&vmrs_path).unwrap();
+        let mut reader = hvs_file::reader::HvsFileReader::open(file).unwrap();
+        for i in [0u32, 1, 249, 250, 499] {
+            let data = reader.read_array(&format!("/savedstate/RamBlock{i}")).unwrap();
+            assert_eq!(data.len(), 4096, "RamBlock{i} wrong size");
+            let stamp = u32::from_le_bytes(data[..4].try_into().unwrap());
+            assert_eq!(stamp, i, "RamBlock{i} data mismatch");
+        }
+    }
+
+    // Verify the DLL can load and parse the file.
     let wide_path: Vec<u16> = vmrs_path
         .to_str()
         .unwrap()
@@ -595,13 +610,25 @@ fn object_table_chaining_with_dll() {
         let hr = dll::LoadSavedStateFile(wide_path.as_ptr(), &mut handle);
         if hr < 0 {
             panic!(
-                "LoadSavedStateFile failed on chained object table file: HRESULT 0x{:08X}",
+                "LoadSavedStateFile failed on double-chained object table file: HRESULT 0x{:08X}",
                 hr as u32,
             );
         }
-        dll::ReleaseSavedStateFiles(handle);
+        let _release = defer(|| {
+            dll::ReleaseSavedStateFiles(handle);
+        });
+
+        let mut vp_count: u32 = 0;
+        let hr = dll::GetVpCount(handle, &mut vp_count);
+        assert!(hr >= 0, "GetVpCount failed: 0x{:08X}", hr as u32);
+        assert_eq!(vp_count, 1);
+
+        let mut arch: u32 = 0;
+        let hr = dll::GetArchitecture(handle, 0, &mut arch);
+        assert!(hr >= 0, "GetArchitecture failed: 0x{:08X}", hr as u32);
+        assert_eq!(arch, 2, "expected x64");
     }
-    eprintln!("Object table chaining test PASSED");
+    eprintln!("Double object table chaining test PASSED");
 }
 
 /// Round-trip: read the real saved state VMRS, write it back with our writer,

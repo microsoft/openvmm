@@ -470,23 +470,23 @@ mod tests {
     fn object_table_chaining() {
         // Each file object >= FILE_OBJECT_THRESHOLD gets its own object table
         // entry. One table holds (4096 - 8) / 18 - 1 = 226 usable slots.
-        // Writing 250 file objects (each >= 2048 bytes) plus a few key tables
-        // should require chaining to a second object table.
-        let blob = vec![0xCDu8; 2048];
+        // 500 file objects requires 3 chained object tables.
         let buf = Cursor::new(Vec::new());
         let mut w = HvsFileWriter::new(buf).unwrap();
-        for i in 0..250 {
-            w.add_array(&format!("/data/block{i}"), blob.clone()).unwrap();
+        for i in 0..500u32 {
+            let mut block = vec![0u8; 2048];
+            block[..4].copy_from_slice(&i.to_le_bytes());
+            w.add_array(&format!("/data/block{i}"), block).unwrap();
         }
         let mut buf = w.finish().unwrap();
 
-        // Read it back and verify all 250 keys.
         buf.set_position(0);
         let mut r = HvsFileReader::open(buf).unwrap();
-        for i in 0..250 {
+        for i in 0..500u32 {
             let actual = r.read_array(&format!("/data/block{i}")).unwrap();
             assert_eq!(actual.len(), 2048, "block{i} wrong size");
-            assert_eq!(actual[0], 0xCD, "block{i} wrong data");
+            let stamp = u32::from_le_bytes(actual[..4].try_into().unwrap());
+            assert_eq!(stamp, i, "block{i} data mismatch");
         }
     }
 
