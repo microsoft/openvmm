@@ -108,26 +108,31 @@ impl<R: Read + Seek> HvsFileReader<R> {
                 break;
             }
 
-            let mut entries = Vec::with_capacity(obj_header.entries_count as usize);
-            for _ in 0..obj_header.entries_count {
+            let count = obj_header.entries_count as usize;
+            all_entries.reserve(count);
+            for _ in 0..count {
                 let mut entry = ObjectTableEntry::new_zeroed();
                 reader.read_exact(entry.as_mut_bytes())?;
-                entries.push(entry);
+                all_entries.push(entry);
             }
 
-            // Last entry is the chain slot.
-            let chain = entries.last().copied();
-            // Add all non-chain entries.
-            if entries.len() > 1 {
-                all_entries.extend_from_slice(&entries[..entries.len() - 1]);
-            }
-
-            // Follow the chain if the last entry points to another table.
-            match chain {
-                Some(e) if e.object_type == ObjectType::OBJECT_TABLE => {
-                    table_offset = e.file_offset_in_bytes;
+            // Last entry is the chain slot — check it and remove from the list.
+            let chain = if count > 0 {
+                let last = all_entries.pop().unwrap();
+                if last.object_type == ObjectType::OBJECT_TABLE {
+                    Some(last.file_offset_in_bytes)
+                } else {
+                    // Not a chain — but also not a real entry (it's the
+                    // reserved slot). Drop it.
+                    None
                 }
-                _ => break,
+            } else {
+                None
+            };
+
+            match chain {
+                Some(next) => table_offset = next,
+                None => break,
             }
         }
 

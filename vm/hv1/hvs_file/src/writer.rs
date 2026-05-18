@@ -558,70 +558,73 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         empty_entry.entry_checksum = struct_checksum(empty_entry.as_bytes(), offset_of!(ObjectTableEntry, entry_checksum));
 
         let object_table_offset = 2 * MIN_DATA_ALIGNMENT as u64;
-        let mut chunks: Vec<&[ObjectTableEntry]> = obj_entries.chunks(usable_per_table).collect();
-        if chunks.is_empty() {
-            chunks.push(&[]);
-        }
+        let num_tables = (obj_entries.len() + usable_per_table - 1) / usable_per_table.max(1);
+        let num_tables = num_tables.max(1); // always at least one table
 
-        // Determine where overflow tables go (after replay log).
+        // Overflow tables go after the replay log.
         let replay_log_offset = align_up(
             key_table_base + tables.len() as u64 * alignment,
             alignment,
         );
         let replay_log_size = alignment;
-        let mut overflow_base = replay_log_offset + replay_log_size;
 
-        // Write each object table.
-        for (chunk_idx, chunk) in chunks.iter().enumerate() {
-            let table_offset = if chunk_idx == 0 {
-                object_table_offset
-            } else {
-                let off = overflow_base;
-                overflow_base += alignment;
-                off
-            };
+        // Pre-compute table offsets: first at 8192, rest after replay log.
+        let mut table_offsets = Vec::with_capacity(num_tables);
+        table_offsets.push(object_table_offset);
+        for i in 1..num_tables {
+            table_offsets.push(replay_log_offset + replay_log_size + (i as u64 - 1) * alignment);
+        }
 
-            let is_last = chunk_idx == chunks.len() - 1;
+        let mut buf = Vec::with_capacity(alignment as usize);
+        for (chunk_idx, chunk) in obj_entries.chunks(usable_per_table).enumerate() {
+            buf.clear();
 
-            let mut buf = Vec::with_capacity(alignment as usize);
             let header = ObjectTableHeader {
                 signature: OBJECT_TABLE_SIGNATURE,
                 entries_count: entries_per_table as u32,
             };
             buf.extend_from_slice(header.as_bytes());
 
-            for entry in *chunk {
+            for entry in chunk {
                 buf.extend_from_slice(entry.as_bytes());
             }
-
-            // Fill unused slots with empty entries.
             for _ in chunk.len()..usable_per_table {
                 buf.extend_from_slice(empty_entry.as_bytes());
             }
 
-            // Chain slot: point to next table or empty.
-            if is_last {
-                buf.extend_from_slice(empty_entry.as_bytes());
-            } else {
-                let next_offset = if chunk_idx + 1 == 1 {
-                    // Second chunk goes after replay log
-                    replay_log_offset + replay_log_size
-                } else {
-                    overflow_base
-                };
+            // Chain slot.
+            if chunk_idx + 1 < num_tables {
                 let mut chain = ObjectTableEntry {
                     object_type: ObjectType::OBJECT_TABLE,
                     entry_checksum: 0,
-                    file_offset_in_bytes: next_offset,
+                    file_offset_in_bytes: table_offsets[chunk_idx + 1],
                     size_in_bytes: alignment as u32,
                     flags: 0,
                 };
                 chain.entry_checksum = struct_checksum(chain.as_bytes(), offset_of!(ObjectTableEntry, entry_checksum));
                 buf.extend_from_slice(chain.as_bytes());
+            } else {
+                buf.extend_from_slice(empty_entry.as_bytes());
             }
 
             buf.resize(alignment as usize, 0);
-            self.writer.seek(SeekFrom::Start(table_offset))?;
+            self.writer.seek(SeekFrom::Start(table_offsets[chunk_idx]))?;
+            self.writer.write_all(&buf)?;
+        }
+
+        // Handle the case where there are no object entries at all.
+        if obj_entries.is_empty() {
+            buf.clear();
+            let header = ObjectTableHeader {
+                signature: OBJECT_TABLE_SIGNATURE,
+                entries_count: entries_per_table as u32,
+            };
+            buf.extend_from_slice(header.as_bytes());
+            for _ in 0..entries_per_table {
+                buf.extend_from_slice(empty_entry.as_bytes());
+            }
+            buf.resize(alignment as usize, 0);
+            self.writer.seek(SeekFrom::Start(object_table_offset))?;
             self.writer.write_all(&buf)?;
         }
 
