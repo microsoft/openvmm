@@ -103,6 +103,7 @@ unicycle.workspace = true
 net_tap.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+crypto = { workspace = true, optional = true, features = ["rust"] }
 vmswitch.workspace = true
 virt_whp.workspace = true
 vmbus_proxy.workspace = true
@@ -123,5 +124,5 @@ build_rs_guest_arch.workspace = true
 workspace = true
 
 [package.metadata.xtask.unused-deps]
-# keep the crypto dep so we can specify the vendored feature
+# keep the crypto dep so we can specify vendored and backend features
 ignored = ["crypto"]
