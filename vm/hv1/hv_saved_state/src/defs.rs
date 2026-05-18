@@ -44,3 +44,18 @@ pub struct MemoryBlockSaveStruct {
 }
 
 const_assert_eq!(size_of::<MemoryBlockSaveStruct>(), 48);
+
+/// VM version used for dump files (v10.0 / Iron).
+///
+/// From `onecore/vm/inc/VmSavedStateKeys.h` (`VM_VERSION_IRON`).
+pub const VM_VERSION_IRON: i64 = 0x0A00;
+
+/// Size of one guest memory block in bytes (1 MiB = 256 × 4K pages).
+///
+/// From `onecore/vm/inc/CommonDefs.h` (`GMO_BLOCK_SIZE_BYTES`).
+pub const GMO_BLOCK_SIZE_BYTES: usize = 1_048_576;
+
+/// Size of one guest memory block in 4K pages.
+///
+/// From `onecore/vm/inc/CommonDefs.h` (`GMO_BLOCK_SIZE_PAGES`).
+pub const GMO_BLOCK_SIZE_PAGES: u64 = 256;

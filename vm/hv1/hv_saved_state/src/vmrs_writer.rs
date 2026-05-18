@@ -7,21 +7,15 @@
 //! memory ranges, using [`hvs_file::writer::HvsFileWriter`] for the
 //! underlying HyperV Storage file format.
 
+use crate::defs::GMO_BLOCK_SIZE_BYTES;
+use crate::defs::GMO_BLOCK_SIZE_PAGES;
 use crate::defs::MemoryBlockSaveStruct;
+use crate::defs::VM_VERSION_IRON;
 use crate::defs::WPMM_MB_SAVE_STATE_VERSION_3;
 use hvs_file::writer::HvsFileWriter;
 use std::io::{self, Seek, Write};
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
-
-/// VM version used for dump files (v10.0 / Iron).
-const VM_VERSION_IRON: i64 = 0x0A00;
-
-/// Size of one guest memory block in bytes (1 MiB = 256 × 4K pages).
-const GMO_BLOCK_SIZE_BYTES: usize = 1_048_576;
-
-/// Size of one guest memory block in 4K pages.
-const GMO_BLOCK_SIZE_PAGES: u64 = 256;
 
 /// A contiguous GPA range to include in the dump.
 struct MemoryRange {
