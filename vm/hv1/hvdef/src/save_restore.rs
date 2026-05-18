@@ -300,6 +300,23 @@ pub struct VpX64SaveChunkFpRegisters {
 }
 
 // ============================================================
+// XSAVE Control Registers
+// ============================================================
+
+/// XSAVE control registers (x64).
+///
+/// Contains the XSAVE Feature Enabled Mask (XFEM/XCR0) register.
+/// Only XCR0 is currently implemented; Xcr1–Xcr7 are reserved.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct VpX64SaveChunkXsaveControlRegisters {
+    pub header: VmSaveChunkHeader,
+    /// XCR0 (XFEATURE_ENABLED_MASK / XFEM).
+    pub xfem: u64,
+    pub _reserved: [u64; 7],
+}
+
+// ============================================================
 // ARM64 Register Chunks
 // ============================================================
 

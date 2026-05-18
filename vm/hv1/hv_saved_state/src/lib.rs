@@ -20,13 +20,15 @@
 //! use hv_saved_state::{PartitionStateBuilder, VmrsWriter, ProcessorArch, VpState, X64VpState};
 //! use hvdef::Vtl;
 //!
+//! # fn example(regs: virt::x86::vp::Registers, debug_regs: virt::x86::vp::DebugRegisters, xsave: virt::x86::vp::Xsave, xcr0: u64) {
 //! // Build partition state from VP registers
 //! let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
 //! builder.set_os_id(0); // unenlightened guest
 //! builder.add_vp(0, vec![(Vtl::Vtl0, VpState::X64(X64VpState {
-//!     registers: Default::default(),
-//!     debug_registers: None,
-//!     xsave: None,
+//!     registers: regs,
+//!     debug_registers: debug_regs,
+//!     xsave,
+//!     xcr0,
 //! }))], Vtl::Vtl0);
 //! let blob = builder.finish();
 //!
@@ -41,6 +43,7 @@
 //! # }
 //! # let mut mem = NullReader;
 //! vmrs.finish(&mut mem).unwrap();
+//! # }
 //! ```
 
 mod defs;

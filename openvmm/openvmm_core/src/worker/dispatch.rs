@@ -3343,8 +3343,9 @@ impl LoadedVm {
                 vmm_core::partition_unit::DumpVpState::X64(x64) => {
                     VpState::X64(X64VpState {
                         registers: x64.registers,
-                        debug_registers: Some(x64.debug_registers),
-                        xsave: Some(x64.xsave),
+                        debug_registers: x64.debug_registers,
+                        xsave: x64.xsave,
+                        xcr0: x64.xcr0,
                     })
                 }
                 vmm_core::partition_unit::DumpVpState::Aarch64(aarch64) => {

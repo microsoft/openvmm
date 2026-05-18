@@ -112,6 +112,8 @@ pub struct DumpX64VpState {
     pub debug_registers: virt::x86::vp::DebugRegisters,
     /// XSAVE state (FP/SSE/AVX).
     pub xsave: virt::x86::vp::Xsave,
+    /// XCR0 (XFEATURE_ENABLED_MASK).
+    pub xcr0: u64,
 }
 
 /// ARM64 VP register state for dump generation.
@@ -287,16 +289,14 @@ where
     fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<DumpVpState> {
         let mut access = self.vp.access_state(vtl);
         let registers = access.registers().context("failed to get registers")?;
-        let debug_registers = access
-            .debug_regs()
-            .unwrap_or_default();
-        let xsave = access
-            .xsave()
-            .unwrap_or_default();
+        let debug_registers = access.debug_regs().context("failed to get debug registers")?;
+        let xsave = access.xsave().context("failed to get xsave state")?;
+        let xcr0 = access.xcr().context("failed to get xcr0")?.value;
         Ok(DumpVpState::X64(DumpX64VpState {
             registers,
             debug_registers,
             xsave,
+            xcr0,
         }))
     }
 
@@ -304,9 +304,7 @@ where
     fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<DumpVpState> {
         let mut access = self.vp.access_state(vtl);
         let registers = access.registers().context("failed to get registers")?;
-        let system_registers = access
-            .system_registers()
-            .unwrap_or_default();
+        let system_registers = access.system_registers().context("failed to get system registers")?;
         Ok(DumpVpState::Aarch64(DumpAarch64VpState {
             registers,
             system_registers,

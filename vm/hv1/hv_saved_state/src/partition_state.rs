@@ -37,10 +37,12 @@ pub enum ProcessorArch {
 pub struct X64VpState {
     /// General-purpose, segment, table, and control registers.
     pub registers: virt::x86::vp::Registers,
-    /// Debug registers (DR0–DR7). Zeroed if `None`.
-    pub debug_registers: Option<virt::x86::vp::DebugRegisters>,
-    /// XSAVE state (FP/SSE/AVX). Zeroed if `None`.
-    pub xsave: Option<virt::x86::vp::Xsave>,
+    /// Debug registers (DR0–DR7).
+    pub debug_registers: virt::x86::vp::DebugRegisters,
+    /// XSAVE state (FP/SSE/AVX).
+    pub xsave: virt::x86::vp::Xsave,
+    /// XCR0 (XFEATURE_ENABLED_MASK / XFEM).
+    pub xcr0: u64,
 }
 
 /// ARM64 VP state for dump generation.
@@ -368,24 +370,35 @@ impl PartitionStateBuilder {
             .as_bytes(),
         );
 
-        if let Some(dr) = &state.debug_registers {
-            out.extend_from_slice(
-                VpX64SaveChunkDebugRegisters {
-                    header: chunk_header_for::<VpX64SaveChunkDebugRegisters>(VmSaveChunkId::VP_DEBUG_REGISTERS),
-                    dr0: dr.dr0,
-                    dr1: dr.dr1,
-                    dr2: dr.dr2,
-                    dr3: dr.dr3,
-                    dr6: dr.dr6,
-                    dr7: dr.dr7,
-                }
-                .as_bytes(),
-            );
-        }
+        let dr = &state.debug_registers;
+        out.extend_from_slice(
+            VpX64SaveChunkDebugRegisters {
+                header: chunk_header_for::<VpX64SaveChunkDebugRegisters>(VmSaveChunkId::VP_DEBUG_REGISTERS),
+                dr0: dr.dr0,
+                dr1: dr.dr1,
+                dr2: dr.dr2,
+                dr3: dr.dr3,
+                dr6: dr.dr6,
+                dr7: dr.dr7,
+            }
+            .as_bytes(),
+        );
 
-        if let Some(xsave) = &state.xsave {
-            self.write_x64_fp_from_xsave(out, xsave);
-        }
+        self.write_x64_fp_from_xsave(out, &state.xsave);
+        self.write_x64_xsave_control(out, state.xcr0);
+    }
+
+    fn write_x64_xsave_control(&self, out: &mut Vec<u8>, xcr0: u64) {
+        out.extend_from_slice(
+            VpX64SaveChunkXsaveControlRegisters {
+                header: chunk_header_for::<VpX64SaveChunkXsaveControlRegisters>(
+                    VmSaveChunkId::VP_XSAVE_CONTROL_REGISTERS,
+                ),
+                xfem: xcr0,
+                _reserved: [0; 7],
+            }
+            .as_bytes(),
+        );
     }
 
     fn write_x64_fp_from_xsave(&self, out: &mut Vec<u8>, xsave: &virt::x86::vp::Xsave) {
@@ -499,6 +512,12 @@ mod tests {
     use super::*;
     use zerocopy::FromBytes;
 
+    /// Minimal zero-valued XSAVE (fxsave + header, no extended features).
+    fn zero_xsave() -> virt::x86::vp::Xsave {
+        // 512 bytes fxsave + 64 bytes xsave header = 576 bytes = 72 u64s
+        virt::x86::vp::Xsave { data: vec![0u64; 72] }
+    }
+
     fn make_x64_state(rip: u64, cr3: u64) -> X64VpState {
         let mut regs = virt::x86::vp::Registers::default();
         regs.rip = rip;
@@ -517,8 +536,9 @@ mod tests {
         };
         X64VpState {
             registers: regs,
-            debug_registers: None,
-            xsave: None,
+            debug_registers: Default::default(),
+            xsave: zero_xsave(),
+            xcr0: 1,
         }
     }
 
@@ -679,5 +699,37 @@ mod tests {
         assert_eq!(chunk_ids[7], VmSaveChunkId::VP_VTL);
         assert_eq!(chunk_ids[8], VmSaveChunkId::VP_GP_REGISTERS);
         assert_eq!(*chunk_ids.last().unwrap(), VmSaveChunkId::EPILOG);
+    }
+
+    #[test]
+    fn xsave_control_chunk_present() {
+        let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
+        add_x64_vp(&mut builder, 0, make_x64_state(0x1000, 0x1AD000));
+
+        let blob = builder.finish();
+        let desc = VidSavedStateDescriptor::read_from_prefix(blob.as_slice())
+            .unwrap()
+            .0;
+
+        let mut offset = desc.header_size as usize + 16;
+        let mut found_xsave_control = false;
+        while offset + size_of::<VmSaveChunkHeader>() <= blob.len() {
+            let header = VmSaveChunkHeader::read_from_prefix(&blob[offset..])
+                .unwrap()
+                .0;
+            if header.id == VmSaveChunkId::VP_XSAVE_CONTROL_REGISTERS {
+                found_xsave_control = true;
+                let chunk = VpX64SaveChunkXsaveControlRegisters::read_from_prefix(&blob[offset..])
+                    .unwrap()
+                    .0;
+                assert_eq!(chunk.xfem, 1);
+                break;
+            }
+            if header.id == VmSaveChunkId::EPILOG {
+                break;
+            }
+            offset += size_of::<VmSaveChunkHeader>() + header.data_length as usize;
+        }
+        assert!(found_xsave_control, "VP_XSAVE_CONTROL_REGISTERS chunk not found");
     }
 }

@@ -147,6 +147,10 @@ mod tests {
     use hvs_file::reader::HvsFileReader;
     use std::io::Cursor;
 
+    fn zero_xsave() -> virt::x86::vp::Xsave {
+        virt::x86::vp::Xsave { data: vec![0u64; 72] }
+    }
+
     /// Test reader that fills all reads with a single byte value.
     struct FillReader(u8);
 
@@ -196,8 +200,9 @@ mod tests {
                 Vtl::Vtl0,
                 VpState::X64(X64VpState {
                     registers: regs,
-                    debug_registers: None,
-                    xsave: None,
+                    debug_registers: Default::default(),
+                    xsave: zero_xsave(),
+                    xcr0: 1,
                 }),
             )],
             Vtl::Vtl0,
@@ -250,8 +255,9 @@ mod tests {
                 Vtl::Vtl0,
                 VpState::X64(X64VpState {
                     registers: Default::default(),
-                    debug_registers: None,
-                    xsave: None,
+                    debug_registers: Default::default(),
+                    xsave: zero_xsave(),
+                    xcr0: 1,
                 }),
             )],
             Vtl::Vtl0,

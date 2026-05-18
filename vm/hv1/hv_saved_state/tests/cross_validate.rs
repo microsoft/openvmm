@@ -96,6 +96,8 @@ fn setup_dll_search_path() -> bool {
 
 /// Build a VMRS file using the hv_saved_state high-level API.
 fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
+    let zero_xsave = || virt::x86::vp::Xsave { data: vec![0u64; 72] };
+
     let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
     builder.set_os_id(0);
 
@@ -128,8 +130,9 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
                 Vtl::Vtl0,
                 VpState::X64(X64VpState {
                     registers: regs,
-                    debug_registers: None,
-                    xsave: None,
+                    debug_registers: Default::default(),
+                    xsave: zero_xsave(),
+                    xcr0: 1,
                 }),
             )],
             Vtl::Vtl0,
@@ -271,8 +274,8 @@ fn dll_validates_large_memory() {
             Vtl::Vtl0,
             VpState::X64(X64VpState {
                 registers: regs,
-                debug_registers: None,
-                xsave: None,
+                debug_registers: Default::default(),
+                xsave: zero_xsave(),
             }),
         )],
         Vtl::Vtl0,
