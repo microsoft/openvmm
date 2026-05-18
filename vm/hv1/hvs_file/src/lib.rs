@@ -29,13 +29,6 @@ pub(crate) mod defs;
 pub mod reader;
 pub mod writer;
 
-/// Computes CRC-32 (ISO 3309) over a byte slice.
-pub(crate) fn crc32(data: &[u8]) -> u32 {
-    let mut hasher = crc32fast::Hasher::new();
-    hasher.update(data);
-    hasher.finalize()
-}
-
 /// Computes the checksum for a structure, skipping the checksum field.
 ///
 /// Hashes the bytes before `checksum_offset`, then 4 zero bytes, then
