@@ -236,10 +236,23 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         // Build all entries in a single pass over sorted pending keys.
         // Use a stack of ancestor paths to track position in the tree.
         // When the path diverges, pop to the common prefix and push new
-        // node entries for new segments. No set or map needed — the sorted
-        // order guarantees each node is encountered exactly once.
+        // node entries for new segments. Insertion sequences are assigned
+        // as entries are created — children of the same parent are
+        // contiguous, so a counter that resets on parent change suffices.
         let mut all_entries: Vec<EntryData> = Vec::new();
         let mut node_stack: Vec<String> = Vec::new();
+        let mut current_parent = String::new();
+        let mut ins_seq: u32 = 0;
+
+        /// Assign the next insertion sequence, resetting if the parent changed.
+        fn next_ins_seq(parent: &str, current_parent: &mut String, ins_seq: &mut u32) -> u32 {
+            if parent != current_parent.as_str() {
+                *current_parent = parent.to_string();
+                *ins_seq = 0;
+            }
+            *ins_seq += 1;
+            *ins_seq
+        }
 
         for key in self.pending_keys {
             let trimmed = key.path.trim_start_matches('/').to_string();
@@ -263,7 +276,10 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 } else {
                     format!("{}/{seg}", node_stack.last().unwrap())
                 };
-                all_entries.push(make_node_entry(&node_path, entry_header_size));
+                let mut entry = make_node_entry(&node_path, entry_header_size);
+                entry.header.insertion_sequence =
+                    next_ins_seq(entry.parent_path(), &mut current_parent, &mut ins_seq);
+                all_entries.push(entry);
                 node_stack.push(node_path);
             }
 
@@ -301,6 +317,12 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             };
 
             let total_size = entry_header_size + name_bytes.len() + data_bytes.len();
+            let parent_path_str = if node_stack.is_empty() {
+                ""
+            } else {
+                node_stack.last().unwrap().as_str()
+            };
+            let leaf_ins_seq = next_ins_seq(parent_path_str, &mut current_parent, &mut ins_seq);
 
             all_entries.push(EntryData {
                 header: KeyTableEntryHeader {
@@ -310,7 +332,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                     parent_node_table: 0,
                     parent_node_offset: 0,
                     checksum: 0,
-                    insertion_sequence: 0,
+                    insertion_sequence: leaf_ins_seq,
                     name_size_in_symbols: name_bytes.len() as u8,
                 },
                 name_bytes,
@@ -343,27 +365,16 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             .to_vec();
         }
 
-        // Layout entries across key tables, assigning insertion sequences
-        // and tracking node positions for parent pointer fixup.
+        // Layout entries across key tables, tracking node positions for
+        // parent pointer fixup.
         let usable_per_table = key_table_size - key_table_header_size;
         let mut tables: Vec<Vec<u8>> = Vec::new();
         let mut current_table_buf = Vec::with_capacity(usable_per_table);
         let mut current_table_index: u16 = 1;
         let mut node_locations: BTreeMap<String, (u16, u32)> = BTreeMap::new();
         node_locations.insert(String::new(), (0, 0)); // root sentinel
-        let mut current_parent = String::new();
-        let mut ins_seq: u32 = 0;
 
         for entry in &mut all_entries {
-            // Assign 1-based insertion sequence, resetting on parent change.
-            let parent = entry.parent_path().to_string();
-            if parent != current_parent {
-                current_parent = parent.clone();
-                ins_seq = 0;
-            }
-            ins_seq += 1;
-            entry.header.insertion_sequence = ins_seq;
-
             let entry_total = entry.header.size_in_bytes as usize;
 
             let remaining_after = usable_per_table.saturating_sub(current_table_buf.len() + entry_total);
@@ -387,7 +398,8 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             }
 
             // Set parent pointer from the node_locations map.
-            if let Some(&(pt, po)) = node_locations.get(&current_parent) {
+            let parent = entry.parent_path().to_string();
+            if let Some(&(pt, po)) = node_locations.get(&parent) {
                 entry.header.parent_node_table = pt;
                 entry.header.parent_node_offset = po;
             }
