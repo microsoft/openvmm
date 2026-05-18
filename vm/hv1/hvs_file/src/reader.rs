@@ -6,8 +6,9 @@
 //! Opens existing `.vmrs` / `.vmcx` / `.vsv` files and provides access
 //! to the key-value store. Read-only, current format version only.
 
-use crate::struct_checksum;
 use crate::defs::*;
+use crate::struct_checksum;
+use core::mem::offset_of;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -295,7 +296,7 @@ impl<R: Read + Seek> HvsFileReader<R> {
 
     fn verify_header_checksum(header: &FileHeader) -> bool {
         // Checksum field is at byte offset 4 in the packed header.
-        header.checksum == struct_checksum(header.as_bytes(), 4)
+        header.checksum == struct_checksum(header.as_bytes(), offset_of!(FileHeader, checksum))
     }
 
     /// Returns all key paths in the file.

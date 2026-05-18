@@ -9,6 +9,7 @@
 
 use crate::defs::*;
 use crate::struct_checksum;
+use core::mem::offset_of;
 use std::io::{self, Seek, SeekFrom, Write};
 use zerocopy::IntoBytes;
 
@@ -416,7 +417,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             checksum_buf.extend_from_slice(entry.header.as_bytes());
             checksum_buf.extend_from_slice(&entry.name_bytes);
             checksum_buf.extend_from_slice(&entry.data_bytes);
-            entry.header.checksum = struct_checksum(&checksum_buf, 12);
+            entry.header.checksum = struct_checksum(&checksum_buf, offset_of!(KeyTableEntryHeader, checksum));
 
             current_table_buf.extend_from_slice(entry.header.as_bytes());
             current_table_buf.extend_from_slice(&entry.name_bytes);
@@ -498,7 +499,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 sequence: 1,
                 checksum: 0,
             };
-            header.checksum = struct_checksum(header.as_bytes(), 6);
+            header.checksum = struct_checksum(header.as_bytes(), offset_of!(KeyTableHeader, checksum));
 
             self.writer.seek(SeekFrom::Start(offset))?;
             self.writer.write_all(header.as_bytes())?;
@@ -532,14 +533,14 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 size_in_bytes: alignment as u32,
                 flags: OBJECT_ENTRY_FLAG_REQUIRED,
             };
-            entry.entry_checksum = struct_checksum(entry.as_bytes(), 1);
+            entry.entry_checksum = struct_checksum(entry.as_bytes(), offset_of!(ObjectTableEntry, entry_checksum));
             obj_entries.push(entry);
         }
 
         // File object entries
         for fo in &self.object_entries {
             let mut entry = *fo;
-            entry.entry_checksum = struct_checksum(entry.as_bytes(), 1);
+            entry.entry_checksum = struct_checksum(entry.as_bytes(), offset_of!(ObjectTableEntry, entry_checksum));
             obj_entries.push(entry);
         }
 
@@ -551,7 +552,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             size_in_bytes: 0,
             flags: 0,
         };
-        chain_entry.entry_checksum = struct_checksum(chain_entry.as_bytes(), 1);
+        chain_entry.entry_checksum = struct_checksum(chain_entry.as_bytes(), offset_of!(ObjectTableEntry, entry_checksum));
         obj_entries.push(chain_entry);
 
         // Fill remaining slots with empty entries (properly checksummed)
@@ -604,7 +605,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             change_tracking_buffer_size: 0,
             change_tracking_buffer_used_size: 0,
         };
-        header.checksum = struct_checksum(header.as_bytes(), 4);
+        header.checksum = struct_checksum(header.as_bytes(), offset_of!(ReplayLogHeader, checksum));
 
         self.writer.seek(SeekFrom::Start(replay_log_offset))?;
         self.writer.write_all(header.as_bytes())?;
@@ -632,8 +633,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 replay_log_size_in_bytes: replay_log_size,
                 replay_log_header_size_in_bytes: replay_log_header_size,
             };
-            let checksum = struct_checksum(header.as_bytes(), 4);
-            header.checksum = checksum;
+            header.checksum = struct_checksum(header.as_bytes(), offset_of!(FileHeader, checksum));
 
             let mut page = vec![0u8; MIN_DATA_ALIGNMENT as usize];
             page[..size_of::<FileHeader>()].copy_from_slice(header.as_bytes());
