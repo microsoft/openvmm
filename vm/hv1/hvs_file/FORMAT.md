@@ -76,22 +76,20 @@ alternates which copy it updates and increments the sequence number.
 The first object table starts at offset **8192** (2 × 4096), regardless
 of the `DataAlignmentInBytes` field in the header.
 
-```c
-struct HyperVStorageHeaderStructure {
-    uint32_t Signature;              // Must be 0x01282014
-    uint32_t Checksum;               // CRC-32 of this structure (with Checksum field zeroed)
-    uint16_t Sequence;               // Monotonically increasing; used to pick the newer copy
-    uint32_t FormatVersion;          // See versioning below
-    uint32_t DataVersion;            // Application-defined data version
-    uint32_t Flags;                  // Reserved
-    uint32_t DataAlignmentInBytes;   // Alignment for all objects (default 4096)
-    uint64_t ReplayLogOffsetInBytes; // Offset to replay log (required)
-    uint64_t ReplayLogSizeInBytes;   // Size of replay log
-    uint32_t ReplayLogHeaderSizeInBytes;
-};
-```
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 4 | Signature | Must be 0x01282014 |
+| 4 | 4 | Checksum | CRC-32 of this structure (with Checksum field zeroed) |
+| 8 | 2 | Sequence | Monotonically increasing; used to pick the newer copy |
+| 10 | 4 | FormatVersion | See versioning below |
+| 14 | 4 | DataVersion | Application-defined data version |
+| 18 | 4 | Flags | Reserved |
+| 22 | 4 | DataAlignmentInBytes | Alignment for all objects (default 4096) |
+| 26 | 8 | ReplayLogOffsetInBytes | Offset to replay log (required) |
+| 34 | 8 | ReplayLogSizeInBytes | Size of replay log |
+| 42 | 4 | ReplayLogHeaderSizeInBytes | |
 
-**Size**: 46 bytes (packed). Padded to `DataAlignment`.
+Padded to `DataAlignment`.
 
 ### Format Versions
 
@@ -116,28 +114,22 @@ additional object tables).
 
 ### Object Table Header
 
-```c
-struct HyperVStorageObjectTableHeader {
-    uint32_t Signature;     // Must be 0x01110001
-    uint32_t EntriesCount;  // Number of entries in this table
-};
-```
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 4 | Signature | Must be 0x01110001 |
+| 4 | 4 | EntriesCount | Number of entries in this table |
 
 Following the header is an array of `EntriesCount` object table entries.
 
 ### Object Table Entry
 
-```c
-struct HyperVStorageObjectTableEntryHeader {
-    uint8_t  ObjectType;        // See object type enum
-    uint32_t EntryChecksum;     // CRC-32 of this entry
-    uint64_t FileOffsetInBytes; // Absolute offset of the object in the file
-    uint32_t SizeInBytes;       // Size of the object
-    uint8_t  Flags;             // 0x01 = required
-};
-```
-
-**Size**: 18 bytes (packed).
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 | ObjectType | See object type enum |
+| 1 | 4 | EntryChecksum | CRC-32 of this entry |
+| 5 | 8 | FileOffsetInBytes | Absolute offset of the object in the file |
+| 13 | 4 | SizeInBytes | Size of the object |
+| 17 | 1 | Flags | 0x01 = required |
 
 ### Object Types
 
@@ -160,16 +152,14 @@ to by an object table entry of type `KeyTable` (2).
 
 ### Key Table Header
 
-```c
-struct HyperVStorageKeyTableHeader {
-    uint16_t Signature;   // Must be 0x0002
-    uint16_t TableIndex;  // Index of this key table
-    uint16_t Sequence;    // For change detection
-    uint32_t Checksum;    // CRC-32 of this header struct (with Checksum zeroed)
-};
-```
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 2 | Signature | Must be 0x0002 |
+| 2 | 2 | TableIndex | Index of this key table |
+| 4 | 2 | Sequence | For change detection |
+| 6 | 4 | Checksum | CRC-32 of this header struct (with Checksum zeroed) |
 
-**Size**: 10 bytes (packed). Checksum covers **only this 10-byte header**
+Checksum covers **only this 10-byte header**
 with the `Checksum` field zeroed — not the table contents.
 
 Following the header is a packed array of key table entries. The usable
@@ -204,20 +194,18 @@ moved to the next key table.
 
 ### Key Table Entry Header
 
-```c
-struct HyperVStorageKeyTableEntryHeader {
-    uint8_t  Type;              // Key type (see below)
-    uint8_t  Flags;             // See flags below
-    uint32_t SizeInBytes;       // Total size of this entry (header + name + data)
-    uint16_t ParentNodeTable;   // Key table index of parent node
-    uint32_t ParentNodeOffset;  // Offset within parent's key table
-    uint32_t Checksum;          // CRC-32 of header (with Checksum zeroed) + name + data
-    uint32_t InsertionSequence; // Order preservation for version 4.0+
-    uint8_t  NameSizeInSymbols; // Length of the key name in bytes (includes trailing NUL)
-};
-```
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 | Type | Key type (see below) |
+| 1 | 1 | Flags | See flags below |
+| 2 | 4 | SizeInBytes | Total size of this entry (header + name + data) |
+| 6 | 2 | ParentNodeTable | Key table index of parent node |
+| 8 | 4 | ParentNodeOffset | Offset within parent's key table |
+| 12 | 4 | Checksum | CRC-32 of header (with Checksum zeroed) + name + data |
+| 16 | 4 | InsertionSequence | Order preservation for version 4.0+ |
+| 20 | 1 | NameSizeInSymbols | Length of the key name in bytes (includes trailing NUL) |
 
-**Size**: 21 bytes (packed). Checksum covers the **21-byte header (with
+Checksum covers the **21-byte header (with
 Checksum zeroed) plus the name and data bytes** — i.e., the meaningful
 content, not any slack space at the end of the entry. The checksum field
 is at byte offset 12 within the header.
@@ -264,12 +252,10 @@ regardless of type:
 
 When `PointsToFileObject` flag is set, the data section contains:
 
-```c
-struct HyperVStorageKeyTableEntryFileObjectData {
-    uint32_t SizeInBytes;       // Actual data size
-    uint64_t OffsetInBytes;     // File offset to the file object
-};
-```
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 4 | SizeInBytes | Actual data size |
+| 4 | 8 | OffsetInBytes | File offset to the file object |
 
 Values of 2048 bytes or larger are stored as file objects rather than
 inline in the key table. The threshold is 2048 bytes and the comparison
@@ -397,25 +383,17 @@ Two sets of keys are used per memory block:
 `RamMemoryBlock1`, ...) — stored as Array values containing a
 memory block metadata structure:
 
-```c
-struct MemoryBlockSaveStruct {
-    uint32_t SavedStateVersion;        // Use version 3
-    struct {
-        uint32_t IsHotAdded       : 1;
-        uint32_t IsSgx            : 1;
-        uint32_t IsVtl2Mb         : 1;
-        uint32_t IsSpecificPurpose: 1;
-        uint32_t Reserved         : 28;
-    } Flags;
-    uint64_t PageCountTotal;           // Number of 4K pages in this block
-    uint64_t MbpIndexStart;            // Starting MBP (memory block page) index
-    uint64_t GpaIndexStart;            // Starting GPA page number (GPA / 4096)
-    uint32_t VirtualNode;              // NUMA node index
-    uint64_t KsrBlockId;              // KSR block ID (can be zero for debug dumps)
-};
-```
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 4 | SavedStateVersion | Use version 3 |
+| 4 | 4 | Flags | Bitfield: bit 0 = IsHotAdded, bit 1 = IsSgx, bit 2 = IsVtl2Mb, bit 3 = IsSpecificPurpose, bits 4–31 reserved |
+| 8 | 8 | PageCountTotal | Number of 4K pages in this block |
+| 16 | 8 | MbpIndexStart | Starting MBP (memory block page) index |
+| 24 | 8 | GpaIndexStart | Starting GPA page number (GPA / 4096) |
+| 32 | 4 | VirtualNode | NUMA node index |
+| 36 | 4 | KsrBlockId | KSR block ID (can be zero for debug dumps) |
 
-**Size**: 40 bytes. For a simple debug dump, set `SavedStateVersion` = 3,
+For a simple debug dump, set `SavedStateVersion` = 3,
 `Flags` = 0, `MbpIndexStart` = cumulative page offset into the RAM
 block sequence, `GpaIndexStart` = GPA base / 4096, `VirtualNode` = 0,
 `KsrBlockId` = 0.
@@ -468,30 +446,9 @@ not from separate keys.
 The partition state blob contains guest OS identification as a 64-bit
 value, identical to `HvGuestOsId` in hvdef (and `HV_X64_MSR_GUEST_OS_ID`).
 
-```c
-union GUEST_OS_INFO {
-    uint64_t AsUINT64;
-
-    // For Microsoft/closed-source guests:
-    struct {
-        uint64_t BuildNumber    : 16;
-        uint64_t ServiceVersion : 8;
-        uint64_t MinorVersion   : 8;
-        uint64_t MajorVersion   : 8;
-        uint64_t OsId           : 8;   // 4 = Windows NT
-        uint64_t VendorId       : 15;  // 1 = Microsoft
-        uint64_t IsOpenSource   : 1;   // 0
-    } ClosedSource;
-
-    // For Linux/open-source guests:
-    struct {
-        uint64_t Version         : 32;  // (major<<16) | (minor<<8) | patch
-        uint64_t VendorSpecific2 : 8;
-        uint64_t OsId            : 7;   // 1 = Linux
-        uint64_t IsOpenSource    : 1;   // 1
-    } OpenSource;
-};
-```
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 8 | AsUINT64 | **Closed-source layout** (bit 63 = 0): bits 0–15 BuildNumber, bits 16–23 ServiceVersion, bits 24–31 MinorVersion, bits 32–39 MajorVersion, bits 40–47 OsId (4 = Windows NT), bits 48–62 VendorId (1 = Microsoft), bit 63 IsOpenSource (0). **Open-source layout** (bit 63 = 1): bits 0–31 Version ((major<<16)\|(minor<<8)\|patch), bits 32–39 VendorSpecific2, bits 40–46 OsId (1 = Linux), bit 63 IsOpenSource (1). |
 
 For unenlightened guests, set to 0 (WinDbg will show "Unknown OS" but
 still function).
