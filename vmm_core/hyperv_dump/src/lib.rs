@@ -29,7 +29,7 @@
 //!     debug_registers: debug_regs,
 //!     xsave,
 //!     xcr0,
-//! }))], Vtl::Vtl0);
+//! }))]);
 //! let blob = builder.finish();
 //!
 //! // Write complete VMRS file with streaming memory

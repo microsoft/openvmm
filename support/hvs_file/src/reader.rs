@@ -210,7 +210,10 @@ impl<R: Read + Seek> HvsFileReader<R> {
                 let data_bytes = table_data[data_start..data_end].to_vec();
 
                 // Determine the full path
-                let parent_key = (entry_header.parent_node_table, entry_header.parent_node_offset);
+                let parent_key = (
+                    entry_header.parent_node_table,
+                    entry_header.parent_node_offset,
+                );
                 let parent_path = node_path_map.get(&parent_key).cloned().unwrap_or_default();
 
                 let full_path = if name.is_empty() && parent_path.is_empty() {
@@ -223,7 +226,10 @@ impl<R: Read + Seek> HvsFileReader<R> {
 
                 if entry_header.key_type == KeyType::NODE {
                     // Use the actual table index from the header, not vector index
-                    let actual_table_idx = kt_header.as_ref().map(|h| h.table_index).unwrap_or(table_idx as u16);
+                    let actual_table_idx = kt_header
+                        .as_ref()
+                        .map(|h| h.table_index)
+                        .unwrap_or(table_idx as u16);
                     let current_key = (actual_table_idx, pos as u32);
                     node_path_map.insert(current_key, full_path.clone());
                 } else if entry_header.key_type != KeyType::FREE {
@@ -233,12 +239,9 @@ impl<R: Read + Seek> HvsFileReader<R> {
                         KeyType::STRING => ValueType::String,
                         KeyType::ARRAY => ValueType::Array,
                         KeyType::BOOL => ValueType::Bool,
-                        other => panic!(
-                            "unrecognized key type {other:?} for key {full_path:?}"
-                        ),
+                        other => panic!("unrecognized key type {other:?} for key {full_path:?}"),
                     };
-                    let is_file_object =
-                        entry_header.flags & KEY_FLAG_POINTS_TO_FILE_OBJECT != 0;
+                    let is_file_object = entry_header.flags & KEY_FLAG_POINTS_TO_FILE_OBJECT != 0;
                     let (fo_offset, fo_size) = if is_file_object {
                         if let Ok((fo_data, _)) = FileObjectData::read_from_prefix(&data_bytes) {
                             (fo_data.offset_in_bytes, fo_data.size_in_bytes)
@@ -249,23 +252,23 @@ impl<R: Read + Seek> HvsFileReader<R> {
                         (0, 0)
                     };
 
-                    keys.insert(full_path, KeyEntry {
-                        value_type,
-                        is_file_object,
-                        data: data_bytes,
-                        file_object_offset: fo_offset,
-                        file_object_size: fo_size,
-                    });
+                    keys.insert(
+                        full_path,
+                        KeyEntry {
+                            value_type,
+                            is_file_object,
+                            data: data_bytes,
+                            file_object_offset: fo_offset,
+                            file_object_size: fo_size,
+                        },
+                    );
                 }
 
                 pos += total_size;
             }
         }
 
-        Ok(Self {
-            reader,
-            keys,
-        })
+        Ok(Self { reader, keys })
     }
 
     fn read_best_header(reader: &mut R) -> Result<FileHeader, ReadError> {
@@ -280,14 +283,18 @@ impl<R: Read + Seek> HvsFileReader<R> {
         reader.read_exact(h1.as_mut_bytes())?;
 
         // Pick the valid one with higher sequence
-        let valid0 = (h0.signature == HEADER_SIGNATURE && Self::verify_header_checksum(&h0))
-            .then_some(h0);
-        let valid1 = (h1.signature == HEADER_SIGNATURE && Self::verify_header_checksum(&h1))
-            .then_some(h1);
+        let valid0 =
+            (h0.signature == HEADER_SIGNATURE && Self::verify_header_checksum(&h0)).then_some(h0);
+        let valid1 =
+            (h1.signature == HEADER_SIGNATURE && Self::verify_header_checksum(&h1)).then_some(h1);
 
         match (valid0, valid1) {
             (Some(a), Some(b)) => {
-                if b.sequence > a.sequence { Ok(b) } else { Ok(a) }
+                if b.sequence > a.sequence {
+                    Ok(b)
+                } else {
+                    Ok(a)
+                }
             }
             (Some(a), None) => Ok(a),
             (None, Some(b)) => Ok(b),
@@ -313,27 +320,49 @@ impl<R: Read + Seek> HvsFileReader<R> {
 
     /// Reads an integer value.
     pub fn read_int(&self, path: &str) -> Result<i64, ReadError> {
-        let entry = self.keys.get(path).ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?;
+        let entry = self
+            .keys
+            .get(path)
+            .ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?;
         if entry.value_type != ValueType::Int {
-            return Err(ReadError::WrongKeyType { expected: "Int", actual: entry.value_type });
+            return Err(ReadError::WrongKeyType {
+                expected: "Int",
+                actual: entry.value_type,
+            });
         }
-        Ok(i64::from_le_bytes(entry.data[..8].try_into().unwrap_or_default()))
+        Ok(i64::from_le_bytes(
+            entry.data[..8].try_into().unwrap_or_default(),
+        ))
     }
 
     /// Reads an unsigned integer value.
     pub fn read_uint(&self, path: &str) -> Result<u64, ReadError> {
-        let entry = self.keys.get(path).ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?;
+        let entry = self
+            .keys
+            .get(path)
+            .ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?;
         if entry.value_type != ValueType::UInt {
-            return Err(ReadError::WrongKeyType { expected: "UInt", actual: entry.value_type });
+            return Err(ReadError::WrongKeyType {
+                expected: "UInt",
+                actual: entry.value_type,
+            });
         }
-        Ok(u64::from_le_bytes(entry.data[..8].try_into().unwrap_or_default()))
+        Ok(u64::from_le_bytes(
+            entry.data[..8].try_into().unwrap_or_default(),
+        ))
     }
 
     /// Reads a string value (UTF-16LE → String).
     pub fn read_string(&self, path: &str) -> Result<String, ReadError> {
-        let entry = self.keys.get(path).ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?;
+        let entry = self
+            .keys
+            .get(path)
+            .ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?;
         if entry.value_type != ValueType::String {
-            return Err(ReadError::WrongKeyType { expected: "String", actual: entry.value_type });
+            return Err(ReadError::WrongKeyType {
+                expected: "String",
+                actual: entry.value_type,
+            });
         }
         // Data format: u32 size_in_bytes, then UTF-16LE data
         if entry.data.len() < 4 {
@@ -351,18 +380,30 @@ impl<R: Read + Seek> HvsFileReader<R> {
 
     /// Reads a boolean value.
     pub fn read_bool(&self, path: &str) -> Result<bool, ReadError> {
-        let entry = self.keys.get(path).ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?;
+        let entry = self
+            .keys
+            .get(path)
+            .ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?;
         if entry.value_type != ValueType::Bool {
-            return Err(ReadError::WrongKeyType { expected: "Bool", actual: entry.value_type });
+            return Err(ReadError::WrongKeyType {
+                expected: "Bool",
+                actual: entry.value_type,
+            });
         }
         Ok(i32::from_le_bytes(entry.data[..4].try_into().unwrap_or_default()) != 0)
     }
 
     /// Reads an array value, transparently handling file objects.
     pub fn read_array(&mut self, path: &str) -> Result<Vec<u8>, ReadError> {
-        let entry = self.keys.get(path).ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?;
+        let entry = self
+            .keys
+            .get(path)
+            .ok_or_else(|| ReadError::KeyNotFound(path.to_string()))?;
         if entry.value_type != ValueType::Array {
-            return Err(ReadError::WrongKeyType { expected: "Array", actual: entry.value_type });
+            return Err(ReadError::WrongKeyType {
+                expected: "Array",
+                actual: entry.value_type,
+            });
         }
         if entry.is_file_object {
             let offset = entry.file_object_offset;

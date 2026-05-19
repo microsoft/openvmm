@@ -118,12 +118,16 @@ mod tests {
         let data: Vec<u8> = (0..4096).map(|i| (i & 0xFF) as u8).collect();
         let buf = Cursor::new(Vec::new());
         let mut w = HvsFileWriter::new(buf).unwrap();
-        w.add_array("/savedstate/savedVM/partition_state", &data).unwrap();
+        w.add_array("/savedstate/savedVM/partition_state", &data)
+            .unwrap();
         let mut buf = w.finish().unwrap();
 
         buf.set_position(0);
         let mut r = HvsFileReader::open(buf).unwrap();
-        assert_eq!(r.read_array("/savedstate/savedVM/partition_state").unwrap(), data);
+        assert_eq!(
+            r.read_array("/savedstate/savedVM/partition_state").unwrap(),
+            data
+        );
     }
 
     #[test]
@@ -133,7 +137,8 @@ mod tests {
         let mut w = HvsFileWriter::new(buf).unwrap();
         w.add_uint("/savedstate/VmVersion", 0x0A00);
         w.add_string("/savedstate/type", "Normal");
-        w.add_array("/savedstate/savedVM/partition_state", &blob).unwrap();
+        w.add_array("/savedstate/savedVM/partition_state", &blob)
+            .unwrap();
         w.add_bool("/savedstate/compressed", false);
         w.add_int("/savedstate/vpcount", 4);
         let mut buf = w.finish().unwrap();
@@ -142,7 +147,10 @@ mod tests {
         let mut r = HvsFileReader::open(buf).unwrap();
         assert_eq!(r.read_uint("/savedstate/VmVersion").unwrap(), 0x0A00);
         assert_eq!(r.read_string("/savedstate/type").unwrap(), "Normal");
-        assert_eq!(r.read_array("/savedstate/savedVM/partition_state").unwrap(), blob);
+        assert_eq!(
+            r.read_array("/savedstate/savedVM/partition_state").unwrap(),
+            blob
+        );
         assert!(!r.read_bool("/savedstate/compressed").unwrap());
         assert_eq!(r.read_int("/savedstate/vpcount").unwrap(), 4);
     }
@@ -212,25 +220,25 @@ mod tests {
         let data = buf.into_inner();
 
         // Parse the file and verify every key table's entries.
-        let obj_count =
-            u32::from_le_bytes(data[8196..8200].try_into().unwrap()) as usize;
+        let obj_count = u32::from_le_bytes(data[8196..8200].try_into().unwrap()) as usize;
 
         for i in 0..obj_count {
             let base = 8200 + i * 18;
             if data[base] != 2 {
                 continue; // not a KeyTable
             }
-            let kt_off =
-                u64::from_le_bytes(data[base + 5..base + 13].try_into().unwrap()) as usize;
+            let kt_off = u64::from_le_bytes(data[base + 5..base + 13].try_into().unwrap()) as usize;
 
             let mut offset = size_of::<KeyTableHeader>();
             let data_end = DEFAULT_KEY_TABLE_SIZE as usize;
             while offset + entry_hdr <= data_end {
                 let pos = kt_off + offset;
-                let entry_size = u32::from_le_bytes(
-                    data[pos + 2..pos + 6].try_into().unwrap(),
-                ) as usize;
-                assert_ne!(entry_size, 0, "zero-size entry in key table at offset {offset}");
+                let entry_size =
+                    u32::from_le_bytes(data[pos + 2..pos + 6].try_into().unwrap()) as usize;
+                assert_ne!(
+                    entry_size, 0,
+                    "zero-size entry in key table at offset {offset}"
+                );
                 assert!(
                     offset + entry_size <= data_end,
                     "entry at offset {offset} (size {entry_size}) overflows key table \
@@ -240,7 +248,8 @@ mod tests {
                 offset += entry_size;
             }
             assert_eq!(
-                offset, data_end,
+                offset,
+                data_end,
                 "key table entries don't exactly fill the table \
                  (ended at {offset}, expected {data_end}, gap = {})",
                 data_end - offset,

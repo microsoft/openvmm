@@ -259,7 +259,9 @@ where
     fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<hyperv_dump::VpState> {
         let mut access = self.vp.access_state(vtl);
         let registers = access.registers().context("failed to get registers")?;
-        let debug_registers = access.debug_regs().context("failed to get debug registers")?;
+        let debug_registers = access
+            .debug_regs()
+            .context("failed to get debug registers")?;
         let xsave = access.xsave().context("failed to get xsave state")?;
         let xcr0 = access.xcr().context("failed to get xcr0")?;
         Ok(hyperv_dump::VpState::X64(hyperv_dump::X64VpState {
@@ -274,7 +276,9 @@ where
     fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<hyperv_dump::VpState> {
         let mut access = self.vp.access_state(vtl);
         let registers = access.registers().context("failed to get registers")?;
-        let system_registers = access.system_registers().context("failed to get system registers")?;
+        let system_registers = access
+            .system_registers()
+            .context("failed to get system registers")?;
         Ok(hyperv_dump::VpState::Aarch64(hyperv_dump::Aarch64VpState {
             registers,
             system_registers: Some(system_registers),
@@ -988,10 +992,7 @@ impl VpSet {
     ) -> anyhow::Result<hyperv_dump::VpState> {
         self.vps[vp.index() as usize]
             .send
-            .call(
-                |x| VpEvent::State(StateEvent::GetDumpVpState(x)),
-                vtl,
-            )
+            .call(|x| VpEvent::State(StateEvent::GetDumpVpState(x)), vtl)
             .await
             .map_err(RunnerGoneError)?
     }
@@ -1351,9 +1352,7 @@ impl RunnerInner {
             StateEvent::Reset(rpc) => rpc.handle_failable_sync(|()| vp.reset()),
             StateEvent::Scrub(rpc) => rpc.handle_failable_sync(|vtl| vp.scrub(vtl)),
             #[cfg(feature = "dump")]
-            StateEvent::GetDumpVpState(rpc) => {
-                rpc.handle_sync(|vtl| vp.get_dump_vp_state(vtl))
-            }
+            StateEvent::GetDumpVpState(rpc) => rpc.handle_sync(|vtl| vp.get_dump_vp_state(vtl)),
             #[cfg(feature = "gdb")]
             StateEvent::Debug(event) => match event {
                 DebugEvent::SetDebugState(rpc) => {

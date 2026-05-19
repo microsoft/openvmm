@@ -306,9 +306,7 @@ impl PartitionUnit {
     /// The VM must be paused when this is called. Returns the serialized
     /// partition state (VP registers as hypervisor save/restore chunks).
     #[cfg(feature = "dump")]
-    pub async fn build_dump_partition_state(
-        &mut self,
-    ) -> anyhow::Result<Vec<u8>> {
+    pub async fn build_dump_partition_state(&mut self) -> anyhow::Result<Vec<u8>> {
         self.req_send
             .call(PartitionRequest::BuildDumpPartitionState, ())
             .await
@@ -390,10 +388,8 @@ impl PartitionUnitRunner {
                     }
                     #[cfg(feature = "dump")]
                     PartitionRequest::BuildDumpPartitionState(rpc) => {
-                        rpc.handle(async |()| {
-                            self.build_dump_partition_state().await
-                        })
-                        .await
+                        rpc.handle(async |()| self.build_dump_partition_state().await)
+                            .await
                     }
                 },
                 #[cfg(feature = "gdb")]
@@ -543,7 +539,7 @@ impl PartitionUnitRunner {
                 .await
                 .with_context(|| format!("failed to get state for VP {vp_idx}"))?;
 
-            builder.add_vp(vp_idx, vec![(vtl, vp_state)], vtl);
+            builder.add_vp(vp_idx, vec![(vtl, vp_state)]);
         }
 
         Ok(builder.finish())

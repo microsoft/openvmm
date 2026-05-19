@@ -120,22 +120,6 @@ pub struct ObSaveChunkEpilog {
 }
 
 // ============================================================
-// VP Indices
-// ============================================================
-
-/// VP indices chunk.
-///
-/// Contains a bitmap of present VPs. Bit N set means VP N is present.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct VpSaveChunkVpIndices {
-    pub header: VmSaveChunkHeader,
-    pub bsp: u32,
-    pub vp_present_map: [u8; 30],
-    pub _padding: [u8; 14],
-}
-
-// ============================================================
 // VP / VTL markers
 // ============================================================
 

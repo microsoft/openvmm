@@ -296,7 +296,11 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                     size_in_bytes: fo.size,
                     offset_in_bytes: fo.offset,
                 };
-                (KeyType::ARRAY, KEY_FLAG_POINTS_TO_FILE_OBJECT, fo_data.as_bytes().to_vec())
+                (
+                    KeyType::ARRAY,
+                    KEY_FLAG_POINTS_TO_FILE_OBJECT,
+                    fo_data.as_bytes().to_vec(),
+                )
             } else {
                 match key.value {
                     Value::Int(v) => (KeyType::INT, 0u8, v.to_le_bytes().to_vec()),
@@ -382,7 +386,8 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         for entry in &mut all_entries {
             let entry_total = entry.header.size_in_bytes as usize;
 
-            let remaining_after = usable_per_table.saturating_sub(current_table_buf.len() + entry_total);
+            let remaining_after =
+                usable_per_table.saturating_sub(current_table_buf.len() + entry_total);
             let would_overflow = current_table_buf.len() + entry_total > usable_per_table;
             let would_leave_small_gap = remaining_after > 0 && remaining_after <= entry_header_size;
 
@@ -404,16 +409,17 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             }
 
             // Set parent pointer from the stack top (or root sentinel).
-            let (pt, po) = loc_stack
-                .last()
-                .map(|(_, t, o)| (*t, *o))
-                .unwrap_or((0, 0));
+            let (pt, po) = loc_stack.last().map(|(_, t, o)| (*t, *o)).unwrap_or((0, 0));
             entry.header.parent_node_table = pt;
             entry.header.parent_node_offset = po;
 
             // Push node location for children to reference.
             if entry.is_node {
-                loc_stack.push((entry.path.clone(), current_table_index, offset_in_table as u32));
+                loc_stack.push((
+                    entry.path.clone(),
+                    current_table_index,
+                    offset_in_table as u32,
+                ));
             }
 
             // Compute entry checksum using streaming CRC (no buffer allocation).
@@ -468,9 +474,9 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                     let mut pos = 0;
                     let mut last_size_offset = 0;
                     while pos + entry_header_size <= table_data.len() {
-                        let entry_size = u32::from_le_bytes(
-                            table_data[pos + 2..pos + 6].try_into().unwrap(),
-                        ) as usize;
+                        let entry_size =
+                            u32::from_le_bytes(table_data[pos + 2..pos + 6].try_into().unwrap())
+                                as usize;
                         if entry_size == 0 || pos + entry_size >= table_data.len() {
                             last_size_offset = pos + 2;
                             break;
@@ -507,7 +513,8 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 sequence: 1,
                 checksum: 0,
             };
-            header.checksum = struct_checksum(header.as_bytes(), offset_of!(KeyTableHeader, checksum));
+            header.checksum =
+                struct_checksum(header.as_bytes(), offset_of!(KeyTableHeader, checksum));
 
             // Write header + entries + padding as a single aligned block.
             self.writer.seek(SeekFrom::Start(offset))?;
@@ -531,20 +538,27 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 size_in_bytes: alignment as u32,
                 flags: OBJECT_ENTRY_FLAG_REQUIRED,
             };
-            entry.entry_checksum = struct_checksum(entry.as_bytes(), offset_of!(ObjectTableEntry, entry_checksum));
+            entry.entry_checksum = struct_checksum(
+                entry.as_bytes(),
+                offset_of!(ObjectTableEntry, entry_checksum),
+            );
             obj_entries.push(entry);
         }
 
         for fo in &self.object_entries {
             let mut entry = *fo;
-            entry.entry_checksum = struct_checksum(entry.as_bytes(), offset_of!(ObjectTableEntry, entry_checksum));
+            entry.entry_checksum = struct_checksum(
+                entry.as_bytes(),
+                offset_of!(ObjectTableEntry, entry_checksum),
+            );
             obj_entries.push(entry);
         }
 
         // Write object tables with chaining. The last entry in each table
         // is reserved as a chain slot pointing to the next table, or empty
         // if this is the final table.
-        let entries_per_table = (alignment as usize - size_of::<ObjectTableHeader>()) / size_of::<ObjectTableEntry>();
+        let entries_per_table =
+            (alignment as usize - size_of::<ObjectTableHeader>()) / size_of::<ObjectTableEntry>();
         let usable_per_table = entries_per_table - 1; // last slot is chain
 
         // Checksummed empty entry for padding and chain termination.
@@ -555,17 +569,18 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             size_in_bytes: 0,
             flags: 0,
         };
-        empty_entry.entry_checksum = struct_checksum(empty_entry.as_bytes(), offset_of!(ObjectTableEntry, entry_checksum));
+        empty_entry.entry_checksum = struct_checksum(
+            empty_entry.as_bytes(),
+            offset_of!(ObjectTableEntry, entry_checksum),
+        );
 
         let object_table_offset = 2 * MIN_DATA_ALIGNMENT as u64;
         let num_tables = (obj_entries.len() + usable_per_table - 1) / usable_per_table.max(1);
         let num_tables = num_tables.max(1); // always at least one table
 
         // Overflow tables go after the replay log.
-        let replay_log_offset = align_up(
-            key_table_base + tables.len() as u64 * alignment,
-            alignment,
-        );
+        let replay_log_offset =
+            align_up(key_table_base + tables.len() as u64 * alignment, alignment);
         let replay_log_size = alignment;
 
         // Pre-compute table offsets: first at 8192, rest after replay log.
@@ -601,14 +616,18 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                     size_in_bytes: alignment as u32,
                     flags: 0,
                 };
-                chain.entry_checksum = struct_checksum(chain.as_bytes(), offset_of!(ObjectTableEntry, entry_checksum));
+                chain.entry_checksum = struct_checksum(
+                    chain.as_bytes(),
+                    offset_of!(ObjectTableEntry, entry_checksum),
+                );
                 buf.extend_from_slice(chain.as_bytes());
             } else {
                 buf.extend_from_slice(empty_entry.as_bytes());
             }
 
             buf.resize(alignment as usize, 0);
-            self.writer.seek(SeekFrom::Start(table_offsets[chunk_idx]))?;
+            self.writer
+                .seek(SeekFrom::Start(table_offsets[chunk_idx]))?;
             self.writer.write_all(&buf)?;
         }
 

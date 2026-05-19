@@ -11,9 +11,7 @@ hvdef.workspace = true
 hvs_file.workspace = true
 memory_range.workspace = true
 static_assertions.workspace = true
-thiserror.workspace = true
 virt.workspace = true
-x86defs.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]

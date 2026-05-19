@@ -87,12 +87,11 @@ impl<W: Write + Seek> VmrsWriter<W> {
 
         // Memory layout: split ranges into 1 MiB blocks, streaming each
         // block through a reusable buffer.
-        let mut meta_block_idx = 0u32;
         let mut data_block_idx = 0u64;
         let mut block_buf = vec![0u8; GMO_BLOCK_SIZE_BYTES];
         let mut key_buf = String::new();
 
-        for range in &self.ranges {
+        for (i, range) in self.ranges.iter().enumerate() {
             let total_pages = range.len() / 4096;
             let gpa_page_start = range.start() / 4096;
 
@@ -104,9 +103,8 @@ impl<W: Write + Seek> VmrsWriter<W> {
             meta.gpa_index_start = gpa_page_start;
 
             key_buf.clear();
-            write!(key_buf, "/savedstate/RamMemoryBlock{meta_block_idx}").unwrap();
+            write!(key_buf, "/savedstate/RamMemoryBlock{i}").unwrap();
             self.hvs.add_array(&key_buf, meta.as_bytes())?;
-            meta_block_idx += 1;
 
             // Stream data blocks (1 MiB each)
             let mut gpa = range.start();
@@ -137,7 +135,9 @@ mod tests {
     use std::io::Cursor;
 
     fn zero_xsave() -> virt::x86::vp::Xsave {
-        virt::x86::vp::Xsave { data: vec![0u64; 72] }
+        virt::x86::vp::Xsave {
+            data: vec![0u64; 72],
+        }
     }
 
     /// Test reader that fills all reads with a single byte value.
@@ -161,27 +161,29 @@ mod tests {
                     return Ok(());
                 }
             }
-            Err(io::Error::new(io::ErrorKind::Other, "unmapped GPA"))
+            Err(io::Error::other("unmapped GPA"))
         }
     }
 
     fn make_test_blob() -> Vec<u8> {
         let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
         builder.set_os_id(0);
-        let mut regs = virt::x86::vp::Registers::default();
-        regs.rip = 0xFFFFF800_12345678;
-        regs.cr3 = 0x1AD000;
-        regs.cr0 = 0x80050033;
-        regs.efer = 0xD01;
-        regs.cs = virt::x86::SegmentRegister {
-            base: 0,
-            limit: 0xFFFFFFFF,
-            selector: 0x10,
-            attributes: 0x209B,
-        };
-        regs.idtr = virt::x86::TableRegister {
-            base: 0xFFFFF800_00000000,
-            limit: 0xFFF,
+        let regs = virt::x86::vp::Registers {
+            rip: 0xFFFFF800_12345678,
+            cr3: 0x1AD000,
+            cr0: 0x80050033,
+            efer: 0xD01,
+            cs: virt::x86::SegmentRegister {
+                base: 0,
+                limit: 0xFFFFFFFF,
+                selector: 0x10,
+                attributes: 0x209B,
+            },
+            idtr: virt::x86::TableRegister {
+                base: 0xFFFFF800_00000000,
+                limit: 0xFFF,
+            },
+            ..Default::default()
         };
         builder.add_vp(
             0,
@@ -194,7 +196,6 @@ mod tests {
                     xcr0: virt::x86::vp::Xcr0 { value: 1 },
                 }),
             )],
-            Vtl::Vtl0,
         );
         builder.finish()
     }
@@ -249,7 +250,6 @@ mod tests {
                     xcr0: virt::x86::vp::Xcr0 { value: 1 },
                 }),
             )],
-            Vtl::Vtl0,
         );
         builder.finish()
     }
@@ -262,7 +262,9 @@ mod tests {
         let mut vmrs = VmrsWriter::new(buf).unwrap();
         vmrs.set_partition_state(blob);
         vmrs.add_memory_range(MemoryRange::new(0..GMO_BLOCK_SIZE_BYTES as u64));
-        vmrs.add_memory_range(MemoryRange::new(0x1_0000_0000..0x1_0000_0000 + GMO_BLOCK_SIZE_BYTES as u64));
+        vmrs.add_memory_range(MemoryRange::new(
+            0x1_0000_0000..0x1_0000_0000 + GMO_BLOCK_SIZE_BYTES as u64,
+        ));
 
         let mut mem = MultiRangeReader(vec![
             (0, GMO_BLOCK_SIZE_BYTES as u64, 0x11),
@@ -280,7 +282,9 @@ mod tests {
         assert!(hvs_reader.contains_key("/savedstate/RamMemoryBlock1"));
 
         // Verify GPA mapping in second metadata block
-        let meta1 = hvs_reader.read_array("/savedstate/RamMemoryBlock1").unwrap();
+        let meta1 = hvs_reader
+            .read_array("/savedstate/RamMemoryBlock1")
+            .unwrap();
         let gpa_page_start = u64::from_le_bytes(meta1[24..32].try_into().unwrap());
         assert_eq!(gpa_page_start, 0x1_0000_0000 / 4096);
 

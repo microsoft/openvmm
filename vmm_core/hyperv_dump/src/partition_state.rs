@@ -70,11 +70,6 @@ struct VtlState {
 struct VpEntry {
     vp_index: u32,
     vtl_states: Vec<VtlState>,
-    /// Which VTL was active when the dump was taken. Currently unused
-    /// (the parser infers it from vtl_is_runnable), but stored for
-    /// future use.
-    #[allow(dead_code)]
-    active_vtl: Vtl,
 }
 
 /// Builds the partition state blob (chunk stream).
@@ -115,10 +110,8 @@ impl PartitionStateBuilder {
     /// Adds a VP to the saved state.
     ///
     /// `vtl_states` is a list of `(vtl, state)` pairs — one entry per VTL
-    /// that has register state. For single-VTL VMs, pass a single `(0, state)`.
-    ///
-    /// `active_vtl` is the VTL that was running when the dump was taken.
-    pub fn add_vp(&mut self, vp_index: u32, vtl_states: Vec<(Vtl, VpState)>, active_vtl: Vtl) {
+    /// that has register state. For single-VTL VMs, pass a single entry.
+    pub fn add_vp(&mut self, vp_index: u32, vtl_states: Vec<(Vtl, VpState)>) {
         let states = vtl_states
             .into_iter()
             .map(|(vtl, regs)| VtlState { vtl, regs })
@@ -127,7 +120,6 @@ impl PartitionStateBuilder {
         self.vps.push(VpEntry {
             vp_index,
             vtl_states: states,
-            active_vtl,
         });
     }
 
@@ -224,23 +216,30 @@ impl PartitionStateBuilder {
     }
 
     fn write_vp_indices(&self, out: &mut Vec<u8>) {
-        let mut vp_present_map = [0u8; 30];
+        let max_vp_index = self.vps.iter().map(|vp| vp.vp_index).max().unwrap_or(0);
+        // Bitmap must cover at least 64 VPs (minimum chunk size) and be
+        // 4-byte aligned.
+        let bitmap_bytes = ((max_vp_index as usize / 8) + 1).max(8);
+        let padded_bitmap_bytes = bitmap_bytes.next_multiple_of(4);
+
+        let data_length = (size_of::<u32>() + padded_bitmap_bytes) as u32;
+        let header = VmSaveChunkHeader {
+            id: VmSaveChunkId::VP_INDICES,
+            data_length,
+            _padding: [0; 8],
+        };
+        out.extend_from_slice(header.as_bytes());
+
+        let bsp = self.vps.first().map_or(0u32, |vp| vp.vp_index);
+        out.extend_from_slice(&bsp.to_le_bytes());
+
+        let bitmap_start = out.len();
+        out.resize(bitmap_start + padded_bitmap_bytes, 0);
         for vp in &self.vps {
             let byte_idx = vp.vp_index as usize / 8;
             let bit_idx = vp.vp_index as usize % 8;
-            if byte_idx < vp_present_map.len() {
-                vp_present_map[byte_idx] |= 1 << bit_idx;
-            }
+            out[bitmap_start + byte_idx] |= 1 << bit_idx;
         }
-        out.extend_from_slice(
-            VpSaveChunkVpIndices {
-                header: chunk_header_for::<VpSaveChunkVpIndices>(VmSaveChunkId::VP_INDICES),
-                bsp: self.vps.first().map_or(0, |vp| vp.vp_index),
-                vp_present_map,
-                _padding: [0; 14],
-            }
-            .as_bytes(),
-        );
     }
 
     fn write_vp_marker(&self, out: &mut Vec<u8>, vp_index: u32) {
@@ -542,20 +541,22 @@ mod tests {
     }
 
     fn make_x64_state(rip: u64, cr3: u64) -> X64VpState {
-        let mut regs = virt::x86::vp::Registers::default();
-        regs.rip = rip;
-        regs.cr3 = cr3;
-        regs.cr0 = 0x80050033;
-        regs.efer = 0xD01;
-        regs.cs = virt::x86::SegmentRegister {
-            base: 0,
-            limit: 0xFFFFFFFF,
-            selector: 0x10,
-            attributes: 0x209B,
-        };
-        regs.idtr = virt::x86::TableRegister {
-            base: 0xFFFFF800_00000000,
-            limit: 0xFFF,
+        let regs = virt::x86::vp::Registers {
+            rip,
+            cr3,
+            cr0: 0x80050033,
+            efer: 0xD01,
+            cs: virt::x86::SegmentRegister {
+                base: 0,
+                limit: 0xFFFFFFFF,
+                selector: 0x10,
+                attributes: 0x209B,
+            },
+            idtr: virt::x86::TableRegister {
+                base: 0xFFFFF800_00000000,
+                limit: 0xFFF,
+            },
+            ..Default::default()
         };
         X64VpState {
             registers: regs,
@@ -566,7 +567,7 @@ mod tests {
     }
 
     fn add_x64_vp(builder: &mut PartitionStateBuilder, vp_index: u32, state: X64VpState) {
-        builder.add_vp(vp_index, vec![(Vtl::Vtl0, VpState::X64(state))], Vtl::Vtl0);
+        builder.add_vp(vp_index, vec![(Vtl::Vtl0, VpState::X64(state))]);
     }
 
     #[test]
@@ -596,8 +597,10 @@ mod tests {
     fn build_minimal_aarch64_blob() {
         let mut builder = PartitionStateBuilder::new(ProcessorArch::Aarch64);
 
-        let mut regs = virt::aarch64::vp::Registers::default();
-        regs.x0 = 0x1234;
+        let regs = virt::aarch64::vp::Registers {
+            x0: 0x1234,
+            ..Default::default()
+        };
         let sys = virt::aarch64::vp::SystemRegisters {
             sctlr_el1: 0x30D00800,
             ttbr0_el1: 0x40000,
@@ -612,7 +615,6 @@ mod tests {
                     system_registers: Some(sys),
                 }),
             )],
-            Vtl::Vtl0,
         );
 
         let blob = builder.finish();
@@ -699,7 +701,6 @@ mod tests {
                 (Vtl::Vtl0, VpState::X64(make_x64_state(0x1000, 0x1AD000))),
                 (Vtl::Vtl1, VpState::X64(make_x64_state(0x2000, 0x2AD000))),
             ],
-            Vtl::Vtl0,
         );
 
         let blob = builder.finish();

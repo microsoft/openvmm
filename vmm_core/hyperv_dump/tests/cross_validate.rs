@@ -8,14 +8,15 @@
 //! Skips gracefully if the DLL is not found on the system.
 
 #![cfg(windows)]
-#![allow(unsafe_code)]
+// UNSAFETY: FFI calls to VmSavedStateDumpProvider.dll for cross-validation.
+#![expect(unsafe_code)]
 
+use hvdef::Vtl;
 use hyperv_dump::PartitionStateBuilder;
 use hyperv_dump::ProcessorArch;
 use hyperv_dump::VmrsWriter;
 use hyperv_dump::VpState;
 use hyperv_dump::X64VpState;
-use hvdef::Vtl;
 use std::ffi::c_void;
 use std::io::Cursor;
 use std::path::PathBuf;
@@ -53,8 +54,10 @@ fn setup_dll_search_path() -> bool {
         return false;
     }
 
+    // xtask-fmt allow-target-arch sys-crate
     let arch = if cfg!(target_arch = "aarch64") {
         "arm64"
+    // xtask-fmt allow-target-arch sys-crate
     } else if cfg!(target_arch = "x86_64") {
         "x64"
     } else {
@@ -96,7 +99,9 @@ fn setup_dll_search_path() -> bool {
 
 /// Build a VMRS file using the hv_saved_state high-level API.
 fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
-    let zero_xsave = || virt::x86::vp::Xsave { data: vec![0u64; 72] };
+    let zero_xsave = || virt::x86::vp::Xsave {
+        data: vec![0u64; 72],
+    };
 
     let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
     builder.set_os_id(0);
@@ -135,7 +140,6 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
                     xcr0: virt::x86::vp::Xcr0 { value: 1 },
                 }),
             )],
-            Vtl::Vtl0,
         );
     }
 
@@ -161,10 +165,7 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
 
 /// Load a VMRS file with the DLL and verify VP count and architecture.
 fn load_and_verify(vmrs_data: &[u8], expected_vp_count: u32, _test_name: &str) {
-    let mut tmp = tempfile::Builder::new()
-        .suffix(".vmrs")
-        .tempfile()
-        .unwrap();
+    let mut tmp = tempfile::Builder::new().suffix(".vmrs").tempfile().unwrap();
     std::io::Write::write_all(&mut tmp, vmrs_data).unwrap();
 
     let vmrs_path = tmp.path();
@@ -178,11 +179,7 @@ fn load_and_verify(vmrs_data: &[u8], expected_vp_count: u32, _test_name: &str) {
     unsafe {
         let mut handle: *mut c_void = std::ptr::null_mut();
         let hr = dll::LoadSavedStateFile(wide_path.as_ptr(), &mut handle);
-        assert!(
-            hr >= 0,
-            "LoadSavedStateFile failed: 0x{:08X}",
-            hr as u32
-        );
+        assert!(hr >= 0, "LoadSavedStateFile failed: 0x{:08X}", hr as u32);
         assert!(!handle.is_null());
 
         // Verify VP count
@@ -279,7 +276,6 @@ fn dll_validates_large_memory() {
                 xcr0: virt::x86::vp::Xcr0 { value: 1 },
             }),
         )],
-        Vtl::Vtl0,
     );
     let blob = builder.finish();
 
@@ -315,8 +311,7 @@ fn dll_validates_large_memory() {
 
     // Verify round-trip through our reader: spot-check a few blocks.
     {
-        let mut reader =
-            hvs_file::reader::HvsFileReader::open(Cursor::new(&vmrs_data)).unwrap();
+        let mut reader = hvs_file::reader::HvsFileReader::open(Cursor::new(&vmrs_data)).unwrap();
         for i in [0u64, 1, 249, 250, 499] {
             let data = reader
                 .read_array(&format!("/savedstate/RamBlock{i}"))
@@ -328,10 +323,7 @@ fn dll_validates_large_memory() {
     }
 
     // Verify the DLL can load the file.
-    let mut tmp = tempfile::Builder::new()
-        .suffix(".vmrs")
-        .tempfile()
-        .unwrap();
+    let mut tmp = tempfile::Builder::new().suffix(".vmrs").tempfile().unwrap();
     std::io::Write::write_all(&mut tmp, &vmrs_data).unwrap();
 
     let vmrs_path = tmp.path();

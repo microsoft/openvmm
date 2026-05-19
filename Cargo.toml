@@ -7,10 +7,6 @@ default-members = ["openvmm/openvmm"]
 members = [
   # openvmm
   "openvmm/openvmm",
-  # hvs_file (HyperV Storage file format library)
-  "support/hvs_file",
-  # hyperv_dump (VMRS dump file builder)
-  "vmm_core/hyperv_dump",
   # openvmm_vhost
   "openvmm_vhost/openvmm_vhost",
   # repo tooling

@@ -218,4 +218,3 @@ pub struct ReplayLogEntryHeader {
 }
 
 const_assert_eq!(size_of::<ReplayLogEntryHeader>(), 28);
-
