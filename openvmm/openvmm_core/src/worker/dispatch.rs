@@ -34,7 +34,6 @@ use ide_resources::IdeDeviceConfig;
 use igvm::IgvmFile;
 use input_core::InputData;
 use input_core::MultiplexedInputHandle;
-use inspect::Inspect;
 use local_clock::LocalClockDelta;
 use membacking::GuestMemoryBuilder;
 use membacking::GuestMemoryManager;
@@ -113,7 +112,6 @@ use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::pcie::PcieHostBridge;
-use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
 use vm_topology::processor::aarch64::Aarch64Topology;
@@ -414,13 +412,6 @@ pub(crate) struct InitializedVm {
     driver_source: VmTaskDriverSource,
 }
 
-trait BuildTopology<T: ArchTopology + Inspect> {
-    fn to_topology(
-        &self,
-        platform_info: &virt::PlatformInfo,
-    ) -> anyhow::Result<ProcessorTopology<T>>;
-}
-
 trait ExtractTopologyConfig {
     fn to_config(&self) -> ProcessorTopologyConfig;
 }
@@ -446,38 +437,35 @@ impl ExtractTopologyConfig for ProcessorTopology<X86Topology> {
 }
 
 #[cfg(guest_arch = "x86_64")]
-impl BuildTopology<X86Topology> for ProcessorTopologyConfig {
-    fn to_topology(
-        &self,
-        _platform_info: &virt::PlatformInfo,
-    ) -> anyhow::Result<ProcessorTopology<X86Topology>> {
-        use vm_topology::processor::x86::X2ApicState;
+fn build_x86_topology(
+    config: &ProcessorTopologyConfig,
+) -> anyhow::Result<ProcessorTopology<X86Topology>> {
+    use vm_topology::processor::x86::X2ApicState;
 
-        let arch = match &self.arch {
-            None => Default::default(),
-            Some(ArchTopologyConfig::X86(arch)) => arch.clone(),
-            _ => anyhow::bail!("invalid architecture config"),
-        };
-        let mut builder = TopologyBuilder::from_host_topology()?;
-        builder.apic_id_offset(arch.apic_id_offset);
-        if let Some(smt) = self.enable_smt {
-            builder.smt_enabled(smt);
-        }
-        if let Some(count) = self.vps_per_socket {
-            builder.vps_per_socket(count);
-        }
-        let x2apic = match arch.x2apic {
-            X2ApicConfig::Auto => {
-                // FUTURE: query the hypervisor for a recommendation.
-                X2ApicState::Supported
-            }
-            X2ApicConfig::Supported => X2ApicState::Supported,
-            X2ApicConfig::Unsupported => X2ApicState::Unsupported,
-            X2ApicConfig::Enabled => X2ApicState::Enabled,
-        };
-        builder.x2apic(x2apic);
-        Ok(builder.build(self.proc_count)?)
+    let arch = match &config.arch {
+        None => Default::default(),
+        Some(ArchTopologyConfig::X86(arch)) => arch.clone(),
+        _ => anyhow::bail!("invalid architecture config"),
+    };
+    let mut builder = TopologyBuilder::from_host_topology()?;
+    builder.apic_id_offset(arch.apic_id_offset);
+    if let Some(smt) = config.enable_smt {
+        builder.smt_enabled(smt);
     }
+    if let Some(count) = config.vps_per_socket {
+        builder.vps_per_socket(count);
+    }
+    let x2apic = match arch.x2apic {
+        X2ApicConfig::Auto => {
+            // FUTURE: query the hypervisor for a recommendation.
+            X2ApicState::Supported
+        }
+        X2ApicConfig::Supported => X2ApicState::Supported,
+        X2ApicConfig::Unsupported => X2ApicState::Unsupported,
+        X2ApicConfig::Enabled => X2ApicState::Enabled,
+    };
+    builder.x2apic(x2apic);
+    Ok(builder.build(config.proc_count)?)
 }
 
 impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
@@ -512,140 +500,107 @@ impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
 }
 
 #[cfg(guest_arch = "aarch64")]
-impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
-    fn to_topology(
-        &self,
-        platform_info: &virt::PlatformInfo,
-    ) -> anyhow::Result<ProcessorTopology<Aarch64Topology>> {
-        use vm_topology::processor::aarch64::Aarch64PlatformConfig;
-        use vm_topology::processor::aarch64::GicItsInfo;
-        use vm_topology::processor::aarch64::GicMsiController;
-        use vm_topology::processor::aarch64::GicV2mInfo;
+fn build_aarch64_topology(
+    config: &ProcessorTopologyConfig,
+    platform_info: &virt::PlatformInfo,
+    gic_msi: vm_topology::processor::aarch64::GicMsiController,
+) -> anyhow::Result<ProcessorTopology<Aarch64Topology>> {
+    use vm_topology::processor::aarch64::Aarch64PlatformConfig;
 
-        let arch = match &self.arch {
-            None => Default::default(),
-            Some(ArchTopologyConfig::Aarch64(arch)) => arch.clone(),
-            _ => anyhow::bail!("invalid architecture config"),
-        };
+    let arch = match &config.arch {
+        None => Default::default(),
+        Some(ArchTopologyConfig::Aarch64(arch)) => arch.clone(),
+        _ => anyhow::bail!("invalid architecture config"),
+    };
 
-        let pmu_gsiv = match arch.pmu_gsiv {
-            PmuGsivConfig::Disabled => None,
-            PmuGsivConfig::Gsiv(gsiv) => Some(gsiv),
-            PmuGsivConfig::Platform => platform_info.platform_gsiv,
-        };
+    let pmu_gsiv = match arch.pmu_gsiv {
+        PmuGsivConfig::Disabled => None,
+        PmuGsivConfig::Gsiv(gsiv) => Some(gsiv),
+        PmuGsivConfig::Platform => platform_info.platform_gsiv,
+    };
 
-        // TODO: When this value is supported on all platforms, we should change
-        // the arch config to not be an option. For now, warn since the ARM VBSA
-        // expects this to be available.
-        if pmu_gsiv.is_none() {
-            tracing::warn!("PMU GSIV is not set");
+    // TODO: When this value is supported on all platforms, we should change
+    // the arch config to not be an option. For now, warn since the ARM VBSA
+    // expects this to be available.
+    if pmu_gsiv.is_none() {
+        tracing::warn!("PMU GSIV is not set");
+    }
+
+    let (gic_distributor_base, gic_version) = match &arch.gic_config {
+        Some(GicConfig::V3(config)) => {
+            let dist = config
+                .as_ref()
+                .map(|c| c.gic_distributor_base)
+                .unwrap_or(openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE);
+            let redist = config
+                .as_ref()
+                .map(|c| c.gic_redistributors_base)
+                .unwrap_or(openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE);
+            (
+                dist,
+                GicVersion::V3 {
+                    redistributors_base: redist,
+                },
+            )
         }
-
-        let (gic_distributor_base, gic_version) = match &arch.gic_config {
-            Some(GicConfig::V3(config)) => {
-                let dist = config
-                    .as_ref()
-                    .map(|c| c.gic_distributor_base)
-                    .unwrap_or(openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE);
-                let redist = config
-                    .as_ref()
-                    .map(|c| c.gic_redistributors_base)
-                    .unwrap_or(openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE);
+        Some(GicConfig::V2(config)) => {
+            let dist = config
+                .as_ref()
+                .map(|c| c.gic_distributor_base)
+                .unwrap_or(openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE);
+            let cpu_if = config
+                .as_ref()
+                .map(|c| c.cpu_interface_base)
+                .unwrap_or(openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE);
+            (
+                dist,
+                GicVersion::V2 {
+                    cpu_interface_base: cpu_if,
+                },
+            )
+        }
+        None => {
+            // No explicit GIC config — use the hypervisor's detected version
+            // with default addresses.
+            let dist = openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE;
+            let second = openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE;
+            if platform_info.supports_gic_v3 {
                 (
                     dist,
                     GicVersion::V3 {
-                        redistributors_base: redist,
+                        redistributors_base: second,
                     },
                 )
-            }
-            Some(GicConfig::V2(config)) => {
-                let dist = config
-                    .as_ref()
-                    .map(|c| c.gic_distributor_base)
-                    .unwrap_or(openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE);
-                let cpu_if = config
-                    .as_ref()
-                    .map(|c| c.cpu_interface_base)
-                    .unwrap_or(openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE);
+            } else {
                 (
                     dist,
                     GicVersion::V2 {
-                        cpu_interface_base: cpu_if,
+                        cpu_interface_base: second,
                     },
                 )
             }
-            None => {
-                // No explicit GIC config — use the hypervisor's detected version
-                // with default addresses.
-                let dist = openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE;
-                let second = openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE;
-                if platform_info.supports_gic_v3 {
-                    (
-                        dist,
-                        GicVersion::V3 {
-                            redistributors_base: second,
-                        },
-                    )
-                } else {
-                    (
-                        dist,
-                        GicVersion::V2 {
-                            cpu_interface_base: second,
-                        },
-                    )
-                }
-            }
-        };
-
-        // Use the ITS for MSI delivery when the backend supports it
-        // (KVM with GICv3). Otherwise fall back to GICv2m (SPI-based MSIs).
-        use openvmm_defs::config::GicMsiConfig;
-        let is_gicv2 = matches!(gic_version, GicVersion::V2 { .. });
-        let use_its = match arch.gic_msi {
-            GicMsiConfig::Auto => platform_info.supports_its && !is_gicv2,
-            GicMsiConfig::Its => {
-                if is_gicv2 {
-                    anyhow::bail!("ITS is incompatible with GICv2");
-                }
-                if !platform_info.supports_its {
-                    anyhow::bail!("ITS requested but the hypervisor does not support it");
-                }
-                true
-            }
-            GicMsiConfig::V2m => false,
-        };
-        let gic_msi = if use_its {
-            GicMsiController::Its(GicItsInfo {
-                its_base: openvmm_defs::config::DEFAULT_GIC_ITS_BASE,
-            })
-        } else {
-            GicMsiController::V2m(GicV2mInfo {
-                frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
-                spi_base: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_BASE,
-                spi_count: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_COUNT,
-            })
-        };
-
-        let platform = Aarch64PlatformConfig {
-            gic_distributor_base,
-            gic_version,
-            gic_msi,
-            pmu_gsiv,
-            virt_timer_ppi: openvmm_defs::config::DEFAULT_VIRT_TIMER_PPI,
-            gic_nr_irqs: openvmm_defs::config::DEFAULT_GIC_NR_IRQS,
-        };
-
-        let mut builder = TopologyBuilder::new_aarch64(platform);
-        if let Some(smt) = self.enable_smt {
-            builder.smt_enabled(smt);
         }
-        if let Some(count) = self.vps_per_socket {
-            builder.vps_per_socket(count);
-        } else {
-            builder.vps_per_socket(self.proc_count);
-        }
-        Ok(builder.build(self.proc_count)?)
+    };
+
+    let platform = Aarch64PlatformConfig {
+        gic_distributor_base,
+        gic_version,
+        gic_msi,
+        pmu_gsiv,
+        virt_timer_ppi: openvmm_defs::config::DEFAULT_VIRT_TIMER_PPI,
+        gic_nr_irqs: openvmm_defs::config::DEFAULT_GIC_NR_IRQS,
+    };
+
+    let mut builder = TopologyBuilder::new_aarch64(platform);
+    if let Some(smt) = config.enable_smt {
+        builder.smt_enabled(smt);
     }
+    if let Some(count) = config.vps_per_socket {
+        builder.vps_per_socket(count);
+    } else {
+        builder.vps_per_socket(config.proc_count);
+    }
+    Ok(builder.build(config.proc_count)?)
 }
 
 /// A VM that has been loaded and can be run.
@@ -818,6 +773,7 @@ impl InitializedVm {
     pub(crate) async fn new_with_hypervisor<P, H>(
         driver_source: VmTaskDriverSource,
         hypervisor: &mut H,
+        #[cfg_attr(not(guest_arch = "aarch64"), expect(unused_variables))]
         platform_info: virt::PlatformInfo,
         cfg: Manifest,
         shared_memory: Option<SharedMemoryBacking>,
@@ -865,7 +821,64 @@ impl InitializedVm {
             None
         };
 
-        let processor_topology = cfg.processor_topology.to_topology(&platform_info)?;
+        cfg_if! {
+            if #[cfg(guest_arch = "aarch64")] {
+                use openvmm_defs::config::GicMsiConfig;
+                use vm_topology::processor::aarch64::GicItsInfo;
+                use vm_topology::processor::aarch64::GicMsiController;
+                use vm_topology::processor::aarch64::GicV2mInfo;
+
+                // Resolve ITS vs v2m and determine v2m SPI count.
+                let arch_config = match &cfg.processor_topology.arch {
+                    Some(ArchTopologyConfig::Aarch64(a)) => a,
+                    _ => &Aarch64TopologyConfig::default(),
+                };
+                let is_gicv2 = match &arch_config.gic_config {
+                    Some(GicConfig::V2(_)) => true,
+                    _ => !platform_info.supports_gic_v3,
+                };
+                let v2m_spi_count = match &arch_config.gic_msi {
+                    GicMsiConfig::Auto if platform_info.supports_its && !is_gicv2 => None,
+                    GicMsiConfig::Auto => Some(openvmm_defs::config::DEFAULT_GIC_V2M_SPI_COUNT),
+                    GicMsiConfig::Its => {
+                        if is_gicv2 {
+                            anyhow::bail!("ITS is incompatible with GICv2");
+                        }
+                        if !platform_info.supports_its {
+                            anyhow::bail!("ITS requested but the hypervisor does not support it");
+                        }
+                        None
+                    }
+                    GicMsiConfig::V2m { spi_count } => Some(*spi_count),
+                };
+
+                // Resolve SPI layout — all SPI allocations in one deterministic pass.
+                let spi_layout = super::spi_layout::resolve_spi_layout(
+                    &super::spi_layout::SpiLayoutInput {
+                        v2m_spi_count,
+                    },
+                )?;
+
+                // Build the GIC MSI controller from resolved SPIs.
+                let gic_msi = if let Some(count) = v2m_spi_count {
+                    GicMsiController::V2m(GicV2mInfo {
+                        frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
+                        spi_base: spi_layout.v2m_spi_base.expect("v2m base must be allocated when v2m_spi_count is Some"),
+                        spi_count: count,
+                    })
+                } else {
+                    GicMsiController::Its(GicItsInfo {
+                        its_base: openvmm_defs::config::DEFAULT_GIC_ITS_BASE,
+                    })
+                };
+
+                let processor_topology =
+                    build_aarch64_topology(&cfg.processor_topology, &platform_info, gic_msi)?;
+            } else {
+                let processor_topology =
+                    build_x86_topology(&cfg.processor_topology)?;
+            }
+        }
 
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {

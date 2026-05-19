@@ -1285,7 +1285,9 @@ async fn vm_config_from_command_line(
             gic_msi: match opt.gic_msi {
                 cli_args::GicMsiCli::Auto => openvmm_defs::config::GicMsiConfig::Auto,
                 cli_args::GicMsiCli::Its => openvmm_defs::config::GicMsiConfig::Its,
-                cli_args::GicMsiCli::V2m => openvmm_defs::config::GicMsiConfig::V2m,
+                cli_args::GicMsiCli::V2m => openvmm_defs::config::GicMsiConfig::V2m {
+                    spi_count: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_COUNT,
+                },
             },
         },
     );
