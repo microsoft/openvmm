@@ -5268,6 +5268,7 @@ dependencies = [
 name = "openvmm"
 version = "0.0.0"
 dependencies = [
+ "embed-resource",
  "openvmm_entry",
  "openvmm_resources",
 ]
