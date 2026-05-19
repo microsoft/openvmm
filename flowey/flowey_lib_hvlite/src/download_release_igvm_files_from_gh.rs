@@ -105,7 +105,7 @@ pub mod resolve {
                 });
             let arch = request.arch;
 
-            ctx.emit_rust_step("write to directory variables", |ctx| {
+            ctx.emit_minor_rust_step("write to directory variables", |ctx| {
                 let downloaded_artifact = downloaded_artifact.claim(ctx);
                 let write_release_output = output.claim(ctx);
 
@@ -136,8 +136,6 @@ pub mod resolve {
                             openhcl_aarch64,
                         },
                     );
-
-                    Ok(())
                 }
             });
 
