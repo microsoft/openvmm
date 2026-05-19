@@ -5477,6 +5477,7 @@ dependencies = [
  "state_unit",
  "storvsp",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "uefi_specs",
  "vfio_assigned_device",

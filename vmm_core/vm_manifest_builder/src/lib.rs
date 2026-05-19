@@ -391,7 +391,7 @@ impl VmManifestBuilder {
                 };
                 result.attach_generic_ioapic();
                 result.attach_pic();
-                result.capabilities.with_i440bx_host_pci_bridge = true;
+                result.attach_i440bx_host_pci_bridge();
                 result.attach_pit();
                 result.attach_piix4_power_management(self.platform_pm_timer_assist);
                 result.attach_missing_arch_ports(self.arch, false);
@@ -694,7 +694,7 @@ impl VmChipsetResult {
 
     fn attach_i440bx_host_pci_bridge(&mut self) -> &mut Self {
         self.pci_chipset_devices.push(LegacyPciChipsetDeviceHandle {
-            name: "440bx-host-pci-bridge".to_string(),
+            name: "i440bx-host-pci-bridge".to_string(),
             resource: I440BxHostPciBridgeDeviceHandle {
                 adjust_gpa_range: PlatformResource.into_resource(),
             }
@@ -702,6 +702,7 @@ impl VmChipsetResult {
             pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
             bdf: I440BX_HOST_PCI_BRIDGE_BDF,
         });
+        self.capabilities.with_i440bx_host_pci_bridge = true;
         self
     }
 

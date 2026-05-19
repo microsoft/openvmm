@@ -10,6 +10,7 @@ use membacking::RamVisibility;
 use membacking::RamVisibilityControl;
 use memory_range::MemoryRange;
 use std::convert::Infallible;
+use tracelimit::error_ratelimited;
 use vm_resource::PlatformResource;
 use vm_resource::ResolveResource;
 
@@ -49,7 +50,9 @@ impl AdjustGpaRange for ManageRamGpaRange {
                 }
             }
         };
-        block_on(self.memory.set_ram_visibility(range, state)).unwrap();
+        if let Err(err) = block_on(self.memory.set_ram_visibility(range, state)) {
+            error_ratelimited!(error = &err as &dyn std::error::Error, %range, "failed to set RAM visibility");
+        }
     }
 }
 
