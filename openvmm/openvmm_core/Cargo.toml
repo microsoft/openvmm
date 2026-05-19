@@ -7,7 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-dump = ["vmm_core/dump"]
 gdb = ["vmm_core/gdb"]
 
 unstable_whp = ["virt_whp/unstable_whp"]
@@ -41,7 +40,7 @@ virt.workspace = true
 vm_loader.workspace = true
 vmgs.workspace = true
 vmgs_broker.workspace = true
-vmm_core.workspace = true
+vmm_core = { workspace = true, features = ["dump"] }
 vmm_core_defs.workspace = true
 state_unit.workspace = true
 

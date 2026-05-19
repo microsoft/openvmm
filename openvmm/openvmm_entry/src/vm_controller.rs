@@ -426,23 +426,12 @@ impl VmController {
         let tmp_file = tempfile::NamedTempFile::new_in(parent)
             .context("failed to create temp file for dump")?;
 
-        // Pause the VM.
+        // Dump state to the temp file (worker pauses, collects VP state +
+        // streams memory, then resumes).
         self.vm_rpc
-            .call(VmRpc::Pause, ())
-            .await
-            .context("failed to pause VM")?;
-
-        // Dump state to the temp file (worker collects VP state + streams memory).
-        let result = self
-            .vm_rpc
             .call_failable(VmRpc::DumpState, tmp_file.as_file().try_clone()?.into())
             .await
-            .context("failed to dump state");
-
-        // Resume the VM regardless of dump success.
-        let _ = self.vm_rpc.call(VmRpc::Resume, ()).await;
-
-        result?;
+            .context("failed to dump state")?;
 
         // Persist the temp file to the final path.
         tmp_file.persist(path).map_err(|e| {

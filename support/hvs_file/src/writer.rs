@@ -207,7 +207,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             }
         }
 
-        fn make_node_entry(path: &str, entry_header_size: usize) -> EntryData {
+        fn make_node_entry(path: &str, entry_header_size: usize) -> io::Result<EntryData> {
             let name = path.rsplit('/').next().unwrap_or("");
             let mut name_bytes = name.as_bytes().to_vec();
             name_bytes.push(0);
@@ -218,7 +218,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             .as_bytes()
             .to_vec();
             let total_size = entry_header_size + name_bytes.len() + data_bytes.len();
-            EntryData {
+            Ok(EntryData {
                 header: KeyTableEntryHeader {
                     key_type: KeyType::NODE,
                     flags: 0,
@@ -227,13 +227,18 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                     parent_node_offset: 0,
                     checksum: 0,
                     insertion_sequence: 0,
-                    name_size_in_symbols: name_bytes.len() as u8,
+                    name_size_in_symbols: name_bytes.len().try_into().map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("key name too long: {} bytes", name_bytes.len()),
+                        )
+                    })?,
                 },
                 name_bytes,
                 data_bytes,
                 path: path.to_string(),
                 is_node: true,
-            }
+            })
         }
 
         // Build all entries in a single pass over sorted pending keys.
@@ -279,7 +284,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 } else {
                     format!("{}/{seg}", node_stack.last().unwrap())
                 };
-                let mut entry = make_node_entry(&node_path, entry_header_size);
+                let mut entry = make_node_entry(&node_path, entry_header_size)?;
                 entry.header.insertion_sequence =
                     next_ins_seq(entry.parent_path(), &mut current_parent, &mut ins_seq);
                 all_entries.push(entry);
@@ -340,7 +345,12 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                     parent_node_offset: 0,
                     checksum: 0,
                     insertion_sequence: leaf_ins_seq,
-                    name_size_in_symbols: name_bytes.len() as u8,
+                    name_size_in_symbols: name_bytes.len().try_into().map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("key name too long: {} bytes", name_bytes.len()),
+                        )
+                    })?,
                 },
                 name_bytes,
                 data_bytes,

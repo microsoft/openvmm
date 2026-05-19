@@ -82,9 +82,6 @@ trait ControlVp: ProtobufSaveRestore {
     fn debug(&mut self) -> &mut dyn DebugVp;
 
     /// Get full VP state for dump generation.
-    ///
-    /// Returns register state suitable for building a `.vmrs` dump file.
-    /// Unlike the debug path, this is not gated on the `gdb` feature.
     #[cfg(feature = "dump")]
     fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<hyperv_dump::VpState>;
 }
@@ -1104,7 +1101,6 @@ enum StateEvent {
     Restore(Rpc<SavedStateBlob, Result<(), RestoreError>>),
     Reset(mesh::rpc::FailableRpc<(), ()>),
     Scrub(mesh::rpc::FailableRpc<Vtl, ()>),
-    /// Get full VP state for dump generation (not gated on gdb).
     #[cfg(feature = "dump")]
     GetDumpVpState(Rpc<Vtl, anyhow::Result<hyperv_dump::VpState>>),
     #[cfg(feature = "gdb")]

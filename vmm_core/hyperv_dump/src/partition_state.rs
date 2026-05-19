@@ -34,7 +34,7 @@ pub enum ProcessorArch {
 /// x64 VP state for dump generation.
 ///
 /// Groups the virt-layer register types needed to populate the save/restore
-/// chunks. All fields are optional except `registers`.
+/// chunks.
 pub struct X64VpState {
     /// General-purpose, segment, table, and control registers.
     pub registers: virt::x86::vp::Registers,

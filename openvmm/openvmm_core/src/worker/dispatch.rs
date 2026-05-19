@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod dump;
+
 use crate::emuplat;
 use crate::partition::BindHvliteVp;
 use crate::partition::HvlitePartition;
@@ -641,22 +643,22 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
 /// Most new state should be added to [`LoadedVmInner`].
 pub(crate) struct LoadedVm {
     state_units: StateUnits,
-    pub(crate) inner: LoadedVmInner,
+    inner: LoadedVmInner,
     running: bool,
 }
 
 /// Most of the VM state for [`LoadedVm`], excluding things that are necessary
 /// for state machine transitions.
-pub(crate) struct LoadedVmInner {
+struct LoadedVmInner {
     driver_source: VmTaskDriverSource,
     resolver: ResourceResolver,
-    pub(crate) partition_unit: PartitionUnit,
+    partition_unit: PartitionUnit,
     partition: Arc<dyn HvlitePartition>,
     chipset_devices: ChipsetDevices,
     _vmtime: SpawnedUnit<VmTimeKeeper>,
     _scsi_devices: Vec<SpawnedUnit<ChannelUnit<storvsp::StorageDevice>>>,
     memory_manager: GuestMemoryManager,
-    pub(crate) gm: GuestMemory,
+    gm: GuestMemory,
     vtl0_hvsock_relay: Option<HvsockRelay>,
     vtl2_hvsock_relay: Option<HvsockRelay>,
     vmbus_server: Option<VmbusServerHandle>,
@@ -666,7 +668,7 @@ pub(crate) struct LoadedVmInner {
     #[cfg(windows)]
     _kernel_vmnics: Vec<vmswitch::kernel::KernelVmNic>,
     memory_cfg: MemoryConfig,
-    pub(crate) mem_layout: MemoryLayout,
+    mem_layout: MemoryLayout,
     processor_topology: ProcessorTopology,
     hypervisor_cfg: HypervisorConfig,
     vmbus_redirect: bool,
@@ -3193,20 +3195,10 @@ impl LoadedVm {
                         .await
                     }
                     VmRpc::DumpState(rpc) => {
-                        #[cfg(feature = "dump")]
-                        {
-                            rpc.handle_failable(async |file: File| {
-                                self.dump_state(file).await
-                            })
-                            .await
-                        }
-                        #[cfg(not(feature = "dump"))]
-                        {
-                            rpc.handle_failable(async |_: File| {
-                                anyhow::bail!("dump support not enabled")
-                            })
-                            .await
-                        }
+                        rpc.handle_failable(async |file: File| {
+                            self.dump_state(file).await
+                        })
+                        .await
                     }
                 },
                 Event::Halt(Err(_)) => break,

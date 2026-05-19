@@ -45,6 +45,9 @@ pub enum ReadError {
     /// A key table has an invalid signature.
     #[error("invalid key table signature: {0:#x}")]
     BadKeyTableSignature(u16),
+    /// The key table contains an unsupported key type.
+    #[error("unsupported key type {0:?}")]
+    UnsupportedKeyType(KeyType),
 }
 
 /// The type of a value in the key-value store.
@@ -239,7 +242,7 @@ impl<R: Read + Seek> HvsFileReader<R> {
                         KeyType::STRING => ValueType::String,
                         KeyType::ARRAY => ValueType::Array,
                         KeyType::BOOL => ValueType::Bool,
-                        other => panic!("unrecognized key type {other:?} for key {full_path:?}"),
+                        other => return Err(ReadError::UnsupportedKeyType(other)),
                     };
                     let is_file_object = entry_header.flags & KEY_FLAG_POINTS_TO_FILE_OBJECT != 0;
                     let (fo_offset, fo_size) = if is_file_object {

@@ -20,7 +20,6 @@ use hyperv_dump::X64VpState;
 use std::ffi::c_void;
 use std::io::Cursor;
 use std::path::PathBuf;
-use tempfile::NamedTempFile;
 
 mod dll {
     use std::ffi::c_void;
@@ -97,12 +96,14 @@ fn setup_dll_search_path() -> bool {
     false
 }
 
+fn zero_xsave() -> virt::x86::vp::Xsave {
+    virt::x86::vp::Xsave {
+        data: vec![0u64; 72],
+    }
+}
+
 /// Build a VMRS file using the hyperv_dump API.
 fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
-    let zero_xsave = || virt::x86::vp::Xsave {
-        data: vec![0u64; 72],
-    };
-
     let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
     builder.set_os_id(0);
 

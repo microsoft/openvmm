@@ -3,7 +3,7 @@
 
 //! VMRS dump file generation.
 
-use super::dispatch::LoadedVm;
+use super::LoadedVm;
 use anyhow::Context;
 use guestmem::GuestMemory;
 use hyperv_dump::GuestMemoryReader;
@@ -13,8 +13,15 @@ use std::fs::File;
 impl LoadedVm {
     /// Dumps VM state (VP registers + memory) to a `.vmrs` file.
     ///
-    /// The VM must already be paused before calling this.
-    pub(crate) async fn dump_state(&mut self, file: File) -> anyhow::Result<()> {
+    /// Pauses the VM, collects VP state and streams memory, then resumes.
+    pub(super) async fn dump_state(&mut self, file: File) -> anyhow::Result<()> {
+        self.pause().await;
+        let result = self.dump_state_inner(file).await;
+        self.resume().await;
+        result
+    }
+
+    async fn dump_state_inner(&mut self, file: File) -> anyhow::Result<()> {
         tracing::info!("dumping VM state to VMRS");
 
         // Build the partition state blob (VP registers as HV chunks).
