@@ -11,11 +11,6 @@ use rsa::sha2;
 use x509_cert::Certificate;
 
 #[cfg(symcrypt)]
-fn err(err: symcrypt::errors::SymCryptError, op: &'static str) -> X509Error {
-    X509Error(crate::BackendError::SymCrypt(err, op))
-}
-
-#[cfg(symcrypt)]
 fn der_err(err: der::Error, op: &'static str) -> X509Error {
     X509Error(crate::BackendError::Der(err, op))
 }
@@ -57,17 +52,15 @@ impl X509CertificateInner {
         )
         .map_err(|e| der_err(e, "parsing PKCS#1 RSA public key"))?;
         #[cfg(symcrypt)]
-        let key = symcrypt::rsa::RsaKey::set_public_key(
+        return crate::rsa::RsaPublicKey::from_components(
             key.modulus.as_bytes(),
             key.public_exponent.as_bytes(),
-            symcrypt::rsa::RsaKeyUsage::SignAndEncrypt,
         )
-        .map_err(|e| err(e, "constructing RSA public key"))?;
+        .map_err(|e| X509Error(e.0));
         #[cfg(rust)]
-        let key = key.try_into().unwrap();
-        Ok(crate::rsa::RsaPublicKey(
-            crate::rsa::sys::RsaPublicKeyInner(key),
-        ))
+        return Ok(crate::rsa::RsaPublicKey(
+            crate::rsa::sys::RsaPublicKeyInner(key.try_into().unwrap()),
+        ));
     }
 
     pub fn verify(

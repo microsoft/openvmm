@@ -66,7 +66,7 @@ pub(crate) enum Pkcs11RsaAesKeyUnwrapError {
     #[error("RSA unwrap failed")]
     RsaUnwrap(#[source] crypto::rsa::RsaError),
     #[error("AES unwrap failed")]
-    AesUnwrap(#[source] crypto::aes_key_wrap::AesKeyWrapError),
+    AesUnwrap(#[source] crypto::aes_kwp::AesKeyWrapError),
     #[error("failed to parse PKCS#8 DER as RSA key")]
     ParsePkcs8Der(#[source] crypto::rsa::RsaError),
 }
@@ -94,7 +94,7 @@ fn pkcs11_rsa_aes_key_unwrap(
     let unwrapped_aes_key = unwrapping_rsa_key
         .oaep_decrypt(wrapped_aes_key, HashAlgorithm::Sha1)
         .map_err(Pkcs11RsaAesKeyUnwrapError::RsaUnwrap)?;
-    let unwrapped_rsa_key = crypto::aes_key_wrap::AesKeyWrap::new(&unwrapped_aes_key)
+    let unwrapped_rsa_key = crypto::aes_kwp::AesKeyWrap::new(&unwrapped_aes_key)
         .and_then(|kw| kw.unwrapper()?.unwrap(wrapped_rsa_key))
         .map_err(Pkcs11RsaAesKeyUnwrapError::AesUnwrap)?;
     let unwrapped_rsa_key = RsaKeyPair::from_pkcs8_der(&unwrapped_rsa_key)
@@ -421,7 +421,7 @@ mod tests {
         let wrapped_aes_key = wrapping_rsa_key
             .oaep_encrypt(&wrapping_aes_key, crypto::rsa::HashAlgorithm::Sha1)
             .unwrap();
-        let wrapped_target_key = crypto::aes_key_wrap::AesKeyWrap::new(&wrapping_aes_key)
+        let wrapped_target_key = crypto::aes_kwp::AesKeyWrap::new(&wrapping_aes_key)
             .unwrap()
             .wrapper()
             .unwrap()
