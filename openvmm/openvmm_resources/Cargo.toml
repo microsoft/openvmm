@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [features]
 # Enable gdbstub support.
+dump = ["openvmm_core/dump"]
 gdb = ["openvmm_core/gdb", "dep:debug_worker"]
 
 # Enable building with TPM device support.

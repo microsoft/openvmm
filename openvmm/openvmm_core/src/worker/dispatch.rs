@@ -641,22 +641,22 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
 /// Most new state should be added to [`LoadedVmInner`].
 pub(crate) struct LoadedVm {
     state_units: StateUnits,
-    inner: LoadedVmInner,
+    pub(crate) inner: LoadedVmInner,
     running: bool,
 }
 
 /// Most of the VM state for [`LoadedVm`], excluding things that are necessary
 /// for state machine transitions.
-struct LoadedVmInner {
+pub(crate) struct LoadedVmInner {
     driver_source: VmTaskDriverSource,
     resolver: ResourceResolver,
-    partition_unit: PartitionUnit,
-    partition: Arc<dyn HvlitePartition>,
+    pub(crate) partition_unit: PartitionUnit,
+    pub(crate) partition: Arc<dyn HvlitePartition>,
     chipset_devices: ChipsetDevices,
     _vmtime: SpawnedUnit<VmTimeKeeper>,
     _scsi_devices: Vec<SpawnedUnit<ChannelUnit<storvsp::StorageDevice>>>,
     memory_manager: GuestMemoryManager,
-    gm: GuestMemory,
+    pub(crate) gm: GuestMemory,
     vtl0_hvsock_relay: Option<HvsockRelay>,
     vtl2_hvsock_relay: Option<HvsockRelay>,
     vmbus_server: Option<VmbusServerHandle>,
@@ -666,8 +666,8 @@ struct LoadedVmInner {
     #[cfg(windows)]
     _kernel_vmnics: Vec<vmswitch::kernel::KernelVmNic>,
     memory_cfg: MemoryConfig,
-    mem_layout: MemoryLayout,
-    processor_topology: ProcessorTopology,
+    pub(crate) mem_layout: MemoryLayout,
+    pub(crate) processor_topology: ProcessorTopology,
     hypervisor_cfg: HypervisorConfig,
     vmbus_redirect: bool,
     vmbus_devices: Vec<SpawnedUnit<ChannelUnit<dyn VmbusDevice>>>,
@@ -3193,10 +3193,20 @@ impl LoadedVm {
                         .await
                     }
                     VmRpc::DumpState(rpc) => {
-                        rpc.handle_failable(async |file: File| {
-                            self.dump_state(file).await
-                        })
-                        .await
+                        #[cfg(feature = "dump")]
+                        {
+                            rpc.handle_failable(async |file: File| {
+                                self.dump_state(file).await
+                            })
+                            .await
+                        }
+                        #[cfg(not(feature = "dump"))]
+                        {
+                            rpc.handle_failable(async |_: File| {
+                                anyhow::bail!("dump support not enabled")
+                            })
+                            .await
+                        }
                     }
                 },
                 Event::Halt(Err(_)) => break,
@@ -3302,92 +3312,6 @@ impl LoadedVm {
         Ok(SavedState {
             units: self.state_units.save().await?,
         })
-    }
-
-    /// Dumps VM state (VP registers + memory) to a `.vmrs` file.
-    ///
-    /// The VM must already be paused before calling this.
-    async fn dump_state(&mut self, file: File) -> anyhow::Result<()> {
-        use hyperv_dump::GuestMemoryReader;
-        use hyperv_dump::PartitionStateBuilder;
-        use hyperv_dump::ProcessorArch;
-        use hyperv_dump::VmrsWriter;
-        use hyperv_dump::VpState;
-        use hyperv_dump::X64VpState;
-
-        let vp_count = self.inner.processor_topology.vp_count();
-        tracing::info!(vp_count, "dumping VM state to VMRS");
-
-        // Determine architecture.
-        #[cfg(guest_arch = "x86_64")]
-        let arch = ProcessorArch::X64;
-        #[cfg(guest_arch = "aarch64")]
-        let arch = ProcessorArch::Aarch64;
-
-        let mut builder = PartitionStateBuilder::new(arch);
-        builder.set_os_id(self.inner.partition.guest_os_id());
-
-        // Collect VP state for each VP.
-        for vp_idx in 0..vp_count {
-            let vp = VpIndex::new(vp_idx);
-            let vtl = Vtl::Vtl0;
-
-            let dump_state = self
-                .inner
-                .partition_unit
-                .get_dump_vp_state(vp, vtl)
-                .await
-                .with_context(|| format!("failed to get state for VP {vp_idx}"))?;
-
-            let vp_state = match dump_state {
-                vmm_core::partition_unit::DumpVpState::X64(x64) => {
-                    VpState::X64(X64VpState {
-                        registers: x64.registers,
-                        debug_registers: x64.debug_registers,
-                        xsave: x64.xsave,
-                        xcr0: x64.xcr0,
-                    })
-                }
-                vmm_core::partition_unit::DumpVpState::Aarch64(aarch64) => {
-                    VpState::Aarch64(hyperv_dump::Aarch64VpState {
-                        registers: aarch64.registers,
-                        system_registers: Some(aarch64.system_registers),
-                    })
-                }
-            };
-
-            builder.add_vp(vp_idx, vec![(vtl, vp_state)], vtl);
-        }
-
-        let partition_state_blob = builder.finish();
-
-        // Write the VMRS file. BufWriter reduces syscalls for the many small
-        // key table / header writes interspersed with large memory blocks.
-        let file = std::io::BufWriter::with_capacity(256 * 1024, file);
-        let mut vmrs = VmrsWriter::new(file).context("failed to initialize VMRS writer")?;
-        vmrs.set_partition_state(partition_state_blob);
-
-        // Add memory ranges from the VM topology.
-        for ram_range in self.inner.mem_layout.ram() {
-            vmrs.add_memory_range(ram_range.range.start(), ram_range.range.len());
-        }
-
-        // Stream guest memory to disk.
-        let gm = self.inner.gm.clone();
-        struct GmReader(GuestMemory);
-        impl GuestMemoryReader for GmReader {
-            fn read_gpa(&mut self, gpa: u64, buf: &mut [u8]) -> std::io::Result<()> {
-                self.0
-                    .read_at(gpa, buf)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-            }
-        }
-        let mut reader = GmReader(gm);
-        vmrs.finish(&mut reader)
-            .context("failed to write VMRS file")?;
-
-        tracing::info!("VMRS dump complete");
-        Ok(())
     }
 
     /// Restore state on the VM.

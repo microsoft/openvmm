@@ -16,19 +16,11 @@ use crate::defs::MemoryBlockSaveStruct;
 use crate::defs::VM_VERSION_IRON;
 use crate::defs::WPMM_MB_SAVE_STATE_VERSION_3;
 use hvs_file::writer::HvsFileWriter;
+use memory_range::MemoryRange;
 use std::fmt::Write as _;
 use std::io::{self, Seek, Write};
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
-
-/// A contiguous guest physical address range.
-#[derive(Clone, Debug)]
-pub struct GpaRange {
-    /// Starting GPA (byte address, must be page-aligned).
-    pub gpa_start: u64,
-    /// Length in bytes (must be a multiple of 4096).
-    pub length: u64,
-}
 
 /// Trait for reading guest physical memory on demand.
 ///
@@ -53,7 +45,7 @@ pub trait GuestMemoryReader {
 pub struct VmrsWriter<W: Write + Seek> {
     hvs: HvsFileWriter<W>,
     partition_state: Option<Vec<u8>>,
-    ranges: Vec<GpaRange>,
+    ranges: Vec<MemoryRange>,
 }
 
 impl<W: Write + Seek> VmrsWriter<W> {
@@ -73,12 +65,9 @@ impl<W: Write + Seek> VmrsWriter<W> {
 
     /// Declares a contiguous guest physical memory range to include.
     ///
-    /// `gpa_start` must be page-aligned and `length` must be a multiple
-    /// of 4096. The actual memory content is read later during [`finish`].
-    pub fn add_memory_range(&mut self, gpa_start: u64, length: u64) {
-        assert!(gpa_start % 4096 == 0, "GPA must be page-aligned");
-        assert!(length % 4096 == 0, "length must be page-aligned");
-        self.ranges.push(GpaRange { gpa_start, length });
+    /// The actual memory content is read later during [`finish`].
+    pub fn add_memory_range(&mut self, range: MemoryRange) {
+        self.ranges.push(range);
     }
 
     /// Writes the complete `.vmrs` file, reading guest memory on demand.
@@ -104,8 +93,8 @@ impl<W: Write + Seek> VmrsWriter<W> {
         let mut key_buf = String::new();
 
         for range in &self.ranges {
-            let total_pages = range.length / 4096;
-            let gpa_page_start = range.gpa_start / 4096;
+            let total_pages = range.len() / 4096;
+            let gpa_page_start = range.start() / 4096;
 
             // Write metadata for this contiguous range
             let mut meta = MemoryBlockSaveStruct::new_zeroed();
@@ -120,8 +109,8 @@ impl<W: Write + Seek> VmrsWriter<W> {
             meta_block_idx += 1;
 
             // Stream data blocks (1 MiB each)
-            let mut gpa = range.gpa_start;
-            let gpa_end = range.gpa_start + range.length;
+            let mut gpa = range.start();
+            let gpa_end = range.end();
             while gpa < gpa_end {
                 let block_len = GMO_BLOCK_SIZE_BYTES.min((gpa_end - gpa) as usize);
                 let buf = &mut block_buf[..block_len];
@@ -202,7 +191,7 @@ mod tests {
                     registers: regs,
                     debug_registers: Default::default(),
                     xsave: zero_xsave(),
-                    xcr0: 1,
+                    xcr0: virt::x86::vp::Xcr0 { value: 1 },
                 }),
             )],
             Vtl::Vtl0,
@@ -217,7 +206,7 @@ mod tests {
         let buf = Cursor::new(Vec::new());
         let mut vmrs = VmrsWriter::new(buf).unwrap();
         vmrs.set_partition_state(blob);
-        vmrs.add_memory_range(0, 2 * GMO_BLOCK_SIZE_BYTES as u64);
+        vmrs.add_memory_range(MemoryRange::new(0..2 * GMO_BLOCK_SIZE_BYTES as u64));
 
         let mut mem = FillReader(0xAB);
         let buf = vmrs.finish(&mut mem).unwrap();
@@ -257,7 +246,7 @@ mod tests {
                     registers: Default::default(),
                     debug_registers: Default::default(),
                     xsave: zero_xsave(),
-                    xcr0: 1,
+                    xcr0: virt::x86::vp::Xcr0 { value: 1 },
                 }),
             )],
             Vtl::Vtl0,
@@ -272,8 +261,8 @@ mod tests {
         let buf = Cursor::new(Vec::new());
         let mut vmrs = VmrsWriter::new(buf).unwrap();
         vmrs.set_partition_state(blob);
-        vmrs.add_memory_range(0, GMO_BLOCK_SIZE_BYTES as u64);
-        vmrs.add_memory_range(0x1_0000_0000, GMO_BLOCK_SIZE_BYTES as u64);
+        vmrs.add_memory_range(MemoryRange::new(0..GMO_BLOCK_SIZE_BYTES as u64));
+        vmrs.add_memory_range(MemoryRange::new(0x1_0000_0000..0x1_0000_0000 + GMO_BLOCK_SIZE_BYTES as u64));
 
         let mut mem = MultiRangeReader(vec![
             (0, GMO_BLOCK_SIZE_BYTES as u64, 0x11),

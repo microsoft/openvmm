@@ -3,9 +3,8 @@
 
 //! Hypervisor save/restore chunk definitions.
 //!
-//! These are the canonical structures from `onecore/hv/hvx/inc/vm.h`, used
-//! for serializing VM processor state into the partition state blob stored
-//! in `.vmrs` files.
+//! Structures for serializing VM processor state into the hypervisor's
+//! partition state chunk stream.
 
 use crate::AlignedU128;
 use crate::HvX64SegmentRegister;
@@ -22,7 +21,7 @@ use zerocopy::KnownLayout;
 // ============================================================
 
 open_enum! {
-    /// Save/restore chunk IDs from `VM_SAVE_CHUNK_ID`.
+    /// Save/restore chunk IDs.
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum VmSaveChunkId: u32 {
 
@@ -48,7 +47,7 @@ open_enum! {
         VP_TABLE_REGISTERS          = 0x3000_A000,
         VP_VIRTUAL_MSRS             = 0x3000_B000,
         VP_XSAVE_CONTROL_REGISTERS  = 0x3000_D000,
-        VP_XSAVE_AVX_REGISTERS      = 0x3000_E000,
+        VP_XSAVE_STATE              = 0x3000_E100,
         VP_SYNIC_APIC_STATE         = 0x3000_F000,
         VP_SYNIC_MSRS               = 0x3001_0000,
         VP_VTL_CONTROL_PAGE         = 0x3001_8000,
@@ -64,9 +63,9 @@ open_enum! {
 
 /// Header prefixed to every chunk in the partition state blob.
 ///
-/// The C definition uses `DECLSPEC_ALIGN(16)`, making `sizeof` = 16.
-/// On disk, each chunk occupies `size_of::<VmSaveChunkHeader>() + data_length`
-/// bytes — there is no alignment padding between chunks in the stream.
+/// 16 bytes, aligned to 16. Each chunk occupies
+/// `size_of::<VmSaveChunkHeader>() + data_length` bytes with no
+/// inter-chunk padding.
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VmSaveChunkHeader {
@@ -76,26 +75,6 @@ pub struct VmSaveChunkHeader {
 }
 
 static_assertions::const_assert_eq!(size_of::<VmSaveChunkHeader>(), 16);
-
-// ============================================================
-// VID Saved State Descriptor (blob envelope)
-// ============================================================
-
-/// Envelope wrapping the partition state chunk stream.
-///
-/// The chunk data starts at offset `header_size + 16` from the start of
-/// the blob. The first 16 bytes after `header_size` are skipped for
-/// alignment.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct VidSavedStateDescriptor {
-    /// Size of the descriptor + any pre-data area.
-    pub descriptor_size: u64,
-    /// Size of the pre-data sections (descriptor + header areas).
-    pub header_size: u64,
-    /// Total blob size.
-    pub total_size: u64,
-}
 
 // ============================================================
 // Processor Vendor
@@ -119,8 +98,6 @@ open_enum! {
 pub const VM_SAVE_CHUNK_TAG_UNDEFINED: u32 = 0x5054_6475; // 'duTP'
 
 /// Prolog chunk — always 4080 bytes total.
-///
-/// `Header.DataLength` = 4080 - 16 = 4064.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ObSaveChunkProlog {
@@ -146,10 +123,9 @@ pub struct ObSaveChunkEpilog {
 // VP Indices
 // ============================================================
 
-/// VP indices chunk — variable-length VP present bitmap.
+/// VP indices chunk.
 ///
-/// The bitmap size is `header.data_length - 4` bytes. Bit N set = VP N
-/// is present. Maximum of 240 VPs (30 bytes) in the canonical definition.
+/// Contains a bitmap of present VPs. Bit N set means VP N is present.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpSaveChunkVpIndices {
@@ -173,9 +149,6 @@ pub struct ObSaveChunkVp {
 }
 
 /// Per-VTL marker chunk within a VP.
-///
-/// Used for both `VmSaveChunkIdVpVtl` and `VmSaveChunkIdPartitionVtl`.
-/// `HV_VTL` is `UINT8`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ObSaveChunkVtl {
@@ -256,8 +229,6 @@ pub struct VpX64SaveChunkDebugRegisters {
 }
 
 /// Segment registers (x64).
-///
-/// Uses the existing `HvX64SegmentRegister` type.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpX64SaveChunkSegmentRegisters {
@@ -275,8 +246,6 @@ pub struct VpX64SaveChunkSegmentRegisters {
 }
 
 /// Table registers (x64) — IDTR and GDTR.
-///
-/// Uses the existing `HvX64TableRegister` type.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpX64SaveChunkTableRegisters {
@@ -286,9 +255,6 @@ pub struct VpX64SaveChunkTableRegisters {
 }
 
 /// Floating-point / SSE / MMX registers (x64).
-///
-/// Uses `AlignedU128` for XMM and FP registers. The 16-byte aligned
-/// `VmSaveChunkHeader` provides natural alignment for the HV_UINT128 fields.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpX64SaveChunkFpRegisters {
@@ -404,5 +370,3 @@ pub struct VsmSaveChunkVpVtlControlPage {
     pub vtl_is_runnable: u8,
     pub _padding: [u8; 7],
 }
-
-

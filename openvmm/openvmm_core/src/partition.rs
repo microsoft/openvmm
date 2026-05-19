@@ -115,14 +115,6 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
     /// TODO: remove this.
     #[cfg(all(windows, feature = "virt_whp"))]
     fn as_any(&self) -> &dyn std::any::Any;
-
-    /// Returns the guest OS ID (from `HV_X64_MSR_GUEST_OS_ID`).
-    ///
-    /// Returns 0 if the guest hasn't written the MSR (unenlightened guest)
-    /// or if the backend doesn't support reading it.
-    fn guest_os_id(&self) -> u64 {
-        0
-    }
 }
 
 pub trait BasicPartitionStateAccess: 'static + Send + Sync + Inspect {
@@ -132,6 +124,9 @@ pub trait BasicPartitionStateAccess: 'static + Send + Sync + Inspect {
     fn scrub_vtl(&self, vtl: Vtl) -> anyhow::Result<()>;
     fn accept_initial_pages(&self, pages: Vec<(MemoryRange, PageVisibility)>)
     -> anyhow::Result<()>;
+    fn guest_os_id(&self) -> u64 {
+        0
+    }
 }
 
 impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
@@ -174,6 +169,13 @@ impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
             .context("accept pages not supported")?
             .accept_initial_pages(&pages)?;
         Ok(())
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn guest_os_id(&self) -> u64 {
+        self.access_state(Vtl::Vtl0)
+            .hypercall()
+            .map_or(0, |msrs| msrs.guest_os_id)
     }
 }
 
@@ -256,13 +258,6 @@ where
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
-
-    #[cfg(guest_arch = "x86_64")]
-    fn guest_os_id(&self) -> u64 {
-        self.access_state(Vtl::Vtl0)
-            .hypercall()
-            .map_or(0, |msrs| msrs.guest_os_id)
-    }
 }
 
 /// Wrapper struct that implements [`VmPartition`].
@@ -285,6 +280,10 @@ impl VmPartition for WrappedPartition {
         pages: Vec<(MemoryRange, PageVisibility)>,
     ) -> anyhow::Result<()> {
         self.0.accept_initial_pages(pages)
+    }
+
+    fn guest_os_id(&self) -> u64 {
+        self.0.guest_os_id()
     }
 }
 

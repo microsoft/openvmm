@@ -11,9 +11,10 @@
 //! Accepts VP register state using the `virt` crate types directly, so
 //! integration with the rest of OpenVMM is straightforward.
 
+use crate::defs::VidSavedStateDescriptor;
 use hvdef::AlignedU128;
-use hvdef::save_restore::*;
 use hvdef::Vtl;
+use hvdef::save_restore::*;
 use std::mem::size_of;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -42,7 +43,7 @@ pub struct X64VpState {
     /// XSAVE state (FP/SSE/AVX).
     pub xsave: virt::x86::vp::Xsave,
     /// XCR0 (XFEATURE_ENABLED_MASK / XFEM).
-    pub xcr0: u64,
+    pub xcr0: virt::x86::vp::Xcr0,
 }
 
 /// ARM64 VP state for dump generation.
@@ -117,12 +118,7 @@ impl PartitionStateBuilder {
     /// that has register state. For single-VTL VMs, pass a single `(0, state)`.
     ///
     /// `active_vtl` is the VTL that was running when the dump was taken.
-    pub fn add_vp(
-        &mut self,
-        vp_index: u32,
-        vtl_states: Vec<(Vtl, VpState)>,
-        active_vtl: Vtl,
-    ) {
+    pub fn add_vp(&mut self, vp_index: u32, vtl_states: Vec<(Vtl, VpState)>, active_vtl: Vtl) {
         let states = vtl_states
             .into_iter()
             .map(|(vtl, regs)| VtlState { vtl, regs })
@@ -283,7 +279,9 @@ impl PartitionStateBuilder {
     fn write_vp_vtl_control_page(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(
             VsmSaveChunkVpVtlControlPage {
-                header: chunk_header_for::<VsmSaveChunkVpVtlControlPage>(VmSaveChunkId::VP_VTL_CONTROL_PAGE),
+                header: chunk_header_for::<VsmSaveChunkVpVtlControlPage>(
+                    VmSaveChunkId::VP_VTL_CONTROL_PAGE,
+                ),
                 vp_assist_page_vtl_control_contents: [0; VSM_SAVE_VP_VTL_CONTROL_BYTES],
                 vtl_is_runnable: 1,
                 _padding: [0; 7],
@@ -308,7 +306,9 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             VpX64SaveChunkGpRegisters {
-                header: chunk_header_for::<VpX64SaveChunkGpRegisters>(VmSaveChunkId::VP_GP_REGISTERS),
+                header: chunk_header_for::<VpX64SaveChunkGpRegisters>(
+                    VmSaveChunkId::VP_GP_REGISTERS,
+                ),
                 rax: r.rax,
                 rcx: r.rcx,
                 rdx: r.rdx,
@@ -333,7 +333,9 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             SynicX64SaveChunkControlRegisters {
-                header: chunk_header_for::<SynicX64SaveChunkControlRegisters>(VmSaveChunkId::VP_VTL_CONTROL_REGISTERS),
+                header: chunk_header_for::<SynicX64SaveChunkControlRegisters>(
+                    VmSaveChunkId::VP_VTL_CONTROL_REGISTERS,
+                ),
                 cr0: r.cr0,
                 cr2: r.cr2,
                 cr3: r.cr3,
@@ -346,7 +348,9 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             VpX64SaveChunkSegmentRegisters {
-                header: chunk_header_for::<VpX64SaveChunkSegmentRegisters>(VmSaveChunkId::VP_SEGMENT_REGISTERS),
+                header: chunk_header_for::<VpX64SaveChunkSegmentRegisters>(
+                    VmSaveChunkId::VP_SEGMENT_REGISTERS,
+                ),
                 es: r.es.into(),
                 cs: r.cs.into(),
                 ss: r.ss.into(),
@@ -363,7 +367,9 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             VpX64SaveChunkTableRegisters {
-                header: chunk_header_for::<VpX64SaveChunkTableRegisters>(VmSaveChunkId::VP_TABLE_REGISTERS),
+                header: chunk_header_for::<VpX64SaveChunkTableRegisters>(
+                    VmSaveChunkId::VP_TABLE_REGISTERS,
+                ),
                 idtr: r.idtr.into(),
                 gdtr: r.gdtr.into(),
             }
@@ -373,7 +379,9 @@ impl PartitionStateBuilder {
         let dr = &state.debug_registers;
         out.extend_from_slice(
             VpX64SaveChunkDebugRegisters {
-                header: chunk_header_for::<VpX64SaveChunkDebugRegisters>(VmSaveChunkId::VP_DEBUG_REGISTERS),
+                header: chunk_header_for::<VpX64SaveChunkDebugRegisters>(
+                    VmSaveChunkId::VP_DEBUG_REGISTERS,
+                ),
                 dr0: dr.dr0,
                 dr1: dr.dr1,
                 dr2: dr.dr2,
@@ -385,7 +393,7 @@ impl PartitionStateBuilder {
         );
 
         self.write_x64_fp_from_xsave(out, &state.xsave);
-        self.write_x64_xsave_control(out, state.xcr0);
+        self.write_x64_xsave_control(out, state.xcr0.value);
     }
 
     fn write_x64_xsave_control(&self, out: &mut Vec<u8>, xcr0: u64) {
@@ -407,11 +415,17 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             VpX64SaveChunkFpRegisters {
-                header: chunk_header_for::<VpX64SaveChunkFpRegisters>(VmSaveChunkId::VP_FP_REGISTERS),
+                header: chunk_header_for::<VpX64SaveChunkFpRegisters>(
+                    VmSaveChunkId::VP_FP_REGISTERS,
+                ),
                 xmm: fxsave.xmm.map(AlignedU128::from_ne_bytes),
                 fp_mmx: fxsave.st.map(AlignedU128::from_ne_bytes),
-                fp_control_status: AlignedU128::from_ne_bytes(fxsave_bytes[0x00..0x10].try_into().unwrap()),
-                xmm_control_status: AlignedU128::from_ne_bytes(fxsave_bytes[0x10..0x20].try_into().unwrap()),
+                fp_control_status: AlignedU128::from_ne_bytes(
+                    fxsave_bytes[0x00..0x10].try_into().unwrap(),
+                ),
+                xmm_control_status: AlignedU128::from_ne_bytes(
+                    fxsave_bytes[0x10..0x20].try_into().unwrap(),
+                ),
             }
             .as_bytes(),
         );
@@ -425,11 +439,13 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             VpArm64SaveChunkGpRegisters {
-                header: chunk_header_for::<VpArm64SaveChunkGpRegisters>(VmSaveChunkId::VP_GP_REGISTERS),
+                header: chunk_header_for::<VpArm64SaveChunkGpRegisters>(
+                    VmSaveChunkId::VP_GP_REGISTERS,
+                ),
                 x: [
                     r.x0, r.x1, r.x2, r.x3, r.x4, r.x5, r.x6, r.x7, r.x8, r.x9, r.x10, r.x11,
-                    r.x12, r.x13, r.x14, r.x15, r.x16, r.x17, r.x18, r.x19, r.x20, r.x21,
-                    r.x22, r.x23, r.x24, r.x25, r.x26, r.x27, r.x28,
+                    r.x12, r.x13, r.x14, r.x15, r.x16, r.x17, r.x18, r.x19, r.x20, r.x21, r.x22,
+                    r.x23, r.x24, r.x25, r.x26, r.x27, r.x28,
                 ],
                 x_fp: r.fp,
                 x_lr: r.lr,
@@ -450,7 +466,9 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             SynicArm64SaveChunkControlRegisters {
-                header: chunk_header_for::<SynicArm64SaveChunkControlRegisters>(VmSaveChunkId::VP_VTL_CONTROL_REGISTERS),
+                header: chunk_header_for::<SynicArm64SaveChunkControlRegisters>(
+                    VmSaveChunkId::VP_VTL_CONTROL_REGISTERS,
+                ),
                 vmpidr_el2: 0,
                 vpidr_el2: 0,
                 sctlr_el1: sys.sctlr_el1,
@@ -473,7 +491,9 @@ impl PartitionStateBuilder {
 
         out.extend_from_slice(
             VpArm64SaveChunkTableRegisters {
-                header: chunk_header_for::<VpArm64SaveChunkTableRegisters>(VmSaveChunkId::VP_TABLE_REGISTERS),
+                header: chunk_header_for::<VpArm64SaveChunkTableRegisters>(
+                    VmSaveChunkId::VP_TABLE_REGISTERS,
+                ),
                 ttbr0_el1: sys.ttbr0_el1,
                 ttbr1_el1: sys.ttbr1_el1,
                 vbar_el1: sys.vbar_el1,
@@ -485,7 +505,9 @@ impl PartitionStateBuilder {
         // FP/SIMD — not available in virt types
         out.extend_from_slice(
             VpArm64SaveChunkFpRegisters {
-                header: chunk_header_for::<VpArm64SaveChunkFpRegisters>(VmSaveChunkId::VP_FP_REGISTERS),
+                header: chunk_header_for::<VpArm64SaveChunkFpRegisters>(
+                    VmSaveChunkId::VP_FP_REGISTERS,
+                ),
                 q: [AlignedU128::from(0u128); 32],
                 fpsr: 0,
                 fpcr: 0,
@@ -493,7 +515,6 @@ impl PartitionStateBuilder {
             .as_bytes(),
         );
     }
-
 }
 
 /// Creates a chunk header for a chunk struct of the given total size.
@@ -515,7 +536,9 @@ mod tests {
     /// Minimal zero-valued XSAVE (fxsave + header, no extended features).
     fn zero_xsave() -> virt::x86::vp::Xsave {
         // 512 bytes fxsave + 64 bytes xsave header = 576 bytes = 72 u64s
-        virt::x86::vp::Xsave { data: vec![0u64; 72] }
+        virt::x86::vp::Xsave {
+            data: vec![0u64; 72],
+        }
     }
 
     fn make_x64_state(rip: u64, cr3: u64) -> X64VpState {
@@ -538,7 +561,7 @@ mod tests {
             registers: regs,
             debug_registers: Default::default(),
             xsave: zero_xsave(),
-            xcr0: 1,
+            xcr0: virt::x86::vp::Xcr0 { value: 1 },
         }
     }
 
@@ -549,7 +572,11 @@ mod tests {
     #[test]
     fn build_minimal_x64_blob() {
         let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
-        add_x64_vp(&mut builder, 0, make_x64_state(0xFFFFF800_12345678, 0x1AD000));
+        add_x64_vp(
+            &mut builder,
+            0,
+            make_x64_state(0xFFFFF800_12345678, 0x1AD000),
+        );
 
         let blob = builder.finish();
         let desc = VidSavedStateDescriptor::read_from_prefix(blob.as_slice())
@@ -635,7 +662,11 @@ mod tests {
     #[test]
     fn x64_register_values_roundtrip() {
         let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
-        add_x64_vp(&mut builder, 0, make_x64_state(0xFFFFF800_12345678, 0x1AD000));
+        add_x64_vp(
+            &mut builder,
+            0,
+            make_x64_state(0xFFFFF800_12345678, 0x1AD000),
+        );
 
         let blob = builder.finish();
         let desc = VidSavedStateDescriptor::read_from_prefix(blob.as_slice())
@@ -730,6 +761,9 @@ mod tests {
             }
             offset += size_of::<VmSaveChunkHeader>() + header.data_length as usize;
         }
-        assert!(found_xsave_control, "VP_XSAVE_CONTROL_REGISTERS chunk not found");
+        assert!(
+            found_xsave_control,
+            "VP_XSAVE_CONTROL_REGISTERS chunk not found"
+        );
     }
 }

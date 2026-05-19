@@ -132,7 +132,7 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
                     registers: regs,
                     debug_registers: Default::default(),
                     xsave: zero_xsave(),
-                    xcr0: 1,
+                    xcr0: virt::x86::vp::Xcr0 { value: 1 },
                 }),
             )],
             Vtl::Vtl0,
@@ -146,7 +146,7 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
     vmrs.set_partition_state(blob);
 
     // One 4K page of zeros for RAM
-    vmrs.add_memory_range(0, 4096);
+    vmrs.add_memory_range(memory_range::MemoryRange::new(0..4096));
 
     struct ZeroReader;
     impl hyperv_dump::GuestMemoryReader for ZeroReader {
@@ -276,6 +276,7 @@ fn dll_validates_large_memory() {
                 registers: regs,
                 debug_registers: Default::default(),
                 xsave: zero_xsave(),
+                xcr0: virt::x86::vp::Xcr0 { value: 1 },
             }),
         )],
         Vtl::Vtl0,
@@ -289,7 +290,7 @@ fn dll_validates_large_memory() {
     // 500 MiB of memory at GPA 0 — 500 × 1 MiB blocks.
     const BLOCK_COUNT: u64 = 500;
     const MIB: u64 = 1_048_576;
-    vmrs.add_memory_range(0, BLOCK_COUNT * MIB);
+    vmrs.add_memory_range(memory_range::MemoryRange::new(0..BLOCK_COUNT * MIB));
 
     /// Reader that fills each block with a stamp derived from the GPA.
     struct StampReader;

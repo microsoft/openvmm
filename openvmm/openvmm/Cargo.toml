@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [features]
 default = [
+  "dump",
   "gdb",
   "virt_hvf",
   "virt_kvm",
@@ -21,6 +22,7 @@ default = [
 
 # see the `openvmm_entry` crate for more info on these features
 gdb = ["openvmm_resources/gdb"]
+dump = ["openvmm_resources/dump"]
 vendored_crypto = ["openvmm_entry/vendored_crypto"]
 tpm = ["openvmm_resources/tpm"]
 virt_hvf = ["openvmm_resources/virt_hvf"]

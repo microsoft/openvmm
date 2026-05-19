@@ -12,11 +12,10 @@ pub use vp_set::RunCancelled;
 pub use vp_set::RunnerCanceller;
 pub use vp_set::VpRunner;
 pub use vp_set::block_on_vp;
-pub use vp_set::DumpAarch64VpState;
-pub use vp_set::DumpVpState;
-pub use vp_set::DumpX64VpState;
 
 use self::vp_set::RegisterSetError;
+#[cfg(feature = "dump")]
+use anyhow::Context as _;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -38,6 +37,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use virt::InitialRegs;
 use virt::PageVisibility;
+#[cfg(feature = "dump")]
 use virt::VpIndex;
 use vm_topology::processor::ProcessorTopology;
 use vmcore::save_restore::ProtobufSaveRestore;
@@ -67,6 +67,14 @@ pub trait VmPartition: 'static + Send + Sync + InspectMut + ProtobufSaveRestore 
         &mut self,
         pages: Vec<(MemoryRange, PageVisibility)>,
     ) -> anyhow::Result<()>;
+
+    /// Returns the guest OS ID (from `HV_X64_MSR_GUEST_OS_ID`).
+    ///
+    /// Returns 0 if the guest hasn't written the MSR (unenlightened guest)
+    /// or if the backend doesn't support reading it.
+    fn guest_os_id(&self) -> u64 {
+        0
+    }
 }
 
 /// An object to run the VM partition state unit.
@@ -125,8 +133,9 @@ enum PartitionRequest {
     ),
     StopVps(Rpc<(), ()>),
     StartVps,
-    /// Get full VP state for dump generation.
-    GetDumpVpState(Rpc<(VpIndex, Vtl), anyhow::Result<DumpVpState>>),
+    /// Build the partition state blob for a dump file.
+    #[cfg(feature = "dump")]
+    BuildDumpPartitionState(Rpc<(), anyhow::Result<Vec<u8>>>),
 }
 
 pub struct PartitionUnitParams<'a> {
@@ -292,16 +301,16 @@ impl PartitionUnit {
             .unwrap()
     }
 
-    /// Gets the full VP state for dump generation.
+    /// Builds the partition state blob for a `.vmrs` dump file.
     ///
-    /// The VP must be stopped (paused) when this is called.
-    pub async fn get_dump_vp_state(
+    /// The VM must be paused when this is called. Returns the serialized
+    /// partition state (VP registers as hypervisor save/restore chunks).
+    #[cfg(feature = "dump")]
+    pub async fn build_dump_partition_state(
         &mut self,
-        vp: VpIndex,
-        vtl: Vtl,
-    ) -> anyhow::Result<DumpVpState> {
+    ) -> anyhow::Result<Vec<u8>> {
         self.req_send
-            .call(PartitionRequest::GetDumpVpState, (vp, vtl))
+            .call(PartitionRequest::BuildDumpPartitionState, ())
             .await
             .unwrap()
     }
@@ -379,9 +388,10 @@ impl PartitionUnitRunner {
                         self.vp_stop_count -= 1;
                         self.try_start();
                     }
-                    PartitionRequest::GetDumpVpState(rpc) => {
-                        rpc.handle(async |(vp, vtl)| {
-                            self.vp_set.get_dump_vp_state(vp, vtl).await
+                    #[cfg(feature = "dump")]
+                    PartitionRequest::BuildDumpPartitionState(rpc) => {
+                        rpc.handle(async |()| {
+                            self.build_dump_partition_state().await
                         })
                         .await
                     }
@@ -506,6 +516,37 @@ impl PartitionUnitRunner {
             self.needs_reset = true;
             self.vp_set.start();
         }
+    }
+
+    /// Builds the partition state blob for a `.vmrs` dump file.
+    ///
+    /// Collects VP register state and assembles the chunk stream.
+    #[cfg(feature = "dump")]
+    async fn build_dump_partition_state(&mut self) -> anyhow::Result<Vec<u8>> {
+        use hyperv_dump::PartitionStateBuilder;
+        use hyperv_dump::ProcessorArch;
+
+        #[cfg(guest_arch = "x86_64")]
+        let arch = ProcessorArch::X64;
+        #[cfg(guest_arch = "aarch64")]
+        let arch = ProcessorArch::Aarch64;
+
+        let mut builder = PartitionStateBuilder::new(arch);
+        builder.set_os_id(self.partition.guest_os_id());
+
+        let vp_count = self.topology.vp_count();
+        for vp_idx in 0..vp_count {
+            let vtl = Vtl::Vtl0;
+            let vp_state = self
+                .vp_set
+                .get_dump_vp_state(VpIndex::new(vp_idx), vtl)
+                .await
+                .with_context(|| format!("failed to get state for VP {vp_idx}"))?;
+
+            builder.add_vp(vp_idx, vec![(vtl, vp_state)], vtl);
+        }
+
+        Ok(builder.finish())
     }
 }
 

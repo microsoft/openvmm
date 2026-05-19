@@ -85,43 +85,13 @@ trait ControlVp: ProtobufSaveRestore {
     ///
     /// Returns register state suitable for building a `.vmrs` dump file.
     /// Unlike the debug path, this is not gated on the `gdb` feature.
-    fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<DumpVpState>;
+    #[cfg(feature = "dump")]
+    fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<hyperv_dump::VpState>;
 }
 
 enum StopReason {
     OnRequest(VpStopped),
     Cancel,
-}
-
-/// Full VP register state for dump generation.
-///
-/// Contains all registers needed to populate a `.vmrs` dump file, using
-/// the native `virt` crate types.
-pub enum DumpVpState {
-    /// x86-64 VP state.
-    X64(DumpX64VpState),
-    /// ARM64 VP state.
-    Aarch64(DumpAarch64VpState),
-}
-
-/// x86-64 VP register state for dump generation.
-pub struct DumpX64VpState {
-    /// General-purpose, segment, table, and control registers.
-    pub registers: virt::x86::vp::Registers,
-    /// Debug registers (DR0–DR7).
-    pub debug_registers: virt::x86::vp::DebugRegisters,
-    /// XSAVE state (FP/SSE/AVX).
-    pub xsave: virt::x86::vp::Xsave,
-    /// XCR0 (XFEATURE_ENABLED_MASK).
-    pub xcr0: u64,
-}
-
-/// ARM64 VP register state for dump generation.
-pub struct DumpAarch64VpState {
-    /// General-purpose registers, SP, PC, CPSR.
-    pub registers: virt::aarch64::vp::Registers,
-    /// System registers (SCTLR, TTBR, TCR, etc.).
-    pub system_registers: virt::aarch64::vp::SystemRegisters,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -285,14 +255,14 @@ where
         self
     }
 
-    #[cfg(guest_arch = "x86_64")]
-    fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<DumpVpState> {
+    #[cfg(all(guest_arch = "x86_64", feature = "dump"))]
+    fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<hyperv_dump::VpState> {
         let mut access = self.vp.access_state(vtl);
         let registers = access.registers().context("failed to get registers")?;
         let debug_registers = access.debug_regs().context("failed to get debug registers")?;
         let xsave = access.xsave().context("failed to get xsave state")?;
-        let xcr0 = access.xcr().context("failed to get xcr0")?.value;
-        Ok(DumpVpState::X64(DumpX64VpState {
+        let xcr0 = access.xcr().context("failed to get xcr0")?;
+        Ok(hyperv_dump::VpState::X64(hyperv_dump::X64VpState {
             registers,
             debug_registers,
             xsave,
@@ -300,14 +270,14 @@ where
         }))
     }
 
-    #[cfg(guest_arch = "aarch64")]
-    fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<DumpVpState> {
+    #[cfg(all(guest_arch = "aarch64", feature = "dump"))]
+    fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<hyperv_dump::VpState> {
         let mut access = self.vp.access_state(vtl);
         let registers = access.registers().context("failed to get registers")?;
         let system_registers = access.system_registers().context("failed to get system registers")?;
-        Ok(DumpVpState::Aarch64(DumpAarch64VpState {
+        Ok(hyperv_dump::VpState::Aarch64(hyperv_dump::Aarch64VpState {
             registers,
-            system_registers,
+            system_registers: Some(system_registers),
         }))
     }
 }
@@ -1006,6 +976,7 @@ pub struct RegisterSetError(&'static str, #[source] anyhow::Error);
 #[error("the vp runner was dropped")]
 struct RunnerGoneError(#[source] RpcError);
 
+#[cfg(feature = "dump")]
 impl VpSet {
     /// Gets full VP state for dump generation.
     ///
@@ -1014,7 +985,7 @@ impl VpSet {
         &self,
         vp: VpIndex,
         vtl: Vtl,
-    ) -> anyhow::Result<DumpVpState> {
+    ) -> anyhow::Result<hyperv_dump::VpState> {
         self.vps[vp.index() as usize]
             .send
             .call(
@@ -1133,7 +1104,8 @@ enum StateEvent {
     Reset(mesh::rpc::FailableRpc<(), ()>),
     Scrub(mesh::rpc::FailableRpc<Vtl, ()>),
     /// Get full VP state for dump generation (not gated on gdb).
-    GetDumpVpState(Rpc<Vtl, anyhow::Result<DumpVpState>>),
+    #[cfg(feature = "dump")]
+    GetDumpVpState(Rpc<Vtl, anyhow::Result<hyperv_dump::VpState>>),
     #[cfg(feature = "gdb")]
     Debug(DebugEvent),
 }
@@ -1378,6 +1350,7 @@ impl RunnerInner {
             StateEvent::Restore(rpc) => rpc.handle_sync(|data| vp.restore(data)),
             StateEvent::Reset(rpc) => rpc.handle_failable_sync(|()| vp.reset()),
             StateEvent::Scrub(rpc) => rpc.handle_failable_sync(|vtl| vp.scrub(vtl)),
+            #[cfg(feature = "dump")]
             StateEvent::GetDumpVpState(rpc) => {
                 rpc.handle_sync(|vtl| vp.get_dump_vp_state(vtl))
             }
