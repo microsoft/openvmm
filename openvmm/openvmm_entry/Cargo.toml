@@ -66,7 +66,7 @@ pcie_remote_resources.workspace = true
 
 clap_dyn_complete.workspace = true
 console_relay.workspace = true
-crypto = { workspace = true, optional = true }
+crypto = { workspace = true, features = ["native"] }
 guid.workspace = true
 inspect.workspace = true
 inspect_proto.workspace = true
@@ -122,5 +122,5 @@ build_rs_guest_arch.workspace = true
 workspace = true
 
 [package.metadata.xtask.unused-deps]
-# keep the crypto dep so we can specify the vendored feature
+# keep the crypto dep so we can specify the vendored and backend features
 ignored = ["crypto"]

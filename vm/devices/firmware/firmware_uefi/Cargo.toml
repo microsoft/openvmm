@@ -24,7 +24,8 @@ vmcore.workspace = true
 
 async-trait.workspace = true
 bitfield-struct.workspace = true
-crypto.workspace = true
+# TODO: Should probably be the rust backend
+crypto = { workspace = true, features = ["native"] }
 der = { workspace = true, features = ["derive", "alloc", "oid"] }
 getrandom.workspace = true
 guid.workspace = true

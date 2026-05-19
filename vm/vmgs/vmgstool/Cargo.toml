@@ -10,7 +10,7 @@ rust-version.workspace = true
 [features]
 default = []
 
-encryption = ["vmgs/encryption", "crypto/vendored"]
+encryption = ["vmgs/encryption", "crypto/vendored", "crypto/native"]
 
 test_helpers = ["vmgs/test_helpers", "getrandom", "dep:resource_dll_parser"]
 

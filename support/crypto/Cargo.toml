@@ -12,6 +12,9 @@ rust-version.workspace = true
 # If the chosen backend is not natively available and can't be vendored, this will trigger a compile error.
 vendored = ["openssl?/vendored"]
 
+# Use a native backend, or OpenSSL on Linux.
+native = []
+
 # Use OpenSSL instead of any native backend.
 openssl = ["dep:openssl", "dep:openssl_kdf"]
 
