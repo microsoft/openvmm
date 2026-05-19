@@ -821,64 +821,62 @@ impl InitializedVm {
             None
         };
 
-        cfg_if! {
-            if #[cfg(guest_arch = "aarch64")] {
-                use openvmm_defs::config::GicMsiConfig;
-                use vm_topology::processor::aarch64::GicItsInfo;
-                use vm_topology::processor::aarch64::GicMsiController;
-                use vm_topology::processor::aarch64::GicV2mInfo;
+        #[cfg(guest_arch = "aarch64")]
+        let processor_topology = {
+            use openvmm_defs::config::GicMsiConfig;
+            use vm_topology::processor::aarch64::GicItsInfo;
+            use vm_topology::processor::aarch64::GicMsiController;
+            use vm_topology::processor::aarch64::GicV2mInfo;
 
-                // Resolve ITS vs v2m and determine v2m SPI count.
-                let arch_config = match &cfg.processor_topology.arch {
-                    Some(ArchTopologyConfig::Aarch64(a)) => a,
-                    _ => &Aarch64TopologyConfig::default(),
-                };
-                let is_gicv2 = match &arch_config.gic_config {
-                    Some(GicConfig::V2(_)) => true,
-                    _ => !platform_info.supports_gic_v3,
-                };
-                let v2m_spi_count = match &arch_config.gic_msi {
-                    GicMsiConfig::Auto if platform_info.supports_its && !is_gicv2 => None,
-                    GicMsiConfig::Auto => Some(openvmm_defs::config::DEFAULT_GIC_V2M_SPI_COUNT),
-                    GicMsiConfig::Its => {
-                        if is_gicv2 {
-                            anyhow::bail!("ITS is incompatible with GICv2");
-                        }
-                        if !platform_info.supports_its {
-                            anyhow::bail!("ITS requested but the hypervisor does not support it");
-                        }
-                        None
+            // Resolve ITS vs v2m and determine v2m SPI count.
+            let arch_config = match &cfg.processor_topology.arch {
+                Some(ArchTopologyConfig::Aarch64(a)) => a,
+                _ => &Aarch64TopologyConfig::default(),
+            };
+            let is_gicv2 = match &arch_config.gic_config {
+                Some(GicConfig::V2(_)) => true,
+                _ => !platform_info.supports_gic_v3,
+            };
+            let v2m_spi_count = match &arch_config.gic_msi {
+                GicMsiConfig::Auto if platform_info.supports_its && !is_gicv2 => None,
+                GicMsiConfig::Auto => Some(openvmm_defs::config::DEFAULT_GIC_V2M_SPI_COUNT),
+                GicMsiConfig::Its => {
+                    if is_gicv2 {
+                        anyhow::bail!("ITS is incompatible with GICv2");
                     }
-                    GicMsiConfig::V2m { spi_count } => Some(*spi_count),
-                };
+                    if !platform_info.supports_its {
+                        anyhow::bail!("ITS requested but the hypervisor does not support it");
+                    }
+                    None
+                }
+                GicMsiConfig::V2m { spi_count } => Some(*spi_count),
+            };
 
-                // Resolve SPI layout — all SPI allocations in one deterministic pass.
-                let spi_layout = super::spi_layout::resolve_spi_layout(
-                    &super::spi_layout::SpiLayoutInput {
-                        v2m_spi_count,
-                    },
-                )?;
+            // Resolve SPI layout — all SPI allocations in one deterministic pass.
+            let spi_layout =
+                super::spi_layout::resolve_spi_layout(&super::spi_layout::SpiLayoutInput {
+                    v2m_spi_count,
+                })?;
 
-                // Build the GIC MSI controller from resolved SPIs.
-                let gic_msi = if let Some(count) = v2m_spi_count {
-                    GicMsiController::V2m(GicV2mInfo {
-                        frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
-                        spi_base: spi_layout.v2m_spi_base.expect("v2m base must be allocated when v2m_spi_count is Some"),
-                        spi_count: count,
-                    })
-                } else {
-                    GicMsiController::Its(GicItsInfo {
-                        its_base: openvmm_defs::config::DEFAULT_GIC_ITS_BASE,
-                    })
-                };
-
-                let processor_topology =
-                    build_aarch64_topology(&cfg.processor_topology, &platform_info, gic_msi)?;
+            // Build the GIC MSI controller from resolved SPIs.
+            let gic_msi = if let Some(count) = v2m_spi_count {
+                GicMsiController::V2m(GicV2mInfo {
+                    frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
+                    spi_base: spi_layout
+                        .v2m_spi_base
+                        .expect("v2m base must be allocated when v2m_spi_count is Some"),
+                    spi_count: count,
+                })
             } else {
-                let processor_topology =
-                    build_x86_topology(&cfg.processor_topology)?;
-            }
-        }
+                GicMsiController::Its(GicItsInfo {
+                    its_base: openvmm_defs::config::DEFAULT_GIC_ITS_BASE,
+                })
+            };
+
+            build_aarch64_topology(&cfg.processor_topology, &platform_info, gic_msi)?
+        };
+        #[cfg(not(guest_arch = "aarch64"))]
+        let processor_topology = build_x86_topology(&cfg.processor_topology)?;
 
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
