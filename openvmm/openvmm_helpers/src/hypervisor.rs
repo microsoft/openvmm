@@ -7,19 +7,6 @@
 use hypervisor_resources::HypervisorKind;
 use vm_resource::Resource;
 
-/// Returns a [`Resource<HypervisorKind>`] for the first available hypervisor
-/// backend.
-///
-/// Backends are checked in registration order (highest priority first).
-pub fn choose_hypervisor() -> anyhow::Result<Resource<HypervisorKind>> {
-    for probe in hypervisor_resources::probes() {
-        if let Some(resource) = probe.try_new_resource()? {
-            return Ok(resource);
-        }
-    }
-    anyhow::bail!("no hypervisor available");
-}
-
 /// Parses a hypervisor specifier of the form `name` or `name:key=val,key,...`.
 ///
 /// Returns `(name, params)` where `params` is a list of `(key, value)` pairs.

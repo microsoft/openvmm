@@ -282,6 +282,19 @@ async fn open_simple_disk(
     Ok(disk.0)
 }
 
+/// Returns a [`Resource<HypervisorKind>`] for the first available hypervisor
+/// backend.
+///
+/// Backends are checked in registration order (highest priority first).
+fn choose_hypervisor() -> anyhow::Result<Resource<HypervisorKind>> {
+    for probe in hypervisor_resources::probes() {
+        if let Some(resource) = probe.try_new_resource()? {
+            return Ok(resource);
+        }
+    }
+    anyhow::bail!("no hypervisor available");
+}
+
 #[derive(MeshPayload)]
 pub struct RestartState {
     hypervisor: Resource<HypervisorKind>,
@@ -316,16 +329,7 @@ impl Worker for VmWorker {
 
         let hypervisor_resource = match parameters.hypervisor {
             Some(resource) => resource,
-            None => {
-                let mut found = None;
-                for probe in hypervisor_resources::probes() {
-                    if let Some(resource) = probe.try_new_resource()? {
-                        found = Some(resource);
-                        break;
-                    }
-                }
-                found.context("no hypervisor available")?
-            }
+            None => choose_hypervisor()?,
         };
 
         let hypervisor = block_on(ResourceResolver::new().resolve(hypervisor_resource, ()))
