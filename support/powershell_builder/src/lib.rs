@@ -21,8 +21,10 @@ pub struct PowerShellBuilder(Command);
 impl PowerShellBuilder {
     /// Create a new PowerShell command
     pub fn new() -> Self {
-        PowerShellCmdletBuilder(Command::new("powershell.exe"))
+        // TODO: fall back to powershell.exe if pwsh.exe does not exist
+        PowerShellCmdletBuilder(Command::new("pwsh.exe"))
             .flag("NoProfile")
+            .flag("Command")
             .finish()
     }
 
