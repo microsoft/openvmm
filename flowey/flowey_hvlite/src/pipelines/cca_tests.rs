@@ -90,17 +90,9 @@ impl IntoPipeline for CcaTestsCli {
                     FlowArch::host(backend_hint),
                     "cca-tests: check existence of emulation environment needed tools",
                 )
-                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
-                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_common::Params {
-                    local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
-                        interactive: true,
-                        auto_install: true,
-                        ignore_rust_version: true,
-                    }),
-                    verbose: ReadVar::from_static(verbose),
-                    locked: false,
-                    deny_warnings: false,
-                    no_incremental: false,
+                .config(flowey_lib_common::install_dist_pkg::Config {
+                    interactive: Some(true),
+                    skip_update: Some(false),
                 })
                 .dep_on(
                     |ctx| flowey_lib_hvlite::_jobs::local_check_cca_emu_prereq::Params {
@@ -115,26 +107,20 @@ impl IntoPipeline for CcaTestsCli {
                     FlowArch::host(backend_hint),
                     "cca-tests: install emulation environment",
                 )
-                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
-                .dep_on(
-                    |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
-                        hvlite_repo_source: openvmm_repo.clone(),
-                    },
-                )
-                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_common::Params {
-                    local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
-                        interactive: true,
-                        auto_install: true,
-                        ignore_rust_version: true,
-                    }),
-                    verbose: ReadVar::from_static(verbose),
-                    locked: false,
-                    deny_warnings: false,
-                    no_incremental: false,
+                .config(flowey_lib_common::git_checkout::Config {
+                    require_local_clones: Some(false),
+                })
+                .config(flowey_lib_common::install_git::Config {
+                    auto_install: Some(true),
+                })
+                .config(flowey_lib_common::install_dist_pkg::Config {
+                    interactive: Some(true),
+                    skip_update: Some(false),
                 })
                 .dep_on(
                     |ctx| flowey_lib_hvlite::_jobs::local_install_cca_emu::Params {
                         test_root: test_root.clone(),
+                        openvmm_root: crate::repo_root(),
                         done: ctx.new_done_handle(),
                     },
                 )
