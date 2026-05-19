@@ -179,18 +179,11 @@ mod tests {
         assert!(r.read_uint("/does_not_exist").is_err());
     }
 
-    /// Verify that key table entries never overflow the table boundary.
+    /// Verify that key table entries exactly fill each table.
     ///
-    /// The DLL's key table verifier walks entries with:
-    ///   `while (offset + sizeof(EntryHeader) < dataEnd)`
-    /// Using strict `<`, it cannot reach an entry starting at exactly
-    /// `dataEnd - sizeof(EntryHeader)` (i.e., 21 bytes from the end).
-    /// If such an entry exists, the verifier stops early and reports
-    /// `offset != dataEnd` → ERROR_FILE_CORRUPT.
-    ///
-    /// The writer must ensure no entry (including Free gap-fillers)
-    /// starts at that position by moving the preceding real entry to
-    /// the next key table and absorbing the slack into an earlier entry.
+    /// Per FORMAT.md ("Key table filling"), entries must exactly fill
+    /// the data area. Free entries must be > 21 bytes; gaps of 1–21
+    /// bytes must be absorbed into the preceding entry's SizeInBytes.
     #[test]
     fn no_entry_at_key_table_boundary() {
         use crate::defs::*;

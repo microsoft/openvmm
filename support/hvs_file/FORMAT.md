@@ -184,13 +184,27 @@ on read-only files. Therefore, **insertion sequences must be 1-based**
 (first child gets 1).
 
 **Key table filling**: Entries must **exactly fill** the key table's data
-area (from the end of the header to the end of the object). Any remaining
-space must be **> 21 bytes** (strictly greater than
-`sizeof(KeyTableEntryHeader)`). The verify loop uses
-`while (offset + sizeof(header) < dataEnd)` — strict less-than — so a
-Free entry starting at exactly `dataEnd - 21` is unreachable. If the
-remaining space after the last entry is ≤ 21 bytes, the entry must be
-moved to the next key table.
+area (from the end of the header to the end of the object). Each entry
+occupies `SizeInBytes` bytes. The sum of all entry sizes must equal the
+data area size exactly.
+
+Free entries must be **> 21 bytes** (`sizeof(KeyTableEntryHeader)` + at
+least 1 byte). A 21-byte Free entry (header only, no payload) is not
+valid because it would be indistinguishable from an empty gap at the
+end of the table.
+
+If the remaining space after the last real entry is 1–21 bytes, it
+must be absorbed into the preceding entry by inflating its
+`SizeInBytes`. The extra bytes are padding and are not included in
+the entry's checksum (see below).
+
+### Entry checksum scope
+
+The entry checksum covers the header (with `Checksum` zeroed) plus the
+name and type-specific data — i.e., the **meaningful content**, not the
+full `SizeInBytes`. When an entry's `SizeInBytes` is inflated to absorb
+trailing slack, the padding bytes are not included in the checksum.
+`SizeInBytes` must be ≥ the meaningful content size.
 
 ### Key Table Entry Header
 

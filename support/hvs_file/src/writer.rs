@@ -396,12 +396,9 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         for entry in &mut all_entries {
             let entry_total = entry.header.size_in_bytes as usize;
 
-            let remaining_after =
-                usable_per_table.saturating_sub(current_table_buf.len() + entry_total);
-            let would_overflow = current_table_buf.len() + entry_total > usable_per_table;
-            let would_leave_small_gap = remaining_after > 0 && remaining_after <= entry_header_size;
-
-            if (would_overflow || would_leave_small_gap) && !current_table_buf.is_empty() {
+            if current_table_buf.len() + entry_total > usable_per_table
+                && !current_table_buf.is_empty()
+            {
                 tables.push(current_table_buf);
                 current_table_buf = Vec::with_capacity(usable_per_table);
                 current_table_index += 1;
@@ -432,6 +429,19 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 ));
             }
 
+            // If this entry would leave a 1..=21 byte gap at the end of
+            // the table, absorb that gap by inflating SizeInBytes. Gaps
+            // of ≤21 bytes cannot hold a Free entry (see FORMAT.md, "Key
+            // table filling"). The checksum covers only the meaningful
+            // content, so the trailing padding is harmless.
+            let remaining_after = usable_per_table - current_table_buf.len() - entry_total;
+            let absorbed = if remaining_after > 0 && remaining_after <= entry_header_size {
+                entry.header.size_in_bytes += remaining_after as u32;
+                remaining_after
+            } else {
+                0
+            };
+
             // Compute entry checksum using streaming CRC (no buffer allocation).
             {
                 let header_bytes = entry.header.as_bytes();
@@ -448,62 +458,34 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             current_table_buf.extend_from_slice(entry.header.as_bytes());
             current_table_buf.extend_from_slice(&entry.name_bytes);
             current_table_buf.extend_from_slice(&entry.data_bytes);
+            // Zero-fill any absorbed slack.
+            if absorbed > 0 {
+                current_table_buf.resize(current_table_buf.len() + absorbed, 0);
+            }
         }
         if !current_table_buf.is_empty() {
             tables.push(current_table_buf);
         }
 
-        // Pad each key table's entries to fill the full usable space.
-        // The key table verifier requires that entries exactly fill
-        // the data area (from sizeof(KeyTableHeader) to objectSizeInBytes).
-        // Fill remaining space with a Free entry, or if remaining < 21
-        // bytes (minimum Free entry), extend the last entry to absorb it.
+        // Pad tables that have remaining space > 21 bytes with a Free entry.
+        // Gaps of 1..=21 bytes were already absorbed into the last entry
+        // above (see FORMAT.md, "Key table filling").
         for table_data in &mut tables {
             if table_data.len() < usable_per_table {
                 let remaining = usable_per_table - table_data.len();
-                if remaining >= entry_header_size {
-                    // Free entries have checksum = 0 (the CalculateChecksum
-                    // method returns 0 for free entries — the CRC block is
-                    // skipped entirely).
-                    let free_header = KeyTableEntryHeader {
-                        key_type: KeyType::FREE,
-                        flags: 0,
-                        size_in_bytes: remaining as u32,
-                        parent_node_table: 0,
-                        parent_node_offset: 0,
-                        checksum: 0,
-                        insertion_sequence: 0,
-                        name_size_in_symbols: 0,
-                    };
+                let free_header = KeyTableEntryHeader {
+                    key_type: KeyType::FREE,
+                    flags: 0,
+                    size_in_bytes: remaining as u32,
+                    parent_node_table: 0,
+                    parent_node_offset: 0,
+                    checksum: 0,
+                    insertion_sequence: 0,
+                    name_size_in_symbols: 0,
+                };
 
-                    table_data.extend_from_slice(free_header.as_bytes());
-                    table_data.resize(usable_per_table, 0);
-                } else {
-                    // Gap is too small for a Free entry. Extend the last
-                    // entry's SizeInBytes to absorb the slack bytes.
-                    let mut pos = 0;
-                    let mut last_size_offset = 0;
-                    while pos + entry_header_size <= table_data.len() {
-                        let entry_size =
-                            u32::from_le_bytes(table_data[pos + 2..pos + 6].try_into().unwrap())
-                                as usize;
-                        if entry_size == 0 || pos + entry_size >= table_data.len() {
-                            last_size_offset = pos + 2;
-                            break;
-                        }
-                        last_size_offset = pos + 2;
-                        pos += entry_size;
-                    }
-                    let old_size = u32::from_le_bytes(
-                        table_data[last_size_offset..last_size_offset + 4]
-                            .try_into()
-                            .unwrap(),
-                    );
-                    let new_size = old_size + remaining as u32;
-                    table_data[last_size_offset..last_size_offset + 4]
-                        .copy_from_slice(&new_size.to_le_bytes());
-                    table_data.resize(usable_per_table, 0);
-                }
+                table_data.extend_from_slice(free_header.as_bytes());
+                table_data.resize(usable_per_table, 0);
             }
         }
 
