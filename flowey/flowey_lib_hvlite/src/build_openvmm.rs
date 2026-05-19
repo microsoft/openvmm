@@ -90,7 +90,7 @@ impl FlowNode for Node {
         {
             // Set the OPENVMM_* env vars for version information (if provided).
             let extra_env = version.map(|version| {
-                ctx.emit_rust_stepv("set openvmm version env vars", |ctx| {
+                ctx.emit_minor_rust_stepv("set openvmm version env vars", |ctx| {
                     let version = version.claim(ctx);
                     |rt| {
                         let mut env = BTreeMap::new();
@@ -99,7 +99,7 @@ impl FlowNode for Node {
                         env.insert("OPENVMM_MINOR".into(), minor.to_string());
                         env.insert("OPENVMM_PATCH".into(), patch.to_string());
                         env.insert("OPENVMM_REVISION".into(), revision.to_string());
-                        Ok(env)
+                        env
                     }
                 })
             });
