@@ -31,6 +31,7 @@ impl SpiAllocator {
     }
 
     /// Allocates a single SPI, returning its GIC INTID.
+    #[expect(dead_code)] // used when SMMU instances are configured
     fn alloc(&mut self, tag: &str) -> anyhow::Result<u32> {
         if self.cursor < self.range_start {
             anyhow::bail!("SPI exhausted allocating {tag}");

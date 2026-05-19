@@ -80,9 +80,6 @@ pub const DEFAULT_GIC_V2M_MSI_FRAME_BASE: u64 = 0xEFFE_8000;
 /// Size of the v2m MSI frame (one 4KB page is the architectural minimum).
 pub const GIC_V2M_MSI_FRAME_SIZE: u64 = 0x1000;
 
-/// Default number of SPIs reserved for PCIe MSIs when using GICv2m.
-pub const DEFAULT_GIC_V2M_SPI_COUNT: u32 = 64;
-
 /// Base address of the GICv3 ITS MMIO region. Must be 64 KiB aligned,
 /// below the v2m frame address, and not overlap other devices.
 /// The region extends from this base to base + GIC_ITS_SIZE (128 KiB).
@@ -294,8 +291,9 @@ pub enum GicMsiConfig {
     Its,
     /// Force GICv2m for MSI delivery via SPIs.
     V2m {
-        /// Number of SPIs to reserve for PCIe MSIs.
-        spi_count: u32,
+        /// Number of SPIs to reserve for PCIe MSIs. Defaults to a
+        /// platform-specific value when `None`.
+        spi_count: Option<u32>,
     },
 }
 
