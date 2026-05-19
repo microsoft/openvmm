@@ -4,6 +4,7 @@
 //! AES key wrap with padding (RFC 5649) using the `aes-kw` RustCrypto crate.
 
 use super::AesKeyWrapError;
+use super::AesKeyWrapErrorInner;
 use aes_kw::KwpAes128;
 use aes_kw::KwpAes192;
 use aes_kw::KwpAes256;
@@ -25,7 +26,7 @@ impl AesKeyWrapInner {
             16 => Self::Aes128(KwpAes128::new_from_slice(key).unwrap()),
             24 => Self::Aes192(KwpAes192::new_from_slice(key).unwrap()),
             32 => Self::Aes256(KwpAes256::new_from_slice(key).unwrap()),
-            n => return Err(AesKeyWrapError::InvalidKeySize(n)),
+            n => return Err(AesKeyWrapError(AesKeyWrapErrorInner::InvalidKeySize(n))),
         })
     }
 
@@ -39,7 +40,7 @@ impl AesKeyWrapInner {
 }
 
 fn err(e: aes_kw::Error, op: &'static str) -> AesKeyWrapError {
-    AesKeyWrapError::Backend(e.to_string(), op)
+    AesKeyWrapError(AesKeyWrapErrorInner::Backend(e.to_string(), op))
 }
 
 impl AesKeyWrapCtxInner<'_> {

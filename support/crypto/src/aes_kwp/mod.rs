@@ -19,14 +19,17 @@ use thiserror::Error;
 
 /// An error for AES key wrap operations.
 #[derive(Clone, Debug, Error)]
-pub enum AesKeyWrapError {
+#[error(transparent)]
+pub struct AesKeyWrapError(AesKeyWrapErrorInner);
+
+#[derive(Clone, Debug, Error)]
+enum AesKeyWrapErrorInner {
     /// The wrapping key size is not 16, 24, or 32 bytes.
     #[error("invalid wrapping key size {0}")]
     InvalidKeySize(usize),
     /// A backend cryptographic error occurred.
     #[cfg(not(rust))]
     #[error("AES key wrap error")]
-    #[expect(private_interfaces)]
     Backend(#[source] super::BackendError),
     /// A backend cryptographic error occurred.
     #[cfg(rust)]
