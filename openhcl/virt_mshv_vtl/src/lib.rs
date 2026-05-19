@@ -2034,7 +2034,7 @@ impl UhPartition {
                 _ => false,
             };
             if !vnmi {
-                tracelimit::warn_ratelimited!(
+                tracing::error!(
                     "debug interrupt is not supported on SNP without virtual NMI"
                 );
                 return;
@@ -2046,7 +2046,7 @@ impl UhPartition {
 
     #[cfg(guest_arch = "aarch64")]
     pub fn assert_debug_interrupt(&self, _vtl: Vtl) {
-        tracelimit::warn_ratelimited!("debug interrupts are not supported on aarch64");
+        tracing::error!("debug interrupts are not supported on aarch64");
     }
 
     /// Enables or disables the PM timer assist.
