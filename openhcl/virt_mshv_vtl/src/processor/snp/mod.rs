@@ -1094,8 +1094,8 @@ impl<'b> ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpBacked> {
             }
 
             // Wake this VP so an idle VP comes out of  HLT and runs VMRUN.
-            //The VMSA is encrypted so the hypervisor cannot see the V_NMI
-            //write directly; without an explicit wake, a VP sitting in HLT
+            // The VMSA is encrypted so the hypervisor cannot see the V_NMI
+            // write directly; without an explicit wake, a VP sitting in HLT
             // will not VMRUN so hardware can deliver the virtual NMI.
             self.inner.wake(vtl, WakeReason::INTCON);
         } else {
