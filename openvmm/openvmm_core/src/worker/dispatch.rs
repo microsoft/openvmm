@@ -314,7 +314,21 @@ impl Worker for VmWorker {
 
         let manifest = Manifest::from_config(parameters.cfg);
 
-        let hypervisor = block_on(ResourceResolver::new().resolve(parameters.hypervisor, ()))
+        let hypervisor_resource = match parameters.hypervisor {
+            Some(resource) => resource,
+            None => {
+                let mut found = None;
+                for probe in hypervisor_resources::probes() {
+                    if let Some(resource) = probe.try_new_resource()? {
+                        found = Some(resource);
+                        break;
+                    }
+                }
+                found.context("no hypervisor available")?
+            }
+        };
+
+        let hypervisor = block_on(ResourceResolver::new().resolve(hypervisor_resource, ()))
             .context("failed to resolve hypervisor backend")?;
 
         let shared_memory = parameters

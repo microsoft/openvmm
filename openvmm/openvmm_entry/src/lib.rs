@@ -2255,10 +2255,11 @@ async fn run_control_inner(
         };
 
         let params = VmWorkerParameters {
-            hypervisor: match &opt.hypervisor {
-                Some(name) => openvmm_helpers::hypervisor::hypervisor_resource(name)?,
-                None => openvmm_helpers::hypervisor::choose_hypervisor()?,
-            },
+            hypervisor: opt
+                .hypervisor
+                .as_ref()
+                .map(|name| openvmm_helpers::hypervisor::hypervisor_resource(name))
+                .transpose()?,
             cfg: vm_config,
             saved_state,
             shared_memory,

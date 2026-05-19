@@ -24,8 +24,10 @@ pub const VM_WORKER: WorkerId<VmWorkerParameters> = WorkerId::new("VmWorker");
 /// Launch parameters for the VM worker.
 #[derive(MeshPayload)]
 pub struct VmWorkerParameters {
-    /// The hypervisor to use.
-    pub hypervisor: Resource<HypervisorKind>,
+    /// The hypervisor to use. If `None`, the worker auto-detects an
+    /// available hypervisor backend in its own process via the registered
+    /// [`HypervisorProbe`](hypervisor_resources::HypervisorProbe)s.
+    pub hypervisor: Option<Resource<HypervisorKind>>,
     /// The initial configuration.
     pub cfg: Config,
     /// The saved state.

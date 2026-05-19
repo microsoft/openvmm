@@ -715,7 +715,7 @@ impl VmService {
             .launch_worker(
                 VM_WORKER,
                 VmWorkerParameters {
-                    hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
+                    hypervisor: None,
                     cfg: config,
                     saved_state: None,
                     shared_memory: None,
