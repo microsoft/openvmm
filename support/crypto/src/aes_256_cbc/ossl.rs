@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! AES-256-CBC implementation using OpenSSL.
+
 use super::*;
 
 pub struct Aes256CbcInner {

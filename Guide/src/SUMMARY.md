@@ -127,6 +127,7 @@
     - [Consomme](./reference/backends/consomme.md)
 - [Architecture](./reference/architecture.md)
   - [OpenVMM Architecture](./reference/architecture/openvmm.md)
+    - [Memory Layout](./reference/architecture/openvmm/memory-layout.md)
     - [mesh](./reference/architecture/openvmm/mesh.md)
       - [Using mesh](./reference/architecture/openvmm/mesh/usage.md)
       - [How mesh works](./reference/architecture/openvmm/mesh/internals.md)

@@ -22,7 +22,6 @@ use crate::vtl2_settings::Vtl2StorageControllerBuilder;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
-use memory_range::MemoryRange;
 use mesh::CancelContext;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use pal_async::DefaultDriver;
@@ -181,6 +180,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     enable_screenshots: bool,
     // Pre-built initrd with pipette already injected (skips runtime injection).
     prebuilt_initrd: Option<PathBuf>,
+    // Use virtio vsock instead of VMBus-based hvsocket for guest communication.
+    use_virtio_vsock: bool,
 }
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
@@ -201,6 +202,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("enable_serial", &self.enable_serial)
             .field("enable_screenshots", &self.enable_screenshots)
             .field("prebuilt_initrd", &self.prebuilt_initrd)
+            .field("use_virtio_vsock", &self.use_virtio_vsock)
             .finish()
     }
 }
@@ -268,6 +270,8 @@ pub struct PetriVmProperties {
     pub prebuilt_initrd: Option<PathBuf>,
     /// Whether the VM has a CIDATA agent disk attached
     pub has_agent_disk: bool,
+    /// Use virtio vsock instead of VMBus-based hvsocket
+    pub use_virtio_vsock: bool,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -433,6 +437,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_serial: true,
             enable_screenshots: true,
             prebuilt_initrd: None,
+            use_virtio_vsock: false,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
@@ -506,6 +511,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_serial: false,
             enable_screenshots: true,
             prebuilt_initrd: None,
+            use_virtio_vsock: false,
         })
     }
 
@@ -598,6 +604,21 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// eliminating the "No change in framebuffer" debug log lines.
     pub fn without_screenshots(mut self) -> Self {
         self.enable_screenshots = false;
+        self
+    }
+
+    /// Use virtio vsock instead of VMBus-based hvsocket for guest communication.
+    /// The virtio-vsock device will use PCIe, so a PCIe root topology must be
+    /// configured.
+    ///
+    /// When enabled, a virtio-vsock device is added to the VM. This device uses
+    /// the same Unix socket relay path that hvsocket would otherwise use, so
+    /// pipette will connect using this.
+    ///
+    /// For Linux direct boot, this also adjusts the kernel command line to
+    /// blacklist hv_sock instead of virtio_vsock.
+    pub fn with_virtio_vsock(mut self) -> Self {
+        self.use_virtio_vsock = true;
         self
     }
 
@@ -876,6 +897,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_serial: self.enable_serial,
             prebuilt_initrd: self.prebuilt_initrd.clone(),
             has_agent_disk: self.has_agent_disk(),
+            use_virtio_vsock: self.use_virtio_vsock,
         }
     }
 
@@ -1291,6 +1313,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .uefi_config_mut()
             .expect("UEFI frontpage is only supported for UEFI firmware.")
             .disable_frontpage = !enable;
+        self
+    }
+
+    /// Sets the UEFI diagnostics log level filter.
+    ///
+    /// By default only ERROR and WARN level entries are forwarded to the
+    /// host tracing infrastructure. Use this to also surface INFO (or all)
+    /// entries when a test needs to observe them.
+    pub fn with_efi_diagnostics_log_level(mut self, level: EfiDiagnosticsLogLevel) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("EFI diagnostics log level is only supported for UEFI firmware.")
+            .efi_diagnostics_log_level = level;
         self
     }
 
@@ -2107,16 +2143,6 @@ pub enum ApicMode {
     X2apicEnabled,
 }
 
-/// Mmio configuration.
-#[derive(Debug)]
-pub enum MmioConfig {
-    /// The platform provided default.
-    Platform,
-    /// Custom mmio gaps.
-    /// TODO: Not supported on all platforms (ie Hyper-V).
-    Custom(Vec<MemoryRange>),
-}
-
 /// Common memory configuration information for the VM.
 #[derive(Debug)]
 pub struct MemoryConfig {
@@ -2127,8 +2153,6 @@ pub struct MemoryConfig {
     ///
     /// Dynamic memory will be disabled if this is `None`.
     pub dynamic_memory_range: Option<(u64, u64)>,
-    /// Specifies the mmio gaps to use, either platform or custom.
-    pub mmio_gaps: MmioConfig,
     /// Per-NUMA-node memory sizes. When set, RAM is distributed across
     /// vNUMA nodes instead of assigning all RAM to node 0.
     pub numa_mem_sizes: Option<Vec<u64>>,
@@ -2139,7 +2163,6 @@ impl Default for MemoryConfig {
         Self {
             startup_bytes: 4 * 1024 * 1024 * 1024, // 4 GiB
             dynamic_memory_range: None,
-            mmio_gaps: MmioConfig::Platform,
             numa_mem_sizes: None,
         }
     }
@@ -2158,6 +2181,8 @@ pub struct UefiConfig {
     pub default_boot_always_attempt: bool,
     /// Enable vPCI boot (for NVMe)
     pub enable_vpci_boot: bool,
+    /// EFI diagnostics log level filter
+    pub efi_diagnostics_log_level: EfiDiagnosticsLogLevel,
 }
 
 impl Default for UefiConfig {
@@ -2168,8 +2193,24 @@ impl Default for UefiConfig {
             disable_frontpage: true,
             default_boot_always_attempt: false,
             enable_vpci_boot: false,
+            efi_diagnostics_log_level: EfiDiagnosticsLogLevel::Default,
         }
     }
+}
+
+/// EFI diagnostics log level filter.
+///
+/// Controls which UEFI diagnostics log entries are forwarded to the host
+/// tracing infrastructure (and thus visible via kmsg / test output).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EfiDiagnosticsLogLevel {
+    /// Default log level (ERROR and WARN only).
+    #[default]
+    Default,
+    /// Include INFO logs (ERROR, WARN, and INFO).
+    Info,
+    /// All log levels.
+    Full,
 }
 
 /// Control the logging configuration of OpenVMM/OpenHCL.
@@ -2416,6 +2457,18 @@ impl Firmware {
                 kernel: resolver.require(LINUX_DIRECT_TEST_KERNEL_AARCH64).erase(),
                 initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_AARCH64).erase(),
             },
+        }
+    }
+
+    /// Constructs a [`Firmware::LinuxDirect`] configuration that uses a
+    /// compressed bzImage kernel instead of an uncompressed ELF.
+    ///
+    /// This is x86_64-only, as bzImage is an x86-specific format.
+    pub fn linux_direct_bzimage(resolver: &ArtifactResolver<'_>) -> Self {
+        use petri_artifacts_vmm_test::artifacts::loadable::*;
+        Firmware::LinuxDirect {
+            kernel: resolver.require(LINUX_DIRECT_TEST_BZIMAGE_X64).erase(),
+            initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_X64).erase(),
         }
     }
 

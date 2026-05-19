@@ -3,24 +3,39 @@
 
 //! RSA cryptographic operations.
 
-#![cfg(any(openssl, symcrypt))]
+#![cfg(any(openssl, rust, symcrypt))]
 
 #[cfg(openssl)]
 pub(crate) mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
 
+#[cfg(rust)]
+pub(crate) mod rust;
+#[cfg(rust)]
+pub(crate) use rust as sys;
+
 #[cfg(symcrypt)]
 pub(crate) mod symcrypt;
 #[cfg(symcrypt)]
-use symcrypt as sys;
+pub(crate) use symcrypt as sys;
 
 use thiserror::Error;
 
 /// An error for RSA operations.
+#[cfg(not(rust))]
 #[derive(Debug, Error)]
 #[error("RSA error")]
 pub struct RsaError(#[source] pub(crate) super::BackendError);
+
+/// An error for RSA operations.
+#[cfg(rust)]
+#[derive(Debug, Error)]
+#[error("RSA error during {1}")]
+pub struct RsaError(
+    #[source] pub(crate) rsa::errors::Error,
+    pub(crate) &'static str,
+);
 
 /// Hash algorithm for RSA operations.
 #[derive(Debug, Clone, Copy)]

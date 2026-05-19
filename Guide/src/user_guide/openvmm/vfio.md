@@ -12,6 +12,12 @@ VFIO device assignment is experimental. PCI config space, BAR MMIO passthrough, 
 
 OpenVMM running on a Linux host can assign physical PCI devices to guest VMs using VFIO. The device is bound to the `vfio-pci` kernel driver, then OpenVMM opens it via VFIO and presents it to the guest as a PCIe endpoint.
 
+The guest sees the device's real config space with some filtering applied:
+each assigned device appears as a single-function device (the multi-function
+bit is cleared), and certain PCIe extended capabilities are hidden because they
+don't make sense in a virtual topology. Currently filtered extended
+capabilities are SR-IOV, ARI, and Resizable BAR.
+
 ```text
 Linux Host
 └── OpenVMM

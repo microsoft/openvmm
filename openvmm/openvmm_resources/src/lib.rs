@@ -19,6 +19,8 @@ vm_resource::register_static_resolvers! {
     chipset::pit::resolver::PitResolver,
     #[cfg(guest_arch = "x86_64")]
     chipset::pic::resolver::PicResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset::ioapic::resolver::GenericIoApicResolver,
     missing_dev::resolver::MissingDevResolver,
     #[cfg(feature = "tpm")]
     tpm_device::resolver::TpmDeviceResolver,
@@ -29,6 +31,7 @@ vm_resource::register_static_resolvers! {
     #[cfg(guest_arch = "aarch64")]
     serial_pl011::resolver::SerialPl011Resolver,
     chipset::battery::resolver::BatteryResolver,
+    guest_watchdog::resolver::HyperVGuestWatchdogResolver,
 
     // Non-volatile stores
     vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreResolver,

@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod layout;
 pub mod memory;
 pub mod pcie;
 pub mod processor;

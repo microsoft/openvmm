@@ -3,7 +3,7 @@
 
 //! Helpers for macOS operations, used by multiple algorithms.
 
-#![cfg(target_os = "macos")]
+#![cfg(all(native, target_os = "macos"))]
 
 use std::ffi::c_void;
 use std::fmt;
@@ -87,7 +87,7 @@ impl std::error::Error for OsStatusCode {}
 /// An error that occurred in the crypto backend.
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("{0}")]
-pub struct BackendError(BackendErrorKind);
+pub(crate) struct BackendError(BackendErrorKind);
 
 #[derive(Clone, Debug, thiserror::Error)]
 enum BackendErrorKind {

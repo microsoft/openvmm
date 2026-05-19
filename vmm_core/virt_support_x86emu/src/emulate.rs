@@ -6,6 +6,8 @@
 use crate::translate::TranslateFlags;
 use crate::translate::TranslatePrivilegeCheck;
 use crate::translate::translate_gva_to_gpa;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use hvdef::HV_PAGE_SIZE;
@@ -293,9 +295,51 @@ pub async fn emulate<T: EmulatorSupport>(
     emu_mem: &EmulatorMemoryAccess<'_>,
     dev: &impl CpuIo,
 ) -> Result<(), VpHaltReason> {
-    emulate_core(support, emu_mem, dev)
-        .await
-        .map_err(|e| dev.fatal_error(e.into()))
+    emulate_core(support, emu_mem, dev).await.map_err(|e| {
+        let rip = support.rip();
+        let efer = support.efer();
+        let cr0 = support.cr0();
+        let rflags = support.rflags();
+        let vendor = support.vendor();
+        let gpa = support.physical_address();
+        let initial_translation = support.initial_gva_translation();
+        let int_pend = support.interruption_pending();
+        let gpa_mapped = gpa.map(|a| support.is_gpa_mapped(a, false));
+        tracing::warn!(
+            CVM_ALLOWED,
+            rip,
+            ?vendor,
+            efer,
+            cr0,
+            ?rflags,
+            gpa,
+            ?initial_translation,
+            int_pend,
+            gpa_mapped,
+            "emulation failed"
+        );
+        let gps = [
+            Gp::RAX,
+            Gp::RCX,
+            Gp::RDX,
+            Gp::RBX,
+            Gp::RSP,
+            Gp::RBP,
+            Gp::RSI,
+            Gp::RDI,
+            Gp::R8,
+            Gp::R9,
+            Gp::R10,
+            Gp::R11,
+            Gp::R12,
+            Gp::R13,
+            Gp::R14,
+            Gp::R15,
+        ]
+        .map(|i| support.gp(i));
+        tracing::warn!(CVM_CONFIDENTIAL, ?gps, "emulation failed");
+        dev.fatal_error(e.into())
+    })
 }
 
 async fn emulate_core<T: EmulatorSupport>(

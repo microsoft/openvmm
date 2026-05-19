@@ -120,7 +120,7 @@ struct WhpPartitionInner {
     isolation: IsolationType,
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
-    gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
+    gic_msi: vm_topology::processor::aarch64::GicMsiController,
     synic_ports: virt::synic::SynicPortMap,
 }
 
@@ -554,7 +554,10 @@ impl virt::Partition for WhpPartition {
 
     #[cfg(guest_arch = "aarch64")]
     fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
-        let v2m = self.inner.gic_v2m.as_ref()?;
+        let v2m = match &self.inner.gic_msi {
+            vm_topology::processor::aarch64::GicMsiController::V2m(v2m) => v2m,
+            _ => return None,
+        };
         let irqcon = self.with_vtl(minimum_vtl).clone() as Arc<dyn virt::irqcon::ControlGic>;
         Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
             v2m, irqcon,
@@ -774,6 +777,7 @@ impl virt::Hypervisor for Whp {
             virt::PlatformInfo {
                 platform_gsiv: Some(WHP_PMU_GSIV),
                 supports_gic_v3: true,
+                supports_its: false,
             }
         }
     }
@@ -1144,7 +1148,7 @@ impl WhpPartitionInner {
             hvstate,
             isolation: proto_config.isolation,
             #[cfg(guest_arch = "aarch64")]
-            gic_v2m: proto_config.processor_topology.gic_v2m(),
+            gic_msi: proto_config.processor_topology.gic_msi(),
             synic_ports: Default::default(),
         };
 
@@ -1344,7 +1348,10 @@ impl VtlPartition {
                     // (GICD_TYPER.LPIS=0) so Linux uses the GICv2m MSI frame
                     // instead of ITS for PCIe MSIs. Otherwise keep LPI
                     // enabled (1 ID bit minimum).
-                    GicLpiIntIdBits: if config.processor_topology.gic_v2m().is_some() {
+                    GicLpiIntIdBits: if matches!(
+                        config.processor_topology.gic_msi(),
+                        vm_topology::processor::aarch64::GicMsiController::V2m(_)
+                    ) {
                         0
                     } else {
                         1

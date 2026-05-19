@@ -14,6 +14,7 @@ use mesh::payload::Protobuf;
 use std::fmt::Display;
 use thiserror::Error;
 use vmbus_channel::bus::OfferKey;
+use vmbus_core::MaxVersionInfo;
 use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::FeatureFlags;
@@ -24,7 +25,7 @@ use vmcore::monitor::MonitorId;
 
 impl super::Server {
     fn restore_one_channel(&mut self, saved_channel: Channel) -> Result<(), RestoreError> {
-        let (info, stub_offer, state) = saved_channel.restore()?;
+        let (info, stub_offer, state) = saved_channel.restore(self.max_version)?;
         if let Some((offer_id, channel)) = self.channels.get_by_key_mut(&saved_channel.key) {
             // There is an existing channel. Restore on top of it.
 
@@ -190,7 +191,7 @@ impl<'a, N: 'a + Notifier> super::ServerWithNotifier<'a, N> {
         let saved = SavedStateData::from(saved);
         match saved.state {
             SavedConnectionState::Connected(saved) => {
-                self.inner.state = saved.connection.restore()?;
+                self.inner.state = saved.connection.restore(self.inner.max_version)?;
 
                 // Restore server state, and resend server notifications if needed. If these notifications
                 // were processed before the save, it's harmless as the values will be the same.
@@ -442,15 +443,41 @@ impl VersionInfo {
         }
     }
 
-    fn restore(self, trusted: bool) -> Result<vmbus_core::VersionInfo, RestoreError> {
+    fn restore(
+        self,
+        trusted: bool,
+        max_version: Option<MaxVersionInfo>,
+    ) -> Result<vmbus_core::VersionInfo, RestoreError> {
         let version = super::SUPPORTED_VERSIONS
             .iter()
             .find(|v| self.version == **v as u32)
             .copied()
             .ok_or(RestoreError::UnsupportedVersion(self.version))?;
 
+        // Enforce the server's compatibility version limit, if any. This may
+        // restrict both the protocol version and the set of feature flags
+        // permitted, similar to negotiation in `check_version_supported`.
+        if let Some(max_version) = max_version {
+            if version as u32 > max_version.version {
+                return Err(RestoreError::UnsupportedVersion(self.version));
+            }
+        }
+
         let feature_flags = FeatureFlags::from(self.feature_flags);
-        let supported_flags = SUPPORTED_FEATURE_FLAGS.with_confidential_channels(trusted);
+        let supported_flags = if version >= Version::Copper {
+            let mut flags = SUPPORTED_FEATURE_FLAGS.with_confidential_channels(trusted);
+            // Limit feature flags to those supported by the server's
+            // compatibility version, if specified.
+            if let Some(max_version) = max_version {
+                flags &= max_version.feature_flags;
+            }
+
+            flags
+        } else {
+            // Earlier protocol versions don't have feature flags.
+            FeatureFlags::new()
+        };
+
         if !supported_flags.contains(feature_flags) {
             return Err(RestoreError::UnsupportedFeatureFlags(feature_flags.into()));
         }
@@ -548,7 +575,10 @@ impl Connection {
         }
     }
 
-    fn restore(self) -> Result<super::ConnectionState, RestoreError> {
+    fn restore(
+        self,
+        max_version: Option<MaxVersionInfo>,
+    ) -> Result<super::ConnectionState, RestoreError> {
         Ok(match self {
             Connection::Connecting {
                 version,
@@ -560,7 +590,7 @@ impl Connection {
                 trusted,
             } => super::ConnectionState::Connecting {
                 info: super::ConnectionInfo {
-                    version: version.restore(trusted)?,
+                    version: version.restore(trusted, max_version)?,
                     trusted,
                     interrupt_page,
                     monitor_page: monitor_page.map(MonitorPageGpas::restore),
@@ -583,7 +613,7 @@ impl Connection {
                 trusted,
                 paused,
             } => super::ConnectionState::Connected(super::ConnectionInfo {
-                version: version.restore(trusted)?,
+                version: version.restore(trusted, max_version)?,
                 trusted,
                 offers_sent,
                 interrupt_page,
@@ -682,6 +712,7 @@ impl Channel {
 
     fn restore(
         &self,
+        max_version: Option<MaxVersionInfo>,
     ) -> Result<(OfferedInfo, OfferParamsInternal, super::ChannelState), RestoreError> {
         let info = OfferedInfo {
             channel_id: ChannelId(self.channel_id),
@@ -696,7 +727,7 @@ impl Channel {
             ..Default::default()
         };
 
-        let state = self.state.restore()?;
+        let state = self.state.restore(max_version)?;
         tracing::info!(key = %self.key, %state, "channel restored");
         Ok((info, stub_offer, state))
     }
@@ -1009,16 +1040,23 @@ impl ReservedState {
         }
     }
 
-    fn restore(&self) -> Result<super::ReservedState, RestoreError> {
+    fn restore(
+        &self,
+        max_version: Option<MaxVersionInfo>,
+    ) -> Result<super::ReservedState, RestoreError> {
         // We don't know if the connection when the channel was reserved was trusted, so assume it
         // was for what feature flags are accepted here; it doesn't affect any actual behavior.
-        let version = self.version.clone().restore(true).map_err(|e| match e {
-            RestoreError::UnsupportedVersion(v) => RestoreError::UnsupportedReserveVersion(v),
-            RestoreError::UnsupportedFeatureFlags(f) => {
-                RestoreError::UnsupportedReserveFeatureFlags(f)
-            }
-            err => err,
-        })?;
+        let version = self
+            .version
+            .clone()
+            .restore(true, max_version)
+            .map_err(|e| match e {
+                RestoreError::UnsupportedVersion(v) => RestoreError::UnsupportedReserveVersion(v),
+                RestoreError::UnsupportedFeatureFlags(f) => {
+                    RestoreError::UnsupportedReserveFeatureFlags(f)
+                }
+                err => err,
+            })?;
 
         if version.version < Version::Win10 {
             return Err(RestoreError::UnsupportedReserveVersion(
@@ -1115,7 +1153,10 @@ impl ChannelState {
         })
     }
 
-    fn restore(&self) -> Result<super::ChannelState, RestoreError> {
+    fn restore(
+        &self,
+        max_version: Option<MaxVersionInfo>,
+    ) -> Result<super::ChannelState, RestoreError> {
         Ok(match self {
             ChannelState::Closed => super::ChannelState::Closed,
             ChannelState::Opening {
@@ -1125,7 +1166,7 @@ impl ChannelState {
                 request: request.restore(),
                 reserved_state: reserved_state
                     .as_ref()
-                    .map(ReservedState::restore)
+                    .map(|r| r.restore(max_version))
                     .transpose()?,
             },
             ChannelState::ClosingReopen { params, request } => super::ChannelState::ClosingReopen {
@@ -1141,7 +1182,7 @@ impl ChannelState {
                 modify_state: modify_state.restore(),
                 reserved_state: reserved_state
                     .as_ref()
-                    .map(ReservedState::restore)
+                    .map(|r| r.restore(max_version))
                     .transpose()?,
             },
             ChannelState::Closing {
@@ -1151,7 +1192,7 @@ impl ChannelState {
                 params: params.restore(),
                 reserved_state: reserved_state
                     .as_ref()
-                    .map(ReservedState::restore)
+                    .map(|r| r.restore(max_version))
                     .transpose()?,
             },
             ChannelState::Revoked => {

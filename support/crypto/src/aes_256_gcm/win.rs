@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! AES-256-GCM implementation using Windows Bcrypt APIs.
+
 use super::*;
 use crate::win::*;
 use std::sync::LazyLock;

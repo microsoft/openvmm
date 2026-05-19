@@ -58,7 +58,6 @@ use guid::Guid;
 use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
 use io::Read;
-use memory_range::MemoryRange;
 use mesh::CancelContext;
 use mesh::CellUpdater;
 use mesh::rpc::RpcSend;
@@ -66,10 +65,6 @@ use meshworker::VmmMesh;
 use net_backend_resources::mac_address::MacAddress;
 use nvme_resources::NvmeControllerRequest;
 use openvmm_defs::config::Config;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::EfiDiagnosticsLogLevelType;
@@ -78,6 +73,7 @@ use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
@@ -86,7 +82,6 @@ use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpciDeviceConfig;
-use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
@@ -145,14 +140,26 @@ use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vnc_worker_defs::VncParameters;
 
+/// RAII guard that removes the pidfile when dropped. Ensures the pidfile is
+/// cleaned up even if [`do_main`] panics.
+struct PidfileGuard(Option<PathBuf>);
+
+impl Drop for PidfileGuard {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = fs_err::remove_file(path);
+        }
+    }
+}
+
 pub fn openvmm_main() {
     // Save the current state of the terminal so we can restore it back to
     // normal before exiting.
     #[cfg(unix)]
     let orig_termios = io::stderr().is_terminal().then(term::get_termios);
 
-    let mut pidfile_path = None;
-    let exit_code = match do_main(&mut pidfile_path) {
+    let mut pidfile_guard = PidfileGuard(None);
+    let exit_code = match do_main(&mut pidfile_guard.0) {
         Ok(_) => 0,
         Err(err) => {
             eprintln!("fatal error: {:?}", err);
@@ -168,9 +175,7 @@ pub fn openvmm_main() {
 
     // Clean up the pidfile before terminating, since pal::process::terminate
     // skips destructors.
-    if let Some(ref path) = pidfile_path {
-        let _ = std::fs::remove_file(path);
-    }
+    drop(pidfile_guard);
 
     // Terminate the process immediately without graceful shutdown of DLLs or
     // C++ destructors or anything like that. This is all unnecessary and saves
@@ -212,6 +217,7 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
             num_downstream_ports: switch_cli.num_downstream_ports,
             parent_port: switch_cli.port_name.clone(),
             hotplug: switch_cli.hotplug,
+            acs_capabilities_supported: switch_cli.acs_capabilities_supported,
         })
         .collect()
 }
@@ -708,33 +714,12 @@ async fn vm_config_from_command_line(
             }),
     );
 
-    // If VTL2 is enabled, and we are not in VTL2 self allocate mode, provide an
-    // mmio gap for VTL2.
-    let use_vtl2_gap = opt.vtl2
-        && !matches!(
-            opt.igvm_vtl2_relocation_type,
-            Vtl2BaseAddressType::Vtl2Allocate { .. },
-        );
+    let mut pcie_root_complexes = Vec::new();
 
     #[cfg(guest_arch = "aarch64")]
     let arch = MachineArch::Aarch64;
     #[cfg(guest_arch = "x86_64")]
     let arch = MachineArch::X86_64;
-
-    let mmio_gaps: Vec<MemoryRange> = match (use_vtl2_gap, arch) {
-        (true, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
-        (true, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
-        (false, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86.into(),
-        (false, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64.into(),
-    };
-
-    let mut pci_ecam_gaps = Vec::new();
-    let mut pci_mmio_gaps = Vec::new();
-
-    let mut low_mmio_start = mmio_gaps.first().context("expected mmio gap")?.start();
-    let mut high_mmio_end = mmio_gaps.last().context("expected second mmio gap")?.end();
-
-    let mut pcie_root_complexes = Vec::new();
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
         let ports = opt
             .pcie_root_port
@@ -743,6 +728,7 @@ async fn vm_config_from_command_line(
             .map(|port_cli| PcieRootPortConfig {
                 name: port_cli.name.clone(),
                 hotplug: port_cli.hotplug,
+                acs_capabilities_supported: port_cli.acs_capabilities_supported,
             })
             .collect();
 
@@ -752,42 +738,21 @@ async fn vm_config_from_command_line(
             .high_mmio
             .checked_next_multiple_of(ONE_MB)
             .context("high mmio rounding error")?;
-        let ecam_size = (((rc_cli.end_bus - rc_cli.start_bus) as u64) + 1) * 256 * 4096;
-
-        let low_pci_mmio_start = low_mmio_start
-            .checked_sub(low_mmio_size)
-            .context("pci low mmio underflow")?;
-        let ecam_start = low_pci_mmio_start
-            .checked_sub(ecam_size)
-            .context("pci ecam underflow")?;
-        low_mmio_start = ecam_start;
-        high_mmio_end = high_mmio_end
-            .checked_add(high_mmio_size)
-            .context("pci high mmio overflow")?;
-
-        let ecam_range = MemoryRange::new(ecam_start..ecam_start + ecam_size);
-        let low_mmio = MemoryRange::new(low_pci_mmio_start..low_pci_mmio_start + low_mmio_size);
-        let high_mmio = MemoryRange::new(high_mmio_end - high_mmio_size..high_mmio_end);
-
-        pci_ecam_gaps.push(ecam_range);
-        pci_mmio_gaps.push(low_mmio);
-        pci_mmio_gaps.push(high_mmio);
-
         pcie_root_complexes.push(PcieRootComplexConfig {
             index: i as u32,
             name: rc_cli.name.clone(),
             segment: rc_cli.segment,
             start_bus: rc_cli.start_bus,
             end_bus: rc_cli.end_bus,
-            ecam_range,
-            low_mmio,
-            high_mmio,
+            low_mmio: PcieMmioRangeConfig::Dynamic {
+                size: low_mmio_size,
+            },
+            high_mmio: PcieMmioRangeConfig::Dynamic {
+                size: high_mmio_size,
+            },
             ports,
         });
     }
-
-    pci_ecam_gaps.sort();
-    pci_mmio_gaps.sort();
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
 
@@ -907,6 +872,7 @@ async fn vm_config_from_command_line(
     // TODO: load from VMGS file if it exists
     let bios_guid = Guid::new_random();
 
+    let layout_config = chipset.layout_config();
     let VmChipsetResult {
         chipset,
         mut chipset_devices,
@@ -1316,6 +1282,11 @@ async fn vm_config_from_command_line(
             // TODO: allow this to be configured from the command line
             gic_config: None,
             pmu_gsiv: openvmm_defs::config::PmuGsivConfig::Platform,
+            gic_msi: match opt.gic_msi {
+                cli_args::GicMsiCli::Auto => openvmm_defs::config::GicMsiConfig::Auto,
+                cli_args::GicMsiCli::Its => openvmm_defs::config::GicMsiConfig::Its,
+                cli_args::GicMsiCli::V2m => openvmm_defs::config::GicMsiConfig::V2m,
+            },
         },
     );
     #[cfg(guest_arch = "x86_64")]
@@ -1605,14 +1576,11 @@ async fn vm_config_from_command_line(
             } else {
                 opt.memory_size()
             },
-            mmio_gaps,
             prefetch_memory: opt.prefetch_memory(),
             private_memory: opt.private_memory(),
             transparent_hugepages: opt.transparent_hugepages(),
             hugepages: opt.memory.hugepages,
             hugepage_size: opt.memory.hugepage_size,
-            pci_ecam_gaps,
-            pci_mmio_gaps,
             numa_mem_sizes: opt.numa_memory.clone(),
         },
         processor_topology: ProcessorTopologyConfig {
@@ -1664,6 +1632,7 @@ async fn vm_config_from_command_line(
         chipset_devices,
         pci_chipset_devices,
         chipset_capabilities: capabilities,
+        layout: layout_config,
         #[cfg(windows)]
         vpci_resources,
         vmgs,

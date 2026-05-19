@@ -10,7 +10,6 @@ use loader::linux::InitrdAddressType;
 use loader::linux::InitrdConfig;
 use loader::linux::RegisterConfig;
 use loader::linux::ZeroPageConfig;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
 use std::ffi::CString;
 use std::io::Seek;
 use thiserror::Error;
@@ -161,6 +160,7 @@ fn build_dt(
 
     let num_cpus = processor_topology.vps().len();
 
+    use vm_topology::processor::aarch64::GicMsiController;
     use vm_topology::processor::aarch64::GicVersion;
 
     let gic_dist_base: u64 = processor_topology.gic_distributor_base();
@@ -237,6 +237,7 @@ fn build_dt(
     const PHANDLE_GIC: u32 = 1;
     const PHANDLE_APB_PCLK: u32 = 2;
     const PHANDLE_V2M: u32 = 3;
+    const PHANDLE_ITS: u32 = 4;
 
     const GIC_SPI: u32 = 0;
     const GIC_PPI: u32 = 1;
@@ -311,8 +312,9 @@ fn build_dt(
 
     // ARM64 Generic Interrupt Controller.
     // GICv3 uses "arm,gic-v3"; GICv2 uses "arm,cortex-a15-gic".
-    // Both versions can have a v2m child for SPI-based MSIs (PCIe).
-    let v2m_info = processor_topology.gic_v2m();
+    // GICv3 can have an ITS child for LPI-based MSIs; v2m is the
+    // fallback for SPI-based MSIs (GICv2 or GICv3 without ITS).
+    let gic_msi = processor_topology.gic_msi();
     let gic_compatible = match processor_topology.gic_version() {
         GicVersion::V3 { .. } => "arm,gic-v3",
         GicVersion::V2 { .. } => "arm,cortex-a15-gic",
@@ -335,8 +337,16 @@ fn build_dt(
         .add_null(p_interrupt_controller)?
         .add_u32(p_phandle, PHANDLE_GIC)?
         .add_null(p_ranges)?;
-    root_builder = if let Some(v2m) = v2m_info {
-        gic_node
+    root_builder = match gic_msi {
+        GicMsiController::Its(its) => gic_node
+            .start_node(format!("its@{:x}", its.its_base).as_str())?
+            .add_str(p_compatible, "arm,gic-v3-its")?
+            .add_null(p_msi_controller)?
+            .add_u64_array(p_reg, &[its.its_base, openvmm_defs::config::GIC_ITS_SIZE])?
+            .add_u32(p_phandle, PHANDLE_ITS)?
+            .end_node()?
+            .end_node()?,
+        GicMsiController::V2m(v2m) => gic_node
             .start_node(format!("v2m@{:x}", v2m.frame_base).as_str())?
             .add_str(p_compatible, "arm,gic-v2m-frame")?
             .add_null(p_msi_controller)?
@@ -348,9 +358,8 @@ fn build_dt(
             .add_u32(p_arm_msi_num_spis, v2m.spi_count)?
             .add_u32(p_phandle, PHANDLE_V2M)?
             .end_node()?
-            .end_node()?
-    } else {
-        gic_node.end_node()?
+            .end_node()?,
+        GicMsiController::None => gic_node.end_node()?,
     };
 
     // ARM64 Architectural Timer.
@@ -424,7 +433,7 @@ fn build_dt(
         }
 
         // No interrupt-map is provided because all devices use MSIs via the
-        // v2m frame; legacy INTx routing is not supported.
+        // ITS or v2m frame; legacy INTx routing is not supported.
         let mut node = root_builder
             .start_node(name.as_str())?
             .add_str(p_compatible, "pci-host-ecam-generic")?
@@ -439,8 +448,14 @@ fn build_dt(
             .add_u32(p_size_cells, 2)?
             .add_u32(p_interrupt_parent, PHANDLE_GIC)?
             .add_u32_array(p_ranges, &ranges)?;
-        if v2m_info.is_some() {
-            node = node.add_u32(p_msi_parent, PHANDLE_V2M)?;
+        match gic_msi {
+            GicMsiController::Its(_) => {
+                node = node.add_u32(p_msi_parent, PHANDLE_ITS)?;
+            }
+            GicMsiController::V2m(_) => {
+                node = node.add_u32(p_msi_parent, PHANDLE_V2M)?;
+            }
+            GicMsiController::None => {}
         }
         root_builder = node.end_node()?;
     }
@@ -478,9 +493,13 @@ fn build_dt(
         }
     }
 
-    assert!(DEFAULT_MMIO_GAPS_AARCH64.len() == 2);
-    let low_mmio_gap = DEFAULT_MMIO_GAPS_AARCH64[0];
-    let high_mmio_gap = DEFAULT_MMIO_GAPS_AARCH64[1];
+    // Build VMBus MMIO ranges from the memory layout's chipset MMIO gaps.
+    assert!(
+        cfg.mem_layout.mmio().len() >= 2,
+        "need at least two MMIO regions for VMBus DT node"
+    );
+    let low_mmio_gap = cfg.mem_layout.mmio()[0];
+    let high_mmio_gap = cfg.mem_layout.mmio()[1];
     soc = soc
         .start_node("vmbus")?
         .add_u32(p_address_cells, 2)?
@@ -785,14 +804,20 @@ pub fn load_linux_arm64(
 
     // Data dependencies:
     // - DeviceTree carries the start address of the initrd.
-    // - The linux loader loads the kernel, the initrd at the said address,
-    //   and the device tree into the guest memory.
+    // - The linux loader loads the kernel, the initrd at the said address, and
+    //   the device tree into the guest memory.
     //
-    // Thus, we first start with planning the memory layout where
-    // some space at the loader bottom is reserved for the initrd.
-
-    const INITRD_BASE: u64 = 16 << 20; // 16 MB
-    let initrd_start: u64 = INITRD_BASE;
+    // Place the initrd at the bottom of guest memory + 16MB, and set the
+    // minimum kernel address above it, aligned to the next 2MB boundary.
+    let mem_start = cfg
+        .mem_layout
+        .ram()
+        .first()
+        .expect("must be at least one ram range")
+        .range
+        .start();
+    const INITRD_OFFSET: u64 = 16 << 20; // 16 MB
+    let initrd_start: u64 = mem_start + INITRD_OFFSET;
     let initrd_end: u64 = initrd_start + initrd_size;
     // Align the kernel to 2MB
     let kernel_minimum_start_address: u64 = (initrd_end + 0x1fffff) & !0x1fffff;
@@ -801,13 +826,18 @@ pub fn load_linux_arm64(
         // ACPI mode: write EFI + ACPI tables into guest memory, then build a
         // minimal "stub" DT that points the kernel's EFI stub at them. The
         // kernel discovers all devices through ACPI, not the DT.
-        const EFI_BASE: u64 = 0x0080_0000; // 8 MB
+        const EFI_OFFSET: u64 = 0x0080_0000; // 8 MB
         const ACPI_TABLES_OFFSET: u64 = 0x2000;
-        const { assert!(EFI_BASE < INITRD_BASE) };
-        let rsdp_addr = EFI_BASE + ACPI_TABLES_OFFSET;
+        const { assert!(EFI_OFFSET < INITRD_OFFSET) };
+        let rsdp_addr = mem_start + EFI_OFFSET + ACPI_TABLES_OFFSET;
         let acpi_tables = build_acpi(rsdp_addr);
-        let efi_info =
-            write_efi_and_acpi_tables(gm, EFI_BASE, rsdp_addr, cfg.mem_layout, &acpi_tables)?;
+        let efi_info = write_efi_and_acpi_tables(
+            gm,
+            mem_start + EFI_OFFSET,
+            rsdp_addr,
+            cfg.mem_layout,
+            &acpi_tables,
+        )?;
         build_stub_dt(cfg.cmdline, initrd_start, initrd_end, &efi_info)
             .map_err(|e| Error::Dt(DtError(e)))?
     } else {

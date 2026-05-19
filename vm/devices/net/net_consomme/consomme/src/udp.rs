@@ -199,7 +199,8 @@ impl UdpConnection {
                 Poll::Ready(Err(err)) => {
                     tracelimit::error_ratelimited!(
                         error = &err as &dyn std::error::Error,
-                        "recv error"
+                        guest = %dst_addr,
+                        "udp recv error"
                     );
                     break false;
                 }
@@ -299,6 +300,8 @@ impl UdpListener {
                 Poll::Ready(Err(err)) => {
                     tracelimit::error_ratelimited!(
                         error = &err as &dyn std::error::Error,
+                        local_addr = %local_addr,
+                        guest_port = self.guest_port,
                         "udp listener recv error"
                     );
                     break;
@@ -318,7 +321,7 @@ impl<T: Client> Access<'_, T> {
             // Check if connection has timed out
             if now.duration_since(conn.last_activity) > timeout {
                 tracing::debug!(
-                    addr = %dst_addr,
+                    guest = %dst_addr,
                     "UDP connection timed out"
                 );
                 return false;
@@ -347,7 +350,7 @@ impl<T: Client> Access<'_, T> {
     }
 
     pub(crate) fn refresh_udp_driver(&mut self) {
-        self.inner.udp.connections.retain(|_, conn| {
+        self.inner.udp.connections.retain(|dst_addr, conn| {
             let socket = conn.socket.take().unwrap().into_inner();
             match PolledSocket::new(self.client.driver(), socket) {
                 Ok(socket) => {
@@ -357,6 +360,7 @@ impl<T: Client> Access<'_, T> {
                 Err(err) => {
                     tracing::warn!(
                         error = &err as &dyn std::error::Error,
+                        guest = %dst_addr,
                         "failed to update driver for udp connection"
                     );
                     false
@@ -372,7 +376,7 @@ impl<T: Client> Access<'_, T> {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        port,
+                        guest_port = port,
                         error = &err as &dyn std::error::Error,
                         "failed to update driver for udp listener"
                     );

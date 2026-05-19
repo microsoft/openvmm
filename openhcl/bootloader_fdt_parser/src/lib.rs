@@ -537,7 +537,7 @@ fn parse_gic(node: &Node<'_>) -> anyhow::Result<Aarch64PlatformConfig> {
         gic_version: vm_topology::processor::aarch64::GicVersion::V3 {
             redistributors_base: reg[2],
         },
-        gic_v2m: None,
+        gic_msi: vm_topology::processor::aarch64::GicMsiController::None,
         pmu_gsiv: None,
         // TODO: parse from the DT timer node instead of hardcoding.
         virt_timer_ppi: 20,
@@ -1078,7 +1078,7 @@ mod tests {
                 gic_version: vm_topology::processor::aarch64::GicVersion::V3 {
                     redistributors_base: 0x20000,
                 },
-                gic_v2m: None,
+                gic_msi: vm_topology::processor::aarch64::GicMsiController::None,
                 pmu_gsiv: Some(0x17),
                 virt_timer_ppi: 20,
                 gic_nr_irqs: 992,

@@ -36,6 +36,7 @@ use pal_async::timer::PolledTimer;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
 use parking_lot::Mutex;
+use pci_core::bus_range::AssignedBusRange;
 use pci_core::msi::MsiConnection;
 use pci_core::spec::caps::CapabilityId;
 use pci_core::spec::cfg_space;
@@ -65,6 +66,7 @@ const VIRTIO_F_RING_INDIRECT_DESC: u32 = 0x10000000;
 const VIRTIO_F_RING_EVENT_IDX: u32 = 0x20000000;
 // Device features - second bank
 const VIRTIO_F_VERSION_1: u32 = 1;
+const VIRTIO_F_ACCESS_PLATFORM: u32 = 2;
 const VIRTIO_F_RING_PACKED: u32 = 4;
 
 // Device status
@@ -1390,7 +1392,7 @@ impl VirtioPciTestDevice {
     ) -> Self {
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
         let mem = GuestMemory::new("test", test_mem.clone());
-        let msi_conn = MsiConnection::new();
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
 
         let dev = VirtioPciDevice::new(
@@ -1486,7 +1488,10 @@ async fn verify_chipset_config(driver: DefaultDriver) {
     // device feature (bank 1)
     dev.write_u32(20, 1);
     assert_eq!(dev.read_u32(20), 1);
-    assert_eq!(dev.read_u32(16), VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
+    assert_eq!(
+        dev.read_u32(16),
+        VIRTIO_F_VERSION_1 | VIRTIO_F_ACCESS_PLATFORM | VIRTIO_F_RING_PACKED
+    );
     // device feature (bank 2)
     dev.write_u32(20, 2);
     assert_eq!(dev.read_u32(16), 0);
@@ -1506,7 +1511,10 @@ async fn verify_chipset_config(driver: DefaultDriver) {
     // driver feature (bank 1)
     assert_eq!(dev.read_u32(32), 0);
     dev.write_u32(32, 0xffffffff);
-    assert_eq!(dev.read_u32(32), VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
+    assert_eq!(
+        dev.read_u32(32),
+        VIRTIO_F_VERSION_1 | VIRTIO_F_ACCESS_PLATFORM | VIRTIO_F_RING_PACKED
+    );
     // driver feature (bank 2)
     dev.write_u32(36, 2);
     assert_eq!(dev.read_u32(32), 0);
@@ -1793,7 +1801,7 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     assert_eq!(pci_test_device.read_u32(bar_address1), 1);
     assert_eq!(
         pci_test_device.read_u32(bar_address1 + 4),
-        VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED
+        VIRTIO_F_VERSION_1 | VIRTIO_F_ACCESS_PLATFORM | VIRTIO_F_RING_PACKED
     );
     // device feature (bank 2)
     pci_test_device.write_u32(bar_address1, 2);
@@ -1817,7 +1825,7 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     pci_test_device.write_u32(bar_address1 + 12, 0xffffffff);
     assert_eq!(
         pci_test_device.read_u32(bar_address1 + 12),
-        VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED
+        VIRTIO_F_VERSION_1 | VIRTIO_F_ACCESS_PLATFORM | VIRTIO_F_RING_PACKED
     );
     // driver feature (bank 2)
     pci_test_device.write_u32(bar_address1 + 8, 2);
@@ -2868,7 +2876,7 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
 async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
-    let msi_conn = MsiConnection::new();
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
 
     let mut dev = VirtioPciDevice::new(
         Box::new(FailingTestDevice {
@@ -3706,7 +3714,7 @@ impl PciTestTransport {
     fn new(device: Box<dyn DynVirtioDevice>, driver: &DefaultDriver, num_queues: u16) -> Self {
         let test_mem = VirtioTestMemoryAccess::new();
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem;
-        let msi_conn = MsiConnection::new();
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
 
         let mut dev = VirtioPciDevice::new(
             device,
@@ -4220,7 +4228,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     assert_ne!(saved.common.driver_feature_banks[0] & 2, 0);
 
     // Create a new device that does NOT support that device-specific feature.
-    let msi_conn = MsiConnection::new();
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
     let mut dev2 = VirtioPciDevice::new(
         Box::new(TestDevice::new(
             &driver_source,
@@ -4254,7 +4262,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
 async fn pci_save_not_supported_device(_driver: DefaultDriver) {
     use vmcore::save_restore::SaveRestore;
 
-    let msi_conn = MsiConnection::new();
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
 
     // FailingTestDevice does not override supports_save_restore (default false).
     let mut dev = VirtioPciDevice::new(

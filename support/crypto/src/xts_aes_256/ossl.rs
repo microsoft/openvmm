@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! XTS-AES-256 implementation using OpenSSL.
+
 use super::*;
 
 pub struct XtsAes256Inner {
