@@ -27,6 +27,8 @@ use std::path::Path;
 use vmm_test_igvm_agent as igvm_agent_rpc_server;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
+#[cfg(windows)]
+use vmm_test_macros::vmm_test_with;
 
 const AK_CERT_NONZERO_BYTES: usize = 2500;
 const AK_CERT_TOTAL_BYTES: usize = 4096;
@@ -714,10 +716,10 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 /// test function (`skip_hw_unseal`), they all map to
 /// `KeyReleaseFailureSkipHwUnsealing`.
 #[cfg(windows)]
-#[vmm_test(
+#[vmm_test_with(unstable(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-)]
+))]
 async fn skip_hw_unseal<T, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>,),
@@ -810,10 +812,10 @@ async fn skip_hw_unseal<T, U: PetriVmmBackend>(
 /// test function (`use_hw_unseal`), they all map to
 /// `KeyReleaseFailure`.
 #[cfg(windows)]
-#[vmm_test(
+#[vmm_test_with(unstable(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-)]
+))]
 async fn use_hw_unseal<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
