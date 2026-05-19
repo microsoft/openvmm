@@ -193,9 +193,7 @@ use watchdog_core::resources::StaticWatchdogPlatformResolver;
 use zerocopy::FromZeros;
 
 #[cfg(guest_arch = "x86_64")]
-use chipset_resources::pm::DEFAULT_ACPI_IRQ;
-#[cfg(guest_arch = "x86_64")]
-use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
+use chipset_resources::pm::{DEFAULT_ACPI_IRQ, DEFAULT_PM_PIO_BASE};
 
 pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new("UnderhillWorker");
 

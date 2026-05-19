@@ -371,11 +371,9 @@ impl VmManifestBuilder {
                 };
                 if is_x86 {
                     result.attach_generic_ioapic();
-                }
-                result.capabilities.with_psp = self.psp;
-                if is_x86 {
                     result.attach_hyperv_power_management(self.platform_pm_timer_assist);
                 }
+                result.capabilities.with_psp = self.psp;
                 result
                     .maybe_attach_arch_serial(
                         self.arch,
