@@ -39,7 +39,7 @@ impl X509Certificate {
     }
 
     /// Extract the public key from this certificate.
-    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, X509Error> {
+    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
         self.0.public_key()
     }
 

@@ -39,7 +39,7 @@ impl X509CertificateInner {
         Ok(Self(cert))
     }
 
-    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, X509Error> {
+    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
         // Currently we only expect RSA public keys.
         // If someday we need to support other public key types, the return
         // type of this function will need to change.
@@ -50,17 +50,11 @@ impl X509CertificateInner {
                 .subject_public_key
                 .raw_bytes(),
         )
-        .map_err(|e| der_err(e, "parsing PKCS#1 RSA public key"))?;
-        #[cfg(symcrypt)]
-        return crate::rsa::RsaPublicKey::from_components(
+        .map_err(|e| rsa_der_err(e, "parsing PKCS#1 RSA public key"))?;
+        crate::rsa::RsaPublicKey::from_components(
             key.modulus.as_bytes(),
             key.public_exponent.as_bytes(),
         )
-        .map_err(|e| X509Error(e.0));
-        #[cfg(rust)]
-        return Ok(crate::rsa::RsaPublicKey(
-            crate::rsa::sys::RsaPublicKeyInner(key.try_into().unwrap()),
-        ));
     }
 
     pub fn verify(
