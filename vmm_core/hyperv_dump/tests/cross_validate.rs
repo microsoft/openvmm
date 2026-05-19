@@ -148,7 +148,6 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
 
     let buf = Cursor::new(Vec::new());
     let mut vmrs = VmrsWriter::new(buf).unwrap();
-    vmrs.set_partition_state(blob);
 
     // One 4K page of zeros for RAM
     vmrs.add_memory_range(memory_range::MemoryRange::new(0..4096));
@@ -161,7 +160,7 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
         }
     }
     let mut mem = ZeroReader;
-    vmrs.finish(&mut mem).unwrap().into_inner()
+    vmrs.finish(&blob, &mut mem).unwrap().into_inner()
 }
 
 /// Load a VMRS file with the DLL and verify VP count and architecture.
@@ -282,7 +281,6 @@ fn dll_validates_large_memory() {
 
     let buf = Cursor::new(Vec::new());
     let mut vmrs = VmrsWriter::new(buf).unwrap();
-    vmrs.set_partition_state(blob);
 
     // 500 MiB of memory at GPA 0 — 500 × 1 MiB blocks.
     const BLOCK_COUNT: u64 = 500;
@@ -302,7 +300,7 @@ fn dll_validates_large_memory() {
     }
 
     let mut mem = StampReader;
-    let vmrs_data = vmrs.finish(&mut mem).unwrap().into_inner();
+    let vmrs_data = vmrs.finish(&blob, &mut mem).unwrap().into_inner();
     eprintln!(
         "Built large VMRS: {} bytes ({} MiB, {} blocks)",
         vmrs_data.len(),

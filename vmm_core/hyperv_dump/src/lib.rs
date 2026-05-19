@@ -35,14 +35,13 @@
 //! // Write complete VMRS file with streaming memory
 //! let file = std::fs::File::create("dump.vmrs").unwrap();
 //! let mut vmrs = VmrsWriter::new(file).unwrap();
-//! vmrs.set_partition_state(blob);
 //! vmrs.add_memory_range(memory_range::MemoryRange::new(0..4096));
 //! # struct NullReader;
 //! # impl hyperv_dump::GuestMemoryReader for NullReader {
 //! #     fn read_gpa(&mut self, _: u64, buf: &mut [u8]) -> std::io::Result<()> { buf.fill(0); Ok(()) }
 //! # }
 //! # let mut mem = NullReader;
-//! vmrs.finish(&mut mem).unwrap();
+//! vmrs.finish(&blob, &mut mem).unwrap();
 //! # }
 //! ```
 

@@ -36,7 +36,6 @@ impl LoadedVm {
         // key table / header writes interspersed with large memory blocks.
         let file = std::io::BufWriter::with_capacity(256 * 1024, file);
         let mut vmrs = VmrsWriter::new(file).context("failed to initialize VMRS writer")?;
-        vmrs.set_partition_state(partition_state_blob);
 
         // Add memory ranges from the VM topology.
         for ram_range in self.inner.mem_layout.ram() {
@@ -52,7 +51,7 @@ impl LoadedVm {
             }
         }
         let mut reader = GmReader(gm);
-        vmrs.finish(&mut reader)
+        vmrs.finish(&partition_state_blob, &mut reader)
             .context("failed to write VMRS file")?;
 
         tracing::info!("VMRS dump complete");

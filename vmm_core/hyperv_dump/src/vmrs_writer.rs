@@ -39,12 +39,10 @@ pub trait GuestMemoryReader {
 ///
 /// Usage:
 /// 1. Create with [`VmrsWriter::new`]
-/// 2. Set the partition state blob with [`set_partition_state`]
-/// 3. Declare memory ranges with [`add_memory_range`]
-/// 4. Call [`finish`] with a [`GuestMemoryReader`] to stream memory to disk
+/// 2. Declare memory ranges with [`add_memory_range`]
+/// 3. Call [`finish`] with the partition state and a [`GuestMemoryReader`]
 pub struct VmrsWriter<W: Write + Seek> {
     hvs: HvsFileWriter<W>,
-    partition_state: Option<Vec<u8>>,
     ranges: Vec<MemoryRange>,
 }
 
@@ -53,14 +51,8 @@ impl<W: Write + Seek> VmrsWriter<W> {
     pub fn new(writer: W) -> io::Result<Self> {
         Ok(Self {
             hvs: HvsFileWriter::new(writer)?,
-            partition_state: None,
             ranges: Vec::new(),
         })
-    }
-
-    /// Sets the partition state blob (from [`PartitionStateBuilder::finish`]).
-    pub fn set_partition_state(&mut self, blob: Vec<u8>) {
-        self.partition_state = Some(blob);
     }
 
     /// Declares a contiguous guest physical memory range to include.
@@ -72,18 +64,22 @@ impl<W: Write + Seek> VmrsWriter<W> {
 
     /// Writes the complete `.vmrs` file, reading guest memory on demand.
     ///
+    /// `partition_state` is the blob from [`PartitionStateBuilder::finish`].
     /// Memory is streamed through a reusable 1 MiB buffer — at no point
     /// is the entire guest address space materialized in memory.
-    pub fn finish(mut self, reader: &mut dyn GuestMemoryReader) -> io::Result<W> {
+    pub fn finish(
+        mut self,
+        partition_state: &[u8],
+        reader: &mut dyn GuestMemoryReader,
+    ) -> io::Result<W> {
         // VM version
         self.hvs.add_int("/savedstate/VmVersion", VM_VERSION);
         self.hvs
             .add_int("/configuration/properties/version", VM_VERSION);
 
         // Partition state
-        let partition_state = self.partition_state.take().unwrap_or_default();
         self.hvs
-            .add_array("/savedstate/savedVM/partition_state", &partition_state)?;
+            .add_array("/savedstate/savedVM/partition_state", partition_state)?;
 
         // Memory layout: split ranges into 1 MiB blocks, streaming each
         // block through a reusable buffer.
@@ -206,11 +202,10 @@ mod tests {
 
         let buf = Cursor::new(Vec::new());
         let mut vmrs = VmrsWriter::new(buf).unwrap();
-        vmrs.set_partition_state(blob);
         vmrs.add_memory_range(MemoryRange::new(0..2 * DATA_BLOCK_SIZE as u64));
 
         let mut mem = FillReader(0xAB);
-        let buf = vmrs.finish(&mut mem).unwrap();
+        let buf = vmrs.finish(&blob, &mut mem).unwrap();
         let data = buf.into_inner();
 
         let mut hvs_reader = HvsFileReader::open(Cursor::new(&data)).unwrap();
@@ -260,7 +255,6 @@ mod tests {
 
         let buf = Cursor::new(Vec::new());
         let mut vmrs = VmrsWriter::new(buf).unwrap();
-        vmrs.set_partition_state(blob);
         vmrs.add_memory_range(MemoryRange::new(0..DATA_BLOCK_SIZE as u64));
         vmrs.add_memory_range(MemoryRange::new(
             0x1_0000_0000..0x1_0000_0000 + DATA_BLOCK_SIZE as u64,
@@ -270,7 +264,7 @@ mod tests {
             (0, DATA_BLOCK_SIZE as u64, 0x11),
             (0x1_0000_0000, 0x1_0000_0000 + DATA_BLOCK_SIZE as u64, 0x22),
         ]);
-        let buf = vmrs.finish(&mut mem).unwrap();
+        let buf = vmrs.finish(&blob, &mut mem).unwrap();
         let mut hvs_reader = HvsFileReader::open(Cursor::new(buf.into_inner())).unwrap();
 
         // Two metadata blocks
@@ -296,11 +290,10 @@ mod tests {
         let blob = make_default_blob();
 
         let buf = Cursor::new(Vec::new());
-        let mut vmrs = VmrsWriter::new(buf).unwrap();
-        vmrs.set_partition_state(blob);
+        let vmrs = VmrsWriter::new(buf).unwrap();
 
         let mut mem = FillReader(0);
-        let buf = vmrs.finish(&mut mem).unwrap();
+        let buf = vmrs.finish(&blob, &mut mem).unwrap();
         let hvs_reader = HvsFileReader::open(Cursor::new(buf.into_inner())).unwrap();
         assert!(hvs_reader.contains_key("/savedstate/VmVersion"));
         assert!(hvs_reader.contains_key("/savedstate/savedVM/partition_state"));
