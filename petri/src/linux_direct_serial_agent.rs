@@ -49,10 +49,10 @@ impl LinuxDirectSerialAgent {
         // Instead we send this special text sequence to signal the end of the command, since it's unlikely
         // that a normal command will ever output it.
         const COMMAND_END_SIGNAL: &str = "== Petri Command Complete ==";
-        let command = format!("({command}) > /dev/ttyS1\necho {COMMAND_END_SIGNAL} > /dev/ttyS1\n");
+        let command =
+            format!("({command}) > /dev/ttyS1\nprintf '{COMMAND_END_SIGNAL}\\n' > /dev/ttyS1\n");
 
-        // When reading the output there will be a trailing newline.
-        const COMMAND_END_SIGNAL_READ: &str = "== Petri Command Complete ==\r\n";
+        const COMMAND_END_SIGNAL_READ: &str = "== Petri Command Complete ==\n";
 
         self.write.write_all(command.as_bytes()).await?;
 
