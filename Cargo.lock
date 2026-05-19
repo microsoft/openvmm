@@ -7541,7 +7541,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 [[package]]
 name = "symcrypt"
 version = "0.6.0"
-source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#c5cbfebeb6ab12afff9b8d01cb6a9e547f60f8da"
+source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#050dc7e0e3741e226d0de250b36c15e51524e815"
 dependencies = [
  "libc",
  "symcrypt-sys",
@@ -7550,7 +7550,7 @@ dependencies = [
 [[package]]
 name = "symcrypt-sys"
 version = "0.4.0"
-source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#c5cbfebeb6ab12afff9b8d01cb6a9e547f60f8da"
+source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#050dc7e0e3741e226d0de250b36c15e51524e815"
 dependencies = [
  "libc",
 ]
