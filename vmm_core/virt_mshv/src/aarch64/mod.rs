@@ -138,6 +138,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
         let caps = Aarch64PartitionCapabilities {
+            isolation: virt::IsolationType::None,
             supports_aarch32_el0: false,
             vendor: Vendor::ARM,
         };

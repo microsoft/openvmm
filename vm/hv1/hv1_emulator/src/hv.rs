@@ -250,12 +250,13 @@ impl ProcessorVtlHv {
             && (!mutable.hypercall_reg.enable() || hc.gpn() != mutable.hypercall_reg.gpn())
         {
             #[cfg(guest_arch = "x86_64")]
-            let new_page = mutable
-                .hypercall_page
-                .remap(hc.gpn(), prot_access, true)
-                .map_err(|_| MsrError::InvalidAccess)?;
-            #[cfg(guest_arch = "x86_64")]
-            self.write_hypercall_page(new_page);
+            {
+                let new_page = mutable
+                    .hypercall_page
+                    .remap(hc.gpn(), prot_access, true)
+                    .map_err(|_| MsrError::InvalidAccess)?;
+                self.write_hypercall_page(new_page);
+            }
         } else if !hc.enable() {
             mutable.hypercall_page.unmap(prot_access);
         }

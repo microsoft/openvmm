@@ -1907,6 +1907,7 @@ impl<'a> UhProtoPartition<'a> {
 
         #[cfg(guest_arch = "aarch64")]
         let caps = virt::aarch64::Aarch64PartitionCapabilities {
+            isolation: params.isolation,
             vendor: Vendor::ARM,
             supports_aarch32_el0: false,
         };

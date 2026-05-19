@@ -1102,6 +1102,7 @@ impl WhpPartitionInner {
             let features =
                 whp::capabilities::processor_features().for_op("get processor features")?;
             virt::aarch64::Aarch64PartitionCapabilities {
+                isolation: IsolationType::None,
                 supports_aarch32_el0: features
                     .bank0
                     .is_set(whp::abi::WHV_PROCESSOR_FEATURES::El0Aarch32),

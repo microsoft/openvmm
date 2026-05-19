@@ -205,13 +205,8 @@ impl BackingPrivate for CcaBacked {
     fn init(vp: &mut UhProcessor<'_, Self>) {
         // initialise non-zero registers for plane
         // TODO: CCA: SIMD regs?
-        const SCTLR_EL1_DEFAULT: u64 = 0xC50878;
         const PMCR_EL0_DEFAULT: u64 = 1 << 6;
         const MDSCR_EL1_DEFAULT: u64 = 1 << 11;
-
-        vp.sysreg_write(GuestVtl::Vtl0, SystemReg::SCTLR, SCTLR_EL1_DEFAULT)
-            .map_err(vp_state::Error::SetRegisters)
-            .unwrap();
 
         vp.sysreg_write(GuestVtl::Vtl0, SystemReg::PMCR_EL0, PMCR_EL0_DEFAULT)
             .map_err(vp_state::Error::SetRegisters)
@@ -357,6 +352,15 @@ impl UhProcessor<'_, CcaBacked> {
         val: u64,
     ) -> Result<(), register::SetRegError> {
         self.runner.cca_sysreg_write(vtl, reg, val)
+    }
+
+    fn sysreg_read(
+        &mut self,
+        vtl: GuestVtl,
+        reg: SystemReg,
+        val: &mut u64,
+    ) -> Result<(), register::GetRegError> {
+        self.runner.cca_sysreg_read(vtl, reg, val)
     }
 
     fn set_plane_enter(&mut self) {
@@ -514,11 +518,57 @@ impl AccessVpState for UhVpStateAccess<'_, '_, CcaBacked> {
     }
 
     fn system_registers(&mut self) -> Result<vp::SystemRegisters, Self::Error> {
-        todo!()
+        let mut vp_regs = vp::SystemRegisters::default();
+
+        let mut get = |reg: SystemReg, value: &mut u64| {
+            self.vp
+                .sysreg_read(self.vtl, reg, value)
+                .map_err(vp_state::Error::GetRegisters)
+        };
+
+        get(SystemReg::SCTLR, &mut vp_regs.sctlr_el1)?;
+        get(SystemReg::TTBR0_EL1, &mut vp_regs.ttbr0_el1)?;
+        get(SystemReg::TTBR1_EL1, &mut vp_regs.ttbr1_el1)?;
+        get(SystemReg::TCR_EL1, &mut vp_regs.tcr_el1)?;
+        get(SystemReg::ESR_EL1, &mut vp_regs.esr_el1)?;
+        get(SystemReg::FAR_EL1, &mut vp_regs.far_el1)?;
+        get(SystemReg::MAIR_EL1, &mut vp_regs.mair_el1)?;
+        get(SystemReg::ELR_EL1, &mut vp_regs.elr_el1)?;
+        get(SystemReg::VBAR, &mut vp_regs.vbar_el1)?;
+
+        Ok(vp_regs)
     }
 
-    fn set_system_registers(&mut self, _value: &vp::SystemRegisters) -> Result<(), Self::Error> {
-        todo!()
+    fn set_system_registers(&mut self, value: &vp::SystemRegisters) -> Result<(), Self::Error> {
+        let vp::SystemRegisters {
+            sctlr_el1,
+            ttbr0_el1,
+            ttbr1_el1,
+            tcr_el1,
+            esr_el1,
+            far_el1,
+            mair_el1,
+            elr_el1,
+            vbar_el1,
+        } = *value;
+
+        for (reg, value) in [
+            (SystemReg::SCTLR, sctlr_el1),
+            (SystemReg::TTBR0_EL1, ttbr0_el1),
+            (SystemReg::TTBR1_EL1, ttbr1_el1),
+            (SystemReg::TCR_EL1, tcr_el1),
+            (SystemReg::ESR_EL1, esr_el1),
+            (SystemReg::FAR_EL1, far_el1),
+            (SystemReg::MAIR_EL1, mair_el1),
+            (SystemReg::ELR_EL1, elr_el1),
+            (SystemReg::VBAR, vbar_el1),
+        ] {
+            self.vp
+                .sysreg_write(self.vtl, reg, value)
+                .map_err(vp_state::Error::SetRegisters)?;
+        }
+
+        Ok(())
     }
 }
 

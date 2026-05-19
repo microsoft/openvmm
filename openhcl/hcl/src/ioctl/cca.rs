@@ -12,10 +12,12 @@ use super::NoRunner;
 use super::ProcessorRunner;
 use crate::GuestVtl;
 use crate::ioctl::Error;
+use crate::ioctl::GetRegError;
 use crate::ioctl::HvError;
 use crate::ioctl::SetRegError;
 use crate::ioctl::ioctls::hcl_realm_config;
 use crate::ioctl::ioctls::hcl_rsi_set_mem_perm;
+use crate::ioctl::ioctls::hcl_rsi_sysreg_read;
 use crate::ioctl::ioctls::hcl_rsi_sysreg_write;
 use aarch64defs::SystemReg;
 use hvdef::HV_PAGE_SIZE;
@@ -43,12 +45,12 @@ pub struct mshv_realm_config {
     pub gicv3_vtr: u64,
 }
 
-/// CCA: Structure (mostly) mirroring the data taken by RMM in the RSI_PLANE_SYSREG_WRITE.
+/// CCA: Structure mirroring the data taken by RMM in the RSI_PLANE_SYSREG_WRITE.
 /// `vtl` is converted into plane number in kernel driver.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 #[expect(missing_docs)]
-pub struct mshv_rsi_sysreg_write {
+pub struct mshv_rsi_sysreg_rw {
     pub vtl: u8,
     pub _pad: [u8; 7],
     pub sysreg: u64,
@@ -189,6 +191,17 @@ impl ProcessorRunner<'_, Cca> {
     ) -> Result<(), SetRegError> {
         self.hcl
             .rsi_sysreg_write(vtl, encode_rsi_sysreg(name), value)
+    }
+
+    /// Read the value of a system register from the RMM.
+    pub fn cca_sysreg_read(
+        &mut self,
+        vtl: GuestVtl,
+        name: SystemReg,
+        value: &mut u64,
+    ) -> Result<(), GetRegError> {
+        self.hcl
+            .rsi_sysreg_read(vtl, encode_rsi_sysreg(name), value)
     }
 
     /// Update the address of the `plane_run` structure in `mshv_vtl_run.context`.
@@ -397,7 +410,7 @@ impl MshvVtl {
         sysreg: u64,
         value: u64,
     ) -> Result<(), SetRegError> {
-        let sysreg_write = mshv_rsi_sysreg_write {
+        let sysreg_write = mshv_rsi_sysreg_rw {
             vtl: vtl.into(),
             sysreg,
             value,
@@ -409,6 +422,29 @@ impl MshvVtl {
             hcl_rsi_sysreg_write(self.file.as_raw_fd(), &sysreg_write)
                 .map_err(SetRegError::Ioctl)?;
         }
+        Ok(())
+    }
+
+    /// Read the value of a system register for the given VTL.
+    pub fn rsi_sysreg_read(
+        &self,
+        vtl: GuestVtl,
+        sysreg: u64,
+        value: &mut u64,
+    ) -> Result<(), GetRegError> {
+        let mut sysreg_read = mshv_rsi_sysreg_rw {
+            vtl: vtl.into(),
+            sysreg,
+            ..Default::default()
+        };
+
+        // SAFETY: Calling hcl_rsi_sysreg_read ioctl with the correct arguments.
+        unsafe {
+            hcl_rsi_sysreg_read(self.file.as_raw_fd(), &mut sysreg_read)
+                .map_err(GetRegError::Ioctl)?;
+        }
+
+        *value = sysreg_read.value;
         Ok(())
     }
 
@@ -448,6 +484,16 @@ impl Hcl {
         value: u64,
     ) -> Result<(), SetRegError> {
         self.mshv_vtl.rsi_sysreg_write(vtl, sysreg, value)
+    }
+
+    /// Read a system register through RSI.
+    pub fn rsi_sysreg_read(
+        &self,
+        vtl: GuestVtl,
+        sysreg: u64,
+        value: &mut u64,
+    ) -> Result<(), GetRegError> {
+        self.mshv_vtl.rsi_sysreg_read(vtl, sysreg, value)
     }
 
     /// setting memory permissions

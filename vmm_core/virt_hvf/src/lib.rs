@@ -165,6 +165,7 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
 
         let inner = Arc::new(HvfPartitionInner {
             caps: Aarch64PartitionCapabilities {
+                isolation: virt::IsolationType::None,
                 // Apple Silicon does not support aarch32.
                 supports_aarch32_el0: false,
                 vendor: Vendor::ARM,

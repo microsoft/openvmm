@@ -16,6 +16,7 @@ use self::deferred::DeferredActionSlots;
 use self::ioctls::*;
 use crate::GuestVtl;
 use crate::ioctl::deferred::DeferredAction;
+use crate::ioctl::register::GetRegError;
 use crate::ioctl::register::SetRegError;
 use crate::mapped_page::MappedPage;
 use crate::protocol;
@@ -372,8 +373,9 @@ pub(crate) mod ioctls {
     const MSHV_MAP_REDIRECTED_DEVICE_INTERRUPT: u16 = 0x39;
     const MSHV_VTL_SECURE_AVIC_VTL0_PFN: u16 = 0x40;
     const MSHV_VTL_REALM_CONFIG: u16 = 0x41;
-    const MSHV_VTL_RSI_SYSREG_WRITE: u16 = 0x42;
-    const MSHV_VTL_RSI_SET_MEM_PERM: u16 = 0x43;
+    const MSHV_VTL_RSI_SYSREG_READ: u16 = 0x42;
+    const MSHV_VTL_RSI_SYSREG_WRITE: u16 = 0x43;
+    const MSHV_VTL_RSI_SET_MEM_PERM: u16 = 0x44;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -599,12 +601,20 @@ pub(crate) mod ioctls {
         cca::mshv_realm_config
     );
 
-    // CCA: Set the value of a system register
+    // CCA: Write the value of a system register
     ioctl_write_ptr!(
         hcl_rsi_sysreg_write,
         MSHV_IOCTL,
         MSHV_VTL_RSI_SYSREG_WRITE,
-        cca::mshv_rsi_sysreg_write
+        cca::mshv_rsi_sysreg_rw
+    );
+
+    // CCA: Read the value of a system register
+    ioctl_readwrite!(
+        hcl_rsi_sysreg_read,
+        MSHV_IOCTL,
+        MSHV_VTL_RSI_SYSREG_READ,
+        cca::mshv_rsi_sysreg_rw
     );
 
     // CCA: Assign the address described by `mshv_rsi_set_mem_perm`
