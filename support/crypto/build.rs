@@ -31,7 +31,17 @@ fn main() {
     // Since this is a common rust-analyzer configuration, allow it and fall back to
     // platform defaults.
     if backend_count > 1 && !all_features {
-        panic!("Multiple crypto backends enabled, but only one can be selected");
+        let enabled = [
+            ("native", native),
+            ("openssl", openssl),
+            ("rust", rust),
+            ("symcrypt", symcrypt),
+        ]
+        .iter()
+        .filter_map(|(n, e)| e.then_some(*n))
+        .collect::<Vec<_>>()
+        .join(", ");
+        panic!("Multiple crypto backends enabled, but only one can be selected: {enabled}");
     } else if backend_count == 0 {
         panic!("No crypto backend enabled, but one must be selected");
     } else if native || all_features {
