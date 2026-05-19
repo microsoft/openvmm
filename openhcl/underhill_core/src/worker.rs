@@ -7,6 +7,8 @@ cfg_if::cfg_if! {
     if #[cfg(guest_arch = "x86_64")] {
         pub use hvdef::HvX64RegisterName as HvArchRegisterName;
         use chipset_device_resources::BSP_LINT_LINE_SET;
+        use chipset_resources::pm::DEFAULT_ACPI_IRQ;
+        use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
         use virt::irqcon::MsiRequest;
         use vmm_core::acpi_builder::AcpiTablesBuilder;
     } else if #[cfg(guest_arch = "aarch64")] {
@@ -191,9 +193,6 @@ use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
 use watchdog_core::resources::StaticWatchdogPlatformResolver;
 use zerocopy::FromZeros;
-
-#[cfg(guest_arch = "x86_64")]
-use chipset_resources::pm::{DEFAULT_ACPI_IRQ, DEFAULT_PM_PIO_BASE};
 
 pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new("UnderhillWorker");
 
