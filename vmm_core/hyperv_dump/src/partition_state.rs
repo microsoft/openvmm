@@ -62,6 +62,15 @@ pub enum VpState {
     Aarch64(Aarch64VpState),
 }
 
+impl VpState {
+    fn arch(&self) -> ProcessorArch {
+        match self {
+            VpState::X64(_) => ProcessorArch::X64,
+            VpState::Aarch64(_) => ProcessorArch::Aarch64,
+        }
+    }
+}
+
 struct VtlState {
     vtl: Vtl,
     regs: VpState,
@@ -112,6 +121,10 @@ impl PartitionStateBuilder {
     /// `vtl_states` is a list of `(vtl, state)` pairs — one entry per VTL
     /// that has register state. For single-VTL VMs, pass a single entry.
     pub fn add_vp(&mut self, vp_index: u32, vtl_states: Vec<(Vtl, VpState)>) {
+        for (_, state) in &vtl_states {
+            assert_eq!(state.arch(), self.arch, "VP state arch mismatch");
+        }
+
         let states = vtl_states
             .into_iter()
             .map(|(vtl, regs)| VtlState { vtl, regs })
