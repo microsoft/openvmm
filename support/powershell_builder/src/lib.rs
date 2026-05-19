@@ -14,15 +14,39 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 
 /// A PowerShell script builder
 pub struct PowerShellBuilder(Command);
 
 impl PowerShellBuilder {
+    // use pwsh if it exists, otherwise powershell. cache the result
+    fn get_program() -> &'static str {
+        const PWSH: &str = "pwsh.exe";
+        const POWERSHELL: &str = "powershell.exe";
+        static PROGRAM: OnceLock<&'static str> = OnceLock::new();
+        PROGRAM.get_or_init(|| {
+            if Self::new_inner(PWSH)
+                .cmdlet("exit")
+                .finish()
+                .build()
+                .status()
+                .is_ok_and(|r| r.success())
+            {
+                PWSH
+            } else {
+                POWERSHELL
+            }
+        })
+    }
+
     /// Create a new PowerShell command
     pub fn new() -> Self {
-        // TODO: fall back to powershell.exe if pwsh.exe does not exist
-        PowerShellCmdletBuilder(Command::new("pwsh.exe"))
+        Self::new_inner(Self::get_program())
+    }
+
+    fn new_inner(program: &'static str) -> Self {
+        PowerShellCmdletBuilder(Command::new(program))
             .flag("NoProfile")
             .flag("Command")
             .finish()
