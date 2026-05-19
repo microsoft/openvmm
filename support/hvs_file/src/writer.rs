@@ -412,7 +412,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             // Pop the stack back to this entry's parent.
             let parent = entry.parent_path();
             while let Some(top) = loc_stack.last() {
-                if parent.starts_with(&top.0) && (parent == top.0 || parent.len() == top.0.len()) {
+                if parent == top.0 {
                     break;
                 }
                 loc_stack.pop();

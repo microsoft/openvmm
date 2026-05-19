@@ -515,6 +515,10 @@ impl PartitionUnitRunner {
     }
 
     fn resume_vps(&mut self) {
+        assert!(
+            self.vp_stop_count > 0,
+            "resume_vps called without matching stop"
+        );
         self.vp_stop_count -= 1;
         self.try_start();
     }

@@ -3195,10 +3195,8 @@ impl LoadedVm {
                         .await
                     }
                     VmRpc::DumpState(rpc) => {
-                        rpc.handle_failable(async |file: File| {
-                            self.dump_state(file).await
-                        })
-                        .await
+                        rpc.handle_failable(async |file| self.dump_state(file).await)
+                            .await
                     }
                 },
                 Event::Halt(Err(_)) => break,
