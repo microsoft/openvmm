@@ -376,15 +376,10 @@ impl PartitionUnitRunner {
                             .await
                     }
                     PartitionRequest::StopVps(rpc) => {
-                        rpc.handle(async |()| {
-                            self.vp_set.stop().await;
-                            self.vp_stop_count += 1;
-                        })
-                        .await
+                        rpc.handle(async |()| self.stop_vps().await).await
                     }
                     PartitionRequest::StartVps => {
-                        self.vp_stop_count -= 1;
-                        self.try_start();
+                        self.resume_vps();
                     }
                     #[cfg(feature = "dump")]
                     PartitionRequest::BuildDumpPartitionState(rpc) => {
@@ -514,11 +509,32 @@ impl PartitionUnitRunner {
         }
     }
 
+    async fn stop_vps(&mut self) {
+        self.vp_set.stop().await;
+        self.vp_stop_count += 1;
+    }
+
+    fn resume_vps(&mut self) {
+        self.vp_stop_count -= 1;
+        self.try_start();
+    }
+}
+
+#[cfg(feature = "dump")]
+impl PartitionUnitRunner {
     /// Builds the partition state blob for a `.vmrs` dump file.
     ///
     /// Collects VP register state and assembles the chunk stream.
-    #[cfg(feature = "dump")]
     async fn build_dump_partition_state(&mut self) -> anyhow::Result<Vec<u8>> {
+        // Stop VPs for a consistent snapshot (and to ensure guest_os_id
+        // doesn't block on backends that retrieve it from a VP).
+        self.stop_vps().await;
+        let result = self.build_dump_partition_state_inner().await;
+        self.resume_vps();
+        result
+    }
+
+    async fn build_dump_partition_state_inner(&mut self) -> anyhow::Result<Vec<u8>> {
         use hyperv_dump::PartitionStateBuilder;
         use hyperv_dump::ProcessorArch;
 

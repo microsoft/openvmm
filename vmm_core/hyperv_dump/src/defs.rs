@@ -35,7 +35,7 @@ pub struct VidSavedStateDescriptor {
 // ============================================================
 
 /// Version constant for the memory block save state struct.
-pub const WPMM_MB_SAVE_STATE_VERSION_3: u32 = 3;
+pub const MEMORY_BLOCK_SAVE_VERSION: u32 = 3;
 
 /// Memory block metadata.
 ///
@@ -45,7 +45,7 @@ pub const WPMM_MB_SAVE_STATE_VERSION_3: u32 = 3;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MemoryBlockSaveStruct {
-    /// Must be [`WPMM_MB_SAVE_STATE_VERSION_3`] (3).
+    /// Must be [`MEMORY_BLOCK_SAVE_VERSION`] (3).
     pub saved_state_version: u32,
     /// Flags. Zero for dumps.
     pub flags: u32,
@@ -64,11 +64,11 @@ pub struct MemoryBlockSaveStruct {
 
 const_assert_eq!(size_of::<MemoryBlockSaveStruct>(), 48);
 
-/// VM version used for dump files (v10.0).
-pub const VM_VERSION_IRON: i64 = 0x0A00;
+/// VM version for dump files (v10.0 = 0x0A00).
+pub const VM_VERSION: i64 = 0x0A00;
 
-/// Size of one guest memory block in bytes (1 MiB).
-pub const GMO_BLOCK_SIZE_BYTES: usize = 1_048_576;
+/// Size of one guest memory data block in bytes (1 MiB).
+pub const DATA_BLOCK_SIZE: usize = 1_048_576;
 
-/// Size of one guest memory block in 4K pages.
-pub const GMO_BLOCK_SIZE_PAGES: u64 = 256;
+/// Size of one guest memory data block in 4K pages (256).
+pub const DATA_BLOCK_PAGES: u64 = (DATA_BLOCK_SIZE / 4096) as u64;

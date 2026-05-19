@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Cross-validation test: builds a .vmrs file using `hv_saved_state`, then
+//! Cross-validation test: builds a .vmrs file using `hyperv_dump`, then
 //! opens it with VmSavedStateDumpProvider.dll from the Windows SDK and
 //! verifies VP count and architecture.
 //!
@@ -97,7 +97,7 @@ fn setup_dll_search_path() -> bool {
     false
 }
 
-/// Build a VMRS file using the hv_saved_state high-level API.
+/// Build a VMRS file using the hyperv_dump API.
 fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
     let zero_xsave = || virt::x86::vp::Xsave {
         data: vec![0u64; 72],

@@ -10,11 +10,11 @@
 //! Guest memory is read on demand via a caller-provided
 //! [`GuestMemoryReader`] trait — memory is never buffered in full.
 
-use crate::defs::GMO_BLOCK_SIZE_BYTES;
-use crate::defs::GMO_BLOCK_SIZE_PAGES;
+use crate::defs::DATA_BLOCK_PAGES;
+use crate::defs::DATA_BLOCK_SIZE;
+use crate::defs::MEMORY_BLOCK_SAVE_VERSION;
 use crate::defs::MemoryBlockSaveStruct;
-use crate::defs::VM_VERSION_IRON;
-use crate::defs::WPMM_MB_SAVE_STATE_VERSION_3;
+use crate::defs::VM_VERSION;
 use hvs_file::writer::HvsFileWriter;
 use memory_range::MemoryRange;
 use std::fmt::Write as _;
@@ -76,9 +76,9 @@ impl<W: Write + Seek> VmrsWriter<W> {
     /// is the entire guest address space materialized in memory.
     pub fn finish(mut self, reader: &mut dyn GuestMemoryReader) -> io::Result<W> {
         // VM version
-        self.hvs.add_int("/savedstate/VmVersion", VM_VERSION_IRON);
+        self.hvs.add_int("/savedstate/VmVersion", VM_VERSION);
         self.hvs
-            .add_int("/configuration/properties/version", VM_VERSION_IRON);
+            .add_int("/configuration/properties/version", VM_VERSION);
 
         // Partition state
         let partition_state = self.partition_state.take().unwrap_or_default();
@@ -88,7 +88,7 @@ impl<W: Write + Seek> VmrsWriter<W> {
         // Memory layout: split ranges into 1 MiB blocks, streaming each
         // block through a reusable buffer.
         let mut data_block_idx = 0u64;
-        let mut block_buf = vec![0u8; GMO_BLOCK_SIZE_BYTES];
+        let mut block_buf = vec![0u8; DATA_BLOCK_SIZE];
         let mut key_buf = String::new();
 
         for (i, range) in self.ranges.iter().enumerate() {
@@ -97,9 +97,9 @@ impl<W: Write + Seek> VmrsWriter<W> {
 
             // Write metadata for this contiguous range
             let mut meta = MemoryBlockSaveStruct::new_zeroed();
-            meta.saved_state_version = WPMM_MB_SAVE_STATE_VERSION_3;
+            meta.saved_state_version = MEMORY_BLOCK_SAVE_VERSION;
             meta.page_count_total = total_pages;
-            meta.mbp_index_start = data_block_idx * GMO_BLOCK_SIZE_PAGES;
+            meta.mbp_index_start = data_block_idx * DATA_BLOCK_PAGES;
             meta.gpa_index_start = gpa_page_start;
 
             key_buf.clear();
@@ -110,7 +110,7 @@ impl<W: Write + Seek> VmrsWriter<W> {
             let mut gpa = range.start();
             let gpa_end = range.end();
             while gpa < gpa_end {
-                let block_len = GMO_BLOCK_SIZE_BYTES.min((gpa_end - gpa) as usize);
+                let block_len = DATA_BLOCK_SIZE.min((gpa_end - gpa) as usize);
                 let buf = &mut block_buf[..block_len];
                 reader.read_gpa(gpa, buf)?;
 
@@ -207,7 +207,7 @@ mod tests {
         let buf = Cursor::new(Vec::new());
         let mut vmrs = VmrsWriter::new(buf).unwrap();
         vmrs.set_partition_state(blob);
-        vmrs.add_memory_range(MemoryRange::new(0..2 * GMO_BLOCK_SIZE_BYTES as u64));
+        vmrs.add_memory_range(MemoryRange::new(0..2 * DATA_BLOCK_SIZE as u64));
 
         let mut mem = FillReader(0xAB);
         let buf = vmrs.finish(&mut mem).unwrap();
@@ -217,7 +217,7 @@ mod tests {
 
         assert_eq!(
             hvs_reader.read_int("/savedstate/VmVersion").unwrap(),
-            VM_VERSION_IRON
+            VM_VERSION
         );
         assert!(hvs_reader.contains_key("/savedstate/savedVM/partition_state"));
 
@@ -231,7 +231,7 @@ mod tests {
 
         // Check RAM data blocks were streamed correctly
         let block0 = hvs_reader.read_array("/savedstate/RamBlock0").unwrap();
-        assert_eq!(block0.len(), GMO_BLOCK_SIZE_BYTES);
+        assert_eq!(block0.len(), DATA_BLOCK_SIZE);
         assert!(block0.iter().all(|&b| b == 0xAB));
         let block1 = hvs_reader.read_array("/savedstate/RamBlock1").unwrap();
         assert!(block1.iter().all(|&b| b == 0xAB));
@@ -261,18 +261,14 @@ mod tests {
         let buf = Cursor::new(Vec::new());
         let mut vmrs = VmrsWriter::new(buf).unwrap();
         vmrs.set_partition_state(blob);
-        vmrs.add_memory_range(MemoryRange::new(0..GMO_BLOCK_SIZE_BYTES as u64));
+        vmrs.add_memory_range(MemoryRange::new(0..DATA_BLOCK_SIZE as u64));
         vmrs.add_memory_range(MemoryRange::new(
-            0x1_0000_0000..0x1_0000_0000 + GMO_BLOCK_SIZE_BYTES as u64,
+            0x1_0000_0000..0x1_0000_0000 + DATA_BLOCK_SIZE as u64,
         ));
 
         let mut mem = MultiRangeReader(vec![
-            (0, GMO_BLOCK_SIZE_BYTES as u64, 0x11),
-            (
-                0x1_0000_0000,
-                0x1_0000_0000 + GMO_BLOCK_SIZE_BYTES as u64,
-                0x22,
-            ),
+            (0, DATA_BLOCK_SIZE as u64, 0x11),
+            (0x1_0000_0000, 0x1_0000_0000 + DATA_BLOCK_SIZE as u64, 0x22),
         ]);
         let buf = vmrs.finish(&mut mem).unwrap();
         let mut hvs_reader = HvsFileReader::open(Cursor::new(buf.into_inner())).unwrap();

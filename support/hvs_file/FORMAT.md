@@ -332,17 +332,16 @@ For VM saved state (`.vmrs`) files, the key hierarchy under the
 
 The VM version is a `uint32_t` encoded as `(major << 8) | minor`:
 
-| Constant | Value | Version |
-|----------|-------|---------|
-| `VM_VERSION_WINBLUE` | 0x0500 | 5.0 |
-| `VM_VERSION_REDSTONE_5` | 0x0900 | 9.0 |
-| `VM_VERSION_IRON` | 0x0A00 | 10.0 |
-| `VM_VERSION_BROMINE` | 0x0C03 | 12.3 (current active) |
+| Value | Version |
+|-------|---------|
+| 0x0500 | 5.0 |
+| 0x0900 | 9.0 |
+| 0x0A00 | 10.0 |
+| 0x0C03 | 12.3 (current) |
 
-For a debug dump writer, use a version >= `VM_VERSION_WINBLUE` (0x0500)
-to ensure the `/savedstate` key prefix is used. Using `VM_VERSION_IRON`
-(0x0A00) is a safe choice — it's modern enough for all features but old
-enough to be widely supported.
+For a debug dump writer, use a version >= 0x0500 to ensure the
+`/savedstate` key prefix is used. 0x0A00 is a safe choice — it's
+modern enough for all features but old enough to be widely supported.
 
 ### VM Metadata
 
@@ -356,9 +355,9 @@ enough to be widely supported.
 ### Key Path Versioning
 
 Key paths have a version-dependent prefix. For VMs with version >
-`VM_VERSION_WINBLUE`, all keys are prefixed with `/savedstate`:
+0x0500, all keys are prefixed with `/savedstate`:
 
-| Component | Old (≤ WinBlue) | New (> WinBlue) |
+| Component | Old (≤ v5.0) | New (> v5.0) |
 |-----------|-----------------|-----------------|
 | Partition state | `/savedVM/partition_state` | `/savedstate/savedVM/partition_state` |
 | RAM blocks | `RamMemoryBlock/%d/` | `/savedstate/RamMemoryBlock%d` |
