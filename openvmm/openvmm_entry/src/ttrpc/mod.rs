@@ -37,9 +37,12 @@ use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::NumaNode;
+use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
+use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
@@ -572,14 +575,20 @@ impl VmService {
             pcie_devices: vec![],
             pcie_switches: vec![],
             vpci_devices: vec![],
-            memory: MemoryConfig {
-                mem_size: config_mem_size,
-                prefetch_memory: false,
-                private_memory: false,
-                transparent_hugepages: false,
-                hugepages: false,
-                hugepage_size: None,
-                numa_mem_sizes: None,
+            numa: NumaTopology {
+                nodes: vec![NumaNode {
+                    mem: Some(MemoryConfig {
+                        mem_size: config_mem_size,
+                        prefetch_memory: false,
+                        private_memory: false,
+                        transparent_hugepages: false,
+                        hugepages: false,
+                        hugepage_size: None,
+                        host_numa_node: None,
+                    }),
+                    vps: VpAssignment::FromTopology,
+                }],
+                distances: vec![],
             },
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {
@@ -662,6 +671,7 @@ impl VmService {
                         vtl: DeviceVtl::Vtl0,
                         instance_id: Guid::new_random(),
                         resource: VirtioPciDeviceHandle(resource).into_resource(),
+                        vnode: None,
                     });
                 } else {
                     config.virtio_devices.push((VirtioBus::Mmio, resource));
@@ -685,6 +695,7 @@ impl VmService {
                             vtl: DeviceVtl::Vtl0,
                             instance_id: Guid::new_random(),
                             resource: VirtioPciDeviceHandle(resource).into_resource(),
+                            vnode: None,
                         });
                     } else {
                         config.virtio_devices.push((VirtioBus::Mmio, resource));

@@ -63,7 +63,7 @@ use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::GicConfig;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
-use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
@@ -189,7 +189,7 @@ impl Manifest {
             pcie_switches: config.pcie_switches,
             vpci_devices: config.vpci_devices,
             hypervisor: config.hypervisor,
-            memory: config.memory,
+            numa: config.numa,
             processor_topology: config.processor_topology,
             chipset: config.chipset,
             #[cfg(windows)]
@@ -238,7 +238,7 @@ pub struct Manifest {
     pcie_devices: Vec<PcieDeviceConfig>,
     pcie_switches: Vec<PcieSwitchConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
-    memory: MemoryConfig,
+    numa: NumaTopology,
     processor_topology: ProcessorTopologyConfig,
     hypervisor: HypervisorConfig,
     chipset: BaseChipsetManifest,
@@ -707,7 +707,7 @@ struct LoadedVmInner {
     _vmbus_proxy: Option<vmbus_server::ProxyIntegration>,
     #[cfg(windows)]
     _kernel_vmnics: Vec<vmswitch::kernel::KernelVmNic>,
-    memory_cfg: MemoryConfig,
+    numa_cfg: NumaTopology,
     mem_layout: MemoryLayout,
     processor_topology: ProcessorTopology,
     hypervisor_cfg: HypervisorConfig,
@@ -899,7 +899,20 @@ impl InitializedVm {
         H: virt::Hypervisor<Partition = P>,
         P: 'static + HvlitePartition,
     {
-        tracing::info!(mem_size = cfg.memory.mem_size, "guest RAM config");
+        let total_mem_size: u64 = cfg
+            .numa
+            .nodes
+            .iter()
+            .filter_map(|n| n.mem.as_ref())
+            .map(|m| m.mem_size)
+            .sum();
+        let numa_mem_sizes: Vec<u64> = cfg
+            .numa
+            .nodes
+            .iter()
+            .map(|n| n.mem.as_ref().map_or(0, |m| m.mem_size))
+            .collect();
+        tracing::info!(mem_size = total_mem_size, "guest RAM config");
 
         let vmtime_keeper = VmTimeKeeper::new(&driver_source.simple(), VmTime::from_100ns(0));
         let vmtime_source = vmtime_keeper
@@ -1038,8 +1051,8 @@ impl InitializedVm {
             0
         };
         let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
-            mem_size: cfg.memory.mem_size,
-            numa_mem_sizes: cfg.memory.numa_mem_sizes.as_deref(),
+            mem_size: total_mem_size,
+            numa_mem_sizes: Some(&numa_mem_sizes),
             layout: cfg.layout.clone(),
             pcie_root_complexes: &cfg.pcie_root_complexes,
             virtio_mmio_count,
@@ -1075,8 +1088,17 @@ impl InitializedVm {
                 .then_some(1 << (physical_address_size - 1))
         });
 
-        if let Some(size) = cfg.memory.hugepage_size
-            && !cfg.memory.hugepages
+        // Validate hugepage settings and extract VM-wide memory flags from
+        // the first node with memory (all nodes should agree on VM-wide flags).
+        let first_mem = cfg.numa.nodes.iter().find_map(|n| n.mem.as_ref());
+        let prefetch_memory = first_mem.is_some_and(|m| m.prefetch_memory);
+        let private_memory = first_mem.is_some_and(|m| m.private_memory);
+        let transparent_hugepages = first_mem.is_some_and(|m| m.transparent_hugepages);
+        let hugepages = first_mem.is_some_and(|m| m.hugepages);
+        let hugepage_size = first_mem.and_then(|m| m.hugepage_size);
+
+        if let Some(size) = hugepage_size
+            && !hugepages
         {
             anyhow::bail!("hugepage_size={size} requires hugepages=on");
         }
@@ -1091,11 +1113,11 @@ impl InitializedVm {
             .collect();
 
         let mut backing = membacking::RamBackingRequest::new(ram_ranges)
-            .prefetch(cfg.memory.prefetch_memory)
-            .private_memory(cfg.memory.private_memory)
-            .transparent_hugepages(cfg.memory.transparent_hugepages);
-        if cfg.memory.hugepages {
-            backing = backing.hugepages(cfg.memory.hugepage_size);
+            .prefetch(prefetch_memory)
+            .private_memory(private_memory)
+            .transparent_hugepages(transparent_hugepages);
+        if hugepages {
+            backing = backing.hugepages(hugepage_size);
         }
         if let Some(smb) = shared_memory {
             backing = backing.existing_mappable(smb.into_mappable());
@@ -2684,7 +2706,7 @@ impl InitializedVm {
                 vmbus_server,
                 vtl2_vmbus_server,
                 hypervisor_cfg: cfg.hypervisor,
-                memory_cfg: cfg.memory,
+                numa_cfg: cfg.numa,
                 mem_layout,
                 processor_topology,
                 vmbus_redirect,
@@ -3565,7 +3587,7 @@ impl LoadedVm {
             pcie_devices: vec![],        // TODO
             pcie_switches: vec![],       // TODO
             vpci_devices: vec![],        // TODO
-            memory: self.inner.memory_cfg,
+            numa: self.inner.numa_cfg,
             processor_topology: self.inner.processor_topology.to_config(),
             chipset: self.inner.chipset_cfg,
             vmbus: None,      // TODO

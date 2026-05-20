@@ -804,6 +804,7 @@ impl StorageBuilder {
                     requests: None,
                 }
                 .into_resource(),
+                vnode: None,
             });
 
             // Tell UEFI to try to enumerate VPCI devices since there might be
@@ -841,6 +842,7 @@ impl StorageBuilder {
                     requests: Some(recv),
                 }
                 .into_resource(),
+                vnode: None,
             });
             resources.nvme_vtl2_rpc = Some(send);
         }
@@ -862,6 +864,7 @@ impl StorageBuilder {
                     .into_resource(),
                 )
                 .into_resource(),
+                vnode: None,
             });
         }
 

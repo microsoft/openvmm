@@ -72,6 +72,8 @@ use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::NumaNode;
+use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
@@ -82,6 +84,7 @@ use openvmm_defs::config::RootComplexCxlConfig;
 use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
+use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
@@ -800,6 +803,7 @@ async fn vm_config_from_command_line(
                     },
                     instance_id,
                     resource: handle.into_resource(),
+                    vnode: None,
                 })
             }),
     );
@@ -887,6 +891,7 @@ async fn vm_config_from_command_line(
                 .iter()
                 .any(|s| s == &rc_cli.name)
                 .then_some(openvmm_defs::config::PcieIommuConfig::AmdVi),
+            vnode: None,
         });
     }
 
@@ -1628,6 +1633,7 @@ async fn vm_config_from_command_line(
                 vtl: DeviceVtl::Vtl0,
                 instance_id: Guid::new_random(),
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
+                vnode: None,
             });
         }
     };
@@ -1832,21 +1838,47 @@ async fn vm_config_from_command_line(
         pcie_switches,
         vpci_devices,
         ide_disks: Vec::new(),
-        memory: MemoryConfig {
-            mem_size: if let Some(ref sizes) = opt.numa_memory {
+        numa: {
+            let mem_size = if let Some(ref sizes) = opt.numa_memory {
                 sizes
                     .iter()
                     .try_fold(0u64, |acc, &s| acc.checked_add(s))
                     .context("numa memory sizes overflow")?
             } else {
                 opt.memory_size()
-            },
-            prefetch_memory: opt.prefetch_memory(),
-            private_memory: opt.private_memory(),
-            transparent_hugepages: opt.transparent_hugepages(),
-            hugepages: opt.memory.hugepages,
-            hugepage_size: opt.memory.hugepage_size,
-            numa_mem_sizes: opt.numa_memory.clone(),
+            };
+            let mem_cfg = MemoryConfig {
+                mem_size,
+                prefetch_memory: opt.prefetch_memory(),
+                private_memory: opt.private_memory(),
+                transparent_hugepages: opt.transparent_hugepages(),
+                hugepages: opt.memory.hugepages,
+                hugepage_size: opt.memory.hugepage_size,
+                host_numa_node: None,
+            };
+            if let Some(ref sizes) = opt.numa_memory {
+                NumaTopology {
+                    nodes: sizes
+                        .iter()
+                        .map(|&size| NumaNode {
+                            mem: Some(MemoryConfig {
+                                mem_size: size,
+                                ..mem_cfg
+                            }),
+                            vps: VpAssignment::FromTopology,
+                        })
+                        .collect(),
+                    distances: vec![],
+                }
+            } else {
+                NumaTopology {
+                    nodes: vec![NumaNode {
+                        mem: Some(mem_cfg),
+                        vps: VpAssignment::FromTopology,
+                    }],
+                    distances: vec![],
+                }
+            }
         },
         processor_topology: ProcessorTopologyConfig {
             proc_count: opt.processors,

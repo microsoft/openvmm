@@ -104,6 +104,7 @@ impl PetriVmConfigOpenVmm {
                     }],
                 }
                 .into_resource(),
+                vnode: None,
             });
 
             vtl2_settings.dynamic.as_mut().unwrap().nic_devices.push(
@@ -299,8 +300,12 @@ impl PetriVmConfigOpenVmm {
 
     /// Use explicit hugetlb-backed guest memory.
     pub fn with_hugepages(mut self, hugepage_size: Option<u64>) -> Self {
-        self.config.memory.hugepages = true;
-        self.config.memory.hugepage_size = hugepage_size;
+        for node in &mut self.config.numa.nodes {
+            if let Some(mem) = &mut node.mem {
+                mem.hugepages = true;
+                mem.hugepage_size = hugepage_size;
+            }
+        }
         self
     }
 
@@ -352,6 +357,7 @@ impl PetriVmConfigOpenVmm {
                     cxl: None,
                     ports,
                     iommu: None,
+                    vnode: None,
                 });
             }
         }

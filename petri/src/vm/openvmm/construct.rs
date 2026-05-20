@@ -51,10 +51,13 @@ use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
+use openvmm_defs::config::NumaNode;
+use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::VmbusConfig;
+use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::Vtl2Config;
@@ -415,7 +418,7 @@ impl PetriVmConfigOpenVmm {
             .build()
             .context("failed to build chipset configuration")?;
 
-        let memory = {
+        let numa = {
             let MemoryConfig {
                 startup_bytes,
                 dynamic_memory_range,
@@ -426,23 +429,35 @@ impl PetriVmConfigOpenVmm {
                 anyhow::bail!("dynamic memory not supported in OpenVMM");
             }
 
-            let mem_size = if let Some(ref sizes) = numa_mem_sizes {
-                sizes
-                    .iter()
-                    .try_fold(0u64, |acc, &s| acc.checked_add(s))
-                    .context("numa memory sizes overflow")?
-            } else {
-                startup_bytes
-            };
-
-            openvmm_defs::config::MemoryConfig {
-                mem_size,
+            let make_mem = |size: u64| openvmm_defs::config::MemoryConfig {
+                mem_size: size,
                 prefetch_memory: false,
                 private_memory: false,
                 transparent_hugepages: false,
                 hugepages: false,
                 hugepage_size: None,
-                numa_mem_sizes,
+                host_numa_node: None,
+            };
+
+            if let Some(sizes) = numa_mem_sizes {
+                NumaTopology {
+                    nodes: sizes
+                        .into_iter()
+                        .map(|size| NumaNode {
+                            mem: Some(make_mem(size)),
+                            vps: VpAssignment::FromTopology,
+                        })
+                        .collect(),
+                    distances: vec![],
+                }
+            } else {
+                NumaTopology {
+                    nodes: vec![NumaNode {
+                        mem: Some(make_mem(startup_bytes)),
+                        vps: VpAssignment::FromTopology,
+                    }],
+                    distances: vec![],
+                }
             }
         };
 
@@ -558,7 +573,7 @@ impl PetriVmConfigOpenVmm {
             firmware_event_send: Some(firmware_event_send),
 
             // CPU and RAM
-            memory,
+            numa,
             processor_topology,
 
             // Base chipset
@@ -1363,6 +1378,7 @@ async fn vmbus_storage_controllers_to_openvmm(
                         requests: None,
                     }
                     .into_resource(),
+                    vnode: None,
                 });
             }
             VmbusStorageType::VirtioBlk => {
@@ -1394,6 +1410,7 @@ async fn vmbus_storage_controllers_to_openvmm(
                             .into_resource(),
                         )
                         .into_resource(),
+                        vnode: None,
                     });
                 }
             }

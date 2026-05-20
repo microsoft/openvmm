@@ -373,7 +373,7 @@ pub enum ArchTopologyConfig {
 }
 
 /// Per-node memory allocation configuration.
-#[derive(Debug, MeshPayload)]
+#[derive(Debug, Clone, Copy, MeshPayload)]
 pub struct MemoryConfig {
     pub mem_size: u64,
     pub prefetch_memory: bool,
