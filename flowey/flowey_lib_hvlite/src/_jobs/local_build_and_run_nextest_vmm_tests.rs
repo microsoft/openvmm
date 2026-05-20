@@ -627,7 +627,14 @@ impl SimpleFlowNode for Node {
             ..Default::default()
         });
 
-        ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));
+        // Skip disk image downloads in build-only mode since tests won't run
+        // on this machine and images can be acquired on the test machine.
+        let downloads = if build_only {
+            Vec::new()
+        } else {
+            test_artifacts
+        };
+        ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(downloads));
         let test_artifacts_dir =
             ctx.reqv(crate::download_openvmm_vmm_tests_artifacts::Request::GetDownloadFolder);
 
@@ -778,7 +785,11 @@ impl SimpleFlowNode for Node {
             tool_config_files: Vec::new(),
             nextest_profile: nextest_profile.as_str().to_owned(),
             nextest_filter_expr: Some(nextest_filter_expr.clone()),
-            run_ignored: false,
+            // When building for later execution on a different machine
+            // (build_only mode), include --run-ignored all so that tests
+            // ignored due to the build machine's host capabilities are
+            // still attempted on the target machine.
+            run_ignored: build_only,
             fail_fast: None,
             extra_env: Some(extra_env.clone()),
             extra_commands: register_prep_steps
