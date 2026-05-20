@@ -20,6 +20,8 @@
 /// Top-down GIC SPI allocator.
 struct SpiAllocator {
     range_start: u32,
+    /// One past the last allocated INTID, or `range_end + 1` when nothing
+    /// has been allocated yet.
     cursor: u32,
 }
 
@@ -27,33 +29,31 @@ impl SpiAllocator {
     fn new(range: std::ops::RangeInclusive<u32>) -> Self {
         Self {
             range_start: *range.start(),
-            cursor: *range.end(),
+            cursor: *range.end() + 1,
         }
     }
 
     /// Allocates a single SPI, returning its GIC INTID.
     #[expect(dead_code)] // used when SMMU instances are configured
     fn alloc(&mut self, tag: &str) -> anyhow::Result<u32> {
-        if self.cursor < self.range_start {
+        if self.cursor <= self.range_start {
             anyhow::bail!("SPI exhausted allocating {tag}");
         }
-        let intid = self.cursor;
         self.cursor -= 1;
-        Ok(intid)
+        Ok(self.cursor)
     }
 
     /// Allocates a contiguous block of `count` SPIs, returning the lowest
     /// GIC INTID in the block.
     fn alloc_block(&mut self, tag: &str, count: u32) -> anyhow::Result<u32> {
-        let available = self.cursor.saturating_sub(self.range_start) + 1;
-        if count == 0 || count > available {
+        let available = self.cursor - self.range_start;
+        if count > available {
             anyhow::bail!(
                 "SPI exhausted allocating {tag}: need {count}, only {available} remaining"
             );
         }
-        let base = self.cursor - count + 1;
-        self.cursor = base - 1;
-        Ok(base)
+        self.cursor -= count;
+        Ok(self.cursor)
     }
 }
 
