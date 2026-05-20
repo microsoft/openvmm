@@ -50,9 +50,9 @@ struct FileObjectRef {
 ///
 /// Usage:
 /// 1. Create with [`HvsFileWriter::new`]
-/// 2. Add keys with [`add_int`], [`add_uint`], [`add_string`], [`add_array`],
-///    or [`add_bool`]
-/// 3. Call [`finish`] to write the complete file
+/// 2. Add keys with [`Self::add_int`], [`Self::add_uint`], [`Self::add_string`],
+///    [`Self::add_array`], or [`Self::add_bool`]
+/// 3. Call [`Self::finish`] to write the complete file
 pub struct HvsFileWriter<W: Write + Seek> {
     writer: W,
     alignment: u64,
@@ -67,8 +67,8 @@ impl<W: Write + Seek> HvsFileWriter<W> {
     /// Creates a new writer.
     ///
     /// Reserves space for the two header copies and the initial object table;
-    /// they are written later by [`finish`]. Keys and file objects are buffered
-    /// until [`finish`] is called.
+    /// they are written later by [`Self::finish`]. Keys and file objects are
+    /// buffered until [`Self::finish`] is called.
     pub fn new(mut writer: W) -> io::Result<Self> {
         let alignment = DEFAULT_DATA_ALIGNMENT as u64;
         // Object table starts at offset 8192
@@ -124,9 +124,6 @@ impl<W: Write + Seek> HvsFileWriter<W> {
     }
 
     /// Adds a binary array key.
-    ///
-    /// Arrays of [`FILE_OBJECT_THRESHOLD`] bytes or larger are automatically
-    /// stored as file objects (written to disk immediately).
     pub fn add_array(&mut self, path: &str, data: &[u8]) -> io::Result<()> {
         if data.len() >= FILE_OBJECT_THRESHOLD as usize {
             return self.add_file_object(path, data);
@@ -245,23 +242,17 @@ impl<W: Write + Seek> HvsFileWriter<W> {
         // Build all entries in a single pass over sorted pending keys.
         // Use a stack of ancestor paths to track position in the tree.
         // When the path diverges, pop to the common prefix and push new
-        // node entries for new segments. Insertion sequences are assigned
-        // as entries are created — children of the same parent are
-        // contiguous, so a counter that resets on parent change suffices.
+        // node entries for new segments.
+        //
+        // Insertion sequences are tracked per-parent via a counter on the
+        // node stack. Each stack entry records the next insertion sequence
+        // for its children, so descending into a subtree and returning
+        // preserves the parent's counter.
         let mut all_entries: Vec<EntryData> = Vec::new();
-        let mut node_stack: Vec<String> = Vec::new();
-        let mut current_parent = String::new();
-        let mut ins_seq: u32 = 0;
-
-        /// Assign the next insertion sequence, resetting if the parent changed.
-        fn next_ins_seq(parent: &str, current_parent: &mut String, ins_seq: &mut u32) -> u32 {
-            if parent != current_parent.as_str() {
-                *current_parent = parent.to_string();
-                *ins_seq = 0;
-            }
-            *ins_seq += 1;
-            *ins_seq
-        }
+        // (path, next_child_ins_seq)
+        let mut node_stack: Vec<(String, u32)> = Vec::new();
+        // Counter for children of the root node (which has no stack entry).
+        let mut root_ins_seq: u32 = 0;
 
         for key in self.pending_keys {
             let trimmed = key.path.trim_start_matches('/').to_string();
@@ -272,7 +263,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             let common = node_stack
                 .iter()
                 .zip(ancestor_segments.iter())
-                .take_while(|(stk, seg)| stk.rsplit('/').next().unwrap_or("") == **seg)
+                .take_while(|(stk, seg)| stk.0.rsplit('/').next().unwrap_or("") == **seg)
                 .count();
 
             // Pop back to common prefix.
@@ -283,13 +274,22 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                 let node_path = if node_stack.is_empty() {
                     format!("/{seg}")
                 } else {
-                    format!("{}/{seg}", node_stack.last().unwrap())
+                    format!("{}/{seg}", node_stack.last().unwrap().0)
                 };
                 let mut entry = make_node_entry(&node_path, entry_header_size)?;
-                entry.header.insertion_sequence =
-                    next_ins_seq(entry.parent_path(), &mut current_parent, &mut ins_seq);
+
+                // Assign insertion sequence from the parent's counter.
+                let ins_seq = if let Some(parent) = node_stack.last_mut() {
+                    parent.1 += 1;
+                    parent.1
+                } else {
+                    root_ins_seq += 1;
+                    root_ins_seq
+                };
+                entry.header.insertion_sequence = ins_seq;
+
                 all_entries.push(entry);
-                node_stack.push(node_path);
+                node_stack.push((node_path, 0));
             }
 
             // Emit the leaf entry.
@@ -330,12 +330,13 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             };
 
             let total_size = entry_header_size + name_bytes.len() + data_bytes.len();
-            let parent_path_str = if node_stack.is_empty() {
-                ""
+            let leaf_ins_seq = if let Some(parent) = node_stack.last_mut() {
+                parent.1 += 1;
+                parent.1
             } else {
-                node_stack.last().unwrap().as_str()
+                root_ins_seq += 1;
+                root_ins_seq
             };
-            let leaf_ins_seq = next_ins_seq(parent_path_str, &mut current_parent, &mut ins_seq);
 
             all_entries.push(EntryData {
                 header: KeyTableEntryHeader {
@@ -360,24 +361,24 @@ impl<W: Write + Seek> HvsFileWriter<W> {
             });
         }
 
-        // Set NodeData.next_insertion_sequence for each node by counting
-        // how many subsequent entries are its direct children.
+        // Set NodeData.next_insertion_sequence for each node to
+        // max(child insertion_sequence) + 1.
         for i in 0..all_entries.len() {
             if !all_entries[i].is_node {
                 continue;
             }
-            let mut count = 0u32;
+            let mut max_child_seq = 0u32;
             let rest = &all_entries[i + 1..];
             for other in rest {
                 if other.parent_path() == all_entries[i].path {
-                    count += 1;
+                    max_child_seq = max_child_seq.max(other.header.insertion_sequence);
                 } else if !other.path.starts_with(&all_entries[i].path) {
                     break;
                 }
             }
             all_entries[i].data_bytes = NodeData {
                 change_tracking_sequence: 0,
-                next_insertion_sequence: count + 1,
+                next_insertion_sequence: max_child_seq + 1,
             }
             .as_bytes()
             .to_vec();

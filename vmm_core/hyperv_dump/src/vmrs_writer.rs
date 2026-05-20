@@ -72,6 +72,13 @@ impl<W: Write + Seek> VmrsWriter<W> {
         partition_state: &[u8],
         reader: &mut dyn GuestMemoryReader,
     ) -> io::Result<W> {
+        if self.ranges.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "at least one memory range is required",
+            ));
+        }
+
         // VM version
         self.hvs.add_int("/savedstate/VmVersion", VM_VERSION);
         self.hvs
@@ -102,19 +109,23 @@ impl<W: Write + Seek> VmrsWriter<W> {
             write!(key_buf, "/savedstate/RamMemoryBlock{i}").unwrap();
             self.hvs.add_array(&key_buf, meta.as_bytes())?;
 
-            // Stream data blocks (1 MiB each)
+            // Stream data blocks (1 MiB each). Always write exactly
+            // DATA_BLOCK_SIZE bytes per block — short blocks are
+            // interpreted as XPRESS-compressed by the reader.
             let mut gpa = range.start();
             let gpa_end = range.end();
             while gpa < gpa_end {
-                let block_len = DATA_BLOCK_SIZE.min((gpa_end - gpa) as usize);
-                let buf = &mut block_buf[..block_len];
-                reader.read_gpa(gpa, buf)?;
+                let read_len = DATA_BLOCK_SIZE.min((gpa_end - gpa) as usize);
+                block_buf[..read_len].fill(0);
+                reader.read_gpa(gpa, &mut block_buf[..read_len])?;
+                // Zero-fill the remainder if this is the last (partial) block.
+                block_buf[read_len..].fill(0);
 
                 key_buf.clear();
                 write!(key_buf, "/savedstate/RamBlock{data_block_idx}").unwrap();
-                self.hvs.add_array(&key_buf, buf)?;
+                self.hvs.add_array(&key_buf, &block_buf)?;
                 data_block_idx += 1;
-                gpa += block_len as u64;
+                gpa += read_len as u64;
             }
         }
 
@@ -286,16 +297,14 @@ mod tests {
     }
 
     #[test]
-    fn empty_memory_produces_valid_file() {
+    fn empty_memory_is_rejected() {
         let blob = make_default_blob();
 
         let buf = Cursor::new(Vec::new());
         let vmrs = VmrsWriter::new(buf).unwrap();
 
         let mut mem = FillReader(0);
-        let buf = vmrs.finish(&blob, &mut mem).unwrap();
-        let hvs_reader = HvsFileReader::open(Cursor::new(buf.into_inner())).unwrap();
-        assert!(hvs_reader.contains_key("/savedstate/VmVersion"));
-        assert!(hvs_reader.contains_key("/savedstate/savedVM/partition_state"));
+        let err = vmrs.finish(&blob, &mut mem).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 }
