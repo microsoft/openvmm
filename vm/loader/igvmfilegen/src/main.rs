@@ -122,9 +122,8 @@ fn main() -> anyhow::Result<()> {
 
             if disable_secure_avic {
                 for guest_config in &mut config.guest_configs {
-                    if let ConfigIsolationType::Snp {
-                        secure_avic, ..
-                    } = &mut guest_config.isolation_type
+                    if let ConfigIsolationType::Snp { secure_avic, .. } =
+                        &mut guest_config.isolation_type
                     {
                         *secure_avic = SecureAvicType::Disabled;
                     }

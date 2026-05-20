@@ -111,9 +111,7 @@ impl SimpleFlowNode for Node {
         }
 
         if disable_secure_avic && (release_cfg || release) {
-            anyhow::bail!(
-                "--disable-secure-avic cannot be used with release builds."
-            );
+            anyhow::bail!("--disable-secure-avic cannot be used with release builds.");
         }
 
         let build_profile = if release {
@@ -193,8 +191,9 @@ impl SimpleFlowNode for Node {
             }
 
             if disable_secure_avic {
-                openvmm_hcl_features
-                    .insert(OpenvmmHclFeature::LocalOnlyCustom("disable_secure_avic".into()));
+                openvmm_hcl_features.insert(OpenvmmHclFeature::LocalOnlyCustom(
+                    "disable_secure_avic".into(),
+                ));
             }
 
             if let Some(arch) = override_arch {
