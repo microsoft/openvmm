@@ -81,17 +81,10 @@ struct VpEntry {
     vtl_states: Vec<VtlState>,
 }
 
-/// Builds the partition state blob (chunk stream).
+/// Builds the partition state blob for a `.vmrs` dump file.
 ///
-/// The blob is wrapped in a [`VidSavedStateDescriptor`] envelope and contains
-/// the chunk sequence expected by `VmSavedStateDumpProvider`:
-///
-/// 1. Prolog (processor vendor)
-/// 2. OsId (guest OS identification)
-/// 3. PartitionVtl markers (one per VTL, for multi-VTL)
-/// 4. VpIndices (VP present bitmap)
-/// 5. Per-VP: Vp marker → per-VTL register chunks
-/// 6. Epilog
+/// Add VPs with [`Self::add_vp`], then call [`Self::finish`] to produce the
+/// blob to pass to [`VmrsWriter::finish`](crate::VmrsWriter::finish).
 pub struct PartitionStateBuilder {
     arch: ProcessorArch,
     os_id: u64,

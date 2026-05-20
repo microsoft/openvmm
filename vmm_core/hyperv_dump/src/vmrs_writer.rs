@@ -31,7 +31,7 @@ pub trait GuestMemoryReader {
     ///
     /// Returns an error if the read fails. The caller guarantees that
     /// `gpa..gpa+buf.len()` falls within a previously declared
-    /// [`GpaRange`].
+    /// memory range.
     fn read_gpa(&mut self, gpa: u64, buf: &mut [u8]) -> io::Result<()>;
 }
 
@@ -39,8 +39,8 @@ pub trait GuestMemoryReader {
 ///
 /// Usage:
 /// 1. Create with [`VmrsWriter::new`]
-/// 2. Declare memory ranges with [`add_memory_range`]
-/// 3. Call [`finish`] with the partition state and a [`GuestMemoryReader`]
+/// 2. Declare memory ranges with [`Self::add_memory_range`]
+/// 3. Call [`Self::finish`] with the partition state and a [`GuestMemoryReader`]
 pub struct VmrsWriter<W: Write + Seek> {
     hvs: HvsFileWriter<W>,
     ranges: Vec<MemoryRange>,
@@ -57,14 +57,14 @@ impl<W: Write + Seek> VmrsWriter<W> {
 
     /// Declares a contiguous guest physical memory range to include.
     ///
-    /// The actual memory content is read later during [`finish`].
+    /// The actual memory content is read later during [`Self::finish`].
     pub fn add_memory_range(&mut self, range: MemoryRange) {
         self.ranges.push(range);
     }
 
     /// Writes the complete `.vmrs` file, reading guest memory on demand.
     ///
-    /// `partition_state` is the blob from [`PartitionStateBuilder::finish`].
+    /// `partition_state` is the blob from [`crate::PartitionStateBuilder::finish`].
     /// Memory is streamed through a reusable 1 MiB buffer — at no point
     /// is the entire guest address space materialized in memory.
     pub fn finish(
