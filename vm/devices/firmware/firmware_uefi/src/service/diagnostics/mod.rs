@@ -178,6 +178,15 @@ impl DiagnosticsServices {
         self.processed = false;
     }
 
+    /// Returns true if a GPA has been set and diagnostics have not yet been processed.
+    ///
+    /// Used to detect cases where the guest resets or shuts down without going through
+    /// the normal UEFI crash path or ExitBootServices, so that the caller can trigger
+    /// processing before discarding the buffer.
+    pub fn has_unprocessed_diagnostics(&self) -> bool {
+        self.gpa.is_some() && !self.processed
+    }
+
     /// Set the GPA of the diagnostics buffer
     pub fn set_gpa(&mut self, gpa: u32) {
         self.gpa = Gpa::new(gpa).ok();

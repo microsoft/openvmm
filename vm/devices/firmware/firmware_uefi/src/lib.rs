@@ -346,9 +346,35 @@ impl UefiDevice {
 impl ChangeDeviceState for UefiDevice {
     fn start(&mut self) {}
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        // If the guest is shutting down without having gone through the normal UEFI
+        // diagnostics path (e.g. a custom bootloader that calls ResetSystem directly),
+        // process any pending diagnostics now before the buffer becomes inaccessible.
+        if self.service.diagnostics.has_unprocessed_diagnostics() {
+            let _ = self.process_diagnostics(
+                false,
+                service::diagnostics::DiagnosticsEmitter::Tracing {
+                    limit: Some(WATCHDOG_LOGS_PER_PERIOD),
+                },
+                Some(LogLevel::make_info()),
+            );
+        }
+    }
 
     async fn reset(&mut self) {
+        // If the guest is resetting without having gone through the normal UEFI
+        // diagnostics path (e.g. a custom bootloader that calls ResetSystem directly),
+        // process any pending diagnostics before clearing state.
+        if self.service.diagnostics.has_unprocessed_diagnostics() {
+            let _ = self.process_diagnostics(
+                false,
+                service::diagnostics::DiagnosticsEmitter::Tracing {
+                    limit: Some(WATCHDOG_LOGS_PER_PERIOD),
+                },
+                Some(LogLevel::make_info()),
+            );
+        }
+
         self.address = 0;
 
         self.service.nvram.reset();
