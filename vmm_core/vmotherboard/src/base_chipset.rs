@@ -49,6 +49,8 @@ pub enum BaseChipsetBuilderError {
     NoDmaForFloppy,
     #[error("failed to resolve ISA DMA controller")]
     ResolveIsaDma(#[source] vm_resource::ResolveError),
+    #[error("failed to resolve resource")]
+    ResolveResource(#[source] vm_resource::ResolveError),
 }
 
 /// A grab-bag of device-specific interfaces that may need to be wired up into
@@ -450,9 +452,13 @@ impl<'a> BaseChipsetBuilder<'a> {
             initial_cmos,
         }) = deps_generic_cmos_rtc
         {
+            let resolved = resolver
+                .resolve(time_source, ())
+                .await
+                .map_err(BaseChipsetBuilderError::ResolveResource)?;
             builder.arc_mutex_device("rtc").add(|services| {
                 cmos_rtc::Rtc::new(
-                    time_source,
+                    resolved.0,
                     services.new_line(IRQ_LINE_SET, "interrupt", irq),
                     services.register_vmtime(),
                     century_reg_idx,
@@ -468,11 +474,15 @@ impl<'a> BaseChipsetBuilder<'a> {
             enlightened_interrupts,
         }) = deps_piix4_cmos_rtc
         {
+            let resolved = resolver
+                .resolve(time_source, ())
+                .await
+                .map_err(BaseChipsetBuilderError::ResolveResource)?;
             builder.arc_mutex_device("piix4-rtc").add(|services| {
                 // hard-coded to IRQ line 8, as per PIIX4 spec
                 let rtc_interrupt = services.new_line(IRQ_LINE_SET, "interrupt", 8);
                 chipset_legacy::piix4_cmos_rtc::Piix4CmosRtc::new(
-                    time_source,
+                    resolved.0,
                     rtc_interrupt,
                     services.register_vmtime(),
                     initial_cmos,
@@ -1160,8 +1170,8 @@ pub mod options {
         pub struct GenericCmosRtcDeps {
             /// IRQ line to signal RTC device events
             pub irq: u32,
-            /// A source of "real time"
-            pub time_source: Box<dyn InspectableLocalClock>,
+            /// A time source resource, resolved at device build time.
+            pub time_source: Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
             /// Which CMOS RAM register contains the century register
             pub century_reg_idx: u8,
             /// Initial state of CMOS RAM
@@ -1170,8 +1180,8 @@ pub mod options {
 
         /// PIIX4 "flavored" MC146818A compatible RTC + CMOS device
         pub struct Piix4CmosRtcDeps {
-            /// A source of "real time"
-            pub time_source: Box<dyn InspectableLocalClock>,
+            /// A time source resource, resolved at device build time.
+            pub time_source: Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
             /// Initial state of CMOS RAM
             pub initial_cmos: Option<[u8; 256]>,
             /// Whether enlightened interrupts are enabled. Needed when
