@@ -611,6 +611,7 @@ dependencies = [
  "inspect",
  "mesh",
  "tdisp",
+ "vmcore",
 ]
 
 [[package]]
@@ -10046,7 +10047,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "chipset_device",
  "futures",
  "futures-concurrency",
  "hvdef",

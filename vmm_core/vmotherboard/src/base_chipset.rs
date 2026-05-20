@@ -294,7 +294,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             let resolved = resolver
                 .resolve(dma_handle, ())
                 .await
-                .map_err(BaseChipsetBuilderError::ResolveResource)?;
+                .map_err(BaseChipsetBuilderError::ResolveIsaDma)?;
             let dev = builder
                 .arc_mutex_device::<dma::DmaController>("dma")
                 .add(|_services| resolved.0)?;

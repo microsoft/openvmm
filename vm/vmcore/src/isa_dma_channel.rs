@@ -5,9 +5,23 @@
 
 #![forbid(unsafe_code)]
 
-// Re-export DMA types from chipset_device to avoid duplicate definitions.
-pub use chipset_device::isa_dma::IsaDmaTransferBuffer as IsaDmaBuffer;
-pub use chipset_device::isa_dma::IsaDmaTransferDirection as IsaDmaDirection;
+/// ISA DMA transfer direction.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum IsaDmaDirection {
+    /// Device is writing data into guest memory.
+    Write,
+    /// Device is reading data from guest memory.
+    Read,
+}
+
+/// Location of a DMA transfer buffer in guest memory.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct IsaDmaBuffer {
+    /// Guest physical address of the DMA buffer.
+    pub address: u64,
+    /// Transfer size in bytes.
+    pub size: usize,
+}
 
 /// A handle to an ISA DMA channel.
 ///

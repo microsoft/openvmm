@@ -7,7 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-chipset_device.workspace = true
 hvdef.workspace = true
 save_restore_derive.workspace = true
 vm_resource.workspace = true
