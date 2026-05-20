@@ -67,23 +67,21 @@ impl SimpleFlowNode for Node {
                 std::fs::write(&resources_path, serde_json::to_string_pretty(&resources)?)
                     .context("writing resources")?;
 
-                let disable_secure_avic_flag = if disable_secure_avic {
-                    "--disable-secure-avic"
-                } else {
-                    ""
-                };
-
-                flowey::shell_cmd!(
+                let mut cmd = flowey::shell_cmd!(
                     rt,
                     "{igvmfilegen} manifest
                             -m {manifest}
                             -r {resources_path}
                             --debug-validation
-                            {disable_secure_avic_flag}
                             -o {igvm_path}
                         "
-                )
-                .run()?;
+                );
+
+                if disable_secure_avic {
+                    cmd = cmd.arg("--disable-secure-avic");
+                }
+
+                cmd.run()?;
 
                 let igvm_map_path = igvm_path.with_extension("bin.map");
                 let igvm_map_path = igvm_map_path.exists().then_some(igvm_map_path);
