@@ -22,10 +22,13 @@ commands, please invoke the `help` command.
 * `n` / `nmi`: inject an NMI.
 * `p` / `pause`: pause the VM.
 * `r` / `resume`: resume the VM.
-* `d` / `add-disk [--ro] [--dvd] [--path <INDEX>] [--target <INDEX>]
-  [--lun <INDEX>] [--ram <SIZE>] [<PATH>]`: hot add a disk to the
-  VTL0 guest. Provide either `--ram <SIZE>` for a RAM-backed disk
-  or a file `<PATH>` as the backing store.
+* `d` / `add-disk`: hot add a disk to the VTL0 guest. Provide either
+  `--ram <SIZE>` for a RAM-backed disk or a file `<PATH>` as the
+  backing store. Usage:
+
+  ```text
+  add-disk [--ro] [--dvd] [--path <INDEX>] [--target <INDEX>] [--lun <INDEX>] [--ram <SIZE>] [<PATH>]
+  ```
 * `D` / `rm-disk --target <INDEX> --path <INDEX> --lun <INDEX>`:
   hot remove a disk from the VTL0 guest.
 * `x` / `inspect [-r] [-l <LIMIT>] [-v] [path] [-u <VALUE>]`:
