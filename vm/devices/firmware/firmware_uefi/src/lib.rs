@@ -341,39 +341,44 @@ impl UefiDevice {
             Result::<_, std::convert::Infallible>::Ok(output.unwrap_or_else(|| USAGE.to_string()))
         });
     }
+
+    /// Process diagnostics if a GPA has been configured but logs have not yet
+    /// been processed.
+    fn process_pending_diagnostics(&mut self, trigger: &'static str) {
+        if self.service.diagnostics.has_unprocessed_diagnostics() {
+            tracing::info!(%trigger, "processing pending UEFI diagnostics");
+            let _ = self.process_diagnostics(
+                false,
+                service::diagnostics::DiagnosticsEmitter::Tracing { limit: None },
+                Some(LogLevel::make_info()),
+            );
+        }
+    }
+
+    /// Best-effort flush for teardown/halt paths that occur outside the normal
+    /// UEFI signaling flow.
+    pub fn flush_pending_diagnostics_for_halt(&mut self, trigger: &'static str) {
+        self.process_pending_diagnostics(trigger);
+    }
+}
+
+impl Drop for UefiDevice {
+    fn drop(&mut self) {
+        // Best-effort fallback for teardown paths that do not invoke explicit
+        // ChangeDeviceState::stop/reset transitions.
+        self.process_pending_diagnostics("drop");
+    }
 }
 
 impl ChangeDeviceState for UefiDevice {
     fn start(&mut self) {}
 
     async fn stop(&mut self) {
-        // If the guest is shutting down without having gone through the normal UEFI
-        // diagnostics path (e.g. a custom bootloader that calls ResetSystem directly),
-        // process any pending diagnostics now before the buffer becomes inaccessible.
-        if self.service.diagnostics.has_unprocessed_diagnostics() {
-            let _ = self.process_diagnostics(
-                false,
-                service::diagnostics::DiagnosticsEmitter::Tracing {
-                    limit: Some(WATCHDOG_LOGS_PER_PERIOD),
-                },
-                Some(LogLevel::make_info()),
-            );
-        }
+        self.process_pending_diagnostics("stop");
     }
 
     async fn reset(&mut self) {
-        // If the guest is resetting without having gone through the normal UEFI
-        // diagnostics path (e.g. a custom bootloader that calls ResetSystem directly),
-        // process any pending diagnostics before clearing state.
-        if self.service.diagnostics.has_unprocessed_diagnostics() {
-            let _ = self.process_diagnostics(
-                false,
-                service::diagnostics::DiagnosticsEmitter::Tracing {
-                    limit: Some(WATCHDOG_LOGS_PER_PERIOD),
-                },
-                Some(LogLevel::make_info()),
-            );
-        }
+        self.process_pending_diagnostics("reset");
 
         self.address = 0;
 
