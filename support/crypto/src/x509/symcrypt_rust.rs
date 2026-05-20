@@ -60,16 +60,8 @@ impl X509CertificateInner {
         issuer_public_key: &crate::rsa::RsaPublicKey,
     ) -> Result<bool, crate::rsa::RsaError> {
         let oid = self.0.signature_algorithm().oid;
-        let hash = match oid {
-            der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION => crate::rsa::HashAlgorithm::Sha256,
-            der::oid::db::rfc5912::SHA_1_WITH_RSA_ENCRYPTION => crate::rsa::HashAlgorithm::Sha1,
-            _ => {
-                return Err(rsa_der_err(
-                    der::ErrorKind::OidUnknown { oid }.to_error(),
-                    "unrecognized signature algorithm OID",
-                ));
-            }
-        };
+        let hash = crate::HashAlgorithm::try_from(oid)
+            .map_err(|e| rsa_der_err(e, "unrecognized signature algorithm OID"))?;
 
         let tbs_der = self
             .0

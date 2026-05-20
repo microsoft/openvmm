@@ -24,6 +24,11 @@ pub mod sha_256;
 pub mod x509;
 pub mod xts_aes_256;
 
+mod hashes;
+
+#[cfg(any(openssl, rust, symcrypt))]
+pub use hashes::HashAlgorithm;
+
 pub(crate) mod mac;
 pub(crate) mod win;
 
