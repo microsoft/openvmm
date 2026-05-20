@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 //! Hash algorithms and related utilities.
 
 #![expect(deprecated)]
