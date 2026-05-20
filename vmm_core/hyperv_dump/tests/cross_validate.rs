@@ -83,6 +83,8 @@ fn setup_dll_search_path() -> bool {
                 .encode_utf16()
                 .chain(std::iter::once(0))
                 .collect();
+            // SAFETY: Calling SetDllDirectoryW with a valid null-terminated
+            // wide string to add the SDK directory to the DLL search path.
             unsafe {
                 #[link(name = "kernel32")]
                 unsafe extern "system" {
@@ -131,27 +133,29 @@ fn build_vmrs_via_builder(rip: u64, cr3: u64, vp_count: u32) -> Vec<u8> {
     builder.set_os_id(0);
 
     for i in 0..vp_count {
-        let mut regs = virt::x86::vp::Registers::default();
-        regs.rip = rip + i as u64;
-        regs.rsp = 0xFFFFF780_00000000;
-        regs.rax = 0xDEAD_BEEF;
-        regs.cr0 = 0x80050033;
-        regs.cr3 = cr3;
-        regs.cr4 = 0x370678;
-        regs.efer = 0xD01;
-        regs.cs = virt::x86::SegmentRegister {
-            base: 0,
-            limit: 0xFFFFFFFF,
-            selector: 0x10,
-            attributes: 0x209B,
-        };
-        regs.idtr = virt::x86::TableRegister {
-            base: 0xFFFFF800_00000000,
-            limit: 0xFFF,
-        };
-        regs.gdtr = virt::x86::TableRegister {
-            base: 0xFFFFF800_00001000,
-            limit: 0x6F,
+        let regs = virt::x86::vp::Registers {
+            rip: rip + i as u64,
+            rsp: 0xFFFFF780_00000000,
+            rax: 0xDEAD_BEEF,
+            cr0: 0x80050033,
+            cr3,
+            cr4: 0x370678,
+            efer: 0xD01,
+            cs: virt::x86::SegmentRegister {
+                base: 0,
+                limit: 0xFFFFFFFF,
+                selector: 0x10,
+                attributes: 0x209B,
+            },
+            idtr: virt::x86::TableRegister {
+                base: 0xFFFFF800_00000000,
+                limit: 0xFFF,
+            },
+            gdtr: virt::x86::TableRegister {
+                base: 0xFFFFF800_00001000,
+                limit: 0x6F,
+            },
+            ..Default::default()
         };
         builder.add_vp(
             i,
@@ -199,6 +203,9 @@ fn load_and_verify(vmrs_data: &[u8], expected_vp_count: u32, _test_name: &str) {
         .chain(std::iter::once(0))
         .collect();
 
+    // SAFETY: Calling VmSavedStateDumpProvider FFI functions with valid
+    // pointers. The handle is obtained from LoadSavedStateFile and released
+    // before this block exits.
     unsafe {
         let mut handle: *mut c_void = std::ptr::null_mut();
         let hr = dll::LoadSavedStateFile(wide_path.as_ptr(), &mut handle);
@@ -262,16 +269,18 @@ fn dll_validates_large_memory() {
     let mut builder = PartitionStateBuilder::new(ProcessorArch::X64);
     builder.set_os_id(0);
 
-    let mut regs = virt::x86::vp::Registers::default();
-    regs.rip = 0xFFFFF800_12345678;
-    regs.cr3 = 0x1AD000;
-    regs.cr0 = 0x80050033;
-    regs.efer = 0xD01;
-    regs.cs = virt::x86::SegmentRegister {
-        base: 0,
-        limit: 0xFFFFFFFF,
-        selector: 0x10,
-        attributes: 0x209B,
+    let regs = virt::x86::vp::Registers {
+        rip: 0xFFFFF800_12345678,
+        cr3: 0x1AD000,
+        cr0: 0x80050033,
+        efer: 0xD01,
+        cs: virt::x86::SegmentRegister {
+            base: 0,
+            limit: 0xFFFFFFFF,
+            selector: 0x10,
+            attributes: 0x209B,
+        },
+        ..Default::default()
     };
     builder.add_vp(
         0,
@@ -341,6 +350,9 @@ fn dll_validates_large_memory() {
         .chain(std::iter::once(0))
         .collect();
 
+    // SAFETY: Calling VmSavedStateDumpProvider FFI functions with valid
+    // pointers. The handle is obtained from LoadSavedStateFile and released
+    // before this block exits.
     unsafe {
         let mut handle: *mut c_void = std::ptr::null_mut();
         let hr = dll::LoadSavedStateFile(wide_path.as_ptr(), &mut handle);
