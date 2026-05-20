@@ -27,9 +27,9 @@ padding). Offsets are absolute byte positions from the start of the file.
 ├─────────────────────────────────────────────┤  offset 8192
 │  Root Object Table                          │
 ├─────────────────────────────────────────────┤
-│  Key Tables (allocated sequentially)        │
-├─────────────────────────────────────────────┤
 │  File Objects (large binary blobs)          │
+├─────────────────────────────────────────────┤
+│  Key Tables (allocated sequentially)        │
 ├─────────────────────────────────────────────┤
 │  Additional Object Tables (if needed)       │
 ├─────────────────────────────────────────────┤

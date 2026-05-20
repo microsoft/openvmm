@@ -236,7 +236,7 @@ impl PartitionStateBuilder {
         };
         out.extend_from_slice(header.as_bytes());
 
-        let bsp = self.vps.first().map_or(0u32, |vp| vp.vp_index);
+        let bsp = self.vps.iter().map(|vp| vp.vp_index).min().unwrap_or(0);
         out.extend_from_slice(&bsp.to_le_bytes());
 
         let bitmap_start = out.len();

@@ -13,11 +13,14 @@ use std::fs::File;
 impl LoadedVm {
     /// Dumps VM state (VP registers + memory) to a `.vmrs` file.
     ///
-    /// Pauses the VM, collects VP state and streams memory, then resumes.
+    /// Pauses the VM if running, collects VP state and streams memory,
+    /// then restores the prior running state.
     pub(super) async fn dump_state(&mut self, file: File) -> anyhow::Result<()> {
-        self.pause().await;
+        let was_running = self.pause().await;
         let result = self.dump_state_inner(file).await;
-        self.resume().await;
+        if was_running {
+            self.resume().await;
+        }
         result
     }
 

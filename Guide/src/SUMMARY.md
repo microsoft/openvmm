@@ -11,6 +11,7 @@
   - [VFIO Device Assignment](./user_guide/openvmm/vfio.md)
   - [Troubleshooting](./user_guide/openvmm/troubleshooting.md)
   - [Snapshots](./user_guide/openvmm/snapshots.md)
+  - [VM Memory Dumps](./user_guide/openvmm/vm_memory_dumps.md)
   - [Next Steps](./user_guide/openvmm/next_steps.md)
 - [OpenHCL](./user_guide/openhcl.md)
   - [Running OpenHCL](./user_guide/openhcl/run.md)
