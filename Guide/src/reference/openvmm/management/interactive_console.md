@@ -14,15 +14,24 @@ The most up to date reference is always the code itself. For a full list of
 commands, please invoke the `help` command.
 ```
 
-* `q`: quit. Note--sometimes this does not work due to a bug in the virito serial teardown path. In this case, type Ctrl-C to exit after running `q`.
-* `I`: re-enter interactive mode.
-* `i<LINE>`: input `LINE` to the active serial console.
-* `R`: restart worker (experimental)
-* `n`: inject NMI
-* `s`: print state
-* `h`: print hv state
-* `p`: pause
-* `r`: resume
-* `d [-ro] [-path <INDEX>] [-target <INDEX>] [-lun <INDEX>] [-ram <Size>] <PATH>`: hot add the disk at `<PATH>` to the VM. Requires `--hv`
-* `x [-r] [path]`: inspect runtime state using the `Inspect` trait infrastructure
-* `help`: help
+* `q` / `quit`: quit the program.
+* `I` / `input-mode`: switch to input mode (Ctrl-Q returns to command mode).
+* `i <LINE>` / `input <LINE>`: write input to the VM console.
+* `R` / `restart`: restart the VM worker (experimental).
+* `n` / `nmi`: inject an NMI.
+* `p` / `pause`: pause the VM.
+* `r` / `resume`: resume the VM.
+* `d` / `add-disk [-ro] [--dvd] [--path <INDEX>] [--target <INDEX>] [--lun <INDEX>] [--ram <SIZE>] <PATH>`: hot add a disk to the VTL0 guest.
+* `D` / `rm-disk --target <INDEX> --path <INDEX> --lun <INDEX>`: hot remove a disk from the VTL0 guest.
+* `x` / `inspect [-r] [-l <LIMIT>] [-v] [path] [-u <VALUE>]`: inspect runtime state using the `Inspect` trait infrastructure.
+* `V` / `restart-vnc`: restart the VNC worker.
+* `v` / `hvsock [--term <PATH>] <PORT>`: start an hvsocket terminal window.
+* `snap` / `save-snapshot <DIR>`: save a snapshot to a directory.
+* `psr` / `pulse-save-restore`: do a pulsed save-restore cycle.
+* `reset`: reset the VM.
+* `shutdown [-r] [-h] [-f]`: send a shutdown/reboot/hibernate request to the VM.
+* `ch` / `clear-halt`: clear the current halt condition.
+* `read-memory <GPA> <SIZE> [-f <FILE>]`: read guest memory.
+* `write-memory <GPA> [HEX] [-f <FILE>]`: write guest memory.
+* `panic`: inject an artificial panic into OpenVMM.
+* `help`: show full command list.

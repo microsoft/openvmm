@@ -59,7 +59,7 @@ detail elsewhere on this page.
 
 ## Unused `Cargo.toml` Dependencies
 
-_Checked Automatically:_ **Yes** (via [`cargo xtask fmt --pass unused-deps`](../dev_tools/xtask.md))
+_Checked Automatically:_ **Yes** (via [`cargo xtask fmt --pass lints`](../dev_tools/xtask.md))
 
 We have an in-repo fork of
 [`cargo-machete`](https://github.com/bnjbvr/cargo-machete) that ensures
