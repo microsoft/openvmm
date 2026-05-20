@@ -1579,7 +1579,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     }
 
     /// Wait for the VM to halt, returning the reason for the halt.
-    pub async fn wait_for_halt(&mut self) -> anyhow::Result<PetriHaltReason> {
+    pub async fn wait_for_halt(&mut self) -> anyhow::Result<PetriHaltReasonDetail> {
         tracing::info!("Waiting for VM to halt...");
         let halt_reason = self.runtime.wait_for_halt(false).await?;
         tracing::info!("VM halted: {halt_reason:?}. Cancelling watchdogs...");
@@ -1590,7 +1590,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Wait for the VM to cleanly shutdown.
     pub async fn wait_for_clean_shutdown(&mut self) -> anyhow::Result<()> {
         let halt_reason = self.wait_for_halt().await?;
-        if halt_reason != PetriHaltReason::PowerOff {
+        if halt_reason.reason != PetriHaltReason::PowerOff {
             anyhow::bail!("Expected PowerOff, got {halt_reason:?}");
         }
         tracing::info!("VM was cleanly powered off and torn down.");
@@ -1599,7 +1599,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
 
     /// Wait for the VM to halt, returning the reason for the halt,
     /// and tear down the VM.
-    pub async fn wait_for_teardown(mut self) -> anyhow::Result<PetriHaltReason> {
+    pub async fn wait_for_teardown(mut self) -> anyhow::Result<PetriHaltReasonDetail> {
         let halt_reason = self.wait_for_halt().await?;
         self.teardown().await?;
         Ok(halt_reason)
@@ -1627,7 +1627,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     async fn wait_for_reset_core(&mut self) -> anyhow::Result<()> {
         tracing::info!("Waiting for VM to reset...");
         let halt_reason = self.runtime.wait_for_halt(true).await?;
-        if halt_reason != PetriHaltReason::Reset {
+        if halt_reason.reason != PetriHaltReason::Reset {
             anyhow::bail!("Expected reset, got {halt_reason:?}");
         }
         tracing::info!("VM reset.");
@@ -1967,7 +1967,7 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     async fn teardown(self) -> anyhow::Result<()>;
     /// Wait for the VM to halt, returning the reason for the halt. The VM
     /// should automatically restart the VM on reset if `allow_reset` is true.
-    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason>;
+    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReasonDetail>;
     /// Wait for a connection from a pipette agent
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>;
     /// Get an OpenHCL diagnostics handler for the VM
@@ -3130,6 +3130,25 @@ pub enum PetriHaltReason {
     TripleFault,
     /// The vm halted for some other reason
     Other,
+}
+
+impl PetriHaltReason {
+    /// Construct a halt reason with detailed debug info
+    pub fn with_detail(self, detail: String) -> PetriHaltReasonDetail {
+        PetriHaltReasonDetail {
+            reason: self,
+            detail,
+        }
+    }
+}
+
+/// The reason that the VM halted, with optional addition debug details
+#[derive(Debug, Clone)]
+pub struct PetriHaltReasonDetail {
+    /// The reason for the halt
+    pub reason: PetriHaltReason,
+    /// More details about the halt
+    pub detail: String,
 }
 
 fn append_cmdline(cmd: &mut Option<String>, add_cmd: impl AsRef<str>) {

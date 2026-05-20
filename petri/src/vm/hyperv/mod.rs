@@ -15,7 +15,7 @@ use crate::ModifyFn;
 use crate::NoPetriVmInspector;
 use crate::OpenHclServicingFlags;
 use crate::OpenvmmLogConfig;
-use crate::PetriHaltReason;
+use crate::PetriHaltReasonDetail;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmRuntime;
@@ -478,7 +478,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         self.vm.remove().await
     }
 
-    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
+    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReasonDetail> {
         self.vm.wait_for_halt(allow_reset).await
     }
 
