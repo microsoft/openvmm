@@ -14,6 +14,7 @@ use anyhow::Context;
 use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
+use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
@@ -34,7 +35,6 @@ use ide_resources::IdeDeviceConfig;
 use igvm::IgvmFile;
 use input_core::InputData;
 use input_core::MultiplexedInputHandle;
-use inspect::Inspect;
 use local_clock::LocalClockDelta;
 use membacking::GuestMemoryBuilder;
 use membacking::GuestMemoryManager;
@@ -104,6 +104,7 @@ use virtio::VirtioMmioDevice;
 use virtio::VirtioPciDevice;
 use virtio::resolve::VirtioResolveInput;
 use vm_loader::initial_regs::initial_regs;
+use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
@@ -113,7 +114,6 @@ use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::pcie::PcieHostBridge;
-use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
 use vm_topology::processor::aarch64::Aarch64Topology;
@@ -158,7 +158,9 @@ use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
 use watchdog_core::resources::StaticWatchdogPlatformResolver;
 
+#[cfg(guest_arch = "x86_64")]
 const PM_BASE: u16 = 0x400;
+#[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
 
 /// Creates a thread to run low-performance devices on.
@@ -412,13 +414,6 @@ pub(crate) struct InitializedVm {
     driver_source: VmTaskDriverSource,
 }
 
-trait BuildTopology<T: ArchTopology + Inspect> {
-    fn to_topology(
-        &self,
-        platform_info: &virt::PlatformInfo,
-    ) -> anyhow::Result<ProcessorTopology<T>>;
-}
-
 trait ExtractTopologyConfig {
     fn to_config(&self) -> ProcessorTopologyConfig;
 }
@@ -444,38 +439,35 @@ impl ExtractTopologyConfig for ProcessorTopology<X86Topology> {
 }
 
 #[cfg(guest_arch = "x86_64")]
-impl BuildTopology<X86Topology> for ProcessorTopologyConfig {
-    fn to_topology(
-        &self,
-        _platform_info: &virt::PlatformInfo,
-    ) -> anyhow::Result<ProcessorTopology<X86Topology>> {
-        use vm_topology::processor::x86::X2ApicState;
+fn build_x86_topology(
+    config: &ProcessorTopologyConfig,
+) -> anyhow::Result<ProcessorTopology<X86Topology>> {
+    use vm_topology::processor::x86::X2ApicState;
 
-        let arch = match &self.arch {
-            None => Default::default(),
-            Some(ArchTopologyConfig::X86(arch)) => arch.clone(),
-            _ => anyhow::bail!("invalid architecture config"),
-        };
-        let mut builder = TopologyBuilder::from_host_topology()?;
-        builder.apic_id_offset(arch.apic_id_offset);
-        if let Some(smt) = self.enable_smt {
-            builder.smt_enabled(smt);
-        }
-        if let Some(count) = self.vps_per_socket {
-            builder.vps_per_socket(count);
-        }
-        let x2apic = match arch.x2apic {
-            X2ApicConfig::Auto => {
-                // FUTURE: query the hypervisor for a recommendation.
-                X2ApicState::Supported
-            }
-            X2ApicConfig::Supported => X2ApicState::Supported,
-            X2ApicConfig::Unsupported => X2ApicState::Unsupported,
-            X2ApicConfig::Enabled => X2ApicState::Enabled,
-        };
-        builder.x2apic(x2apic);
-        Ok(builder.build(self.proc_count)?)
+    let arch = match &config.arch {
+        None => Default::default(),
+        Some(ArchTopologyConfig::X86(arch)) => arch.clone(),
+        _ => anyhow::bail!("invalid architecture config"),
+    };
+    let mut builder = TopologyBuilder::from_host_topology()?;
+    builder.apic_id_offset(arch.apic_id_offset);
+    if let Some(smt) = config.enable_smt {
+        builder.smt_enabled(smt);
     }
+    if let Some(count) = config.vps_per_socket {
+        builder.vps_per_socket(count);
+    }
+    let x2apic = match arch.x2apic {
+        X2ApicConfig::Auto => {
+            // FUTURE: query the hypervisor for a recommendation.
+            X2ApicState::Supported
+        }
+        X2ApicConfig::Supported => X2ApicState::Supported,
+        X2ApicConfig::Unsupported => X2ApicState::Unsupported,
+        X2ApicConfig::Enabled => X2ApicState::Enabled,
+    };
+    builder.x2apic(x2apic);
+    Ok(builder.build(config.proc_count)?)
 }
 
 impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
@@ -510,140 +502,161 @@ impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
 }
 
 #[cfg(guest_arch = "aarch64")]
-impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
-    fn to_topology(
-        &self,
-        platform_info: &virt::PlatformInfo,
-    ) -> anyhow::Result<ProcessorTopology<Aarch64Topology>> {
-        use vm_topology::processor::aarch64::Aarch64PlatformConfig;
-        use vm_topology::processor::aarch64::GicItsInfo;
-        use vm_topology::processor::aarch64::GicMsiController;
-        use vm_topology::processor::aarch64::GicV2mInfo;
+struct Aarch64TopologyResult {
+    processor_topology: ProcessorTopology<Aarch64Topology>,
+    #[expect(dead_code)] // consumed by SMMU device wiring
+    spi_layout: super::spi_layout::ResolvedSpiLayout,
+}
 
-        let arch = match &self.arch {
-            None => Default::default(),
-            Some(ArchTopologyConfig::Aarch64(arch)) => arch.clone(),
-            _ => anyhow::bail!("invalid architecture config"),
-        };
+#[cfg(guest_arch = "aarch64")]
+fn build_aarch64_topology(
+    config: &ProcessorTopologyConfig,
+    platform_info: &virt::PlatformInfo,
+) -> anyhow::Result<Aarch64TopologyResult> {
+    use openvmm_defs::config::GicMsiConfig;
+    use vm_topology::processor::aarch64::Aarch64PlatformConfig;
+    use vm_topology::processor::aarch64::GicItsInfo;
+    use vm_topology::processor::aarch64::GicMsiController;
+    use vm_topology::processor::aarch64::GicV2mInfo;
 
-        let pmu_gsiv = match arch.pmu_gsiv {
-            PmuGsivConfig::Disabled => None,
-            PmuGsivConfig::Gsiv(gsiv) => Some(gsiv),
-            PmuGsivConfig::Platform => platform_info.platform_gsiv,
-        };
+    const DEFAULT_GIC_V2M_SPI_COUNT: u32 = 64;
 
-        // TODO: When this value is supported on all platforms, we should change
-        // the arch config to not be an option. For now, warn since the ARM VBSA
-        // expects this to be available.
-        if pmu_gsiv.is_none() {
-            tracing::warn!("PMU GSIV is not set");
+    let arch = match &config.arch {
+        None => Default::default(),
+        Some(ArchTopologyConfig::Aarch64(arch)) => arch.clone(),
+        _ => anyhow::bail!("invalid architecture config"),
+    };
+
+    let pmu_gsiv = match arch.pmu_gsiv {
+        PmuGsivConfig::Disabled => None,
+        PmuGsivConfig::Gsiv(gsiv) => Some(gsiv),
+        PmuGsivConfig::Platform => platform_info.platform_gsiv,
+    };
+
+    // TODO: When this value is supported on all platforms, we should change
+    // the arch config to not be an option. For now, warn since the ARM VBSA
+    // expects this to be available.
+    if pmu_gsiv.is_none() {
+        tracing::warn!("PMU GSIV is not set");
+    }
+
+    let (gic_distributor_base, gic_version) = match &arch.gic_config {
+        Some(GicConfig::V3(config)) => {
+            let dist = config
+                .as_ref()
+                .map(|c| c.gic_distributor_base)
+                .unwrap_or(openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE);
+            let redist = config
+                .as_ref()
+                .map(|c| c.gic_redistributors_base)
+                .unwrap_or(openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE);
+            (
+                dist,
+                GicVersion::V3 {
+                    redistributors_base: redist,
+                },
+            )
         }
-
-        let (gic_distributor_base, gic_version) = match &arch.gic_config {
-            Some(GicConfig::V3(config)) => {
-                let dist = config
-                    .as_ref()
-                    .map(|c| c.gic_distributor_base)
-                    .unwrap_or(openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE);
-                let redist = config
-                    .as_ref()
-                    .map(|c| c.gic_redistributors_base)
-                    .unwrap_or(openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE);
+        Some(GicConfig::V2(config)) => {
+            let dist = config
+                .as_ref()
+                .map(|c| c.gic_distributor_base)
+                .unwrap_or(openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE);
+            let cpu_if = config
+                .as_ref()
+                .map(|c| c.cpu_interface_base)
+                .unwrap_or(openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE);
+            (
+                dist,
+                GicVersion::V2 {
+                    cpu_interface_base: cpu_if,
+                },
+            )
+        }
+        None => {
+            // No explicit GIC config — use the hypervisor's detected version
+            // with default addresses.
+            let dist = openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE;
+            let second = openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE;
+            if platform_info.supports_gic_v3 {
                 (
                     dist,
                     GicVersion::V3 {
-                        redistributors_base: redist,
+                        redistributors_base: second,
                     },
                 )
-            }
-            Some(GicConfig::V2(config)) => {
-                let dist = config
-                    .as_ref()
-                    .map(|c| c.gic_distributor_base)
-                    .unwrap_or(openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE);
-                let cpu_if = config
-                    .as_ref()
-                    .map(|c| c.cpu_interface_base)
-                    .unwrap_or(openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE);
+            } else {
                 (
                     dist,
                     GicVersion::V2 {
-                        cpu_interface_base: cpu_if,
+                        cpu_interface_base: second,
                     },
                 )
             }
-            None => {
-                // No explicit GIC config — use the hypervisor's detected version
-                // with default addresses.
-                let dist = openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE;
-                let second = openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE;
-                if platform_info.supports_gic_v3 {
-                    (
-                        dist,
-                        GicVersion::V3 {
-                            redistributors_base: second,
-                        },
-                    )
-                } else {
-                    (
-                        dist,
-                        GicVersion::V2 {
-                            cpu_interface_base: second,
-                        },
-                    )
-                }
-            }
-        };
-
-        // Use the ITS for MSI delivery when the backend supports it
-        // (KVM with GICv3). Otherwise fall back to GICv2m (SPI-based MSIs).
-        use openvmm_defs::config::GicMsiConfig;
-        let is_gicv2 = matches!(gic_version, GicVersion::V2 { .. });
-        let use_its = match arch.gic_msi {
-            GicMsiConfig::Auto => platform_info.supports_its && !is_gicv2,
-            GicMsiConfig::Its => {
-                if is_gicv2 {
-                    anyhow::bail!("ITS is incompatible with GICv2");
-                }
-                if !platform_info.supports_its {
-                    anyhow::bail!("ITS requested but the hypervisor does not support it");
-                }
-                true
-            }
-            GicMsiConfig::V2m => false,
-        };
-        let gic_msi = if use_its {
-            GicMsiController::Its(GicItsInfo {
-                its_base: openvmm_defs::config::DEFAULT_GIC_ITS_BASE,
-            })
-        } else {
-            GicMsiController::V2m(GicV2mInfo {
-                frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
-                spi_base: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_BASE,
-                spi_count: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_COUNT,
-            })
-        };
-
-        let platform = Aarch64PlatformConfig {
-            gic_distributor_base,
-            gic_version,
-            gic_msi,
-            pmu_gsiv,
-            virt_timer_ppi: openvmm_defs::config::DEFAULT_VIRT_TIMER_PPI,
-            gic_nr_irqs: openvmm_defs::config::DEFAULT_GIC_NR_IRQS,
-        };
-
-        let mut builder = TopologyBuilder::new_aarch64(platform);
-        if let Some(smt) = self.enable_smt {
-            builder.smt_enabled(smt);
         }
-        if let Some(count) = self.vps_per_socket {
-            builder.vps_per_socket(count);
-        } else {
-            builder.vps_per_socket(self.proc_count);
+    };
+
+    // Resolve ITS vs v2m and determine v2m SPI count.
+    let is_gicv2 = matches!(gic_version, GicVersion::V2 { .. });
+    let v2m_spi_count = match &arch.gic_msi {
+        GicMsiConfig::Auto if platform_info.supports_its && !is_gicv2 => None,
+        GicMsiConfig::Auto => Some(DEFAULT_GIC_V2M_SPI_COUNT),
+        GicMsiConfig::Its => {
+            if is_gicv2 {
+                anyhow::bail!("ITS is incompatible with GICv2");
+            }
+            if !platform_info.supports_its {
+                anyhow::bail!("ITS requested but the hypervisor does not support it");
+            }
+            None
         }
-        Ok(builder.build(self.proc_count)?)
+        GicMsiConfig::V2m { spi_count } => Some(spi_count.unwrap_or(DEFAULT_GIC_V2M_SPI_COUNT)),
+    };
+
+    // Resolve SPI layout — all SPI allocations in one deterministic pass.
+    let gic_nr_irqs = openvmm_defs::config::DEFAULT_GIC_NR_IRQS;
+    let spi_layout = super::spi_layout::resolve_spi_layout(&super::spi_layout::SpiLayoutInput {
+        gic_nr_irqs,
+        v2m_spi_count,
+    })?;
+
+    // Build the GIC MSI controller from resolved SPIs.
+    let gic_msi = if let Some(count) = v2m_spi_count {
+        GicMsiController::V2m(GicV2mInfo {
+            frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
+            spi_base: spi_layout
+                .v2m_spi_base
+                .expect("v2m base must be allocated when v2m_spi_count is Some"),
+            spi_count: count,
+        })
+    } else {
+        GicMsiController::Its(GicItsInfo {
+            its_base: openvmm_defs::config::DEFAULT_GIC_ITS_BASE,
+        })
+    };
+
+    let platform = Aarch64PlatformConfig {
+        gic_distributor_base,
+        gic_version,
+        gic_msi,
+        pmu_gsiv,
+        virt_timer_ppi: openvmm_defs::config::DEFAULT_VIRT_TIMER_PPI,
+        gic_nr_irqs,
+    };
+
+    let mut builder = TopologyBuilder::new_aarch64(platform);
+    if let Some(smt) = config.enable_smt {
+        builder.smt_enabled(smt);
     }
+    if let Some(count) = config.vps_per_socket {
+        builder.vps_per_socket(count);
+    } else {
+        builder.vps_per_socket(config.proc_count);
+    }
+    Ok(Aarch64TopologyResult {
+        processor_topology: builder.build(config.proc_count)?,
+        spi_layout,
+    })
 }
 
 /// A VM that has been loaded and can be run.
@@ -816,6 +829,7 @@ impl InitializedVm {
     pub(crate) async fn new_with_hypervisor<P, H>(
         driver_source: VmTaskDriverSource,
         hypervisor: &mut H,
+        #[cfg_attr(not(guest_arch = "aarch64"), expect(unused_variables))]
         platform_info: virt::PlatformInfo,
         cfg: Manifest,
         shared_memory: Option<SharedMemoryBacking>,
@@ -863,7 +877,13 @@ impl InitializedVm {
             None
         };
 
-        let processor_topology = cfg.processor_topology.to_topology(&platform_info)?;
+        #[cfg(guest_arch = "aarch64")]
+        let processor_topology = {
+            let result = build_aarch64_topology(&cfg.processor_topology, &platform_info)?;
+            result.processor_topology
+        };
+        #[cfg(not(guest_arch = "aarch64"))]
+        let processor_topology = build_x86_topology(&cfg.processor_topology)?;
 
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
@@ -1489,14 +1509,12 @@ impl InitializedVm {
         };
 
         let deps_generic_cmos_rtc = (cfg.chipset.with_generic_cmos_rtc).then(|| {
-            // TODO: persist SystemTimeClock time across reboots.
-            // TODO: move to instantiate via a resource.
-            let time_source = Box::new(local_clock::SystemTimeClock::new(
-                LocalClockDelta::from_millis(cfg.rtc_delta_milliseconds),
-            ));
             dev::GenericCmosRtcDeps {
                 irq: 8,
-                time_source,
+                time_source: SystemTimeClockHandle {
+                    delta_milliseconds: cfg.rtc_delta_milliseconds,
+                }
+                .into_resource(),
                 century_reg_idx: 0x32, // TODO: automatically sync with FADT
                 initial_cmos: initial_rtc_cmos,
             }
@@ -1588,13 +1606,6 @@ impl InitializedVm {
                 vtl2_framebuffer_gpa_base,
             });
 
-        let deps_hyperv_power_management =
-            (cfg.chipset.with_hyperv_power_management).then_some(dev::HyperVPowerManagementDeps {
-                acpi_irq: SYSTEM_IRQ_ACPI,
-                pio_base: PM_BASE,
-                pm_timer_assist: None,
-            });
-
         let deps_hyperv_vga = if cfg.chipset.with_hyperv_vga {
             let vga_firmware = cfg.vga_firmware.as_ref().context("no VGA BIOS file")?;
             let rom_builder = RomBuilder::new("vga".into(), Box::new(mapper.clone()));
@@ -1623,13 +1634,11 @@ impl InitializedVm {
         });
 
         let deps_piix4_cmos_rtc = (cfg.chipset.with_piix4_cmos_rtc).then(|| {
-            // TODO: persist SystemTimeClock time across reboots.
-            // TODO: move to instantiate via a resource.
-            let time_source = Box::new(local_clock::SystemTimeClock::new(
-                LocalClockDelta::from_millis(cfg.rtc_delta_milliseconds),
-            ));
             dev::Piix4CmosRtcDeps {
-                time_source,
+                time_source: SystemTimeClockHandle {
+                    delta_milliseconds: cfg.rtc_delta_milliseconds,
+                }
+                .into_resource(),
                 initial_cmos: initial_rtc_cmos,
                 enlightened_interrupts: true, // As advertised by the PCAT BIOS.
             }
@@ -1642,12 +1651,6 @@ impl InitializedVm {
             secondary_channel_drives,
         });
 
-        let deps_piix4_power_management =
-            (cfg.chipset.with_piix4_power_management).then_some(dev::Piix4PowerManagementDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-                pm_timer_assist: None,
-            });
-
         let base_chipset_devices = {
             BaseChipsetDevices {
                 deps_generic_cmos_rtc,
@@ -1659,12 +1662,10 @@ impl InitializedVm {
                 deps_hyperv_firmware_uefi,
                 deps_hyperv_framebuffer,
                 deps_hyperv_ide,
-                deps_hyperv_power_management,
                 deps_hyperv_vga,
                 deps_i440bx_host_pci_bridge,
                 deps_piix4_cmos_rtc,
                 deps_piix4_pci_bus,
-                deps_piix4_power_management,
                 deps_underhill_vga_proxy: None,
                 deps_winbond_super_io_and_floppy_stub: None,
                 deps_winbond_super_io_and_floppy_full,

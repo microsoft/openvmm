@@ -6,14 +6,7 @@
 use super::X509Error;
 use der::Decode;
 use der::Encode;
-#[cfg(symcrypt)]
-use rsa::sha2;
 use x509_cert::Certificate;
-
-#[cfg(symcrypt)]
-fn err(err: symcrypt::errors::SymCryptError, op: &'static str) -> X509Error {
-    X509Error(crate::BackendError::SymCrypt(err, op))
-}
 
 #[cfg(symcrypt)]
 fn der_err(err: der::Error, op: &'static str) -> X509Error {
@@ -35,7 +28,7 @@ fn rsa_der_err(err: der::Error, op: &'static str) -> crate::rsa::RsaError {
     crate::rsa::RsaError(rsa::Error::Pkcs1(pkcs1::Error::Asn1(err)), op)
 }
 
-pub struct X509CertificateInner(Certificate);
+pub struct X509CertificateInner(pub(crate) Certificate);
 
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
@@ -44,7 +37,7 @@ impl X509CertificateInner {
         Ok(Self(cert))
     }
 
-    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, X509Error> {
+    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
         // Currently we only expect RSA public keys.
         // If someday we need to support other public key types, the return
         // type of this function will need to change.
@@ -55,30 +48,21 @@ impl X509CertificateInner {
                 .subject_public_key
                 .raw_bytes(),
         )
-        .map_err(|e| der_err(e, "parsing PKCS#1 RSA public key"))?;
-        #[cfg(symcrypt)]
-        let key = symcrypt::rsa::RsaKey::set_public_key(
+        .map_err(|e| rsa_der_err(e, "parsing PKCS#1 RSA public key"))?;
+        crate::rsa::RsaPublicKey::from_components(
             key.modulus.as_bytes(),
             key.public_exponent.as_bytes(),
-            symcrypt::rsa::RsaKeyUsage::SignAndEncrypt,
         )
-        .map_err(|e| err(e, "constructing RSA public key"))?;
-        #[cfg(rust)]
-        let key = key.try_into().unwrap();
-        Ok(crate::rsa::RsaPublicKey(
-            crate::rsa::sys::RsaPublicKeyInner(key),
-        ))
     }
 
     pub fn verify(
         &self,
         issuer_public_key: &crate::rsa::RsaPublicKey,
     ) -> Result<bool, crate::rsa::RsaError> {
-        use rsa::pkcs1v15::RsaSignatureAssociatedOid;
-
         let oid = self.0.signature_algorithm().oid;
         let hash = match oid {
-            sha2::Sha256::OID => crate::rsa::HashAlgorithm::Sha256,
+            der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION => crate::rsa::HashAlgorithm::Sha256,
+            der::oid::db::rfc5912::SHA_1_WITH_RSA_ENCRYPTION => crate::rsa::HashAlgorithm::Sha1,
             _ => {
                 return Err(rsa_der_err(
                     der::ErrorKind::OidUnknown { oid }.to_error(),
@@ -179,6 +163,8 @@ impl X509CertificateInner {
         common_name: &str,
     ) -> anyhow::Result<Self> {
         use core::str::FromStr;
+        #[cfg(symcrypt)]
+        use rsa::sha2;
         use x509_cert::builder::Builder;
         use x509_cert::name::Name;
 

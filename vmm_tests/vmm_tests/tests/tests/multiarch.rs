@@ -553,11 +553,16 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     // No boot event check, UEFI watchdog gets fired before ExitBootServices
     let halt_reason = vm.wait_for_teardown().await?;
     tracing::debug!("vm halt reason: {halt_reason:?}");
+    let check_reason = |expected| {
+        if halt_reason.reason != expected {
+            anyhow::bail!("Expected {expected:?}, got {halt_reason:?}");
+        }
+        Ok(())
+    };
     match arch {
-        MachineArch::X86_64 => assert!(matches!(halt_reason, PetriHaltReason::TripleFault)),
-        MachineArch::Aarch64 => assert!(matches!(halt_reason, PetriHaltReason::Reset)),
+        MachineArch::X86_64 => check_reason(PetriHaltReason::TripleFault),
+        MachineArch::Aarch64 => check_reason(PetriHaltReason::Reset),
     }
-    Ok(())
 }
 
 /// Test that unauthenticated deletion of PK and KEK is rejected by the firmware.

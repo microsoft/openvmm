@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::KdfError;
+use super::KbkdfError;
 use openssl_kdf::kdf::Kbkdf;
 
 pub fn kbkdf_hmac_sha256(
@@ -9,7 +9,7 @@ pub fn kbkdf_hmac_sha256(
     context: &[u8],
     salt: &[u8],
     output_len: usize,
-) -> Result<Vec<u8>, KdfError> {
+) -> Result<Vec<u8>, KbkdfError> {
     let mut kdf = Kbkdf::new(
         openssl::hash::MessageDigest::sha256(),
         salt.to_vec(),
@@ -17,6 +17,6 @@ pub fn kbkdf_hmac_sha256(
     );
     kdf.set_context(context.to_vec());
     let mut output = vec![0u8; output_len];
-    openssl_kdf::kdf::derive(kdf, &mut output).map_err(KdfError)?;
+    openssl_kdf::kdf::derive(kdf, &mut output).map_err(KbkdfError)?;
     Ok(output)
 }
