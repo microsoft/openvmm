@@ -14,22 +14,22 @@ gdb = ["openvmm_core/gdb", "dep:debug_worker"]
 tpm = ["dep:tpm_device"]
 
 # Enable building with /dev/mshv support.
-virt_mshv = ["openvmm_hypervisors/virt_mshv"]
+virt_mshv = ["dep:virt_mshv"]
 
 # Enable building with KVM support.
-virt_kvm = ["openvmm_hypervisors/virt_kvm"]
+virt_kvm = ["dep:virt_kvm"]
 
 # Enable building with WHP support.
-virt_whp = ["openvmm_core/virt_whp", "openvmm_hypervisors/virt_whp"]
+virt_whp = ["openvmm_core/virt_whp", "dep:virt_whp"]
 
 # Enable building with macOS hypervisor framework support.
-virt_hvf = ["openvmm_hypervisors/virt_hvf"]
+virt_hvf = ["dep:virt_hvf"]
 
 unstable_whp = ["openvmm_core/unstable_whp"]
 
 [dependencies]
+hypervisor_resources.workspace = true
 mesh_worker.workspace = true
-openvmm_hypervisors.workspace = true
 vm_resource.workspace = true
 
 # Serial
@@ -112,13 +112,19 @@ serial_debugcon.workspace = true
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 serial_pl011.workspace = true
 
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+virt_hvf = { workspace = true, optional = true }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 net_tap = { workspace = true, optional = true }
 vhost_user_frontend.workspace = true
 disk_blockdevice.workspace = true
+virt_kvm = { workspace = true, optional = true }
+virt_mshv = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 net_dio.workspace = true
+virt_whp = { workspace = true, optional = true }
 
 disk_vhdmp.workspace = true
 
