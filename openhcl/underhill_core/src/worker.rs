@@ -1456,6 +1456,29 @@ async fn write_provisioning_marker(vmgs: &mut Vmgs) -> anyhow::Result<()> {
     Ok(vmgs.write_provisioning_marker(&marker).await?)
 }
 
+/// Duplicate a mesh resource by cloning the underlying OS resource.
+///
+/// This is used to create independent copies of IDE disk configs for both
+/// the emulator and storvsp paths, where the config contains file descriptors
+/// for backing block devices.
+fn try_clone_mesh_resource(
+    resource: &mesh::resource::Resource,
+) -> anyhow::Result<mesh::resource::Resource> {
+    match resource {
+        mesh::resource::Resource::Os(mesh::resource::OsResource::Fd(fd)) => {
+            use std::os::fd::AsFd;
+            let cloned = fd
+                .as_fd()
+                .try_clone_to_owned()
+                .context("failed to dup file descriptor")?;
+            Ok(mesh::resource::Resource::Os(
+                mesh::resource::OsResource::Fd(cloned),
+            ))
+        }
+        other => anyhow::bail!("cannot duplicate mesh resource: {other:?}"),
+    }
+}
+
 /// Run the underhill specific worker entrypoint.
 async fn new_underhill_vm(
     get_spawner: impl Spawn,
@@ -2765,19 +2788,22 @@ async fn new_underhill_vm(
 
                 // Duplicate the config via mesh serialization so we can
                 // independently resolve for both the IDE emulator and
-                // the storvsp IDE accelerator. VTL2 settings are pure
-                // protobuf data (no OS handles), so this is safe.
+                // the storvsp IDE accelerator. The serialized config may
+                // contain OS resources (e.g. file descriptors for block
+                // devices), which must be duplicated for both copies.
                 let is_hard_disk = matches!(disk_cfg.guest_media, GuestMedia::Disk { .. });
                 let (emulator_cfg, storvsp_cfg) = if is_hard_disk {
                     let serialized = mesh::resource::SerializedMessage::from_message(disk_cfg);
-                    anyhow::ensure!(
-                        serialized.resources.is_empty(),
-                        "IDE disk configs from VTL2 settings must not contain OS resources"
-                    );
+                    let storvsp_resources = serialized
+                        .resources
+                        .iter()
+                        .map(try_clone_mesh_resource)
+                        .collect::<anyhow::Result<Vec<_>>>()
+                        .context("failed to duplicate OS resources for storvsp IDE config")?;
                     let storvsp_cfg: ide_resources::IdeDeviceConfig =
                         (mesh::resource::SerializedMessage {
                             data: serialized.data.clone(),
-                            resources: Vec::new(),
+                            resources: storvsp_resources,
                         })
                         .into_message()
                         .context("failed to duplicate IDE disk config for storvsp")?;
