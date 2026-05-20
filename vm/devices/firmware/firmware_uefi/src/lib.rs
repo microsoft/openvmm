@@ -354,12 +354,6 @@ impl UefiDevice {
             );
         }
     }
-
-    /// Best-effort flush for teardown/halt paths that occur outside the normal
-    /// UEFI signaling flow.
-    pub fn flush_pending_diagnostics_for_halt(&mut self, trigger: &'static str) {
-        self.process_pending_diagnostics(trigger);
-    }
 }
 
 impl Drop for UefiDevice {
