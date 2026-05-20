@@ -1424,12 +1424,7 @@ impl VtlPartition {
 
                     #[cfg(guest_arch = "aarch64")]
                     {
-                        features.bank0 |= F::AccessVpRegs | F::SyncContext;
-                    }
-
-                    #[cfg(guest_arch = "aarch64")]
-                    {
-                        features.bank0 |= F::TbFlushHypercalls;
+                        features.bank0 |= F::AccessVpRegs | F::SyncContext | F::TbFlushHypercalls;
                     }
 
                     if vtl == Vtl::Vtl0 {
