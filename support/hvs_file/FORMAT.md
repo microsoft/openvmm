@@ -97,14 +97,12 @@ Version is encoded as `(major << 8) | minor`:
 
 | Version | Value  | Description |
 |---------|--------|-------------|
-| 1.0     | 0x0100 | Original, WCHAR key names (no longer supported) |
-| 1.1     | 0x0101 | Pre-optimization, non-optimized layout |
+| 1.0     | 0x0100 | Original format with WCHAR key names |
+| 1.1     | 0x0101 | Switched to UTF-8 key names; non-optimized layout |
 | 2.0     | 0x0200 | Optimized layout |
 | 3.0     | 0x0300 | Updated key table indexes |
 | 3.1     | 0x0301 | Fixed object table entry checksum |
 | 4.0     | 0x0400 | Stable array ordering (current) |
-
-Minimum supported version: 1.0. Current version: 4.0.
 
 ## Object Tables
 
@@ -234,21 +232,21 @@ Following the header is:
 Fixed-size types store their value directly after the name with **no
 length prefix**:
 
-| Value | Name | Inline Data |
-|-------|------|-------------|
-| 1 | Free | Entry is unused |
-| 3 | Int | `int64_t` (8 bytes, no prefix) |
-| 4 | UInt | `uint64_t` (8 bytes, no prefix) |
-| 5 | Double | `double` (8 bytes, no prefix) |
-| 8 | Bool | `BOOL` (4 bytes / `int32_t`, 0 or 1, no prefix) |
-| 9 | Node | `{ uint64_t ChangeTrackingSequence; uint32_t NextInsertionSequence; }` (12 bytes, no prefix) |
+| Value | Name | Size | Data |
+|-------|------|------|------|
+| 1 | Free | 0 | Entry is unused |
+| 3 | Int | 8 | Signed 64-bit integer |
+| 4 | UInt | 8 | Unsigned 64-bit integer |
+| 5 | Double | 8 | IEEE 754 double |
+| 8 | Bool | 4 | 0 or 1 (signed 32-bit) |
+| 9 | Node | 12 | 8-byte ChangeTrackingSequence + 4-byte NextInsertionSequence |
 
-Variable-size types have a **`uint32_t SizeInBytes` length prefix**:
+Variable-size types are length-prefixed:
 
-| Value | Name | Inline Data |
-|-------|------|-------------|
-| 6 | String | `{ uint32_t SizeInBytes; wchar_t StringData[]; }` |
-| 7 | Array | `{ uint32_t SizeInBytes; uint8_t Data[]; }` |
+| Value | Name | Data |
+|-------|------|------|
+| 6 | String | 4-byte length (in bytes) followed by UTF-16LE string data |
+| 7 | Array | 4-byte length (in bytes) followed by raw data |
 
 When the `PointsToFileObject` flag is set (for values >= 2048 bytes),
 the data section is **always** replaced with a `FileObjectData` pointer
@@ -344,18 +342,24 @@ For VM saved state (`.vmrs`) files, the key hierarchy under the
 
 ### VM Version
 
-The VM version is a `uint32_t` encoded as `(major << 8) | minor`:
+The VM version identifies the Hyper-V configuration version that
+produced the saved state. It is an unsigned 32-bit integer encoded
+as `(major << 8) | minor` (e.g., 0x0A00 = version 10.0).
 
-| Value | Version |
-|-------|---------|
-| 0x0500 | 5.0 |
-| 0x0900 | 9.0 |
-| 0x0A00 | 10.0 |
-| 0x0C03 | 12.3 (current) |
+This value controls key paths and metadata formats. For versions
+> 5.0 (0x0500), all saved state keys are prefixed with `/savedstate`
+and use the current formats. Versions ≤ 5.0 omit the prefix and use
+older key names and metadata structures:
 
-For a debug dump writer, use a version >= 0x0500 to ensure the
-`/savedstate` key prefix is used. 0x0A00 is a safe choice — it's
-modern enough for all features but old enough to be widely supported.
+| Component | ≤ v5.0 | > v5.0 |
+|-----------|--------|--------|
+| Partition state | `/savedVM/partition_state` | `/savedstate/savedVM/partition_state` |
+| Memory block metadata | `RamMemoryBlock/%d/` | `/savedstate/RamMemoryBlock%d` |
+| Memory block data | `RamBlock/%I64u/` | `/savedstate/RamBlock%I64u` |
+| Metadata struct size | varies (see source) | 48 bytes (current format) |
+
+Versions ≤ 1.0 (0x0100) are rejected. Any version > 5.0 selects
+the current key paths and metadata format.
 
 ### VM Metadata
 
@@ -365,17 +369,6 @@ modern enough for all features but old enough to be widely supported.
   `VmVersion`. **Required** by some reader versions.
 - `/savedstate/type` — saved state type as **string**: `"Normal"`,
   `"Snapshot"`, `"Fast"`, or `"FastWithHandleTransfer"`. Optional.
-
-### Key Path Versioning
-
-Key paths have a version-dependent prefix. For VMs with version >
-0x0500, all keys are prefixed with `/savedstate`:
-
-| Component | Old (≤ v5.0) | New (> v5.0) |
-|-----------|-----------------|-----------------|
-| Partition state | `/savedVM/partition_state` | `/savedstate/savedVM/partition_state` |
-| RAM blocks | `RamMemoryBlock/%d/` | `/savedstate/RamMemoryBlock%d` |
-| RAM data | `RamBlock%I64u` | `/savedstate/RamBlock%I64u` |
 
 ### Processor State
 
@@ -409,19 +402,12 @@ memory block metadata structure:
 
 Total size: 48 bytes.
 
-For a simple debug dump, set `SavedStateVersion` = 3,
-`Flags` = 0, `MbpIndexStart` = cumulative page offset into the RAM
-block sequence, `GpaIndexStart` = GPA base / 4096, `VirtualNode` = 0,
-`KsrBlockId` = 0.
-
 **Data keys** — `RamBlock%I64u` (e.g., `RamBlock0`, `RamBlock1`, ...) —
 stored as Array values containing the raw guest memory data for that
 block, up to 1,048,576 bytes.
 
 - If value size == 1,048,576: data is **uncompressed**
 - If value size < 1,048,576: data is **XPRESS compressed**
-
-For a debug dump writer, writing uncompressed blocks is simplest.
 
 **GPA mapping**: There is no direct GPA→file-offset table. The reader
 enumerates `RamMemoryBlock0`, `RamMemoryBlock1`, ... until a key is not
@@ -460,11 +446,8 @@ not from separate keys.
 ### GUEST_OS_INFO
 
 The partition state blob contains guest OS identification as a 64-bit
-value, identical to `HvGuestOsId` in hvdef (and `HV_X64_MSR_GUEST_OS_ID`).
-
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0 | 8 | AsUINT64 | **Closed-source layout** (bit 63 = 0): bits 0–15 BuildNumber, bits 16–23 ServiceVersion, bits 24–31 MinorVersion, bits 32–39 MajorVersion, bits 40–47 OsId (4 = Windows NT), bits 48–62 VendorId (1 = Microsoft), bit 63 IsOpenSource (0). **Open-source layout** (bit 63 = 1): bits 0–31 Version ((major<<16)\|(minor<<8)\|patch), bits 32–39 VendorSpecific2, bits 40–46 OsId (1 = Linux), bit 63 IsOpenSource (1). |
+value. The layout matches `HV_GUEST_OS_ID` as defined in the
+[Hypervisor Top-Level Functional Specification (TLFS)](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercall-interface#reporting-the-guest-os-identity).
 
 For unenlightened guests, set to 0 (WinDbg will show "Unknown OS" but
 still function).

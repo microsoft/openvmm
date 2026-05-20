@@ -96,6 +96,29 @@ fn setup_dll_search_path() -> bool {
     false
 }
 
+/// Returns `true` if the DLL is available. If not, either skips (local dev)
+/// or panics (CI). Set `OPENVMM_NO_TEST_SKIP=1` in CI to require
+/// these tests to actually run.
+fn require_dll() -> bool {
+    let must_run = std::env::var("OPENVMM_NO_TEST_SKIP").is_ok_and(|v| v == "1");
+
+    if !setup_dll_search_path() {
+        if must_run {
+            panic!("OPENVMM_NO_TEST_SKIP is set but Windows SDK not found");
+        }
+        eprintln!("SKIP: Windows SDK not found");
+        return false;
+    }
+    if !dll::is_supported::LoadSavedStateFile() {
+        if must_run {
+            panic!("OPENVMM_NO_TEST_SKIP is set but VmSavedStateDumpProvider.dll not loadable");
+        }
+        eprintln!("SKIP: VmSavedStateDumpProvider.dll not loadable");
+        return false;
+    }
+    true
+}
+
 fn zero_xsave() -> virt::x86::vp::Xsave {
     virt::x86::vp::Xsave {
         data: vec![0u64; 72],
@@ -205,12 +228,7 @@ fn load_and_verify(vmrs_data: &[u8], expected_vp_count: u32, _test_name: &str) {
 
 #[test]
 fn dll_validates_single_vp() {
-    if !setup_dll_search_path() {
-        eprintln!("SKIP: Windows SDK not found");
-        return;
-    }
-    if !dll::is_supported::LoadSavedStateFile() {
-        eprintln!("SKIP: VmSavedStateDumpProvider.dll not loadable");
+    if !require_dll() {
         return;
     }
 
@@ -222,12 +240,7 @@ fn dll_validates_single_vp() {
 
 #[test]
 fn dll_validates_multi_vp() {
-    if !setup_dll_search_path() {
-        eprintln!("SKIP: Windows SDK not found");
-        return;
-    }
-    if !dll::is_supported::LoadSavedStateFile() {
-        eprintln!("SKIP: VmSavedStateDumpProvider.dll not loadable");
+    if !require_dll() {
         return;
     }
 
@@ -242,12 +255,7 @@ fn dll_validates_multi_vp() {
 /// chained object tables (226 usable entries per table).
 #[test]
 fn dll_validates_large_memory() {
-    if !setup_dll_search_path() {
-        eprintln!("SKIP: Windows SDK not found");
-        return;
-    }
-    if !dll::is_supported::LoadSavedStateFile() {
-        eprintln!("SKIP: VmSavedStateDumpProvider.dll not loadable");
+    if !require_dll() {
         return;
     }
 
