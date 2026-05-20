@@ -327,6 +327,11 @@ impl Channel {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
 
+        if self.enlightened_write.is_some() {
+            tracelimit::error_ratelimited!("enlightened write while one is in progress, ignoring");
+            return IoResult::Ok;
+        }
+
         // Read the EnlightenedInt13Command packet directly from guest ram
         let addr = u32::from_ne_bytes(data.try_into().unwrap());
 
@@ -364,10 +369,6 @@ impl Channel {
                 );
                 return IoResult::Ok;
             }
-        }
-        if self.enlightened_write.is_some() {
-            tracelimit::error_ratelimited!("enlightened write while one is in progress, ignoring");
-            return IoResult::Ok;
         }
 
         let result = if let Some(drive_type) = self.current_drive_type() {
