@@ -327,24 +327,6 @@ impl Channel {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
 
-        if let Some(status) = self.current_drive_status() {
-            if status.err() {
-                tracelimit::warn_ratelimited!(
-                    "drive is in error state, ignoring enlightened command",
-                );
-                return IoResult::Ok;
-            } else if status.bsy() || status.drq() {
-                tracelimit::warn_ratelimited!(
-                    "command is already pending on this drive, ignoring enlightened command"
-                );
-                return IoResult::Ok;
-            }
-        }
-        if self.enlightened_write.is_some() {
-            tracelimit::error_ratelimited!("enlightened write while one is in progress, ignoring");
-            return IoResult::Ok;
-        }
-
         // Read the EnlightenedInt13Command packet directly from guest ram
         let addr = u32::from_ne_bytes(data.try_into().unwrap());
 
@@ -369,6 +351,24 @@ impl Channel {
             eint13_cmd.device_head.into(),
             bus_master_state,
         );
+
+        if let Some(status) = self.current_drive_status() {
+            if status.err() {
+                tracelimit::warn_ratelimited!(
+                    "drive is in error state, ignoring enlightened command",
+                );
+                return IoResult::Ok;
+            } else if status.bsy() || status.drq() {
+                tracelimit::warn_ratelimited!(
+                    "command is already pending on this drive, ignoring enlightened command"
+                );
+                return IoResult::Ok;
+            }
+        }
+        if self.enlightened_write.is_some() {
+            tracelimit::error_ratelimited!("enlightened write while one is in progress, ignoring");
+            return IoResult::Ok;
+        }
 
         let result = if let Some(drive_type) = self.current_drive_type() {
             match drive_type {
