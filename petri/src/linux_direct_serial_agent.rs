@@ -59,8 +59,12 @@ impl LinuxDirectSerialAgent {
             let n = self.read.read(&mut buf).await?;
             tracing::debug!(buf = ?&buf[..n], "read serial bytes from guest");
             output.extend_from_slice(&buf[..n]);
-            if output.ends_with(COMMAND_END_SIGNAL.as_bytes()) {
-                output.truncate(output.len() - COMMAND_END_SIGNAL.len());
+            if let Some(pos) = output
+                .windows(COMMAND_END_SIGNAL.len())
+                .rev()
+                .position(|window| window == COMMAND_END_SIGNAL.as_bytes())
+            {
+                output.truncate(pos);
                 break;
             }
         }
