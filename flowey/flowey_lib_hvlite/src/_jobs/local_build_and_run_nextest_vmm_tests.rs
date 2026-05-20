@@ -314,6 +314,7 @@ impl SimpleFlowNode for Node {
                         [].into()
                     },
                 },
+                version: None,
                 openvmm: v,
             });
             if copy_extras {

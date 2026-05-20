@@ -835,6 +835,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f88a43d011fc4a6876cb7344703e297c71dda42494fee094d5f7c76bf13f746"
 
 [[package]]
+name = "cms"
+version = "0.3.0-pre.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "986e7713348fbe5322df18082d73a0ad53a2946dbb7a02452cf3622b83b91e7c"
+dependencies = [
+ "const-oid",
+ "der",
+ "spki",
+ "x509-cert",
+]
+
+[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1072,6 +1084,7 @@ version = "0.0.0"
 dependencies = [
  "aes-kw",
  "anyhow",
+ "cms",
  "der",
  "getrandom 0.4.2",
  "hex",
@@ -5309,6 +5322,7 @@ dependencies = [
 name = "openvmm"
 version = "0.0.0"
 dependencies = [
+ "embed-resource",
  "openvmm_entry",
  "openvmm_resources",
 ]
@@ -8428,12 +8442,12 @@ dependencies = [
  "build_info",
  "build_rs_guest_arch",
  "cfg-if",
- "chipset",
  "chipset_device",
  "chipset_device_resources",
  "chipset_device_worker",
  "chipset_device_worker_defs",
  "chipset_legacy",
+ "chipset_resources",
  "closeable_mutex",
  "crypto",
  "cvm_tracing",

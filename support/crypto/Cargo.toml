@@ -22,6 +22,7 @@ symcrypt = [
     "dep:symcrypt",
     "symcrypt/sha1",
     # The Symcrypt backend uses RustCrypto crates for de/serialization only.
+    "dep:cms",
     "dep:der",
     "dep:pkcs1",
     "dep:pkcs8",
@@ -34,6 +35,7 @@ symcrypt = [
 # This backend should not be used in production scenarios.
 rust = [
     "dep:aes-kw",
+    "dep:cms",
     "dep:der",
     "dep:getrandom",
     "dep:pkcs1",
@@ -51,6 +53,7 @@ openssl = { workspace = true, optional = true }
 symcrypt = { workspace = true, optional = true }
 
 aes-kw = { workspace = true, optional = true }
+cms = { workspace = true, optional = true }
 der = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true, features = ["sys_rng"] }
 pkcs1 = { workspace = true, optional = true }

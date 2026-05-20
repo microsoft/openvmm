@@ -7,6 +7,8 @@ cfg_if::cfg_if! {
     if #[cfg(guest_arch = "x86_64")] {
         pub use hvdef::HvX64RegisterName as HvArchRegisterName;
         use chipset_device_resources::BSP_LINT_LINE_SET;
+        use chipset_resources::pm::DEFAULT_ACPI_IRQ;
+        use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
         use virt::irqcon::MsiRequest;
         use vmm_core::acpi_builder::AcpiTablesBuilder;
     } else if #[cfg(guest_arch = "aarch64")] {
@@ -192,9 +194,6 @@ use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
 use watchdog_core::resources::StaticWatchdogPlatformResolver;
 use zerocopy::FromZeros;
-
-pub(crate) const PM_BASE: u16 = 0x400;
-pub(crate) const SYSTEM_IRQ_ACPI: u32 = 9;
 
 pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new("UnderhillWorker");
 
@@ -2225,6 +2224,11 @@ async fn new_underhill_vm(
     resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
         partition.ioapic_routing(),
     ));
+    resolver.add_resolver(
+        crate::emuplat::pm_timer_assist::UnderhillPmTimerAssistResolver {
+            partition: Arc::downgrade(&partition),
+        },
+    );
 
     let bounce_buffer_tracker = {
         let size = {
@@ -2358,7 +2362,8 @@ async fn new_underhill_vm(
         } else {
             anyhow::bail!("unsupported guest architecture")
         },
-    );
+    )
+    .with_platform_pm_timer_assist();
 
     if with_serial {
         chipset = chipset.with_serial(serial_inputs);
@@ -2424,8 +2429,8 @@ async fn new_underhill_vm(
                     with_pic: capabilities.with_pic,
                     with_pit: capabilities.with_pit,
                     with_psp: dps.general.psp_enabled,
-                    pm_base: PM_BASE,
-                    acpi_irq: SYSTEM_IRQ_ACPI,
+                    pm_base: DEFAULT_PM_PIO_BASE,
+                    acpi_irq: DEFAULT_ACPI_IRQ,
                 },
             };
 
@@ -2787,15 +2792,6 @@ async fn new_underhill_vm(
     let deps_generic_isa_dma = chipset
         .with_generic_isa_dma
         .then_some(dev::GenericIsaDmaDeps);
-    let deps_piix4_power_management =
-        chipset
-            .with_piix4_power_management
-            .then(|| dev::Piix4PowerManagementDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-                pm_timer_assist: Some(Box::new(UnderhillPmTimerAssist {
-                    partition: Arc::downgrade(&partition),
-                })),
-            });
 
     let deps_winbond_super_io_and_floppy_stub = chipset
         .with_winbond_super_io_and_floppy_stub
@@ -2952,22 +2948,10 @@ async fn new_underhill_vm(
         });
     };
 
-    let deps_hyperv_power_management =
-        chipset
-            .with_hyperv_power_management
-            .then(|| dev::HyperVPowerManagementDeps {
-                acpi_irq: SYSTEM_IRQ_ACPI,
-                pio_base: PM_BASE,
-                pm_timer_assist: Some(Box::new(UnderhillPmTimerAssist {
-                    partition: Arc::downgrade(&partition),
-                })),
-            });
-
     let devices = BaseChipsetDevices {
         deps_generic_cmos_rtc,
         deps_generic_psp,
         deps_hyperv_firmware_uefi,
-        deps_hyperv_power_management,
         deps_generic_isa_dma,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
@@ -2978,7 +2962,6 @@ async fn new_underhill_vm(
         deps_i440bx_host_pci_bridge,
         deps_piix4_cmos_rtc,
         deps_piix4_pci_bus,
-        deps_piix4_power_management,
         deps_underhill_vga_proxy,
         deps_winbond_super_io_and_floppy_stub,
         deps_winbond_super_io_and_floppy_full: None,
@@ -3912,25 +3895,6 @@ async fn load_firmware(
         .context("failed to set initial registers")?;
 
     Ok(())
-}
-
-pub struct UnderhillPmTimerAssist {
-    pub partition: std::sync::Weak<UhPartition>,
-}
-
-impl chipset::pm::PmTimerAssist for UnderhillPmTimerAssist {
-    fn set(&self, port: Option<u16>) {
-        if let Some(partition) = self.partition.upgrade() {
-            if let Err(err) = partition.set_pm_timer_assist(port) {
-                tracing::warn!(
-                    CVM_ALLOWED,
-                    error = &err as &dyn std::error::Error,
-                    ?port,
-                    "failed to set PM timer assist"
-                );
-            }
-        }
-    }
 }
 
 // Represents a stub MMIO device that handles unhandled MMIO accesses by

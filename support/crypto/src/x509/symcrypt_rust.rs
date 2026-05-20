@@ -6,8 +6,6 @@
 use super::X509Error;
 use der::Decode;
 use der::Encode;
-#[cfg(symcrypt)]
-use rsa::sha2;
 use x509_cert::Certificate;
 
 #[cfg(symcrypt)]
@@ -30,7 +28,7 @@ fn rsa_der_err(err: der::Error, op: &'static str) -> crate::rsa::RsaError {
     crate::rsa::RsaError(rsa::Error::Pkcs1(pkcs1::Error::Asn1(err)), op)
 }
 
-pub struct X509CertificateInner(Certificate);
+pub struct X509CertificateInner(pub(crate) Certificate);
 
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
@@ -61,11 +59,10 @@ impl X509CertificateInner {
         &self,
         issuer_public_key: &crate::rsa::RsaPublicKey,
     ) -> Result<bool, crate::rsa::RsaError> {
-        use rsa::pkcs1v15::RsaSignatureAssociatedOid;
-
         let oid = self.0.signature_algorithm().oid;
         let hash = match oid {
-            sha2::Sha256::OID => crate::rsa::HashAlgorithm::Sha256,
+            der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION => crate::rsa::HashAlgorithm::Sha256,
+            der::oid::db::rfc5912::SHA_1_WITH_RSA_ENCRYPTION => crate::rsa::HashAlgorithm::Sha1,
             _ => {
                 return Err(rsa_der_err(
                     der::ErrorKind::OidUnknown { oid }.to_error(),
@@ -166,6 +163,8 @@ impl X509CertificateInner {
         common_name: &str,
     ) -> anyhow::Result<Self> {
         use core::str::FromStr;
+        #[cfg(symcrypt)]
+        use rsa::sha2;
         use x509_cert::builder::Builder;
         use x509_cert::name::Name;
 
