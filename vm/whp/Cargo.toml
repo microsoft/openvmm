@@ -6,9 +6,6 @@ name = "whp"
 edition.workspace = true
 rust-version.workspace = true
 
-[features]
-unstable_whp = []
-
 [target.'cfg(windows)'.dependencies]
 guid.workspace = true
 pal.workspace = true

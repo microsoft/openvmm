@@ -35,11 +35,6 @@ disk_blob = ["openvmm_resources/disk_blob"]
 disk_crypt = ["openvmm_resources/disk_crypt"]
 disklayer_sqlite = ["openvmm_resources/disklayer_sqlite"]
 
-# build openvmm to support the latest insider build of windows on arm
-# rather than latest release build
-# TODO: remove once whp on arm is stabilized
-unstable_whp = ["openvmm_entry/unstable_whp", "openvmm_resources/unstable_whp"]
-
 [dependencies]
 openvmm_entry.workspace = true
 openvmm_resources.workspace = true

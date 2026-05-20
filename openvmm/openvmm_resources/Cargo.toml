@@ -25,8 +25,6 @@ virt_whp = ["openvmm_core/virt_whp", "openvmm_hypervisors/virt_whp"]
 # Enable building with macOS hypervisor framework support.
 virt_hvf = ["openvmm_hypervisors/virt_hvf"]
 
-unstable_whp = ["openvmm_core/unstable_whp"]
-
 [dependencies]
 mesh_worker.workspace = true
 openvmm_hypervisors.workspace = true
