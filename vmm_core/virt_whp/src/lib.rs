@@ -490,21 +490,6 @@ impl virt::ScrubVtl for WhpPartition {
         self.inner.vtl2_emulation.as_ref().unwrap().reset(false);
         self.validate_is_reset(Vtl::Vtl2);
 
-        // Reset per-VP VTL2-enable state on non-BSP VPs. The new VTL2 firmware
-        // will re-issue `HvCallEnableVpVtl` on each AP to program its startup
-        // context (RIP/RSP/CR3/GDT/IDT). Without clearing this flag, the
-        // hypercall handler would short-circuit with `VtlAlreadyEnabled` and
-        // skip programming the AP context, leaving APs to resume at stale
-        // pre-scrub register values and potentially fault. Note that
-        // `set_initial_regs` only programs the BSP, so APs rely entirely on
-        // this enable-VP-VTL path after scrub. The BSP is left alone because
-        // it boots directly via `set_initial_regs` and is always in VTL2.
-        for vp in &self.inner.vps {
-            if !vp.vp_info.base.vp_index.is_bsp() {
-                vp.vtl2_enable.store(false, Ordering::SeqCst);
-            }
-        }
-
         #[cfg(guest_arch = "x86_64")]
         {
             self.access_state(Vtl::Vtl2).set_reftime(&reference_time)?;
@@ -1683,6 +1668,19 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         // Scrub only resets VTL2.
         self.finish_reset(Vtl::Vtl2);
         self.vplc(Vtl::Vtl2).message_queues.clear();
+
+        // Reset per-VP VTL2-enable state on non-BSP VPs. The new VTL2
+        // will re-issue `HvCallEnableVpVtl` on each AP to program its startup
+        // context (RIP/RSP/CR3/GDT/IDT). Without clearing this flag, the
+        // hypercall handler would short-circuit with `VtlAlreadyEnabled` and
+        // skip programming the AP context, leaving APs to resume at stale
+        // pre-scrub register values and potentially fault. Note that
+        // `set_initial_regs` only programs the BSP, so APs rely entirely on
+        // this enable-VP-VTL path after scrub. The BSP is left alone because
+        // it boots directly via `set_initial_regs` and is always in VTL2.
+        if !is_bsp {
+            self.inner.vtl2_enable.store(false, Ordering::SeqCst);
+        }
 
         if cfg!(debug_assertions) {
             let vp_info = &self.inner.vp_info;
