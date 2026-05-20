@@ -721,7 +721,7 @@ pub(crate) struct VfioCdevManager {
     /// Spawner for per-iommu manager tasks.
     spawner: Arc<dyn pal_async::task::Spawn>,
     /// Per-iommu manager tasks (kept alive).
-    _tasks: Vec<pal_async::task::Task<()>>,
+    tasks: Vec<pal_async::task::Task<()>>,
     recv: mesh::Receiver<VfioCdevManagerRpc>,
 }
 
@@ -759,7 +759,7 @@ impl VfioCdevManager {
             managers: HashMap::new(),
             dma_mapper_client,
             spawner,
-            _tasks: Vec::new(),
+            tasks: Vec::new(),
             recv: mesh::Receiver::new(),
         }
     }
@@ -770,12 +770,7 @@ impl VfioCdevManager {
             match rpc {
                 VfioCdevManagerRpc::PrepareDevice(rpc) => {
                     let (req, respond) = rpc.split();
-                    match self.route_prepare(req, respond) {
-                        Ok(()) => {} // forwarded to per-iommu manager
-                        Err((e, respond)) => {
-                            respond.fail(e);
-                        }
-                    }
+                    self.route_prepare(req, respond).await;
                 }
                 VfioCdevManagerRpc::Inspect(deferred) => {
                     deferred.respond(|resp| {
@@ -791,13 +786,18 @@ impl VfioCdevManager {
     }
 
     /// Route a prepare request to the per-iommu manager, spawning one
-    /// if needed. Returns Ok(()) if forwarded, or Err with the error
-    /// and response handle if spawning failed.
-    fn route_prepare(
+    /// if needed. Initializes the per-iommu manager inline on first use
+    /// so that init failures are reported directly to the caller.
+    ///
+    /// The actual bind/attach ioctls are forwarded to the per-iommu
+    /// manager task via fire-and-forget send, so the dispatcher is
+    /// immediately free to handle the next request. This allows devices
+    /// on different `--iommu` contexts to be prepared concurrently.
+    async fn route_prepare(
         &mut self,
         req: CdevPrepareRequest,
         respond: FailableRpc<(), CdevPrepareResponse>,
-    ) -> Result<(), (anyhow::Error, FailableRpc<(), CdevPrepareResponse>)> {
+    ) {
         let CdevPrepareRequest {
             pci_id,
             cdev,
@@ -805,41 +805,44 @@ impl VfioCdevManager {
             iommu_id,
         } = req;
 
-        let sender = if let Some(sender) = self.managers.get(&iommu_id) {
-            sender.clone()
-        } else {
-            let mut ioas_recv: mesh::Receiver<IoasManagerRpc> = mesh::Receiver::new();
-            let sender = ioas_recv.sender();
+        let sender = match self.managers.entry(iommu_id.clone()) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                let mut ioas_recv: mesh::Receiver<IoasManagerRpc> = mesh::Receiver::new();
+                let sender = ioas_recv.sender();
 
-            let dma_mapper_client = self.dma_mapper_client.clone();
-            let iommu_id2 = iommu_id.clone();
-            let task = self
-                .spawner
-                .spawn(format!("vfio-ioas-{iommu_id}"), async move {
-                    match IoasManager::new(iommu_id2, iommufd, &dma_mapper_client, ioas_recv).await
-                    {
-                        Ok(mgr) => mgr.run().await,
-                        Err(e) => {
-                            tracing::error!(
-                                error = format!("{e:#}"),
-                                "failed to initialize iommufd IOAS manager"
-                            );
-                            // The recv will be dropped, causing all pending
-                            // and future RPCs to fail with channel-closed.
-                        }
+                let mgr = match IoasManager::new(
+                    iommu_id.clone(),
+                    iommufd,
+                    &self.dma_mapper_client,
+                    ioas_recv,
+                )
+                .await
+                .with_context(|| {
+                    format!("failed to initialize iommufd IOAS manager for iommu={iommu_id}")
+                }) {
+                    Ok(mgr) => mgr,
+                    Err(e) => {
+                        respond.fail(e);
+                        return;
                     }
-                });
-            self._tasks.push(task);
-            self.managers.insert(iommu_id, sender.clone());
-            sender
+                };
+
+                let task = self
+                    .spawner
+                    .spawn(format!("vfio-ioas-{iommu_id}"), mgr.run());
+                self.tasks.push(task);
+                e.insert(sender)
+            }
         };
 
+        // Forward to the per-iommu manager task. The manager will
+        // complete the respond half after the bind/attach ioctls.
         sender.send(IoasManagerRpc::PrepareDevice {
             pci_id,
             cdev,
             respond,
         });
-        Ok(())
     }
 
     pub(crate) fn client(&mut self) -> VfioCdevManagerClient {
