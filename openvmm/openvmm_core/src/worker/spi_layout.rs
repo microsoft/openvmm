@@ -12,9 +12,10 @@
 //! This is critical for hibernation — a resumed VM must get the same SPI
 //! layout as the original.
 //!
-//! SPIs are allocated top-down from INTID 1019. This maximizes distance from
-//! the guest-side vPCI MSI allocator (Hyper-V PCI driver in Linux), which
-//! allocates bottom-up starting at INTID 64.
+//! SPIs are allocated top-down from the highest SPI supported by the GIC
+//! (determined by `gic_nr_irqs`). This maximizes distance from the guest-side
+//! vPCI MSI allocator (Hyper-V PCI driver in Linux), which allocates bottom-up
+//! starting at INTID 64.
 
 /// Top-down GIC SPI allocator.
 struct SpiAllocator {
@@ -58,6 +59,9 @@ impl SpiAllocator {
 
 /// Inputs to the SPI layout resolver.
 pub(super) struct SpiLayoutInput {
+    /// Total number of GIC interrupt lines (INTIDs 0..gic_nr_irqs-1).
+    /// Determines the highest usable SPI.
+    pub gic_nr_irqs: u32,
     /// Number of SPIs to reserve for GICv2m MSI delivery. `None` when using
     /// ITS (no v2m block needed).
     pub v2m_spi_count: Option<u32>,
@@ -72,11 +76,12 @@ pub(super) struct ResolvedSpiLayout {
 /// Resolves SPI assignments for all platform devices.
 ///
 /// All allocations happen here in a single top-down pass over the SPI range
-/// `[64, 1019]`. The order of allocations determines the layout and must not
-/// change across OpenVMM versions for a given config, or hibernation will
-/// break.
+/// `[64, gic_nr_irqs-1]`. The order of allocations determines the layout and
+/// must not change across OpenVMM versions for a given config, or hibernation
+/// will break.
 pub(super) fn resolve_spi_layout(input: &SpiLayoutInput) -> anyhow::Result<ResolvedSpiLayout> {
-    let mut spi = SpiAllocator::new(64..=1019);
+    let max_intid = input.gic_nr_irqs.saturating_sub(1).min(1019);
+    let mut spi = SpiAllocator::new(64..=max_intid);
 
     // --- Allocation order (do not reorder!) ---
 
@@ -96,16 +101,18 @@ mod tests {
     #[test]
     fn v2m_allocation() {
         let result = resolve_spi_layout(&SpiLayoutInput {
+            gic_nr_irqs: 992,
             v2m_spi_count: Some(64),
         })
         .unwrap();
 
-        assert_eq!(result.v2m_spi_base, Some(956));
+        assert_eq!(result.v2m_spi_base, Some(928));
     }
 
     #[test]
     fn its_skips_v2m() {
         let result = resolve_spi_layout(&SpiLayoutInput {
+            gic_nr_irqs: 992,
             v2m_spi_count: None,
         })
         .unwrap();

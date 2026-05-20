@@ -612,7 +612,9 @@ fn build_aarch64_topology(
     };
 
     // Resolve SPI layout — all SPI allocations in one deterministic pass.
+    let gic_nr_irqs = openvmm_defs::config::DEFAULT_GIC_NR_IRQS;
     let spi_layout = super::spi_layout::resolve_spi_layout(&super::spi_layout::SpiLayoutInput {
+        gic_nr_irqs,
         v2m_spi_count,
     })?;
 
@@ -637,7 +639,7 @@ fn build_aarch64_topology(
         gic_msi,
         pmu_gsiv,
         virt_timer_ppi: openvmm_defs::config::DEFAULT_VIRT_TIMER_PPI,
-        gic_nr_irqs: openvmm_defs::config::DEFAULT_GIC_NR_IRQS,
+        gic_nr_irqs,
     };
 
     let mut builder = TopologyBuilder::new_aarch64(platform);
