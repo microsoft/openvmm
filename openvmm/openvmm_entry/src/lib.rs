@@ -791,9 +791,10 @@ async fn vm_config_from_command_line(
                             cli_cfg.pci_id
                         )
                     })?;
-                    // Open a cloned iommufd fd (each device binding needs its own fd
-                    // for VFIO_DEVICE_BIND_IOMMUFD, but they can share the same
-                    // underlying iommufd kernel object via dup).
+                    // Clone the iommufd fd so the per-iommu manager can own it.
+                    // The first device for a given iommu ID uses the cloned fd
+                    // to create the IoasManager; subsequent devices reuse the
+                    // existing manager and the cloned fd is dropped.
                     let iommufd = iommufd.try_clone().with_context(|| {
                         format!("failed to dup iommufd fd for iommu={iommu_id}")
                     })?;

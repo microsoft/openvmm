@@ -216,14 +216,6 @@ impl Container {
             ioctl::vfio_iommu_unmap_dma(self.file.as_raw_fd(), &mut dma_unmap)
                 .context("VFIO_IOMMU_UNMAP_DMA failed")?;
         }
-        if dma_unmap.size != size {
-            tracing::warn!(
-                iova,
-                requested = size,
-                actual = dma_unmap.size,
-                "VFIO_IOMMU_UNMAP_DMA: unmapped size differs from requested"
-            );
-        }
         Ok(())
     }
 }
