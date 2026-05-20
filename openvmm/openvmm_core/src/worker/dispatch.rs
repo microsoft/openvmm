@@ -22,6 +22,7 @@ use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::cmos_rtc::GenericCmosRtcDeviceHandle;
+#[cfg(guest_arch = "x86_64")]
 use chipset_resources::cmos_rtc::Piix4CmosRtcDeviceHandle;
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
 use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
@@ -1625,9 +1626,11 @@ impl InitializedVm {
 
         let mut chipset_device_handles = cfg.chipset_devices;
 
-        // Emit CMOS RTC device handles based on load mode / architecture.
-        // PCAT uses the PIIX4 variant; all other configurations (including
-        // non-x86 architectures) use the generic variant.
+        // Emit CMOS RTC device handles based on load mode and manifest flags.
+        // PCAT (x86-only) uses the PIIX4 variant; other configurations use
+        // the generic variant when enabled by the manifest.
+        let emit_generic_rtc;
+        #[cfg(guest_arch = "x86_64")]
         if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {
             let initial_rtc_cmos = Some(firmware_pcat::default_cmos_values(&mem_layout));
             chipset_device_handles.push(ChipsetDeviceHandle {
@@ -1642,7 +1645,15 @@ impl InitializedVm {
                 }
                 .into_resource(),
             });
+            emit_generic_rtc = false;
         } else {
+            emit_generic_rtc = cfg.chipset.with_generic_cmos_rtc;
+        }
+        #[cfg(not(guest_arch = "x86_64"))]
+        {
+            emit_generic_rtc = cfg.chipset.with_generic_cmos_rtc;
+        }
+        if emit_generic_rtc {
             chipset_device_handles.push(ChipsetDeviceHandle {
                 name: "rtc".to_owned(),
                 resource: GenericCmosRtcDeviceHandle {
