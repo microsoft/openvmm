@@ -1092,12 +1092,6 @@ impl<'b> ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpBacked> {
                 vmsa.v_intr_cntrl_mut().set_nmi_enable(true);
                 vmsa.v_intr_cntrl_mut().set_nmi(true);
             }
-
-            // Wake this VP so an idle VP comes out of  HLT and runs VMRUN.
-            // The VMSA is encrypted so the hypervisor cannot see the V_NMI
-            // write directly; without an explicit wake, a VP sitting in HLT
-            // will not VMRUN so hardware can deliver the virtual NMI.
-            self.inner.wake(vtl, WakeReason::INTCON);
         } else {
             let mut vmsa = self.runner.vmsa_mut(vtl);
             // TODO GUEST VSM: Don't inject the NMI if there's already an event

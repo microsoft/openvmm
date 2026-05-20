@@ -2035,9 +2035,7 @@ impl UhPartition {
                 _ => false,
             };
             if !vnmi {
-                tracing::error!(
-                    "debug interrupt is not supported on SNP without virtual NMI"
-                );
+                tracing::error!("debug interrupt is not supported on SNP without virtual NMI");
                 return;
             }
         }
