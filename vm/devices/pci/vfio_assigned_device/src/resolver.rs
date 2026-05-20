@@ -93,9 +93,8 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
 
 /// Resource resolver for [`VfioCdevDeviceHandle`] (cdev + iommufd path).
 ///
-/// Spawns a [`VfioCdevManager`](crate::manager::VfioCdevManager) task
-/// internally and communicates with it via RPC to share IOAS contexts
-/// across devices referencing the same `--iommu` ID.
+/// Spawns a `VfioCdevManager` task internally and communicates with it via RPC
+/// to share IOAS contexts across devices referencing the same iommu ID.
 pub struct VfioCdevDeviceResolver {
     client: crate::manager::VfioCdevManagerClient,
     _task: pal_async::task::Task<()>,

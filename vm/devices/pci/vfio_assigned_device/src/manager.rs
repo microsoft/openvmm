@@ -725,7 +725,7 @@ pub(crate) struct VfioCdevManager {
     recv: mesh::Receiver<VfioCdevManagerRpc>,
 }
 
-/// Client handle for the [`VfioCdevManager`] dispatcher.
+/// Client handle for the `VfioCdevManager` dispatcher.
 #[derive(Clone)]
 pub struct VfioCdevManagerClient {
     sender: mesh::Sender<VfioCdevManagerRpc>,
