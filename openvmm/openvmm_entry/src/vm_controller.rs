@@ -429,7 +429,7 @@ impl VmController {
         // Dump state to the temp file (worker pauses, collects VP state +
         // streams memory, then resumes).
         self.vm_rpc
-            .call_failable(VmRpc::DumpState, tmp_file.as_file().try_clone()?.into())
+            .call_failable(VmRpc::DumpState, tmp_file.as_file().try_clone()?)
             .await
             .context("failed to dump state")?;
 
