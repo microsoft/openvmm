@@ -306,6 +306,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         let mut cpuid = self.cpuid.into_leaves();
         cpuid.extend(config.cpuid);
         cpuid.extend(topology_leaves);
+        fixup_spec_ctrl_cpuid(&mut cpuid);
         let cpuid = CpuidLeafSet::new(cpuid);
 
         let bsp_apic_id = self.config.processor_topology.vp_arch(VpIndex::BSP).apic_id;
@@ -484,6 +485,49 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         }
 
         Ok((partition, vps))
+    }
+}
+
+/// Work around a KVM bug where PSFD is advertised in guest CPUID but the
+/// SPEC_CTRL MSR (0x48) is not accessible.
+///
+/// KVM's `guest_has_spec_ctrl_msr()` determines whether a guest may access
+/// MSR 0x48 by checking CPUID 7.0.EDX bit 26 (SPEC_CTRL), and
+/// 0x80000008.EBX bits 14 (AMD_IBRS), 15 (AMD_STIBP), and 24 (AMD_SSBD).
+/// However, KVM also passes through AMD PSFD (0x80000008.EBX bit 28) in
+/// CPUID without including it in that check. PSFD is architecturally
+/// controlled via bit 7 of MSR 0x48, so a guest that sees PSFD and infers
+/// SPEC_CTRL MSR support (as Hyper-V does) will #GP when writing the MSR.
+///
+/// Strip PSFD from the guest CPUID when none of the bits that KVM uses to
+/// gate MSR 0x48 access are present.
+fn fixup_spec_ctrl_cpuid(cpuid: &mut Vec<CpuidLeaf>) {
+    use x86defs::cpuid::ExtendedAddressSpaceSizesEbx;
+    use x86defs::cpuid::ExtendedFeatureSubleaf0Edx;
+
+    let temp_cpuid = CpuidLeafSet::new(cpuid.clone());
+    let leaf7 = temp_cpuid.result(CpuidFunction::ExtendedFeatures.0, 0, &[0; 4]);
+    let leaf80000008 = temp_cpuid.result(
+        CpuidFunction::ExtendedAddressSpaceSizes.0,
+        0,
+        &[0; 4],
+    );
+
+    let edx = ExtendedFeatureSubleaf0Edx::from(leaf7[3]);
+    let ebx = ExtendedAddressSpaceSizesEbx::from(leaf80000008[1]);
+
+    // Mirror KVM's guest_has_spec_ctrl_msr() check.
+    let has_spec_ctrl_msr = edx.ibrs() || ebx.ibrs() || ebx.stibp() || ebx.ssbd();
+
+    if !has_spec_ctrl_msr && ebx.psfd() {
+        let psfd_mask = ExtendedAddressSpaceSizesEbx::new().with_psfd(true);
+        cpuid.push(
+            CpuidLeaf::new(
+                CpuidFunction::ExtendedAddressSpaceSizes.0,
+                [0, 0, 0, 0],
+            )
+            .masked([0, u32::from(psfd_mask), 0, 0]),
+        );
     }
 }
 
