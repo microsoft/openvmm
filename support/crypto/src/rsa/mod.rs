@@ -23,12 +23,14 @@ pub(crate) use symcrypt as sys;
 use thiserror::Error;
 
 /// An error for RSA operations.
+// TODO: Make this clone once RustCrypto rsa::errors::Error is cloneable
 #[cfg(not(rust))]
 #[derive(Debug, Error)]
 #[error("RSA error")]
 pub struct RsaError(#[source] pub(crate) super::BackendError);
 
 /// An error for RSA operations.
+// TODO: Make this clone once RustCrypto rsa::errors::Error is cloneable
 #[cfg(rust)]
 #[derive(Debug, Error)]
 #[error("RSA error during {1}")]
