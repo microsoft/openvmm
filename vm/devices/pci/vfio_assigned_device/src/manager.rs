@@ -145,15 +145,10 @@ pub(crate) struct VfioContainerManager {
 ///
 /// Inspecting this sends a deferred inspect request to the container manager
 /// task, which reports the container/group/device topology.
-#[derive(Clone)]
+#[derive(Clone, Inspect)]
 pub struct VfioManagerClient {
+    #[inspect(flatten, send = "VfioManagerRpc::Inspect")]
     sender: mesh::Sender<VfioManagerRpc>,
-}
-
-impl Inspect for VfioManagerClient {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.sender.send(VfioManagerRpc::Inspect(req.defer()));
-    }
 }
 
 impl VfioManagerClient {
@@ -532,16 +527,22 @@ pub(crate) enum IoasManagerRpc {
 /// referencing the same `--iommu` ID share one IOAS — one set of IOMMU
 /// page tables, one DMA mapper registration. Devices on different
 /// `--iommu` IDs are handled by separate `IoasManager` tasks concurrently.
+#[derive(Inspect)]
 struct IoasManager {
     iommu_id: String,
+    #[inspect(skip)]
     ctx: Arc<vfio_sys::iommufd::IommufdCtx>,
     ioas_id: u32,
     /// Keeps the DMA mapper registered with the region manager.
+    #[inspect(skip)]
     _dma_handle: membacking::DmaMapperHandle,
     /// Active devices on this IOAS.
+    #[inspect(with = "|x| inspect::iter_by_key(x.iter().map(|d| (&d.pci_id, ())))")]
     devices: Vec<CdevDeviceEntry>,
     /// Next device ID (unique within this manager).
+    #[inspect(skip)]
     next_device_id: u64,
+    #[inspect(skip)]
     recv: mesh::Receiver<IoasManagerRpc>,
 }
 
@@ -666,17 +667,6 @@ impl IoasManager {
     }
 }
 
-impl Inspect for IoasManager {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        let mut resp = req.respond();
-        resp.field("ioas_id", self.ioas_id);
-        resp.field("device_count", self.devices.len());
-        for dev in &self.devices {
-            resp.field(&dev.pci_id, ());
-        }
-    }
-}
-
 // --- Cdev dispatcher (VfioCdevManager) ---
 
 /// RPC messages for the cdev dispatcher.
@@ -726,15 +716,10 @@ pub(crate) struct VfioCdevManager {
 }
 
 /// Client handle for the `VfioCdevManager` dispatcher.
-#[derive(Clone)]
+#[derive(Clone, Inspect)]
 pub struct VfioCdevManagerClient {
+    #[inspect(flatten, send = "VfioCdevManagerRpc::Inspect")]
     sender: mesh::Sender<VfioCdevManagerRpc>,
-}
-
-impl Inspect for VfioCdevManagerClient {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.sender.send(VfioCdevManagerRpc::Inspect(req.defer()));
-    }
 }
 
 impl VfioCdevManagerClient {
@@ -940,16 +925,9 @@ impl Drop for VfioCdevBindingState {
 ///
 /// Kept as a field on `VfioAssignedPciDevice` to hold the underlying
 /// fd/handle resources alive for the device's lifetime.
+#[derive(Inspect)]
+#[inspect(external_tag)]
 pub(crate) enum VfioBinding {
     Group(VfioDeviceBinding),
     Cdev(VfioCdevBindingState),
-}
-
-impl Inspect for VfioBinding {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        match self {
-            VfioBinding::Group(b) => b.inspect(req),
-            VfioBinding::Cdev(b) => b.inspect(req),
-        }
-    }
 }
