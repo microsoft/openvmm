@@ -77,6 +77,17 @@ impl RsaKeyPairInner {
 pub struct RsaPublicKeyInner(pub(crate) openssl::pkey::PKey<openssl::pkey::Public>);
 
 impl RsaPublicKeyInner {
+    pub fn from_components(n: &[u8], e: &[u8]) -> Result<Self, RsaError> {
+        let n = openssl::bn::BigNum::from_slice(n).map_err(|e| err(e, "parsing modulus"))?;
+        let e =
+            openssl::bn::BigNum::from_slice(e).map_err(|e| err(e, "parsing public exponent"))?;
+        let rsa = openssl::rsa::Rsa::from_public_components(n, e)
+            .map_err(|e| err(e, "constructing RSA public key from components"))?;
+        let pkey =
+            openssl::pkey::PKey::from_rsa(rsa).map_err(|e| err(e, "converting RSA to PKey"))?;
+        Ok(Self(pkey))
+    }
+
     pub fn oaep_encrypt(
         &self,
         input: &[u8],

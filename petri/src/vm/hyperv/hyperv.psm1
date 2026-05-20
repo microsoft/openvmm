@@ -537,7 +537,15 @@ function Convert-ImcData
         [string] $ImcHive
     )
 
-    $imcHiveData = Get-Content -Encoding Byte $ImcHive
+    if ($PSVersionTable.PSVersion.Major -gt 5)
+    {
+        $imcHiveData = Get-Content -AsByteStream -Raw $ImcHive
+    }
+    else
+    {
+        $imcHiveData = Get-Content -Encoding Byte $ImcHive
+    }
+
     $length = [System.BitConverter]::GetBytes([int32]$imcHiveData.Length + 4)
     if ([System.BitConverter]::IsLittleEndian)
     {

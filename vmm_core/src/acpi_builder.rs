@@ -329,10 +329,18 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             // address reported in the MCFG table must reflect wherever bus number
             // 0 would be accessible even if the host bridge has a different starting
             // bus number.
+            //
+            // The layout resolver guarantees `ecam_range.start() >=
+            // start_bus * 1 MiB` so this subtraction never underflows in
+            // practice. Use `wrapping_sub` anyway so that, if a future code
+            // path ever bypasses that check, behavior matches what a C MCFG
+            // builder would do: the guest sees a wrapped base address and is
+            // most likely to still compute the right per-bus ECAM addresses
+            // for the buses it actually accesses.
             let ecam_region_offset = (bridge.start_bus as u64) * 256 * 4096;
             mcfg_extra.extend_from_slice(
                 acpi_spec::mcfg::McfgSegmentBusRange::new(
-                    bridge.ecam_range.start() - ecam_region_offset,
+                    bridge.ecam_range.start().wrapping_sub(ecam_region_offset),
                     bridge.segment,
                     bridge.start_bus,
                     bridge.end_bus,

@@ -167,11 +167,11 @@ impl FlowNode for Node {
                 );
             }
 
-            // On windows, we can't run with all features, as many crates
-            // require openSSL for crypto, which isn't supported yet.
+            // On Windows we can't run with all features since the TPM requires
+            // OpenSSL for crypto, which isn't supported in Windows CI today.
             //
-            // Adding the the "ci" feature is also used to skip certain tests
-            // that fail in CI.
+            // Adding the "ci" feature is also used to skip certain tests that
+            // fail in CI.
             let features = if matches!(
                 target.operating_system,
                 target_lexicon::OperatingSystem::Windows

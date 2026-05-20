@@ -20,6 +20,7 @@ use net_backend::QueueConfig;
 use net_backend::RxId;
 use net_backend::TxId;
 use net_backend::TxSegment;
+use net_backend::VlanMetadata;
 use net_backend::loopback::LoopbackEndpoint;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
@@ -34,6 +35,7 @@ use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 
 const IPV4_HEADER_LENGTH: usize = 54;
+const IPV4_VLAN_HEADER_LENGTH: usize = 58;
 const MAX_GDMA_SGE_PER_TX_PACKET: usize = 31;
 
 struct TxPacketBuilder {
@@ -744,7 +746,7 @@ async fn test_rx_error_handling(driver: DefaultDriver) {
     let mut pkt_builder = TxPacketBuilder::new();
     build_tx_segments(packet_len, num_segments, false, &mut pkt_builder);
 
-    let stats = test_endpoint(
+    let (stats, _) = test_endpoint(
         driver,
         GuestDmaMode::DirectDma,
         &pkt_builder,
@@ -802,7 +804,7 @@ async fn send_test_packet_multi(
         }
     });
 
-    let stats = test_endpoint(
+    let (stats, _) = test_endpoint(
         driver,
         dma_mode,
         pkt_builder,
@@ -834,13 +836,13 @@ async fn send_test_packet_multi(
     );
 }
 
-fn build_tx_segments(
+fn build_tx_segments_internal(
     packet_len: usize,
     num_segments: usize,
     enable_lso: bool,
+    vlan: Option<VlanMetadata>,
     pkt_builder: &mut TxPacketBuilder,
 ) {
-    // Packet length must be divisible by number of segments.
     assert_eq!(packet_len % num_segments, 0);
     let tx_id = 1;
     let segment_len = packet_len / num_segments;
@@ -848,19 +850,32 @@ fn build_tx_segments(
         id: TxId(tx_id),
         segment_count: num_segments as u8,
         len: packet_len as u32,
-        l2_len: 14,             // Ethernet header
+        l2_len: if vlan.is_some() {
+            18 // Ethernet header with 802.1q
+        } else {
+            14 // Ethernet header
+        },
         l3_len: 20,             // IPv4 header
         l4_len: 20,             // TCP header
         max_segment_size: 1460, // Typical MSS for Ethernet
+        vlan,
         ..Default::default()
     };
 
     tx_metadata.flags.set_offload_tcp_segmentation(enable_lso);
 
-    assert_eq!(
-        tx_metadata.l2_len as usize + tx_metadata.l3_len as usize + tx_metadata.l4_len as usize,
-        IPV4_HEADER_LENGTH
-    );
+    if tx_metadata.vlan.is_some() {
+        assert_eq!(
+            tx_metadata.l2_len as usize + tx_metadata.l3_len as usize + tx_metadata.l4_len as usize,
+            IPV4_VLAN_HEADER_LENGTH
+        );
+    } else {
+        assert_eq!(
+            tx_metadata.l2_len as usize + tx_metadata.l3_len as usize + tx_metadata.l4_len as usize,
+            IPV4_HEADER_LENGTH
+        );
+    }
+
     assert_eq!(packet_len % num_segments, 0);
 
     let mut gpa = pkt_builder.data_len();
@@ -880,6 +895,37 @@ fn build_tx_segments(
     }
 }
 
+fn build_tx_segments(
+    packet_len: usize,
+    num_segments: usize,
+    enable_lso: bool,
+    pkt_builder: &mut TxPacketBuilder,
+) {
+    build_tx_segments_internal(packet_len, num_segments, enable_lso, None, pkt_builder);
+}
+
+fn build_tx_segments_vlan(
+    packet_len: usize,
+    num_segments: usize,
+    vlan_id: u16,
+    vlan_priority: u8,
+    vlan_dei: bool,
+    pkt_builder: &mut TxPacketBuilder,
+) {
+    build_tx_segments_internal(
+        packet_len,
+        num_segments,
+        false, // LSO doesn't make sense for VLAN-tagged packets in these tests.
+        Some(
+            VlanMetadata::new()
+                .with_priority(vlan_priority)
+                .with_drop_eligible_indicator(vlan_dei)
+                .with_vlan_id(vlan_id),
+        ),
+        pkt_builder,
+    );
+}
+
 async fn test_endpoint(
     driver: DefaultDriver,
     dma_mode: GuestDmaMode,
@@ -887,7 +933,7 @@ async fn test_endpoint(
     expected_num_send_packets: usize,
     expected_num_received_packets: usize,
     test_configuration: ManaTestConfiguration,
-) -> QueueStats {
+) -> (QueueStats, Vec<Option<net_backend::RxMetadata>>) {
     let pages = 256; // 1MB
     let allow_dma = dma_mode == GuestDmaMode::DirectDma;
     let mem: DeviceTestMemory = DeviceTestMemory::new(pages * 2, allow_dma, "test_endpoint");
@@ -991,7 +1037,7 @@ async fn test_endpoint(
         let stats = get_queue_stats(queues[0].queue_stats());
         drop(queues);
         endpoint.stop().await;
-        return stats;
+        return (stats, Vec::new());
     }
 
     // GDMA emulator always returns TxId(1) for completed packets.
@@ -1023,10 +1069,16 @@ async fn test_endpoint(
         offset += this_pkt_len;
     }
 
+    // Gather per-buffer RX metadata written by net_mana.
+    let rx_meta: Vec<Option<net_backend::RxMetadata>> = rx_packets[..rx_packets_n]
+        .iter()
+        .map(|id| pool.rx_metadata(*id))
+        .collect();
+
     let stats = get_queue_stats(queues[0].queue_stats());
     drop(queues);
     endpoint.stop().await;
-    stats
+    (stats, rx_meta)
 }
 
 fn get_queue_stats(queue_stats: Option<&dyn net_backend::BackendQueueStats>) -> QueueStats {
@@ -1036,6 +1088,8 @@ fn get_queue_stats(queue_stats: Option<&dyn net_backend::BackendQueueStats>) -> 
         tx_errors: queue_stats.tx_errors(),
         rx_packets: queue_stats.rx_packets(),
         tx_packets: queue_stats.tx_packets(),
+        tx_vlan_packets: queue_stats.tx_vlan_packets(),
+        rx_vlan_packets: queue_stats.rx_vlan_packets(),
         ..Default::default()
     }
 }
@@ -1193,4 +1247,193 @@ async fn tx_cqe_okay_completes_packet(driver: DefaultDriver) {
     drop(queue);
     endpoint.vport.destroy(arena).await;
     endpoint.stop().await;
+}
+
+// ---------------------------------------------------------------------------
+// VLAN tests
+// ---------------------------------------------------------------------------
+
+/// Verify that a single VLAN-tagged packet round-trips through the MANA TX and
+/// RX paths with the VLAN ID preserved.
+#[async_test]
+async fn test_vlan_tx_rx_roundtrip_direct_dma(driver: DefaultDriver) {
+    let mut pkt_builder = TxPacketBuilder::new();
+    build_tx_segments_vlan(1138, 1, 42, 0, false, &mut pkt_builder);
+
+    let (stats, rx_meta) = test_endpoint(
+        driver,
+        GuestDmaMode::DirectDma,
+        &pkt_builder,
+        1, // expected TX
+        1, // expected RX
+        ManaTestConfiguration::default(),
+    )
+    .await;
+
+    assert_eq!(stats.tx_packets.get(), 1);
+    assert_eq!(stats.rx_packets.get(), 1);
+    assert_eq!(stats.tx_vlan_packets.get(), 1);
+    assert_eq!(stats.rx_vlan_packets.get(), 1);
+
+    let rx_vlan = rx_meta[0]
+        .expect("RX metadata should be present")
+        .vlan
+        .expect("RX metadata should carry VLAN");
+    assert_eq!(rx_vlan.vlan_id(), 42);
+    assert_eq!(rx_vlan.priority(), 0);
+    assert_eq!(rx_vlan.drop_eligible_indicator(), false);
+}
+
+/// Same round-trip but with bounce-buffer DMA mode.
+#[async_test]
+async fn test_vlan_tx_rx_roundtrip_bounce_buffer(driver: DefaultDriver) {
+    let mut pkt_builder = TxPacketBuilder::new();
+    build_tx_segments_vlan(1138, 1, 99, 0, false, &mut pkt_builder);
+
+    let (stats, rx_meta) = test_endpoint(
+        driver,
+        GuestDmaMode::BounceBuffer,
+        &pkt_builder,
+        1,
+        1,
+        ManaTestConfiguration::default(),
+    )
+    .await;
+
+    assert_eq!(stats.tx_packets.get(), 1);
+    assert_eq!(stats.rx_packets.get(), 1);
+    assert_eq!(stats.tx_vlan_packets.get(), 1);
+    assert_eq!(stats.rx_vlan_packets.get(), 1);
+
+    let rx_vlan = rx_meta[0]
+        .expect("RX metadata should be present")
+        .vlan
+        .expect("RX metadata should carry VLAN");
+    assert_eq!(rx_vlan.vlan_id(), 99);
+    assert_eq!(rx_vlan.priority(), 0);
+    assert_eq!(rx_vlan.drop_eligible_indicator(), false);
+}
+
+/// Verify that a non-VLAN packet does NOT produce VLAN metadata.
+#[async_test]
+async fn test_no_vlan_rx_metadata_when_untagged(driver: DefaultDriver) {
+    let mut pkt_builder = TxPacketBuilder::new();
+    build_tx_segments(1138, 1, false, &mut pkt_builder);
+
+    let (stats, rx_meta) = test_endpoint(
+        driver,
+        GuestDmaMode::DirectDma,
+        &pkt_builder,
+        1,
+        1,
+        ManaTestConfiguration::default(),
+    )
+    .await;
+
+    assert_eq!(stats.tx_vlan_packets.get(), 0);
+    assert_eq!(stats.rx_vlan_packets.get(), 0);
+
+    let rx = rx_meta[0].expect("RX metadata should be present");
+    assert!(
+        rx.vlan.is_none(),
+        "RX metadata must not carry VLAN for an untagged packet"
+    );
+}
+
+/// Mix of VLAN-tagged and untagged packets in a single TX batch.
+#[async_test]
+async fn test_vlan_mixed_batch(driver: DefaultDriver) {
+    let mut pkt_builder = TxPacketBuilder::new();
+
+    // Packet 0: no VLAN
+    build_tx_segments(550, 1, false, &mut pkt_builder);
+    // Packet 1: VLAN 100
+    build_tx_segments_vlan(550, 1, 100, 0, false, &mut pkt_builder);
+    // Packet 2: no VLAN, multi-segment
+    build_tx_segments(1130, 10, false, &mut pkt_builder);
+    // Packet 3: VLAN 4094 (max 12-bit value)
+    build_tx_segments_vlan(550, 1, 4094, 0, false, &mut pkt_builder);
+
+    let (stats, rx_meta) = test_endpoint(
+        driver,
+        GuestDmaMode::DirectDma,
+        &pkt_builder,
+        4,
+        4,
+        ManaTestConfiguration::default(),
+    )
+    .await;
+
+    assert_eq!(stats.tx_packets.get(), 4);
+    assert_eq!(stats.rx_packets.get(), 4);
+    assert_eq!(stats.tx_vlan_packets.get(), 2);
+    assert_eq!(stats.rx_vlan_packets.get(), 2);
+
+    // Packet 0: no VLAN
+    assert!(
+        rx_meta[0]
+            .expect("RX metadata should be present")
+            .vlan
+            .is_none()
+    );
+
+    // Packet 1: VLAN 100
+    assert_eq!(
+        rx_meta[1]
+            .expect("RX metadata should be present")
+            .vlan
+            .expect("RX should carry VLAN")
+            .vlan_id(),
+        100
+    );
+    assert_eq!(
+        rx_meta[1]
+            .expect("RX metadata should be present")
+            .vlan
+            .expect("RX should carry VLAN")
+            .priority(),
+        0
+    );
+    assert_eq!(
+        rx_meta[1]
+            .expect("RX metadata should be present")
+            .vlan
+            .expect("RX should carry VLAN")
+            .drop_eligible_indicator(),
+        false
+    );
+
+    // Packet 2: no VLAN
+    assert!(
+        rx_meta[2]
+            .expect("RX metadata should be present")
+            .vlan
+            .is_none()
+    );
+
+    // Packet 3: VLAN 4094
+    assert_eq!(
+        rx_meta[3]
+            .expect("RX metadata should be present")
+            .vlan
+            .expect("RX should carry VLAN")
+            .vlan_id(),
+        4094
+    );
+    assert_eq!(
+        rx_meta[3]
+            .expect("RX metadata should be present")
+            .vlan
+            .expect("RX should carry VLAN")
+            .priority(),
+        0
+    );
+    assert_eq!(
+        rx_meta[3]
+            .expect("RX metadata should be present")
+            .vlan
+            .expect("RX should carry VLAN")
+            .drop_eligible_indicator(),
+        false
+    );
 }

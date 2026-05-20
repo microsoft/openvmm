@@ -54,15 +54,25 @@ pub struct GuestBuffers {
 /// suballocations.
 pub struct BufferPool {
     buffers: Arc<GuestBuffers>,
+    rx_vlan_count: u64,
 }
 
 impl BufferPool {
     pub fn new(buffers: Arc<GuestBuffers>) -> Self {
-        Self { buffers }
+        Self {
+            buffers,
+            rx_vlan_count: 0,
+        }
     }
 
     fn offset(&self, id: RxId) -> u32 {
         id.0 * self.buffers.sub_allocation_size
+    }
+
+    /// Returns and resets the number of RX packets with VLAN metadata
+    /// observed since the last call.
+    pub fn take_rx_vlan_count(&mut self) -> u64 {
+        std::mem::take(&mut self.rx_vlan_count)
     }
 }
 
@@ -187,16 +197,16 @@ impl BufferAccess for BufferPool {
         struct Header {
             header: rndisprot::MessageHeader,
             packet: rndisprot::Packet,
-            per_packet_info: PerPacketInfo,
         }
 
         #[repr(C)]
         #[derive(zerocopy::IntoBytes, Immutable, KnownLayout, Debug)]
         struct PerPacketInfo {
             header: rndisprot::PerPacketInfo,
-            checksum: rndisprot::RxTcpIpChecksumInfo,
+            payload: u32,
         }
 
+        let mut ppi_count = 1;
         let checksum = rndisprot::RxTcpIpChecksumInfo::new_zeroed()
             .set_ip_checksum_failed(metadata.ip_checksum == RxChecksumState::Bad)
             .set_ip_checksum_succeeded(metadata.ip_checksum.is_valid())
@@ -221,6 +231,30 @@ impl BufferAccess for BufferPool {
             .set_udp_checksum_succeeded(
                 metadata.l4_protocol == L4Protocol::Udp && metadata.l4_checksum.is_valid(),
             );
+        let checksum_ppi = PerPacketInfo {
+            header: rndisprot::PerPacketInfo {
+                size: size_of::<PerPacketInfo>() as u32,
+                typ: rndisprot::PPI_TCP_IP_CHECKSUM,
+                per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+            },
+            payload: checksum.0,
+        };
+
+        let vlan = if let Some(vlan_info) = metadata.vlan {
+            self.rx_vlan_count += 1;
+            ppi_count += 1;
+
+            Some(PerPacketInfo {
+                header: rndisprot::PerPacketInfo {
+                    size: size_of::<PerPacketInfo>() as u32,
+                    typ: rndisprot::PPI_VLAN,
+                    per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+                },
+                payload: Into::<rndisprot::EthVlanInfo>::into(vlan_info).into(),
+            })
+        } else {
+            None
+        };
 
         let header = Header {
             header: rndisprot::MessageHeader {
@@ -239,21 +273,23 @@ impl BufferAccess for BufferPool {
                 oob_data_length: 0,
                 num_oob_data_elements: 0,
                 per_packet_info_offset: size_of::<rndisprot::Packet>() as u32,
-                per_packet_info_length: size_of::<PerPacketInfo>() as u32,
+                per_packet_info_length: ppi_count * size_of::<PerPacketInfo>() as u32,
                 vc_handle: 0,
                 reserved: 0,
             },
-            per_packet_info: PerPacketInfo {
-                header: rndisprot::PerPacketInfo {
-                    size: size_of::<PerPacketInfo>() as u32,
-                    typ: rndisprot::PPI_TCP_IP_CHECKSUM,
-                    per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
-                },
-                checksum,
-            },
         };
 
-        self.buffers.write_at(self.offset(id), header.as_bytes());
+        let mut offset = self.offset(id);
+        self.buffers.write_at(offset, header.as_bytes());
+        offset += size_of::<Header>() as u32;
+        self.buffers.write_at(offset, checksum_ppi.as_bytes());
+        offset += size_of::<PerPacketInfo>() as u32;
+        if let Some(vlan_ppi) = vlan {
+            self.buffers.write_at(offset, vlan_ppi.as_bytes());
+        }
+        static_assertions::const_assert!(
+            (size_of::<Header>() + 2 * size_of::<PerPacketInfo>()) < RX_HEADER_LEN as usize
+        );
     }
 }
 

@@ -27,6 +27,8 @@ use std::path::Path;
 use vmm_test_igvm_agent as igvm_agent_rpc_server;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
+#[cfg(windows)]
+use vmm_test_macros::vmm_test_with;
 
 const AK_CERT_NONZERO_BYTES: usize = 2500;
 const AK_CERT_TOTAL_BYTES: usize = 4096;
@@ -714,10 +716,10 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 /// test function (`skip_hw_unseal`), they all map to
 /// `KeyReleaseFailureSkipHwUnsealing`.
 #[cfg(windows)]
-#[vmm_test(
+#[vmm_test_with(unstable(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-)]
+))]
 async fn skip_hw_unseal<T, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>,),
@@ -760,33 +762,20 @@ async fn skip_hw_unseal<T, U: PetriVmmBackend>(
     //
     // Both outcomes confirm the expected behavior: the VM cannot boot after
     // hardware unsealing is skipped.
-    match vm.wait_for_halt().await {
-        Ok(PetriHaltReason::Reset) => {
+    let halt_reason = vm.wait_for_halt().await?;
+    match halt_reason.reason {
+        PetriHaltReason::Reset => {
             tracing::info!("Got reset event; waiting for second boot termination...");
-            // The VM termination after second boot failure may not produce
-            // a recognized Hyper-V halt event (e.g., event 18620 from
-            // Hyper-V-Chipset is not in the standard halt event filter).
-            // Ignore the error — the VM going off IS the expected outcome.
-            match vm.wait_for_teardown().await {
-                Ok(halt_reason) => {
-                    tracing::info!("Second boot halt reason: {halt_reason:?}");
-                }
-                Err(e) => {
-                    tracing::info!("Second boot terminated as expected: {e:#}");
-                }
+            let second_halt_reason = vm.wait_for_teardown().await?;
+            if !matches!(second_halt_reason.reason, PetriHaltReason::Other) {
+                anyhow::bail!("Unexpected second boot halt reason: {second_halt_reason:?}")
             }
         }
-        Ok(other) => {
-            let error = anyhow::anyhow!("Expected Reset or VM start failure, got {other:?}");
-            vm.teardown().await?;
-            return Err(error);
-        }
-        Err(e) => {
-            // The VM failed to restart within the allowed time, which is
-            // the expected behavior when underhill cannot unlock VMGS.
-            tracing::info!("VM failed to restart as expected: {e:#}");
+        PetriHaltReason::Other => {
+            tracing::info!("VM failed to restart as expected: {halt_reason:?}");
             vm.teardown().await?;
         }
+        _ => anyhow::bail!("Unexpected halt reason: {halt_reason:?}"),
     }
 
     Ok(())
@@ -810,10 +799,10 @@ async fn skip_hw_unseal<T, U: PetriVmmBackend>(
 /// test function (`use_hw_unseal`), they all map to
 /// `KeyReleaseFailure`.
 #[cfg(windows)]
-#[vmm_test(
+#[vmm_test_with(unstable(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-)]
+))]
 async fn use_hw_unseal<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),

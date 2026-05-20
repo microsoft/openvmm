@@ -663,14 +663,7 @@ impl virt::BindProcessor for WhpProcessorBinder {
                 }
             }
 
-            #[cfg(all(guest_arch = "aarch64", not(feature = "unstable_whp")))]
-            {
-                let _ = vp_info;
-                let _ = vtlp;
-                let _ = vtl;
-            }
-
-            #[cfg(all(guest_arch = "aarch64", feature = "unstable_whp"))]
+            #[cfg(guest_arch = "aarch64")]
             {
                 let _ = vtlp;
                 vp.vp
@@ -1335,7 +1328,7 @@ impl VtlPartition {
             }
         }
 
-        #[cfg(all(guest_arch = "aarch64", feature = "unstable_whp"))]
+        #[cfg(guest_arch = "aarch64")]
         {
             let gic_params = whp::abi::WHV_ARM64_IC_PARAMETERS {
                 EmulationMode: whp::abi::WHV_ARM64_IC_EMULATION_MODE::GicV3,
@@ -1431,12 +1424,7 @@ impl VtlPartition {
 
                     #[cfg(guest_arch = "aarch64")]
                     {
-                        features.bank0 |= F::AccessVpRegs | F::SyncContext;
-                    }
-
-                    #[cfg(all(guest_arch = "aarch64", feature = "unstable_whp"))]
-                    {
-                        features.bank0 |= F::TbFlushHypercalls;
+                        features.bank0 |= F::AccessVpRegs | F::SyncContext | F::TbFlushHypercalls;
                     }
 
                     if vtl == Vtl::Vtl0 {

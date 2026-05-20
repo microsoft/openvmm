@@ -170,7 +170,7 @@ guest tests, pipette will need to be
 
 ```admonish warning
 `cargo nextest run` won't rebuild any of your changes. Make sure you `cargo build`
-or `cargo xflowey igvm [RECIPE]` first!
+or `cargo xflowey build-igvm [RECIPE]` first!
 ```
 
 VMM tests are run using standard Rust test infrastructure, and are invoked via

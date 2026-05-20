@@ -112,22 +112,22 @@ enum GetDerivedKeysError {
     #[error("failed to get derived key by id")]
     GetDerivedKeyById(#[source] GetDerivedKeysByIdError),
     #[error("failed to derive an ingress key")]
-    DeriveIngressKey(#[source] crypto::kdf::KdfError),
+    DeriveIngressKey(#[source] crypto::kbkdf::KbkdfError),
     #[error("failed to derive an egress key")]
-    DeriveEgressKey(#[source] crypto::kdf::KdfError),
+    DeriveEgressKey(#[source] crypto::kbkdf::KbkdfError),
 }
 
 #[derive(Debug, Error)]
 enum GetDerivedKeysByIdError {
     #[error("failed to derive an egress key based on current vm bios guid")]
-    DeriveEgressKeyUsingCurrentVmId(#[source] crypto::kdf::KdfError),
+    DeriveEgressKeyUsingCurrentVmId(#[source] crypto::kbkdf::KbkdfError),
     #[error("invalid derived egress key size {key_size}, expected {expected_size}")]
     InvalidDerivedEgressKeySize {
         key_size: usize,
         expected_size: usize,
     },
     #[error("failed to derive an ingress key based on key protector Id from vmgs")]
-    DeriveIngressKeyUsingKeyProtectorId(#[source] crypto::kdf::KdfError),
+    DeriveIngressKeyUsingKeyProtectorId(#[source] crypto::kbkdf::KbkdfError),
     #[error("invalid derived egress key size {key_size}, expected {expected_size}")]
     InvalidDerivedIngressKeySize {
         key_size: usize,
@@ -175,8 +175,8 @@ fn derive_key(
     key: &[u8],
     context: &[u8],
     label: &[u8],
-) -> Result<[u8; AES_GCM_KEY_LENGTH], crypto::kdf::KdfError> {
-    let output = crypto::kdf::kbkdf_hmac_sha256(key, context, label, AES_GCM_KEY_LENGTH)?;
+) -> Result<[u8; AES_GCM_KEY_LENGTH], crypto::kbkdf::KbkdfError> {
+    let output = crypto::kbkdf::kbkdf_hmac_sha256(key, context, label, AES_GCM_KEY_LENGTH)?;
     Ok(output.try_into().unwrap())
 }
 
