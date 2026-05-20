@@ -51,7 +51,7 @@ struct FileObjectRef {
 /// Usage:
 /// 1. Create with [`HvsFileWriter::new`]
 /// 2. Add keys with [`add_int`], [`add_uint`], [`add_string`], [`add_array`],
-///    [`add_bool`], or [`add_array`]
+///    or [`add_bool`]
 /// 3. Call [`finish`] to write the complete file
 pub struct HvsFileWriter<W: Write + Seek> {
     writer: W,
@@ -66,8 +66,9 @@ pub struct HvsFileWriter<W: Write + Seek> {
 impl<W: Write + Seek> HvsFileWriter<W> {
     /// Creates a new writer.
     ///
-    /// Writes the two header copies and the initial (empty) object table.
-    /// Keys and file objects are buffered until [`finish`] is called.
+    /// Reserves space for the two header copies and the initial object table;
+    /// they are written later by [`finish`]. Keys and file objects are buffered
+    /// until [`finish`] is called.
     pub fn new(mut writer: W) -> io::Result<Self> {
         let alignment = DEFAULT_DATA_ALIGNMENT as u64;
         // Object table starts at offset 8192

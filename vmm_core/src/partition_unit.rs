@@ -303,8 +303,9 @@ impl PartitionUnit {
 
     /// Builds the partition state blob for a `.vmrs` dump file.
     ///
-    /// The VM must be paused when this is called. Returns the serialized
-    /// partition state (VP registers as hypervisor save/restore chunks).
+    /// Stops VPs internally for a consistent snapshot and resumes them
+    /// afterward. Returns the serialized partition state (VP registers
+    /// as hypervisor save/restore chunks).
     #[cfg(feature = "dump")]
     pub async fn build_dump_partition_state(&mut self) -> anyhow::Result<Vec<u8>> {
         self.req_send

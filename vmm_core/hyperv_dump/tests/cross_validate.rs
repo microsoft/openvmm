@@ -20,6 +20,7 @@ use hyperv_dump::X64VpState;
 use std::ffi::c_void;
 use std::io::Cursor;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 mod dll {
     use std::ffi::c_void;
@@ -47,7 +48,19 @@ mod dll {
     }}
 }
 
+/// Sets the DLL search path to the Windows SDK directory so that
+/// `VmSavedStateDumpProvider.dll` can be loaded.
+///
+/// Uses `Once` so the process-global `SetDllDirectoryW` call happens at
+/// most once. We intentionally never restore the previous value — this
+/// is a dedicated test binary (nextest runs each test crate in its own
+/// process), so leaking the SDK path into the DLL search order is fine.
 fn setup_dll_search_path() -> bool {
+    static FOUND: OnceLock<bool> = OnceLock::new();
+    *FOUND.get_or_init(setup_dll_search_path_inner)
+}
+
+fn setup_dll_search_path_inner() -> bool {
     let kits_root = PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10\bin");
     if !kits_root.exists() {
         return false;
