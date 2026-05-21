@@ -36,16 +36,6 @@
 //! e.g: there's no reason for, say, UEFI generation ID services to directly
 //! share state with the UEFI watchdog service, or the event log service. As
 //! such, each is modeled as a separate struct + impl.
-//!
-//! ### `pub mod platform`
-//!
-//! A centralized place to expose various service-specific interface traits that
-//! must be implemented by the "platform" hosting the UEFI device.
-//!
-//! This layer of abstraction allows the re-using the same UEFI emulator between
-//! multiple VMMs (OpenVMM, Underhill, etc...), without tying the emulator to any
-//! VMM specific infrastructure (via some kind of compile-time feature flag
-//! infrastructure).
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
