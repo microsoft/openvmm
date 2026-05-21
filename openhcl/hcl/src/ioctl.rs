@@ -1343,6 +1343,7 @@ pub struct Hcl {
     supports_register_page: bool,
     dr6_shared: bool,
     supports_lower_vtl_timer_virt: bool,
+    supports_lower_vtl_snp_guest_request: bool,
     isolation: IsolationType,
     snp_register_bitmap: [u8; 64],
     sidecar: Option<SidecarClient>,
@@ -1382,6 +1383,11 @@ impl Hcl {
     /// Returns true if timer virtualization for lower VTL is supported.
     pub fn supports_lower_vtl_timer_virt(&self) -> bool {
         self.supports_lower_vtl_timer_virt
+    }
+
+    /// Returns true if the partition supports SNP guest requests from lower VTLs.
+    pub fn supports_lower_vtl_snp_guest_request(&self) -> bool {
+        self.supports_lower_vtl_snp_guest_request
     }
 }
 
@@ -1784,10 +1790,34 @@ impl Hcl {
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
         let supports_lower_vtl_timer_virt =
             mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
+
+        let supports_lower_vtl_snp_guest_request = if cfg!(guest_arch = "x86_64") {
+            // xtask-fmt allow-target-arch cpu-intrinsic
+            #[cfg(target_arch = "x86_64")]
+            {
+                let result = safe_intrinsics::cpuid(
+                    hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+                    0,
+                );
+                let enlightenment_info = hvdef::HvEnlightenmentInformation::from_cpuid([
+                    result.eax, result.ebx, result.ecx, result.edx,
+                ]);
+                enlightenment_info.lower_vtl_guest_request_support()
+            }
+            // xtask-fmt allow-target-arch cpu-intrinsic
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                unreachable!()
+            }
+        } else {
+            false
+        };
+
         tracing::debug!(
             supports_vtl_ret_action,
             supports_register_page,
             supports_lower_vtl_timer_virt,
+            supports_lower_vtl_snp_guest_request,
             "HCL capabilities",
         );
 
@@ -1812,6 +1842,7 @@ impl Hcl {
             supports_register_page,
             dr6_shared,
             supports_lower_vtl_timer_virt,
+            supports_lower_vtl_snp_guest_request,
             isolation,
             snp_register_bitmap,
             sidecar,
