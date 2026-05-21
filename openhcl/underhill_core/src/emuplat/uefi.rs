@@ -195,6 +195,7 @@ struct UefiWatchdogTimeoutNmi {
 #[async_trait]
 impl WatchdogCallback for UefiWatchdogTimeoutNmi {
     async fn on_timeout(&mut self) {
+        crate::livedump::livedump().await;
         use virt::Partition;
         self.partition.request_msi(
             hvdef::Vtl::Vtl0,
@@ -214,6 +215,7 @@ struct UefiWatchdogTimeoutReset {
 #[async_trait]
 impl WatchdogCallback for UefiWatchdogTimeoutReset {
     async fn on_timeout(&mut self) {
+        crate::livedump::livedump().await;
         use vmm_core_defs::HaltReason;
         self.halt_vps.halt(HaltReason::Reset);
         self.watchdog_send.send(());

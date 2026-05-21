@@ -24,7 +24,6 @@ use crate::dispatch::vtl2_settings_worker::disk_from_disk_type;
 use crate::dispatch::vtl2_settings_worker::wait_for_mana;
 use crate::emuplat::EmuplatServicing;
 use crate::emuplat::cmos_rtc_time_source::UnderhillCmosRtcTimeSourceResolver;
-use crate::emuplat::firmware::UnderhillLogger;
 use crate::emuplat::framebuffer::FramebufferRemoteControl;
 use crate::emuplat::i440bx_host_pci_bridge::ArcMutexGetBackedAdjustGpaRange;
 use crate::emuplat::i440bx_host_pci_bridge::GetBackedAdjustGpaRange;
@@ -2594,7 +2593,7 @@ async fn new_underhill_vm(
 
             deps_hyperv_firmware_pcat = Some(dev::HyperVFirmwarePcat {
                 config,
-                logger: Box::new(UnderhillLogger {
+                logger: Box::new(crate::emuplat::firmware::UnderhillLogger {
                     get: get_client.clone(),
                 }),
                 generation_id_recv: get_client
