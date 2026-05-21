@@ -94,79 +94,6 @@ impl PtDesc {
         self.valid() && self.desc_type()
     }
 
-    /// Returns the output address for a 4KB granule.
-    ///
-    /// For table descriptors: the next-level table address (bits `[47:12]`).
-    /// For block descriptors at L1: bits `[47:30]` (1GB block).
-    /// For block descriptors at L2: bits `[47:21]` (2MB block).
-    /// For page descriptors at L3: bits `[47:12]` (4KB page).
-    pub fn output_address_4k(&self, level: u8) -> u64 {
-        let raw = self.addr_bits() << 12;
-        match level {
-            0 => raw, // table only at L0 for 4K
-            1 => {
-                if self.is_block() {
-                    raw & !((1u64 << 30) - 1) // 1GB aligned
-                } else {
-                    raw // table address
-                }
-            }
-            2 => {
-                if self.is_block() {
-                    raw & !((1u64 << 21) - 1) // 2MB aligned
-                } else {
-                    raw // table address
-                }
-            }
-            3 => raw, // page address, 4KB aligned
-            _ => raw,
-        }
-    }
-
-    /// Returns the output address for a 16KB granule.
-    pub fn output_address_16k(&self, level: u8) -> u64 {
-        let raw = self.addr_bits() << 12;
-        match level {
-            // L1 block: 64GB (bits [47:36])
-            1 => {
-                if self.is_block() {
-                    raw & !((1u64 << 36) - 1)
-                } else {
-                    raw
-                }
-            }
-            // L2 block: 32MB (bits [47:25])
-            2 => {
-                if self.is_block() {
-                    raw & !((1u64 << 25) - 1)
-                } else {
-                    raw
-                }
-            }
-            // L3 page: 16KB aligned — clear RES0 bits [13:12]
-            3 => raw & !((1u64 << 14) - 1),
-            _ => raw,
-        }
-    }
-
-    /// Returns the output address for a 64KB granule.
-    pub fn output_address_64k(&self, level: u8) -> u64 {
-        let raw = self.addr_bits() << 12;
-        match level {
-            // L2 block: 512MB (bits [47:29])
-            2 => {
-                if self.is_block() {
-                    raw & !((1u64 << 29) - 1)
-                } else {
-                    raw
-                }
-            }
-            // L3 page: 64KB aligned — clear RES0 bits [15:12]
-            3 => raw & !((1u64 << 16) - 1),
-            _ => raw,
-        }
-    }
-
     /// Returns the next-level table address (for table descriptors),
     /// masked to the given granule alignment. Bits below `page_shift`
     /// are RES0 in the descriptor and are cleared.
@@ -197,12 +124,6 @@ impl ApBits {
             Self::RO_EL1 | Self::RO_ANY => false,
             _ => false,
         }
-    }
-
-    /// Returns true if the access permissions allow reads (always true for
-    /// valid permissions).
-    pub fn allows_read(self) -> bool {
-        true
     }
 }
 
@@ -256,42 +177,6 @@ mod tests {
     }
 
     #[test]
-    fn test_pt_desc_4k_page_address() {
-        // 4K page at L3: output address at bits [47:12]
-        let page_addr: u64 = 0x4000_1000;
-        let desc = PtDesc::new()
-            .with_valid(true)
-            .with_desc_type(true)
-            .with_addr_bits(page_addr >> 12);
-
-        assert_eq!(desc.output_address_4k(3), page_addr);
-    }
-
-    #[test]
-    fn test_pt_desc_4k_l2_block_address() {
-        // 2MB block at L2: output address at bits [47:21]
-        let block_addr: u64 = 0x4020_0000; // 2MB aligned
-        let desc = PtDesc::new()
-            .with_valid(true)
-            .with_desc_type(false)
-            .with_addr_bits(block_addr >> 12);
-
-        assert_eq!(desc.output_address_4k(2), block_addr);
-    }
-
-    #[test]
-    fn test_pt_desc_4k_l1_block_address() {
-        // 1GB block at L1: output address at bits [47:30]
-        let block_addr: u64 = 0x4000_0000; // 1GB aligned
-        let desc = PtDesc::new()
-            .with_valid(true)
-            .with_desc_type(false)
-            .with_addr_bits(block_addr >> 12);
-
-        assert_eq!(desc.output_address_4k(1), block_addr);
-    }
-
-    #[test]
     fn test_pt_desc_table_next_addr() {
         let table_addr: u64 = 0x8000_5000;
         let desc = PtDesc::new()
@@ -337,15 +222,6 @@ mod tests {
         assert!(ApBits::RW_ANY.allows_write());
         assert!(!ApBits::RO_EL1.allows_write());
         assert!(!ApBits::RO_ANY.allows_write());
-    }
-
-    #[test]
-    fn test_ap_bits_read_permission() {
-        // All valid AP values allow reads
-        assert!(ApBits::RW_EL1.allows_read());
-        assert!(ApBits::RW_ANY.allows_read());
-        assert!(ApBits::RO_EL1.allows_read());
-        assert!(ApBits::RO_ANY.allows_read());
     }
 
     #[test]

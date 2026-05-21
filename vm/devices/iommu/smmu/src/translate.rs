@@ -279,7 +279,6 @@ pub fn walk_s1(
     let bits_per_level = tg0.bits_per_level().ok_or_else(|| SmmuFault {
         event: EvtEntry::translation_fault(sid, iova, write),
     })?;
-    let page_size = 1u64 << page_shift;
 
     let (start_level, va_bits) = compute_start_level(tg0, ctx.t0sz).ok_or_else(|| SmmuFault {
         event: EvtEntry::translation_fault(sid, iova, write),
@@ -338,35 +337,26 @@ pub fn walk_s1(
                     event: EvtEntry::translation_fault(sid, iova, write),
                 });
             }
-            // Page descriptor at L3.
-            check_permissions(&desc, iova, write, sid)?;
-            let output_addr = output_address(&desc, tg0, level);
-            if output_addr > oas_mask {
-                return Err(SmmuFault {
-                    event: EvtEntry::addr_size_fault(sid, iova, write),
-                });
-            }
-            let page_offset = iova & (page_size - 1);
-            return Ok(Translation {
-                gpa: output_addr | page_offset,
-                page_size,
-            });
         }
 
-        if desc.is_block() {
-            // Block descriptor at level 1 or 2.
+        if level == 3 || desc.is_block() {
+            // Leaf descriptor (page at L3 or block at L1/L2).
             check_permissions(&desc, iova, write, sid)?;
-            let block_size = 1u64 << shift;
-            let output_addr = output_address(&desc, tg0, level);
+            // The output address is the descriptor's address field masked
+            // to the mapping size. This naturally handles all granule sizes
+            // because `shift` encodes the correct alignment for any
+            // granule/level combination.
+            let mapping_size = 1u64 << shift;
+            let output_addr = (desc.addr_bits() << 12) & !(mapping_size - 1);
             if output_addr > oas_mask {
                 return Err(SmmuFault {
                     event: EvtEntry::addr_size_fault(sid, iova, write),
                 });
             }
-            let block_offset = iova & (block_size - 1);
+            let offset = iova & (mapping_size - 1);
             return Ok(Translation {
-                gpa: output_addr | block_offset,
-                page_size: block_size,
+                gpa: output_addr | offset,
+                page_size: mapping_size,
             });
         }
 
@@ -413,17 +403,6 @@ fn check_permissions(desc: &PtDesc, iova: u64, write: bool, sid: u32) -> Result<
     }
 
     Ok(())
-}
-
-/// Extract the output address from a leaf descriptor, masking to the
-/// appropriate alignment for the given level and granule.
-fn output_address(desc: &PtDesc, tg0: Tg0, level: u8) -> u64 {
-    match tg0 {
-        Tg0::GRAN_4K => desc.output_address_4k(level),
-        Tg0::GRAN_16K => desc.output_address_16k(level),
-        Tg0::GRAN_64K => desc.output_address_64k(level),
-        _ => desc.output_address_4k(level), // fallback, shouldn't happen
-    }
 }
 
 #[cfg(test)]
