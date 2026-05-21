@@ -926,6 +926,17 @@ impl Vendor {
     pub fn is_arm_compatible(&self) -> bool {
         *self == Self::ARM
     }
+
+    // Intel and Amd compatible checkers are still implemented and return false.
+    // By this, some generic code do NOT diverge on AArch64.
+    pub fn is_intel_compatible(&self) -> bool {
+        false
+    }
+
+    // Likewise
+    pub fn is_amd_compatible(&self) -> bool {
+        false
+    }
 }
 
 impl Display for Vendor {

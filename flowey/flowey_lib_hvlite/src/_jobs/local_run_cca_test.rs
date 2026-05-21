@@ -90,7 +90,6 @@ impl SimpleFlowNode for Node {
                 arch: CommonArch::Aarch64,
                 platform: CommonPlatform::LinuxGnu,
             },
-            unstable_whp: false,
             profile: CommonProfile::Debug,
             tmk_vmm: v,
         });

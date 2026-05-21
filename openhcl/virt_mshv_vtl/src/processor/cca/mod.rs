@@ -17,6 +17,7 @@ use crate::UhCvmVpState;
 use crate::UhPartitionInner;
 use crate::processor::InterceptMessageState;
 use aarch64defs::EsrEl2;
+use aarch64defs::IssDataAbort;
 use aarch64defs::SystemReg;
 use aarch64defs::rsi::cca_rsi_plane_exit;
 use hcl::GuestVtl;
@@ -39,6 +40,18 @@ use zerocopy::FromZeros;
 #[derive(Debug, Error)]
 #[error("failed to run")]
 struct CcaRunVpError(#[source] hcl::ioctl::Error);
+
+#[derive(Debug, Error)]
+enum CcaUnsupportedExit {
+    #[error("unsupported CCA plane exit reason {0}")]
+    ExitReason(u64),
+    #[error("unsupported CCA exception class {exception_class:#x} in ESR_EL2 {esr_el2:#x}")]
+    ExceptionClass { exception_class: u8, esr_el2: u64 },
+    #[error("CCA data abort with invalid instruction syndrome in ESR_EL2 {0:#x}")]
+    InvalidDataAbortIss(u64),
+}
+
+const AARCH64_ZERO_REGISTER_INDEX: u8 = 31;
 
 // For use with Hyper-V synthetic interrupt controller allocated by paravisor.
 enum UhDirectOverlay {
@@ -101,6 +114,7 @@ enum ExceptionClass {
     InstructionAbort,
     SimdAccess,
     SmcError,
+    Unknown(u8),
 }
 
 impl From<u8> for ExceptionClass {
@@ -110,7 +124,7 @@ impl From<u8> for ExceptionClass {
             0b0010_0000 => ExceptionClass::InstructionAbort,
             0b0000_0111 => ExceptionClass::SimdAccess,
             0b0001_0111 => ExceptionClass::SmcError,
-            _ => panic!("Unknown exception class: {value}"),
+            _ => ExceptionClass::Unknown(value),
         }
     }
 }
@@ -121,6 +135,7 @@ impl From<u8> for ExceptionClass {
 enum PlaneExitReason {
     Sync,
     Irq,
+    Unknown(u64),
 }
 
 impl From<u64> for PlaneExitReason {
@@ -128,7 +143,7 @@ impl From<u64> for PlaneExitReason {
         match value {
             0 => PlaneExitReason::Sync,
             1 => PlaneExitReason::Irq,
-            _ => panic!("Unknown CCA plane exit reason: {value}"),
+            _ => PlaneExitReason::Unknown(value),
         }
     }
 }
@@ -152,6 +167,28 @@ impl<'a> CcaExit<'a> {
 
     fn far_el2(&self) -> u64 {
         self.0.far_el2
+    }
+
+    fn gpr_or_zero_register(&self, index: u8) -> Option<u64> {
+        match index {
+            AARCH64_ZERO_REGISTER_INDEX => Some(0),
+            index => self.0.gprs.get(usize::from(index)).copied(),
+        }
+    }
+}
+
+fn extend_mmio_read(data: [u8; size_of::<u64>()], len: usize, sign_extend: bool, sf: bool) -> u64 {
+    let value = u64::from_ne_bytes(data);
+    if sign_extend {
+        let shift = 64 - len * 8;
+        let value = ((value as i64) << shift >> shift) as u64;
+        if sf {
+            value
+        } else {
+            value & u64::from(u32::MAX)
+        }
+    } else {
+        value & ((1u128 << (len * 8)) - 1) as u64
     }
 }
 
@@ -252,27 +289,57 @@ impl BackingPrivate for CcaBacked {
                         ExceptionClass::DataAbort => {
                             // get the address that caused the data abort
                             let address = cca_exit.far_el2();
-                            // Based on the CpuIo impl in tmk_vmm/src/run.rs, dev.is_mmio(address)
-                            // always returns false, so we handle MMIO access here.
+                            let iss = IssDataAbort::from(esr_el2.iss());
+                            if !iss.isv() {
+                                tracing::warn!(
+                                    esr_el2 = cca_exit.0.esr_el2,
+                                    "CCA data abort has no valid instruction syndrome"
+                                );
+                                return Err(dev.fatal_error(
+                                    CcaUnsupportedExit::InvalidDataAbortIss(cca_exit.0.esr_el2)
+                                        .into(),
+                                ));
+                            }
 
-                            if esr_el2.is_write() {
+                            let len = 1usize << iss.sas();
+                            let srt = iss.srt();
+
+                            if iss.wnr() {
                                 // Handle MMIO write
-                                if let Some(srt) = esr_el2.srt() {
+                                if let Some(value) = cca_exit.gpr_or_zero_register(srt) {
                                     dev.write_mmio(
                                         this.vp_index(),
                                         address,
-                                        &this.runner.cca_rsi_plane_exit().gprs[srt as usize]
-                                            .to_ne_bytes(),
+                                        &value.to_ne_bytes()[..len],
                                     )
                                     .await;
                                 } else {
                                     tracing::warn!(
-                                        "MMIO write not handled, srt does have a valid value"
+                                        srt,
+                                        "MMIO write not handled, srt is outside the RSI GPR array"
                                     );
                                 }
                             } else {
                                 // Handle MMIO read
-                                todo!();
+                                let mut value = [0u8; size_of::<u64>()];
+                                dev.read_mmio(this.vp_index(), address, &mut value[..len])
+                                    .await;
+
+                                if srt != AARCH64_ZERO_REGISTER_INDEX {
+                                    if let Some(gpr) = this
+                                        .runner
+                                        .cca_rsi_plane_entry()
+                                        .gprs
+                                        .get_mut(usize::from(srt))
+                                    {
+                                        *gpr = extend_mmio_read(value, len, iss.sse(), iss.sf());
+                                    } else {
+                                        tracing::warn!(
+                                            srt,
+                                            "MMIO read not handled, srt is outside the RSI GPR array"
+                                        );
+                                    }
+                                }
                             }
                             this.runner.cca_rsi_plane_entry().pc += 4; // Advance PC
                         }
@@ -286,11 +353,29 @@ impl BackingPrivate for CcaBacked {
                         ExceptionClass::SmcError => {
                             tracing::warn!("SmcError exception triggered, but not handled");
                         }
+                        ExceptionClass::Unknown(exception_class) => {
+                            tracing::warn!(
+                                exception_class,
+                                esr_el2 = cca_exit.0.esr_el2,
+                                "unsupported CCA exception class"
+                            );
+                            return Err(dev.fatal_error(
+                                CcaUnsupportedExit::ExceptionClass {
+                                    exception_class,
+                                    esr_el2: cca_exit.0.esr_el2,
+                                }
+                                .into(),
+                            ));
+                        }
                     }
                 }
                 PlaneExitReason::Irq => {
                     // Handle IRQ exit
                     tracing::warn!("IRQ triggered, but not handled");
+                }
+                PlaneExitReason::Unknown(exit_reason) => {
+                    tracing::warn!(exit_reason, "unsupported CCA plane exit reason");
+                    return Err(dev.fatal_error(CcaUnsupportedExit::ExitReason(exit_reason).into()));
                 }
             }
         }

@@ -107,7 +107,7 @@ impl Options {
 }
 
 async fn do_main(driver: DefaultDriver) -> Result<()> {
-    let opts = Options::parse().finalize()?;
+    let opts = Options::parse();
 
     if opts.list {
         let tmk = fs_err::File::open(&opts.tmk).context("failed to open TMK")?;
@@ -117,7 +117,8 @@ async fn do_main(driver: DefaultDriver) -> Result<()> {
         }
         Ok(())
     } else {
-        let hv = opts.hv.expect("hv must have an finalized value");
+        let opts = opts.finalize()?;
+        let hv = opts.hv.expect("hv must have a finalized value");
         let mut state = CommonState::new(driver, opts).await?;
 
         state

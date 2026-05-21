@@ -21,7 +21,7 @@ impl RunContext<'_> {
         isolation: virt::IsolationType,
         test: &crate::load::TestInfo,
     ) -> anyhow::Result<TestResult> {
-        let mut params = UhPartitionNewParams {
+        let params = UhPartitionNewParams {
             isolation,
             hide_isolation: false,
             lower_vtl_memory_layout: &self.state.memory_layout,
@@ -37,13 +37,13 @@ impl RunContext<'_> {
             // TODO: match openhcl defaults when TDX is supported.
             disable_lower_vtl_timer_virt: true,
         };
-        let p = virt_mshv_vtl::UhProtoPartition::new(&mut params, |_| self.state.driver.clone())?;
+        let p = virt_mshv_vtl::UhProtoPartition::new(&params, |_| self.state.driver.clone())?;
 
         let m = underhill_mem::init(&underhill_mem::Init {
             processor_topology: &self.state.processor_topology,
             isolation,
             vtl0_alias_map_bit: None,
-            vtom: params.vtom,
+            vtom: p.get_vtom(),
             mem_layout: &self.state.memory_layout,
             complete_memory_layout: &self.state.memory_layout,
             boot_init: None,

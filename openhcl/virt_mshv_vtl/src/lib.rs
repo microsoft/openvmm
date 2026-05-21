@@ -1423,6 +1423,7 @@ fn is_restore_partition_time_available() -> bool {
 /// Configure the [`hvdef::HvRegisterVsmPartitionConfig`] register with the
 /// values used by underhill.
 fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
+    // TODO CCA: handle setting vtl2 vsm partition configuration
     if hcl.isolation() == hcl::ioctl::IsolationType::Cca {
         tracing::warn!("cca: set_vtl2_vsm_partition_config: do nothing now");
         return Ok(());
@@ -1451,7 +1452,6 @@ fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
 /// Configuration parameters supplied to [`UhProtoPartition::new`].
 ///
 /// These do not include runtime resources.
-#[derive(Clone, Copy)]
 pub struct UhPartitionNewParams<'a> {
     /// The isolation type for the partition.
     pub isolation: IsolationType,
@@ -1643,7 +1643,7 @@ impl<'a> UhProtoPartition<'a> {
     /// `driver(cpu)` returns the driver to use for polling the sidecar device
     /// whose base CPU is `cpu`.
     pub fn new<T: SpawnDriver>(
-        params: &mut UhPartitionNewParams<'a>,
+        params: &UhPartitionNewParams<'a>,
         driver: impl FnMut(u32) -> T,
     ) -> Result<Self, Error> {
         let hcl_isolation = match params.isolation {
@@ -1733,16 +1733,19 @@ impl<'a> UhProtoPartition<'a> {
             IsolationType::Cca => unreachable!(),
         };
 
-        #[cfg(guest_arch = "aarch64")]
-        if params.isolation == IsolationType::Cca && params.vtom.is_none() {
-            // Query vtom from realm config.
-            let realm_config = hcl.get_realm_config().map_err(Error::Hcl)?;
-            params.vtom = Some(1_u64 << (realm_config.ipa_width() - 1));
-        }
+        let vtom = match params.isolation {
+            #[cfg(guest_arch = "aarch64")]
+            IsolationType::Cca if params.vtom.is_none() => {
+                // Query vtom from realm config.
+                let realm_config = hcl.get_realm_config().map_err(Error::Hcl)?;
+                Some(1_u64 << (realm_config.ipa_width() - 1))
+            }
+            _ => params.vtom,
+        };
 
         Ok(UhProtoPartition {
             hcl,
-            params: *params,
+            params: UhPartitionNewParams { vtom, ..*params },
             guest_vsm_available,
             create_partition_available: privs.create_partitions(),
             #[cfg(guest_arch = "x86_64")]
@@ -1946,28 +1949,20 @@ impl<'a> UhProtoPartition<'a> {
             .expect("registering synic intercept cannot fail");
         }
 
-        let cvm_state = match isolation {
-            IsolationType::Snp | IsolationType::Tdx => {
-                let vsm_caps = hcl.get_vsm_capabilities().map_err(Error::GetReg)?;
-                let proxy_interrupt_redirect_available =
-                    vsm_caps.proxy_interrupt_redirect_available() && !params.disable_proxy_redirect;
+        let cvm_state = if is_hardware_isolated {
+            let vsm_caps = hcl.get_vsm_capabilities().map_err(Error::GetReg)?;
+            let proxy_interrupt_redirect_available =
+                vsm_caps.proxy_interrupt_redirect_available() && !params.disable_proxy_redirect;
 
-                Some(Self::construct_cvm_state(
-                    &params,
-                    late_params.cvm_params.unwrap(),
-                    &caps,
-                    guest_vsm_available,
-                    proxy_interrupt_redirect_available,
-                )?)
-            }
-            IsolationType::Cca => Some(Self::construct_cvm_state(
+            Some(Self::construct_cvm_state(
                 &params,
                 late_params.cvm_params.unwrap(),
                 &caps,
                 guest_vsm_available,
-                false,
-            )?),
-            IsolationType::Vbs | IsolationType::None => None,
+                proxy_interrupt_redirect_available,
+            )?)
+        } else {
+            None
         };
 
         let lower_vtl_timer_virt_available =
@@ -2298,6 +2293,11 @@ impl UhProtoPartition<'_> {
             hide_isolation: params.hide_isolation,
             proxy_interrupt_redirect: proxy_interrupt_redirect_available,
         })
+    }
+
+    /// vtom getter
+    pub fn get_vtom(&self) -> Option<u64> {
+        self.params.vtom
     }
 }
 

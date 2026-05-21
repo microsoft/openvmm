@@ -450,12 +450,13 @@ impl MshvVtl {
 
     /// Assign given memory range to the VTL.
     pub fn rsi_set_mem_perm(&self, vtl: GuestVtl, range: &MemoryRange) -> Result<(), HvError> {
+        let plane = match vtl {
+            GuestVtl::Vtl0 => 1,
+            _ => return Err(HvError::InvalidRegisterValue),
+        };
+
         let set_mem_perm = mshv_rsi_set_mem_perm {
-            plane: if vtl == GuestVtl::Vtl0 {
-                1
-            } else {
-                panic!("Invalid VTL")
-            },
+            plane,
             _pad: [0; 7],
             base_addr: range.start(),
             top_addr: range.end(),

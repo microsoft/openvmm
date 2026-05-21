@@ -57,7 +57,7 @@ mod cca {
         memory_layout: &mut MemoryLayout,
         ram_size: u64,
     ) -> anyhow::Result<Option<CcaState>> {
-        let hv = opts.hv.expect("hv must have an finalized value");
+        let hv = opts.hv.expect("hv must have a finalized value");
         match hv {
             HypervisorOpt::Cca => {
                 let mut map_size = ram_size as usize;

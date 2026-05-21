@@ -1576,7 +1576,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
                 hv_vp_context
             }
             virt::IsolationType::Tdx => hvdef::hypercall::InitialVpContextX64::new_zeroed(),
-            virt::IsolationType::Cca => todo!(),
+            virt::IsolationType::Cca => return Err(HvError::FeatureUnavailable),
         };
 
         // Tell the hypervisor to enable VTL 1, and register any needed state

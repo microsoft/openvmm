@@ -369,7 +369,11 @@ impl MshvProcessor<'_> {
                     u32::from(syndrome.lower_iss())
                         | (u32::from(syndrome.wnr()) << 6)
                         | (u32::from(syndrome.mid_iss()) << 7)
-                        | (u32::from(syndrome.b_srt()) << 16),
+                        | (u32::from(syndrome.b_srt()) << 16)
+                        | (u32::from(syndrome.a()) << 21)
+                        | (u32::from(syndrome.b()) << 22)
+                        | (u32::from(syndrome.c()) << 23)
+                        | (u32::from(syndrome.d()) << 24),
                 );
                 if !iss.isv() {
                     return Err(dev.fatal_error(

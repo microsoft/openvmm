@@ -229,7 +229,10 @@ pub mod resources {
                 AttestationType::Snp => Some(Arc::new(tee_call::SnpCall)),
                 AttestationType::Tdx => Some(Arc::new(tee_call::TdxCall)),
                 AttestationType::Vbs => Some(Arc::new(tee_call::VbsCall)),
-                AttestationType::Cca => todo!(),
+                AttestationType::Cca => {
+                    tracing::warn!("CCA: resolve: tee_call is not implemented yet");
+                    None
+                }
                 AttestationType::Host => None,
             };
 

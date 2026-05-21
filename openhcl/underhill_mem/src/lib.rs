@@ -192,7 +192,7 @@ impl GpaVtlPermissions {
                 *mask = new_mask;
             }
             GpaVtlPermissions::Cca(_index) => {
-                tracing::warn!("cca: GpaVtlPermissions::set is doing nothing now");
+                tracing::debug!("cca: GpaVtlPermissions::set is doing nothing now");
             }
         }
     }
@@ -362,13 +362,14 @@ impl MemoryAcceptor {
                         vtl: vtl.into(),
                     })
             }
-            GpaVtlPermissions::Cca(_index) => self
-                .mshv_vtl
-                .rsi_set_mem_perm(GuestVtl::Vtl0, &range)
-                .map_err(|_err| ApplyVtlProtectionsError::Cca {
-                    range,
-                    vtl: vtl.into(),
-                }),
+            GpaVtlPermissions::Cca(_index) => {
+                self.mshv_vtl.rsi_set_mem_perm(vtl, &range).map_err(|_err| {
+                    ApplyVtlProtectionsError::Cca {
+                        range,
+                        vtl: vtl.into(),
+                    }
+                })
+            }
         }
     }
 }
