@@ -3,7 +3,6 @@
 
 mod dump;
 mod pcie_wiring;
-#[cfg(guest_arch = "aarch64")]
 mod smmu_wiring;
 
 use crate::emuplat;

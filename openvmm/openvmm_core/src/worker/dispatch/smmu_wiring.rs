@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![cfg(guest_arch = "aarch64")]
+
 //! SMMU resource resolution and wiring helpers for aarch64 VMs.
 //!
 //! This module handles combining SMMU MMIO ranges (from the memory layout
