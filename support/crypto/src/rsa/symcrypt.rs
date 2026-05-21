@@ -80,7 +80,7 @@ impl RsaKeyPairInner {
         hash_algorithm: super::HashAlgorithm,
     ) -> Result<Vec<u8>, RsaError> {
         self.0
-            .oaep_decrypt(input, conv_hash(hash_algorithm), &[])
+            .oaep_decrypt(input, hash_algorithm.into(), &[])
             .map_err(|e| err(e, "OAEP decryption"))
     }
 
@@ -92,9 +92,9 @@ impl RsaKeyPairInner {
         // SymCrypt's `pkcs1_sign` expects the caller-supplied buffer to already
         // be the hash digest of the message. Other backends take the raw
         // message and hash internally. Do the hash here before handing off.
-        let digest = hash_message(data, hash_algorithm);
+        let digest = hash_algorithm.hash(data);
         self.0
-            .pkcs1_sign(&digest, conv_hash(hash_algorithm))
+            .pkcs1_sign(&digest, hash_algorithm.into())
             .map_err(|e| err(e, "PKCS#1 signing"))
     }
 
@@ -120,7 +120,7 @@ impl RsaPublicKeyInner {
         hash_algorithm: super::HashAlgorithm,
     ) -> Result<Vec<u8>, RsaError> {
         self.0
-            .oaep_encrypt(input, conv_hash(hash_algorithm), &[])
+            .oaep_encrypt(input, hash_algorithm.into(), &[])
             .map_err(|e| err(e, "OAEP encryption"))
     }
 
@@ -133,10 +133,10 @@ impl RsaPublicKeyInner {
         // SymCrypt's `pkcs1_verify` expects the caller-supplied buffer to already
         // be the hash digest of the message. Other backends take the raw
         // message and hash internally. Do the hash here before handing off.
-        let digest = hash_message(data, hash_algorithm);
+        let digest = hash_algorithm.hash(data);
         match self
             .0
-            .pkcs1_verify(&digest, signature, conv_hash(hash_algorithm))
+            .pkcs1_verify(&digest, signature, hash_algorithm.into())
         {
             Ok(()) => Ok(true),
             // `SignatureVerificationFailure` is the expected error for an
@@ -166,19 +166,5 @@ impl RsaPublicKeyInner {
     pub fn public_exponent(&self) -> Vec<u8> {
         // TODO: Maybe cache the pub blob?
         self.0.export_public_key_blob().unwrap().pub_exp
-    }
-}
-
-fn conv_hash(hash_algorithm: super::HashAlgorithm) -> symcrypt::hash::HashAlgorithm {
-    match hash_algorithm {
-        super::HashAlgorithm::Sha1 => symcrypt::hash::HashAlgorithm::Sha1,
-        super::HashAlgorithm::Sha256 => symcrypt::hash::HashAlgorithm::Sha256,
-    }
-}
-
-fn hash_message(data: &[u8], hash_algorithm: super::HashAlgorithm) -> Vec<u8> {
-    match hash_algorithm {
-        super::HashAlgorithm::Sha1 => symcrypt::hash::sha1(data).to_vec(),
-        super::HashAlgorithm::Sha256 => symcrypt::hash::sha256(data).to_vec(),
     }
 }

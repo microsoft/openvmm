@@ -19,6 +19,8 @@
 use super::vm_loaders::igvm::Vtl2MemoryLayoutRequest;
 use anyhow::Context;
 use anyhow::bail;
+use cxl_spec::spec::CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl_spec::spec::CXL_HPA_ALIGNMENT;
 use memory_range::MemoryRange;
 use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
@@ -68,6 +70,8 @@ pub(super) struct ResolvedPcieRootComplexRanges {
     pub ecam_range: MemoryRange,
     pub low_mmio: MemoryRange,
     pub high_mmio: MemoryRange,
+    pub chbcr_range: MemoryRange,
+    pub hdm_range: MemoryRange,
 }
 
 pub(super) struct MemoryLayoutInput<'a> {
@@ -111,6 +115,8 @@ pub(super) fn resolve_memory_layout(
             ecam_range: MemoryRange::EMPTY,
             low_mmio: MemoryRange::EMPTY,
             high_mmio: MemoryRange::EMPTY,
+            chbcr_range: MemoryRange::EMPTY,
+            hdm_range: MemoryRange::EMPTY,
         })
         .collect::<Vec<_>>();
 
@@ -215,6 +221,30 @@ pub(super) fn resolve_memory_layout(
             GB,
             Placement::Mmio64,
         )?;
+
+        if let Some(cxl) = &root_complex.cxl {
+            let hdm_config = PcieMmioRangeConfig::Dynamic { size: cxl.hdm_size };
+            add_mmio_range(
+                &mut builder,
+                format!("pcie-{}-cxl-hdm", root_complex.name),
+                &mut ranges.hdm_range,
+                &hdm_config,
+                CXL_HPA_ALIGNMENT,
+                Placement::Mmio64,
+            )?;
+
+            let chbcr_config = PcieMmioRangeConfig::Dynamic {
+                size: CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES,
+            };
+            add_mmio_range(
+                &mut builder,
+                format!("pcie-{}-cxl-chbcr", root_complex.name),
+                &mut ranges.chbcr_range,
+                &chbcr_config,
+                CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES,
+                Placement::Mmio64,
+            )?;
+        }
     }
 
     // Virtio-mmio: allocate one contiguous region for all slots. Each slot is
@@ -514,6 +544,7 @@ mod tests {
             low_mmio,
             high_mmio,
             ports: Vec::new(),
+            cxl: None,
         }
     }
 
@@ -625,6 +656,7 @@ mod tests {
                 low_mmio: PcieMmioRangeConfig::Dynamic { size: 32 * MB },
                 high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
                 ports: Vec::new(),
+                cxl: None,
             },
             PcieRootComplexConfig {
                 index: 1,
@@ -635,6 +667,7 @@ mod tests {
                 low_mmio: PcieMmioRangeConfig::Dynamic { size: 32 * MB },
                 high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
                 ports: Vec::new(),
+                cxl: None,
             },
         ];
         let mut config = input(2 * GB, None, None);
@@ -669,6 +702,7 @@ mod tests {
             low_mmio: PcieMmioRangeConfig::Dynamic { size: 64 * MB },
             high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
             ports: Vec::new(),
+            cxl: None,
         }];
         let mut config = input(2 * GB, None, None);
         config.pcie_root_complexes = &root_complexes;

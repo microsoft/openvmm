@@ -133,6 +133,7 @@ impl FuzzRootComplex {
             &mut register_mmio,
             START_BUS,
             END_BUS,
+            None,
             ecam_range,
             port_defs,
             msi_conn.target(),

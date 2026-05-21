@@ -7,12 +7,12 @@ use openssl_kdf::kdf::Kbkdf;
 pub fn kbkdf_hmac_sha256(
     key: &[u8],
     context: &[u8],
-    salt: &[u8],
+    label: &[u8],
     output_len: usize,
 ) -> Result<Vec<u8>, KbkdfError> {
     let mut kdf = Kbkdf::new(
         openssl::hash::MessageDigest::sha256(),
-        salt.to_vec(),
+        label.to_vec(),
         key.to_vec(),
     );
     kdf.set_context(context.to_vec());

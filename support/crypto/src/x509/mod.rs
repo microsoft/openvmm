@@ -55,6 +55,11 @@ impl X509Certificate {
     }
 
     /// Check if this certificate (acting as issuer) issued `subject`.
+    ///
+    /// This performs only deterministic structural comparisons - it does not
+    /// cryptographically verify the issuer's signature on `subject`. Callers
+    /// that need to establish a trust relationship must additionally call
+    /// [`X509Certificate::verify`] with the issuer's public key.
     pub fn issued(&self, subject: &X509Certificate) -> Result<bool, X509Error> {
         self.0.issued(&subject.0)
     }

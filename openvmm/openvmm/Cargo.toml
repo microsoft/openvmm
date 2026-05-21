@@ -23,10 +23,10 @@ default = [
 gdb = ["openvmm_resources/gdb"]
 vendored_crypto = ["openvmm_entry/vendored_crypto"]
 tpm = ["openvmm_resources/tpm"]
-virt_hvf = ["openvmm_resources/virt_hvf"]
-virt_kvm = ["openvmm_resources/virt_kvm"]
-virt_mshv = ["openvmm_resources/virt_mshv"]
-virt_whp = ["openvmm_resources/virt_whp"]
+virt_hvf = ["openvmm_resources/virt_hvf", "openvmm_hypervisors/virt_hvf"]
+virt_kvm = ["openvmm_resources/virt_kvm", "openvmm_hypervisors/virt_kvm"]
+virt_mshv = ["openvmm_resources/virt_mshv", "openvmm_hypervisors/virt_mshv"]
+virt_whp = ["openvmm_resources/virt_whp", "openvmm_hypervisors/virt_whp"]
 
 net_consomme = ["openvmm_resources/net_consomme"]
 net_tap = ["openvmm_resources/net_tap"]
@@ -37,6 +37,7 @@ disklayer_sqlite = ["openvmm_resources/disklayer_sqlite"]
 
 [dependencies]
 openvmm_entry.workspace = true
+openvmm_hypervisors.workspace = true
 openvmm_resources.workspace = true
 
 [build-dependencies]

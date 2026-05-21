@@ -255,6 +255,7 @@ hyperv_ic_protocol = { path = "vm/devices/hyperv_ic_protocol" }
 hyperv_ic_resources = { path = "vm/devices/hyperv_ic_resources" }
 hyperv_ic_guest = { path = "vm/devices/hyperv_ic_guest" }
 input_core = { path = "vm/devices/input_core" }
+cxl_spec = { path = "vm/devices/cxl" }
 underhill_config = { path = "vm/devices/get/underhill_config" }
 missing_dev = { path = "vm/devices/missing_dev" }
 missing_dev_resources = { path = "vm/devices/missing_dev_resources" }

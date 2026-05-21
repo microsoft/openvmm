@@ -3,8 +3,8 @@
 
 //! RSA implementation using OpenSSL.
 
-use super::HashAlgorithm;
 use super::RsaError;
+use crate::HashAlgorithm;
 
 fn err(err: openssl::error::ErrorStack, op: &'static str) -> RsaError {
     RsaError(crate::BackendError(err, op))
@@ -45,7 +45,7 @@ impl RsaKeyPairInner {
         ctx.decrypt_init().map_err(|e| err(e, "decrypt init"))?;
         ctx.set_rsa_padding(openssl::rsa::Padding::PKCS1_OAEP)
             .map_err(|e| err(e, "setting RSA padding"))?;
-        ctx.set_rsa_oaep_md(conv_mdref(hash_algorithm))
+        ctx.set_rsa_oaep_md(hash_algorithm.into())
             .map_err(|e| err(e, "setting OAEP hash"))?;
         let mut output = vec![];
         ctx.decrypt_to_vec(input, &mut output)
@@ -58,7 +58,7 @@ impl RsaKeyPairInner {
         data: &[u8],
         hash_algorithm: HashAlgorithm,
     ) -> Result<Vec<u8>, RsaError> {
-        let mut signer = openssl::sign::Signer::new(conv_md(hash_algorithm), &self.0)
+        let mut signer = openssl::sign::Signer::new(hash_algorithm.into(), &self.0)
             .map_err(|e| err(e, "creating signer"))?;
         signer
             .set_rsa_padding(openssl::rsa::Padding::PKCS1)
@@ -98,7 +98,7 @@ impl RsaPublicKeyInner {
         ctx.encrypt_init().map_err(|e| err(e, "encrypt init"))?;
         ctx.set_rsa_padding(openssl::rsa::Padding::PKCS1_OAEP)
             .map_err(|e| err(e, "setting RSA padding"))?;
-        ctx.set_rsa_oaep_md(conv_mdref(hash_algorithm))
+        ctx.set_rsa_oaep_md(hash_algorithm.into())
             .map_err(|e| err(e, "setting OAEP hash"))?;
         let mut output = vec![];
         ctx.encrypt_to_vec(input, &mut output)
@@ -112,7 +112,7 @@ impl RsaPublicKeyInner {
         signature: &[u8],
         hash_algorithm: HashAlgorithm,
     ) -> Result<bool, RsaError> {
-        let mut verifier = openssl::sign::Verifier::new(conv_md(hash_algorithm), &self.0)
+        let mut verifier = openssl::sign::Verifier::new(hash_algorithm.into(), &self.0)
             .map_err(|e| err(e, "creating verifier"))?;
         verifier
             .set_rsa_padding(openssl::rsa::Padding::PKCS1)
@@ -138,19 +138,5 @@ impl RsaPublicKeyInner {
     pub fn public_exponent(&self) -> Vec<u8> {
         // TODO: This should use EVP_PKEY_get_params but the openssl crate doesn't expose it
         self.0.rsa().unwrap().e().to_vec()
-    }
-}
-
-fn conv_md(hash_algorithm: HashAlgorithm) -> openssl::hash::MessageDigest {
-    match hash_algorithm {
-        HashAlgorithm::Sha1 => openssl::hash::MessageDigest::sha1(),
-        HashAlgorithm::Sha256 => openssl::hash::MessageDigest::sha256(),
-    }
-}
-
-fn conv_mdref(hash_algorithm: HashAlgorithm) -> &'static openssl::md::MdRef {
-    match hash_algorithm {
-        HashAlgorithm::Sha1 => openssl::md::Md::sha1(),
-        HashAlgorithm::Sha256 => openssl::md::Md::sha256(),
     }
 }

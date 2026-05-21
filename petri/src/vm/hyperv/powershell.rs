@@ -1812,6 +1812,7 @@ pub async fn run_get_vm_host() -> anyhow::Result<HyperVGetVmHost> {
             .pipeline()
             .cmdlet("ConvertTo-Json")
             .arg("Depth", 3)
+            .arg("WarningAction", "Ignore")
             .flag("Compress")
             .finish()
             .build(),

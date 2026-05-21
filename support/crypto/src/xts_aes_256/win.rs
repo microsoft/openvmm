@@ -6,7 +6,6 @@
 use super::*;
 use crate::win::*;
 use std::sync::LazyLock;
-use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Security::Cryptography::BCRYPT_ALG_HANDLE;
 use windows::Win32::Security::Cryptography::BCRYPT_HANDLE;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_HANDLE;
@@ -86,13 +85,8 @@ impl XtsAes256Inner {
 }
 
 impl XtsAes256EncCtxInner<'_> {
-    pub fn cipher(&mut self, tweak: u128, data: &mut [u8]) -> Result<(), XtsAes256Error> {
-        // BCrypt only supports 64-bit tweaks, internally padding out the high 8
-        // bytes with zeroes. (Why?) This is fine for our purposes but it's a
-        // bit annoying.
-        let mut iv = u64::try_from(tweak)
-            .map_err(|_| XtsAes256Error(crate::BackendError(E_INVALIDARG.into(), "convert tweak")))?
-            .to_le_bytes();
+    pub fn cipher(&mut self, tweak: u64, data: &mut [u8]) -> Result<(), XtsAes256Error> {
+        let mut iv = tweak.to_le_bytes();
 
         // TODO: fix windows crate to allow aliased input and output, as
         // allowed by the API.
@@ -119,13 +113,8 @@ impl XtsAes256EncCtxInner<'_> {
 }
 
 impl XtsAes256DecCtxInner<'_> {
-    pub fn cipher(&mut self, tweak: u128, data: &mut [u8]) -> Result<(), XtsAes256Error> {
-        // BCrypt only supports 64-bit tweaks, internally padding out the high 8
-        // bytes with zeroes. (Why?) This is fine for our purposes but it's a
-        // bit annoying.
-        let mut iv = u64::try_from(tweak)
-            .map_err(|_| XtsAes256Error(crate::BackendError(E_INVALIDARG.into(), "convert tweak")))?
-            .to_le_bytes();
+    pub fn cipher(&mut self, tweak: u64, data: &mut [u8]) -> Result<(), XtsAes256Error> {
+        let mut iv = tweak.to_le_bytes();
 
         // TODO: fix windows crate to allow aliased input and output, as
         // allowed by the API.

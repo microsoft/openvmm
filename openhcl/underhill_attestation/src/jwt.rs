@@ -223,7 +223,7 @@ fn verify_jwt_signature(
 ) -> Result<bool, JwtSignatureVerificationError> {
     match alg {
         JwtAlgorithm::RS256 => pkey
-            .pkcs1_verify(payload, signature, crypto::rsa::HashAlgorithm::Sha256)
+            .pkcs1_verify(payload, signature, crypto::HashAlgorithm::Sha256)
             .map_err(JwtSignatureVerificationError::VerifySignature),
     }
 }
@@ -396,7 +396,7 @@ mod tests {
 
         let payload = "test";
         let signature = rsa_key
-            .pkcs1_sign(payload.as_bytes(), crypto::rsa::HashAlgorithm::Sha256)
+            .pkcs1_sign(payload.as_bytes(), crypto::HashAlgorithm::Sha256)
             .unwrap();
 
         let cert = crate::test_helpers::generate_x509(&rsa_key);

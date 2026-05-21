@@ -8,5 +8,6 @@
 
 mod aml;
 pub mod builder;
+pub mod cedt;
 pub mod dsdt;
 pub mod ssdt;
