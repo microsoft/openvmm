@@ -1098,6 +1098,7 @@ dependencies = [
  "rsa",
  "sha1",
  "sha2",
+ "signature",
  "symcrypt",
  "thiserror 2.0.16",
  "wchar",

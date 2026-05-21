@@ -4,15 +4,20 @@
 //! RSA implementation using SymCrypt.
 
 use super::RsaError;
+use der::Decode;
+use der::Encode;
+use der::asn1::OctetString;
+use der::asn1::UintRef;
 use symcrypt::rsa::RsaKey;
 use symcrypt::rsa::RsaKeyUsage;
+use x509_cert::spki::AlgorithmIdentifierOwned;
 
 fn err(err: symcrypt::errors::SymCryptError, op: &'static str) -> RsaError {
     RsaError(crate::BackendError::SymCrypt(err, op))
 }
 
-fn pkcs8_err(err: pkcs8::Error, op: &'static str) -> RsaError {
-    RsaError(crate::BackendError::Pkcs8Encoding(err, op))
+fn der_err(e: der::Error, op: &'static str) -> RsaError {
+    RsaError(crate::BackendError::Der(e, op))
 }
 
 #[repr(transparent)] // Needed for the transmute in as_pub.
@@ -25,25 +30,28 @@ impl RsaKeyPairInner {
         Ok(Self(rsa))
     }
 
-    pub fn from_pkcs8_der(der: &[u8]) -> Result<Self, RsaError> {
-        use pkcs8::DecodePrivateKey;
-        use rsa::traits::PrivateKeyParts;
-        use rsa::traits::PublicKeyParts;
-
-        let parsed = rsa::RsaPrivateKey::from_pkcs8_der(der)
-            .map_err(|e| pkcs8_err(e, "parsing PKCS#8 DER"))?;
-        let primes = parsed.primes();
-        if primes.len() != 2 {
+    pub fn from_pkcs8_der(der_bytes: &[u8]) -> Result<Self, RsaError> {
+        let pki = pkcs8::PrivateKeyInfoRef::from_der(der_bytes)
+            .map_err(|e| der_err(e, "parsing PKCS#8 DER"))?;
+        if pki.algorithm.oid != pkcs1::ALGORITHM_OID {
+            return Err(RsaError(crate::BackendError::Pkcs8Encoding(
+                pkcs8::Error::KeyMalformed(pkcs8::KeyError::Invalid),
+                "PKCS#8 algorithm is not rsaEncryption",
+            )));
+        }
+        let key = pkcs1::RsaPrivateKey::from_der(pki.private_key.as_bytes())
+            .map_err(|e| der_err(e, "parsing PKCS#1 RSA private key"))?;
+        if key.other_prime_infos.is_some() {
             return Err(RsaError(crate::BackendError::Pkcs8Encoding(
                 pkcs8::Error::KeyMalformed(pkcs8::KeyError::Invalid),
                 "multiprime RSA keys not supported",
             )));
         }
         let rsa = RsaKey::set_key_pair(
-            &parsed.n().to_be_bytes_trimmed_vartime(),
-            &parsed.e().to_be_bytes_trimmed_vartime(),
-            &primes[0].to_be_bytes_trimmed_vartime(),
-            &primes[1].to_be_bytes_trimmed_vartime(),
+            key.modulus.as_bytes(),
+            key.public_exponent.as_bytes(),
+            key.prime1.as_bytes(),
+            key.prime2.as_bytes(),
             RsaKeyUsage::SignAndEncrypt,
         )
         .map_err(|e| err(e, "setting RSA key pair"))?;
@@ -51,27 +59,40 @@ impl RsaKeyPairInner {
     }
 
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
-        use pkcs8::EncodePrivateKey;
-
         let blob = self
             .0
             .export_key_pair_blob()
             .map_err(|e| err(e, "exporting RSA key blob"))?;
-        let rsa = rsa::RsaPrivateKey::from_components(
-            rsa::BoxedUint::from_be_slice_vartime(&blob.modulus),
-            rsa::BoxedUint::from_be_slice_vartime(&blob.pub_exp),
-            rsa::BoxedUint::from_be_slice_vartime(&blob.private_exp),
-            vec![
-                rsa::BoxedUint::from_be_slice_vartime(&blob.p),
-                rsa::BoxedUint::from_be_slice_vartime(&blob.q),
-            ],
-        )
-        .unwrap();
-        Ok(rsa
-            .to_pkcs8_der()
-            .map_err(|e| pkcs8_err(e, "converting to DER"))?
-            .as_bytes()
-            .to_vec())
+
+        let pkcs1_key = pkcs1::RsaPrivateKey {
+            modulus: UintRef::new(&blob.modulus).map_err(|e| der_err(e, "encoding modulus"))?,
+            public_exponent: UintRef::new(&blob.pub_exp)
+                .map_err(|e| der_err(e, "encoding public exponent"))?,
+            private_exponent: UintRef::new(&blob.private_exp)
+                .map_err(|e| der_err(e, "encoding private exponent"))?,
+            prime1: UintRef::new(&blob.p).map_err(|e| der_err(e, "encoding prime1"))?,
+            prime2: UintRef::new(&blob.q).map_err(|e| der_err(e, "encoding prime2"))?,
+            exponent1: UintRef::new(&blob.d_p).map_err(|e| der_err(e, "encoding exponent1"))?,
+            exponent2: UintRef::new(&blob.d_q).map_err(|e| der_err(e, "encoding exponent2"))?,
+            coefficient: UintRef::new(&blob.crt_coefficient)
+                .map_err(|e| der_err(e, "encoding coefficient"))?,
+            other_prime_infos: None,
+        };
+        let pkcs1_der = pkcs1_key
+            .to_der()
+            .map_err(|e| der_err(e, "encoding PKCS#1 RSA private key"))?;
+
+        let pki = pkcs8::PrivateKeyInfoOwned {
+            algorithm: AlgorithmIdentifierOwned {
+                oid: pkcs1::ALGORITHM_OID,
+                parameters: None,
+            },
+            private_key: OctetString::new(pkcs1_der)
+                .map_err(|e| der_err(e, "wrapping PKCS#1 in OCTET STRING"))?,
+            public_key: None,
+        };
+        pki.to_der()
+            .map_err(|e| der_err(e, "encoding PKCS#8 PrivateKeyInfo"))
     }
 
     pub fn oaep_decrypt(

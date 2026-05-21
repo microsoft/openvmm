@@ -527,6 +527,7 @@ pkcs8 = "0.11.0"
 rsa = { version = "0.10.0-rc.18", default-features = false }
 sha1 = { version = "0.11.0", default-features = false }
 sha2 = { version = "0.11.0", default-features = false }
+signature = { version = "3.0.0", default-features = false }
 symcrypt = { version = "0.6.0", git = "https://github.com/microsoft/rust-symcrypt.git", branch = "release/0.6.0" }
 x509-cert = { version = "0.3.0-rc.4", default-features = false }
 

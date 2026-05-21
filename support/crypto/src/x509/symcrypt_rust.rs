@@ -4,9 +4,12 @@
 //! X.509 certificate parsing and verification using the `x509-cert` RustCrypto crate.
 
 use super::X509Error;
+use core::str::FromStr;
 use der::Decode;
 use der::Encode;
 use x509_cert::Certificate;
+use x509_cert::builder::Builder;
+use x509_cert::name::Name;
 
 #[cfg(symcrypt)]
 fn der_err(err: der::Error, op: &'static str) -> X509Error {
@@ -154,12 +157,6 @@ impl X509CertificateInner {
         organization: &str,
         common_name: &str,
     ) -> anyhow::Result<Self> {
-        use core::str::FromStr;
-        #[cfg(symcrypt)]
-        use rsa::sha2;
-        use x509_cert::builder::Builder;
-        use x509_cert::name::Name;
-
         // Profile that produces a basic self-signed certificate with no
         // extensions and the same `Name` for both the subject and issuer.
         struct SelfSignedProfile {
@@ -199,7 +196,7 @@ impl X509CertificateInner {
         let spki = x509_cert::spki::SubjectPublicKeyInfoOwned {
             algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
                 oid: pkcs1::ALGORITHM_OID,
-                parameters: Some(der::asn1::Any::null()),
+                parameters: None,
             },
             subject_public_key: der::asn1::BitString::from_bytes(&pkcs1_der)?,
         };
@@ -216,22 +213,81 @@ impl X509CertificateInner {
             x509_cert::builder::CertificateBuilder::new(profile, serial_number, validity, spki)?;
 
         #[cfg(symcrypt)]
-        let blob = key.0.0.export_key_pair_blob()?;
-        #[cfg(symcrypt)]
-        let key = rsa::RsaPrivateKey::from_components(
-            rsa::BoxedUint::from_be_slice_vartime(&blob.modulus),
-            rsa::BoxedUint::from_be_slice_vartime(&blob.pub_exp),
-            rsa::BoxedUint::from_be_slice_vartime(&blob.private_exp),
-            vec![
-                rsa::BoxedUint::from_be_slice_vartime(&blob.p),
-                rsa::BoxedUint::from_be_slice_vartime(&blob.q),
-            ],
-        )?;
+        let cert = builder.build(&symcrypt_signer::SymCryptRsaSigner {
+            key,
+            spki_der: pkcs1_der,
+        })?;
         #[cfg(rust)]
-        let key = key.0.0.clone();
-        let signer = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(key);
-
-        let cert = builder.build(&signer)?;
+        let cert = builder.build(&rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(
+            key.0.0.clone(),
+        ))?;
         Ok(Self(cert))
+    }
+}
+
+/// Adapters that implement the `signature` and `spki` traits required by
+/// `x509_cert::builder::CertificateBuilder::build` on top of SymCrypt's
+/// PKCS#1 v1.5 signing primitive.
+#[cfg(symcrypt)]
+mod symcrypt_signer {
+    use der::Encode;
+
+    pub struct SymCryptRsaSigner<'a> {
+        pub key: &'a crate::rsa::RsaKeyPair,
+        pub spki_der: Vec<u8>,
+    }
+
+    #[derive(Clone)]
+    pub struct SymCryptRsaVerifyingKey(Vec<u8>);
+
+    pub struct SymCryptRsaSignature(Vec<u8>);
+
+    impl signature::Keypair for SymCryptRsaSigner<'_> {
+        type VerifyingKey = SymCryptRsaVerifyingKey;
+
+        fn verifying_key(&self) -> Self::VerifyingKey {
+            SymCryptRsaVerifyingKey(self.spki_der.clone())
+        }
+    }
+
+    impl x509_cert::spki::DynSignatureAlgorithmIdentifier for SymCryptRsaSigner<'_> {
+        fn signature_algorithm_identifier(
+            &self,
+        ) -> x509_cert::spki::Result<x509_cert::spki::AlgorithmIdentifierOwned> {
+            Ok(x509_cert::spki::AlgorithmIdentifierOwned {
+                oid: der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION,
+                parameters: None,
+            })
+        }
+    }
+
+    impl signature::Signer<SymCryptRsaSignature> for SymCryptRsaSigner<'_> {
+        fn try_sign(&self, msg: &[u8]) -> Result<SymCryptRsaSignature, signature::Error> {
+            self.key
+                .pkcs1_sign(msg, crate::HashAlgorithm::Sha256)
+                .map(SymCryptRsaSignature)
+                .map_err(signature::Error::from_source)
+        }
+    }
+
+    impl x509_cert::spki::EncodePublicKey for SymCryptRsaVerifyingKey {
+        fn to_public_key_der(&self) -> x509_cert::spki::Result<der::Document> {
+            // Wrap the PKCS#1 RSAPublicKey DER in a SubjectPublicKeyInfo and
+            // encode the result as a DER document.
+            let spki = x509_cert::spki::SubjectPublicKeyInfoOwned {
+                algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
+                    oid: pkcs1::ALGORITHM_OID,
+                    parameters: None,
+                },
+                subject_public_key: der::asn1::BitString::from_bytes(&self.0)?,
+            };
+            Ok(der::Document::try_from(spki.to_der()?)?)
+        }
+    }
+
+    impl x509_cert::spki::SignatureBitStringEncoding for SymCryptRsaSignature {
+        fn to_bitstring(&self) -> der::Result<der::asn1::BitString> {
+            der::asn1::BitString::from_bytes(&self.0)
+        }
     }
 }
