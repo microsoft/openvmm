@@ -3486,7 +3486,9 @@ impl Adapter {
             rndisprot::Oid::OID_GEN_MAC_OPTIONS => {
                 let options: u32 = rndisprot::MAC_OPTION_COPY_LOOKAHEAD_DATA
                     | rndisprot::MAC_OPTION_TRANSFERS_NOT_PEND
-                    | rndisprot::MAC_OPTION_NO_LOOPBACK;
+                    | rndisprot::MAC_OPTION_NO_LOOPBACK
+                    | rndisprot::MAC_OPTION_8021P_PRIORITY
+                    | rndisprot::MAC_OPTION_8021Q_VLAN;
                 writer.write(options.as_bytes())?;
             }
             rndisprot::Oid::OID_GEN_MEDIA_CONNECT_STATUS => {
