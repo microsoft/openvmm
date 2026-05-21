@@ -62,8 +62,6 @@ use anyhow::Context;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
-use chipset_resources::CmosRtcTimeSourceHandleKind;
-use chipset_resources::ResolvedCmosRtcTimeSource;
 use chipset_resources::cmos_rtc::GenericCmosRtcDeviceHandle;
 #[cfg(guest_arch = "x86_64")]
 use chipset_resources::cmos_rtc::Piix4CmosRtcDeviceHandle;
@@ -3050,7 +3048,7 @@ async fn new_underhill_vm(
     };
 
     let devices = BaseChipsetDevices {
-        deps_generic_cmos_rtc,
+        deps_generic_cmos_rtc: None,
         deps_generic_psp,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
