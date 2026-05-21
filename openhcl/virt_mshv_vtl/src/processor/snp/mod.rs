@@ -1534,33 +1534,46 @@ impl UhProcessor<'_, SnpBacked> {
         let (avic_page, mut vmsa) = self.runner.secure_avic_page_vmsa_mut(entered_from_vtl);
         let exit_int_info_trace = SevEventInjectInfo::from(vmsa.exit_int_info());
 
-        if vmsa.sev_features().alternate_injection() {
-            let was_busy = vmsa.guest_busy_bit_test_and_set();
-            if was_busy {
-                self.backing.general_stats[entered_from_vtl]
-                    .guest_busy
-                    .increment();
+        // Atomically test and set the guest busy bit. This prevents the untrusted
+        // hypervisor from re-entering the VMSA on another physical CPU while VTL2
+        // is processing the exit. The return value indicates whether the hardware
+        // had already set the busy bit on exit (e.g., for APIC-related exits with
+        // secure AVIC, or injection failures with alternate injection).
+        #[cfg(not(feature = "disable_secure_avic"))]
+        if !vmsa.sev_features().alternate_injection() {
+            assert!(
+                vmsa.sev_features().secure_avic(),
+                "secure AVIC must be enabled"
+            );
+        }
+        let was_busy = vmsa.guest_busy_bit_test_and_set();
 
-                let sev_error_code = SevExitCode(vmsa.guest_error_code());
-                match sev_error_code {
-                    SevExitCode::NOT_RESTARTABLE => {
-                        // The guest APIC backing page is not validated in the RMP.
+        if was_busy {
+            self.backing.general_stats[entered_from_vtl]
+                .guest_busy
+                .increment();
+
+            let sev_error_code = SevExitCode(vmsa.guest_error_code());
+            match sev_error_code {
+                SevExitCode::NOT_RESTARTABLE => {
+                    // The guest APIC backing page is not validated in the RMP.
+                    return Err(dev.fatal_error(SnpRunVpError::VpNotRestartableError.into()));
+                }
+                SevExitCode::NPF => {
+                    let exit_info = SevNpfInfo::from(vmsa.exit_info1());
+                    if exit_info.not_restartable() {
+                        // An access to the guest's APIC backing page by AVIC hardware resulted
+                        // in a nested page fault.
                         return Err(dev.fatal_error(SnpRunVpError::VpNotRestartableError.into()));
                     }
-                    SevExitCode::NPF => {
-                        let exit_info = SevNpfInfo::from(vmsa.exit_info1());
-                        if exit_info.not_restartable() {
-                            // An access to the guest's APIC backing page by AVIC hardware resulted
-                            // in a nested page fault.
-                            return Err(
-                                dev.fatal_error(SnpRunVpError::VpNotRestartableError.into())
-                            );
-                        }
-                    }
-                    _ => {}
                 }
+                _ => {}
             }
+        }
 
+        // Handle exit interrupt info re-injection (alternate injection only).
+        // Secure AVIC manages event injection through the APIC backing page.
+        if vmsa.sev_features().alternate_injection() {
             // Software interrupts/exceptions cannot be automatically re-injected, but RIP still
             // points to the instruction and the event should be re-generated when the
             // instruction is re-executed. Note that hardware does not provide instruction
@@ -1592,17 +1605,8 @@ impl UhProcessor<'_, SnpBacked> {
                 // cleared so that it is not examined again on a subsequent reentry to
                 // the HCL.
                 vmsa.set_exit_int_info(0);
-            } else {
-                // Any previously injected event has been consumed.
             }
-        } else {
-            #[cfg(not(feature = "disable_secure_avic"))]
-            assert!(
-                vmsa.sev_features().secure_avic(),
-                "secure AVIC must be enabled"
-            );
-            None
-        };
+        }
 
         if last_interrupt_ctrl.irq() && !vmsa.v_intr_cntrl().irq() {
             self.backing.general_stats[entered_from_vtl]
