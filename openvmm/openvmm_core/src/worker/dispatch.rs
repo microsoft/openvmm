@@ -971,9 +971,7 @@ impl InitializedVm {
             backing = backing.hugepages(cfg.memory.hugepage_size);
         }
         if let Some(smb) = shared_memory {
-            if let Some(mappable) = smb.into_mappables().into_iter().next().flatten() {
-                backing = backing.existing_mappable(mappable);
-            }
+            backing = backing.existing_mappable(smb.into_mappable());
         }
 
         let mut memory_builder = GuestMemoryBuilder::new();

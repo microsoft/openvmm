@@ -401,6 +401,19 @@ impl GuestMemoryBuilder {
             }
         }
 
+        // Validate x86 legacy support: at least one backing must contain a
+        // range starting at GPA 0 and covering at least 1MB.
+        if self.x86_legacy_support {
+            let has_low_mem = backing_requests.iter().any(|req| {
+                req.ranges
+                    .iter()
+                    .any(|r| r.start() == 0 && r.end() >= 0x100000)
+            });
+            if !has_low_mem {
+                return Err(MemoryBuildError::InvalidRamForX86);
+            }
+        }
+
         // Compute the maximum hugepage size across all backings (used for
         // VA alignment in the MappingManager).
         let max_hugepage_size = {
@@ -598,24 +611,19 @@ impl GuestMemoryBuilder {
 }
 
 /// The backing objects used to transfer guest memory between processes.
-///
-/// Each entry corresponds to one backing request. Private (anonymous) backings
-/// are `None`; file-backed backings are `Some(Mappable)`.
 #[derive(Debug, MeshPayload)]
 pub struct SharedMemoryBacking {
-    guest_ram: Vec<Option<Mappable>>,
+    guest_ram: Mappable,
 }
 
 impl SharedMemoryBacking {
-    /// Create a SharedMemoryBacking from a single mappable handle/fd.
+    /// Create a SharedMemoryBacking from a mappable handle/fd.
     pub fn from_mappable(guest_ram: Mappable) -> Self {
-        Self {
-            guest_ram: vec![Some(guest_ram)],
-        }
+        Self { guest_ram }
     }
 
-    /// Returns the mappables, consuming this backing.
-    pub fn into_mappables(self) -> Vec<Option<Mappable>> {
+    /// Returns the mappable, consuming this backing.
+    pub fn into_mappable(self) -> Mappable {
         self.guest_ram
     }
 }
@@ -676,24 +684,21 @@ impl GuestMemoryManager {
     /// Returns the shared memory resources that can be used to reconstruct the
     /// memory backing.
     ///
-    /// The returned mappables can be passed back via
+    /// The returned mappable can be passed back via
     /// [`RamBackingRequest::existing_mappable`] to create a new memory
     /// manager with the same memory state. Only one instance of this type
     /// should be managing a given memory backing at a time, though, or the
     /// guest may see unpredictable results.
     ///
-    /// Returns `None` when all backings are private (anonymous), since
-    /// there is nothing to share.
+    /// Returns `None` when any backing uses private memory, since
+    /// restart requires all RAM to be file-backed.
     pub fn shared_memory_backing(&self) -> Option<SharedMemoryBacking> {
-        if self.guest_ram.is_empty() {
-            return None;
-        }
-        // If all backings are private, there's nothing to share.
-        if self.guest_ram.iter().all(|b| b.mappable.is_none()) {
+        // Require exactly one backing, and it must be file-backed.
+        if self.guest_ram.len() != 1 {
             return None;
         }
         Some(SharedMemoryBacking {
-            guest_ram: self.guest_ram.iter().map(|b| b.mappable.clone()).collect(),
+            guest_ram: self.guest_ram[0].mappable.clone()?,
         })
     }
 
