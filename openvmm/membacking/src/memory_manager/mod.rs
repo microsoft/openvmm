@@ -65,8 +65,6 @@ struct RamBacking {
     ranges: Vec<MemoryRange>,
     /// Prefetch pages at build time.
     prefetch: bool,
-    /// This backing uses private anonymous memory.
-    private_memory: bool,
     /// THP is enabled for this backing.
     #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
     transparent_hugepages: bool,
@@ -442,7 +440,6 @@ impl GuestMemoryBuilder {
                     mappable: None,
                     ranges: req.ranges,
                     prefetch: req.prefetch,
-                    private_memory: true,
                     transparent_hugepages: req.transparent_hugepages,
                 });
                 continue;
@@ -486,7 +483,6 @@ impl GuestMemoryBuilder {
                 mappable: Some(mappable),
                 ranges: req.ranges,
                 prefetch: req.prefetch,
-                private_memory: false,
                 transparent_hugepages: false,
             });
         }
@@ -584,7 +580,7 @@ impl GuestMemoryBuilder {
                         .map(MapParams {
                             writable: true,
                             executable: true,
-                            prefetch: backing.prefetch && !backing.private_memory,
+                            prefetch: backing.prefetch && backing.mappable.is_some(),
                         })
                         .await;
 
