@@ -807,16 +807,20 @@ mod tests {
     use parking_lot::Mutex;
     use std::sync::Arc;
 
-    // Memory layout for tests.
+    // Memory layout for tests. All addresses fit within a 6 MB allocation
+    // to avoid excessive memory usage in test processes.
     const STRTAB_BASE: u64 = 0x10_0000;
     const STRTAB_LOG2SIZE: u8 = 10;
     const CD_BASE: u64 = 0x20_0000;
     const PT_L1_BASE: u64 = 0x30_1000;
     const PT_L2_BASE: u64 = 0x30_2000;
     const PT_L3_BASE: u64 = 0x30_3000;
-    const DATA_GPA: u64 = 0x4000_0000;
+    // DATA_GPA and EVTQ_BASE are kept low so the guest memory allocation
+    // does not need to span gigabytes. Tests read/write data at DATA_GPA
+    // and the SMMU writes fault events at EVTQ_BASE.
+    const DATA_GPA: u64 = 0x40_0000;
     /// EVTQ base GPA for tests (must not overlap other test regions).
-    const EVTQ_BASE: u64 = 0x4100_0000;
+    const EVTQ_BASE: u64 = 0x50_0000;
     /// EVTQ log2 size for tests (3 = 8 entries).
     const EVTQ_LOG2SIZE: u8 = 3;
     const TEST_SEGMENT: u16 = 0;
@@ -987,7 +991,7 @@ mod tests {
 
     #[test]
     fn test_translating_memory_basic_read() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
         let sid = expected_sid();
         setup_translation(&gm, sid);
 
@@ -1010,7 +1014,7 @@ mod tests {
 
     #[test]
     fn test_translating_memory_basic_write() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
         let sid = expected_sid();
         setup_translation(&gm, sid);
 
@@ -1033,7 +1037,7 @@ mod tests {
 
     #[test]
     fn test_translating_memory_with_offset() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
         let sid = expected_sid();
         setup_translation(&gm, sid);
 
@@ -1056,7 +1060,7 @@ mod tests {
 
     #[test]
     fn test_translating_memory_cross_page() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
         let sid = expected_sid();
 
         // Set up STE and CD.
@@ -1093,7 +1097,7 @@ mod tests {
 
     #[test]
     fn test_translating_memory_bypass() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
         let sid = expected_sid();
 
         // STE in bypass mode.
@@ -1118,7 +1122,7 @@ mod tests {
 
     #[test]
     fn test_translating_memory_abort() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
         let sid = expected_sid();
 
         // STE in abort mode.
@@ -1142,7 +1146,7 @@ mod tests {
 
     #[test]
     fn test_translating_memory_unmapped() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
         let sid = expected_sid();
 
         // Set up STE and CD, but NO page table entries (L1 is all zeros).
@@ -1170,7 +1174,7 @@ mod tests {
 
     #[test]
     fn test_translating_memory_unassigned_bus() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
 
         // Write data at GPA 0x2000.
         let data = b"unassigned bus data";
@@ -1192,7 +1196,7 @@ mod tests {
 
     #[test]
     fn test_translating_memory_smmu_disabled() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
 
         // Write data at GPA 0x3000.
         let data = b"disabled smmu";
@@ -1217,7 +1221,7 @@ mod tests {
 
     #[test]
     fn test_signal_msi_translated() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
         let sid = expected_sid();
         setup_translation(&gm, sid);
 
@@ -1248,7 +1252,7 @@ mod tests {
 
     #[test]
     fn test_signal_msi_bypass() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
         let sid = expected_sid();
 
         write_ste(&gm, sid, &make_bypass_ste());
@@ -1275,7 +1279,7 @@ mod tests {
 
     #[test]
     fn test_signal_msi_unmapped() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
         let sid = expected_sid();
 
         // STE with S1 translation, but no page table entries.
@@ -1307,7 +1311,7 @@ mod tests {
 
     #[test]
     fn test_signal_msi_devid_passthrough() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
         let sid = expected_sid();
 
         write_ste(&gm, sid, &make_bypass_ste());
@@ -1334,7 +1338,7 @@ mod tests {
 
     #[test]
     fn test_signal_msi_no_devid() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
 
         let state = make_shared_state(&gm);
         let bus_range = make_bus_range();
@@ -1361,7 +1365,7 @@ mod tests {
 
     #[test]
     fn test_translating_memory_nonzero_stream_id_base() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
 
         // Use a non-zero stream_id_base (simulating a second root complex
         // with its own region in the SMMU stream table).
@@ -1396,7 +1400,7 @@ mod tests {
 
     #[test]
     fn test_signal_msi_nonzero_stream_id_base() {
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x60_0000);
 
         // Non-zero base (different root complex).
         let stream_id_base: u32 = 256;

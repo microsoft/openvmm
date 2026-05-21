@@ -710,7 +710,10 @@ mod tests {
     const PT_L1_BASE: u64 = 0x30_1000; // L1 table
     const PT_L2_BASE: u64 = 0x30_2000; // L2 table
     const PT_L3_BASE: u64 = 0x30_3000; // L3 table
-    const DATA_GPA: u64 = 0x4000_0000; // Target GPA for mappings
+    // Target GPA for mappings. This address is never accessed by the walker —
+    // it only appears inside page table descriptors as the output address.
+    // It can exceed the guest memory allocation size.
+    const DATA_GPA: u64 = 0x4000_0000;
 
     /// Build a TranslationContext for 4K granule, T0SZ=32 (32-bit VA), 40-bit OAS.
     fn make_4k_ctx(ttb0: u64) -> TranslationContext {
@@ -788,7 +791,7 @@ mod tests {
         // T0SZ=32 with 4K granule: 32-bit VA space.
         // Walk starts at level 1 (levels 1, 2, 3).
         // Map a 1GB block at level 1 entry 0 → DATA_GPA.
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x40_0000);
         let ctx = make_4k_ctx(PT_L1_BASE);
 
         // Level 1 entry 0: 1GB block → DATA_GPA.
@@ -803,7 +806,7 @@ mod tests {
     #[test]
     fn test_walk_4k_four_levels() {
         // T0SZ=16 with 4K granule: 48-bit VA space, 4 levels (0-3).
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x40_0000);
         let ctx = TranslationContext {
             ttb0: PT_L0_BASE,
             t0sz: 16,
@@ -831,7 +834,7 @@ mod tests {
     #[test]
     fn test_walk_4k_2mb_block() {
         // T0SZ=32, 4K granule. Level 2 block descriptor (2MB).
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x40_0000);
         let ctx = make_4k_ctx(PT_L1_BASE);
 
         // L1[0] → L2 table
@@ -848,7 +851,7 @@ mod tests {
     #[test]
     fn test_walk_4k_page_with_offset() {
         // Walk to a 4K page and verify the intra-page offset is preserved.
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x40_0000);
         let ctx = make_4k_ctx(PT_L1_BASE);
 
         // L1[0] → L2 table
@@ -868,7 +871,7 @@ mod tests {
     #[test]
     fn test_walk_4k_block_with_offset() {
         // Walk to a 2MB block and verify the intra-block offset is preserved.
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x40_0000);
         let ctx = make_4k_ctx(PT_L1_BASE);
 
         // L1[0] → L2 table
@@ -886,7 +889,7 @@ mod tests {
     #[test]
     fn test_walk_fault_unmapped() {
         // Walk with a PTE that has Valid=0.
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x40_0000);
         let ctx = make_4k_ctx(PT_L1_BASE);
 
         // L1[0] is all zeros (invalid).
@@ -899,7 +902,7 @@ mod tests {
     #[test]
     fn test_walk_fault_permission() {
         // Write to a read-only page.
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x40_0000);
         let ctx = make_4k_ctx(PT_L1_BASE);
 
         // L1[0] → L2 table
@@ -922,7 +925,7 @@ mod tests {
     #[test]
     fn test_walk_fault_access_flag() {
         // Page with AF=0 — should produce F_ACCESS fault.
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x40_0000);
         let ctx = make_4k_ctx(PT_L1_BASE);
 
         // L1[0] → L2 table
@@ -940,7 +943,7 @@ mod tests {
     #[test]
     fn test_walk_fault_addr_size() {
         // Output address exceeds OAS.
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x40_0000);
         // 32-bit OAS — output addresses must fit in 32 bits.
         let ctx = TranslationContext {
             ttb0: PT_L1_BASE,
@@ -967,7 +970,7 @@ mod tests {
     #[test]
     fn test_walk_iova_out_of_range() {
         // IOVA exceeds the VA range defined by T0SZ.
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x40_0000);
         let ctx = make_4k_ctx(PT_L1_BASE); // T0SZ=32, VA range = 2^32
 
         // IOVA = 0x1_0000_0000 (exceeds 32-bit range).
@@ -980,7 +983,7 @@ mod tests {
     fn test_walk_nonzero_l1_index() {
         // Verify that non-zero L1 indices work correctly.
         // T0SZ=32, 4K: L1 has 4 entries (indices 0-3, each covering 1GB).
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x40_0000);
         let ctx = make_4k_ctx(PT_L1_BASE);
 
         // L1[2] → 1GB block at DATA_GPA (IOVA starting at 2GB).
@@ -997,7 +1000,7 @@ mod tests {
     #[test]
     fn test_walk_nonzero_l3_index() {
         // Verify non-zero L3 index with 4K pages.
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x40_0000);
         let ctx = make_4k_ctx(PT_L1_BASE);
 
         // L1[0] → L2 table
@@ -1018,7 +1021,7 @@ mod tests {
     #[test]
     fn test_walk_write_to_rw_page() {
         // Write to a RW page should succeed.
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x40_0000);
         let ctx = make_4k_ctx(PT_L1_BASE);
 
         write_pt_desc(&gm, PT_L1_BASE, table_desc(PT_L2_BASE));
@@ -1046,7 +1049,7 @@ mod tests {
         // the guard in compute_start_level, walk_s1 would compute
         // start_level=4 and then evaluate (3u32 - 4u32), panicking
         // in debug mode. Verify it returns a translation fault instead.
-        let gm = GuestMemory::allocate(0x5000_0000);
+        let gm = GuestMemory::allocate(0x40_0000);
         let ctx = TranslationContext {
             ttb0: PT_L1_BASE,
             t0sz: 48,

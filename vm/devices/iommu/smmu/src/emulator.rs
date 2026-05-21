@@ -1695,10 +1695,12 @@ mod tests {
         const PT_L1_GPA: u64 = 0x50_1000; // L1 page table
         const PT_L2_GPA: u64 = 0x50_2000; // L2 page table
         const PT_L3_GPA: u64 = 0x50_3000; // L3 page table
-        const DATA_GPA: u64 = 0x6000_0000; // Translated target page
+        const DATA_GPA: u64 = 0x60_0000; // Translated target page
+        const SYNC_MSI_GPA: u64 = 0x70_0000; // CMD_SYNC MSI target
+        const EVTQ_MSI_GPA: u64 = 0x70_0100; // EVTQ MSI target
+        // DOORBELL_GPA is a translation output only — never accessed
+        // directly by the test. It can exceed the guest memory allocation.
         const DOORBELL_GPA: u64 = 0x7000_0000; // MSI doorbell physical page
-        const SYNC_MSI_GPA: u64 = 0x80_0000; // CMD_SYNC MSI target
-        const EVTQ_MSI_GPA: u64 = 0x80_0100; // EVTQ MSI target
 
         // IOVA space layout (guest-programmed)
         const DMA_IOVA: u64 = 0x0000_0000; // Maps to DATA_GPA
@@ -1746,7 +1748,7 @@ mod tests {
         // Allocate guest memory and create device
         // =====================================================================
 
-        let gm = GuestMemory::allocate(0x8000_0000); // 2 GiB
+        let gm = GuestMemory::allocate(0x80_0000); // 8 MiB
         let mut dev = SmmuDevice::new(
             TEST_MMIO_BASE,
             gm.clone(),
