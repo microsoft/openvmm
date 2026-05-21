@@ -196,7 +196,7 @@ impl X509CertificateInner {
         let spki = x509_cert::spki::SubjectPublicKeyInfoOwned {
             algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
                 oid: pkcs1::ALGORITHM_OID,
-                parameters: None,
+                parameters: Some(der::Any::null()),
             },
             subject_public_key: der::asn1::BitString::from_bytes(&pkcs1_der)?,
         };
@@ -213,10 +213,7 @@ impl X509CertificateInner {
             x509_cert::builder::CertificateBuilder::new(profile, serial_number, validity, spki)?;
 
         #[cfg(symcrypt)]
-        let cert = builder.build(&symcrypt_signer::SymCryptRsaSigner {
-            key,
-            spki_der: pkcs1_der,
-        })?;
+        let cert = builder.build(&symcrypt_signer::SymCryptRsaSigner { key, pkcs1_der })?;
         #[cfg(rust)]
         let cert = builder.build(&rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(
             key.0.0.clone(),
@@ -234,7 +231,7 @@ mod symcrypt_signer {
 
     pub struct SymCryptRsaSigner<'a> {
         pub key: &'a crate::rsa::RsaKeyPair,
-        pub spki_der: Vec<u8>,
+        pub pkcs1_der: Vec<u8>,
     }
 
     #[derive(Clone)]
@@ -246,7 +243,7 @@ mod symcrypt_signer {
         type VerifyingKey = SymCryptRsaVerifyingKey;
 
         fn verifying_key(&self) -> Self::VerifyingKey {
-            SymCryptRsaVerifyingKey(self.spki_der.clone())
+            SymCryptRsaVerifyingKey(self.pkcs1_der.clone())
         }
     }
 
@@ -256,7 +253,7 @@ mod symcrypt_signer {
         ) -> x509_cert::spki::Result<x509_cert::spki::AlgorithmIdentifierOwned> {
             Ok(x509_cert::spki::AlgorithmIdentifierOwned {
                 oid: der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION,
-                parameters: None,
+                parameters: Some(der::Any::null()),
             })
         }
     }
@@ -277,7 +274,7 @@ mod symcrypt_signer {
             let spki = x509_cert::spki::SubjectPublicKeyInfoOwned {
                 algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
                     oid: pkcs1::ALGORITHM_OID,
-                    parameters: None,
+                    parameters: Some(der::Any::null()),
                 },
                 subject_public_key: der::asn1::BitString::from_bytes(&self.0)?,
             };

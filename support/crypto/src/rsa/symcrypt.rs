@@ -85,7 +85,7 @@ impl RsaKeyPairInner {
         let pki = pkcs8::PrivateKeyInfoOwned {
             algorithm: AlgorithmIdentifierOwned {
                 oid: pkcs1::ALGORITHM_OID,
-                parameters: None,
+                parameters: Some(der::Any::null()),
             },
             private_key: OctetString::new(pkcs1_der)
                 .map_err(|e| der_err(e, "wrapping PKCS#1 in OCTET STRING"))?,
