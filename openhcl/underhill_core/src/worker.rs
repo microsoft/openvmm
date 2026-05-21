@@ -3341,15 +3341,18 @@ async fn new_underhill_vm(
                 .context("vpci devices require vmbus redirection to be enabled")?;
 
             vmm_core::device_builder::build_vpci_device(
-                &driver_source,
-                &resolver,
-                device_memory,
+                vmm_core::device_builder::PciDeviceResolveContext {
+                    driver_source: &driver_source,
+                    resolver: &resolver,
+                    guest_memory: device_memory,
+                    resource,
+                    doorbell_registration: None,
+                    shared_mem_mapper: None,
+                    software_iommu: false,
+                },
                 vmbus.control(),
                 instance_id,
-                resource,
                 &chipset_builder,
-                None,
-                None,
                 |device_id| {
                     let device = partition
                         .new_virtual_device()
