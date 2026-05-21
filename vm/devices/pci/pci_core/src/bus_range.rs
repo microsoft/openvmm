@@ -9,10 +9,8 @@
 //! [`ConfigSpaceType1Emulator`](crate::cfg_space_emu::ConfigSpaceType1Emulator)
 //! when the guest writes bus number registers, and on restore/reset.
 //!
-//! Consumers (ITS wrappers, SMMU) compose a full device identity from the
-//! bus range plus the device's BDF. The segment number is not included
-//! here — it is a static property of the root complex and is held
-//! separately by the consumer.
+//! Consumers (ITS wrappers, SMMU) read the bus range to compose a full
+//! device identity from the bus range plus the device's BDF.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU16;

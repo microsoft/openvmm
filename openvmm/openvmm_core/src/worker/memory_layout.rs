@@ -34,6 +34,9 @@ const PAGE_SIZE: u64 = 4096;
 const TWO_MB: u64 = 2 * 1024 * 1024;
 const GB: u64 = 1024 * 1024 * 1024;
 
+/// SMMUv3 MMIO region size: two 64 KiB pages (page 0 + page 1).
+const SMMU_SIZE: u64 = 0x2_0000;
+
 /// PCIe ECAM: 32 devices * 8 functions * 4 KiB config space = 1 MB per bus.
 const PCIE_ECAM_BYTES_PER_BUS: u64 = 32 * 8 * 4096;
 
@@ -63,6 +66,10 @@ pub(super) struct ResolvedMemoryLayout {
     /// VTL2-private chipset MMIO range, reported to VTL2 VMBus via the device
     /// tree. `EMPTY` when VTL2 is not configured or has no chipset MMIO.
     pub vtl2_chipset_mmio: MemoryRange,
+    /// Resolved MMIO ranges for SMMUv3 instances, one per configured SMMU.
+    /// Each range is `SMMU_SIZE` bytes. Empty when no SMMUs are configured.
+    #[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
+    pub smmu_ranges: Vec<MemoryRange>,
 }
 
 #[derive(Debug)]
@@ -88,6 +95,9 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// Number of virtio-mmio device slots to allocate in 32-bit MMIO space.
     /// A single contiguous region of `count * 4 KiB` is allocated.
     pub virtio_mmio_count: usize,
+    /// Number of SMMUv3 instances to allocate MMIO for. Each instance requires
+    /// `SMMU_SIZE` bytes (128 KiB), 128 KiB aligned, in 32-bit MMIO space.
+    pub smmu_count: usize,
     /// Optional IGVM VTL2 private-memory request. This is allocated after all
     /// VTL0-visible RAM and MMIO and is carried separately from ordinary RAM.
     pub vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
@@ -261,6 +271,19 @@ pub(super) fn resolve_memory_layout(
         );
     }
 
+    // SMMUv3: allocate one 128 KiB region per instance. Placed below 4 GiB
+    // alongside other aarch64 system devices (GIC, ITS, PL011).
+    let mut smmu_ranges: Vec<MemoryRange> = vec![MemoryRange::EMPTY; input.smmu_count];
+    for (idx, range) in smmu_ranges.iter_mut().enumerate() {
+        builder.request(
+            format!("smmu-{idx}"),
+            range,
+            SMMU_SIZE,
+            SMMU_SIZE,
+            Placement::Mmio32,
+        );
+    }
+
     // RAM request order is part of the NUMA compatibility contract: the first
     // request maps to vnode 0, the second to vnode 1, and so on. For GB-sized
     // nodes, use GB alignment so holes do not create sub-GB RAM chunks. For
@@ -415,6 +438,7 @@ pub(super) fn resolve_memory_layout(
         chipset_low_mmio,
         chipset_high_mmio,
         vtl2_chipset_mmio,
+        smmu_ranges,
     })
 }
 
@@ -515,6 +539,7 @@ mod tests {
             layout: DEFAULT_LAYOUT,
             pcie_root_complexes: &[],
             virtio_mmio_count: 0,
+            smmu_count: 0,
             vtl2_layout,
             physical_address_size: 46,
         }

@@ -147,6 +147,7 @@ fn build_dt(
     enable_serial: bool,
     processor_topology: &ProcessorTopology<Aarch64Topology>,
     pcie_host_bridges: &[PcieHostBridge],
+    smmu_configs: &[vmm_core::acpi_builder::AcpiSmmuConfig],
     initrd_start: u64,
     initrd_end: u64,
 ) -> Result<Vec<u8>, fdt::builder::Error> {
@@ -157,6 +158,8 @@ fn build_dt(
     const PL011_SERIAL0_IRQ: u32 = 1;
     const PL011_SERIAL1_BASE: u64 = 0xEFFEB000;
     const PL011_SERIAL1_IRQ: u32 = 2;
+    /// SMMUv3 MMIO region size: two 64 KiB pages (page 0 + page 1).
+    const SMMU_SIZE: u64 = 0x2_0000;
 
     let num_cpus = processor_topology.vps().len();
 
@@ -232,12 +235,16 @@ fn build_dt(
     let p_msi_controller = builder.add_string("msi-controller")?;
     let p_arm_msi_base_spi = builder.add_string("arm,msi-base-spi")?;
     let p_arm_msi_num_spis = builder.add_string("arm,msi-num-spis")?;
+    let p_iommu_cells = builder.add_string("#iommu-cells")?;
+    let p_iommu_map = builder.add_string("iommu-map")?;
 
     // Property handle values.
     const PHANDLE_GIC: u32 = 1;
     const PHANDLE_APB_PCLK: u32 = 2;
     const PHANDLE_V2M: u32 = 3;
     const PHANDLE_ITS: u32 = 4;
+    // SMMU phandles start at 5: SMMU instance N gets phandle 5 + N.
+    const PHANDLE_SMMU_BASE: u32 = 5;
 
     const GIC_SPI: u32 = 0;
     const GIC_PPI: u32 = 1;
@@ -362,6 +369,39 @@ fn build_dt(
         GicMsiController::None => gic_node.end_node()?,
     };
 
+    // SMMUv3 nodes (one per configured instance).
+    // Build a lookup from RC index → phandle for the iommu-map entries below.
+    let mut smmu_phandles: Vec<(u32, u32)> = Vec::new();
+    for (idx, smmu) in smmu_configs.iter().enumerate() {
+        let phandle = PHANDLE_SMMU_BASE + idx as u32;
+        smmu_phandles.push((smmu.rc_index, phandle));
+        // SPI interrupts use GIC_SPI encoding. The GSIV is the full INTID
+        // (e.g., 35), and the DT `interrupts` property wants the SPI number
+        // (INTID - 32) for GIC_SPI type.
+        let evtq_spi = smmu.event_gsiv - 32;
+        let gerr_spi = smmu.gerr_gsiv - 32;
+        root_builder = root_builder
+            .start_node(format!("smmu@{:x}", smmu.base).as_str())?
+            .add_str(p_compatible, "arm,smmu-v3")?
+            .add_u64_array(p_reg, &[smmu.base, SMMU_SIZE])?
+            .add_u32_array(
+                p_interrupts,
+                &[
+                    GIC_SPI,
+                    evtq_spi,
+                    IRQ_TYPE_LEVEL_HIGH,
+                    GIC_SPI,
+                    gerr_spi,
+                    IRQ_TYPE_LEVEL_HIGH,
+                ],
+            )?
+            .add_str_array(p_interrupt_names, &["eventq", "gerror"])?
+            .add_u32(p_iommu_cells, 1)?
+            .add_u32(p_phandle, phandle)?
+            .add_null(p_dma_coherent)?
+            .end_node()?;
+    }
+
     // ARM64 Architectural Timer.
     // The DT `interrupts` property uses the PPI offset (INTID - 16).
     assert!((16..32).contains(&processor_topology.virt_timer_ppi()));
@@ -456,6 +496,13 @@ fn build_dt(
                 node = node.add_u32(p_msi_parent, PHANDLE_V2M)?;
             }
             GicMsiController::None => {}
+        }
+        if let Some((_, phandle)) = smmu_phandles.iter().find(|(idx, _)| *idx == bridge.index) {
+            // iommu-map: <rid_base> <&smmu_phandle> <stream_id_base> <length>
+            // Maps the full RID range (0..0x10000) for this root complex
+            // through its SMMU instance. stream_id_base is 0 because each
+            // SMMU is 1:1 with its RC — stream IDs are plain BDFs.
+            node = node.add_u32_array(p_iommu_map, &[0, *phandle, 0, 0x10000])?;
         }
         root_builder = node.end_node()?;
     }
@@ -787,6 +834,7 @@ pub fn load_linux_arm64(
     enable_serial: bool,
     processor_topology: &ProcessorTopology<Aarch64Topology>,
     pcie_host_bridges: &[PcieHostBridge],
+    smmu_configs: &[vmm_core::acpi_builder::AcpiSmmuConfig],
     build_acpi: Option<impl FnOnce(u64) -> vmm_core::acpi_builder::BuiltAcpiTables>,
 ) -> Result<Vec<Aarch64Register>, Error> {
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
@@ -847,6 +895,7 @@ pub fn load_linux_arm64(
             enable_serial,
             processor_topology,
             pcie_host_bridges,
+            smmu_configs,
             initrd_start,
             initrd_end,
         )

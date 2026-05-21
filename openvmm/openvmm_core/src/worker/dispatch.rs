@@ -2,6 +2,9 @@
 // Licensed under the MIT License.
 
 mod dump;
+mod pcie_wiring;
+#[cfg(guest_arch = "aarch64")]
+mod smmu_wiring;
 
 use crate::emuplat;
 use crate::partition::BindHvliteVp;
@@ -416,6 +419,8 @@ pub(crate) struct InitializedVm {
     chipset_low_mmio: MemoryRange,
     chipset_high_mmio: MemoryRange,
     vtl2_chipset_mmio: MemoryRange,
+    #[cfg(guest_arch = "aarch64")]
+    resolved_smmu_resources: Vec<smmu_wiring::ResolvedSmmuResources>,
     processor_topology: ProcessorTopology,
     igvm_file: Option<IgvmFile>,
     driver_source: VmTaskDriverSource,
@@ -503,6 +508,7 @@ impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
                     None => PmuGsivConfig::Disabled,
                 },
                 gic_msi: Default::default(),
+                smmu: Vec::new(),
             })),
         }
     }
@@ -511,8 +517,8 @@ impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
 #[cfg(guest_arch = "aarch64")]
 struct Aarch64TopologyResult {
     processor_topology: ProcessorTopology<Aarch64Topology>,
-    #[expect(dead_code)] // consumed by SMMU device wiring
     spi_layout: super::spi_layout::ResolvedSpiLayout,
+    smmu_count: usize,
 }
 
 #[cfg(guest_arch = "aarch64")]
@@ -625,6 +631,7 @@ fn build_aarch64_topology(
     let spi_layout = super::spi_layout::resolve_spi_layout(&super::spi_layout::SpiLayoutInput {
         gic_nr_irqs,
         v2m_spi_count,
+        smmu_count: arch.smmu.len(),
     })?;
 
     // Build the GIC MSI controller from resolved SPIs.
@@ -651,6 +658,8 @@ fn build_aarch64_topology(
         gic_nr_irqs,
     };
 
+    let smmu_count = arch.smmu.len();
+
     let mut builder = TopologyBuilder::new_aarch64(platform);
     if let Some(smt) = config.enable_smt {
         builder.smt_enabled(smt);
@@ -663,6 +672,7 @@ fn build_aarch64_topology(
     Ok(Aarch64TopologyResult {
         processor_topology: builder.build(config.proc_count)?,
         spi_layout,
+        smmu_count,
     })
 }
 
@@ -742,6 +752,13 @@ struct LoadedVmInner {
     automatic_guest_reset: bool,
     pcie_host_bridges: Vec<PcieHostBridge>,
     pcie_root_complexes: Vec<Arc<closeable_mutex::CloseableMutex<GenericPcieRootComplex>>>,
+    /// SMMU configurations, one per instance.
+    #[cfg(guest_arch = "aarch64")]
+    smmu_configs: Vec<vmm_core::acpi_builder::AcpiSmmuConfig>,
+    /// Per-RC SMMU shared state, indexed parallel to `pcie_host_bridges`.
+    /// `None` for root complexes without an SMMU.
+    #[cfg(guest_arch = "aarch64")]
+    smmu_shared_states: Vec<Option<Arc<smmu::SmmuSharedState>>>,
     pcie_hotplug_devices: Vec<(
         String,
         vmotherboard::DynamicDeviceUnit,
@@ -916,9 +933,13 @@ impl InitializedVm {
         };
 
         #[cfg(guest_arch = "aarch64")]
-        let processor_topology = {
+        let (processor_topology, spi_layout, smmu_count) = {
             let result = build_aarch64_topology(&cfg.processor_topology, &platform_info)?;
-            result.processor_topology
+            (
+                result.processor_topology,
+                result.spi_layout,
+                result.smmu_count,
+            )
         };
         #[cfg(not(guest_arch = "aarch64"))]
         let processor_topology = build_x86_topology(&cfg.processor_topology)?;
@@ -977,12 +998,18 @@ impl InitializedVm {
             .iter()
             .filter(|(bus, _)| matches!(bus, VirtioBus::Mmio))
             .count();
+
+        // smmu_count was already computed by build_aarch64_topology.
+        #[cfg(not(guest_arch = "aarch64"))]
+        let smmu_count = 0;
+
         let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
             mem_size: cfg.memory.mem_size,
             numa_mem_sizes: cfg.memory.numa_mem_sizes.as_deref(),
             layout: cfg.layout.clone(),
             pcie_root_complexes: &cfg.pcie_root_complexes,
             virtio_mmio_count,
+            smmu_count,
             vtl2_layout,
             physical_address_size,
         })
@@ -993,6 +1020,11 @@ impl InitializedVm {
         let chipset_low_mmio = resolved_layout.chipset_low_mmio;
         let chipset_high_mmio = resolved_layout.chipset_high_mmio;
         let vtl2_chipset_mmio = resolved_layout.vtl2_chipset_mmio;
+
+        // Combine SMMU MMIO ranges with SPI layout.
+        #[cfg(guest_arch = "aarch64")]
+        let resolved_smmu_resources =
+            smmu_wiring::resolve_smmu_resources(&resolved_layout.smmu_ranges, &spi_layout);
 
         // Place the alias map at the end of the address space. Newer versions
         // of OpenHCL support receiving this offset via devicetree (especially
@@ -1109,6 +1141,8 @@ impl InitializedVm {
             chipset_low_mmio,
             chipset_high_mmio,
             vtl2_chipset_mmio,
+            #[cfg(guest_arch = "aarch64")]
+            resolved_smmu_resources,
             processor_topology,
             igvm_file,
             driver_source,
@@ -1140,6 +1174,8 @@ impl InitializedVm {
             chipset_low_mmio,
             chipset_high_mmio,
             vtl2_chipset_mmio,
+            #[cfg(guest_arch = "aarch64")]
+            resolved_smmu_resources,
             processor_topology,
             igvm_file,
             driver_source,
@@ -1813,16 +1849,15 @@ impl InitializedVm {
 
         // PCI Express topology
 
-        // Determine whether ITS wrappers are needed for PCIe MSI delivery.
-        // Only aarch64 VMs configured with a GICv3 ITS need device ID
-        // injection; all other configurations pass through directly.
+        // Build the RC name→index map before consuming the RC configs.
+        // Only needed on aarch64 for SMMU setup.
         #[cfg(guest_arch = "aarch64")]
-        let use_its = matches!(
-            processor_topology.gic_msi(),
-            vm_topology::processor::aarch64::GicMsiController::Its(_)
-        );
-        #[cfg(not(guest_arch = "aarch64"))]
-        let use_its = false;
+        let pcie_rc_name_to_idx: std::collections::HashMap<String, usize> = cfg
+            .pcie_root_complexes
+            .iter()
+            .enumerate()
+            .map(|(i, rc)| (rc.name.clone(), i))
+            .collect();
 
         let (pcie_host_bridges, pcie_root_complexes) = {
             let mut pcie_host_bridges = Vec::new();
@@ -1902,17 +1937,11 @@ impl InitializedVm {
                         })?;
 
                 if let Some(signal_msi) = partition.as_signal_msi(Vtl::Vtl0) {
-                    // When ITS is active, wrap the root complex's
-                    // SignalMsi with a segment prepender so that all
-                    // MSIs (from both root ports and child devices)
-                    // get the ITS device ID composed.
-                    if use_its {
-                        msi_conn.connect(Arc::new(pcie::its::ItsSignalMsi::new(
-                            signal_msi, rc.segment,
-                        )));
-                    } else {
-                        msi_conn.connect(signal_msi);
-                    }
+                    // Wrap the root complex's SignalMsi with platform
+                    // MSI controller translation (ITS on aarch64).
+                    let signal_msi =
+                        pcie_wiring::wrap_platform_msi(signal_msi, rc.segment, &processor_topology);
+                    msi_conn.connect(signal_msi);
                 }
 
                 let cxl = cxl_config
@@ -1994,21 +2023,13 @@ impl InitializedVm {
                 pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
 
             if let Some(signal_msi) = partition.as_signal_msi(Vtl::Vtl0) {
-                if use_its {
-                    msi_conn.connect(Arc::new(pcie::its::ItsSignalMsi::new(
-                        signal_msi,
-                        parent_segment,
-                    )));
-                } else {
-                    msi_conn.connect(signal_msi);
-                }
+                let signal_msi =
+                    pcie_wiring::wrap_platform_msi(signal_msi, parent_segment, &processor_topology);
+                msi_conn.connect(signal_msi);
             }
             if let Some(fd) = partition.irqfd() {
-                if use_its {
-                    msi_conn.connect_irqfd(Arc::new(pcie::its::ItsIrqFd::new(fd, parent_segment)));
-                } else {
-                    msi_conn.connect_irqfd(fd);
-                }
+                let fd = pcie_wiring::wrap_platform_irqfd(fd, parent_segment, &processor_topology);
+                msi_conn.connect_irqfd(fd);
             }
 
             let msi_target = msi_conn.target().clone();
@@ -2084,44 +2105,33 @@ impl InitializedVm {
             (Some(handle), Some(cdev_handle))
         };
 
+        // Instantiate SMMU devices and build port-level lookup maps.
+        // When active, PCIe devices on the covered root complexes get
+        // translating GuestMemory and SignalMsi wrappers that route DMA
+        // and MSI writes through the emulated SMMUv3.
+        #[cfg(guest_arch = "aarch64")]
+        let smmu_wiring::SmmuDevicesResult {
+            shared_states: smmu_shared_states,
+            configs: smmu_configs,
+            port_maps: smmu_port_maps,
+        } = smmu_wiring::setup_smmu(
+            cfg.processor_topology.arch.as_ref(),
+            &resolved_smmu_resources,
+            &pcie_rc_name_to_idx,
+            &pcie_host_bridges,
+            &pcie_root_complexes,
+            &chipset_builder,
+            &gm,
+        )?;
+
         // Resolve PCIe devices concurrently.
         //
         // When ITS is active, the root complex's ITS-wrapped SignalMsi
         // and IrqFd are shared across all devices on that complex. Each
         // device's MsiConnection carries a default BDF derived from the
         // port's AssignedBusRange, which the MsiTarget resolves lazily
-        // at interrupt delivery time.
-
-        // Build per-segment ITS-wrapped signal_msi and irqfd. Each root
-        // complex connection already has ITS wrapping for port MSIs; we
-        // share the same wrapped instances for child devices.
-        let its_signal_msi: std::collections::HashMap<u16, Arc<dyn pci_core::msi::SignalMsi>> =
-            if use_its {
-                let mut map = std::collections::HashMap::new();
-                if let Some(s) = partition.as_signal_msi(Vtl::Vtl0) {
-                    for hb in &pcie_host_bridges {
-                        map.entry(hb.segment).or_insert_with(|| {
-                            Arc::new(pcie::its::ItsSignalMsi::new(s.clone(), hb.segment)) as _
-                        });
-                    }
-                }
-                map
-            } else {
-                std::collections::HashMap::new()
-            };
-        let its_irqfd: std::collections::HashMap<u16, Arc<dyn vmcore::irqfd::IrqFd>> = if use_its {
-            let mut map = std::collections::HashMap::new();
-            if let Some(fd) = partition.irqfd() {
-                for hb in &pcie_host_bridges {
-                    map.entry(hb.segment).or_insert_with(|| {
-                        Arc::new(pcie::its::ItsIrqFd::new(fd.clone(), hb.segment)) as _
-                    });
-                }
-            }
-            map
-        } else {
-            std::collections::HashMap::new()
-        };
+        // at interrupt delivery time. When SMMU is enabled, per-device
+        // wrappers translate IOVAs and MSI addresses through the emulated SMMU.
 
         try_join_all(cfg.pcie_devices.into_iter().map(|dev_cfg| {
             let chipset_builder = &chipset_builder;
@@ -2131,8 +2141,9 @@ impl InitializedVm {
             let partition = &partition;
             let mapper = &mapper;
             let port_info = &port_info;
-            let its_signal_msi = &its_signal_msi;
-            let its_irqfd = &its_irqfd;
+            #[cfg(guest_arch = "aarch64")]
+            let smmu_port_maps = &smmu_port_maps;
+            let processor_topology = &processor_topology;
             async move {
                 let port_name: Arc<str> = dev_cfg.port_name.into();
                 let pi = port_info.get(&port_name).ok_or_else(|| {
@@ -2144,39 +2155,37 @@ impl InitializedVm {
 
                 let msi_conn = pci_core::msi::MsiConnection::new(pi.bus_range.clone(), 0);
 
+                let pcie_ctx =
+                    pcie_wiring::build_pcie_msi_context(&pcie_wiring::PcieWiringParams {
+                        partition: partition.as_ref(),
+                        guest_memory: gm,
+                        #[cfg(guest_arch = "aarch64")]
+                        bus_range: &pi.bus_range,
+                        segment: pi.segment,
+                        processor_topology,
+                        #[cfg(guest_arch = "aarch64")]
+                        smmu: smmu_port_maps.port_map.get(&port_name),
+                    });
+
                 vmm_core::device_builder::build_pcie_device(
+                    vmm_core::device_builder::PciDeviceResolveContext {
+                        driver_source,
+                        resolver,
+                        guest_memory: &pcie_ctx.guest_memory,
+                        resource: dev_cfg.resource,
+                        doorbell_registration: partition
+                            .clone()
+                            .into_doorbell_registration(Vtl::Vtl0),
+                        shared_mem_mapper: Some(mapper),
+                        software_iommu: pcie_ctx.software_iommu,
+                    },
                     chipset_builder,
                     port_name.clone(),
-                    driver_source,
-                    resolver,
-                    gm,
-                    dev_cfg.resource,
-                    partition.clone().into_doorbell_registration(Vtl::Vtl0),
-                    Some(mapper),
                     msi_conn.target(),
                 )
                 .await?;
 
-                // When ITS is active, use the per-segment wrapped
-                // SignalMsi and IrqFd. The device's MsiConnection
-                // carries a default BDF from the port's bus range.
-                let signal_msi = if use_its {
-                    its_signal_msi.get(&pi.segment).cloned()
-                } else {
-                    partition.as_signal_msi(Vtl::Vtl0)
-                };
-                if let Some(target) = signal_msi {
-                    msi_conn.connect(target);
-                }
-
-                let irqfd = if use_its {
-                    its_irqfd.get(&pi.segment).cloned()
-                } else {
-                    partition.irqfd()
-                };
-                if let Some(fd) = irqfd {
-                    msi_conn.connect_irqfd(fd);
-                }
+                pcie_ctx.connect_to(&msi_conn);
 
                 anyhow::Ok(())
             }
@@ -2366,15 +2375,20 @@ impl InitializedVm {
                     };
 
                     vmm_core::device_builder::build_vpci_device(
-                        &driver_source,
-                        &resolver,
-                        &gm,
+                        vmm_core::device_builder::PciDeviceResolveContext {
+                            driver_source: &driver_source,
+                            resolver: &resolver,
+                            guest_memory: &gm,
+                            resource: dev_cfg.resource,
+                            doorbell_registration: partition
+                                .clone()
+                                .into_doorbell_registration(vtl),
+                            shared_mem_mapper: Some(&mapper),
+                            software_iommu: false,
+                        },
                         vmbus.control(),
                         dev_cfg.instance_id,
-                        dev_cfg.resource,
                         &chipset_builder,
-                        partition.clone().into_doorbell_registration(vtl),
-                        Some(&mapper),
                         |device_id| {
                             let hv_device = partition.new_virtual_device(
                                 match dev_cfg.vtl {
@@ -2669,6 +2683,10 @@ impl InitializedVm {
                 pcie_host_bridges,
                 pcie_root_complexes,
                 pcie_hotplug_devices: Vec::new(),
+                #[cfg(guest_arch = "aarch64")]
+                smmu_configs,
+                #[cfg(guest_arch = "aarch64")]
+                smmu_shared_states,
             },
         };
 
@@ -2716,6 +2734,7 @@ impl LoadedVmInner {
                     0
                 },
                 virt_timer_ppi: self.processor_topology.virt_timer_ppi(),
+                smmu: self.smmu_configs.clone(),
             },
         };
 
@@ -2811,6 +2830,7 @@ impl LoadedVmInner {
                     enable_serial,
                     &self.processor_topology,
                     &self.pcie_host_bridges,
+                    &self.smmu_configs,
                     build_acpi,
                 )?;
 
@@ -3201,7 +3221,21 @@ impl LoadedVm {
                                 .expect("port was just found above")
                                 .bus_range;
 
-                            let msi_conn = pci_core::msi::MsiConnection::new(bus_range, 0);
+                            let segment = self.inner.pcie_host_bridges[rc_idx].segment;
+                            let msi_conn = pci_core::msi::MsiConnection::new(bus_range.clone(), 0);
+
+                            let pcie_ctx = pcie_wiring::build_pcie_msi_context(
+                                &pcie_wiring::PcieWiringParams {
+                                    partition: self.inner.partition.as_ref(),
+                                    guest_memory: &self.inner.gm,
+                                    #[cfg(guest_arch = "aarch64")]
+                                    bus_range: &bus_range,
+                                    segment,
+                                    processor_topology: &self.inner.processor_topology,
+                                    #[cfg(guest_arch = "aarch64")]
+                                    smmu: self.inner.smmu_shared_states[rc_idx].as_ref(),
+                                },
+                            );
 
                             let (unit, device) = self.inner.chipset_devices.add_dyn_device(
                                 &self.inner.driver_source,
@@ -3215,9 +3249,10 @@ impl LoadedVm {
                                                 msi_target: msi_conn.target(),
                                                 register_mmio,
                                                 driver_source: &self.inner.driver_source,
-                                                guest_memory: &self.inner.gm,
+                                                guest_memory: &pcie_ctx.guest_memory,
                                                 doorbell_registration: self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0),
                                                 shared_mem_mapper: None,
+                                                software_iommu: pcie_ctx.software_iommu,
                                             },
                                         )
                                         .await
@@ -3226,30 +3261,9 @@ impl LoadedVm {
                                 },
                             ).await?;
 
-                            // Connect the MSI target and IrqFd, wrapping
-                            // with ITS segment translation when needed.
-                            #[cfg(guest_arch = "aarch64")]
-                            let use_its = matches!(
-                                self.inner.processor_topology.gic_msi(),
-                                vm_topology::processor::aarch64::GicMsiController::Its(_)
-                            );
-                            #[cfg(not(guest_arch = "aarch64"))]
-                            let use_its = false;
-                            let segment = self.inner.pcie_host_bridges[rc_idx].segment;
-                            if let Some(s) = self.inner.partition.as_signal_msi(Vtl::Vtl0) {
-                                if use_its {
-                                    msi_conn.connect(Arc::new(pcie::its::ItsSignalMsi::new(s, segment)));
-                                } else {
-                                    msi_conn.connect(s);
-                                }
-                            }
-                            if let Some(fd) = self.inner.partition.irqfd() {
-                                if use_its {
-                                    msi_conn.connect_irqfd(Arc::new(pcie::its::ItsIrqFd::new(fd, segment)));
-                                } else {
-                                    msi_conn.connect_irqfd(fd);
-                                }
-                            }
+                            // Connect the signal_msi and irqfd (possibly
+                            // ITS-wrapped and/or SMMU-wrapped).
+                            pcie_ctx.connect_to(&msi_conn);
 
                             // Wrap the device as a GenericPciBusDevice for the port.
                             // Keep a strong Arc to the device so the Weak stays valid.

@@ -396,6 +396,11 @@ options:
     #[clap(long, default_value = "auto")]
     pub gic_msi: GicMsiCli,
 
+    /// enable SMMUv3 IOMMU for an aarch64 PCIe root complex (repeatable, e.g. --smmu rc0 --smmu rc1)
+    #[cfg(guest_arch = "aarch64")]
+    #[clap(long, value_name = "RC_NAME")]
+    pub smmu: Vec<String>,
+
     /// COM1 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com1: Option<SerialConfigCli>,

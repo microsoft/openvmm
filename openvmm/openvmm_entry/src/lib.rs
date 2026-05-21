@@ -1375,6 +1375,13 @@ async fn vm_config_from_command_line(
     }
 
     #[cfg(guest_arch = "aarch64")]
+    let smmu_instances: Vec<openvmm_defs::config::SmmuInstanceConfig> = opt
+        .smmu
+        .iter()
+        .map(|s| openvmm_defs::config::SmmuInstanceConfig { rc_name: s.clone() })
+        .collect();
+
+    #[cfg(guest_arch = "aarch64")]
     let topology_arch = openvmm_defs::config::ArchTopologyConfig::Aarch64(
         openvmm_defs::config::Aarch64TopologyConfig {
             // TODO: allow this to be configured from the command line
@@ -1387,6 +1394,7 @@ async fn vm_config_from_command_line(
                     openvmm_defs::config::GicMsiConfig::V2m { spi_count: None }
                 }
             },
+            smmu: smmu_instances,
         },
     );
     #[cfg(guest_arch = "x86_64")]

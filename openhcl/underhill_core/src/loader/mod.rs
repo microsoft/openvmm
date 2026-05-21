@@ -492,6 +492,7 @@ pub fn write_uefi_config(
                 // Not used for MADT/SRAT generation; only matters for FADT.
                 hypervisor_vendor_identity: 0,
                 virt_timer_ppi: processor_topology.virt_timer_ppi(),
+                smmu: Vec::new(),
             },
         };
 

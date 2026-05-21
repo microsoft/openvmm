@@ -70,6 +70,7 @@ pci_bus.workspace = true
 pci_core.workspace = true
 pci_resources.workspace = true
 pcie.workspace = true
+smmu.workspace = true
 scsi_core.workspace = true
 scsidisk.workspace = true
 serial_16550_resources.workspace = true

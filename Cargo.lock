@@ -5437,6 +5437,7 @@ dependencies = [
  "scsi_core",
  "scsidisk",
  "serial_16550_resources",
+ "smmu",
  "sparse_mmap",
  "state_unit",
  "storvsp",
@@ -7401,6 +7402,24 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+
+[[package]]
+name = "smmu"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "bitfield-struct 0.11.0",
+ "chipset_device",
+ "guestmem",
+ "inspect",
+ "open_enum",
+ "pal_event",
+ "parking_lot",
+ "pci_core",
+ "tracelimit",
+ "vmcore",
+ "zerocopy",
+]
 
 [[package]]
 name = "smoltcp"

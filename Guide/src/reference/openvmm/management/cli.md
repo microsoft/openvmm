@@ -260,3 +260,21 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 # Modern VFIO cdev + iommufd path (Linux >= 6.6):
 --iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
 ```
+
+### SMMU (aarch64 only)
+
+`--smmu <RC_NAME>` enables an emulated Arm SMMUv3 IOMMU for the named
+root complex. The flag is repeatable — use one `--smmu` per root complex
+that should have an SMMU. Devices behind a covered root complex get
+software IOVA→GPA translation for DMA and MSI addresses.
+
+```sh
+# Enable SMMU on root complex rc0
+--smmu rc0
+
+# Multiple root complexes
+--smmu rc0 --smmu rc1
+```
+
+VFIO devices cannot currently be placed behind an SMMU-covered root
+complex because iommufd nested translation is not yet available.

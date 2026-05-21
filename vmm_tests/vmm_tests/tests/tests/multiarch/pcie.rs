@@ -500,3 +500,124 @@ async fn pcie_nvme_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+/// Test SMMUv3 IOMMU emulation with a mixed topology:
+///
+/// - Root complex s0rc0 (segment 0): SMMU enabled, virtio-net + NVMe behind it
+/// - Root complex s1rc0 (segment 1): no SMMU, virtio-net behind it
+///
+/// Verifies:
+/// 1. Linux discovers the SMMUv3 (dmesg shows arm-smmu-v3 init)
+/// 2. IORT ACPI table is present
+/// 3. Devices behind the SMMU RC are in IOMMU groups
+/// 4. Devices on both RCs enumerate and function (block I/O, network interfaces)
+/// 5. DMA through SMMU works (NVMe I/O behind the SMMU)
+#[openvmm_test(linux_direct_aarch64)]
+async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(2, 1, 4) // 2 segments, 1 RC each, 4 ports each
+                .with_smmu(&["s0rc0"]) // SMMU only on segment 0's RC
+                .with_pcie_nvme("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
+                .with_virtio_nic("s0rc0rp1")
+                .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
+                .with_virtio_nic("s1rc0rp1")
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // 1. Verify SMMUv3 is discovered by Linux
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    tracing::info!(dmesg_len = dmesg.len(), "dmesg captured");
+
+    let smmu_lines: Vec<&str> = dmesg
+        .lines()
+        .filter(|l| l.contains("smmu") || l.contains("SMMU") || l.contains("arm-smmu"))
+        .collect();
+    tracing::info!(?smmu_lines, "SMMU-related dmesg lines");
+    assert!(
+        dmesg.contains("arm-smmu-v3"),
+        "Linux should discover the SMMUv3 in dmesg. SMMU lines:\n{}",
+        smmu_lines.join("\n")
+    );
+
+    // 2. Verify IORT ACPI table is present
+    let acpi_tables = cmd!(sh, "ls /sys/firmware/acpi/tables/").read().await?;
+    assert!(
+        acpi_tables.contains("IORT"),
+        "IORT ACPI table should be present. Tables: {acpi_tables}"
+    );
+
+    // 3. Verify IOMMU groups exist (devices behind the SMMU RC)
+    let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/")
+        .read()
+        .await
+        .unwrap_or_default();
+    tracing::info!(%iommu_groups, "IOMMU groups");
+    assert!(
+        !iommu_groups.trim().is_empty(),
+        "IOMMU groups should exist for devices behind the SMMU"
+    );
+
+    // 4. Verify all NVMe devices enumerate and have block devices
+    let block_devs = cmd!(sh, "ls /sys/block/").read().await?;
+    let nvme_count = block_devs
+        .split_whitespace()
+        .filter(|d| d.starts_with("nvme"))
+        .count();
+    assert_eq!(
+        nvme_count, 2,
+        "both NVMe controllers should create block devices: {block_devs}"
+    );
+
+    // 5. Verify NVMe behind SMMU works: write and read back data.
+    //    Resolve each NVMe block device's PCI domain from sysfs to find the
+    //    one on segment 0 (the SMMU-covered root complex). This ensures we
+    //    exercise DMA through the SMMU, not the non-SMMU path.
+    let nvme_devs: Vec<&str> = block_devs
+        .split_whitespace()
+        .filter(|d| d.starts_with("nvme"))
+        .collect();
+    let mut smmu_nvme = None;
+    for dev in &nvme_devs {
+        let pci_path = cmd!(sh, "readlink -f /sys/block/{dev}/device")
+            .read()
+            .await?;
+        // PCI path looks like .../pci0000:00/0000:00:00.0/0000:01:00.0/nvme/nvme0
+        // Search all path segments for a BDF in PCI domain 0000.
+        if pci_path.split('/').any(|seg| seg.starts_with("0000:")) {
+            smmu_nvme = Some(*dev);
+            break;
+        }
+    }
+    let smmu_nvme =
+        smmu_nvme.expect("should find an NVMe on PCI domain 0000 (SMMU-covered segment)");
+    tracing::info!(smmu_nvme, "exercising DMA through SMMU");
+    cmd!(
+        sh,
+        "dd if=/dev/urandom of=/dev/{smmu_nvme} bs=4096 count=16 oflag=direct"
+    )
+    .read()
+    .await?;
+    cmd!(
+        sh,
+        "dd if=/dev/{smmu_nvme} of=/dev/null bs=4096 count=16 iflag=direct"
+    )
+    .read()
+    .await?;
+
+    // 6. Verify virtio-net interfaces exist on both RCs
+    let net_devs = cmd!(sh, "ls /sys/class/net/").read().await?;
+    let net_count = net_devs.split_whitespace().filter(|d| *d != "lo").count();
+    tracing::info!(%net_devs, net_count, "network devices");
+    assert!(
+        net_count >= 2,
+        "at least 2 network interfaces should exist (got {net_count}): {net_devs}"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}

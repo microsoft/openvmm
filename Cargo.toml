@@ -292,6 +292,7 @@ pci_bus = { path = "vm/devices/pci/pci_bus" }
 pci_core = { path = "vm/devices/pci/pci_core" }
 pci_resources = { path = "vm/devices/pci/pci_resources" }
 pcie = { path = "vm/devices/pci/pcie" }
+smmu = { path = "vm/devices/iommu/smmu" }
 vpci = { path = "vm/devices/pci/vpci" }
 vpci_client = { path = "vm/devices/pci/vpci_client" }
 vpci_protocol = { path = "vm/devices/pci/vpci_protocol" }
