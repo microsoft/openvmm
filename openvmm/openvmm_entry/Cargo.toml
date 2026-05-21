@@ -29,6 +29,7 @@ openvmm_ttrpc_vmservice.workspace = true
 disk_backend_resources.workspace = true
 disk_crypt_resources.workspace = true
 firmware_uefi_custom_vars.workspace = true
+firmware_uefi_resources.workspace = true
 hyperv_secure_boot_templates.workspace = true
 hyperv_uefi_custom_vars_json.workspace = true
 floppy_resources.workspace = true

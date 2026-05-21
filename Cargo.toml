@@ -232,6 +232,7 @@ chipset_resources = { path = "vm/devices/chipset_resources" }
 firmware_pcat = { path = "vm/devices/firmware/firmware_pcat" }
 firmware_uefi = { path = "vm/devices/firmware/firmware_uefi" }
 firmware_uefi_custom_vars = { path = "vm/devices/firmware/firmware_uefi_custom_vars" }
+firmware_uefi_resources = { path = "vm/devices/firmware/firmware_uefi_resources" }
 uefi_nvram_storage = { path = "vm/devices/firmware/uefi_nvram_storage" }
 uefi_specs = { path = "vm/devices/firmware/uefi_specs" }
 uefi_nvram_specvars = { path = "vm/devices/firmware/uefi_nvram_specvars" }

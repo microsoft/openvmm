@@ -50,13 +50,11 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
-pub mod platform;
+pub mod resolver;
 #[cfg(feature = "fuzzing")]
 pub mod service;
 #[cfg(not(feature = "fuzzing"))]
 mod service;
-
-pub use crate::service::diagnostics::LogLevel;
 
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
@@ -64,14 +62,15 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use firmware_uefi_custom_vars::CustomVars;
+use firmware_uefi_resources::LogLevel;
+use firmware_uefi_resources::UefiCommandSet;
+use firmware_uefi_resources::UefiConfig;
+use firmware_uefi_resources::platform::UefiLogger;
+use firmware_uefi_resources::platform::VsmConfig;
 use guestmem::GuestMemory;
-use inspect::Inspect;
 use inspect::InspectMut;
 use local_clock::InspectableLocalClock;
 use pal_async::local::block_on;
-use platform::logger::UefiLogger;
-use platform::nvram::VsmConfig;
 use service::diagnostics::DEFAULT_LOGS_PER_PERIOD;
 use service::diagnostics::WATCHDOG_LOGS_PER_PERIOD;
 use std::convert::TryInto;
@@ -94,12 +93,6 @@ pub enum UefiInitError {
     EventLog(#[from] service::event_log::EventLogError),
 }
 
-#[derive(Inspect, PartialEq, Clone)]
-pub enum UefiCommandSet {
-    X64,
-    Aarch64,
-}
-
 #[derive(InspectMut)]
 struct UefiDeviceServices {
     nvram: service::nvram::NvramServices,
@@ -120,17 +113,6 @@ const MMIO_RANGE_END: u64 = 0xeffedfff;
 
 const REGISTER_ADDRESS: u16 = 0x0;
 const REGISTER_DATA: u16 = 0x4;
-
-/// Various bits of static configuration data.
-#[derive(Clone)]
-pub struct UefiConfig {
-    pub custom_uefi_vars: CustomVars,
-    pub secure_boot: bool,
-    pub initial_generation_id: [u8; 16],
-    pub use_mmio: bool,
-    pub command_set: UefiCommandSet,
-    pub diagnostics_log_level: LogLevel,
-}
 
 /// Various runtime objects used by the UEFI device + underlying services.
 pub struct UefiRuntimeDeps<'a> {

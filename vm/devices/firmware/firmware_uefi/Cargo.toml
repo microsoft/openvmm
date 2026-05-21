@@ -12,6 +12,7 @@ fuzzing = []
 
 [dependencies]
 firmware_uefi_custom_vars.workspace = true
+firmware_uefi_resources.workspace = true
 uefi_nvram_storage = { workspace = true, features = ["inspect", "save_restore"] }
 uefi_specs.workspace = true
 uefi_nvram_specvars.workspace = true
@@ -19,7 +20,10 @@ generation_id.workspace = true
 watchdog_core.workspace = true
 
 chipset_device.workspace = true
+chipset_device_resources.workspace = true
+chipset_resources.workspace = true
 guestmem.workspace = true
+vm_resource.workspace = true
 vmcore.workspace = true
 
 async-trait.workspace = true
