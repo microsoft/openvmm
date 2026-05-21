@@ -391,7 +391,6 @@ impl VmManifestBuilder {
                 };
                 result.attach_generic_ioapic();
                 result.attach_pic();
-                result.attach_i440bx_host_pci_bridge();
                 result.attach_pit();
                 result.attach_piix4_power_management(self.platform_pm_timer_assist);
                 result.attach_missing_arch_ports(self.arch, false);
