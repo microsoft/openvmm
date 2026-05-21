@@ -30,8 +30,8 @@ pub const NODEJS: &str = "24.x";
 // N.B. Kernel version numbers for dev and stable branches are not directly
 //      comparable. They originate from separate branches, and the fourth digit
 //      increases with each release from the respective branch.
-pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.18.0.2";
-pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.0.2";
+pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.18.1008.0";
+pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.1008.0";
 pub const OPENVMM_DEPS: &str = "0.3.0-29";
 pub const PROTOC: &str = "27.1";
 
