@@ -11,14 +11,13 @@ default = ["ttrpc", "grpc"]
 
 vendored_crypto = ["crypto/vendored"]
 
-unstable_whp = ["virt_whp/unstable_whp", "whp/unstable_whp"]
-
 grpc = ["mesh_rpc/grpc"]
 ttrpc = []
 
 [dependencies]
 chipset_resources.workspace = true
 chipset_device_worker_defs.workspace = true
+cxl_spec.workspace = true
 debug_worker_defs.workspace = true
 vmotherboard.workspace = true
 diag_client.workspace = true

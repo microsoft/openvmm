@@ -862,17 +862,32 @@ mod weak_mutex_pci {
     }
 }
 
+#[cfg(any(
+    feature = "dev_generic_isa_floppy",
+    feature = "dev_winbond_super_io_and_floppy_full",
+    feature = "dev_winbond_super_io_and_floppy_stub"
+))]
 pub struct ArcMutexIsaDmaChannel {
     channel_num: u8,
     dma: Arc<CloseableMutex<dma::DmaController>>,
 }
 
+#[cfg(any(
+    feature = "dev_generic_isa_floppy",
+    feature = "dev_winbond_super_io_and_floppy_full",
+    feature = "dev_winbond_super_io_and_floppy_stub"
+))]
 impl ArcMutexIsaDmaChannel {
     pub fn new(dma: Arc<CloseableMutex<dma::DmaController>>, channel_num: u8) -> Self {
         Self { dma, channel_num }
     }
 }
 
+#[cfg(any(
+    feature = "dev_generic_isa_floppy",
+    feature = "dev_winbond_super_io_and_floppy_full",
+    feature = "dev_winbond_super_io_and_floppy_stub"
+))]
 impl vmcore::isa_dma_channel::IsaDmaChannel for ArcMutexIsaDmaChannel {
     fn check_transfer_size(&mut self) -> u16 {
         self.dma.lock().check_transfer_size(self.channel_num.into())

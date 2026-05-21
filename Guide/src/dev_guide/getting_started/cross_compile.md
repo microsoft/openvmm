@@ -219,10 +219,6 @@ if [[ $1 == "build" || $1 == "run" ]]; then
 
     echo
 
-    if [[ $5 == "unstable" ]]; then
-        build_args+=" --features unstable_whp"
-    fi
-
     echo "Building openvmm..."
     (
         set -x

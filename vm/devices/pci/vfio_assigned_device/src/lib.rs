@@ -194,9 +194,9 @@ pub(crate) struct VfioAssignedPciDevice {
     )]
     config_patches: BTreeMap<u16, ConfigPatch>,
 
-    /// VFIO container/group binding. Keeps the container and group fds alive
-    /// and notifies the container manager on drop.
-    binding: manager::VfioDeviceBinding,
+    /// VFIO binding. Keeps the container/group (legacy) or iommufd/IOAS
+    /// (cdev) fds alive and cleans up on drop.
+    binding: manager::VfioBinding,
 }
 
 impl VfioAssignedPciDevice {
@@ -231,6 +231,45 @@ impl VfioAssignedPciDevice {
             .await
             .with_context(|| format!("failed to open VFIO device {pci_id}"))?;
 
+        Self::from_device(
+            vfio_device,
+            manager::VfioBinding::Group(binding),
+            pci_id,
+            register_mmio,
+            msi_target,
+            memory_mapper,
+        )
+        .await
+    }
+
+    /// Create from a pre-opened VFIO device and a cdev binding.
+    pub async fn from_cdev(
+        cdev_binding: manager::VfioCdevBinding,
+        pci_id: String,
+        register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
+        msi_target: &MsiTarget,
+        memory_mapper: &dyn MemoryMapper,
+    ) -> anyhow::Result<Self> {
+        let (device, binding) = cdev_binding.into_parts();
+        Self::from_device(
+            device,
+            manager::VfioBinding::Cdev(binding),
+            pci_id,
+            register_mmio,
+            msi_target,
+            memory_mapper,
+        )
+        .await
+    }
+
+    async fn from_device(
+        vfio_device: vfio_sys::Device,
+        binding: manager::VfioBinding,
+        pci_id: String,
+        register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
+        msi_target: &MsiTarget,
+        memory_mapper: &dyn MemoryMapper,
+    ) -> anyhow::Result<Self> {
         let config_info = vfio_device
             .region_info(vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX)
             .context("failed to get VFIO config region info")?;

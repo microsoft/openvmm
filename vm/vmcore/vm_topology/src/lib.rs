@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod cxl;
 pub mod layout;
 pub mod memory;
 pub mod pcie;

@@ -98,7 +98,7 @@ impl Pkcs7SignedDataInner {
         // Produce a detached PKCS#1 v1.5 SHA-256 signature over `data`. We
         // omit signed attributes, so the signature covers the content
         // directly per RFC 5652 §5.4.
-        let signature = key_pair.pkcs1_sign(data, crate::rsa::HashAlgorithm::Sha256)?;
+        let signature = key_pair.pkcs1_sign(data, crate::HashAlgorithm::Sha256)?;
 
         let digest_alg = AlgorithmIdentifierOwned {
             oid: ID_SHA_256,

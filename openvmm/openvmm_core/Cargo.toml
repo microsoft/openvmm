@@ -9,8 +9,6 @@ rust-version.workspace = true
 [features]
 gdb = ["vmm_core/gdb"]
 
-unstable_whp = ["virt_whp/unstable_whp"]
-
 [dependencies]
 hypervisor_resources.workspace = true
 openvmm_defs.workspace = true
@@ -29,6 +27,7 @@ vmgs_resources.workspace = true
 
 aarch64defs.workspace = true
 acpi.workspace = true
+cxl_spec.workspace = true
 floppy_resources.workspace = true
 hvdef.workspace = true
 ide_resources.workspace = true

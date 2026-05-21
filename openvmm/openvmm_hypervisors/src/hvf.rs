@@ -12,7 +12,6 @@
 
 use hypervisor_resources::HvfHandle;
 use hypervisor_resources::HypervisorKind;
-use openvmm_core::hypervisor_backend::ResolvedHypervisorBackend;
 use vm_resource::Resource;
 
 /// HVF probe for auto-detection.
@@ -34,17 +33,3 @@ impl hypervisor_resources::HypervisorProbe for HvfProbe {
         Ok(Resource::new(HvfHandle))
     }
 }
-
-/// HVF resource resolver.
-pub struct HvfResolver;
-
-impl vm_resource::ResolveResource<HypervisorKind, HvfHandle> for HvfResolver {
-    type Output = ResolvedHypervisorBackend;
-    type Error = std::convert::Infallible;
-
-    fn resolve(&self, _resource: HvfHandle, _input: ()) -> Result<Self::Output, Self::Error> {
-        Ok(ResolvedHypervisorBackend::new(virt_hvf::HvfHypervisor))
-    }
-}
-
-vm_resource::declare_static_resolver!(HvfResolver, (HypervisorKind, HvfHandle),);

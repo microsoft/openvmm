@@ -6,6 +6,8 @@
 
 #![forbid(unsafe_code)]
 
+mod hypervisor_resolvers;
+
 // Resources.
 vm_resource::register_static_resolvers! {
     // Chipset devices
@@ -78,6 +80,7 @@ vm_resource::register_static_resolvers! {
     disklayer_sqlite::resolver::SqliteDiskLayerResolver,
 
     // PCI devices
+    cxl_spec::test::resolver::CxlTestDeviceResolver,
     gdma::resolver::GdmaDeviceResolver,
     nvme::resolver::NvmeControllerResolver,
     nvme_test::resolver::NvmeFaultControllerResolver,
@@ -126,14 +129,14 @@ mesh_worker::register_workers! {
 // Hypervisor backend resolvers.
 vm_resource::register_static_resolvers! {
     #[cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native))]
-    openvmm_hypervisors::mshv::MshvResolver,
+    hypervisor_resolvers::mshv::MshvResolver,
 
     #[cfg(all(target_os = "linux", feature = "virt_kvm", guest_is_native))]
-    openvmm_hypervisors::kvm::KvmResolver,
+    hypervisor_resolvers::kvm::KvmResolver,
 
     #[cfg(all(target_os = "windows", feature = "virt_whp", guest_is_native))]
-    openvmm_hypervisors::whp::WhpResolver,
+    hypervisor_resolvers::whp::WhpResolver,
 
     #[cfg(all(target_os = "macos", guest_arch = "aarch64", guest_is_native, feature = "virt_hvf"))]
-    openvmm_hypervisors::hvf::HvfResolver,
+    hypervisor_resolvers::hvf::HvfResolver,
 }

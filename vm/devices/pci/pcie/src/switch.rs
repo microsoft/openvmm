@@ -124,6 +124,8 @@ impl DownstreamSwitchPort {
             hotplug_slot_number,
             msi_target,
             settings,
+            None,
+            None,
         );
 
         Self { port }
@@ -414,10 +416,13 @@ impl GenericPcieSwitch {
 }
 
 impl ChangeDeviceState for GenericPcieSwitch {
+    /// No-op start hook: switch state is fully modeled in config-space state.
     fn start(&mut self) {}
 
+    /// No-op stop hook: no background tasks or external resources to drain.
     async fn stop(&mut self) {}
 
+    /// Resets upstream and downstream bridge config-space state to power-on defaults.
     async fn reset(&mut self) {
         // Reset the upstream port configuration space
         self.upstream_port.cfg_space.reset();
@@ -430,17 +435,20 @@ impl ChangeDeviceState for GenericPcieSwitch {
 }
 
 impl ChipsetDevice for GenericPcieSwitch {
+    /// Exposes this switch as a PCI config-space device to the chipset bus.
     fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
         Some(self)
     }
 }
 
 impl PciConfigSpace for GenericPcieSwitch {
+    /// Reads the switch's own upstream-port config space (Type 0 view).
     fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
         // Forward to the upstream port's configuration space (the switch presents as the upstream port)
         self.upstream_port.cfg_space.read_u32(offset, value)
     }
 
+    /// Writes the switch's own upstream-port config space (Type 0 view).
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
         // Forward to the upstream port's configuration space (the switch presents as the upstream port)
         self.upstream_port.cfg_space.write_u32(offset, value)
@@ -454,6 +462,7 @@ impl PciConfigSpace for GenericPcieSwitch {
         offset: u16,
         value: &mut u32,
     ) -> IoResult {
+        // Try switch-internal routing first (downstream ports and their descendants).
         if let Some(result) = self.route_cfg_read(target_bus, function, offset, value) {
             return result;
         }
@@ -480,6 +489,7 @@ impl PciConfigSpace for GenericPcieSwitch {
         offset: u16,
         value: u32,
     ) -> IoResult {
+        // Try switch-internal routing first (downstream ports and their descendants).
         if let Some(result) = self.route_cfg_write(target_bus, function, offset, value) {
             return result;
         }
@@ -512,10 +522,12 @@ mod save_restore {
     mod state {
         use super::ConfigSpaceType1Emulator;
         use super::SaveRestore;
+        use cxl_spec::CxlComponentRegisters;
         use mesh::payload::Protobuf;
         use vmcore::save_restore::SavedStateRoot;
 
         type SwitchPortCfgSpaceSavedState = <ConfigSpaceType1Emulator as SaveRestore>::SavedState;
+        type CxlComponentRegistersSavedState = <CxlComponentRegisters as SaveRestore>::SavedState;
 
         /// Saved state for one switch port config space.
         #[derive(Protobuf)]
@@ -524,9 +536,12 @@ mod save_restore {
             /// Logical downstream port number.
             #[mesh(1)]
             pub port_number: u8,
-            /// The port's Type 1 configuration space state.
+            /// The downstream port Type 1 configuration space state.
             #[mesh(2)]
             pub cfg_space: SwitchPortCfgSpaceSavedState,
+            /// Optional CXL component-register state for this downstream port.
+            #[mesh(3)]
+            pub cxl_component_registers: Option<CxlComponentRegistersSavedState>,
         }
 
         /// Saved state for the GenericPcieSwitch.
@@ -553,12 +568,15 @@ mod save_restore {
             let upstream_cfg_space = self.upstream_port.cfg_space.save()?;
 
             // Save all downstream ports and sort by port number for stable ordering.
+            // Sorting keeps serialization deterministic without encoding ordering as state.
             let mut downstream_ports = Vec::with_capacity(self.downstream_ports.len());
             for (&port_number, (_, downstream_port)) in self.downstream_ports.iter_mut() {
-                let cfg_space = downstream_port.port.cfg_space.save()?;
                 downstream_ports.push(state::DownstreamPortSavedState {
                     port_number,
-                    cfg_space,
+                    cfg_space: downstream_port.port.cfg_space.save()?,
+                    cxl_component_registers: downstream_port
+                        .port
+                        .save_cxl_component_registers_state()?,
                 });
             }
             downstream_ports.sort_by_key(|p| p.port_number);
@@ -575,7 +593,7 @@ mod save_restore {
                 downstream_ports,
             } = state;
 
-            // Validate that the number of downstream ports matches
+            // Reject snapshots from a different topology shape.
             if downstream_ports.len() != self.downstream_ports.len() {
                 return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
                     "downstream port count mismatch: saved {}, current {}",
@@ -589,8 +607,9 @@ mod save_restore {
 
             let mut seen_ports = HashSet::with_capacity(downstream_ports.len());
 
-            // Restore all downstream ports by explicit port number.
+            // Restore all downstream ports by explicit port number rather than vector order.
             for port_state in downstream_ports {
+                // Duplicate entries indicate corrupted or malformed saved state.
                 if !seen_ports.insert(port_state.port_number) {
                     return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
                         "duplicate downstream port {} in saved state",
@@ -605,6 +624,9 @@ mod save_restore {
                         .port
                         .cfg_space
                         .restore(port_state.cfg_space)?;
+                    downstream_port.port.restore_cxl_component_registers_state(
+                        port_state.cxl_component_registers,
+                    )?;
                 } else {
                     return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
                         "downstream port {} not found",
@@ -1478,6 +1500,8 @@ mod tests {
             None,
             msi_conn.target(),
             PciePortSettings::default(),
+            None,
+            None,
         );
 
         // Configure the root port's bus range: secondary=1, subordinate=10
@@ -1530,6 +1554,7 @@ mod tests {
             hotplug: false,
             dsp_settings: PciePortSettings {
                 acs_capabilities_supported: 0x0001,
+                ..Default::default()
             },
             msi_target: MsiTarget::disconnected(),
         });

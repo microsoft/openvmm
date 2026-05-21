@@ -10,13 +10,13 @@ use symcrypt::sp800_108::sp800_108_counter_mode;
 pub fn kbkdf_hmac_sha256(
     key: &[u8],
     context: &[u8],
-    salt: &[u8],
+    label: &[u8],
     output_len: usize,
 ) -> Result<Vec<u8>, KbkdfError> {
     sp800_108_counter_mode(
         HmacAlgorithm::HmacSha256,
         key,
-        salt,
+        label,
         context,
         output_len as u64,
     )
