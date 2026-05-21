@@ -1000,7 +1000,6 @@ async fn vm_config_from_command_line(
         };
         let mut initial_generation_id = [0; 16];
         getrandom::fill(&mut initial_generation_id).expect("rng failure");
-        let (_send, generation_id_recv) = mesh::channel();
         chipset = chipset.with_uefi(UefiManifest {
             config: UefiConfig {
                 custom_uefi_vars: custom_uefi_vars.clone(),
@@ -1013,7 +1012,7 @@ async fn vm_config_from_command_line(
                 },
                 diagnostics_log_level: log_level,
             },
-            generation_id_recv,
+            generation_id_recv: mesh::channel().1,
             vsm_config: false,
             time_source: chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle {
                 delta_milliseconds: 0,
@@ -1755,7 +1754,6 @@ async fn vm_config_from_command_line(
         custom_uefi_vars,
         firmware_event_send: None,
         debugger_rpc: None,
-        generation_id_recv: None,
         rtc_delta_milliseconds: 0,
         automatic_guest_reset: !opt.halt_on_reset,
         efi_diagnostics_log_level: {

@@ -58,7 +58,6 @@ pub struct Config {
     /// Memory layout sizing for the layout engine. Determines chipset MMIO
     /// range sizes; addresses are allocated dynamically by the resolver.
     pub layout: vmm_core_defs::LayoutConfig,
-    pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
     /// allow the guest to reset without notifying the client

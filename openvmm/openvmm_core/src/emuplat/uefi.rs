@@ -146,7 +146,7 @@ struct UefiWatchdogTimeoutReset {
 #[async_trait]
 impl WatchdogCallback for UefiWatchdogTimeoutReset {
     async fn on_timeout(&mut self) {
-        self.halt_vps.halt(vmcore::halt::HaltReason::Reset);
+        self.halt_vps.halt(vmm_core_defs::HaltReason::Reset);
         self.watchdog_send.send(());
     }
 }

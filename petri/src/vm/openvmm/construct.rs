@@ -551,7 +551,6 @@ impl PetriVmConfigOpenVmm {
             #[cfg(windows)]
             vpci_resources: vec![],
             debugger_rpc: None,
-            generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             efi_diagnostics_log_level: match firmware
                 .uefi_config()

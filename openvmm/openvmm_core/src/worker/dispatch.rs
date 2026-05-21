@@ -201,7 +201,6 @@ impl Manifest {
             pci_chipset_devices: config.pci_chipset_devices,
             chipset_capabilities: config.chipset_capabilities,
             layout: config.layout,
-            generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
             efi_diagnostics_log_level: match config.efi_diagnostics_log_level {
@@ -251,7 +250,6 @@ pub struct Manifest {
     pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
     chipset_capabilities: VmChipsetCapabilities,
     layout: vmm_core_defs::LayoutConfig,
-    generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
     efi_diagnostics_log_level: LogLevel,
@@ -1195,12 +1193,6 @@ impl InitializedVm {
             partition.clone().ioapic_routing(),
         ));
 
-        let generation_id_recv = cfg.generation_id_recv.unwrap_or_else(|| mesh::channel().1);
-
-        let logger = Box::new(emuplat::firmware::MeshLogger::new(
-            cfg.firmware_event_send.clone(),
-        ));
-
         let mapper = memory_manager.device_memory_mapper();
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
@@ -1232,8 +1224,10 @@ impl InitializedVm {
                 // TODO: move mtrr replay to a resource.
                 let halt_vps = halt_vps.clone();
                 deps_hyperv_firmware_pcat = Some(dev::HyperVFirmwarePcat {
-                    logger,
-                    generation_id_recv,
+                    logger: Box::new(emuplat::firmware::MeshLogger::new(
+                        cfg.firmware_event_send.clone(),
+                    )),
+                    generation_id_recv: mesh::channel().1,
                     rom: Some(Box::new(rom)),
                     replay_mtrrs: Box::new(move || halt_vps.replay_mtrrs()),
                     config: {
@@ -3336,7 +3330,6 @@ impl LoadedVm {
                 chipset_high_mmio_size: 0,
                 vtl2_chipset_mmio_size: 0,
             }, // TODO
-            generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
             efi_diagnostics_log_level: Default::default(),
