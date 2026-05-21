@@ -143,7 +143,8 @@ impl PtDesc {
                     raw
                 }
             }
-            3 => raw, // page address, 16KB aligned
+            // L3 page: 16KB aligned — clear RES0 bits [13:12]
+            3 => raw & !((1u64 << 14) - 1),
             _ => raw,
         }
     }
@@ -160,15 +161,17 @@ impl PtDesc {
                     raw
                 }
             }
-            3 => raw, // page address, 64KB aligned
+            // L3 page: 64KB aligned — clear RES0 bits [15:12]
+            3 => raw & !((1u64 << 16) - 1),
             _ => raw,
         }
     }
 
-    /// Returns the next-level table address (for table descriptors).
-    /// The table address is always in bits `[47:12]`, page-aligned.
-    pub fn next_table_addr(&self) -> u64 {
-        self.addr_bits() << 12
+    /// Returns the next-level table address (for table descriptors),
+    /// masked to the given granule alignment. Bits below `page_shift`
+    /// are RES0 in the descriptor and are cleared.
+    pub fn next_table_addr(&self, page_shift: u8) -> u64 {
+        (self.addr_bits() << 12) & !((1u64 << page_shift) - 1)
     }
 }
 
@@ -296,7 +299,7 @@ mod tests {
             .with_desc_type(true)
             .with_addr_bits(table_addr >> 12);
 
-        assert_eq!(desc.next_table_addr(), table_addr);
+        assert_eq!(desc.next_table_addr(12), table_addr);
     }
 
     #[test]
@@ -368,7 +371,7 @@ mod tests {
         assert_eq!(desc.sh(), Shareability::INNER_SHAREABLE.0);
         assert!(desc.af());
         assert!(desc.ng());
-        assert_eq!(desc.next_table_addr(), 0x1234_5000);
+        assert_eq!(desc.next_table_addr(12), 0x1234_5000);
         assert!(desc.pxn());
         assert!(desc.uxn());
     }

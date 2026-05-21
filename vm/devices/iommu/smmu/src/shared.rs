@@ -386,8 +386,8 @@ impl SmmuSharedState {
                         Err(fault) => return TranslateResult::Fault(fault.event),
                     };
 
-                // Extract translation context.
-                let ctx = match translate::translation_context(&cd, sid) {
+                // Extract translation context (caps CD.IPS to device OAS).
+                let ctx = match translate::translation_context(&cd, sid, inner.oas_mask) {
                     Ok(ctx) => ctx,
                     Err(fault) => return TranslateResult::Fault(fault.event),
                 };

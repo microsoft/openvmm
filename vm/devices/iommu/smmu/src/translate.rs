@@ -176,9 +176,16 @@ pub fn lookup_cd(
 
 /// Extract the translation context from a parsed CD.
 ///
+/// `device_oas_mask` is `(1 << device_oas_bits) - 1` from the SMMU's
+/// IDR5.OAS. Per SMMUv3 §3.4, CD.IPS is capped to the device OAS.
+///
 /// Returns `Err` with a `SmmuFault` if the CD contains unsupported or
 /// invalid configuration (e.g., unrecognized granule or IPS encoding).
-pub fn translation_context(cd: &Cd, sid: u32) -> Result<TranslationContext, SmmuFault> {
+pub fn translation_context(
+    cd: &Cd,
+    sid: u32,
+    device_oas_mask: u64,
+) -> Result<TranslationContext, SmmuFault> {
     let tg0 = cd.tg0();
     let ips = cd.ips();
 
@@ -187,8 +194,11 @@ pub fn translation_context(cd: &Cd, sid: u32) -> Result<TranslationContext, Smmu
         return Err(SmmuFault::bad_cd(sid));
     }
 
-    // Validate IPS.
-    let oas_bits = ips.bits().ok_or_else(|| SmmuFault::bad_cd(sid))?;
+    // Validate IPS and cap to device OAS per SMMUv3 §3.4.
+    let cd_oas_bits = ips.bits().ok_or_else(|| SmmuFault::bad_cd(sid))?;
+    let cd_oas_mask = (1u64 << cd_oas_bits) - 1;
+    // The effective OAS is the minimum of CD.IPS and the device OAS.
+    let oas_mask = cd_oas_mask.min(device_oas_mask);
 
     let t0sz = cd.t0sz();
     if t0sz > 48 {
@@ -204,7 +214,7 @@ pub fn translation_context(cd: &Cd, sid: u32) -> Result<TranslationContext, Smmu
         ttb0: cd.ttb0(),
         t0sz,
         tg0,
-        oas_mask: (1u64 << oas_bits) - 1,
+        oas_mask,
         _mair0: cd.mair0,
         _asid: cd.asid(),
     })
@@ -361,10 +371,11 @@ pub fn walk_s1(
         }
 
         // Table descriptor — descend to next level.
-        // Truncate the next-level table address to OAS. Per SMMUv3 §3.4,
-        // addresses derived from intermediate translation table descriptors
-        // generate an Address Size fault if they exceed the OAS.
-        let next_addr = desc.next_table_addr();
+        // Mask RES0 bits below granule alignment and check against OAS.
+        // Per SMMUv3 §3.4, addresses derived from intermediate translation
+        // table descriptors generate an Address Size fault if they exceed
+        // the OAS.
+        let next_addr = desc.next_table_addr(page_shift);
         if next_addr > oas_mask {
             return Err(SmmuFault {
                 event: EvtEntry::addr_size_fault(sid, iova, write),
@@ -633,7 +644,7 @@ mod tests {
     #[test]
     fn test_translation_context_4k() {
         let cd = make_cd(0x4000_0000, 32, Tg0::GRAN_4K, Ips::IPS_40);
-        let ctx = translation_context(&cd, 0).expect("should succeed");
+        let ctx = translation_context(&cd, 0, OAS_MASK).expect("should succeed");
         assert_eq!(ctx.ttb0, 0x4000_0000);
         assert_eq!(ctx.t0sz, 32);
         assert_eq!(ctx.tg0, Tg0::GRAN_4K);
@@ -644,7 +655,7 @@ mod tests {
     #[test]
     fn test_translation_context_16k() {
         let cd = make_cd(0x8000_0000, 28, Tg0::GRAN_16K, Ips::IPS_48);
-        let ctx = translation_context(&cd, 0).expect("should succeed");
+        let ctx = translation_context(&cd, 0, (1u64 << 48) - 1).expect("should succeed");
         assert_eq!(ctx.tg0, Tg0::GRAN_16K);
         assert_eq!(ctx.oas_mask, (1 << 48) - 1);
         assert_eq!(ctx.t0sz, 28);
@@ -666,7 +677,7 @@ mod tests {
             mair1: 0,
             _qw5_7: [0; 3],
         };
-        let result = translation_context(&cd, 0);
+        let result = translation_context(&cd, 0, OAS_MASK);
         assert!(result.is_err());
     }
 
@@ -686,7 +697,7 @@ mod tests {
             mair1: 0,
             _qw5_7: [0; 3],
         };
-        let result = translation_context(&cd, 0);
+        let result = translation_context(&cd, 0, OAS_MASK);
         assert!(result.is_err());
     }
 
@@ -707,7 +718,7 @@ mod tests {
             mair1: 0,
             _qw5_7: [0; 3],
         };
-        let result = translation_context(&cd, 0);
+        let result = translation_context(&cd, 0, OAS_MASK);
         assert!(result.is_err());
     }
 
