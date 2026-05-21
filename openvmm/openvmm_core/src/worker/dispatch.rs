@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod dump;
+
 use crate::emuplat;
 use crate::partition::BindHvliteVp;
 use crate::partition::HvlitePartition;
@@ -3306,6 +3308,10 @@ impl LoadedVm {
                             anyhow::Ok(())
                         })
                         .await
+                    }
+                    VmRpc::DumpState(rpc) => {
+                        rpc.handle_failable(async |file| self.dump_state(file).await)
+                            .await
                     }
                 },
                 Event::Halt(Err(_)) => break,
