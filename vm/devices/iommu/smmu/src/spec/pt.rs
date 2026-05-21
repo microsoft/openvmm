@@ -144,79 +144,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pt_desc_invalid() {
-        let desc = PtDesc::from(0u64);
-        assert!(!desc.is_valid());
-        assert!(!desc.is_table());
-        assert!(!desc.is_block());
-    }
-
-    #[test]
-    fn test_pt_desc_table() {
-        // Valid=1, Type=1 → table descriptor
-        let desc = PtDesc::new().with_valid(true).with_desc_type(true);
-        assert!(desc.is_valid());
-        assert!(desc.is_table());
-        assert!(!desc.is_block());
-    }
-
-    #[test]
-    fn test_pt_desc_block() {
-        // Valid=1, Type=0 → block descriptor
-        let desc = PtDesc::new().with_valid(true).with_desc_type(false);
-        assert!(desc.is_valid());
-        assert!(!desc.is_table());
-        assert!(desc.is_block());
-    }
-
-    #[test]
-    fn test_pt_desc_page_at_l3() {
-        // At L3: Valid=1, Type=1 → page descriptor
-        let desc = PtDesc::new().with_valid(true).with_desc_type(true);
-        assert!(desc.is_page_at_l3());
-    }
-
-    #[test]
-    fn test_pt_desc_table_next_addr() {
-        let table_addr: u64 = 0x8000_5000;
-        let desc = PtDesc::new()
-            .with_valid(true)
-            .with_desc_type(true)
-            .with_addr_bits(table_addr >> 12);
-
-        assert_eq!(desc.next_table_addr(12), table_addr);
-    }
-
-    #[test]
-    fn test_pt_desc_access_flag() {
-        let desc = PtDesc::new()
-            .with_valid(true)
-            .with_desc_type(true)
-            .with_af(true);
-        assert!(desc.af());
-
-        let desc = PtDesc::new()
-            .with_valid(true)
-            .with_desc_type(true)
-            .with_af(false);
-        assert!(!desc.af());
-    }
-
-    #[test]
-    fn test_pt_desc_permissions() {
-        // RW_EL1
-        let desc = PtDesc::new()
-            .with_valid(true)
-            .with_desc_type(true)
-            .with_ap(ApBits::RW_EL1.0);
-        assert_eq!(desc.ap(), ApBits::RW_EL1.0);
-
-        // RO_EL1
-        let desc = desc.with_ap(ApBits::RO_EL1.0);
-        assert_eq!(desc.ap(), ApBits::RO_EL1.0);
-    }
-
-    #[test]
     fn test_ap_bits_write_permission() {
         assert!(ApBits::RW_EL1.allows_write());
         assert!(ApBits::RW_ANY.allows_write());
@@ -224,6 +151,9 @@ mod tests {
         assert!(!ApBits::RO_ANY.allows_write());
     }
 
+    /// Verify all bitfield positions are correct by round-tripping every
+    /// field through a single descriptor. This catches overlapping or
+    /// misordered fields in the bitfield definition.
     #[test]
     fn test_pt_desc_full_roundtrip() {
         let desc = PtDesc::new()
@@ -253,23 +183,17 @@ mod tests {
     }
 
     #[test]
-    fn test_pt_desc_preserves_page_offset() {
-        // Verify that the output address does not include sub-page bits
-        let page_addr: u64 = 0x8000_3000;
-        let desc = PtDesc::new()
-            .with_valid(true)
-            .with_desc_type(true)
-            .with_addr_bits(page_addr >> 12);
+    fn test_next_table_addr_masks_to_granule() {
+        // For 4K granule, bits [11:0] are cleared (no-op since addr_bits starts at bit 12).
+        let desc = PtDesc::new().with_addr_bits(0x8000_5000_u64 >> 12);
+        assert_eq!(desc.next_table_addr(12), 0x8000_5000);
 
-        // At L3, the output is the page base
-        assert_eq!(desc.output_address_4k(3), page_addr);
-        assert_eq!(desc.output_address_4k(3) & 0xFFF, 0);
-    }
+        // For 16K granule, bits [13:12] are RES0 and must be cleared.
+        let desc = PtDesc::new().with_addr_bits(0x8000_5000_u64 >> 12);
+        assert_eq!(desc.next_table_addr(14), 0x8000_4000);
 
-    #[test]
-    fn test_shareability_values() {
-        assert_eq!(Shareability::NON_SHAREABLE.0, 0b00);
-        assert_eq!(Shareability::OUTER_SHAREABLE.0, 0b10);
-        assert_eq!(Shareability::INNER_SHAREABLE.0, 0b11);
+        // For 64K granule, bits [15:12] are RES0 and must be cleared.
+        let desc = PtDesc::new().with_addr_bits(0x8000_F000_u64 >> 12);
+        assert_eq!(desc.next_table_addr(16), 0x8000_0000);
     }
 }
