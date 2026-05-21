@@ -2043,6 +2043,7 @@ impl UhPartition {
         self.pulse_lint(bsp_index, vtl, LINT_INDEX_1);
     }
 
+    /// Debug interrupts are not supported on aarch64.
     #[cfg(guest_arch = "aarch64")]
     pub fn assert_debug_interrupt(&self, _vtl: Vtl) {
         tracing::error!("debug interrupts are not supported on aarch64");
