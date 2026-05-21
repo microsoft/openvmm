@@ -3,7 +3,7 @@
 
 //! AES key wrap with padding (RFC 5649).
 
-#![cfg(any(openssl, rust))]
+#![cfg(any(openssl, rust, symcrypt))]
 
 #[cfg(openssl)]
 mod ossl;
@@ -14,6 +14,11 @@ use ossl as sys;
 mod rust;
 #[cfg(rust)]
 use rust as sys;
+
+#[cfg(symcrypt)]
+mod symcrypt;
+#[cfg(symcrypt)]
+use symcrypt as sys;
 
 use thiserror::Error;
 
