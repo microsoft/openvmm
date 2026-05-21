@@ -37,6 +37,26 @@ use std::sync::Arc;
 use vmcore::device_state::ChangeDeviceState;
 use zerocopy::IntoBytes;
 
+
+/// A generic PCI Express root complex emulator.
+#[derive(InspectMut)]
+pub struct GenericPcieRootComplex {
+    /// The lowest valid bus number under the root complex.
+    start_bus: u8,
+    /// The highest valid bus number under the root complex.
+    end_bus: u8,
+    /// Intercept control for the ECAM MMIO region.
+    ecam: Box<dyn ControlMmioIntercept>,
+    /// Intercept control for the CHBCR MMIO region, when present.
+    chbcr: Option<Box<dyn ControlMmioIntercept>>,
+    /// CXL Component Registers backing CHBCR accesses in CXL mode.
+    cxl_component_registers: Option<CxlComponentRegisters>,
+    /// Devices on the root complex bus, indexed by PCI device number (0-31).
+    /// Each slot can hold a root port, an RCiEP, or be empty.
+    #[inspect(iter_by_index)]
+    devices: [BusDevice; MAX_DEVICES_PER_BUS],
+}
+
 /// Maximum number of PCI devices on a single bus.
 const MAX_DEVICES_PER_BUS: usize = 32;
 
@@ -67,24 +87,6 @@ impl Inspect for BusDevice {
     }
 }
 
-/// A generic PCI Express root complex emulator.
-#[derive(InspectMut)]
-pub struct GenericPcieRootComplex {
-    /// The lowest valid bus number under the root complex.
-    start_bus: u8,
-    /// The highest valid bus number under the root complex.
-    end_bus: u8,
-    /// Intercept control for the ECAM MMIO region.
-    ecam: Box<dyn ControlMmioIntercept>,
-    /// Intercept control for the CHBCR MMIO region, when present.
-    chbcr: Option<Box<dyn ControlMmioIntercept>>,
-    /// CXL Component Registers backing CHBCR accesses in CXL mode.
-    cxl_component_registers: Option<CxlComponentRegisters>,
-    /// Devices on the root complex bus, indexed by PCI device number (0-31).
-    /// Each slot can hold a root port, an RCiEP, or be empty.
-    #[inspect(iter_by_index)]
-    devices: [BusDevice; MAX_DEVICES_PER_BUS],
-}
 
 /// Information about a downstream port in a PCIe topology.
 pub struct DownstreamPortInfo {
