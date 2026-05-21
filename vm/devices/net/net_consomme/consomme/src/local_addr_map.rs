@@ -23,7 +23,8 @@ pub(crate) struct LocalAddrMap {
     /// Next available IPv4 host offset from the broadcast address, counting
     /// downward. Virtual addresses are allocated from the high end of the
     /// subnet to minimize collisions with real addresses which are typically
-    /// assigned from the low end.
+    /// assigned from the low end. Capped at /24 as there should only be a max of four
+    /// addresses used (guest IP, gateway IP, virtual IP for guest IP and virtual IP for 127.0.0.1).
     next_ipv4_offset_from_end: u8,
     /// Next available IPv6 interface ID suffix for link-local virtual addresses.
     /// We allocate fe80::ff:fe00:NNNN addresses (using a range unlikely to

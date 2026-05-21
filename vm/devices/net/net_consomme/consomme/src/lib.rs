@@ -176,7 +176,7 @@ impl ConsommeParams {
             client_ip_ipv6_routable: None,
             // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
             udp_timeout: Duration::from_secs(300),
-            skip_ipv6_checks: true,
+            skip_ipv6_checks: false,
         })
     }
 
@@ -620,6 +620,9 @@ pub(crate) fn is_same_ipv6_subnet(addr1: Ipv6Address, addr2: Ipv6Address, prefix
     if prefix_len == 0 {
         return true;
     }
+    if prefix_len >= 128 {
+        return addr1 == addr2;
+    }
     let mask = u128::MAX << (128 - prefix_len);
     (addr1.to_bits() & mask) == (addr2.to_bits() & mask)
 }
@@ -918,5 +921,48 @@ impl<T: Client> Access<'_, T> {
                 .params
                 .internal_nameservers(self.inner.host_has_ipv6);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smoltcp::wire::Ipv6Address;
+
+    #[test]
+    fn test_is_same_ipv6_subnet_basic() {
+        let a = Ipv6Address::new(0x2001, 0x0db8, 0x0001, 0, 0, 0, 0, 1);
+        let b = Ipv6Address::new(0x2001, 0x0db8, 0x0001, 0, 0, 0, 0, 2);
+        assert!(is_same_ipv6_subnet(a, b, 48));
+        assert!(!is_same_ipv6_subnet(a, b, 128));
+    }
+
+    #[test]
+    fn test_is_same_ipv6_subnet_prefix_zero() {
+        let a = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
+        let b = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+        assert!(is_same_ipv6_subnet(a, b, 0));
+    }
+
+    #[test]
+    fn test_is_same_ipv6_subnet_prefix_128_exact_match() {
+        let a = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
+        assert!(is_same_ipv6_subnet(a, a, 128));
+    }
+
+    #[test]
+    fn test_is_same_ipv6_subnet_prefix_128_no_match() {
+        let a = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
+        let b = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 2);
+        assert!(!is_same_ipv6_subnet(a, b, 128));
+    }
+
+    #[test]
+    fn test_is_same_ipv6_subnet_prefix_above_128_does_not_panic() {
+        let a = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
+        let b = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 2);
+        // prefix_len > 128 should behave like /128 (exact match), not panic.
+        assert!(is_same_ipv6_subnet(a, a, 200));
+        assert!(!is_same_ipv6_subnet(a, b, 255));
     }
 }

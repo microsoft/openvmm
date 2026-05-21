@@ -936,4 +936,214 @@ mod tests {
             "error should be PortAlreadyBound"
         );
     }
+
+    /// Test that when a UDP packet arrives from a loopback sender, the source
+    /// IP forwarded to the guest is rewritten to a virtual address (not
+    /// 127.0.0.1), so the guest routes its reply through the virtual adapter.
+    #[pal_async::async_test]
+    async fn test_udp_port_forward_loopback_src_rewritten(driver: DefaultDriver) {
+        let driver = Arc::new(driver);
+        let mut consomme = create_consomme_with_timeout(Duration::from_secs(30));
+        let mut client = TestClient::new(driver.clone());
+
+        let client_ip: Ipv4Address = consomme.params_mut().client_ip;
+
+        // Bind a UDP listener socket on an ephemeral port.
+        let socket = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+        socket
+            .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+            .unwrap();
+        let host_addr: SocketAddr = socket.local_addr().unwrap().as_socket().unwrap();
+
+        let guest_port = 5556;
+        let packets = client.received_packets.clone();
+        let mut access = consomme.access(&mut client);
+        access
+            .bind_udp_port(socket, guest_port)
+            .expect("bind should succeed");
+
+        // Send a UDP packet from loopback to the listener.
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender.send_to(b"hello", host_addr).unwrap();
+
+        // Poll until the forwarded packet arrives.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            std::future::poll_fn(|cx| {
+                access.poll(cx);
+                Poll::Ready(())
+            })
+            .await;
+
+            if !packets.lock().is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for forwarded UDP packet"
+            );
+            pal_async::timer::PolledTimer::new(&*driver)
+                .sleep(Duration::from_millis(10))
+                .await;
+        }
+
+        // Verify the source IP is NOT loopback and NOT the guest's own IP.
+        let packets = packets.lock();
+        let pkt = &packets[0];
+        let eth = EthernetFrame::new_unchecked(pkt.as_slice());
+        let ipv4 = Ipv4Packet::new_unchecked(eth.payload());
+        let src_ip = ipv4.src_addr();
+        let dst_ip = ipv4.dst_addr();
+
+        // Destination should be the guest.
+        assert_eq!(dst_ip, client_ip);
+        // Source must not be loopback — the guest would route replies to its
+        // own loopback interface instead of back through the virtual NIC.
+        assert!(
+            !src_ip.is_loopback(),
+            "forwarded UDP source IP should not be loopback, got {src_ip}"
+        );
+        // Source must not be the guest's own IP either.
+        assert_ne!(
+            src_ip, client_ip,
+            "forwarded UDP source IP should not be the guest's own IP"
+        );
+    }
+
+    /// Test that the UDP loopback port remapping works end-to-end:
+    /// when the guest sends a UDP packet to localhost on a listener port,
+    /// consomme routes it through the host listener, and the returned packet
+    /// has the guest's original source port (not the proxy ephemeral port).
+    #[pal_async::async_test]
+    async fn test_udp_loopback_port_remap(driver: DefaultDriver) {
+        let driver = Arc::new(driver);
+        let mut consomme = create_consomme_with_timeout(Duration::from_secs(30));
+        let mut client = TestClient::new(driver.clone());
+
+        let guest_mac = consomme.params_mut().client_mac;
+        let gateway_mac = consomme.params_mut().gateway_mac;
+        let guest_ip: Ipv4Address = consomme.params_mut().client_ip;
+        let dst_ip: IpAddress = IpAddress::Ipv4(Ipv4Addr::LOCALHOST);
+        let listener_guest_port = 7070u16;
+        let guest_src_port = 44444u16;
+
+        // Bind a UDP listener on an ephemeral host port, mapped to guest port 7070.
+        let socket = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+        socket
+            .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+            .unwrap();
+
+        let packets = client.received_packets.clone();
+        let mut access = consomme.access(&mut client);
+        access
+            .bind_udp_port(socket, listener_guest_port)
+            .expect("bind should succeed");
+
+        // Guest sends a UDP packet to 127.0.0.1 on the listener port.
+        // This simulates the guest trying to send to a host service that is
+        // also forwarded back to the guest (loopback through consomme).
+        let payload = b"loopback_test";
+        let total_len = ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN + payload.len();
+        let mut buffer = vec![0u8; total_len];
+        // Place the payload at the correct offset.
+        buffer[ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN..].copy_from_slice(payload);
+
+        let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer[..]);
+        let packet_len = build_udp_packet(
+            &mut eth_frame,
+            IpAddress::Ipv4(guest_ip),
+            dst_ip,
+            guest_src_port,
+            listener_guest_port,
+            payload.len(),
+            guest_mac,
+            gateway_mac,
+        );
+
+        let _ = access.send(&buffer[..packet_len], &ChecksumState::NONE);
+
+        // Poll until the loopback packet arrives back at the guest.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            std::future::poll_fn(|cx| {
+                access.poll(cx);
+                Poll::Ready(())
+            })
+            .await;
+
+            let has_packet = packets.lock().iter().any(|p| {
+                if p.len() < ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN {
+                    return false;
+                }
+                let eth = EthernetFrame::new_unchecked(p.as_slice());
+                if eth.ethertype() != EthernetProtocol::Ipv4 {
+                    return false;
+                }
+                let ipv4 = Ipv4Packet::new_unchecked(eth.payload());
+                if ipv4.next_header() != IpProtocol::Udp {
+                    return false;
+                }
+                let udp = UdpPacket::new_unchecked(ipv4.payload());
+                udp.dst_port() == listener_guest_port
+            });
+            if has_packet {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for loopback UDP packet to be forwarded back to guest"
+            );
+            pal_async::timer::PolledTimer::new(&*driver)
+                .sleep(Duration::from_millis(10))
+                .await;
+        }
+
+        // Find the packet forwarded to the guest on the listener port.
+        let packets = packets.lock();
+        let loopback_pkt = packets
+            .iter()
+            .find(|p| {
+                if p.len() < ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN {
+                    return false;
+                }
+                let eth = EthernetFrame::new_unchecked(p.as_slice());
+                if eth.ethertype() != EthernetProtocol::Ipv4 {
+                    return false;
+                }
+                let ipv4 = Ipv4Packet::new_unchecked(eth.payload());
+                if ipv4.next_header() != IpProtocol::Udp {
+                    return false;
+                }
+                let udp = UdpPacket::new_unchecked(ipv4.payload());
+                udp.dst_port() == listener_guest_port
+            })
+            .expect("should have received a loopback UDP packet");
+
+        let eth = EthernetFrame::new_unchecked(loopback_pkt.as_slice());
+        let ipv4 = Ipv4Packet::new_unchecked(eth.payload());
+        let udp = UdpPacket::new_unchecked(ipv4.payload());
+        let src_ip = ipv4.src_addr();
+
+        // The source port should be the guest's original source port (remapped
+        // from the proxy's ephemeral host port back to the guest port).
+        assert_eq!(
+            udp.src_port(),
+            guest_src_port,
+            "loopback UDP source port should be the guest's original source port \
+             ({guest_src_port}), not a proxy ephemeral port; got {}",
+            udp.src_port()
+        );
+        // Destination port should be the listener's guest port.
+        assert_eq!(udp.dst_port(), listener_guest_port);
+        // Source IP should not be loopback.
+        assert!(
+            !src_ip.is_loopback(),
+            "loopback UDP source IP should not be 127.x.x.x, got {src_ip}"
+        );
+        // Source IP should not be the guest's own IP.
+        assert_ne!(
+            src_ip, guest_ip,
+            "loopback UDP source IP should not be the guest's own IP"
+        );
+    }
 }
