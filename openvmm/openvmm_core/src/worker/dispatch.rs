@@ -954,19 +954,35 @@ impl InitializedVm {
             anyhow::bail!("hugepage_size={size} requires hugepages=on");
         }
 
+        // Collect RAM ranges for the backing request. All ranges go into a
+        // single backing for now; NUMA will split them across multiple.
+        let ram_ranges: Vec<MemoryRange> = mem_layout
+            .ram()
+            .iter()
+            .map(|r| r.range)
+            .chain(mem_layout.vtl2_range())
+            .collect();
+
+        let mut backing = membacking::RamBackingRequest::new(ram_ranges)
+            .prefetch(cfg.memory.prefetch_memory)
+            .private_memory(cfg.memory.private_memory)
+            .transparent_hugepages(cfg.memory.transparent_hugepages);
+        if cfg.memory.hugepages {
+            backing = backing.hugepages(cfg.memory.hugepage_size);
+        }
+        if let Some(smb) = shared_memory {
+            if let Some(mappable) = smb.into_mappables().into_iter().next().flatten() {
+                backing = backing.existing_mappable(mappable);
+            }
+        }
+
         let mut memory_builder = GuestMemoryBuilder::new();
         memory_builder = memory_builder
-            .existing_backing(shared_memory)
             .vtl0_alias_map(vtl0_alias_map)
-            .prefetch_ram(cfg.memory.prefetch_memory)
-            .private_memory(cfg.memory.private_memory)
-            .transparent_hugepages(cfg.memory.transparent_hugepages)
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
-            );
-        if cfg.memory.hugepages {
-            memory_builder = memory_builder.hugepages(cfg.memory.hugepage_size);
-        }
+            )
+            .add_backing(backing);
 
         #[cfg(all(windows, feature = "virt_whp"))]
         if !cfg.vpci_resources.is_empty() {
@@ -988,8 +1004,12 @@ impl InitializedVm {
             }
         }
 
+        let max_addr = mem_layout
+            .end_of_layout()
+            .max(mem_layout.vtl2_range().map_or(0, |r| r.end()));
+
         let mut memory_manager = memory_builder
-            .build(&mem_layout)
+            .build(max_addr)
             .await
             .context("failed to build guest memory")?;
 
