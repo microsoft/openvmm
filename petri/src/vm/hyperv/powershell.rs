@@ -293,6 +293,8 @@ pub struct HyperVNewCustomVMArgs {
     pub storage_controllers: HashMap<Guid, HyperVVmbusStorageController>,
     /// IDE controllers and associated drives/disks
     pub ide_controllers: HashMap<u32, HashMap<u8, HyperVDrive>>,
+    /// Physical NVMe devices, used exclusively in closed source tests
+    pub physical_nvme_devices: Vec<crate::PhysicalNvmeDevice>,
     /// Temporary file containing initial machine configuration data
     pub imc_hiv: Option<NamedTempFile>,
     /// Enable COM1 at \\.\pipe\<VMID>-1
@@ -303,8 +305,6 @@ pub struct HyperVNewCustomVMArgs {
     pub tpm_enabled: bool,
     /// Temporary file containing management VTL settings
     pub management_vtl_settings: Option<NamedTempFile>,
-    /// Physical NVMe devices, used exclusively in closed source tests
-    pub physical_nvme_devices: Vec<crate::PhysicalNvmeDevice>,
 }
 
 /// VMBus storage controller type

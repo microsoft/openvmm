@@ -70,9 +70,9 @@ impl HyperVVM {
                 .context("failed to write hyperv powershell module")?;
 
             let mut utilities_mod_file =
-                std::fs::File::create_new(temp_dir.path().join("Utilities.psm1"))?;
+                std::fs::File::create_new(temp_dir.path().join("utilities.psm1"))?;
             utilities_mod_file
-                .write_all(include_bytes!("Utilities.psm1"))
+                .write_all(include_bytes!("utilities.psm1"))
                 .context("failed to write hyperv utilities powershell module")?;
         }
 

@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
- Import-Module (Join-Path -Path $PSScriptRoot -ChildPath "Utilities.psm1")
+ Import-Module (Join-Path -Path $PSScriptRoot -ChildPath "utilities.psm1")
 
 #
 # Constants
@@ -345,6 +345,17 @@ function New-CustomVM
         }
     }
 
+    # Assign physical NVMe devices via PhysicalNvme module
+    if ($PhysicalNvmeControllers) {
+        Import-Module PhysicalNvme -ErrorAction Stop
+        foreach ($entry in $PhysicalNvmeControllers.GetEnumerator()) {
+            $vsid = $entry.Name
+            $targetVtl = $entry.Value["Vtl"]
+            $nsid = $entry.Value["Nsid"]
+            $resourceSettings += Get-PhysicalNvmeDeviceRasd -Vsid $vsid -Nsid $nsid -TargetVtl $targetVtl
+        }
+    }
+
     $vm = ($vmms | Invoke-CimMethod -Name "DefineSystem" -Arguments @{
         "SystemSettings"   = ($vssd | ConvertTo-CimEmbeddedString);
         "ResourceSettings" = $resourceSettings
@@ -387,17 +398,6 @@ function New-CustomVM
             "AffectedConfiguration" = $vssd;
             "ResourceSettings" = $resourceSettings
         } | Trace-CimMethodExecution -MethodName "AddResourceSettings" -CimInstance $vmms | Out-Null
-    }
-
-    # Assign physical NVMe devices via PhysicalNvme module
-    if ($PhysicalNvmeControllers) {
-        Import-Module PhysicalNvme
-        foreach ($entry in $PhysicalNvmeControllers.GetEnumerator()) {
-            $vsid = $entry.Name
-            $targetVtl = $entry.Value["Vtl"]
-            $nsid = $entry.Value["Nsid"]
-            Add-PhysicalNvmeDeviceToVm -VmName $VMName -Vsid $vsid -Nsid $nsid -TargetVtl $targetVtl | Out-Null
-        }
     }
 
     if ($Com1 -or $Com3) {

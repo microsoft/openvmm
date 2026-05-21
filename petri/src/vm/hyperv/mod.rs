@@ -49,6 +49,7 @@ use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
+pub use powershell::add_physical_nvme_device;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::io::Write;
