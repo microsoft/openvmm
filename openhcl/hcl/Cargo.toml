@@ -18,7 +18,6 @@ x86defs.workspace = true
 inspect.workspace = true
 user_driver.workspace = true
 aarch64defs.workspace = true
-rsi.workspace = true
 
 anyhow.workspace = true
 arrayvec.workspace = true

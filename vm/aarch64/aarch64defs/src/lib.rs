@@ -8,6 +8,7 @@
 #![no_std]
 
 pub mod gic;
+pub mod rsi;
 pub mod smccc;
 
 use bitfield_struct::bitfield;

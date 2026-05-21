@@ -3164,7 +3164,6 @@ dependencies = [
  "open_enum",
  "pal",
  "parking_lot",
- "rsi",
  "safe_intrinsics",
  "sidecar_client",
  "signal-hook",
@@ -6739,13 +6738,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rsi"
-version = "0.0.0"
-dependencies = [
- "zerocopy",
-]
-
-[[package]]
 name = "rusqlite"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8722,6 +8714,7 @@ dependencies = [
 name = "underhill_mem"
 version = "0.0.0"
 dependencies = [
+ "aarch64defs",
  "anyhow",
  "build_rs_guest_arch",
  "cvm_tracing",
@@ -8734,7 +8727,6 @@ dependencies = [
  "memory_range",
  "pal_async",
  "parking_lot",
- "rsi",
  "sparse_mmap",
  "thiserror 2.0.16",
  "tracelimit",
@@ -9223,7 +9215,6 @@ dependencies = [
  "pal_uring",
  "parking_lot",
  "pci_core",
- "rsi",
  "safe_intrinsics",
  "safeatomic",
  "sidecar_client",

@@ -14,6 +14,7 @@ pub use init::Init;
 pub use init::MemoryMappings;
 pub use init::init;
 
+use aarch64defs::rsi::CcaMemPermIndex;
 use cvm_tracing::CVM_ALLOWED;
 use guestmem::GuestMemoryBackingError;
 use guestmem::PAGE_SIZE;
@@ -42,7 +43,6 @@ use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
 use registrar::RegisterMemory;
-use rsi::CcaMemPermIndex;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
