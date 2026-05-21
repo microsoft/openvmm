@@ -1186,16 +1186,66 @@ impl UhProcessor<'_, SnpBacked> {
                             )
                             .map_err(SnpGhcbError::GhcbPageAccess)?;
                     }
+                    x86defs::snp::GhcbUsage::BASE => {
+                        match SevExitCode(sw_exit_code) {
+                            // The hypervisor could not handle VMMCALL and forwarded the GHCB message
+                            SevExitCode::VMMCALL => {
+                                let shared_memory = &self.shared.cvm.shared_memory;
+                                let overlay_base = ghcb_overlay * HV_PAGE_SIZE;
+
+                                let input_control: u64 = shared_memory
+                                    .read_plain(
+                                        overlay_base + x86defs::snp::GHCB_PAGE_RCX_OFFSET as u64,
+                                    )
+                                    .map_err(SnpGhcbError::GhcbPageAccess)?;
+                                let input_gpa: u64 = shared_memory
+                                    .read_plain(
+                                        overlay_base + x86defs::snp::GHCB_PAGE_RDX_OFFSET as u64,
+                                    )
+                                    .map_err(SnpGhcbError::GhcbPageAccess)?;
+                                let output_gpa: u64 = shared_memory
+                                    .read_plain(
+                                        overlay_base + x86defs::snp::GHCB_PAGE_R8_OFFSET as u64,
+                                    )
+                                    .map_err(SnpGhcbError::GhcbPageAccess)?;
+
+                                let guest_memory = &self.partition.gm[intercepted_vtl];
+                                let mut handler = GhcbEnlightenedHypercall {
+                                    handler: UhHypercallHandler {
+                                        vp: self,
+                                        trusted: false,
+                                        intercepted_vtl,
+                                    },
+                                    control: input_control,
+                                    output_gpa,
+                                    input_gpa,
+                                    result: 0,
+                                };
+
+                                UhHypercallHandler::UNTRUSTED_DISPATCHER
+                                    .dispatch(guest_memory, &mut handler);
+
+                                shared_memory
+                                    .write_at(
+                                        overlay_base + x86defs::snp::GHCB_PAGE_RAX_OFFSET as u64,
+                                        handler.result.as_bytes(),
+                                    )
+                                    .map_err(SnpGhcbError::GhcbPageAccess)?;
+                            }
+                            _ => {
+                                let exit_code = SevExitCode(sw_exit_code);
+                                unimplemented!("unhandled GHCB BASE sw_exit_code {exit_code:?}");
+                            }
+                        }
+                    }
                     usage => unimplemented!(
-                        r#"
-                        Invalid ghcb message.
-                        usage {usage:?}
-                        flags {flags:?}
-                        ghcb_msr {ghcb_msr:?}
-                        sw_exit_code {sw_exit_code:?}
-                        sw_exit_info1 {sw_exit_info1:?}
-                        sw_exit_info2 {sw_exit_info2:?}
-                    "#
+                        "Invalid ghcb message.\n\
+                         usage {usage:?}\n\
+                         flags {flags:?}\n\
+                         ghcb_msr {ghcb_msr:?}\n\
+                         sw_exit_code {sw_exit_code:?}\n\
+                         sw_exit_info1 {sw_exit_info1:?}\n\
+                         sw_exit_info2 {sw_exit_info2:?}"
                     ),
                 }
             }
