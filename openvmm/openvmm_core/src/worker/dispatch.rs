@@ -999,7 +999,8 @@ impl InitializedVm {
             .filter(|(bus, _)| matches!(bus, VirtioBus::Mmio))
             .count();
 
-        // smmu_count was already computed by build_aarch64_topology.
+        // SMMU is only supported on aarch64; on other architectures,
+        // no SMMU MMIO is allocated.
         #[cfg(not(guest_arch = "aarch64"))]
         let smmu_count = 0;
 

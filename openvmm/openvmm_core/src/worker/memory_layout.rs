@@ -95,7 +95,8 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// Number of virtio-mmio device slots to allocate in 32-bit MMIO space.
     /// A single contiguous region of `count * 4 KiB` is allocated.
     pub virtio_mmio_count: usize,
-    /// Number of SMMUv3 instances to allocate MMIO for. Each instance requires
+    /// Number of SMMUv3 instances to allocate MMIO for (aarch64 only;
+    /// always 0 on other architectures). Each instance requires
     /// `SMMU_SIZE` bytes (128 KiB), 128 KiB aligned, in 32-bit MMIO space.
     pub smmu_count: usize,
     /// Optional IGVM VTL2 private-memory request. This is allocated after all
