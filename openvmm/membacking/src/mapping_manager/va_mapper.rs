@@ -294,7 +294,7 @@ impl VaMapper {
     ///
     /// This replaces the placeholder at the given offset with committed
     /// anonymous memory.
-    pub fn alloc_range(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
+    pub(crate) fn alloc_range(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
         self.inner.mapping.alloc(offset, len)
     }
 
@@ -305,7 +305,7 @@ impl VaMapper {
 
     /// Marks a range as eligible for Transparent Huge Pages.
     #[cfg(target_os = "linux")]
-    pub fn madvise_hugepage(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
+    pub(crate) fn madvise_hugepage(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
         self.inner.mapping.madvise_hugepage(offset, len)
     }
 

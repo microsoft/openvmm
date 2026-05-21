@@ -691,8 +691,9 @@ impl GuestMemoryManager {
     /// should be managing a given memory backing at a time, though, or the
     /// guest may see unpredictable results.
     ///
-    /// Returns `None` when any backing uses private memory, since
-    /// restart requires all RAM to be file-backed.
+    /// Returns `None` unless there is exactly one backing and it is
+    /// file-backed. This currently means multi-backing and private-memory
+    /// configurations cannot be restarted.
     pub fn shared_memory_backing(&self) -> Option<SharedMemoryBacking> {
         // Require exactly one backing, and it must be file-backed.
         if self.guest_ram.len() != 1 {
