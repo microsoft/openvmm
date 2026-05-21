@@ -3360,6 +3360,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hvs_file"
+version = "0.0.0"
+dependencies = [
+ "crc32fast",
+ "open_enum",
+ "static_assertions",
+ "thiserror 2.0.16",
+ "zerocopy",
+]
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3434,6 +3445,20 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "hyperv_dump"
+version = "0.0.0"
+dependencies = [
+ "hvdef",
+ "hvs_file",
+ "memory_range",
+ "pal",
+ "static_assertions",
+ "tempfile",
+ "virt",
+ "zerocopy",
 ]
 
 [[package]]
@@ -5385,6 +5410,7 @@ dependencies = [
  "guid",
  "hcl_compat_uefi_nvram_storage",
  "hvdef",
+ "hyperv_dump",
  "hypervisor_resources",
  "ide",
  "ide_resources",
@@ -10126,6 +10152,7 @@ dependencies = [
  "guestmem",
  "hcl_compat_uefi_nvram_storage",
  "hvdef",
+ "hyperv_dump",
  "iced-x86",
  "input_core",
  "inspect",

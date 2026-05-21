@@ -123,6 +123,7 @@ fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
 headervec = { path = "support/headervec" }
 hybrid_vsock = { path = "support/hybrid_vsock" }
+hvs_file = { path = "support/hvs_file" }
 inspect = { path = "support/inspect", default-features = false, features = ["derive"] }
 inspect_counters = { path = "support/inspect_counters" }
 inspect_derive = { path = "support/inspect_derive" }
@@ -412,6 +413,7 @@ vm_topology = { path = "vm/vmcore/vm_topology" }
 vmcore = { path = "vm/vmcore" }
 
 # vmm_core
+hyperv_dump = { path = "vmm_core/hyperv_dump" }
 state_unit = { path = "vmm_core/state_unit" }
 virt = { path = "vmm_core/virt" }
 virt_hvf = { path = "vmm_core/virt_hvf" }
