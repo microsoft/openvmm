@@ -90,7 +90,7 @@ pub trait RegisterWeakMutexPcie: Send {
     fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo>;
 
     /// Try to add a Root Complex Integrated Endpoint (RCiEP) at the given
-    /// device/function on the start bus of the root complex.
+    /// PCI device number (0-31) on the start bus of the root complex.
     ///
     /// Not all enumerators support RCiEPs — only root complexes do.
     /// The default implementation returns an error.
