@@ -389,9 +389,7 @@ impl Vplc {
         }
     }
 
-    /// Resets the pending per-VTL VP signal flags (`message_queues`,
-    /// `check_queues`, `extint_pending`, and `start_vp`) to the initial
-    /// state from `Vplc::new`.
+    /// Resets the pending per-VTL VP signals to the initial state from `Vplc::new`.
     ///
     /// This is used when resetting the partition or scrubbing a VTL, so that
     /// the freshly-reinitialized VTL does not observe stale events queued
@@ -407,7 +405,7 @@ impl Vplc {
         message_queues.clear();
         check_queues.store(false, Ordering::SeqCst);
         extint_pending.store(false, Ordering::SeqCst);
-        start_vp_context.lock().take();
+        *start_vp_context.lock() = None;
         start_vp.store(false, Ordering::SeqCst);
     }
 }
