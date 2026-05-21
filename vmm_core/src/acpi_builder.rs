@@ -754,7 +754,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
     /// Returns tables that should be loaded at the supplied gpa.
     pub fn build_acpi_tables<F>(&self, gpa: u64, add_devices_to_dsdt: F) -> BuiltAcpiTables
     where
-        F: FnOnce(&MemoryLayout, &mut dsdt::Dsdt),
+        F: FnOnce(&mut dsdt::Dsdt),
     {
         let mut dsdt_data = dsdt::Dsdt::new();
         // Name(\_S0, Package(2){0, 0})
@@ -768,7 +768,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             &dsdt::Package(vec![0, 0]),
         ));
         // Add any chipset devices.
-        add_devices_to_dsdt(self.mem_layout, &mut dsdt_data);
+        add_devices_to_dsdt(&mut dsdt_data);
         // Add processor devices:
         // Device(P###) { Name(_HID, "ACPI0007") Name(_UID, #) Method(_STA, 0) { Return(0xF) } }
         for proc_index in 1..self.processor_topology.vp_count() + 1 {
@@ -1306,7 +1306,7 @@ mod test {
         let builder = new_builder(&mem, &topology, &pcie_host_bridges);
         assert!(builder.build_iort().is_none());
 
-        let tables = builder.build_acpi_tables(0x100000, |_, _| {});
+        let tables = builder.build_acpi_tables(0x100000, |_| {});
         assert!(!contains_signature(&tables.tables, b"IORT"));
     }
 
@@ -1335,7 +1335,7 @@ mod test {
         }];
         let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
 
-        let tables = builder.build_acpi_tables(0x100000, |_, _| {});
+        let tables = builder.build_acpi_tables(0x100000, |_| {});
         assert!(contains_signature(&tables.tables, b"MCFG"));
         assert!(contains_signature(&tables.tables, b"IORT"));
     }
@@ -1393,7 +1393,7 @@ mod test {
         }];
         let builder = new_builder(&mem, &topology, &pcie_host_bridges);
 
-        let tables = builder.build_acpi_tables(0x100000, |_, _| {});
+        let tables = builder.build_acpi_tables(0x100000, |_| {});
         assert!(contains_signature(&tables.tables, b"CEDT"));
     }
 

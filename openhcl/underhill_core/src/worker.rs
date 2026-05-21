@@ -1158,13 +1158,28 @@ struct BuiltVtl0MemoryLayout {
     complete_memory_layout: MemoryLayout,
 }
 
+/// Chipset MMIO ranges.
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct ChipsetMmioRanges {
+    /// Chipset low MMIO range (below 4 GB) for VMOD/PCI0 _CRS. Always at
+    /// least the architectural reserved zone (LAPIC, IOAPIC, TPM, ...).
+    pub low: MemoryRange,
+    /// Chipset high MMIO range (above RAM) for VMOD/PCI0 _CRS. `EMPTY` when
+    /// no chipset high MMIO is configured.
+    pub high: MemoryRange,
+}
+
 /// Build the VTL0 memory map after carving out any memory requested for shared
 /// visibility memory to be used by VTL2.
 fn build_vtl0_memory_layout(
     vtl0_memory_map: Vec<(MemoryRangeWithNode, MemoryMapEntryType)>,
-    mmio: &[MemoryRange],
+    chipset_mmio: &ChipsetMmioRanges,
     mut shared_pool_size: u64,
 ) -> anyhow::Result<BuiltVtl0MemoryLayout> {
+    let mmio: Vec<MemoryRange> = [chipset_mmio.low, chipset_mmio.high]
+        .into_iter()
+        .filter(|r| !r.is_empty())
+        .collect();
     // Allocate shared_pool memory starting from the last (top of memory)
     // continuing downward until the size is covered.
     //
@@ -1220,13 +1235,13 @@ fn build_vtl0_memory_layout(
         .collect::<Vec<_>>();
 
     let vtl0_memory_layout =
-        MemoryLayout::new_from_ranges(&memory, mmio).context("invalid memory layout")?;
+        MemoryLayout::new_from_ranges(&memory, &mmio).context("invalid memory layout")?;
 
     let complete_memory = vtl0_memory_map
         .iter()
         .map(|(entry, _typ)| entry.clone())
         .collect::<Vec<_>>();
-    let complete_memory_layout = MemoryLayout::new_from_ranges(&complete_memory, mmio)
+    let complete_memory_layout = MemoryLayout::new_from_ranges(&complete_memory, &mmio)
         .context("invalid complete memory layout")?;
 
     tracing::info!(
@@ -1694,20 +1709,34 @@ async fn new_underhill_vm(
         anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
     }
 
-    let mut vtl0_mmio;
-    let (vtl0_mmio, vpci_relay_mmio) = if enable_vpci_relay {
-        // Carve out enough VTL0 MMIO space for 64 devices.
+    // Construct chipset MMIO ranges from the positional convention in the
+    // device tree: [0] = low (below 4 GiB), [1] = high (above RAM).
+    let mut chipset_mmio = ChipsetMmioRanges {
+        low: boot_info
+            .vtl0_mmio
+            .first()
+            .copied()
+            .unwrap_or(MemoryRange::EMPTY),
+        high: boot_info
+            .vtl0_mmio
+            .get(1)
+            .copied()
+            .unwrap_or(MemoryRange::EMPTY),
+    };
+
+    let vpci_relay_mmio = if enable_vpci_relay {
+        // Carve out enough VTL0 MMIO space from the high range for 64 devices.
         let required_len = 64 * vpci_relay::VPCI_RELAY_MMIO_PER_DEVICE;
-        vtl0_mmio = boot_info.vtl0_mmio.clone();
-        if vtl0_mmio.last().is_none_or(|r| r.len() < required_len) {
+        if chipset_mmio.high.is_empty() || chipset_mmio.high.len() < required_len {
             anyhow::bail!("too little VTL0 MMIO space to take for the VPCI relay");
         }
-        let r = vtl0_mmio.last().unwrap();
-        let (rest, vpci) = r.split_at_offset(r.len() - required_len);
-        *vtl0_mmio.last_mut().unwrap() = rest;
-        (&vtl0_mmio, vpci)
+        let (rest, vpci) = chipset_mmio
+            .high
+            .split_at_offset(chipset_mmio.high.len() - required_len);
+        chipset_mmio.high = rest;
+        vpci
     } else {
-        (&boot_info.vtl0_mmio, MemoryRange::EMPTY)
+        MemoryRange::EMPTY
     };
 
     let BuiltVtl0MemoryLayout {
@@ -1715,7 +1744,7 @@ async fn new_underhill_vm(
         vtl0_memory_layout: mem_layout,
         shared_pool,
         complete_memory_layout,
-    } = build_vtl0_memory_layout(vtl0_memory_map, vtl0_mmio, shared_pool_size)?;
+    } = build_vtl0_memory_layout(vtl0_memory_map, &chipset_mmio, shared_pool_size)?;
 
     // Determine if x2apic is supported so that the topology matches
     // reality.
@@ -2446,6 +2475,8 @@ async fn new_underhill_vm(
             let config = firmware_pcat::config::PcatBiosConfig {
                 processor_topology: processor_topology.clone(),
                 mem_layout: mem_layout.clone(),
+                chipset_low_mmio: chipset_mmio.low,
+                chipset_high_mmio: chipset_mmio.high,
                 srat: acpi_builder.build_srat(),
                 hibernation_enabled: dps.general.hibernation_enabled,
                 initial_generation_id,
@@ -3002,9 +3033,12 @@ async fn new_underhill_vm(
                 // By default on aarch64 send all MMIO accesses to the host.
                 None
             } else {
-                let mut untrusted_mmio_ranges: Vec<_> = mem_layout.mmio().to_vec();
+                let chipset_mmio_ranges = [chipset_mmio.low, chipset_mmio.high]
+                    .into_iter()
+                    .filter(|r| !r.is_empty());
+                let mut untrusted_mmio_ranges: Vec<_> = chipset_mmio_ranges.clone().collect();
                 if vtom > 0 {
-                    untrusted_mmio_ranges.extend(mem_layout.mmio().iter().map(|range| {
+                    untrusted_mmio_ranges.extend(chipset_mmio_ranges.map(|range| {
                         MemoryRange::new((range.start() + vtom)..(range.end() + vtom))
                     }));
                 }
@@ -3592,6 +3626,7 @@ async fn new_underhill_vm(
             load_kind,
             &dps,
             isolation.is_isolated(),
+            &chipset_mmio,
         )
         .instrument(tracing::info_span!("load_firmware", CVM_ALLOWED))
         .await?;
@@ -3871,6 +3906,7 @@ async fn load_firmware(
     load_kind: LoadKind,
     dps: &DevicePlatformSettings,
     isolated: bool,
+    chipset_mmio: &ChipsetMmioRanges,
 ) -> Result<(), anyhow::Error> {
     let cmdline_append = match cmdline_append {
         Some(cmdline) => CString::new(cmdline.as_bytes()).context("bad command line")?,
@@ -3891,19 +3927,19 @@ async fn load_firmware(
         loader_config,
         caps,
         isolated,
+        chipset_mmio,
     )
     .context("failed to load firmware")?;
 
     #[cfg(guest_arch = "x86_64")]
     let registers = {
         let crate::loader::VpContext::Vbs(mut registers) = vtl0_vp_context;
-        registers.extend(
-            loader::common::compute_variable_mtrrs(
-                mem_layout,
-                partition.caps().physical_address_width,
-            )
-            .context("Failed to compute variable mtrrs")?,
-        );
+        registers.extend(loader::common::compute_variable_mtrrs(
+            mem_layout,
+            partition.caps().physical_address_width,
+            chipset_mmio.low,
+            chipset_mmio.high,
+        ));
         registers
     };
     #[cfg(guest_arch = "aarch64")]

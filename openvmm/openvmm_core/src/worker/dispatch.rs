@@ -9,6 +9,7 @@ use crate::emuplat;
 use crate::partition::BindHvliteVp;
 use crate::partition::HvlitePartition;
 use crate::vmgs_non_volatile_store::HvLiteVmgsNonVolatileStore;
+use crate::worker::memory_layout::ChipsetMmioRanges;
 use crate::worker::memory_layout::MemoryLayoutInput;
 use crate::worker::memory_layout::ResolvedPcieRootComplexRanges;
 use crate::worker::memory_layout::resolve_memory_layout;
@@ -415,9 +416,8 @@ pub(crate) struct InitializedVm {
     mem_layout: MemoryLayout,
     resolved_pcie_root_complex_ranges: Vec<ResolvedPcieRootComplexRanges>,
     virtio_mmio_region: MemoryRange,
-    chipset_low_mmio: MemoryRange,
-    chipset_high_mmio: MemoryRange,
-    vtl2_chipset_mmio: MemoryRange,
+    chipset_mmio: ChipsetMmioRanges,
+    vtl2_framebuffer_gpa_base: Option<u64>,
     #[cfg(guest_arch = "aarch64")]
     resolved_smmu_resources: Vec<smmu_wiring::ResolvedSmmuResources>,
     processor_topology: ProcessorTopology,
@@ -720,12 +720,8 @@ struct LoadedVmInner {
     virtio_mmio_region: MemoryRange,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_irq: u32,
-    /// Chipset low MMIO range for VMOD/PCI0 _CRS.
-    chipset_low_mmio: MemoryRange,
-    /// Chipset high MMIO range for VMOD/PCI0 _CRS.
-    chipset_high_mmio: MemoryRange,
-    /// VTL2-private chipset MMIO range for VTL2 VMBus.
-    vtl2_chipset_mmio: MemoryRange,
+    /// Resolved chipset MMIO ranges.
+    chipset_mmio: ChipsetMmioRanges,
     /// ((device, function), interrupt)
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     pci_legacy_interrupts: Vec<((u8, Option<u8>), u32)>,
@@ -1022,6 +1018,14 @@ impl InitializedVm {
                 0
             };
 
+        let vtl2_framebuffer_size = if cfg.vtl2_gfx {
+            cfg.framebuffer
+                .as_ref()
+                .context("no framebuffer configured")?
+                .len() as u64
+        } else {
+            0
+        };
         let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
             mem_size: cfg.memory.mem_size,
             numa_mem_sizes: cfg.memory.numa_mem_sizes.as_deref(),
@@ -1031,15 +1035,14 @@ impl InitializedVm {
             smmu_count,
             vtl2_layout,
             ram_start_address,
+            vtl2_framebuffer_size,
             physical_address_size,
         })
         .context("invalid memory configuration")?;
         let mem_layout = resolved_layout.memory_layout;
         let resolved_pcie_root_complex_ranges = resolved_layout.pcie_root_complex_ranges;
         let virtio_mmio_region = resolved_layout.virtio_mmio_region;
-        let chipset_low_mmio = resolved_layout.chipset_low_mmio;
-        let chipset_high_mmio = resolved_layout.chipset_high_mmio;
-        let vtl2_chipset_mmio = resolved_layout.vtl2_chipset_mmio;
+        let chipset_mmio = resolved_layout.chipset_mmio;
 
         // Combine SMMU MMIO ranges with SPI layout.
         #[cfg(guest_arch = "aarch64")]
@@ -1176,9 +1179,8 @@ impl InitializedVm {
             mem_layout,
             resolved_pcie_root_complex_ranges,
             virtio_mmio_region,
-            chipset_low_mmio,
-            chipset_high_mmio,
-            vtl2_chipset_mmio,
+            chipset_mmio,
+            vtl2_framebuffer_gpa_base: resolved_layout.vtl2_framebuffer_gpa_base,
             #[cfg(guest_arch = "aarch64")]
             resolved_smmu_resources,
             processor_topology,
@@ -1209,9 +1211,8 @@ impl InitializedVm {
             mem_layout,
             resolved_pcie_root_complex_ranges,
             virtio_mmio_region,
-            chipset_low_mmio,
-            chipset_high_mmio,
-            vtl2_chipset_mmio,
+            chipset_mmio,
+            vtl2_framebuffer_gpa_base,
             #[cfg(guest_arch = "aarch64")]
             resolved_smmu_resources,
             processor_topology,
@@ -1424,6 +1425,8 @@ impl InitializedVm {
                         firmware_pcat::config::PcatBiosConfig {
                             processor_topology: processor_topology.clone(),
                             mem_layout: mem_layout.clone(),
+                            chipset_low_mmio: chipset_mmio.low,
+                            chipset_high_mmio: chipset_mmio.high,
                             srat,
 
                             hibernation_enabled: false,
@@ -1472,25 +1475,9 @@ impl InitializedVm {
             _ => {}
         };
 
-        let vtl2_framebuffer_gpa_base = if cfg.vtl2_gfx {
-            // calculate a safe place to put the framebuffer mapping in GPA space
-            // this places it after the end of ram at the first place it won't overlap with MMIO
-            let len = cfg
-                .framebuffer
-                .as_ref()
-                .context("no framebuffer configured")?
-                .len();
-            let mut gpa = mem_layout.end_of_ram();
-            for mmio in mem_layout.mmio() {
-                if gpa < mmio.end() && mmio.start() < gpa + len as u64 {
-                    gpa = mmio.end();
-                }
-            }
+        if let Some(gpa) = vtl2_framebuffer_gpa_base {
             tracing::debug!("Vtl2 framebuffer gpa base: {:#x}", gpa);
-            Some(gpa)
-        } else {
-            None
-        };
+        }
 
         let state_units = StateUnits::new();
 
@@ -2703,9 +2690,7 @@ impl InitializedVm {
                 load_mode: cfg.load_mode,
                 virtio_mmio_region,
                 virtio_mmio_irq,
-                chipset_low_mmio,
-                chipset_high_mmio,
-                vtl2_chipset_mmio,
+                chipset_mmio,
                 pci_legacy_interrupts,
                 igvm_file,
                 next_igvm_file: None,
@@ -2804,20 +2789,17 @@ impl LoadedVmInner {
                     cmdline,
                     mem_layout: &self.mem_layout,
                 };
-                if custom_dsdt.is_none() && self.mem_layout.mmio().len() < 2 {
-                    anyhow::bail!("at least two mmio regions are required");
-                }
                 let regs =
                     super::vm_loaders::linux::load_linux_x86(&kernel_config, &self.gm, |gpa| {
                         let tables = if let Some(dsdt) = custom_dsdt {
                             acpi_builder.build_acpi_tables_custom_dsdt(gpa, dsdt)
                         } else {
-                            acpi_builder.build_acpi_tables(gpa, |mem_layout, dsdt| {
+                            acpi_builder.build_acpi_tables(gpa, |dsdt| {
                                 add_devices_to_dsdt_x64(
-                                    mem_layout,
                                     dsdt,
                                     &self.chipset_cfg,
                                     enable_serial,
+                                    &self.chipset_mmio,
                                     self.virtio_mmio_region,
                                     self.virtio_mmio_irq,
                                     &self.pci_legacy_interrupts,
@@ -2851,11 +2833,10 @@ impl LoadedVmInner {
                     mem_layout: &self.mem_layout,
                 };
 
-                let with_hv = self.hypervisor_cfg.with_hv;
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
                     Some(|rsdp_gpa: u64| {
-                        acpi_builder.build_acpi_tables(rsdp_gpa, |mem_layout, dsdt| {
-                            add_devices_to_dsdt_arm64(mem_layout, dsdt, enable_serial, with_hv)
+                        acpi_builder.build_acpi_tables(rsdp_gpa, |dsdt| {
+                            add_devices_to_dsdt_arm64(dsdt, enable_serial, &self.chipset_mmio)
                         })
                     })
                 } else {
@@ -2869,6 +2850,7 @@ impl LoadedVmInner {
                     &self.processor_topology,
                     &self.pcie_host_bridges,
                     &self.smmu_configs,
+                    &self.chipset_mmio,
                     build_acpi,
                 )?;
 
@@ -2911,6 +2893,7 @@ impl LoadedVmInner {
                     &self.mem_layout,
                     &self.pcie_host_bridges,
                     load_settings,
+                    &self.chipset_mmio,
                     &madt,
                     &srat,
                     mcfg.as_deref(),
@@ -2955,9 +2938,7 @@ impl LoadedVmInner {
                     with_vmbus_redirect: self.vmbus_redirect,
                     com_serial,
                     entropy: Some(&entropy),
-                    chipset_low_mmio: self.chipset_low_mmio,
-                    chipset_high_mmio: self.chipset_high_mmio,
-                    vtl2_chipset_mmio: self.vtl2_chipset_mmio,
+                    chipset_mmio: self.chipset_mmio,
                 };
                 super::vm_loaders::igvm::load_igvm(params)?
             }
@@ -2971,13 +2952,12 @@ impl LoadedVmInner {
         // VTL2 will setup MTRRs for VTL0 if needed.
         #[cfg(guest_arch = "x86_64")]
         if self.hypervisor_cfg.with_vtl2.is_none() {
-            regs.extend(
-                loader::common::compute_variable_mtrrs(
-                    &self.mem_layout,
-                    self.partition.caps().physical_address_width,
-                )
-                .context("failed to compute variable mtrrs")?,
-            );
+            regs.extend(loader::common::compute_variable_mtrrs(
+                &self.mem_layout,
+                self.partition.caps().physical_address_width,
+                self.chipset_mmio.low,
+                self.chipset_mmio.high,
+            ));
         }
 
         // Only set initial page visibility on isolated partitions.
@@ -3574,10 +3554,10 @@ impl LoadedVm {
 
 #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn add_devices_to_dsdt_x64(
-    mem_layout: &MemoryLayout,
     dsdt: &mut dsdt::Dsdt,
     cfg: &BaseChipsetManifest,
     serial_uarts: bool,
+    chipset_mmio: &ChipsetMmioRanges,
     virtio_mmio_region: MemoryRange,
     virtio_mmio_irq: u32,
     pci_legacy_interrupts: &[((u8, Option<u8>), u32)], // ((device, function), interrupt)
@@ -3599,36 +3579,29 @@ fn add_devices_to_dsdt_x64(
         }
     }
 
-    assert!(
-        mem_layout.mmio().len() >= 2,
-        "the DSDT describes two MMIO regions"
-    );
-    let low_mmio_gap = mem_layout.mmio()[0];
-    let high_mmio_gap = mem_layout.mmio()[1];
-
     // Virtio-mmio devices are allocated as a contiguous region by the memory
     // layout resolver. Each 4 KiB slot is a separate device.
-    {
-        for i in 0..virtio_mmio_region.page_count_4k() {
-            let slot_base = virtio_mmio_region.start() + i * HV_PAGE_SIZE;
-            let mut device = dsdt::Device::new(format!("\\_SB.VI{i:02}").as_bytes());
-            device.add_object(&dsdt::NamedString::new(b"_HID", b"LNRO0005"));
-            device.add_object(&dsdt::NamedInteger::new(b"_UID", i));
-            let mut crs = dsdt::CurrentResourceSettings::new();
-            crs.add_resource(&dsdt::QwordMemory::new(slot_base, HV_PAGE_SIZE));
-            let mut intr = dsdt::Interrupt::new(virtio_mmio_irq);
-            intr.is_edge_triggered = false;
-            crs.add_resource(&intr);
-            device.add_object(&crs);
-            dsdt.add_object(&device);
-        }
+    for i in 0..virtio_mmio_region.page_count_4k() {
+        let slot_base = virtio_mmio_region.start() + i * HV_PAGE_SIZE;
+        let mut device = dsdt::Device::new(format!("\\_SB.VI{i:02}").as_bytes());
+        device.add_object(&dsdt::NamedString::new(b"_HID", b"LNRO0005"));
+        device.add_object(&dsdt::NamedInteger::new(b"_UID", i));
+        let mut crs = dsdt::CurrentResourceSettings::new();
+        crs.add_resource(&dsdt::QwordMemory::new(slot_base, HV_PAGE_SIZE));
+        let mut intr = dsdt::Interrupt::new(virtio_mmio_irq);
+        intr.is_edge_triggered = false;
+        crs.add_resource(&intr);
+        device.add_object(&crs);
+        dsdt.add_object(&device);
     }
 
+    // The chipset MMIO module or PCI bus describes the chipset low/high
+    // MMIO regions to the guest.
     if cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge {
         // TODO: actually plumb through legacy PCI interrupts
-        dsdt.add_pci(low_mmio_gap, high_mmio_gap, pci_legacy_interrupts);
+        dsdt.add_pci(chipset_mmio.low, chipset_mmio.high, pci_legacy_interrupts);
     } else {
-        dsdt.add_mmio_module(low_mmio_gap, high_mmio_gap);
+        dsdt.add_mmio_module(chipset_mmio.low, chipset_mmio.high);
     }
 
     dsdt.add_vmbus(
@@ -3640,10 +3613,9 @@ fn add_devices_to_dsdt_x64(
 
 #[cfg(guest_arch = "aarch64")]
 fn add_devices_to_dsdt_arm64(
-    mem_layout: &MemoryLayout,
     dsdt: &mut dsdt::Dsdt,
     enable_serial: bool,
-    with_hv: bool,
+    chipset_mmio: &ChipsetMmioRanges,
 ) {
     // VMBus GIC INTID (PPI 2 = INTID 16 + 2 = 18), matching the DT path.
     const VMBUS_INTID: u32 = openvmm_defs::config::DEFAULT_VMBUS_PPI;
@@ -3655,22 +3627,12 @@ fn add_devices_to_dsdt_arm64(
     const PL011_SERIAL0_GSIV: u32 = 33;
     const PL011_SERIAL1_GSIV: u32 = 34;
 
-    if with_hv {
-        // Internal invariant: the memory layout for ARM64 with HV always has
-        // at least two MMIO gaps (low + high). This is configured by OpenVMM
-        // itself, not by guest input.
-        assert!(
-            mem_layout.mmio().len() >= 2,
-            "need at least two MMIO regions"
-        );
-        let low_mmio_gap = mem_layout.mmio()[0];
-        let high_mmio_gap: MemoryRange = mem_layout.mmio()[1];
-        dsdt.add_mmio_module(low_mmio_gap, high_mmio_gap);
-        // VMBus on ARM64 ACPI needs a per-CPU interrupt (PPI) in _CRS.
-        // Always place under VMOD, not PCI0 — ARM64 doesn't use the x86
-        // PCI0 DSDT node.
-        dsdt.add_vmbus(false, Some(VMBUS_INTID));
-    }
+    dsdt.add_mmio_module(chipset_mmio.low, chipset_mmio.high);
+
+    // VMBus on ARM64 ACPI needs a per-CPU interrupt (PPI) in _CRS.
+    // Always place under VMOD, not PCI0 — ARM64 doesn't use the x86
+    // PCI0 DSDT node.
+    dsdt.add_vmbus(false, Some(VMBUS_INTID));
 
     if enable_serial {
         dsdt.add_sbsa_uart(

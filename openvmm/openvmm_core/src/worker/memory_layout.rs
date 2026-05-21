@@ -49,6 +49,20 @@ const PCIE_ECAM_BYTES_PER_BUS: u64 = 32 * 8 * 4096;
 /// value, independent of any individual root complex's configuration.
 const PCIE_ECAM_MIN_ADDRESS: u64 = 256 * 1024 * 1024;
 
+/// Resolved chipset MMIO ranges produced by the memory layout engine.
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct ChipsetMmioRanges {
+    /// Chipset low MMIO range (below 4 GB) for VMOD/PCI0 _CRS. Always at
+    /// least the architectural reserved zone (LAPIC, IOAPIC, TPM, ...).
+    pub low: MemoryRange,
+    /// Chipset high MMIO range (above RAM) for VMOD/PCI0 _CRS. `EMPTY` when
+    /// no chipset high MMIO is configured.
+    pub high: MemoryRange,
+    /// VTL2-private chipset MMIO range, reported to VTL2 VMBus via the device
+    /// tree. `EMPTY` when VTL2 is not configured or has no chipset MMIO.
+    pub vtl2: MemoryRange,
+}
+
 #[derive(Debug)]
 pub(super) struct ResolvedMemoryLayout {
     pub memory_layout: MemoryLayout,
@@ -57,15 +71,11 @@ pub(super) struct ResolvedMemoryLayout {
     /// 4 KiB, indexed from the start of the region. `EMPTY` when no
     /// virtio-mmio devices are configured.
     pub virtio_mmio_region: MemoryRange,
-    /// Chipset low MMIO range (below 4 GB) for VMOD/PCI0 _CRS. Always at
-    /// least the architectural reserved zone (LAPIC, IOAPIC, TPM, ...).
-    pub chipset_low_mmio: MemoryRange,
-    /// Chipset high MMIO range (above RAM) for VMOD/PCI0 _CRS. `EMPTY` when
-    /// no chipset high MMIO is configured.
-    pub chipset_high_mmio: MemoryRange,
-    /// VTL2-private chipset MMIO range, reported to VTL2 VMBus via the device
-    /// tree. `EMPTY` when VTL2 is not configured or has no chipset MMIO.
-    pub vtl2_chipset_mmio: MemoryRange,
+    /// Resolved chipset MMIO ranges.
+    pub chipset_mmio: ChipsetMmioRanges,
+    /// Resolved VTL2 framebuffer GPA base. `None` when VTL2 graphics is not
+    /// configured.
+    pub vtl2_framebuffer_gpa_base: Option<u64>,
     /// Resolved MMIO ranges for SMMUv3 instances, one per configured SMMU.
     /// Each range is `SMMU_SIZE` bytes. Empty when no SMMUs are configured.
     #[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
@@ -107,6 +117,10 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// This is used on aarch64 Linux direct boot to avoid the low GPA region
     /// that conflicts with iommufd IOVA reservations.
     pub ram_start_address: u64,
+    /// Size in bytes of the VTL2 framebuffer mapping. When non-zero, a
+    /// `PostMmio` allocation is created and the resolved GPA is returned in
+    /// `ResolvedMemoryLayout::vtl2_framebuffer_gpa_base`.
+    pub vtl2_framebuffer_size: u64,
     /// Host-supported physical address width used only after allocation. The
     /// allocator computes the smallest layout it can; host fit is validation.
     pub physical_address_size: u8,
@@ -345,6 +359,19 @@ pub(super) fn resolve_memory_layout(
         );
     }
 
+    // VTL2 framebuffer: a page-aligned PostMmio allocation so the GPA does
+    // not overlap RAM or any MMIO range.
+    let mut vtl2_framebuffer_range = MemoryRange::EMPTY;
+    if input.vtl2_framebuffer_size != 0 {
+        builder.request(
+            "vtl2-framebuffer",
+            &mut vtl2_framebuffer_range,
+            input.vtl2_framebuffer_size,
+            PAGE_SIZE,
+            Placement::PostMmio,
+        );
+    }
+
     let placed_ranges = builder
         .allocate()
         .context("allocating memory layout ranges")?;
@@ -448,9 +475,16 @@ pub(super) fn resolve_memory_layout(
         memory_layout,
         pcie_root_complex_ranges,
         virtio_mmio_region,
-        chipset_low_mmio,
-        chipset_high_mmio,
-        vtl2_chipset_mmio,
+        chipset_mmio: ChipsetMmioRanges {
+            low: chipset_low_mmio,
+            high: chipset_high_mmio,
+            vtl2: vtl2_chipset_mmio,
+        },
+        vtl2_framebuffer_gpa_base: if vtl2_framebuffer_range.is_empty() {
+            None
+        } else {
+            Some(vtl2_framebuffer_range.start())
+        },
         smmu_ranges,
     })
 }
@@ -555,6 +589,7 @@ mod tests {
             smmu_count: 0,
             vtl2_layout,
             ram_start_address: 0,
+            vtl2_framebuffer_size: 0,
             physical_address_size: 46,
         }
     }
@@ -632,8 +667,8 @@ mod tests {
     fn chipset_mmio_is_resolved() {
         let result = resolve_memory_layout(input(2 * GB, None, None)).unwrap();
 
-        let low = result.chipset_low_mmio;
-        let high = result.chipset_high_mmio;
+        let low = result.chipset_mmio.low;
+        let high = result.chipset_mmio.high;
         assert_eq!(low.len(), DEFAULT_CHIPSET_LOW_MMIO_SIZE as u64);
         assert_eq!(high.len(), DEFAULT_CHIPSET_HIGH_MMIO_SIZE);
         // Chipset low MMIO is pinned to end at 4 GiB and must fully contain
@@ -854,10 +889,10 @@ mod tests {
 
         let result = resolve_memory_layout(config).unwrap();
 
-        let vtl2_mmio = result.vtl2_chipset_mmio;
+        let vtl2_mmio = result.chipset_mmio.vtl2;
         assert_eq!(vtl2_mmio.len(), DEFAULT_VTL2_CHIPSET_MMIO_SIZE);
         // VTL2 chipset MMIO should be after all VTL0-visible ranges.
-        let chipset_high = result.chipset_high_mmio;
+        let chipset_high = result.chipset_mmio.high;
         assert!(
             vtl2_mmio.start() >= chipset_high.end(),
             "VTL2 chipset MMIO should be after VTL0 high MMIO"
@@ -887,10 +922,10 @@ mod tests {
 
         let result = resolve_memory_layout(config).unwrap();
 
-        let low = result.chipset_low_mmio;
+        let low = result.chipset_mmio.low;
         assert_eq!(low.end(), 4 * GB);
         assert!(low.contains(&ARCH_RESERVED));
-        assert!(result.chipset_high_mmio.is_empty());
+        assert!(result.chipset_mmio.high.is_empty());
         // The reported ranges must appear in MemoryLayout::mmio() preserving
         // the positional contract: [0] = low, [1] = high (EMPTY placeholder).
         assert_eq!(result.memory_layout.mmio(), &[low, MemoryRange::EMPTY]);
@@ -903,16 +938,16 @@ mod tests {
         let mut config = input(2 * GB, None, None);
         config.layout.chipset_high_mmio_size = 0;
         let result = resolve_memory_layout(config).unwrap();
-        assert!(!result.chipset_low_mmio.is_empty());
-        assert!(result.chipset_high_mmio.is_empty());
+        assert!(!result.chipset_mmio.low.is_empty());
+        assert!(result.chipset_mmio.high.is_empty());
 
         let mut config = input(2 * GB, None, None);
         config.layout.chipset_low_mmio_size = 0;
         let result = resolve_memory_layout(config).unwrap();
         // Low is always at least the arch reserved zone.
-        assert!(!result.chipset_low_mmio.is_empty());
+        assert!(!result.chipset_mmio.low.is_empty());
         // High is still configured in this case.
-        assert!(!result.chipset_high_mmio.is_empty());
+        assert!(!result.chipset_mmio.high.is_empty());
     }
 
     #[test]

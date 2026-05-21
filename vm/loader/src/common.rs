@@ -10,6 +10,7 @@ use crate::importer::SegmentRegister;
 use crate::importer::TableRegister;
 use crate::importer::X86Register;
 use hvdef::HV_PAGE_SIZE;
+use memory_range::MemoryRange;
 use std::io::Read;
 use std::io::Seek;
 use thiserror::Error;
@@ -99,23 +100,16 @@ pub fn import_default_gdt(
     Ok(())
 }
 
-/// Returned when the MMIO layout is not supported.
-#[derive(Debug, Error)]
-#[error("exactly two MMIO gaps are required")]
-pub struct UnsupportedMmio;
-
 /// Computes the x86 variable MTRRs that describe the given memory layout. This
 /// is intended to be used to setup MTRRs for booting a guest with two mmio
 /// gaps, such as booting Linux, UEFI, or PCAT.
-///
-/// N.B. Currently this panics if there are not exactly two MMIO ranges.
 pub fn compute_variable_mtrrs(
     memory: &MemoryLayout,
     physical_address_width: u8,
-) -> Result<Vec<X86Register>, UnsupportedMmio> {
+    chipset_low_mmio: MemoryRange,
+    chipset_high_mmio: MemoryRange,
+) -> Vec<X86Register> {
     const WRITEBACK: u64 = 0x6;
-
-    let &[mmio_gap_low, mmio_gap_high] = memory.mmio().try_into().map_err(|_| UnsupportedMmio)?;
 
     // Clamp the width to something reasonable.
     let gpa_space_size = physical_address_width.clamp(36, 52);
@@ -141,17 +135,19 @@ pub fn compute_variable_mtrrs(
         result.push(X86Register::MtrrPhysBase1(pcat_mtrr_size | WRITEBACK));
         result.push(X86Register::MtrrPhysMask1(mtrr_mask(
             gpa_space_size,
-            mmio_gap_low.start() - 1,
+            chipset_low_mmio.start() - 1,
         )));
     }
 
     // If there is more than ~3.8GB of memory, use MTRR 204 and MTRR Mask 205 to cover
     // the amount of memory above 4GB.
-    if memory.end_of_ram() > mmio_gap_low.end() {
-        result.push(X86Register::MtrrPhysBase2(mmio_gap_low.end() | WRITEBACK));
+    if memory.end_of_ram() > chipset_low_mmio.end() {
+        result.push(X86Register::MtrrPhysBase2(
+            chipset_low_mmio.end() | WRITEBACK,
+        ));
         result.push(X86Register::MtrrPhysMask2(mtrr_mask(
             gpa_space_size,
-            mmio_gap_high.start() - 1,
+            chipset_high_mmio.start() - 1,
         )));
     }
 
@@ -159,8 +155,10 @@ pub fn compute_variable_mtrrs(
     // MTRR 208 and MTRR Mask 209 depending on maximum address width. Both MTRR pairs are
     // used with the magic 8TB boundary to work around a bug in older Linux kernels
     // (e.g. RHEL 6.x, etc.)
-    if memory.end_of_ram() > mmio_gap_high.end() {
-        result.push(X86Register::MtrrPhysBase3(mmio_gap_high.end() | WRITEBACK));
+    if memory.end_of_ram() > chipset_high_mmio.end() {
+        result.push(X86Register::MtrrPhysBase3(
+            chipset_high_mmio.end() | WRITEBACK,
+        ));
         result.push(X86Register::MtrrPhysMask3(mtrr_mask(
             gpa_space_size,
             (1 << std::cmp::min(gpa_space_size, 43)) - 1,
@@ -174,7 +172,7 @@ pub fn compute_variable_mtrrs(
         }
     }
 
-    Ok(result)
+    result
 }
 
 fn mtrr_mask(gpa_space_size: u8, maximum_address: u64) -> u64 {
