@@ -9,7 +9,6 @@ cfg_if::cfg_if! {
         use chipset_device_resources::BSP_LINT_LINE_SET;
         use chipset_resources::pm::DEFAULT_ACPI_IRQ;
         use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
-        use virt::irqcon::MsiRequest;
         use vmm_core::acpi_builder::AcpiTablesBuilder;
     } else if #[cfg(guest_arch = "aarch64")] {
         pub use hvdef::HvArm64RegisterName as HvArchRegisterName;
@@ -26,7 +25,6 @@ use crate::dispatch::vtl2_settings_worker::wait_for_mana;
 use crate::emuplat::EmuplatServicing;
 use crate::emuplat::cmos_rtc_time_source::UnderhillCmosRtcTimeSourceResolver;
 use crate::emuplat::firmware::UnderhillLogger;
-use crate::emuplat::firmware::UnderhillVsmConfig;
 use crate::emuplat::framebuffer::FramebufferRemoteControl;
 use crate::emuplat::i440bx_host_pci_bridge::ArcMutexGetBackedAdjustGpaRange;
 use crate::emuplat::i440bx_host_pci_bridge::GetBackedAdjustGpaRange;
@@ -72,8 +70,8 @@ use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend_resources::BlockDeviceDiskHandle;
 use disk_blockdevice::resolver::BlockDeviceResolver;
-use firmware_uefi::LogLevel;
-use firmware_uefi::UefiCommandSet;
+use firmware_uefi_resources::LogLevel;
+use firmware_uefi_resources::UefiCommandSet;
 use futures::executor::block_on;
 use futures::future::join_all;
 use futures_concurrency::future::Race;
@@ -87,7 +85,6 @@ use guest_emulation_transport::api::platform_settings::DevicePlatformSettings;
 use guest_emulation_transport::api::platform_settings::General;
 use guestmem::GuestMemory;
 use guid::Guid;
-use hcl_compat_uefi_nvram_storage::HclCompatNvramQuirks;
 use hvdef::HvRegisterValue;
 use hvdef::Vtl;
 use hvdef::hypercall::HvGuestOsId;
@@ -2081,7 +2078,7 @@ async fn new_underhill_vm(
         let (vmgs_client, vmgs_handle) = spawn_vmgs_broker(get_spawner, vmgs);
         resolver.add_resolver(vmgs_client.clone());
         (
-            Some(Box::new(vmgs_client.clone()) as Box<dyn VmgsBrokerNonVolatileStore>),
+            Some(vmgs_client.clone()),
             Some((vmgs_client, meta, vmgs_handle)),
         )
     } else {
@@ -2093,7 +2090,7 @@ async fn new_underhill_vm(
         chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
             OpenHclRemoteDynamicResolvers {
                 get: get_client.clone(),
-                vmgs: vmgs.as_ref().map(|(client, _, _)| client.clone()),
+                vmgs: vmgs_client.clone(),
             },
         ),
     );
@@ -2402,6 +2399,117 @@ async fn new_underhill_vm(
         );
     }
 
+    if matches!(firmware_type, FirmwareType::Uefi) {
+        use crate::emuplat::uefi::*;
+        use firmware_uefi_custom_vars::CustomVars;
+        use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
+
+        // map the GET's template enum onto the hardcoded secureboot template type
+        let base_vars = match dps.general.secure_boot_template {
+            SecureBootTemplateType::None => CustomVars::default(),
+            SecureBootTemplateType::MicrosoftWindows => {
+                if cfg!(guest_arch = "x86_64") {
+                    hyperv_secure_boot_templates::x64::microsoft_windows()
+                } else if cfg!(guest_arch = "aarch64") {
+                    hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                } else {
+                    anyhow::bail!("no secure boot template for current guest_arch")
+                }
+            }
+            SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
+                if cfg!(guest_arch = "x86_64") {
+                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
+                } else if cfg!(guest_arch = "aarch64") {
+                    hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
+                } else {
+                    anyhow::bail!("no secure boot template for current guest_arch")
+                }
+            }
+        };
+
+        // check if vmgs includes custom UEFI JSON
+        let custom_uefi_json_data = if let Some(vmgs_client) = vmgs_client.as_ref() {
+            vmgs_client
+                .as_non_volatile_store(vmgs::FileId::CUSTOM_UEFI, false)
+                .context("failed to instantiate custom UEFI JSON store")?
+                .restore()
+                .await
+                .context("failed to get custom UEFI JSON data")?
+        } else {
+            None
+        };
+
+        // obtain the final custom uefi vars by applying the delta onto
+        // the base vars
+        let custom_uefi_vars = match custom_uefi_json_data {
+            Some(data) => {
+                let res = (|| -> Result<CustomVars, anyhow::Error> {
+                    let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
+                    Ok(base_vars.apply_delta(delta)?)
+                })();
+
+                match res {
+                    Ok(vars) => vars,
+                    Err(e) => {
+                        tracing::error!(CVM_ALLOWED, "Failed to load custom UEFI vars");
+                        get_client
+                            .event_log_fatal(EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED)
+                            .await;
+                        return Err(e).context("failed to load custom UEFI variables");
+                    }
+                }
+            }
+            None => base_vars,
+        };
+
+        let config = firmware_uefi_resources::UefiConfig {
+            custom_uefi_vars,
+            secure_boot: dps.general.secure_boot_enabled,
+            initial_generation_id,
+            use_mmio: cfg!(not(guest_arch = "x86_64")),
+            command_set: if cfg!(guest_arch = "x86_64") {
+                UefiCommandSet::X64
+            } else {
+                UefiCommandSet::Aarch64
+            },
+            diagnostics_log_level: {
+                use get_protocol::dps_json::EfiDiagnosticsLogLevelType as LogLevelType;
+                let level = dps.general.efi_diagnostics_log_level.0;
+                match level {
+                    x if x == LogLevelType::DEFAULT.0 => LogLevel::make_default(),
+                    x if x == LogLevelType::INFO.0 => LogLevel::make_info(),
+                    x if x == LogLevelType::FULL.0 => LogLevel::make_full(),
+                    _ => LogLevel::make_default(),
+                }
+            },
+        };
+
+        // Register the platform resolvers used by the resource-model UEFI
+        // device.
+        resolver.add_resolver(UnderhillUefiLoggerResolver::new(get_client.clone()));
+        resolver.add_resolver(UnderhillUefiNvramStorageResolver::new(vmgs_client.clone()));
+        resolver.add_async_resolver(UnderhillUefiWatchdogPlatformResolver::new(
+            get_client.clone(),
+            partition.clone(),
+            halt_vps.clone(),
+        ));
+        resolver.add_resolver(UnderhillUefiVsmConfigResolver::new(Arc::downgrade(
+            &partition,
+        )));
+
+        let generation_id_recv = get_client
+            .take_generation_id_recv()
+            .await
+            .expect("first time taking chan");
+
+        chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest {
+            config,
+            generation_id_recv,
+            vsm_config: true,
+            time_source: PlatformResource.into_resource(),
+        });
+    }
+
     let vm_manifest_builder::VmChipsetResult {
         chipset,
         mut chipset_devices,
@@ -2416,7 +2524,6 @@ async fn new_underhill_vm(
     #[cfg(not(guest_arch = "x86_64"))]
     let deps_hyperv_firmware_pcat = None;
 
-    let mut deps_hyperv_firmware_uefi = None;
     match firmware_type {
         #[cfg(not(guest_arch = "x86_64"))]
         FirmwareType::Pcat => {
@@ -2498,151 +2605,9 @@ async fn new_underhill_vm(
                 replay_mtrrs: Box::new(move || halt_vps.replay_mtrrs()),
             })
         }
-        FirmwareType::Uefi => {
-            use firmware_uefi_custom_vars::CustomVars;
-            use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
-            use hcl_compat_uefi_nvram_storage::HclCompatNvram;
-            use vmm_core::emuplat::hcl_compat_uefi_nvram_storage::VmgsStorageBackendAdapter;
-
-            // map the GET's template enum onto the hardcoded secureboot template type
-            let base_vars = match dps.general.secure_boot_template {
-                SecureBootTemplateType::None => CustomVars::default(),
-                SecureBootTemplateType::MicrosoftWindows => {
-                    if cfg!(guest_arch = "x86_64") {
-                        hyperv_secure_boot_templates::x64::microsoft_windows()
-                    } else if cfg!(guest_arch = "aarch64") {
-                        hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                    } else {
-                        anyhow::bail!("no secure boot template for current guest_arch")
-                    }
-                }
-                SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
-                    if cfg!(guest_arch = "x86_64") {
-                        hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
-                    } else if cfg!(guest_arch = "aarch64") {
-                        hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
-                    } else {
-                        anyhow::bail!("no secure boot template for current guest_arch")
-                    }
-                }
-            };
-
-            // check if vmgs includes custom UEFI JSON
-            let custom_uefi_json_data = if let Some(vmgs_client) = vmgs_client.as_ref() {
-                vmgs_client
-                    .as_non_volatile_store(vmgs::FileId::CUSTOM_UEFI, false)
-                    .context("failed to instantiate custom UEFI JSON store")?
-                    .restore()
-                    .await
-                    .context("failed to get custom UEFI JSON data")?
-            } else {
-                None
-            };
-
-            // obtain the final custom uefi vars by applying the delta onto
-            // the base vars
-            let custom_uefi_vars = match custom_uefi_json_data {
-                Some(data) => {
-                    let res = (|| -> Result<CustomVars, anyhow::Error> {
-                        let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
-                        Ok(base_vars.apply_delta(delta)?)
-                    })();
-
-                    match res {
-                        Ok(vars) => vars,
-                        Err(e) => {
-                            tracing::error!(CVM_ALLOWED, "Failed to load custom UEFI vars");
-                            get_client
-                                .event_log_fatal(EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED)
-                                .await;
-                            return Err(e).context("failed to load custom UEFI variables");
-                        }
-                    }
-                }
-                None => base_vars,
-            };
-
-            let config = firmware_uefi::UefiConfig {
-                custom_uefi_vars,
-                secure_boot: dps.general.secure_boot_enabled,
-                initial_generation_id,
-                use_mmio: cfg!(not(guest_arch = "x86_64")),
-                command_set: if cfg!(guest_arch = "x86_64") {
-                    UefiCommandSet::X64
-                } else {
-                    UefiCommandSet::Aarch64
-                },
-                diagnostics_log_level: {
-                    use get_protocol::dps_json::EfiDiagnosticsLogLevelType as LogLevelType;
-                    let level = dps.general.efi_diagnostics_log_level.0;
-                    match level {
-                        x if x == LogLevelType::DEFAULT.0 => LogLevel::make_default(),
-                        x if x == LogLevelType::INFO.0 => LogLevel::make_info(),
-                        x if x == LogLevelType::FULL.0 => LogLevel::make_full(),
-                        _ => LogLevel::make_default(),
-                    }
-                },
-            };
-
-            let (watchdog_send, watchdog_recv) = mesh::channel();
-            deps_hyperv_firmware_uefi = Some(dev::HyperVFirmwareUefi {
-                config,
-                logger: Box::new(UnderhillLogger {
-                    get: get_client.clone(),
-                }),
-                nvram_storage: if let Some(vmgs_client) = vmgs_client.as_ref() {
-                    Box::new(HclCompatNvram::new(
-                        VmgsStorageBackendAdapter(
-                            vmgs_client
-                                .as_non_volatile_store(vmgs::FileId::BIOS_NVRAM, true)
-                                .context("failed to instantiate UEFI NVRAM store")?,
-                        ),
-                        Some(HclCompatNvramQuirks {
-                            skip_corrupt_vars_with_missing_null_term: true,
-                        }),
-                    ))
-                } else {
-                    Box::new(uefi_nvram_storage::in_memory::InMemoryNvram::new())
-                },
-                generation_id_recv: get_client
-                    .take_generation_id_recv()
-                    .await
-                    .expect("first time taking chan"),
-                watchdog_platform: {
-                    // UEFI watchdog doesn't persist to VMGS at this time
-                    let store = EphemeralNonVolatileStore::new_boxed();
-
-                    // Create base watchdog platform
-                    let mut underhill_watchdog_platform =
-                        UnderhillWatchdogPlatform::new(store, get_client.clone()).await?;
-
-                    // Inject NMI on watchdog timeout
-                    #[cfg(guest_arch = "x86_64")]
-                    let watchdog_callback = WatchdogTimeoutNmi {
-                        partition: partition.clone(),
-                        watchdog_send: Some(watchdog_send),
-                    };
-
-                    // ARM64 does not have NMI support yet, so halt instead
-                    #[cfg(guest_arch = "aarch64")]
-                    let watchdog_callback = WatchdogTimeoutReset {
-                        halt_vps: halt_vps.clone(),
-                        watchdog_send: Some(watchdog_send),
-                    };
-
-                    // Add the callback
-                    underhill_watchdog_platform.add_callback(Box::new(watchdog_callback));
-
-                    Box::new(underhill_watchdog_platform)
-                },
-                watchdog_recv,
-                vsm_config: Some(Box::new(UnderhillVsmConfig {
-                    partition: Arc::downgrade(&partition),
-                })),
-                time_source: Box::new(rtc_time_source.new_linked_clock()),
-            })
+        FirmwareType::Uefi | FirmwareType::None => {
+            // UEFI is configured via `chipset.with_uefi(...)` above
         }
-        FirmwareType::None => {}
     };
 
     if dps.general.processor_idle_enabled {
@@ -2956,7 +2921,6 @@ async fn new_underhill_vm(
     let devices = BaseChipsetDevices {
         deps_generic_cmos_rtc,
         deps_generic_psp,
-        deps_hyperv_firmware_uefi,
         deps_generic_isa_dma,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
@@ -3954,30 +3918,6 @@ impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
 impl ChipsetDevice for FallbackMmioDevice {
     fn supports_mmio(&mut self) -> Option<&mut dyn chipset_device::mmio::MmioIntercept> {
         Some(self)
-    }
-}
-
-#[cfg(guest_arch = "x86_64")]
-struct WatchdogTimeoutNmi {
-    partition: Arc<UhPartition>,
-    watchdog_send: Option<mesh::Sender<()>>,
-}
-
-#[cfg(guest_arch = "x86_64")]
-#[async_trait::async_trait]
-impl WatchdogCallback for WatchdogTimeoutNmi {
-    async fn on_timeout(&mut self) {
-        crate::livedump::livedump().await;
-
-        // Unlike Hyper-V, we only send the NMI to the BSP.
-        self.partition.request_msi(
-            Vtl::Vtl0,
-            MsiRequest::new_x86(virt::irqcon::DeliveryMode::NMI, 0, false, 0, false),
-        );
-
-        if let Some(watchdog_send) = &self.watchdog_send {
-            watchdog_send.send(());
-        }
     }
 }
 

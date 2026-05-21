@@ -35,6 +35,8 @@ use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
 use chipset_resources::pm::HyperVPowerManagementDeviceHandle;
 use chipset_resources::pm::PIIX4_PM_BDF;
 use chipset_resources::pm::Piix4PowerManagementDeviceHandle;
+use firmware_uefi_resources::UefiConfig;
+use firmware_uefi_resources::UefiDeviceHandle;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
@@ -67,7 +69,20 @@ pub struct VmManifestBuilder {
     guest_watchdog: bool,
     psp: bool,
     platform_pm_timer_assist: bool,
+    uefi: Option<UefiManifest>,
     debugcon: Option<(Resource<SerialBackendHandle>, u16)>,
+}
+
+/// Configuration for the Hyper-V UEFI helper device.
+pub struct UefiManifest {
+    /// Static configuration for the UEFI device.
+    pub config: UefiConfig,
+    /// Channel receiver for guest generation ID updates.
+    pub generation_id_recv: mesh::Receiver<[u8; 16]>,
+    /// Whether to wire up the platform VSM configuration resource.
+    pub vsm_config: bool,
+    /// Time source resource for UEFI time services.
+    pub time_source: Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
 }
 
 /// The VM's base chipset type, which determines the set of core devices (such
@@ -144,6 +159,7 @@ impl VmManifestBuilder {
             guest_watchdog: false,
             psp: false,
             platform_pm_timer_assist: false,
+            uefi: None,
             debugcon: None,
         }
     }
@@ -242,6 +258,21 @@ impl VmManifestBuilder {
         self
     }
 
+    /// Enable the Hyper-V UEFI helper device.
+    ///
+    /// All platform-specific dependencies (logger, NVRAM storage, watchdog
+    /// platform, optional VSM config, time source) are resolved via
+    /// [`vm_resource::PlatformResource`] resolvers that the caller must
+    /// register with the resource resolver.
+    ///
+    /// Only supported by [`BaseChipsetType::HypervGen2Uefi`]. Panics
+    /// otherwise.
+    pub fn with_uefi(mut self, uefi: UefiManifest) -> Self {
+        assert!(matches!(self.ty, BaseChipsetType::HypervGen2Uefi));
+        self.uefi = Some(uefi);
+        self
+    }
+
     /// Build the VM manifest.
     pub fn build(self) -> Result<VmChipsetResult, Error> {
         let mut result = VmChipsetResult {
@@ -285,7 +316,6 @@ impl VmManifestBuilder {
                     with_generic_pci_bus: false,
                     with_generic_psp: false,
                     with_hyperv_firmware_pcat: true,
-                    with_hyperv_firmware_uefi: false,
                     with_hyperv_framebuffer: !self.proxy_vga,
                     with_hyperv_ide: true,
                     with_hyperv_vga: !self.proxy_vga,
@@ -314,7 +344,6 @@ impl VmManifestBuilder {
                     with_generic_pci_bus: false,
                     with_generic_psp: self.psp,
                     with_hyperv_firmware_pcat: false,
-                    with_hyperv_firmware_uefi: false,
                     with_hyperv_framebuffer: self.framebuffer,
                     with_hyperv_ide: false,
                     with_hyperv_vga: false,
@@ -358,7 +387,6 @@ impl VmManifestBuilder {
                     with_generic_pci_bus: false,
                     with_generic_psp: self.psp,
                     with_hyperv_firmware_pcat: false,
-                    with_hyperv_firmware_uefi: matches!(self.ty, BaseChipsetType::HypervGen2Uefi),
                     with_hyperv_framebuffer: self.framebuffer,
                     with_hyperv_ide: false,
                     with_hyperv_vga: false,
@@ -388,6 +416,12 @@ impl VmManifestBuilder {
                 }
                 if self.guest_watchdog {
                     result.attach_guest_watchdog();
+                }
+                if matches!(self.ty, BaseChipsetType::HypervGen2Uefi) {
+                    result.attach_uefi(
+                        self.uefi
+                            .expect("must have called .with_uefi to enable uefi"),
+                    );
                 }
             }
             BaseChipsetType::HclHost => {
@@ -562,6 +596,29 @@ impl VmChipsetResult {
             resource: Piix4PowerManagementDeviceHandle { pm_timer_assist }.into_resource(),
             pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
             bdf: PIIX4_PM_BDF,
+        });
+        self
+    }
+
+    fn attach_uefi(&mut self, uefi: UefiManifest) -> &mut Self {
+        let UefiManifest {
+            config,
+            generation_id_recv,
+            vsm_config,
+            time_source,
+        } = uefi;
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "uefi".to_owned(),
+            resource: UefiDeviceHandle {
+                config,
+                generation_id_recv,
+                logger: PlatformResource.into_resource(),
+                nvram_storage: PlatformResource.into_resource(),
+                watchdog_platform: PlatformResource.into_resource(),
+                vsm_config: vsm_config.then(|| PlatformResource.into_resource()),
+                time_source,
+            }
+            .into_resource(),
         });
         self
     }

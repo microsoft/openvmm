@@ -18,8 +18,7 @@ use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
-use firmware_uefi::LogLevel;
-use firmware_uefi::UefiCommandSet;
+use firmware_uefi_resources::LogLevel;
 use floppy_resources::FloppyDiskConfig;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -35,7 +34,6 @@ use ide_resources::IdeDeviceConfig;
 use igvm::IgvmFile;
 use input_core::InputData;
 use input_core::MultiplexedInputHandle;
-use local_clock::LocalClockDelta;
 use membacking::GuestMemoryBuilder;
 use membacking::GuestMemoryManager;
 use membacking::SharedMemoryBacking;
@@ -1207,80 +1205,21 @@ impl InitializedVm {
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
-        let mut deps_hyperv_firmware_uefi = None;
         match &cfg.load_mode {
             LoadMode::Uefi { .. } => {
-                let (watchdog_send, watchdog_recv) = mesh::channel();
-                deps_hyperv_firmware_uefi = Some(dev::HyperVFirmwareUefi {
-                    config: firmware_uefi::UefiConfig {
-                        custom_uefi_vars: cfg.custom_uefi_vars,
-                        secure_boot: cfg.secure_boot_enabled,
-                        initial_generation_id: {
-                            let mut generation_id = [0; 16];
-                            getrandom::fill(&mut generation_id).expect("rng failure");
-                            generation_id
-                        },
-                        use_mmio: cfg!(not(guest_arch = "x86_64")),
-                        command_set: if cfg!(guest_arch = "x86_64") {
-                            UefiCommandSet::X64
-                        } else {
-                            UefiCommandSet::Aarch64
-                        },
-                        diagnostics_log_level: cfg.efi_diagnostics_log_level,
-                    },
-                    logger,
-                    nvram_storage: {
-                        use hcl_compat_uefi_nvram_storage::HclCompatNvram;
-                        use uefi_nvram_storage::in_memory::InMemoryNvram;
-                        use vmm_core::emuplat::hcl_compat_uefi_nvram_storage::VmgsStorageBackendAdapter;
-
-                        match vmgs_client {
-                            Some(vmgs) => Box::new(HclCompatNvram::new(
-                                VmgsStorageBackendAdapter(
-                                    vmgs.as_non_volatile_store(vmgs::FileId::BIOS_NVRAM, true)
-                                        .context("failed to instantiate UEFI NVRAM store")?,
-                                ),
-                                None,
-                            )),
-                            None => Box::new(InMemoryNvram::new()),
-                        }
-                    },
-                    generation_id_recv,
-                    watchdog_platform: {
-                        use vmcore::non_volatile_store::EphemeralNonVolatileStore;
-
-                        // UEFI watchdog doesn't persist to VMGS at this time
-                        let store = EphemeralNonVolatileStore::new_boxed();
-
-                        // Create the base watchdog platform
-                        let mut base_watchdog_platform = BaseWatchdogPlatform::new(store).await?;
-
-                        // Inject NMI on watchdog timeout
-                        #[cfg(guest_arch = "x86_64")]
-                        let watchdog_callback = WatchdogTimeoutNmi {
-                            partition: partition.clone(),
-                            watchdog_send: Some(watchdog_send),
-                        };
-
-                        // ARM64 does not have NMI support yet, so halt instead
-                        #[cfg(guest_arch = "aarch64")]
-                        let watchdog_callback = WatchdogTimeoutReset {
-                            halt_vps: halt_vps.clone(),
-                            watchdog_send: Some(watchdog_send),
-                        };
-
-                        // Add callbacks
-                        base_watchdog_platform.add_callback(Box::new(watchdog_callback));
-
-                        Box::new(base_watchdog_platform)
-                    },
-                    watchdog_recv,
-                    vsm_config: None,
-                    // TODO: persist SystemTimeClock time across reboots.
-                    time_source: Box::new(local_clock::SystemTimeClock::new(
-                        LocalClockDelta::from_millis(cfg.rtc_delta_milliseconds),
-                    )),
-                })
+                use emuplat::uefi::*;
+                // Register the platform-specific resolvers used by the UEFI
+                // device.
+                resolver.add_resolver(emuplat::firmware::MeshLoggerResolver::new(
+                    cfg.firmware_event_send.clone(),
+                ));
+                resolver.add_resolver(VmgsUefiNvramStorageResolver::new(
+                    vmgs_client_inspect_handle.clone(),
+                ));
+                resolver.add_async_resolver(OpenvmmUefiWatchdogPlatformResolver::new(
+                    partition.clone(),
+                    halt_vps.clone(),
+                ));
             }
             #[cfg(guest_arch = "x86_64")]
             LoadMode::Pcat {
@@ -1662,7 +1601,6 @@ impl InitializedVm {
                 deps_generic_pci_bus,
                 deps_generic_psp,
                 deps_hyperv_firmware_pcat,
-                deps_hyperv_firmware_uefi,
                 deps_hyperv_framebuffer,
                 deps_hyperv_ide,
                 deps_hyperv_vga,
@@ -3549,28 +3487,6 @@ fn add_devices_to_dsdt_arm64(
             PL011_SERIAL_SIZE,
             PL011_SERIAL1_GSIV,
         );
-    }
-}
-
-#[cfg(guest_arch = "x86_64")]
-struct WatchdogTimeoutNmi {
-    partition: Arc<dyn HvlitePartition>,
-    watchdog_send: Option<mesh::Sender<()>>,
-}
-
-#[cfg(guest_arch = "x86_64")]
-#[async_trait::async_trait]
-impl WatchdogCallback for WatchdogTimeoutNmi {
-    async fn on_timeout(&mut self) {
-        // Unlike Hyper-V, we only send the NMI to the BSP.
-        self.partition.request_msi(
-            Vtl::Vtl0,
-            virt::irqcon::MsiRequest::new_x86(virt::irqcon::DeliveryMode::NMI, 0, false, 0, false),
-        );
-
-        if let Some(watchdog_send) = &self.watchdog_send {
-            watchdog_send.send(());
-        }
     }
 }
 
