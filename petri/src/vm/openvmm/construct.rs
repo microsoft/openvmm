@@ -349,6 +349,60 @@ impl PetriVmConfigOpenVmm {
         let mut vsock_listener = Some(vsock_listener);
         let vsock_path_string = vsock_path.to_string_lossy();
 
+        // Configure the UEFI helper device on the chipset for Firmware::Uefi.
+        // OpenhclUefi uses BaseChipsetType::HclHost, so it does not need this.
+        if matches!(firmware, Firmware::Uefi { .. }) {
+            let uefi_cfg = firmware.uefi_config();
+            let custom_uefi_vars =
+                uefi_cfg.map_or_else(Default::default, |c| match (arch, c.secure_boot_template) {
+                    (MachineArch::X86_64, Some(SecureBootTemplate::MicrosoftWindows)) => {
+                        hyperv_secure_boot_templates::x64::microsoft_windows()
+                    }
+                    (
+                        MachineArch::X86_64,
+                        Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
+                    ) => hyperv_secure_boot_templates::x64::microsoft_uefi_ca(),
+                    (MachineArch::Aarch64, Some(SecureBootTemplate::MicrosoftWindows)) => {
+                        hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                    }
+                    (
+                        MachineArch::Aarch64,
+                        Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
+                    ) => hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca(),
+                    (_, None) => Default::default(),
+                });
+            let secure_boot = uefi_cfg.is_some_and(|c| c.secure_boot_enabled);
+            let log_level = match uefi_cfg
+                .map(|c| c.efi_diagnostics_log_level)
+                .unwrap_or_default()
+            {
+                EfiDiagnosticsLogLevel::Default => {
+                    firmware_uefi_resources::LogLevel::make_default()
+                }
+                EfiDiagnosticsLogLevel::Info => firmware_uefi_resources::LogLevel::make_info(),
+                EfiDiagnosticsLogLevel::Full => firmware_uefi_resources::LogLevel::make_full(),
+            };
+            chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest {
+                config: firmware_uefi_resources::UefiConfig {
+                    custom_uefi_vars,
+                    secure_boot,
+                    initial_generation_id: [0; 16],
+                    use_mmio: !matches!(arch, MachineArch::X86_64),
+                    command_set: match arch {
+                        MachineArch::X86_64 => firmware_uefi_resources::UefiCommandSet::X64,
+                        MachineArch::Aarch64 => firmware_uefi_resources::UefiCommandSet::Aarch64,
+                    },
+                    diagnostics_log_level: log_level,
+                },
+                generation_id_recv: mesh::channel().1,
+                vsm_config: false,
+                time_source: chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle {
+                    delta_milliseconds: 0,
+                }
+                .into_resource(),
+            });
+        }
+
         let layout_config = chipset.layout_config();
         let chipset = chipset
             .build()

@@ -6083,6 +6083,7 @@ dependencies = [
  "disk_vhd1",
  "disk_vhdmp",
  "fatfs",
+ "firmware_uefi_resources",
  "flate2",
  "framebuffer",
  "fs-err",
