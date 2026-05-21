@@ -68,6 +68,7 @@ struct RamBacking {
     /// This backing uses private anonymous memory.
     private_memory: bool,
     /// THP is enabled for this backing.
+    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
     transparent_hugepages: bool,
 }
 
