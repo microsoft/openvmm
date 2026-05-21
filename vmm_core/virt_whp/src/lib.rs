@@ -1688,6 +1688,17 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
     fn scrub(&mut self, vtl: Vtl) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
         assert_eq!(vtl, Vtl::Vtl2);
         let is_bsp = self.inner.vp_info.base.is_bsp();
+
+        // Reset per-VP VTL2-enable state on non-BSP VPs. The new VTL2
+        // will re-issue `HvCallEnableVpVtl` on each AP to program its startup
+        // context (RIP/RSP/CR3/GDT/IDT). Clear VTL2 from `enabled_vtls`
+        // before `state.reset` so that `runnable_vtls` and `active_vtl` are
+        // derived from the post-scrub set rather than the pre-scrub one.
+        if !is_bsp {
+            self.inner.vtl2_enable.store(false, Ordering::SeqCst);
+            self.state.enabled_vtls.clear(Vtl::Vtl2);
+        }
+
         self.state.reset(true, is_bsp);
 
         // Scrub only resets VTL2. Reset the Vplc to clear any stale pending
@@ -1700,13 +1711,6 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         // Clear any pending VTL2 wake signal, since VTL2 is now back in
         // startup suspend and any prior wake request is stale.
         self.inner.vtl2_wake.store(false, Ordering::SeqCst);
-
-        // Reset per-VP VTL2-enable state on non-BSP VPs. The new VTL2
-        // will re-issue `HvCallEnableVpVtl` on each AP to program its startup
-        // context (RIP/RSP/CR3/GDT/IDT).
-        if !is_bsp {
-            self.inner.vtl2_enable.store(false, Ordering::SeqCst);
-        }
 
         if cfg!(debug_assertions) {
             let vp_info = &self.inner.vp_info;
