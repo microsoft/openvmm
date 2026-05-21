@@ -1195,21 +1195,21 @@ impl UhProcessor<'_, SnpBacked> {
 
                                 let input_control: u64 = shared_memory
                                     .read_plain(
-                                        overlay_base + x86defs::snp::GHCB_PAGE_RCX_OFFSET as u64,
+                                        overlay_base + std::mem::offset_of!(SevVmsa, rcx) as u64,
                                     )
                                     .map_err(SnpGhcbError::GhcbPageAccess)?;
                                 let input_gpa: u64 = shared_memory
                                     .read_plain(
-                                        overlay_base + x86defs::snp::GHCB_PAGE_RDX_OFFSET as u64,
+                                        overlay_base + std::mem::offset_of!(SevVmsa, rdx) as u64,
                                     )
                                     .map_err(SnpGhcbError::GhcbPageAccess)?;
                                 let output_gpa: u64 = shared_memory
                                     .read_plain(
-                                        overlay_base + x86defs::snp::GHCB_PAGE_R8_OFFSET as u64,
+                                        overlay_base + std::mem::offset_of!(SevVmsa, r8) as u64,
                                     )
                                     .map_err(SnpGhcbError::GhcbPageAccess)?;
 
-                                let guest_memory = &self.partition.gm[intercepted_vtl];
+                                let guest_memory = &self.shared.cvm.shared_memory;
                                 let mut handler = GhcbEnlightenedHypercall {
                                     handler: UhHypercallHandler {
                                         vp: self,
@@ -1227,7 +1227,7 @@ impl UhProcessor<'_, SnpBacked> {
 
                                 shared_memory
                                     .write_at(
-                                        overlay_base + x86defs::snp::GHCB_PAGE_RAX_OFFSET as u64,
+                                        overlay_base + std::mem::offset_of!(SevVmsa, rax) as u64,
                                         handler.result.as_bytes(),
                                     )
                                     .map_err(SnpGhcbError::GhcbPageAccess)?;

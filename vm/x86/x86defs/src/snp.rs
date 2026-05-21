@@ -693,10 +693,6 @@ pub struct GhcbHypercallParameters {
 
 pub const GHCB_PAGE_HYPERCALL_PARAMETERS_OFFSET: usize = 4072;
 pub const GHCB_PAGE_HYPERCALL_OUTPUT_OFFSET: usize = 4080;
-pub const GHCB_PAGE_RAX_OFFSET: usize = core::mem::offset_of!(SevVmsa, rax);
-pub const GHCB_PAGE_RCX_OFFSET: usize = core::mem::offset_of!(SevVmsa, rcx);
-pub const GHCB_PAGE_RDX_OFFSET: usize = core::mem::offset_of!(SevVmsa, rdx);
-pub const GHCB_PAGE_R8_OFFSET: usize = core::mem::offset_of!(SevVmsa, r8);
 
 // Exit Codes.
 open_enum::open_enum! {
