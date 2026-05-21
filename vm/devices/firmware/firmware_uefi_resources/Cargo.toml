@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 chipset_resources.workspace = true
 firmware_uefi_custom_vars.workspace = true
-uefi_nvram_storage.workspace = true
+uefi_nvram_storage = { workspace = true, features = ["save_restore"] }
 uefi_specs.workspace = true
 watchdog_core.workspace = true
 
