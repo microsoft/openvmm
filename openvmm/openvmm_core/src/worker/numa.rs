@@ -6,6 +6,44 @@
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::VpAssignment;
 
+/// Resolves a NUMA topology's VP assignments to a flat vp-to-vnode map.
+///
+/// Returns a `Vec<u32>` of length `proc_count` where `result[vp_index]` is the
+/// vnode for that VP.
+///
+/// `FromTopology` uses `(vp_index / vps_per_socket) % num_nodes`.
+/// `Explicit` uses the specified VP-to-node assignments directly.
+///
+/// Call [`validate_numa_topology`] first to ensure the topology is valid.
+pub fn resolve_vp_to_vnode(
+    topology: &NumaTopology,
+    proc_count: u32,
+    vps_per_socket: u32,
+) -> Vec<u32> {
+    let num_nodes = topology.nodes.len() as u32;
+    let has_explicit = topology
+        .nodes
+        .iter()
+        .any(|n| matches!(n.vps, VpAssignment::Explicit(_)));
+
+    if has_explicit {
+        let mut vp_to_vnode = vec![0u32; proc_count as usize];
+        for (node_idx, node) in topology.nodes.iter().enumerate() {
+            if let VpAssignment::Explicit(ref vps) = node.vps {
+                for &vp in vps {
+                    vp_to_vnode[vp as usize] = node_idx as u32;
+                }
+            }
+        }
+        vp_to_vnode
+    } else {
+        // FromTopology: (vp_index / vps_per_socket) % num_nodes
+        (0..proc_count)
+            .map(|vp| (vp / vps_per_socket) % num_nodes)
+            .collect()
+    }
+}
+
 /// Validates the NUMA topology configuration.
 ///
 /// Checks:
@@ -262,5 +300,77 @@ mod tests {
             distance: 10,
         });
         validate_numa_topology(&topo, 4).unwrap();
+    }
+
+    #[test]
+    fn resolve_single_node_from_topology() {
+        let topo = single_node();
+        let map = resolve_vp_to_vnode(&topo, 4, 2);
+        // All VPs in one node: (vp / 2) % 1 == 0 for all.
+        assert_eq!(map, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn resolve_two_nodes_from_topology() {
+        let topo = NumaTopology {
+            nodes: vec![
+                NumaNode {
+                    mem: mem(1024 * 1024 * 1024),
+                    vps: VpAssignment::FromTopology,
+                },
+                NumaNode {
+                    mem: mem(1024 * 1024 * 1024),
+                    vps: VpAssignment::FromTopology,
+                },
+            ],
+            distances: Vec::new(),
+        };
+        // vps_per_socket=2: vp0,1 -> socket 0 -> node 0; vp2,3 -> socket 1 -> node 1
+        let map = resolve_vp_to_vnode(&topo, 4, 2);
+        assert_eq!(map, vec![0, 0, 1, 1]);
+    }
+
+    #[test]
+    fn resolve_from_topology_round_robin() {
+        // 3 nodes, vps_per_socket=1: each VP is its own socket, round-robin.
+        let topo = NumaTopology {
+            nodes: vec![
+                NumaNode {
+                    mem: mem(1024 * 1024 * 1024),
+                    vps: VpAssignment::FromTopology,
+                },
+                NumaNode {
+                    mem: mem(1024 * 1024 * 1024),
+                    vps: VpAssignment::FromTopology,
+                },
+                NumaNode {
+                    mem: mem(1024 * 1024 * 1024),
+                    vps: VpAssignment::FromTopology,
+                },
+            ],
+            distances: Vec::new(),
+        };
+        let map = resolve_vp_to_vnode(&topo, 6, 1);
+        // (vp / 1) % 3: 0,1,2,0,1,2
+        assert_eq!(map, vec![0, 1, 2, 0, 1, 2]);
+    }
+
+    #[test]
+    fn resolve_explicit_vps() {
+        let topo = NumaTopology {
+            nodes: vec![
+                NumaNode {
+                    mem: mem(1024 * 1024 * 1024),
+                    vps: VpAssignment::Explicit(vec![0, 3]),
+                },
+                NumaNode {
+                    mem: mem(1024 * 1024 * 1024),
+                    vps: VpAssignment::Explicit(vec![1, 2]),
+                },
+            ],
+            distances: Vec::new(),
+        };
+        let map = resolve_vp_to_vnode(&topo, 4, 2);
+        assert_eq!(map, vec![0, 1, 1, 0]);
     }
 }

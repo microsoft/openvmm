@@ -957,7 +957,7 @@ impl InitializedVm {
         };
 
         #[cfg(guest_arch = "aarch64")]
-        let (processor_topology, spi_layout) = {
+        let (mut processor_topology, spi_layout) = {
             let smmu_count = cfg
                 .pcie_root_complexes
                 .iter()
@@ -968,10 +968,18 @@ impl InitializedVm {
             (result.processor_topology, result.spi_layout)
         };
         #[cfg(not(guest_arch = "aarch64"))]
-        let processor_topology = {
+        let mut processor_topology = {
             let result = build_x86_topology(&cfg.processor_topology)?;
             result.processor_topology
         };
+
+        // Resolve NUMA VP assignments and apply to the processor topology.
+        let vp_to_vnode = super::numa::resolve_vp_to_vnode(
+            &cfg.numa,
+            cfg.processor_topology.proc_count,
+            processor_topology.reserved_vps_per_socket(),
+        );
+        processor_topology.set_vnodes(&vp_to_vnode);
 
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {

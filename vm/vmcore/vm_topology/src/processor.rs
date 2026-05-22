@@ -179,6 +179,24 @@ impl<
     pub fn vp_topology(&self, vp_index: VpIndex) -> VpTopologyInfo {
         T::vp_topology(self, &self.vp_arch(vp_index))
     }
+
+    /// Sets the virtual NUMA node for each VP.
+    ///
+    /// `vnodes` must have exactly `vp_count()` entries, where `vnodes[i]` is
+    /// the vnode for VP index `i`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `vnodes.len() != vp_count()`.
+    pub fn set_vnodes(&mut self, vnodes: &[u32])
+    where
+        T::ArchVpInfo: AsMut<VpInfo>,
+    {
+        assert_eq!(vnodes.len(), self.vps.len());
+        for (vp, &vnode) in self.vps.iter_mut().zip(vnodes) {
+            vp.as_mut().vnode = vnode;
+        }
+    }
 }
 
 /// Per-processor topology information.
