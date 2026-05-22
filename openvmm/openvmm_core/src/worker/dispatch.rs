@@ -142,6 +142,7 @@ use vmcore::vmtime::VmTimeSource;
 use vmgs_resources::GuestStateEncryptionPolicy;
 use vmgs_resources::VmgsResource;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
+use vmm_core::acpi_builder::SlitInfo;
 use vmm_core::input_distributor::InputDistributor;
 use vmm_core::partition_unit::Halt;
 use vmm_core::partition_unit::PartitionUnit;
@@ -1422,11 +1423,26 @@ impl InitializedVm {
                     rom: Some(Box::new(rom)),
                     replay_mtrrs: Box::new(move || halt_vps.replay_mtrrs()),
                     config: {
+                        let pcat_slit_info =
+                            if cfg.numa.nodes.len() > 1 || !cfg.numa.distances.is_empty() {
+                                Some(SlitInfo {
+                                    num_nodes: cfg.numa.nodes.len(),
+                                    distances: cfg
+                                        .numa
+                                        .distances
+                                        .iter()
+                                        .map(|d| (d.src, d.dst, d.distance))
+                                        .collect(),
+                                })
+                            } else {
+                                None
+                            };
                         let acpi_tables_builder = AcpiTablesBuilder {
                             processor_topology: &processor_topology,
                             mem_layout: &mem_layout,
                             cache_topology: None,
                             pcie_host_bridges: &Vec::new(),
+                            slit_info: pcat_slit_info.as_ref(),
                             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                                 with_ioapic: cfg.chipset_capabilities.with_ioapic,
                                 with_pic: cfg.chipset_capabilities.with_pic,
@@ -2800,6 +2816,22 @@ impl InitializedVm {
 }
 
 impl LoadedVmInner {
+    fn slit_info(&self) -> Option<SlitInfo> {
+        let num_nodes = self.numa_cfg.nodes.len();
+        if num_nodes <= 1 && self.numa_cfg.distances.is_empty() {
+            return None;
+        }
+        Some(SlitInfo {
+            num_nodes,
+            distances: self
+                .numa_cfg
+                .distances
+                .iter()
+                .map(|d| (d.src, d.dst, d.distance))
+                .collect(),
+        })
+    }
+
     async fn load_firmware(&mut self, vtl2_only: bool) -> anyhow::Result<()> {
         let cache_topology = if cfg!(guest_arch = "aarch64") {
             Some(
@@ -2809,11 +2841,13 @@ impl LoadedVmInner {
         } else {
             None
         };
+        let slit_info = self.slit_info();
         let acpi_builder = AcpiTablesBuilder {
             processor_topology: &self.processor_topology,
             mem_layout: &self.mem_layout,
             cache_topology: cache_topology.as_ref(),
             pcie_host_bridges: &self.pcie_host_bridges,
+            slit_info: slit_info.as_ref(),
             #[cfg(guest_arch = "x86_64")]
             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                 with_ioapic: self.chipset_capabilities.with_ioapic,
@@ -2963,6 +2997,7 @@ impl LoadedVmInner {
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
+                let slit = acpi_builder.build_slit();
                 let mcfg = (!self.pcie_host_bridges.is_empty()).then(|| acpi_builder.build_mcfg());
                 let pptt = cache_topology.is_some().then(|| acpi_builder.build_pptt());
                 let load_settings = super::vm_loaders::uefi::UefiLoadSettings {
@@ -2979,19 +3014,21 @@ impl LoadedVmInner {
                     bios_guid,
                     vmbus: enable_vmbus,
                 };
-                let regs = super::vm_loaders::uefi::load_uefi(
-                    firmware,
-                    &self.gm,
-                    &self.processor_topology,
-                    &self.mem_layout,
-                    &self.pcie_host_bridges,
-                    load_settings,
-                    &self.chipset_mmio,
-                    &madt,
-                    &srat,
-                    mcfg.as_deref(),
-                    pptt.as_deref(),
-                )?;
+                let regs =
+                    super::vm_loaders::uefi::load_uefi(&super::vm_loaders::uefi::LoadUefiParams {
+                        firmware,
+                        gm: &self.gm,
+                        processor_topology: &self.processor_topology,
+                        mem_layout: &self.mem_layout,
+                        pcie_host_bridges: &self.pcie_host_bridges,
+                        settings: load_settings,
+                        chipset_mmio: &self.chipset_mmio,
+                        madt: &madt,
+                        srat: &srat,
+                        slit: slit.as_deref(),
+                        mcfg: mcfg.as_deref(),
+                        pptt: pptt.as_deref(),
+                    })?;
 
                 (regs, Vec::new())
             }
@@ -3009,6 +3046,7 @@ impl LoadedVmInner {
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
+                let slit = acpi_builder.build_slit();
                 const ENTROPY_SIZE: usize = 64;
                 let mut entropy = [0u8; ENTROPY_SIZE];
                 getrandom::fill(&mut entropy).unwrap();
@@ -3022,7 +3060,7 @@ impl LoadedVmInner {
                     acpi_tables: super::vm_loaders::igvm::AcpiTables {
                         madt: &madt,
                         srat: &srat,
-                        slit: None,
+                        slit: slit.as_deref(),
                         pptt: None,
                     },
                     vtl2_base_address,

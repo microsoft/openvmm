@@ -86,6 +86,28 @@ pub struct MemoryCli {
     pub file: Option<PathBuf>,
 }
 
+/// NUMA node configuration parsed from `--numa`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NumaNodeCli {
+    /// Memory configuration (size, shared, prefetch, hugepages, etc.)
+    pub memory: MemoryCli,
+    /// Host NUMA node to bind memory allocation to.
+    pub host_numa_node: Option<u32>,
+    /// Explicit VP indices for this node.
+    pub vps: Option<Vec<u32>>,
+}
+
+/// NUMA distance parsed from `--numa-distance`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NumaDistanceCli {
+    /// Source node index.
+    pub src: u32,
+    /// Destination node index.
+    pub dst: u32,
+    /// Distance value (10-254).
+    pub distance: u8,
+}
+
 /// OpenVMM virtual machine monitor.
 ///
 /// This is not yet a stable interface and may change radically between
@@ -103,7 +125,7 @@ pub struct Options {
         value_name = "PARAMS",
         default_value = "1GB",
         value_parser = parse_memory_config,
-        conflicts_with = "numa_memory",
+        conflicts_with = "numa",
         long_help = r#"Configure guest RAM.
 
 Syntax: SIZE | key=value[,key=value...]
@@ -127,14 +149,42 @@ Examples:
     )]
     pub memory: MemoryCli,
 
-    /// per-NUMA-node guest RAM sizes (comma-separated, e.g. "2G,2G").
-    /// Distributes memory across vNUMA nodes reported to the guest. Mutually
-    /// exclusive with --memory. This is for test-only usage.
+    /// NUMA node configuration (repeatable, one per node).
     ///
-    /// TODO: Backing pages are not pinned to any host topology, nor coordinated
-    /// with CPUs. This should change once we implement real numa support.
-    #[clap(long, value_name = "SIZES", value_parser = parse_memory, value_delimiter = ',', conflicts_with = "memory")]
-    pub numa_memory: Option<Vec<u64>>,
+    /// Each --numa specifies one guest NUMA node. Mutually exclusive with
+    /// --memory.
+    #[clap(
+        long,
+        value_name = "PARAMS",
+        value_parser = parse_numa_node,
+        conflicts_with = "memory",
+        long_help = r#"Configure a guest NUMA node (repeatable, one per node).
+
+Syntax: key=value[,key=value...]
+
+Options:
+    size=<SIZE>              RAM for this node (required)
+    shared=on|off            use shared file-backed RAM, default on
+    prefetch=on|off          pre-populate shared RAM mappings
+    thp=on|off               mark private RAM as THP-eligible; requires shared=off
+    hugepages=on|off         allocate RAM from hugetlb pages
+    hugepage_size=<SIZE>     hugetlb page size; requires hugepages=on
+    host_numa_node=<N>       bind allocation to host NUMA node N
+    vps=<LIST>               explicit VP indices (e.g. "0,1,2,3")
+
+Examples:
+    --numa size=2G --numa size=2G
+    --numa size=2G,host_numa_node=0 --numa size=2G,host_numa_node=1
+    --numa size=2G,hugepages=on,vps=0,1 --numa size=2G,vps=2,3"#
+    )]
+    pub numa: Option<Vec<NumaNodeCli>>,
+
+    /// NUMA distance (repeatable). Format: SRC:DST:DISTANCE.
+    ///
+    /// SRC and DST are 0-based node indices. DISTANCE is 10-254 (10 = local).
+    /// Specify each direction explicitly (not auto-symmetric).
+    #[clap(long, value_name = "SRC:DST:DIST", value_parser = parse_numa_distance, conflicts_with = "memory")]
+    pub numa_distance: Option<Vec<NumaDistanceCli>>,
 
     /// use shared memory segment
     #[clap(short = 'M', long, hide = true)]
@@ -1300,6 +1350,87 @@ fn parse_memory_toggle(key: &str, value: &str) -> anyhow::Result<bool> {
     }
 }
 
+/// Accumulator for shared memory option parsing (size, shared, prefetch, thp,
+/// hugepages, hugepage_size). Used by both `parse_memory_config` and
+/// `parse_numa_node`.
+#[derive(Default)]
+struct MemoryOptionAccum {
+    mem_size: Option<u64>,
+    shared: Option<bool>,
+    prefetch: Option<bool>,
+    transparent_hugepages: Option<bool>,
+    hugepages: Option<bool>,
+    hugepage_size: Option<u64>,
+}
+
+impl MemoryOptionAccum {
+    /// Try to parse a key=value pair as a common memory option.
+    /// Returns `Ok(true)` if the key was recognized, `Ok(false)` if not.
+    fn try_parse(&mut self, key: &str, value: &str) -> anyhow::Result<bool> {
+        match key {
+            "size" => {
+                anyhow::ensure!(self.mem_size.is_none(), "duplicate option 'size'");
+                self.mem_size = Some(parse_memory(value)?);
+            }
+            "shared" => {
+                anyhow::ensure!(self.shared.is_none(), "duplicate option 'shared'");
+                self.shared = Some(parse_memory_toggle(key, value)?);
+            }
+            "prefetch" => {
+                anyhow::ensure!(self.prefetch.is_none(), "duplicate option 'prefetch'");
+                self.prefetch = Some(parse_memory_toggle(key, value)?);
+            }
+            "thp" => {
+                anyhow::ensure!(
+                    self.transparent_hugepages.is_none(),
+                    "duplicate option 'thp'"
+                );
+                self.transparent_hugepages = Some(parse_memory_toggle(key, value)?);
+            }
+            "hugepages" => {
+                anyhow::ensure!(self.hugepages.is_none(), "duplicate option 'hugepages'");
+                self.hugepages = Some(parse_memory_toggle(key, value)?);
+            }
+            "hugepage_size" => {
+                anyhow::ensure!(
+                    self.hugepage_size.is_none(),
+                    "duplicate option 'hugepage_size'"
+                );
+                self.hugepage_size = Some(parse_memory(value)?);
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// Validate common constraints and build a `MemoryCli`.
+    fn finish(self, default_size: u64, file: Option<PathBuf>) -> anyhow::Result<MemoryCli> {
+        if self.transparent_hugepages == Some(true) && self.shared != Some(false) {
+            anyhow::bail!("thp=on requires shared=off");
+        }
+        if self.hugepage_size.is_some() && self.hugepages != Some(true) {
+            anyhow::bail!("hugepage_size requires hugepages=on");
+        }
+        if self.hugepages == Some(true) {
+            if self.shared == Some(false) {
+                anyhow::bail!("hugepages=on conflicts with shared=off");
+            }
+            if file.is_some() {
+                anyhow::bail!("hugepages=on conflicts with file=...");
+            }
+        }
+        Ok(MemoryCli {
+            mem_size: self.mem_size.unwrap_or(default_size),
+            shared: self.shared,
+            prefetch: self.prefetch.unwrap_or(false),
+            transparent_hugepages: self.transparent_hugepages.unwrap_or(false),
+            hugepages: self.hugepages.unwrap_or(false),
+            hugepage_size: self.hugepage_size,
+            file,
+        })
+    }
+}
+
 fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
     if !s.contains('=') && !s.contains(',') {
         return Ok(MemoryCli {
@@ -1313,13 +1444,7 @@ fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
         });
     }
 
-    let mut mem_size = DEFAULT_MEMORY_SIZE;
-    let mut saw_size = false;
-    let mut shared = None;
-    let mut prefetch = None;
-    let mut transparent_hugepages = None;
-    let mut hugepages = None;
-    let mut hugepage_size = None;
+    let mut accum = MemoryOptionAccum::default();
     let mut file = None;
 
     for part in s.split(',') {
@@ -1330,78 +1455,80 @@ fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
             anyhow::bail!("invalid memory option '{part}', expected key=value");
         }
 
+        if accum.try_parse(key, value)? {
+            continue;
+        }
         match key {
-            "size" => {
-                if saw_size {
-                    anyhow::bail!("duplicate memory option 'size'");
-                }
-                mem_size = parse_memory(value)?;
-                saw_size = true;
-            }
-            "shared" => {
-                if shared.is_some() {
-                    anyhow::bail!("duplicate memory option 'shared'");
-                }
-                shared = Some(parse_memory_toggle(key, value)?);
-            }
-            "prefetch" => {
-                if prefetch.is_some() {
-                    anyhow::bail!("duplicate memory option 'prefetch'");
-                }
-                prefetch = Some(parse_memory_toggle(key, value)?);
-            }
-            "thp" => {
-                if transparent_hugepages.is_some() {
-                    anyhow::bail!("duplicate memory option 'thp'");
-                }
-                transparent_hugepages = Some(parse_memory_toggle(key, value)?);
-            }
-            "hugepages" => {
-                if hugepages.is_some() {
-                    anyhow::bail!("duplicate memory option 'hugepages'");
-                }
-                hugepages = Some(parse_memory_toggle(key, value)?);
-            }
-            "hugepage_size" => {
-                if hugepage_size.is_some() {
-                    anyhow::bail!("duplicate memory option 'hugepage_size'");
-                }
-                hugepage_size = Some(parse_memory(value)?);
-            }
             "file" => {
-                if file.is_some() {
-                    anyhow::bail!("duplicate memory option 'file'");
-                }
+                anyhow::ensure!(file.is_none(), "duplicate memory option 'file'");
                 file = Some(PathBuf::from(value));
             }
             _ => anyhow::bail!("unknown memory option '{key}'"),
         }
     }
 
-    if transparent_hugepages == Some(true) && shared != Some(false) {
-        anyhow::bail!("memory thp=on requires shared=off");
-    }
-    if hugepage_size.is_some() && hugepages != Some(true) {
-        anyhow::bail!("memory hugepage_size requires hugepages=on");
-    }
-    if hugepages == Some(true) {
-        if shared == Some(false) {
-            anyhow::bail!("memory hugepages=on conflicts with shared=off");
+    accum.finish(DEFAULT_MEMORY_SIZE, file)
+}
+
+fn parse_numa_node(s: &str) -> anyhow::Result<NumaNodeCli> {
+    let mut accum = MemoryOptionAccum::default();
+    let mut host_numa_node = None;
+    let mut vps: Option<Vec<u32>> = None;
+
+    for part in s.split(',') {
+        let (key, value) = part
+            .split_once('=')
+            .with_context(|| format!("invalid numa option '{part}', expected key=value"))?;
+
+        if accum.try_parse(key, value)? {
+            continue;
         }
-        if file.is_some() {
-            anyhow::bail!("memory hugepages=on conflicts with file=...");
+        match key {
+            "host_numa_node" => {
+                anyhow::ensure!(
+                    host_numa_node.is_none(),
+                    "duplicate numa option 'host_numa_node'"
+                );
+                host_numa_node = Some(value.parse::<u32>().context("invalid host_numa_node")?);
+            }
+            "vps" => {
+                // VP indices can appear as multiple vps= entries or as
+                // a dash-separated range within a single value.
+                let vp_list = vps.get_or_insert_with(Vec::new);
+                for vp_str in value.split('-') {
+                    vp_list.push(vp_str.trim().parse::<u32>().context("invalid vp index")?);
+                }
+            }
+            _ => anyhow::bail!("unknown numa option '{key}'"),
         }
     }
 
-    Ok(MemoryCli {
-        mem_size,
-        shared,
-        prefetch: prefetch.unwrap_or(false),
-        transparent_hugepages: transparent_hugepages.unwrap_or(false),
-        hugepages: hugepages.unwrap_or(false),
-        hugepage_size,
-        file,
+    anyhow::ensure!(accum.mem_size.is_some(), "numa node requires 'size' option");
+    let memory = accum.finish(0, None)?;
+
+    Ok(NumaNodeCli {
+        memory,
+        host_numa_node,
+        vps,
     })
+}
+
+fn parse_numa_distance(s: &str) -> anyhow::Result<NumaDistanceCli> {
+    let parts: Vec<&str> = s.split(':').collect();
+    anyhow::ensure!(
+        parts.len() == 3,
+        "expected SRC:DST:DISTANCE format, got '{s}'"
+    );
+    let src = parts[0].parse::<u32>().context("invalid source node")?;
+    let dst = parts[1]
+        .parse::<u32>()
+        .context("invalid destination node")?;
+    let distance = parts[2].parse::<u8>().context("invalid distance")?;
+    anyhow::ensure!(
+        distance >= 10,
+        "distance must be >= 10 (10 = local), got {distance}"
+    );
+    Ok(NumaDistanceCli { src, dst, distance })
 }
 
 /// Parse a number from a string that could be prefixed with 0x to indicate hex.
