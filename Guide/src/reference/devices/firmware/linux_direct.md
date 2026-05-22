@@ -13,12 +13,16 @@ useful for lightweight testing and development scenarios.
 
 | Architecture | Supported | Kernel format | Boot protocol |
 |-------------|-----------|---------------|---------------|
-| x86_64 | Yes | Uncompressed ELF (`vmlinux`) | Linux boot protocol (zero page) |
+| x86_64 | Yes | Uncompressed ELF (`vmlinux`) or compressed `bzImage` | Linux boot protocol (zero page) |
 | AArch64 | Yes | ARM64 `Image` (flat binary) | ARM64 Image boot (device tree or ACPI) |
 
-Compressed kernels (bzImage, gzip, etc.) are not supported. On x86_64,
-pass the uncompressed `vmlinux` ELF. On AArch64, pass the uncompressed
-`Image` file (not `Image.gz`).
+On x86_64, both uncompressed `vmlinux` ELF images and compressed `bzImage`
+(vmlinuz) files are supported. When a bzImage is detected, the loader places
+the protected-mode code directly into guest memory and relies on the kernel's
+built-in decompressor to run at boot time. All standard bzImage compression
+formats are supported since decompression is handled by the kernel itself.
+
+On AArch64, pass the uncompressed `Image` file (not `Image.gz`).
 
 ## x86_64 Boot Flow
 
@@ -55,9 +59,9 @@ OpenVMM synthesizes a minimal set of EFI structures in guest memory:
 2. **EFI Memory Map** — describes the EFI metadata region, ACPI tables, and
    conventional RAM.
 3. **ACPI Tables** — FADT (with `HW_REDUCED_ACPI`), MADT (GIC distributor, GICv3
-   redistributors or GICv2 CPU interfaces, optional v2m MSI frame), GTDT
+   redistributors or GICv2 CPU interfaces, GICv3 ITS or v2m MSI frame), GTDT
    (virtual timer), DSDT (VMBus, serial UARTs), and optionally MCFG/SSDT for
-   PCIe.
+   PCIe and IORT for PCIe interrupt routing via the ITS.
 
 A **stub device tree** is then built. Unlike a full device tree, it contains
 no hardware nodes — no CPUs, GIC, timer, or devices. Its only purpose is a

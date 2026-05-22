@@ -269,6 +269,37 @@ impl MemoryLayout {
         Self::build(memory.to_vec(), gaps.to_vec(), vec![], vec![], None)
     }
 
+    /// Makes a new memory layout from already-resolved RAM and fixed ranges.
+    ///
+    /// Each individual range must be non-empty, but the lists themselves may
+    /// be empty (e.g. no PCIe root complexes means empty PCI ECAM/MMIO
+    /// vectors). Ranges within each list must be sorted and non-overlapping.
+    /// MMIO gaps may contain empty placeholder ranges to preserve positional
+    /// indexing (e.g. `mmio()[0]` = low, `mmio()[1]` = high); empty entries
+    /// are ignored during validation. The combined layout is also validated
+    /// for overlaps, including the optional VTL2 range.
+    pub fn new_from_resolved_ranges(
+        ram: Vec<MemoryRangeWithNode>,
+        mmio_gaps: Vec<MemoryRange>,
+        pci_ecam_gaps: Vec<MemoryRange>,
+        pci_mmio_gaps: Vec<MemoryRange>,
+        vtl2_range: Option<MemoryRange>,
+    ) -> Result<Self, Error> {
+        validate_ranges_with_metadata(&ram)?;
+        // MMIO gaps may include empty placeholders for positional indexing;
+        // validate only the non-empty entries.
+        let non_empty_mmio: Vec<_> = mmio_gaps
+            .iter()
+            .copied()
+            .filter(|r| !r.is_empty())
+            .collect();
+        validate_ranges(&non_empty_mmio)?;
+        validate_ranges(&pci_ecam_gaps)?;
+        validate_ranges(&pci_mmio_gaps)?;
+
+        Self::build(ram, mmio_gaps, pci_ecam_gaps, pci_mmio_gaps, vtl2_range)
+    }
+
     /// Builds the memory layout.
     ///
     /// `ram` must already be known to be sorted.
@@ -279,6 +310,9 @@ impl MemoryLayout {
         pci_mmio: Vec<MemoryRange>,
         vtl2_range: Option<MemoryRange>,
     ) -> Result<Self, Error> {
+        // Filter out empty placeholder ranges before validation and overlap
+        // checks — they carry no physical meaning and exist only for
+        // positional indexing in the stored mmio vector.
         let mut all_ranges = ram
             .iter()
             .map(|x| &x.range)
@@ -287,6 +321,7 @@ impl MemoryLayout {
             .chain(&pci_ecam)
             .chain(&pci_mmio)
             .copied()
+            .filter(|r| !r.is_empty())
             .collect::<Vec<_>>();
 
         all_ranges.sort();
@@ -398,7 +433,12 @@ impl MemoryLayout {
     /// One past the last byte of RAM, MMIO, PCI ECAM, or PCI MMIO.
     pub fn end_of_layout(&self) -> u64 {
         [
-            self.mmio.last().expect("mmio set").end(),
+            self.mmio
+                .iter()
+                .filter(|r| !r.is_empty())
+                .map(|r| r.end())
+                .max()
+                .unwrap_or(0),
             self.end_of_ram(),
             self.pci_ecam.last().map(|r| r.end()).unwrap_or(0),
             self.pci_mmio.last().map(|r| r.end()).unwrap_or(0),
@@ -553,6 +593,69 @@ mod tests {
         let pci_ecam = &[MemoryRange::new(GB..GB + MB)];
         let pci_mmio = &[MemoryRange::new(GB..GB + MB)];
         MemoryLayout::new(TB, &[], pci_ecam, pci_mmio, None).unwrap_err();
+    }
+
+    #[test]
+    fn resolved_ranges_constructor() {
+        let ram = vec![
+            MemoryRangeWithNode {
+                range: MemoryRange::new(0..GB),
+                vnode: 0,
+            },
+            MemoryRangeWithNode {
+                range: MemoryRange::new(2 * GB..3 * GB),
+                vnode: 1,
+            },
+        ];
+        let mmio = vec![MemoryRange::new(GB..2 * GB)];
+        let pci_ecam = vec![MemoryRange::new(4 * GB..4 * GB + MB)];
+        let pci_mmio = vec![MemoryRange::new(5 * GB..6 * GB)];
+
+        let layout = MemoryLayout::new_from_resolved_ranges(
+            ram.clone(),
+            mmio.clone(),
+            pci_ecam.clone(),
+            pci_mmio.clone(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(layout.ram(), ram);
+        assert_eq!(layout.mmio(), mmio);
+        assert_eq!(layout.probe_address(4 * GB), Some(AddressType::PciEcam));
+        assert_eq!(layout.probe_address(5 * GB), Some(AddressType::PciMmio));
+    }
+
+    #[test]
+    fn resolved_ranges_reject_overlap_with_fixed_ranges() {
+        let ram = vec![MemoryRangeWithNode {
+            range: MemoryRange::new(0..2 * GB),
+            vnode: 0,
+        }];
+        let mmio = vec![MemoryRange::new(GB..2 * GB)];
+
+        assert!(MemoryLayout::new_from_resolved_ranges(ram, mmio, vec![], vec![], None).is_err());
+    }
+
+    #[test]
+    fn resolved_ranges_validate_vtl2_against_ram_end() {
+        let ram = vec![
+            MemoryRangeWithNode {
+                range: MemoryRange::new(0..GB),
+                vnode: 0,
+            },
+            MemoryRangeWithNode {
+                range: MemoryRange::new(3 * GB..4 * GB),
+                vnode: 0,
+            },
+        ];
+        let mmio = vec![MemoryRange::new(GB..2 * GB)];
+        let vtl2_range = MemoryRange::new(2 * GB..2 * GB + MB);
+
+        assert!(matches!(
+            MemoryLayout::new_from_resolved_ranges(ram, mmio, vec![], vec![], Some(vtl2_range)),
+            Err(Error::Vtl2RangeBeforeEndOfRam)
+        ));
     }
 
     #[test]

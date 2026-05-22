@@ -2,9 +2,10 @@
 // Licensed under the MIT License.
 
 use super::AesKeyWrapError;
+use super::AesKeyWrapErrorInner;
 
 fn err(err: openssl::error::ErrorStack, op: &'static str) -> AesKeyWrapError {
-    AesKeyWrapError::Backend(crate::BackendError(err, op))
+    AesKeyWrapError(AesKeyWrapErrorInner::Backend(crate::BackendError(err, op)))
 }
 
 fn openssl_cipher(key_len: usize) -> Result<&'static openssl::cipher::CipherRef, AesKeyWrapError> {
@@ -12,7 +13,9 @@ fn openssl_cipher(key_len: usize) -> Result<&'static openssl::cipher::CipherRef,
         16 => Ok(openssl::cipher::Cipher::aes_128_wrap_pad()),
         24 => Ok(openssl::cipher::Cipher::aes_192_wrap_pad()),
         32 => Ok(openssl::cipher::Cipher::aes_256_wrap_pad()),
-        key_size => Err(AesKeyWrapError::InvalidKeySize(key_size)),
+        key_size => Err(AesKeyWrapError(AesKeyWrapErrorInner::InvalidKeySize(
+            key_size,
+        ))),
     }
 }
 
@@ -60,29 +63,26 @@ impl AesKeyWrapInner {
 
 impl AesKeyWrapCtxInner<'_> {
     pub fn wrap(&mut self, payload: &[u8]) -> Result<Vec<u8>, AesKeyWrapError> {
-        let padding = 8 - payload.len() % 8;
-        let mut output = vec![0; payload.len() + padding + 16];
-        let count = self
-            .ctx
-            .cipher_update(payload, Some(&mut output))
+        let mut output = Vec::with_capacity(payload.len() + 16);
+        self.ctx
+            .cipher_update_vec(payload, &mut output)
             .map_err(|e| err(e, "wrapping key"))?;
-        // DEVNOTE: Skip the `cipher_final()`, which is effectively a no-op for this operation
-        // according to OpenSSL implementation.
-        output.truncate(count);
+        self.ctx
+            .cipher_final_vec(&mut output)
+            .map_err(|e| err(e, "finalizing key wrap"))?;
         Ok(output)
     }
 }
 
 impl AesKeyUnwrapCtxInner<'_> {
     pub fn unwrap(&mut self, wrapped_payload: &[u8]) -> Result<Vec<u8>, AesKeyWrapError> {
-        let mut output = vec![0; wrapped_payload.len() + 16];
-        let count = self
-            .ctx
-            .cipher_update(wrapped_payload, Some(&mut output))
+        let mut output = Vec::with_capacity(wrapped_payload.len() + 16);
+        self.ctx
+            .cipher_update_vec(wrapped_payload, &mut output)
             .map_err(|e| err(e, "unwrapping key"))?;
-        // DEVNOTE: Skip the `cipher_final()`, which is effectively a no-op for this operation
-        // according to OpenSSL implementation.
-        output.truncate(count);
+        self.ctx
+            .cipher_final_vec(&mut output)
+            .map_err(|e| err(e, "finalizing key unwrap"))?;
         Ok(output)
     }
 }

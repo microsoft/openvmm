@@ -171,6 +171,7 @@ impl GdmaDevice {
         let config = ConfigSpaceType0Emulator::new(
             hardware_ids,
             capabilities,
+            Vec::new(),
             DeviceBars::new()
                 .bar0(8192, BarMemoryKind::Intercept(bar0_mem))
                 .bar4(msix.bar_len(), BarMemoryKind::Intercept(bar2_mem)),

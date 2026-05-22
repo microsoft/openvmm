@@ -55,6 +55,9 @@ pub struct Config {
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
     pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
     pub chipset_capabilities: VmChipsetCapabilities,
+    /// Memory layout sizing for the layout engine. Determines chipset MMIO
+    /// range sizes; addresses are allocated dynamically by the resolver.
+    pub layout: vmm_core_defs::LayoutConfig,
     pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
@@ -62,36 +65,6 @@ pub struct Config {
     pub automatic_guest_reset: bool,
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
 }
-
-// ARM64 needs a larger low gap.
-const DEFAULT_LOW_MMAP_GAP_SIZE_X86: u64 = 1024 * 1024 * 128;
-const DEFAULT_LOW_MMAP_GAP_SIZE_AARCH64: u64 = 1024 * 1024 * 512;
-
-/// Default mmio gaps for an x86 partition.
-pub const DEFAULT_MMIO_GAPS_X86: [MemoryRange; 2] = [
-    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_X86..0x1_0000_0000), // nMB just below 4GB
-    MemoryRange::new(0xF_E000_0000..0x10_0000_0000), // 512MB just below 64GB, then up to 64GB
-];
-
-/// Default mmio gaps for x86 if VTL2 is enabled.
-pub const DEFAULT_MMIO_GAPS_X86_WITH_VTL2: [MemoryRange; 3] = [
-    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_X86..0x1_0000_0000), // nMB just below 4GB
-    MemoryRange::new(0xF_E000_0000..0x20_0000_0000), // 512MB just below 64GB, then up to 128GB
-    MemoryRange::new(0x20_0000_0000..0x20_4000_0000), // 128GB to 129 GB
-];
-
-/// Default mmio gaps for an aarch64 partition.
-pub const DEFAULT_MMIO_GAPS_AARCH64: [MemoryRange; 2] = [
-    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_AARCH64..0x1_0000_0000), // nMB just below 4GB
-    MemoryRange::new(0xF_E000_0000..0x10_0000_0000), // 512MB just below 64GB, then up to 64GB
-];
-
-/// Default mmio gaps for aarch64 if VTL2 is enabled.
-pub const DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2: [MemoryRange; 3] = [
-    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_AARCH64..0x1_0000_0000), // nMB just below 4GB
-    MemoryRange::new(0xF_E000_0000..0x20_0000_0000), // 512MB just below 64GB, then up to 128GB
-    MemoryRange::new(0x20_0000_0000..0x20_4000_0000), // 128GB to 129 GB
-];
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;
 // The KVM in-kernel vGICv3 requires the distributor and redistributor bases be 64KiB aligned.
@@ -107,11 +80,12 @@ pub const DEFAULT_GIC_V2M_MSI_FRAME_BASE: u64 = 0xEFFE_8000;
 /// Size of the v2m MSI frame (one 4KB page is the architectural minimum).
 pub const GIC_V2M_MSI_FRAME_SIZE: u64 = 0x1000;
 
-/// First GIC interrupt ID reserved for PCIe MSIs via the v2m frame.
-/// Must be in the SPI range (32–1019) and not conflict with other devices.
-pub const DEFAULT_GIC_V2M_SPI_BASE: u32 = 512;
-/// Number of SPIs reserved for PCIe MSIs.
-pub const DEFAULT_GIC_V2M_SPI_COUNT: u32 = 64;
+/// Base address of the GICv3 ITS MMIO region. Must be 64 KiB aligned,
+/// below the v2m frame address, and not overlap other devices.
+/// The region extends from this base to base + GIC_ITS_SIZE (128 KiB).
+pub const DEFAULT_GIC_ITS_BASE: u64 = 0xEFFC_0000;
+/// Size of the ITS MMIO region (control frame + translation frame, 2×64 KiB).
+pub const GIC_ITS_SIZE: u64 = 0x2_0000;
 
 /// Default virtual timer PPI (GIC INTID). PPI 4 = INTID 16 + 4 = 20.
 /// This is the EL1 virtual timer interrupt used across Hyper-V, KVM, and HVF.
@@ -209,6 +183,28 @@ pub enum Vtl2BaseAddressType {
     Vtl2Allocate { size: Option<u64> },
 }
 
+/// Specifies a PCIe MMIO BAR window, either by size (the resolver allocates) or
+/// by a fixed location. Fixed locations exist for assigned-device, IOMMU, and
+/// physical-topology compatibility.
+#[derive(Debug, MeshPayload)]
+pub enum PcieMmioRangeConfig {
+    /// Dynamically allocate a range of the given size.
+    Dynamic {
+        /// Size of the range in bytes.
+        size: u64,
+    },
+    /// Use the specified fixed memory range.
+    Fixed(MemoryRange),
+}
+
+#[derive(Debug, MeshPayload)]
+pub struct RootComplexCxlConfig {
+    /// HDM window size in bytes for this CXL root complex.
+    pub hdm_size: u64,
+    /// CFMWS HDM window restrictions bitmask.
+    pub hdm_window_restrictions: u16,
+}
+
 #[derive(Debug, MeshPayload)]
 pub struct PcieRootComplexConfig {
     pub index: u32,
@@ -216,16 +212,26 @@ pub struct PcieRootComplexConfig {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
-    pub ecam_range: MemoryRange,
-    pub low_mmio: MemoryRange,
-    pub high_mmio: MemoryRange,
+    pub low_mmio: PcieMmioRangeConfig,
+    pub high_mmio: PcieMmioRangeConfig,
     pub ports: Vec<PcieRootPortConfig>,
+    /// Optional CXL configuration for root-complex CXL mode.
+    pub cxl: Option<RootComplexCxlConfig>,
 }
 
 #[derive(Debug, MeshPayload)]
 pub struct PcieRootPortConfig {
+    /// Root-port name used for topology wiring and lookup.
     pub name: String,
+    /// Enables PCIe hotplug capabilities for this root port.
     pub hotplug: bool,
+    /// Optional ACS capability bitmask to expose on this root port.
+    pub acs_capabilities_supported: Option<u16>,
+    /// Marks this root port as CXL-capable.
+    ///
+    /// Runtime port construction derives required BAR/subregion layout from
+    /// this flag (currently CXL component registers for BAR0).
+    pub cxl: bool,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -234,6 +240,7 @@ pub struct PcieSwitchConfig {
     pub num_downstream_ports: u8,
     pub parent_port: String,
     pub hotplug: bool,
+    pub acs_capabilities_supported: Option<u16>,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -291,10 +298,28 @@ pub enum PmuGsivConfig {
     Disabled,
 }
 
+/// MSI controller selection for aarch64 PCIe interrupt delivery.
+#[derive(Debug, Protobuf, Default, Clone)]
+pub enum GicMsiConfig {
+    /// Automatically select the best available MSI controller:
+    /// ITS when the hypervisor supports it, otherwise GICv2m.
+    #[default]
+    Auto,
+    /// Force GICv3 ITS for MSI delivery via LPIs.
+    Its,
+    /// Force GICv2m for MSI delivery via SPIs.
+    V2m {
+        /// Number of SPIs to reserve for PCIe MSIs. Defaults to a
+        /// platform-specific value when `None`.
+        spi_count: Option<u32>,
+    },
+}
+
 #[derive(Debug, Protobuf, Default, Clone)]
 pub struct Aarch64TopologyConfig {
     pub gic_config: Option<GicConfig>,
     pub pmu_gsiv: PmuGsivConfig,
+    pub gic_msi: GicMsiConfig,
 }
 
 /// GIC configuration for the virtual machine.
@@ -337,9 +362,6 @@ pub struct MemoryConfig {
     pub transparent_hugepages: bool,
     pub hugepages: bool,
     pub hugepage_size: Option<u64>,
-    pub mmio_gaps: Vec<MemoryRange>,
-    pub pci_ecam_gaps: Vec<MemoryRange>,
-    pub pci_mmio_gaps: Vec<MemoryRange>,
     /// Test only: per-NUMA-node memory sizes. When set, RAM is distributed
     /// across vNUMA nodes according to these sizes instead of assigning all RAM
     /// to node 0. The sum must equal `mem_size`.

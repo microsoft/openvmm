@@ -282,8 +282,8 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
             with_pic: chipset_capabilities.with_pic,
             with_pit: chipset_capabilities.with_pit,
             with_psp: platform_config.general.psp_enabled,
-            pm_base: crate::worker::PM_BASE,
-            acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+            pm_base: chipset_resources::pm::DEFAULT_PM_PIO_BASE,
+            acpi_irq: chipset_resources::pm::DEFAULT_ACPI_IRQ,
         },
     };
 
@@ -384,6 +384,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         },
         initrd: initrd_info,
         dtb: None,
+        bzimage_setup_header: None,
     };
 
     loader::linux::load_config(
@@ -483,8 +484,8 @@ pub fn write_uefi_config(
                 with_pic: chipset_capabilities.with_pic,
                 with_pit: chipset_capabilities.with_pit,
                 with_psp: platform_config.general.psp_enabled,
-                pm_base: crate::worker::PM_BASE,
-                acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+                pm_base: chipset_resources::pm::DEFAULT_PM_PIO_BASE,
+                acpi_irq: chipset_resources::pm::DEFAULT_ACPI_IRQ,
             },
             #[cfg(guest_arch = "aarch64")]
             arch: vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {

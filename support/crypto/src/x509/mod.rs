@@ -3,24 +3,31 @@
 
 //! X.509 certificate operations.
 
-#![cfg(any(openssl, symcrypt))]
+#![cfg(any(openssl, rust, symcrypt))]
 
 #[cfg(openssl)]
 mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
 
-#[cfg(symcrypt)]
-mod symcrypt;
-#[cfg(symcrypt)]
-use symcrypt as sys;
+#[cfg(any(rust, symcrypt))]
+mod symcrypt_rust;
+#[cfg(any(rust, symcrypt))]
+use symcrypt_rust as sys;
 
 use thiserror::Error;
 
 /// An error for X.509 operations.
+#[cfg(not(rust))]
 #[derive(Debug, Error)]
 #[error("X.509 error")]
-pub struct X509Error(#[source] super::BackendError);
+pub struct X509Error(#[source] pub(crate) super::BackendError);
+
+/// An error for X.509 operations.
+#[cfg(rust)]
+#[derive(Debug, Error)]
+#[error("X.509 error during {1}")]
+pub struct X509Error(#[source] pub(crate) der::Error, pub(crate) &'static str);
 
 /// An X.509 certificate.
 pub struct X509Certificate(pub(crate) sys::X509CertificateInner);
@@ -32,7 +39,7 @@ impl X509Certificate {
     }
 
     /// Extract the public key from this certificate.
-    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, X509Error> {
+    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
         self.0.public_key()
     }
 
@@ -40,12 +47,20 @@ impl X509Certificate {
     /// public key.
     /// Returns `Ok(true)` if the signature is valid, `Ok(false)` if the
     /// signature is invalid, or an error for other failures.
-    pub fn verify(&self, issuer_public_key: &crate::rsa::RsaPublicKey) -> Result<bool, X509Error> {
+    pub fn verify(
+        &self,
+        issuer_public_key: &crate::rsa::RsaPublicKey,
+    ) -> Result<bool, crate::rsa::RsaError> {
         self.0.verify(issuer_public_key)
     }
 
     /// Check if this certificate (acting as issuer) issued `subject`.
-    pub fn issued(&self, subject: &X509Certificate) -> bool {
+    ///
+    /// This performs only deterministic structural comparisons - it does not
+    /// cryptographically verify the issuer's signature on `subject`. Callers
+    /// that need to establish a trust relationship must additionally call
+    /// [`X509Certificate::verify`] with the issuer's public key.
+    pub fn issued(&self, subject: &X509Certificate) -> Result<bool, X509Error> {
         self.0.issued(&subject.0)
     }
 
@@ -102,7 +117,7 @@ mod tests {
         let cert = build_test_cert(&key);
         let pubkey = cert.public_key().unwrap();
         assert!(cert.verify(&pubkey).unwrap());
-        assert!(cert.issued(&cert));
+        assert!(cert.issued(&cert).unwrap());
     }
 
     /// A cert signed by one key must NOT verify against an unrelated key.

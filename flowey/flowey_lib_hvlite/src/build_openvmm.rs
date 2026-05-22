@@ -7,13 +7,13 @@ use crate::common::CommonProfile;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum OpenvmmFeature {
     Gdb,
     Tpm,
-    UnstableWhp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -45,6 +45,7 @@ impl Artifact for OpenvmmOutput {}
 flowey_request! {
     pub struct Request {
         pub params: OpenvmmBuildParams,
+        pub version: Option<ReadVar<(u16, u16, u16, u16)>>,
         pub openvmm: WriteVar<OpenvmmOutput>,
     }
 }
@@ -82,9 +83,26 @@ impl FlowNode for Node {
                     target,
                     features,
                 },
+            version,
             openvmm: openvmm_bin,
         } in requests
         {
+            // Set the OPENVMM_* env vars for version information (if provided).
+            let extra_env = version.map(|version| {
+                ctx.emit_minor_rust_stepv("set openvmm version env vars", |ctx| {
+                    let version = version.claim(ctx);
+                    |rt| {
+                        let mut env = BTreeMap::new();
+                        let (major, minor, patch, revision) = rt.read(version);
+                        env.insert("OPENVMM_MAJOR".into(), major.to_string());
+                        env.insert("OPENVMM_MINOR".into(), minor.to_string());
+                        env.insert("OPENVMM_PATCH".into(), patch.to_string());
+                        env.insert("OPENVMM_REVISION".into(), revision.to_string());
+                        env
+                    }
+                })
+            });
+
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openvmm".into(),
                 out_name: "openvmm".into(),
@@ -97,7 +115,6 @@ impl FlowNode for Node {
                             match f {
                                 OpenvmmFeature::Gdb => "gdb",
                                 OpenvmmFeature::Tpm => "tpm",
-                                OpenvmmFeature::UnstableWhp => "unstable_whp",
                             }
                             .into()
                         })
@@ -105,7 +122,7 @@ impl FlowNode for Node {
                 ),
                 target: target.as_triple(),
                 no_split_dbg_info: false,
-                extra_env: None,
+                extra_env,
                 pre_build_deps: pre_build_deps.clone(),
                 output: v,
             });

@@ -112,6 +112,13 @@ enum InteractiveCommand {
         dir: PathBuf,
     },
 
+    /// Dump VM state (VP registers + memory) to a .vmrs file for WinDbg.
+    #[clap(visible_alias = "dump")]
+    DumpState {
+        /// Path for the output .vmrs file.
+        path: PathBuf,
+    },
+
     /// Do a pulsed save restore (pause, save, reset, restore, resume) to the VM.
     #[clap(visible_alias = "psr")]
     PulseSaveRestore,
@@ -829,6 +836,27 @@ pub(crate) async fn run_repl(
                     }
                     Err(err) => {
                         eprintln!("error: save-snapshot failed: {err:#}");
+                    }
+                }
+            }
+            InteractiveCommand::DumpState { path } => {
+                match vm_controller
+                    .call(
+                        VmControllerRpc::DumpState,
+                        path.to_string_lossy().into_owned(),
+                    )
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|r| Ok(r?))
+                {
+                    Ok(()) => {
+                        tracing::info!(
+                            path = %path.display(),
+                            "VM state dumped to VMRS file"
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("error: dump-state failed: {err:#}");
                     }
                 }
             }

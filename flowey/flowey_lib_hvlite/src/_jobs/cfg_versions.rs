@@ -24,15 +24,15 @@ pub const GH_CLI: &str = "2.52.0";
 pub const MDBOOK: &str = "0.4.40";
 pub const MDBOOK_ADMONISH: &str = "1.18.0";
 pub const MDBOOK_MERMAID: &str = "0.14.0";
-pub const MU_MSVM: &str = "26.0.1";
-pub const NEXTEST: &str = "0.9.101";
+pub const MU_MSVM: &str = "26.0.6";
+pub const NEXTEST: &str = "0.9.133";
 pub const NODEJS: &str = "24.x";
 // N.B. Kernel version numbers for dev and stable branches are not directly
 //      comparable. They originate from separate branches, and the fourth digit
 //      increases with each release from the respective branch.
-pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.18.0.2";
-pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.0.2";
-pub const OPENVMM_DEPS: &str = "0.1.0-20260427.3";
+pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.18.0.3";
+pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.0.3";
+pub const OPENVMM_DEPS: &str = "0.3.0-29";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {
@@ -62,6 +62,8 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::resolve_openhcl_kernel_package::Node>();
         ctx.import::<crate::resolve_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
+        ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::cfg_rustup_version::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
@@ -196,6 +198,18 @@ impl FlowNode for Node {
                 ..Default::default()
             });
         }
+        // The test Linux kernel and shared test initrd are always pulled
+        // from the openvmm-deps GitHub release; `LocalOpenvmmDeps` only
+        // overrides the (non-kernel/initrd) openvmm-deps tarball, since the
+        // 0.3.0 split moved the kernel and initrd into their own artifacts.
+        ctx.config(crate::resolve_openvmm_test_linux_kernel::Config {
+            version: Some(OPENVMM_DEPS.into()),
+            ..Default::default()
+        });
+        ctx.config(crate::resolve_openvmm_test_initrd::Config {
+            version: Some(OPENVMM_DEPS.into()),
+            ..Default::default()
+        });
         if !has_local_uefi {
             ctx.config(crate::download_uefi_mu_msvm::Config {
                 version: Some(MU_MSVM.into()),

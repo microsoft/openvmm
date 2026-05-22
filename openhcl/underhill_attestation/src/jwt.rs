@@ -53,11 +53,13 @@ pub(crate) enum CertificateChainValidationError {
     #[error("certificate chain is empty")]
     CertChainIsEmpty,
     #[error("failed to get public key from the certificate")]
-    GetPublicKeyFromCertificate(#[source] crypto::x509::X509Error),
+    GetPublicKeyFromCertificate(#[source] crypto::rsa::RsaError),
     #[error("failed to verify the child certificate signature with parent public key")]
-    VerifyChildSignatureWithParentPublicKey(#[source] crypto::x509::X509Error),
+    VerifyChildSignatureWithParentPublicKey(#[source] crypto::rsa::RsaError),
     #[error("cert chain validation failed -- signature mismatch")]
     CertChainSignatureMismatch,
+    #[error("failed to check if the certificate was issued by the issuer")]
+    CheckCertificateIssuedByIssuer(#[source] crypto::x509::X509Error),
     #[error("cert chain validation failed -- subject and issuer mismatch")]
     CertChainSubjectIssuerMismatch,
 }
@@ -221,7 +223,7 @@ fn verify_jwt_signature(
 ) -> Result<bool, JwtSignatureVerificationError> {
     match alg {
         JwtAlgorithm::RS256 => pkey
-            .pkcs1_verify(payload, signature, crypto::rsa::HashAlgorithm::Sha256)
+            .pkcs1_verify(payload, signature, crypto::HashAlgorithm::Sha256)
             .map_err(JwtSignatureVerificationError::VerifySignature),
     }
 }
@@ -251,7 +253,9 @@ fn validate_cert_chain(
                 Err(CertificateChainValidationError::CertChainSignatureMismatch)?
             }
 
-            let issued = parent.issued(child);
+            let issued = parent
+                .issued(child)
+                .map_err(CertificateChainValidationError::CheckCertificateIssuedByIssuer)?;
             if !issued {
                 Err(CertificateChainValidationError::CertChainSubjectIssuerMismatch)?
             }
@@ -392,7 +396,7 @@ mod tests {
 
         let payload = "test";
         let signature = rsa_key
-            .pkcs1_sign(payload.as_bytes(), crypto::rsa::HashAlgorithm::Sha256)
+            .pkcs1_sign(payload.as_bytes(), crypto::HashAlgorithm::Sha256)
             .unwrap();
 
         let cert = crate::test_helpers::generate_x509(&rsa_key);

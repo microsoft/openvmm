@@ -24,6 +24,7 @@ use gdma_defs::bnic::MANA_SHORT_PKT_FMT;
 use gdma_defs::bnic::ManaQueryStatisticsResponse;
 use gdma_defs::bnic::ManaRxcompOob;
 use gdma_defs::bnic::ManaTxCompOob;
+use gdma_defs::bnic::ManaTxLongOob;
 use gdma_defs::bnic::ManaTxOob;
 use gdma_defs::bnic::ManaTxShortOob;
 use guestmem::GuestMemory;
@@ -58,6 +59,7 @@ use net_backend::TxId;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
+use net_backend::VlanMetadata;
 use pal_async::task::Spawn;
 use safeatomic::AtomicSliceOps;
 use std::collections::VecDeque;
@@ -648,12 +650,14 @@ struct PostedTx {
 struct QueueStats {
     tx_events: Counter,
     tx_packets: Counter,
+    tx_vlan_packets: Counter,
     tx_errors: Counter,
     tx_dropped: Counter,
     tx_stuck: Counter,
 
     rx_events: Counter,
     rx_packets: Counter,
+    rx_vlan_packets: Counter,
     rx_errors: Counter,
 
     interrupts: Counter,
@@ -828,6 +832,27 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     short_vp_offset = tx_s_oob.short_vp_offset(),
                     "tx s_oob"
                 );
+
+                if tx_s_oob.pkt_fmt() == MANA_LONG_PKT_FMT {
+                    let l_oob_offset = wqe_offset + (header_size + s_oob_size) as u32;
+                    let l_oob_bytes = self.tx_wq.read(l_oob_offset, size_of::<ManaTxLongOob>());
+                    match ManaTxLongOob::read_from_prefix(&l_oob_bytes) {
+                        Ok((tx_l_oob, _)) => {
+                            tracelimit::event_ratelimited!(
+                                tracing_level,
+                                inject_vlan_pri_tag = tx_l_oob.inject_vlan_pri_tag(),
+                                vlan_id = tx_l_oob.vlan_id(),
+                                pcp = tx_l_oob.pcp(),
+                                dei = tx_l_oob.dei(),
+                                long_vp_offset = tx_l_oob.long_vp_offset(),
+                                "tx l_oob"
+                            );
+                        }
+                        Err(_) => {
+                            tracelimit::error_ratelimited!("failed to read tx l_oob");
+                        }
+                    }
+                }
             }
             Err(_) => {
                 tracelimit::error_ratelimited!("failed to read tx s_oob");
@@ -965,6 +990,9 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         } else {
                             (L4Protocol::Unknown, RxChecksumState::Unknown)
                         };
+                        let vlantag = rx_oob.flags.rx_vlantag_present().then(|| {
+                            VlanMetadata::new().with_vlan_id(rx_oob.flags.rx_vlan_id() as u16)
+                        });
                         let len = rx_oob.ppi[0].pkt_len.into();
                         pool.write_header(
                             rx.id,
@@ -974,6 +1002,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                                 ip_checksum,
                                 l4_checksum,
                                 l4_protocol,
+                                vlan: vlantag,
                             },
                         );
                         if rx.bounced_len_with_padding > 0 {
@@ -986,6 +1015,9 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                             pool.write_data(rx.id, &data);
                         }
                         self.stats.rx_packets.increment();
+                        if vlantag.is_some() {
+                            self.stats.rx_vlan_packets.increment();
+                        }
                         packets[i] = rx.id;
                         i += 1;
                     }
@@ -995,6 +1027,8 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                             vendor_err = rx_oob.cqe_hdr.vendor_err(),
                             rx_cq_id = self.rx_cq.id(),
                             rx_wq_id = self.rx_wq.id(),
+                            rx_vlantag_present = rx_oob.flags.rx_vlantag_present(),
+                            rx_vlan_id = rx_oob.flags.rx_vlan_id(),
                             "invalid rx cqe type"
                         );
                         self.trace_rx_wqe_from_offset(rx_oob.rx_wqe_offset);
@@ -1104,6 +1138,12 @@ impl BackendQueueStats for QueueStats {
     fn tx_packets(&self) -> Counter {
         self.tx_packets.clone()
     }
+    fn tx_vlan_packets(&self) -> Counter {
+        self.tx_vlan_packets.clone()
+    }
+    fn rx_vlan_packets(&self) -> Counter {
+        self.rx_vlan_packets.clone()
+    }
 }
 
 impl<T: DeviceBacking> ManaQueue<T> {
@@ -1184,10 +1224,17 @@ impl<T: DeviceBacking> ManaQueue<T> {
             .set_comp_tcp_csum(meta.flags.offload_tcp_checksum());
         oob.s_oob
             .set_comp_udp_csum(meta.flags.offload_udp_checksum());
-        if meta.flags.offload_tcp_checksum() {
+        if meta.flags.offload_tcp_checksum() || meta.flags.offload_udp_checksum() {
             oob.s_oob.set_trans_off(meta.l2_len as u16 + meta.l3_len);
         }
-        let short_format = self.vp_offset <= 0xff;
+        if let Some(vlan) = &meta.vlan {
+            oob.l_oob.set_inject_vlan_pri_tag(true);
+            oob.l_oob.set_vlan_id(vlan.vlan_id());
+            oob.l_oob.set_pcp(vlan.priority());
+            oob.l_oob.set_dei(vlan.drop_eligible_indicator());
+            self.stats.tx_vlan_packets.increment();
+        }
+        let short_format = self.vp_offset <= 0xff && meta.vlan.is_none();
         if short_format {
             oob.s_oob.set_pkt_fmt(MANA_SHORT_PKT_FMT);
             oob.s_oob.set_short_vp_offset(self.vp_offset as u8);

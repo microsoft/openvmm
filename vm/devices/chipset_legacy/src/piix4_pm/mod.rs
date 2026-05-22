@@ -3,9 +3,9 @@
 
 //! PIIX4 - Power Management
 
-use chipset::pm::PmTimerAssist;
+pub mod resolver;
+
 use chipset::pm::PowerAction;
-use chipset::pm::PowerActionFn;
 use chipset::pm::PowerManagementDevice;
 use chipset_device::ChipsetDevice;
 use chipset_device::interrupt::LineInterruptTarget;
@@ -25,8 +25,6 @@ use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 use vmcore::device_state::ChangeDeviceState;
-use vmcore::line_interrupt::LineInterrupt;
-use vmcore::vmtime::VmTimeAccess;
 
 /// IO ports used in the legacy Hyper-V implementation
 pub mod io_ports {
@@ -117,12 +115,16 @@ pub struct Piix4Pm {
 }
 
 impl Piix4Pm {
+    /// Create a new PIIX4 PM device wrapping a pre-constructed
+    /// [`PowerManagementDevice`].
+    ///
+    /// The `inner` PM device should be constructed by the resolver
+    /// infrastructure (see [`chipset::pm::resolver::resolve_pm_deps`])
+    /// with `enable_acpi_mode` set to `None`, as the PIIX4 variant manages
+    /// ACPI mode transitions through its own PCI config space.
     pub fn new(
-        power_action: PowerActionFn,
-        interrupt: LineInterrupt,
+        inner: PowerManagementDevice,
         register_pio: &mut dyn RegisterPortIoIntercept,
-        vmtime: VmTimeAccess,
-        pm_timer_assist: Option<Box<dyn PmTimerAssist>>,
     ) -> Self {
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
@@ -136,6 +138,7 @@ impl Piix4Pm {
                 type0_sub_system_id: 0,
             },
             Vec::new(),
+            Vec::new(),
             DeviceBars::new(),
         );
 
@@ -146,14 +149,7 @@ impl Piix4Pm {
         pio_static_status.map(io_ports::STATUS_PORT);
 
         Self {
-            inner: PowerManagementDevice::new(
-                power_action,
-                interrupt,
-                register_pio,
-                vmtime,
-                None, // manually configured
-                pm_timer_assist,
-            ),
+            inner,
             cfg_space,
             rt: Piix4PmRt {
                 pio_static_control,

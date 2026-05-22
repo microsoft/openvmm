@@ -370,6 +370,10 @@ impl HardwareIsolatedBacking for SnpBacked {
         {
             return true;
         }
+        // A pending virtual NMI also counts as a pending interrupt.
+        if vmsa.v_intr_cntrl().nmi() {
+            return true;
+        }
 
         let vmsa_priority = vmsa.v_intr_cntrl().priority() as u32;
         let lapic = &mut this.backing.cvm.lapics[vtl].lapic;
@@ -427,6 +431,8 @@ pub struct SnpBackedShared {
     #[inspect(skip)]
     guest_timer: hardware_cvm::VmTimeGuestTimer,
     secure_avic: bool,
+    /// Whether virtual NMI (V_NMI) is supported by the host CPU.
+    pub(crate) vnmi: bool,
 }
 
 impl SnpBackedShared {
@@ -448,6 +454,15 @@ impl SnpBackedShared {
         );
         let tsc_aux_virtualized = extended_sev_features.tsc_aux_virtualization();
 
+        // Query SVM features for V_NMI support directly from the host CPU via
+        // CPUID Fn8000_000A_EDX. We can't use `params.cpuid` here because the
+        // CVM cpuid mask filters EDX of this leaf down to zero (SVM is not
+        // exposed to the guest), so the V_NMI bit would never make it through.
+        let svm_features_edx = x86defs::cpuid::ExtendedSvmVersionAndFeaturesEdx::from(
+            safe_intrinsics::cpuid(CpuidFunction::ExtendedSvmVersionAndFeatures.0, 0).edx,
+        );
+        let vnmi = svm_features_edx.vnmi();
+
         // Query the SEV_FEATURES MSR to determine the features enabled on VTL2's VMSA
         // and use that to set btb_isolation, prevent_host_ibs, VMSA register protection,
         // and secure AVIC support.
@@ -455,7 +470,12 @@ impl SnpBackedShared {
         let sev_status =
             SevStatusMsr::from(msr.read_msr(x86defs::X86X_AMD_MSR_SEV).expect("read msr"));
         tracing::info!(CVM_ALLOWED, ?sev_status, "SEV status");
+
+        #[cfg(feature = "disable_secure_avic")]
+        let secure_avic = false;
+        #[cfg(not(feature = "disable_secure_avic"))]
         let secure_avic = sev_status.secure_avic();
+        tracing::info!(CVM_ALLOWED, ?secure_avic, "Secure AVIC status");
 
         // Configure timer interface for lower VTLs.
         let guest_timer = hardware_cvm::VmTimeGuestTimer;
@@ -467,6 +487,7 @@ impl SnpBackedShared {
             secure_avic,
             cvm,
             guest_timer,
+            vnmi,
         })
     }
 }
@@ -500,12 +521,14 @@ impl BackingPrivate for SnpBacked {
 
     fn init(this: &mut UhProcessor<'_, Self>) {
         let sev_status = this.vp().shared.sev_status;
+        let vnmi = this.vp().shared.vnmi;
         for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
             init_vmsa(
                 &mut this.runner.vmsa_mut(vtl),
                 vtl,
                 this.partition.caps.vtom,
                 sev_status,
+                vnmi,
             );
 
             // Reset VMSA-backed state.
@@ -819,6 +842,7 @@ fn init_vmsa(
     vtl: GuestVtl,
     vtom: Option<u64>,
     sev_status: SevStatusMsr,
+    vnmi: bool,
 ) {
     // BUGBUG: this isn't fully accurate--the hypervisor can try running
     // from this at any time, so we need to be careful to set the field
@@ -843,13 +867,23 @@ fn init_vmsa(
 
     // Configure the interrupt injection mode. Secure AVIC and alternate injection
     // are mutually exclusive (AMD PPR 15.36.16, 15.36.21).
-    if vtl == GuestVtl::Vtl0 && sev_status.secure_avic() {
-        vmsa.sev_features_mut().set_secure_avic(true);
-        vmsa.sev_features_mut().set_guest_intercept_control(true);
-    } else {
-        vmsa.sev_features_mut().set_alternate_injection(true);
+    #[cfg(not(feature = "disable_secure_avic"))]
+    {
+        if vtl == GuestVtl::Vtl0 && sev_status.secure_avic() {
+            vmsa.sev_features_mut().set_secure_avic(true);
+            vmsa.sev_features_mut().set_guest_intercept_control(true);
+        } else {
+            vmsa.sev_features_mut().set_alternate_injection(true);
+        }
     }
+
     vmsa.v_intr_cntrl_mut().set_guest_busy(true);
+
+    // Enable virtual NMI delivery if the host CPU supports it (VTL0 only).
+    if vnmi && vtl == GuestVtl::Vtl0 {
+        vmsa.v_intr_cntrl_mut().set_nmi_enable(true);
+    }
+
     // Note: The VMSA pages for VTL0 and VTL1 are converted to a VMSA page
     // in the RMP by the kernel, in mshv_configure_vmsa_page. The VTL2 VMSA
     // page is converted via SNP_LAUNCH_UPDATE.
@@ -1059,20 +1093,25 @@ impl<'b> ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpBacked> {
     }
 
     fn handle_nmi(&mut self, vtl: GuestVtl) {
-        // TODO SNP: support virtual NMI injection
-        // For now, just inject an NMI and hope for the best.
-        // Don't forget to update handle_cross_vtl_interrupts if this code changes.
-        let mut vmsa = self.runner.vmsa_mut(vtl);
+        // Don't forget to update is_interrupt_pending if this code changes.
 
-        // TODO GUEST VSM: Don't inject the NMI if there's already an event
-        // pending.
-
-        vmsa.set_event_inject(
-            SevEventInjectInfo::new()
-                .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_NMI)
-                .with_vector(2)
-                .with_valid(true),
-        );
+        if self.shared.vnmi && vtl == GuestVtl::Vtl0 {
+            {
+                let mut vmsa = self.runner.vmsa_mut(vtl);
+                vmsa.v_intr_cntrl_mut().set_nmi_enable(true);
+                vmsa.v_intr_cntrl_mut().set_nmi(true);
+            }
+        } else {
+            let mut vmsa = self.runner.vmsa_mut(vtl);
+            // TODO GUEST VSM: Don't inject the NMI if there's already an event
+            // pending.
+            vmsa.set_event_inject(
+                SevEventInjectInfo::new()
+                    .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_NMI)
+                    .with_vector(2)
+                    .with_valid(true),
+            );
+        }
         self.backing.cvm.lapics[vtl].nmi_pending = false;
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
     }
@@ -1186,16 +1225,66 @@ impl UhProcessor<'_, SnpBacked> {
                             )
                             .map_err(SnpGhcbError::GhcbPageAccess)?;
                     }
+                    x86defs::snp::GhcbUsage::BASE => {
+                        match SevExitCode(sw_exit_code) {
+                            // The hypervisor could not handle VMMCALL and forwarded the GHCB message
+                            SevExitCode::VMMCALL => {
+                                let shared_memory = &self.shared.cvm.shared_memory;
+                                let overlay_base = ghcb_overlay * HV_PAGE_SIZE;
+
+                                let input_control: u64 = shared_memory
+                                    .read_plain(
+                                        overlay_base + std::mem::offset_of!(SevVmsa, rcx) as u64,
+                                    )
+                                    .map_err(SnpGhcbError::GhcbPageAccess)?;
+                                let input_gpa: u64 = shared_memory
+                                    .read_plain(
+                                        overlay_base + std::mem::offset_of!(SevVmsa, rdx) as u64,
+                                    )
+                                    .map_err(SnpGhcbError::GhcbPageAccess)?;
+                                let output_gpa: u64 = shared_memory
+                                    .read_plain(
+                                        overlay_base + std::mem::offset_of!(SevVmsa, r8) as u64,
+                                    )
+                                    .map_err(SnpGhcbError::GhcbPageAccess)?;
+
+                                let guest_memory = &self.shared.cvm.shared_memory;
+                                let mut handler = GhcbEnlightenedHypercall {
+                                    handler: UhHypercallHandler {
+                                        vp: self,
+                                        trusted: false,
+                                        intercepted_vtl,
+                                    },
+                                    control: input_control,
+                                    output_gpa,
+                                    input_gpa,
+                                    result: 0,
+                                };
+
+                                UhHypercallHandler::UNTRUSTED_DISPATCHER
+                                    .dispatch(guest_memory, &mut handler);
+
+                                shared_memory
+                                    .write_at(
+                                        overlay_base + std::mem::offset_of!(SevVmsa, rax) as u64,
+                                        handler.result.as_bytes(),
+                                    )
+                                    .map_err(SnpGhcbError::GhcbPageAccess)?;
+                            }
+                            _ => {
+                                let exit_code = SevExitCode(sw_exit_code);
+                                unimplemented!("unhandled GHCB BASE sw_exit_code {exit_code:?}");
+                            }
+                        }
+                    }
                     usage => unimplemented!(
-                        r#"
-                        Invalid ghcb message.
-                        usage {usage:?}
-                        flags {flags:?}
-                        ghcb_msr {ghcb_msr:?}
-                        sw_exit_code {sw_exit_code:?}
-                        sw_exit_info1 {sw_exit_info1:?}
-                        sw_exit_info2 {sw_exit_info2:?}
-                    "#
+                        "Invalid ghcb message.\n\
+                         usage {usage:?}\n\
+                         flags {flags:?}\n\
+                         ghcb_msr {ghcb_msr:?}\n\
+                         sw_exit_code {sw_exit_code:?}\n\
+                         sw_exit_info1 {sw_exit_info1:?}\n\
+                         sw_exit_info2 {sw_exit_info2:?}"
                     ),
                 }
             }
@@ -1474,6 +1563,7 @@ impl UhProcessor<'_, SnpBacked> {
                 None
             }
         } else {
+            #[cfg(not(feature = "disable_secure_avic"))]
             assert!(
                 vmsa.sev_features().secure_avic(),
                 "secure AVIC must be enabled"

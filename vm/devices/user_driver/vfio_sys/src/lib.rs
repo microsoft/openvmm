@@ -6,6 +6,9 @@
 // UNSAFETY: Manual memory management with mmap and vfio ioctls.
 #![expect(unsafe_code)]
 
+pub mod cdev;
+pub mod iommufd;
+
 use anyhow::Context;
 use bitfield_struct::bitfield;
 use headervec::HeaderVec;
@@ -212,14 +215,6 @@ impl Container {
         unsafe {
             ioctl::vfio_iommu_unmap_dma(self.file.as_raw_fd(), &mut dma_unmap)
                 .context("VFIO_IOMMU_UNMAP_DMA failed")?;
-        }
-        if dma_unmap.size != size {
-            tracing::warn!(
-                iova,
-                requested = size,
-                actual = dma_unmap.size,
-                "VFIO_IOMMU_UNMAP_DMA: unmapped size differs from requested"
-            );
         }
         Ok(())
     }

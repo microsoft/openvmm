@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! XTS-AES-256 implementation using OpenSSL.
+
 use super::*;
 
 pub struct XtsAes256Inner {
@@ -52,8 +54,8 @@ impl XtsAes256Inner {
 }
 
 impl XtsAes256EncCtxInner<'_> {
-    pub fn cipher(&mut self, tweak: u128, data: &mut [u8]) -> Result<(), XtsAes256Error> {
-        let iv = tweak.to_le_bytes();
+    pub fn cipher(&mut self, tweak: u64, data: &mut [u8]) -> Result<(), XtsAes256Error> {
+        let iv = (tweak as u128).to_le_bytes();
         self.ctx
             .encrypt_init(None, None, Some(&iv))
             .map_err(|e| err(e, "encryption"))?;
@@ -65,8 +67,8 @@ impl XtsAes256EncCtxInner<'_> {
 }
 
 impl XtsAes256DecCtxInner<'_> {
-    pub fn cipher(&mut self, tweak: u128, data: &mut [u8]) -> Result<(), XtsAes256Error> {
-        let iv = tweak.to_le_bytes();
+    pub fn cipher(&mut self, tweak: u64, data: &mut [u8]) -> Result<(), XtsAes256Error> {
+        let iv = (tweak as u128).to_le_bytes();
         self.ctx
             .decrypt_init(None, None, Some(&iv))
             .map_err(|e| err(e, "decryption"))?;

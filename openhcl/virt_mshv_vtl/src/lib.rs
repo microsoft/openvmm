@@ -380,6 +380,7 @@ struct UhCvmVpState {
     /// Hypervisor enlightenment emulator state.
     hv: VtlArray<ProcessorVtlHv, 2>,
     /// LAPIC state.
+    #[inspect(safe)]
     lapics: VtlArray<LapicState, 2>,
     /// Guest VSM state for this vp. Some when VTL 1 is enabled.
     vtl1: Option<GuestVsmVpState>,
@@ -1314,7 +1315,7 @@ struct UhInterruptTarget {
 }
 
 impl pci_core::msi::SignalMsi for UhInterruptTarget {
-    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         self.partition
             .request_msi(self.vtl, MsiRequest { address, data });
     }
@@ -2021,19 +2022,31 @@ impl UhPartition {
     }
 
     /// Trigger the LINT1 interrupt vector on the LAPIC of the BSP.
-    pub fn assert_debug_interrupt(&self, _vtl: u8) {
-        #[cfg(guest_arch = "x86_64")]
+    #[cfg(guest_arch = "x86_64")]
+    pub fn assert_debug_interrupt(&self, vtl: Vtl) {
         const LINT_INDEX_1: u8 = 1;
-        #[cfg(guest_arch = "x86_64")]
-        match self.inner.isolation {
-            IsolationType::Snp => {
-                tracing::error!(?_vtl, "Debug interrupts cannot be injected into SNP VMs",);
-            }
-            _ => {
-                let bsp_index = VpIndex::new(0);
-                self.pulse_lint(bsp_index, Vtl::try_from(_vtl).unwrap(), LINT_INDEX_1)
+        // For SNP CVMs, only deliver the debug NMI when the host CPU
+        // supports virtual NMI (CPUID Fn8000_000A_EDX[V_NMI]). Without
+        // V_NMI, injecting multiple NMIs can corrupt the NMI stack in the
+        // guest.
+        if self.inner.isolation == IsolationType::Snp {
+            let vnmi = match &self.inner.backing_shared {
+                BackingShared::Snp(snp) => snp.vnmi,
+                _ => false,
+            };
+            if !vnmi {
+                tracing::error!("debug interrupt is not supported on SNP without virtual NMI");
+                return;
             }
         }
+        let bsp_index = VpIndex::new(0);
+        self.pulse_lint(bsp_index, vtl, LINT_INDEX_1);
+    }
+
+    /// Debug interrupts are not supported on aarch64.
+    #[cfg(guest_arch = "aarch64")]
+    pub fn assert_debug_interrupt(&self, _vtl: Vtl) {
+        tracing::error!("debug interrupts are not supported on aarch64");
     }
 
     /// Enables or disables the PM timer assist.

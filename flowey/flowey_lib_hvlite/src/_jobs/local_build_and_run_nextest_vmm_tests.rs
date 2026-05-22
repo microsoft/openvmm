@@ -82,8 +82,6 @@ flowey_request! {
 
         pub selections: VmmTestSelections,
 
-        /// Use unstable WHP interfaces
-        pub unstable_whp: bool,
         /// Release build instead of debug build
         pub release: bool,
 
@@ -145,7 +143,6 @@ impl SimpleFlowNode for Node {
             target,
             test_content_dir,
             selections,
-            unstable_whp,
             release,
             build_only,
             copy_extras,
@@ -252,6 +249,7 @@ impl SimpleFlowNode for Node {
                     recipe: recipe_to_use,
                     custom_target: None,
                     extra_features: BTreeSet::new(),
+                    disable_secure_avic: false,
                     built_openvmm_hcl,
                     built_openhcl_boot,
                     built_openhcl_igvm,
@@ -308,12 +306,9 @@ impl SimpleFlowNode for Node {
                     target: target.clone(),
                     profile: CommonProfile::from_release(release),
                     // FIXME: this relies on openvmm default features
-                    features: if unstable_whp {
-                        [crate::build_openvmm::OpenvmmFeature::UnstableWhp].into()
-                    } else {
-                        [].into()
-                    },
+                    features: [].into(),
                 },
+                version: None,
                 openvmm: v,
             });
             if copy_extras {
@@ -484,7 +479,6 @@ impl SimpleFlowNode for Node {
                     arch,
                     platform: CommonPlatform::WindowsMsvc,
                 },
-                unstable_whp,
                 profile: CommonProfile::from_release(release),
                 tmk_vmm: v,
             });
@@ -508,7 +502,6 @@ impl SimpleFlowNode for Node {
                     arch,
                     platform: CommonPlatform::LinuxMusl,
                 },
-                unstable_whp,
                 profile: CommonProfile::from_release(release),
                 tmk_vmm: v,
             });
