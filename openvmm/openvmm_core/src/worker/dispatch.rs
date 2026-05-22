@@ -1088,48 +1088,78 @@ impl InitializedVm {
                 .then_some(1 << (physical_address_size - 1))
         });
 
-        // Validate hugepage settings and extract VM-wide memory flags from
-        // the first node with memory (all nodes should agree on VM-wide flags).
-        let first_mem = cfg.numa.nodes.iter().find_map(|n| n.mem.as_ref());
-        let prefetch_memory = first_mem.is_some_and(|m| m.prefetch_memory);
-        let private_memory = first_mem.is_some_and(|m| m.private_memory);
-        let transparent_hugepages = first_mem.is_some_and(|m| m.transparent_hugepages);
-        let hugepages = first_mem.is_some_and(|m| m.hugepages);
-        let hugepage_size = first_mem.and_then(|m| m.hugepage_size);
+        // Build per-node RAM backing requests. Each NUMA node with memory
+        // gets its own backing (memfd), enabling per-node hugepage settings
+        // and host NUMA binding.
+        let num_nodes = cfg.numa.nodes.len();
 
-        if let Some(size) = hugepage_size
-            && !hugepages
-        {
-            anyhow::bail!("hugepage_size={size} requires hugepages=on");
+        // Group RAM ranges by vnode.
+        let mut ranges_by_node: Vec<Vec<MemoryRange>> = vec![Vec::new(); num_nodes];
+        for r in mem_layout.ram() {
+            ranges_by_node[r.vnode as usize].push(r.range);
         }
 
-        // Collect RAM ranges for the backing request. All ranges go into a
-        // single backing for now; NUMA will split them across multiple.
-        let ram_ranges: Vec<MemoryRange> = mem_layout
-            .ram()
-            .iter()
-            .map(|r| r.range)
-            .chain(mem_layout.vtl2_range())
-            .collect();
+        // VTL2 memory goes on the first node with memory.
+        if let Some(vtl2_range) = mem_layout.vtl2_range() {
+            let first_mem_node = cfg
+                .numa
+                .nodes
+                .iter()
+                .position(|n| n.mem.is_some())
+                .unwrap_or(0);
+            ranges_by_node[first_mem_node].push(vtl2_range);
+        }
 
-        let mut backing = membacking::RamBackingRequest::new(ram_ranges)
-            .prefetch(prefetch_memory)
-            .private_memory(private_memory)
-            .transparent_hugepages(transparent_hugepages);
-        if hugepages {
-            backing = backing.hugepages(hugepage_size);
-        }
-        if let Some(smb) = shared_memory {
-            backing = backing.existing_mappable(smb.into_mappable());
-        }
+        // For restore, an existing mappable can only be applied to
+        // single-node configurations.
+        let nodes_with_ranges = ranges_by_node.iter().filter(|r| !r.is_empty()).count();
+        let mut existing_mappable = if let Some(smb) = shared_memory {
+            if nodes_with_ranges > 1 {
+                anyhow::bail!(
+                    "shared memory restore not supported with {nodes_with_ranges} memory nodes"
+                );
+            }
+            Some(smb.into_mappable())
+        } else {
+            None
+        };
 
         let mut memory_builder = GuestMemoryBuilder::new();
         memory_builder = memory_builder
             .vtl0_alias_map(vtl0_alias_map)
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
-            )
-            .add_backing(backing);
+            );
+
+        for (vnode, ranges) in ranges_by_node.into_iter().enumerate() {
+            if ranges.is_empty() {
+                continue;
+            }
+
+            let mem = cfg.numa.nodes[vnode]
+                .mem
+                .as_ref()
+                .with_context(|| format!("node {vnode} has RAM ranges but no memory config"))?;
+
+            if let Some(size) = mem.hugepage_size
+                && !mem.hugepages
+            {
+                anyhow::bail!("node {vnode}: hugepage_size={size} requires hugepages=on");
+            }
+
+            let mut backing = membacking::RamBackingRequest::new(ranges)
+                .prefetch(mem.prefetch_memory)
+                .private_memory(mem.private_memory)
+                .transparent_hugepages(mem.transparent_hugepages);
+            if mem.hugepages {
+                backing = backing.hugepages(mem.hugepage_size);
+            }
+            if let Some(mappable) = existing_mappable.take() {
+                backing = backing.existing_mappable(mappable);
+            }
+
+            memory_builder = memory_builder.add_backing(backing);
+        }
 
         #[cfg(all(windows, feature = "virt_whp"))]
         if !cfg.vpci_resources.is_empty() {
