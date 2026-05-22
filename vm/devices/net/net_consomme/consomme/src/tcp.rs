@@ -995,8 +995,6 @@ impl TcpConnectionInner {
             return true;
         }
 
-        let mut did_io = false;
-
         // Handle the tx path.
         if let Some(socket) = opt_socket.as_mut() {
             if self.state.tx_fin() {
@@ -1031,7 +1029,6 @@ impl TcpConnectionInner {
                                 break;
                             }
                             self.tx_buffer.extend_by(n);
-                            did_io = true;
                         }
                         Poll::Ready(Err(err)) => {
                             match err.kind() {
@@ -1055,14 +1052,13 @@ impl TcpConnectionInner {
                         Poll::Pending => break,
                     }
                 }
-                // If the buffer filled without hitting Pending, ensure the socket
-                // waker is registered so we get re-polled when the buffer drains
-                // and there's more data to read.
-                if self.tx_buffer.is_full() {
-                    let (a, b) = self.tx_buffer.unwritten_slices_mut();
-                    let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
-                    let _ = Pin::new(&mut *socket).poll_read_vectored(cx, &mut bufs);
-                }
+                // When the buffer fills without hitting Pending, the socket's
+                // cached readiness remains set (successful reads don't clear
+                // it). No explicit waker re-arm is needed — the next poll cycle
+                // (triggered when the guest ACKs and drains the buffer) will
+                // naturally retry the read via the still-cached readiness.
+                // Clearing readiness synthetically would be unsafe on
+                // edge-triggered epoll backends.
             }
         }
 
@@ -1075,7 +1071,6 @@ impl TcpConnectionInner {
                 match Pin::new(&mut *socket).poll_write_vectored(cx, &bufs) {
                     Poll::Ready(Ok(n)) => {
                         self.rx_buffer.consume(n);
-                        did_io = true;
                     }
                     Poll::Ready(Err(err)) => {
                         match err.kind() {
@@ -1112,16 +1107,10 @@ impl TcpConnectionInner {
             }
         }
 
-        // Flush deferred ACKs when this connection did I/O work or has a
-        // pending ACK that needs to go out. Without the `needs_ack` check,
-        // connections that receive data but have an idle host socket would
-        // never flush their ACK, causing the peer to retransmit.
-        let policy = if did_io || self.needs_ack {
-            AckPolicy::Flush
-        } else {
-            AckPolicy::Defer
-        };
-        self.send_next(sender, policy);
+        // Send any pending data or ACKs. Always use Flush: if no data was
+        // read from the socket and no ACK is pending, send_data will find
+        // nothing to do anyway.
+        self.send_next(sender, AckPolicy::Flush);
 
         // Detect normal connection closure (same logic as DNS backend).
         let closing = self.state == TcpState::TimeWait
@@ -1204,15 +1193,19 @@ impl TcpConnectionInner {
     }
 
     fn send_data(&mut self, sender: &mut Sender<'_, impl Client>, ack_policy: AckPolicy) {
-        // These computations assume syn has already been sent and acked.
-        let tx_payload_end = self.tx_acked + self.tx_buffer.len();
-        let tx_end = tx_payload_end + self.tx_fin_buffered as usize;
-        let effective_scale = if self.tx_window_scale_active {
+        // RFC 1323 §2.2: the window field in SYN/SYN-ACK is unscaled. Only
+        // apply the shift once the handshake is complete (first non-SYN window
+        // update sets tx_window_scale_active). For the guest-initiated path
+        // this is set before send_data can run; for host-initiated (port-forward)
+        // connections it guards against using the unscaled SYN-ACK window.
+        let scale = if self.tx_window_scale_active {
             self.tx_window_scale
         } else {
             0
         };
-        let tx_window_end = self.tx_acked + ((self.tx_window_len as usize) << effective_scale);
+        let tx_payload_end = self.tx_acked + self.tx_buffer.len();
+        let tx_end = tx_payload_end + self.tx_fin_buffered as usize;
+        let tx_window_end = self.tx_acked + ((self.tx_window_len as usize) << scale);
         let tx_done = seq_min([tx_end, tx_window_end]);
 
         if self.tx_send < tx_end && tx_window_end <= self.tx_send {
@@ -1519,8 +1512,8 @@ impl TcpConnectionInner {
             self.tx_window_len = tcp.window_len;
             self.tx_window_rx_seq = tcp.seq_number;
             self.tx_window_tx_seq = ack_number;
-            // RFC 1323 §2.2: window scaling becomes active after the handshake
-            // completes. This is idempotent — once set, it stays true.
+            // RFC 1323 §2.2: window scaling becomes active after the
+            // handshake. The SYN/SYN-ACK window field is unscaled.
             self.tx_window_scale_active = true;
         }
 
