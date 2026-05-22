@@ -4,6 +4,7 @@
 //! Hyper-V test pre-reqs
 
 use flowey::node::prelude::*;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 const HYPERV_TESTS_REQUIRED_FEATURES: [&str; 3] = [
@@ -15,6 +16,7 @@ const HYPERV_TESTS_REQUIRED_FEATURES: [&str; 3] = [
 const WHP_TESTS_REQUIRED_FEATURES: [&str; 1] = ["HypervisorPlatform"];
 
 const VIRT_REG_PATH: &str = r#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\Virtualization"#;
+const HYPERVISOR_REG_PATH: &str = r#"HKLM\System\CurrentControlSet\Control\Hypervisor"#;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum VmmTestsDepSelections {
@@ -188,52 +190,73 @@ Otherwise, press `ctrl-c` to cancel the run.
                         }
 
                         // Select required reg keys
-                        let mut reg_keys_to_set = BTreeSet::new();
+                        let mut reg_keys_to_set = BTreeMap::new();
                         if hyperv {
+                            reg_keys_to_set.insert(VIRT_REG_PATH, BTreeMap::new());
+
                             // Allow loading IGVM from file (to run custom OpenHCL firmware)
-                            reg_keys_to_set.insert("AllowFirmwareLoadFromFile");
+                            reg_keys_to_set.get_mut(VIRT_REG_PATH).unwrap().insert("AllowFirmwareLoadFromFile", ("REG_DWORD", "0x1"));
+
                             // Enable COM3 and COM4 for Hyper-V VMs so we can get the OpenHCL KMSG logs over serial
-                            reg_keys_to_set.insert("EnableAdditionalComPorts");
+                            reg_keys_to_set.get_mut(VIRT_REG_PATH).unwrap().insert("EnableAdditionalComPorts", ("REG_DWORD", "0x1"));
 
                             if hardware_isolation {
-                                reg_keys_to_set.insert("EnableHardwareIsolation");
+                                reg_keys_to_set.insert(HYPERVISOR_REG_PATH, BTreeMap::new());
+
+                                reg_keys_to_set.get_mut(VIRT_REG_PATH).unwrap().insert("EnableHardwareIsolation", ("REG_DWORD", "0x1"));
                             }
                         }
 
                         // Check if reg keys are set (skip if not auto_install, assume already set)
                         if installing && auto_install && !reg_keys_to_set.is_empty() {
-                            let output = flowey::shell_cmd!(rt, "reg.exe query {VIRT_REG_PATH}").output()?;
-                            if output.status.success() {
-                                let output = String::from_utf8_lossy(&output.stdout).to_string();
-                                for line in output.lines() {
-                                    let components = line.split_whitespace().collect::<Vec<_>>();
-                                    if components.len() == 3
-                                        && reg_keys_to_set.contains(components[0])
-                                        && components[1] == "REG_DWORD"
-                                        && components[2] == "0x1"
-                                    {
-                                        assert!(reg_keys_to_set.remove(components[0]));
+                            for (path, keys) in reg_keys_to_set.iter_mut() {
+                                let output = flowey::shell_cmd!(rt, "reg.exe query {path}").output()?;
+                                if output.status.success() {
+                                    let output = String::from_utf8_lossy(&output.stdout).to_string();
+                                    let mut existing_keys = BTreeMap::new();
+                                    for line in output.lines() {
+                                        let components = line.split_whitespace().collect::<Vec<_>>();
+                                        if components.len() == 3 {
+                                        existing_keys.insert(components[0], (components[1], components[2]));
+                                        }
+                                    }
+                                    for (key, (existing_type, existing_value)) in existing_keys.iter() {
+                                        if let Some((new_type, new_value)) = keys.get(key)
+                                            
+                                        {
+                                            if *existing_type == *new_type
+                                            && *existing_value == *new_value {
+                                                assert!( keys.remove(key).is_some());
+                                            }
+                                        }
                                     }
                                 }
                             }
+                            
                         } else if installing && !auto_install && !reg_keys_to_set.is_empty() {
                             // Not auto-installing, assume reg keys are already set
                             log::info!("Skipping registry key check. Assuming keys are already set.");
                             reg_keys_to_set.clear();
                         }
 
+                        // flatten the keys
+                        let reg_keys_to_set = reg_keys_to_set.into_iter().flat_map(|(p, k)| k.into_iter().map(move |(v, (t, d))| (p, v, t, d))).collect::<Vec<_>>();
+                        let mut reg_cmds = reg_keys_to_set.iter().map(|(p, v, t, d)| format!("reg.exe add \"{p}\" /v {v} /t {t} /d {d} /f")).collect::<Vec<_>>();
+
                         // Prompt before changing registry when running locally
                         if installing && auto_install && !reg_keys_to_set.is_empty() && matches!(rt.backend(), FlowBackend::Local) {
+                            
                             let mut reg_keys_to_set_string = String::new();
-                            for feature in reg_keys_to_set.iter() {
-                                reg_keys_to_set_string.push_str(feature);
+                            for cmd in reg_cmds.iter() {
+                                reg_keys_to_set_string.push_str(cmd);
                                 reg_keys_to_set_string.push('\n');
+                                
                             }
 
                             log::warn!(
                                 r#"
 ================================================================================
-To run the VMM tests, the following registry keys need to be set to 1:
+To run the VMM tests, the following registry keys need to be set:
 {reg_keys_to_set_string}
 
 If you're OK with changing the registry, please press <enter>.
@@ -245,13 +268,13 @@ Otherwise, press `ctrl-c` to cancel the run.
                         }
 
                         // Modify the registry
-                        for v in reg_keys_to_set {
+                        commands.append(&mut reg_cmds);
+                        for (p, v, t, d) in reg_keys_to_set {
                             // TODO: figure out why reg.exe is not found if I
                             // render the command as a string first and share
                             if installing && auto_install {
-                                flowey::shell_cmd!(rt, "reg.exe add {VIRT_REG_PATH} /v {v} /t REG_DWORD /d 1 /f").run()?;
+                                flowey::shell_cmd!(rt, "reg.exe add \"{p}\" /v {v} /t {t} /d {d} /f").run()?;
                             }
-                            commands.push(format!("reg.exe add \"{VIRT_REG_PATH}\" /v {v} /t REG_DWORD /d 1 /f"));
                         }
 
                         for write_cmds in write_commands {
