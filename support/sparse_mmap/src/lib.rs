@@ -378,4 +378,54 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    #[cfg(any(target_os = "linux", windows))]
+    fn test_alloc_numa_node0() {
+        let page_size = SparseMapping::page_size();
+        let size = 4 * page_size;
+        let mapping = SparseMapping::new(size).unwrap();
+
+        // Allocate with NUMA node 0 (always present).
+        mapping.alloc_numa(0, size, Some(0)).unwrap();
+
+        // Memory should be accessible and writable.
+        let pattern = vec![0xABu8; page_size];
+        mapping.write_at(0, &pattern).unwrap();
+        let mut buf = vec![0u8; page_size];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, pattern);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", windows))]
+    fn test_map_file_numa_node0() {
+        let page_size = SparseMapping::page_size();
+        let size = 4 * page_size;
+        let mapping = SparseMapping::new(size).unwrap();
+        let shmem = alloc_shared_memory(size, "test-numa").unwrap();
+
+        // Map with NUMA node 0 (always present).
+        mapping
+            .map_file_numa(0, size, &shmem, 0, true, Some(0))
+            .unwrap();
+
+        // Memory should be accessible and writable.
+        let pattern = vec![0xCDu8; page_size];
+        mapping.write_at(0, &pattern).unwrap();
+        let mut buf = vec![0u8; page_size];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, pattern);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", windows))]
+    fn test_alloc_numa_invalid_node() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(page_size).unwrap();
+
+        // A very large NUMA node number should fail with an error (not panic).
+        let result = mapping.alloc_numa(0, page_size, Some(99999));
+        assert!(result.is_err());
+    }
 }

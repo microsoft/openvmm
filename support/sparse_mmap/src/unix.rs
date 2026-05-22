@@ -215,6 +215,21 @@ impl SparseMapping {
         }
     }
 
+    /// Allocates private, writable memory at the given offset, optionally
+    /// bound to a specific host NUMA node via `mbind(MPOL_BIND)`.
+    pub fn alloc_numa(
+        &self,
+        offset: usize,
+        len: usize,
+        numa_node: Option<u32>,
+    ) -> Result<(), Error> {
+        self.alloc(offset, len)?;
+        if let Some(node) = numa_node {
+            self.mbind_at(offset, len, node)?;
+        }
+        Ok(())
+    }
+
     /// Maps read-only zero pages at the given offset within the mapping.
     pub fn map_zero(&self, offset: usize, len: usize) -> Result<(), Error> {
         // SAFETY: The flags passed in are guaranteed to be valid
@@ -277,6 +292,44 @@ impl SparseMapping {
                 file_offset as i64,
             )
         }
+    }
+
+    /// Maps a portion of a file mapping at `offset`, optionally bound to a
+    /// specific host NUMA node via `mbind(MPOL_BIND)`.
+    pub fn map_file_numa(
+        &self,
+        offset: usize,
+        len: usize,
+        file_mapping: impl AsFd,
+        file_offset: u64,
+        writable: bool,
+        numa_node: Option<u32>,
+    ) -> Result<(), Error> {
+        self.map_file(offset, len, file_mapping, file_offset, writable)?;
+        if let Some(node) = numa_node {
+            self.mbind_at(offset, len, node)?;
+        }
+        Ok(())
+    }
+
+    /// Calls `mbind(MPOL_BIND)` on a range within this mapping.
+    ///
+    /// The range at `offset..offset+len` must already be mapped (via
+    /// `alloc`, `map_file`, etc.) before calling this.
+    #[cfg(target_os = "linux")]
+    fn mbind_at(&self, offset: usize, len: usize, numa_node: u32) -> Result<(), Error> {
+        // SAFETY: the caller has just mapped this range within the
+        // SparseMapping, so `self.address + offset` is valid for `len` bytes.
+        unsafe { mbind_range(self.address.add(offset), len, numa_node) }
+    }
+
+    /// Stub for non-Linux unix platforms where `mbind` is not available.
+    #[cfg(not(target_os = "linux"))]
+    fn mbind_at(&self, _offset: usize, _len: usize, _numa_node: u32) -> Result<(), Error> {
+        Err(Error::new(
+            io::ErrorKind::Unsupported,
+            "NUMA memory binding is not supported on this platform",
+        ))
     }
 
     /// Maps memory into the mapping, passing parameters through to the mmap
@@ -561,4 +614,46 @@ pub fn alloc_shared_memory_hugetlb(
         io::ErrorKind::Unsupported,
         "hugetlb shared memory is only supported on Linux",
     ))
+}
+
+/// Calls `mbind(MPOL_BIND)` on an already-mapped virtual address range,
+/// binding it to a specific host NUMA node.
+///
+/// # Safety
+///
+/// `addr` must point to a valid mapped region of at least `len` bytes.
+#[cfg(target_os = "linux")]
+unsafe fn mbind_range(addr: *mut c_void, len: usize, numa_node: u32) -> io::Result<()> {
+    // MPOL constants not provided by libc.
+    const MPOL_BIND: libc::c_int = 2;
+    const MPOL_MF_STRICT: libc::c_uint = 1;
+    const MPOL_MF_MOVE: libc::c_uint = 2;
+
+    // Build nodemask bitmask. The kernel expects an array of unsigned long
+    // with bit `numa_node` set. maxnode is the number of bits (1-based).
+    let word_bits = libc::c_ulong::BITS as usize;
+    let word_index = numa_node as usize / word_bits;
+    let bit_index = numa_node as usize % word_bits;
+    let num_words = word_index + 1;
+    let mut nodemask = vec![0 as libc::c_ulong; num_words];
+    nodemask[word_index] = 1 << bit_index;
+    let maxnode = num_words * word_bits + 1;
+
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_mbind,
+            addr,
+            len,
+            MPOL_BIND,
+            nodemask.as_ptr(),
+            maxnode,
+            MPOL_MF_STRICT | MPOL_MF_MOVE,
+        )
+    };
+
+    if result == -1 {
+        return Err(Error::last_os_error());
+    }
+
+    Ok(())
 }

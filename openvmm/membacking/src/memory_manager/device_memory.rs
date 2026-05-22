@@ -116,6 +116,7 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
                 new_mapping.mappable.clone(),
                 new_mapping.file_offset,
                 new_mapping.writable,
+                None,
             ));
         }
         state.mappings.push(new_mapping);
@@ -173,6 +174,7 @@ impl MappableGuestMemory for DeviceMemoryControl {
                         mapping.mappable.clone(),
                         mapping.file_offset,
                         mapping.writable,
+                        None,
                     )
                     .await;
             }

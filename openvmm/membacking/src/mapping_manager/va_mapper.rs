@@ -120,18 +120,20 @@ impl MapperTask {
                     mappable,
                     writable,
                     file_offset,
+                    numa_node,
                     ..
                 }) => {
                     tracing::debug!(%range, "mapping received for range");
 
                     self.inner
                         .mapping
-                        .map_file(
+                        .map_file_numa(
                             range.start() as usize,
                             range.len() as usize,
                             &mappable,
                             file_offset,
                             writable,
+                            numa_node,
                         )
                         .expect("oom mapping file");
 
@@ -290,12 +292,18 @@ impl VaMapper {
         self.process.as_ref()
     }
 
-    /// Allocates private anonymous memory for a range within the mapping.
+    /// Allocates private anonymous memory for a range within the mapping,
+    /// optionally bound to a specific host NUMA node.
     ///
     /// This replaces the placeholder at the given offset with committed
     /// anonymous memory.
-    pub(crate) fn alloc_range(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
-        self.inner.mapping.alloc(offset, len)
+    pub(crate) fn alloc_range(
+        &self,
+        offset: usize,
+        len: usize,
+        numa_node: Option<u32>,
+    ) -> Result<(), std::io::Error> {
+        self.inner.mapping.alloc_numa(offset, len, numa_node)
     }
 
     /// Names a range within the mapping for debugging (visible in smaps).
