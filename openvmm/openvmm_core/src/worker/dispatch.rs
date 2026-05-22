@@ -2836,7 +2836,12 @@ impl LoadedVmInner {
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
                     Some(|rsdp_gpa: u64| {
                         acpi_builder.build_acpi_tables(rsdp_gpa, |dsdt| {
-                            add_devices_to_dsdt_arm64(dsdt, enable_serial, &self.chipset_mmio)
+                            add_devices_to_dsdt_arm64(
+                                dsdt,
+                                enable_serial,
+                                &self.chipset_mmio,
+                                self.hypervisor_cfg.with_hv,
+                            )
                         })
                     })
                 } else {
@@ -3616,6 +3621,7 @@ fn add_devices_to_dsdt_arm64(
     dsdt: &mut dsdt::Dsdt,
     enable_serial: bool,
     chipset_mmio: &ChipsetMmioRanges,
+    with_hv: bool,
 ) {
     // VMBus GIC INTID (PPI 2 = INTID 16 + 2 = 18), matching the DT path.
     const VMBUS_INTID: u32 = openvmm_defs::config::DEFAULT_VMBUS_PPI;
@@ -3627,12 +3633,14 @@ fn add_devices_to_dsdt_arm64(
     const PL011_SERIAL0_GSIV: u32 = 33;
     const PL011_SERIAL1_GSIV: u32 = 34;
 
-    dsdt.add_mmio_module(chipset_mmio.low, chipset_mmio.high);
+    if with_hv {
+        dsdt.add_mmio_module(chipset_mmio.low, chipset_mmio.high);
 
-    // VMBus on ARM64 ACPI needs a per-CPU interrupt (PPI) in _CRS.
-    // Always place under VMOD, not PCI0 — ARM64 doesn't use the x86
-    // PCI0 DSDT node.
-    dsdt.add_vmbus(false, Some(VMBUS_INTID));
+        // VMBus on ARM64 ACPI needs a per-CPU interrupt (PPI) in _CRS.
+        // Always place under VMOD, not PCI0 — ARM64 doesn't use the x86
+        // PCI0 DSDT node.
+        dsdt.add_vmbus(false, Some(VMBUS_INTID));
+    }
 
     if enable_serial {
         dsdt.add_sbsa_uart(

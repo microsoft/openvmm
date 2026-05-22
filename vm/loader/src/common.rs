@@ -145,17 +145,34 @@ pub fn compute_variable_mtrrs(
         result.push(X86Register::MtrrPhysBase2(
             chipset_low_mmio.end() | WRITEBACK,
         ));
-        result.push(X86Register::MtrrPhysMask2(mtrr_mask(
-            gpa_space_size,
-            chipset_high_mmio.start() - 1,
-        )));
+        if chipset_high_mmio.is_empty() {
+            // No high MMIO gap — RAM above the low gap is contiguous.
+            // Cover to the 8TB boundary (or GPA space limit) using the
+            // same split as the >64GB path below.
+            result.push(X86Register::MtrrPhysMask2(mtrr_mask(
+                gpa_space_size,
+                (1 << std::cmp::min(gpa_space_size, 43)) - 1,
+            )));
+            if gpa_space_size > 43 {
+                result.push(X86Register::MtrrPhysBase3((1 << 43) | WRITEBACK));
+                result.push(X86Register::MtrrPhysMask3(mtrr_mask(
+                    gpa_space_size,
+                    (1 << gpa_space_size) - 1,
+                )));
+            }
+        } else {
+            result.push(X86Register::MtrrPhysMask2(mtrr_mask(
+                gpa_space_size,
+                chipset_high_mmio.start() - 1,
+            )));
+        }
     }
 
     // If there is more memory than 64GB then use MTRR 206 and MTRR Mask 207 and possibly
     // MTRR 208 and MTRR Mask 209 depending on maximum address width. Both MTRR pairs are
     // used with the magic 8TB boundary to work around a bug in older Linux kernels
     // (e.g. RHEL 6.x, etc.)
-    if memory.end_of_ram() > chipset_high_mmio.end() {
+    if !chipset_high_mmio.is_empty() && memory.end_of_ram() > chipset_high_mmio.end() {
         result.push(X86Register::MtrrPhysBase3(
             chipset_high_mmio.end() | WRITEBACK,
         ));
