@@ -914,6 +914,10 @@ impl InitializedVm {
             .collect();
         tracing::info!(mem_size = total_mem_size, "guest RAM config");
 
+        // Validate NUMA topology.
+        super::numa::validate_numa_topology(&cfg.numa, cfg.processor_topology.proc_count)
+            .context("invalid NUMA topology")?;
+
         let vmtime_keeper = VmTimeKeeper::new(&driver_source.simple(), VmTime::from_100ns(0));
         let vmtime_source = vmtime_keeper
             .builder()
@@ -1150,7 +1154,8 @@ impl InitializedVm {
             let mut backing = membacking::RamBackingRequest::new(ranges)
                 .prefetch(mem.prefetch_memory)
                 .private_memory(mem.private_memory)
-                .transparent_hugepages(mem.transparent_hugepages);
+                .transparent_hugepages(mem.transparent_hugepages)
+                .host_numa_node(mem.host_numa_node);
             if mem.hugepages {
                 backing = backing.hugepages(mem.hugepage_size);
             }
