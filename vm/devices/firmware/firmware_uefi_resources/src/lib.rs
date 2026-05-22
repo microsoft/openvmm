@@ -187,6 +187,25 @@ impl CanResolveTo<ResolvedUefiNvramStorage> for UefiNvramStorageHandleKind {
     type Input<'a> = ();
 }
 
+/// Handle for VMGS-backed UEFI NVRAM storage. Resolved by the platform's
+/// VMGS-backed NVRAM storage resolver, which has access to the host VMGS
+/// client.
+#[derive(MeshPayload)]
+pub struct VmgsNvramStorageHandle;
+
+impl ResourceId<UefiNvramStorageHandleKind> for VmgsNvramStorageHandle {
+    const ID: &'static str = "uefi_vmgs";
+}
+
+/// Handle for an ephemeral, in-memory UEFI NVRAM store. Resolves to a fresh
+/// [`uefi_nvram_storage::in_memory::InMemoryNvram`] each time.
+#[derive(MeshPayload)]
+pub struct EphemeralNvramStorageHandle;
+
+impl ResourceId<UefiNvramStorageHandleKind> for EphemeralNvramStorageHandle {
+    const ID: &'static str = "uefi_ephemeral";
+}
+
 /// Resource kind for the UEFI watchdog platform implementation.
 pub enum UefiWatchdogPlatformHandleKind {}
 

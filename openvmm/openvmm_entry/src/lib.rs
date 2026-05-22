@@ -994,11 +994,17 @@ async fn vm_config_from_command_line(
             EfiDiagnosticsLogLevelType::Info => firmware_uefi_resources::LogLevel::make_info(),
             EfiDiagnosticsLogLevelType::Full => firmware_uefi_resources::LogLevel::make_full(),
         };
+        let nvram_storage = if opt.vmgs.is_some() {
+            firmware_uefi_resources::VmgsNvramStorageHandle.into_resource()
+        } else {
+            firmware_uefi_resources::EphemeralNvramStorageHandle.into_resource()
+        };
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
             arch,
             custom_uefi_vars.clone(),
             opt.secure_boot,
             log_level,
+            nvram_storage,
         ));
     }
 

@@ -390,6 +390,7 @@ impl PetriVmConfigOpenVmm {
                 custom_uefi_vars,
                 secure_boot,
                 log_level,
+                firmware_uefi_resources::EphemeralNvramStorageHandle.into_resource(),
             ));
         }
 

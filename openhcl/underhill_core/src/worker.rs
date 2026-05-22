@@ -2486,7 +2486,13 @@ async fn new_underhill_vm(
         // Register the platform resolvers used by the resource-model UEFI
         // device.
         resolver.add_resolver(UnderhillUefiLoggerResolver::new(get_client.clone()));
-        resolver.add_resolver(UnderhillUefiNvramStorageResolver::new(vmgs_client.clone()));
+        let nvram_storage = if let Some(vmgs_client) = vmgs_client.clone() {
+            resolver.add_resolver(UnderhillUefiNvramStorageResolver::new(vmgs_client));
+            firmware_uefi_resources::VmgsNvramStorageHandle.into_resource()
+        } else {
+            resolver.add_resolver(EphemeralUefiNvramStorageResolver);
+            firmware_uefi_resources::EphemeralNvramStorageHandle.into_resource()
+        };
         resolver.add_async_resolver(UnderhillUefiWatchdogPlatformResolver::new(
             get_client.clone(),
             partition.clone(),
@@ -2504,6 +2510,7 @@ async fn new_underhill_vm(
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest {
             config,
             generation_id_recv,
+            nvram_storage,
             vsm_config: true,
             time_source: PlatformResource.into_resource(),
         });

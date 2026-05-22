@@ -40,6 +40,7 @@ use firmware_uefi_resources::LogLevel;
 use firmware_uefi_resources::UefiCommandSet;
 use firmware_uefi_resources::UefiConfig;
 use firmware_uefi_resources::UefiDeviceHandle;
+use firmware_uefi_resources::UefiNvramStorageHandleKind;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
@@ -82,6 +83,8 @@ pub struct UefiManifest {
     pub config: UefiConfig,
     /// Channel receiver for guest generation ID updates.
     pub generation_id_recv: mesh::Receiver<[u8; 16]>,
+    /// NVRAM backing storage resource.
+    pub nvram_storage: Resource<UefiNvramStorageHandleKind>,
     /// Whether to wire up the platform VSM configuration resource.
     pub vsm_config: bool,
     /// Time source resource for UEFI time services.
@@ -104,6 +107,7 @@ impl UefiManifest {
         custom_uefi_vars: CustomVars,
         secure_boot: bool,
         diagnostics_log_level: LogLevel,
+        nvram_storage: Resource<UefiNvramStorageHandleKind>,
     ) -> Self {
         let mut initial_generation_id = [0; 16];
         getrandom::fill(&mut initial_generation_id).expect("rng failure");
@@ -120,6 +124,7 @@ impl UefiManifest {
                 diagnostics_log_level,
             },
             generation_id_recv: mesh::channel().1,
+            nvram_storage,
             vsm_config: false,
             time_source: chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle {
                 delta_milliseconds: 0,
@@ -648,6 +653,7 @@ impl VmChipsetResult {
         let UefiManifest {
             config,
             generation_id_recv,
+            nvram_storage,
             vsm_config,
             time_source,
         } = uefi;
@@ -657,7 +663,7 @@ impl VmChipsetResult {
                 config,
                 generation_id_recv,
                 logger: PlatformResource.into_resource(),
-                nvram_storage: PlatformResource.into_resource(),
+                nvram_storage,
                 watchdog_platform: PlatformResource.into_resource(),
                 vsm_config: vsm_config.then(|| PlatformResource.into_resource()),
                 time_source,
