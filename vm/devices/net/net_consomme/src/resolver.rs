@@ -43,7 +43,7 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
                 .map_err(ResolveConsommeError::InvalidCidr)?;
         }
         let endpoint = if let Some(port_recv) = resource.recv {
-            ConsommeEndpoint::new_with_ports_and_requests(state, resource.ports, port_recv)
+            ConsommeEndpoint::new_dynamic(state, resource.ports, port_recv)
         } else {
             ConsommeEndpoint::new_with_ports(state, resource.ports)
         };

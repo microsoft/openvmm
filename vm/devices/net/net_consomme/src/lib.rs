@@ -105,46 +105,9 @@ impl ConsommeEndpoint {
         }
     }
 
-    pub fn new_dynamic(state: ConsommeParams) -> (Self, ConsommeControl) {
-        let consomme = Consomme::new(state);
-        let (send, recv) = mesh::channel();
-        (
-            Self {
-                endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
-                    consomme,
-                    recv: Some(recv),
-                    port_recv: None,
-                    port_forwards: Vec::new(),
-                }))),
-            },
-            ConsommeControl { send },
-        )
-    }
-
-    /// Creates a new dynamic endpoint with initial ports to forward and a
-    /// [`ConsommeControl`] handle for runtime bind/unbind.
-    pub fn new_dynamic_with_ports(
-        state: ConsommeParams,
-        ports: Vec<HostPortConfig>,
-    ) -> (Self, ConsommeControl) {
-        let consomme = Consomme::new(state);
-        let (send, recv) = mesh::channel();
-        (
-            Self {
-                endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
-                    consomme,
-                    recv: Some(recv),
-                    port_recv: None,
-                    port_forwards: ports,
-                }))),
-            },
-            ConsommeControl { send },
-        )
-    }
-
     /// Creates a new endpoint with initial ports and a channel for runtime
     /// port bind/unbind requests from an external source (e.g. ttrpc server).
-    pub fn new_with_ports_and_requests(
+    pub fn new_dynamic(
         state: ConsommeParams,
         ports: Vec<HostPortConfig>,
         port_recv: mesh::Receiver<ConsommeRequest>,
@@ -429,7 +392,7 @@ impl ConsommeQueue {
                         "Consomme dynamic update channel failure"
                     );
                     state.recv = None;
-                    return;
+                    break;
                 }
                 Poll::Ready(Ok(message)) => process_message(
                     &mut state.consomme.access(&mut Client {
@@ -440,11 +403,11 @@ impl ConsommeQueue {
                     }),
                     message,
                 ),
-                Poll::Pending => return,
+                Poll::Pending => break,
             }
         }
 
-        // Poll cross-proc port request channel and delegate to the shared handler.
+        // Poll cross-proc port request channel.
         while let Some(recv) = &mut state.port_recv {
             match recv.poll_recv(cx) {
                 Poll::Ready(Err(err)) => {
