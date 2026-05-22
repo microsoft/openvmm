@@ -101,5 +101,28 @@ pub(crate) async fn get_device_paths(
         );
     }
 
+    // Verify each device is in the "running" SCSI state before declaring
+    // discovery successful.
+    //
+    // SCSI LUN removal in the Linux guest is asynchronous: after a LUN is
+    // removed from VTL2 settings, the kernel takes some time to actually
+    // tear down the block device. If a subsequent re-add races with an
+    // in-flight removal, the block device node can briefly exist while its
+    // SCSI device is in a transient state (e.g. "cancel" / "deleted" /
+    // "transport-offline"), causing `open(O_DIRECT)` to fail with EINVAL
+    // when the test starts IO. Reading the sysfs state lets the caller's
+    // retry loop wait for the kernel to settle.
+    for dev in &device_paths {
+        let name = dev.trim_start_matches("/dev/");
+        let state = cmd!(sh, "cat /sys/block/{name}/device/state")
+            .read()
+            .await
+            .with_context(|| format!("failed to read SCSI state for {dev}"))?;
+        let state = state.trim();
+        if state != "running" {
+            anyhow::bail!("device {dev} is not running (state={state:?})");
+        }
+    }
+
     Ok(device_paths)
 }

@@ -284,7 +284,7 @@ pub struct WHV_RUN_VP_EXIT_CONTEXT {
     pub Reserved: u32,
     #[cfg(target_arch = "x86_64")]
     pub VpContext: WHV_VP_EXIT_CONTEXT,
-    #[cfg(all(target_arch = "aarch64", feature = "unstable_whp"))]
+    #[cfg(target_arch = "aarch64")]
     pub Reserved1: u64,
     pub u: WHV_RUN_VP_EXIT_CONTEXT_u,
 }

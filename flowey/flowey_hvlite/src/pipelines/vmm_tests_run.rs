@@ -60,9 +60,6 @@ pub struct VmmTestsRunCli {
     #[clap(long)]
     install_missing_deps: bool,
 
-    /// Use unstable WHP interfaces
-    #[clap(long)]
-    unstable_whp: bool,
     /// Release build instead of debug build
     #[clap(long)]
     release: bool,
@@ -152,7 +149,6 @@ impl IntoPipeline for VmmTestsRunCli {
             filter,
             verbose,
             install_missing_deps,
-            unstable_whp,
             release,
             build_only,
             copy_extras,
@@ -332,7 +328,6 @@ impl IntoPipeline for VmmTestsRunCli {
                     target,
                     test_content_dir,
                     selections: selections_from_resolved(filter, resolved, target_os),
-                    unstable_whp,
                     release,
                     build_only,
                     copy_extras,

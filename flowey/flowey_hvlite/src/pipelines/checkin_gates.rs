@@ -484,7 +484,6 @@ impl IntoPipeline for CheckinGatesCli {
                             platform: CommonPlatform::LinuxMusl,
                         },
                         profile: CommonProfile::from_release(release),
-                        unstable_whp: false,
                         tmk_vmm,
                     }
                 });
@@ -636,14 +635,9 @@ impl IntoPipeline for CheckinGatesCli {
                             },
                             profile: CommonProfile::from_release(release),
                             // FIXME: this relies on openvmm default features
-                            // Our ARM test runners need the latest WHP changes
-                            features: if matches!(arch, CommonArch::Aarch64) {
-                                [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::UnstableWhp]
-                                    .into()
-                            } else {
-                                [].into()
-                            },
+                            features: [].into(),
                         },
+                        version: None,
                         openvmm,
                     }
                 })
@@ -653,7 +647,6 @@ impl IntoPipeline for CheckinGatesCli {
                             arch,
                             platform: CommonPlatform::WindowsMsvc,
                         },
-                        unstable_whp: true, // The ARM64 CI runner supports the unstable WHP interface
                         profile: CommonProfile::from_release(release),
                         tmk_vmm,
                     }
@@ -803,6 +796,7 @@ impl IntoPipeline for CheckinGatesCli {
                             features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
                                 .into(),
                         },
+                        version: None,
                         openvmm,
                     }
                 })
@@ -871,6 +865,7 @@ impl IntoPipeline for CheckinGatesCli {
                             features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
                                 .into(),
                         },
+                        version: None,
                         openvmm,
                     }
                 })

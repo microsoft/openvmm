@@ -1208,11 +1208,26 @@ impl ConfigSpaceType1Emulator {
         capabilities: Vec<Box<dyn PciCapability>>,
         extended_capabilities: Vec<Box<dyn PciExtendedCapability>>,
     ) -> Self {
-        let common = ConfigSpaceCommonHeaderEmulator::new(
+        Self::new_with_bars(
             hardware_ids,
             capabilities,
             extended_capabilities,
             DeviceBars::new(),
+        )
+    }
+
+    /// Create a new [`ConfigSpaceType1Emulator`] with caller-specified BARs.
+    pub fn new_with_bars(
+        hardware_ids: HardwareIds,
+        capabilities: Vec<Box<dyn PciCapability>>,
+        extended_capabilities: Vec<Box<dyn PciExtendedCapability>>,
+        bars: DeviceBars,
+    ) -> Self {
+        let common = ConfigSpaceCommonHeaderEmulator::new(
+            hardware_ids,
+            capabilities,
+            extended_capabilities,
+            bars,
         );
 
         Self {
@@ -1444,6 +1459,16 @@ impl ConfigSpaceType1Emulator {
     /// Get the list of PCI capabilities (mutable).
     pub fn capabilities_mut(&mut self) -> &mut [Box<dyn PciCapability>] {
         self.common.capabilities_mut()
+    }
+
+    /// Finds a BAR + offset by address.
+    pub fn find_bar(&self, address: u64) -> Option<(u8, u64)> {
+        self.common.find_bar(address)
+    }
+
+    /// Gets the active base address for a specific BAR index, if mapped.
+    pub fn bar_address(&self, bar: u8) -> Option<u64> {
+        self.common.bar_address(bar)
     }
 }
 

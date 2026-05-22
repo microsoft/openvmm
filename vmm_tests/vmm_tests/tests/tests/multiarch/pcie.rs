@@ -1,6 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+// All of the PCIe tests on Linux direct have been marked as unstable due to
+// what is presumed to be a bug in the guest kernel currently being used.
+// TODO: remove the unstable designations once the kernel is updated.
+
 use crate::multiarch::OsFlavor;
 use crate::multiarch::cmd;
 use guid::Guid;
@@ -161,7 +165,7 @@ async fn parse_guest_pci_devices(
 /// Test PCIe root complex discovery and root port enumeration by
 /// guest software in a single segment topology.
 #[openvmm_test(
-    linux_direct_x64,
+    unstable_linux_direct_x64,
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     uefi_x64(vhd(ubuntu_2404_server_x64)),
     uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
@@ -194,7 +198,7 @@ async fn pcie_root_emulation_single_segment(
 /// Test PCIe root complex discovery and root port enumeration by
 /// guest software in a topology with multiple segments.
 #[openvmm_test(
-    linux_direct_x64,
+    unstable_linux_direct_x64,
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     uefi_x64(vhd(ubuntu_2404_server_x64)),
     uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
@@ -227,7 +231,7 @@ async fn pcie_root_emulation_multi_segment(
 /// Test PCIe switch enumeration when attached to both root
 /// ports and the downstream switch ports of other switches.
 #[openvmm_test(
-    linux_direct_x64,
+    unstable_linux_direct_x64,
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     uefi_x64(vhd(ubuntu_2404_server_x64)),
     uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
@@ -271,7 +275,7 @@ async fn pcie_switches(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 ///
 /// NOTE: This test relies on device specific software (drivers,
 /// tooling) within the guest OS to perform the validation.
-#[openvmm_test(linux_direct_x64)]
+#[openvmm_test(unstable_linux_direct_x64)]
 async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
@@ -328,7 +332,10 @@ async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Re
 
 /// Test PCIe hotplug: hot-add a device to a hotplug-capable port, verify the
 /// guest sees it, then hot-remove it and verify it's gone.
-#[openvmm_test(linux_direct_x64, uefi_x64(vhd(windows_datacenter_core_2022_x64)))]
+#[openvmm_test(
+    unstable_linux_direct_x64,
+    uefi_x64(vhd(windows_datacenter_core_2022_x64))
+)]
 async fn pcie_hotplug(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     _: (),
@@ -408,7 +415,7 @@ async fn pcie_hotplug(
 /// 2. Enumerates PCI devices visible to the guest
 /// 3. Pulses save/restore (pause → save → restore → resume)
 /// 4. Re-enumerates PCI devices and verifies they match
-#[openvmm_test(linux_direct_x64)]
+#[openvmm_test(unstable_linux_direct_x64)]
 async fn pcie_save_restore(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (mut vm, agent) = config

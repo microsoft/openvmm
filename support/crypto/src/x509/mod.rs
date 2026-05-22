@@ -21,13 +21,13 @@ use thiserror::Error;
 #[cfg(not(rust))]
 #[derive(Debug, Error)]
 #[error("X.509 error")]
-pub struct X509Error(#[source] super::BackendError);
+pub struct X509Error(#[source] pub(crate) super::BackendError);
 
 /// An error for X.509 operations.
 #[cfg(rust)]
 #[derive(Debug, Error)]
 #[error("X.509 error during {1}")]
-pub struct X509Error(#[source] der::Error, &'static str);
+pub struct X509Error(#[source] pub(crate) der::Error, pub(crate) &'static str);
 
 /// An X.509 certificate.
 pub struct X509Certificate(pub(crate) sys::X509CertificateInner);
@@ -39,7 +39,7 @@ impl X509Certificate {
     }
 
     /// Extract the public key from this certificate.
-    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, X509Error> {
+    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
         self.0.public_key()
     }
 
@@ -55,6 +55,11 @@ impl X509Certificate {
     }
 
     /// Check if this certificate (acting as issuer) issued `subject`.
+    ///
+    /// This performs only deterministic structural comparisons - it does not
+    /// cryptographically verify the issuer's signature on `subject`. Callers
+    /// that need to establish a trust relationship must additionally call
+    /// [`X509Certificate::verify`] with the issuer's public key.
     pub fn issued(&self, subject: &X509Certificate) -> Result<bool, X509Error> {
         self.0.issued(&subject.0)
     }

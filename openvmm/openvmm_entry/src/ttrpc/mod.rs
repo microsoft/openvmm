@@ -33,7 +33,6 @@ use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use netvsp_resources::NetvspHandle;
 use openvmm_defs::config::Config;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
@@ -541,13 +540,15 @@ impl VmService {
             })?);
         }
 
-        let chipset = VmManifestBuilder::new(
+        let chipset_builder = VmManifestBuilder::new(
             vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
             vm_manifest_builder::MachineArch::X86_64,
         )
-        .with_serial(ports)
-        .build()
-        .context("failed to build vm configuration")?;
+        .with_serial(ports);
+        let layout_config = chipset_builder.layout_config();
+        let chipset = chipset_builder
+            .build()
+            .context("failed to build vm configuration")?;
 
         // Extract memory and processor counts for the VmController.
         let config_mem_size = req_config
@@ -574,9 +575,6 @@ impl VmService {
             vpci_devices: vec![],
             memory: MemoryConfig {
                 mem_size: config_mem_size,
-                mmio_gaps: DEFAULT_MMIO_GAPS_X86.into(),
-                pci_ecam_gaps: vec![],
-                pci_mmio_gaps: vec![],
                 prefetch_memory: false,
                 private_memory: false,
                 transparent_hugepages: false,
@@ -615,6 +613,7 @@ impl VmService {
             chipset_devices: chipset.chipset_devices,
             pci_chipset_devices: chipset.pci_chipset_devices,
             chipset_capabilities: chipset.capabilities,
+            layout: layout_config,
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             automatic_guest_reset: true,

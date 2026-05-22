@@ -15,7 +15,7 @@ use crate::ModifyFn;
 use crate::NoPetriVmInspector;
 use crate::OpenHclServicingFlags;
 use crate::OpenvmmLogConfig;
-use crate::PetriHaltReason;
+use crate::PetriHaltReasonDetail;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmRuntime;
@@ -189,6 +189,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             enable_vpci_boot,
             secure_boot_enabled,
             default_boot_always_attempt,
+            efi_diagnostics_log_level,
             ..
         }) = config.firmware.uefi_config()
         {
@@ -213,6 +214,35 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 append_cmdline(
                     &mut openhcl_command_line,
                     "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=0",
+                );
+            }
+
+            // Plumb the EFI diagnostics log level via the OpenHCL command
+            // line. The corresponding `EfiDiagnosticsLogLevel` WMI property
+            // is not available on all hosts (e.g. rs_prerelease), so we
+            // rely on the underhill env var fallback instead. This means
+            // we currently only support setting the level on OpenHCL-backed
+            // VMs; for plain Hyper-V UEFI VMs we fail loudly rather than
+            // silently dropping the setting.
+            //
+            // TODO: switch to the WMI property (which would also cover the
+            // non-OpenHCL path) once host changes are saturated.
+            let efi_diag_cli = match efi_diagnostics_log_level {
+                crate::EfiDiagnosticsLogLevel::Default => None,
+                crate::EfiDiagnosticsLogLevel::Info => Some("INFO"),
+                crate::EfiDiagnosticsLogLevel::Full => Some("FULL"),
+            };
+            if let Some(cli) = efi_diag_cli {
+                if !properties.is_openhcl {
+                    anyhow::bail!(
+                        "with_efi_diagnostics_log_level({:?}) is only supported for \
+                         OpenHCL-backed Hyper-V UEFI VMs in this code path",
+                        efi_diagnostics_log_level
+                    );
+                }
+                append_cmdline(
+                    &mut openhcl_command_line,
+                    format!("HCL_EFI_DIAGNOSTICS_LOG_LEVEL={cli}"),
                 );
             }
 
@@ -448,7 +478,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         self.vm.remove().await
     }
 
-    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
+    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReasonDetail> {
         self.vm.wait_for_halt(allow_reset).await
     }
 

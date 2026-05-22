@@ -331,6 +331,7 @@ async fn launch_workers(
         default_boot_always_attempt: opt.default_boot_always_attempt,
         guest_state_lifetime: opt.guest_state_lifetime,
         guest_state_encryption_policy: opt.guest_state_encryption_policy,
+        efi_diagnostics_log_level: opt.efi_diagnostics_log_level,
         strict_encryption_policy: opt.strict_encryption_policy,
         attempt_ak_cert_callback: opt.attempt_ak_cert_callback,
         enable_vpci_relay: opt.enable_vpci_relay,

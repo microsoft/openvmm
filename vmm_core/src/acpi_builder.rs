@@ -4,6 +4,7 @@
 //! Construct ACPI tables for a concrete VM topology
 
 // TODO: continue to remove these hardcoded deps
+use acpi::cedt::Cedt;
 use acpi::dsdt;
 use acpi::ssdt::Ssdt;
 use acpi_spec::madt::InterruptPolarity;
@@ -13,6 +14,7 @@ use chipset::ioapic;
 use chipset::psp;
 use inspect::Inspect;
 use std::collections::BTreeMap;
+use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::pcie::PcieHostBridge;
 use vm_topology::processor::ArchTopology;
@@ -85,6 +87,81 @@ pub const OEM_INFO: acpi::builder::OemInfo = acpi::builder::OemInfo {
     creator_id: *b"MSHV",
     creator_revision: 0,
 };
+
+/// Errors that can occur while building PCIe SSDT/CEDT payloads.
+#[derive(Debug, Error)]
+pub enum PcieAcpiBuildError {
+    #[error("invalid CXL host-bridge CEDT entry for uid {uid}")]
+    CedtHostBridge {
+        uid: u32,
+        #[source]
+        source: acpi::cedt::CedtHostBridgeError,
+    },
+    #[error("failed to serialize CEDT ACPI table")]
+    CedtSerialize(#[source] acpi::cedt::CedtSerializeError),
+}
+
+/// Serialized PCIe-related ACPI tables.
+pub struct BuiltPcieAcpiTables {
+    /// SSDT bytes containing PCI host-bridge namespace objects.
+    pub ssdt: Vec<u8>,
+    /// Optional CEDT bytes when at least one valid CXL host bridge is present.
+    pub cedt: Option<Vec<u8>>,
+}
+
+/// Build PCIe SSDT/CEDT payloads from host-bridge topology.
+pub fn build_pcie_acpi_tables(
+    pcie_host_bridges: &[PcieHostBridge],
+) -> Result<BuiltPcieAcpiTables, PcieAcpiBuildError> {
+    let mut ssdt = Ssdt::new();
+    let mut cedt = Cedt::new();
+    let mut has_cedt_entries = false;
+
+    for bridge in pcie_host_bridges {
+        ssdt.add_pcie(
+            bridge.index,
+            bridge.segment,
+            bridge.start_bus,
+            bridge.end_bus,
+            bridge.ecam_range,
+            bridge.low_mmio,
+            bridge.high_mmio,
+            bridge.cxl.is_some(),
+        );
+
+        if let Some(cxl) = &bridge.cxl {
+            if let Err(source) = cedt.add_cxl_host_bridge(
+                bridge.index,
+                cxl.hdm_range,
+                cxl.chbcr_range,
+                cxl.hdm_window_restrictions.bits(),
+            ) {
+                return Err(PcieAcpiBuildError::CedtHostBridge {
+                    uid: bridge.index,
+                    source,
+                });
+            } else {
+                has_cedt_entries = true;
+            }
+        }
+    }
+
+    let cedt = if has_cedt_entries {
+        match cedt.to_bytes() {
+            Ok(table) => Some(table),
+            Err(source) => {
+                return Err(PcieAcpiBuildError::CedtSerialize(source));
+            }
+        }
+    } else {
+        None
+    };
+
+    Ok(BuiltPcieAcpiTables {
+        ssdt: ssdt.to_bytes(),
+        cedt,
+    })
+}
 
 pub trait AcpiTopology: ArchTopology + Inspect + Sized {
     fn extend_srat(topology: &ProcessorTopology<Self>, srat: &mut Vec<u8>);
@@ -329,10 +406,18 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             // address reported in the MCFG table must reflect wherever bus number
             // 0 would be accessible even if the host bridge has a different starting
             // bus number.
+            //
+            // The layout resolver guarantees `ecam_range.start() >=
+            // start_bus * 1 MiB` so this subtraction never underflows in
+            // practice. Use `wrapping_sub` anyway so that, if a future code
+            // path ever bypasses that check, behavior matches what a C MCFG
+            // builder would do: the guest sees a wrapped base address and is
+            // most likely to still compute the right per-bus ECAM addresses
+            // for the buses it actually accesses.
             let ecam_region_offset = (bridge.start_bus as u64) * 256 * 4096;
             mcfg_extra.extend_from_slice(
                 acpi_spec::mcfg::McfgSegmentBusRange::new(
-                    bridge.ecam_range.start() - ecam_region_offset,
+                    bridge.ecam_range.start().wrapping_sub(ecam_region_offset),
                     bridge.segment,
                     bridge.start_bus,
                     bridge.end_bus,
@@ -743,19 +828,12 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                 self.with_iort(|t| b.append(t));
             }
 
-            let mut ssdt = Ssdt::new();
-            for bridge in self.pcie_host_bridges {
-                ssdt.add_pcie(
-                    bridge.index,
-                    bridge.segment,
-                    bridge.start_bus,
-                    bridge.end_bus,
-                    bridge.ecam_range,
-                    bridge.low_mmio,
-                    bridge.high_mmio,
-                );
+            let pcie_tables = build_pcie_acpi_tables(self.pcie_host_bridges)
+                .expect("PCIe ACPI table build should not fail");
+            b.append_raw(&pcie_tables.ssdt);
+            if let Some(cedt) = pcie_tables.cedt {
+                b.append_raw(&cedt);
             }
-            b.append_raw(&ssdt.to_bytes());
         }
 
         if self.cache_topology.is_some() {
@@ -930,6 +1008,7 @@ mod test {
                 ecam_range: MemoryRange::new(0..256 * 256 * 4096),
                 low_mmio: MemoryRange::new(0..0),
                 high_mmio: MemoryRange::new(0..0),
+                cxl: None,
             },
             PcieHostBridge {
                 index: 1,
@@ -939,6 +1018,7 @@ mod test {
                 ecam_range: MemoryRange::new(5 * GB..5 * GB + 32 * 256 * 4096),
                 low_mmio: MemoryRange::new(0..0),
                 high_mmio: MemoryRange::new(0..0),
+                cxl: None,
             },
         ];
 
@@ -1033,6 +1113,7 @@ mod test {
                 ecam_range: MemoryRange::new(0..256 * 256 * 4096),
                 low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
                 high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+                cxl: None,
             },
             PcieHostBridge {
                 index: 7,
@@ -1042,6 +1123,7 @@ mod test {
                 ecam_range: MemoryRange::new(5 * GB..5 * GB + 32 * 256 * 4096),
                 low_mmio: MemoryRange::new(0xe0000000..0xe4000000),
                 high_mmio: MemoryRange::new(0x1040000000..0x1080000000),
+                cxl: None,
             },
         ];
         let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
@@ -1100,6 +1182,7 @@ mod test {
             ecam_range: MemoryRange::new(0..256 * 256 * 4096),
             low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
             high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+            cxl: None,
         }];
         let builder = new_builder(&mem, &topology, &pcie_host_bridges);
         assert!(builder.build_iort().is_none());
@@ -1129,11 +1212,36 @@ mod test {
             ecam_range: MemoryRange::new(0..256 * 256 * 4096),
             low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
             high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+            cxl: None,
         }];
         let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
 
         let tables = builder.build_acpi_tables(0x100000, |_, _| {});
         assert!(contains_signature(&tables.tables, b"MCFG"));
         assert!(contains_signature(&tables.tables, b"IORT"));
+    }
+
+    #[test]
+    fn test_acpi_tables_include_cedt_when_cxl_bridge_present() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(1).unwrap();
+        let pcie_host_bridges = vec![PcieHostBridge {
+            index: 0,
+            segment: 0,
+            start_bus: 0,
+            end_bus: 255,
+            ecam_range: MemoryRange::new(0..256 * 256 * 4096),
+            low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
+            high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+            cxl: Some(vm_topology::pcie::PcieHostBridgeCxlInfo {
+                chbcr_range: MemoryRange::new(0x1040000000..0x1040010000),
+                hdm_range: MemoryRange::new(0x1000000000..0x1040000000),
+                hdm_window_restrictions: Default::default(),
+            }),
+        }];
+        let builder = new_builder(&mem, &topology, &pcie_host_bridges);
+
+        let tables = builder.build_acpi_tables(0x100000, |_, _| {});
+        assert!(contains_signature(&tables.tables, b"CEDT"));
     }
 }

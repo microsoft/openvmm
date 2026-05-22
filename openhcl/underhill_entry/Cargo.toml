@@ -19,6 +19,9 @@ mem-profile-tracing = ["dep:dhat", "underhill_core/mem-profile-tracing"]
 # Enable mimalloc secure mode.
 mi-secure = ["mimalloc/secure"]
 
+# Disable secure AVIC support for SNP.
+disable_secure_avic = ["underhill_core/disable_secure_avic"]
+
 # Enable vpci support.
 vpci = ["underhill_core/vpci"]
 

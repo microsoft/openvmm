@@ -6,6 +6,7 @@
 
 use crate::IgvmAttestRequestHelper;
 use crate::igvm_attest;
+use crypto::HashAlgorithm;
 use crypto::rsa::RsaKeyPair;
 use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::GuestEmulationTransportClient;
@@ -66,18 +67,17 @@ pub(crate) enum Pkcs11RsaAesKeyUnwrapError {
     #[error("RSA unwrap failed")]
     RsaUnwrap(#[source] crypto::rsa::RsaError),
     #[error("AES unwrap failed")]
-    AesUnwrap(#[source] crypto::aes_key_wrap::AesKeyWrapError),
+    AesUnwrap(#[source] crypto::aes_kwp::AesKeyWrapError),
     #[error("failed to parse PKCS#8 DER as RSA key")]
     ParsePkcs8Der(#[source] crypto::rsa::RsaError),
 }
 
 /// PKCS#11 RSA AES key unwrap implementation.
+#[expect(deprecated)]
 fn pkcs11_rsa_aes_key_unwrap(
     unwrapping_rsa_key: &RsaKeyPair,
     wrapped_key_blob: &[u8],
 ) -> Result<RsaKeyPair, Pkcs11RsaAesKeyUnwrapError> {
-    use crypto::rsa::HashAlgorithm;
-
     let modulus_size = unwrapping_rsa_key.modulus_size();
 
     let (wrapped_aes_key, wrapped_rsa_key) = wrapped_key_blob
@@ -94,7 +94,7 @@ fn pkcs11_rsa_aes_key_unwrap(
     let unwrapped_aes_key = unwrapping_rsa_key
         .oaep_decrypt(wrapped_aes_key, HashAlgorithm::Sha1)
         .map_err(Pkcs11RsaAesKeyUnwrapError::RsaUnwrap)?;
-    let unwrapped_rsa_key = crypto::aes_key_wrap::AesKeyWrap::new(&unwrapped_aes_key)
+    let unwrapped_rsa_key = crypto::aes_kwp::AesKeyWrap::new(&unwrapped_aes_key)
         .and_then(|kw| kw.unwrapper()?.unwrap(wrapped_rsa_key))
         .map_err(Pkcs11RsaAesKeyUnwrapError::AesUnwrap)?;
     let unwrapped_rsa_key = RsaKeyPair::from_pkcs8_der(&unwrapped_rsa_key)
@@ -410,6 +410,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(deprecated)]
     fn pkcs11_rsa_aes_key_unwrap_roundtrip() {
         let target_key = RsaKeyPair::generate(2048).unwrap();
         let pkcs8_target_key = target_key.to_pkcs8_der().unwrap();
@@ -419,9 +420,9 @@ mod tests {
 
         let wrapping_rsa_key = RsaKeyPair::generate(2048).unwrap();
         let wrapped_aes_key = wrapping_rsa_key
-            .oaep_encrypt(&wrapping_aes_key, crypto::rsa::HashAlgorithm::Sha1)
+            .oaep_encrypt(&wrapping_aes_key, HashAlgorithm::Sha1)
             .unwrap();
-        let wrapped_target_key = crypto::aes_key_wrap::AesKeyWrap::new(&wrapping_aes_key)
+        let wrapped_target_key = crypto::aes_kwp::AesKeyWrap::new(&wrapping_aes_key)
             .unwrap()
             .wrapper()
             .unwrap()

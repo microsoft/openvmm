@@ -124,38 +124,52 @@ impl Ssdt {
         ecam_range: MemoryRange,
         low_mmio: MemoryRange,
         high_mmio: MemoryRange,
+        cxl: bool,
     ) {
         let mut pcie = Device::new(encode_pcie_name(index).as_slice());
-        pcie.add_object(&NamedObject::new(b"_HID", &EisaId(*b"PNP0A08")));
-        pcie.add_object(&NamedObject::new(b"_CID", &EisaId(*b"PNP0A03")));
+        if cxl {
+            // As recommended by the CXL specification, describe CXL host bridges with _HID "ACPI0016"
+            // and both PNP0A03 and PNP0A08 in _CID to maximize compatibility with different OSes.
+            pcie.add_object(&NamedString::new(b"_HID", b"ACPI0016"));
+            let mut cid_data = Vec::new();
+            cid_data.extend_from_slice(&EisaId(*b"PNP0A03").to_bytes());
+            cid_data.extend_from_slice(&EisaId(*b"PNP0A08").to_bytes());
+            pcie.add_object(&NamedObject::new(
+                b"_CID",
+                &StructuredPackage {
+                    elem_count: 2,
+                    elem_data: cid_data,
+                },
+            ));
+        } else {
+            pcie.add_object(&NamedObject::new(b"_HID", &EisaId(*b"PNP0A08")));
+            pcie.add_object(&NamedObject::new(b"_CID", &EisaId(*b"PNP0A03")));
+        }
         pcie.add_object(&NamedInteger::new(b"_UID", index.into()));
         pcie.add_object(&NamedInteger::new(b"_SEG", segment.into()));
         pcie.add_object(&NamedInteger::new(b"_BBN", start_bus.into()));
         pcie.add_object(&NamedInteger::new(b"_CCA", 1));
 
-        // _OSC method: grant native PCIe control to the OS.
+        // _OSC method: negotiate native control with the guest OS.
         //
         // Per ACPI spec §6.2.11 (_OSC, Operating System Capabilities), the OS
-        // calls _OSC to negotiate platform feature control. For PCIe root
-        // complexes, the UUID and capability definitions are specified in the
-        // PCI Firmware Specification §4.5.1 (_OSC Implementation for PCI Host
-        // Bridge Devices).
+        // calls _OSC to negotiate platform feature control.
         //
-        // UUID: 33DB4D5B-1FF7-401C-9657-7441C03DD766
+        // Supported UUIDs:
+        // - PCIe: 33DB4D5B-1FF7-401C-9657-7441C03DD766
         //   (PCI Firmware Spec §4.5.1, Table 4-3)
+        // - CXL:  68F2D50B-C469-4D8A-BD3D-941A103FD3FC (CXL host bridge mode)
         //
-        // Status DWORD[0] bit 2: "Unrecognized UUID"
+        // Status DWORD[0] bits used here:
+        // - bit 1 (0x02): unrecognized revision (CXL path, Arg1 != 1)
+        // - bit 2 (0x04): unrecognized UUID
         //   (ACPI spec §6.2.11.1, Table 6.15)
         //
-        // Method(_OSC, 4) {
-        //   CreateDWordField(Arg3, 0, STS0)
-        //   If (LEqual(Arg0, ToUUID("33DB4D5B-1FF7-401C-9657-7441C03DD766"))) {
-        //     Store(0, STS0)  // clear status — grant everything
-        //   } Else {
-        //     Or(STS0, 0x04, STS0)  // unrecognized UUID
-        //   }
-        //   Return(Arg3)
-        // }
+        // Behavior:
+        // - PCIe UUID: clear status (grant all requested control)
+        // - CXL UUID: if Arg1 == 1 clear status; else set bit 1
+        // - Any other UUID: set bit 2
+        // - Return Arg3
         let mut osc_method = Method::new(b"_OSC");
         osc_method.set_arg_count(4);
 
@@ -174,14 +188,78 @@ impl Ssdt {
             right: uuid_buffer,
         };
 
-        // Else { Or(STS0, 0x04, STS0) }
-        let or_op = OrOp {
-            operand1: b"STS0".to_vec(),
-            operand2: encode_integer(0x04),
-            target_name: b"STS0".to_vec(),
-        };
-        let else_body = ElseOp {
-            body: or_op.to_bytes(),
+        let else_body = if cxl {
+            // CXL _OSC UUID: 68f2d50b-c469-4d8a-bd3d-941a103fd3fc
+            // Rev 1 is currently supported; unsupported revisions set STS0 bit 1.
+            let cxl_osc_uuid = guid::guid!("68f2d50b-c469-4d8a-bd3d-941a103fd3fc");
+            let cxl_uuid_buffer = Buffer(cxl_osc_uuid.as_bytes()).to_bytes();
+            let cxl_uuid_match = LEqualOp {
+                left: encode_arg(0),
+                right: cxl_uuid_buffer,
+            };
+
+            let cxl_revision_match = LEqualOp {
+                left: encode_arg(1),
+                right: encode_integer(1),
+            };
+
+            let cxl_store_zero = StoreOp {
+                source: encode_integer(0),
+                destination: b"STS0".to_vec(),
+            };
+            let cxl_rev_if_op = IfOp {
+                predicate: cxl_revision_match.to_bytes(),
+                body: cxl_store_zero.to_bytes(),
+            };
+
+            // STS0 bit 1: unrecognized revision.
+            let cxl_revision_or = OrOp {
+                operand1: b"STS0".to_vec(),
+                operand2: encode_integer(0x02),
+                target_name: b"STS0".to_vec(),
+            };
+            let cxl_revision_else = ElseOp {
+                body: cxl_revision_or.to_bytes(),
+            };
+
+            // STS0 bit 2: unrecognized UUID.
+            let uuid_or = OrOp {
+                operand1: b"STS0".to_vec(),
+                operand2: encode_integer(0x04),
+                target_name: b"STS0".to_vec(),
+            };
+            let unknown_uuid_else = ElseOp {
+                body: uuid_or.to_bytes(),
+            };
+
+            let cxl_if_op = IfOp {
+                predicate: cxl_uuid_match.to_bytes(),
+                body: {
+                    let mut body = Vec::new();
+                    cxl_rev_if_op.append_to_vec(&mut body);
+                    cxl_revision_else.append_to_vec(&mut body);
+                    body
+                },
+            };
+
+            ElseOp {
+                body: {
+                    let mut body = Vec::new();
+                    cxl_if_op.append_to_vec(&mut body);
+                    unknown_uuid_else.append_to_vec(&mut body);
+                    body
+                },
+            }
+        } else {
+            // STS0 bit 2: unrecognized UUID.
+            let uuid_or = OrOp {
+                operand1: b"STS0".to_vec(),
+                operand2: encode_integer(0x04),
+                target_name: b"STS0".to_vec(),
+            };
+            ElseOp {
+                body: uuid_or.to_bytes(),
+            }
         };
 
         // If block: UUID matches — clear status and grant everything
@@ -314,6 +392,7 @@ mod tests {
             MemoryRange::new(0x1000_0000..0x2000_0000),
             MemoryRange::new(0xdc00_0000..0xe000_0000),
             MemoryRange::new(0x10_0000_0000..0x10_4000_0000),
+            false,
         );
 
         let bytes = ssdt.to_bytes();

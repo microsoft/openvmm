@@ -3433,10 +3433,9 @@ jobs:
       run: flowey.exe e 19 flowey_lib_common::gh_latest_completed_workflow_id 0
       shell: bash
     - name: download artifacts from github actions run
-      run: flowey.exe e 19 flowey_lib_common::download_gh_artifact 0
-      shell: bash
-    - name: write to directory variables
-      run: flowey.exe e 19 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
+      run: |-
+        flowey.exe e 19 flowey_lib_common::download_gh_artifact 0
+        flowey.exe e 19 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
     - name: unpack openvmm-test-initrd archives
       run: flowey.exe e 19 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
@@ -3886,10 +3885,9 @@ jobs:
       run: flowey.exe e 20 flowey_lib_common::gh_latest_completed_workflow_id 0
       shell: bash
     - name: download artifacts from github actions run
-      run: flowey.exe e 20 flowey_lib_common::download_gh_artifact 0
-      shell: bash
-    - name: write to directory variables
-      run: flowey.exe e 20 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
+      run: |-
+        flowey.exe e 20 flowey_lib_common::download_gh_artifact 0
+        flowey.exe e 20 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
     - name: unpack openvmm-test-initrd archives
       run: flowey.exe e 20 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
@@ -4156,10 +4154,9 @@ jobs:
       run: flowey.exe e 21 flowey_lib_common::gh_latest_completed_workflow_id 0
       shell: bash
     - name: download artifacts from github actions run
-      run: flowey.exe e 21 flowey_lib_common::download_gh_artifact 0
-      shell: bash
-    - name: write to directory variables
-      run: flowey.exe e 21 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
+      run: |-
+        flowey.exe e 21 flowey_lib_common::download_gh_artifact 0
+        flowey.exe e 21 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
     - name: unpack openvmm-test-initrd archives
       run: flowey.exe e 21 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
@@ -4430,10 +4427,9 @@ jobs:
       run: flowey.exe e 22 flowey_lib_common::gh_latest_completed_workflow_id 0
       shell: bash
     - name: download artifacts from github actions run
-      run: flowey.exe e 22 flowey_lib_common::download_gh_artifact 0
-      shell: bash
-    - name: write to directory variables
-      run: flowey.exe e 22 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
+      run: |-
+        flowey.exe e 22 flowey_lib_common::download_gh_artifact 0
+        flowey.exe e 22 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
     - name: unpack openvmm-test-initrd archives
       run: flowey.exe e 22 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
@@ -4700,10 +4696,9 @@ jobs:
       run: flowey.exe e 23 flowey_lib_common::gh_latest_completed_workflow_id 0
       shell: bash
     - name: download artifacts from github actions run
-      run: flowey.exe e 23 flowey_lib_common::download_gh_artifact 0
-      shell: bash
-    - name: write to directory variables
-      run: flowey.exe e 23 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
+      run: |-
+        flowey.exe e 23 flowey_lib_common::download_gh_artifact 0
+        flowey.exe e 23 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
     - name: unpack openvmm-test-initrd archives
       run: flowey.exe e 23 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
@@ -4917,10 +4912,9 @@ jobs:
       run: flowey e 24 flowey_lib_common::gh_latest_completed_workflow_id 0
       shell: bash
     - name: download artifacts from github actions run
-      run: flowey e 24 flowey_lib_common::download_gh_artifact 0
-      shell: bash
-    - name: write to directory variables
-      run: flowey e 24 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
+      run: |-
+        flowey e 24 flowey_lib_common::download_gh_artifact 0
+        flowey e 24 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
     - name: unpack openvmm-test-initrd archives
       run: flowey e 24 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
@@ -5225,10 +5219,9 @@ jobs:
       run: flowey e 25 flowey_lib_common::gh_latest_completed_workflow_id 0
       shell: bash
     - name: download artifacts from github actions run
-      run: flowey e 25 flowey_lib_common::download_gh_artifact 0
-      shell: bash
-    - name: write to directory variables
-      run: flowey e 25 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
+      run: |-
+        flowey e 25 flowey_lib_common::download_gh_artifact 0
+        flowey e 25 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
     - name: unpack openvmm-test-initrd archives
       run: flowey e 25 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
@@ -5580,10 +5573,9 @@ jobs:
       run: flowey.exe e 26 flowey_lib_common::gh_latest_completed_workflow_id 0
       shell: bash
     - name: download artifacts from github actions run
-      run: flowey.exe e 26 flowey_lib_common::download_gh_artifact 0
-      shell: bash
-    - name: write to directory variables
-      run: flowey.exe e 26 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
+      run: |-
+        flowey.exe e 26 flowey_lib_common::download_gh_artifact 0
+        flowey.exe e 26 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
     - name: unpack openvmm-test-initrd archives
       run: flowey.exe e 26 flowey_lib_hvlite::resolve_openvmm_test_initrd 0

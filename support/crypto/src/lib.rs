@@ -15,14 +15,19 @@
 
 pub mod aes_256_cbc;
 pub mod aes_256_gcm;
-pub mod aes_key_wrap;
+pub mod aes_kwp;
 pub mod hmac_sha_256;
-pub mod kdf;
+pub mod kbkdf;
 pub mod pkcs7;
 pub mod rsa;
 pub mod sha_256;
 pub mod x509;
 pub mod xts_aes_256;
+
+mod hashes;
+
+#[cfg(any(openssl, rust, symcrypt))]
+pub use hashes::HashAlgorithm;
 
 pub(crate) mod mac;
 pub(crate) mod win;

@@ -9,8 +9,6 @@ rust-version.workspace = true
 [features]
 gdb = ["vmm_core/gdb"]
 
-unstable_whp = ["virt_whp/unstable_whp"]
-
 [dependencies]
 hypervisor_resources.workspace = true
 openvmm_defs.workspace = true
@@ -29,8 +27,10 @@ vmgs_resources.workspace = true
 
 aarch64defs.workspace = true
 acpi.workspace = true
+cxl_spec.workspace = true
 floppy_resources.workspace = true
 hvdef.workspace = true
+hyperv_dump.workspace = true
 ide_resources.workspace = true
 igvm.workspace = true
 igvm_defs.workspace = true
@@ -39,7 +39,7 @@ virt.workspace = true
 vm_loader.workspace = true
 vmgs.workspace = true
 vmgs_broker.workspace = true
-vmm_core.workspace = true
+vmm_core = { workspace = true, features = ["dump"] }
 vmm_core_defs.workspace = true
 state_unit.workspace = true
 

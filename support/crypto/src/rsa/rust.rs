@@ -3,7 +3,10 @@
 
 //! RSA implementation using the `rsa` RustCrypto crate.
 
+#![expect(deprecated)]
+
 use super::RsaError;
+use crate::HashAlgorithm;
 use getrandom::SysRng;
 use pkcs8::DecodePrivateKey;
 use pkcs8::EncodePrivateKey;
@@ -14,9 +17,8 @@ use rsa::RsaPublicKey;
 use rsa::rand_core;
 use rsa::rand_core::UnwrapErr;
 use rsa::traits::PublicKeyParts;
-use sha2::Digest;
 
-fn rng() -> impl rand_core::CryptoRng {
+const fn rng() -> impl rand_core::CryptoRng {
     UnwrapErr(SysRng)
 }
 
@@ -48,14 +50,14 @@ impl RsaKeyPairInner {
     pub fn oaep_decrypt(
         &self,
         input: &[u8],
-        hash_algorithm: super::HashAlgorithm,
+        hash_algorithm: HashAlgorithm,
     ) -> Result<Vec<u8>, RsaError> {
         match hash_algorithm {
-            super::HashAlgorithm::Sha1 => {
+            HashAlgorithm::Sha1 => {
                 self.0
                     .decrypt_blinded(&mut rng(), Oaep::<sha1::Sha1>::new(), input)
             }
-            super::HashAlgorithm::Sha256 => {
+            HashAlgorithm::Sha256 => {
                 self.0
                     .decrypt_blinded(&mut rng(), Oaep::<sha2::Sha256>::new(), input)
             }
@@ -66,19 +68,18 @@ impl RsaKeyPairInner {
     pub fn pkcs1_sign(
         &self,
         data: &[u8],
-        hash_algorithm: super::HashAlgorithm,
+        hash_algorithm: HashAlgorithm,
     ) -> Result<Vec<u8>, RsaError> {
         // rsa's `sign` expects the caller-supplied buffer to already
         // be the hash digest of the message. Other backends take the raw
         // message and hash internally. Do the hash here before handing off.
+        let data = hash_algorithm.hash(data);
         match hash_algorithm {
-            super::HashAlgorithm::Sha1 => {
-                let data = sha1::Sha1::digest(data);
+            HashAlgorithm::Sha1 => {
                 self.0
                     .sign_with_rng(&mut rng(), Pkcs1v15Sign::new::<sha1::Sha1>(), &data)
             }
-            super::HashAlgorithm::Sha256 => {
-                let data = sha2::Sha256::digest(data);
+            HashAlgorithm::Sha256 => {
                 self.0
                     .sign_with_rng(&mut rng(), Pkcs1v15Sign::new::<sha2::Sha256>(), &data)
             }
@@ -96,19 +97,25 @@ impl RsaKeyPairInner {
 pub struct RsaPublicKeyInner(pub(crate) RsaPublicKey);
 
 impl RsaPublicKeyInner {
+    pub fn from_components(n: &[u8], e: &[u8]) -> Result<Self, RsaError> {
+        let key = RsaPublicKey::new(
+            rsa::BoxedUint::from_be_slice_vartime(n),
+            rsa::BoxedUint::from_be_slice_vartime(e),
+        )
+        .map_err(|e| RsaError(e, "constructing RSA public key from components"))?;
+        Ok(Self(key))
+    }
+
     pub fn oaep_encrypt(
         &self,
         input: &[u8],
-        hash_algorithm: super::HashAlgorithm,
+        hash_algorithm: HashAlgorithm,
     ) -> Result<Vec<u8>, RsaError> {
         match hash_algorithm {
-            super::HashAlgorithm::Sha1 => {
-                self.0.encrypt(&mut rng(), Oaep::<sha1::Sha1>::new(), input)
-            }
-            super::HashAlgorithm::Sha256 => {
-                self.0
-                    .encrypt(&mut rng(), Oaep::<sha2::Sha256>::new(), input)
-            }
+            HashAlgorithm::Sha1 => self.0.encrypt(&mut rng(), Oaep::<sha1::Sha1>::new(), input),
+            HashAlgorithm::Sha256 => self
+                .0
+                .encrypt(&mut rng(), Oaep::<sha2::Sha256>::new(), input),
         }
         .map_err(|e| RsaError(e, "OAEP encryption"))
     }
@@ -117,19 +124,18 @@ impl RsaPublicKeyInner {
         &self,
         data: &[u8],
         signature: &[u8],
-        hash_algorithm: super::HashAlgorithm,
+        hash_algorithm: HashAlgorithm,
     ) -> Result<bool, RsaError> {
         // rsa's `pkcs1_verify` expects the caller-supplied buffer to already
         // be the hash digest of the message. Other backends take the raw
         // message and hash internally. Do the hash here before handing off.
+        let data = hash_algorithm.hash(data);
         let result = match hash_algorithm {
-            super::HashAlgorithm::Sha1 => {
-                let data = sha1::Sha1::digest(data);
+            HashAlgorithm::Sha1 => {
                 self.0
                     .verify(Pkcs1v15Sign::new::<sha1::Sha1>(), &data, signature)
             }
-            super::HashAlgorithm::Sha256 => {
-                let data = sha2::Sha256::digest(data);
+            HashAlgorithm::Sha256 => {
                 self.0
                     .verify(Pkcs1v15Sign::new::<sha2::Sha256>(), &data, signature)
             }

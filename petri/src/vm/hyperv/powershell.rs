@@ -1451,6 +1451,92 @@ pub async fn run_get_winevent(
 const HYPERV_WORKER_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Admin";
 const HYPERV_VMMS_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Admin";
 
+macro_rules! define_winevents {
+    (
+        $($collection_name:ident(
+            $(
+                $(#[doc = $doc:literal])*
+                $vis:vis const $name:ident: u32 = $id:literal;
+            )*
+        )),*
+    ) => {
+        $($(
+            $(#[doc = $doc])*
+            $vis const $name: u32 = $id;
+        )*)*
+
+        /// Get the name of a Windows event ID
+        pub fn winevent_name(id: u32) -> Option<&'static str> {
+            match id {
+                $($(
+                    $name => Some(stringify!($name)),
+                )*)*
+                _ => None
+            }
+        }
+
+        $(
+            const $collection_name: &[u32] = &[
+                $($name,)*
+            ];
+        )*
+    };
+}
+
+define_winevents!(
+    BOOT_EVENT_IDS(
+        /// The vm successfully booted an operating system.
+        pub const MSVM_BOOT_RESULTS_SUCCESS: u32 = 18601;
+        /// The vm successfully booted an operating system, but at least one boot source failed secure boot validation.
+        pub const MSVM_BOOT_RESULTS_SUCCESS_SECURE_BOOT_FAILURES: u32 = 18602;
+        /// The vm failed to boot an operating system.
+        pub const MSVM_BOOT_RESULTS_FAILURE: u32 = 18603;
+        /// The vm failed to boot an operating system. At least one boot source failed secure boot validation.
+        pub const MSVM_BOOT_RESULTS_FAILURE_SECURE_BOOT_FAILURES: u32 = 18604;
+        /// The vm failed to boot an operating system. No bootable devices are configured.
+        pub const MSVM_BOOT_RESULTS_FAILURE_NO_DEVICES: u32 = 18605;
+        /// The vm is attempting to boot an operating system. (PCAT only)
+        pub const MSVM_BOOT_RESULTS_ATTEMPT: u32 = 18606;
+    ),
+    HALT_EVENT_IDS(
+        /// The vm was turned off.
+        pub const MSVM_HOST_STOP_SUCCESS: u32 = 18502;
+        /// The vm was shut down using the Shutdown Integration Component.
+        pub const MSVM_HOST_SHUTDOWN_SUCCESS: u32 = 18504;
+        /// The vm was shut down by the guest operating system.
+        pub const MSVM_GUEST_SHUTDOWN_SUCCESS: u32 = 18508;
+        /// The vm was shut down using the Shutdown Integration Component.
+        pub const MSVM_HOST_RESET_SUCCESS: u32 = 18512;
+        /// The vm was shut down by the guest operating system.
+        pub const MSVM_GUEST_RESET_SUCCESS: u32 = 18514;
+        /// The vm was shut down for a reset initiated by the guest operating system.
+        pub const MSVM_STOP_FOR_GUEST_RESET_SUCCESS: u32 = 18515;
+        /// The vm was turned off as it could not recover from a critical error.
+        pub const MSVM_STOP_CRITICAL_SUCCESS: u32 = 18528;
+        /// The vm was reset because the guest operating system requested an operation
+        /// that is not supported by Hyper-V or an unrecoverable error occurred.
+        /// This caused a triple fault.
+        pub const MSVM_TRIPLE_FAULT_GENERAL_ERROR: u32 = 18539;
+        /// The vm was reset because the guest operating system requested an operation
+        /// that is not supported by Hyper-V. This request caused a triple fault.
+        pub const MSVM_TRIPLE_FAULT_UNSUPPORTED_FEATURE_ERROR: u32 = 18540;
+        /// The vm was reset because an unrecoverable error occurred while accessing a
+        /// virtual processor register which caused a triple fault.
+        pub const MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR: u32 = 18550;
+        /// The vm was reset because an unrecoverable error occurred on a virtual
+        /// processor that caused a triple fault.
+        pub const MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR: u32 = 18560;
+        /// The vm was hibernated successfully.
+        pub const MSVM_GUEST_HIBERNATE_SUCCESS: u32 = 18608;
+        /// The vm has quit unexpectedly (the worker process terminated).
+        pub const MSVM_VMMS_VM_TERMINATE_ERROR: u32 = 14070;
+        /// The vm has encountered a fatal error. The guest operating system reported that it failed.
+        pub const MSVM_GUEST_CRASH_REPORT: u32 = 18590;
+        /// The vm failed in the management VTL before starting guest VTL0.
+        pub const MSVM_START_VTL0_REQUEST_ERROR: u32 = 18620;
+    )
+);
+
 /// Get Hyper-V event logs for a VM
 pub async fn hyperv_event_logs(
     vmid: Option<&Guid>,
@@ -1466,28 +1552,6 @@ pub async fn hyperv_event_logs(
     .await
 }
 
-/// The vm successfully booted an operating system.
-pub const MSVM_BOOT_RESULTS_SUCCESS: u32 = 18601;
-/// The vm successfully booted an operating system, but at least one boot source failed secure boot validation.
-pub const MSVM_BOOT_RESULTS_SUCCESS_SECURE_BOOT_FAILURES: u32 = 18602;
-/// The vm failed to boot an operating system.
-pub const MSVM_BOOT_RESULTS_FAILURE: u32 = 18603;
-/// The vm failed to boot an operating system. At least one boot source failed secure boot validation.
-pub const MSVM_BOOT_RESULTS_FAILURE_SECURE_BOOT_FAILURES: u32 = 18604;
-/// The vm failed to boot an operating system. No bootable devices are configured.
-pub const MSVM_BOOT_RESULTS_FAILURE_NO_DEVICES: u32 = 18605;
-/// The vm is attempting to boot an operating system. (PCAT only)
-pub const MSVM_BOOT_RESULTS_ATTEMPT: u32 = 18606;
-
-const BOOT_EVENT_IDS: [u32; 6] = [
-    MSVM_BOOT_RESULTS_SUCCESS,
-    MSVM_BOOT_RESULTS_SUCCESS_SECURE_BOOT_FAILURES,
-    MSVM_BOOT_RESULTS_FAILURE,
-    MSVM_BOOT_RESULTS_FAILURE_SECURE_BOOT_FAILURES,
-    MSVM_BOOT_RESULTS_FAILURE_NO_DEVICES,
-    MSVM_BOOT_RESULTS_ATTEMPT,
-];
-
 /// Get Hyper-V boot event logs for a VM
 pub async fn hyperv_boot_events(
     vmid: &Guid,
@@ -1498,58 +1562,10 @@ pub async fn hyperv_boot_events(
         &[HYPERV_WORKER_TABLE],
         Some(start_time),
         Some(&vmid),
-        &BOOT_EVENT_IDS,
+        BOOT_EVENT_IDS,
     )
     .await
 }
-
-/// The vm was turned off.
-pub const MSVM_HOST_STOP_SUCCESS: u32 = 18502;
-/// The vm was shut down using the Shutdown Integration Component.
-pub const MSVM_HOST_SHUTDOWN_SUCCESS: u32 = 18504;
-/// The vm was shut down by the guest operating system.
-pub const MSVM_GUEST_SHUTDOWN_SUCCESS: u32 = 18508;
-/// The vm was shut down using the Shutdown Integration Component.
-pub const MSVM_HOST_RESET_SUCCESS: u32 = 18512;
-/// The vm was shut down by the guest operating system.
-pub const MSVM_GUEST_RESET_SUCCESS: u32 = 18514;
-/// The vm was shut down for a reset initiated by the guest operating system.
-pub const MSVM_STOP_FOR_GUEST_RESET_SUCCESS: u32 = 18515;
-/// The vm was turned off as it could not recover from a critical error.
-pub const MSVM_STOP_CRITICAL_SUCCESS: u32 = 18528;
-/// The vm was reset because the guest operating system requested an operation
-/// that is not supported by Hyper-V or an unrecoverable error occurred.
-/// This caused a triple fault.
-pub const MSVM_TRIPLE_FAULT_GENERAL_ERROR: u32 = 18539;
-/// The vm was reset because the guest operating system requested an operation
-/// that is not supported by Hyper-V. This request caused a triple fault.
-pub const MSVM_TRIPLE_FAULT_UNSUPPORTED_FEATURE_ERROR: u32 = 18540;
-/// The vm was reset because an unrecoverable error occurred while accessing a
-/// virtual processor register which caused a triple fault.
-pub const MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR: u32 = 18550;
-/// The vm was reset because an unrecoverable error occurred on a virtual
-/// processor that caused a triple fault.
-pub const MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR: u32 = 18560;
-/// The vm was hibernated successfully.
-pub const MSVM_GUEST_HIBERNATE_SUCCESS: u32 = 18608;
-/// The vm has quit unexpectedly (the worker process terminated).
-pub const MSVM_VMMS_VM_TERMINATE_ERROR: u32 = 14070;
-
-const HALT_EVENT_IDS: [u32; 13] = [
-    MSVM_HOST_STOP_SUCCESS,
-    MSVM_HOST_SHUTDOWN_SUCCESS,
-    MSVM_GUEST_SHUTDOWN_SUCCESS,
-    MSVM_HOST_RESET_SUCCESS,
-    MSVM_GUEST_RESET_SUCCESS,
-    MSVM_STOP_FOR_GUEST_RESET_SUCCESS,
-    MSVM_STOP_CRITICAL_SUCCESS,
-    MSVM_TRIPLE_FAULT_GENERAL_ERROR,
-    MSVM_TRIPLE_FAULT_UNSUPPORTED_FEATURE_ERROR,
-    MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR,
-    MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR,
-    MSVM_GUEST_HIBERNATE_SUCCESS,
-    MSVM_VMMS_VM_TERMINATE_ERROR,
-];
 
 /// Get Hyper-V halt event logs for a VM
 pub async fn hyperv_halt_events(
@@ -1561,7 +1577,7 @@ pub async fn hyperv_halt_events(
         &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
         Some(start_time),
         Some(&vmid),
-        &HALT_EVENT_IDS,
+        HALT_EVENT_IDS,
     )
     .await
 }
@@ -1796,6 +1812,7 @@ pub async fn run_get_vm_host() -> anyhow::Result<HyperVGetVmHost> {
             .pipeline()
             .cmdlet("ConvertTo-Json")
             .arg("Depth", 3)
+            .arg("WarningAction", "Ignore")
             .flag("Compress")
             .finish()
             .build(),

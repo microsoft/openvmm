@@ -11,13 +11,11 @@ use crate::chipset::ChipsetBuilder;
 use crate::chipset::backing::arc_mutex::device::AddDeviceError;
 use crate::chipset::backing::arc_mutex::services::ArcMutexChipsetServices;
 use chipset::*;
-use chipset_device::interrupt::LineInterruptTarget;
 use chipset_device_resources::ConfigureChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use closeable_mutex::CloseableMutex;
-use cvm_tracing::CVM_ALLOWED;
 use firmware_uefi::UefiCommandSet;
 use framebuffer::Framebuffer;
 use framebuffer::FramebufferDevice;
@@ -46,6 +44,8 @@ pub enum BaseChipsetBuilderError {
     FeatureGatedDevice(&'static str),
     #[error("no valid ISA DMA controller for floppy")]
     NoDmaForFloppy,
+    #[error("failed to resolve resource")]
+    ResolveResource(#[source] vm_resource::ResolveError),
 }
 
 /// A grab-bag of device-specific interfaces that may need to be wired up into
@@ -223,12 +223,10 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_hyperv_firmware_uefi,
             deps_hyperv_framebuffer,
             deps_hyperv_ide,
-            deps_hyperv_power_management,
             deps_hyperv_vga,
             deps_i440bx_host_pci_bridge,
             deps_piix4_cmos_rtc,
             deps_piix4_pci_bus,
-            deps_piix4_power_management,
             deps_underhill_vga_proxy,
             deps_winbond_super_io_and_floppy_stub,
             deps_winbond_super_io_and_floppy_full,
@@ -411,9 +409,13 @@ impl<'a> BaseChipsetBuilder<'a> {
             initial_cmos,
         }) = deps_generic_cmos_rtc
         {
+            let resolved = resolver
+                .resolve(time_source, ())
+                .await
+                .map_err(BaseChipsetBuilderError::ResolveResource)?;
             builder.arc_mutex_device("rtc").add(|services| {
                 cmos_rtc::Rtc::new(
-                    time_source,
+                    resolved.0,
                     services.new_line(IRQ_LINE_SET, "interrupt", irq),
                     services.register_vmtime(),
                     century_reg_idx,
@@ -429,11 +431,15 @@ impl<'a> BaseChipsetBuilder<'a> {
             enlightened_interrupts,
         }) = deps_piix4_cmos_rtc
         {
+            let resolved = resolver
+                .resolve(time_source, ())
+                .await
+                .map_err(BaseChipsetBuilderError::ResolveResource)?;
             builder.arc_mutex_device("piix4-rtc").add(|services| {
                 // hard-coded to IRQ line 8, as per PIIX4 spec
                 let rtc_interrupt = services.new_line(IRQ_LINE_SET, "interrupt", 8);
                 chipset_legacy::piix4_cmos_rtc::Piix4CmosRtc::new(
-                    time_source,
+                    resolved.0,
                     rtc_interrupt,
                     services.register_vmtime(),
                     initial_cmos,
@@ -448,69 +454,6 @@ impl<'a> BaseChipsetBuilder<'a> {
         // for ARM64, 3 + 32 (SPI range start) = 35,
         // the SYSTEM_SPI_GENCOUNTER vector for the GIC
         const GENERATION_ID_IRQ: u32 = 3;
-
-        // TODO: use PowerRequestHandleKind
-        let pm_action = || {
-            let power = foundation.power_event_handler.clone();
-            move |action: pm::PowerAction| {
-                tracing::info!(CVM_ALLOWED, ?action, "guest initiated");
-                let req = match action {
-                    pm::PowerAction::PowerOff => PowerEvent::PowerOff,
-                    pm::PowerAction::Hibernate => PowerEvent::Hibernate,
-                    pm::PowerAction::Reboot => PowerEvent::Reset,
-                };
-                power.on_power_event(req);
-            }
-        };
-
-        if let Some(options::dev::HyperVPowerManagementDeps {
-            acpi_irq,
-            pio_base: pio_dynamic_reg_base,
-            pm_timer_assist,
-        }) = deps_hyperv_power_management
-        {
-            builder.arc_mutex_device("pm").add(|services| {
-                let pm = pm::PowerManagementDevice::new(
-                    Box::new(pm_action()),
-                    services.new_line(IRQ_LINE_SET, "gpe0", acpi_irq),
-                    &mut services.register_pio(),
-                    services.register_vmtime().access("pm"),
-                    Some(pm::EnableAcpiMode {
-                        default_pio_dynamic: pio_dynamic_reg_base,
-                    }),
-                    pm_timer_assist,
-                );
-                for range in pm.valid_lines() {
-                    services.add_line_target(GPE0_LINE_SET, range.clone(), *range.start());
-                }
-                pm
-            })?;
-        }
-
-        if let Some(options::dev::Piix4PowerManagementDeps {
-            attached_to,
-            pm_timer_assist,
-        }) = deps_piix4_power_management
-        {
-            builder
-                .arc_mutex_device("piix4-pm")
-                .on_pci_bus(attached_to)
-                .add(|services| {
-                    // hard-coded to IRQ line 9, as per PIIX4 spec
-                    let interrupt = services.new_line(IRQ_LINE_SET, "acpi", 9);
-                    let pm = chipset_legacy::piix4_pm::Piix4Pm::new(
-                        Box::new(pm_action()),
-                        interrupt,
-                        &mut services.register_pio(),
-                        services.register_vmtime().access("piix4-pm"),
-                        pm_timer_assist,
-                    );
-                    for range in pm.valid_lines() {
-                        services.add_line_target(GPE0_LINE_SET, range.clone(), *range.start());
-                    }
-                    pm
-                })?;
-        }
 
         if let Some(options::dev::HyperVFirmwareUefi {
             config,
@@ -919,17 +862,32 @@ mod weak_mutex_pci {
     }
 }
 
+#[cfg(any(
+    feature = "dev_generic_isa_floppy",
+    feature = "dev_winbond_super_io_and_floppy_full",
+    feature = "dev_winbond_super_io_and_floppy_stub"
+))]
 pub struct ArcMutexIsaDmaChannel {
     channel_num: u8,
     dma: Arc<CloseableMutex<dma::DmaController>>,
 }
 
+#[cfg(any(
+    feature = "dev_generic_isa_floppy",
+    feature = "dev_winbond_super_io_and_floppy_full",
+    feature = "dev_winbond_super_io_and_floppy_stub"
+))]
 impl ArcMutexIsaDmaChannel {
     pub fn new(dma: Arc<CloseableMutex<dma::DmaController>>, channel_num: u8) -> Self {
         Self { dma, channel_num }
     }
 }
 
+#[cfg(any(
+    feature = "dev_generic_isa_floppy",
+    feature = "dev_winbond_super_io_and_floppy_full",
+    feature = "dev_winbond_super_io_and_floppy_stub"
+))]
 impl vmcore::isa_dma_channel::IsaDmaChannel for ArcMutexIsaDmaChannel {
     fn check_transfer_size(&mut self) -> u16 {
         self.dma.lock().check_transfer_size(self.channel_num.into())
@@ -1085,14 +1043,12 @@ pub mod options {
             hyperv_firmware_uefi:        dev::HyperVFirmwareUefi,
             hyperv_framebuffer:          dev::HyperVFramebufferDeps,
             hyperv_ide:                  dev::HyperVIdeDeps,
-            hyperv_power_management:     dev::HyperVPowerManagementDeps,
             hyperv_vga:                  dev::HyperVVgaDeps,
 
             i440bx_host_pci_bridge:      dev::I440BxHostPciBridgeDeps,
 
             piix4_cmos_rtc:              dev::Piix4CmosRtcDeps,
             piix4_pci_bus:               dev::Piix4PciBusDeps,
-            piix4_power_management:      dev::Piix4PowerManagementDeps,
 
             underhill_vga_proxy:         dev::UnderhillVgaProxyDeps,
 
@@ -1153,26 +1109,8 @@ pub mod options {
             pub secondary_channel_drives: [Option<ide::DriveMedia>; 2],
         }
 
-        /// PIIX4 power management device (fixed pci address: 0:7.3)
-        pub struct Piix4PowerManagementDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
-            /// Interface to enable/disable PM timer assist
-            pub pm_timer_assist: Option<Box<dyn pm::PmTimerAssist>>,
-        }
-
         /// Generic dual 8237A ISA DMA controllers
         pub struct GenericIsaDmaDeps;
-
-        /// Hyper-V specific ACPI-compatible power management device
-        pub struct HyperVPowerManagementDeps {
-            /// IRQ line triggered on ACPI power event
-            pub acpi_irq: u32,
-            /// Base port io address of the device's register region
-            pub pio_base: u16,
-            /// Interface to enable/disable PM timer assist
-            pub pm_timer_assist: Option<Box<dyn pm::PmTimerAssist>>,
-        }
 
         /// AMD Platform Security Processor (PSP)
         pub struct GenericPspDeps;
@@ -1266,8 +1204,8 @@ pub mod options {
         pub struct GenericCmosRtcDeps {
             /// IRQ line to signal RTC device events
             pub irq: u32,
-            /// A source of "real time"
-            pub time_source: Box<dyn InspectableLocalClock>,
+            /// A time source resource, resolved at device build time.
+            pub time_source: vm_resource::Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
             /// Which CMOS RAM register contains the century register
             pub century_reg_idx: u8,
             /// Initial state of CMOS RAM
@@ -1276,8 +1214,8 @@ pub mod options {
 
         /// PIIX4 "flavored" MC146818A compatible RTC + CMOS device
         pub struct Piix4CmosRtcDeps {
-            /// A source of "real time"
-            pub time_source: Box<dyn InspectableLocalClock>,
+            /// A time source resource, resolved at device build time.
+            pub time_source: vm_resource::Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
             /// Initial state of CMOS RAM
             pub initial_cmos: Option<[u8; 256]>,
             /// Whether enlightened interrupts are enabled. Needed when

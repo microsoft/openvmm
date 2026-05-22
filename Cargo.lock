@@ -30,8 +30,10 @@ name = "acpi"
 version = "0.0.0"
 dependencies = [
  "acpi_spec",
+ "cxl_spec",
  "guid",
  "memory_range",
+ "thiserror 2.0.16",
  "x86defs",
  "zerocopy",
 ]
@@ -69,6 +71,27 @@ name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
+name = "aes"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66bd29a732b644c0431c6140f370d097879203d79b80c94a6747ba0872adaef8"
+dependencies = [
+ "cipher",
+ "cpubits",
+ "cpufeatures",
+]
+
+[[package]]
+name = "aes-kw"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40e4645e6ea320665abf87e13821f9a37ab204b34bcb18e34e7d1dcf2366516e"
+dependencies = [
+ "aes",
+ "const-oid",
+]
 
 [[package]]
 name = "aho-corasick"
@@ -682,6 +705,7 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "inspect",
+ "local_clock",
  "mesh",
  "vm_resource",
 ]
@@ -728,6 +752,16 @@ checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
 dependencies = [
  "ciborium-io",
  "half",
+]
+
+[[package]]
+name = "cipher"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e34d8227fe1ba289043aeb13792056ff80fd6de1a9f49137a5f499de8e8c78ea"
+dependencies = [
+ "crypto-common",
+ "inout",
 ]
 
 [[package]]
@@ -802,6 +836,18 @@ name = "cmov"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f88a43d011fc4a6876cb7344703e297c71dda42494fee094d5f7c76bf13f746"
+
+[[package]]
+name = "cms"
+version = "0.3.0-pre.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "986e7713348fbe5322df18082d73a0ad53a2946dbb7a02452cf3622b83b91e7c"
+dependencies = [
+ "const-oid",
+ "der",
+ "spki",
+ "x509-cert",
+]
 
 [[package]]
 name = "cobs"
@@ -1039,7 +1085,9 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 name = "crypto"
 version = "0.0.0"
 dependencies = [
+ "aes-kw",
  "anyhow",
+ "cms",
  "der",
  "getrandom 0.4.2",
  "hex",
@@ -1050,6 +1098,7 @@ dependencies = [
  "rsa",
  "sha1",
  "sha2",
+ "signature",
  "symcrypt",
  "thiserror 2.0.16",
  "wchar",
@@ -1118,6 +1167,23 @@ version = "0.0.0"
 dependencies = [
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "cxl_spec"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "bitfield-struct 0.11.0",
+ "chipset_device",
+ "inspect",
+ "mesh",
+ "pci_core",
+ "pci_resources",
+ "thiserror 2.0.16",
+ "tracing",
+ "vm_resource",
+ "vmcore",
 ]
 
 [[package]]
@@ -3295,6 +3361,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hvs_file"
+version = "0.0.0"
+dependencies = [
+ "crc32fast",
+ "open_enum",
+ "static_assertions",
+ "thiserror 2.0.16",
+ "zerocopy",
+]
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3369,6 +3446,20 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "hyperv_dump"
+version = "0.0.0"
+dependencies = [
+ "hvdef",
+ "hvs_file",
+ "memory_range",
+ "pal",
+ "static_assertions",
+ "tempfile",
+ "virt",
+ "zerocopy",
 ]
 
 [[package]]
@@ -3651,6 +3742,15 @@ dependencies = [
  "equivalent",
  "hashbrown",
  "serde",
+]
+
+[[package]]
+name = "inout"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4250ce6452e92010fdf7268ccc5d14faa80bb12fc741938534c58f16804e03c7"
+dependencies = [
+ "hybrid-array",
 ]
 
 [[package]]
@@ -4200,7 +4300,6 @@ dependencies = [
  "thiserror 2.0.16",
  "tracing",
  "virt",
- "vm_topology",
  "vmcore",
 ]
 
@@ -4880,6 +4979,7 @@ dependencies = [
  "chipset_device",
  "device_emulators",
  "disk_backend",
+ "disklayer_ram",
  "futures",
  "futures-concurrency",
  "guestmem",
@@ -5268,7 +5368,9 @@ dependencies = [
 name = "openvmm"
 version = "0.0.0"
 dependencies = [
+ "embed-resource",
  "openvmm_entry",
+ "openvmm_hypervisors",
  "openvmm_resources",
 ]
 
@@ -5290,6 +5392,7 @@ dependencies = [
  "chipset_resources",
  "closeable_mutex",
  "crc32fast",
+ "cxl_spec",
  "debug_ptr",
  "disk_backend",
  "fdt",
@@ -5307,6 +5410,7 @@ dependencies = [
  "guid",
  "hcl_compat_uefi_nvram_storage",
  "hvdef",
+ "hyperv_dump",
  "hypervisor_resources",
  "ide",
  "ide_resources",
@@ -5405,6 +5509,7 @@ dependencies = [
  "clap_dyn_complete",
  "console_relay",
  "crypto",
+ "cxl_spec",
  "debug_worker_defs",
  "diag_client",
  "dirs",
@@ -5427,7 +5532,6 @@ dependencies = [
  "input_core",
  "inspect",
  "inspect_proto",
- "memory_range",
  "mesh",
  "mesh_process",
  "mesh_rpc",
@@ -5502,6 +5606,7 @@ dependencies = [
  "build_rs_guest_arch",
  "chipset",
  "chipset_legacy",
+ "chipset_resources",
  "debug_worker",
  "disk_striped",
  "guest_watchdog",
@@ -5552,9 +5657,6 @@ dependencies = [
  "build_rs_guest_arch",
  "fs-err",
  "hypervisor_resources",
- "openvmm_core",
- "virt_hvf",
- "virt_kvm",
  "virt_mshv",
  "virt_whp",
  "vm_resource",
@@ -5578,6 +5680,8 @@ dependencies = [
  "build_rs_guest_arch",
  "chipset",
  "chipset_legacy",
+ "chipset_resources",
+ "cxl_spec",
  "debug_worker",
  "disk_blob",
  "disk_blockdevice",
@@ -5596,6 +5700,7 @@ dependencies = [
  "guest_emulation_log",
  "guest_watchdog",
  "hyperv_ic",
+ "hypervisor_resources",
  "mesh_worker",
  "missing_dev",
  "net_backend",
@@ -5606,7 +5711,6 @@ dependencies = [
  "nvme",
  "nvme_test",
  "openvmm_core",
- "openvmm_hypervisors",
  "rusqlite",
  "scsidisk",
  "serial_16550",
@@ -5618,6 +5722,10 @@ dependencies = [
  "tpm_device",
  "uidevices",
  "vhost_user_frontend",
+ "virt_hvf",
+ "virt_kvm",
+ "virt_mshv",
+ "virt_whp",
  "virtio",
  "virtio_blk",
  "virtio_console",
@@ -5929,6 +6037,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "cxl_spec",
  "inspect",
  "memory_range",
  "mesh",
@@ -6020,7 +6129,6 @@ dependencies = [
  "kmsg",
  "libtest-mimic",
  "linkme",
- "memory_range",
  "mesh",
  "mesh_process",
  "mesh_worker",
@@ -7543,7 +7651,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 [[package]]
 name = "symcrypt"
 version = "0.6.0"
-source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#c5cbfebeb6ab12afff9b8d01cb6a9e547f60f8da"
+source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#050dc7e0e3741e226d0de250b36c15e51524e815"
 dependencies = [
  "libc",
  "symcrypt-sys",
@@ -7552,7 +7660,7 @@ dependencies = [
 [[package]]
 name = "symcrypt-sys"
 version = "0.4.0"
-source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#c5cbfebeb6ab12afff9b8d01cb6a9e547f60f8da"
+source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#050dc7e0e3741e226d0de250b36c15e51524e815"
 dependencies = [
  "libc",
 ]
@@ -8389,12 +8497,12 @@ dependencies = [
  "build_info",
  "build_rs_guest_arch",
  "cfg-if",
- "chipset",
  "chipset_device",
  "chipset_device_resources",
  "chipset_device_worker",
  "chipset_device_worker_defs",
  "chipset_legacy",
+ "chipset_resources",
  "closeable_mutex",
  "crypto",
  "cvm_tracing",
@@ -9516,6 +9624,7 @@ dependencies = [
  "serial_pl011_resources",
  "thiserror 2.0.16",
  "vm_resource",
+ "vmm_core_defs",
  "vmotherboard",
 ]
 
@@ -9538,6 +9647,7 @@ dependencies = [
  "aarch64defs",
  "build_rs_guest_arch",
  "cfg-if",
+ "cxl_spec",
  "inspect",
  "memory_range",
  "mesh_protobuf",
@@ -10042,6 +10152,7 @@ dependencies = [
  "guestmem",
  "hcl_compat_uefi_nvram_storage",
  "hvdef",
+ "hyperv_dump",
  "iced-x86",
  "input_core",
  "inspect",

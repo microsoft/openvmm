@@ -17,7 +17,7 @@ pub(crate) enum HardwareDerivedKeysError {
     #[error("failed to initialize hardware secret")]
     InitializeHardwareSecret(#[source] tee_call::Error),
     #[error("KDF derivation with hardware secret failed")]
-    KdfWithHardwareSecret(#[source] crypto::kdf::KdfError),
+    KdfWithHardwareSecret(#[source] crypto::kbkdf::KbkdfError),
 }
 
 #[derive(Debug, Error)]
@@ -59,7 +59,7 @@ impl HardwareDerivedKeys {
 
         let vm_config = serde_json::to_string(vm_config).expect("JSON serialization failed");
 
-        let output = crypto::kdf::kbkdf_hmac_sha256(
+        let output = crypto::kbkdf::kbkdf_hmac_sha256(
             &hardware_secret,
             vm_config.as_bytes(),
             label,

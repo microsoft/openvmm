@@ -10,7 +10,6 @@ use loader::linux::InitrdAddressType;
 use loader::linux::InitrdConfig;
 use loader::linux::RegisterConfig;
 use loader::linux::ZeroPageConfig;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
 use std::ffi::CString;
 use std::io::Seek;
 use thiserror::Error;
@@ -494,9 +493,13 @@ fn build_dt(
         }
     }
 
-    assert!(DEFAULT_MMIO_GAPS_AARCH64.len() == 2);
-    let low_mmio_gap = DEFAULT_MMIO_GAPS_AARCH64[0];
-    let high_mmio_gap = DEFAULT_MMIO_GAPS_AARCH64[1];
+    // Build VMBus MMIO ranges from the memory layout's chipset MMIO gaps.
+    assert!(
+        cfg.mem_layout.mmio().len() >= 2,
+        "need at least two MMIO regions for VMBus DT node"
+    );
+    let low_mmio_gap = cfg.mem_layout.mmio()[0];
+    let high_mmio_gap = cfg.mem_layout.mmio()[1];
     soc = soc
         .start_node("vmbus")?
         .add_u32(p_address_cells, 2)?

@@ -3,27 +3,32 @@
 
 //! SP800-108 KBKDF (Key-Based Key Derivation Function) using HMAC-SHA-256.
 
-#![cfg(openssl)]
+#![cfg(any(openssl, symcrypt))]
 
 #[cfg(openssl)]
 mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
 
+#[cfg(symcrypt)]
+mod symcrypt;
+#[cfg(symcrypt)]
+use symcrypt as sys;
+
 use thiserror::Error;
 
-/// An error for KDF operations.
-// DEVNOTE: This would use BackendError if the kdf functions were implemented in the openssl crate itself
+/// An error for KBKDF operations.
+// DEVNOTE: The openssl variant would use BackendError if the kdf functions were implemented in the openssl crate itself
 #[cfg(openssl)]
 #[derive(Debug, Error)]
-#[error("KDF derivation error")]
-pub struct KdfError(#[source] openssl_kdf::kdf::KdfError);
+#[error("KBKDF derivation error")]
+pub struct KbkdfError(#[source] openssl_kdf::kdf::KdfError);
 
-/// An error for KDF operations.
+/// An error for KBKDF operations.
 #[cfg(not(openssl))]
 #[derive(Debug, Error)]
-#[error("KDF derivation error")]
-pub struct KdfError(#[source] super::BackendError);
+#[error("KBKDF derivation error")]
+pub struct KbkdfError(#[source] super::BackendError);
 
 /// Derive key material using SP800-108 KBKDF with HMAC-SHA-256 in counter
 /// mode.
@@ -31,10 +36,10 @@ pub struct KdfError(#[source] super::BackendError);
 pub fn kbkdf_hmac_sha256(
     key: &[u8],
     context: &[u8],
-    salt: &[u8],
+    label: &[u8],
     output_len: usize,
-) -> Result<Vec<u8>, KdfError> {
-    sys::kbkdf_hmac_sha256(key, context, salt, output_len)
+) -> Result<Vec<u8>, KbkdfError> {
+    sys::kbkdf_hmac_sha256(key, context, label, output_len)
 }
 
 #[cfg(test)]
