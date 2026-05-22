@@ -171,6 +171,13 @@ pub fn lookup_cd(
         return Err(SmmuFault::bad_cd(sid));
     }
 
+    // TERM_MODEL=1 requires CD.A=1 (abort flag set). With STALL_MODEL=1
+    // (no stall) and TERM_MODEL=1 (terminate on fault), an access flag
+    // fault would be unrecoverable, so the guest must pre-set A=1.
+    if !cd.qw0.a() {
+        return Err(SmmuFault::bad_cd(sid));
+    }
+
     Ok(cd)
 }
 
@@ -460,6 +467,7 @@ mod tests {
                 .with_tg0(tg0.0)
                 .with_ips(ips.0)
                 .with_aa64(true)
+                .with_a(true)
                 .with_asid(1),
             qw1: CdDw1::new().with_ttb0(ttb0 >> 4),
             _qw2: 0,

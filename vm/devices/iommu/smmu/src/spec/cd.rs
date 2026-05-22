@@ -126,6 +126,18 @@ pub struct CdDw0 {
     pub ips: u8,
     /// Access flag fault disable.
     pub affd: bool,
+    /// Write implies XN.
+    pub wxn: bool,
+    /// Unprivileged write implies XN.
+    pub uwxn: bool,
+    /// Top byte ignore for TTB0 addresses.
+    pub tbi0: bool,
+    /// Top byte ignore for TTB1 addresses.
+    pub tbi1: bool,
+    /// Privileged Access Never.
+    pub pan: bool,
+    /// VMSAv8-64 mode (must be 1 for AArch64 page tables).
+    pub aa64: bool,
     /// HW dirty bit management.
     pub hd: bool,
     /// HW access flag update.
@@ -138,18 +150,6 @@ pub struct CdDw0 {
     pub a: bool,
     /// ASID set (for TLB invalidation).
     pub aset: bool,
-    /// Top byte ignore for TTB0 addresses.
-    pub tbi0: bool,
-    /// Top byte ignore for TTB1 addresses.
-    pub tbi1: bool,
-    /// Privileged Access Never.
-    pub pan: bool,
-    /// VMSAv8-64 mode (must be 1 for AArch64 page tables).
-    pub aa64: bool,
-    /// Write implies XN.
-    pub wxn: bool,
-    /// Unprivileged write implies XN.
-    pub uwxn: bool,
     /// ASID (16-bit).
     #[bits(16)]
     pub asid: u16,

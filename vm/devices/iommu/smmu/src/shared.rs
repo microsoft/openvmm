@@ -921,6 +921,7 @@ mod tests {
                 .with_tg0(Tg0::GRAN_4K.0)
                 .with_ips(Ips::IPS_40.0)
                 .with_aa64(true)
+                .with_a(true)
                 .with_asid(1),
             qw1: CdDw1::new().with_ttb0(PT_L1_BASE >> 4),
             _qw2: 0,

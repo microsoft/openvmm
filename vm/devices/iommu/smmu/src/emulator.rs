@@ -146,6 +146,8 @@ impl SmmuDevice {
             .with_asid16(true)
             .with_msi(false)
             .with_ttendian(0b10) // Little-endian
+            .with_stall_model(0b01) // Stall not supported
+            .with_term_model(true) // Terminate faults (no stall)
             .with_st_level(0b00); // Linear stream table only
 
         let idr1 = registers::Idr1::new()
@@ -1946,6 +1948,7 @@ mod tests {
                 .with_tg0(Tg0::GRAN_4K.0)
                 .with_ips(Ips::IPS_40.0)
                 .with_aa64(true)
+                .with_a(true)
                 .with_asid(1),
             qw1: CdDw1::new().with_ttb0(PT_L1_GPA >> 4),
             _qw2: 0,
