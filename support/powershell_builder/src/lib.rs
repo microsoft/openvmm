@@ -6,7 +6,6 @@
 //! Provides a builder for constructing PowerShell commands with various
 //! argument data types and pipelining.
 
-#![cfg(windows)]
 #![forbid(unsafe_code)]
 
 use std::ffi::OsStr;

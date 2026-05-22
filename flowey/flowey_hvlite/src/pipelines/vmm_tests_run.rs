@@ -102,6 +102,12 @@ pub struct VmmTestsRunCli {
     /// Use when making changes to prep_steps
     #[clap(long)]
     no_reuse_prepped_vhds: bool,
+
+    /// Disable secure AVIC support for SNP. This adds the
+    /// `disable_secure_avic` cargo feature and sets `secure_avic` to
+    /// `disabled` in the IGVM manifest.
+    #[clap(long)]
+    pub disable_secure_avic: bool,
 }
 
 struct CargoNextestListRequest<'a> {
@@ -118,6 +124,7 @@ struct RustSuite {
 }
 
 /// Result of resolving artifact requirements to build/download selections
+#[derive(Default, Debug)]
 struct ResolvedArtifactSelections {
     /// What to build
     build: BuildSelections,
@@ -125,16 +132,10 @@ struct ResolvedArtifactSelections {
     downloads: BTreeSet<KnownTestArtifacts>,
     /// Whether any tests need release IGVM files from GitHub
     needs_release_igvm: bool,
-}
-
-impl Default for ResolvedArtifactSelections {
-    fn default() -> Self {
-        Self {
-            build: BuildSelections::none(),
-            downloads: BTreeSet::new(),
-            needs_release_igvm: false,
-        }
-    }
+    /// Whether any of the tests require Hyper-V
+    needs_hyperv: bool,
+    /// Whether any of the tests require hardware isolation
+    needs_hardware_isolation: bool,
 }
 
 impl IntoPipeline for VmmTestsRunCli {
@@ -159,6 +160,7 @@ impl IntoPipeline for VmmTestsRunCli {
             custom_uefi_firmware,
             ci_profile,
             no_reuse_prepped_vhds,
+            disable_secure_avic,
         } = self;
 
         let target = resolve_target(target, backend_hint)?;
@@ -209,6 +211,16 @@ impl IntoPipeline for VmmTestsRunCli {
             resolved.resolve_artifact(&artifact)?;
         }
 
+        // Determine whether we need hyper-v and/or hardware isolation
+        resolved.needs_hyperv = suites
+            .values()
+            .any(|s| s.testcases.iter().any(|name| name.contains("hyperv")));
+        resolved.needs_hardware_isolation = suites.values().any(|s| {
+            s.testcases
+                .iter()
+                .any(|name| name.contains("snp") || name.contains("tdx"))
+        });
+
         // Determine lazy fetch mode.
         //
         // By default, VHD/ISO downloads are skipped and disk images are
@@ -231,7 +243,7 @@ impl IntoPipeline for VmmTestsRunCli {
                 let hyperv_testcases: Vec<_> = suite
                     .testcases
                     .iter()
-                    .filter(|name| name.contains("hyperv_"))
+                    .filter(|name| name.contains("hyperv"))
                     .cloned()
                     .collect();
 
@@ -262,11 +274,7 @@ impl IntoPipeline for VmmTestsRunCli {
             }
         }
 
-        log::info!("Resolved build selections: {:?}", resolved.build);
-        log::info!(
-            "Resolved downloads: {:?}",
-            resolved.downloads.iter().collect::<Vec<_>>()
-        );
+        log::info!("Resolved selections: {:?}", resolved);
 
         let openvmm_repo = flowey_lib_common::git_checkout::RepoSource::ExistingClone(
             ReadVar::from_static(repo_root),
@@ -340,6 +348,7 @@ impl IntoPipeline for VmmTestsRunCli {
                         flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Default
                     },
                     reuse_prepped_vhds: !no_reuse_prepped_vhds,
+                    disable_secure_avic,
                     done: ctx.new_done_handle(),
                 }
             });
@@ -584,9 +593,9 @@ fn selections_from_resolved(
         build: resolved.build.clone(),
         deps: match target_os {
             target_lexicon::OperatingSystem::Windows => VmmTestsDepSelections::Windows {
-                hyperv: true,
+                hyperv: resolved.needs_hyperv,
                 whp: resolved.build.openvmm,
-                hardware_isolation: resolved.build.prep_steps,
+                hardware_isolation: resolved.needs_hardware_isolation,
             },
             target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
             _ => unreachable!(),
@@ -616,13 +625,22 @@ impl ResolvedArtifactSelections {
 
             // OpenHCL IGVM files
             petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_CVM_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64::GLOBAL_UNIQUE_ID =>
+            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64::GLOBAL_UNIQUE_ID =>
             {
-                self.build.openhcl = true;
+                self.build.openhcl_standard = true;
+            }
+            petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.openhcl_standard_dev = true;
+            }
+            petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_CVM_X64::GLOBAL_UNIQUE_ID
+             =>
+            {
+                self.build.openhcl_cvm = true;
+            }
+            petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID =>
+            {
+                self.build.openhcl_linux_direct = true;
             }
 
             // Release IGVM files (downloaded, not built)
@@ -761,7 +779,7 @@ impl ResolvedArtifactSelections {
             petri_artifacts_vmm_test::artifacts::openhcl_igvm::um_bin::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID
             | petri_artifacts_vmm_test::artifacts::openhcl_igvm::um_dbg::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID =>
             {
-                self.build.openhcl = true;
+                self.build.openhcl_linux_direct = true;
             }
 
             // Common artifacts (always available, no build needed)

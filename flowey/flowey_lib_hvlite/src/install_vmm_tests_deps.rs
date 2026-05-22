@@ -6,6 +6,7 @@
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::process::Stdio;
 
 const HYPERV_TESTS_REQUIRED_FEATURES: [&str; 3] = [
     "Microsoft-Hyper-V",
@@ -141,6 +142,7 @@ fn install_windows_deps(
     write_commands: Vec<WriteVar<Vec<String>, VarClaimed>>,
 ) -> anyhow::Result<()> {
     let mut commands = Vec::new();
+    let mut needs_restart = false;
 
     if !matches!(rt.platform(), FlowPlatform::Windows)
         && !flowey_lib_common::_util::running_in_wsl(rt)
@@ -195,10 +197,28 @@ fn install_windows_deps(
             }
         }
     } else if installing && !auto_install && !features_to_enable.is_empty() {
-        // Not auto-installing, assume features are already present
-        log::info!(
-            "Skipping Windows feature check (requires admin). Assuming features are already enabled."
-        );
+        if powershell_builder::PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .finish()
+            .build()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            log::info!(
+                "Verified that Hyper-V is installed, assuming related features are enabled."
+            );
+            log::info!(
+                "If you encounter issues, try re-running in an Administrator window with `--install-missing-deps`"
+            );
+        } else {
+            anyhow::bail!(
+                "Hyper-V is not installed. Re-run in an Administrator window with `--install-missing-deps`"
+            );
+        }
+
         features_to_enable.clear();
     }
 
@@ -228,6 +248,8 @@ Otherwise, press `ctrl-c` to cancel the run.
 "#
         );
         let _ = std::io::stdin().read_line(&mut String::new());
+
+        needs_restart = true;
     }
 
     // Install the features
@@ -251,24 +273,24 @@ Otherwise, press `ctrl-c` to cancel the run.
         reg_keys_to_set
             .entry(VIRT_REG_PATH)
             .or_insert(BTreeMap::new())
-            .insert("AllowFirmwareLoadFromFile", ("REG_DWORD", "0x1"));
+            .insert("AllowFirmwareLoadFromFile", ("REG_DWORD", "0x1", false));
 
         // Enable COM3 and COM4 for Hyper-V VMs so we can get the OpenHCL KMSG logs over serial
         reg_keys_to_set
             .entry(VIRT_REG_PATH)
             .or_insert(BTreeMap::new())
-            .insert("EnableAdditionalComPorts", ("REG_DWORD", "0x1"));
+            .insert("EnableAdditionalComPorts", ("REG_DWORD", "0x1", false));
 
         if hardware_isolation {
             reg_keys_to_set
                 .entry(HYPERVISOR_REG_PATH)
                 .or_insert(BTreeMap::new())
-                .insert("EnableHardwareIsolation", ("REG_DWORD", "0x1"));
+                .insert("EnableHardwareIsolation", ("REG_DWORD", "0x1", true));
         }
     }
 
     // Check if reg keys are set (skip if not auto_install, assume already set)
-    if installing && auto_install && !reg_keys_to_set.is_empty() {
+    if installing && !reg_keys_to_set.is_empty() {
         for (path, keys) in reg_keys_to_set.iter_mut() {
             let output = flowey::shell_cmd!(rt, "reg.exe query {path}").output()?;
             if output.status.success() {
@@ -278,23 +300,22 @@ Otherwise, press `ctrl-c` to cancel the run.
                     if components.len() == 3
                         && keys
                             .get(components[0])
-                            .is_some_and(|(t, d)| *t == components[1] && *d == components[2])
+                            .is_some_and(|(t, d, _)| *t == components[1] && *d == components[2])
                     {
                         assert!(keys.remove(components[0]).is_some());
                     }
                 }
             }
         }
-    } else if installing && !auto_install && !reg_keys_to_set.is_empty() {
-        // Not auto-installing, assume reg keys are already set
-        log::info!("Skipping registry key check. Assuming keys are already set.");
-        reg_keys_to_set.clear();
     }
 
     // flatten the keys
+    let reg_keys_would_require_restart = reg_keys_to_set
+        .iter()
+        .any(|(_, k)| k.iter().any(|(_, (_, _, needs_restart))| *needs_restart));
     let reg_keys_to_set = reg_keys_to_set
         .into_iter()
-        .flat_map(|(p, k)| k.into_iter().map(move |(v, (t, d))| (p, v, t, d)))
+        .flat_map(|(p, k)| k.into_iter().map(move |(v, (t, d, _))| (p, v, t, d)))
         .collect::<Vec<_>>();
     let mut reg_cmds = reg_keys_to_set
         .iter()
@@ -302,19 +323,16 @@ Otherwise, press `ctrl-c` to cancel the run.
         .collect::<Vec<_>>();
 
     // Prompt before changing registry when running locally
-    if installing
-        && auto_install
-        && !reg_keys_to_set.is_empty()
-        && matches!(rt.backend(), FlowBackend::Local)
-    {
+    if installing && !reg_keys_to_set.is_empty() && matches!(rt.backend(), FlowBackend::Local) {
         let mut reg_keys_to_set_string = String::new();
         for cmd in reg_cmds.iter() {
             reg_keys_to_set_string.push_str(cmd);
             reg_keys_to_set_string.push('\n');
         }
 
-        log::warn!(
-            r#"
+        if auto_install {
+            log::warn!(
+                r#"
 ================================================================================
 To run the VMM tests, the following registry keys need to be set:
 {reg_keys_to_set_string}
@@ -323,8 +341,22 @@ If you're OK with changing the registry, please press <enter>.
 Otherwise, press `ctrl-c` to cancel the run.
 ================================================================================
 "#
-        );
-        let _ = std::io::stdin().read_line(&mut String::new());
+            );
+            let _ = std::io::stdin().read_line(&mut String::new());
+
+            needs_restart |= reg_keys_would_require_restart;
+        } else {
+            anyhow::bail!(
+                r#"
+================================================================================
+To run the VMM tests, the following registry keys need to be set:
+{reg_keys_to_set_string}
+
+Please re-run in an Administrator window with `--install-missing-deps`.
+================================================================================
+"#
+            );
+        }
     }
 
     // Modify the registry
@@ -333,8 +365,14 @@ Otherwise, press `ctrl-c` to cancel the run.
         // TODO: figure out why reg.exe is not found if I
         // render the command as a string first and share
         if installing && auto_install {
-            flowey::shell_cmd!(rt, "reg.exe add \"{p}\" /v {v} /t {t} /d {d} /f").run()?;
+            flowey::shell_cmd!(rt, "reg.exe add {p} /v {v} /t {t} /d {d} /f").run()?;
         }
+    }
+
+    if needs_restart {
+        anyhow::bail!(
+            "Installed dependencies require a restart. Please restart and re-run this command"
+        );
     }
 
     for write_cmds in write_commands {

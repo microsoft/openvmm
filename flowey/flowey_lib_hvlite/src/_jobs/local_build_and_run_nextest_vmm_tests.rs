@@ -35,9 +35,12 @@ pub struct VmmTestSelections {
     pub needs_release_igvm: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct BuildSelections {
-    pub openhcl: bool,
+    pub openhcl_standard: bool,
+    pub openhcl_standard_dev: bool,
+    pub openhcl_cvm: bool,
+    pub openhcl_linux_direct: bool,
     pub openvmm: bool,
     pub openvmm_vhost: bool,
     pub pipette_windows: bool,
@@ -51,27 +54,6 @@ pub struct BuildSelections {
     pub tpm_guest_tests_windows: bool,
     pub tpm_guest_tests_linux: bool,
     pub test_igvm_agent_rpc_server: bool,
-}
-
-impl BuildSelections {
-    pub fn none() -> Self {
-        Self {
-            prep_steps: false,
-            openhcl: false,
-            openvmm: false,
-            openvmm_vhost: false,
-            pipette_windows: false,
-            pipette_linux: false,
-            guest_test_uefi: false,
-            tmks: false,
-            tmk_vmm_windows: false,
-            tmk_vmm_linux: false,
-            vmgstool: false,
-            tpm_guest_tests_windows: false,
-            tpm_guest_tests_linux: false,
-            test_igvm_agent_rpc_server: false,
-        }
-    }
 }
 
 flowey_request! {
@@ -101,6 +83,8 @@ flowey_request! {
         pub nextest_profile: crate::run_cargo_nextest_run::NextestProfile,
 
         pub reuse_prepped_vhds: bool,
+
+        pub disable_secure_avic: bool,
 
         pub done: WriteVar<SideEffect>,
     }
@@ -151,6 +135,7 @@ impl SimpleFlowNode for Node {
             skip_vhd_prompt,
             nextest_profile,
             reuse_prepped_vhds,
+            disable_secure_avic,
             done,
         } = request;
 
@@ -171,47 +156,65 @@ impl SimpleFlowNode for Node {
         };
         let test_label = format!("{arch_tag}-{platform_tag}-vmm-tests");
 
-        // Some things can only be built on linux
-        let linux_host = matches!(ctx.platform(), FlowPlatform::Linux(_));
-
         let mut copy_to_dir = Vec::new();
         let extras_dir = Path::new("extras");
 
         let VmmTestSelections {
             filter: nextest_filter_expr,
             artifacts: test_artifacts,
-            mut build,
+            build,
             deps,
             needs_release_igvm,
         } = selections;
 
-        if !linux_host {
-            build.openhcl = false;
-            build.pipette_linux = false;
-            build.openvmm_vhost = false;
-            build.tmk_vmm_linux = false;
-            build.tpm_guest_tests_linux = false;
-            build.test_igvm_agent_rpc_server = false;
+        let build_openhcl = build.openhcl_standard
+            || build.openhcl_standard_dev
+            || build.openhcl_cvm
+            || build.openhcl_linux_direct;
+
+        // Some things can only be built on linux
+        if !matches!(ctx.platform(), FlowPlatform::Linux(_))
+            && (build_openhcl
+                || build.pipette_linux
+                || build.openvmm_vhost
+                || build.tmk_vmm_linux
+                || build.tpm_guest_tests_linux
+                || build.tpm_guest_tests_linux)
+        {
+            anyhow::bail!(
+                "Selected tests require artifacts that can only be build on linux. Try building from WSL2."
+            );
         }
 
-        let register_openhcl_igvm_files = build.openhcl.then(|| {
+        let register_openhcl_igvm_files = build_openhcl.then(|| {
             let openvmm_hcl_profile = if release {
                 OpenvmmHclBuildProfile::OpenvmmHclShip
             } else {
                 OpenvmmHclBuildProfile::Debug
             };
-            let openhcl_recipies = match arch {
-                CommonArch::X86_64 => vec![
-                    OpenhclIgvmRecipe::X64,
-                    OpenhclIgvmRecipe::X64Devkern,
-                    OpenhclIgvmRecipe::X64TestLinuxDirect,
-                    OpenhclIgvmRecipe::X64Cvm,
-                ],
+            let mut openhcl_recipies = Vec::new();
+            match arch {
+                CommonArch::X86_64 => {
+                    if build.openhcl_standard {
+                        openhcl_recipies.push(OpenhclIgvmRecipe::X64);
+                    }
+                    if build.openhcl_standard_dev {
+                        openhcl_recipies.push(OpenhclIgvmRecipe::X64Devkern);
+                    }
+                    if build.openhcl_cvm {
+                        openhcl_recipies.push(OpenhclIgvmRecipe::X64Cvm);
+                    }
+                    if build.openhcl_linux_direct {
+                        openhcl_recipies.push(OpenhclIgvmRecipe::X64TestLinuxDirect);
+                    }
+                }
                 CommonArch::Aarch64 => {
-                    vec![
-                        OpenhclIgvmRecipe::Aarch64,
-                        OpenhclIgvmRecipe::Aarch64Devkern,
-                    ]
+                    if build.openhcl_standard {
+                        openhcl_recipies.push(OpenhclIgvmRecipe::Aarch64);
+                    }
+                    if build.openhcl_standard_dev {
+                        openhcl_recipies.push(OpenhclIgvmRecipe::Aarch64Devkern);
+                    }
                 }
             };
             let openhcl_extras_dir = extras_dir.join("openhcl");
@@ -249,7 +252,7 @@ impl SimpleFlowNode for Node {
                     recipe: recipe_to_use,
                     custom_target: None,
                     extra_features: BTreeSet::new(),
-                    disable_secure_avic: false,
+                    disable_secure_avic,
                     built_openvmm_hcl,
                     built_openhcl_boot,
                     built_openhcl_igvm,
