@@ -31,6 +31,9 @@ use mesh_rpc::service::Status;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
+use net_backend_resources::consomme::ConsommeRequest;
+use net_backend_resources::consomme::HostPortConfig;
+use net_backend_resources::consomme::HostPortProtocol;
 use netvsp_resources::NetvspHandle;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
@@ -318,7 +321,7 @@ impl VmService {
 struct Vm {
     worker_rpc: mesh::Sender<VmRpc>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
-    consomme_rpc: Option<mesh::Sender<net_backend_resources::consomme::ConsommeRequest>>,
+    consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
 }
 
 struct VmService {
@@ -656,9 +659,7 @@ impl VmService {
                 } else {
                     None
                 };
-                config
-                    .vmbus_devices
-                    .push(parse_nic_config(nic, recv)?);
+                config.vmbus_devices.push(parse_nic_config(nic, recv)?);
             }
 
             for virtiofs in devices_config.virtiofs_config {
@@ -887,18 +888,19 @@ impl VmService {
                     let recv = vm.worker_rpc.call_failable(VmRpc::AddVmbusDevice, config);
                     Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
                 } else if request.r#type == vmservice::ModifyType::Update as i32 {
-                    use net_backend_resources::consomme::{ConsommeRequest, HostPortConfig, HostPortProtocol};
                     let consomme = match nic.backend.context("missing backend")? {
                         vmservice::nic_config::Backend::Consomme(c) => c,
                         _ => anyhow::bail!("port update only supported for consomme backend"),
                     };
-                    let consomme_rpc = vm.consomme_rpc.as_ref()
+                    let consomme_rpc = vm
+                        .consomme_rpc
+                        .as_ref()
                         .context("no consomme port channel")?
                         .clone();
                     Ok(async move {
                         for port in consomme.ports {
                             let cfg = HostPortConfig {
-                                protocol: if port.protocol == vmservice::HostPortProtocol::Udp as i32 {
+                                protocol: if port.protocol == vmservice::IpProtocol::Udp as i32 {
                                     HostPortProtocol::Udp
                                 } else {
                                     HostPortProtocol::Tcp
@@ -913,20 +915,22 @@ impl VmService {
                                 .map_err(anyhow::Error::from)?;
                         }
                         Ok(())
-                    }.boxed())
+                    }
+                    .boxed())
                 } else if request.r#type == vmservice::ModifyType::Remove as i32 {
-                    use net_backend_resources::consomme::{ConsommeRequest, HostPortConfig, HostPortProtocol};
                     let consomme = match nic.backend.context("missing backend")? {
                         vmservice::nic_config::Backend::Consomme(c) => c,
                         _ => anyhow::bail!("port remove only supported for consomme backend"),
                     };
-                    let consomme_rpc = vm.consomme_rpc.as_ref()
+                    let consomme_rpc = vm
+                        .consomme_rpc
+                        .as_ref()
                         .context("no consomme port channel")?
                         .clone();
                     Ok(async move {
                         for port in consomme.ports {
                             let cfg = HostPortConfig {
-                                protocol: if port.protocol == vmservice::HostPortProtocol::Udp as i32 {
+                                protocol: if port.protocol == vmservice::IpProtocol::Udp as i32 {
                                     HostPortProtocol::Udp
                                 } else {
                                     HostPortProtocol::Tcp
@@ -941,7 +945,8 @@ impl VmService {
                                 .map_err(anyhow::Error::from)?;
                         }
                         Ok(())
-                    }.boxed())
+                    }
+                    .boxed())
                 } else {
                     anyhow::bail!("unsupported NIC modify type {}", request.r#type);
                 }
@@ -973,7 +978,7 @@ fn open_socket_backend(
 
 fn parse_nic_config(
     nic: vmservice::NicConfig,
-    recv: Option<mesh::Receiver<net_backend_resources::consomme::ConsommeRequest>>,
+    recv: Option<mesh::Receiver<ConsommeRequest>>,
 ) -> anyhow::Result<(DeviceVtl, Resource<VmbusDeviceHandleKind>)> {
     use self::vmservice::nic_config::Backend;
 

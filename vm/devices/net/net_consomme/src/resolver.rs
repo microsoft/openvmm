@@ -2,13 +2,10 @@
 // Licensed under the MIT License.
 
 use crate::ConsommeEndpoint;
-use crate::IpProtocol;
-use crate::PortForwardConfig;
 use consomme::ConsommeParams;
 use net_backend::resolve::ResolveEndpointParams;
 use net_backend::resolve::ResolvedEndpoint;
 use net_backend_resources::consomme::ConsommeHandle;
-use net_backend_resources::consomme::HostPortProtocol;
 use thiserror::Error;
 use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
@@ -45,23 +42,10 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
                 .set_cidr(cidr)
                 .map_err(ResolveConsommeError::InvalidCidr)?;
         }
-        let port_forwards: Vec<PortForwardConfig> = resource
-            .ports
-            .into_iter()
-            .map(|p| PortForwardConfig {
-                protocol: match p.protocol {
-                    HostPortProtocol::Tcp => IpProtocol::Tcp,
-                    HostPortProtocol::Udp => IpProtocol::Udp,
-                },
-                host_address: p.host_address.map(std::net::IpAddr::from),
-                host_port: p.host_port,
-                guest_port: p.guest_port,
-            })
-            .collect();
         let endpoint = if let Some(port_recv) = resource.recv {
-            ConsommeEndpoint::new_with_ports_and_requests(state, port_forwards, port_recv)
+            ConsommeEndpoint::new_with_ports_and_requests(state, resource.ports, port_recv)
         } else {
-            ConsommeEndpoint::new_with_ports(state, port_forwards)
+            ConsommeEndpoint::new_with_ports(state, resource.ports)
         };
         Ok(endpoint.into())
     }

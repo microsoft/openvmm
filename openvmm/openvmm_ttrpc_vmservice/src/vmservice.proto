@@ -250,18 +250,18 @@ message TapBackend {
     string name = 1;
 }
 
-enum HostPortProtocol {
+enum IpProtocol {
     TCP = 0;
     UDP = 1;
 }
 
-message HostPortConfig {
+message PortConfig {
     // The host port to listen on.
     uint32 host_port = 1;
     // The guest port to forward to.
     uint32 guest_port = 2;
     // The protocol to forward.
-    HostPortProtocol protocol = 3;
+    IpProtocol protocol = 3;
 }
 
 message ConsommeBackend {
@@ -270,7 +270,7 @@ message ConsommeBackend {
     string cidr = 1;
     // Ports to forward from the host into the guest.
     // Used during initial creation and for dynamic add/remove via ModifyResource.
-    repeated HostPortConfig ports = 2;
+    repeated PortConfig ports = 2;
 }
 
 message WindowsPCIDevice {
