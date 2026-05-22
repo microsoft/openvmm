@@ -39,6 +39,7 @@ use std::net::SocketAddrV6;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 use thiserror::Error;
 
 /// Creates and binds a socket for the given protocol, address, and port.
@@ -258,6 +259,8 @@ impl net_backend::Endpoint for ConsommeEndpoint {
                 rx_ready: VecDeque::new(),
                 tx_avail: VecDeque::new(),
                 tx_ready: VecDeque::new(),
+                tx_scratch: Vec::new(),
+                waker: None,
             },
             stats: Default::default(),
             driver: config.driver,
@@ -451,7 +454,10 @@ impl net_backend::Queue for ConsommeQueue {
                     .then_some(meta.max_segment_size),
             };
 
-            let mut buf = vec![0; meta.len as usize];
+            // Reuse the scratch buffer to avoid per-packet heap allocation.
+            let mut buf = std::mem::take(&mut self.state.tx_scratch);
+            buf.clear();
+            buf.resize(meta.len as usize, 0);
             let gm = pool.guest_memory();
             let mut offset = 0;
             for segment in self.state.tx_avail.drain(..meta.segment_count as usize) {
@@ -484,6 +490,14 @@ impl net_backend::Queue for ConsommeQueue {
                     | consomme::DropReason::MalformedPacket => self.stats.tx_errors.increment(),
                 }
             }
+            // Return scratch buffer for reuse, but cap its capacity to avoid
+            // a single jumbo frame permanently inflating memory usage.
+            const MAX_SCRATCH_CAP: usize = 16 * 1024;
+            if buf.capacity() > MAX_SCRATCH_CAP {
+                buf.truncate(MAX_SCRATCH_CAP);
+                buf.shrink_to_fit();
+            }
+            self.state.tx_scratch = buf;
 
             self.state.tx_ready.push_back(tx_id);
         }
@@ -499,12 +513,28 @@ impl net_backend::Queue for ConsommeQueue {
         if !self.state.tx_ready.is_empty() || !self.state.rx_ready.is_empty() {
             Poll::Ready(())
         } else {
+            // Update the waker if it has changed.
+            if !self
+                .state
+                .waker
+                .as_ref()
+                .is_some_and(|w| w.will_wake(cx.waker()))
+            {
+                self.state.waker = Some(cx.waker().clone());
+            }
             Poll::Pending
         }
     }
 
     fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, done: &[RxId]) {
+        let was_empty = self.state.rx_avail.is_empty();
         self.state.rx_avail.extend(done);
+        // Wake the poll loop if rx buffers were previously exhausted.
+        if was_empty && !done.is_empty() {
+            if let Some(w) = self.state.waker.take() {
+                w.wake();
+            }
+        }
     }
 
     fn rx_poll(
@@ -546,6 +576,11 @@ struct QueueState {
     rx_ready: VecDeque<RxId>,
     tx_avail: VecDeque<TxSegment>,
     tx_ready: VecDeque<TxId>,
+    /// Reusable scratch buffer for assembling outbound packets from guest memory.
+    tx_scratch: Vec<u8>,
+    /// Waker from the last poll_ready call, used to wake the queue when rx
+    /// buffers become available (which may unblock host→guest data transfer).
+    waker: Option<Waker>,
 }
 
 #[derive(Inspect, Default)]
