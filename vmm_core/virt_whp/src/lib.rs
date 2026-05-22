@@ -403,10 +403,10 @@ impl Vplc {
             start_vp,
         } = self;
         message_queues.clear();
-        check_queues.store(false, Ordering::SeqCst);
-        extint_pending.store(false, Ordering::SeqCst);
+        check_queues.store(false, Ordering::Relaxed);
+        extint_pending.store(false, Ordering::Relaxed);
         *start_vp_context.lock() = None;
-        start_vp.store(false, Ordering::SeqCst);
+        start_vp.store(false, Ordering::Relaxed);
     }
 }
 
@@ -1673,7 +1673,7 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
             self.finish_reset(Vtl::Vtl2);
             self.vplc(Vtl::Vtl2).reset();
         }
-        self.inner.vtl2_wake.store(false, Ordering::SeqCst);
+        self.inner.vtl2_wake.store(false, Ordering::Relaxed);
 
         if cfg!(debug_assertions) {
             let vp_info = &self.inner.vp_info;
@@ -1695,7 +1695,7 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         // before `state.reset` so that `runnable_vtls` and `active_vtl` are
         // derived from the post-scrub set rather than the pre-scrub one.
         if !is_bsp {
-            self.inner.vtl2_enable.store(false, Ordering::SeqCst);
+            self.inner.vtl2_enable.store(false, Ordering::Relaxed);
             self.state.enabled_vtls.clear(Vtl::Vtl2);
         }
 
@@ -1710,7 +1710,7 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
 
         // Clear any pending VTL2 wake signal, since VTL2 is now back in
         // startup suspend and any prior wake request is stale.
-        self.inner.vtl2_wake.store(false, Ordering::SeqCst);
+        self.inner.vtl2_wake.store(false, Ordering::Relaxed);
 
         if cfg!(debug_assertions) {
             let vp_info = &self.inner.vp_info;
