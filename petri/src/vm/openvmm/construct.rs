@@ -382,25 +382,15 @@ impl PetriVmConfigOpenVmm {
                 EfiDiagnosticsLogLevel::Info => firmware_uefi_resources::LogLevel::make_info(),
                 EfiDiagnosticsLogLevel::Full => firmware_uefi_resources::LogLevel::make_full(),
             };
-            chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest {
-                config: firmware_uefi_resources::UefiConfig {
-                    custom_uefi_vars,
-                    secure_boot,
-                    initial_generation_id: [0; 16],
-                    use_mmio: !matches!(arch, MachineArch::X86_64),
-                    command_set: match arch {
-                        MachineArch::X86_64 => firmware_uefi_resources::UefiCommandSet::X64,
-                        MachineArch::Aarch64 => firmware_uefi_resources::UefiCommandSet::Aarch64,
-                    },
-                    diagnostics_log_level: log_level,
+            chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
+                match arch {
+                    MachineArch::X86_64 => vm_manifest_builder::MachineArch::X86_64,
+                    MachineArch::Aarch64 => vm_manifest_builder::MachineArch::Aarch64,
                 },
-                generation_id_recv: mesh::channel().1,
-                vsm_config: false,
-                time_source: chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle {
-                    delta_milliseconds: 0,
-                }
-                .into_resource(),
-            });
+                custom_uefi_vars,
+                secure_boot,
+                log_level,
+            ));
         }
 
         let layout_config = chipset.layout_config();

@@ -9590,7 +9590,9 @@ name = "vm_manifest_builder"
 version = "0.0.0"
 dependencies = [
  "chipset_resources",
+ "firmware_uefi_custom_vars",
  "firmware_uefi_resources",
+ "getrandom 0.4.2",
  "input_core",
  "mesh",
  "missing_dev_resources",

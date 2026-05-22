@@ -987,10 +987,6 @@ async fn vm_config_from_command_line(
     };
 
     if opt.uefi {
-        use firmware_uefi_resources::UefiCommandSet;
-        use firmware_uefi_resources::UefiConfig;
-        use vm_manifest_builder::UefiManifest;
-
         let log_level = match efi_diagnostics_log_level {
             EfiDiagnosticsLogLevelType::Default => {
                 firmware_uefi_resources::LogLevel::make_default()
@@ -998,27 +994,12 @@ async fn vm_config_from_command_line(
             EfiDiagnosticsLogLevelType::Info => firmware_uefi_resources::LogLevel::make_info(),
             EfiDiagnosticsLogLevelType::Full => firmware_uefi_resources::LogLevel::make_full(),
         };
-        let mut initial_generation_id = [0; 16];
-        getrandom::fill(&mut initial_generation_id).expect("rng failure");
-        chipset = chipset.with_uefi(UefiManifest {
-            config: UefiConfig {
-                custom_uefi_vars: custom_uefi_vars.clone(),
-                secure_boot: opt.secure_boot,
-                initial_generation_id,
-                use_mmio: !matches!(arch, MachineArch::X86_64),
-                command_set: match arch {
-                    MachineArch::X86_64 => UefiCommandSet::X64,
-                    MachineArch::Aarch64 => UefiCommandSet::Aarch64,
-                },
-                diagnostics_log_level: log_level,
-            },
-            generation_id_recv: mesh::channel().1,
-            vsm_config: false,
-            time_source: chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle {
-                delta_milliseconds: 0,
-            }
-            .into_resource(),
-        });
+        chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
+            arch,
+            custom_uefi_vars.clone(),
+            opt.secure_boot,
+            log_level,
+        ));
     }
 
     // TODO: load from VMGS file if it exists
