@@ -148,6 +148,9 @@ struct TestNicEndpointState {
     /// `(false, N)`, leaving packets in-flight.
     pub sync_tx: bool,
     pub tx_metadata: Vec<net_backend::TxMetadata>,
+    /// Per-queue one-shot trigger: when `tx_restart_triggers[idx]` is true,
+    /// the next `tx_poll` call on queue `idx` returns `TxError::TryRestart(_)`.
+    pub tx_restart_triggers: Vec<bool>,
 }
 
 impl TestNicEndpointState {
@@ -162,6 +165,7 @@ impl TestNicEndpointState {
             queues: Vec::new(),
             sync_tx: true,
             tx_metadata: Vec::new(),
+            tx_restart_triggers: Vec::new(),
         }))
     }
 
@@ -184,6 +188,15 @@ impl TestNicEndpointState {
     /// Send an RX packet on the given queue with explicit metadata.
     pub fn send_rx_with_metadata(&self, queue_idx: usize, data: Vec<u8>, metadata: RxMetadata) {
         self.queues[queue_idx].send((data, metadata));
+    }
+
+    /// Arm a one-shot trigger so the next `tx_poll` on `queue_idx` returns TryRestart.
+    pub fn trigger_tx_restart(&mut self, queue_idx: usize) {
+        assert!(
+            queue_idx < self.tx_restart_triggers.len(),
+            "trigger_tx_restart called before get_queues populated triggers"
+        );
+        self.tx_restart_triggers[queue_idx] = true;
     }
 }
 
@@ -260,13 +273,15 @@ impl net_backend::Endpoint for TestNicEndpoint {
             .is_none_or(|s| s.lock().sync_tx);
         let senders = config
             .into_iter()
-            .map(|config| {
+            .enumerate()
+            .map(|(queue_idx, config)| {
                 let (tx, rx) = mesh::channel();
                 queues.push(Box::new(TestNicQueue::new(
                     config,
                     rx,
                     sync_tx,
                     inner.endpoint_state.clone(),
+                    queue_idx,
                 )));
                 tx
             })
@@ -274,6 +289,7 @@ impl net_backend::Endpoint for TestNicEndpoint {
 
         if let Some(endpoint_state) = &inner.endpoint_state {
             let mut locked_data = endpoint_state.lock();
+            locked_data.tx_restart_triggers = vec![false; senders.len()];
             locked_data.queues = senders;
         }
         Ok(())
@@ -365,6 +381,7 @@ struct TestNicQueue {
     #[inspect(skip)]
     next_rx_packet: Option<(Vec<u8>, RxMetadata)>,
     sync_tx: bool,
+    queue_idx: usize,
 }
 
 impl TestNicQueue {
@@ -373,6 +390,7 @@ impl TestNicQueue {
         rx: mesh::Receiver<(Vec<u8>, RxMetadata)>,
         sync_tx: bool,
         endpoint_state: Option<Arc<parking_lot::Mutex<TestNicEndpointState>>>,
+        queue_idx: usize,
     ) -> Self {
         Self {
             rx_ids: VecDeque::new(),
@@ -380,6 +398,7 @@ impl TestNicQueue {
             endpoint_state,
             next_rx_packet: None,
             sync_tx,
+            queue_idx,
         }
     }
 }
@@ -471,6 +490,21 @@ impl NetQueue for TestNicQueue {
         _pool: &mut dyn BufferAccess,
         _done: &mut [TxId],
     ) -> Result<usize, TxError> {
+        if let Some(endpoint_state) = &self.endpoint_state {
+            let mut locked = endpoint_state.lock();
+            if locked
+                .tx_restart_triggers
+                .get(self.queue_idx)
+                .copied()
+                .unwrap_or(false)
+            {
+                locked.tx_restart_triggers[self.queue_idx] = false;
+                return Err(TxError::TryRestart(anyhow::anyhow!(
+                    "test-injected tx_poll restart on queue {}",
+                    self.queue_idx
+                )));
+            }
+        }
         Ok(0)
     }
 }
@@ -7409,4 +7443,237 @@ async fn vlan_rx_counter_increments(driver: DefaultDriver) {
         1,
         "netvsp should count 1 VLAN RX packet"
     );
+}
+
+#[async_test]
+async fn subchannel_tx_restart(driver: DefaultDriver) {
+    const TOTAL_QUEUES: u32 = 4;
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(
+            TOTAL_QUEUES as usize - 1,
+            protocol::NdisConfigCapabilities::new(),
+        )
+        .await;
+
+    // RNDIS initialize.
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    // Allocate the sub-channels.
+    let alloc_message = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE5_TYPE_SUB_CHANNEL,
+        },
+        data: protocol::Message5SubchannelRequest {
+            operation: protocol::SubchannelOperation::ALLOCATE,
+            num_sub_channels: TOTAL_QUEUES - 1,
+        },
+        padding: &[],
+    };
+    channel
+        .write(OutgoingPacket {
+            transaction_id: 123,
+            packet_type: OutgoingPacketType::InBandWithCompletion,
+            payload: &alloc_message.payload(),
+        })
+        .await;
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(header.message_type, protocol::MESSAGE5_TYPE_SUB_CHANNEL);
+                let completion_data: protocol::Message5SubchannelComplete =
+                    reader.read_plain().unwrap();
+                assert_eq!(completion_data.status, protocol::Status::SUCCESS);
+                assert_eq!(completion_data.num_sub_channels, TOTAL_QUEUES - 1);
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("sub-channel allocation completion");
+
+    for idx in 1..TOTAL_QUEUES {
+        channel.connect_subchannel(idx).await;
+    }
+
+    // Drain the indirection-table data packet from the primary and complete it.
+    let transaction_id = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(packet) => {
+                let mut reader = packet.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE5_TYPE_SEND_INDIRECTION_TABLE
+                );
+                packet.transaction_id()
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("indirection table message");
+    if let Some(transaction_id) = transaction_id {
+        channel
+            .write(OutgoingPacket {
+                transaction_id,
+                packet_type: OutgoingPacketType::Completion,
+                payload: &NvspMessage {
+                    header: protocol::MessageHeader {
+                        message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                    },
+                    data: protocol::Message1SendRndisPacketComplete {
+                        status: protocol::Status::SUCCESS,
+                    },
+                    padding: &[],
+                }
+                .payload(),
+            })
+            .await;
+    }
+
+    // Enable a packet filter so RX traffic is delivered to the guest.
+    let request_id = 456;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NPROTO_PACKET_FILTER.to_le_bytes(),
+        )
+        .await;
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(set_complete.request_id, request_id);
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+
+    // Send a SECOND OID_GEN_CURRENT_PACKET_FILTER SET with a different
+    // filter value. The primary worker handles this OID inline, then pushes
+    // a `CoordinatorMessage::Update` to the coordinator.
+    const NEW_FILTER: u32 = rndisprot::NDIS_PACKET_TYPE_DIRECTED;
+    let request_id_filter_change = 457;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: request_id_filter_change,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &NEW_FILTER.to_le_bytes(),
+        )
+        .await;
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(set_complete.request_id, request_id_filter_change);
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+
+    let stop_before = endpoint_state.lock().stop_endpoint_counter;
+
+    // Arm a one-shot TryRestart on every sub-channel queue and wake each
+    // one by routing an RX packet through it. Each sub-channel's main_loop
+    // will call tx_poll, hit TryRestart, and route a Restart to the coordinator.
+    {
+        let mut locked = endpoint_state.lock();
+        for idx in 1..TOTAL_QUEUES as usize {
+            locked.trigger_tx_restart(idx);
+            locked.send_rx(idx, vec![0xAA + idx as u8; 60]);
+        }
+    }
+
+    // Wait for the coordinator to observe at least one Restart message and
+    // run restart_queues (which calls endpoint.stop()).
+    // All three `Restart` messages coalesce into a single restart cycle.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if endpoint_state.lock().stop_endpoint_counter > stop_before {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "restart_queues did not run within timeout (stop_before={}, current={})",
+                stop_before,
+                endpoint_state.lock().stop_endpoint_counter
+            );
+        }
+        // Yield to let the workers and coordinator make progress.
+        let mut ctx = mesh::CancelContext::new().with_timeout(Duration::from_millis(50));
+        let _ = ctx.until_cancelled(pending::<()>()).await;
+    }
+
+    // Bound the number of restart cycles.
+    let stop_after = endpoint_state.lock().stop_endpoint_counter;
+    let cycles = stop_after - stop_before;
+    assert_eq!(
+        cycles, 1,
+        "expected exactly 1 restart cycle (pass B coalesces all in-flight sub-channel TryRestarts), got {cycles}",
+    );
+
+    // The `Update` filter change being visible on every sub-channel proves
+    // the Primary channel message was not lost.
+    for idx in 1..TOTAL_QUEUES as usize {
+        let current =
+            read_netvsp_counter(&channel.nic.channel, &format!("queues/{idx}/packet_filter")).await
+                as u32;
+        assert_eq!(
+            current, NEW_FILTER,
+            "sub-channel {idx} packet_filter not propagated before restart cycle finished",
+        );
+    }
+
+    // Deliver another RX packet on every sub-channel and verify each worker
+    // is alive and functional.
+    {
+        let locked = endpoint_state.lock();
+        for idx in 1..TOTAL_QUEUES as usize {
+            locked.send_rx(idx, vec![0xBB + idx as u8; 60]);
+        }
+    }
+    for idx in 1..TOTAL_QUEUES {
+        channel
+            .read_subchannel_with(idx, |packet| match packet {
+                IncomingPacket::Data(_) => (),
+                _ => panic!("Unexpected packet on sub-channel {idx}"),
+            })
+            .await
+            .unwrap_or_else(|_| panic!("sub-channel {idx} RX packet after restart cycle"));
+    }
 }
