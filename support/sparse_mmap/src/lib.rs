@@ -387,6 +387,12 @@ mod tests {
         let mapping = SparseMapping::new(size).unwrap();
 
         // Allocate with NUMA node 0 (always present).
+        #[cfg(unix)]
+        {
+            mapping.alloc(0, size).unwrap();
+            mapping.mbind_at(0, size, 0).unwrap();
+        }
+        #[cfg(windows)]
         mapping.alloc_numa(0, size, Some(0)).unwrap();
 
         // Memory should be accessible and writable.
@@ -406,6 +412,12 @@ mod tests {
         let shmem = alloc_shared_memory(size, "test-numa").unwrap();
 
         // Map with NUMA node 0 (always present).
+        #[cfg(unix)]
+        {
+            mapping.map_file(0, size, &shmem, 0, true).unwrap();
+            mapping.mbind_at(0, size, 0).unwrap();
+        }
+        #[cfg(windows)]
         mapping
             .map_file_numa(0, size, &shmem, 0, true, Some(0))
             .unwrap();
@@ -425,7 +437,16 @@ mod tests {
         let mapping = SparseMapping::new(page_size).unwrap();
 
         // A very large NUMA node number should fail with an error (not panic).
-        let result = mapping.alloc_numa(0, page_size, Some(99999));
-        assert!(result.is_err());
+        #[cfg(unix)]
+        {
+            mapping.alloc(0, page_size).unwrap();
+            let result = mapping.mbind_at(0, page_size, 99999);
+            assert!(result.is_err());
+        }
+        #[cfg(windows)]
+        {
+            let result = mapping.alloc_numa(0, page_size, Some(99999));
+            assert!(result.is_err());
+        }
     }
 }

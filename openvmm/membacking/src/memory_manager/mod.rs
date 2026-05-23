@@ -250,7 +250,7 @@ impl RamBackingRequest {
     }
 
     /// Bind this backing's memory to a specific host NUMA node
-    /// (Linux: `mbind(MPOL_BIND)`). Incompatible with `private_memory`.
+    /// (Linux: `mbind(MPOL_BIND)`, Windows: `MemExtendedParameterNumaNode`).
     pub fn host_numa_node(mut self, node: Option<u32>) -> Self {
         self.host_numa_node = node;
         self
@@ -566,6 +566,10 @@ impl GuestMemoryBuilder {
                                 backing.host_numa_node,
                             )
                             .await;
+                        // TODO: file-backed RAM mappings are established lazily
+                        // via page faults, so NUMA binding errors are not
+                        // caught here. Replace lazy mapping with eager push
+                        // model to propagate errors at build time.
                     } else {
                         va_mapper
                             .alloc_range(

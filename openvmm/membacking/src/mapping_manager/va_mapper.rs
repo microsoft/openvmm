@@ -125,19 +125,58 @@ impl MapperTask {
                 }) => {
                     tracing::debug!(%range, "mapping received for range");
 
-                    self.inner
-                        .mapping
-                        .map_file_numa(
-                            range.start() as usize,
-                            range.len() as usize,
-                            &mappable,
-                            file_offset,
-                            writable,
-                            numa_node,
-                        )
-                        .expect("oom mapping file");
+                    let map_result = {
+                        #[cfg(unix)]
+                        {
+                            self.inner.mapping.map_file(
+                                range.start() as usize,
+                                range.len() as usize,
+                                &mappable,
+                                file_offset,
+                                writable,
+                            )
+                        }
+                        #[cfg(windows)]
+                        {
+                            self.inner.mapping.map_file_numa(
+                                range.start() as usize,
+                                range.len() as usize,
+                                &mappable,
+                                file_offset,
+                                writable,
+                                numa_node,
+                            )
+                        }
+                    };
 
-                    self.wake_waiters(range, Some(writable));
+                    match map_result {
+                        Ok(()) => {
+                            #[cfg(target_os = "linux")]
+                            if let Some(node) = numa_node {
+                                if let Err(e) = self.inner.mapping.mbind_at(
+                                    range.start() as usize,
+                                    range.len() as usize,
+                                    node,
+                                ) {
+                                    tracing::error!(
+                                        error = &e as &dyn std::error::Error,
+                                        %range,
+                                        node,
+                                        "NUMA binding failed, using default placement"
+                                    );
+                                }
+                            }
+                            self.wake_waiters(range, Some(writable));
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = &e as &dyn std::error::Error,
+                                %range,
+                                "failed to map file for range"
+                            );
+                            self.wake_waiters(range, None);
+                        }
+                    }
                 }
                 MapperRequest::NoMapping(range) => {
                     // Wake up waiters. They'll see a failure when they try to
@@ -303,7 +342,19 @@ impl VaMapper {
         len: usize,
         numa_node: Option<u32>,
     ) -> Result<(), std::io::Error> {
-        self.inner.mapping.alloc_numa(offset, len, numa_node)
+        #[cfg(windows)]
+        {
+            self.inner.mapping.alloc_numa(offset, len, numa_node)
+        }
+        #[cfg(unix)]
+        {
+            self.inner.mapping.alloc(offset, len)?;
+            #[cfg(target_os = "linux")]
+            if let Some(node) = numa_node {
+                self.inner.mapping.mbind_at(offset, len, node)?;
+            }
+            Ok(())
+        }
     }
 
     /// Names a range within the mapping for debugging (visible in smaps).
