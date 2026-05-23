@@ -71,6 +71,7 @@ use inspect::InspectMut;
 use local_clock::InspectableLocalClock;
 use pal_async::local::block_on;
 use platform::logger::UefiLogger;
+use platform::nvram::MorConfig;
 use platform::nvram::VsmConfig;
 use service::diagnostics::DEFAULT_LOGS_PER_PERIOD;
 use service::diagnostics::WATCHDOG_LOGS_PER_PERIOD;
@@ -143,6 +144,7 @@ pub struct UefiRuntimeDeps<'a> {
     pub generation_id_deps: generation_id::GenerationIdRuntimeDeps,
     pub vsm_config: Option<Box<dyn VsmConfig>>,
     pub time_source: Box<dyn InspectableLocalClock>,
+    pub mor_config: Option<Box<dyn MorConfig>>,
 }
 
 /// The Hyper-V UEFI services chipset device.
@@ -163,6 +165,11 @@ pub struct UefiDevice {
     // Volatile state
     #[inspect(hex)]
     address: u32,
+
+    // MOR (Memory Overwrite Request) state
+    mor_bit_status: bool,
+    #[inspect(skip)]
+    mor_config: Option<Box<dyn MorConfig>>,
 
     // Receiver for watchdog timeout events
     #[inspect(skip)]
@@ -185,6 +192,7 @@ impl UefiDevice {
             generation_id_deps,
             vsm_config,
             time_source,
+            mor_config,
         } = runtime_deps;
 
         // Create the UEFI device with the rest of the services.
@@ -194,6 +202,8 @@ impl UefiDevice {
             address: 0,
             gm,
             watchdog_recv,
+            mor_bit_status: true, // initialized to success, matching legacy behavior
+            mor_config,
             service: UefiDeviceServices {
                 nvram: service::nvram::NvramServices::new(
                     nvram_storage,
@@ -233,6 +243,10 @@ impl UefiDevice {
                 self.handle_watchdog_read(reg)
             }
             UefiCommand::NFIT_SIZE => 0, // no NFIT
+            UefiCommand::MOR_SET_VARIABLE => {
+                // Return 1 if the last MOR SetVariable succeeded, 0 otherwise.
+                u32::from(self.mor_bit_status)
+            }
             _ => {
                 tracelimit::warn_ratelimited!(?addr, "unknown uefi read");
                 !0
@@ -285,7 +299,42 @@ impl UefiDevice {
                     None,
                 );
             }
+            UefiCommand::MOR_SET_VARIABLE => block_on(self.handle_mor_set_variable(data as u8)),
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
+        }
+    }
+
+    /// Handle the MOR_SET_VARIABLE command from the guest.
+    ///
+    /// Persists the MOR variable in NVRAM and notifies the platform so it can
+    /// arrange for memory to be scrubbed on the next reset.
+    async fn handle_mor_set_variable(&mut self, value: u8) {
+        use uefi_specs::uefi::nvram::EfiVariableAttributes;
+        use uefi_specs::uefi::nvram::vars;
+
+        let attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES;
+
+        let result = self
+            .service
+            .nvram
+            .set_mor_variable(vars::MEMORY_OVERWRITE_REQUEST_CONTROL(), value, attr.into())
+            .await;
+
+        self.mor_bit_status = result.is_ok();
+
+        match result {
+            Ok(_) => {
+                if let Some(mor_config) = &self.mor_config {
+                    mor_config.notify_mor_set(value);
+                }
+            }
+            Err((status, error)) => {
+                tracelimit::warn_ratelimited!(
+                    ?status,
+                    ?error,
+                    "failed to set MOR variable in NVRAM"
+                );
+            }
         }
     }
 
@@ -350,6 +399,7 @@ impl ChangeDeviceState for UefiDevice {
 
     async fn reset(&mut self) {
         self.address = 0;
+        self.mor_bit_status = true;
 
         self.service.nvram.reset();
         self.service.event_log.reset();
@@ -568,6 +618,8 @@ mod save_restore {
             pub time: <TimeServices as SaveRestore>::SavedState,
             #[mesh(7)]
             pub diagnostics: <DiagnosticsServices as SaveRestore>::SavedState,
+            #[mesh(8)]
+            pub mor_bit_status: bool,
         }
     }
 
@@ -580,6 +632,8 @@ mod save_restore {
                 command_set: _,
                 gm: _,
                 watchdog_recv: _,
+                mor_bit_status,
+                mor_config: _,
                 service:
                     UefiDeviceServices {
                         nvram,
@@ -601,6 +655,7 @@ mod save_restore {
                 generation_id: generation_id.save()?,
                 time: time.save()?,
                 diagnostics: diagnostics.save()?,
+                mor_bit_status: *mor_bit_status,
             })
         }
 
@@ -614,9 +669,11 @@ mod save_restore {
                 generation_id,
                 time,
                 diagnostics,
+                mor_bit_status,
             } = state;
 
             self.address = address;
+            self.mor_bit_status = mor_bit_status;
 
             self.service.nvram.restore(nvram)?;
             self.service.event_log.restore(event_log)?;

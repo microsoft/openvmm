@@ -67,3 +67,31 @@ impl firmware_uefi::platform::nvram::VsmConfig for UnderhillVsmConfig {
         }
     }
 }
+
+/// MOR (Memory Overwrite Request) configuration for Underhill.
+///
+/// When the guest sets the MOR bit, this notifies the hypervisor to ensure
+/// memory is scrubbed on the next partition reset by setting the
+/// `zero_memory_on_reset` flag in `HvRegisterVsmPartitionConfig`.
+#[derive(Debug)]
+pub struct UnderhillMorConfig {
+    pub partition: Weak<UhPartition>,
+}
+
+impl firmware_uefi::platform::nvram::MorConfig for UnderhillMorConfig {
+    fn notify_mor_set(&self, mor_value: u8) {
+        const MOR_CLEAR_MEMORY_BIT_MASK: u8 = 0x01;
+
+        let clear_memory = (mor_value & MOR_CLEAR_MEMORY_BIT_MASK) != 0;
+
+        if let Some(partition) = self.partition.upgrade() {
+            if let Err(err) = partition.set_zero_memory_on_reset(clear_memory) {
+                tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "failed to update zero_memory_on_reset for MOR"
+                );
+            }
+        }
+    }
+}

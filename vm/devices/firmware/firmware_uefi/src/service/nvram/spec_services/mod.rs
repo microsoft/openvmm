@@ -1955,4 +1955,45 @@ mod test {
         expected.extend_from_slice(&append_data);
         assert_eq!(data, Some(expected));
     }
+
+    #[async_test]
+    async fn mor_set_variable() {
+        use uefi_specs::uefi::nvram::vars;
+
+        let nvram_storage = InMemoryNvram::new();
+        let mut nvram = NvramSpecServices::new(nvram_storage);
+
+        nvram.prepare_for_boot();
+
+        let (vendor, name) = vars::MEMORY_OVERWRITE_REQUEST_CONTROL();
+        let attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES;
+
+        // Set MOR bit to 1 (request memory clear)
+        nvram
+            .set_variable_ucs2(vendor, name, attr.into(), vec![0x01])
+            .await
+            .expect("failed to set MOR variable");
+
+        // Read the variable back
+        let NvramResult(data, status, _err) = nvram
+            .uefi_get_variable(Some(name.as_bytes()), vendor, &mut 0u32, &mut 256u32, false)
+            .await;
+
+        assert_eq!(status, EfiStatus::SUCCESS);
+        assert_eq!(data, Some(vec![0x01]));
+
+        // Clear MOR bit
+        nvram
+            .set_variable_ucs2(vendor, name, attr.into(), vec![0x00])
+            .await
+            .expect("failed to clear MOR variable");
+
+        // Read back and verify cleared
+        let NvramResult(data, status, _err) = nvram
+            .uefi_get_variable(Some(name.as_bytes()), vendor, &mut 0u32, &mut 256u32, false)
+            .await;
+
+        assert_eq!(status, EfiStatus::SUCCESS);
+        assert_eq!(data, Some(vec![0x00]));
+    }
 }
