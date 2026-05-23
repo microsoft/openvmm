@@ -993,4 +993,42 @@ mod tests {
 
         assert!(err.to_string().contains("ECAM"), "unexpected error: {err}");
     }
+
+    #[test]
+    fn vtl2_framebuffer_allocation() {
+        let framebuffer_size = 8 * MB;
+        let mut config = input(2 * GB, None, None);
+        config.vtl2_framebuffer_size = framebuffer_size;
+        let result = resolve_memory_layout(config).unwrap();
+
+        let gpa_base = result
+            .vtl2_framebuffer_gpa_base
+            .expect("framebuffer GPA should be allocated");
+        // Must be page-aligned.
+        assert_eq!(gpa_base % PAGE_SIZE, 0, "framebuffer GPA not page-aligned");
+        let fb_range = MemoryRange::new(gpa_base..gpa_base + framebuffer_size);
+        // Must not overlap RAM.
+        for ram in result.memory_layout.ram() {
+            assert!(
+                !fb_range.overlaps(&ram.range),
+                "framebuffer {fb_range} overlaps RAM {}",
+                ram.range,
+            );
+        }
+        // Must not overlap chipset MMIO.
+        for mmio in result.memory_layout.mmio() {
+            assert!(
+                !fb_range.overlaps(mmio),
+                "framebuffer {fb_range} overlaps MMIO {mmio}",
+            );
+        }
+    }
+
+    #[test]
+    fn vtl2_framebuffer_zero_size_returns_none() {
+        let mut config = input(2 * GB, None, None);
+        config.vtl2_framebuffer_size = 0;
+        let result = resolve_memory_layout(config).unwrap();
+        assert!(result.vtl2_framebuffer_gpa_base.is_none());
+    }
 }
