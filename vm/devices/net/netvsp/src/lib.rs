@@ -4236,18 +4236,7 @@ impl Coordinator {
 
         // All workers are stopped and cannot push new messages.
         // Drain any messages that arrived prior to the stop.
-        while let Ok(Some(msg)) = self.recv.try_next() {
-            match msg {
-                CoordinatorMessage::Restart { .. } => {
-                    // Discarding any additional Restart messages.
-                }
-                // Ensure any non-restart message from the Primary is
-                // handled prior to restarting the workers.
-                other => {
-                    self.handle_primary_message(other, state).await;
-                }
-            }
-        }
+        self.drain_pending_messages(state).await;
 
         // The queue restart operation is not restartable; do not poll on stop here.
         if let Err(err) = self
