@@ -102,6 +102,11 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// Optional IGVM VTL2 private-memory request. This is allocated after all
     /// VTL0-visible RAM and MMIO and is carried separately from ordinary RAM.
     pub vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
+    /// Minimum guest physical address for ordinary RAM. When nonzero, the
+    /// range `0..ram_start_address` is reserved so RAM is placed above it.
+    /// This is used on aarch64 Linux direct boot to avoid the low GPA region
+    /// that conflicts with iommufd IOVA reservations.
+    pub ram_start_address: u64,
     /// Host-supported physical address width used only after allocation. The
     /// allocator computes the smallest layout it can; host fit is validation.
     pub physical_address_size: u8,
@@ -138,6 +143,13 @@ pub(super) fn resolve_memory_layout(
     // least the architectural reserved zone (LAPIC, IOAPIC, TPM, ...) so
     // guests can arbitrate fixed-address children like TPM2 against this
     // window; the caller-requested size may extend it lower.
+    // Reserve low addresses so RAM starts above `ram_start_address`. This is
+    // used on aarch64 Linux direct boot to skip the 128 MiB–129 MiB IOVA
+    // region that iommufd reserves for the host MSI doorbell.
+    if input.ram_start_address > 0 {
+        builder.reserve("low-ram-gap", MemoryRange::new(0..input.ram_start_address));
+    }
+
     let arch_reserved = if cfg!(guest_arch = "x86_64") {
         ARCH_RESERVED_X86_64
     } else {
@@ -542,6 +554,7 @@ mod tests {
             virtio_mmio_count: 0,
             smmu_count: 0,
             vtl2_layout,
+            ram_start_address: 0,
             physical_address_size: 46,
         }
     }

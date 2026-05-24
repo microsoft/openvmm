@@ -1003,6 +1003,25 @@ impl InitializedVm {
         #[cfg(not(guest_arch = "aarch64"))]
         let smmu_count = 0;
 
+        // On aarch64 Linux direct boot, start RAM at 1 GiB to avoid the low GPA
+        // region (128 MiB–129 MiB) that iommufd reserves for the host MSI
+        // doorbell in IOVA space. Without this gap, iommufd identity-mapped DMA
+        // for passthrough devices fails because it cannot allocate IOVAs in
+        // that range.
+        //
+        // FUTURE: this needs to be present for UEFI as well, but UEFI cannot
+        // only boot from low memory. Either:
+        //  1. Fix Linux to allow configuring the reserved IOVA range.
+        //  2. Fix UEFI to allow booting from >0.
+        //  3. Install a little bit of low memory, enough for UEFI to get to DXE
+        //     (which can run anywhere.)
+        let ram_start_address =
+            if cfg!(guest_arch = "aarch64") && matches!(cfg.load_mode, LoadMode::Linux { .. }) {
+                1024 * 1024 * 1024 // 1 GiB
+            } else {
+                0
+            };
+
         let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
             mem_size: cfg.memory.mem_size,
             numa_mem_sizes: cfg.memory.numa_mem_sizes.as_deref(),
@@ -1011,6 +1030,7 @@ impl InitializedVm {
             virtio_mmio_count,
             smmu_count,
             vtl2_layout,
+            ram_start_address,
             physical_address_size,
         })
         .context("invalid memory configuration")?;
