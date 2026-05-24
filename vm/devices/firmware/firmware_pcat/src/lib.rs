@@ -387,7 +387,14 @@ impl PcatBiosDevice {
                 // Consumers:
                 // - vmbios/source/bsp/em/smbios/Smbport.asm,
                 // - core/src/MEM.ASM.
-                self.config.mem_layout.ram_above_4gb().to_mb()
+                self.config
+                    .mem_layout
+                    .ram()
+                    .iter()
+                    .filter(|r| r.range.end() >= 0x1_0000_0000)
+                    .map(|r| r.range.len())
+                    .sum::<u64>()
+                    .to_mb()
             }
             PcatAddress::SLEEP_STATES => {
                 // The AMI BIOS wants to read a byte value of flags to determine
@@ -427,8 +434,11 @@ impl PcatBiosDevice {
                 // - core/src/MEM.ASM.
                 self.config
                     .mem_layout
-                    .ram_above_high_mmio()
-                    .expect("validated exactly 2 mmio ranges")
+                    .ram()
+                    .iter()
+                    .filter(|r| r.range.start() >= self.config.chipset_high_mmio.end())
+                    .map(|r| r.range.len())
+                    .sum::<u64>()
                     .to_mb()
             }
             PcatAddress::HIGH_MMIO_GAP_BASE_IN_MB => {
@@ -456,7 +466,14 @@ impl PcatBiosDevice {
             ),
             PcatAddress::INITIAL_MEGABYTES_BELOW_GAP => {
                 // Consumers: vmbios/source/bsp/em/smbios/smbios/Smbport.asm
-                self.config.mem_layout.ram_below_4gb().to_mb()
+                self.config
+                    .mem_layout
+                    .ram()
+                    .iter()
+                    .filter(|r| r.range.end() < 0x1_0000_0000)
+                    .map(|r| r.range.len())
+                    .sum::<u64>()
+                    .to_mb()
             }
             _ => {
                 tracelimit::warn_ratelimited!(?addr, "unknown bios read");
