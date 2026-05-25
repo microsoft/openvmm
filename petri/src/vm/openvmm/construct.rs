@@ -382,10 +382,6 @@ impl PetriVmConfigOpenVmm {
                 EfiDiagnosticsLogLevel::Info => firmware_uefi_resources::LogLevel::make_info(),
                 EfiDiagnosticsLogLevel::Full => firmware_uefi_resources::LogLevel::make_full(),
             };
-            // If the test configured a VMGS-backed guest state disk, route the
-            // UEFI NVRAM through the VMGS so persisted state (e.g. boot
-            // entries) is honored. Otherwise, fall back to an ephemeral
-            // in-memory NVRAM store.
             let nvram_storage = if vmgs.disk().is_some() {
                 firmware_uefi_resources::VmgsNvramStorageHandle.into_resource()
             } else {
