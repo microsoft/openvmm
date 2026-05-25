@@ -1689,14 +1689,15 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         assert_eq!(vtl, Vtl::Vtl2);
         let is_bsp = self.inner.vp_info.base.is_bsp();
 
-        // Reset per-VP VTL2-enable state on non-BSP VPs. The new VTL2
-        // will re-issue `HvCallEnableVpVtl` on each AP to program its startup
-        // context (RIP/RSP/CR3/GDT/IDT). Clear VTL2 from `enabled_vtls`
-        // before `state.reset` so that `runnable_vtls` and `active_vtl` are
-        // derived from the post-scrub set rather than the pre-scrub one.
+        // Reset per-VP VTL2-enable state on non-BSP VPs. The new VTL2 will
+        // re-issue `HvCallEnableVpVtl` on each AP to program its startup
+        // context (RIP/RSP/CR3/GDT/IDT)
+        //
+        // Leave `enabled_vtls` alone so that `state.reset` keeps `active_vtl`
+        // at VTL2 on the AP, allowing it to idle in VTL2 (in startup suspend)
+        // during the servicing window.
         if !is_bsp {
             self.inner.vtl2_enable.store(false, Ordering::Relaxed);
-            self.state.enabled_vtls.clear(Vtl::Vtl2);
         }
 
         self.state.reset(true, is_bsp);
