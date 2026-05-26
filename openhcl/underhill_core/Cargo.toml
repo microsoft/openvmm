@@ -147,7 +147,7 @@ x86defs.workspace = true
 safe_intrinsics.workspace = true
 debug_ptr.workspace = true
 guid.workspace = true
-crypto = { workspace = true, features = ["openssl"] }
+crypto = { workspace = true, features = ["symcrypt"] }
 inspect.workspace = true
 kmsg.workspace = true
 local_clock.workspace = true
