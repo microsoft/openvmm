@@ -103,7 +103,7 @@ helper module supplies matching `serialize` and `deserialize`
 functions so JSON round-trips are byte-stable:
 
 ```rust
-#[mesh(7)]
+#[mesh(6)]
 #[cfg_attr(
     feature = "manifest",
     serde(default, with = "custom_uefi_json_serde")
