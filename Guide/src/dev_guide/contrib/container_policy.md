@@ -44,23 +44,27 @@ parser trait, and no central dispatch.
 1. **Never reuse a `#[mesh(N)]` tag.** Once allocated to a product, the
    number is permanent — re-using it would silently change the measured
    wire format for an existing product.
-2. **Never derive `serde::Serialize`** on `ContainerPolicy` or any
-   `*Policy` body. Field-level `#[serde(deserialize_with)]` adapters
-   (such as CWCOW's `custom_uefi_json` base64 decoder) are inherently
-   asymmetric — a symmetric Serialize impl would silently round-trip
-   wire bytes back to JSON instead of the original input shape.
+2. **Any non-trivial field encoding must be a *symmetric* serde
+   adapter.** When a manifest field's JSON shape differs from its wire
+   byte shape (e.g. CWCOW's base64-encoded `custom_uefi_json`), use
+   `#[serde(with = "module_name")]` with a helper module that exposes
+   matching `serialize` *and* `deserialize` functions. Never use
+   one-directional `#[serde(deserialize_with = "…")]` alone — it
+   leaves the Serialize side free to emit a shape that won't
+   deserialize again, silently corrupting any future manifest dump.
+   The `json_round_trip_is_byte_identical` test enforces this for
+   every existing field.
 
 ## Adding a new product
 
 The default flow is two edits in `vm/loader/loader_defs/src/paravisor.rs`:
 
 ```rust
-/// 1. Define a body struct (mesh + optional serde::Deserialize under
-///    the `manifest` feature). Manifest field names match wire field
-///    names by default; use serde(rename) / deserialize_with on
-///    individual fields when needed.
+/// 1. Define a body struct (mesh + symmetric serde under the
+///    `manifest` feature). Manifest field names match wire field
+///    names by default.
 #[derive(mesh_protobuf::Protobuf, Debug, Clone, PartialEq, Default)]
-#[cfg_attr(feature = "manifest", derive(serde::Deserialize))]
+#[cfg_attr(feature = "manifest", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(
     feature = "manifest",
     serde(rename_all = "snake_case", deny_unknown_fields)
@@ -85,46 +89,60 @@ Manifest authors can then write:
 "container_policy": { "foo": { "setting_a": true, "setting_b": 7 } }
 ```
 
-…and the manifest deserializes directly into the wire enum.
+…and the manifest deserializes directly into the wire enum. The
+matching `Serialize` impl lets build tooling re-emit a manifest from
+a wire-enum value (useful for `igvmfilegen --dump-manifest` and
+similar workflows).
 
-### Build-time work on individual fields
+### Custom field encoding (must be symmetric)
 
-When a manifest field needs build-side processing (base64 decoding,
-shape conversion, etc.), attach a `#[serde(deserialize_with = "…")]`
-adapter to the *field*. The wire type stays a single struct; only the
-field's JSON shape diverges from its byte shape. CWCOW does this for
-`custom_uefi_json`:
+When a manifest field's JSON shape differs from its wire byte shape —
+e.g. CWCOW embeds the custom UEFI JSON as a base64-encoded string —
+attach a *symmetric* `#[serde(with = "…")]` adapter to the field. The
+helper module supplies matching `serialize` and `deserialize`
+functions so JSON round-trips are byte-stable:
 
 ```rust
 #[mesh(7)]
 #[cfg_attr(
     feature = "manifest",
-    serde(default, deserialize_with = "decode_custom_uefi_json_base64")
+    serde(default, with = "custom_uefi_json_serde")
 )]
 pub custom_uefi_json: Vec<u8>,
 ```
 
-The adapter is gated behind the `manifest` feature so the runtime crate
-stays minimal:
-
 ```rust
 #[cfg(feature = "manifest")]
-fn decode_custom_uefi_json_base64<'de, D>(d: D) -> Result<Vec<u8>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
+mod custom_uefi_json_serde {
     use base64::Engine as _;
-    let s = String::deserialize(d)?;
-    base64::engine::general_purpose::STANDARD
-        .decode(s.as_bytes())
-        .map_err(serde::de::Error::custom)
+    use serde::Deserialize as _;
+
+    pub fn serialize<S: serde::Serializer>(
+        bytes: &Vec<u8>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        s.serialize_str(
+            &base64::engine::general_purpose::STANDARD.encode(bytes),
+        )
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        d: D,
+    ) -> Result<Vec<u8>, D::Error> {
+        let s = String::deserialize(d)?;
+        if s.is_empty() {
+            return Ok(Vec::new());
+        }
+        base64::engine::general_purpose::STANDARD
+            .decode(s.as_bytes())
+            .map_err(serde::de::Error::custom)
+    }
 }
 ```
 
-In manifest JSON the field is a base64-encoded string (standard RFC
-4648 alphabet, padding optional); in the wire bytes it is the decoded
-raw payload. Embedding the bytes inline keeps manifests self-contained
-and avoids out-of-band file dependencies during the build.
+The adapter is gated behind the `manifest` feature so the runtime
+crate stays minimal. The mandatory `json_round_trip_is_byte_identical`
+test exercises this contract: any asymmetry breaks the build.
 
 ## Region layout
 

@@ -478,26 +478,28 @@ pub use container_policy::encode_container_policy_page;
 ///
 /// **Default case** (manifest fields match wire fields by name):
 ///   1. Define a `#[derive(mesh_protobuf::Protobuf)]` body struct with
-///      `#[cfg_attr(feature = "manifest", derive(serde::Deserialize))]`.
+///      `#[cfg_attr(feature = "manifest", derive(serde::Serialize,
+///      serde::Deserialize))]`.
 ///   2. Add a `#[mesh(N)] Foo(FooPolicy)` variant to [`ContainerPolicy`]
 ///      with a **fresh** mesh tag (never reuse a tag — it would
 ///      silently change the measured wire format for an existing
 ///      product).
 ///
-/// **Build-side translation when needed** (e.g. a manifest field is a
-/// file path whose contents must be embedded into the measured bytes):
-/// use a *field-level* `#[serde(deserialize_with = "...")]` adapter on
-/// the wire body. The adapter runs only during deserialization (it is
-/// gated by the `manifest` feature), so the wire type stays a single
-/// struct and the runtime build does not pull in std.
+/// **Custom JSON encoding for individual fields** (e.g. a manifest
+/// field is a base64-encoded binary blob): use a *symmetric*
+/// `#[serde(with = "module_name")]` field adapter where the helper
+/// module exposes matching `serialize` and `deserialize` functions.
+/// Symmetry is mandatory: the JSON value produced by `serialize` must
+/// deserialize back to a byte-identical Rust value. The compiler
+/// enforces both directions exist; round-trip tests catch any encoding
+/// mismatch.
 ///
-/// # Hard rule
-///
-/// **Never** derive `serde::Serialize` on [`ContainerPolicy`] or any of
-/// its body structs. The wire bytes are the only canonical export; a
-/// symmetric Serialize impl would silently break the asymmetry of any
-/// `deserialize_with` adapter (e.g. a path read in via deserialize
-/// would round-trip back as raw bytes, not a path).
+/// **Do not** use one-directional `#[serde(deserialize_with = "...")]`
+/// adapters: they leave the matching `Serialize` impl free to emit a
+/// shape that won't deserialize again, silently corrupting any future
+/// manifest dump. The `custom_uefi_json` field on [`CwcowPolicy`] is
+/// the canonical symmetric-adapter example (base64 ↔ bytes via
+/// `custom_uefi_json_serde`).
 pub mod container_policy {
     extern crate alloc;
 
@@ -509,7 +511,7 @@ pub mod container_policy {
     /// identifier on the wire and **must never be reused**. Adding a new
     /// product is purely additive — new variants get a fresh tag.
     #[derive(mesh_protobuf::Protobuf, Debug, Clone, PartialEq)]
-    #[cfg_attr(feature = "manifest", derive(serde::Deserialize))]
+    #[cfg_attr(feature = "manifest", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(
         feature = "manifest",
         serde(rename_all = "snake_case", deny_unknown_fields)
@@ -533,7 +535,7 @@ pub mod container_policy {
     /// configuration should compose sub-structs (with their own
     /// `#[mesh(N)]` tags) rather than overload existing fields.
     #[derive(mesh_protobuf::Protobuf, Debug, Clone, PartialEq, Default)]
-    #[cfg_attr(feature = "manifest", derive(serde::Deserialize))]
+    #[cfg_attr(feature = "manifest", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(
         feature = "manifest",
         serde(rename_all = "snake_case", deny_unknown_fields)
@@ -577,52 +579,67 @@ pub mod container_policy {
         // and MUST NOT be allocated to a new field.
         /// Custom UEFI JSON bytes embedded into the measured policy
         /// payload. In manifest JSON the field is a **base64-encoded
-        /// string**; the build-side adapter decodes it into bytes via
-        /// [`decode_custom_uefi_json_base64`]. The wire format only
-        /// carries the decoded bytes — the base64 framing is a
-        /// manifest convenience that lets authors embed arbitrary
-        /// binary directly in JSON without referencing an out-of-band
-        /// file.
+        /// string** (RFC 4648 standard alphabet); the field's serde
+        /// adapter handles both directions symmetrically — encoding
+        /// raw bytes back to base64 on serialize, decoding base64 to
+        /// raw bytes on deserialize. Manifest authors can embed
+        /// arbitrary binary directly in JSON without referencing an
+        /// out-of-band file.
         #[mesh(7)]
-        #[cfg_attr(
-            feature = "manifest",
-            serde(default, deserialize_with = "decode_custom_uefi_json_base64")
-        )]
+        #[cfg_attr(feature = "manifest", serde(default, with = "custom_uefi_json_serde"))]
         pub custom_uefi_json: Vec<u8>,
     }
 
-    /// Field-level serde adapter for [`CwcowPolicy::custom_uefi_json`].
+    /// Symmetric serde adapter for [`CwcowPolicy::custom_uefi_json`].
+    /// Both `serialize` and `deserialize` go through RFC 4648
+    /// standard base64 — bytes are emitted as a base64 string on
+    /// serialize, and a base64 string is decoded to bytes on
+    /// deserialize.
     ///
-    /// In manifest JSON the field is a base64-encoded string; this
-    /// adapter decodes it into the raw byte buffer embedded in the
-    /// wire enum. Standard (RFC 4648) base64 alphabet with optional
-    /// padding is accepted.
+    /// Symmetry is the whole point: any future code that re-serializes
+    /// a `ContainerPolicy` to JSON produces a manifest that, when
+    /// deserialized again, yields a byte-identical value. The
+    /// previous one-way `deserialize_with` adapter required a "never
+    /// derive Serialize" hard rule to prevent silent corruption;
+    /// using `#[serde(with = "...")]` makes that rule structurally
+    /// unnecessary.
     ///
     /// `Default::default()` (empty) is accepted via `serde(default)`
-    /// so builds that don't ship a custom UEFI JSON work out of the
-    /// box; the empty string also decodes to an empty `Vec`.
+    /// on the field so builds that don't ship a custom UEFI JSON
+    /// work out of the box; the empty string also decodes to an
+    /// empty `Vec`.
     #[cfg(feature = "manifest")]
-    fn decode_custom_uefi_json_base64<'de, D>(d: D) -> Result<Vec<u8>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use base64::Engine as _;
-        use serde::Deserialize;
+    mod custom_uefi_json_serde {
+        extern crate alloc;
 
-        let s = alloc::string::String::deserialize(d)?;
-        if s.is_empty() {
-            return Ok(Vec::new());
+        use alloc::format;
+        use alloc::string::String;
+        use alloc::vec::Vec;
+        use base64::Engine as _;
+        use serde::Deserialize as _;
+
+        pub fn serialize<S>(bytes: &Vec<u8>, s: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+            s.serialize_str(&encoded)
         }
-        // Standard base64 (with or without `=` padding) so manifest
-        // authors can paste output from common tools (`base64`,
-        // `openssl base64`, etc.) verbatim.
-        base64::engine::general_purpose::STANDARD
-            .decode(s.as_bytes())
-            .map_err(|e| {
-                serde::de::Error::custom(alloc::format!(
-                    "failed to base64-decode custom UEFI JSON: {e}"
-                ))
-            })
+
+        pub fn deserialize<'de, D>(d: D) -> Result<Vec<u8>, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = String::deserialize(d)?;
+            if s.is_empty() {
+                return Ok(Vec::new());
+            }
+            base64::engine::general_purpose::STANDARD
+                .decode(s.as_bytes())
+                .map_err(|e| {
+                    serde::de::Error::custom(format!("failed to base64-decode bytes: {e}"))
+                })
+        }
     }
 
     /// Errors that may arise while decoding the inline measured
@@ -957,6 +974,53 @@ mod tests {
             }"#;
             let err = from_json(json);
             assert!(err.is_err(), "expected base64 error, got: {err:?}");
+        }
+
+        #[test]
+        fn json_round_trip_is_byte_identical() {
+            // Serialize then re-deserialize a fully populated
+            // ContainerPolicy and confirm the value survives.
+            //
+            // This is the structural enforcement of the
+            // serialize/deserialize symmetry that replaces the old
+            // "never derive Serialize" hard rule: any field whose
+            // serde adapter is asymmetric will break this test.
+            let original = ContainerPolicy::Cwcow(CwcowPolicy {
+                vmgs_read_only: true,
+                require_secure_boot: true,
+                require_secure_boot_vars: true,
+                require_bcd_integrity: true,
+                require_secure_avic: true,
+                custom_uefi_json: alloc::vec![0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x00, 0xFF],
+            });
+            let json = serde_json::to_string(&original).unwrap();
+            let restored: ContainerPolicy = from_json(&json).unwrap();
+            assert_eq!(restored, original);
+
+            // Round-trip a default-shaped policy too (exercises the
+            // empty-bytes path through the base64 adapter).
+            let default_policy = ContainerPolicy::Cwcow(CwcowPolicy::default());
+            let json = serde_json::to_string(&default_policy).unwrap();
+            let restored: ContainerPolicy = from_json(&json).unwrap();
+            assert_eq!(restored, default_policy);
+        }
+
+        #[test]
+        fn serialize_emits_custom_uefi_json_as_base64_string() {
+            // Verify the symmetric adapter emits base64 (not a JSON
+            // array of bytes) on the serialize side. Otherwise the
+            // round-trip test above would pass with a "JSON array of
+            // numbers" round trip — that's not the manifest contract
+            // we want.
+            let policy = ContainerPolicy::Cwcow(CwcowPolicy {
+                custom_uefi_json: alloc::vec![b'A', b'B', b'C'], // base64: "QUJD"
+                ..Default::default()
+            });
+            let json = serde_json::to_string(&policy).unwrap();
+            assert!(
+                json.contains("\"custom_uefi_json\":\"QUJD\""),
+                "expected base64 string in JSON, got: {json}"
+            );
         }
 
         #[test]

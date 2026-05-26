@@ -111,24 +111,19 @@ pub enum Image {
         #[serde(skip_serializing_if = "Option::is_none")]
         linux: Option<LinuxImage>,
         /// Optional container policy configuration. When `Some`, the
-        /// IGVM build emits an additional measured VTL2 page containing a
-        /// product-specific [`ContainerPolicy`]. When `None` (the
-        /// default), no such page is imported.
+        /// IGVM build emits an additional measured VTL2 payload
+        /// containing a product-specific [`ContainerPolicy`]. When
+        /// `None` (the default), no such payload is imported.
         ///
         /// The manifest schema is the wire schema:
-        /// `loader_defs::paravisor::ContainerPolicy` directly derives
-        /// `serde::Deserialize` (under its `manifest` feature). Default
-        /// products map manifest fields to wire fields by name; products
-        /// that need a build-side translation step (e.g. reading a file
-        /// from disk) attach `#[serde(try_from = "FooPolicyInput")]` to
-        /// the wire type.
-        ///
-        /// **Note**: `ContainerPolicy` intentionally does *not* derive
-        /// `serde::Serialize` (to avoid asymmetric round-trip footguns
-        /// in products that use `#[serde(try_from)]`). Consequently, we
-        /// skip the field when re-serializing the manifest — which is
-        /// fine because manifest JSON is an input-only artefact.
-        #[serde(default, skip_serializing)]
+        /// `loader_defs::paravisor::ContainerPolicy` derives both
+        /// `serde::Deserialize` and `serde::Serialize` (under its
+        /// `manifest` feature). Default products map manifest fields
+        /// to wire fields by name; fields that need a non-trivial
+        /// JSON encoding (e.g. CWCOW's base64 `custom_uefi_json`)
+        /// use a *symmetric* `#[serde(with = "…")]` adapter so the
+        /// JSON round-trip is byte-stable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         container_policy: Option<ContainerPolicy>,
     },
     /// Load the Linux kernel.
