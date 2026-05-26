@@ -236,7 +236,7 @@ impl<'a> BaseChipsetBuilder<'a> {
 
         // oh boy, time to build all the devices!
         let options::BaseChipsetDevices {
-            deps_generic_cmos_rtc,
+            deps_generic_cmos_rtc: _,
             deps_generic_isa_floppy,
             deps_generic_pci_bus,
             deps_generic_psp: _, // not actually a device... yet
