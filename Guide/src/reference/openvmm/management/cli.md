@@ -8,14 +8,80 @@ as well as the generated CLI help (via `cargo run -- --help`).
 ```
 
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
-* `--memory <SIZE>`: The VM's memory size. Defaults to 1GB.
+* `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
+  `SPEC` can be a size-only shorthand, such as `--memory 4G`, or a
+  comma-separated key/value list:
+
+  ```bash
+  --memory size=4G,shared=on,prefetch=off
+  ```
+
+  Supported keys:
+  * `size=<SIZE>` - guest RAM size. Sizes accept `K`, `M`, `G`, and
+    `T` suffixes, optionally followed by `B`.
+  * `shared=on|off` - use shared file-backed guest RAM. The default is
+    `on`; `off` uses private anonymous memory.
+  * `prefetch=on|off` - pre-populate shared guest RAM mappings.
+  * `thp=on|off` - mark private guest RAM as Transparent Huge Page
+    eligible. Requires `shared=off`.
+  * `hugepages=on|off` - allocate guest RAM from Linux hugetlb pages.
+    This is Linux-only, requires shared memory, and cannot be combined
+    with file-backed memory or PCAT/legacy x86 RAM splitting.
+  * `hugepage_size=<SIZE>` - request a specific hugetlb page size, such
+    as `2MB` or `1GB`. Requires `hugepages=on`; if omitted,
+    OpenVMM uses 2 MB pages.
+  * `file=<PATH>` - use an existing file as the guest RAM backing file.
+    This is used by snapshots.
+
+  Examples:
+
+  ```bash
+  --memory 4G
+  --memory size=64GB,hugepages=on,hugepage_size=2MB
+  --memory size=4G,file=path/to/memory.bin
+  --memory size=4G,shared=off,thp=on
+  ```
 * `--hv`: Exposes Hyper-V enlightenments and VMBus support.
+* `--hypervisor <SPEC>`: Select a specific hypervisor backend, optionally with
+  backend-specific parameters. The format is `name` or `name:key=val,key,...`.
+  Available backends: `whp` (Windows), `kvm` (Linux), `mshv` (Linux,
+  `x86_64` guests only), `hvf` (macOS). When omitted, OpenVMM
+  auto-detects the best available backend.
+
+  WHP accepts the following parameters (x86_64 guests only):
+  * `user_mode_apic` — use the user-mode APIC emulator instead of WHP's
+    in-hypervisor APIC
+  * `no_enlightenments` — disable in-hypervisor Hyper-V enlightenment support
+
+  Examples:
+  ```bash
+  --hypervisor whp
+  --hypervisor whp:user_mode_apic
+  --hypervisor whp:user_mode_apic,no_enlightenments
+  --hypervisor kvm
+  ```
 * `--uefi`: Boot using `mu_msvm` UEFI
+* `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
-* `--disk file:<DISK>`: Exposes a single disk over VMBus. You must also pass `--hv`. The `DISK` argument can be:
+* `--disk file:<DISK>`: Exposes a single disk over VMBus. You must also
+  pass `--hv`. The `DISK` argument can be:
   * A flat binary disk image
   * A VHD file with an extension of .vhd (Windows host only)
   * A VHDX file with an extension of .vhdx (Windows host only)
+
+  On Linux, raw files and block devices use the `disk_blockdevice` backend
+  (io_uring-based async I/O) by default. Append `;direct` to the path to
+  bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct`.
+* `--private-memory`, `--prefetch`, `--thp`, and
+  `--memory-backing-file <PATH>`: Deprecated aliases for `--memory`
+  parameters. Prefer `shared=off`, `prefetch=on`, `thp=on`, and
+  `file=<PATH>`.
+* `--pidfile <PATH>`: Write the process ID to the specified file on startup,
+  and remove it on clean exit. If the process is killed with `SIGKILL` or
+  crashes, the pidfile is not removed — consumers should verify the PID is
+  still alive. No file locking is performed; concurrent launches with the same
+  pidfile path will overwrite each other. Not written for short-lived utility
+  modes such as `--write-saved-state-proto`.
 * `--nic`: Exposes a NIC using the Consomme user-mode NAT.
 * `--gfx`: Enable a graphical console over VNC (see below)
 * `--virtio-9p`: Expose a virtio 9p file system. Uses the format `tag,root_path`, e.g. `myfs,C:\\`.
@@ -24,10 +90,37 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--virtio-fs`: Expose a virtio-fs file system. The format is the same as `--virtio-9p`. The
   file system can be mounted in a Linux guest using `mount -t virtiofs tag /mnt/point`.
   You can specify this argument multiple times to create multiple file systems.
+* `--virtio-rng`: Add a virtio entropy (RNG) device, exposing `/dev/hwrng` in the Linux guest.
+  The guest kernel must have `CONFIG_HW_RANDOM_VIRTIO` enabled.
+* `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device (`auto`, `mmio`, `pci`, `vpci`).
+  Defaults to `auto`.
+* `--vhost-user <SOCKET_PATH>,type=<TYPE>[,tag=<NAME>][,num_queues=<N>][,queue_size=<N>][,pcie_port=<PORT>]`: Attach a
+  vhost-user device backed by an external process over a Unix socket (Linux
+  only). The backend process must already be listening on `SOCKET_PATH`.
+  Supported `type` values: `blk`, `fs`. For `type=fs`, `tag=<NAME>` is required
+  and specifies the mount tag exposed to the guest (max 36 bytes).
+  `num_queues` and `queue_size` control the queue layout (defaults: blk
+  num_queues=1/queue_size=128, fs num_queues=1/queue_size=1024).
+  Alternatively, use `device_id=<N>` instead of `type=` to specify the numeric
+  virtio device ID directly, with `queue_sizes=[N,N,N]` for per-queue sizes.
+  Examples:
+  ```sh
+  --vhost-user /tmp/vhost-blk.sock,type=blk
+  --vhost-user /tmp/vhost-blk.sock,type=blk,num_queues=4,queue_size=512
+  --vhost-user /tmp/vhost-blk.sock,type=blk,pcie_port=rp0
+  --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs
+  --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs,num_queues=2,queue_size=1024
+  --vhost-user /tmp/vhost.sock,device_id=26,queue_sizes=[256,256]
+  ```
 
-And serial devices can each be configured to be relayed to different endpoints:
+Serial devices can be configured to appear as different devices inside the guest:
 
-* `--com1/com2 <none|console|stderr|listen=PATH|listen=tcp:IP:PORT>`
+* `--com1/com2 <BACKEND>`: Configure a COM port serial device.
+* `--virtio-console <BACKEND>`: Expose a virtio console device (appears as
+  `/dev/hvc0` inside the guest).
+
+The `BACKEND` argument is the same for all serial devices:
+
   * `none`: Serial output is dropped.
   * `console`: Serial input is read and output is written to the console.
   * `stderr`: Serial output is written to stderr.
@@ -37,3 +130,151 @@ And serial devices can each be configured to be relayed to different endpoints:
   * `listen=tcp:IP:PORT`: As with `listen=PATH`, but listen for TCP
       connections on the given IP address and port. Typically IP will be
       127.0.0.1, to restrict connections to the current host.
+
+## PCIe Device Support
+
+OpenVMM can emulate a PCI Express topology using `--pcie-root-complex` and
+`--pcie-root-port`. Devices that support the `pcie_port=` option can be
+attached to a root port to appear as PCIe devices in the guest.
+
+### Setting up a PCIe topology
+
+```sh
+# Create a root complex and root port
+--pcie-root-complex rc0 --pcie-root-port rc0:rp0
+```
+
+`--pcie-root-complex` accepts optional comma-separated options after the root
+complex name:
+
+```sh
+--pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255
+```
+
+- `segment=<N>`: PCIe segment number for the root complex.
+- `start_bus=<N>` and `end_bus=<N>`: inclusive bus range assigned to that
+  root complex.
+- `low_mmio=<SIZE>` and `high_mmio=<SIZE>`: low/high MMIO window sizes.
+- `hdm=<SIZE>`: CXL HDM decoder MMIO window size (CFMWS window). Default
+  is `1G`.
+- `hdm_window_restrictions=<MASK>`: CFMWS window restrictions bitmask
+  (`u16`, decimal or `0x`-prefixed hex). Default is `0x1`
+  (`DEVICE_COHERENT`, bit 0 set).
+  Defined bits:
+  0: device coherent
+  1: host-only coherent
+  2: volatile
+  3: persistent
+  4: fixed device configuration
+  5: BI
+  Bits 15:6 are reserved and rejected.
+
+### Root port and switch options
+
+`--pcie-root-port` accepts optional comma-separated options after the port
+name:
+
+```sh
+--pcie-root-port rc0:rp0,hotplug,acs=0x005f,cxl
+```
+
+- `hotplug`: enables hotplug support for that root port.
+- `acs=<mask>`: sets the Access Control Services capability mask for the
+  root port. The value can be decimal or hexadecimal. Default is `0x005f`.
+  Use `acs=0` to disable ACS for a root port.
+- `cxl`: marks the root port as CXL-capable.
+
+`--pcie-switch` accepts optional comma-separated options as well:
+
+```sh
+--pcie-switch rp0:switch0,num_downstream_ports=4,acs=0x005f
+```
+
+- `num_downstream_ports=<N>`: number of downstream ports for the switch.
+- `hotplug`: enables hotplug support on all downstream switch ports.
+- `acs=<mask>`: ACS capability mask requested for downstream switch ports.
+  The upstream switch port does not expose ACS. Default is `0x005f`.
+  Use `acs=0` to disable ACS for switch downstream ports.
+
+### Attaching devices to PCIe
+
+Several device types support the `pcie_port=<name>` option to attach to a
+PCIe root port. The syntax varies slightly between device types:
+
+**Disks** (comma-separated option): `--disk`, `--nvme`, `--virtio-blk`
+
+```sh
+--virtio-blk file:/path/to/disk.raw,pcie_port=rp0
+--nvme file:/path/to/disk.raw,pcie_port=rp0
+--disk file:/path/to/disk.raw,pcie_port=rp0
+```
+
+**CXL test endpoint** (comma-separated option): `--cxl-test`
+
+```sh
+--cxl-test mem:1G,pcie_port=rp0
+```
+
+`--cxl-test` creates a CXL Type-3 test endpoint with one component-register
+BAR.
+The `mem:<len>` value sets the emulated HDM size and allocates backing memory.
+
+**NICs** (colon-prefixed): `--net`, `--virtio-net`, `--mana`
+
+```sh
+--virtio-net pcie_port=rp0:tap:tap0  # TAP is Linux-only
+--net pcie_port=rp0:consomme
+--mana pcie_port=rp0:tap:tap0        # TAP is Linux-only
+```
+
+**Filesystems and other virtio devices** (colon-prefixed):
+`--virtio-fs`, `--virtio-fs-shmem`, `--virtio-9p`, `--virtio-pmem`
+
+```sh
+--virtio-fs pcie_port=rp0:myfs,/path/to/share
+--virtio-fs-shmem pcie_port=rp0:myfs,/path/to/share
+--virtio-9p pcie_port=rp0:myfs,/path/to/share
+--virtio-pmem pcie_port=rp0:/path/to/file
+```
+
+For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
+
+```sh
+--virtio-rng --virtio-rng-pcie-port rp0
+--virtio-console console --virtio-console-pcie-port rp0
+```
+
+**vhost-user devices** (comma-separated option, Linux only): `--vhost-user`
+
+```sh
+--vhost-user /tmp/vhost-blk.sock,type=blk,pcie_port=rp0
+--vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs,pcie_port=rp0
+```
+
+**VFIO device assignment** (Linux only): `--vfio` (and optional `--iommu`)
+
+```sh
+# Legacy VFIO group/container path:
+--vfio host=0000:01:00.0,port=rp0
+
+# Modern VFIO cdev + iommufd path (Linux >= 6.6):
+--iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
+```
+
+### SMMU (aarch64 only)
+
+`--smmu <RC_NAME>` enables an emulated Arm SMMUv3 IOMMU for the named
+root complex. The flag is repeatable — use one `--smmu` per root complex
+that should have an SMMU. Devices behind a covered root complex get
+software IOVA→GPA translation for DMA and MSI addresses.
+
+```sh
+# Enable SMMU on root complex rc0
+--smmu rc0
+
+# Multiple root complexes
+--smmu rc0 --smmu rc1
+```
+
+VFIO devices cannot currently be placed behind an SMMU-covered root
+complex because iommufd nested translation is not yet available.

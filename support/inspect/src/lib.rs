@@ -497,6 +497,7 @@ struct RequestParams<'a> {
     path_start: usize,
     depth: usize,
     number_format: NumberFormat,
+    parent_sensitivity: SensitivityLevel,
 }
 
 impl<'a> RequestParams<'a> {
@@ -580,9 +581,9 @@ enum Action<'a> {
 }
 
 impl<'a> Action<'a> {
-    // Determine which action to take for the field with `name`, given the
+    // Determine which action to take for the child field `child`, given the
     // remaining `path` and the remaining `depth`.
-    fn eval(child: Child<'a>, params: &RequestParams<'_>, path: &str) -> Self {
+    fn eval(child: &Child<'a>, params: &RequestParams<'_>, path: &str) -> Self {
         if params.depth == 0 {
             // Don't return any subfields if the depth is exhausted, since depth
             // exhausted will be reported for the current node.
@@ -815,7 +816,7 @@ impl Response<'_> {
 
     fn child_request(&mut self, child: Child<'_>) -> Option<Request<'_>> {
         let children = &mut **self.children.as_mut()?;
-        let action = Action::eval(child, &self.params, self.path_without_slashes);
+        let action = Action::eval(&child, &self.params, self.path_without_slashes);
         match action {
             Action::Process {
                 name,
@@ -823,17 +824,18 @@ impl Response<'_> {
                 new_path_start,
                 new_depth,
             } => {
-                children.push(InternalEntry {
+                let entry = children.push_mut(InternalEntry {
                     name: name.to_owned(),
                     node: InternalNode::Unevaluated,
                     sensitivity,
                 });
-                let entry = children.last_mut().unwrap();
                 Some(
                     RequestParams {
                         path_start: new_path_start,
                         depth: new_depth,
-                        ..self.params
+                        root: self.params.root,
+                        number_format: self.params.number_format,
+                        parent_sensitivity: child.sensitivity,
                     }
                     .request(&mut entry.node),
                 )
@@ -1010,13 +1012,19 @@ assert_eq!(
     /// no need (or ability--requests must have nodes) to propagate the request.
     fn request(&mut self) -> Option<Request<'_>> {
         let children = &mut **self.children.as_mut()?;
-        children.push(InternalEntry {
+        let entry = children.push_mut(InternalEntry {
             name: String::new(),
             node: InternalNode::Unevaluated,
             sensitivity: SensitivityLevel::Unspecified,
         });
-        let entry = children.last_mut().unwrap();
         Some(self.params.request(&mut entry.node))
+    }
+
+    /// Gets the sensitivity level of the parent node of this request. This is
+    /// useful for wrappers around fields that wish to inherit the sensitivity
+    /// level of their parent node.
+    pub fn parent_sensitivity(&self) -> SensitivityLevel {
+        self.params.parent_sensitivity
     }
 }
 
@@ -1856,7 +1864,7 @@ where
     fn inspect(&self, req: Request<'_>) {
         let mut resp = req.respond();
         for (name, value) in self.0.clone() {
-            resp.field(&name.to_string(), value);
+            resp.sensitivity_field(&name.to_string(), resp.parent_sensitivity(), value);
         }
     }
 }
@@ -3266,6 +3274,78 @@ mod tests {
         assert_eq!(
             node,
             inspect_sync("", Some(SensitivityLevel::Sensitive), &obj)
+        );
+    }
+
+    #[test]
+    fn test_inherit_sensitivity() {
+        fn inspect_sync(
+            path: &str,
+            sensitivity: Option<SensitivityLevel>,
+            obj: impl Inspect,
+        ) -> Node {
+            let mut result = InspectionBuilder::new(path)
+                .sensitivity(sensitivity)
+                .inspect(&obj);
+            result.resolve().now_or_never();
+            result.results()
+        }
+
+        #[derive(Inspect)]
+        struct Indexed {
+            #[inspect(safe, iter_by_index)]
+            a: Vec<Baz>,
+        }
+
+        #[derive(Inspect)]
+        struct Baz {
+            #[inspect(safe)]
+            b: u32,
+            #[inspect(safe)]
+            c: Qux,
+        }
+
+        #[derive(Inspect)]
+        struct Qux {
+            #[inspect(sensitive)]
+            d: u32,
+            e: u32,
+            #[inspect(safe)]
+            f: u32,
+        }
+
+        let obj = Indexed {
+            a: vec![
+                Baz {
+                    b: 0,
+                    c: Qux { d: 0, e: 0, f: 0 },
+                },
+                Baz {
+                    b: 0,
+                    c: Qux { d: 0, e: 0, f: 0 },
+                },
+            ],
+        };
+
+        expected_node(
+            inspect_sync("", Some(SensitivityLevel::Safe), &obj),
+            expect!([r#"
+                {
+                    a: {
+                        0: {
+                            b: 0,
+                            c: {
+                                f: 0,
+                            },
+                        },
+                        1: {
+                            b: 0,
+                            c: {
+                                f: 0,
+                            },
+                        },
+                    },
+                }|{"a":{"0":{"b":0,"c":{"f":0}},"1":{"b":0,"c":{"f":0}}}}"#]),
         );
     }
 

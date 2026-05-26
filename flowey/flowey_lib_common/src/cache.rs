@@ -462,7 +462,7 @@ impl FlowNode for Node {
                     let (hitvar_str_reader, hitvar_str_writer) = ctx.new_var();
 
                     let mut step = ctx
-                        .emit_gh_step(format!("Restore cache: {label}"), "actions/cache@v4")
+                        .emit_gh_step(format!("Restore cache: {label}"), "actions/cache@v5")
                         .with("key", key)
                         .with("path", dir_string);
                     if let Some(restore_keys) = restore_keys {

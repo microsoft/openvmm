@@ -36,17 +36,17 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 use std::time::Duration;
-use winapi::shared::winerror::ERROR_OPERATION_ABORTED;
-use winapi::um::errhandlingapi::GetLastError;
-use winapi::um::ioapiset::CancelIoEx;
-use winapi::um::ioapiset::GetOverlappedResult;
-use winapi::um::processthreadsapi::GetCurrentProcess;
-use winapi::um::processthreadsapi::GetCurrentThread;
-use winapi::um::processthreadsapi::QueueUserAPC;
-use winapi::um::synchapi::WaitForMultipleObjectsEx;
-use winapi::um::synchapi::WaitForSingleObjectEx;
-use winapi::um::winbase::INFINITE;
-use winapi::um::winbase::WAIT_FAILED;
+use windows_sys::Win32::Foundation::ERROR_OPERATION_ABORTED;
+use windows_sys::Win32::Foundation::GetLastError;
+use windows_sys::Win32::Foundation::WAIT_FAILED;
+use windows_sys::Win32::System::IO::CancelIoEx;
+use windows_sys::Win32::System::IO::GetOverlappedResult;
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
+use windows_sys::Win32::System::Threading::GetCurrentThread;
+use windows_sys::Win32::System::Threading::INFINITE;
+use windows_sys::Win32::System::Threading::QueueUserAPC;
+use windows_sys::Win32::System::Threading::WaitForMultipleObjectsEx;
+use windows_sys::Win32::System::Threading::WaitForSingleObjectEx;
 
 #[derive(Debug, Default)]
 pub(crate) struct State {

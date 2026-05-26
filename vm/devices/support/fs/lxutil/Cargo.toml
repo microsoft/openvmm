@@ -13,8 +13,6 @@ ci = []
 [dependencies]
 lx.workspace = true
 
-pal.workspace = true
-
 tracing.workspace = true
 
 [target.'cfg(unix)'.dependencies]
@@ -24,6 +22,7 @@ libc.workspace = true
 arrayvec.workspace = true
 bitfield-struct.workspace = true
 headervec.workspace = true
+pal.workspace = true
 parking_lot.workspace = true
 static_assertions.workspace = true
 widestring.workspace = true
@@ -50,6 +49,7 @@ features = [
 ]
 
 [dev-dependencies]
+pal.workspace = true
 tempfile.workspace = true
 
 [lints]

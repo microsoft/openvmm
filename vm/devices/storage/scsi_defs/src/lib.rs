@@ -1,6 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! SCSI protocol definitions: opcodes, status codes, sense data structures,
+//! and CDB (Command Descriptor Block) layouts.
+//!
+//! Based on the SCSI Primary Commands (SPC) and SCSI Block Commands (SBC)
+//! specifications from the [T10 committee](https://www.t10.org/). All
+//! multi-byte integers use big-endian byte order per the SCSI spec.
+//!
+//! This crate defines wire-format types only — no I/O logic. Consumers
+//! include `scsidisk` (CDB parsing) and `storvsp` (SRB status handling).
+//!
+//! # Modules
+//!
+//! - [`srb`] — SRB (SCSI Request Block) types for the Hyper-V SCSI protocol.
+//!   [`SrbStatus`](srb::SrbStatus) reports command-level status;
+//!   [`SrbStatusAndFlags`](srb::SrbStatusAndFlags) packs status with additional
+//!   flags.
+
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
@@ -557,6 +574,11 @@ pub struct SenseDataHeader {
     pub additional_sense_length: u8,
 }
 
+/// Fixed-format SCSI sense data (SPC-4 §4.5.3).
+///
+/// Contains the sense key (broad error category), additional sense code (ASC),
+/// and additional sense code qualifier (ASCQ) that together identify the
+/// specific error condition. Constructed via [`SenseData::new`].
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SenseData {
@@ -1025,6 +1047,10 @@ pub struct Cdb16 {
     pub control: u8,
 }
 
+/// Flags from a SCSI CDB (Command Descriptor Block) for 10-byte commands.
+///
+/// Packs FUA (Force Unit Access), DPO (Disable Page Out), and protection
+/// information fields into a single byte.
 #[bitfield(u8)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbFlags {

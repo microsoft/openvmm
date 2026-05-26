@@ -24,7 +24,6 @@ use tracing_helpers::ErrorValueExt;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::io::CpuIo;
-use virt::vp::AccessVpState;
 use zerocopy::IntoBytes;
 
 #[derive(Debug, Default, Inspect)]
@@ -231,8 +230,6 @@ impl<'a> WhpProcessor<'a> {
         stop: StopVp<'_>,
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason> {
-        self.reset_if_requested();
-
         tracing::trace!(vtl = ?self.state.active_vtl, "current vtl");
         let mut last_waker = None;
         loop {
@@ -461,34 +458,9 @@ impl<'a> WhpProcessor<'a> {
         self.flush_messages(vtl, sints);
     }
 
-    /// Flushes pending register changes.
-    pub(crate) fn reset_if_requested(&mut self) {
-        if self.inner.reset_next.swap(false, Ordering::SeqCst) {
-            self.state.reset(false, self.inner.vp_info.base.is_bsp());
-        }
-
-        if self.inner.scrub_next.swap(false, Ordering::SeqCst) {
-            self.state.reset(true, self.inner.vp_info.base.is_bsp());
-        }
-
-        if self.state.finish_reset_vtl0 {
-            self.state.finish_reset_vtl0 = false;
-            self.finish_reset(Vtl::Vtl0);
-        }
-
-        if self.state.finish_reset_vtl2 {
-            self.state.finish_reset_vtl2 = false;
-            self.finish_reset(Vtl::Vtl2);
-        }
-    }
-
-    fn finish_reset(&mut self, vtl: Vtl) {
+    pub(crate) fn finish_reset(&mut self, vtl: Vtl) {
         self.finish_reset_arch(vtl);
         *self.vplc(vtl).start_vp_context.lock() = None;
-        if cfg!(debug_assertions) {
-            let vp_info = &self.inner.vp_info;
-            self.access_state(vtl).check_reset_all(vp_info);
-        }
     }
 
     fn request_sint_notifications(&mut self, vtl: Vtl, sints: u16) {
@@ -611,7 +583,7 @@ mod x86 {
                     &mut self.state.exits.interrupt_window
                 }
                 ExitReason::Hypercall(info) => {
-                    crate::hypercalls::WhpHypercallExit::handle(self, dev, info, exit.vp_context);
+                    crate::hypercalls::WhpHypercallExit::handle(self, info, exit.vp_context);
                     &mut self.state.exits.hypercall
                 }
                 ExitReason::MemoryAccess(access) => {
@@ -892,7 +864,7 @@ mod x86 {
                         gva_valid,
                     ) {
                         if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
-                            self.signal_mnf(dev, connection_id);
+                            self.signal_mnf(connection_id);
                         }
                         return Ok(());
                     }
@@ -904,8 +876,12 @@ mod x86 {
             Ok(())
         }
 
-        pub(crate) fn signal_mnf(&self, dev: &impl CpuIo, connection_id: u32) {
-            if let Err(err) = dev.signal_synic_event(self.state.active_vtl, connection_id, 0) {
+        pub(crate) fn signal_mnf(&self, connection_id: u32) {
+            if let Err(err) = self.vp.partition.synic_ports.handle_signal_event(
+                self.state.active_vtl,
+                connection_id,
+                0,
+            ) {
                 tracing::warn!(
                     error = &err as &dyn std::error::Error,
                     connection_id,
@@ -1761,11 +1737,7 @@ mod aarch64 {
                         &mut self.state.exits.sint_deliverable
                     }
                     HvMessageType::HvMessageTypeHypercallIntercept => {
-                        crate::hypercalls::WhpHypercallExit::handle(
-                            self,
-                            dev,
-                            message_ref(message),
-                        );
+                        crate::hypercalls::WhpHypercallExit::handle(self, message_ref(message));
                         &mut self.state.exits.hypercall
                     }
                     HvMessageType::HvMessageTypeArm64ResetIntercept => {

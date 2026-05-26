@@ -139,6 +139,27 @@ impl CompletionQueue {
         self.cqid
     }
 
+    /// Peek at the completion entry at the current head position without
+    /// advancing the head or committing. Returns diagnostic info about what
+    /// is sitting in CQ DMA memory at the current head position.
+    pub fn peek(&self) -> CqPeekResult {
+        let completion_mem = self.mem.as_slice()
+            [self.head as usize * size_of::<spec::Completion>()..][..size_of::<spec::Completion>()]
+            .as_atomic_slice::<AtomicU64>()
+            .unwrap();
+
+        let high = completion_mem[1].load(Acquire);
+        let status = spec::CompletionStatus::from((high >> 48) as u16);
+        let low = completion_mem[0].load(Relaxed);
+        let completion: spec::Completion = zerocopy::transmute!([low, high]);
+        CqPeekResult {
+            completion,
+            phase_match: status.phase() == self.phase,
+            head: self.head,
+            expected_phase: self.phase,
+        }
+    }
+
     pub fn read(&mut self) -> Option<spec::Completion> {
         let completion_mem = self.mem.as_slice()
             [self.head as usize * size_of::<spec::Completion>()..][..size_of::<spec::Completion>()]
@@ -203,6 +224,19 @@ impl CompletionQueue {
             mem,
         })
     }
+}
+
+/// Result of peeking at the CQ head position for diagnostics.
+pub(crate) struct CqPeekResult {
+    /// The raw completion entry at the current head.
+    pub completion: spec::Completion,
+    /// Whether the phase bit in the completion matches the expected phase.
+    /// If true, a valid completion is sitting in DMA memory.
+    pub phase_match: bool,
+    /// The CQ head position that was peeked.
+    pub head: u32,
+    /// The phase bit the driver expects at this head position.
+    pub expected_phase: bool,
 }
 
 fn advance(n: u32, l: u32) -> u32 {

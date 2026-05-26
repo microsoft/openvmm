@@ -375,11 +375,11 @@ fn get_next_page_table(
                 *is_user_address = *is_user_address && !pte.ap_table_privileged_only();
                 *is_writeable_address = *is_writeable_address && !pte.ap_table_read_only();
                 *is_executable_address = *is_executable_address
-                    && if context.check_user_access {
+                    && !(if context.check_user_access {
                         pte.uxn_table()
                     } else {
                         pte.pxn_table()
-                    };
+                    });
             }
         } else {
             // check permissions
@@ -521,7 +521,7 @@ pub fn translate_gva_to_gpa(
         write_no_execute,
         output_size_mask: (1 << output_size) - 1,
     };
-    let mut is_user_address = false;
+    let mut is_user_address = true;
     let mut is_writeable_address = true;
     let mut is_executable_address = true;
     let (address, mut page_table) = get_root_page_table(gva, registers, &walk_context.flags)?;
@@ -542,5 +542,164 @@ pub fn translate_gva_to_gpa(
             PageTableWalkResult::Table(next_table) => next_table,
         };
         level += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aarch64defs::Cpsr64;
+    use aarch64defs::IntermPhysAddrSize;
+    use aarch64defs::Pte;
+    use aarch64defs::SctlrEl1;
+    use aarch64defs::TranslationControlEl1;
+    use guestmem::GuestMemory;
+
+    /// Helper: set up a 2-level page table walk for a 4KB granule.
+    ///
+    /// Memory layout (all within first 16 KB of guest memory):
+    ///   GPA 0x0000: Level 1 table (root)
+    ///   GPA 0x1000: Level 0 table
+    ///   Output maps to GPA 0x2000
+    ///
+    /// TCR: t0sz = 34 → address_width = 30 → 2 levels (L1 → L0)
+    fn setup_page_tables(
+        gm: &GuestMemory,
+        l1_table_pte: Pte, // table descriptor at L1[0]
+        l0_leaf_pte: Pte,  // leaf PTE at L0[0]
+    ) {
+        gm.write_plain::<u64>(0x0000, &l1_table_pte.into()).unwrap();
+        gm.write_plain::<u64>(0x1000, &l0_leaf_pte.into()).unwrap();
+    }
+
+    fn make_registers() -> TranslationRegisters {
+        TranslationRegisters {
+            cpsr: Cpsr64::new(),                 // EL0
+            sctlr: SctlrEl1::new().with_m(true), // paging enabled
+            tcr: TranslationControlEl1::new()
+                .with_t0sz(34) // address_width = 30 → 2 levels
+                .with_ips(IntermPhysAddrSize::IPA_48_BITS_256_TB),
+            // tg0 = 0 → TranslationGranule0::TG_4KB
+            ttbr0: 0x0000, // L1 table at GPA 0
+            ttbr1: 0,
+            syndrome: 0,
+            encryption_mode: EncryptionMode::None,
+        }
+    }
+
+    #[test]
+    fn test_table_level_uxn_should_deny_execution() {
+        let gm = GuestMemory::allocate(0x4000);
+
+        // L1 table descriptor: valid, points to L0 table at 0x1000,
+        // with UXN_TABLE = 1 (user execute never).
+        let l1_pte = Pte::new()
+            .with_valid(true)
+            .with_not_large_page(true) // table descriptor
+            .with_pfn(0x1000 >> 12)
+            .with_uxn_table(true); // USER EXECUTE NEVER
+
+        // L0 leaf PTE: valid page at 0x2000, user accessible, executable
+        // at the leaf level (user_no_execute = false).
+        let l0_pte = Pte::new()
+            .with_valid(true)
+            .with_pfn(0x2000 >> 12)
+            .with_access_flag(true)
+            .with_ap_unprivileged(true); // user accessible
+        // user_no_execute defaults to false → leaf says executable
+
+        setup_page_tables(&gm, l1_pte, l0_pte);
+
+        let registers = make_registers();
+        // HPD=0 means hierarchical permissions ARE enabled.
+        assert_eq!(registers.tcr.hpd0(), 0);
+
+        let flags = TranslateFlags {
+            validate_execute: true,
+            validate_read: true,
+            validate_write: false,
+            privilege_check: TranslatePrivilegeCheck::User,
+            set_page_table_bits: false,
+        };
+
+        let result = translate_gva_to_gpa(&gm, 0, &registers, flags);
+
+        // The table descriptor says UXN=1 (user execute never).
+        // Translation with validate_execute should FAIL.
+        assert!(matches!(result, Err(Error::PrivilegeViolation(_))));
+    }
+
+    #[test]
+    fn test_user_read_succeeds_on_user_accessible_page() {
+        let gm = GuestMemory::allocate(0x4000);
+
+        // L1 table descriptor: plain table, no restrictions.
+        let l1_pte = Pte::new()
+            .with_valid(true)
+            .with_not_large_page(true)
+            .with_pfn(0x1000 >> 12);
+
+        // L0 leaf PTE: user-accessible page at GPA 0x2000.
+        let l0_pte = Pte::new()
+            .with_valid(true)
+            .with_pfn(0x2000 >> 12)
+            .with_access_flag(true)
+            .with_ap_unprivileged(true); // USER ACCESSIBLE
+
+        setup_page_tables(&gm, l1_pte, l0_pte);
+
+        let registers = make_registers();
+
+        // User-mode read validation.
+        let flags = TranslateFlags {
+            validate_execute: false,
+            validate_read: true,
+            validate_write: false,
+            privilege_check: TranslatePrivilegeCheck::User,
+            set_page_table_bits: false,
+        };
+
+        let result = translate_gva_to_gpa(&gm, 0, &registers, flags);
+
+        // The page has ap_unprivileged=true, so a user-mode read should
+        // succeed and resolve to GPA 0x2000.
+        assert_eq!(result.unwrap(), 0x2000);
+    }
+
+    #[test]
+    fn test_table_level_pxn_should_deny_execution() {
+        let gm = GuestMemory::allocate(0x4000);
+
+        // L1 table descriptor with PXN_TABLE = 1 (privileged execute never).
+        let l1_pte = Pte::new()
+            .with_valid(true)
+            .with_not_large_page(true)
+            .with_pfn(0x1000 >> 12)
+            .with_pxn_table(true); // PRIVILEGED EXECUTE NEVER
+
+        // L0 leaf PTE: valid, executable at leaf level.
+        let l0_pte = Pte::new()
+            .with_valid(true)
+            .with_pfn(0x2000 >> 12)
+            .with_access_flag(true);
+        // privilege_no_execute defaults to false → leaf says executable
+
+        setup_page_tables(&gm, l1_pte, l0_pte);
+
+        let registers = make_registers();
+
+        let flags = TranslateFlags {
+            validate_execute: true,
+            validate_read: true,
+            validate_write: false,
+            privilege_check: TranslatePrivilegeCheck::Supervisor,
+            set_page_table_bits: false,
+        };
+
+        let result = translate_gva_to_gpa(&gm, 0, &registers, flags);
+
+        // The table descriptor says PXN=1 (privileged execute never).
+        // Translation with validate_execute should FAIL.
+        assert!(matches!(result, Err(Error::PrivilegeViolation(_))));
     }
 }

@@ -3,12 +3,14 @@
 
 //! PCI capabilities.
 
+pub use self::extended::PciExtendedCapability;
 pub use self::read_only::ReadOnlyCapability;
 
 use crate::spec::caps::CapabilityId;
 use inspect::Inspect;
 use vmcore::save_restore::ProtobufSaveRestore;
 
+pub mod extended;
 pub mod msi_cap;
 pub mod msix;
 pub mod pci_express;
@@ -43,6 +45,16 @@ pub trait PciCapability: Send + Sync + Inspect + ProtobufSaveRestore {
 
     /// Downcast to PCI Express capability (mutable)
     fn as_pci_express_mut(&mut self) -> Option<&mut pci_express::PciExpressCapability> {
+        None
+    }
+
+    /// Downcast to MSI capability
+    fn as_msi_cap(&self) -> Option<&msi_cap::MsiCapability> {
+        None
+    }
+
+    /// Downcast to MSI capability (mutable)
+    fn as_msi_cap_mut(&mut self) -> Option<&mut msi_cap::MsiCapability> {
         None
     }
 }

@@ -51,6 +51,8 @@ pub enum PipetteRequest {
     Crash(FailableRpc<(), ()>),
     /// Crash the kernel.
     KernelCrash(FailableRpc<(), ()>),
+    /// Mounts a filesystem (Linux only).
+    Mount(FailableRpc<MountRequest, ()>),
 }
 
 /// A request to execute a command inside the guest.
@@ -72,6 +74,8 @@ pub struct ExecuteRequest {
     pub env: Vec<EnvPair>,
     /// Whether to clear the environment before setting the new environment.
     pub clear_env: bool,
+    /// If set, chroot into this directory before exec (Linux only).
+    pub chroot: Option<String>,
 }
 
 impl std::fmt::Debug for ExecuteRequest {
@@ -85,6 +89,7 @@ impl std::fmt::Debug for ExecuteRequest {
             .field("stderr", &self.stderr.is_some())
             .field("env", &self.env)
             .field("clear_env", &self.clear_env)
+            .field("chroot", &self.chroot)
             .finish()
     }
 }
@@ -163,6 +168,21 @@ pub struct WriteFileRequest {
     pub path: String,
     /// The receiver of the contents of the file.
     pub receiver: ReadPipe,
+}
+
+/// A request to mount a filesystem.
+#[derive(MeshPayload)]
+pub struct MountRequest {
+    /// The source device or filesystem (e.g. "/dev/vda").
+    pub source: String,
+    /// The target mount point (e.g. "/perf").
+    pub target: String,
+    /// The filesystem type (e.g. "erofs").
+    pub fstype: String,
+    /// Mount flags (e.g. `libc::MS_RDONLY`).
+    pub flags: u64,
+    /// Create the target directory if it doesn't exist.
+    pub mkdir_target: bool,
 }
 
 /// A file that the guest client wishes to be logged on the host for diagnostic purposes.

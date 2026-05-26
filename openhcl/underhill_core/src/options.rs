@@ -84,6 +84,26 @@ impl FromStr for GuestStateEncryptionPolicyCli {
     }
 }
 
+#[derive(Clone, Copy, Debug, MeshPayload)]
+pub enum EfiDiagnosticsLogLevelCli {
+    Default,
+    Info,
+    Full,
+}
+
+impl FromStr for EfiDiagnosticsLogLevelCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<EfiDiagnosticsLogLevelCli, anyhow::Error> {
+        match s {
+            "DEFAULT" | "0" => Ok(EfiDiagnosticsLogLevelCli::Default),
+            "INFO" | "1" => Ok(EfiDiagnosticsLogLevelCli::Info),
+            "FULL" | "2" => Ok(EfiDiagnosticsLogLevelCli::Full),
+            _ => Err(anyhow::anyhow!("Invalid EFI diagnostics log level: {}", s)),
+        }
+    }
+}
+
 #[derive(Clone, Debug, MeshPayload, Inspect, InspectMut)]
 pub enum KeepAliveConfig {
     EnabledHostAndPrivatePoolPresent,
@@ -204,10 +224,6 @@ pub struct Options {
     /// Use the user-mode VFIO NVMe driver instead of the Linux driver.
     pub nvme_vfio: bool,
 
-    /// (OPENHCL_MCR_DEVICE=1)
-    /// MCR Device Enable
-    pub mcr: bool, // TODO MCR: support closed-source ENV vars
-
     /// (OPENHCL_HIDE_ISOLATION=1)
     /// Hide the isolation mode from the guest.
     pub hide_isolation: bool,
@@ -267,6 +283,11 @@ pub struct Options {
     /// (HCL_GUEST_STATE_ENCRYPTION_POLICY=\<GuestStateEncryptionPolicyCli\>)
     /// Specify which guest state encryption policy to use.
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+
+    /// (HCL_EFI_DIAGNOSTICS_LOG_LEVEL=\<EfiDiagnosticsLogLevelCli\>)
+    /// Specify the EFI diagnostics log level filter (DEFAULT, INFO, or FULL).
+    /// Overrides the value in DPS when set.
+    pub efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
 
     /// (HCL_STRICT_ENCRYPTION_POLICY=1) Strict guest state encryption policy.
     pub strict_encryption_policy: Option<bool>,
@@ -399,7 +420,6 @@ impl Options {
         let vtl0_starts_paused = parse_legacy_env_bool("OPENHCL_VTL0_STARTS_PAUSED");
         let serial_wait_for_rts = parse_legacy_env_bool("OPENHCL_SERIAL_WAIT_FOR_RTS");
         let nvme_vfio = parse_legacy_env_bool("OPENHCL_NVME_VFIO");
-        let mcr = parse_legacy_env_bool("OPENHCL_MCR_DEVICE");
         let hide_isolation = parse_env_bool("OPENHCL_HIDE_ISOLATION");
         let halt_on_guest_halt = parse_legacy_env_bool("OPENHCL_HALT_ON_GUEST_HALT");
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
@@ -463,6 +483,14 @@ impl Options {
                     })
                     .ok()
             });
+        let efi_diagnostics_log_level = read_env("HCL_EFI_DIAGNOSTICS_LOG_LEVEL").and_then(|x| {
+            x.to_string_lossy()
+                .parse::<EfiDiagnosticsLogLevelCli>()
+                .map_err(|e| {
+                    tracing::warn!("failed to parse HCL_EFI_DIAGNOSTICS_LOG_LEVEL: {:#}", e)
+                })
+                .ok()
+        });
         let strict_encryption_policy = parse_env_bool_opt("HCL_STRICT_ENCRYPTION_POLICY");
         let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK");
         let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY");
@@ -520,7 +548,6 @@ impl Options {
             serial_wait_for_rts,
             force_load_vtl0_image,
             nvme_vfio,
-            mcr,
             hide_isolation,
             halt_on_guest_halt,
             no_sidecar_hotplug,
@@ -532,6 +559,7 @@ impl Options {
             default_boot_always_attempt,
             guest_state_lifetime,
             guest_state_encryption_policy,
+            efi_diagnostics_log_level,
             strict_encryption_policy,
             attempt_ak_cert_callback,
             enable_vpci_relay,

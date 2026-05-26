@@ -132,11 +132,18 @@ impl PetriLogSource {
     }
 
     /// Traces and logs the result of a test run in the format expected by our tooling.
-    pub fn log_test_result(&self, name: &str, r: &anyhow::Result<()>) {
+    pub fn log_test_result(&self, name: &str, r: &anyhow::Result<()>, unstable: bool) {
         let result_path = match &r {
             Ok(()) => {
                 tracing::info!("test passed");
                 "petri.passed"
+            }
+            Err(err) if unstable => {
+                tracing::warn!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "unstable test failed"
+                );
+                "petri.failed_unstable"
             }
             Err(err) => {
                 tracing::error!(
@@ -287,12 +294,15 @@ macro_rules! log {
 /// - a log file, in human readable format. This file is `petri.log`, except
 ///   for events whose target ends in `.log`, which go to separate files named by
 ///   the target.
-pub fn try_init_tracing(root_path: &Path) -> anyhow::Result<PetriLogSource> {
+pub fn try_init_tracing(
+    root_path: &Path,
+    default_level: LevelFilter,
+) -> anyhow::Result<PetriLogSource> {
     let targets =
         if let Ok(var) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
             var.parse().unwrap()
         } else {
-            Targets::new().with_default(LevelFilter::DEBUG)
+            Targets::new().with_default(default_level)
         };
 
     // Canonicalize so that printed attachment paths are most likely to work.

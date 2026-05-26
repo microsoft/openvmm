@@ -3,7 +3,8 @@
 
 //! Build the cargo-nextest based VMM tests.
 
-use crate::run_cargo_build::common::CommonProfile;
+use crate::common::CommonArch;
+use crate::common::CommonProfile;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoBuildProfile;
@@ -71,11 +72,30 @@ impl FlowNode for Node {
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
         ctx.import::<crate::init_cross_build::Node>();
         ctx.import::<flowey_lib_common::run_cargo_nextest_archive::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        // base requirements for building crates in the hvlite tree
-        let ambient_deps = vec![ctx.reqv(crate::install_openvmm_rust_build_essential::Request)];
+        let mut ambient_deps = vec![ctx.reqv(crate::install_openvmm_rust_build_essential::Request)];
+
+        // TODO: install build tools for other platforms
+        if matches!(
+            ctx.platform(),
+            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
+        ) {
+            ambient_deps.push(ctx.reqv(|v| {
+                flowey_lib_common::install_dist_pkg::Request::Install {
+                    package_names: vec![
+                        "libssl-dev".into(),
+                        "pkg-config".into(),
+                        "build-essential".into(),
+                    ],
+                    done: v,
+                }
+            }));
+        }
+
+        let ambient_deps = ambient_deps;
 
         for Request {
             target,
@@ -85,15 +105,7 @@ impl FlowNode for Node {
         {
             let mut ambient_deps = ambient_deps.clone();
 
-            let sysroot_arch = match target.architecture {
-                target_lexicon::Architecture::Aarch64(_) => {
-                    crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch::Aarch64
-                }
-                target_lexicon::Architecture::X86_64 => {
-                    crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch::X64
-                }
-                arch => anyhow::bail!("unsupported arch {arch}"),
-            };
+            let sysroot_arch = CommonArch::from_architecture(target.architecture)?;
 
             // See comment in `crate::cargo_build` for why this is necessary.
             //

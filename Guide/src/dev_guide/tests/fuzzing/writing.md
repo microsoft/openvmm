@@ -162,7 +162,61 @@ fuzz_target!(|input: &[u8]| -> libfuzzer_sys::Corpus {
 
 ## Fuzzing a vmbus device
 
-TBD (no such fuzzers exist in-tree today)
+VMBus device fuzzers exercise the guest-facing VMBus channel protocol. Unlike
+chipset device fuzzers (which use `FuzzChipset` for PIO/MMIO dispatch), VMBus
+fuzzers create a pair of connected async channels and send packets directly.
+
+See [storvsp/fuzz/fuzz_storvsp.rs][fuzz_storvsp_url] for a complete example.
+
+The general pattern:
+
+1. **Create connected channels** using `vmbus_channel::connected_async_channels`
+2. **Set up the device** (controller, disks, etc.) and start a `TestWorker`
+3. **Negotiate the protocol** — most VMBus devices reject all packets until
+   initialization completes, so always negotiate upfront
+4. **Loop over arbitrary actions** — send SCSI commands, reset packets, raw
+   packets, and read completions
+5. **Race teardown against the fuzz loop** using `futures::select!`
+
+```rust,ignore
+use futures::{select, FutureExt};
+use std::pin::pin;
+
+fn do_fuzz(u: &mut Unstructured<'_>) -> Result<(), anyhow::Error> {
+    DefaultPool::run_with(|driver| async move {
+        let (host, guest_channel) = connected_async_channels(4 * 1024);
+        let guest_queue = Queue::new(guest_channel)?;
+
+        // Set up the device under test
+        let controller = ScsiController::new();
+        // ... attach disks ...
+
+        let test_worker = TestWorker::start(controller, driver.clone(), mem, host, None);
+        let mut guest = TestGuest { queue: guest_queue, transaction_id: 0 };
+
+        // Always negotiate — without init, the device rejects everything
+        guest.perform_protocol_negotiation().await;
+
+        // Fuzz loop
+        let mut fuzz_loop = pin!(async {
+            while !u.is_empty() {
+                let action = u.arbitrary::<FuzzAction>()?;
+                // ... execute action ...
+            }
+            Ok::<(), anyhow::Error>(())
+        }.fuse());
+        let mut teardown = pin!(test_worker.teardown_ignore().fuse());
+
+        select! {
+            _ = fuzz_loop => {},
+            _ = teardown => {},
+        }
+        Ok(())
+    })
+}
+```
+
+[fuzz_storvsp_url]: https://github.com/microsoft/openvmm/blob/main/vm/devices/storage/storvsp/fuzz/fuzz_storvsp.rs
 
 ## Fuzzing `async` code
 

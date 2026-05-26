@@ -6,7 +6,6 @@
 
 mod channel_bitmap;
 pub mod channels;
-pub mod event;
 pub mod hvsock;
 mod monitor;
 mod proxyintegration;
@@ -601,6 +600,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             inner,
             external_requests: self.external_requests,
             next_seq: 0,
+            perform_post_restore_on_start: false,
             unstick_on_start: false,
             channel_unstickers: FuturesUnordered::new(),
             channel_unstick_delay: self.channel_unstick_delay,
@@ -722,6 +722,7 @@ struct ServerTask {
     external_requests: Option<mesh::Receiver<InitiateContactRequest>>,
     /// Next value for [`Channel::seq`].
     next_seq: u64,
+    perform_post_restore_on_start: bool,
     unstick_on_start: bool,
     channel_unstickers: FuturesUnordered<Pin<Box<dyn Send + Future<Output = OfferInstanceId>>>>,
     channel_unstick_delay: Option<Duration>,
@@ -1083,6 +1084,7 @@ impl ServerTask {
             VmbusRequest::Restore(rpc) => {
                 rpc.handle(async |state| {
                     self.unstick_on_start = !state.lost_synic_bug_fixed;
+                    self.perform_post_restore_on_start = true;
                     if let Some(sender) = &self.inner.saved_state_notify {
                         tracing::trace!("sending saved state to proxy");
                         if let Err(err) = sender
@@ -1111,19 +1113,24 @@ impl ServerTask {
             VmbusRequest::Start => {
                 if !self.inner.running {
                     self.inner.running = true;
-                    if let Some(sender) = self.inner.saved_state_notify.as_ref() {
-                        // Indicate to the proxy that the server is starting and that it should
-                        // clear its saved state cache.
-                        tracing::trace!("sending clear saved state message to proxy");
-                        sender
-                            .call(SavedStateRequest::Clear, ())
-                            .await
-                            .expect("failed to clear proxy saved state");
+                    if self.perform_post_restore_on_start {
+                        if let Some(sender) = self.inner.saved_state_notify.as_ref() {
+                            // Indicate to the proxy that the server is starting and that it should
+                            // clear its saved state cache.
+                            tracing::trace!("sending clear saved state message to proxy");
+                            sender
+                                .call(SavedStateRequest::Clear, ())
+                                .await
+                                .expect("failed to clear proxy saved state");
+                        }
+
+                        self.server
+                            .with_notifier(&mut self.inner)
+                            .revoke_unclaimed_channels();
+
+                        self.perform_post_restore_on_start = false;
                     }
 
-                    self.server
-                        .with_notifier(&mut self.inner)
-                        .revoke_unclaimed_channels();
                     if self.unstick_on_start {
                         tracing::info!(
                             "lost synic bug fix is not in yet, call unstick_channels to mitigate the issue."
@@ -1662,8 +1669,12 @@ impl Notifier for ServerTaskInner {
     fn inspect(&self, version: Option<VersionInfo>, offer_id: OfferId, req: inspect::Request<'_>) {
         let channel = self.channels.get(&offer_id).expect("should exist");
         let mut resp = req.respond();
-        if let ChannelState::Open(state) = &channel.state {
-            let mem = self.get_gm_for_channel(version.expect("must be connected"), channel);
+        // Only inspect ring buffers if we have an active connection; during
+        // disconnect/reset, `version` may be None even if an individual channel
+        // is still in the Open state, and we must not panic during inspect
+        // (e.g., timeout diagnostics rely on inspect succeeding).
+        if let (ChannelState::Open(state), Some(version)) = (&channel.state, version) {
+            let mem = self.get_gm_for_channel(version, channel);
             inspect_rings(
                 &mut resp,
                 mem,
@@ -1827,9 +1838,8 @@ impl ServerTaskInner {
 
             (Some(guest_event_port), interrupt)
         } else {
-            // Use a dummy interrupt which does nothing, but make sure it has an event to avoid
-            // proxy_integration from trying to wrap it.
-            (None, Interrupt::null_event())
+            // Use a dummy interrupt which does nothing.
+            (None, Interrupt::null())
         };
 
         // Delete any previously reserved state.

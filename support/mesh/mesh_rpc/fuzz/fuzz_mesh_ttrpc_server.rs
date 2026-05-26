@@ -15,7 +15,12 @@ use unix_socket::UnixStream;
 use xtask_fuzz::fuzz_eprintln;
 use xtask_fuzz::fuzz_target;
 
-include!(concat!(env!("OUT_DIR"), "/proto.rs"));
+#[expect(clippy::allow_attributes)]
+mod proto {
+    include!(concat!(env!("OUT_DIR"), "/proto.rs"));
+}
+
+use proto::*;
 
 fn do_fuzz(input: &[u8]) {
     fuzz_eprintln!("{input:X?}");

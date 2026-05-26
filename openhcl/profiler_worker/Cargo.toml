@@ -6,7 +6,7 @@ name = "profiler_worker"
 edition.workspace = true
 rust-version.workspace = true
 
-[dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 mesh = { workspace = true, features = ["socket2"] }
 mesh_worker.workspace = true
 pal_async.workspace = true

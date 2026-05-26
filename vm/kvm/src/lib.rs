@@ -187,6 +187,8 @@ pub enum Error {
     CreateDevice(#[source] nix::Error),
     #[error("SetDeviceAttr")]
     SetDeviceAttr(#[source] nix::Error),
+    #[error("CheckExtension")]
+    CheckExtension(#[source] nix::Error),
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -306,6 +308,18 @@ impl Kvm {
 impl AsFd for Kvm {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.0.as_fd()
+    }
+}
+
+impl From<File> for Kvm {
+    fn from(fd: File) -> Self {
+        Self(fd)
+    }
+}
+
+impl From<Kvm> for File {
+    fn from(kvm: Kvm) -> Self {
+        kvm.0
     }
 }
 
@@ -506,24 +520,37 @@ impl Partition {
             entries: [Default::default(); MAX_ROUTES],
         };
         for (i, route) in routes.iter().enumerate() {
-            let (type_, u) = match route.1 {
+            let (type_, flags, u) = match route.1 {
                 RoutingEntry::Msi {
                     address_lo,
                     address_hi,
                     data,
-                } => (
-                    KVM_IRQ_ROUTING_MSI,
-                    kvm_irq_routing_entry__bindgen_ty_1 {
-                        msi: kvm_irq_routing_msi {
-                            address_lo,
-                            address_hi,
-                            data,
-                            __bindgen_anon_1: Default::default(),
+                    devid,
+                } => {
+                    let (flags, anon) = if let Some(devid) = devid {
+                        (
+                            KVM_MSI_VALID_DEVID,
+                            kvm_irq_routing_msi__bindgen_ty_1 { devid },
+                        )
+                    } else {
+                        (0, Default::default())
+                    };
+                    (
+                        KVM_IRQ_ROUTING_MSI,
+                        flags,
+                        kvm_irq_routing_entry__bindgen_ty_1 {
+                            msi: kvm_irq_routing_msi {
+                                address_lo,
+                                address_hi,
+                                data,
+                                __bindgen_anon_1: anon,
+                            },
                         },
-                    },
-                ),
+                    )
+                }
                 RoutingEntry::HvSint { vp, sint } => (
                     KVM_IRQ_ROUTING_HV_SINT,
+                    0,
                     kvm_irq_routing_entry__bindgen_ty_1 {
                         hv_sint: kvm_irq_routing_hv_sint {
                             vcpu: vp,
@@ -533,6 +560,7 @@ impl Partition {
                 ),
                 RoutingEntry::Irqchip { pin } => (
                     KVM_IRQ_ROUTING_IRQCHIP,
+                    0,
                     kvm_irq_routing_entry__bindgen_ty_1 {
                         irqchip: kvm_irq_routing_irqchip { pin, irqchip: 0 },
                     },
@@ -541,7 +569,7 @@ impl Partition {
             kvm_routes.entries[i] = kvm_irq_routing_entry {
                 gsi: route.0,
                 type_,
-                flags: 0,
+                flags,
                 pad: 0,
                 u,
             };
@@ -635,6 +663,25 @@ impl Partition {
         }
     }
 
+    /// Tests whether a device type can be created without actually creating it.
+    ///
+    /// Uses `KVM_CREATE_DEVICE_TEST` to probe support. Unlike
+    /// [`create_device`](Self::create_device), this does not wrap any fd.
+    pub fn test_create_device(&self, ty: u32) -> nix::Result<()> {
+        // SAFETY: With KVM_CREATE_DEVICE_TEST the kernel only checks
+        // whether the device type is supported and does not populate
+        // `device.fd`.
+        unsafe {
+            let mut device = kvm_create_device {
+                type_: ty,
+                fd: 0,
+                flags: KVM_CREATE_DEVICE_TEST,
+            };
+            ioctl::kvm_create_device(self.vm.as_raw_fd(), &mut device)?;
+        }
+        Ok(())
+    }
+
     /// Gets the current kvmclock value.
     pub fn get_clock_ns(&self) -> Result<kvm_clock_data> {
         let mut clock = kvm_clock_data::default();
@@ -686,6 +733,7 @@ pub enum RoutingEntry {
         address_lo: u32,
         address_hi: u32,
         data: u32,
+        devid: Option<u32>,
     },
     HvSint {
         vp: u32,
@@ -1186,6 +1234,7 @@ impl<'a> VpRunner<'a> {
         unsafe { &mut *vp.run_data.ptr }
     }
 
+    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     fn run_data_slice(&mut self) -> &mut [u8] {
         let vp = self.get();
         // SAFETY: there are no other references to this data right
@@ -1255,26 +1304,19 @@ impl<'a> VpRunner<'a> {
         }
 
         let exit = match self.run_data().exit_reason {
+            #[cfg(target_arch = "x86_64")]
             KVM_EXIT_DEBUG => {
                 // SAFETY: no other references to this data.
                 let debug = unsafe { &self.run_data().__bindgen_anon_1.debug };
 
-                #[cfg(not(target_arch = "x86_64"))]
-                {
-                    _ = debug;
-                    todo!("debug exit on non-x86_64")
-                }
-
-                #[cfg(target_arch = "x86_64")]
-                {
-                    Exit::Debug {
-                        exception: debug.arch.exception,
-                        pc: debug.arch.pc,
-                        dr6: debug.arch.dr6,
-                        dr7: debug.arch.dr7,
-                    }
+                Exit::Debug {
+                    exception: debug.arch.exception,
+                    pc: debug.arch.pc,
+                    dr6: debug.arch.dr6,
+                    dr7: debug.arch.dr7,
                 }
             }
+            #[cfg(target_arch = "x86_64")]
             KVM_EXIT_IO => {
                 // SAFETY: this is the active union field.
                 let io = unsafe { self.run_data().__bindgen_anon_1.io };
@@ -1296,6 +1338,7 @@ impl<'a> VpRunner<'a> {
                     }
                 }
             }
+            #[cfg(target_arch = "x86_64")]
             KVM_EXIT_IRQ_WINDOW_OPEN => {
                 let rdata = self.run_data();
                 assert!(rdata.ready_for_interrupt_injection != 0);
@@ -1319,6 +1362,7 @@ impl<'a> VpRunner<'a> {
                 }
             }
             KVM_EXIT_SHUTDOWN => Exit::Shutdown,
+            #[cfg(target_arch = "x86_64")]
             KVM_EXIT_HYPERV => {
                 // SAFETY: this is the active union field.
                 let hyperv = unsafe { &mut self.run_data().__bindgen_anon_1.hyperv };
@@ -1345,6 +1389,7 @@ impl<'a> VpRunner<'a> {
                     _ => return Err(Error::UnknownHvExit(hyperv.type_)),
                 }
             }
+            #[cfg(target_arch = "x86_64")]
             KVM_EXIT_IOAPIC_EOI => {
                 // SAFETY: this is the active union field.
                 let eoi = unsafe { &mut self.run_data().__bindgen_anon_1.eoi };
@@ -1373,6 +1418,7 @@ impl<'a> VpRunner<'a> {
                     }
                 }
             }
+            #[cfg(target_arch = "x86_64")]
             KVM_EXIT_X86_WRMSR => {
                 // SAFETY: this is the active union field.
                 let msr = unsafe { &mut self.run_data().__bindgen_anon_1.msr };
@@ -1383,6 +1429,7 @@ impl<'a> VpRunner<'a> {
                     error: &mut msr.error,
                 }
             }
+            #[cfg(target_arch = "x86_64")]
             KVM_EXIT_X86_RDMSR => {
                 // SAFETY: this is the active union field.
                 let msr = unsafe { &mut self.run_data().__bindgen_anon_1.msr };
@@ -1392,6 +1439,16 @@ impl<'a> VpRunner<'a> {
                     index: msr.index,
                     data: &mut msr.data,
                     error: &mut msr.error,
+                }
+            }
+            #[cfg(target_arch = "aarch64")]
+            KVM_EXIT_SYSTEM_EVENT => {
+                // SAFETY: this is the active union field.
+                let system_event = unsafe { &self.run_data().__bindgen_anon_1.system_event };
+                Exit::SystemEvent {
+                    event_type: system_event.type_,
+                    // SAFETY: accessing the flags field of the union.
+                    event_flags: unsafe { system_event.__bindgen_anon_1.flags },
                 }
             }
             exit_reason => return Err(Error::UnknownExit(exit_reason)),
@@ -1431,12 +1488,15 @@ impl<'a> VpRunner<'a> {
 #[derive(Debug)]
 pub enum Exit<'a> {
     Interrupted,
+    #[cfg(target_arch = "x86_64")]
     InterruptWindow,
+    #[cfg(target_arch = "x86_64")]
     IoIn {
         port: u16,
         size: u8,
         data: &'a mut [u8],
     },
+    #[cfg(target_arch = "x86_64")]
     IoOut {
         port: u16,
         size: u8,
@@ -1450,11 +1510,13 @@ pub enum Exit<'a> {
         address: u64,
         data: &'a [u8],
     },
+    #[cfg(target_arch = "x86_64")]
     MsrRead {
         index: u32,
         data: &'a mut u64,
         error: &'a mut u8,
     },
+    #[cfg(target_arch = "x86_64")]
     MsrWrite {
         index: u32,
         data: u64,
@@ -1471,25 +1533,34 @@ pub enum Exit<'a> {
     EmulationFailure {
         instruction_bytes: &'a [u8],
     },
+    #[cfg(target_arch = "x86_64")]
     SynicUpdate {
         msr: u32,
         control: u64,
         siefp: u64,
         simp: u64,
     },
+    #[cfg(target_arch = "x86_64")]
     HvHypercall {
         input: u64,
         result: &'a mut u64,
         params: [u64; 2],
     },
+    #[cfg(target_arch = "x86_64")]
     Debug {
         exception: u32,
         pc: u64,
         dr6: u64,
         dr7: u64,
     },
+    #[cfg(target_arch = "x86_64")]
     Eoi {
         irq: u8,
+    },
+    #[cfg(target_arch = "aarch64")]
+    SystemEvent {
+        event_type: u32,
+        event_flags: u64,
     },
 }
 

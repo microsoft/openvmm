@@ -8,27 +8,26 @@ use flowey::node::prelude::*;
 use std::collections::BTreeSet;
 use std::io::Write;
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-flowey_request! {
-    pub enum Request {
+flowey_config! {
+    /// Config for the install_rust node.
+    pub struct Config {
         /// Automatically install all required Rust tools and components.
         ///
         /// If false - will check for pre-existing Rust installation, and fail
         /// if it doesn't meet the current job's requirements.
-        AutoInstall(bool),
-
+        pub auto_install: Option<bool>,
         /// Ignore the Version requirement, and build using whatever version of
         /// the Rust toolchain the user has installed locally.
-        IgnoreVersion(bool),
-
+        pub ignore_version: Option<bool>,
         /// Install a specific Rust toolchain version.
-        // FUTURE: support installing / using multiple versions of the Rust
-        // toolchain at the same time, e.g: for stable and nightly, or to
-        // support regression tests between a pinned rust version and current
-        // stable.
-        Version(String),
+        pub version: Option<String>,
+    }
+}
 
+flowey_request! {
+    pub enum Request {
         /// Specify an additional target-triple to install the toolchain for.
         ///
         /// By default, only the native target will be installed.
@@ -50,18 +49,20 @@ flowey_request! {
     }
 }
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(dep: &mut ImportCtx<'_>) {
         dep.import::<crate::check_needs_relaunch::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut ensure_installed = Vec::new();
-        let mut rust_toolchain = None;
-        let mut auto_install = None;
-        let mut ignore_version = None;
         let mut additional_target_triples = BTreeSet::new();
         let mut additional_components = BTreeSet::new();
         let mut get_rust_toolchain = Vec::new();
@@ -70,13 +71,6 @@ impl FlowNode for Node {
         for req in requests {
             match req {
                 Request::EnsureInstalled(v) => ensure_installed.push(v),
-                Request::AutoInstall(v) => {
-                    same_across_all_reqs("AutoInstall", &mut auto_install, v)?
-                }
-                Request::IgnoreVersion(v) => {
-                    same_across_all_reqs("IgnoreVersion", &mut ignore_version, v)?
-                }
-                Request::Version(v) => same_across_all_reqs("Version", &mut rust_toolchain, v)?,
                 Request::InstallTargetTriple(s) => {
                     additional_target_triples.insert(s.to_string());
                 }
@@ -89,18 +83,21 @@ impl FlowNode for Node {
         }
 
         let ensure_installed = ensure_installed;
-        let auto_install =
-            auto_install.ok_or(anyhow::anyhow!("Missing essential request: AutoInstall",))?;
+        let auto_install = config
+            .auto_install
+            .ok_or(anyhow::anyhow!("missing config: auto_install"))?;
         if !auto_install && matches!(ctx.backend(), FlowBackend::Github) {
             anyhow::bail!("`AutoInstall` must be true when using the Github backend");
         }
-        let ignore_version =
-            ignore_version.ok_or(anyhow::anyhow!("Missing essential request: IgnoreVersion",))?;
+        let ignore_version = config
+            .ignore_version
+            .ok_or(anyhow::anyhow!("missing config: ignore_version"))?;
         if ignore_version && matches!(ctx.backend(), FlowBackend::Github) {
             anyhow::bail!("`IgnoreVersion` must be false when using the Github backend");
         }
-        let rust_toolchain =
-            rust_toolchain.ok_or(anyhow::anyhow!("Missing essential request: RustToolchain"))?;
+        let rust_toolchain = config
+            .version
+            .ok_or(anyhow::anyhow!("missing config: version"))?;
         let additional_target_triples = additional_target_triples;
         let additional_components = additional_components;
         let get_rust_toolchain = get_rust_toolchain;
@@ -116,25 +113,46 @@ impl FlowNode for Node {
             let additional_components = additional_components.clone();
 
             move |rt: &mut RustRuntimeServices<'_>| {
-                if which::which("cargo").is_err() {
+                if flowey::shell_cmd!(rt, "cargo --version").run().is_err() {
                     anyhow::bail!("did not find `cargo` on $PATH");
                 }
 
-                let rust_toolchain = rust_toolchain.map(|s| format!("+{s}"));
-                let rust_toolchain = rust_toolchain.as_ref();
+                let has_rustup = flowey::shell_cmd!(rt, "rustup --version").run().is_ok();
 
-                // make sure the specific rust version was installed
-                flowey::shell_cmd!(rt, "rustc {rust_toolchain...} -vV").run()?;
+                // Check if the specified version is installed — use rustup when
+                // available, otherwise check via plain `rustc`.
+                if has_rustup {
+                    let rust_toolchain = rust_toolchain.as_ref().map(|s| format!("+{s}"));
+                    let rust_toolchain = rust_toolchain.as_ref();
+                    flowey::shell_cmd!(rt, "rustc {rust_toolchain...} -vV").run()?;
+                } else if let Some(ref version) = rust_toolchain {
+                    let output = flowey::shell_cmd!(rt, "rustc -vV").output()?;
+                    let stdout = String::from_utf8(output.stdout)?;
+                    let installed_version = stdout
+                        .lines()
+                        .find_map(|line| line.strip_prefix("release: "))
+                        .context("failed to parse rustc version output")?;
+                    if installed_version != version.as_str() {
+                        anyhow::bail!(
+                            "required Rust {version}, found {installed_version} \
+                             (rustup unavailable)"
+                        );
+                    }
+                } else {
+                    flowey::shell_cmd!(rt, "rustc -vV").run()?;
+                }
 
                 // make sure the additional target triples were installed
-                if let Ok(rustup) = which::which("rustup") {
+                if has_rustup {
+                    let rust_toolchain = rust_toolchain.as_ref().map(|s| format!("+{s}"));
+                    let rust_toolchain = rust_toolchain.as_ref();
                     for (thing, expected_things) in [
                         ("target", &additional_target_triples),
                         ("component", &additional_components),
                     ] {
                         let output = flowey::shell_cmd!(
                             rt,
-                            "{rustup} {rust_toolchain...} {thing} list --installed"
+                            "rustup {rust_toolchain...} {thing} list --installed"
                         )
                         .ignore_status()
                         .output()?;
@@ -222,9 +240,25 @@ impl FlowNode for Node {
                             if let Some(write_cargo_bin) = write_cargo_bin {
                                 rt.write(write_cargo_bin, &Some(crate::check_needs_relaunch::BinOrEnv::Bin("cargo".to_string())));
                             }
+
                             let rust_toolchain = rust_toolchain.clone();
                             if check_rust_install.clone()(rt).is_ok() {
                                 return Ok(());
+                            }
+
+                            // If cargo is already on PATH but rustup is not then assume
+                            // rust is being managed manually (Nix for example) and bail
+                            let cargo_available =
+                                flowey::shell_cmd!(rt, "cargo --version").run().is_ok();
+                            let rustup_available =
+                                flowey::shell_cmd!(rt, "rustup --version").run().is_ok();
+                            if cargo_available && !rustup_available
+                            {
+                                anyhow::bail!(
+                                    "Rust installation check failed and rustup is \
+                                     not available; Rust appears to be externally \
+                                     managed and cannot be installed by this node"
+                                );
                             }
 
                             match rt.platform() {
@@ -331,10 +365,17 @@ impl FlowNode for Node {
                 let get_rust_toolchain = get_rust_toolchain.claim(ctx);
 
                 move |rt| {
+                    let has_rustup = flowey::shell_cmd!(rt, "rustup --version").run().is_ok();
                     let rust_toolchain = match rust_toolchain {
-                        Some(toolchain) => Some(toolchain),
+                        Some(toolchain) => {
+                            if has_rustup {
+                                Some(toolchain)
+                            } else {
+                                None
+                            }
+                        }
                         None => {
-                            if let Ok(rustup) = which::which("rustup") {
+                            if has_rustup {
                                 // Unfortunately, `rustup` still doesn't have any stable way to emit
                                 // machine-readable output. See https://github.com/rust-lang/rustup/issues/450
                                 //
@@ -349,12 +390,17 @@ impl FlowNode for Node {
                                 //   $ rustup show active-toolchain
                                 //   stable-x86_64-unknown-linux-gnu
                                 //   active because: it's the default toolchain
-                                let output =
-                                    flowey::shell_cmd!(rt, "{rustup} show active-toolchain")
-                                        .output()?;
+                                let output = flowey::shell_cmd!(rt, "rustup show active-toolchain")
+                                    .output()?;
                                 let stdout = String::from_utf8(output.stdout)?;
-                                let line = stdout.lines().next().unwrap();
-                                Some(line.split(' ').next().unwrap().into())
+                                let line = stdout
+                                    .lines()
+                                    .next()
+                                    .context("`rustup show active-toolchain` produced no output")?;
+                                let toolchain = line.split(' ').next().context(format!(
+                                    "unexpected `rustup show active-toolchain` output: `{line}`"
+                                ))?;
+                                Some(toolchain.into())
                             } else {
                                 None
                             }

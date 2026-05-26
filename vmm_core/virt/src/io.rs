@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use crate::VpHaltReason;
-use hvdef::Vtl;
 use std::future::Future;
 use vm_topology::processor::VpIndex;
 
@@ -20,18 +19,6 @@ pub trait CpuIo {
     ///
     /// A `u32` is used for the IRQ value for (future) ARM compat.
     fn handle_eoi(&self, irq: u32);
-
-    /// Signal a synic event.
-    fn signal_synic_event(&self, vtl: Vtl, connection_id: u32, flag: u16) -> hvdef::HvResult<()>;
-
-    /// Post a synic message.
-    fn post_synic_message(
-        &self,
-        vtl: Vtl,
-        connection_id: u32,
-        secure: bool,
-        message: &[u8],
-    ) -> hvdef::HvResult<()>;
 
     /// Memory mapped IO read.
     #[must_use]

@@ -1,0 +1,8 @@
+{
+  "containment": [
+    {
+      "prefix": "support/",
+      "description": "support/ crates must not depend on crates outside support/"
+    }
+  ]
+}

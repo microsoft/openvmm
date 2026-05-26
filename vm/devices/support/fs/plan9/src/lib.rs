@@ -16,6 +16,7 @@ use parking_lot::RwLock;
 use protocol::*;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::path::Path;
 use std::str;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
@@ -35,7 +36,7 @@ pub struct Plan9FileSystem {
 }
 
 impl Plan9FileSystem {
-    pub fn new(root_path: &str, debug: bool) -> lx::Result<Plan9FileSystem> {
+    pub fn new(root_path: impl AsRef<Path>, debug: bool) -> lx::Result<Plan9FileSystem> {
         let root = Arc::new(LxVolume::new(root_path)?);
         Ok(Plan9FileSystem {
             negotiated_size: AtomicU32::new(0),
@@ -43,6 +44,13 @@ impl Plan9FileSystem {
             root,
             debug,
         })
+    }
+
+    /// Reset the filesystem state, clearing all open fids and the
+    /// negotiated protocol size. Called on guest-initiated device reset.
+    pub fn reset(&self) {
+        self.fids.write().clear();
+        self.negotiated_size.store(0, Ordering::Relaxed);
     }
 
     // Process a message received from virtio.

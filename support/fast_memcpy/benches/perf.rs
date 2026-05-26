@@ -48,7 +48,7 @@ fn do_bench_memcpy(
                 struct Aligned {
                     _data: [u8; N],
                 }
-                let count = len.next_multiple_of(N) / N;
+                let count = len.div_ceil(N);
                 let elt = Aligned { _data: [0; N] };
                 let src = vec![elt; count];
                 let mut dest = vec![elt; count];

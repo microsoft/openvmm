@@ -7,7 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-test_utilities = ["dep:disklayer_ram"]
+test_utilities = ["dep:disklayer_ram", "dep:pal_async", "dep:parking_lot"]
 
 [dependencies]
 get_protocol.workspace = true
@@ -30,12 +30,12 @@ vmgs_resources.workspace = true
 async-trait.workspace = true
 inspect.workspace = true
 mesh.workspace = true
-pal_async.workspace = true
+pal_async = { workspace = true, optional = true }
 task_control.workspace = true
 tracelimit.workspace = true
 
 futures.workspace = true
-parking_lot.workspace = true
+parking_lot = { workspace = true, optional = true }
 serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
 jiff.workspace = true

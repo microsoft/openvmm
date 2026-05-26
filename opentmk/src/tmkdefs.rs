@@ -9,6 +9,9 @@ use thiserror::Error;
 /// Primary error type produced by TMK operations.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Error)]
 pub enum TmkError {
+    /// Returned when an error occurs in ACPI parsing or handling.
+    #[error("Error occurred in ACPI handling")]
+    AcpiError,
     /// Returned when a memory allocation attempt fails.
     #[error("allocation failed")]
     AllocationFailed,

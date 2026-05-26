@@ -4,20 +4,24 @@
 //! MSI-X Capability.
 
 use super::PciCapability;
+use crate::msi::MsiRoute;
 use crate::msi::MsiTarget;
 use crate::spec::caps::CapabilityId;
 use crate::spec::caps::msix::MsixCapabilityHeader;
 use crate::spec::caps::msix::MsixTableEntryIdx;
 use inspect::Inspect;
 use inspect::InspectMut;
+use pal_event::Event;
 use parking_lot::Mutex;
 use std::fmt::Debug;
 use std::sync::Arc;
 use vmcore::interrupt::Interrupt;
+use vmcore::interrupt::InterruptTarget;
 
 #[derive(Debug, Inspect)]
 struct MsiTableLocation {
     #[inspect(hex)]
+    // MSI-X table offsets are, per spec, no larger than 32 bits.
     offset: u32,
     bar: u8,
 }
@@ -109,6 +113,7 @@ impl PciCapability for MsixCapability {
         let mut state = self.state.lock();
         state.enabled = false;
         for vector in &mut state.vectors {
+            vector.msi.disable();
             vector.state = EntryState::new();
         }
     }
@@ -117,19 +122,48 @@ impl PciCapability for MsixCapability {
 #[derive(Clone, Inspect, Debug)]
 pub(crate) struct MsiInterrupt(#[inspect(flatten)] Arc<Mutex<MsiInterruptInner>>);
 
-#[derive(Inspect, Debug)]
+#[derive(Inspect)]
 struct MsiInterruptInner {
+    #[inspect(skip)]
     target: MsiTarget,
+    /// Optional kernel-mediated route for direct interrupt delivery.
+    /// When present, `enable()`/`disable()` automatically program the
+    /// kernel's MSI routing alongside the userspace `MsiTarget` path.
+    #[inspect(skip)]
+    route: Option<MsiRoute>,
     pending: bool,
     enabled: bool,
     address: u64,
     data: u32,
 }
 
+impl Debug for MsiInterruptInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MsiInterruptInner")
+            .field("pending", &self.pending)
+            .field("enabled", &self.enabled)
+            .field("address", &self.address)
+            .field("data", &self.data)
+            .field("has_route", &self.route.is_some())
+            .finish()
+    }
+}
+
+impl MsiInterruptInner {
+    fn signal_msi(&self) {
+        self.target.signal_msi(self.address, self.data);
+    }
+
+    fn enable_route(&self, route: &MsiRoute) {
+        route.enable(self.address, self.data);
+    }
+}
+
 impl MsiInterrupt {
     pub fn new(target: MsiTarget) -> Self {
         Self(Arc::new(Mutex::new(MsiInterruptInner {
             target,
+            route: None,
             pending: false,
             enabled: false,
             address: 0,
@@ -143,8 +177,14 @@ impl MsiInterrupt {
         state.address = address;
         state.data = data;
         state.enabled = true;
+
+        // Program the kernel route if present.
+        if let Some(route) = &state.route {
+            state.enable_route(route);
+        }
+
         if state.pending {
-            state.target.signal_msi(0, address, data);
+            state.signal_msi();
             state.pending = false;
         }
     }
@@ -152,25 +192,61 @@ impl MsiInterrupt {
     pub fn disable(&self) {
         let mut state = self.0.lock();
         state.enabled = false;
+        if let Some(route) = &state.route {
+            route.disable();
+        }
     }
 
     pub fn drain_pending(&self) -> bool {
         let mut state = self.0.lock();
+        if let Some(route) = &state.route {
+            state.pending |= route.consume_pending();
+        }
         let was_pending = state.pending;
         state.pending = false;
         was_pending
     }
 
     pub fn interrupt(&self) -> Interrupt {
-        let state = self.0.clone();
-        Interrupt::from_fn(move || {
-            let mut state = state.lock();
-            if state.enabled {
-                state.target.signal_msi(0, state.address, state.data);
-            } else {
-                state.pending = true;
+        Interrupt::from_target(MsiInterruptTarget(self.0.clone()))
+    }
+}
+
+/// [`InterruptTarget`] for MSI-X vectors that lazily allocates an irqfd
+/// route when [`event()`](InterruptTarget::event) is first called.
+struct MsiInterruptTarget(Arc<Mutex<MsiInterruptInner>>);
+
+impl InterruptTarget for MsiInterruptTarget {
+    fn deliver(&self) {
+        let mut state = self.0.lock();
+        if state.enabled {
+            state.signal_msi();
+        } else {
+            state.pending = true;
+        }
+    }
+
+    fn event(&self) -> Option<Arc<Event>> {
+        let mut state = self.0.lock();
+        if let Some(route) = &state.route {
+            return Some(Arc::new(route.event().clone()));
+        }
+        let route = match state.target.new_route() {
+            Some(Ok(route)) => route,
+            Some(Err(e)) => {
+                tracelimit::warn_ratelimited!(error = ?e, "failed to allocate MSI route");
+                return None;
             }
-        })
+            None => return None,
+        };
+        if state.enabled {
+            state.enable_route(&route);
+        } else {
+            route.disable();
+        }
+        let event = Arc::new(route.event().clone());
+        state.route = Some(route);
+        Some(event)
     }
 }
 
@@ -217,7 +293,7 @@ impl MsixMessageTableEntry {
         }
     }
 
-    fn read_u32(&self, offset: u16) -> u32 {
+    fn read_u32(&self, offset: u64) -> u32 {
         match MsixTableEntryIdx(offset) {
             MsixTableEntryIdx::MSG_ADDR_LO => self.state.address as u32,
             MsixTableEntryIdx::MSG_ADDR_HI => (self.state.address >> 32) as u32,
@@ -227,7 +303,7 @@ impl MsixMessageTableEntry {
         }
     }
 
-    fn write_u32(&mut self, offset: u16, val: u32) {
+    fn write_u32(&mut self, offset: u64, val: u32) {
         match MsixTableEntryIdx(offset) {
             MsixTableEntryIdx::MSG_ADDR_LO => {
                 self.state.address = (self.state.address & 0xffffffff00000000) | val as u64
@@ -274,7 +350,8 @@ fn inspect_entries(entries: &mut [MsixMessageTableEntry]) -> impl '_ + InspectMu
 #[derive(Clone)]
 pub struct MsixEmulator {
     state: Arc<Mutex<MsixState>>,
-    pending_bits_offset: u16,
+    // PBA offsets, per spec, are no larger than 32 bits.
+    pending_bits_offset: u32,
     pending_bits_dword_count: u16,
 }
 
@@ -300,7 +377,7 @@ impl MsixEmulator {
                 .collect(),
         };
         let state = Arc::new(Mutex::new(state));
-        let pending_bits_offset = count * 16;
+        let pending_bits_offset = count as u32 * 16;
         (
             Self {
                 state: state.clone(),
@@ -311,27 +388,29 @@ impl MsixEmulator {
                 count,
                 state,
                 config_table_location: MsiTableLocation::new(bar, 0),
-                pending_bits_location: MsiTableLocation::new(bar, pending_bits_offset.into()),
+                pending_bits_location: MsiTableLocation::new(bar, pending_bits_offset),
             },
         )
     }
 
     /// Return the total length of the MSI-X BAR
+    /// (Actually, the notion that there is an "MSI-X BAR" is an issue to fix sometime.
+    /// MSI-X tables are often in the same bar as other things.)
     pub fn bar_len(&self) -> u64 {
-        (self.pending_bits_offset + self.pending_bits_dword_count * 4).into()
+        self.pending_bits_offset as u64 + self.pending_bits_dword_count as u64 * 4
     }
 
     /// Read a `u32` from the MSI-X BAR at the given offset.
-    pub fn read_u32(&self, offset: u16) -> u32 {
+    pub fn read_u32(&self, offset: u64) -> u32 {
         let mut state = self.state.lock();
         let state: &mut MsixState = &mut state;
-        if offset < self.pending_bits_offset {
+        if offset < self.pending_bits_offset as u64 {
             let index = offset / 16;
             if let Some(entry) = state.vectors.get(index as usize) {
                 return entry.read_u32(offset & 0xf);
             }
         } else {
-            let dword = (offset - self.pending_bits_offset) / 4;
+            let dword = (offset - self.pending_bits_offset as u64) / 4;
             let start = dword as usize * 32;
             if start < state.vectors.len() {
                 let end = (start + 32).min(state.vectors.len());
@@ -349,9 +428,9 @@ impl MsixEmulator {
     }
 
     /// Write a `u32` to the MSI-X BAR at the given offset.
-    pub fn write_u32(&mut self, offset: u16, val: u32) {
+    pub fn write_u32(&mut self, offset: u64, val: u32) {
         let mut state = self.state.lock();
-        if offset < self.pending_bits_offset {
+        if offset < self.pending_bits_offset as u64 {
             let index = offset / 16;
             let global = state.enabled;
             if let Some(entry) = state.vectors.get_mut(index as usize) {
@@ -359,6 +438,7 @@ impl MsixEmulator {
                 entry.write_u32(offset & 0xf, val);
                 let is_enabled = entry.is_enabled(global);
                 if is_enabled && !was_enabled {
+                    // Vector just unmasked.
                     entry.msi.enable(
                         entry.state.address,
                         entry.state.data,
@@ -366,11 +446,20 @@ impl MsixEmulator {
                     );
                     entry.state.is_pending = false;
                 } else if was_enabled && !is_enabled {
+                    // Vector just masked.
                     entry.msi.disable();
+                } else if is_enabled {
+                    // Still enabled. addr/data may have changed — enable()
+                    // will update the route if present.
+                    entry
+                        .msi
+                        .enable(entry.state.address, entry.state.data, false);
                 }
                 return;
             }
-        } else if offset - self.pending_bits_offset < self.pending_bits_dword_count * 4 {
+        } else if offset - (self.pending_bits_offset as u64)
+            < self.pending_bits_dword_count as u64 * 4
+        {
             return;
         }
         tracelimit::warn_ratelimited!(offset, "Unexpected write offset");
@@ -395,10 +484,22 @@ impl MsixEmulator {
         state.vectors[index as usize].state.is_pending = false;
     }
 
-    #[cfg(test)]
-    fn set_pending_bit(&self, index: u8) {
+    /// Sets the pending bit for the given vector index.
+    ///
+    /// Used by device passthrough (e.g., VFIO with irqfd) to record that an
+    /// interrupt arrived while the vector was masked, so PBA reads return
+    /// the correct pending state.
+    pub fn set_pending_bit(&self, index: u16) {
         let mut state = self.state.lock();
-        state.vectors[index as usize].state.is_pending = true;
+        if let Some(entry) = state.vectors.get_mut(index as usize) {
+            entry.state.is_pending = true;
+        } else {
+            tracelimit::warn_ratelimited!(
+                index,
+                count = state.vectors.len(),
+                "set_pending_bit: vector index out of range"
+            );
+        }
     }
 }
 
@@ -504,11 +605,12 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus_range::AssignedBusRange;
     use crate::{msi::MsiConnection, test_helpers::TestPciInterruptController};
 
     #[test]
     fn msix_check() {
-        let msi_conn = MsiConnection::new();
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
         let (mut msix, mut cap) = MsixEmulator::new(2, 64, msi_conn.target());
         let msi_controller = TestPciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
@@ -561,5 +663,230 @@ mod tests {
         msix.clear_pending_bit(1);
         assert_eq!(msix.read_u32(0x400), 0x80000000);
         assert_eq!(msix.read_u32(0x404), 0x80000002);
+    }
+
+    use pal_event::Event;
+    use parking_lot::Mutex;
+
+    /// Record of a call made to a mock route.
+    #[derive(Debug, Clone, PartialEq)]
+    enum RouteCall {
+        SetMsi { address: u64, data: u32 },
+        ClearMsi,
+    }
+
+    /// Mock IrqFdRoute implementation that records calls.
+    struct MockIrqFdRoute {
+        event: Event,
+        calls: Arc<Mutex<Vec<RouteCall>>>,
+    }
+
+    impl vmcore::irqfd::IrqFdRoute for MockIrqFdRoute {
+        fn event(&self) -> &Event {
+            &self.event
+        }
+
+        fn enable(&self, address: u64, data: u32, _devid: Option<u32>) {
+            self.calls.lock().push(RouteCall::SetMsi { address, data });
+        }
+
+        fn disable(&self) {
+            self.calls.lock().push(RouteCall::ClearMsi);
+        }
+    }
+
+    /// Build a mock IrqFd and shared call logs.
+    fn mock_irqfd(
+        count: usize,
+    ) -> (
+        Arc<dyn vmcore::irqfd::IrqFd>,
+        Vec<Arc<Mutex<Vec<RouteCall>>>>,
+    ) {
+        let mut call_logs = Vec::new();
+        let route_params = Arc::new(Mutex::new(Vec::new()));
+        for _ in 0..count {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            call_logs.push(calls.clone());
+            route_params.lock().push(calls);
+        }
+
+        struct MockIrqFd {
+            routes: Mutex<Vec<Arc<Mutex<Vec<RouteCall>>>>>,
+        }
+        impl vmcore::irqfd::IrqFd for MockIrqFd {
+            fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn vmcore::irqfd::IrqFdRoute>> {
+                let calls = self.routes.lock().remove(0);
+                Ok(Box::new(MockIrqFdRoute {
+                    event: Event::new(),
+                    calls,
+                }))
+            }
+        }
+
+        (
+            Arc::new(MockIrqFd {
+                routes: Mutex::new(call_logs.clone()),
+            }),
+            call_logs,
+        )
+    }
+
+    #[test]
+    fn route_set_msi_on_unmask() {
+        let (irqfd, calls) = mock_irqfd(2);
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        msi_conn.connect_irqfd(irqfd);
+        let (mut msix, mut cap) = MsixEmulator::new(2, 2, msi_conn.target());
+        let msi_controller = TestPciInterruptController::new();
+        msi_conn.connect(msi_controller.signal_msi());
+
+        // Trigger lazy irqfd route creation for all vectors.
+        for i in 0..2 {
+            msix.interrupt(i).unwrap().event();
+        }
+
+        // Enable MSI-X globally.
+        cap.write_u32(0, 0x80000000);
+
+        // Program vector 0 addr/data (still masked — control starts at 1).
+        msix.write_u32(0, 0xFEE00000); // addr_lo
+        msix.write_u32(4, 0); // addr_hi
+        msix.write_u32(8, 0x42); // data
+
+        // No set_msi yet because vector is still masked.
+        assert!(
+            !calls[0]
+                .lock()
+                .iter()
+                .any(|c| matches!(c, RouteCall::SetMsi { .. }))
+        );
+
+        // Unmask vector 0 (write control = 0).
+        calls[0].lock().clear();
+        msix.write_u32(12, 0);
+
+        // Should have called set_msi to re-establish the route.
+        let log = calls[0].lock().clone();
+        assert!(log.contains(&RouteCall::SetMsi {
+            address: 0xFEE00000,
+            data: 0x42
+        }));
+    }
+
+    #[test]
+    fn route_mask_on_vector_mask() {
+        let (irqfd, calls) = mock_irqfd(2);
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        msi_conn.connect_irqfd(irqfd);
+        let (mut msix, mut cap) = MsixEmulator::new(2, 2, msi_conn.target());
+        let msi_controller = TestPciInterruptController::new();
+        msi_conn.connect(msi_controller.signal_msi());
+
+        // Trigger lazy irqfd route creation for all vectors.
+        for i in 0..2 {
+            msix.interrupt(i).unwrap().event();
+        }
+
+        // Enable MSI-X, program and unmask vector 0.
+        cap.write_u32(0, 0x80000000);
+        msix.write_u32(0, 0xFEE00000);
+        msix.write_u32(8, 0x42);
+        msix.write_u32(12, 0); // unmask
+
+        calls[0].lock().clear();
+
+        // Mask vector 0 (write control = 1).
+        msix.write_u32(12, 1);
+
+        let log = calls[0].lock().clone();
+        assert!(log.contains(&RouteCall::ClearMsi));
+    }
+
+    #[test]
+    fn route_global_disable_masks_all() {
+        let (irqfd, calls) = mock_irqfd(2);
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        msi_conn.connect_irqfd(irqfd);
+        let (mut msix, mut cap) = MsixEmulator::new(2, 2, msi_conn.target());
+        let msi_controller = TestPciInterruptController::new();
+        msi_conn.connect(msi_controller.signal_msi());
+
+        // Trigger lazy irqfd route creation for all vectors.
+        for i in 0..2 {
+            msix.interrupt(i).unwrap().event();
+        }
+
+        // Enable, program, and unmask both vectors.
+        cap.write_u32(0, 0x80000000);
+        for v in 0..2u64 {
+            msix.write_u32(v * 16, 0xFEE00000);
+            msix.write_u32(v * 16 + 8, (v + 1) as u32);
+            msix.write_u32(v * 16 + 12, 0); // unmask
+        }
+        calls[0].lock().clear();
+        calls[1].lock().clear();
+
+        // Disable MSI-X globally.
+        cap.write_u32(0, 0);
+
+        // Both vectors should have been disabled.
+        assert!(calls[0].lock().contains(&RouteCall::ClearMsi));
+        assert!(calls[1].lock().contains(&RouteCall::ClearMsi));
+    }
+
+    #[test]
+    fn route_consume_pending_on_pba_read() {
+        let (irqfd, _calls) = mock_irqfd(2);
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        msi_conn.connect_irqfd(irqfd);
+        let (msix, mut cap) = MsixEmulator::new(2, 2, msi_conn.target());
+        let msi_controller = TestPciInterruptController::new();
+        msi_conn.connect(msi_controller.signal_msi());
+
+        // Trigger lazy irqfd route creation for all vectors.
+        let events: Vec<_> = (0..2)
+            .map(|i| msix.interrupt(i).unwrap().event().unwrap().clone())
+            .collect();
+
+        // Enable MSI-X but leave vectors masked (control = 1 by default).
+        cap.write_u32(0, 0x80000000);
+
+        // Simulate a pending interrupt on vector 0 by signaling the event.
+        events[0].signal();
+
+        // PBA is at offset = vector_count * 16 = 32.
+        let pba = msix.read_u32(32);
+
+        // consume_pending drains the event; PBA bit 0 should be set.
+        assert_eq!(pba & 1, 1);
+    }
+
+    #[test]
+    fn route_set_msi_on_addr_data_change_while_unmasked() {
+        let (irqfd, calls) = mock_irqfd(1);
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        msi_conn.connect_irqfd(irqfd);
+        let (mut msix, mut cap) = MsixEmulator::new(2, 1, msi_conn.target());
+        let msi_controller = TestPciInterruptController::new();
+        msi_conn.connect(msi_controller.signal_msi());
+
+        // Trigger lazy irqfd route creation.
+        msix.interrupt(0).unwrap().event();
+
+        // Enable, program, unmask.
+        cap.write_u32(0, 0x80000000);
+        msix.write_u32(0, 0xFEE00000);
+        msix.write_u32(8, 0x42);
+        msix.write_u32(12, 0);
+        calls[0].lock().clear();
+
+        // Change data while still unmasked.
+        msix.write_u32(8, 0x99);
+
+        let log = calls[0].lock().clone();
+        assert!(log.contains(&RouteCall::SetMsi {
+            address: 0xFEE00000,
+            data: 0x99
+        }));
     }
 }

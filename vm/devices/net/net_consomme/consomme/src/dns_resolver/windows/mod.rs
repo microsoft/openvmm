@@ -21,6 +21,7 @@ use std::ptr::null_mut;
 use std::sync::Arc;
 use windows_sys::Win32::Foundation::DNS_REQUEST_PENDING;
 use windows_sys::Win32::Foundation::NO_ERROR;
+use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_TCP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_UDP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_NO_MULTICAST;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_CANCEL;
@@ -47,13 +48,12 @@ fn is_dns_raw_apis_supported() -> bool {
 
 /// Context passed to the DNS query callback.
 struct RawCallbackContext {
-    request_id: usize,
+    slab_key: usize,
     request: DnsRequestInternal,
     pending_requests: Arc<Mutex<Slab<DNS_QUERY_RAW_CANCEL>>>,
 }
 
 pub struct WindowsDnsResolverBackend {
-    /// Map of pending DNS requests (for cancellation support).
     pending_requests: Arc<Mutex<Slab<DNS_QUERY_RAW_CANCEL>>>,
 }
 
@@ -70,30 +70,57 @@ impl WindowsDnsResolverBackend {
 }
 
 impl DnsBackend for WindowsDnsResolverBackend {
-    fn query(&self, request: &DnsRequest<'_>, response_sender: Sender<DnsResponse>) {
+    fn query(&self, request: &DnsRequest<'_>, response_sender: Sender<DnsResponse>, query_id: u64) {
         // Clone the sender for error handling
         let response_sender_clone = response_sender.clone();
 
-        // Create internal request
+        // For TCP, DnsQueryRaw expects the 2-byte TCP length prefix in the
+        // query buffer. Prepend it here so that the DnsTcpHandler can remain
+        // platform-agnostic and always pass raw DNS bytes.
+        let wire_query = match request.flow.transport {
+            super::DnsTransport::Tcp => {
+                let len = request.dns_query.len() as u16;
+                let mut buf = Vec::with_capacity(2 + request.dns_query.len());
+                buf.extend_from_slice(&len.to_be_bytes());
+                buf.extend_from_slice(request.dns_query);
+                buf
+            }
+            super::DnsTransport::Udp => request.dns_query.to_vec(),
+        };
+
+        // Create internal request with raw DNS bytes (no TCP prefix) so that
+        // SERVFAIL generation works correctly.
         let internal_request = DnsRequestInternal {
+            query_id,
             flow: request.flow.clone(),
             query: request.dns_query.to_vec(),
             response_sender,
         };
 
-        let dns_query_size = internal_request.query.len() as u32;
-        let dns_query = internal_request.query.as_ptr().cast_mut();
+        let dns_query_size = wire_query.len() as u32;
+        let dns_query = wire_query.as_ptr().cast_mut();
 
         // Pre-insert placeholder before calling DnsQueryRaw to avoid race condition
         // where callback fires before we can insert the cancel handle.
-        let request_id = self
+        let slab_key = self
             .pending_requests
             .lock()
             .insert(DNS_QUERY_RAW_CANCEL::default());
 
+        let pending_count = self.pending_requests.lock().len();
+        tracing::trace!(
+            query_id,
+            pending_count,
+            query_len = dns_query_size,
+            src = %request.flow.src,
+            dst = %request.flow.dst,
+            transport = ?request.flow.transport,
+            "dns_windows: submitting query to DnsQueryRaw",
+        );
+
         // Create callback context
         let context = Box::new(RawCallbackContext {
-            request_id,
+            slab_key,
             request: internal_request,
             pending_requests: self.pending_requests.clone(),
         });
@@ -117,7 +144,10 @@ impl DnsBackend for WindowsDnsResolverBackend {
             queryRawOptions: 0,
             customServersSize: 0,
             customServers: null_mut(),
-            protocol: DNS_PROTOCOL_UDP,
+            protocol: match request.flow.transport {
+                super::DnsTransport::Tcp => DNS_PROTOCOL_TCP,
+                super::DnsTransport::Udp => DNS_PROTOCOL_UDP,
+            },
             Anonymous: DNS_QUERY_RAW_REQUEST_0::default(),
         };
 
@@ -131,14 +161,21 @@ impl DnsBackend for WindowsDnsResolverBackend {
             // If the callback already fired and removed the entry, this is a no-op.
             {
                 let mut pending = self.pending_requests.lock();
-                if let Some(v) = pending.get_mut(request_id) {
+                if let Some(v) = pending.get_mut(slab_key) {
                     *v = cancel_handle;
                 }
             }
         } else {
             // Remove placeholder since callback won't fire on error
-            self.pending_requests.lock().remove(request_id);
-            tracelimit::warn_ratelimited!("DnsQueryRaw failed with error code: {}", result);
+            self.pending_requests.lock().remove(slab_key);
+            tracelimit::warn_ratelimited!(
+                query_id,
+                src = %request.flow.src,
+                dst = %request.flow.dst,
+                transport = ?request.flow.transport,
+                result,
+                "dns_windows: DnsQueryRaw failed",
+            );
             // SAFETY: We're reclaiming ownership of the context we just created
             unsafe {
                 let _ = Box::from_raw(context_ptr);
@@ -224,15 +261,33 @@ unsafe extern "system" fn dns_query_raw_callback(
 
     {
         let mut pending = context.pending_requests.lock();
-        pending.remove(context.request_id);
+        let _ = pending.try_remove(context.slab_key);
     }
+
+    tracing::trace!(
+        query_id = context.request.query_id,
+        src = %context.request.flow.src,
+        dst = %context.request.flow.dst,
+        transport = ?context.request.flow.transport,
+        "dns_windows: callback fired",
+    );
 
     // SAFETY: query_results is provided by Windows and will be freed after processing
     let response = match unsafe { process_dns_results(query_results) } {
-        Ok(response_data) => Some(DnsResponse {
-            flow: context.request.flow.clone(),
-            response_data,
-        }),
+        Ok(mut response_data) => {
+            // For TCP, DnsQueryRaw returns the response with a 2-byte TCP
+            // length prefix. Strip it so the DnsTcpHandler can add its own
+            // framing.
+            if context.request.flow.transport == super::DnsTransport::Tcp
+                && response_data.len() >= 2
+            {
+                response_data.drain(..2);
+            }
+            Some(DnsResponse {
+                flow: context.request.flow.clone(),
+                response_data,
+            })
+        }
         Err(DnsResultError::QueryFailed(status)) => {
             tracelimit::warn_ratelimited!(status, "DNS query failed, returning SERVFAIL");
             None

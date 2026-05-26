@@ -3,12 +3,13 @@
 
 //! See [`BuildIgvmCli`]
 
+use crate::pipelines_shared::cfg_common_params::CommonArchCli;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclKernelPackage;
 use flowey_lib_hvlite::build_openvmm_hcl::MaxTraceLevel;
-use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
+use flowey_lib_hvlite::common::CommonArch;
 use std::path::PathBuf;
 
 #[derive(clap::ValueEnum, Copy, Clone)]
@@ -99,7 +100,7 @@ pub struct BuildIgvmCliCustomizations {
     /// Override architecture used when building. You probably don't want this -
     /// prefer changing the base recipe to something more appropriate.
     #[clap(long)]
-    pub override_arch: Option<BuildIgvmArch>,
+    pub override_arch: Option<CommonArchCli>,
 
     /// Override the json manifest passed to igvmfilegen, none means the
     /// debug/release manifest from the base recipe will be used.
@@ -120,6 +121,18 @@ pub struct BuildIgvmCliCustomizations {
     /// likely require passing a `--override-manifest` to compensate.
     #[clap(long)]
     pub with_debuginfo: bool,
+
+    /// Build mimalloc with secure mode enabled. This adds extra security
+    /// hardening (guard pages, randomized allocation, encrypted free lists)
+    /// at a small performance cost.
+    #[clap(long)]
+    pub with_mi_secure: bool,
+
+    /// Disable secure AVIC support for SNP. This adds the
+    /// `disable_secure_avic` cargo feature and sets `secure_avic` to
+    /// `disabled` in the IGVM manifest.
+    #[clap(long)]
+    pub disable_secure_avic: bool,
 
     /// Path to custom openvmm_hcl binary, none means openhcl will be built.
     #[clap(long)]
@@ -231,12 +244,6 @@ impl From<MaxTraceLevelCli> for MaxTraceLevel {
     }
 }
 
-#[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
-pub enum BuildIgvmArch {
-    X86_64,
-    Aarch64,
-}
-
 pub fn bail_if_running_in_ci() -> anyhow::Result<()> {
     const OVERRIDE_ENV: &str = "I_HAVE_A_GOOD_REASON_TO_RUN_BUILD_IGVM_IN_CI";
 
@@ -295,6 +302,8 @@ impl IntoPipeline for BuildIgvmCli {
                     override_manifest,
                     with_perf_tools,
                     with_debuginfo,
+                    with_mi_secure,
+                    disable_secure_avic,
                     custom_openvmm_hcl,
                     custom_openhcl_boot,
                     custom_uefi,
@@ -333,12 +342,7 @@ impl IntoPipeline for BuildIgvmCli {
         };
 
         // Use the effective arch, accounting for any --override-arch
-        let effective_arch = override_arch
-            .map(|a| match a {
-                BuildIgvmArch::X86_64 => CommonArch::X86_64,
-                BuildIgvmArch::Aarch64 => CommonArch::Aarch64,
-            })
-            .unwrap_or(recipe_arch);
+        let effective_arch = override_arch.map(CommonArch::from).unwrap_or(recipe_arch);
 
         let mut job = pipeline.new_job(
             FlowPlatform::host(backend_hint),
@@ -355,7 +359,7 @@ impl IntoPipeline for BuildIgvmCli {
             job = job.dep_on(move |_| {
                 flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalOpenvmmDeps(
                     effective_arch,
-                    openvmm_deps_path,
+                    ReadVar::from_static(openvmm_deps_path),
                 )
             });
         }
@@ -363,7 +367,9 @@ impl IntoPipeline for BuildIgvmCli {
         // Override protoc with a local path if specified
         if let Some(protoc_path) = custom_protoc {
             job = job.dep_on(move |_| {
-                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalProtoc(protoc_path)
+                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalProtoc(ReadVar::from_static(
+                    protoc_path,
+                ))
             });
         }
 
@@ -375,8 +381,8 @@ impl IntoPipeline for BuildIgvmCli {
                 job.dep_on(
                     move |_| flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalKernel {
                         arch: effective_arch,
-                        kernel: kernel_path,
-                        modules: modules_path,
+                        kernel: ReadVar::from_static(kernel_path),
+                        modules: ReadVar::from_static(modules_path),
                     },
                 );
         }
@@ -386,7 +392,7 @@ impl IntoPipeline for BuildIgvmCli {
             job = job.dep_on(move |_| {
                 flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalUefi(
                     effective_arch,
-                    uefi_path,
+                    ReadVar::from_static(uefi_path),
                 )
             });
         }
@@ -400,13 +406,12 @@ impl IntoPipeline for BuildIgvmCli {
             local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
                 interactive: true,
                 auto_install: install_missing_deps,
-                force_nuget_mono: false, // no oss nuget packages
-                external_nuget_auth: false,
                 ignore_rust_version: true,
             }),
             verbose: ReadVar::from_static(verbose),
             locked,
             deny_warnings: false,
+            no_incremental: false,
         })
         .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_build_igvm::Params {
             artifact_dir: ctx.publish_artifact(pub_out_dir),
@@ -429,12 +434,11 @@ impl IntoPipeline for BuildIgvmCli {
 
             customizations: flowey_lib_hvlite::_jobs::local_build_igvm::Customizations {
                 build_label,
-                override_arch: override_arch.map(|a| match a {
-                    BuildIgvmArch::X86_64 => CommonArch::X86_64,
-                    BuildIgvmArch::Aarch64 => CommonArch::Aarch64,
-                }),
+                override_arch: override_arch.map(CommonArch::from),
                 with_perf_tools,
                 with_debuginfo,
+                with_mi_secure,
+                disable_secure_avic,
                 override_kernel_pkg: override_kernel_pkg.map(|p| match p {
                     KernelPackageKindCli::Main => OpenhclKernelPackage::Main,
                     KernelPackageKindCli::Cvm => OpenhclKernelPackage::Cvm,

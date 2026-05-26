@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 //! Implementation of the VMGS file format.
 //!
 //! # Implementation Notes
@@ -21,6 +23,7 @@
 //! its early days... but the code still has plenty of echoes from that initial
 //! C++ port, which really ought to get ironed out.
 
+#[cfg(feature = "encryption")]
 mod encrypt;
 mod error;
 mod storage;

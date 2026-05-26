@@ -1,15 +1,26 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod dump;
+mod pcie_wiring;
+mod smmu_wiring;
+
 use crate::emuplat;
 use crate::partition::BindHvliteVp;
 use crate::partition::HvlitePartition;
 use crate::vmgs_non_volatile_store::HvLiteVmgsNonVolatileStore;
+use crate::worker::memory_layout::MemoryLayoutInput;
+use crate::worker::memory_layout::ResolvedPcieRootComplexRanges;
+use crate::worker::memory_layout::resolve_memory_layout;
 use crate::worker::rom::RomBuilder;
 use acpi::dsdt;
 use anyhow::Context;
 use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
+use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
+use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
+use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
+use cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
@@ -24,12 +35,12 @@ use futures_concurrency::prelude::*;
 use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::Vtl;
+use hypervisor_resources::HypervisorKind;
 use ide_resources::GuestMedia;
 use ide_resources::IdeDeviceConfig;
 use igvm::IgvmFile;
 use input_core::InputData;
 use input_core::MultiplexedInputHandle;
-use inspect::Inspect;
 use local_clock::LocalClockDelta;
 use membacking::GuestMemoryBuilder;
 use membacking::GuestMemoryManager;
@@ -49,12 +60,12 @@ use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::GicConfig;
-use openvmm_defs::config::Hypervisor;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
+use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::PmuGsivConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
@@ -76,6 +87,8 @@ use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pci_core::PciInterruptPin;
+use pci_core::spec::caps::acs::DEFAULT_ACS_CAP_MASK;
+use pcie::PciePortSettings;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
@@ -98,6 +111,7 @@ use virtio::VirtioMmioDevice;
 use virtio::VirtioPciDevice;
 use virtio::resolve::VirtioResolveInput;
 use vm_loader::initial_regs::initial_regs;
+use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
@@ -105,13 +119,14 @@ use vm_resource::kind::KeyboardInputHandleKind;
 use vm_resource::kind::MouseInputHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
+use vm_topology::cxl::CfmwsWindowRestrictions;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::pcie::PcieHostBridge;
-use vm_topology::processor::ArchTopology;
+use vm_topology::pcie::PcieHostBridgeCxlInfo;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
 use vm_topology::processor::aarch64::Aarch64Topology;
-use vm_topology::processor::aarch64::GicInfo;
+use vm_topology::processor::aarch64::GicVersion;
 use vm_topology::processor::x86::X86Topology;
 use vmbus_channel::channel::VmbusDevice;
 use vmbus_server::HvsockRelayChannel;
@@ -131,7 +146,6 @@ use vmm_core::partition_unit::Halt;
 use vmm_core::partition_unit::PartitionUnit;
 use vmm_core::partition_unit::PartitionUnitParams;
 use vmm_core::partition_unit::block_on_vp;
-use vmm_core::synic::SynicPorts;
 use vmm_core::vmbus_unit::ChannelUnit;
 use vmm_core::vmbus_unit::VmbusServerHandle;
 use vmm_core::vmbus_unit::offer_channel_unit;
@@ -141,19 +155,22 @@ use vmotherboard::BaseChipsetBuilder;
 use vmotherboard::BaseChipsetBuilderOutput;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::ChipsetDevices;
+use vmotherboard::LegacyPciChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
 use vmotherboard::options::BaseChipsetManifest;
+use vmotherboard::options::VmChipsetCapabilities;
 #[cfg(all(windows, feature = "virt_whp"))]
 use vpci::bus::VpciBus;
 use watchdog_core::platform::BaseWatchdogPlatform;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
+use watchdog_core::resources::StaticWatchdogPlatformResolver;
 
+#[cfg(guest_arch = "x86_64")]
 const PM_BASE: u16 = 0x400;
+#[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
-
-const WDAT_PORT: u16 = 0x30;
 
 /// Creates a thread to run low-performance devices on.
 pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
@@ -192,6 +209,9 @@ impl Manifest {
             debugger_rpc: config.debugger_rpc,
             vmbus_devices: config.vmbus_devices,
             chipset_devices: config.chipset_devices,
+            pci_chipset_devices: config.pci_chipset_devices,
+            chipset_capabilities: config.chipset_capabilities,
+            layout: config.layout,
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
@@ -239,6 +259,9 @@ pub struct Manifest {
     debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     chipset_devices: Vec<ChipsetDeviceHandle>,
+    pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
+    chipset_capabilities: VmChipsetCapabilities,
+    layout: vmm_core_defs::LayoutConfig,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
@@ -272,11 +295,11 @@ async fn open_simple_disk(
 
 #[derive(MeshPayload)]
 pub struct RestartState {
-    hypervisor: Hypervisor,
+    hypervisor: Resource<HypervisorKind>,
     manifest: Manifest,
     running: bool,
     saved_state: SavedState,
-    shared_memory: SharedMemoryBacking,
+    shared_memory: Option<SharedMemoryBacking>,
     rpc: mesh::Receiver<VmRpc>,
     notify: mesh::Sender<HaltReason>,
 }
@@ -302,18 +325,18 @@ impl Worker for VmWorker {
 
         let manifest = Manifest::from_config(parameters.cfg);
 
-        // Choose the hypervisor to use.
-        let hypervisor = if let Some(hv) = parameters.hypervisor {
-            hv
-        } else {
-            choose_hypervisor()?
-        };
+        let hypervisor = block_on(ResourceResolver::new().resolve(parameters.hypervisor, ()))
+            .context("failed to resolve hypervisor backend")?;
+
+        let shared_memory = parameters
+            .shared_memory
+            .map(|fd| SharedMemoryBacking::from_mappable(fd.into()));
 
         let vm = block_on(InitializedVm::new(
             VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
-            hypervisor,
+            hypervisor.0,
             manifest,
-            None,
+            shared_memory,
         ))?;
         let saved_state = parameters
             .saved_state
@@ -344,11 +367,14 @@ impl Worker for VmWorker {
         } = state;
         let (device_thread, device_driver) = new_device_thread();
 
+        let hypervisor = block_on(ResourceResolver::new().resolve(hypervisor, ()))
+            .context("failed to resolve hypervisor backend")?;
+
         let vm = block_on(InitializedVm::new(
             VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
-            hypervisor,
+            hypervisor.0,
             manifest,
-            Some(shared_memory),
+            shared_memory,
         ))?;
         pal_async::local::block_on(async {
             let mut vm = vm.load(Some(saved_state), notify).await?;
@@ -378,8 +404,7 @@ impl Worker for VmWorker {
 
 /// A VM that has been initialized but not yet loaded (i.e. the saved state is
 /// not yet available).
-struct InitializedVm {
-    hypervisor: Hypervisor,
+pub(crate) struct InitializedVm {
     partition: Arc<dyn HvlitePartition>,
     vps: Vec<Box<dyn BindHvliteVp>>,
     vmtime_keeper: VmTimeKeeper,
@@ -388,13 +413,16 @@ struct InitializedVm {
     gm: GuestMemory,
     cfg: Manifest,
     mem_layout: MemoryLayout,
+    resolved_pcie_root_complex_ranges: Vec<ResolvedPcieRootComplexRanges>,
+    virtio_mmio_region: MemoryRange,
+    chipset_low_mmio: MemoryRange,
+    chipset_high_mmio: MemoryRange,
+    vtl2_chipset_mmio: MemoryRange,
+    #[cfg(guest_arch = "aarch64")]
+    resolved_smmu_resources: Vec<smmu_wiring::ResolvedSmmuResources>,
     processor_topology: ProcessorTopology,
     igvm_file: Option<IgvmFile>,
     driver_source: VmTaskDriverSource,
-}
-
-trait BuildTopology<T: ArchTopology + Inspect> {
-    fn to_topology(&self, hypervisor: Hypervisor) -> anyhow::Result<ProcessorTopology<T>>;
 }
 
 trait ExtractTopologyConfig {
@@ -422,38 +450,35 @@ impl ExtractTopologyConfig for ProcessorTopology<X86Topology> {
 }
 
 #[cfg(guest_arch = "x86_64")]
-impl BuildTopology<X86Topology> for ProcessorTopologyConfig {
-    fn to_topology(
-        &self,
-        _hypervisor: Hypervisor,
-    ) -> anyhow::Result<ProcessorTopology<X86Topology>> {
-        use vm_topology::processor::x86::X2ApicState;
+fn build_x86_topology(
+    config: &ProcessorTopologyConfig,
+) -> anyhow::Result<ProcessorTopology<X86Topology>> {
+    use vm_topology::processor::x86::X2ApicState;
 
-        let arch = match &self.arch {
-            None => Default::default(),
-            Some(ArchTopologyConfig::X86(arch)) => arch.clone(),
-            _ => anyhow::bail!("invalid architecture config"),
-        };
-        let mut builder = TopologyBuilder::from_host_topology()?;
-        builder.apic_id_offset(arch.apic_id_offset);
-        if let Some(smt) = self.enable_smt {
-            builder.smt_enabled(smt);
-        }
-        if let Some(count) = self.vps_per_socket {
-            builder.vps_per_socket(count);
-        }
-        let x2apic = match arch.x2apic {
-            X2ApicConfig::Auto => {
-                // FUTURE: query the hypervisor for a recommendation.
-                X2ApicState::Supported
-            }
-            X2ApicConfig::Supported => X2ApicState::Supported,
-            X2ApicConfig::Unsupported => X2ApicState::Unsupported,
-            X2ApicConfig::Enabled => X2ApicState::Enabled,
-        };
-        builder.x2apic(x2apic);
-        Ok(builder.build(self.proc_count)?)
+    let arch = match &config.arch {
+        None => Default::default(),
+        Some(ArchTopologyConfig::X86(arch)) => arch.clone(),
+        _ => anyhow::bail!("invalid architecture config"),
+    };
+    let mut builder = TopologyBuilder::from_host_topology()?;
+    builder.apic_id_offset(arch.apic_id_offset);
+    if let Some(smt) = config.enable_smt {
+        builder.smt_enabled(smt);
     }
+    if let Some(count) = config.vps_per_socket {
+        builder.vps_per_socket(count);
+    }
+    let x2apic = match arch.x2apic {
+        X2ApicConfig::Auto => {
+            // FUTURE: query the hypervisor for a recommendation.
+            X2ApicState::Supported
+        }
+        X2ApicConfig::Supported => X2ApicState::Supported,
+        X2ApicConfig::Unsupported => X2ApicState::Unsupported,
+        X2ApicConfig::Enabled => X2ApicState::Enabled,
+    };
+    builder.x2apic(x2apic);
+    Ok(builder.build(config.proc_count)?)
 }
 
 impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
@@ -463,60 +488,191 @@ impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
             vps_per_socket: Some(self.reserved_vps_per_socket()),
             enable_smt: Some(self.smt_enabled()),
             arch: Some(ArchTopologyConfig::Aarch64(Aarch64TopologyConfig {
-                gic_config: Some(GicConfig {
-                    gic_distributor_base: self.gic_distributor_base(),
-                    gic_redistributors_base: self.gic_redistributors_base(),
+                gic_config: Some(match self.gic_version() {
+                    GicVersion::V3 {
+                        redistributors_base,
+                    } => GicConfig::V3(Some(openvmm_defs::config::GicV3Config {
+                        gic_distributor_base: self.gic_distributor_base(),
+                        gic_redistributors_base: redistributors_base,
+                    })),
+                    GicVersion::V2 { cpu_interface_base } => {
+                        GicConfig::V2(Some(openvmm_defs::config::GicV2Config {
+                            gic_distributor_base: self.gic_distributor_base(),
+                            cpu_interface_base,
+                        }))
+                    }
                 }),
-                pmu_gsiv: PmuGsivConfig::Gsiv(self.pmu_gsiv()),
+                pmu_gsiv: match self.pmu_gsiv() {
+                    Some(gsiv) => PmuGsivConfig::Gsiv(gsiv),
+                    None => PmuGsivConfig::Disabled,
+                },
+                gic_msi: Default::default(),
+                smmu: Vec::new(),
             })),
         }
     }
 }
 
-impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
-    fn to_topology(
-        &self,
-        hypervisor: Hypervisor,
-    ) -> anyhow::Result<ProcessorTopology<Aarch64Topology>> {
-        let arch = match &self.arch {
-            None => Default::default(),
-            Some(ArchTopologyConfig::Aarch64(arch)) => arch.clone(),
-            _ => anyhow::bail!("invalid architecture config"),
-        };
-        let gic = if let Some(gic_config) = &arch.gic_config {
-            GicInfo {
-                gic_distributor_base: gic_config.gic_distributor_base,
-                gic_redistributors_base: gic_config.gic_redistributors_base,
-            }
-        } else {
-            GicInfo {
-                gic_distributor_base: openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE,
-                gic_redistributors_base: openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE,
-            }
-        };
-        let pmu_gsiv = match arch.pmu_gsiv {
-            PmuGsivConfig::Gsiv(gsiv) => gsiv,
-            PmuGsivConfig::Platform => platform_gsiv(hypervisor),
-        };
+#[cfg(guest_arch = "aarch64")]
+struct Aarch64TopologyResult {
+    processor_topology: ProcessorTopology<Aarch64Topology>,
+    spi_layout: super::spi_layout::ResolvedSpiLayout,
+    smmu_count: usize,
+}
 
-        // TODO: When this value is supported on all platforms, we should change
-        // the arch config to not be an option. For now, warn since the ARM VBSA
-        // expects this to be available.
-        if pmu_gsiv == 0 {
-            tracing::warn!("PMU GSIV is set to 0");
-        }
+#[cfg(guest_arch = "aarch64")]
+fn build_aarch64_topology(
+    config: &ProcessorTopologyConfig,
+    platform_info: &virt::PlatformInfo,
+) -> anyhow::Result<Aarch64TopologyResult> {
+    use openvmm_defs::config::GicMsiConfig;
+    use vm_topology::processor::aarch64::Aarch64PlatformConfig;
+    use vm_topology::processor::aarch64::GicItsInfo;
+    use vm_topology::processor::aarch64::GicMsiController;
+    use vm_topology::processor::aarch64::GicV2mInfo;
 
-        let mut builder = TopologyBuilder::new_aarch64(gic, pmu_gsiv);
-        if let Some(smt) = self.enable_smt {
-            builder.smt_enabled(smt);
-        }
-        if let Some(count) = self.vps_per_socket {
-            builder.vps_per_socket(count);
-        } else {
-            builder.vps_per_socket(self.proc_count);
-        }
-        Ok(builder.build(self.proc_count)?)
+    const DEFAULT_GIC_V2M_SPI_COUNT: u32 = 64;
+
+    let arch = match &config.arch {
+        None => Default::default(),
+        Some(ArchTopologyConfig::Aarch64(arch)) => arch.clone(),
+        _ => anyhow::bail!("invalid architecture config"),
+    };
+
+    let pmu_gsiv = match arch.pmu_gsiv {
+        PmuGsivConfig::Disabled => None,
+        PmuGsivConfig::Gsiv(gsiv) => Some(gsiv),
+        PmuGsivConfig::Platform => platform_info.platform_gsiv,
+    };
+
+    // TODO: When this value is supported on all platforms, we should change
+    // the arch config to not be an option. For now, warn since the ARM VBSA
+    // expects this to be available.
+    if pmu_gsiv.is_none() {
+        tracing::warn!("PMU GSIV is not set");
     }
+
+    let (gic_distributor_base, gic_version) = match &arch.gic_config {
+        Some(GicConfig::V3(config)) => {
+            let dist = config
+                .as_ref()
+                .map(|c| c.gic_distributor_base)
+                .unwrap_or(openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE);
+            let redist = config
+                .as_ref()
+                .map(|c| c.gic_redistributors_base)
+                .unwrap_or(openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE);
+            (
+                dist,
+                GicVersion::V3 {
+                    redistributors_base: redist,
+                },
+            )
+        }
+        Some(GicConfig::V2(config)) => {
+            let dist = config
+                .as_ref()
+                .map(|c| c.gic_distributor_base)
+                .unwrap_or(openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE);
+            let cpu_if = config
+                .as_ref()
+                .map(|c| c.cpu_interface_base)
+                .unwrap_or(openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE);
+            (
+                dist,
+                GicVersion::V2 {
+                    cpu_interface_base: cpu_if,
+                },
+            )
+        }
+        None => {
+            // No explicit GIC config — use the hypervisor's detected version
+            // with default addresses.
+            let dist = openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE;
+            let second = openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE;
+            if platform_info.supports_gic_v3 {
+                (
+                    dist,
+                    GicVersion::V3 {
+                        redistributors_base: second,
+                    },
+                )
+            } else {
+                (
+                    dist,
+                    GicVersion::V2 {
+                        cpu_interface_base: second,
+                    },
+                )
+            }
+        }
+    };
+
+    // Resolve ITS vs v2m and determine v2m SPI count.
+    let is_gicv2 = matches!(gic_version, GicVersion::V2 { .. });
+    let v2m_spi_count = match &arch.gic_msi {
+        GicMsiConfig::Auto if platform_info.supports_its && !is_gicv2 => None,
+        GicMsiConfig::Auto => Some(DEFAULT_GIC_V2M_SPI_COUNT),
+        GicMsiConfig::Its => {
+            if is_gicv2 {
+                anyhow::bail!("ITS is incompatible with GICv2");
+            }
+            if !platform_info.supports_its {
+                anyhow::bail!("ITS requested but the hypervisor does not support it");
+            }
+            None
+        }
+        GicMsiConfig::V2m { spi_count } => Some(spi_count.unwrap_or(DEFAULT_GIC_V2M_SPI_COUNT)),
+    };
+
+    // Resolve SPI layout — all SPI allocations in one deterministic pass.
+    let gic_nr_irqs = openvmm_defs::config::DEFAULT_GIC_NR_IRQS;
+    let spi_layout = super::spi_layout::resolve_spi_layout(&super::spi_layout::SpiLayoutInput {
+        gic_nr_irqs,
+        v2m_spi_count,
+        smmu_count: arch.smmu.len(),
+    })?;
+
+    // Build the GIC MSI controller from resolved SPIs.
+    let gic_msi = if let Some(count) = v2m_spi_count {
+        GicMsiController::V2m(GicV2mInfo {
+            frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
+            spi_base: spi_layout
+                .v2m_spi_base
+                .expect("v2m base must be allocated when v2m_spi_count is Some"),
+            spi_count: count,
+        })
+    } else {
+        GicMsiController::Its(GicItsInfo {
+            its_base: openvmm_defs::config::DEFAULT_GIC_ITS_BASE,
+        })
+    };
+
+    let platform = Aarch64PlatformConfig {
+        gic_distributor_base,
+        gic_version,
+        gic_msi,
+        pmu_gsiv,
+        virt_timer_ppi: openvmm_defs::config::DEFAULT_VIRT_TIMER_PPI,
+        gic_nr_irqs,
+    };
+
+    let smmu_count = arch.smmu.len();
+
+    let mut builder = TopologyBuilder::new_aarch64(platform);
+    if let Some(smt) = config.enable_smt {
+        builder.smt_enabled(smt);
+    }
+    if let Some(count) = config.vps_per_socket {
+        builder.vps_per_socket(count);
+    } else {
+        builder.vps_per_socket(config.proc_count);
+    }
+    Ok(Aarch64TopologyResult {
+        processor_topology: builder.build(config.proc_count)?,
+        spi_layout,
+        smmu_count,
+    })
 }
 
 /// A VM that has been loaded and can be run.
@@ -533,10 +689,9 @@ pub(crate) struct LoadedVm {
 struct LoadedVmInner {
     driver_source: VmTaskDriverSource,
     resolver: ResourceResolver,
-    hypervisor: Hypervisor,
     partition_unit: PartitionUnit,
     partition: Arc<dyn HvlitePartition>,
-    _chipset_devices: ChipsetDevices,
+    chipset_devices: ChipsetDevices,
     _vmtime: SpawnedUnit<VmTimeKeeper>,
     _scsi_devices: Vec<SpawnedUnit<ChannelUnit<storvsp::StorageDevice>>>,
     memory_manager: GuestMemoryManager,
@@ -560,10 +715,17 @@ struct LoadedVmInner {
     vtl2_framebuffer_gpa_base: Option<u64>,
 
     chipset_cfg: BaseChipsetManifest,
+    chipset_capabilities: VmChipsetCapabilities,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
-    virtio_mmio_count: usize,
+    virtio_mmio_region: MemoryRange,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_irq: u32,
+    /// Chipset low MMIO range for VMOD/PCI0 _CRS.
+    chipset_low_mmio: MemoryRange,
+    /// Chipset high MMIO range for VMOD/PCI0 _CRS.
+    chipset_high_mmio: MemoryRange,
+    /// VTL2-private chipset MMIO range for VTL2 VMBus.
+    vtl2_chipset_mmio: MemoryRange,
     /// ((device, function), interrupt)
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     pci_legacy_interrupts: Vec<((u8, Option<u8>), u32)>,
@@ -575,61 +737,32 @@ struct LoadedVmInner {
     _vmgs_task: Option<Task<()>>,
     vmgs_client_inspect_handle: Option<vmgs_broker::VmgsClient>,
 
+    /// VFIO container manager inspect handle (Linux only).
+    #[cfg(target_os = "linux")]
+    vfio_inspect: Option<vfio_assigned_device::manager::VfioManagerClient>,
+    /// VFIO cdev + iommufd manager inspect handle (Linux only).
+    #[cfg(target_os = "linux")]
+    vfio_cdev_inspect: Option<vfio_assigned_device::manager::VfioCdevManagerClient>,
+
     // relay halt messages, intercepting reset if configured.
     halt_recv: mesh::Receiver<HaltReason>,
     client_notify_send: mesh::Sender<HaltReason>,
     /// allow the guest to reset without notifying the client
     automatic_guest_reset: bool,
     pcie_host_bridges: Vec<PcieHostBridge>,
-}
-
-fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
-    cfg_if! {
-        if #[cfg(target_os = "linux")] {
-            #[cfg(all(feature = "virt_mshv", guest_is_native, guest_arch = "x86_64"))]
-            if virt::Hypervisor::is_available(&virt_mshv::LinuxMshv)? {
-                return Ok(Hypervisor::MsHv);
-            }
-            #[cfg(all(feature = "virt_kvm", guest_is_native))]
-            if virt::Hypervisor::is_available(&virt_kvm::Kvm)? {
-                return Ok(Hypervisor::Kvm);
-            }
-        } else if #[cfg(all(target_os = "windows", guest_is_native))] {
-            #[cfg(feature = "virt_whp")]
-            if virt::Hypervisor::is_available(&virt_whp::Whp)? {
-                return Ok(Hypervisor::Whp);
-            }
-        } else if #[cfg(all(target_os = "macos", guest_is_native, guest_arch = "aarch64"))] {
-            #[cfg(feature = "virt_hvf")]
-            if virt::Hypervisor::is_available(&virt_hvf::HvfHypervisor)? {
-                return Ok(Hypervisor::Hvf);
-            }
-        }
-    }
-    anyhow::bail!("no hypervisor available");
-}
-
-fn platform_gsiv(hypervisor: Hypervisor) -> u32 {
-    let gsiv = match hypervisor {
-        #[cfg(all(
-            feature = "virt_whp",
-            target_os = "windows",
-            guest_is_native,
-            guest_arch = "aarch64"
-        ))]
-        Hypervisor::Whp => virt_whp::WHP_PMU_GSIV,
-        // TODO: hvf supports the PMU interrupt, but enabling it didn't seem to
-        // make it work it a Linux guest. More investigation required.
-        #[cfg(all(target_os = "macos", guest_is_native, guest_arch = "aarch64"))]
-        Hypervisor::Hvf => 0,
-        _ => 0,
-    };
-
-    if gsiv == 0 {
-        tracing::warn!(?hypervisor, "no platform GSIV available for hypervisor");
-    }
-
-    gsiv
+    pcie_root_complexes: Vec<Arc<closeable_mutex::CloseableMutex<GenericPcieRootComplex>>>,
+    /// SMMU configurations, one per instance.
+    #[cfg(guest_arch = "aarch64")]
+    smmu_configs: Vec<vmm_core::acpi_builder::AcpiSmmuConfig>,
+    /// Per-RC SMMU shared state, indexed parallel to `pcie_host_bridges`.
+    /// `None` for root complexes without an SMMU.
+    #[cfg(guest_arch = "aarch64")]
+    smmu_shared_states: Vec<Option<Arc<smmu::SmmuSharedState>>>,
+    pcie_hotplug_devices: Vec<(
+        String,
+        vmotherboard::DynamicDeviceUnit,
+        Arc<closeable_mutex::CloseableMutex<chipset_device_resources::ErasedChipsetDevice>>,
+    )>,
 }
 
 fn convert_vtl2_config(
@@ -668,9 +801,10 @@ fn convert_vtl2_config(
 
                         // Use the size, but the base is the requested load
                         // base.
-                        LateMapVtl0AllowedRanges::Ranges(vec![MemoryRange::new(
-                            *base..(*base + range.len()),
-                        )])
+                        let allowed =
+                            MemoryRange::try_new(*base..base.wrapping_add(range.len()))
+                                .with_context(|| format!("invalid vtl2 absolute base {base:#x}"))?;
+                        LateMapVtl0AllowedRanges::Ranges(vec![allowed])
                     }
                     Vtl2BaseAddressType::MemoryLayout { .. } => {
                         LateMapVtl0AllowedRanges::MemoryLayout
@@ -702,81 +836,55 @@ fn convert_vtl2_config(
     Ok(Some(config))
 }
 
+/// Builds root-port PCIe settings from manifest flags.
+///
+/// When CXL is enabled, emit a default Flex Bus capability advertising both
+/// cache and memory support.
+fn build_root_port_settings(rp_cfg: &PcieRootPortConfig) -> PciePortSettings {
+    PciePortSettings {
+        acs_capabilities_supported: rp_cfg
+            .acs_capabilities_supported
+            .unwrap_or(DEFAULT_ACS_CAP_MASK),
+        cxl_flex_bus_port_capability: rp_cfg.cxl.then_some(
+            CxlFlexBusPortDvsecCapability::new()
+                .with_cache_capable(true)
+                .with_mem_capable(true),
+        ),
+    }
+}
+
+/// Converts a manifest root-port entry into the runtime root-port definition.
+fn build_root_port_definition(rp_cfg: PcieRootPortConfig) -> GenericPcieRootPortDefinition {
+    let settings = build_root_port_settings(&rp_cfg);
+
+    GenericPcieRootPortDefinition {
+        name: rp_cfg.name.into(),
+        hotplug: rp_cfg.hotplug,
+        settings,
+    }
+}
+
 impl InitializedVm {
-    /// Creates and initializes a VM.
+    /// Creates and initializes a VM using the given backend.
     async fn new(
         driver_source: VmTaskDriverSource,
-        hypervisor: Hypervisor,
+        create_vm: crate::hypervisor_backend::CreateVmFn,
         cfg: Manifest,
         shared_memory: Option<SharedMemoryBacking>,
     ) -> anyhow::Result<Self> {
-        match hypervisor {
-            #[cfg(all(target_os = "linux", feature = "virt_kvm", guest_is_native))]
-            Hypervisor::Kvm => {
-                Self::new_with_hypervisor(
-                    driver_source,
-                    &mut virt_kvm::Kvm,
-                    hypervisor,
-                    cfg,
-                    shared_memory,
-                )
-                .await
-            }
-            #[cfg(all(
-                target_os = "linux",
-                feature = "virt_mshv",
-                guest_is_native,
-                guest_arch = "x86_64"
-            ))]
-            Hypervisor::MsHv => {
-                Self::new_with_hypervisor(
-                    driver_source,
-                    &mut virt_mshv::LinuxMshv,
-                    hypervisor,
-                    cfg,
-                    shared_memory,
-                )
-                .await
-            }
-            #[cfg(all(target_os = "windows", feature = "virt_whp", guest_is_native))]
-            Hypervisor::Whp => {
-                Self::new_with_hypervisor(
-                    driver_source,
-                    &mut virt_whp::Whp,
-                    hypervisor,
-                    cfg,
-                    shared_memory,
-                )
-                .await
-            }
-            #[cfg(all(
-                target_os = "macos",
-                guest_arch = "aarch64",
-                guest_is_native,
-                feature = "virt_hvf"
-            ))]
-            Hypervisor::Hvf => {
-                Self::new_with_hypervisor(
-                    driver_source,
-                    &mut virt_hvf::HvfHypervisor,
-                    hypervisor,
-                    cfg,
-                    shared_memory,
-                )
-                .await
-            }
-            _ => {
-                let _ = (cfg, driver_source, shared_memory);
-                anyhow::bail!("hypervisor {} not supported", hypervisor);
-            }
-        }
+        create_vm(driver_source, cfg, shared_memory).await
     }
 
-    #[allow(dead_code)]
-    async fn new_with_hypervisor<P, H>(
+    /// Creates and initializes a VM with the given hypervisor backend.
+    ///
+    /// This is the main monomorphization point — callers provide a concrete
+    /// `virt::Hypervisor` implementation. Called from the blanket impl of
+    /// [`HypervisorBackend`](crate::hypervisor_backend::HypervisorBackend).
+    pub(crate) async fn new_with_hypervisor<P, H>(
         driver_source: VmTaskDriverSource,
         hypervisor: &mut H,
-        hypervisor_type: Hypervisor,
+        #[cfg_attr(not(guest_arch = "aarch64"), expect(unused_variables))]
+        platform_info: virt::PlatformInfo,
         cfg: Manifest,
         shared_memory: Option<SharedMemoryBacking>,
     ) -> anyhow::Result<Self>
@@ -812,7 +920,6 @@ impl InitializedVm {
             }
 
             Some(virt::HvConfig {
-                offload_enlightenments: !cfg.hypervisor.user_mode_hv_enlightenments,
                 allow_device_assignment,
                 vtl2: convert_vtl2_config(
                     cfg.hypervisor.with_vtl2.as_ref(),
@@ -824,14 +931,23 @@ impl InitializedVm {
             None
         };
 
-        let processor_topology = cfg.processor_topology.to_topology(hypervisor_type)?;
+        #[cfg(guest_arch = "aarch64")]
+        let (processor_topology, spi_layout, smmu_count) = {
+            let result = build_aarch64_topology(&cfg.processor_topology, &platform_info)?;
+            (
+                result.processor_topology,
+                result.spi_layout,
+                result.smmu_count,
+            )
+        };
+        #[cfg(not(guest_arch = "aarch64"))]
+        let processor_topology = build_x86_topology(&cfg.processor_topology)?;
 
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
                 processor_topology: &processor_topology,
                 hv_config,
                 vmtime: &vmtime_source,
-                user_mode_apic: cfg.hypervisor.user_mode_apic,
                 isolation: cfg
                     .hypervisor
                     .with_isolation
@@ -843,7 +959,7 @@ impl InitializedVm {
         let physical_address_size = proto.max_physical_address_size();
 
         // Determine if a special vtl2 memory allocation should be used.
-        let vtl2_range = if let LoadMode::Igvm {
+        let vtl2_layout = if let LoadMode::Igvm {
             vtl2_base_address, ..
         } = &cfg.load_mode
         {
@@ -852,19 +968,16 @@ impl InitializedVm {
                 | Vtl2BaseAddressType::Absolute(_)
                 | Vtl2BaseAddressType::Vtl2Allocate { .. } => None,
                 Vtl2BaseAddressType::MemoryLayout { size } => {
-                    let vtl2_range = super::vm_loaders::igvm::vtl2_memory_range(
-                        physical_address_size,
-                        cfg.memory.mem_size,
-                        &cfg.memory.mmio_gaps,
+                    let vtl2_layout = super::vm_loaders::igvm::vtl2_memory_layout_request(
                         igvm_file
                             .as_ref()
                             .expect("igvm file should be already parsed"),
                         *size,
                     )
-                    .context("unable to determine vtl2 memory range")?;
-                    tracing::info!(?vtl2_range, "vtl2 memory range selected");
+                    .context("unable to determine vtl2 memory layout request")?;
+                    tracing::info!(?vtl2_layout, "vtl2 memory layout request selected");
 
-                    Some(vtl2_range)
+                    Some(vtl2_layout)
                 }
             }
         } else {
@@ -872,16 +985,66 @@ impl InitializedVm {
         };
 
         // Choose the memory layout of the VM.
-        let mem_layout = MemoryLayout::new(cfg.memory.mem_size, &cfg.memory.mmio_gaps, vtl2_range)
-            .context("invalid memory configuration")?;
+        //
+        // When numa_mem_sizes is set, distribute guest RAM across vNUMA nodes
+        // for ACPI SRAT / FDT reporting.
+        //
+        // TODO: The vNUMA nodes reported are meant for test usage only, as they
+        // are not aligned to any physical NUMA node. There is more work to do
+        // to support useful vNUMA reporting.
+        let virtio_mmio_count = cfg
+            .virtio_devices
+            .iter()
+            .filter(|(bus, _)| matches!(bus, VirtioBus::Mmio))
+            .count();
 
-        if mem_layout.end_of_ram_or_mmio() > 1 << physical_address_size {
-            anyhow::bail!(
-                "memory layout ends at {:#x}, which exceeds the address with of {} bits",
-                mem_layout.end_of_ram_or_mmio(),
-                physical_address_size
-            );
-        }
+        // SMMU is only supported on aarch64; on other architectures,
+        // no SMMU MMIO is allocated.
+        #[cfg(not(guest_arch = "aarch64"))]
+        let smmu_count = 0;
+
+        // On aarch64 Linux direct boot, start RAM at 1 GiB to avoid the low GPA
+        // region (128 MiB–129 MiB) that iommufd reserves for the host MSI
+        // doorbell in IOVA space. Without this gap, iommufd identity-mapped DMA
+        // for passthrough devices fails because it cannot allocate IOVAs in
+        // that range.
+        //
+        // FUTURE: this needs to be present for UEFI as well, but UEFI cannot
+        // only boot from low memory. Either:
+        //  1. Fix Linux to allow configuring the reserved IOVA range.
+        //  2. Fix UEFI to allow booting from >0.
+        //  3. Install a little bit of low memory, enough for UEFI to get to DXE
+        //     (which can run anywhere.)
+        let ram_start_address =
+            if cfg!(guest_arch = "aarch64") && matches!(cfg.load_mode, LoadMode::Linux { .. }) {
+                1024 * 1024 * 1024 // 1 GiB
+            } else {
+                0
+            };
+
+        let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
+            mem_size: cfg.memory.mem_size,
+            numa_mem_sizes: cfg.memory.numa_mem_sizes.as_deref(),
+            layout: cfg.layout.clone(),
+            pcie_root_complexes: &cfg.pcie_root_complexes,
+            virtio_mmio_count,
+            smmu_count,
+            vtl2_layout,
+            ram_start_address,
+            physical_address_size,
+        })
+        .context("invalid memory configuration")?;
+        let mem_layout = resolved_layout.memory_layout;
+        let resolved_pcie_root_complex_ranges = resolved_layout.pcie_root_complex_ranges;
+        let virtio_mmio_region = resolved_layout.virtio_mmio_region;
+        let chipset_low_mmio = resolved_layout.chipset_low_mmio;
+        let chipset_high_mmio = resolved_layout.chipset_high_mmio;
+        let vtl2_chipset_mmio = resolved_layout.vtl2_chipset_mmio;
+
+        // Combine SMMU MMIO ranges with SPI layout.
+        #[cfg(guest_arch = "aarch64")]
+        let resolved_smmu_resources =
+            smmu_wiring::resolve_smmu_resources(&resolved_layout.smmu_ranges, &spi_layout);
 
         // Place the alias map at the end of the address space. Newer versions
         // of OpenHCL support receiving this offset via devicetree (especially
@@ -892,14 +1055,39 @@ impl InitializedVm {
                 .then_some(1 << (physical_address_size - 1))
         });
 
+        if let Some(size) = cfg.memory.hugepage_size
+            && !cfg.memory.hugepages
+        {
+            anyhow::bail!("hugepage_size={size} requires hugepages=on");
+        }
+
+        // Collect RAM ranges for the backing request. All ranges go into a
+        // single backing for now; NUMA will split them across multiple.
+        let ram_ranges: Vec<MemoryRange> = mem_layout
+            .ram()
+            .iter()
+            .map(|r| r.range)
+            .chain(mem_layout.vtl2_range())
+            .collect();
+
+        let mut backing = membacking::RamBackingRequest::new(ram_ranges)
+            .prefetch(cfg.memory.prefetch_memory)
+            .private_memory(cfg.memory.private_memory)
+            .transparent_hugepages(cfg.memory.transparent_hugepages);
+        if cfg.memory.hugepages {
+            backing = backing.hugepages(cfg.memory.hugepage_size);
+        }
+        if let Some(smb) = shared_memory {
+            backing = backing.existing_mappable(smb.into_mappable());
+        }
+
         let mut memory_builder = GuestMemoryBuilder::new();
         memory_builder = memory_builder
-            .existing_backing(shared_memory)
             .vtl0_alias_map(vtl0_alias_map)
-            .prefetch_ram(cfg.memory.prefetch_memory)
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
-            );
+            )
+            .add_backing(backing);
 
         #[cfg(all(windows, feature = "virt_whp"))]
         if !cfg.vpci_resources.is_empty() {
@@ -921,8 +1109,12 @@ impl InitializedVm {
             }
         }
 
+        let max_addr = mem_layout
+            .end_of_layout()
+            .max(mem_layout.vtl2_range().map_or(0, |r| r.end()));
+
         let mut memory_manager = memory_builder
-            .build(&mem_layout)
+            .build(max_addr)
             .await
             .context("failed to build guest memory")?;
 
@@ -943,15 +1135,6 @@ impl InitializedVm {
                 confidential_vmbus,
             ));
         }
-
-        // Add in topology CPUID leaves.
-        #[cfg(guest_arch = "x86_64")]
-        vmm_core::cpuid::topology::topology_cpuid(
-            &processor_topology,
-            &|eax, ecx| proto.cpuid(eax, ecx),
-            &mut cpuid,
-        )
-        .context("failed to compute topology cpuid")?;
 
         let (partition, vps) = proto
             .build(virt::PartitionConfig {
@@ -983,7 +1166,6 @@ impl InitializedVm {
         }
 
         Ok(Self {
-            hypervisor: hypervisor_type,
             partition,
             vps,
             vmtime_keeper,
@@ -992,6 +1174,13 @@ impl InitializedVm {
             gm,
             cfg,
             mem_layout,
+            resolved_pcie_root_complex_ranges,
+            virtio_mmio_region,
+            chipset_low_mmio,
+            chipset_high_mmio,
+            vtl2_chipset_mmio,
+            #[cfg(guest_arch = "aarch64")]
+            resolved_smmu_resources,
             processor_topology,
             igvm_file,
             driver_source,
@@ -1010,7 +1199,6 @@ impl InitializedVm {
         use vmotherboard::options::dev;
 
         let Self {
-            hypervisor,
             partition,
             vps,
             vmtime_keeper,
@@ -1019,6 +1207,13 @@ impl InitializedVm {
             gm,
             cfg,
             mem_layout,
+            resolved_pcie_root_complex_ranges,
+            virtio_mmio_region,
+            chipset_low_mmio,
+            chipset_high_mmio,
+            vtl2_chipset_mmio,
+            #[cfg(guest_arch = "aarch64")]
+            resolved_smmu_resources,
             processor_topology,
             igvm_file,
             driver_source,
@@ -1105,6 +1300,10 @@ impl InitializedVm {
         let halt_vps = Arc::new(halt_vps);
 
         resolver.add_resolver(vmm_core::platform_resolvers::HaltResolver(halt_vps.clone()));
+        #[cfg(guest_arch = "x86_64")]
+        resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
+            partition.clone().ioapic_routing(),
+        ));
 
         let generation_id_recv = cfg.generation_id_recv.unwrap_or_else(|| mesh::channel().1);
 
@@ -1212,12 +1411,14 @@ impl InitializedVm {
                             mem_layout: &mem_layout,
                             cache_topology: None,
                             pcie_host_bridges: &Vec::new(),
-                            with_ioapic: cfg.chipset.with_generic_ioapic,
-                            with_pic: cfg.chipset.with_generic_pic,
-                            with_pit: cfg.chipset.with_generic_pit,
-                            with_psp: cfg.chipset.with_generic_psp,
-                            pm_base: PM_BASE,
-                            acpi_irq: SYSTEM_IRQ_ACPI,
+                            arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+                                with_ioapic: cfg.chipset_capabilities.with_ioapic,
+                                with_pic: cfg.chipset_capabilities.with_pic,
+                                with_pit: cfg.chipset_capabilities.with_pit,
+                                with_psp: cfg.chipset.with_generic_psp,
+                                pm_base: PM_BASE,
+                                acpi_irq: SYSTEM_IRQ_ACPI,
+                            },
                         };
                         let srat = acpi_tables_builder.build_srat();
                         firmware_pcat::config::PcatBiosConfig {
@@ -1270,8 +1471,6 @@ impl InitializedVm {
             }
             _ => {}
         };
-
-        let synic = Arc::new(SynicPorts::new(partition.clone()));
 
         let vtl2_framebuffer_gpa_base = if cfg.vtl2_gfx {
             // calculate a safe place to put the framebuffer mapping in GPA space
@@ -1386,38 +1585,33 @@ impl InitializedVm {
             }
         }
 
-        let deps_hyperv_guest_watchdog = if cfg.chipset.with_hyperv_guest_watchdog {
-            Some(dev::HyperVGuestWatchdogDeps {
-                port_base: WDAT_PORT,
-                watchdog_platform: {
-                    use vmcore::non_volatile_store::EphemeralNonVolatileStore;
+        if cfg.chipset_capabilities.with_guest_watchdog {
+            use vmcore::non_volatile_store::EphemeralNonVolatileStore;
 
-                    let store = match vmgs_client {
-                        Some(vmgs) => vmgs
-                            .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
-                            .context("failed to instantiate guest watchdog store")?,
-                        None => EphemeralNonVolatileStore::new_boxed(),
-                    };
+            let store = match vmgs_client {
+                Some(vmgs) => vmgs
+                    .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
+                    .context("failed to instantiate guest watchdog store")?,
+                None => EphemeralNonVolatileStore::new_boxed(),
+            };
 
-                    // Create the base watchdog platform
-                    let mut base_watchdog_platform = BaseWatchdogPlatform::new(store).await?;
+            // Create the base watchdog platform
+            let mut base_watchdog_platform = BaseWatchdogPlatform::new(store).await?;
 
-                    // Create callback to reset on watchdog timeout
-                    let watchdog_callback = WatchdogTimeoutReset {
-                        halt_vps: halt_vps.clone(),
-                        watchdog_send: None, // This is not the UEFI watchdog, so no need to send
-                                             // watchdog notifications
-                    };
+            // Create callback to reset on watchdog timeout
+            let watchdog_callback = WatchdogTimeoutReset {
+                halt_vps: halt_vps.clone(),
+                watchdog_send: None, // This is not the UEFI watchdog, so no need to send
+                                     // watchdog notifications
+            };
 
-                    // Add callbacks
-                    base_watchdog_platform.add_callback(Box::new(watchdog_callback));
+            // Add callbacks
+            base_watchdog_platform.add_callback(Box::new(watchdog_callback));
 
-                    Box::new(base_watchdog_platform)
-                },
-            })
-        } else {
-            None
-        };
+            resolver.add_resolver(StaticWatchdogPlatformResolver::new(Box::new(
+                base_watchdog_platform,
+            )));
+        }
 
         let initial_rtc_cmos = if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {
             Some(firmware_pcat::default_cmos_values(&mem_layout))
@@ -1426,34 +1620,16 @@ impl InitializedVm {
         };
 
         let deps_generic_cmos_rtc = (cfg.chipset.with_generic_cmos_rtc).then(|| {
-            // TODO: persist SystemTimeClock time across reboots.
-            // TODO: move to instantiate via a resource.
-            let time_source = Box::new(local_clock::SystemTimeClock::new(
-                LocalClockDelta::from_millis(cfg.rtc_delta_milliseconds),
-            ));
             dev::GenericCmosRtcDeps {
                 irq: 8,
-                time_source,
+                time_source: SystemTimeClockHandle {
+                    delta_milliseconds: cfg.rtc_delta_milliseconds,
+                }
+                .into_resource(),
                 century_reg_idx: 0x32, // TODO: automatically sync with FADT
                 initial_cmos: initial_rtc_cmos,
             }
         });
-
-        #[cfg(guest_arch = "x86_64")]
-        let deps_generic_ioapic =
-            (cfg.chipset.with_generic_ioapic).then(|| dev::GenericIoApicDeps {
-                num_entries: virt::irqcon::IRQ_LINES as u8,
-                routing: Box::new(vmm_core::emuplat::ioapic::IoApicRouting(
-                    partition.clone().ioapic_routing(),
-                )),
-            });
-
-        #[cfg(guest_arch = "aarch64")]
-        let deps_generic_ioapic = if cfg.chipset.with_generic_ioapic {
-            anyhow::bail!("ioapic not supported on this architecture");
-        } else {
-            None
-        };
 
         let deps_generic_isa_dma =
             (cfg.chipset.with_generic_isa_dma).then_some(dev::GenericIsaDmaDeps {});
@@ -1523,7 +1699,7 @@ impl InitializedVm {
         };
 
         let pci_bus_id_generic = vmotherboard::BusId::new("generic");
-        let pci_bus_id_piix4 = vmotherboard::BusId::new("i440bx");
+        let pci_bus_id_piix4 = vmotherboard::BusId::new(LEGACY_CHIPSET_PCI_BUS_NAME);
 
         let deps_generic_pci_bus =
             (cfg.chipset.with_generic_pci_bus).then_some(dev::GenericPciBusDeps {
@@ -1532,9 +1708,6 @@ impl InitializedVm {
                 pio_data: pci_bus::standard_x86_io_ports::DATA_START,
             });
 
-        let deps_generic_pic = (cfg.chipset.with_generic_pic).then_some(dev::GenericPicDeps {});
-
-        let deps_generic_pit = (cfg.chipset.with_generic_pit).then_some(dev::GenericPitDeps {});
         let deps_generic_psp = (cfg.chipset.with_generic_psp).then_some(dev::GenericPspDeps {});
 
         let deps_hyperv_framebuffer =
@@ -1542,13 +1715,6 @@ impl InitializedVm {
                 fb_mapper: Box::new(mapper.clone()),
                 fb: cfg.framebuffer.unwrap(),
                 vtl2_framebuffer_gpa_base,
-            });
-
-        let deps_hyperv_power_management =
-            (cfg.chipset.with_hyperv_power_management).then_some(dev::HyperVPowerManagementDeps {
-                acpi_irq: SYSTEM_IRQ_ACPI,
-                pio_base: PM_BASE,
-                pm_timer_assist: None,
             });
 
         let deps_hyperv_vga = if cfg.chipset.with_hyperv_vga {
@@ -1579,13 +1745,11 @@ impl InitializedVm {
         });
 
         let deps_piix4_cmos_rtc = (cfg.chipset.with_piix4_cmos_rtc).then(|| {
-            // TODO: persist SystemTimeClock time across reboots.
-            // TODO: move to instantiate via a resource.
-            let time_source = Box::new(local_clock::SystemTimeClock::new(
-                LocalClockDelta::from_millis(cfg.rtc_delta_milliseconds),
-            ));
             dev::Piix4CmosRtcDeps {
-                time_source,
+                time_source: SystemTimeClockHandle {
+                    delta_milliseconds: cfg.rtc_delta_milliseconds,
+                }
+                .into_resource(),
                 initial_cmos: initial_rtc_cmos,
                 enlightened_interrupts: true, // As advertised by the PCAT BIOS.
             }
@@ -1598,43 +1762,21 @@ impl InitializedVm {
             secondary_channel_drives,
         });
 
-        let deps_piix4_pci_isa_bridge =
-            (cfg.chipset.with_piix4_pci_isa_bridge).then_some(dev::Piix4PciIsaBridgeDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-            });
-        let deps_piix4_pci_usb_uhci_stub =
-            (cfg.chipset.with_piix4_pci_usb_uhci_stub).then_some(dev::Piix4PciUsbUhciStubDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-            });
-        let deps_piix4_power_management =
-            (cfg.chipset.with_piix4_power_management).then_some(dev::Piix4PowerManagementDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-                pm_timer_assist: None,
-            });
-
         let base_chipset_devices = {
             BaseChipsetDevices {
                 deps_generic_cmos_rtc,
-                deps_generic_ioapic,
                 deps_generic_isa_dma,
                 deps_generic_isa_floppy,
                 deps_generic_pci_bus,
-                deps_generic_pic,
-                deps_generic_pit,
                 deps_generic_psp,
                 deps_hyperv_firmware_pcat,
                 deps_hyperv_firmware_uefi,
                 deps_hyperv_framebuffer,
-                deps_hyperv_guest_watchdog,
                 deps_hyperv_ide,
-                deps_hyperv_power_management,
                 deps_hyperv_vga,
                 deps_i440bx_host_pci_bridge,
                 deps_piix4_cmos_rtc,
                 deps_piix4_pci_bus,
-                deps_piix4_pci_isa_bridge,
-                deps_piix4_pci_usb_uhci_stub,
-                deps_piix4_power_management,
                 deps_underhill_vga_proxy: None,
                 deps_winbond_super_io_and_floppy_stub: None,
                 deps_winbond_super_io_and_floppy_full,
@@ -1642,7 +1784,7 @@ impl InitializedVm {
         };
 
         let BaseChipsetBuilderOutput {
-            mut chipset_builder,
+            chipset_builder,
             device_interfaces: base_chipset_device_interfaces,
         } = BaseChipsetBuilder::new(
             BaseChipsetFoundation {
@@ -1664,6 +1806,7 @@ impl InitializedVm {
         )
         .with_expected_manifest(cfg.chipset.clone())
         .with_device_handles(cfg.chipset_devices)
+        .with_pci_device_handles(cfg.pci_chipset_devices)
         .with_trace_unknown_pio(true) // todo: add CLI param?
         .build(&driver_source, &state_units, &resolver)
         .await?;
@@ -1721,7 +1864,7 @@ impl InitializedVm {
                 // Avoid an ISA interrupt to avoid conflicts and to avoid needing to
                 // configure the line as level-triggered in the MADT (necessary for
                 // Linux when the PIC is missing).
-                if cfg.chipset.with_generic_pic {
+                if cfg.chipset_capabilities.with_pic {
                     Some(PCI_LEGACY_INTA_IRQ)
                 } else {
                     Some(PCI_INTA_IRQ)
@@ -1744,19 +1887,72 @@ impl InitializedVm {
 
         // PCI Express topology
 
-        let mut pcie_host_bridges = Vec::new();
-        {
-            // ECAM allocation starts at the configured base and grows upwards.
-            // Low MMIO allocation for PCIe starts just below the low MMIO window for other
-            // devices and grows downwards.
-            // High MMIO allocation for PCIe starts just above the high MMIO window for
-            // other devices and grows upwards.
-            let mut ecam_address = cfg.memory.pcie_ecam_base;
-            let mut low_mmio_address = cfg.memory.mmio_gaps[0].start();
-            let mut high_mmio_address = cfg.memory.mmio_gaps[1].end();
+        // Build the RC name→index map before consuming the RC configs.
+        // Only needed on aarch64 for SMMU setup.
+        #[cfg(guest_arch = "aarch64")]
+        let pcie_rc_name_to_idx: std::collections::HashMap<String, usize> = cfg
+            .pcie_root_complexes
+            .iter()
+            .enumerate()
+            .map(|(i, rc)| (rc.name.clone(), i))
+            .collect();
 
-            for rc in cfg.pcie_root_complexes {
+        let (pcie_host_bridges, pcie_root_complexes) = {
+            let mut pcie_host_bridges = Vec::new();
+            let mut pcie_root_complexes = Vec::new();
+
+            for (rc, ranges) in cfg
+                .pcie_root_complexes
+                .into_iter()
+                .zip(resolved_pcie_root_complex_ranges)
+            {
+                let cxl_port_count = rc.ports.iter().filter(|rp_cfg| rp_cfg.cxl).count() as u64;
+                let cxl_config = rc.cxl.as_ref();
+
+                // Note that for each CXL enabled root port, they need 64K of MMIO space for the component registers.
+                // We need to ensure that the PCI MMIO range reserved is sufficient for that.
+                if cxl_port_count != 0 {
+                    let required_cxl_component_bar_mmio = cxl_port_count
+                        .checked_mul(CXL_COMPONENT_REGISTERS_SIZE_BYTES)
+                        .context("cxl component register size overflow")?;
+                    if ranges.high_mmio.len() < required_cxl_component_bar_mmio {
+                        anyhow::bail!(
+                            "invalid CXL root complex '{}': high MMIO range {:#x} is too small for {} CXL root-port BAR apertures (requires {:#x})",
+                            rc.name,
+                            ranges.high_mmio.len(),
+                            cxl_port_count,
+                            required_cxl_component_bar_mmio
+                        );
+                    }
+                }
+
+                let hdm_range = (!ranges.hdm_range.is_empty()).then_some(ranges.hdm_range);
+                let chbcr_range = (!ranges.chbcr_range.is_empty()).then_some(ranges.chbcr_range);
+
+                if cxl_port_count != 0 {
+                    if cxl_config.is_none() {
+                        anyhow::bail!(
+                            "invalid CXL root complex '{}': CXL-capable root ports require both CHBCR and HDM ranges",
+                            rc.name
+                        );
+                    }
+                    if hdm_range.is_none() || chbcr_range.is_none() {
+                        anyhow::bail!(
+                            "invalid CXL root complex '{}': configured CXL CHBCR/HDM ranges were not resolved",
+                            rc.name
+                        );
+                    }
+                }
+
                 let device_name = format!("pcie-root:{}", rc.name);
+
+                // Create a static bus range for the root complex so that
+                // root port MSI targets can lazily resolve their BDF as
+                // (start_bus << 8) | devfn.
+                let rc_bus_range = pci_core::bus_range::AssignedBusRange::new();
+                rc_bus_range.set_bus_range(rc.start_bus, rc.end_bus);
+                let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+
                 let root_complex =
                     chipset_builder
                         .arc_mutex_device(device_name)
@@ -1764,82 +1960,282 @@ impl InitializedVm {
                             let root_port_definitions = rc
                                 .ports
                                 .into_iter()
-                                .map(|rp_cfg| GenericPcieRootPortDefinition {
-                                    name: rp_cfg.name.into(),
-                                    hotplug: rp_cfg.hotplug,
-                                })
+                                .map(build_root_port_definition)
                                 .collect();
 
                             GenericPcieRootComplex::new(
                                 &mut services.register_mmio(),
                                 rc.start_bus,
                                 rc.end_bus,
-                                ecam_address,
+                                chbcr_range,
+                                ranges.ecam_range,
                                 root_port_definitions,
+                                msi_conn.target(),
                             )
                         })?;
 
-                let ecam_size = root_complex.lock().ecam_size();
-                let low_mmio_size = rc.low_mmio_size as u64;
+                if let Some(signal_msi) = partition.as_signal_msi(Vtl::Vtl0) {
+                    // Wrap the root complex's SignalMsi with platform
+                    // MSI controller translation (ITS on aarch64).
+                    let signal_msi =
+                        pcie_wiring::wrap_platform_msi(signal_msi, rc.segment, &processor_topology);
+                    msi_conn.connect(signal_msi);
+                }
+
+                let cxl = cxl_config
+                    .map(|cxl| -> anyhow::Result<PcieHostBridgeCxlInfo> {
+                        Ok(PcieHostBridgeCxlInfo {
+                            chbcr_range: chbcr_range
+                                .context("missing CHBCR range for CXL root complex")?,
+                            hdm_range: hdm_range
+                                .context("missing HDM range for CXL root complex")?,
+                            hdm_window_restrictions: CfmwsWindowRestrictions::try_from_bits(
+                                cxl.hdm_window_restrictions,
+                            )
+                            .context("invalid CFMWS HDM window restrictions")?,
+                        })
+                    })
+                    .transpose()?;
+
                 pcie_host_bridges.push(PcieHostBridge {
                     index: rc.index,
                     segment: rc.segment,
                     start_bus: rc.start_bus,
                     end_bus: rc.end_bus,
-                    ecam_range: MemoryRange::new(ecam_address..ecam_address + ecam_size),
-                    low_mmio: MemoryRange::new(low_mmio_address - low_mmio_size..low_mmio_address),
-                    high_mmio: MemoryRange::new(
-                        high_mmio_address..high_mmio_address + rc.high_mmio_size,
-                    ),
+                    ecam_range: ranges.ecam_range,
+                    low_mmio: ranges.low_mmio,
+                    high_mmio: ranges.high_mmio,
+                    cxl,
                 });
+
+                pcie_root_complexes.push(root_complex.clone());
 
                 let bus_id = vmotherboard::BusId::new(&rc.name);
                 chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(root_complex));
-
-                ecam_address += ecam_size;
-                low_mmio_address -= low_mmio_size;
-                high_mmio_address += rc.high_mmio_size;
             }
 
-            for switch in cfg.pcie_switches {
-                let device_name = format!("pcie-switch:{}", switch.name);
-                let switch_device = chipset_builder
-                    .arc_mutex_device(device_name)
-                    .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
-                    .add(|_services| {
-                        let definition = pcie::switch::GenericPcieSwitchDefinition {
-                            name: switch.name.clone().into(),
-                            downstream_port_count: switch.num_downstream_ports,
-                            hotplug: switch.hotplug,
-                        };
-                        GenericPcieSwitch::new(definition)
-                    })?;
+            (pcie_host_bridges, pcie_root_complexes)
+        };
 
-                let bus_id = vmotherboard::BusId::new(&switch.name);
-                chipset_builder
-                    .register_weak_mutex_pcie_enumerator(bus_id, Box::new(switch_device));
+        // Build a port-name→(segment, bus_range) map covering all ports in
+        // the PCIe topology (root complex ports and switch downstream ports).
+        // The segment is used for ITS device ID composition; the bus_range is
+        // a shared atomic that the config space emulator updates when the
+        // guest programs secondary/subordinate bus numbers.
+        struct PortInfo {
+            segment: u16,
+            bus_range: pci_core::bus_range::AssignedBusRange,
+        }
+        let mut port_info: std::collections::HashMap<Arc<str>, PortInfo> =
+            std::collections::HashMap::new();
+        for (hb, rc) in pcie_host_bridges.iter().zip(pcie_root_complexes.iter()) {
+            for p in rc.lock().downstream_ports() {
+                if let Some(_existing) = port_info.insert(
+                    p.name.clone(),
+                    PortInfo {
+                        segment: hb.segment,
+                        bus_range: p.bus_range,
+                    },
+                ) {
+                    anyhow::bail!("duplicate PCIe port name '{}'", p.name);
+                }
             }
         }
 
-        for dev_cfg in cfg.pcie_devices {
-            vmm_core::device_builder::build_pcie_device(
-                &mut chipset_builder,
-                dev_cfg.port_name.into(),
-                &driver_source,
-                &resolver,
-                &gm,
-                dev_cfg.resource,
-                partition.clone().into_doorbell_registration(Vtl::Vtl0),
-                Some(&mapper),
-                partition.clone().into_signal_msi(Vtl::Vtl0),
-            )
-            .await?;
+        for switch in cfg.pcie_switches {
+            let device_name = format!("pcie-switch:{}", switch.name);
+
+            // Inherit the segment from the switch's parent port.
+            let parent_segment = port_info
+                .get(switch.parent_port.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "switch '{}' parent port '{}' not found in any root complex",
+                        switch.name,
+                        switch.parent_port
+                    )
+                })?
+                .segment;
+
+            let msi_conn =
+                pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
+
+            if let Some(signal_msi) = partition.as_signal_msi(Vtl::Vtl0) {
+                let signal_msi =
+                    pcie_wiring::wrap_platform_msi(signal_msi, parent_segment, &processor_topology);
+                msi_conn.connect(signal_msi);
+            }
+            if let Some(fd) = partition.irqfd() {
+                let fd = pcie_wiring::wrap_platform_irqfd(fd, parent_segment, &processor_topology);
+                msi_conn.connect_irqfd(fd);
+            }
+
+            let msi_target = msi_conn.target().clone();
+            let switch_device = chipset_builder
+                .arc_mutex_device(device_name)
+                .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
+                .add(|_services| {
+                    let definition = pcie::switch::GenericPcieSwitchDefinition {
+                        name: switch.name.clone().into(),
+                        downstream_port_count: switch.num_downstream_ports,
+                        hotplug: switch.hotplug,
+                        msi_target,
+                        dsp_settings: PciePortSettings {
+                            acs_capabilities_supported: switch
+                                .acs_capabilities_supported
+                                .unwrap_or(DEFAULT_ACS_CAP_MASK),
+                            cxl_flex_bus_port_capability: None,
+                        },
+                    };
+                    GenericPcieSwitch::new(definition)
+                })?;
+
+            // Query the switch's actual downstream port names instead of
+            // reconstructing them from the naming convention.
+            for p in switch_device.lock().downstream_ports() {
+                if let Some(_existing) = port_info.insert(
+                    p.name.clone(),
+                    PortInfo {
+                        segment: parent_segment,
+                        bus_range: p.bus_range,
+                    },
+                ) {
+                    anyhow::bail!("duplicate PCIe port name '{}'", p.name);
+                }
+            }
+
+            let bus_id = vmotherboard::BusId::new(&switch.name);
+            chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(switch_device));
         }
+
+        // Register the VFIO resolver, which spawns a container manager task
+        // internally to share containers across assigned devices.
+        #[cfg(target_os = "linux")]
+        let (vfio_inspect, vfio_cdev_inspect) = {
+            let dma_mapper_client = memory_manager.dma_mapper_client();
+            let vfio_resolver = vfio_assigned_device::resolver::VfioDeviceResolver::new(
+                driver_source.builder().build("vfio-container-mgr"),
+                dma_mapper_client.clone(),
+            );
+            let handle = vfio_resolver.inspect_handle();
+            resolver.add_async_resolver::<
+                vm_resource::kind::PciDeviceHandleKind,
+                _,
+                vfio_assigned_device_resources::VfioDeviceHandle,
+                _,
+            >(vfio_resolver);
+
+            // Register the VFIO cdev + iommufd resolver for devices opened
+            // via the cdev interface. Spawns a VfioCdevManager task that
+            // shares IOAS contexts across devices with the same --iommu ID.
+            let cdev_resolver = vfio_assigned_device::resolver::VfioCdevDeviceResolver::new(
+                driver_source.builder().build("vfio-cdev-mgr"),
+                dma_mapper_client,
+            );
+            let cdev_handle = cdev_resolver.inspect_handle();
+            resolver.add_async_resolver::<
+                vm_resource::kind::PciDeviceHandleKind,
+                _,
+                vfio_assigned_device_resources::VfioCdevDeviceHandle,
+                _,
+            >(cdev_resolver);
+
+            (Some(handle), Some(cdev_handle))
+        };
+
+        // Instantiate SMMU devices and build port-level lookup maps.
+        // When active, PCIe devices on the covered root complexes get
+        // translating GuestMemory and SignalMsi wrappers that route DMA
+        // and MSI writes through the emulated SMMUv3.
+        #[cfg(guest_arch = "aarch64")]
+        let smmu_wiring::SmmuDevicesResult {
+            shared_states: smmu_shared_states,
+            configs: smmu_configs,
+            port_maps: smmu_port_maps,
+        } = smmu_wiring::setup_smmu(
+            cfg.processor_topology.arch.as_ref(),
+            &resolved_smmu_resources,
+            &pcie_rc_name_to_idx,
+            &pcie_host_bridges,
+            &pcie_root_complexes,
+            &chipset_builder,
+            &gm,
+        )?;
+
+        // Resolve PCIe devices concurrently.
+        //
+        // When ITS is active, the root complex's ITS-wrapped SignalMsi
+        // and IrqFd are shared across all devices on that complex. Each
+        // device's MsiConnection carries a default BDF derived from the
+        // port's AssignedBusRange, which the MsiTarget resolves lazily
+        // at interrupt delivery time. When SMMU is enabled, per-device
+        // wrappers translate IOVAs and MSI addresses through the emulated SMMU.
+
+        try_join_all(cfg.pcie_devices.into_iter().map(|dev_cfg| {
+            let chipset_builder = &chipset_builder;
+            let driver_source = &driver_source;
+            let resolver = &resolver;
+            let gm = &gm;
+            let partition = &partition;
+            let mapper = &mapper;
+            let port_info = &port_info;
+            #[cfg(guest_arch = "aarch64")]
+            let smmu_port_maps = &smmu_port_maps;
+            let processor_topology = &processor_topology;
+            async move {
+                let port_name: Arc<str> = dev_cfg.port_name.into();
+                let pi = port_info.get(&port_name).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "device port '{}' not found in any root complex or switch",
+                        port_name
+                    )
+                })?;
+
+                let msi_conn = pci_core::msi::MsiConnection::new(pi.bus_range.clone(), 0);
+
+                let pcie_ctx =
+                    pcie_wiring::build_pcie_msi_context(&pcie_wiring::PcieWiringParams {
+                        partition: partition.as_ref(),
+                        guest_memory: gm,
+                        #[cfg(guest_arch = "aarch64")]
+                        bus_range: &pi.bus_range,
+                        segment: pi.segment,
+                        processor_topology,
+                        #[cfg(guest_arch = "aarch64")]
+                        smmu: smmu_port_maps.port_map.get(&port_name),
+                    });
+
+                vmm_core::device_builder::build_pcie_device(
+                    vmm_core::device_builder::PciDeviceResolveContext {
+                        driver_source,
+                        resolver,
+                        guest_memory: &pcie_ctx.guest_memory,
+                        resource: dev_cfg.resource,
+                        doorbell_registration: partition
+                            .clone()
+                            .into_doorbell_registration(Vtl::Vtl0),
+                        shared_mem_mapper: Some(mapper),
+                        software_iommu: pcie_ctx.software_iommu,
+                    },
+                    chipset_builder,
+                    port_name.clone(),
+                    msi_conn.target(),
+                )
+                .await?;
+
+                pcie_ctx.connect_to(&msi_conn);
+
+                anyhow::Ok(())
+            }
+        }))
+        .await?;
 
         if let Some(vmbus_cfg) = cfg.vmbus {
             if !cfg.hypervisor.with_hv {
                 anyhow::bail!("vmbus required hypervisor enlightements");
             }
+
+            let synic = partition.synic();
 
             vmbus_redirect = vmbus_cfg.vtl2_redirect;
             let hvsock_channel = HvsockRelayChannel::new();
@@ -2017,15 +2413,20 @@ impl InitializedVm {
                     };
 
                     vmm_core::device_builder::build_vpci_device(
-                        &driver_source,
-                        &resolver,
-                        &gm,
+                        vmm_core::device_builder::PciDeviceResolveContext {
+                            driver_source: &driver_source,
+                            resolver: &resolver,
+                            guest_memory: &gm,
+                            resource: dev_cfg.resource,
+                            doorbell_registration: partition
+                                .clone()
+                                .into_doorbell_registration(vtl),
+                            shared_mem_mapper: Some(&mapper),
+                            software_iommu: false,
+                        },
                         vmbus.control(),
                         dev_cfg.instance_id,
-                        dev_cfg.resource,
-                        &mut chipset_builder,
-                        partition.clone().into_doorbell_registration(vtl),
-                        Some(&mapper),
+                        &chipset_builder,
                         |device_id| {
                             let hv_device = partition.new_virtual_device(
                                 match dev_cfg.vtl {
@@ -2121,15 +2522,11 @@ impl InitializedVm {
 
         // add virtio devices
 
-        // Construct virtio devices.
-        //
-        // TODO: allocate PCI and MMIO space better.
+        // Construct virtio devices. Virtio-mmio device addresses are resolved
+        // by the memory layout allocator; each slot is a 4 KiB Mmio32
+        // allocation indexed by the order of VirtioBus::Mmio devices.
         let mut pci_device_number = 10;
-        if mem_layout.mmio().len() < 2 {
-            anyhow::bail!("at least two mmio regions are required");
-        }
-        let mut virtio_mmio_start = mem_layout.mmio()[1].end();
-        let mut virtio_mmio_count = 0;
+        let mut virtio_mmio_index = 0;
 
         // Avoid an ISA interrupt to avoid conflicts and to avoid needing to
         // configure the line as level-triggered in the MADT (necessary for
@@ -2137,7 +2534,7 @@ impl InitializedVm {
         let virtio_mmio_irq = {
             const VIRTIO_MMIO_IOAPIC_IRQ: u32 = 17;
             const VIRTIO_MMIO_PIC_IRQ: u32 = 5;
-            if cfg.chipset.with_generic_pic {
+            if cfg.chipset_capabilities.with_pic {
                 VIRTIO_MMIO_PIC_IRQ
             } else {
                 VIRTIO_MMIO_IOAPIC_IRQ
@@ -2150,25 +2547,26 @@ impl InitializedVm {
                     device,
                     VirtioResolveInput {
                         driver_source: &driver_source,
-                        guest_memory: &gm,
                     },
                 )
                 .await?;
             match bus {
                 VirtioBus::Mmio => {
-                    let mmio_start = virtio_mmio_start - 0x1000;
-                    virtio_mmio_start -= 0x1000;
+                    let mmio_start = virtio_mmio_region.start() + virtio_mmio_index as u64 * 0x1000;
+                    virtio_mmio_index += 1;
                     let id = format!("{id}-{mmio_start}");
-                    chipset_builder.arc_mutex_device(id).add(|services| {
+                    let gm = gm.clone();
+                    chipset_builder.arc_mutex_device(id).try_add(|services| {
                         VirtioMmioDevice::new(
                             device.0,
+                            &driver_source.simple(),
+                            gm,
                             services.new_line(IRQ_LINE_SET, "interrupt", virtio_mmio_irq),
                             partition.clone().into_doorbell_registration(Vtl::Vtl0),
                             mmio_start,
                             0x1000,
                         )
                     })?;
-                    virtio_mmio_count += 1;
                 }
                 VirtioBus::Pci => {
                     let pci_inta_line = pci_inta_line.context("missing PCI INT#A line")?;
@@ -2190,6 +2588,8 @@ impl InitializedVm {
                         .try_add(|services| {
                             VirtioPciDevice::new(
                                 device.0,
+                                &driver_source.simple(),
+                                gm.clone(),
                                 PciInterruptModel::IntX(
                                     PciInterruptPin::IntA,
                                     services.new_line(IRQ_LINE_SET, "interrupt", pci_inta_line),
@@ -2203,12 +2603,9 @@ impl InitializedVm {
             }
         }
 
-        assert!(virtio_mmio_start >= mem_layout.mmio()[1].start());
-
         let (chipset, devices) = chipset_builder.build()?;
         let (fatal_error_send, _fatal_error_recv) = mesh::channel();
-        let chipset = vmm_core::vmotherboard_adapter::ChipsetPlusSynic::new(
-            synic.clone(),
+        let chipset = vmm_core::vmotherboard_adapter::AdaptedChipset::new(
             chipset,
             // TODO: Support this being a cmd line option
             vmm_core::vmotherboard_adapter::FatalErrorPolicy::DebugBreak(fatal_error_send),
@@ -2277,10 +2674,9 @@ impl InitializedVm {
             inner: LoadedVmInner {
                 driver_source,
                 resolver,
-                hypervisor,
                 partition_unit,
                 partition,
-                _chipset_devices: devices,
+                chipset_devices: devices,
                 _vmtime: vmtime,
                 _scsi_devices: scsi_devices,
                 memory_manager,
@@ -2302,19 +2698,33 @@ impl InitializedVm {
                 _kernel_vmnics: kernel_vmnics,
                 vmbus_devices,
                 chipset_cfg: cfg.chipset,
+                chipset_capabilities: cfg.chipset_capabilities,
                 firmware_event_send: cfg.firmware_event_send,
                 load_mode: cfg.load_mode,
-                virtio_mmio_count,
+                virtio_mmio_region,
                 virtio_mmio_irq,
+                chipset_low_mmio,
+                chipset_high_mmio,
+                vtl2_chipset_mmio,
                 pci_legacy_interrupts,
                 igvm_file,
                 next_igvm_file: None,
                 _vmgs_task: vmgs_task,
                 vmgs_client_inspect_handle,
+                #[cfg(target_os = "linux")]
+                vfio_inspect,
+                #[cfg(target_os = "linux")]
+                vfio_cdev_inspect,
                 halt_recv,
                 client_notify_send,
                 automatic_guest_reset: cfg.automatic_guest_reset,
                 pcie_host_bridges,
+                pcie_root_complexes,
+                pcie_hotplug_devices: Vec::new(),
+                #[cfg(guest_arch = "aarch64")]
+                smmu_configs,
+                #[cfg(guest_arch = "aarch64")]
+                smmu_shared_states,
             },
         };
 
@@ -2345,12 +2755,25 @@ impl LoadedVmInner {
             mem_layout: &self.mem_layout,
             cache_topology: cache_topology.as_ref(),
             pcie_host_bridges: &self.pcie_host_bridges,
-            with_ioapic: self.chipset_cfg.with_generic_ioapic,
-            with_psp: self.chipset_cfg.with_generic_psp,
-            with_pic: self.chipset_cfg.with_generic_pic,
-            with_pit: self.chipset_cfg.with_generic_pit,
-            pm_base: PM_BASE,
-            acpi_irq: SYSTEM_IRQ_ACPI,
+            #[cfg(guest_arch = "x86_64")]
+            arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+                with_ioapic: self.chipset_capabilities.with_ioapic,
+                with_psp: self.chipset_cfg.with_generic_psp,
+                with_pic: self.chipset_capabilities.with_pic,
+                with_pit: self.chipset_capabilities.with_pit,
+                pm_base: PM_BASE,
+                acpi_irq: SYSTEM_IRQ_ACPI,
+            },
+            #[cfg(guest_arch = "aarch64")]
+            arch: vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {
+                hypervisor_vendor_identity: if self.hypervisor_cfg.with_hv {
+                    u64::from_le_bytes(*b"MsHyperV")
+                } else {
+                    0
+                },
+                virt_timer_ppi: self.processor_topology.virt_timer_ppi(),
+                smmu: self.smmu_configs.clone(),
+            },
         };
 
         if vtl2_only {
@@ -2367,7 +2790,14 @@ impl LoadedVmInner {
                 ref cmdline,
                 enable_serial,
                 ref custom_dsdt,
+                boot_mode,
             } => {
+                match boot_mode {
+                    openvmm_defs::config::LinuxDirectBootMode::DeviceTree => {
+                        anyhow::bail!("device tree boot mode is not supported on x86_64");
+                    }
+                    openvmm_defs::config::LinuxDirectBootMode::Acpi => {}
+                }
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
                     initrd,
@@ -2383,12 +2813,12 @@ impl LoadedVmInner {
                             acpi_builder.build_acpi_tables_custom_dsdt(gpa, dsdt)
                         } else {
                             acpi_builder.build_acpi_tables(gpa, |mem_layout, dsdt| {
-                                add_devices_to_dsdt(
+                                add_devices_to_dsdt_x64(
                                     mem_layout,
                                     dsdt,
                                     &self.chipset_cfg,
                                     enable_serial,
-                                    self.virtio_mmio_count,
+                                    self.virtio_mmio_region,
                                     self.virtio_mmio_irq,
                                     &self.pci_legacy_interrupts,
                                 )
@@ -2410,18 +2840,36 @@ impl LoadedVmInner {
                 ref cmdline,
                 enable_serial,
                 custom_dsdt: _,
+                boot_mode,
             } => {
+                use openvmm_defs::config::LinuxDirectBootMode;
+
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
                 };
+
+                let with_hv = self.hypervisor_cfg.with_hv;
+                let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
+                    Some(|rsdp_gpa: u64| {
+                        acpi_builder.build_acpi_tables(rsdp_gpa, |mem_layout, dsdt| {
+                            add_devices_to_dsdt_arm64(mem_layout, dsdt, enable_serial, with_hv)
+                        })
+                    })
+                } else {
+                    None
+                };
+
                 let regs = super::vm_loaders::linux::load_linux_arm64(
                     &kernel_config,
                     &self.gm,
                     enable_serial,
                     &self.processor_topology,
+                    &self.pcie_host_bridges,
+                    &self.smmu_configs,
+                    build_acpi,
                 )?;
 
                 (regs, Vec::new())
@@ -2449,7 +2897,7 @@ impl LoadedVmInner {
                     frontpage: !disable_frontpage,
                     tpm: enable_tpm,
                     battery: enable_battery,
-                    guest_watchdog: self.chipset_cfg.with_hyperv_guest_watchdog,
+                    guest_watchdog: self.chipset_capabilities.with_guest_watchdog,
                     vpci_boot: enable_vpci_boot,
                     serial: enable_serial,
                     uefi_console_mode,
@@ -2507,9 +2955,14 @@ impl LoadedVmInner {
                     with_vmbus_redirect: self.vmbus_redirect,
                     com_serial,
                     entropy: Some(&entropy),
+                    chipset_low_mmio: self.chipset_low_mmio,
+                    chipset_high_mmio: self.chipset_high_mmio,
+                    vtl2_chipset_mmio: self.vtl2_chipset_mmio,
                 };
                 super::vm_loaders::igvm::load_igvm(params)?
             }
+
+            #[expect(clippy::allow_attributes)]
             #[allow(unreachable_patterns)]
             _ => anyhow::bail!("load mode not supported on this platform"),
         };
@@ -2627,6 +3080,9 @@ impl LoadedVm {
                         // First run the non-destructive operations.
                         let r = async {
                             let shared_memory = self.inner.memory_manager.shared_memory_backing();
+                            if shared_memory.is_none() {
+                                anyhow::bail!("restart is not supported with --private-memory");
+                            }
                             if self.running {
                                 self.state_units.stop().await;
                                 stopped = true;
@@ -2656,6 +3112,9 @@ impl LoadedVm {
                             .field("memory_layout", &self.inner.mem_layout)
                             .field("resolver", &self.inner.resolver)
                             .field("vmgs", &self.inner.vmgs_client_inspect_handle);
+                        #[cfg(target_os = "linux")]
+                        resp.field("vfio", &self.inner.vfio_inspect)
+                            .field("vfio_cdev", &self.inner.vfio_cdev_inspect);
                     }),
                 },
                 Event::VmRpc(Err(_)) => break,
@@ -2782,6 +3241,130 @@ impl LoadedVm {
                             ),
                         })
                     }
+                    VmRpc::AddPcieDevice(rpc) => {
+                        rpc.handle_failable(async |(port_name, resource)| {
+                            // Find the root complex and its index for the named port.
+                            let (rc_idx, rc) = self.inner.pcie_root_complexes.iter()
+                                .enumerate()
+                                .find(|(_, rc)| {
+                                    rc.lock().downstream_ports().iter().any(|p| p.name.as_ref() == port_name.as_str())
+                                })
+                                .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
+
+                            // Get the bus_range from the port's config space emulator.
+                            let bus_range = rc.lock()
+                                .downstream_ports()
+                                .into_iter()
+                                .find(|p| p.name.as_ref() == port_name.as_str())
+                                .expect("port was just found above")
+                                .bus_range;
+
+                            let segment = self.inner.pcie_host_bridges[rc_idx].segment;
+                            let msi_conn = pci_core::msi::MsiConnection::new(bus_range.clone(), 0);
+
+                            let pcie_ctx = pcie_wiring::build_pcie_msi_context(
+                                &pcie_wiring::PcieWiringParams {
+                                    partition: self.inner.partition.as_ref(),
+                                    guest_memory: &self.inner.gm,
+                                    #[cfg(guest_arch = "aarch64")]
+                                    bus_range: &bus_range,
+                                    segment,
+                                    processor_topology: &self.inner.processor_topology,
+                                    #[cfg(guest_arch = "aarch64")]
+                                    smmu: self.inner.smmu_shared_states[rc_idx].as_ref(),
+                                },
+                            );
+
+                            let (unit, device) = self.inner.chipset_devices.add_dyn_device(
+                                &self.inner.driver_source,
+                                &self.state_units,
+                                format!("pcie-hotplug:{}", port_name),
+                                async |register_mmio| {
+                                    self.inner.resolver
+                                        .resolve(
+                                            resource,
+                                            pci_resources::ResolvePciDeviceHandleParams {
+                                                msi_target: msi_conn.target(),
+                                                register_mmio,
+                                                driver_source: &self.inner.driver_source,
+                                                guest_memory: &pcie_ctx.guest_memory,
+                                                doorbell_registration: self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0),
+                                                shared_mem_mapper: None,
+                                                software_iommu: pcie_ctx.software_iommu,
+                                            },
+                                        )
+                                        .await
+                                        .map(|r| r.0)
+                                        .map_err(|e| anyhow::anyhow!(e))
+                                },
+                            ).await?;
+
+                            // Connect the signal_msi and irqfd (possibly
+                            // ITS-wrapped and/or SMMU-wrapped).
+                            pcie_ctx.connect_to(&msi_conn);
+
+                            // Wrap the device as a GenericPciBusDevice for the port.
+                            // Keep a strong Arc to the device so the Weak stays valid.
+                            let weak_dev: std::sync::Weak<closeable_mutex::CloseableMutex<dyn chipset_device::ChipsetDevice>> = Arc::downgrade(&(device.clone() as Arc<closeable_mutex::CloseableMutex<dyn chipset_device::ChipsetDevice>>));
+                            let bus_device = Box::new(WeakMutexPciBusDevice(weak_dev));
+
+                            self.inner.pcie_hotplug_devices.push((port_name.clone(), unit, device));
+
+                            // Start the device unit before firing the hotplug
+                            // MSI. The guest may begin probing config space
+                            // immediately after receiving the interrupt, so
+                            // the device must be ready first.
+                            self.state_units.start_stopped_units().await;
+
+                            // Now attach the device and notify the guest.
+                            if let Err(e) = rc.lock().hotplug_add_device(
+                                &port_name,
+                                "hotplug-device",
+                                bus_device,
+                            ) {
+                                // Clean up the device unit on failure
+                                let (_, unit, _) = self.inner.pcie_hotplug_devices.pop().unwrap();
+                                unit.remove().await;
+                                return Err(e);
+                            }
+                            anyhow::Ok(())
+                        })
+                        .await
+                    }
+                    VmRpc::RemovePcieDevice(rpc) => {
+                        rpc.handle_failable(async |port_name: String| {
+                            // Only allow removing dynamically hot-added devices.
+                            // Statically-attached devices don't have a tracked unit
+                            // and removing them would leave their state unit/MMIO
+                            // registrations running.
+                            let idx = self.inner.pcie_hotplug_devices.iter()
+                                .position(|(name, _, _)| name == &port_name)
+                                .ok_or_else(|| anyhow::anyhow!(
+                                    "no hot-added device on port '{}' (only dynamically added devices can be hot-removed)",
+                                    port_name
+                                ))?;
+
+                            // Find the root complex containing the target port
+                            let rc = self.inner.pcie_root_complexes.iter()
+                                .find(|rc| {
+                                    rc.lock().downstream_ports().iter().any(|p| p.name.as_ref() == port_name.as_str())
+                                })
+                                .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
+
+                            rc.lock().hotplug_remove_device(&port_name)?;
+
+                            // Remove and stop the device unit
+                            let (_, unit, _device) = self.inner.pcie_hotplug_devices.remove(idx);
+                            unit.remove().await;
+
+                            anyhow::Ok(())
+                        })
+                        .await
+                    }
+                    VmRpc::DumpState(rpc) => {
+                        rpc.handle_failable(async |file| self.dump_state(file).await)
+                            .await
+                    }
                 },
                 Event::Halt(Err(_)) => break,
                 Event::Halt(Ok(reason)) => {
@@ -2906,7 +3489,7 @@ impl LoadedVm {
     async fn serialize(
         mut self,
         rpc: mesh::Receiver<VmRpc>,
-        shared_memory: SharedMemoryBacking,
+        shared_memory: Option<SharedMemoryBacking>,
         saved_state: SavedState,
     ) -> RestartState {
         let notify = self.inner.partition_unit.teardown().await;
@@ -2943,22 +3526,30 @@ impl LoadedVm {
             secure_boot_enabled: false, // TODO
             custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,
-            debugger_rpc: None,        // TODO
-            vmbus_devices: vec![],     // TODO
-            chipset_devices: vec![],   // TODO
+            debugger_rpc: None,          // TODO
+            vmbus_devices: vec![],       // TODO
+            chipset_devices: vec![],     // TODO
+            pci_chipset_devices: vec![], // TODO
+            chipset_capabilities: self.inner.chipset_capabilities,
+            layout: vmm_core_defs::LayoutConfig {
+                chipset_low_mmio_size: 0,
+                chipset_high_mmio_size: 0,
+                vtl2_chipset_mmio_size: 0,
+            }, // TODO
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
             efi_diagnostics_log_level: Default::default(),
         };
+        #[expect(unreachable_code, reason = "TODO")]
         RestartState {
-            hypervisor: self.inner.hypervisor,
             manifest,
             running: self.running,
             saved_state,
             shared_memory,
             rpc,
             notify,
+            hypervisor: todo!("TODO: RestartState serialization is broken"),
         }
     }
 
@@ -2982,12 +3573,12 @@ impl LoadedVm {
 }
 
 #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
-fn add_devices_to_dsdt(
+fn add_devices_to_dsdt_x64(
     mem_layout: &MemoryLayout,
     dsdt: &mut dsdt::Dsdt,
     cfg: &BaseChipsetManifest,
     serial_uarts: bool,
-    virtio_mmio_count: usize,
+    virtio_mmio_region: MemoryRange,
     virtio_mmio_irq: u32,
     pci_legacy_interrupts: &[((u8, Option<u8>), u32)], // ((device, function), interrupt)
 ) {
@@ -3013,34 +3604,25 @@ fn add_devices_to_dsdt(
         "the DSDT describes two MMIO regions"
     );
     let low_mmio_gap = mem_layout.mmio()[0];
-    let mut high_mmio_space: std::ops::Range<u64> = mem_layout.mmio()[1].into();
-    // Device(\_SB.VI00)
-    // {
-    //     Name(_HID, "LNRO0005")
-    //     Name(_UID, 0)
-    //     Name(_CRS, ResourceTemplate()
-    //     {
-    //         QWORDMemory(,,,,,ReadWrite,0,0x1fffff000,0x1ffffffff,0,0x1000)
-    //         Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive)
-    //             {5}
-    //     })
-    // }
-    // TODO: manage MMIO space better than this
-    for i in 0..virtio_mmio_count {
-        high_mmio_space.end -= HV_PAGE_SIZE;
-        let mut device = dsdt::Device::new(format!("\\_SB.VI{i:02}").as_bytes());
-        device.add_object(&dsdt::NamedString::new(b"_HID", b"LNRO0005"));
-        device.add_object(&dsdt::NamedInteger::new(b"_UID", i as u64));
-        let mut crs = dsdt::CurrentResourceSettings::new();
-        crs.add_resource(&dsdt::QwordMemory::new(high_mmio_space.end, HV_PAGE_SIZE));
-        let mut intr = dsdt::Interrupt::new(virtio_mmio_irq);
-        intr.is_edge_triggered = false;
-        crs.add_resource(&intr);
-        device.add_object(&crs);
-        dsdt.add_object(&device);
-    }
+    let high_mmio_gap = mem_layout.mmio()[1];
 
-    let high_mmio_gap = MemoryRange::new(high_mmio_space);
+    // Virtio-mmio devices are allocated as a contiguous region by the memory
+    // layout resolver. Each 4 KiB slot is a separate device.
+    {
+        for i in 0..virtio_mmio_region.page_count_4k() {
+            let slot_base = virtio_mmio_region.start() + i * HV_PAGE_SIZE;
+            let mut device = dsdt::Device::new(format!("\\_SB.VI{i:02}").as_bytes());
+            device.add_object(&dsdt::NamedString::new(b"_HID", b"LNRO0005"));
+            device.add_object(&dsdt::NamedInteger::new(b"_UID", i));
+            let mut crs = dsdt::CurrentResourceSettings::new();
+            crs.add_resource(&dsdt::QwordMemory::new(slot_base, HV_PAGE_SIZE));
+            let mut intr = dsdt::Interrupt::new(virtio_mmio_irq);
+            intr.is_edge_triggered = false;
+            crs.add_resource(&intr);
+            device.add_object(&crs);
+            dsdt.add_object(&device);
+        }
+    }
 
     if cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge {
         // TODO: actually plumb through legacy PCI interrupts
@@ -3049,8 +3631,63 @@ fn add_devices_to_dsdt(
         dsdt.add_mmio_module(low_mmio_gap, high_mmio_gap);
     }
 
-    dsdt.add_vmbus(cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge);
+    dsdt.add_vmbus(
+        cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge,
+        None,
+    );
     dsdt.add_rtc();
+}
+
+#[cfg(guest_arch = "aarch64")]
+fn add_devices_to_dsdt_arm64(
+    mem_layout: &MemoryLayout,
+    dsdt: &mut dsdt::Dsdt,
+    enable_serial: bool,
+    with_hv: bool,
+) {
+    // VMBus GIC INTID (PPI 2 = INTID 16 + 2 = 18), matching the DT path.
+    const VMBUS_INTID: u32 = openvmm_defs::config::DEFAULT_VMBUS_PPI;
+    // SBSA UART MMIO bases and sizes.
+    const PL011_SERIAL0_BASE: u64 = 0xEFFEC000;
+    const PL011_SERIAL1_BASE: u64 = 0xEFFEB000;
+    const PL011_SERIAL_SIZE: u64 = 0x1000;
+    // UART GSIVs (SPI 1 = INTID 33, SPI 2 = INTID 34).
+    const PL011_SERIAL0_GSIV: u32 = 33;
+    const PL011_SERIAL1_GSIV: u32 = 34;
+
+    if with_hv {
+        // Internal invariant: the memory layout for ARM64 with HV always has
+        // at least two MMIO gaps (low + high). This is configured by OpenVMM
+        // itself, not by guest input.
+        assert!(
+            mem_layout.mmio().len() >= 2,
+            "need at least two MMIO regions"
+        );
+        let low_mmio_gap = mem_layout.mmio()[0];
+        let high_mmio_gap: MemoryRange = mem_layout.mmio()[1];
+        dsdt.add_mmio_module(low_mmio_gap, high_mmio_gap);
+        // VMBus on ARM64 ACPI needs a per-CPU interrupt (PPI) in _CRS.
+        // Always place under VMOD, not PCI0 — ARM64 doesn't use the x86
+        // PCI0 DSDT node.
+        dsdt.add_vmbus(false, Some(VMBUS_INTID));
+    }
+
+    if enable_serial {
+        dsdt.add_sbsa_uart(
+            b"\\_SB.UAR0",
+            0,
+            PL011_SERIAL0_BASE,
+            PL011_SERIAL_SIZE,
+            PL011_SERIAL0_GSIV,
+        );
+        dsdt.add_sbsa_uart(
+            b"\\_SB.UAR1",
+            1,
+            PL011_SERIAL1_BASE,
+            PL011_SERIAL_SIZE,
+            PL011_SERIAL1_GSIV,
+        );
+    }
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -3107,4 +3744,70 @@ impl chipset_device_worker::RemoteDynamicResolvers for OpenVmmRemoteDynamicResol
 
 mesh_worker::register_workers! {
     chipset_device_worker::worker::RemoteChipsetDeviceWorker<OpenVmmRemoteDynamicResolvers>
+}
+
+/// Wrapper around `Weak<CloseableMutex<dyn ChipsetDevice>>` that implements
+/// [`GenericPciBusDevice`] for PCIe hotplug devices.
+struct WeakMutexPciBusDevice(
+    std::sync::Weak<closeable_mutex::CloseableMutex<dyn chipset_device::ChipsetDevice>>,
+);
+
+impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
+    fn pci_cfg_read(
+        &mut self,
+        offset: u16,
+        value: &mut u32,
+    ) -> Option<chipset_device::io::IoResult> {
+        Some(
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()?
+                .pci_cfg_read(offset, value),
+        )
+    }
+
+    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<chipset_device::io::IoResult> {
+        Some(
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()?
+                .pci_cfg_write(offset, value),
+        )
+    }
+
+    fn pci_cfg_read_with_routing(
+        &mut self,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        offset: u16,
+        value: &mut u32,
+    ) -> Option<chipset_device::io::IoResult> {
+        Some(
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()?
+                .pci_cfg_read_with_routing(secondary_bus, target_bus, function, offset, value),
+        )
+    }
+
+    fn pci_cfg_write_with_routing(
+        &mut self,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        offset: u16,
+        value: u32,
+    ) -> Option<chipset_device::io::IoResult> {
+        Some(
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()?
+                .pci_cfg_write_with_routing(secondary_bus, target_bus, function, offset, value),
+        )
+    }
 }

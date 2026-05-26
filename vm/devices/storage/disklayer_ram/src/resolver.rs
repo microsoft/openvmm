@@ -3,8 +3,6 @@
 
 //! Resource resolver for RAM-backed disk layers.
 
-use super::Error;
-use super::RamDiskLayer;
 use crate::LazyRamDiskLayer;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use disk_layered::resolve::ResolveDiskLayerParameters;
@@ -21,28 +19,22 @@ declare_static_resolver!(
     (DiskLayerHandleKind, RamDiskLayerHandle)
 );
 
-/// Error type for [`RamDiskLayerResolver`].
-#[derive(Debug, Error)]
-pub enum ResolveRamDiskError {
-    /// Failed to create the RAM disk layer.
-    #[error("failed to create ram disk layer")]
-    Ram(#[source] Error),
-}
-
 impl ResolveResource<DiskLayerHandleKind, RamDiskLayerHandle> for RamDiskLayerResolver {
     type Output = ResolvedDiskLayer;
-    type Error = ResolveRamDiskError;
+    type Error = std::convert::Infallible;
 
     fn resolve(
         &self,
         rsrc: RamDiskLayerHandle,
         _input: ResolveDiskLayerParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        Ok(match rsrc.len {
-            Some(len) => {
-                ResolvedDiskLayer::new(RamDiskLayer::new(len).map_err(ResolveRamDiskError::Ram)?)
-            }
-            None => ResolvedDiskLayer::new(LazyRamDiskLayer::new()),
-        })
+        let mut layer = LazyRamDiskLayer::new();
+        if let Some(len) = rsrc.len {
+            layer = layer.with_len(len);
+        }
+        if let Some(sector_size) = rsrc.sector_size {
+            layer = layer.with_sector_size(sector_size);
+        }
+        Ok(ResolvedDiskLayer::new(layer))
     }
 }

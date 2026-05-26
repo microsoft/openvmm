@@ -17,16 +17,16 @@ input_core.workspace = true
 vmcore.workspace = true
 x86defs.workspace = true
 
-inspect.workspace = true
-inspect_counters.workspace = true
-mesh.workspace = true
-open_enum.workspace = true
 async-trait.workspace = true
 bitfield-struct.workspace = true
 futures.workspace = true
+inspect_counters.workspace = true
+inspect.workspace = true
+jiff.workspace = true
 local_clock = { workspace = true, features = ["inspect"] }
+mesh.workspace = true
+open_enum.workspace = true
 thiserror.workspace = true
-time.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 

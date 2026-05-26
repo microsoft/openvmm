@@ -17,23 +17,13 @@ getrandom.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 widestring.workspace = true
+windows-sys = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Threading",
+] }
 zerocopy.workspace = true
-[target.'cfg(windows)'.dependencies.winapi]
-features = [
-  "consoleapi",
-  "handleapi",
-  "memoryapi",
-  "namedpipeapi",
-  "processenv",
-  "realtimeapiset",
-  "synchapi",
-  "winbase",
-  "wincon",
-  "winnls",
-  "winnt",
-  "winsock2",
-]
-workspace = true
 
 [lints]
 workspace = true

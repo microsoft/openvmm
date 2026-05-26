@@ -20,6 +20,30 @@
 //! which would be needed for caches that are smaller than the disk. These
 //! require potentially complicated cache management policies and are probably
 //! best implemented in a separate disk implementation.
+//!
+//! # Layer types
+//!
+//! Each layer implements [`LayerIo`], which is similar to [`DiskIo`]
+//! but adds per-sector presence tracking via [`SectorMarker`]. Two concrete
+//! layer implementations exist:
+//!
+//! - **`RamDiskLayer`** (`disklayer_ram`) — ephemeral, in-memory.
+//! - **`SqliteDiskLayer`** (`disklayer_sqlite`) — persistent, file-backed
+//!   (dev/test only).
+//!
+//! A full [`Disk`] can appear at the bottom of the stack
+//! as a fully-present layer via `DiskLayer::from_disk`, which wraps it in
+//! `DiskAsLayer` — a layer that marks all sectors as present on every read.
+//!
+//! # Construction and validation
+//!
+//! [`LayeredDisk::new`] validates the layer stack at construction time:
+//!
+//! - All layers must have matching sector sizes.
+//! - Write-through layers must be contiguous from the top.
+//! - The last layer must not be write-through.
+//! - Layers used as read caches must support [`WriteNoOverwrite`].
+//! - If the disk is writable, all layers in the write path must be writable.
 
 #![forbid(unsafe_code)]
 

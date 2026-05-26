@@ -7,18 +7,17 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-test_igvm_agent_lib.workspace = true
 get_resources.workspace = true
-
-guid.workspace = true
 
 cfg-if.workspace = true
 clap = { workspace = true, features = ["derive"] }
-parking_lot.workspace = true
-tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [target.'cfg(windows)'.dependencies]
+guid.workspace = true
+parking_lot.workspace = true
+test_igvm_agent_lib.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_System_Memory",

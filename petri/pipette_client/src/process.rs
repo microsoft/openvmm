@@ -28,6 +28,7 @@ pub struct Command<'a> {
     stderr: Option<Stdio>,
     env: Vec<EnvPair>,
     clear_env: bool,
+    chroot: Option<String>,
 }
 
 impl<'a> Command<'a> {
@@ -42,6 +43,7 @@ impl<'a> Command<'a> {
             stderr: None,
             env: Vec::new(),
             clear_env: false,
+            chroot: None,
         }
     }
 
@@ -110,6 +112,12 @@ impl<'a> Command<'a> {
         self
     }
 
+    /// Sets the chroot directory for the command (Linux only).
+    pub fn chroot(&mut self, root: impl AsRef<str>) -> &mut Self {
+        self.chroot = Some(root.as_ref().to_owned());
+        self
+    }
+
     /// Spawns the command, defaulting to inheriting (relaying, really) the
     /// current process for stdin, stdout, and stderr.
     pub async fn spawn(&self) -> anyhow::Result<Child> {
@@ -161,6 +169,7 @@ impl<'a> Command<'a> {
             stderr: stderr_write,
             env: self.env.clone(),
             clear_env: self.clear_env,
+            chroot: self.chroot.clone(),
         };
 
         let response = self

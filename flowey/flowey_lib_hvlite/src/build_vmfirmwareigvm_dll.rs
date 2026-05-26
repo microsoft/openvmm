@@ -3,8 +3,8 @@
 
 //! Build an instance of `vmfirmwareigvm.dll`
 
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonArch;
+use crate::common::CommonTriple;
 use crate::run_igvmfilegen::IgvmOutput;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -90,7 +90,7 @@ impl SimpleFlowNode for Node {
             features: Default::default(),
             target: CommonTriple::Common {
                 arch,
-                platform: crate::run_cargo_build::common::CommonPlatform::WindowsMsvc,
+                platform: crate::common::CommonPlatform::WindowsMsvc,
             }
             .as_triple(),
             no_split_dbg_info: false,

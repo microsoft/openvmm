@@ -38,6 +38,7 @@ fn viz_pipeline_generic(
     with_persist_dir: bool,
     f: fn(
         seed_nodes: BTreeMap<NodeHandle, (bool, Vec<Box<[u8]>>)>,
+        seed_configs: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
         resolved_patches: flowey_core::patch::ResolvedPatches,
         external_read_vars: BTreeSet<String>,
         backend: FlowBackend,
@@ -69,6 +70,7 @@ fn viz_pipeline_generic(
     for idx in order {
         let ResolvedPipelineJob {
             ref root_nodes,
+            ref root_configs,
             ref patches,
             ref label,
             platform,
@@ -124,6 +126,7 @@ fn viz_pipeline_generic(
                 .into_iter()
                 .map(|(node, requests)| (node, (true, requests)))
                 .collect(),
+            root_configs.clone(),
             patches.clone(),
             external_read_vars.clone(),
             backend,
@@ -141,6 +144,7 @@ fn viz_pipeline_generic(
 /// (debug) print the modpath of each node in topological sort of the flow
 pub fn viz_flow_toposort(
     seed_nodes: BTreeMap<NodeHandle, (bool, Vec<Box<[u8]>>)>,
+    seed_configs: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
     resolved_patches: flowey_core::patch::ResolvedPatches,
     external_read_vars: BTreeSet<String>,
     backend: FlowBackend,
@@ -149,16 +153,18 @@ pub fn viz_flow_toposort(
     with_persist_dir: bool,
 ) -> anyhow::Result<()> {
     // ignore the unreachable nodes error, since we want to allow debugging issues here
-    let (mut output_graph, _, _err_unreachable_nodes) =
-        crate::flow_resolver::stage1_dag::stage1_dag(
-            backend,
-            platform,
-            arch,
-            resolved_patches,
-            seed_nodes,
-            external_read_vars,
-            with_persist_dir.then_some("<dummy>".into()),
-        )?;
+    let crate::flow_resolver::stage1_dag::Stage1DagOutput {
+        mut output_graph, ..
+    } = crate::flow_resolver::stage1_dag::stage1_dag(
+        backend,
+        platform,
+        arch,
+        resolved_patches,
+        seed_nodes,
+        seed_configs,
+        external_read_vars,
+        with_persist_dir.then_some("<dummy>".into()),
+    )?;
 
     let output_order = petgraph::algo::toposort(&output_graph, None)
         .expect("runtime variables cannot introduce a DAG cycle");
@@ -253,6 +259,7 @@ pub fn viz_pipeline_dot(pipeline: ResolvedPipeline, _backend: FlowBackend) -> an
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             let Self(ResolvedPipelineJob {
                 root_nodes: _,
+                root_configs: _,
                 patches: _,
                 label,
                 platform: _,
@@ -323,6 +330,7 @@ pub fn viz_pipeline_dot(pipeline: ResolvedPipeline, _backend: FlowBackend) -> an
 /// (debug) emit a graph in the graphviz `.dot` format of the flow
 pub fn viz_flow_dot(
     seed_nodes: BTreeMap<NodeHandle, (bool, Vec<Box<[u8]>>)>,
+    seed_configs: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
     resolved_patches: flowey_core::patch::ResolvedPatches,
     external_read_vars: BTreeSet<String>,
     backend: FlowBackend,
@@ -331,15 +339,17 @@ pub fn viz_flow_dot(
     with_persist_dir: bool,
 ) -> anyhow::Result<()> {
     // ignore the unreachable nodes error, since we want to allow debugging issues here
-    let (output_graph, _, _err_unreachable_nodes) = crate::flow_resolver::stage1_dag::stage1_dag(
-        backend,
-        platform,
-        arch,
-        resolved_patches,
-        seed_nodes,
-        external_read_vars,
-        with_persist_dir.then_some("<dummy>".into()),
-    )?;
+    let crate::flow_resolver::stage1_dag::Stage1DagOutput { output_graph, .. } =
+        crate::flow_resolver::stage1_dag::stage1_dag(
+            backend,
+            platform,
+            arch,
+            resolved_patches,
+            seed_nodes,
+            seed_configs,
+            external_read_vars,
+            with_persist_dir.then_some("<dummy>".into()),
+        )?;
 
     #[derive(Clone)]
     struct VizNode((StepId, Option<OutputGraphEntry>));

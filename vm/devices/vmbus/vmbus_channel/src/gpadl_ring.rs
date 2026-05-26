@@ -79,7 +79,6 @@ impl AlignedGpadlView {
     }
 }
 
-#[derive(Clone)]
 struct GpadlPagedMemory {
     _gpadl: AlignedGpadlView,
     pages: LockedPages,
@@ -125,7 +124,7 @@ impl Debug for GpadlPagedMemory {
 
 /// An implementation of [`vmbus_ring::RingMem`] backed by an aligned GPADL
 /// view.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct GpadlRingMem {
     ring: ring::PagedRingMem<GpadlPagedMemory>,
 }

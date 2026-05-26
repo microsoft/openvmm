@@ -7,6 +7,7 @@
 
 use Memory::CreateFileMappingW;
 use Memory::MEM_COMMIT;
+use Memory::MEM_DECOMMIT;
 use Memory::MEM_RELEASE;
 use Memory::MEM_RESERVE;
 use Memory::MEMORY_MAPPED_VIEW_ADDRESS;
@@ -38,6 +39,7 @@ use windows_sys::Win32::System::Memory;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const PAGE_SIZE: usize = 4096;
+const ALLOCATION_GRANULARITY: usize = 0x10000;
 
 pub(crate) fn page_size() -> usize {
     PAGE_SIZE
@@ -290,6 +292,26 @@ impl SparseMapping {
     pub fn new(len: usize) -> Result<Self, Error> {
         trycopy::initialize_try_copy();
         Self::new_inner(None, None, len)
+    }
+
+    /// Reserves a sparse mapping range with at least the requested alignment.
+    ///
+    /// Windows virtual address reservations are aligned to the system
+    /// allocation granularity.
+    pub fn new_with_minimum_alignment(len: usize, minimum_alignment: usize) -> Result<Self, Error> {
+        if !minimum_alignment.is_power_of_two() {
+            return Err(Error::new(
+                io::ErrorKind::InvalidInput,
+                "alignment must be a power of two",
+            ));
+        }
+        if minimum_alignment > ALLOCATION_GRANULARITY {
+            return Err(Error::new(
+                io::ErrorKind::Unsupported,
+                "sparse mapping alignment greater than the Windows allocation granularity is not supported",
+            ));
+        }
+        Self::new(len)
     }
 
     /// Reserves a sparse mapping range with the given address and size in a
@@ -644,6 +666,58 @@ impl SparseMapping {
         start_index
     }
 
+    /// Decommits a range of memory, releasing physical pages back to the host.
+    ///
+    /// The virtual address range remains reserved; accessing decommitted
+    /// pages will cause an access violation until they are recommitted
+    /// with [`commit()`](Self::commit).
+    ///
+    /// This is only valid for ranges that were previously committed with
+    /// [`alloc()`](Self::alloc) or [`commit()`](Self::commit).
+    pub fn decommit(&self, offset: usize, len: usize) -> Result<(), Error> {
+        let _ = self.validate_offset_len(offset, len)?;
+        if len == 0 {
+            return Ok(());
+        }
+        unsafe {
+            virtual_free(
+                self.process.as_ref(),
+                self.address.wrapping_add(offset),
+                len,
+                MEM_DECOMMIT,
+            )
+        }
+    }
+
+    /// Commits a range of previously reserved or decommitted memory.
+    ///
+    /// This is used to recommit pages after [`decommit()`](Self::decommit).
+    /// For the initial commit of anonymous pages (replacing placeholders),
+    /// use [`alloc()`](Self::alloc) instead.
+    ///
+    /// Committing already-committed pages is a no-op.
+    pub fn commit(&self, offset: usize, len: usize) -> Result<(), Error> {
+        let _ = self.validate_offset_len(offset, len)?;
+        if len == 0 {
+            return Ok(());
+        }
+        unsafe {
+            virtual_alloc(
+                self.process.as_ref(),
+                self.address.wrapping_add(offset),
+                len,
+                MEM_COMMIT,
+                PAGE_READWRITE,
+                null_mut(),
+                0,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Names a mapping range for debugging. No-op on Windows.
+    pub fn set_name(&self, _offset: usize, _len: usize, _name: &str) {}
+
     /// Unmaps a range of mappings.
     pub fn unmap(&self, offset: usize, len: usize) -> io::Result<()> {
         let end = self.validate_offset_len(offset, len)?;
@@ -664,7 +738,9 @@ impl Drop for SparseMapping {
 }
 
 /// Allocates a mappable shared memory object of `size` bytes.
-pub fn alloc_shared_memory(size: usize) -> io::Result<OwnedHandle> {
+///
+/// `name` is used for debugging on Linux; ignored on Windows.
+pub fn alloc_shared_memory(size: usize, _name: &str) -> io::Result<OwnedHandle> {
     // SAFETY: calling according to API
     unsafe {
         let h = CreateFileMappingW(
@@ -682,6 +758,18 @@ pub fn alloc_shared_memory(size: usize) -> io::Result<OwnedHandle> {
     }
 }
 
+/// Allocates a hugetlb mappable shared memory object of `size` bytes.
+pub fn alloc_shared_memory_hugetlb(
+    _size: usize,
+    _name: &str,
+    _hugepage_size: Option<usize>,
+) -> io::Result<OwnedHandle> {
+    Err(Error::new(
+        io::ErrorKind::Unsupported,
+        "hugetlb shared memory is only supported on Linux",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::SparseMapping;
@@ -693,7 +781,7 @@ mod tests {
     fn test_shared_mem_split() {
         trycopy::initialize_try_copy();
 
-        let shmem = alloc_shared_memory(0x100000).unwrap();
+        let shmem = alloc_shared_memory(0x100000, "test").unwrap();
         let sparse = SparseMapping::new(0x100000).unwrap();
         sparse
             .map_view_of_file(0, 0x100000, &shmem, 0, PAGE_READWRITE)
@@ -728,7 +816,7 @@ mod tests {
     #[test]
     fn test_remote() {
         let process = pal::windows::process::empty_process().unwrap();
-        let shmem = alloc_shared_memory(0x100000).unwrap();
+        let shmem = alloc_shared_memory(0x100000, "test").unwrap();
         let sparse = SparseMapping::new_remote(process.process, None, 0x100000).unwrap();
         sparse.map_file(0, 0x10000, &shmem, 0, true).unwrap();
 

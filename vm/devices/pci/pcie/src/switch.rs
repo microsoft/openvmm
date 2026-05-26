@@ -14,6 +14,7 @@ use crate::DOWNSTREAM_SWITCH_PORT_DEVICE_ID;
 use crate::UPSTREAM_SWITCH_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
 use crate::port::PcieDownstreamPort;
+use crate::port::PciePortSettings;
 use anyhow::{Context, bail};
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
@@ -23,6 +24,7 @@ use inspect::InspectMut;
 use pci_bus::GenericPciBusDevice;
 use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
+use pci_core::msi::MsiTarget;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
@@ -59,6 +61,7 @@ impl UpstreamSwitchPort {
                 DevicePortType::UpstreamSwitchPort,
                 None,
             ))],
+            vec![],
         );
         Self { cfg_space }
     }
@@ -92,10 +95,14 @@ impl DownstreamSwitchPort {
     /// * `name` - The name for this downstream switch port
     /// * `multi_function` - Whether this port should have the multi-function flag set (default: false)
     /// * `hotplug_slot_number` - The slot number for hotplug support. `Some(slot_number)` enables hotplug, `None` disables it
+    /// * `msi_target` - MSI target for interrupt delivery
+    /// * `settings` - Express-level port settings (ACS, etc.)
     pub fn new(
         name: impl Into<Arc<str>>,
         multi_function: Option<bool>,
         hotplug_slot_number: Option<u32>,
+        msi_target: &MsiTarget,
+        settings: PciePortSettings,
     ) -> Self {
         let multi_function = multi_function.unwrap_or(false);
         let hardware_ids = HardwareIds {
@@ -115,6 +122,10 @@ impl DownstreamSwitchPort {
             DevicePortType::DownstreamSwitchPort,
             multi_function,
             hotplug_slot_number,
+            msi_target,
+            settings,
+            None,
+            None,
         );
 
         Self { port }
@@ -140,6 +151,11 @@ pub struct GenericPcieSwitchDefinition {
     pub downstream_port_count: u8,
     /// Whether hotplug is enabled for this switch's downstream ports.
     pub hotplug: bool,
+    /// MSI target from the parent connection. The switch re-derives
+    /// per-port targets using the upstream port's bus range.
+    pub msi_target: MsiTarget,
+    /// Express-level settings for downstream switch ports.
+    pub dsp_settings: PciePortSettings,
 }
 
 /// A PCI Express switch emulator that implements a complete switch with upstream and downstream ports.
@@ -169,6 +185,14 @@ impl GenericPcieSwitch {
         // If there are multiple downstream ports, they need the multi-function flag set
         let multi_function = definition.downstream_port_count > 1;
 
+        // Derive per-port MSI targets from the parent's target, using
+        // the upstream port's bus range. When the guest programs the
+        // upstream port's secondary bus, all downstream port MSI RIDs
+        // automatically update.
+        let switch_msi_target = definition
+            .msi_target
+            .with_bus_range(upstream_port.cfg_space().bus_range(), 0);
+
         let downstream_ports = (0..definition.downstream_port_count)
             .map(|i| {
                 let port_name = format!("{}-downstream-{}", definition.name, i);
@@ -178,10 +202,13 @@ impl GenericPcieSwitch {
                 } else {
                     None
                 };
+                let port_msi_target = switch_msi_target.with_devfn(i);
                 let port = DownstreamSwitchPort::new(
                     port_name.clone(),
                     Some(multi_function),
                     hotplug_slot_number,
+                    &port_msi_target,
+                    definition.dsp_settings.clone(),
                 );
                 (i, (port_name.into(), port))
             })
@@ -205,10 +232,14 @@ impl GenericPcieSwitch {
     }
 
     /// Enumerate the downstream ports of the switch.
-    pub fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+    pub fn downstream_ports(&self) -> Vec<crate::root::DownstreamPortInfo> {
         self.downstream_ports
             .iter()
-            .map(|(port, (name, _))| (*port, name.clone()))
+            .map(|(port, (name, dsp))| crate::root::DownstreamPortInfo {
+                port_number: *port,
+                name: name.clone(),
+                bus_range: dsp.port.bus_range(),
+            })
             .collect()
     }
 
@@ -216,7 +247,7 @@ impl GenericPcieSwitch {
     fn route_cfg_read(
         &mut self,
         bus: u8,
-        device_function: u8,
+        function: u8,
         cfg_offset: u16,
         value: &mut u32,
     ) -> Option<IoResult> {
@@ -236,18 +267,18 @@ impl GenericPcieSwitch {
 
         // Direct access to downstream switch ports on the secondary bus
         if bus == secondary_bus {
-            return self.handle_downstream_port_read(device_function, cfg_offset, value);
+            return self.handle_downstream_port_read(function, cfg_offset, value);
         }
 
         // Route to downstream ports for further forwarding
-        self.route_read_to_downstream_ports(bus, device_function, cfg_offset, value)
+        self.route_read_to_downstream_ports(bus, function, cfg_offset, value)
     }
 
     /// Route configuration space write to the appropriate port based on addressing.
     fn route_cfg_write(
         &mut self,
         bus: u8,
-        device_function: u8,
+        function: u8,
         cfg_offset: u16,
         value: u32,
     ) -> Option<IoResult> {
@@ -267,21 +298,21 @@ impl GenericPcieSwitch {
 
         // Direct access to downstream switch ports on the secondary bus
         if bus == secondary_bus {
-            return self.handle_downstream_port_write(device_function, cfg_offset, value);
+            return self.handle_downstream_port_write(function, cfg_offset, value);
         }
 
         // Route to downstream ports for further forwarding
-        self.route_write_to_downstream_ports(bus, device_function, cfg_offset, value)
+        self.route_write_to_downstream_ports(bus, function, cfg_offset, value)
     }
 
     /// Handle direct configuration space read to downstream switch ports.
     fn handle_downstream_port_read(
         &mut self,
-        device_function: u8,
+        function: u8,
         cfg_offset: u16,
         value: &mut u32,
     ) -> Option<IoResult> {
-        if let Some((_, downstream_port)) = self.downstream_ports.get_mut(&device_function) {
+        if let Some((_, downstream_port)) = self.downstream_ports.get_mut(&function) {
             Some(downstream_port.port.cfg_space.read_u32(cfg_offset, value))
         } else {
             // No downstream switch port found for this device function
@@ -292,11 +323,11 @@ impl GenericPcieSwitch {
     /// Handle direct configuration space write to downstream switch ports.
     fn handle_downstream_port_write(
         &mut self,
-        device_function: u8,
+        function: u8,
         cfg_offset: u16,
         value: u32,
     ) -> Option<IoResult> {
-        if let Some((_, downstream_port)) = self.downstream_ports.get_mut(&device_function) {
+        if let Some((_, downstream_port)) = self.downstream_ports.get_mut(&function) {
             Some(downstream_port.port.cfg_space.write_u32(cfg_offset, value))
         } else {
             // No downstream switch port found for this device function
@@ -308,7 +339,7 @@ impl GenericPcieSwitch {
     fn route_read_to_downstream_ports(
         &mut self,
         bus: u8,
-        device_function: u8,
+        function: u8,
         cfg_offset: u16,
         value: &mut u32,
     ) -> Option<IoResult> {
@@ -321,12 +352,11 @@ impl GenericPcieSwitch {
             }
 
             if downstream_bus_range.contains(&bus) {
-                return Some(downstream_port.port.forward_cfg_read_with_routing(
-                    &bus,
-                    &device_function,
-                    cfg_offset,
-                    value,
-                ));
+                return Some(
+                    downstream_port
+                        .port
+                        .forward_cfg_read_with_routing(&bus, &function, cfg_offset, value),
+                );
             }
         }
 
@@ -338,7 +368,7 @@ impl GenericPcieSwitch {
     fn route_write_to_downstream_ports(
         &mut self,
         bus: u8,
-        device_function: u8,
+        function: u8,
         cfg_offset: u16,
         value: u32,
     ) -> Option<IoResult> {
@@ -351,12 +381,11 @@ impl GenericPcieSwitch {
             }
 
             if downstream_bus_range.contains(&bus) {
-                return Some(downstream_port.port.forward_cfg_write_with_routing(
-                    &bus,
-                    &device_function,
-                    cfg_offset,
-                    value,
-                ));
+                return Some(
+                    downstream_port
+                        .port
+                        .forward_cfg_write_with_routing(&bus, &function, cfg_offset, value),
+                );
             }
         }
 
@@ -387,10 +416,13 @@ impl GenericPcieSwitch {
 }
 
 impl ChangeDeviceState for GenericPcieSwitch {
+    /// No-op start hook: switch state is fully modeled in config-space state.
     fn start(&mut self) {}
 
+    /// No-op stop hook: no background tasks or external resources to drain.
     async fn stop(&mut self) {}
 
+    /// Resets upstream and downstream bridge config-space state to power-on defaults.
     async fn reset(&mut self) {
         // Reset the upstream port configuration space
         self.upstream_port.cfg_space.reset();
@@ -403,40 +435,75 @@ impl ChangeDeviceState for GenericPcieSwitch {
 }
 
 impl ChipsetDevice for GenericPcieSwitch {
+    /// Exposes this switch as a PCI config-space device to the chipset bus.
     fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
         Some(self)
     }
 }
 
 impl PciConfigSpace for GenericPcieSwitch {
+    /// Reads the switch's own upstream-port config space (Type 0 view).
     fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
         // Forward to the upstream port's configuration space (the switch presents as the upstream port)
         self.upstream_port.cfg_space.read_u32(offset, value)
     }
 
+    /// Writes the switch's own upstream-port config space (Type 0 view).
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
         // Forward to the upstream port's configuration space (the switch presents as the upstream port)
         self.upstream_port.cfg_space.write_u32(offset, value)
     }
 
-    fn pci_cfg_read_forward(
+    fn pci_cfg_read_with_routing(
         &mut self,
-        bus: u8,
-        device_function: u8,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
         offset: u16,
         value: &mut u32,
-    ) -> Option<IoResult> {
-        self.route_cfg_read(bus, device_function, offset, value)
+    ) -> IoResult {
+        // Try switch-internal routing first (downstream ports and their descendants).
+        if let Some(result) = self.route_cfg_read(target_bus, function, offset, value) {
+            return result;
+        }
+
+        // Routing didn't handle this access. If target_bus equals the
+        // secondary_bus passed by the parent port, this is a Type 0 access
+        // targeting the switch's own upstream port config space.
+        if target_bus == secondary_bus {
+            if function == 0 {
+                return self.upstream_port.cfg_space.read_u32(offset, value);
+            }
+        }
+
+        // No device at this function / bus — return all-1s.
+        *value = !0;
+        IoResult::Ok
     }
 
-    fn pci_cfg_write_forward(
+    fn pci_cfg_write_with_routing(
         &mut self,
-        bus: u8,
-        device_function: u8,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
         offset: u16,
         value: u32,
-    ) -> Option<IoResult> {
-        self.route_cfg_write(bus, device_function, offset, value)
+    ) -> IoResult {
+        // Try switch-internal routing first (downstream ports and their descendants).
+        if let Some(result) = self.route_cfg_write(target_bus, function, offset, value) {
+            return result;
+        }
+
+        // Routing didn't handle this access. If target_bus equals the
+        // secondary_bus passed by the parent port, this is a Type 0 access
+        // targeting the switch's own upstream port config space.
+        if target_bus == secondary_bus {
+            if function == 0 {
+                return self.upstream_port.cfg_space.write_u32(offset, value);
+            }
+        }
+
+        IoResult::Ok
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
@@ -447,22 +514,128 @@ impl PciConfigSpace for GenericPcieSwitch {
 
 mod save_restore {
     use super::*;
+    use std::collections::HashSet;
+    use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;
-    use vmcore::save_restore::SavedStateNotSupported;
 
-    impl SaveRestore for GenericPcieSwitch {
-        type SavedState = SavedStateNotSupported;
+    mod state {
+        use super::ConfigSpaceType1Emulator;
+        use super::SaveRestore;
+        use cxl_spec::CxlComponentRegisters;
+        use mesh::payload::Protobuf;
+        use vmcore::save_restore::SavedStateRoot;
 
-        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            Err(SaveError::NotSupported)
+        type SwitchPortCfgSpaceSavedState = <ConfigSpaceType1Emulator as SaveRestore>::SavedState;
+        type CxlComponentRegistersSavedState = <CxlComponentRegisters as SaveRestore>::SavedState;
+
+        /// Saved state for one switch port config space.
+        #[derive(Protobuf)]
+        #[mesh(package = "pcie.switch")]
+        pub struct DownstreamPortSavedState {
+            /// Logical downstream port number.
+            #[mesh(1)]
+            pub port_number: u8,
+            /// The downstream port Type 1 configuration space state.
+            #[mesh(2)]
+            pub cfg_space: SwitchPortCfgSpaceSavedState,
+            /// Optional CXL component-register state for this downstream port.
+            #[mesh(3)]
+            pub cxl_component_registers: Option<CxlComponentRegistersSavedState>,
         }
 
-        fn restore(
-            &mut self,
-            state: Self::SavedState,
-        ) -> Result<(), vmcore::save_restore::RestoreError> {
-            match state {}
+        /// Saved state for the GenericPcieSwitch.
+        #[derive(Protobuf, SavedStateRoot)]
+        #[mesh(package = "pcie.switch")]
+        pub struct SavedState {
+            /// The upstream port configuration space state.
+            #[mesh(1)]
+            pub upstream_cfg_space: SwitchPortCfgSpaceSavedState,
+            /// Saved state for downstream ports.
+            ///
+            /// `port_number` identifies the target port for each entry.
+            /// The vector ordering is not part of the saved-state contract.
+            #[mesh(2)]
+            pub downstream_ports: Vec<DownstreamPortSavedState>,
+        }
+    }
+
+    impl SaveRestore for GenericPcieSwitch {
+        type SavedState = state::SavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            // Save the upstream port configuration space
+            let upstream_cfg_space = self.upstream_port.cfg_space.save()?;
+
+            // Save all downstream ports and sort by port number for stable ordering.
+            // Sorting keeps serialization deterministic without encoding ordering as state.
+            let mut downstream_ports = Vec::with_capacity(self.downstream_ports.len());
+            for (&port_number, (_, downstream_port)) in self.downstream_ports.iter_mut() {
+                downstream_ports.push(state::DownstreamPortSavedState {
+                    port_number,
+                    cfg_space: downstream_port.port.cfg_space.save()?,
+                    cxl_component_registers: downstream_port
+                        .port
+                        .save_cxl_component_registers_state()?,
+                });
+            }
+            downstream_ports.sort_by_key(|p| p.port_number);
+
+            Ok(state::SavedState {
+                upstream_cfg_space,
+                downstream_ports,
+            })
+        }
+
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            let state::SavedState {
+                upstream_cfg_space,
+                downstream_ports,
+            } = state;
+
+            // Reject snapshots from a different topology shape.
+            if downstream_ports.len() != self.downstream_ports.len() {
+                return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                    "downstream port count mismatch: saved {}, current {}",
+                    downstream_ports.len(),
+                    self.downstream_ports.len()
+                )));
+            }
+
+            // Restore the upstream port configuration space
+            self.upstream_port.cfg_space.restore(upstream_cfg_space)?;
+
+            let mut seen_ports = HashSet::with_capacity(downstream_ports.len());
+
+            // Restore all downstream ports by explicit port number rather than vector order.
+            for port_state in downstream_ports {
+                // Duplicate entries indicate corrupted or malformed saved state.
+                if !seen_ports.insert(port_state.port_number) {
+                    return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                        "duplicate downstream port {} in saved state",
+                        port_state.port_number
+                    )));
+                }
+
+                if let Some((_, downstream_port)) =
+                    self.downstream_ports.get_mut(&port_state.port_number)
+                {
+                    downstream_port
+                        .port
+                        .cfg_space
+                        .restore(port_state.cfg_space)?;
+                    downstream_port.port.restore_cxl_component_registers_state(
+                        port_state.cxl_component_registers,
+                    )?;
+                } else {
+                    return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                        "downstream port {} not found",
+                        port_state.port_number
+                    )));
+                }
+            }
+
+            Ok(())
         }
     }
 }
@@ -470,6 +643,8 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pci_core::bus_range::AssignedBusRange;
+    use pci_core::msi::MsiConnection;
 
     #[test]
     fn test_upstream_switch_port_creation() {
@@ -484,7 +659,13 @@ mod tests {
 
     #[test]
     fn test_downstream_switch_port_creation() {
-        let port = DownstreamSwitchPort::new("test-downstream-port", None, None);
+        let port = DownstreamSwitchPort::new(
+            "test-downstream-port",
+            None,
+            None,
+            &MsiTarget::disconnected(),
+            PciePortSettings::default(),
+        );
         assert!(port.port.link.is_none());
 
         // Verify that we can read the vendor/device ID from config space
@@ -500,7 +681,13 @@ mod tests {
     #[test]
     fn test_downstream_switch_port_multi_function_options() {
         // Test with default multi_function (false)
-        let port_default = DownstreamSwitchPort::new("test-port-default", None, None);
+        let port_default = DownstreamSwitchPort::new(
+            "test-port-default",
+            None,
+            None,
+            &MsiTarget::disconnected(),
+            PciePortSettings::default(),
+        );
         let mut header_type_value: u32 = 0;
         port_default
             .cfg_space()
@@ -514,7 +701,13 @@ mod tests {
         );
 
         // Test with explicit multi_function false
-        let port_false = DownstreamSwitchPort::new("test-port-false", Some(false), None);
+        let port_false = DownstreamSwitchPort::new(
+            "test-port-false",
+            Some(false),
+            None,
+            &MsiTarget::disconnected(),
+            PciePortSettings::default(),
+        );
         let mut header_type_value_false: u32 = 0;
         port_false
             .cfg_space()
@@ -528,7 +721,13 @@ mod tests {
         );
 
         // Test with explicit multi_function true
-        let port_true = DownstreamSwitchPort::new("test-port-true", Some(true), None);
+        let port_true = DownstreamSwitchPort::new(
+            "test-port-true",
+            Some(true),
+            None,
+            &MsiTarget::disconnected(),
+            PciePortSettings::default(),
+        );
         let mut header_type_value_true: u32 = 0;
         port_true
             .cfg_space()
@@ -545,7 +744,13 @@ mod tests {
     #[test]
     fn test_downstream_switch_port_hotplug_options() {
         // Test with hotplug disabled (None)
-        let port_no_hotplug = DownstreamSwitchPort::new("test-port-no-hotplug", None, None);
+        let port_no_hotplug = DownstreamSwitchPort::new(
+            "test-port-no-hotplug",
+            None,
+            None,
+            &MsiTarget::disconnected(),
+            PciePortSettings::default(),
+        );
         // We can't easily verify hotplug is disabled without accessing internal state,
         // but we can verify the port was created successfully
         let mut vendor_device_id: u32 = 0;
@@ -557,7 +762,13 @@ mod tests {
         assert_eq!(vendor_device_id, expected);
 
         // Test with hotplug enabled (Some(slot_number))
-        let port_with_hotplug = DownstreamSwitchPort::new("test-port-hotplug", None, Some(42));
+        let port_with_hotplug = DownstreamSwitchPort::new(
+            "test-port-hotplug",
+            None,
+            Some(42),
+            &MsiTarget::disconnected(),
+            PciePortSettings::default(),
+        );
         let mut vendor_device_id_hotplug: u32 = 0;
         port_with_hotplug
             .cfg_space()
@@ -574,6 +785,8 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 3,
             hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
         };
         let switch = GenericPcieSwitch::new(definition);
 
@@ -583,14 +796,14 @@ mod tests {
         // Verify downstream port names (HashMap doesn't guarantee order, so check each one exists)
         let ports = switch.downstream_ports();
         let port_names: std::collections::HashSet<_> =
-            ports.iter().map(|(_, name)| name.as_ref()).collect();
+            ports.iter().map(|p| p.name.as_ref()).collect();
         assert!(port_names.contains("test-switch-downstream-0"));
         assert!(port_names.contains("test-switch-downstream-1"));
         assert!(port_names.contains("test-switch-downstream-2"));
 
         // Verify port numbers
         let port_numbers: std::collections::HashSet<_> =
-            ports.iter().map(|(num, _)| *num).collect();
+            ports.iter().map(|p| p.port_number).collect();
         assert!(port_numbers.contains(&0));
         assert!(port_numbers.contains(&1));
         assert!(port_numbers.contains(&2));
@@ -605,6 +818,8 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
             hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -625,7 +840,7 @@ mod tests {
                 .add_pcie_device(
                     0, // Port number instead of port name
                     "downstream-dev",
-                    Box::new(downstream_device)
+                    Box::new(downstream_device),
                 )
                 .is_ok()
         );
@@ -651,6 +866,8 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
             hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -684,6 +901,8 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 4,
             hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -713,6 +932,8 @@ mod tests {
             name: "default-switch".into(),
             downstream_port_count: 4,
             hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
         };
         let switch = GenericPcieSwitch::new(definition);
         assert_eq!(switch.name().as_ref(), "default-switch");
@@ -725,6 +946,8 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 16,
             hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
         };
         let switch = GenericPcieSwitch::new(definition);
         assert_eq!(switch.downstream_ports().len(), 16);
@@ -736,6 +959,8 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 3,
             hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -752,7 +977,7 @@ mod tests {
         let bus_range = switch.upstream_port.cfg_space().assigned_bus_range();
         let switch_internal_bus = *bus_range.start(); // This is the secondary bus
 
-        // Test direct access to downstream port 0 using device_function = 0
+        // Test direct access to downstream port 0 using function = 0
         let mut value = 0u32;
         let result = switch.route_cfg_read(switch_internal_bus, 0, 0x0, &mut value);
         assert!(result.is_some());
@@ -761,13 +986,13 @@ mod tests {
         let expected = (DOWNSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
         assert_eq!(value, expected);
 
-        // Test direct access to downstream port 2 using device_function = 2
+        // Test direct access to downstream port 2 using function = 2
         let mut value2 = 0u32;
         let result2 = switch.route_cfg_read(switch_internal_bus, 2, 0x0, &mut value2);
         assert!(result2.is_some());
         assert_eq!(value2, expected);
 
-        // Test access to non-existent downstream port using device_function = 5
+        // Test access to non-existent downstream port using function = 5
         let mut value3 = 0u32;
         let result3 = switch.route_cfg_read(switch_internal_bus, 5, 0x0, &mut value3);
         assert!(result3.is_none());
@@ -779,6 +1004,8 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
             hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -804,6 +1031,8 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
             hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -843,11 +1072,14 @@ mod tests {
             name: "multi-port-switch".into(),
             downstream_port_count: 3,
             hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
         };
         let multi_port_switch = GenericPcieSwitch::new(multi_port_definition);
 
         // Verify each downstream port has the multi-function bit set
-        for (port_num, _) in multi_port_switch.downstream_ports() {
+        for p in multi_port_switch.downstream_ports() {
+            let port_num = p.port_number;
             if let Some((_, downstream_port)) = multi_port_switch.downstream_ports.get(&port_num) {
                 let mut header_type_value: u32 = 0;
                 downstream_port
@@ -881,11 +1113,14 @@ mod tests {
             name: "single-port-switch".into(),
             downstream_port_count: 1,
             hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
         };
         let single_port_switch = GenericPcieSwitch::new(single_port_definition);
 
         // Verify the single downstream port does NOT have the multi-function bit set
-        for (port_num, _) in single_port_switch.downstream_ports() {
+        for p in single_port_switch.downstream_ports() {
+            let port_num = p.port_number;
             if let Some((_, downstream_port)) = single_port_switch.downstream_ports.get(&port_num) {
                 let mut header_type_value: u32 = 0;
                 downstream_port
@@ -922,6 +1157,8 @@ mod tests {
             name: "test-switch-no-hotplug".into(),
             downstream_port_count: 1,
             hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
         };
         let switch_no_hotplug = GenericPcieSwitch::new(definition_no_hotplug);
         assert_eq!(switch_no_hotplug.name().as_ref(), "test-switch-no-hotplug");
@@ -931,11 +1168,428 @@ mod tests {
             name: "test-switch-with-hotplug".into(),
             downstream_port_count: 1,
             hotplug: true,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
         };
         let switch_with_hotplug = GenericPcieSwitch::new(definition_with_hotplug);
         assert_eq!(
             switch_with_hotplug.name().as_ref(),
             "test-switch-with-hotplug"
         );
+    }
+
+    #[test]
+    fn test_save_restore_port_mismatch_error() {
+        use vmcore::save_restore::SaveRestore;
+
+        // Create a switch with 3 downstream ports
+        let definition = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 3,
+            hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
+        };
+        let mut switch = GenericPcieSwitch::new(definition);
+
+        // Save the state
+        let saved_state = switch.save().expect("save should succeed");
+        assert_eq!(saved_state.downstream_ports.len(), 3);
+
+        // Create a new switch with only 2 downstream ports
+        let definition2 = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
+        };
+        let mut switch2 = GenericPcieSwitch::new(definition2);
+
+        // Restore should fail because port 2 doesn't exist in the new switch
+        let result = switch2.restore(saved_state);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_save_restore_basic() {
+        use vmcore::save_restore::SaveRestore;
+
+        let definition = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
+        };
+        let mut switch = GenericPcieSwitch::new(definition);
+
+        // Save the initial state
+        let saved_state = switch.save().expect("save should succeed");
+
+        // Verify the saved state has the correct number of downstream ports
+        assert_eq!(saved_state.downstream_ports.len(), 2);
+
+        // Restore the state to a new switch
+        let definition2 = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
+        };
+        let mut switch2 = GenericPcieSwitch::new(definition2);
+        switch2
+            .restore(saved_state)
+            .expect("restore should succeed");
+    }
+
+    #[test]
+    fn test_save_restore_with_bus_configuration() {
+        use vmcore::save_restore::SaveRestore;
+
+        let definition = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 3,
+            hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
+        };
+        let mut switch = GenericPcieSwitch::new(definition);
+
+        // Configure bus numbers on the upstream port
+        let secondary_bus = 5u8;
+        let subordinate_bus = 15u8;
+        let primary_bus = 0u8;
+        let bus_config =
+            ((subordinate_bus as u32) << 16) | ((secondary_bus as u32) << 8) | (primary_bus as u32);
+        switch
+            .upstream_port
+            .cfg_space_mut()
+            .write_u32(0x18, bus_config)
+            .unwrap();
+
+        // Verify the bus range is set
+        let bus_range = switch.upstream_port.cfg_space().assigned_bus_range();
+        assert_eq!(*bus_range.start(), secondary_bus);
+        assert_eq!(*bus_range.end(), subordinate_bus);
+
+        // Save the state
+        let saved_state = switch.save().expect("save should succeed");
+
+        // Create a new switch and restore the state
+        let definition2 = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 3,
+            hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
+        };
+        let mut switch2 = GenericPcieSwitch::new(definition2);
+
+        // Verify the new switch has default bus range before restore
+        let default_bus_range = switch2.upstream_port.cfg_space().assigned_bus_range();
+        assert_eq!(default_bus_range, 0..=0);
+
+        // Restore the state
+        switch2
+            .restore(saved_state)
+            .expect("restore should succeed");
+
+        // Verify the bus range is restored
+        let restored_bus_range = switch2.upstream_port.cfg_space().assigned_bus_range();
+        assert_eq!(*restored_bus_range.start(), secondary_bus);
+        assert_eq!(*restored_bus_range.end(), subordinate_bus);
+    }
+
+    #[test]
+    fn test_save_restore_downstream_port_state() {
+        use vmcore::save_restore::SaveRestore;
+
+        let definition = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
+        };
+        let mut switch = GenericPcieSwitch::new(definition);
+
+        // Configure bus numbers on one of the downstream ports
+        // First, we need to get access to the downstream port and configure it
+        if let Some((_, downstream_port)) = switch.downstream_ports.get_mut(&0) {
+            let secondary_bus = 10u8;
+            let subordinate_bus = 20u8;
+            let primary_bus = 5u8;
+            let bus_config = ((subordinate_bus as u32) << 16)
+                | ((secondary_bus as u32) << 8)
+                | (primary_bus as u32);
+            downstream_port
+                .port
+                .cfg_space
+                .write_u32(0x18, bus_config)
+                .unwrap();
+        }
+
+        // Verify the downstream port bus range is set
+        if let Some((_, downstream_port)) = switch.downstream_ports.get(&0) {
+            let bus_range = downstream_port.cfg_space().assigned_bus_range();
+            assert_eq!(*bus_range.start(), 10);
+            assert_eq!(*bus_range.end(), 20);
+        }
+
+        // Save the state
+        let saved_state = switch.save().expect("save should succeed");
+
+        // Create a new switch and restore the state
+        let definition2 = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
+        };
+        let mut switch2 = GenericPcieSwitch::new(definition2);
+
+        // Verify the new switch has default bus range on downstream port before restore
+        if let Some((_, downstream_port)) = switch2.downstream_ports.get(&0) {
+            let default_bus_range = downstream_port.cfg_space().assigned_bus_range();
+            assert_eq!(default_bus_range, 0..=0);
+        }
+
+        // Restore the state
+        switch2
+            .restore(saved_state)
+            .expect("restore should succeed");
+
+        // Verify the downstream port bus range is restored
+        if let Some((_, downstream_port)) = switch2.downstream_ports.get(&0) {
+            let restored_bus_range = downstream_port.cfg_space().assigned_bus_range();
+            assert_eq!(*restored_bus_range.start(), 10);
+            assert_eq!(*restored_bus_range.end(), 20);
+        }
+    }
+
+    #[test]
+    fn test_save_restore_preserves_upstream_and_downstream_cfg_space() {
+        use vmcore::save_restore::SaveRestore;
+
+        let definition = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
+        };
+        let mut switch = GenericPcieSwitch::new(definition);
+
+        // Upstream primary/secondary/subordinate bus numbers.
+        switch
+            .upstream_port
+            .cfg_space_mut()
+            .write_u32(0x18, 0x0014_1200)
+            .unwrap();
+
+        // Downstream port 1 bus range.
+        if let Some((_, downstream_port)) = switch.downstream_ports.get_mut(&1) {
+            downstream_port
+                .port
+                .cfg_space
+                .write_u32(0x18, 0x0020_1f12)
+                .unwrap();
+        }
+
+        let saved_state = switch.save().expect("save should succeed");
+
+        let definition2 = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
+        };
+        let mut switch2 = GenericPcieSwitch::new(definition2);
+
+        switch2
+            .restore(saved_state)
+            .expect("restore should succeed");
+
+        let upstream_bus_range = switch2.upstream_port.cfg_space().assigned_bus_range();
+        assert_eq!(*upstream_bus_range.start(), 0x12);
+        assert_eq!(*upstream_bus_range.end(), 0x14);
+
+        if let Some((_, downstream_port)) = switch2.downstream_ports.get(&1) {
+            let downstream_bus_range = downstream_port.cfg_space().assigned_bus_range();
+            assert_eq!(*downstream_bus_range.start(), 0x1f);
+            assert_eq!(*downstream_bus_range.end(), 0x20);
+        } else {
+            panic!("missing downstream port 1");
+        }
+    }
+
+    /// Adapts a `GenericPcieSwitch` to the `GenericPciBusDevice` trait so it
+    /// can be attached to a downstream port as a linked device in tests.
+    struct SwitchAdapter(GenericPcieSwitch);
+
+    impl GenericPciBusDevice for SwitchAdapter {
+        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
+            Some(PciConfigSpace::pci_cfg_read(&mut self.0, offset, value))
+        }
+
+        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult> {
+            Some(PciConfigSpace::pci_cfg_write(&mut self.0, offset, value))
+        }
+
+        fn pci_cfg_read_with_routing(
+            &mut self,
+            secondary_bus: u8,
+            target_bus: u8,
+            function: u8,
+            offset: u16,
+            value: &mut u32,
+        ) -> Option<IoResult> {
+            Some(self.0.pci_cfg_read_with_routing(
+                secondary_bus,
+                target_bus,
+                function,
+                offset,
+                value,
+            ))
+        }
+
+        fn pci_cfg_write_with_routing(
+            &mut self,
+            secondary_bus: u8,
+            target_bus: u8,
+            function: u8,
+            offset: u16,
+            value: u32,
+        ) -> Option<IoResult> {
+            Some(self.0.pci_cfg_write_with_routing(
+                secondary_bus,
+                target_bus,
+                function,
+                offset,
+                value,
+            ))
+        }
+    }
+
+    #[test]
+    fn test_switch_enumeration_through_port() {
+        use crate::port::PcieDownstreamPort;
+        use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
+
+        let hardware_ids = HardwareIds {
+            vendor_id: 0x1234,
+            device_id: 0x5678,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+            base_class: ClassCode::BRIDGE,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        };
+
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        let mut port = PcieDownstreamPort::new(
+            "root-port",
+            hardware_ids,
+            DevicePortType::RootPort,
+            false,
+            None,
+            msi_conn.target(),
+            PciePortSettings::default(),
+            None,
+            None,
+        );
+
+        // Configure the root port's bus range: secondary=1, subordinate=10
+        port.cfg_space
+            .write_u32(0x18, (10u32 << 16) | (1u32 << 8))
+            .unwrap();
+
+        // Create and attach a switch behind the port
+        let switch = GenericPcieSwitch::new(GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+            dsp_settings: PciePortSettings::default(),
+            msi_target: MsiTarget::disconnected(),
+        });
+
+        port.link = Some(("switch".into(), Box::new(SwitchAdapter(switch))));
+
+        // Type 0 config read to bus 1 (secondary), function 0 — this should
+        // read the switch's upstream port config space and return its
+        // vendor/device ID.
+        let mut value = 0u32;
+        let result = port.forward_cfg_read_with_routing(&1, &0, 0x0, &mut value);
+        assert!(matches!(result, IoResult::Ok));
+
+        let expected = (UPSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
+        assert_eq!(
+            value, expected,
+            "Type 0 access to bus 1 function 0 must read the switch's upstream port"
+        );
+
+        // Non-zero function on the same bus should return no device (switch
+        // upstream port is single-function).
+        let mut value2 = 0u32;
+        let result2 = port.forward_cfg_read_with_routing(&1, &1, 0x0, &mut value2);
+        assert!(matches!(result2, IoResult::Ok));
+        assert_eq!(
+            value2, !0,
+            "Non-zero function should return all-1s (no device)"
+        );
+    }
+
+    #[test]
+    fn test_switch_acs_only_applies_to_dsp() {
+        use pci_core::spec::caps::ExtendedCapabilityId;
+
+        let switch = GenericPcieSwitch::new(GenericPcieSwitchDefinition {
+            name: "acs-switch".into(),
+            downstream_port_count: 1,
+            hotplug: false,
+            dsp_settings: PciePortSettings {
+                acs_capabilities_supported: 0x0001,
+                ..Default::default()
+            },
+            msi_target: MsiTarget::disconnected(),
+        });
+
+        // Upstream switch ports do not expose ACS in this model.
+        let mut upstream_header = 0u32;
+        switch
+            .upstream_port()
+            .cfg_space()
+            .read_u32(0x100, &mut upstream_header)
+            .unwrap();
+        assert_eq!(upstream_header, 0xffff_ffff);
+
+        let mut switch = switch;
+        let (_, (_, downstream_port)) = switch
+            .downstream_ports
+            .iter_mut()
+            .next()
+            .expect("expected downstream port");
+
+        let mut downstream_header = 0u32;
+        downstream_port
+            .cfg_space_mut()
+            .read_u32(0x100, &mut downstream_header)
+            .unwrap();
+        assert_eq!(
+            downstream_header & 0xffff,
+            ExtendedCapabilityId::ACS.0 as u32
+        );
+
+        let mut caps_control = 0u32;
+        downstream_port
+            .cfg_space_mut()
+            .read_u32(0x104, &mut caps_control)
+            .unwrap();
+        assert_eq!(caps_control as u16, 0x0001);
     }
 }

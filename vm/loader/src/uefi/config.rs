@@ -184,6 +184,7 @@ pub enum BlobStructureType {
     Ssdt = 0x25,
     Hmat = 0x26,
     Iort = 0x27,
+    PcieBarApertures = 0x28,
 }
 
 //
@@ -413,6 +414,28 @@ pub struct VpciInstanceFilter {
 pub struct Gic {
     pub gic_distributor_base: u64,
     pub gic_redistributors_base: u64,
+}
+
+// Describes the BAR Aperture for each PCIe Root Complex / Host bridge. There
+// should be one entry per host bridge that UEFI should enumerate. The MCFG
+// table may contain additional segments that are not described to UEFI via
+// these structures, which UEFI will ignore.
+//
+// This structure is used to pass this information to UEFI instead of having
+// UEFI parse the SSDT.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct PcieBarApertureEntry {
+    pub segment: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
+    /// The UID here must match the UID described in the SSDT for the
+    /// corresponding host bridge.
+    pub uid: u32,
+    pub low_mmio_base: u64,
+    pub low_mmio_length: u64,
+    pub high_mmio_base: u64,
+    pub high_mmio_length: u64,
 }
 
 #[cfg(test)]

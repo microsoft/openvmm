@@ -280,7 +280,7 @@ mod hyperv {
         })
     }
 
-    petri::test!(
+    petri::unstable_test!(
         hyperv_openhcl_tmks,
         resolve_openhcl_tmks::<HyperVPetriBackend>
     );

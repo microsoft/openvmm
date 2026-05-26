@@ -245,7 +245,6 @@ fn do_fuzz(mut u: Unstructured<'_>) -> Result<(), arbitrary::Error> {
         .depth(depth)
         .sensitivity(sensitivity);
 
-    // TODO: update
     if u.arbitrary()? {
         let mut starting_node = InspectNode {
             u: &mut u,

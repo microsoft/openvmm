@@ -14,13 +14,6 @@ pub struct LocalOnlyParams {
     pub interactive: bool,
     /// Automatically install any necessary system dependencies / tools.
     pub auto_install: bool,
-    /// (WSL2 only) Use `mono` to run `nuget.exe`, instead of using native
-    /// WSL2 interop.
-    pub force_nuget_mono: bool,
-    /// Claim that nuget is using an external auth mechanism, and Azure
-    /// Credential Provider doesn't need to be present to pull down required
-    /// packages.
-    pub external_nuget_auth: bool,
     /// Ignore the Rust version requirement, and use whatever toolchain the user
     /// currently has installed.
     pub ignore_rust_version: bool,
@@ -33,6 +26,7 @@ flowey_request! {
         pub verbose: ReadVar<bool>,
         pub locked: bool,
         pub deny_warnings: bool,
+        pub no_incremental: bool,
     }
 }
 
@@ -49,17 +43,17 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_openvmm_cargo_config_deny_warnings::Node>();
         ctx.import::<crate::install_git_credential_manager::Node>();
         ctx.import::<crate::install_openvmm_rust_build_essential::Node>();
+        ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<flowey_lib_common::cfg_cargo_common_flags::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
-        ctx.import::<flowey_lib_common::download_nuget_exe::Node>();
         ctx.import::<flowey_lib_common::resolve_protoc::Node>();
         ctx.import::<flowey_lib_common::git_checkout::Node>();
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
+        ctx.import::<flowey_lib_common::install_dotnet_cli::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
         ctx.import::<flowey_lib_common::install_git::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
-        ctx.import::<flowey_lib_common::install_nuget_azure_credential_provider::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
         ctx.import::<flowey_lib_common::nuget_install_package::Node>();
         ctx.import::<flowey_lib_common::run_cargo_nextest_run::Node>();
@@ -72,6 +66,7 @@ impl SimpleFlowNode for Node {
             verbose,
             locked,
             deny_warnings,
+            no_incremental,
         } = request;
 
         if matches!(ctx.backend(), FlowBackend::Github) {
@@ -79,29 +74,27 @@ impl SimpleFlowNode for Node {
                 anyhow::bail!("can only set `local_only` params when using Local backend");
             }
 
-            ctx.req(flowey_lib_common::install_azure_cli::Request::AutoInstall(
-                true,
-            ));
-            ctx.req(flowey_lib_common::install_rust::Request::AutoInstall(true));
-            ctx.req(flowey_lib_common::install_rust::Request::IgnoreVersion(
-                false,
-            ));
+            ctx.config(flowey_lib_common::install_rust::Config {
+                auto_install: Some(true),
+                ignore_version: Some(false),
+                ..Default::default()
+            });
             let token = ctx.get_gh_context_var().global().token();
-            ctx.req(flowey_lib_common::use_gh_cli::Request::WithAuth(
-                flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(token),
-            ));
+            ctx.config(flowey_lib_common::use_gh_cli::Config {
+                auth: Some(flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(
+                    ConfigVar(token),
+                )),
+            });
         } else if matches!(ctx.backend(), FlowBackend::Ado) {
             if local_only.is_some() {
                 anyhow::bail!("can only set `local_only` params when using Local backend");
             }
 
-            ctx.req(flowey_lib_common::install_azure_cli::Request::AutoInstall(
-                true,
-            ));
-            ctx.req(flowey_lib_common::install_rust::Request::AutoInstall(true));
-            ctx.req(flowey_lib_common::install_rust::Request::IgnoreVersion(
-                false,
-            ));
+            ctx.config(flowey_lib_common::install_rust::Config {
+                auto_install: Some(true),
+                ignore_version: Some(false),
+                ..Default::default()
+            });
         } else if matches!(ctx.backend(), FlowBackend::Local) {
             let local_only =
                 local_only.ok_or(anyhow::anyhow!("missing essential request: local_only"))?;
@@ -109,91 +102,74 @@ impl SimpleFlowNode for Node {
             let LocalOnlyParams {
                 interactive,
                 auto_install,
-                force_nuget_mono,
-                external_nuget_auth,
                 ignore_rust_version,
             } = local_only;
 
             // wire up `interactive`
             {
-                ctx.req(
-                    flowey_lib_common::install_dist_pkg::Request::LocalOnlyInteractive(interactive),
-                );
-                ctx.req(
-                    flowey_lib_common::nuget_install_package::Request::LocalOnlyInteractive(
-                        interactive,
-                    ),
-                );
-                ctx.req(
-                    flowey_lib_common::nuget_install_package::Request::LocalOnlyInteractive(
-                        interactive,
-                    ),
-                );
-                ctx.req(flowey_lib_common::use_gh_cli::Request::WithAuth(
-                    flowey_lib_common::use_gh_cli::GhCliAuth::LocalOnlyInteractive,
-                ));
-                ctx.req(flowey_lib_common::install_rust::Request::IgnoreVersion(
-                    ignore_rust_version,
-                ));
+                ctx.config(flowey_lib_common::install_dist_pkg::Config {
+                    interactive: Some(interactive),
+                    ..Default::default()
+                });
+                ctx.config(flowey_lib_common::use_gh_cli::Config {
+                    auth: Some(flowey_lib_common::use_gh_cli::GhCliAuth::LocalOnlyInteractive),
+                });
+                ctx.config(flowey_lib_common::install_rust::Config {
+                    ignore_version: Some(ignore_rust_version),
+                    ..Default::default()
+                });
             }
 
             // wire up auto_install
             {
-                ctx.req(flowey_lib_common::install_rust::Request::AutoInstall(
-                    auto_install,
-                ));
-                ctx.req(
-                    flowey_lib_common::install_nuget_azure_credential_provider::Request::LocalOnlyAutoInstall(
-                        auto_install,
-                    ),
-                );
-                ctx.req(
-                    flowey_lib_common::install_dist_pkg::Request::LocalOnlySkipUpdate(
-                        !auto_install,
-                    ),
-                );
-                ctx.req(flowey_lib_common::install_nodejs::Request::AutoInstall(
-                    auto_install,
-                ));
-                ctx.req(flowey_lib_common::install_azure_cli::Request::AutoInstall(
-                    auto_install,
-                ));
-                ctx.req(
-                    flowey_lib_common::install_git::Request::LocalOnlyAutoInstall(auto_install),
-                );
+                ctx.config(flowey_lib_common::install_rust::Config {
+                    auto_install: Some(auto_install),
+                    ..Default::default()
+                });
+                ctx.config(flowey_lib_common::install_dist_pkg::Config {
+                    skip_update: Some(!auto_install),
+                    ..Default::default()
+                });
+                ctx.config(flowey_lib_common::install_nodejs::Config {
+                    auto_install: Some(auto_install),
+                    ..Default::default()
+                });
+                ctx.config(flowey_lib_common::install_azure_cli::Config {
+                    auto_install: Some(auto_install),
+                    ..Default::default()
+                });
+                ctx.config(flowey_lib_common::install_git::Config {
+                    auto_install: Some(auto_install),
+                });
+                ctx.config(flowey_lib_common::install_dotnet_cli::Config {
+                    auto_install: Some(auto_install),
+                    ..Default::default()
+                });
+                ctx.config(crate::install_vmm_tests_deps::Config {
+                    auto_install: Some(auto_install),
+                    selections: None,
+                });
             }
-
-            //
-            // wire up misc.
-            //
-            ctx.req(
-                flowey_lib_common::install_nuget_azure_credential_provider::Request::LocalOnlySkipAuthCheck(
-                    external_nuget_auth,
-                ),
-            );
-
-            ctx.req(
-                flowey_lib_common::download_nuget_exe::Request::LocalOnlyForceWsl2MonoNugetExe(
-                    force_nuget_mono,
-                ),
-            );
 
             // FUTURE: if we ever spin up a openvmm setup utility - it might be
             // interesting to distribute a flowey-based tool that also clones
             // the repo.
-            ctx.req(flowey_lib_common::git_checkout::Request::LocalOnlyRequireExistingClones(true));
+            ctx.config(flowey_lib_common::git_checkout::Config {
+                require_local_clones: Some(true),
+            });
         } else {
             anyhow::bail!("unsupported backend")
         }
 
-        ctx.requests::<flowey_lib_common::cfg_cargo_common_flags::Node>([
-            flowey_lib_common::cfg_cargo_common_flags::Request::SetVerbose(verbose),
-            flowey_lib_common::cfg_cargo_common_flags::Request::SetLocked(locked),
-        ]);
+        ctx.config(flowey_lib_common::cfg_cargo_common_flags::Config {
+            locked: Some(locked),
+            verbose: Some(ConfigVar(verbose)),
+            no_incremental: Some(no_incremental),
+        });
 
-        ctx.req(
-            crate::init_openvmm_cargo_config_deny_warnings::Request::DenyWarnings(deny_warnings),
-        );
+        ctx.config(crate::init_openvmm_cargo_config_deny_warnings::Config {
+            deny_warnings: Some(deny_warnings),
+        });
 
         Ok(())
     }

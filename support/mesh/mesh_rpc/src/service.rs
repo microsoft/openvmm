@@ -18,6 +18,7 @@ use mesh::payload::protobuf::MessageSizer;
 use mesh::payload::protobuf::MessageWriter;
 use mesh::resource::Resource;
 
+#[expect(clippy::allow_attributes)]
 mod grpc {
     // Generated types use these crates, reference them here to ensure they are
     // not removed by automated tooling.

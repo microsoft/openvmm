@@ -54,12 +54,13 @@ pub enum Error {
         latest_version: IgvmAttestResponseVersion,
     },
     #[error(
-        "attest failed ({igvm_error_code}-{http_status_code}), retry recommendation ({retry_signal})"
+        "attest failed ({igvm_error_code}-{http_status_code}), retry recommendation ({retry_signal}), skip hw unsealing recommendation ({skip_hw_unsealing_signal})"
     )]
     Attestation {
         igvm_error_code: u32,
         http_status_code: u32,
         retry_signal: bool,
+        skip_hw_unsealing_signal: bool,
     },
 }
 
@@ -71,6 +72,8 @@ pub enum ReportType {
     Snp,
     /// TDX report
     Tdx,
+    /// CCA report
+    Cca,
     /// Trusted VM report
     Tvm,
 }
@@ -82,6 +85,7 @@ impl ReportType {
             Self::Vbs => IgvmAttestReportType::VBS_VM_REPORT,
             Self::Snp => IgvmAttestReportType::SNP_VM_REPORT,
             Self::Tdx => IgvmAttestReportType::TDX_VM_REPORT,
+            Self::Cca => IgvmAttestReportType::CCA_VM_REPORT,
             Self::Tvm => IgvmAttestReportType::TVM_REPORT,
         }
     }
@@ -114,6 +118,7 @@ impl IgvmAttestRequestHelper {
         let report_type = match tee_type {
             TeeType::Snp => ReportType::Snp,
             TeeType::Tdx => ReportType::Tdx,
+            TeeType::Cca => ReportType::Cca,
             TeeType::Vbs => ReportType::Vbs,
         };
 
@@ -124,7 +129,7 @@ impl IgvmAttestRequestHelper {
         let runtime_claims = runtime_claims_to_bytes(&runtime_claims);
 
         let hash_type = IgvmAttestHashType::SHA_256;
-        let hash = crate::crypto::sha_256(runtime_claims.as_bytes());
+        let hash = crypto::sha_256::sha_256(runtime_claims.as_bytes());
         let mut runtime_claims_hash = [0u8; tee_call::REPORT_DATA_SIZE];
         runtime_claims_hash[0..hash.len()].copy_from_slice(&hash);
 
@@ -150,6 +155,7 @@ impl IgvmAttestRequestHelper {
         let report_type = match tee_type {
             Some(TeeType::Snp) => ReportType::Snp,
             Some(TeeType::Tdx) => ReportType::Tdx,
+            Some(TeeType::Cca) => ReportType::Cca,
             Some(TeeType::Vbs) => ReportType::Vbs,
             None => ReportType::Tvm,
         };
@@ -167,7 +173,7 @@ impl IgvmAttestRequestHelper {
         let runtime_claims = runtime_claims_to_bytes(&runtime_claims);
 
         let hash_type = IgvmAttestHashType::SHA_256;
-        let hash = crate::crypto::sha_256(runtime_claims.as_bytes());
+        let hash = crypto::sha_256::sha_256(runtime_claims.as_bytes());
         let mut runtime_claims_hash = [0u8; tee_call::REPORT_DATA_SIZE];
         runtime_claims_hash[0..hash.len()].copy_from_slice(&hash);
 
@@ -247,6 +253,7 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
                 igvm_error_code: igvm_error_info.error_code,
                 http_status_code: igvm_error_info.http_status_code,
                 retry_signal: igvm_error_info.igvm_signal.retry(),
+                skip_hw_unsealing_signal: igvm_error_info.igvm_signal.skip_hw_unsealing(),
             })?
         }
     }
@@ -310,7 +317,8 @@ fn create_request(
     if include_extension {
         let capability_bitmap = IgvmCapabilityBitMap::new()
             .with_error_code(true)
-            .with_retry(true);
+            .with_retry(true)
+            .with_skip_hw_unsealing(true);
         let ext = IgvmAttestRequestDataExt::new(capability_bitmap);
         buffer.extend_from_slice(ext.as_bytes());
     }
@@ -327,6 +335,7 @@ fn get_report_size(report_type: &ReportType) -> usize {
         ReportType::Snp => openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE,
         ReportType::Tdx => openhcl_attestation_protocol::igvm_attest::get::TDX_VM_REPORT_SIZE,
         ReportType::Tvm => openhcl_attestation_protocol::igvm_attest::get::TVM_REPORT_SIZE,
+        ReportType::Cca => todo!(),
     }
 }
 
@@ -458,6 +467,7 @@ mod tests {
             .expect("parse IgvmAttestRequestDataExt");
         assert!(ext.capability_bitmap.error_code());
         assert!(ext.capability_bitmap.retry());
+        assert!(ext.capability_bitmap.skip_hw_unsealing());
 
         assert_eq!(
             buffer.len(),
@@ -702,7 +712,8 @@ mod tests {
             Error::Attestation {
                 igvm_error_code: 1103,
                 http_status_code: 403,
-                retry_signal: true
+                retry_signal: true,
+                skip_hw_unsealing_signal: false
             }
             .to_string()
         );
@@ -724,7 +735,56 @@ mod tests {
             Error::Attestation {
                 igvm_error_code: 1103,
                 http_status_code: 503,
-                retry_signal: false
+                retry_signal: false,
+                skip_hw_unsealing_signal: false
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn test_failed_response_with_skip_hw_unsealing_signal() {
+        // error_code: 1103 (0x44f), http_status_code: 400 (0x190),
+        // igvm_signal: retry=true, skip_hw_unsealing=true (0x03 = bits 0 and 1 set)
+        const INVALID_RESPONSE: [u8; 42] = [
+            0x2a, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x4f, 0x04, 0x00, 0x00, 0x90, 0x01,
+            0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
+        ];
+
+        let result = parse_response_header(&INVALID_RESPONSE);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            Error::Attestation {
+                igvm_error_code: 1103,
+                http_status_code: 400,
+                retry_signal: true,
+                skip_hw_unsealing_signal: true
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn test_failed_response_with_skip_hw_unsealing_only() {
+        // error_code: 1103 (0x44f), http_status_code: 400 (0x190),
+        // igvm_signal: retry=false, skip_hw_unsealing=true (0x02 = bit 1 set)
+        const INVALID_RESPONSE: [u8; 42] = [
+            0x2a, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x4f, 0x04, 0x00, 0x00, 0x90, 0x01,
+            0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
+        ];
+
+        let result = parse_response_header(&INVALID_RESPONSE);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            Error::Attestation {
+                igvm_error_code: 1103,
+                http_status_code: 400,
+                retry_signal: false,
+                skip_hw_unsealing_signal: true
             }
             .to_string()
         );

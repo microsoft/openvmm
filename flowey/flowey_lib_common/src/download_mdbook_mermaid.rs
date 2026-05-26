@@ -5,37 +5,48 @@
 
 use flowey::node::prelude::*;
 
+flowey_config! {
+    /// Config for the download_mdbook_mermaid node.
+    pub struct Config {
+        /// Version of `mdbook-mermaid` to install
+        pub version: Option<String>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Version of `mdbook-mermaid` to install
-        Version(String),
         /// Get a path to `mdbook-mermaid`
         GetMdbookMermaid(WriteVar<PathBuf>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::install_dist_pkg::Node>();
         ctx.import::<crate::download_gh_release::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut version = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut get_mdbook_mermaid = Vec::new();
 
         for req in requests {
             match req {
-                Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::GetMdbookMermaid(v) => get_mdbook_mermaid.push(v),
             }
         }
 
-        let version = version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
+        let version = config
+            .version
+            .ok_or(anyhow::anyhow!("missing config: version"))?;
         let get_mdbook_mermaid = get_mdbook_mermaid;
 
         // -- end of req processing -- //

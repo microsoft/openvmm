@@ -5,8 +5,10 @@
 
 // TODO: move VMX defs somewhere?
 
+use crate::ApicRegisterValue;
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
+use static_assertions::const_assert_eq;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -498,44 +500,39 @@ pub struct SecondaryProcessorControls {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct ApicRegister {
-    pub value: u32,
-    _reserved: [u32; 3],
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct VmxApicPage {
+    pub reserved_0: [ApicRegisterValue; 2],
+    pub id: ApicRegisterValue,
+    pub version: ApicRegisterValue,
+    pub reserved_4: [ApicRegisterValue; 4],
+    pub tpr: ApicRegisterValue,
+    pub apr: ApicRegisterValue,
+    pub ppr: ApicRegisterValue,
+    pub eoi: ApicRegisterValue,
+    pub rrd: ApicRegisterValue,
+    pub ldr: ApicRegisterValue,
+    pub dfr: ApicRegisterValue,
+    pub svr: ApicRegisterValue,
+    pub isr: [ApicRegisterValue; 8],
+    pub tmr: [ApicRegisterValue; 8],
+    pub irr: [ApicRegisterValue; 8],
+    pub esr: ApicRegisterValue,
+    pub reserved_29: [ApicRegisterValue; 6],
+    pub lvt_cmci: ApicRegisterValue,
+    pub icr: [ApicRegisterValue; 2],
+    pub lvt_timer: ApicRegisterValue,
+    pub lvt_thermal: ApicRegisterValue,
+    pub lvt_pmc: ApicRegisterValue,
+    pub lvt_lint0: ApicRegisterValue,
+    pub lvt_lint1: ApicRegisterValue,
+    pub lvt_error: ApicRegisterValue,
+    pub timer_icr: ApicRegisterValue,
+    pub timer_ccr: ApicRegisterValue,
+    pub reserved_3a: [ApicRegisterValue; 4],
+    pub timer_dcr: ApicRegisterValue,
+    pub reserved_3f: ApicRegisterValue,
+    pub reserved_40: [ApicRegisterValue; 0xc0],
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct ApicPage {
-    pub reserved_0: [ApicRegister; 2],
-    pub id: ApicRegister,
-    pub version: ApicRegister,
-    pub reserved_4: [ApicRegister; 4],
-    pub tpr: ApicRegister,
-    pub apr: ApicRegister,
-    pub ppr: ApicRegister,
-    pub eoi: ApicRegister,
-    pub rrd: ApicRegister,
-    pub ldr: ApicRegister,
-    pub dfr: ApicRegister,
-    pub svr: ApicRegister,
-    pub isr: [ApicRegister; 8],
-    pub tmr: [ApicRegister; 8],
-    pub irr: [ApicRegister; 8],
-    pub esr: ApicRegister,
-    pub reserved_29: [ApicRegister; 6],
-    pub lvt_cmci: ApicRegister,
-    pub icr: [ApicRegister; 2],
-    pub lvt_timer: ApicRegister,
-    pub lvt_thermal: ApicRegister,
-    pub lvt_pmc: ApicRegister,
-    pub lvt_lint0: ApicRegister,
-    pub lvt_lint1: ApicRegister,
-    pub lvt_error: ApicRegister,
-    pub timer_icr: ApicRegister,
-    pub timer_ccr: ApicRegister,
-    pub reserved_3a: [ApicRegister; 4],
-    pub timer_dcr: ApicRegister,
-    pub reserved_3f: ApicRegister,
-    pub reserved_40: [ApicRegister; 0xc0],
-}
+const_assert_eq!(size_of::<VmxApicPage>(), 4096);

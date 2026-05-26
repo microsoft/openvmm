@@ -1,0 +1,961 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Guest physical memory layout resolution for the VM worker.
+//!
+//! This module is the point where OpenVMM turns stable VM configuration and
+//! already-known platform ranges into the production [`MemoryLayout`]. The
+//! resulting guest physical addresses are part of the VM's compatibility surface:
+//! hibernated guests and saved VMs remember device and RAM locations, so changes
+//! to the request order, placement class, or alignment policy can break resume or
+//! restore. Keep layout policy changes deliberate and covered by tests.
+//!
+//! The resolver owns all layout consumers: architectural reserved zones (LAPIC,
+//! IOAPIC, GIC, etc.), chipset MMIO (VMBus, PIIX4 PCI BARs), PCIe
+//! ECAM/BAR pools, virtio-mmio slots, ordinary RAM, VTL2 private memory, and
+//! VTL2 chipset MMIO. Callers express sizing intent; the resolver places
+//! everything and derives the effective MMIO gaps for [`MemoryLayout`].
+
+use super::vm_loaders::igvm::Vtl2MemoryLayoutRequest;
+use anyhow::Context;
+use anyhow::bail;
+use cxl_spec::spec::CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl_spec::spec::CXL_HPA_ALIGNMENT;
+use memory_range::MemoryRange;
+use openvmm_defs::config::PcieMmioRangeConfig;
+use openvmm_defs::config::PcieRootComplexConfig;
+use std::sync::Arc;
+use vm_topology::layout::LayoutBuilder;
+use vm_topology::layout::Placement;
+use vm_topology::memory::MemoryLayout;
+use vm_topology::memory::MemoryRangeWithNode;
+
+const PAGE_SIZE: u64 = 4096;
+const TWO_MB: u64 = 2 * 1024 * 1024;
+const GB: u64 = 1024 * 1024 * 1024;
+
+/// SMMUv3 MMIO region size: two 64 KiB pages (page 0 + page 1).
+const SMMU_SIZE: u64 = 0x2_0000;
+
+/// PCIe ECAM: 32 devices * 8 functions * 4 KiB config space = 1 MB per bus.
+const PCIE_ECAM_BYTES_PER_BUS: u64 = 32 * 8 * 4096;
+
+/// Minimum guest physical address at which an ECAM range may be placed.
+///
+/// The ACPI MCFG table reports the bus-0 base as
+/// `ecam_range.start() - start_bus * 1 MiB`. `start_bus` is a `u8`, so up to
+/// 255 MiB of headroom may be required. Rounding up to a flat 256 MiB gives a
+/// single easy-to-remember invariant that works for every legal `start_bus`
+/// value, independent of any individual root complex's configuration.
+const PCIE_ECAM_MIN_ADDRESS: u64 = 256 * 1024 * 1024;
+
+#[derive(Debug)]
+pub(super) struct ResolvedMemoryLayout {
+    pub memory_layout: MemoryLayout,
+    pub pcie_root_complex_ranges: Vec<ResolvedPcieRootComplexRanges>,
+    /// Contiguous MMIO region for all virtio-mmio device slots. Each slot is
+    /// 4 KiB, indexed from the start of the region. `EMPTY` when no
+    /// virtio-mmio devices are configured.
+    pub virtio_mmio_region: MemoryRange,
+    /// Chipset low MMIO range (below 4 GB) for VMOD/PCI0 _CRS. Always at
+    /// least the architectural reserved zone (LAPIC, IOAPIC, TPM, ...).
+    pub chipset_low_mmio: MemoryRange,
+    /// Chipset high MMIO range (above RAM) for VMOD/PCI0 _CRS. `EMPTY` when
+    /// no chipset high MMIO is configured.
+    pub chipset_high_mmio: MemoryRange,
+    /// VTL2-private chipset MMIO range, reported to VTL2 VMBus via the device
+    /// tree. `EMPTY` when VTL2 is not configured or has no chipset MMIO.
+    pub vtl2_chipset_mmio: MemoryRange,
+    /// Resolved MMIO ranges for SMMUv3 instances, one per configured SMMU.
+    /// Each range is `SMMU_SIZE` bytes. Empty when no SMMUs are configured.
+    #[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
+    pub smmu_ranges: Vec<MemoryRange>,
+}
+
+#[derive(Debug)]
+pub(super) struct ResolvedPcieRootComplexRanges {
+    pub ecam_range: MemoryRange,
+    pub low_mmio: MemoryRange,
+    pub high_mmio: MemoryRange,
+    pub chbcr_range: MemoryRange,
+    pub hdm_range: MemoryRange,
+}
+
+pub(super) struct MemoryLayoutInput<'a> {
+    /// Total VTL0 RAM size requested by the VM configuration.
+    pub mem_size: u64,
+    /// Optional per-vNUMA RAM budgets. When present, these must sum to
+    /// `mem_size`, and request order is the vnode assignment order.
+    pub numa_mem_sizes: Option<&'a [u64]>,
+    /// Chipset MMIO sizing from the manifest builder.
+    pub layout: vmm_core_defs::LayoutConfig,
+    /// PCIe root complex address-space intents. These are resolved by this
+    /// worker step so front ends do not need to carve guest physical addresses.
+    pub pcie_root_complexes: &'a [PcieRootComplexConfig],
+    /// Number of virtio-mmio device slots to allocate in 32-bit MMIO space.
+    /// A single contiguous region of `count * 4 KiB` is allocated.
+    pub virtio_mmio_count: usize,
+    /// Number of SMMUv3 instances to allocate MMIO for (aarch64 only;
+    /// always 0 on other architectures). Each instance requires
+    /// `SMMU_SIZE` bytes (128 KiB), 128 KiB aligned, in 32-bit MMIO space.
+    pub smmu_count: usize,
+    /// Optional IGVM VTL2 private-memory request. This is allocated after all
+    /// VTL0-visible RAM and MMIO and is carried separately from ordinary RAM.
+    pub vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
+    /// Minimum guest physical address for ordinary RAM. When nonzero, the
+    /// range `0..ram_start_address` is reserved so RAM is placed above it.
+    /// This is used on aarch64 Linux direct boot to avoid the low GPA region
+    /// that conflicts with iommufd IOVA reservations.
+    pub ram_start_address: u64,
+    /// Host-supported physical address width used only after allocation. The
+    /// allocator computes the smallest layout it can; host fit is validation.
+    pub physical_address_size: u8,
+}
+
+/// Architectural reserved zone for x86_64: LAPIC, IOAPIC, battery, TPM.
+const ARCH_RESERVED_X86_64: MemoryRange = MemoryRange::new(0xFE00_0000..0x1_0000_0000);
+
+/// Architectural reserved zone for aarch64: GIC, PL011, battery.
+const ARCH_RESERVED_AARCH64: MemoryRange = MemoryRange::new(0xEF00_0000..0x1_0000_0000);
+
+pub(super) fn resolve_memory_layout(
+    input: MemoryLayoutInput<'_>,
+) -> anyhow::Result<ResolvedMemoryLayout> {
+    let ram_sizes = validate_ram_sizes(input.mem_size, input.numa_mem_sizes)?;
+
+    let mut ram_ranges_by_node = vec![Vec::new(); ram_sizes.len()];
+    let mut pcie_root_complex_ranges = input
+        .pcie_root_complexes
+        .iter()
+        .map(|_| ResolvedPcieRootComplexRanges {
+            ecam_range: MemoryRange::EMPTY,
+            low_mmio: MemoryRange::EMPTY,
+            high_mmio: MemoryRange::EMPTY,
+            chbcr_range: MemoryRange::EMPTY,
+            hdm_range: MemoryRange::EMPTY,
+        })
+        .collect::<Vec<_>>();
+
+    let mut builder = LayoutBuilder::new();
+
+    // Chipset low MMIO (Mmio32): a fixed window pinned to the top of 32-bit
+    // address space, advertised to firmware as `\_SB.VMOD._CRS`. Always at
+    // least the architectural reserved zone (LAPIC, IOAPIC, TPM, ...) so
+    // guests can arbitrate fixed-address children like TPM2 against this
+    // window; the caller-requested size may extend it lower.
+    // Reserve low addresses so RAM starts above `ram_start_address`. This is
+    // used on aarch64 Linux direct boot to skip the 128 MiB–129 MiB IOVA
+    // region that iommufd reserves for the host MSI doorbell.
+    if input.ram_start_address > 0 {
+        builder.reserve("low-ram-gap", MemoryRange::new(0..input.ram_start_address));
+    }
+
+    let arch_reserved = if cfg!(guest_arch = "x86_64") {
+        ARCH_RESERVED_X86_64
+    } else {
+        ARCH_RESERVED_AARCH64
+    };
+    let four_gb = 4 * GB;
+    let low_mmio_size = u64::from(input.layout.chipset_low_mmio_size)
+        .next_multiple_of(0x1000)
+        .max(arch_reserved.len());
+    let chipset_low_mmio = MemoryRange::new(four_gb - low_mmio_size..four_gb);
+    builder.fixed("chipset-low-mmio", chipset_low_mmio);
+
+    // Chipset high MMIO (Mmio64): VMOD/PCI0 _CRS high range.
+    let mut chipset_high_mmio = MemoryRange::EMPTY;
+    if input.layout.chipset_high_mmio_size != 0 {
+        builder.request(
+            "chipset-high-mmio",
+            &mut chipset_high_mmio,
+            input.layout.chipset_high_mmio_size,
+            TWO_MB,
+            Placement::Mmio64,
+        );
+    }
+
+    // Group root complexes by PCI segment so that RCs sharing a segment get a
+    // single contiguous ECAM block. This ensures the MCFG bus-0 base address
+    // is consistent for all RCs in the same segment.
+    struct SegmentEcam {
+        segment: u16,
+        min_bus: u8,
+        max_bus: u8,
+        range: MemoryRange,
+    }
+    let mut segment_ecams: Vec<SegmentEcam> = Vec::new();
+    for rc in input.pcie_root_complexes {
+        if let Some(entry) = segment_ecams.iter_mut().find(|e| e.segment == rc.segment) {
+            entry.min_bus = entry.min_bus.min(rc.start_bus);
+            entry.max_bus = entry.max_bus.max(rc.end_bus);
+        } else {
+            segment_ecams.push(SegmentEcam {
+                segment: rc.segment,
+                min_bus: rc.start_bus,
+                max_bus: rc.end_bus,
+                range: MemoryRange::EMPTY,
+            });
+        }
+    }
+
+    // ECAM: always dynamically allocated below 4GB (since Linux on x86_64
+    // refuses to use ECAM above 4GB unless the BIOS is of a special shape).
+    //
+    // TODO: fix the Linux loader and move this above 4GB before the layout
+    // is stabilized.
+    for se in &mut segment_ecams {
+        let bus_count = u64::from(se.max_bus - se.min_bus) + 1;
+        builder.request(
+            format!("pcie-seg{}-ecam", se.segment),
+            &mut se.range,
+            bus_count * PCIE_ECAM_BYTES_PER_BUS,
+            PCIE_ECAM_BYTES_PER_BUS,
+            Placement::Mmio32,
+        );
+    }
+
+    for (root_complex, ranges) in input
+        .pcie_root_complexes
+        .iter()
+        .zip(&mut pcie_root_complex_ranges)
+    {
+        // Low MMIO: 2 MB aligned.
+        add_mmio_range(
+            &mut builder,
+            format!("pcie-{}-low-mmio", root_complex.name),
+            &mut ranges.low_mmio,
+            &root_complex.low_mmio,
+            TWO_MB,
+            Placement::Mmio32,
+        )?;
+        // High MMIO: 1 GB aligned. Ideally we'd align it to its actual size so
+        // that the full amount is always usable for a single large BAR. But
+        // that burns physical address space, which is especially limited on
+        // some x86 machines.
+        //
+        // The downside of this approach is that the maximum mappable BAR size
+        // is a function of the rest of the topology, which can create
+        // reliability issues for users.
+        add_mmio_range(
+            &mut builder,
+            format!("pcie-{}-high-mmio", root_complex.name),
+            &mut ranges.high_mmio,
+            &root_complex.high_mmio,
+            GB,
+            Placement::Mmio64,
+        )?;
+
+        if let Some(cxl) = &root_complex.cxl {
+            let hdm_config = PcieMmioRangeConfig::Dynamic { size: cxl.hdm_size };
+            add_mmio_range(
+                &mut builder,
+                format!("pcie-{}-cxl-hdm", root_complex.name),
+                &mut ranges.hdm_range,
+                &hdm_config,
+                CXL_HPA_ALIGNMENT,
+                Placement::Mmio64,
+            )?;
+
+            let chbcr_config = PcieMmioRangeConfig::Dynamic {
+                size: CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES,
+            };
+            add_mmio_range(
+                &mut builder,
+                format!("pcie-{}-cxl-chbcr", root_complex.name),
+                &mut ranges.chbcr_range,
+                &chbcr_config,
+                CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES,
+                Placement::Mmio64,
+            )?;
+        }
+    }
+
+    // Virtio-mmio: allocate one contiguous region for all slots. Each slot is
+    // 4 KiB, so the region is `count * 4 KiB` placed as a single Mmio32
+    // request.
+    let mut virtio_mmio_region = MemoryRange::EMPTY;
+    if input.virtio_mmio_count > 0 {
+        builder.request(
+            "virtio-mmio",
+            &mut virtio_mmio_region,
+            input.virtio_mmio_count as u64 * PAGE_SIZE,
+            PAGE_SIZE,
+            Placement::Mmio32,
+        );
+    }
+
+    // SMMUv3: allocate one 128 KiB region per instance. Placed below 4 GiB
+    // alongside other aarch64 system devices (GIC, ITS, PL011).
+    let mut smmu_ranges: Vec<MemoryRange> = vec![MemoryRange::EMPTY; input.smmu_count];
+    for (idx, range) in smmu_ranges.iter_mut().enumerate() {
+        builder.request(
+            format!("smmu-{idx}"),
+            range,
+            SMMU_SIZE,
+            SMMU_SIZE,
+            Placement::Mmio32,
+        );
+    }
+
+    // RAM request order is part of the NUMA compatibility contract: the first
+    // request maps to vnode 0, the second to vnode 1, and so on. For GB-sized
+    // nodes, use GB alignment so holes do not create sub-GB RAM chunks. For
+    // sub-GB nodes, use 2 MB alignment to avoid wasting a full GB of address
+    // space per small node.
+    for (vnode, (ram_size, ram_ranges)) in ram_sizes
+        .iter()
+        .copied()
+        .zip(&mut ram_ranges_by_node)
+        .enumerate()
+    {
+        let ram_alignment = if ram_size < GB { TWO_MB } else { GB };
+        builder.ram(format!("ram{vnode}"), ram_ranges, ram_size, ram_alignment);
+    }
+
+    // VTL2 chipset MMIO is implementation-private — placed after all
+    // VTL0-visible RAM/MMIO so enabling VTL2 does not move VTL0 addresses.
+    let mut vtl2_chipset_mmio = MemoryRange::EMPTY;
+    if input.layout.vtl2_chipset_mmio_size != 0 {
+        builder.request(
+            "vtl2-chipset-mmio",
+            &mut vtl2_chipset_mmio,
+            input.layout.vtl2_chipset_mmio_size,
+            TWO_MB,
+            Placement::PostMmio,
+        );
+    }
+
+    // VTL2 MemoryLayout mode is implementation-private memory, not a VTL0 RAM
+    // hole. Allocate it only after all VTL0-visible RAM/MMIO so enabling VTL2
+    // does not move the VTL0 layout.
+    //
+    // IGVM relocation min/max constraints are checked later by the IGVM loader
+    // against the selected base; using them as a constraint here would be
+    // overconstraining and would lead to holes in the VTL0 layout--we just
+    // don't support IGVM files with relocation sections that cannot be
+    // satisfied by the post-MMIO space.
+    let mut vtl2_range = MemoryRange::EMPTY;
+    if let Some(vtl2_layout) = input.vtl2_layout {
+        builder.request(
+            "vtl2",
+            &mut vtl2_range,
+            vtl2_layout.size,
+            vtl2_layout.alignment,
+            Placement::PostMmio,
+        );
+    }
+
+    let placed_ranges = builder
+        .allocate()
+        .context("allocating memory layout ranges")?;
+
+    // Subdivide per-segment ECAM blocks into per-RC sub-ranges.
+    for (root_complex, ranges) in input
+        .pcie_root_complexes
+        .iter()
+        .zip(&mut pcie_root_complex_ranges)
+    {
+        let se = segment_ecams
+            .iter()
+            .find(|e| e.segment == root_complex.segment)
+            .expect("segment must exist");
+        let offset = u64::from(root_complex.start_bus - se.min_bus) * PCIE_ECAM_BYTES_PER_BUS;
+        let size = (u64::from(root_complex.end_bus - root_complex.start_bus) + 1)
+            * PCIE_ECAM_BYTES_PER_BUS;
+        ranges.ecam_range =
+            MemoryRange::new(se.range.start() + offset..se.range.start() + offset + size);
+    }
+
+    // Enforce the MCFG bus-0 base invariant: every ECAM range must sit at
+    // `PCIE_ECAM_MIN_ADDRESS` or above. Fail fast at VM construction with a
+    // clear error rather than letting an unrepresentable MCFG entry surface
+    // later as a panic (debug) or silent wraparound (release).
+    for (root_complex, ranges) in input
+        .pcie_root_complexes
+        .iter()
+        .zip(&pcie_root_complex_ranges)
+    {
+        if ranges.ecam_range.start() < PCIE_ECAM_MIN_ADDRESS {
+            bail!(
+                "PCIe root complex {:?}: ECAM at {:#x} is below the {:#x} minimum",
+                root_complex.name,
+                ranges.ecam_range.start(),
+                PCIE_ECAM_MIN_ADDRESS,
+            );
+        }
+    }
+
+    let ram = ram_ranges_by_node
+        .into_iter()
+        .enumerate()
+        .flat_map(|(vnode, ranges)| {
+            ranges.into_iter().map(move |range| MemoryRangeWithNode {
+                range,
+                vnode: vnode as u32,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let vtl2_range = input.vtl2_layout.map(|_| vtl2_range);
+
+    // `MemoryLayout::mmio()` is a positional contract: `[0]` = chipset low
+    // MMIO, `[1]` = chipset high MMIO, and (when VTL2 is enabled) `[2]` =
+    // the VTL2-private chipset MMIO range. Consumers (DSDT, Linux DT, UEFI,
+    // PCAT) rely on this ordering. Entries may be `MemoryRange::EMPTY` when
+    // the corresponding range is not configured; the positional index is
+    // what matters, not the presence of a non-empty range.
+    let mut mmio_gaps: Vec<MemoryRange> = vec![chipset_low_mmio, chipset_high_mmio];
+    if !vtl2_chipset_mmio.is_empty() {
+        mmio_gaps.push(vtl2_chipset_mmio);
+    }
+
+    let mut pci_ecam_gaps: Vec<MemoryRange> = Vec::new();
+    pci_ecam_gaps.extend(segment_ecams.iter().map(|se| se.range));
+    pci_ecam_gaps.sort();
+
+    let mut pci_mmio_gaps: Vec<MemoryRange> = Vec::new();
+    pci_mmio_gaps.extend(
+        pcie_root_complex_ranges
+            .iter()
+            .flat_map(|ranges| [ranges.low_mmio, ranges.high_mmio]),
+    );
+    pci_mmio_gaps.sort();
+
+    let memory_layout = MemoryLayout::new_from_resolved_ranges(
+        ram,
+        mmio_gaps,
+        pci_ecam_gaps,
+        pci_mmio_gaps,
+        vtl2_range,
+    )
+    .context("validating resolved memory layout")?;
+
+    // Host address-width validation is intentionally after allocation. The
+    // layout engine is host-width independent, which keeps the layout a pure
+    // function of VM configuration and avoids host differences changing guest
+    // physical addresses.
+    let address_space_limit = 1u64 << input.physical_address_size;
+    let layout_top = placed_ranges.last().map(|r| r.range.end()).unwrap_or(0);
+    if layout_top > address_space_limit {
+        bail!(
+            "memory layout ends at {:#x}, which exceeds the address width of {} bits",
+            layout_top,
+            input.physical_address_size
+        );
+    }
+
+    Ok(ResolvedMemoryLayout {
+        memory_layout,
+        pcie_root_complex_ranges,
+        virtio_mmio_region,
+        chipset_low_mmio,
+        chipset_high_mmio,
+        vtl2_chipset_mmio,
+        smmu_ranges,
+    })
+}
+
+fn add_mmio_range<'a>(
+    builder: &mut LayoutBuilder<'a>,
+    tag: impl Into<Arc<str>>,
+    target: &'a mut MemoryRange,
+    config: &PcieMmioRangeConfig,
+    alignment: u64,
+    placement: Placement,
+) -> anyhow::Result<()> {
+    let tag = tag.into();
+    match config {
+        PcieMmioRangeConfig::Dynamic { size } => {
+            builder.request(tag, target, *size, alignment, placement);
+        }
+        PcieMmioRangeConfig::Fixed(range) => {
+            // A fixed low-MMIO range must satisfy the Mmio32 placement contract.
+            // Without this check, an above-4 GiB range would be accepted and
+            // then silently truncated to 32 bits in the ARM64 PCI device tree
+            // (`ranges` property uses `low_start as u32`).
+            if placement == Placement::Mmio32 && range.end() > 4 * GB {
+                bail!("{tag}: fixed low MMIO range {range} must end at or below 4 GiB",);
+            }
+            *target = *range;
+            builder.fixed(tag, *range);
+        }
+    }
+    Ok(())
+}
+
+fn validate_ram_sizes(mem_size: u64, numa_mem_sizes: Option<&[u64]>) -> anyhow::Result<Vec<u64>> {
+    // Keep validation compatible with `MemoryLayout::new()` / `new_with_numa()`:
+    // RAM sizes are page-granular, nonzero, and NUMA budgets must exactly cover
+    // the configured total.
+    if mem_size == 0 || !mem_size.is_multiple_of(PAGE_SIZE) {
+        bail!("invalid memory size {mem_size:#x}");
+    }
+
+    let Some(numa_mem_sizes) = numa_mem_sizes else {
+        return Ok(vec![mem_size]);
+    };
+
+    if numa_mem_sizes.is_empty() {
+        bail!("empty NUMA memory sizes");
+    }
+
+    for &size in numa_mem_sizes {
+        if size == 0 || !size.is_multiple_of(PAGE_SIZE) {
+            bail!("invalid NUMA node memory size {size:#x}");
+        }
+    }
+
+    let total = numa_mem_sizes
+        .iter()
+        .copied()
+        .try_fold(0u64, |acc, size| acc.checked_add(size))
+        .context("numa memory sizes overflow")?;
+    if total != mem_size {
+        bail!("numa_mem_sizes total ({total:#x}) does not match mem_size ({mem_size:#x})");
+    }
+
+    Ok(numa_mem_sizes.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vm_topology::memory::AddressType;
+
+    const MB: u64 = 1024 * 1024;
+    // Match the production defaults from `vm_manifest_builder`.
+    #[cfg(guest_arch = "x86_64")]
+    const DEFAULT_CHIPSET_LOW_MMIO_SIZE: u32 = 128 * 1024 * 1024;
+    #[cfg(guest_arch = "aarch64")]
+    const DEFAULT_CHIPSET_LOW_MMIO_SIZE: u32 = 512 * 1024 * 1024;
+    #[cfg(guest_arch = "x86_64")]
+    const ARCH_RESERVED: MemoryRange = ARCH_RESERVED_X86_64;
+    #[cfg(guest_arch = "aarch64")]
+    const ARCH_RESERVED: MemoryRange = ARCH_RESERVED_AARCH64;
+    const DEFAULT_CHIPSET_HIGH_MMIO_SIZE: u64 = 512 * 1024 * 1024;
+    const DEFAULT_VTL2_CHIPSET_MMIO_SIZE: u64 = GB;
+
+    const DEFAULT_LAYOUT: vmm_core_defs::LayoutConfig = vmm_core_defs::LayoutConfig {
+        chipset_low_mmio_size: DEFAULT_CHIPSET_LOW_MMIO_SIZE,
+        chipset_high_mmio_size: DEFAULT_CHIPSET_HIGH_MMIO_SIZE,
+        vtl2_chipset_mmio_size: 0,
+    };
+
+    fn input(
+        mem_size: u64,
+        numa_mem_sizes: Option<&[u64]>,
+        vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
+    ) -> MemoryLayoutInput<'_> {
+        MemoryLayoutInput {
+            mem_size,
+            numa_mem_sizes,
+            layout: DEFAULT_LAYOUT,
+            pcie_root_complexes: &[],
+            virtio_mmio_count: 0,
+            smmu_count: 0,
+            vtl2_layout,
+            ram_start_address: 0,
+            physical_address_size: 46,
+        }
+    }
+
+    fn resolve(input: MemoryLayoutInput<'_>) -> MemoryLayout {
+        resolve_memory_layout(input).unwrap().memory_layout
+    }
+
+    fn vtl2_layout(size: u64) -> Vtl2MemoryLayoutRequest {
+        Vtl2MemoryLayoutRequest {
+            size,
+            alignment: PAGE_SIZE,
+        }
+    }
+
+    fn pcie_root_complex(
+        low_mmio: PcieMmioRangeConfig,
+        high_mmio: PcieMmioRangeConfig,
+    ) -> PcieRootComplexConfig {
+        PcieRootComplexConfig {
+            index: 0,
+            name: "rc0".to_string(),
+            segment: 0,
+            start_bus: 0,
+            end_bus: 0,
+            low_mmio,
+            high_mmio,
+            ports: Vec::new(),
+            cxl: None,
+        }
+    }
+
+    #[test]
+    fn basic_ram_placement() {
+        let actual = resolve(input(2 * GB, None, None));
+
+        assert_eq!(actual.ram_size(), 2 * GB);
+        // RAM starts at GPA 0 and fills upward.
+        assert_eq!(actual.ram()[0].range.start(), 0);
+    }
+
+    #[test]
+    fn ram_splits_around_arch_reserved_zone() {
+        // 4 GB of RAM must split around the architectural reserved zone
+        // and the chipset MMIO allocations below 4 GB.
+        let actual = resolve(input(4 * GB, None, None));
+
+        assert_eq!(actual.ram_size(), 4 * GB);
+        // RAM must not overlap the architectural reserved zone.
+        let reserved = ARCH_RESERVED;
+        for ram in actual.ram() {
+            assert!(
+                !ram.range.overlaps(&reserved),
+                "RAM {:?} overlaps reserved {:?}",
+                ram.range,
+                reserved
+            );
+        }
+    }
+
+    #[test]
+    fn numa_preserves_node_ordering() {
+        let sizes = [2 * GB, 2 * GB];
+
+        let actual = resolve(input(4 * GB, Some(&sizes), None));
+
+        // First vnode's RAM starts at 0.
+        assert_eq!(actual.ram()[0].vnode, 0);
+        assert_eq!(actual.ram()[0].range.start(), 0);
+        // All RAM accounts for 4 GB total.
+        assert_eq!(actual.ram_size(), 4 * GB);
+    }
+
+    #[test]
+    fn chipset_mmio_is_resolved() {
+        let result = resolve_memory_layout(input(2 * GB, None, None)).unwrap();
+
+        let low = result.chipset_low_mmio;
+        let high = result.chipset_high_mmio;
+        assert_eq!(low.len(), DEFAULT_CHIPSET_LOW_MMIO_SIZE as u64);
+        assert_eq!(high.len(), DEFAULT_CHIPSET_HIGH_MMIO_SIZE);
+        // Chipset low MMIO is pinned to end at 4 GiB and must fully contain
+        // the architectural reserved zone (LAPIC, IOAPIC, TPM, ...).
+        assert_eq!(low.end(), 4 * GB);
+        assert!(low.contains(&ARCH_RESERVED));
+        assert!(
+            high.start() >= 2 * GB,
+            "high chipset MMIO should be above RAM"
+        );
+    }
+
+    #[test]
+    fn pcie_dynamic_intents_are_resolved() {
+        let root_complexes = [pcie_root_complex(
+            PcieMmioRangeConfig::Dynamic { size: 64 * MB },
+            PcieMmioRangeConfig::Dynamic { size: GB },
+        )];
+        let mut config = input(2 * GB, None, None);
+        config.pcie_root_complexes = &root_complexes;
+
+        let actual = resolve_memory_layout(config).unwrap();
+        let ranges = &actual.pcie_root_complex_ranges[0];
+
+        assert!(
+            ranges.ecam_range.end() <= 4 * GB,
+            "ECAM should be below 4 GB"
+        );
+        assert_eq!(ranges.low_mmio.len(), 64 * MB);
+        assert_eq!(ranges.high_mmio.len(), GB);
+        assert_eq!(
+            actual
+                .memory_layout
+                .probe_address(ranges.ecam_range.start()),
+            Some(AddressType::PciEcam)
+        );
+        assert_eq!(
+            actual.memory_layout.probe_address(ranges.low_mmio.start()),
+            Some(AddressType::PciMmio)
+        );
+        assert_eq!(
+            actual.memory_layout.probe_address(ranges.high_mmio.start()),
+            Some(AddressType::PciMmio)
+        );
+    }
+
+    #[test]
+    fn shared_segment_gets_contiguous_ecam() {
+        // Two root complexes on the same segment with disjoint bus ranges
+        // must get ECAM sub-ranges within a single contiguous block, so
+        // that the MCFG bus-0 base address is the same for both.
+        let root_complexes = [
+            PcieRootComplexConfig {
+                index: 0,
+                name: "rc0".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 15,
+                low_mmio: PcieMmioRangeConfig::Dynamic { size: 32 * MB },
+                high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
+                ports: Vec::new(),
+                cxl: None,
+            },
+            PcieRootComplexConfig {
+                index: 1,
+                name: "rc1".to_string(),
+                segment: 0,
+                start_bus: 16,
+                end_bus: 31,
+                low_mmio: PcieMmioRangeConfig::Dynamic { size: 32 * MB },
+                high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
+                ports: Vec::new(),
+                cxl: None,
+            },
+        ];
+        let mut config = input(2 * GB, None, None);
+        config.pcie_root_complexes = &root_complexes;
+
+        let actual = resolve_memory_layout(config).unwrap();
+        let r0 = &actual.pcie_root_complex_ranges[0];
+        let r1 = &actual.pcie_root_complex_ranges[1];
+
+        // rc0 ends exactly where rc1 starts (contiguous).
+        assert_eq!(r0.ecam_range.end(), r1.ecam_range.start());
+
+        // Both derive the same MCFG bus-0 base.
+        let bus0_base_r0 = r0.ecam_range.start()
+            - u64::from(root_complexes[0].start_bus) * PCIE_ECAM_BYTES_PER_BUS;
+        let bus0_base_r1 = r1.ecam_range.start()
+            - u64::from(root_complexes[1].start_bus) * PCIE_ECAM_BYTES_PER_BUS;
+        assert_eq!(bus0_base_r0, bus0_base_r1);
+    }
+
+    #[test]
+    fn full_bus_range_ecam_does_not_overflow() {
+        // A single RC spanning buses 0..255 requires (255 - 0 + 1) = 256
+        // buses. The bus count must be computed in u64, not u8, to avoid
+        // overflow.
+        let root_complexes = [PcieRootComplexConfig {
+            index: 0,
+            name: "rc0".to_string(),
+            segment: 0,
+            start_bus: 0,
+            end_bus: 255,
+            low_mmio: PcieMmioRangeConfig::Dynamic { size: 64 * MB },
+            high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
+            ports: Vec::new(),
+            cxl: None,
+        }];
+        let mut config = input(2 * GB, None, None);
+        config.pcie_root_complexes = &root_complexes;
+
+        let actual = resolve_memory_layout(config).unwrap();
+        let ranges = &actual.pcie_root_complex_ranges[0];
+        assert_eq!(ranges.ecam_range.len(), 256 * PCIE_ECAM_BYTES_PER_BUS);
+    }
+
+    #[test]
+    fn sub_gb_numa_nodes_use_two_mb_alignment() {
+        let sizes = [512 * MB, 512 * MB];
+
+        let actual = resolve(input(GB, Some(&sizes), None));
+
+        assert_eq!(
+            actual.ram(),
+            &[
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0..512 * MB),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(512 * MB..GB),
+                    vnode: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn vtl2_is_allocated_after_all_mmio() {
+        let actual = resolve(input(4 * GB, None, Some(vtl2_layout(2 * MB))));
+
+        assert!(actual.vtl2_range().is_some());
+        let vtl2 = actual.vtl2_range().unwrap();
+        assert_eq!(vtl2.len(), 2 * MB);
+        // VTL2 should be after all other allocations.
+        for ram in actual.ram() {
+            assert!(vtl2.start() >= ram.range.end());
+        }
+    }
+
+    #[test]
+    fn vtl2_does_not_change_ram_placement() {
+        let without_vtl2 = resolve(input(2 * GB, None, None));
+        let with_vtl2 = resolve(input(2 * GB, None, Some(vtl2_layout(2 * MB))));
+
+        assert_eq!(with_vtl2.ram(), without_vtl2.ram());
+    }
+
+    #[test]
+    fn deterministic_for_same_inputs() {
+        let sizes = [2 * GB, 3 * GB];
+
+        let first = resolve(input(5 * GB, Some(&sizes), None));
+        let second = resolve(input(5 * GB, Some(&sizes), None));
+
+        assert_eq!(first.ram(), second.ram());
+        assert_eq!(first.end_of_layout(), second.end_of_layout());
+    }
+
+    #[test]
+    fn host_width_validation_happens_after_allocation() {
+        // Use enough RAM that the layout (RAM + chipset high MMIO + arch
+        // reserved zone) exceeds 32 bits.
+        let mut config = input(4 * GB, None, None);
+        config.physical_address_size = 32;
+
+        let err = resolve_memory_layout(config).unwrap_err();
+
+        assert!(err.to_string().contains("memory layout ends at"));
+    }
+
+    #[test]
+    fn virtio_mmio_slots_are_allocated_in_mmio32() {
+        let mut config = input(2 * GB, None, None);
+        config.virtio_mmio_count = 3;
+
+        let result = resolve_memory_layout(config).unwrap();
+
+        let region = result.virtio_mmio_region;
+        assert_eq!(region.len(), 3 * PAGE_SIZE);
+        assert!(region.end() <= 4 * GB, "virtio-mmio should be below 4 GB");
+    }
+
+    #[test]
+    fn virtio_mmio_does_not_move_ram() {
+        let without = resolve(input(2 * GB, None, None));
+        let mut config = input(2 * GB, None, None);
+        config.virtio_mmio_count = 2;
+        let with = resolve_memory_layout(config).unwrap();
+
+        assert_eq!(with.memory_layout.ram(), without.ram());
+    }
+
+    #[test]
+    fn zero_virtio_mmio_produces_no_region() {
+        let config = input(2 * GB, None, None);
+
+        let result = resolve_memory_layout(config).unwrap();
+
+        assert!(result.virtio_mmio_region.is_empty());
+    }
+
+    #[test]
+    fn vtl2_chipset_mmio_is_post_mmio() {
+        let mut config = input(2 * GB, None, None);
+        config.layout.vtl2_chipset_mmio_size = DEFAULT_VTL2_CHIPSET_MMIO_SIZE;
+
+        let result = resolve_memory_layout(config).unwrap();
+
+        let vtl2_mmio = result.vtl2_chipset_mmio;
+        assert_eq!(vtl2_mmio.len(), DEFAULT_VTL2_CHIPSET_MMIO_SIZE);
+        // VTL2 chipset MMIO should be after all VTL0-visible ranges.
+        let chipset_high = result.chipset_high_mmio;
+        assert!(
+            vtl2_mmio.start() >= chipset_high.end(),
+            "VTL2 chipset MMIO should be after VTL0 high MMIO"
+        );
+    }
+
+    #[test]
+    fn vtl2_chipset_mmio_does_not_move_vtl0_layout() {
+        let without = resolve(input(2 * GB, None, None));
+        let mut config = input(2 * GB, None, None);
+        config.layout.vtl2_chipset_mmio_size = DEFAULT_VTL2_CHIPSET_MMIO_SIZE;
+        let with = resolve_memory_layout(config).unwrap();
+
+        assert_eq!(with.memory_layout.ram(), without.ram());
+    }
+
+    #[test]
+    fn disabled_chipset_mmio_still_reports_arch_reserved() {
+        // Even when the caller does not request any chipset MMIO, the
+        // architectural reserved zone (LAPIC, IOAPIC, TPM, ...) is still
+        // carved out of RAM at the top of 4 GiB. That range must be
+        // reported so consumers see the same layout the allocator
+        // produced.
+        let mut config = input(2 * GB, None, None);
+        config.layout.chipset_low_mmio_size = 0;
+        config.layout.chipset_high_mmio_size = 0;
+
+        let result = resolve_memory_layout(config).unwrap();
+
+        let low = result.chipset_low_mmio;
+        assert_eq!(low.end(), 4 * GB);
+        assert!(low.contains(&ARCH_RESERVED));
+        assert!(result.chipset_high_mmio.is_empty());
+        // The reported ranges must appear in MemoryLayout::mmio() preserving
+        // the positional contract: [0] = low, [1] = high (EMPTY placeholder).
+        assert_eq!(result.memory_layout.mmio(), &[low, MemoryRange::EMPTY]);
+    }
+
+    #[test]
+    fn asymmetric_chipset_mmio_is_accepted() {
+        // Asymmetric chipset MMIO (only low or only high) is allowed.
+        // The missing range is EMPTY.
+        let mut config = input(2 * GB, None, None);
+        config.layout.chipset_high_mmio_size = 0;
+        let result = resolve_memory_layout(config).unwrap();
+        assert!(!result.chipset_low_mmio.is_empty());
+        assert!(result.chipset_high_mmio.is_empty());
+
+        let mut config = input(2 * GB, None, None);
+        config.layout.chipset_low_mmio_size = 0;
+        let result = resolve_memory_layout(config).unwrap();
+        // Low is always at least the arch reserved zone.
+        assert!(!result.chipset_low_mmio.is_empty());
+        // High is still configured in this case.
+        assert!(!result.chipset_high_mmio.is_empty());
+    }
+
+    #[test]
+    fn fixed_low_mmio_above_4gb_is_rejected() {
+        let root_complexes = [pcie_root_complex(
+            // A 1 GiB fixed low MMIO range placed above 4 GiB violates the
+            // Mmio32 placement contract.
+            PcieMmioRangeConfig::Fixed(MemoryRange::new(5 * GB..6 * GB)),
+            PcieMmioRangeConfig::Dynamic { size: GB },
+        )];
+        let mut config = input(2 * GB, None, None);
+        config.pcie_root_complexes = &root_complexes;
+        let err = resolve_memory_layout(config).unwrap_err();
+        assert!(
+            err.to_string().contains("must end at or below 4 GiB"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ecam_below_256mb_is_rejected() {
+        // Force ECAM placement below 256 MiB by reserving most of the free
+        // Mmio32 window for low_mmio. The fixed chipset_low_mmio at the top
+        // of 32-bit space leaves 3968 MiB on x86_64 and 3584 MiB on aarch64
+        // for dynamic Mmio32 requests; size low_mmio to push ECAM near
+        // 127 MiB on both. The resolver must bail because MCFG cannot
+        // represent a bus-0 base below the ECAM start.
+        let low_mmio_size = if cfg!(guest_arch = "x86_64") {
+            3840 * MB
+        } else {
+            3456 * MB
+        };
+        let root_complexes = [pcie_root_complex(
+            PcieMmioRangeConfig::Dynamic {
+                size: low_mmio_size,
+            },
+            PcieMmioRangeConfig::Dynamic { size: GB },
+        )];
+        let mut config = input(2 * GB, None, None);
+        config.pcie_root_complexes = &root_complexes;
+
+        let err = resolve_memory_layout(config).unwrap_err();
+
+        assert!(err.to_string().contains("ECAM"), "unexpected error: {err}");
+    }
+}

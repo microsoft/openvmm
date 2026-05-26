@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::run_cargo_build::common::CommonArch;
+use crate::common::CommonArch;
 use flowey::node::prelude::*;
 
 flowey_request! {

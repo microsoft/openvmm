@@ -1,27 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::Xtask;
+use super::FmtCtx;
 use crate::shell::XtaskShell;
+use crate::tasks::fmt::FmtPass;
 use anyhow::Context;
-use clap::Parser;
 
-#[derive(Parser)]
-#[clap(about = "Ensure all flowey pipelines are up to date")]
-pub struct VerifyFlowey {
-    /// Fix any out-of-date pipelines
-    #[clap(long)]
-    pub fix: bool,
-}
+pub struct VerifyFlowey;
 
-impl VerifyFlowey {
-    pub fn new(fix: bool) -> Self {
-        Self { fix }
-    }
-}
+impl FmtPass for VerifyFlowey {
+    fn run(self, ctx: FmtCtx) -> anyhow::Result<()> {
+        let FmtCtx {
+            ctx,
+            fix,
+            only_diffed: _,
+        } = ctx;
 
-impl Xtask for VerifyFlowey {
-    fn run(self, ctx: crate::XtaskCtx) -> anyhow::Result<()> {
         // need to go through all this rigamarole because `cargo --quiet
         // xflowey regen` doesn't do what you'd hope it'd do
         let cmd = {
@@ -41,7 +35,7 @@ impl Xtask for VerifyFlowey {
             cmd.context("could not find `xflowey` alias in .cargo/config.toml")?
         };
 
-        let check = (!self.fix).then_some("--check");
+        let check = (!fix).then_some("--check");
 
         let sh = XtaskShell::new()?;
         sh.cmd("cargo")

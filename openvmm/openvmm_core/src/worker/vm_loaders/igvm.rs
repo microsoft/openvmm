@@ -30,7 +30,6 @@ use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use range_map_vec::RangeMap;
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::io::Read;
 use std::io::Seek;
 use thiserror::Error;
@@ -46,8 +45,8 @@ use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("command line is not a valid C string")]
-    InvalidCommandLine(#[source] std::ffi::NulError),
+    #[error("command line contains an embedded NUL byte at offset {0}")]
+    CommandLineContainsNul(usize),
     #[error("failed to read igvm file")]
     Igvm(#[source] std::io::Error),
     #[error("invalid igvm file")]
@@ -76,16 +75,14 @@ pub enum Error {
     NoVtl2MemoryRange,
     #[error("no vtl2 memory source in igvm file")]
     Vtl2MemorySource,
-    #[error("invalid memory config")]
-    MemoryConfig(#[source] vm_topology::memory::Error),
-    #[error("not enough physical address bits to allocate vtl2 range")]
-    NotEnoughPhysicalAddressBits,
     #[error("building device tree for partition failed")]
     DeviceTree(fdt::builder::Error),
     #[error("supplied vtl2 memory {0} is not aligned to 2MB")]
     Vtl2MemoryAligned(u64),
     #[error("supplied vtl2 memory {0} is smaller than igvm file VTL2 range {1}")]
     Vtl2MemoryTooSmall(u64, u64),
+    #[error("invalid vtl2 relocation alignment {0:#x}")]
+    Vtl2RelocationAlignment(u64),
     #[error("unsupported guest architecture")]
     UnsupportedGuestArch,
     #[error("igvm file does not support vbs")]
@@ -94,8 +91,6 @@ pub enum Error {
     LowerVtlContext,
     #[error("missing required memory range {0}")]
     MissingRequiredMemory(MemoryRange),
-    #[error("IGVM file requires at least two mmio ranges")]
-    UnsupportedMmio,
 }
 
 fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
@@ -199,15 +194,21 @@ pub fn vtl2_memory_info(igvm_file: &IgvmFile) -> Result<MemoryRange, Error> {
     }
 }
 
-/// Determine a location to allocate VTL2 memory, based on VM information and a
-/// provided `igvm_file`.
-pub fn vtl2_memory_range(
-    physical_address_size: u8,
-    mem_size: u64,
-    mmio_gaps: &[MemoryRange],
+/// Information needed to allocate a VTL2 memory range in the VM memory layout.
+#[derive(Debug, Clone, Copy)]
+pub struct Vtl2MemoryLayoutRequest {
+    /// The number of bytes to reserve for VTL2.
+    pub size: u64,
+    /// The required relocation alignment.
+    pub alignment: u64,
+}
+
+/// Determine the VTL2 memory allocation constraints from a provided
+/// `igvm_file`.
+pub fn vtl2_memory_layout_request(
     igvm_file: &IgvmFile,
     vtl2_size: Option<u64>,
-) -> Result<MemoryRange, Error> {
+) -> Result<Vtl2MemoryLayoutRequest, Error> {
     let (mask, _max_vtl) = match vbs_platform_header(igvm_file)? {
         IgvmPlatformHeader::SupportedPlatform(info) => {
             debug_assert_eq!(info.platform_type, IgvmPlatformType::VSM_ISOLATION);
@@ -226,6 +227,9 @@ pub fn vtl2_memory_range(
     let reloc_region = relocs.0.ok_or(Error::RelocationNotSupported)?[0].clone();
 
     let alignment = reloc_region.relocation_alignment;
+    if alignment < HV_PAGE_SIZE || !alignment.is_power_of_two() {
+        return Err(Error::Vtl2RelocationAlignment(alignment));
+    }
 
     let size = match vtl2_size {
         Some(vtl2_size) => {
@@ -246,63 +250,40 @@ pub fn vtl2_memory_range(
         }
     };
 
-    let align_base = |base| -> u64 { (base + alignment - 1) & !(alignment - 1) };
+    Ok(Vtl2MemoryLayoutRequest { size, alignment })
+}
 
-    // Use one bit below the maximum possible address, as the VTL0 alias map
-    // will use the highest available bit of the physical address space.
-    let physical_address_size = physical_address_size - 1;
-
-    // Create an initial memory layout to determine the highest used address.
-    let dummy_layout = MemoryLayout::new(mem_size, mmio_gaps, None).map_err(Error::MemoryConfig)?;
-
-    // TODO: Underhill kernel panics if loaded at 32TB or higher. Restrict the
-    // max address to 32TB until this is fixed.
-    const MAX_ADDR_32TB: u64 = 32u64 << 40; // 0x2000_0000_0000 bytes
-    let max_physical_address = 1 << physical_address_size;
-    let max_physical_address = max_physical_address.min(MAX_ADDR_32TB);
-
-    // With more than two mmio gaps, it's harder to reason about which space is
-    // free or not in the address space to allocate a VTL2 range. Take a
-    // shortcut and place VTL2 above the end of ram or mmio.
-    let (min_addr, max_addr) = (dummy_layout.end_of_ram_or_mmio(), max_physical_address);
-
-    let aligned_min_addr = align_base(min_addr);
-    let aligned_max_addr = (max_addr / alignment) * alignment;
-
-    assert!(aligned_min_addr >= reloc_region.minimum_relocation_gpa);
-    assert!(aligned_max_addr <= reloc_region.maximum_relocation_gpa);
-
-    // It's possible that the min_addr is above the physical address size of the
-    // system. Fail now as mapping ram would fail later.
-    if aligned_min_addr >= aligned_max_addr {
-        return Err(Error::NotEnoughPhysicalAddressBits);
-    }
-
-    tracing::trace!(min_addr, aligned_min_addr, max_addr, aligned_max_addr);
-
-    // Select a random base within the alignment
-    let possible_bases = (aligned_max_addr - aligned_min_addr) / alignment;
-    let mut num: u64 = 0;
-    getrandom::fill(num.as_mut_bytes()).expect("crng failure");
-    let selected_base = num % (possible_bases - 1);
-    let selected_addr = aligned_min_addr + (selected_base * alignment);
-    tracing::trace!(possible_bases, selected_base, selected_addr);
-
-    Ok(MemoryRange::new(selected_addr..(selected_addr + size)))
+/// Parameters for [`build_device_tree`].
+struct BuildDeviceTreeParams<'a> {
+    processor_topology: &'a ProcessorTopology<X86Topology>,
+    all_ram: &'a [MemoryRangeWithNode],
+    vtl2_protectable_ram: &'a [MemoryRange],
+    vtl2_base_address: Vtl2BaseAddressType,
+    command_line: &'a str,
+    with_vmbus_redirect: bool,
+    com_serial: Option<SerialInformation>,
+    entropy: Option<&'a [u8]>,
+    chipset_low_mmio: MemoryRange,
+    chipset_high_mmio: MemoryRange,
+    vtl2_chipset_mmio: MemoryRange,
 }
 
 /// Build a device tree representing the whole guest partition.
-fn build_device_tree(
-    processor_topology: &ProcessorTopology<X86Topology>,
-    mem_layout: &MemoryLayout,
-    all_ram: &[MemoryRangeWithNode],
-    vtl2_protectable_ram: &[MemoryRange],
-    vtl2_base_address: Vtl2BaseAddressType,
-    command_line: &str,
-    with_vmbus_redirect: bool,
-    com_serial: Option<SerialInformation>,
-    entropy: Option<&[u8]>,
-) -> Result<Vec<u8>, fdt::builder::Error> {
+fn build_device_tree(params: BuildDeviceTreeParams<'_>) -> Result<Vec<u8>, fdt::builder::Error> {
+    let BuildDeviceTreeParams {
+        processor_topology,
+        all_ram,
+        vtl2_protectable_ram,
+        vtl2_base_address,
+        command_line,
+        with_vmbus_redirect,
+        com_serial,
+        entropy,
+        chipset_low_mmio,
+        chipset_high_mmio,
+        vtl2_chipset_mmio,
+    } = params;
+
     let mut buf = vec![0; HV_PAGE_SIZE as usize * 256];
 
     let mut builder = fdt::builder::Builder::new(fdt::builder::BuilderConfig {
@@ -374,26 +355,22 @@ fn build_device_tree(
         .add_u32(p_size_cells, 2)?
         .add_prop_array(p_ranges, &[])?;
 
-    // Determine how much mmio this system has. 2 or less gaps are reported to
-    // VTL0. The 3rd and/or 4th gap will be reported to VTL2. Any more are
-    // ignored.
-    let mut mmio_chunks = mem_layout.mmio().chunks(2);
+    // Build DT ranges for VMBus devices. VTL0 gets the chipset low/high MMIO
+    // ranges; VTL2 gets its own private chipset MMIO range.
+    let ranges_vtl0: Vec<u64> = [chipset_low_mmio, chipset_high_mmio]
+        .into_iter()
+        .flat_map(|range| [range.start(), range.start(), range.len()])
+        .collect();
 
-    let extract_ranges = |mmio: Option<&[MemoryRange]>| -> Vec<u64> {
-        let mut ranges = Vec::new();
-
-        if let Some(mmio) = mmio {
-            for entry in mmio {
-                ranges.push(entry.start());
-                ranges.push(entry.start());
-                ranges.push(entry.len());
-            }
-        }
-        ranges
+    let ranges_vtl2: Vec<u64> = if vtl2_chipset_mmio.is_empty() {
+        vec![]
+    } else {
+        vec![
+            vtl2_chipset_mmio.start(),
+            vtl2_chipset_mmio.start(),
+            vtl2_chipset_mmio.len(),
+        ]
     };
-
-    let ranges_vtl0 = extract_ranges(mmio_chunks.next());
-    let ranges_vtl2 = extract_ranges(mmio_chunks.next());
 
     // VTL0 vmbus root device
     let vmbus_vtl0_name = if ranges_vtl0.is_empty() {
@@ -546,6 +523,12 @@ pub struct LoadIgvmParams<'a, T: ArchTopology> {
     pub com_serial: Option<SerialInformation>,
     /// Entropy
     pub entropy: Option<&'a [u8]>,
+    /// VTL0 chipset low MMIO range for the device tree VMBus node.
+    pub chipset_low_mmio: MemoryRange,
+    /// VTL0 chipset high MMIO range for the device tree VMBus node.
+    pub chipset_high_mmio: MemoryRange,
+    /// VTL2-private chipset MMIO range for the device tree VTL2 VMBus node.
+    pub vtl2_chipset_mmio: MemoryRange,
 }
 
 pub fn load_igvm(
@@ -588,6 +571,9 @@ fn load_igvm_x86(
         with_vmbus_redirect,
         com_serial,
         entropy,
+        chipset_low_mmio,
+        chipset_high_mmio,
+        vtl2_chipset_mmio,
     } = params;
 
     let relocations_enabled = match vtl2_base_address {
@@ -605,7 +591,12 @@ fn load_igvm_x86(
         cmdline.to_string()
     };
 
-    let command_line = CString::new(cmdline).map_err(Error::InvalidCommandLine)?;
+    // The command line is exposed to the guest as a NUL-terminated byte
+    // sequence (via the IGVM CommandLine parameter), so reject any embedded NUL
+    // bytes up front.
+    if let Some(pos) = cmdline.as_bytes().iter().position(|&b| b == 0) {
+        return Err(Error::CommandLineContainsNul(pos));
+    }
 
     let (mask, max_vtl) = match vbs_platform_header(igvm_file)? {
         IgvmPlatformHeader::SupportedPlatform(info) => {
@@ -965,14 +956,12 @@ fn load_igvm_x86(
                 }
             }
             IgvmDirectiveHeader::MmioRanges(ref info) => {
-                // Convert the OpenVMM format to the IGVM format
-                // Any gaps above 2 are ignored.
-                let mmio = mem_layout.mmio();
-                if mmio.len() < 2 {
-                    return Err(Error::UnsupportedMmio);
-                }
+                // Convert the chipset MMIO ranges to the IGVM format.
                 let mmio_ranges = IGVM_VHS_MMIO_RANGES {
-                    mmio_ranges: [from_memory_range(&mmio[0]), from_memory_range(&mmio[1])],
+                    mmio_ranges: [
+                        from_memory_range(&chipset_low_mmio),
+                        from_memory_range(&chipset_high_mmio),
+                    ],
                 };
                 import_parameter(&mut parameter_areas, info, mmio_ranges.as_bytes())?;
             }
@@ -981,20 +970,25 @@ fn load_igvm_x86(
                 import_parameter(&mut parameter_areas, info, memory_map.as_bytes())?;
             }
             IgvmDirectiveHeader::CommandLine(ref info) => {
-                import_parameter(&mut parameter_areas, info, command_line.as_bytes_with_nul())?;
+                let mut bytes = Vec::with_capacity(cmdline.len() + 1);
+                bytes.extend_from_slice(cmdline.as_bytes());
+                bytes.push(0);
+                import_parameter(&mut parameter_areas, info, &bytes)?;
             }
             IgvmDirectiveHeader::DeviceTree(ref info) => {
-                let dt = build_device_tree(
+                let dt = build_device_tree(BuildDeviceTreeParams {
                     processor_topology,
-                    mem_layout,
-                    &all_ram,
-                    &vtl2_protectable_ram,
+                    all_ram: &all_ram,
+                    vtl2_protectable_ram: &vtl2_protectable_ram,
                     vtl2_base_address,
-                    &String::from_utf8_lossy(command_line.as_bytes()),
+                    command_line: &cmdline,
                     with_vmbus_redirect,
                     com_serial,
                     entropy,
-                )
+                    chipset_low_mmio,
+                    chipset_high_mmio,
+                    vtl2_chipset_mmio,
+                })
                 .map_err(Error::DeviceTree)?;
                 import_parameter(&mut parameter_areas, info, &dt)?;
             }

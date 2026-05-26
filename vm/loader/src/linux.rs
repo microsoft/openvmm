@@ -3,6 +3,10 @@
 
 //! Linux specific loader definitions and implementation.
 
+use crate::common::ChunkBuf;
+use crate::common::ImportFileRegion;
+use crate::common::ImportFileRegionError;
+use crate::common::ReadSeek;
 use crate::common::import_default_gdt;
 use crate::elf::load_static_elf;
 use crate::importer::Aarch64Register;
@@ -28,6 +32,8 @@ use page_table::x64::PageTable;
 use page_table::x64::align_up_to_large_page_size;
 use page_table::x64::align_up_to_page_size;
 use std::ffi::CString;
+use std::io::Read;
+use std::io::Seek;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
 use zerocopy::FromBytes;
@@ -45,21 +51,36 @@ pub fn build_zero_page(
     cmdline_config: &CommandLineConfig<'_>,
     initrd_base: u32,
     initrd_size: u32,
+    bzimage_header: Option<&defs::setup_header>,
 ) -> defs::boot_params {
-    let mut p = defs::boot_params {
-        hdr: defs::setup_header {
-            type_of_loader: 0xff,
+    // Loader type 0xff = unregistered bootloader, used for both ELF and
+    // bzImage paths since OpenVMM does not have a registered Linux
+    // bootloader ID.
+    const LOADER_TYPE_UNREGISTERED: u8 = 0xff;
+
+    // Start with the bzImage setup header if available, otherwise build
+    // a minimal default header.
+    let mut hdr = match bzimage_header {
+        Some(orig) => *orig,
+        None => defs::setup_header {
             boot_flag: 0xaa55.into(),
             header: 0x53726448.into(),
-            cmd_line_ptr: cmdline_config.address.try_into().expect("must fit in u32"),
-            cmdline_size: (cmdline_config.cmdline.as_bytes().len() as u64)
-                .try_into()
-                .expect("must fit in u32"),
-            ramdisk_image: initrd_base.into(),
-            ramdisk_size: initrd_size.into(),
             kernel_alignment: 0x100000.into(),
             ..FromZeros::new_zeroed()
         },
+    };
+
+    // Set bootloader-owned fields regardless of kernel format.
+    hdr.type_of_loader = LOADER_TYPE_UNREGISTERED;
+    hdr.cmd_line_ptr = cmdline_config.address.try_into().expect("must fit in u32");
+    hdr.cmdline_size = (cmdline_config.cmdline.as_bytes().len() as u64)
+        .try_into()
+        .expect("must fit in u32");
+    hdr.ramdisk_image = initrd_base.into();
+    hdr.ramdisk_size = initrd_size.into();
+
+    let mut p = defs::boot_params {
+        hdr,
         ..FromZeros::new_zeroed()
     };
 
@@ -123,12 +144,18 @@ pub enum FlatLoaderError {
 pub enum Error {
     #[error("elf loader error")]
     ElfLoader(#[source] crate::elf::Error),
+    #[error("bzImage parse error")]
+    BzImage(#[source] crate::bzimage::Error),
     #[error("flat loader error")]
     FlatLoader(#[source] FlatLoaderError),
     #[error("Address is not page aligned")]
     UnalignedAddress(u64),
     #[error("importer error")]
     Importer(#[source] anyhow::Error),
+    #[error("failed to import initrd")]
+    ImportInitrd(#[source] ImportFileRegionError),
+    #[error("failed to import bzImage payload")]
+    ImportBzImage(#[source] ImportFileRegionError),
     #[error("PageTableBuilder: {0}")]
     PageTableBuilder(#[from] page_table::Error),
 }
@@ -171,7 +198,8 @@ pub enum InitrdAddressType {
 
 pub struct InitrdConfig<'a> {
     pub initrd_address: InitrdAddressType,
-    pub initrd: &'a [u8],
+    pub initrd: &'a mut dyn ReadSeek,
+    pub size: u64,
 }
 
 /// Information returned about the kernel loaded.
@@ -203,6 +231,10 @@ pub struct LoadInfo {
     pub initrd: Option<InitrdInfo>,
     /// The information about the device tree blob loaded.
     pub dtb: Option<std::ops::Range<u64>>,
+    /// If a bzImage was loaded, the original setup header from the image.
+    /// This must be placed into the zero page so the kernel's startup code
+    /// can read its own configuration.
+    pub bzimage_setup_header: Option<defs::setup_header>,
 }
 
 /// Check if an address is aligned to a page.
@@ -220,7 +252,7 @@ fn import_initrd<R: GuestArch>(
     next_addr: u64,
     importer: &mut dyn ImageLoad<R>,
 ) -> Result<Option<InitrdInfo>, Error> {
-    let initrd_info = match &initrd {
+    let initrd_info = match initrd {
         Some(cfg) => {
             let initrd_address = match cfg.initrd_address {
                 InitrdAddressType::AfterKernel => align_up_to_large_page_size(next_addr),
@@ -229,20 +261,25 @@ fn import_initrd<R: GuestArch>(
 
             tracing::trace!(initrd_address, "loading initrd");
             check_address_alignment(initrd_address)?;
-            let initrd_size_pages = align_up_to_page_size(cfg.initrd.len() as u64) / HV_PAGE_SIZE;
-            importer
-                .import_pages(
-                    initrd_address / HV_PAGE_SIZE,
-                    initrd_size_pages,
-                    "linux-initrd",
-                    BootPageAcceptance::Exclusive,
-                    cfg.initrd,
+
+            ChunkBuf::new()
+                .import_file_region(
+                    importer,
+                    ImportFileRegion {
+                        file: cfg.initrd,
+                        file_offset: 0,
+                        file_length: cfg.size,
+                        gpa: initrd_address,
+                        memory_length: cfg.size,
+                        acceptance: BootPageAcceptance::Exclusive,
+                        tag: "linux-initrd",
+                    },
                 )
-                .map_err(Error::Importer)?;
+                .map_err(Error::ImportInitrd)?;
 
             Some(InitrdInfo {
                 gpa: initrd_address,
-                size: cfg.initrd.len() as u64,
+                size: cfg.size,
             })
         }
         None => None,
@@ -253,10 +290,15 @@ fn import_initrd<R: GuestArch>(
 /// Load only a Linux kernel and optional initrd to VTL0.
 /// This does not setup register state or any other config information.
 ///
+/// The kernel image may be either an uncompressed ELF (`vmlinux`) or a
+/// compressed bzImage. If a bzImage is detected, the bzImage payload is
+/// loaded directly into guest memory and the kernel's own decompressor
+/// runs at boot time.
+///
 /// # Arguments
 ///
 /// * `importer` - The importer to use.
-/// * `kernel_image` - Uncompressed ELF image for the kernel.
+/// * `kernel_image` - Kernel image (uncompressed ELF or bzImage).
 /// * `kernel_minimum_start_address` - The minimum address the kernel can load at.
 ///   It cannot contain an entrypoint or program headers that refer to memory below this address.
 /// * `initrd` - The initrd config, optional.
@@ -267,14 +309,16 @@ pub fn load_kernel_and_initrd_x64<F>(
     initrd: Option<InitrdConfig<'_>>,
 ) -> Result<LoadInfo, Error>
 where
-    F: std::io::Read + std::io::Seek,
+    F: Read + Seek,
 {
     tracing::trace!(kernel_minimum_start_address, "loading x86_64 kernel");
-    let crate::elf::LoadInfo {
-        minimum_address_used: min_addr,
-        next_available_address: next_addr,
-        entrypoint,
-    } = load_static_elf(
+
+    if crate::bzimage::is_bzimage(kernel_image).map_err(Error::BzImage)? {
+        tracing::info!("detected bzImage format, loading via Linux boot protocol");
+        return load_bzimage(importer, kernel_image, kernel_minimum_start_address, initrd);
+    }
+
+    let elf_load_info = load_static_elf(
         importer,
         kernel_image,
         kernel_minimum_start_address,
@@ -284,6 +328,12 @@ where
         "linux-kernel",
     )
     .map_err(Error::ElfLoader)?;
+
+    let crate::elf::LoadInfo {
+        minimum_address_used: min_addr,
+        next_available_address: next_addr,
+        entrypoint,
+    } = elf_load_info;
     tracing::trace!(min_addr, next_addr, entrypoint, "loaded kernel");
 
     let initrd_info = import_initrd(initrd, next_addr, importer)?;
@@ -296,6 +346,70 @@ where
         },
         initrd: initrd_info,
         dtb: None,
+        bzimage_setup_header: None,
+    })
+}
+
+/// Load a bzImage by placing its payload directly into guest memory at the
+/// load address and following the Linux boot protocol. The kernel's built-in
+/// decompressor handles the rest at boot time.
+fn load_bzimage(
+    importer: &mut dyn ImageLoad<X86Register>,
+    kernel_image: &mut (impl Read + Seek),
+    kernel_start_address: u64,
+    initrd: Option<InitrdConfig<'_>>,
+) -> Result<LoadInfo, Error> {
+    let info = crate::bzimage::parse_bzimage(kernel_image).map_err(Error::BzImage)?;
+
+    check_address_alignment(kernel_start_address)?;
+
+    let payload_offset = (info.setup_sects as u64 + 1) * 512;
+    let payload_len = info.protected_mode_size;
+    let payload_memory_len = align_up_to_page_size(payload_len);
+    let entrypoint = kernel_start_address + info.entry_offset;
+
+    tracing::info!(
+        kernel_start_address = format_args!("{:#x}", kernel_start_address),
+        payload_offset,
+        payload_len,
+        entrypoint = format_args!("{:#x}", entrypoint),
+        "loading bzImage payload into guest memory"
+    );
+
+    ChunkBuf::new()
+        .import_file_region(
+            importer,
+            ImportFileRegion {
+                file: kernel_image,
+                file_offset: payload_offset,
+                file_length: payload_len,
+                gpa: kernel_start_address,
+                memory_length: payload_memory_len,
+                acceptance: BootPageAcceptance::Exclusive,
+                tag: "linux-kernel",
+            },
+        )
+        .map_err(Error::ImportBzImage)?;
+
+    // Place initrd after the kernel's init_size region to avoid being
+    // overwritten during decompression.
+    let next_addr = kernel_start_address + payload_memory_len;
+    let pref_address: u64 = info.setup_header.pref_address.into();
+    let init_end = kernel_start_address
+        .max(pref_address)
+        .saturating_add(info.init_size as u64);
+    let next_addr = next_addr.max(init_end);
+    let initrd_info = import_initrd(initrd, next_addr, importer)?;
+
+    Ok(LoadInfo {
+        kernel: KernelInfo {
+            gpa: kernel_start_address,
+            size: payload_memory_len,
+            entrypoint,
+        },
+        initrd: initrd_info,
+        dtb: None,
+        bzimage_setup_header: Some(info.setup_header),
     })
 }
 
@@ -388,6 +502,7 @@ pub fn load_config(
         &command_line,
         load_info.initrd.as_ref().map(|info| info.gpa).unwrap_or(0) as u32,
         load_info.initrd.as_ref().map(|info| info.size).unwrap_or(0) as u32,
+        load_info.bzimage_setup_header.as_ref(),
     );
     importer
         .import_pages(
@@ -432,10 +547,15 @@ pub fn load_config(
 
 /// Load a Linux kernel into VTL0.
 ///
+/// The kernel image may be either an uncompressed ELF (`vmlinux`) or a
+/// compressed bzImage. If a bzImage is detected, its protected-mode code
+/// is loaded directly into guest memory and the kernel's built-in
+/// decompressor handles the rest at boot time.
+///
 /// # Arguments
 ///
 /// * `importer` - The importer to use.
-/// * `kernel_image` - Uncompressed ELF image for the kernel.
+/// * `kernel_image` - Kernel image (uncompressed ELF or bzImage).
 /// * `kernel_minimum_start_address` - The minimum address the kernel can load at.
 ///   It cannot contain an entrypoint or program headers that refer to memory below this address.
 /// * `initrd` - The initrd config, optional.
@@ -454,7 +574,7 @@ pub fn load_x86<F>(
     registers: RegisterConfig,
 ) -> Result<LoadInfo, Error>
 where
-    F: std::io::Read + std::io::Seek,
+    F: Read + Seek,
 {
     let load_info =
         load_kernel_and_initrd_x64(importer, kernel_image, kernel_minimum_start_address, initrd)?;
@@ -566,7 +686,7 @@ pub fn load_kernel_and_initrd_arm64<F>(
     device_tree_blob: Option<&[u8]>,
 ) -> Result<LoadInfo, Error>
 where
-    F: std::io::Read + std::io::Seek,
+    F: Read + Seek,
 {
     tracing::trace!(kernel_minimum_start_address, "loading aarch64 kernel");
 
@@ -671,6 +791,7 @@ where
         },
         initrd: initrd_info,
         dtb,
+        bzimage_setup_header: None,
     })
 }
 

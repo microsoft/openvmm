@@ -184,21 +184,25 @@ async fn vmgs_file_two_keys(
 }
 
 #[cfg_attr(
-    not(with_encryption),
+    not(feature = "encryption"),
     expect(unused_mut),
     expect(unreachable_code),
     expect(unused_variables)
 )]
-async fn vmgs_two_keys(disk: Disk, first_key: &[u8], second_key: &[u8]) -> Result<Vmgs, Error> {
+async fn vmgs_two_keys(
+    disk: Disk,
+    first_key: &[u8; VMGS_ENCRYPTION_KEY_SIZE],
+    second_key: &[u8; VMGS_ENCRYPTION_KEY_SIZE],
+) -> Result<Vmgs, Error> {
     let mut vmgs = vmgs_create(disk, Some((EncryptionAlgorithm::AES_GCM, first_key))).await?;
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     {
         tracing::info!("Adding encryption key without removing old key");
         vmgs.test_add_new_encryption_key(second_key, EncryptionAlgorithm::AES_GCM)
             .await?;
     }
-    #[cfg(not(with_encryption))]
+    #[cfg(not(feature = "encryption"))]
     unreachable!("Encryption requires the encryption feature");
 
     Ok(vmgs)

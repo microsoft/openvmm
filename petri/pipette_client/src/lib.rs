@@ -97,6 +97,46 @@ impl PipetteClient {
         UnixShell::new(self)
     }
 
+    /// Mounts a filesystem inside the guest (Linux only).
+    pub async fn mount(
+        &self,
+        source: &str,
+        target: &str,
+        fstype: &str,
+        flags: u64,
+        mkdir_target: bool,
+    ) -> anyhow::Result<()> {
+        self.send
+            .call_failable(
+                PipetteRequest::Mount,
+                pipette_protocol::MountRequest {
+                    source: source.to_owned(),
+                    target: target.to_owned(),
+                    fstype: fstype.to_owned(),
+                    flags,
+                    mkdir_target,
+                },
+            )
+            .await
+            .context("failed to send mount request")?;
+        Ok(())
+    }
+
+    /// Prepares a chroot by bind-mounting `/proc`, `/dev`, and `/sys` into it,
+    /// and mounting a writable tmpfs at `/tmp`.
+    pub async fn prepare_chroot(&self, target: &str) -> anyhow::Result<()> {
+        // MS_BIND = 0x1000
+        const MS_BIND: u64 = 0x1000;
+        for dir in ["/proc", "/dev", "/sys"] {
+            let mount_target = format!("{target}{dir}");
+            self.mount(dir, &mount_target, "", MS_BIND, true).await?;
+        }
+        // Mount a writable tmpfs so tools like iperf3 can create temp files.
+        let tmp_target = format!("{target}/tmp");
+        self.mount("tmpfs", &tmp_target, "tmpfs", 0, true).await?;
+        Ok(())
+    }
+
     /// Returns an object used to launch a command inside the guest.
     ///
     /// TODO: this is a low-level interface. Make a high-level interface like

@@ -11,7 +11,6 @@ vm_resource.workspace = true
 
 inspect.workspace = true
 inspect_counters.workspace = true
-mesh.workspace = true
 net_backend.workspace = true
 net_backend_resources.workspace = true
 pal_async.workspace = true
@@ -24,12 +23,18 @@ vmcore.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 bitfield-struct.workspace = true
-futures.workspace = true
-futures-concurrency.workspace = true
 open_enum.workspace = true
-parking_lot.workspace = true
 thiserror.workspace = true
+tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+mesh.workspace = true
+pal_event.workspace = true
+parking_lot.workspace = true
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true

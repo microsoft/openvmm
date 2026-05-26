@@ -137,10 +137,21 @@ impl NvmeFaultController {
                 BarMemoryKind::Intercept(register_mmio.new_io_region("msix", msix.bar_len())),
             );
 
+        // Apply any hardware-config fault overrides for the IDs reported in
+        // PCI configuration space, falling back to the real values when no
+        // override is configured.
+        let hardware_config_fault = fault_configuration.hardware_config_fault.take();
+        let vendor_id = hardware_config_fault
+            .and_then(|f| f.vendor_id)
+            .unwrap_or(VENDOR_ID);
+        let device_id = hardware_config_fault
+            .and_then(|f| f.device_id)
+            .unwrap_or(0x00a9);
+
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
-                vendor_id: VENDOR_ID,
-                device_id: 0x00a9,
+                vendor_id,
+                device_id,
                 revision_id: 0,
                 prog_if: ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
                 sub_class: Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY,
@@ -149,6 +160,7 @@ impl NvmeFaultController {
                 type0_sub_system_id: 0,
             },
             vec![Box::new(msix_cap)],
+            Vec::new(),
             bars,
         );
 
@@ -193,11 +205,11 @@ impl NvmeFaultController {
     }
 
     /// Reads from the virtual BAR 0.
-    pub fn read_bar0(&mut self, addr: u16, data: &mut [u8]) -> IoResult {
+    pub fn read_bar0(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
         if data.len() < 4 {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
-        if addr & (data.len() - 1) as u16 != 0 {
+        if addr & (data.len() as u64 - 1) != 0 {
             return IoResult::Err(IoError::UnalignedAccess);
         }
 
@@ -251,7 +263,7 @@ impl NvmeFaultController {
     }
 
     /// Writes to the virtual BAR 0.
-    pub fn write_bar0(&mut self, addr: u16, data: &[u8]) -> IoResult {
+    pub fn write_bar0(&mut self, addr: u64, data: &[u8]) -> IoResult {
         if addr >= 0x1000 {
             // Doorbell write.
             let base = addr - 0x1000;
@@ -259,6 +271,9 @@ impl NvmeFaultController {
             if (db_id << DOORBELL_STRIDE_BITS) != base {
                 return IoResult::Err(InvalidRegister);
             }
+            let Ok(db_id) = u16::try_from(db_id) else {
+                return IoResult::Err(InvalidRegister);
+            };
             let Ok(data) = data.try_into() else {
                 return IoResult::Err(IoError::InvalidAccessSize);
             };
@@ -270,7 +285,7 @@ impl NvmeFaultController {
         if data.len() < 4 {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
-        if addr & (data.len() - 1) as u16 != 0 {
+        if addr & (data.len() as u64 - 1) != 0 {
             return IoResult::Err(IoError::UnalignedAccess);
         }
 

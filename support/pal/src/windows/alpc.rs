@@ -21,8 +21,9 @@ use std::time::Duration;
 use winapi::shared::ntstatus::STATUS_TIMEOUT;
 
 mod ntlpcapi {
-    #![expect(non_snake_case, dead_code)]
-
+    #![expect(non_snake_case)]
+    // TODO: Revert this ntapi fallback once windows/windows-sys provide a
+    // complete ALPC surface used by this module.
     pub use ntapi::ntlpcapi::*;
     use winapi::shared::ntdef::HANDLE;
     use winapi::shared::ntdef::NTSTATUS;
@@ -42,20 +43,7 @@ mod ntlpcapi {
     pub const ALPC_VIEWFLG_UNMAP_EXISTING: u32 = 0x00010000;
     pub const ALPC_VIEWFLG_AUTO_RELEASE: u32 = 0x00020000;
     pub const ALPC_VIEWFLG_SECURED_ACCESS: u32 = 0x00040000;
-
-    pub const OB_FILE_OBJECT_TYPE: u32 = 0x00000001;
-    pub const OB_THREAD_OBJECT_TYPE: u32 = 0x00000004;
-    pub const OB_SEMAPHORE_OBJECT_TYPE: u32 = 0x00000008;
-    pub const OB_EVENT_OBJECT_TYPE: u32 = 0x00000010;
-    pub const OB_PROCESS_OBJECT_TYPE: u32 = 0x00000020;
-    pub const OB_MUTANT_OBJECT_TYPE: u32 = 0x00000040;
-    pub const OB_SECTION_OBJECT_TYPE: u32 = 0x00000080;
-    pub const OB_REG_KEY_OBJECT_TYPE: u32 = 0x00000100;
-    pub const OB_TOKEN_OBJECT_TYPE: u32 = 0x00000200;
-    pub const OB_COMPOSITION_OBJECT_TYPE: u32 = 0x00000400;
-    pub const OB_JOB_OBJECT_TYPE: u32 = 0x00000800;
     pub const OB_ALL_OBJECT_TYPE_CODES: u32 = 0x00000ffd;
-
     // This is defined incorrectly in ntapi 0.3.6.
     unsafe extern "C" {
         pub fn AlpcInitializeMessageAttribute(
@@ -160,10 +148,10 @@ impl PortConfig {
         let port = unsafe {
             chk_status(NtAlpcCreatePort(
                 &mut port,
-                obj_attr.as_ptr(),
+                obj_attr.as_ptr().cast(),
                 &mut port_attr,
             ))?;
-            OwnedHandle::from_raw_handle(port)
+            OwnedHandle::from_raw_handle(port.cast())
         };
         Ok(Port(port))
     }
@@ -184,7 +172,7 @@ impl PortConfig {
         let port = unsafe {
             chk_status(NtAlpcConnectPortEx(
                 &mut port,
-                obj_attr.as_ptr(),
+                obj_attr.as_ptr().cast(),
                 null_mut(),
                 &mut port_attr,
                 0, // flags
@@ -199,7 +187,7 @@ impl PortConfig {
                 null_mut(),
                 null_mut(),
             ))?;
-            OwnedHandle::from_raw_handle(port)
+            OwnedHandle::from_raw_handle(port.cast())
         };
         Ok(Port(port))
     }
@@ -444,7 +432,7 @@ impl RecvMessage<'_> {
                 // with the a valid handle for the specified index.
                 let handle = unsafe {
                     chk_status(NtAlpcQueryInformationMessage(
-                        port.0.as_raw_handle(),
+                        port.0.as_raw_handle().cast::<c_void>(),
                         self.message.buf.as_ptr() as *mut _,
                         AlpcMessageHandleInformation,
                         std::ptr::from_mut(&mut info).cast(),
@@ -683,7 +671,7 @@ impl<'a> SendOperation<'a> {
         // SAFETY: calling NT API according to contract
         unsafe {
             chk_status(NtAlpcSendWaitReceivePort(
-                self.port.0.as_raw_handle(),
+                self.port.0.as_raw_handle().cast::<c_void>(),
                 if release {
                     ALPC_MSGFLG_RELEASE_MESSAGE
                 } else {
@@ -735,7 +723,7 @@ impl Port {
             let mut port = null_mut();
             chk_status(NtAlpcAcceptConnectPort(
                 &mut port,
-                self.0.as_raw_handle(),
+                self.0.as_raw_handle().cast::<c_void>(),
                 0,
                 null_mut(),
                 port_attr
@@ -748,7 +736,7 @@ impl Port {
                 accept.into(),
             ))?;
             let port = if accept {
-                Some(Port(OwnedHandle::from_raw_handle(port)))
+                Some(Port(OwnedHandle::from_raw_handle(port.cast())))
             } else {
                 None
             };
@@ -800,7 +788,7 @@ impl Port {
         // SAFETY: calling API according to contract
         unsafe {
             if chk_status(NtAlpcSendWaitReceivePort(
-                self.0.as_raw_handle(),
+                self.0.as_raw_handle().cast::<c_void>(),
                 0,
                 null_mut(),
                 null_mut(),
@@ -808,7 +796,7 @@ impl Port {
                 &mut message_len,
                 message.attributes.as_mut_ptr(),
                 if timeout.is_some() {
-                    std::ptr::from_mut::<i64>(&mut timeout_100ns).cast()
+                    std::ptr::from_mut(&mut timeout_100ns).cast()
                 } else {
                     null_mut()
                 },
@@ -862,15 +850,14 @@ impl Port {
     pub fn associate_iocp(&self, iocp: &IoCompletionPort, key: usize) -> io::Result<()> {
         let mut info = ALPC_PORT_ASSOCIATE_COMPLETION_PORT {
             CompletionKey: key as *mut c_void,
-            CompletionPort: iocp.as_handle().as_raw_handle(),
+            CompletionPort: iocp.as_handle().as_raw_handle().cast::<c_void>(),
         };
         // SAFETY: calling the API according to the contract.
         unsafe {
             chk_status(NtAlpcSetInformation(
-                self.0.as_raw_handle(),
+                self.0.as_raw_handle().cast::<c_void>(),
                 AlpcAssociateCompletionPortInformation,
-                std::ptr::from_mut::<ALPC_PORT_ASSOCIATE_COMPLETION_PORT>(&mut info)
-                    .cast::<c_void>(),
+                std::ptr::from_mut(&mut info).cast(),
                 size_of_val(&info) as u32,
             ))?;
             Ok(())
@@ -899,7 +886,7 @@ impl<'a> PortSection<'a> {
         unsafe {
             let mut actual_len = 0;
             chk_status(NtAlpcCreatePortSection(
-                port.0.as_raw_handle(),
+                port.0.as_raw_handle().cast(),
                 ALPC_VIEWFLG_SECURED_ACCESS,
                 null_mut(),
                 len,
@@ -926,7 +913,7 @@ impl<'a> PortSection<'a> {
                 ..std::mem::zeroed()
             };
             chk_status(NtAlpcCreateSectionView(
-                self.port.0.as_raw_handle(),
+                self.port.0.as_raw_handle().cast(),
                 0,
                 &mut attr,
             ))?;
@@ -944,7 +931,7 @@ impl Drop for PortSection<'_> {
         // SAFETY: the port and handle are known to be valid.
         unsafe {
             chk_status(NtAlpcDeletePortSection(
-                self.port.0.as_raw_handle(),
+                self.port.0.as_raw_handle().cast(),
                 0,
                 self.handle as *mut _,
             ))
@@ -1020,7 +1007,7 @@ impl Drop for PortSectionView<'_> {
             // SAFETY: The view is no longer in use and is known to be valid.
             unsafe {
                 chk_status(NtAlpcDeleteSectionView(
-                    self.port.0.as_raw_handle(),
+                    self.port.0.as_raw_handle().cast(),
                     0,
                     self.attr.ViewBase,
                 ))

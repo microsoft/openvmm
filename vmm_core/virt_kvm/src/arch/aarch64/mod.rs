@@ -14,7 +14,12 @@ use crate::KvmError;
 use crate::KvmPartition;
 use crate::KvmPartitionInner;
 use crate::KvmRunVpError;
+use crate::gsi::GsiRouting;
+use crate::gsi::KvmIrqFdState;
+use crate::gsi::MsiRouteBuilder;
 use aarch64defs::SystemReg;
+use aarch64defs::Vendor;
+use aarch64defs::gic::GicV2mRegister;
 use bitfield_struct::bitfield;
 use core::panic;
 use hvdef::Vtl;
@@ -25,11 +30,17 @@ use kvm::KVM_DEV_ARM_VGIC_CTRL_INIT;
 use kvm::KVM_DEV_ARM_VGIC_GRP_ADDR;
 use kvm::KVM_DEV_ARM_VGIC_GRP_CTRL;
 use kvm::KVM_DEV_ARM_VGIC_GRP_NR_IRQS;
+use kvm::KVM_VGIC_ITS_ADDR_TYPE;
+use kvm::KVM_VGIC_V2_ADDR_TYPE_CPU;
+use kvm::KVM_VGIC_V2_ADDR_TYPE_DIST;
 use kvm::KVM_VGIC_V3_ADDR_TYPE_DIST;
 use kvm::KVM_VGIC_V3_ADDR_TYPE_REDIST;
+use kvm::kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_ITS;
+use kvm::kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V2;
 use kvm::kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3;
 use kvm::kvm_regs;
 use kvm::user_pt_regs;
+use parking_lot::Mutex;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -45,6 +56,7 @@ use virt::vp::Registers;
 use virt::vp::SystemRegisters;
 use virt::x86::DebugState;
 use vm_topology::processor::aarch64::Aarch64VpInfo;
+use vm_topology::processor::aarch64::GicMsiController;
 use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::vmtime::VmTimeAccess;
 
@@ -178,6 +190,7 @@ open_enum::open_enum! {
         SYS_MAIR_EL1 = sys_reg64(SystemReg::MAIR_EL1),
         SYS_SPSR_EL1 = sys_reg64(SystemReg::SPSR_EL1),
         SYS_VBAR_EL1 = sys_reg64(SystemReg::VBAR),
+        SYS_ID_AA64PFR0_EL1 = sys_reg64(SystemReg::ID_AA64PFR0_EL1),
     }
 }
 
@@ -205,8 +218,58 @@ impl KvmVpInner {
     }
 }
 
+use vm_topology::processor::aarch64::GicVersion;
+
 #[derive(Debug)]
-pub struct Kvm;
+pub struct Kvm {
+    kvm: kvm::Kvm,
+    supports_gic_v3: bool,
+    supports_its: bool,
+}
+
+impl Kvm {
+    /// Opens `/dev/kvm` and probes whether the host supports GICv3 or GICv2.
+    pub fn new() -> Result<Self, KvmError> {
+        Self::from_kvm(kvm::Kvm::new()?.into())
+    }
+
+    /// Creates a `Kvm` from a pre-opened `/dev/kvm` file descriptor.
+    pub fn from_kvm(file: std::fs::File) -> Result<Self, KvmError> {
+        // Probe GIC version by creating a throwaway VM and attempting to
+        // create a GICv3 device. If that fails, try GICv2.
+        let kvm = kvm::Kvm::from(file);
+        let probe_vm = kvm.new_vm()?;
+        let supports_gic_v3 = if probe_vm
+            .test_create_device(kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3)
+            .is_ok()
+        {
+            true
+        } else if probe_vm
+            .test_create_device(kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V2)
+            .is_ok()
+        {
+            false
+        } else {
+            return Err(KvmError::NoGic);
+        };
+
+        tracing::info!(supports_gic_v3, "detected KVM GIC version");
+
+        // Probe ITS support: only available with GICv3.
+        let supports_its = supports_gic_v3
+            && probe_vm
+                .test_create_device(kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_ITS)
+                .is_ok();
+
+        tracing::info!(supports_its, "detected KVM ITS support");
+
+        Ok(Self {
+            kvm,
+            supports_gic_v3,
+            supports_its,
+        })
+    }
+}
 
 #[derive(InspectMut)]
 pub struct KvmProcessor<'a> {
@@ -434,9 +497,6 @@ impl virt::Processor for KvmProcessor<'_> {
                     kvm::Exit::Shutdown => {
                         return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
                     }
-                    kvm::Exit::Eoi { irq } => {
-                        dev.handle_eoi(irq.into());
-                    }
                     kvm::Exit::InternalError { error, .. } => {
                         return Err(dev.fatal_error(KvmRunVpError::InternalError(error).into()));
                     }
@@ -445,6 +505,28 @@ impl virt::Processor for KvmProcessor<'_> {
                     } => {
                         tracing::error!(hardware_entry_failure_reason, "VP entry failed");
                         return Err(dev.fatal_error(KvmRunVpError::InvalidVpState.into()));
+                    }
+                    kvm::Exit::SystemEvent {
+                        event_type,
+                        event_flags,
+                    } => {
+                        tracing::info!(event_type, event_flags, "system event");
+                        match event_type {
+                            kvm::KVM_SYSTEM_EVENT_SHUTDOWN => {
+                                return Err(VpHaltReason::PowerOff);
+                            }
+                            kvm::KVM_SYSTEM_EVENT_RESET => {
+                                return Err(VpHaltReason::Reset);
+                            }
+                            kvm::KVM_SYSTEM_EVENT_CRASH => {
+                                return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+                            }
+                            _ => {
+                                return Err(dev.fatal_error(
+                                    KvmRunVpError::UnhandledSystemEvent(event_type).into(),
+                                ));
+                            }
+                        }
                     }
                     _ => panic!("unhandled exit: {:?}", exit),
                 }
@@ -495,20 +577,20 @@ pub struct KvmProtoPartition<'a> {
 }
 
 impl KvmProtoPartition<'_> {
-    fn add_gicv3(&mut self) -> Result<(), KvmError> {
+    fn add_gicv3(&mut self, redistributors_base: u64) -> Result<kvm::Device, KvmError> {
         // KVM requires the distributor and redistributor bases be _64KiB aligned_,
         // these ranges come from the OpenVMM MMIO gaps.
         const GIC_ALIGNMENT: u64 = 0x10000;
         let gic_dist_base: u64 = self.config.processor_topology.gic_distributor_base();
-        let gic_redist_base: u64 = self.config.processor_topology.gic_redistributors_base();
         if !gic_dist_base.is_multiple_of(GIC_ALIGNMENT)
-            || !gic_redist_base.is_multiple_of(GIC_ALIGNMENT)
+            || !redistributors_base.is_multiple_of(GIC_ALIGNMENT)
         {
             return Err(KvmError::Misaligned);
         }
 
-        const GIC_NR_IRQS: u32 = 64;
-        const GIC_NR_SPIS: u32 = 32;
+        // KVM validates: 64 <= nr_irqs <= 1023 and must be a multiple of 32.
+        // 992 is the largest valid value (31 * 32).
+        let gic_nr_irqs: u32 = self.config.processor_topology.gic_nr_irqs();
 
         let gicv3 = self
             .vm
@@ -523,7 +605,7 @@ impl KvmProtoPartition<'_> {
                 .set_device_attr::<u64>(
                     KVM_DEV_ARM_VGIC_GRP_ADDR,
                     KVM_VGIC_V3_ADDR_TYPE_REDIST,
-                    &gic_redist_base,
+                    &redistributors_base,
                     0,
                 )
                 .map_err(kvm::Error::SetDeviceAttr)?;
@@ -544,7 +626,7 @@ impl KvmProtoPartition<'_> {
         // SAFETY: passing the right type for the attribute.
         unsafe {
             gicv3
-                .set_device_attr::<u32>(KVM_DEV_ARM_VGIC_GRP_NR_IRQS, 0, &GIC_NR_IRQS, 0)
+                .set_device_attr::<u32>(KVM_DEV_ARM_VGIC_GRP_NR_IRQS, 0, &gic_nr_irqs, 0)
                 .map_err(kvm::Error::SetDeviceAttr)?;
         }
 
@@ -562,9 +644,103 @@ impl KvmProtoPartition<'_> {
                 .map_err(kvm::Error::SetDeviceAttr)?;
         }
 
-        // TODO: save gicv3 to a File to ensure it is cleaned up.
-        std::mem::forget(gicv3);
-        Ok(())
+        Ok(gicv3)
+    }
+
+    fn add_gicv2(&mut self, cpu_interface_base: u64) -> Result<kvm::Device, KvmError> {
+        let gic_dist_base: u64 = self.config.processor_topology.gic_distributor_base();
+
+        let gic_nr_irqs: u32 = self.config.processor_topology.gic_nr_irqs();
+
+        let gicv2 = self
+            .vm
+            .create_device(kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V2, 0)
+            .map_err(kvm::Error::CreateDevice)?;
+
+        // SAFETY: passing the right type for the attribute.
+        unsafe {
+            gicv2
+                .set_device_attr::<u64>(
+                    KVM_DEV_ARM_VGIC_GRP_ADDR,
+                    KVM_VGIC_V2_ADDR_TYPE_DIST,
+                    &gic_dist_base,
+                    0,
+                )
+                .map_err(kvm::Error::SetDeviceAttr)?;
+        }
+
+        // SAFETY: passing the right type for the attribute.
+        unsafe {
+            gicv2
+                .set_device_attr::<u64>(
+                    KVM_DEV_ARM_VGIC_GRP_ADDR,
+                    KVM_VGIC_V2_ADDR_TYPE_CPU,
+                    &cpu_interface_base,
+                    0,
+                )
+                .map_err(kvm::Error::SetDeviceAttr)?;
+        }
+
+        // SAFETY: passing the right type for the attribute.
+        unsafe {
+            gicv2
+                .set_device_attr::<u32>(KVM_DEV_ARM_VGIC_GRP_NR_IRQS, 0, &gic_nr_irqs, 0)
+                .map_err(kvm::Error::SetDeviceAttr)?;
+        }
+
+        // Initialize the GICv2 device.
+        //
+        // SAFETY: passing the right type for the attribute.
+        unsafe {
+            gicv2
+                .set_device_attr::<()>(
+                    KVM_DEV_ARM_VGIC_GRP_CTRL,
+                    KVM_DEV_ARM_VGIC_CTRL_INIT,
+                    &(),
+                    0,
+                )
+                .map_err(kvm::Error::SetDeviceAttr)?;
+        }
+
+        Ok(gicv2)
+    }
+
+    fn add_its(&mut self, its_base: u64) -> Result<kvm::Device, KvmError> {
+        const ITS_ALIGNMENT: u64 = 0x10000;
+        if !its_base.is_multiple_of(ITS_ALIGNMENT) {
+            return Err(KvmError::Misaligned);
+        }
+
+        let its = self
+            .vm
+            .create_device(kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_ITS, 0)
+            .map_err(kvm::Error::CreateDevice)?;
+
+        // SAFETY: passing the right type for the attribute.
+        unsafe {
+            its.set_device_attr::<u64>(
+                KVM_DEV_ARM_VGIC_GRP_ADDR,
+                KVM_VGIC_ITS_ADDR_TYPE,
+                &its_base,
+                0,
+            )
+            .map_err(kvm::Error::SetDeviceAttr)?;
+        }
+
+        // Initialize the ITS device.
+        //
+        // SAFETY: passing the right type for the attribute.
+        unsafe {
+            its.set_device_attr::<()>(
+                KVM_DEV_ARM_VGIC_GRP_CTRL,
+                KVM_DEV_ARM_VGIC_CTRL_INIT,
+                &(),
+                0,
+            )
+            .map_err(kvm::Error::SetDeviceAttr)?;
+        }
+
+        Ok(its)
     }
 
     fn set_timer_ppis(&mut self, virt: u32, phys: u32) -> Result<(), KvmError> {
@@ -614,14 +790,48 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
             self.vm.add_vp(vp_idx as u32)?;
         }
 
-        // TODO: Save the GICv3 FD to a File to ensure it is cleaned up.
-        self.add_gicv3()?;
+        // Set up the GIC device matching the topology's GIC version.
+        let gic_device = match self.config.processor_topology.gic_version() {
+            GicVersion::V3 {
+                redistributors_base,
+            } => self.add_gicv3(redistributors_base)?,
+            GicVersion::V2 { cpu_interface_base } => self.add_gicv2(cpu_interface_base)?,
+        };
 
-        // Use the Hyper-V timers instead of the ARM architectural ones. TODO:
-        // make this configurable.
-        self.set_timer_ppis(20, 19)?;
+        // Create the ITS device after the GIC, if configured.
+        let gic_msi = self.config.processor_topology.gic_msi();
+        let its_device = if let GicMsiController::Its(its_info) = &gic_msi {
+            Some(self.add_its(its_info.its_base)?)
+        } else {
+            None
+        };
 
-        let partition = KvmPartitionInner {
+        // Configure the virtual timer PPI from topology. KVM also requires
+        // a physical timer PPI, but we don't expose it to the guest.
+        self.set_timer_ppis(
+            self.config.processor_topology.virt_timer_ppi(),
+            19, // KVM requires this; unused by the guest
+        )?;
+
+        let caps = {
+            let supports_aarch32_el0 = {
+                let pfr0 = self
+                    .vm
+                    .vp(0)
+                    .get_reg64(KvmRegisterId::SYS_ID_AA64PFR0_EL1.into())
+                    .map_err(KvmError::Kvm)?;
+                // ID_AA64PFR0_EL1 bits [3:0] (EL0) indicate aarch32 support.
+                // 0b0001 = aarch64 only, 0b0010 = aarch64 and aarch32.
+                pfr0 & 0xf == 2
+            };
+            PartitionCapabilities {
+                isolation: virt::IsolationType::None,
+                vendor: Vendor::ARM,
+                supports_aarch32_el0,
+            }
+        };
+
+        let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
             memory: Default::default(),
             hv1_enabled: self.config.hv_config.is_some(),
@@ -636,11 +846,19 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                     eval: false.into(),
                 })
                 .collect(),
-            caps: PartitionCapabilities {},
-        };
+            gsi_routing: Mutex::new(GsiRouting::new()),
+            caps,
+            _gic_device: gic_device,
+            _its_device: its_device,
+            gic_msi,
+            gic_nr_irqs: self.config.processor_topology.gic_nr_irqs(),
+            synic_ports: Default::default(),
+        });
 
         let partition = KvmPartition {
-            inner: Arc::new(partition),
+            synic_ports: Arc::new(virt::synic::SynicPorts::new(partition.clone())),
+            irqfd_state: Arc::new(KvmIrqFdState::new(partition.clone())),
+            inner: partition,
         };
 
         kvm::init();
@@ -678,6 +896,29 @@ impl virt::Partition for KvmPartition {
         tracelimit::warn_ratelimited!("msis not supported");
     }
 
+    fn as_signal_msi(&self, _minimum_vtl: Vtl) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
+        match &self.inner.gic_msi {
+            GicMsiController::Its(its) => Some(Arc::new(GicItsSignalMsi {
+                kvm: self.inner.clone(),
+                translater_addr: its.its_base + GITS_TRANSLATER_OFFSET,
+            })),
+            GicMsiController::V2m(v2m) => {
+                let irqcon = self.inner.clone() as Arc<dyn virt::irqcon::ControlGic>;
+                Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
+                    v2m, irqcon,
+                )))
+            }
+            GicMsiController::None => None,
+        }
+    }
+
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        if matches!(self.inner.gic_msi, GicMsiController::None) {
+            return None;
+        }
+        Some(self.irqfd_state.clone())
+    }
+
     fn request_yield(&self, vp_index: VpIndex) {
         let vp = &self.inner.vps[vp_index.index() as usize];
         if vp.needs_yield.request_yield() {
@@ -700,6 +941,10 @@ impl virt::Hv1 for KvmPartition {
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
     }
+
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic_ports.clone()
+    }
 }
 
 const KVM_ARM_IRQ_TYPE_PPI: u32 = 2;
@@ -708,29 +953,155 @@ const KVM_ARM_IRQ_TYPE_SHIFT: u32 = 24;
 const KVM_ARM_IRQ_NUM_MASK: u32 = 0xffff;
 
 const GIC_IRQ_BASE: u32 = 0x20;
-const GIC_IRQ_MAX: u32 = 0x3fb;
 
 impl virt::irqcon::ControlGic for KvmPartitionInner {
     fn set_spi_irq(&self, irq_id: u32, high: bool) {
-        // tracing::warn!("set_spi_irq: irq_id={}", irq_id);
-        debug_assert!(
-            (GIC_IRQ_BASE..=GIC_IRQ_MAX).contains(&irq_id),
-            "invalid irq_id"
-        );
+        if !(GIC_IRQ_BASE..self.gic_nr_irqs).contains(&irq_id) {
+            tracelimit::warn_ratelimited!(
+                irq_id,
+                high,
+                gic_nr_irqs = self.gic_nr_irqs,
+                "SPI IRQ out of configured range",
+            );
+            return;
+        }
 
         let irqchip_irq =
             (KVM_ARM_IRQ_TYPE_SPI << KVM_ARM_IRQ_TYPE_SHIFT) | ((irq_id) & KVM_ARM_IRQ_NUM_MASK);
 
-        self.kvm
-            .irq_line(irqchip_irq, high)
-            .expect("interrupt delivery failure");
+        if let Err(err) = self.kvm.irq_line(irqchip_irq, high) {
+            tracelimit::warn_ratelimited!(
+                irq_id,
+                high,
+                err = &err as &dyn std::error::Error,
+                "failed to set SPI IRQ",
+            );
+        }
     }
 }
 
 impl virt::Aarch64Partition for KvmPartition {
     fn control_gic(&self, vtl: Vtl) -> Arc<dyn virt::irqcon::ControlGic> {
-        debug_assert!(vtl == Vtl::Vtl0);
+        assert!(vtl == Vtl::Vtl0);
         self.inner.clone()
+    }
+}
+
+struct KvmGicV2mRouteBuilder;
+
+impl MsiRouteBuilder for KvmGicV2mRouteBuilder {
+    fn routing_entry(
+        &self,
+        partition: &KvmPartitionInner,
+        address: u64,
+        data: u32,
+        _devid: Option<u32>,
+    ) -> Option<kvm::RoutingEntry> {
+        let v2m = match &partition.gic_msi {
+            GicMsiController::V2m(v2m) => v2m,
+            _ => panic!("partition does not expose a GICv2m MSI frame"),
+        };
+        let setspi_addr = v2m.frame_base + GicV2mRegister::SETSPI_NS.0 as u64;
+        if address != setspi_addr {
+            return None;
+        }
+        if !(v2m.spi_base..v2m.spi_base + v2m.spi_count).contains(&data) {
+            return None;
+        }
+        // KVM expects the data to be the GIC SPI number, not the interrupt ID.
+        // TODO: centralize this constant.
+        Some(kvm::RoutingEntry::Irqchip { pin: data - 32 })
+    }
+}
+
+/// ITS MSI route builder for irqfd-based interrupt delivery.
+///
+/// The ITS GITS_TRANSLATER address is `its_base + 0x10040`. All MSI writes
+/// target this single address; the device ID distinguishes sources.
+struct KvmItsRouteBuilder {
+    /// GITS_TRANSLATER physical address.
+    translater_addr: u64,
+}
+
+/// Offset of the GITS_TRANSLATER register from the ITS base.
+/// It's in the second 64 KiB page at offset 0x40.
+const GITS_TRANSLATER_OFFSET: u64 = 0x10040;
+
+impl MsiRouteBuilder for KvmItsRouteBuilder {
+    fn routing_entry(
+        &self,
+        _partition: &KvmPartitionInner,
+        address: u64,
+        data: u32,
+        devid: Option<u32>,
+    ) -> Option<kvm::RoutingEntry> {
+        if address != self.translater_addr {
+            return None;
+        }
+        Some(kvm::RoutingEntry::Msi {
+            address_lo: address as u32,
+            address_hi: (address >> 32) as u32,
+            data,
+            devid,
+        })
+    }
+}
+
+/// A [`SignalMsi`](pci_core::msi::SignalMsi) implementation that injects MSIs
+/// via `KVM_SIGNAL_MSI` with the `KVM_MSI_VALID_DEVID` flag for ITS routing.
+struct GicItsSignalMsi {
+    kvm: Arc<KvmPartitionInner>,
+    /// GITS_TRANSLATER physical address.
+    translater_addr: u64,
+}
+
+impl pci_core::msi::SignalMsi for GicItsSignalMsi {
+    fn signal_msi(&self, devid: Option<u32>, address: u64, data: u32) {
+        if address != self.translater_addr {
+            tracelimit::warn_ratelimited!(
+                address,
+                data,
+                expected = self.translater_addr,
+                "unexpected MSI address (expected ITS GITS_TRANSLATER)"
+            );
+            return;
+        }
+        let (flags, raw_devid) = match devid {
+            Some(id) => (kvm::KVM_MSI_VALID_DEVID, id),
+            None => (0, 0),
+        };
+        let msi = kvm::kvm_msi {
+            address_lo: address as u32,
+            address_hi: (address >> 32) as u32,
+            data,
+            flags,
+            devid: raw_devid,
+            pad: [0; 12],
+        };
+        if let Err(err) = self.kvm.kvm.request_msi(&msi) {
+            tracelimit::warn_ratelimited!(
+                ?devid,
+                data,
+                err = &err as &dyn std::error::Error,
+                "failed to signal MSI via ITS"
+            );
+        }
+    }
+}
+
+impl virt::irqfd::IrqFd for KvmIrqFdState {
+    fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn virt::irqfd::IrqFdRoute>> {
+        match &self.partition.gic_msi {
+            GicMsiController::Its(its) => {
+                Ok(Box::new(self.new_irqfd_route(KvmItsRouteBuilder {
+                    translater_addr: its.its_base + GITS_TRANSLATER_OFFSET,
+                })?))
+            }
+            GicMsiController::V2m(_) => Ok(Box::new(self.new_irqfd_route(KvmGicV2mRouteBuilder)?)),
+            GicMsiController::None => {
+                anyhow::bail!("no MSI controller configured for irqfd")
+            }
+        }
     }
 }
 
@@ -744,13 +1115,17 @@ impl virt::PartitionAccessState for KvmPartition {
     }
 }
 
-impl virt::Synic for KvmPartition {
+impl virt::synic::Synic for KvmPartitionInner {
+    fn port_map(&self) -> &virt::synic::SynicPortMap {
+        unimplemented!()
+    }
+
     fn post_message(&self, _vtl: Vtl, _vp: VpIndex, _sint: u8, _typ: u32, _payload: &[u8]) {
         unimplemented!()
     }
 
     fn new_guest_event_port(
-        &self,
+        self: Arc<Self>,
         _vtl: Vtl,
         _vp: u32,
         _sint: u8,
@@ -769,11 +1144,11 @@ impl virt::Hypervisor for Kvm {
     type Partition = KvmPartition;
     type Error = KvmError;
 
-    fn is_available(&self) -> Result<bool, Self::Error> {
-        match std::fs::metadata("/dev/kvm") {
-            Ok(_) => Ok(true),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(KvmError::AvailableCheck(err)),
+    fn platform_info(&self) -> virt::PlatformInfo {
+        virt::PlatformInfo {
+            platform_gsiv: None,
+            supports_gic_v3: self.supports_gic_v3,
+            supports_its: self.supports_its,
         }
     }
 
@@ -785,20 +1160,27 @@ impl virt::Hypervisor for Kvm {
             return Err(KvmError::IsolationNotSupported);
         }
 
-        let kvm = kvm::Kvm::new()?;
-
         if let Some(hv_config) = &config.hv_config {
             if hv_config.vtl2.is_some() {
                 return Err(KvmError::Vtl2NotSupported);
             }
         }
 
-        let vm = kvm.new_vm()?;
+        let ipa_size = match self
+            .kvm
+            .check_extension(KVM_CAP_ARM_VM_IPA_SIZE)
+            .map_err(kvm::Error::CheckExtension)?
+        {
+            v if v > 0 => v as u8,
+            _ => 40,
+        };
+
+        let vm = self.kvm.new_vm()?;
 
         Ok(KvmProtoPartition {
             vm,
             config,
-            ipa_size: kvm.check_extension(KVM_CAP_ARM_VM_IPA_SIZE).unwrap_or(40) as u8,
+            ipa_size,
         })
     }
 }

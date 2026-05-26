@@ -20,7 +20,7 @@ pub trait RemoteDynamicResolvers: MeshPayload + Send + Sync + Clone + 'static {
     /// Worker ID string for this remote chipset device worker.
     const WORKER_ID_STR: &str;
 
-    #[allow(async_fn_in_trait)]
+    #[expect(async_fn_in_trait)]
     /// Register dynamic resolvers needed for remote chipset devices.
     async fn register_remote_dynamic_resolvers(
         self,

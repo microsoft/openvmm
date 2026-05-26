@@ -11,7 +11,7 @@ base64.workspace = true
 get_resources.workspace = true
 inspect = { workspace = true, features = ["derive"] }
 openhcl_attestation_protocol.workspace = true
-rsa.workspace = true
+rsa = { workspace = true, features = ["std", "encoding"] }
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true

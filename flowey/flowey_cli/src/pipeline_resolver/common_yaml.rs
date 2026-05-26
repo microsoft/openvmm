@@ -4,6 +4,7 @@
 //! Shared functionality for emitting a pipeline as ADO/GitHub YAML files
 
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
+use crate::cli::exec_snippet::SerializedRequest;
 use crate::cli::pipeline::CheckMode;
 use crate::pipeline_resolver::generic::ResolvedPipelineJob;
 use anyhow::Context;
@@ -16,6 +17,17 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::Path;
+
+/// The output of resolving a flow into a sequence of YAML steps (shared by ADO
+/// and GitHub resolvers).
+pub(crate) struct ResolvedFlowSteps {
+    /// The resolved YAML steps for this job.
+    pub steps: Vec<Value>,
+    /// The serialized request database, keyed by node module path.
+    pub request_db: BTreeMap<String, Vec<SerializedRequest>>,
+    /// The serialized config database, keyed by node module path.
+    pub config_db: BTreeMap<String, Vec<SerializedRequest>>,
+}
 
 #[derive(Debug)]
 pub(crate) enum FloweySource {

@@ -1,0 +1,22 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "vhost_user_protocol"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bitfield-struct.workspace = true
+open_enum.workspace = true
+pal_async.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+unix_socket.workspace = true
+zerocopy.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true

@@ -23,9 +23,11 @@ tmk_tests.workspace = true
 
 petri_artifacts_common.workspace = true
 petri.workspace = true
+inspect.workspace = true
 
 get_resources.workspace = true
 openvmm_defs.workspace = true
+openvmm_helpers.workspace = true
 disk_backend_resources.workspace = true
 hyperv_ic_resources.workspace = true
 memory_range.workspace = true

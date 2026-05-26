@@ -105,12 +105,6 @@ impl FlowNode for Node {
                             "
                         );
 
-                        // if running in CI, no need to waste time with incremental
-                        // build artifacts
-                        if !matches!(rt.backend(), FlowBackend::Local) {
-                            cmd = cmd.env("CARGO_INCREMENTAL", "0");
-                        }
-
                         for (k, v) in build_env {
                             cmd = cmd.env(k, v);
                         }

@@ -5,9 +5,9 @@
 //!
 //! Tests are windows only at the moment.
 
+use crate::common::CommonProfile;
+use crate::common::CommonTriple;
 use crate::run_cargo_build::CargoBuildOutput;
-use crate::run_cargo_build::common::CommonProfile;
-use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 
@@ -56,10 +56,16 @@ impl SimpleFlowNode for Node {
             vmgs_lib,
         } = request;
 
+        let ssl_pkg = match ctx.platform() {
+            FlowPlatform::Linux(
+                FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::AzureLinux,
+            ) => "openssl-devel",
+            _ => "libssl-dev",
+        };
         let pre_build_deps =
             [
                 ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: vec!["libssl-dev".into()],
+                    package_names: vec![ssl_pkg.into()],
                     done: v,
                 }),
             ]

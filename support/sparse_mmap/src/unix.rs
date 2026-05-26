@@ -95,6 +95,11 @@ impl SparseMapping {
     /// The range will be aligned to the largest system page size that's smaller
     /// or equal to `len`.
     pub fn new(len: usize) -> Result<Self, Error> {
+        Self::new_with_minimum_alignment(len, 1)
+    }
+
+    /// Reserves a sparse mapping range with at least the requested alignment.
+    pub fn new_with_minimum_alignment(len: usize, minimum_alignment: usize) -> Result<Self, Error> {
         trycopy::initialize_try_copy();
 
         // Length of 0 return an OS error, so we need to handle it explicitly.
@@ -104,17 +109,24 @@ impl SparseMapping {
                 "length must be greater than 0",
             ));
         }
+        if !minimum_alignment.is_power_of_two() {
+            return Err(Error::new(
+                io::ErrorKind::InvalidInput,
+                "alignment must be a power of two",
+            ));
+        }
 
         let size_4k = 4096;
         let size_2m = 0x200000;
         let size_1g = 0x40000000;
-        let alignment = if len < size_2m {
+        let default_alignment = if len < size_2m {
             size_4k
         } else if len < size_1g {
             size_2m
         } else {
             size_1g
         };
+        let alignment = default_alignment.max(minimum_alignment);
 
         let len = len
             .checked_add(alignment - 1)
@@ -336,6 +348,87 @@ impl SparseMapping {
         Ok(())
     }
 
+    /// Decommits a range of memory, releasing physical pages back to the host.
+    ///
+    /// The virtual address range remains accessible; the next access will get
+    /// fresh zero pages from the kernel.
+    pub fn decommit(&self, offset: usize, len: usize) -> Result<(), Error> {
+        let _ = self.validate_offset_len(offset, len)?;
+        if len == 0 {
+            return Ok(());
+        }
+        // SAFETY: the address and length have been validated above.
+        unsafe {
+            let addr = self.address.add(offset);
+            if libc::madvise(addr, len, libc::MADV_DONTNEED) < 0 {
+                return Err(Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
+    /// Marks a range as eligible for Transparent Huge Pages.
+    ///
+    /// This calls `madvise(MADV_HUGEPAGE)` so that khugepaged can collapse
+    /// small pages into huge pages. Only effective on anonymous mappings.
+    #[cfg(target_os = "linux")]
+    pub fn madvise_hugepage(&self, offset: usize, len: usize) -> Result<(), Error> {
+        let _ = self.validate_offset_len(offset, len)?;
+        if len == 0 {
+            return Ok(());
+        }
+        // SAFETY: the address and length have been validated above.
+        unsafe {
+            let addr = self.address.add(offset);
+            if libc::madvise(addr, len, libc::MADV_HUGEPAGE) < 0 {
+                return Err(Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
+    /// Names an anonymous mapping range so it appears as `[anon:name]` in
+    /// `/proc/{pid}/smaps` and related tools.
+    ///
+    /// Uses `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)`. If the prctl fails
+    /// (e.g. on older kernels), the error is silently ignored. No-op on
+    /// non-Linux platforms.
+    #[cfg(target_os = "linux")]
+    pub fn set_name(&self, offset: usize, len: usize, name: &str) {
+        if len == 0 {
+            return;
+        }
+        if self.validate_offset_len(offset, len).is_err() {
+            return;
+        }
+        let Ok(name) = std::ffi::CString::new(name) else {
+            return;
+        };
+        // SAFETY: address and length are validated, name is a valid CString.
+        unsafe {
+            libc::prctl(
+                libc::PR_SET_VMA,
+                libc::PR_SET_VMA_ANON_NAME,
+                self.address.add(offset),
+                len,
+                name.as_ptr(),
+            );
+        }
+    }
+
+    /// Names a mapping range for debugging. No-op on non-Linux Unix platforms.
+    #[cfg(not(target_os = "linux"))]
+    pub fn set_name(&self, _offset: usize, _len: usize, _name: &str) {}
+
+    /// Commits a range of memory, making it accessible.
+    ///
+    /// On Linux, this is a no-op because the kernel handles page faults
+    /// transparently for anonymous memory.
+    pub fn commit(&self, offset: usize, len: usize) -> Result<(), Error> {
+        let _ = self.validate_offset_len(offset, len)?;
+        Ok(())
+    }
+
     /// Unmaps memory from the mapping.
     pub fn unmap(&self, offset: usize, len: usize) -> io::Result<()> {
         let _ = self.validate_offset_len(offset, len)?;
@@ -374,20 +467,25 @@ impl Drop for SparseMapping {
     }
 }
 #[cfg(target_os = "linux")]
-fn new_memfd() -> io::Result<File> {
+fn new_memfd(name: &str, flags: libc::c_uint) -> io::Result<File> {
+    let name =
+        std::ffi::CString::new(name).map_err(|e| Error::new(io::ErrorKind::InvalidInput, e))?;
     // SAFETY: creating and truncating a new file descriptor according to
     // the documented contract.
     unsafe {
-        let fd = libc::memfd_create(c"mem".as_ptr(), libc::MFD_CLOEXEC).syscall_result()?;
+        let fd = libc::memfd_create(name.as_ptr(), flags).syscall_result()?;
         Ok(File::from_raw_fd(fd))
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn new_memfd() -> io::Result<File> {
-    let mut name = [0; 16];
-    getrandom::fill(&mut name).unwrap();
-    let mut name = format!("{:x}", u128::from_ne_bytes(name));
+fn new_memfd(_name: &str) -> io::Result<File> {
+    // Use a random name because shm_open creates objects in a global namespace.
+    // A predictable name would allow other processes to collide with or squat
+    // on the name. There is not enough room to include the user-provided name.
+    let mut rand = [0; 16];
+    getrandom::fill(&mut rand).unwrap();
+    let mut name = format!("{:x}", u128::from_ne_bytes(rand));
     // macOS limits the name length to 31 bytes, which is sufficient to ensure uniqueness.
     name.truncate(31);
     let name = std::ffi::CString::new(name).unwrap();
@@ -402,8 +500,65 @@ fn new_memfd() -> io::Result<File> {
 }
 
 /// Allocates a mappable shared memory object of `size` bytes.
-pub fn alloc_shared_memory(size: usize) -> io::Result<OwnedFd> {
-    let fd = new_memfd()?;
+///
+/// `name` labels the memfd so it appears as `/memfd:<name>` in
+/// `/proc/{pid}/smaps` on Linux.
+pub fn alloc_shared_memory(size: usize, name: &str) -> io::Result<OwnedFd> {
+    #[cfg(target_os = "linux")]
+    let fd = new_memfd(name, libc::MFD_CLOEXEC)?;
+    #[cfg(not(target_os = "linux"))]
+    let fd = new_memfd(name)?;
     fd.set_len(size as u64)?;
     Ok(fd.into())
+}
+
+/// Allocates a hugetlb mappable shared memory object of `size` bytes.
+///
+/// If `hugepage_size` is specified, it is encoded in the memfd flags using
+/// the Linux `MFD_HUGE_*` convention.
+#[cfg(target_os = "linux")]
+pub fn alloc_shared_memory_hugetlb(
+    size: usize,
+    name: &str,
+    hugepage_size: Option<usize>,
+) -> io::Result<OwnedFd> {
+    const MFD_HUGE_SHIFT: libc::c_uint = 26;
+
+    let mut flags = libc::MFD_CLOEXEC | libc::MFD_HUGETLB;
+    if let Some(hugepage_size) = hugepage_size {
+        if !hugepage_size.is_power_of_two() {
+            return Err(Error::new(
+                io::ErrorKind::InvalidInput,
+                "hugepage size must be a power of two",
+            ));
+        }
+        flags |= (hugepage_size.trailing_zeros() as libc::c_uint) << MFD_HUGE_SHIFT;
+    }
+
+    let fd = new_memfd(name, flags)?;
+    let size = libc::off_t::try_from(size).map_err(|_| {
+        Error::new(
+            io::ErrorKind::InvalidInput,
+            "hugetlb allocation size is too large",
+        )
+    })?;
+
+    // Unlike ftruncate, fallocate forces hugetlb page reservation now, so
+    // insufficient hugepage pools fail during guest RAM allocation instead of
+    // later when the lazy VA mapper first mmaps the memfd.
+    unsafe { libc::fallocate(fd.as_raw_fd(), 0, 0, size).syscall_result()? };
+    Ok(fd.into())
+}
+
+/// Allocates a hugetlb mappable shared memory object of `size` bytes.
+#[cfg(not(target_os = "linux"))]
+pub fn alloc_shared_memory_hugetlb(
+    _size: usize,
+    _name: &str,
+    _hugepage_size: Option<usize>,
+) -> io::Result<OwnedFd> {
+    Err(Error::new(
+        io::ErrorKind::Unsupported,
+        "hugetlb shared memory is only supported on Linux",
+    ))
 }

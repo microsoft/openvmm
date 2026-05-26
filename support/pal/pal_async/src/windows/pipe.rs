@@ -34,19 +34,19 @@ use std::ptr::null_mut;
 use std::task::Context;
 use std::task::Poll;
 use std::task::ready;
-use winapi::shared::winerror::ERROR_BROKEN_PIPE;
-use winapi::shared::winerror::ERROR_IO_PENDING;
-use winapi::shared::winerror::ERROR_NO_DATA;
-use winapi::shared::winerror::ERROR_PIPE_CONNECTED;
-use winapi::shared::winerror::ERROR_PIPE_NOT_CONNECTED;
-use winapi::um::fileapi::ReadFile;
-use winapi::um::ioapiset::CancelIoEx;
-use winapi::um::namedpipeapi::ConnectNamedPipe;
-use winapi::um::winbase::PIPE_NOWAIT;
-use winapi::um::winbase::PIPE_READMODE_MESSAGE;
-use winapi::um::winbase::PIPE_WAIT;
-use winapi::um::winnt::GENERIC_READ;
-use winapi::um::winnt::GENERIC_WRITE;
+use windows_sys::Win32::Foundation::ERROR_BROKEN_PIPE;
+use windows_sys::Win32::Foundation::ERROR_IO_PENDING;
+use windows_sys::Win32::Foundation::ERROR_NO_DATA;
+use windows_sys::Win32::Foundation::ERROR_PIPE_CONNECTED;
+use windows_sys::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED;
+use windows_sys::Win32::Foundation::GENERIC_READ;
+use windows_sys::Win32::Foundation::GENERIC_WRITE;
+use windows_sys::Win32::Storage::FileSystem::ReadFile;
+use windows_sys::Win32::System::IO::CancelIoEx;
+use windows_sys::Win32::System::Pipes::ConnectNamedPipe;
+use windows_sys::Win32::System::Pipes::PIPE_NOWAIT;
+use windows_sys::Win32::System::Pipes::PIPE_READMODE_MESSAGE;
+use windows_sys::Win32::System::Pipes::PIPE_WAIT;
 
 /// A Windows pipe, configured for polled IO.
 pub struct PolledPipe {

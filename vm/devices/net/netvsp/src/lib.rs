@@ -356,6 +356,7 @@ struct Adapter {
 
 struct QueueState {
     queue: Box<dyn net_backend::Queue>,
+    pool: BufferPool,
     rx_buffer_range: RxBufferRange,
     target_vp_set: bool,
 }
@@ -396,23 +397,57 @@ impl RxBufferRange {
     }
 }
 
+#[derive(Debug, Error)]
+enum RxBufferConfigError {
+    #[error("queue_count must be at least 1")]
+    ZeroQueueCount,
+    #[error("buffer_count must be >= RX_RESERVED_CONTROL_BUFFERS")]
+    InsufficientBuffers,
+    #[error("buffers_per_queue must not be 0")]
+    ZeroBuffersPerQueue,
+}
+
 struct RxBufferRanges {
     buffers_per_queue: u32,
     buffer_id_send: Vec<mpsc::UnboundedSender<u32>>,
 }
 
 impl RxBufferRanges {
-    fn new(buffer_count: u32, queue_count: u32) -> (Self, Vec<mpsc::UnboundedReceiver<u32>>) {
+    /// Validates that the given parameters produce a valid RX buffer configuration.
+    fn validate_params(buffer_count: u32, queue_count: u32) -> Result<u32, WorkerError> {
+        if queue_count == 0 {
+            return Err(WorkerError::InvalidRxBufferConfig(
+                RxBufferConfigError::ZeroQueueCount,
+            ));
+        }
+        if buffer_count < RX_RESERVED_CONTROL_BUFFERS {
+            return Err(WorkerError::InvalidRxBufferConfig(
+                RxBufferConfigError::InsufficientBuffers,
+            ));
+        }
         let buffers_per_queue = (buffer_count - RX_RESERVED_CONTROL_BUFFERS) / queue_count;
+        if buffers_per_queue == 0 {
+            return Err(WorkerError::InvalidRxBufferConfig(
+                RxBufferConfigError::ZeroBuffersPerQueue,
+            ));
+        }
+        Ok(buffers_per_queue)
+    }
+
+    fn new(
+        buffer_count: u32,
+        queue_count: u32,
+    ) -> Result<(Self, Vec<mpsc::UnboundedReceiver<u32>>), WorkerError> {
+        let buffers_per_queue = Self::validate_params(buffer_count, queue_count)?;
         #[expect(clippy::disallowed_methods)] // TODO
         let (send, recv): (Vec<_>, Vec<_>) = (0..queue_count).map(|_| mpsc::unbounded()).unzip();
-        (
+        Ok((
             Self {
                 buffers_per_queue,
                 buffer_id_send: send,
             },
             recv,
-        )
+        ))
     }
 }
 
@@ -511,6 +546,8 @@ struct QueueStats {
     tx_packets: Counter,
     tx_lso_packets: Counter,
     tx_checksum_packets: Counter,
+    tx_vlan_packets: Counter,
+    rx_vlan_packets: Counter,
     tx_invalid_lso_packets: Counter,
     tx_packets_per_wake: Histogram<10>,
     rx_packets_per_wake: Histogram<10>,
@@ -1139,7 +1176,10 @@ impl NicBuilder {
                 udp4: tx_offloads.udp,
                 udp6: tx_offloads.udp,
             },
-            lso4: tx_offloads.tso,
+            // LSOv4 requires both TSO and IPv4 header checksum support,
+            // because the TAP/virtio GSO engine needs a valid IPv4 header
+            // checksum that NDIS LSO packets don't provide.
+            lso4: tx_offloads.tso && tx_offloads.ipv4_header,
             lso6: tx_offloads.tso,
         };
 
@@ -1219,9 +1259,9 @@ impl Nic {
         }
     }
 
-    pub fn shutdown(self) -> Box<dyn Endpoint> {
+    pub fn shutdown(self) -> (Box<dyn Endpoint>, MacAddress) {
         let (state, _) = self.coordinator.into_inner();
-        state.endpoint
+        (state.endpoint, self.adapter.mac_address)
     }
 }
 
@@ -1331,7 +1371,15 @@ impl VmbusDevice for Nic {
             }
 
             // Note that this await is not restartable.
-            self.coordinator.task_mut().endpoint.stop().await;
+            self.coordinator
+                .task_mut()
+                .endpoint
+                .stop()
+                .instrument(tracing::info_span!(
+                    "stopping coordinator endpoint",
+                    instance_id = %self.instance_id,
+                ))
+                .await;
 
             // Keep any VF's added to the guest. This is required to keep guest compat as
             // some apps (such as DPDK) relies on the VF sticking around even after vmbus
@@ -1976,8 +2024,8 @@ enum WorkerError {
     MissingTransactionId,
     #[error("invalid gpadl")]
     InvalidGpadl(#[source] guestmem::InvalidGpn),
-    #[error("gpadl error")]
-    GpadlError(#[source] GuestMemoryError),
+    #[error("guest buffers error")]
+    GuestBuffers(#[source] buffers::GuestBuffersError),
     #[error("gpa direct error")]
     GpaDirectError(#[source] GuestMemoryError),
     #[error("endpoint")]
@@ -1992,8 +2040,8 @@ enum WorkerError {
     InvalidRndisState,
     #[error("rndis message type not implemented")]
     RndisMessageTypeNotImplemented,
-    #[error("invalid TCP header offset")]
-    InvalidTcpHeaderOffset,
+    #[error("invalid TCP header offset {0}")]
+    InvalidTcpHeaderOffset(u16),
     #[error("cancelled")]
     Cancelled(task_control::Cancelled),
     #[error("tearing down because send/receive buffer is revoked")]
@@ -2002,6 +2050,8 @@ enum WorkerError {
     EndpointRequiresQueueRestart(#[source] anyhow::Error),
     #[error("Failed to send message to coordinator")]
     CoordinatorMessageSendFailed(#[source] TrySendError<CoordinatorMessage>),
+    #[error("invalid rx buffer configuration: {0}")]
+    InvalidRxBufferConfig(#[source] RxBufferConfigError),
 }
 
 impl From<task_control::Cancelled> for WorkerError {
@@ -2224,8 +2274,8 @@ impl NvspMessage {
         // Note that vmbus packets are always 8-byte multiples, so round the
         // protocol package size up.
         let len = match self.size {
-            PacketSize::V1 => const { protocol::PACKET_SIZE_V1.next_multiple_of(8) / 8 },
-            PacketSize::V61 => const { protocol::PACKET_SIZE_V61.next_multiple_of(8) / 8 },
+            PacketSize::V1 => const { protocol::PACKET_SIZE_V1.div_ceil(8) },
+            PacketSize::V61 => const { protocol::PACKET_SIZE_V61.div_ceil(8) },
         };
         &self.buf[..len]
     }
@@ -2537,23 +2587,7 @@ impl<T: RingMem> NetChannel<T> {
                             .set_offload_ip_header_checksum(n.is_ipv4() && n.ip_header_checksum());
                         metadata.flags.set_is_ipv4(n.is_ipv4());
                         metadata.flags.set_is_ipv6(n.is_ipv6() && !n.is_ipv4());
-                        metadata.l2_len = ETHERNET_HEADER_LEN as u8;
-                        if metadata.flags.offload_tcp_checksum()
-                            || metadata.flags.offload_udp_checksum()
-                        {
-                            metadata.l3_len = if n.tcp_header_offset() >= metadata.l2_len as u16 {
-                                n.tcp_header_offset() - metadata.l2_len as u16
-                            } else if n.is_ipv4() {
-                                let mut reader = data.clone().reader(mem);
-                                reader.skip(metadata.l2_len as usize)?;
-                                let mut b = 0;
-                                reader.read(std::slice::from_mut(&mut b))?;
-                                (b as u16 >> 4) * 4
-                            } else {
-                                // Hope there are no extensions.
-                                40
-                            };
-                        }
+                        metadata.transport_header_offset = n.tcp_header_offset();
                     }
                     rndisprot::PPI_LSO => {
                         let n: rndisprot::TcpLsoInfo = d.reader(mem).read_plain()?;
@@ -2563,30 +2597,79 @@ impl<T: RingMem> NetChannel<T> {
                         metadata.flags.set_offload_ip_header_checksum(n.is_ipv4());
                         metadata.flags.set_is_ipv4(n.is_ipv4());
                         metadata.flags.set_is_ipv6(n.is_ipv6() && !n.is_ipv4());
-                        metadata.l2_len = ETHERNET_HEADER_LEN as u8;
-                        if n.tcp_header_offset() < metadata.l2_len as u16 {
-                            return Err(WorkerError::InvalidTcpHeaderOffset);
-                        }
-                        metadata.l3_len = n.tcp_header_offset() - metadata.l2_len as u16;
-                        metadata.l4_len = {
-                            let mut reader = data.clone().reader(mem);
-                            reader
-                                .skip(metadata.l2_len as usize + metadata.l3_len as usize + 12)?;
-                            let mut b = 0;
-                            reader.read(std::slice::from_mut(&mut b))?;
-                            (b >> 4) * 4
-                        };
-                        metadata.max_tcp_segment_size = n.mss() as u16;
+                        metadata.max_segment_size = n.mss() as u16;
+                        metadata.transport_header_offset = n.tcp_header_offset();
+                    }
+                    rndisprot::PPI_VLAN => {
+                        let n: rndisprot::EthVlanInfo = d.reader(mem).read_plain()?;
 
-                        if request.data_length >= rndisprot::LSO_MAX_OFFLOAD_SIZE {
-                            // Not strictly enforced.
-                            stats.tx_invalid_lso_packets.increment();
-                        }
+                        metadata.vlan = Some(n.into());
                     }
                     _ => {}
                 }
                 ppi = rest;
             }
+
+            metadata.l2_len = if metadata.vlan.is_some() {
+                net_backend::ETHERNET_VLAN_HEADER_LEN
+            } else {
+                net_backend::ETHERNET_HEADER_LEN
+            } as u8;
+
+            if metadata.flags.offload_tcp_checksum() || metadata.flags.offload_udp_checksum() {
+                // The offset must be set if we're handling checksums; we already know from the above logic
+                // that the L4 checksum-type will match the L4 protocol.
+                metadata.l3_len = if metadata.transport_header_offset == 0 {
+                    tracelimit::warn_ratelimited!("metadata.transport_header_offset was unset");
+                    if metadata.flags.is_ipv4() {
+                        net_backend::IPV4_MIN_HEADER_LEN
+                    } else if metadata.flags.is_ipv6() {
+                        net_backend::IPV6_MIN_HEADER_LEN
+                    } else {
+                        unreachable!("this packet is neither v4 nor v6?");
+                    }
+                } else if (metadata.transport_header_offset < metadata.l2_len as u16)
+                    || (metadata.flags.is_ipv4()
+                        && metadata.transport_header_offset
+                            < (metadata.l2_len as u16 + net_backend::IPV4_MIN_HEADER_LEN))
+                    || (metadata.flags.is_ipv6()
+                        && metadata.transport_header_offset
+                            < (metadata.l2_len as u16 + net_backend::IPV6_MIN_HEADER_LEN))
+                    || (metadata.transport_header_offset as u32 >= request.data_length)
+                {
+                    return Err(WorkerError::InvalidTcpHeaderOffset(
+                        metadata.transport_header_offset,
+                    ));
+                } else {
+                    metadata.transport_header_offset - metadata.l2_len as u16
+                }
+            }
+
+            if metadata.flags.offload_tcp_segmentation() {
+                const TCP_DOFF_BYTE_OFFSET: u32 = 12;
+                let tcp_hdr_doff_offset =
+                    u32::from(metadata.transport_header_offset) + TCP_DOFF_BYTE_OFFSET;
+                // Validate TCP header Data Offset 4 bit nibble within the packet data bounds.
+                if tcp_hdr_doff_offset >= request.data_length {
+                    return Err(WorkerError::InvalidTcpHeaderOffset(
+                        metadata.transport_header_offset,
+                    ));
+                }
+                metadata.l4_len = {
+                    let mut reader = data.clone().reader(mem);
+                    reader.skip(tcp_hdr_doff_offset as usize)?;
+                    let mut b = 0;
+                    reader.read(std::slice::from_mut(&mut b))?;
+                    (b >> 4) * 4
+                };
+
+                if request.data_length >= rndisprot::LSO_MAX_OFFLOAD_SIZE {
+                    // Not strictly enforced.
+                    stats.tx_invalid_lso_packets.increment();
+                }
+            }
+
+            // Issue #3453: USO support is not present. (https://github.com/microsoft/openvmm/issues/3453)
         }
 
         let start = segments.len();
@@ -2607,6 +2690,9 @@ impl<T: RingMem> NetChannel<T> {
         }
         if metadata.flags.offload_tcp_segmentation() {
             stats.tx_lso_packets.increment();
+        }
+        if metadata.vlan.is_some() {
+            stats.tx_vlan_packets.increment();
         }
 
         segments[start].ty = net_backend::TxSegmentType::Head(metadata);
@@ -2756,6 +2842,8 @@ impl<T: RingMem> NetChannel<T> {
                 error = &err as &dyn std::error::Error,
                 "Failed to notify guest that data path is now synthetic"
             );
+        } else {
+            tracing::info!("Switched data path to synthetic")
         }
     }
 
@@ -3247,8 +3335,6 @@ const DEFAULT_MTU: u32 = 1514;
 const MIN_MTU: u32 = DEFAULT_MTU;
 const MAX_MTU: u32 = 9216;
 
-const ETHERNET_HEADER_LEN: u32 = 14;
-
 impl Adapter {
     fn get_guest_vf_serial_number(&self, vfid: u32) -> u32 {
         if let Some(guest_os_id) = self.get_guest_os_id.as_ref().map(|f| f()) {
@@ -3368,7 +3454,7 @@ impl Adapter {
             rndisprot::Oid::OID_GEN_MAXIMUM_LOOKAHEAD
             | rndisprot::Oid::OID_GEN_CURRENT_LOOKAHEAD
             | rndisprot::Oid::OID_GEN_MAXIMUM_FRAME_SIZE => {
-                let len: u32 = buffers.ndis_config.mtu - ETHERNET_HEADER_LEN;
+                let len: u32 = buffers.ndis_config.mtu - net_backend::ETHERNET_HEADER_LEN;
                 writer.write(len.as_bytes())?;
             }
             rndisprot::Oid::OID_GEN_MAXIMUM_TOTAL_SIZE
@@ -3467,10 +3553,10 @@ impl Adapter {
                         },
                         ipv4_enabled: rndisprot::NDIS_OFFLOAD_SUPPORTED,
                         ipv4_encapsulation_type: rndisprot::NDIS_ENCAPSULATION_IEEE_802_3,
-                        ipv4_header_size: ETHERNET_HEADER_LEN,
+                        ipv4_header_size: net_backend::ETHERNET_HEADER_LEN,
                         ipv6_enabled: rndisprot::NDIS_OFFLOAD_SUPPORTED,
                         ipv6_encapsulation_type: rndisprot::NDIS_ENCAPSULATION_IEEE_802_3,
-                        ipv6_header_size: ETHERNET_HEADER_LEN,
+                        ipv6_header_size: net_backend::ETHERNET_HEADER_LEN,
                     }
                     .as_bytes()[..rndisprot::NDIS_SIZEOF_OFFLOAD_ENCAPSULATION_REVISION_1],
                 )?;
@@ -3578,7 +3664,7 @@ impl Adapter {
         if params.hash_secret_key_size != 40 {
             return Err(OidError::InvalidInput("hash_secret_key_size"));
         }
-        if params.indirection_table_size % 4 != 0 {
+        if params.indirection_table_size % 4 != 0 || params.indirection_table_size == 0 {
             return Err(OidError::InvalidInput("indirection_table_size"));
         }
         let indirection_table_size =
@@ -3700,13 +3786,13 @@ impl Adapter {
         )?;
         if encap.ipv4_enabled == rndisprot::NDIS_OFFLOAD_SET_ON
             && (encap.ipv4_encapsulation_type != rndisprot::NDIS_ENCAPSULATION_IEEE_802_3
-                || encap.ipv4_header_size != ETHERNET_HEADER_LEN)
+                || encap.ipv4_header_size != net_backend::ETHERNET_HEADER_LEN)
         {
             return Err(OidError::NotSupported("ipv4 encap"));
         }
         if encap.ipv6_enabled == rndisprot::NDIS_OFFLOAD_SET_ON
             && (encap.ipv6_encapsulation_type != rndisprot::NDIS_ENCAPSULATION_IEEE_802_3
-                || encap.ipv6_header_size != ETHERNET_HEADER_LEN)
+                || encap.ipv6_header_size != net_backend::ETHERNET_HEADER_LEN)
         {
             return Err(OidError::NotSupported("ipv6 encap"));
         }
@@ -3738,7 +3824,12 @@ impl Adapter {
                 let value = value.read_n::<u16>(info.value_length as usize / 2)?;
                 let value =
                     String::from_utf16(&value).map_err(|_| OidError::InvalidInput("value"))?;
-                let as_num = value.as_bytes().first().map_or(0, |c| c - b'0');
+                let as_num = value
+                    .as_bytes()
+                    .first()
+                    .map(|c| c.wrapping_sub(b'0'))
+                    .filter(|&c| c <= 9)
+                    .ok_or(OidError::InvalidInput("value as num"))?;
                 let tx = as_num & 1 != 0;
                 let rx = as_num & 2 != 0;
 
@@ -4407,6 +4498,57 @@ impl Coordinator {
     }
 
     async fn restart_queues(&mut self, c_state: &mut CoordinatorState) -> Result<(), WorkerError> {
+        // Pre-compute the active queue count and validate the rx buffer configuration
+        // before continuing with the queue restart work in this function.
+        // Invalid configurations are returned to the caller as errors.
+        let (num_queues, active_queues, active_queue_count) = if let Some(state) = self.workers[0]
+            .state()
+            .and_then(|worker| worker.state.ready())
+        {
+            let num_queues = state.state.primary.as_ref().unwrap().requested_num_queues;
+            let mut active_queues = Vec::new();
+            let active_queue_count = if let Some(rss_state) =
+                state.state.primary.as_ref().unwrap().rss_state.as_ref()
+            {
+                active_queues.clone_from(&rss_state.indirection_table);
+                active_queues.sort();
+                active_queues.dedup();
+                active_queues = active_queues
+                    .into_iter()
+                    .filter(|&index| index < num_queues)
+                    .collect::<Vec<_>>();
+                if !active_queues.is_empty() {
+                    active_queues.len() as u16
+                } else {
+                    tracelimit::warn_ratelimited!(
+                        num_queues,
+                        indirection_table_len = rss_state.indirection_table.len(),
+                        "RSS indirection table has no entries within the valid queue range, falling back to num_queues",
+                    );
+                    num_queues
+                }
+            } else {
+                num_queues
+            };
+
+            RxBufferRanges::validate_params(
+                state.buffers.recv_buffer.count,
+                active_queue_count.into(),
+            )?;
+
+            GuestBuffers::validate_config(
+                &state.buffers.recv_buffer.gpadl,
+                state.buffers.recv_buffer.sub_allocation_size,
+                state.buffers.ndis_config.mtu,
+            )
+            .map_err(WorkerError::GuestBuffers)?;
+
+            (num_queues, active_queues, active_queue_count)
+        } else {
+            // No ready state; restart_queues will return Ok(()).
+            (0, Vec::new(), 0)
+        };
+
         // Drop all the queues and stop the endpoint. Collect the worker drivers to pass to the queues.
         let drivers = self
             .workers
@@ -4440,45 +4582,25 @@ impl Coordinator {
         // Save the channel buffers for use in the subchannel workers.
         self.buffers = Some(state.buffers.clone());
 
-        let num_queues = state.state.primary.as_ref().unwrap().requested_num_queues;
-        let mut active_queues = Vec::new();
-        let active_queue_count =
-            if let Some(rss_state) = state.state.primary.as_ref().unwrap().rss_state.as_ref() {
-                // Active queue count is computed as the number of unique entries in the indirection table
-                active_queues.clone_from(&rss_state.indirection_table);
-                active_queues.sort();
-                active_queues.dedup();
-                active_queues = active_queues
-                    .into_iter()
-                    .filter(|&index| index < num_queues)
-                    .collect::<Vec<_>>();
-                if !active_queues.is_empty() {
-                    active_queues.len() as u16
-                } else {
-                    tracelimit::warn_ratelimited!("Invalid RSS indirection table");
-                    num_queues
-                }
-            } else {
-                num_queues
-            };
-
         // Distribute the rx buffers to only the active queues.
         let (ranges, mut remote_buffer_id_recvs) =
-            RxBufferRanges::new(state.buffers.recv_buffer.count, active_queue_count.into());
+            RxBufferRanges::new(state.buffers.recv_buffer.count, active_queue_count.into())?;
         let ranges = Arc::new(ranges);
 
         let mut queues = Vec::new();
         let mut rx_buffers = Vec::new();
+        let mut per_queue_rx: Vec<Vec<RxId>> = Vec::new();
+        let guest_buffers;
         {
             let buffers = &state.buffers;
-            let guest_buffers = Arc::new(
+            guest_buffers = Arc::new(
                 GuestBuffers::new(
                     buffers.mem.clone(),
                     buffers.recv_buffer.gpadl.clone(),
                     buffers.recv_buffer.sub_allocation_size,
                     buffers.ndis_config.mtu,
                 )
-                .map_err(WorkerError::GpadlError)?,
+                .map_err(WorkerError::GuestBuffers)?,
             );
 
             // Get the list of free rx buffers from each task, then partition
@@ -4507,10 +4629,9 @@ impl Coordinator {
                     // indirection table, it is assigned just the reserved
                     // buffers.
                     queue_config.push(QueueConfig {
-                        pool: Box::new(BufferPool::new(guest_buffers.clone())),
-                        initial_rx: &[],
                         driver: Box::new(drivers[0].clone()),
                     });
+                    per_queue_rx.push(Vec::new());
                     rx_buffers.push(RxBufferRange::new(
                         ranges.clone(),
                         0..RX_RESERVED_CONTROL_BUFFERS,
@@ -4543,10 +4664,9 @@ impl Coordinator {
 
                     let (this, rest) = initial_rx.split_at(end);
                     queue_config.push(QueueConfig {
-                        pool: Box::new(BufferPool::new(guest_buffers.clone())),
-                        initial_rx: this,
                         driver: Box::new(drivers[queue_index as usize].clone()),
                     });
+                    per_queue_rx.push(this.to_vec());
                     initial_rx = rest;
                     rx_buffers.push(RxBufferRange::new(
                         ranges.clone(),
@@ -4589,9 +4709,20 @@ impl Coordinator {
 
         self.active_packet_filter = self.workers[0].state().unwrap().channel.packet_filter;
         // Provide the queue and receive buffer ranges for each worker.
-        for ((worker, queue), rx_buffer) in self.workers.iter_mut().zip(queues).zip(rx_buffers) {
+        for (((worker, mut queue), rx_buffer), initial) in self
+            .workers
+            .iter_mut()
+            .zip(queues)
+            .zip(rx_buffers)
+            .zip(per_queue_rx)
+        {
+            let mut pool = BufferPool::new(guest_buffers.clone());
+            if !initial.is_empty() {
+                queue.rx_avail(&mut pool, &initial);
+            }
             worker.task_mut().queue_state = Some(QueueState {
                 queue,
+                pool,
                 target_vp_set: false,
                 rx_buffer_range: rx_buffer,
             });
@@ -5029,10 +5160,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
         if !state.pending_rx_packets.is_empty()
             && self.packet_filter != rndisprot::NDIS_PACKET_TYPE_NONE
         {
-            let epqueue = queue_state.queue.as_mut();
             let (front, back) = state.pending_rx_packets.as_slices();
-            epqueue.rx_avail(front);
-            epqueue.rx_avail(back);
+            queue_state.queue.rx_avail(&mut queue_state.pool, front);
+            queue_state.queue.rx_avail(&mut queue_state.pool, back);
             state.pending_rx_packets.clear();
         }
 
@@ -5123,10 +5253,21 @@ impl<T: 'static + RingMem> NetChannel<T> {
             };
 
             let did_some_work = (!ring_full
-                && self.process_endpoint_rx(buffers, state, data, queue_state.queue.as_mut())?)
+                && self.process_endpoint_rx(
+                    buffers,
+                    state,
+                    data,
+                    queue_state.queue.as_mut(),
+                    &mut queue_state.pool,
+                )?)
                 | self.process_ring_buffer(buffers, state, data, queue_state)?
                 | (!ring_full
-                    && self.process_endpoint_tx(state, data, queue_state.queue.as_mut())?)
+                    && self.process_endpoint_tx(
+                        state,
+                        data,
+                        queue_state.queue.as_mut(),
+                        &mut queue_state.pool,
+                    )?)
                 | self.transmit_pending_segments(state, data, queue_state)?
                 | self.send_pending_packets(state)?;
 
@@ -5149,7 +5290,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         // guest cannot keep up with the load.
                         if !ring_full {
                             // Check the network endpoint for tx completion or rx.
-                            if queue_state.queue.poll_ready(cx).is_ready() {
+                            if queue_state
+                                .queue
+                                .poll_ready(cx, &mut queue_state.pool)
+                                .is_ready()
+                            {
                                 tracing::trace!("endpoint ready");
                                 return Poll::Ready(None);
                             }
@@ -5195,7 +5340,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
                                 remote_buffer_id_recv.poll_next_unpin(cx)
                             {
                                 if id >= RX_RESERVED_CONTROL_BUFFERS {
-                                    queue_state.queue.rx_avail(&[RxId(id)]);
+                                    queue_state
+                                        .queue
+                                        .rx_avail(&mut queue_state.pool, &[RxId(id)]);
                                 } else {
                                     state
                                         .primary
@@ -5229,15 +5376,18 @@ impl<T: 'static + RingMem> NetChannel<T> {
         state: &mut ActiveState,
         data: &mut ProcessingData,
         epqueue: &mut dyn net_backend::Queue,
+        pool: &mut BufferPool,
     ) -> Result<bool, WorkerError> {
         let n = epqueue
-            .rx_poll(&mut data.rx_ready)
+            .rx_poll(pool, &mut data.rx_ready)
             .map_err(WorkerError::Endpoint)?;
+
         if n == 0 {
             return Ok(false);
         }
 
         state.stats.rx_packets_per_wake.add_sample(n as u64);
+        state.stats.rx_vlan_packets.add(pool.take_rx_vlan_count());
 
         if self.packet_filter == rndisprot::NDIS_PACKET_TYPE_NONE {
             tracing::trace!(
@@ -5282,7 +5432,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 state.stats.rx_dropped_ring_full.add(n as u64);
 
                 state.rx_bufs.free(data.rx_ready[0].0);
-                epqueue.rx_avail(&data.rx_ready[..n]);
+                epqueue.rx_avail(pool, &data.rx_ready[..n]);
             }
         }
 
@@ -5294,9 +5444,10 @@ impl<T: 'static + RingMem> NetChannel<T> {
         state: &mut ActiveState,
         data: &mut ProcessingData,
         epqueue: &mut dyn net_backend::Queue,
+        pool: &mut BufferPool,
     ) -> Result<bool, WorkerError> {
         // Drain completed transmits.
-        let result = epqueue.tx_poll(&mut data.tx_done);
+        let result = epqueue.tx_poll(pool, &mut data.tx_done);
 
         match result {
             Ok(n) => {
@@ -5440,7 +5591,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             &mut data.rx_done,
                         )
                         .ok_or(WorkerError::InvalidRndisPacketCompletion)?;
-                    queue_state.queue.rx_avail(&data.rx_done);
+                    queue_state
+                        .queue
+                        .rx_avail(&mut queue_state.pool, &data.rx_done);
                 }
                 PacketData::SubChannelRequest(request) if state.primary.is_some() => {
                     let mut subchannel_count = 0;
@@ -5449,8 +5602,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     // the subchannels plus the primary channel must fit within the max_queues value,
                     // which means subchannels + 1 ≤ max_queues, so the subchannel count must be
                     // strictly less than max_queues.
+                    let num_queues = request.num_sub_channels + 1;
                     let status = if request.operation == protocol::SubchannelOperation::ALLOCATE
                         && request.num_sub_channels < self.adapter.max_queues.into()
+                        && RxBufferRanges::validate_params(buffers.recv_buffer.count, num_queues)
+                            .is_ok()
                     {
                         subchannel_count = request.num_sub_channels;
                         protocol::Status::SUCCESS
@@ -5459,6 +5615,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             operation = ?request.operation,
                             request_sub_channels = request.num_sub_channels,
                             max_supported_sub_channels = self.adapter.max_queues - 1,
+                            recv_buffer_count = buffers.recv_buffer.count,
                             "Subchannel request failed: either operation is not supported or requested more subchannels than supported"
                         );
                         protocol::Status::FAILURE
@@ -5558,7 +5715,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         let segments = &data.tx_segments[data.tx_segments_sent..];
         let (sync, segments_sent) = queue_state
             .queue
-            .tx_avail(segments)
+            .tx_avail(&mut queue_state.pool, segments)
             .map_err(WorkerError::Endpoint)?;
 
         let mut segments = &segments[..segments_sent];

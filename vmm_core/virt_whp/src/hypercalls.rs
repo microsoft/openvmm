@@ -22,17 +22,15 @@ use std::iter::zip;
 use std::ops::RangeInclusive;
 use virt::PageVisibility;
 use virt::VpIndex;
-use virt::io::CpuIo;
 #[cfg(guest_arch = "x86_64")]
 use x86 as arch;
 
-pub(crate) struct WhpHypercallExit<'a, 'b, T> {
+pub(crate) struct WhpHypercallExit<'a, 'b> {
     vp: &'a mut WhpProcessor<'b>,
-    bus: &'a T,
     registers: arch::WhpHypercallRegisters<'a>,
 }
 
-impl<T: CpuIo> WhpHypercallExit<'_, '_, T> {
+impl WhpHypercallExit<'_, '_> {
     const DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [
@@ -69,13 +67,15 @@ impl<T: CpuIo> WhpHypercallExit<'_, '_, T> {
     );
 }
 
-impl<T: CpuIo> hv1_hypercall::PostMessage for WhpHypercallExit<'_, '_, T> {
+impl hv1_hypercall::PostMessage for WhpHypercallExit<'_, '_> {
     fn post_message(&mut self, connection_id: u32, message: &[u8]) -> hvdef::HvResult<()> {
         tracing::trace!(connection_id, "post_message");
-        match self
-            .bus
-            .post_synic_message(self.vp.state.active_vtl, connection_id, false, message)
-        {
+        match self.vp.vp.partition.synic_ports.handle_post_message(
+            self.vp.state.active_vtl,
+            connection_id,
+            false,
+            message,
+        ) {
             Err(HvError::InvalidConnectionId) => {
                 if let Some(intercept_state) = self.vp.intercept_state() {
                     if intercept_state.contains(vtl2::InterceptType::UnknownSynicConnection)
@@ -92,12 +92,13 @@ impl<T: CpuIo> hv1_hypercall::PostMessage for WhpHypercallExit<'_, '_, T> {
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::SignalEvent for WhpHypercallExit<'_, '_, T> {
+impl hv1_hypercall::SignalEvent for WhpHypercallExit<'_, '_> {
     fn signal_event(&mut self, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
-        match self
-            .bus
-            .signal_synic_event(self.vp.state.active_vtl, connection_id, flag)
-        {
+        match self.vp.vp.partition.synic_ports.handle_signal_event(
+            self.vp.state.active_vtl,
+            connection_id,
+            flag,
+        ) {
             Err(HvError::InvalidConnectionId) => {
                 if let Some(intercept_state) = self.vp.intercept_state() {
                     if intercept_state.contains(vtl2::InterceptType::UnknownSynicConnection)
@@ -114,7 +115,7 @@ impl<T: CpuIo> hv1_hypercall::SignalEvent for WhpHypercallExit<'_, '_, T> {
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::PostMessageDirect for WhpHypercallExit<'_, '_, T> {
+impl hv1_hypercall::PostMessageDirect for WhpHypercallExit<'_, '_> {
     fn post_message_direct(
         &mut self,
         partition_id: u64,
@@ -147,7 +148,7 @@ impl<T: CpuIo> hv1_hypercall::PostMessageDirect for WhpHypercallExit<'_, '_, T> 
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::SignalEventDirect for WhpHypercallExit<'_, '_, T> {
+impl hv1_hypercall::SignalEventDirect for WhpHypercallExit<'_, '_> {
     fn signal_event_direct(
         &mut self,
         partition_id: u64,
@@ -228,7 +229,7 @@ impl<T: CpuIo> hv1_hypercall::SignalEventDirect for WhpHypercallExit<'_, '_, T> 
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::GetVpRegisters for WhpHypercallExit<'_, '_, T> {
+impl hv1_hypercall::GetVpRegisters for WhpHypercallExit<'_, '_> {
     fn get_vp_registers(
         &mut self,
         partition_id: u64,
@@ -258,7 +259,7 @@ impl<T: CpuIo> hv1_hypercall::GetVpRegisters for WhpHypercallExit<'_, '_, T> {
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::SetVpRegisters for WhpHypercallExit<'_, '_, T> {
+impl hv1_hypercall::SetVpRegisters for WhpHypercallExit<'_, '_> {
     fn set_vp_registers(
         &mut self,
         partition_id: u64,
@@ -290,7 +291,7 @@ impl<T: CpuIo> hv1_hypercall::SetVpRegisters for WhpHypercallExit<'_, '_, T> {
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::InstallIntercept for WhpHypercallExit<'_, '_, T> {
+impl hv1_hypercall::InstallIntercept for WhpHypercallExit<'_, '_> {
     fn install_intercept(
         &mut self,
         partition_id: u64,
@@ -389,7 +390,7 @@ impl<T: CpuIo> hv1_hypercall::InstallIntercept for WhpHypercallExit<'_, '_, T> {
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::ModifyVtlProtectionMask for WhpHypercallExit<'_, '_, T> {
+impl hv1_hypercall::ModifyVtlProtectionMask for WhpHypercallExit<'_, '_> {
     fn modify_vtl_protection_mask(
         &mut self,
         partition_id: u64,
@@ -573,7 +574,7 @@ impl<T: CpuIo> hv1_hypercall::ModifyVtlProtectionMask for WhpHypercallExit<'_, '
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::AcceptGpaPages for WhpHypercallExit<'_, '_, T> {
+impl hv1_hypercall::AcceptGpaPages for WhpHypercallExit<'_, '_> {
     fn accept_gpa_pages(
         &mut self,
         partition_id: u64,
@@ -638,7 +639,7 @@ impl<T: CpuIo> hv1_hypercall::AcceptGpaPages for WhpHypercallExit<'_, '_, T> {
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercallExit<'_, '_, T> {
+impl hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercallExit<'_, '_> {
     fn modify_gpa_visibility(
         &mut self,
         partition_id: u64,
@@ -691,7 +692,7 @@ impl<T: CpuIo> hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercall
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::VbsVmCallReport for WhpHypercallExit<'_, '_, T> {
+impl hv1_hypercall::VbsVmCallReport for WhpHypercallExit<'_, '_> {
     fn vbs_vm_call_report(&self, _report_data: &[u8]) -> hvdef::HvResult<VbsVmCallReportOutput> {
         // For now, we return a dummy report.
         // TODO: Implement actual VBS VM call report generation based on report_data.
@@ -733,7 +734,7 @@ mod x86 {
     use std::sync::atomic::Ordering;
     use tracing_helpers::ErrorValueExt;
     use virt::VpIndex;
-    use virt::io::CpuIo;
+
     use virt_support_x86emu::translate::TranslateFlags;
     use virt_support_x86emu::translate::TranslateResult;
     use virt_support_x86emu::translate::translate_gva_to_gpa;
@@ -754,7 +755,7 @@ mod x86 {
         exit_context: &'a whp::abi::WHV_VP_EXIT_CONTEXT,
     }
 
-    impl<T> hv1_hypercall::X64RegisterState for WhpHypercallExit<'_, '_, T> {
+    impl hv1_hypercall::X64RegisterState for WhpHypercallExit<'_, '_> {
         fn rip(&mut self) -> u64 {
             self.registers.rip
         }
@@ -799,7 +800,7 @@ mod x86 {
         }
     }
 
-    impl<'a, 'b, T: CpuIo> WhpHypercallExit<'a, 'b, T> {
+    impl<'a, 'b> WhpHypercallExit<'a, 'b> {
         pub(super) fn reflect_to_vtl2(&mut self) {
             let regs = &mut self.registers;
 
@@ -827,7 +828,6 @@ mod x86 {
 
         pub fn handle(
             vp: &'a mut WhpProcessor<'b>,
-            bus: &'a T,
             info: &whp::abi::WHV_HYPERCALL_CONTEXT,
             exit_context: &'a whp::abi::WHV_VP_EXIT_CONTEXT,
         ) {
@@ -844,7 +844,7 @@ mod x86 {
                 invalid_opcode: false,
                 exit_context,
             };
-            let mut this = Self { vp, bus, registers };
+            let mut this = Self { vp, registers };
 
             WhpHypercallExit::DISPATCHER.dispatch(
                 &vpref.partition.gm,
@@ -915,7 +915,7 @@ mod x86 {
         }
     }
 
-    impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt for WhpHypercallExit<'_, '_, T> {
+    impl hv1_hypercall::RetargetDeviceInterrupt for WhpHypercallExit<'_, '_> {
         fn retarget_interrupt(
             &mut self,
             device_id: u64,
@@ -952,7 +952,7 @@ mod x86 {
         }
     }
 
-    impl<T: CpuIo> hv1_hypercall::GetVpIndexFromApicId for WhpHypercallExit<'_, '_, T> {
+    impl hv1_hypercall::GetVpIndexFromApicId for WhpHypercallExit<'_, '_> {
         fn get_vp_index_from_apic_id(
             &mut self,
             partition_id: u64,
@@ -989,8 +989,8 @@ mod x86 {
         }
     }
 
-    impl<T: CpuIo> hv1_hypercall::StartVirtualProcessor<hvdef::hypercall::InitialVpContextX64>
-        for WhpHypercallExit<'_, '_, T>
+    impl hv1_hypercall::StartVirtualProcessor<hvdef::hypercall::InitialVpContextX64>
+        for WhpHypercallExit<'_, '_>
     {
         fn start_virtual_processor(
             &mut self,
@@ -1025,7 +1025,7 @@ mod x86 {
             Ok(())
         }
     }
-    impl<T: CpuIo> hv1_hypercall::VtlSwitchOps for WhpHypercallExit<'_, '_, T> {
+    impl hv1_hypercall::VtlSwitchOps for WhpHypercallExit<'_, '_> {
         fn advance_ip(&mut self) {
             let exit_context = self.registers.exit_context;
             let is_64bit =
@@ -1038,7 +1038,7 @@ mod x86 {
         }
     }
 
-    impl<T: CpuIo> hv1_hypercall::VtlReturn for WhpHypercallExit<'_, '_, T> {
+    impl hv1_hypercall::VtlReturn for WhpHypercallExit<'_, '_> {
         fn is_vtl_return_allowed(&self) -> bool {
             if self.vp.state.active_vtl == Vtl::Vtl0 {
                 tracelimit::warn_ratelimited!("attempt to return from VTL0");
@@ -1150,7 +1150,7 @@ mod x86 {
         }
     }
 
-    impl<T: CpuIo> WhpHypercallExit<'_, '_, T> {
+    impl WhpHypercallExit<'_, '_> {
         fn handle_action_signal_event(
             &mut self,
             signal_event: &HvVpAssistPageActionSignalEvent,
@@ -1171,7 +1171,7 @@ mod x86 {
         }
     }
 
-    impl<T: CpuIo> hv1_hypercall::AssertVirtualInterrupt for WhpHypercallExit<'_, '_, T> {
+    impl hv1_hypercall::AssertVirtualInterrupt for WhpHypercallExit<'_, '_> {
         fn assert_virtual_interrupt(
             &mut self,
             partition_id: u64,
@@ -1250,7 +1250,7 @@ mod x86 {
         Ok(TranslateFlags::from_hv_flags(control_flags))
     }
 
-    impl<T: CpuIo> hv1_hypercall::TranslateVirtualAddressX64 for WhpHypercallExit<'_, '_, T> {
+    impl hv1_hypercall::TranslateVirtualAddressX64 for WhpHypercallExit<'_, '_> {
         fn translate_virtual_address(
             &mut self,
             partition_id: u64,
@@ -1268,7 +1268,7 @@ mod x86 {
         }
     }
 
-    impl<T: CpuIo> TranslateVirtualAddressExX64 for WhpHypercallExit<'_, '_, T> {
+    impl TranslateVirtualAddressExX64 for WhpHypercallExit<'_, '_> {
         fn translate_virtual_address_ex(
             &mut self,
             partition_id: u64,
@@ -1327,8 +1327,8 @@ mod x86 {
         }
     }
 
-    impl<T: CpuIo> hv1_hypercall::EnableVpVtl<hvdef::hypercall::InitialVpContextX64>
-        for WhpHypercallExit<'_, '_, T>
+    impl hv1_hypercall::EnableVpVtl<hvdef::hypercall::InitialVpContextX64>
+        for WhpHypercallExit<'_, '_>
     {
         fn enable_vp_vtl(
             &mut self,
@@ -1702,7 +1702,6 @@ mod aarch64 {
     use hvdef::Vtl;
     use hvdef::hypercall::TranslateGvaControlFlagsArm64;
     use hvdef::hypercall::TranslateGvaResultCode;
-    use virt::io::CpuIo;
     use virt_support_aarch64emu::translate::TranslateFlags;
     use virt_support_aarch64emu::translate::TranslationRegisters;
     use virt_support_aarch64emu::translate::translate_gva_to_gpa;
@@ -1716,7 +1715,7 @@ mod aarch64 {
         _dummy: &'a (),
     }
 
-    impl<T> hv1_hypercall::Arm64RegisterState for &mut WhpHypercallExit<'_, '_, T> {
+    impl hv1_hypercall::Arm64RegisterState for &mut WhpHypercallExit<'_, '_> {
         fn pc(&mut self) -> u64 {
             self.registers.message.header.pc
         }
@@ -1736,14 +1735,13 @@ mod aarch64 {
         }
     }
 
-    impl<'a, 'b, T: CpuIo> WhpHypercallExit<'a, 'b, T> {
+    impl<'a, 'b> WhpHypercallExit<'a, 'b> {
         pub(super) fn reflect_to_vtl2(&mut self) {
             todo!("TODO-aarch64")
         }
 
         pub fn handle(
             vp: &'a mut WhpProcessor<'b>,
-            bus: &'a T,
             message: &hvdef::HvArm64HypercallInterceptMessage,
         ) {
             let vpref = vp.vp;
@@ -1754,7 +1752,7 @@ mod aarch64 {
                 gp_dirty: false,
                 _dummy: &(),
             };
-            let mut this = Self { vp, bus, registers };
+            let mut this = Self { vp, registers };
 
             WhpHypercallExit::DISPATCHER.dispatch(
                 &vpref.partition.gm,
@@ -1945,7 +1943,7 @@ mod aarch64 {
         Ok(TranslateFlags::from_hv_flags(control_flags))
     }
 
-    impl<T: CpuIo> hv1_hypercall::TranslateVirtualAddressExAarch64 for WhpHypercallExit<'_, '_, T> {
+    impl hv1_hypercall::TranslateVirtualAddressExAarch64 for WhpHypercallExit<'_, '_> {
         fn translate_virtual_address_ex(
             &mut self,
             partition_id: u64,

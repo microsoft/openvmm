@@ -31,7 +31,6 @@ use virt::PartitionMemoryMap;
 use virt::PartitionMemoryMapper;
 use virt::Processor;
 use virt::StopVp;
-use virt::Synic;
 use virt::VpHaltReason;
 #[cfg(guest_arch = "x86_64")]
 use virt::X86Partition as ArchPartition;
@@ -56,7 +55,7 @@ use vmm_core::partition_unit::VmPartition;
 use vmm_core::partition_unit::VpRunner;
 
 /// A base partition, with methods needed at rutnime along with methods to initialize the vm.
-pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
+pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
     /// Gets a line set target to trigger local APIC LINTs.
     ///
     /// The line number is the VP index times 2, plus the LINT number (0 or 1).
@@ -91,7 +90,10 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
     ) -> Option<Arc<dyn DoorbellRegistration>>;
 
     /// Gets the [`SignalMsi`] interface for a particular VTL.
-    fn into_signal_msi(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>>;
+    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>>;
+
+    /// Gets the irqfd routing interface, if supported.
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>>;
 
     /// Returns whether virtual devices are supported.
     fn supports_virtual_devices(&self) -> bool;
@@ -104,6 +106,9 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
 
     /// Returns the reference time source.
     fn reference_time_source(&self) -> Option<ReferenceTimeSource>;
+
+    /// Returns the partition's synic port access implementation.
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess>;
 
     /// Gets an interface to support downcasting to specific partition types.
     ///
@@ -119,6 +124,7 @@ pub trait BasicPartitionStateAccess: 'static + Send + Sync + Inspect {
     fn scrub_vtl(&self, vtl: Vtl) -> anyhow::Result<()>;
     fn accept_initial_pages(&self, pages: Vec<(MemoryRange, PageVisibility)>)
     -> anyhow::Result<()>;
+    fn guest_os_id(&self) -> u64;
 }
 
 impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
@@ -162,11 +168,25 @@ impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
             .accept_initial_pages(&pages)?;
         Ok(())
     }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn guest_os_id(&self) -> u64 {
+        self.access_state(Vtl::Vtl0)
+            .hypercall()
+            .map_or(0, |msrs| msrs.guest_os_id)
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    fn guest_os_id(&self) -> u64 {
+        // TODO: implement guest OS ID for aarch64 once there is
+        // an equivalent to HV_X64_MSR_GUEST_OS_ID.
+        0
+    }
 }
 
 impl<T> HvlitePartition for T
 where
-    T: BasicPartitionStateAccess + ArchPartition + PartitionMemoryMapper + Synic,
+    T: BasicPartitionStateAccess + ArchPartition + PartitionMemoryMapper + PartitionAccessState,
 {
     #[cfg(guest_arch = "x86_64")]
     fn into_lint_target(self: Arc<Self>, vtl: Vtl) -> Arc<dyn LineSetTarget> {
@@ -207,8 +227,12 @@ where
         self.doorbell_registration(minimum_vtl)
     }
 
-    fn into_signal_msi(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         self.as_signal_msi(minimum_vtl)
+    }
+
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        Partition::irqfd(self)
     }
 
     fn supports_virtual_devices(&self) -> bool {
@@ -229,6 +253,10 @@ where
 
     fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
         self.reference_time_source()
+    }
+
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic()
     }
 
     #[cfg(all(windows, feature = "virt_whp"))]
@@ -257,6 +285,10 @@ impl VmPartition for WrappedPartition {
         pages: Vec<(MemoryRange, PageVisibility)>,
     ) -> anyhow::Result<()> {
         self.0.accept_initial_pages(pages)
+    }
+
+    fn guest_os_id(&self) -> u64 {
+        self.0.guest_os_id()
     }
 }
 
@@ -326,6 +358,14 @@ impl<T: Processor> Processor for WrappedVp<'_, T> {
         self.0.flush_async_requests()
     }
 
+    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        self.0.reset()
+    }
+
+    fn scrub(&mut self, vtl: Vtl) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        self.0.scrub(vtl)
+    }
+
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         self.0.access_state(vtl)
     }
@@ -371,7 +411,7 @@ pub trait HvliteVp {
     async fn run(
         &mut self,
         runner: VpRunner,
-        chipset: &vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
+        chipset: &vmm_core::vmotherboard_adapter::AdaptedChipset,
     );
 }
 
@@ -380,7 +420,7 @@ impl<T: Processor> HvliteVp for T {
     async fn run(
         &mut self,
         mut runner: VpRunner,
-        chipset: &vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
+        chipset: &vmm_core::vmotherboard_adapter::AdaptedChipset,
     ) {
         while let Err(RunCancelled { .. }) = runner.run(&mut WrappedVp(self), chipset).await {}
     }

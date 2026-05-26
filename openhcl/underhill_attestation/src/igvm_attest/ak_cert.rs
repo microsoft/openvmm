@@ -45,8 +45,16 @@ pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
         IgvmAttestResponseVersion::VERSION_2 => size_of::<IgvmAttestAkCertResponseHeader>(),
         invalid_version => return Err(AkCertError::InvalidResponseVersion(invalid_version.0)),
     };
+    let data_size = header.data_size as usize;
 
-    Ok(response[header_size..header.data_size as usize].to_vec())
+    if data_size < header_size {
+        return Err(AkCertError::SizeTooSmall {
+            size: data_size,
+            minimum_size: header_size,
+        });
+    }
+
+    Ok(response[header_size..data_size].to_vec())
 }
 
 #[cfg(test)]
@@ -113,6 +121,17 @@ mod tests {
         let data_size = parse_response_header(&VALID_RESPONSE).unwrap().data_size as usize;
         assert_eq!(payload.len(), data_size - HEADER_SIZE);
         assert_eq!(payload, &VALID_RESPONSE[HEADER_SIZE..data_size]);
+    }
+
+    #[test]
+    fn test_parse_response_small_size() {
+        let mut response = [0u8; 8];
+        // data_size = 4 (little-endian u32)
+        response[0..4].copy_from_slice(&4u32.to_le_bytes());
+        // version = VERSION_1 = 1 (little-endian u32)
+        response[4..8].copy_from_slice(&1u32.to_le_bytes());
+
+        assert!(parse_response(&response).is_err());
     }
 
     #[test]

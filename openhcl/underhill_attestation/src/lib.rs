@@ -9,7 +9,6 @@
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
 
-mod crypto;
 mod hardware_key_sealing;
 mod igvm_attest;
 mod jwt;
@@ -27,6 +26,7 @@ pub use igvm_attest::ak_cert::parse_response as parse_ak_cert_response;
 use ::vmgs::EncryptionAlgorithm;
 use ::vmgs::GspType;
 use ::vmgs::Vmgs;
+use crypto::rsa::RsaKeyPair;
 use cvm_tracing::CVM_ALLOWED;
 use get_protocol::dps_json::GuestStateEncryptionPolicy;
 use guest_emulation_transport::GuestEmulationTransportClient;
@@ -45,8 +45,6 @@ use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
 use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::SecurityProfile;
-use openssl::pkey::Private;
-use openssl::rsa::Rsa;
 use pal_async::local::LocalDriver;
 use secure_key_release::VmgsEncryptionKeys;
 use static_assertions::const_assert_eq;
@@ -114,22 +112,22 @@ enum GetDerivedKeysError {
     #[error("failed to get derived key by id")]
     GetDerivedKeyById(#[source] GetDerivedKeysByIdError),
     #[error("failed to derive an ingress key")]
-    DeriveIngressKey(#[source] crypto::KbkdfError),
+    DeriveIngressKey(#[source] crypto::kbkdf::KbkdfError),
     #[error("failed to derive an egress key")]
-    DeriveEgressKey(#[source] crypto::KbkdfError),
+    DeriveEgressKey(#[source] crypto::kbkdf::KbkdfError),
 }
 
 #[derive(Debug, Error)]
 enum GetDerivedKeysByIdError {
     #[error("failed to derive an egress key based on current vm bios guid")]
-    DeriveEgressKeyUsingCurrentVmId(#[source] crypto::KbkdfError),
+    DeriveEgressKeyUsingCurrentVmId(#[source] crypto::kbkdf::KbkdfError),
     #[error("invalid derived egress key size {key_size}, expected {expected_size}")]
     InvalidDerivedEgressKeySize {
         key_size: usize,
         expected_size: usize,
     },
     #[error("failed to derive an ingress key based on key protector Id from vmgs")]
-    DeriveIngressKeyUsingKeyProtectorId(#[source] crypto::KbkdfError),
+    DeriveIngressKeyUsingKeyProtectorId(#[source] crypto::kbkdf::KbkdfError),
     #[error("invalid derived egress key size {key_size}, expected {expected_size}")]
     InvalidDerivedIngressKeySize {
         key_size: usize,
@@ -171,6 +169,16 @@ enum LogOpType {
 
 /// Label used by `derive_key`
 const VMGS_KEY_DERIVE_LABEL: &[u8; 7] = b"VMGSKEY";
+
+/// KBKDF from SP800-108, using HMAC-SHA-256.
+fn derive_key(
+    key: &[u8],
+    context: &[u8],
+    label: &[u8],
+) -> Result<[u8; AES_GCM_KEY_LENGTH], crypto::kbkdf::KbkdfError> {
+    let output = crypto::kbkdf::kbkdf_hmac_sha256(key, context, label, AES_GCM_KEY_LENGTH)?;
+    Ok(output.try_into().unwrap())
+}
 
 #[derive(Debug)]
 struct Keys {
@@ -238,6 +246,8 @@ pub enum AttestationType {
     Tdx,
     /// Use the VBS TEE for attestation.
     Vbs,
+    /// Use the CCA TEE for attestation,
+    Cca,
     /// Use trusted host-based attestation.
     Host,
 }
@@ -276,10 +286,25 @@ async fn try_unlock_vmgs(
         Ok(VmgsEncryptionKeys::default())
     };
 
-    let retry = match skr_response {
+    let retry = match &skr_response {
         Ok(_) => false,
-        Err((_, r)) => r,
+        Err((_, r)) => *r,
     };
+
+    let skip_hw_unsealing = matches!(
+        &skr_response,
+        Err((
+            secure_key_release::RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
+                igvm_attest::key_release::KeyReleaseError::ParseHeader(
+                    igvm_attest::Error::Attestation {
+                        skip_hw_unsealing_signal: true,
+                        ..
+                    },
+                ),
+            ),
+            _,
+        ))
+    );
 
     let VmgsEncryptionKeys {
         ingress_rsa_kek,
@@ -342,6 +367,7 @@ async fn try_unlock_vmgs(
         tcb_version,
         guest_state_encryption_policy,
         strict_encryption_policy,
+        skip_hw_unsealing,
     )
     .await
     .map_err(|e| {
@@ -579,7 +605,7 @@ async fn unlock_vmgs_data_store(
         return Ok(());
     };
 
-    if !openssl::memcmp::eq(&new_ingress_key, &new_egress_key) {
+    if !constant_time_eq::constant_time_eq_32(&new_ingress_key, &new_egress_key) {
         tracing::trace!(CVM_ALLOWED, "EgressKey is different than IngressKey");
         new_key = true;
     }
@@ -678,11 +704,12 @@ async fn get_derived_keys(
     bios_guid: Guid,
     attestation_vm_config: &AttestationVmConfig,
     is_encrypted: bool,
-    ingress_rsa_kek: Option<&Rsa<Private>>,
+    ingress_rsa_kek: Option<&RsaKeyPair>,
     wrapped_des_key: Option<&[u8]>,
     tcb_version: Option<u64>,
     guest_state_encryption_policy: GuestStateEncryptionPolicy,
     strict_encryption_policy: bool,
+    skip_hw_unsealing: bool,
 ) -> Result<DerivedKeyResult, GetDerivedKeysError> {
     tracing::info!(
         CVM_ALLOWED,
@@ -903,7 +930,36 @@ async fn get_derived_keys(
                 }
             });
 
-            (hardware_key_protector, hardware_derived_keys)
+            // When the IGVM agent signals skip_hw_unsealing, set both
+            // hardware_key_protector and hardware_derived_keys to None
+            // so the code falls through to the scheme-specific error below.
+            // When hardware sealing keys were actually available, additionally
+            // emit a warning and a host event that make the skip visible.
+            if skip_hw_unsealing {
+                if hardware_key_protector.is_some() && hardware_derived_keys.is_some() {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        "Skipping hardware unsealing of VMGS DEK as signaled by IGVM agent"
+                    );
+                    get.event_log_fatal(
+                        guest_emulation_transport::api::EventLogId::DEK_HARDWARE_UNSEALING_SKIPPED,
+                    )
+                    .await;
+
+                    (None, None)
+                } else {
+                    tracing::info!(
+                        CVM_ALLOWED,
+                        hardware_key_protector = hardware_key_protector.is_some(),
+                        hardware_derived_keys = hardware_derived_keys.is_some(),
+                        "skip_hw_unsealing signaled but hardware key data not available, \
+                         falling through to scheme-specific error"
+                    );
+                    (None, None)
+                }
+            } else {
+                (hardware_key_protector, hardware_derived_keys)
+            }
         } else {
             (None, None)
         };
@@ -932,12 +988,12 @@ async fn get_derived_keys(
             });
         } else {
             if no_kek && found_dek {
-                Err(GetDerivedKeysError::GetIngressKeyFromKpFailed)?
+                return Err(GetDerivedKeysError::GetIngressKeyFromKpFailed);
             } else if no_gsp && requires_gsp {
-                Err(GetDerivedKeysError::GetIngressKeyFromKGspFailed)?
+                return Err(GetDerivedKeysError::GetIngressKeyFromKGspFailed);
             } else {
                 // no_gsp_by_id && requires_gsp_by_id
-                Err(GetDerivedKeysError::GetIngressKeyFromKGspByIdFailed)?
+                return Err(GetDerivedKeysError::GetIngressKeyFromKGspByIdFailed);
             }
         }
     }
@@ -1163,18 +1219,18 @@ async fn get_derived_keys(
 
     // Derive key used to lock data store previously
     if let Some(seed) = ingress_seed {
-        derived_keys.ingress = crypto::derive_key(&ingress_key, &seed, VMGS_KEY_DERIVE_LABEL)
+        derived_keys.ingress = derive_key(&ingress_key, &seed, VMGS_KEY_DERIVE_LABEL)
             .map_err(GetDerivedKeysError::DeriveIngressKey)?;
     }
 
     // Always derive a new egress key using best available seed
     derived_keys.decrypt_egress = decrypt_egress_key
-        .map(|key| crypto::derive_key(&key, &egress_seed, VMGS_KEY_DERIVE_LABEL))
+        .map(|key| derive_key(&key, &egress_seed, VMGS_KEY_DERIVE_LABEL))
         .transpose()
         .map_err(GetDerivedKeysError::DeriveEgressKey)?;
 
     derived_keys.encrypt_egress =
-        crypto::derive_key(&encrypt_egress_key, &egress_seed, VMGS_KEY_DERIVE_LABEL)
+        derive_key(&encrypt_egress_key, &egress_seed, VMGS_KEY_DERIVE_LABEL)
             .map_err(GetDerivedKeysError::DeriveEgressKey)?;
 
     if key_protector_settings.should_write_kp {
@@ -1233,7 +1289,7 @@ fn get_derived_keys_by_id(
     // When converted to a later scheme, Egress Key will be overwritten.
 
     // Always derive a new egress key from current VmUniqueId
-    let new_egress_key = crypto::derive_key(
+    let new_egress_key = derive_key(
         &gsp_response_by_id.seed.buffer[..gsp_response_by_id.seed.length as usize],
         bios_guid.as_bytes(),
         VMGS_KEY_DERIVE_LABEL,
@@ -1251,7 +1307,7 @@ fn get_derived_keys_by_id(
     // If not previously encrypted (no saved Id), then Ingress Key not required.
     let new_ingress_key = if key_protector_by_id.inner.id_guid != Guid::default() {
         // Derive key used to lock data store previously
-        crypto::derive_key(
+        derive_key(
             &gsp_response_by_id.seed.buffer[..gsp_response_by_id.seed.length as usize],
             key_protector_by_id.inner.id_guid.as_bytes(),
             VMGS_KEY_DERIVE_LABEL,
@@ -2561,6 +2617,90 @@ mod tests {
 
         // VMGS should remain encrypted
         assert!(vmgs.encrypted());
+    }
+
+    #[async_test]
+    async fn init_sec_secure_key_release_skip_hw_unsealing(driver: DefaultDriver) {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        // IGVM attest is required
+        // KEY_RELEASE succeeds on first boot, fails with skip_hw_unsealing on second boot.
+        // WRAPPED_KEY is not in the plan, so it falls back to default (success) every time.
+        let mut plan = IgvmAgentTestPlan::default();
+        plan.insert(
+            IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+            VecDeque::from([
+                IgvmAgentAction::RespondSuccess,
+                IgvmAgentAction::RespondFailureSkipHwUnsealing,
+            ]),
+        );
+
+        let get_pair = new_test_get(driver, true, Some(plan)).await;
+
+        let bios_guid = Guid::new_random();
+        let att_cfg = new_attestation_vm_config();
+
+        // Ensure VMGS is not encrypted and agent data is empty before the call
+        assert!(!vmgs.encrypted());
+
+        // Obtain a LocalDriver briefly, then run the async flow under the pool executor
+        let tee = MockTeeCall::new(0x1234);
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        let res = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver.clone(),
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+
+        // VMGS is now encrypted and HWKP is updated.
+        assert!(vmgs.encrypted());
+        assert!(!hardware_key_protector_is_empty(&mut vmgs).await);
+        // Agent data should be the same as `key_reference` in the WRAPPED_KEY response.
+        let key_reference = serde_json::json!({
+            "key_info": {
+                "host": "name"
+            },
+            "attestation_info": {
+                "host": "attestation_name"
+            }
+        });
+        let key_reference = serde_json::to_string(&key_reference).unwrap();
+        let key_reference = key_reference.as_bytes();
+        let mut expected_agent_data = [0u8; AGENT_DATA_MAX_SIZE];
+        expected_agent_data[..key_reference.len()].copy_from_slice(key_reference);
+        assert_eq!(res.agent_data.unwrap(), expected_agent_data.to_vec());
+        // Secure key should be None without pre-provisioning
+        assert!(res.guest_secret_key.is_none());
+
+        // Second call: KEY_RELEASE fails with skip_hw_unsealing signal.
+        // The skip_hw_unsealing signal causes the hardware unsealing fallback to be
+        // skipped, so VMGS unlock should fail.
+        // NOTE: The test relies on the test GED to return failing KEY_RELEASE response
+        // with retry recommendation as false so the retry loop terminates immediately.
+        // Otherwise, the test will get stuck on timer.sleep() as the driver is not
+        // progressed.
+        let result = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver,
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await;
+
+        assert!(result.is_err());
     }
 
     #[async_test]

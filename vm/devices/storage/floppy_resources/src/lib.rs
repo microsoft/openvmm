@@ -1,10 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Client definitions for describing floppy controller configuration.
+//! Configuration types for the floppy controller.
 //!
-//! TODO: refactor to support `Resource`-based instantiation of floppy
-//! controllers, at which point this crate name makes sense.
+//! Resource-based instantiation of floppy controllers is not yet implemented;
+//! these types exist in anticipation of that work. The controller is currently
+//! instantiated directly as part of the chipset configuration.
 
 #![forbid(unsafe_code)]
 

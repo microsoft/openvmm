@@ -55,9 +55,12 @@ OpenHCL hosts a virtual TPM (vTPM) and enforces Secure Boot policies, ensuring t
 
 OpenHCL is built on top of a specialized Linux kernel and consists of several userspace processes that work together to provide these services.
 
-For more details on the internal components and boot process, see:
+For more details on the internal components and selected OpenHCL device paths, see:
 
 - [Processes and Components](./openhcl/processes.md)
+- [VMBus Relay and Device Interception](./openhcl/vmbus.md)
+- [Storage Translation](./openhcl/storage_translation.md)
+- [Storage Configuration Model](./openhcl/storage_configuration.md)
 - [Boot Flow](./openhcl/boot.md)
 - [Sidecar](./openhcl/sidecar.md)
 - [IGVM Artifact](./openhcl/igvm.md)

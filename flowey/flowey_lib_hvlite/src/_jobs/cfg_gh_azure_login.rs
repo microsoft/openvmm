@@ -54,7 +54,9 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        ctx.req(flowey_lib_common::gh_task_azure_login::Request::Credentials(open_id_connect));
+        ctx.config(flowey_lib_common::gh_task_azure_login::Config {
+            credentials: Some(ConfigVar(open_id_connect)),
+        });
         Ok(())
     }
 }

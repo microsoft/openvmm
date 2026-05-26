@@ -1,34 +1,34 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![expect(dead_code)]
-
 use crate::virtio_util::VirtioPayloadReader;
 use crate::virtio_util::VirtioPayloadWriter;
-use async_trait::async_trait;
+use anyhow::Context as _;
+use futures::StreamExt;
 use guestmem::GuestMemory;
 use guestmem::MappedMemoryRegion;
-use pal_async::task::Spawn;
+use inspect::InspectMut;
+use pal_async::wait::PolledWait;
 use std::io;
 use std::io::Write;
 use std::sync::Arc;
+use task_control::AsyncRun;
+use task_control::Cancelled;
+use task_control::StopTask;
 use task_control::TaskControl;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
-use virtio::Resources;
+use virtio::QueueResources;
 use virtio::VirtioDevice;
+use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
-use virtio::VirtioQueueState;
-use virtio::VirtioQueueWorker;
-use virtio::VirtioQueueWorkerContext;
+use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
-
-const VIRTIO_DEVICE_TYPE_FS: u16 = 26;
 
 /// PCI configuration space values for virtio-fs devices.
 #[repr(C)]
@@ -39,16 +39,20 @@ struct VirtioFsDeviceConfig {
 }
 
 /// A virtio-fs PCI device.
+#[derive(InspectMut)]
 pub struct VirtioFsDevice {
-    name: Box<str>,
-
+    task_name: Box<str>,
     driver: VmTaskDriver,
+    #[inspect(skip)]
     config: VirtioFsDeviceConfig,
-    memory: GuestMemory,
+    #[inspect(skip)]
     fs: Arc<fuse::Session>,
-    workers: Vec<TaskControl<VirtioQueueWorker, VirtioQueueState>>,
-    exit_event: event_listener::Event,
+    #[inspect(skip)]
+    workers: Vec<TaskControl<VirtioFsWorker, VirtioFsQueue>>,
     shmem_size: u64,
+    #[inspect(skip)]
+    shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
+    #[inspect(skip)]
     notify_corruption: Arc<dyn Fn() + Sync + Send>,
 }
 
@@ -58,7 +62,6 @@ impl VirtioFsDevice {
         driver_source: &VmTaskDriverSource,
         tag: &str,
         fs: Fs,
-        memory: GuestMemory,
         shmem_size: u64,
         notify_corruption: Option<Arc<dyn Fn() + Sync + Send>>,
     ) -> Self
@@ -81,14 +84,13 @@ impl VirtioFsDevice {
         config.tag[..length].copy_from_slice(&tag.as_bytes()[..length]);
 
         Self {
-            name: format!("virtio-fs-{}", tag).into(),
+            task_name: format!("virtiofs-{}", tag).into(),
             driver: driver_source.simple(),
             config,
-            memory,
             fs: Arc::new(fuse::Session::new(fs)),
             workers: Vec::new(),
-            exit_event: event_listener::Event::new(),
             shmem_size,
+            shared_memory_region: None,
             notify_corruption,
         }
     }
@@ -97,8 +99,11 @@ impl VirtioFsDevice {
 impl VirtioDevice for VirtioFsDevice {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
-            device_id: VIRTIO_DEVICE_TYPE_FS,
-            device_features: VirtioDeviceFeatures::new(),
+            device_id: virtio::spec::VirtioDeviceType::FS,
+            device_features: VirtioDeviceFeatures::new()
+                .with_ring_event_idx(true)
+                .with_ring_indirect_desc(true)
+                .with_ring_packed(true),
             max_queues: 2,
             device_register_length: self.config.as_bytes().len() as u32,
             shared_memory: DeviceTraitsSharedMemory {
@@ -108,7 +113,7 @@ impl VirtioDevice for VirtioFsDevice {
         }
     }
 
-    fn read_registers_u32(&self, offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
         let offset = offset as usize;
         let config = self.config.as_bytes();
         if offset < config.len() {
@@ -122,118 +127,192 @@ impl VirtioDevice for VirtioFsDevice {
         }
     }
 
-    fn write_registers_u32(&mut self, offset: u16, val: u32) {
+    async fn write_registers_u32(&mut self, offset: u16, val: u32) {
         tracing::warn!(offset, val, "[virtiofs] Unknown write",);
     }
 
-    fn enable(&mut self, resources: Resources) {
-        self.workers = resources
-            .queues
-            .into_iter()
-            .filter_map(|queue_resources| {
-                if !queue_resources.params.enable {
-                    return None;
-                }
-                let worker = VirtioFsWorker {
-                    fs: self.fs.clone(),
-                    mem: self.memory.clone(),
-                    shared_memory_region: resources.shared_memory_region.clone(),
-                    shared_memory_size: resources.shared_memory_size,
-                    notify_corruption: self.notify_corruption.clone(),
-                };
-                let worker = VirtioQueueWorker::new(self.driver.clone(), Box::new(worker));
-                Some(worker.into_running_task(
-                    "virtiofs-virtio-queue".to_string(),
-                    self.memory.clone(),
-                    resources.features.clone(),
-                    queue_resources,
-                    self.exit_event.listen(),
-                ))
-            })
-            .collect();
+    fn set_shared_memory_region(
+        &mut self,
+        region: &Arc<dyn MappedMemoryRegion>,
+    ) -> anyhow::Result<()> {
+        self.shared_memory_region = Some(region.clone());
+        Ok(())
     }
 
-    fn disable(&mut self) {
-        self.exit_event.notify(usize::MAX);
-        let mut workers = self.workers.drain(..).collect::<Vec<_>>();
-        self.driver
-            .spawn("shutdown-virtiofs-queues".to_owned(), async move {
-                futures::future::join_all(workers.iter_mut().map(async |worker| {
-                    worker.stop().await;
-                }))
-                .await;
-            })
-            .detach();
+    async fn start_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        let mut tc = TaskControl::new(VirtioFsWorker {
+            fs: self.fs.clone(),
+            shared_memory_region: self.shared_memory_region.clone(),
+            shared_memory_size: self.shmem_size,
+            notify_corruption: self.notify_corruption.clone(),
+        });
+
+        let queue_event = PolledWait::new(&self.driver, resources.event)
+            .context("failed to create polled wait")?;
+        let queue = VirtioQueue::new(
+            *features,
+            resources.params,
+            resources.guest_memory.clone(),
+            resources.notify,
+            queue_event,
+            initial_state,
+        )
+        .context("failed to create virtio queue")?;
+
+        tc.insert(
+            self.driver.clone(),
+            &*self.task_name,
+            VirtioFsQueue {
+                queue,
+                mem: resources.guest_memory,
+            },
+        );
+        tc.start();
+
+        let idx = idx as usize;
+        if idx >= self.workers.len() {
+            self.workers.resize_with(idx + 1, || {
+                TaskControl::new(VirtioFsWorker {
+                    fs: self.fs.clone(),
+                    shared_memory_region: None,
+                    shared_memory_size: 0,
+                    notify_corruption: self.notify_corruption.clone(),
+                })
+            });
+        }
+        self.workers[idx] = tc;
+        Ok(())
+    }
+
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
+        let idx = idx as usize;
+        if idx >= self.workers.len() || !self.workers[idx].has_state() {
+            return None;
+        }
+        self.workers[idx].stop().await;
+        let state = self.workers[idx].remove().queue.queue_state();
+        Some(state)
+    }
+
+    async fn reset(&mut self) {
+        self.workers.clear();
+        if let Some(region) = &self.shared_memory_region {
+            if let Err(e) = region.unmap(0, self.shmem_size as usize) {
+                tracing::error!(
+                    error = &e as &dyn std::error::Error,
+                    "failed to unmap DAX region on reset"
+                );
+            }
+        }
+        self.shared_memory_region = None;
+        self.fs.destroy();
     }
 }
 
 struct VirtioFsWorker {
     fs: Arc<fuse::Session>,
-    mem: GuestMemory,
     shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
     shared_memory_size: u64,
     notify_corruption: Arc<dyn Fn() + Sync + Send>,
 }
 
-#[async_trait]
-impl VirtioQueueWorkerContext for VirtioFsWorker {
-    async fn process_work(&mut self, work: anyhow::Result<VirtioQueueCallbackWork>) -> bool {
-        if let Err(err) = work {
-            tracing::error!(
-                error = err.as_ref() as &dyn std::error::Error,
-                "Failed processing queue"
-            );
-            return false;
-        }
+struct VirtioFsQueue {
+    queue: VirtioQueue,
+    mem: GuestMemory,
+}
 
-        let mut work = work.unwrap();
-        // Parse the request.
-        let reader = VirtioPayloadReader::new(&self.mem, &work);
-        let request = match fuse::Request::new(reader) {
-            Ok(request) => request,
-            Err(e) => {
-                tracing::error!(
-                    error = &e as &dyn std::error::Error,
-                    "[virtiofs] Invalid FUSE message, error"
-                );
-                // Often this will result in the guest failing the device as there is no response to a request.
-                (self.notify_corruption)();
-                // This only happens if even the header couldn't be parsed, so there's no way
-                // to send an error reply since the request's unique ID isn't known.
-                work.complete(0);
-                return true;
+impl AsyncRun<VirtioFsQueue> for VirtioFsWorker {
+    async fn run(
+        &mut self,
+        stop: &mut StopTask<'_>,
+        state: &mut VirtioFsQueue,
+    ) -> Result<(), Cancelled> {
+        loop {
+            let work = stop.until_stopped(state.queue.next()).await?;
+            let Some(work) = work else { break };
+            match work {
+                Ok(work) => {
+                    let bytes = process_virtiofs_request(self, &state.mem, &work);
+                    state.queue.complete(work, bytes);
+                }
+                Err(err) => {
+                    tracing::error!(
+                        error = &err as &dyn std::error::Error,
+                        "Failed processing queue"
+                    );
+                    break;
+                }
             }
-        };
-
-        // Dispatch to the file system.
-        let mut sender = VirtioReplySender {
-            work,
-            mem: &self.mem,
-        };
-        let mapper = self
-            .shared_memory_region
-            .as_ref()
-            .map(|shared_memory_region| VirtioMapper {
-                region: shared_memory_region.as_ref(),
-                size: self.shared_memory_size,
-            });
-        self.fs.dispatch(
-            request,
-            &mut sender,
-            mapper.as_ref().map(|x| x as &dyn fuse::Mapper),
-        );
-        true
+        }
+        Ok(())
     }
 }
+
+fn process_virtiofs_request(
+    worker: &VirtioFsWorker,
+    mem: &GuestMemory,
+    work: &VirtioQueueCallbackWork,
+) -> u32 {
+    // Parse the request.
+    let reader = VirtioPayloadReader::new(mem, work);
+    let request = match fuse::Request::new(reader) {
+        Ok(request) => request,
+        Err(e) => {
+            tracing::error!(
+                error = &e as &dyn std::error::Error,
+                "[virtiofs] Invalid FUSE message, error"
+            );
+            // Often this will result in the guest failing the device as there is no response to a request.
+            (worker.notify_corruption)();
+            // This only happens if even the header couldn't be parsed, so there's no way
+            // to send an error reply since the request's unique ID isn't known.
+            return 0;
+        }
+    };
+
+    // Dispatch to the file system. The sender writes the reply into guest
+    // memory but does not complete the descriptor—completion happens once,
+    // after dispatch returns. For FUSE no-reply operations (Forget,
+    // BatchForget, Destroy), send() is never called and bytes_written
+    // stays 0.
+    let mut sender = VirtioReplySender {
+        work,
+        mem,
+        bytes_written: 0,
+    };
+    let mapper = worker
+        .shared_memory_region
+        .as_ref()
+        .map(|shared_memory_region| VirtioMapper {
+            region: shared_memory_region.as_ref(),
+            size: worker.shared_memory_size,
+        });
+    worker.fs.dispatch(
+        request,
+        &mut sender,
+        mapper.as_ref().map(|x| x as &dyn fuse::Mapper),
+    );
+    sender.bytes_written
+}
 /// An implementation of `ReplySender` for virtio payload.
+///
+/// Writes the FUSE reply into guest memory and records the byte count.
+/// Does not complete the descriptor—the caller is responsible for that.
 struct VirtioReplySender<'a> {
-    work: VirtioQueueCallbackWork,
+    work: &'a VirtioQueueCallbackWork,
     mem: &'a GuestMemory,
+    bytes_written: u32,
 }
 
 impl fuse::ReplySender for VirtioReplySender<'_> {
     fn send(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
-        let mut writer = VirtioPayloadWriter::new(self.mem, &self.work);
+        let mut writer = VirtioPayloadWriter::new(self.mem, self.work);
         let mut size = 0;
 
         // Write all the slices to the payload buffers.
@@ -243,7 +322,7 @@ impl fuse::ReplySender for VirtioReplySender<'_> {
             size += buf.len();
         }
 
-        self.work.complete(size as u32);
+        self.bytes_written = size as u32;
         Ok(())
     }
 }

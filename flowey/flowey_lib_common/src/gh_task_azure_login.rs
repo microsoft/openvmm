@@ -12,37 +12,45 @@ pub struct OpenIDConnect {
     pub subscription_id: String,
 }
 
+flowey_config! {
+    /// Config for the gh_task_azure_login node.
+    pub struct Config {
+        /// Credentials for login with an Azure service principal
+        pub credentials: Option<ConfigVar<OpenIDConnect>>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Credentials for login with an Azure service principal
-        Credentials(ReadVar<OpenIDConnect>),
         /// Ensure logged into Azure
         EnsureLogIn(WriteVar<SideEffect>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(_ctx: &mut ImportCtx<'_>) {}
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut credentials = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut ensure_log_in = Vec::new();
 
         for req in requests {
             match req {
-                Request::Credentials(v) => {
-                    same_across_all_reqs_backing_var("Credentials", &mut credentials, v)?;
-                }
                 Request::EnsureLogIn(v) => ensure_log_in.push(v),
             }
         }
 
-        let credentials =
-            credentials.ok_or(anyhow::anyhow!("Missing essential request: Credentials"))?;
+        let credentials = config
+            .credentials
+            .ok_or(anyhow::anyhow!("missing config: credentials"))?;
         let ensure_log_in = ensure_log_in;
 
         // -- end of req processing -- //

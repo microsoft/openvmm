@@ -1,6 +1,31 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! SCSI CDB parser and disk/DVD emulation.
+//!
+//! This crate translates SCSI commands (CDBs) into [`DiskIo`](disk_backend::DiskIo)
+//! calls. It's used by `storvsp` for hard drives and by `ide` (via ATAPI)
+//! for optical drives. It doesn't implement the SCSI transport — that's the
+//! frontend's job.
+//!
+//! # Key types
+//!
+//! - [`SimpleScsiDisk`] — hard drive emulation. Implements
+//!   [`AsyncScsiDisk`], holds a
+//!   [`Disk`], and parses SCSI CDB opcodes. Handles
+//!   READ/WRITE (6/10/12/16), READ_CAPACITY, INQUIRY, MODE_SENSE, UNMAP,
+//!   WRITE_SAME, SYNCHRONIZE_CACHE, and PERSISTENT_RESERVE.
+//! - [`SimpleScsiDvd`](scsidvd::SimpleScsiDvd) — optical drive emulation.
+//!   Manages media state (`Loaded` / `Unloaded`), handles MMC optical commands
+//!   (GET_EVENT_STATUS, GET_CONFIGURATION, READ_TOC, START_STOP_UNIT for eject).
+//!
+//! # Capacity change detection
+//!
+//! On every SCSI command, `SimpleScsiDisk` checks the current sector count
+//! against the last-known value. If the disk resized, it returns
+//! UNIT_ATTENTION with CAPACITY_DATA_CHANGED. The guest retries and re-reads
+//! capacity.
+
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 

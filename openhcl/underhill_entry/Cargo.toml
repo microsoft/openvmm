@@ -16,8 +16,17 @@ profiler = ["underhill_core/profiler"]
 # Enable profiler tracing (heap profiling) support.
 mem-profile-tracing = ["dep:dhat", "underhill_core/mem-profile-tracing"]
 
+# Enable mimalloc secure mode.
+mi-secure = ["mimalloc/secure"]
+
+# Disable secure AVIC support for SNP.
+disable_secure_avic = ["underhill_core/disable_secure_avic"]
+
 # Enable vpci support.
 vpci = ["underhill_core/vpci"]
+
+# Enable TIO support for SEV-SNP
+dev_snp_ohcl_tio_support = ["underhill_core/dev_snp_ohcl_tio_support"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 underhill_core.workspace = true

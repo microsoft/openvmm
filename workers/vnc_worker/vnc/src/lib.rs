@@ -8,6 +8,8 @@
 
 mod rfb;
 mod scancode;
+use flate2::Compression;
+use flate2::FlushCompress;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
@@ -19,6 +21,8 @@ use thiserror::Error;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
+const TILE_SIZE: u16 = 64;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("unsupported protocol version")]
@@ -27,10 +31,16 @@ pub enum Error {
     UnknownMessage(u8),
     #[error("unsupported qemu message type: {0:#x}")]
     UnknownQemuMessage(u8),
+    #[error("unsupported pixel format: {0} bits per pixel")]
+    UnsupportedPixelFormat(u8),
+    #[error("unsupported security type: {0}")]
+    UnsupportedSecurityType(u8),
+    #[error("resolution changed but client does not support DesktopSize")]
+    ResizeUnsupported,
+    #[error("zlib compression failed")]
+    ZlibCompression,
     #[error("socket error")]
     Io(#[from] std::io::Error),
-    #[error("client does not support desktop resize extension")]
-    DesktopResizeNotSupported,
 }
 
 /// A trait used to retrieve data from a framebuffer.
@@ -54,6 +64,11 @@ pub struct Server<F, I> {
     ctrl_left_pressed: bool,
     alt_left_pressed: bool,
     clipboard: String,
+
+    supports_desktop_resize: bool,
+    supports_zlib: bool,
+    supports_cursor: bool,
+    prev_fb: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +84,40 @@ impl Updater {
 pub trait Input {
     fn key(&mut self, scancode: u16, is_down: bool);
     fn mouse(&mut self, button_mask: u8, x: u16, y: u16);
+}
+
+/// Convert source pixels to the client's pixel format and append to `out`.
+fn convert_pixels(src: &[u32], fmt: &rfb::PixelFormat, out: &mut Vec<u8>) {
+    let dest_depth = fmt.bits_per_pixel as usize / 8;
+    let shift_r = 24 - fmt.red_max.get().count_ones();
+    let shift_g = 16 - fmt.green_max.get().count_ones();
+    let shift_b = 8 - fmt.red_max.get().count_ones();
+    let big_endian = fmt.big_endian_flag != 0;
+    let no_convert = dest_depth == 4
+        && !big_endian
+        && shift_r == fmt.red_shift as u32
+        && shift_g == fmt.green_shift as u32
+        && shift_b == fmt.blue_shift as u32;
+
+    if no_convert {
+        out.extend_from_slice(src.as_bytes());
+        return;
+    }
+
+    for &p in src {
+        let (r, g, b) = (p & 0xff0000, p & 0xff00, p & 0xff);
+        let p2 = r >> shift_r << fmt.red_shift
+            | g >> shift_g << fmt.green_shift
+            | b >> shift_b << fmt.blue_shift;
+        match (dest_depth, big_endian) {
+            (1, _) => out.push(p2 as u8),
+            (2, false) => out.extend_from_slice(&(p2 as u16).to_le_bytes()),
+            (2, true) => out.extend_from_slice(&(p2 as u16).to_be_bytes()),
+            (4, false) => out.extend_from_slice(&p2.to_le_bytes()),
+            (4, true) => out.extend_from_slice(&p2.to_be_bytes()),
+            _ => unreachable!(),
+        }
+    }
 }
 
 impl<F: Framebuffer, I: Input> Server<F, I> {
@@ -91,6 +140,10 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
             ctrl_left_pressed: false,
             alt_left_pressed: false,
             clipboard: String::new(),
+            supports_desktop_resize: false,
+            supports_zlib: false,
+            supports_cursor: false,
+            prev_fb: Vec::new(),
         }
     }
 
@@ -114,25 +167,64 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
     async fn run_internal(&mut self) -> Result<(), Error> {
         let socket = &mut self.socket;
         socket
-            .write_all(rfb::ProtocolVersion(rfb::PROTOCOL_VERSION_33).as_bytes())
+            .write_all(rfb::ProtocolVersion(rfb::PROTOCOL_VERSION_38).as_bytes())
             .await?;
 
         let mut version = rfb::ProtocolVersion::new_zeroed();
         socket.read_exact(version.as_mut_bytes()).await?;
 
-        if version.0 != rfb::PROTOCOL_VERSION_33 {
-            return Err(Error::UnsupportedVersion(version));
-        }
+        match version.0 {
+            rfb::PROTOCOL_VERSION_33 => {
+                // RFB 3.3: server dictates security type as a u32.
+                socket
+                    .write_all(
+                        rfb::Security33 {
+                            padding: [0; 3],
+                            security_type: rfb::SECURITY_TYPE_NONE,
+                        }
+                        .as_bytes(),
+                    )
+                    .await?;
+            }
+            rfb::PROTOCOL_VERSION_37 | rfb::PROTOCOL_VERSION_38 => {
+                // RFB 3.7/3.8: server sends a list of supported security types.
+                socket
+                    .write_all(rfb::Security37 { type_count: 1 }.as_bytes())
+                    .await?;
+                socket.write_all(&[rfb::SECURITY_TYPE_NONE]).await?;
 
-        socket
-            .write_all(
-                rfb::Security33 {
-                    padding: [0; 3],
-                    security_type: rfb::SECURITY_TYPE_NONE,
+                // Client responds with chosen security type.
+                let mut chosen_type = 0u8;
+                socket.read_exact(chosen_type.as_mut_bytes()).await?;
+
+                if chosen_type != rfb::SECURITY_TYPE_NONE {
+                    if version.0 == rfb::PROTOCOL_VERSION_38 {
+                        socket
+                            .write_all(
+                                rfb::SecurityResult {
+                                    status: rfb::SECURITY_RESULT_STATUS_FAILED.into(),
+                                }
+                                .as_bytes(),
+                            )
+                            .await?;
+                    }
+                    return Err(Error::UnsupportedSecurityType(chosen_type));
                 }
-                .as_bytes(),
-            )
-            .await?;
+
+                if version.0 == rfb::PROTOCOL_VERSION_38 {
+                    // RFB 3.8: server sends SecurityResult after negotiation.
+                    socket
+                        .write_all(
+                            rfb::SecurityResult {
+                                status: rfb::SECURITY_RESULT_STATUS_OK.into(),
+                            }
+                            .as_bytes(),
+                        )
+                        .await?;
+                }
+            }
+            _ => return Err(Error::UnsupportedVersion(version)),
+        }
 
         let mut init = rfb::ClientInit::new_zeroed();
         socket.read_exact(init.as_mut_bytes()).await?;
@@ -167,6 +259,13 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
         socket.write_all(name).await?;
 
         let mut ready_for_update = false;
+        let mut force_full_update = true;
+        let mut send_cursor = false;
+        let mut cur_fb: Vec<u32> = Vec::new();
+        let mut tile_buf: Vec<u8> = Vec::new();
+        let mut dirty_rects: Vec<(u16, u16, u16, u16)> = Vec::new();
+        let mut zlib_buf: Vec<u8> = Vec::new();
+        let mut zlib_stream = flate2::Compress::new(Compression::fast(), true);
         let mut scancode_state = scancode::State::new();
         loop {
             let mut socket_ready = false;
@@ -187,14 +286,16 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
             }
 
             if ready_for_update && update_ready {
-                ready_for_update = false;
-
                 // Ensure the desktop size has not changed.
                 let (new_width, new_height) = self.fb.resolution();
                 if new_width != width || new_height != height {
-                    // Send the new desktop size.
+                    if !self.supports_desktop_resize {
+                        return Err(Error::ResizeUnsupported);
+                    }
                     width = new_width;
                     height = new_height;
+                    force_full_update = true;
+                    // Notify the client of the new desktop size.
                     socket
                         .write_all(
                             rfb::FramebufferUpdate {
@@ -217,93 +318,242 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                             .as_bytes(),
                         )
                         .await?;
-                } else {
-                    // Send the update. Just update the whole framebuffer for now.
+                }
+
+                // Read current framebuffer.
+                let fb_size = width as usize * height as usize;
+                cur_fb.resize(fb_size, 0);
+                for y in 0..height {
+                    let offset = y as usize * width as usize;
+                    self.fb
+                        .read_line(y, cur_fb[offset..offset + width as usize].as_mut_bytes());
+                }
+
+                let full_update = force_full_update || self.prev_fb.len() != fb_size;
+
+                // Find dirty tiles.
+                dirty_rects.clear();
+                let mut ty: u16 = 0;
+                while ty < height {
+                    let tile_h = TILE_SIZE.min(height - ty);
+                    let mut tx: u16 = 0;
+                    while tx < width {
+                        let tile_w = TILE_SIZE.min(width - tx);
+                        let dirty = if full_update {
+                            true
+                        } else {
+                            let mut d = false;
+                            for y in ty..ty + tile_h {
+                                let start = y as usize * width as usize + tx as usize;
+                                if cur_fb[start..start + tile_w as usize]
+                                    != self.prev_fb[start..start + tile_w as usize]
+                                {
+                                    d = true;
+                                    break;
+                                }
+                            }
+                            d
+                        };
+                        if dirty {
+                            dirty_rects.push((tx, ty, tile_w, tile_h));
+                        }
+                        tx += TILE_SIZE;
+                    }
+                    ty += TILE_SIZE;
+                }
+
+                if !dirty_rects.is_empty() || send_cursor {
+                    if !dirty_rects.is_empty() {
+                        ready_for_update = false;
+                    }
+                    force_full_update = false;
+
+                    let extra_rects = if send_cursor { 1u16 } else { 0 };
+
+                    // Send FramebufferUpdate with dirty tiles + optional cursor.
                     socket
                         .write_all(
                             rfb::FramebufferUpdate {
                                 message_type: rfb::SC_MESSAGE_TYPE_FRAMEBUFFER_UPDATE,
                                 padding: 0,
-                                rectangle_count: 1.into(),
+                                rectangle_count: (dirty_rects.len() as u16 + extra_rects).into(),
                             }
                             .as_bytes(),
                         )
                         .await?;
-                    socket
-                        .write_all(
-                            rfb::Rectangle {
-                                x: 0.into(),
-                                y: 0.into(),
-                                width: width.into(),
-                                height: height.into(),
-                                encoding_type: rfb::ENCODING_TYPE_RAW.into(),
+
+                    if send_cursor {
+                        send_cursor = false;
+                        // 18x18 arrow cursor with white fill and 2px black outline.
+                        // Each row is 18 pixels wide = 3 bytes in the bitmask.
+                        #[rustfmt::skip]
+                        const MASK: [[u8; 3]; 18] = [
+                            [0b11000000, 0b00000000, 0b00000000],
+                            [0b11100000, 0b00000000, 0b00000000],
+                            [0b11110000, 0b00000000, 0b00000000],
+                            [0b11111000, 0b00000000, 0b00000000],
+                            [0b11111100, 0b00000000, 0b00000000],
+                            [0b11111110, 0b00000000, 0b00000000],
+                            [0b11111111, 0b00000000, 0b00000000],
+                            [0b11111111, 0b10000000, 0b00000000],
+                            [0b11111111, 0b11000000, 0b00000000],
+                            [0b11111111, 0b11100000, 0b00000000],
+                            [0b11111111, 0b11110000, 0b00000000],
+                            [0b11111111, 0b00000000, 0b00000000],
+                            [0b11111111, 0b00000000, 0b00000000],
+                            [0b11100111, 0b10000000, 0b00000000],
+                            [0b11000111, 0b10000000, 0b00000000],
+                            [0b10000011, 0b11000000, 0b00000000],
+                            [0b00000011, 0b11000000, 0b00000000],
+                            [0b00000001, 0b10000000, 0b00000000],
+                        ];
+                        // Inner fill (white): 1 = white, 0 = black border
+                        #[rustfmt::skip]
+                        const FILL: [[u8; 3]; 18] = [
+                            [0b00000000, 0b00000000, 0b00000000],
+                            [0b00000000, 0b00000000, 0b00000000],
+                            [0b01100000, 0b00000000, 0b00000000],
+                            [0b01110000, 0b00000000, 0b00000000],
+                            [0b01111000, 0b00000000, 0b00000000],
+                            [0b01111100, 0b00000000, 0b00000000],
+                            [0b01111110, 0b00000000, 0b00000000],
+                            [0b01111111, 0b00000000, 0b00000000],
+                            [0b01111111, 0b10000000, 0b00000000],
+                            [0b01111111, 0b11000000, 0b00000000],
+                            [0b01111100, 0b00000000, 0b00000000],
+                            [0b01111100, 0b00000000, 0b00000000],
+                            [0b01100110, 0b00000000, 0b00000000],
+                            [0b00000011, 0b00000000, 0b00000000],
+                            [0b00000011, 0b00000000, 0b00000000],
+                            [0b00000001, 0b10000000, 0b00000000],
+                            [0b00000001, 0b10000000, 0b00000000],
+                            [0b00000000, 0b00000000, 0b00000000],
+                        ];
+                        let cw: u16 = 18;
+                        let ch: u16 = 18;
+                        let mask_stride = (cw as usize).div_ceil(8);
+                        // Build cursor as 0x00RRGGBB u32 pixels, then convert
+                        // through the negotiated pixel format.
+                        const WHITE: u32 = 0x00FFFFFF;
+                        const BLACK: u32 = 0x00000000;
+                        let mut cursor_src = Vec::with_capacity(cw as usize * ch as usize);
+                        for y in 0..ch as usize {
+                            for x in 0..cw as usize {
+                                let byte_i = x / 8;
+                                let bit = 7 - (x % 8);
+                                let in_mask =
+                                    byte_i < mask_stride && (MASK[y][byte_i] >> bit) & 1 == 1;
+                                let in_fill =
+                                    byte_i < mask_stride && (FILL[y][byte_i] >> bit) & 1 == 1;
+                                cursor_src.push(if in_mask && in_fill { WHITE } else { BLACK });
                             }
-                            .as_bytes(),
-                        )
-                        .await?;
-                    let mut src_line = vec![0u32; width as usize];
-                    let dest_depth = fmt.bits_per_pixel as usize / 8;
-                    let shift_r = 24 - fmt.red_max.get().count_ones();
-                    let shift_g = 16 - fmt.green_max.get().count_ones();
-                    let shift_b = 8 - fmt.red_max.get().count_ones();
-                    match dest_depth {
-                        1 => {
-                            let mut line = vec![0u8; width as usize];
-                            for y in 0..height {
-                                self.fb.read_line(y, src_line.as_mut_bytes());
-                                for x in 0..width as usize {
-                                    let p = src_line[x];
-                                    let (r, g, b) = (p & 0xff0000, p & 0xff00, p & 0xff);
-                                    let p2 = r >> shift_r << fmt.red_shift
-                                        | g >> shift_g << fmt.green_shift
-                                        | b >> shift_b << fmt.blue_shift;
-                                    line[x] = p2 as u8;
+                        }
+                        let mut pixels = Vec::new();
+                        convert_pixels(&cursor_src, &fmt, &mut pixels);
+                        let mask_flat: Vec<u8> =
+                            MASK.iter().flat_map(|r| r.iter().copied()).collect();
+                        socket
+                            .write_all(
+                                rfb::Rectangle {
+                                    x: 0.into(),
+                                    y: 0.into(),
+                                    width: cw.into(),
+                                    height: ch.into(),
+                                    encoding_type: rfb::ENCODING_TYPE_CURSOR.into(),
                                 }
-                                socket.write_all(&line).await?;
-                            }
+                                .as_bytes(),
+                            )
+                            .await?;
+                        socket.write_all(&pixels).await?;
+                        socket.write_all(&mask_flat).await?;
+                    }
+
+                    let use_zlib = self.supports_zlib;
+
+                    for &(tx, ty, tw, th) in &dirty_rects {
+                        // Convert tile pixels.
+                        tile_buf.clear();
+                        for y in ty..ty + th {
+                            let start = y as usize * width as usize + tx as usize;
+                            convert_pixels(
+                                &cur_fb[start..start + tw as usize],
+                                &fmt,
+                                &mut tile_buf,
+                            );
                         }
-                        2 => {
-                            let mut line = vec![0u16; width as usize];
-                            for y in 0..height {
-                                self.fb.read_line(y, src_line.as_mut_bytes());
-                                for x in 0..width as usize {
-                                    let p = src_line[x];
-                                    let (r, g, b) = (p & 0xff0000, p & 0xff00, p & 0xff);
-                                    let p2 = r >> shift_r << fmt.red_shift
-                                        | g >> shift_g << fmt.green_shift
-                                        | b >> shift_b << fmt.blue_shift;
-                                    line[x] = p2 as u16;
+
+                        if use_zlib {
+                            // Compress tile data with zlib. The RFB spec
+                            // requires a single continuous zlib stream per
+                            // connection — use Sync flush to emit all pending
+                            // output while preserving the dictionary.
+                            zlib_buf.clear();
+                            // Reserve enough space: worst case zlib output is
+                            // slightly larger than input + overhead.
+                            zlib_buf.resize(tile_buf.len() + 64, 0);
+                            let before_in = zlib_stream.total_in();
+                            let before_out = zlib_stream.total_out();
+                            loop {
+                                let status = zlib_stream
+                                    .compress(
+                                        &tile_buf[(zlib_stream.total_in() - before_in) as usize..],
+                                        &mut zlib_buf
+                                            [(zlib_stream.total_out() - before_out) as usize..],
+                                        FlushCompress::Sync,
+                                    )
+                                    .map_err(|_| Error::ZlibCompression)?;
+                                // Grow output buffer if needed.
+                                let out_used = (zlib_stream.total_out() - before_out) as usize;
+                                if out_used >= zlib_buf.len() - 16 {
+                                    zlib_buf.resize(zlib_buf.len() * 2, 0);
                                 }
-                                socket.write_all(line.as_bytes()).await?;
-                            }
-                        }
-                        4 if shift_r == fmt.red_shift as u32
-                            && shift_g == fmt.green_shift as u32
-                            && shift_b == fmt.blue_shift as u32 =>
-                        {
-                            for y in 0..height {
-                                self.fb.read_line(y, src_line.as_mut_bytes());
-                                socket.write_all(src_line.as_bytes()).await?;
-                            }
-                        }
-                        4 => {
-                            let mut line = vec![0u32; width as usize];
-                            for y in 0..height {
-                                self.fb.read_line(y, src_line.as_mut_bytes());
-                                for x in (width as usize & !3)..width as usize {
-                                    let p = src_line[x];
-                                    let (r, g, b) = (p & 0xff0000, p & 0xff00, p & 0xff);
-                                    let p2 = r >> shift_r << fmt.red_shift
-                                        | g >> shift_g << fmt.green_shift
-                                        | b >> shift_b << fmt.blue_shift;
-                                    line[x] = p2;
+                                let in_done =
+                                    (zlib_stream.total_in() - before_in) as usize >= tile_buf.len();
+                                if in_done && status == flate2::Status::Ok {
+                                    break;
                                 }
-                                socket.write_all(line.as_bytes()).await?;
                             }
+                            let compressed_len = (zlib_stream.total_out() - before_out) as usize;
+                            zlib_buf.truncate(compressed_len);
+
+                            socket
+                                .write_all(
+                                    rfb::Rectangle {
+                                        x: tx.into(),
+                                        y: ty.into(),
+                                        width: tw.into(),
+                                        height: th.into(),
+                                        encoding_type: rfb::ENCODING_TYPE_ZLIB.into(),
+                                    }
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            // Zlib encoding: 4-byte length prefix + compressed data.
+                            socket
+                                .write_all(&(zlib_buf.len() as u32).to_be_bytes())
+                                .await?;
+                            socket.write_all(&zlib_buf).await?;
+                        } else {
+                            socket
+                                .write_all(
+                                    rfb::Rectangle {
+                                        x: tx.into(),
+                                        y: ty.into(),
+                                        width: tw.into(),
+                                        height: th.into(),
+                                        encoding_type: rfb::ENCODING_TYPE_RAW.into(),
+                                    }
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            socket.write_all(&tile_buf).await?;
                         }
-                        _ => unreachable!(),
                     }
                 }
+                // else: nothing dirty, keep ready_for_update = true
+                // so we check again on the next timer tick.
+
+                std::mem::swap(&mut self.prev_fb, &mut cur_fb);
             }
 
             if socket_ready {
@@ -311,7 +561,24 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     rfb::CS_MESSAGE_SET_PIXEL_FORMAT => {
                         let mut input = rfb::SetPixelFormat::new_zeroed();
                         socket.read_exact(&mut input.as_mut_bytes()[1..]).await?;
+                        // Validate pixel format: only true-color with
+                        // spec-defined bpp, and shifts must be < 32 to
+                        // avoid panics in convert_pixels.
+                        let pf = &input.pixel_format;
+                        match pf.bits_per_pixel {
+                            8 | 16 | 32 => {}
+                            bpp => return Err(Error::UnsupportedPixelFormat(bpp)),
+                        }
+                        if pf.true_color_flag == 0
+                            || pf.red_shift >= 32
+                            || pf.green_shift >= 32
+                            || pf.blue_shift >= 32
+                        {
+                            return Err(Error::UnsupportedPixelFormat(pf.bits_per_pixel));
+                        }
                         fmt = input.pixel_format;
+                        // Pixel format changed, force a full update.
+                        force_full_update = true;
                     }
                     rfb::CS_MESSAGE_SET_ENCODINGS => {
                         let mut input = rfb::SetEncodings::new_zeroed();
@@ -319,9 +586,14 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                         let mut encodings: Vec<zerocopy::U32<zerocopy::BE>> =
                             vec![0.into(); input.encoding_count.get().into()];
                         socket.read_exact(encodings.as_mut_bytes()).await?;
-                        if !encodings.contains(&rfb::ENCODING_TYPE_DESKTOP_SIZE.into()) {
-                            // Can't really operate without being able to change the desktop size dynamically.
-                            return Err(Error::DesktopResizeNotSupported);
+                        self.supports_desktop_resize =
+                            encodings.contains(&rfb::ENCODING_TYPE_DESKTOP_SIZE.into());
+                        self.supports_zlib = encodings.contains(&rfb::ENCODING_TYPE_ZLIB.into());
+                        let had_cursor = self.supports_cursor;
+                        self.supports_cursor =
+                            encodings.contains(&rfb::ENCODING_TYPE_CURSOR.into());
+                        if self.supports_cursor && !had_cursor {
+                            send_cursor = true;
                         }
 
                         if encodings.contains(&rfb::ENCODING_TYPE_QEMU_EXTENDED_KEY_EVENT.into()) {
@@ -351,6 +623,9 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                         let mut input = rfb::FramebufferUpdateRequest::new_zeroed();
                         socket.read_exact(&mut input.as_mut_bytes()[1..]).await?;
                         ready_for_update = true;
+                        if input.incremental == 0 {
+                            force_full_update = true;
+                        }
                     }
                     rfb::CS_MESSAGE_KEY_EVENT => {
                         let mut input = rfb::KeyEvent::new_zeroed();

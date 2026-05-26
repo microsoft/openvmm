@@ -24,7 +24,7 @@ tracing-subscriber.workspace = true
 zerocopy.workspace = true
 
 [build-dependencies]
-vergen = { workspace = true, features = ["git", "gitcl"] }
+build_rs_git_info.workspace = true
 
 [lints]
 workspace = true

@@ -30,6 +30,7 @@ use crate::requirements::can_run_test_with_context;
 use crate::tracing::try_init_tracing;
 use anyhow::Context as _;
 use petri_artifacts_core::ArtifactResolver;
+use petri_artifacts_core::RemoteAccess;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use test_macro_support::TESTS;
@@ -39,7 +40,33 @@ use test_macro_support::TESTS;
 macro_rules! test {
     ($f:ident, $req:expr) => {
         $crate::multitest!(vec![
-            $crate::SimpleTest::new(stringify!($f), $req, $f, None,).into()
+            $crate::SimpleTest::new(
+                stringify!($f),
+                $req,
+                $f,
+                None,
+                false,
+                ::petri::RemoteAccess::LocalOnly
+            )
+            .into()
+        ]);
+    };
+}
+
+/// Defines a single unstable test from a value that implements [`RunTest`].
+#[macro_export]
+macro_rules! unstable_test {
+    ($f:ident, $req:expr) => {
+        $crate::multitest!(vec![
+            $crate::SimpleTest::new(
+                stringify!($f),
+                $req,
+                $f,
+                None,
+                true,
+                ::petri::RemoteAccess::LocalOnly
+            )
+            .into()
         ]);
     };
 }
@@ -89,8 +116,11 @@ impl Test {
             tests.into_iter().filter_map(move |test| {
                 let mut artifact_requirements = test.0.artifact_requirements()?;
                 // All tests require the log directory.
-                artifact_requirements
-                    .require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
+                artifact_requirements.require(
+                    petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY,
+                    RemoteAccess::LocalOnly,
+                    false,
+                );
                 Some(Self {
                     module,
                     artifact_requirements,
@@ -117,7 +147,8 @@ impl Test {
         let artifacts = resolve(&name, self.artifact_requirements.clone())
             .context("failed to resolve artifacts")?;
         let output_dir = artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
-        let logger = try_init_tracing(output_dir).context("failed to initialize tracing")?;
+        let logger = try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG)
+            .context("failed to initialize tracing")?;
         let mut post_test_hooks = Vec::new();
 
         // Catch test panics in order to cleanly log the panic result. Without
@@ -148,7 +179,7 @@ impl Test {
             };
             Err(err)
         });
-        logger.log_test_result(&name, &r);
+        logger.log_test_result(&name, &r, self.test.0.unstable());
 
         for hook in post_test_hooks {
             tracing::info!(name = hook.name(), "Running post-test hook");
@@ -170,8 +201,18 @@ impl Test {
         self,
         resolve: fn(&str, TestArtifactRequirements) -> anyhow::Result<TestArtifacts>,
     ) -> libtest_mimic::Trial {
-        libtest_mimic::Trial::test(self.name(), move || {
-            self.run(resolve).map_err(|err| format!("{err:#}").into())
+        libtest_mimic::Trial::test(self.name(), move || match self.run(resolve) {
+            Ok(()) => Ok(()),
+            Err(err)
+                if self.test.0.unstable()
+                    && std::env::var("PETRI_REPORT_UNSTABLE_FAIL")
+                        .ok()
+                        .is_none_or(|v| v.is_empty() || v == "0") =>
+            {
+                tracing::warn!("ignoring unstable test failure: {err:#}");
+                Ok(())
+            }
+            Err(err) => Err(format!("{err:#}").into()),
         })
     }
 }
@@ -193,12 +234,14 @@ pub trait RunTest: Send {
     /// Returns `None` if this test makes no sense for this host environment
     /// (e.g., an x86_64 test on an aarch64 host) and should be left out of the
     /// test list.
-    fn resolve(&self, resolver: &ArtifactResolver<'_>) -> Option<Self::Artifacts>;
+    fn resolve(&self, resolver: ArtifactResolver<'_>) -> Option<Self::Artifacts>;
     /// Runs the test, which has been assigned `name`, with the given
     /// `artifacts`.
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()>;
     /// Returns the host requirements of the current test, if any.
     fn host_requirements(&self) -> Option<&TestCaseRequirements>;
+    /// Whether this test is unstable
+    fn unstable(&self) -> bool;
 }
 
 trait DynRunTest: Send {
@@ -206,6 +249,7 @@ trait DynRunTest: Send {
     fn artifact_requirements(&self) -> Option<TestArtifactRequirements>;
     fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()>;
     fn host_requirements(&self) -> Option<&TestCaseRequirements>;
+    fn unstable(&self) -> bool;
 }
 
 impl<T: RunTest> DynRunTest for T {
@@ -215,19 +259,23 @@ impl<T: RunTest> DynRunTest for T {
 
     fn artifact_requirements(&self) -> Option<TestArtifactRequirements> {
         let mut requirements = TestArtifactRequirements::new();
-        self.resolve(&ArtifactResolver::collector(&mut requirements))?;
+        self.resolve(ArtifactResolver::collector(&mut requirements))?;
         Some(requirements)
     }
 
     fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()> {
         let artifacts = self
-            .resolve(&ArtifactResolver::resolver(artifacts))
+            .resolve(ArtifactResolver::resolver(artifacts))
             .context("test should have been skipped")?;
         self.run(params, artifacts)
     }
 
     fn host_requirements(&self) -> Option<&TestCaseRequirements> {
         self.host_requirements()
+    }
+
+    fn unstable(&self) -> bool {
+        self.unstable()
     }
 }
 
@@ -274,6 +322,8 @@ pub struct SimpleTest<A, F> {
     run: F,
     /// Optional test requirements
     pub host_requirements: Option<TestCaseRequirements>,
+    unstable: bool,
+    remote_policy: RemoteAccess,
 }
 
 impl<A, AR, F, E> SimpleTest<A, F>
@@ -289,12 +339,16 @@ where
         resolve: A,
         run: F,
         host_requirements: Option<TestCaseRequirements>,
+        unstable: bool,
+        remote_policy: RemoteAccess,
     ) -> Self {
         SimpleTest {
             leaf_name,
             resolve,
             run,
             host_requirements,
+            unstable,
+            remote_policy,
         }
     }
 }
@@ -311,8 +365,9 @@ where
         self.leaf_name
     }
 
-    fn resolve(&self, resolver: &ArtifactResolver<'_>) -> Option<Self::Artifacts> {
-        (self.resolve)(resolver)
+    fn resolve(&self, mut resolver: ArtifactResolver<'_>) -> Option<Self::Artifacts> {
+        resolver.set_remote_policy(self.remote_policy);
+        (self.resolve)(&resolver)
     }
 
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()> {
@@ -322,13 +377,29 @@ where
     fn host_requirements(&self) -> Option<&TestCaseRequirements> {
         self.host_requirements.as_ref()
     }
+
+    fn unstable(&self) -> bool {
+        self.unstable
+    }
 }
 
 #[derive(clap::Parser)]
 struct Options {
-    /// Lists the required artifacts for all tests.
+    /// Lists the required artifacts for all tests in JSON format.
+    /// Use --tests-from-stdin to query artifacts for specific tests.
     #[clap(long)]
     list_required_artifacts: bool,
+    /// When used with --list-required-artifacts, read exact test names from
+    /// stdin (one per line) to query artifacts for specific tests only.
+    ///
+    /// Even though users can use nextest's filter logic to run a subset of
+    /// tests, due to nextest's architecture of running one test per binary we
+    /// cannot accept a nextest filter here directly. Instead, vmm-tests-run
+    /// must first call nextest with the desired filter to determine the exact
+    /// test names to pass via stdin, then ask petri what artifacts are required
+    /// for those tests.
+    #[clap(long, requires = "list_required_artifacts")]
+    tests_from_stdin: bool,
     #[clap(flatten)]
     inner: libtest_mimic::Arguments,
 }
@@ -339,17 +410,61 @@ pub fn test_main(
 ) -> ! {
     let mut args = <Options as clap::Parser>::parse();
     if args.list_required_artifacts {
-        // FUTURE: write this in a machine readable format.
+        use std::collections::BTreeSet;
+
+        // Collect all artifacts from tests (all tests, or those specified via stdin)
+        let mut required_set = BTreeSet::new();
+        let mut optional_set = BTreeSet::new();
+
+        // If reading test names from stdin, collect them into a set for exact matching
+        let stdin_tests: Option<BTreeSet<String>> = if args.tests_from_stdin {
+            use std::io::BufRead;
+            let stdin = std::io::stdin();
+            let tests: BTreeSet<String> = stdin
+                .lock()
+                .lines()
+                .map_while(Result::ok)
+                .filter(|line| !line.is_empty())
+                .collect();
+            if tests.is_empty() {
+                eprintln!("warning: no test names provided on stdin");
+            }
+            Some(tests)
+        } else {
+            None
+        };
+
         for test in Test::all() {
-            println!("{}:", test.name());
-            for artifact in test.artifact_requirements.required_artifacts() {
-                println!("required: {artifact:?}");
+            let name = test.name();
+
+            // If reading from stdin, do exact matching; otherwise include all tests
+            let matches = match stdin_tests {
+                Some(ref stdin_tests) => stdin_tests.contains(&name),
+                None => true,
+            };
+
+            if matches {
+                for artifact in test.artifact_requirements.required_artifacts() {
+                    required_set.insert(artifact.global_unique_id());
+                }
+                for artifact in test.artifact_requirements.optional_artifacts() {
+                    optional_set.insert(artifact.global_unique_id());
+                }
             }
-            for artifact in test.artifact_requirements.optional_artifacts() {
-                println!("optional: {artifact:?}");
-            }
-            println!();
         }
+
+        // Remove from optional any artifacts that are required
+        let optional_set: BTreeSet<_> = optional_set.difference(&required_set).cloned().collect();
+
+        let output = petri_artifacts_core::ArtifactListOutput {
+            required: required_set.into_iter().collect(),
+            optional: optional_set.into_iter().collect(),
+        };
+
+        println!(
+            "{}",
+            serde_json::to_string(&output).expect("JSON serialization failed")
+        );
         std::process::exit(0);
     }
 

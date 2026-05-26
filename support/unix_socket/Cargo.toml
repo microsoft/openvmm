@@ -9,8 +9,6 @@ rust-version.workspace = true
 [features]
 mesh = ["dep:mesh_protobuf"]
 
-[dependencies]
-
 [target.'cfg(windows)'.dependencies]
 getrandom.workspace = true
 socket2.workspace = true

@@ -30,7 +30,7 @@ pub struct TestContext<'scope> {
 /// A virtual processor scope, used to interact with the virtual processor
 /// in a (relatively) memory safe way.
 pub struct Scope<'scope, 'env: 'scope> {
-    #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     arch: arch::ArchScopeState,
     _scope: PhantomData<&'scope mut &'scope ()>,
     _env: PhantomData<&'env mut &'env ()>,

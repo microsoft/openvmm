@@ -6,7 +6,7 @@
 //! `cargo-nextest` does not currently support running doctests, hence the need
 //! for this separate job.
 
-use crate::run_cargo_build::common::CommonProfile;
+use crate::common::CommonProfile;
 use flowey::node::prelude::*;
 
 flowey_request! {

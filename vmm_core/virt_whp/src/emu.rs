@@ -307,7 +307,7 @@ impl<T: CpuIo> virt::EmulatorMonitorSupport for WhpEmulationState<'_, '_, T> {
             .partition
             .monitor_page
             .check_write(gpa, bytes, |connection_id| {
-                self.vp.signal_mnf(self.dev, connection_id)
+                self.vp.signal_mnf(connection_id)
             })
     }
 

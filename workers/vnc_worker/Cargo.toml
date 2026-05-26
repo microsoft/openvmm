@@ -22,6 +22,7 @@ vmsocket.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true
+socket2 = { workspace = true, features = ["all"] }
 tracing.workspace = true
 
 [lints]

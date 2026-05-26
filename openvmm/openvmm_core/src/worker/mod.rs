@@ -2,5 +2,7 @@
 // Licensed under the MIT License.
 
 pub mod dispatch;
+mod memory_layout;
 mod rom;
+mod spi_layout;
 pub mod vm_loaders;

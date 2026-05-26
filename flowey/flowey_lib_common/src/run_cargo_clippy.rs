@@ -64,6 +64,9 @@ impl FlowNode for Node {
             ctx.req(crate::install_rust::Request::InstallTargetTriple(
                 target.clone(),
             ));
+            ctx.req(crate::install_rust::Request::InstallComponent(
+                "clippy".into(),
+            ));
 
             ctx.emit_rust_step("cargo clippy", |ctx| {
                 pre_build_deps.claim(ctx);
@@ -78,7 +81,11 @@ impl FlowNode for Node {
                     let in_folder = rt.read(in_folder);
                     let exclude = rt.read(exclude);
 
-                    let crate::cfg_cargo_common_flags::Flags { locked, verbose } = flags;
+                    let crate::cfg_cargo_common_flags::Flags {
+                        locked,
+                        verbose,
+                        no_incremental,
+                    } = flags;
 
                     let target = target.to_string();
 
@@ -131,9 +138,7 @@ impl FlowNode for Node {
                         flowey::shell_cmd!(rt, "cargo")
                     };
 
-                    // if running in CI, no need to waste time with incremental
-                    // build artifacts
-                    if !matches!(rt.backend(), FlowBackend::Local) {
+                    if no_incremental {
                         cmd = cmd.env("CARGO_INCREMENTAL", "0");
                     }
                     if let Some(env) = extra_env {

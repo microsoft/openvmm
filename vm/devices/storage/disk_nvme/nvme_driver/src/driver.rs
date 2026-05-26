@@ -857,6 +857,32 @@ impl<D: DeviceBacking> NvmeDriver<D> {
 
         let admin = worker.admin.insert(admin);
 
+        // Diagnostic: peek at the admin CQ immediately after restore to detect
+        // phantom completions written by the device during the keepalive window.
+        if let Some(diag) = admin.issuer().request_diagnostic_dump().await {
+            if diag.peek_phase_match {
+                tracing::warn!(
+                    ?pci_id,
+                    cq_head = diag.head,
+                    expected_phase = diag.expected_phase,
+                    peek_cid = diag.peek_cid,
+                    peek_sqid = diag.peek_sqid,
+                    peek_status_raw = format_args!("{:#x}", diag.peek_status_raw),
+                    pending_count = diag.pending_count,
+                    "admin CQ has a completion at head after restore — \
+                     phantom completion from keepalive window detected"
+                );
+            } else {
+                tracing::info!(
+                    ?pci_id,
+                    cq_head = diag.head,
+                    expected_phase = diag.expected_phase,
+                    pending_count = diag.pending_count,
+                    "admin CQ peek after restore: no phantom completion at head"
+                );
+            }
+        }
+
         // Spawn a task to handle asynchronous events.
         let async_event_task = this.driver.spawn("nvme_async_event", {
             let admin = admin.issuer().clone();
@@ -899,8 +925,24 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         );
 
         // Restore I/O queues.
-        // (1) Restore qid1 and any queues that have pending commands.
+        //
+        // Work around a device bug: when eager restore is
+        // active (the default), restore ALL queues sorted by interrupt vector
+        // so that VPci receives CreateInterruptMessage calls in ascending
+        // order.
+        //
+        // When `allow_lazy_restore` is explicitly true in saved state, use the
+        // original eager+proto split (only qid=1 and non-empty queues are
+        // eagerly restored; empty queues become proto queues restored on
+        // demand). This path does NOT guarantee interrupt vector ordering.
+        //
+        // This is a placeholder mechanism so that we can turn this optimization
+        // back on once we run on devices with fixed interrupt assignment behavior.
+        //
         // Interrupt vector 0 is shared between Admin queue and I/O queue #1.
+        let allow_lazy_restore = saved_state.worker_data.allow_lazy_restore.unwrap_or(false);
+        tracing::info!(allow_lazy_restore, ?pci_id, "io queue restore strategy");
+
         let mut max_seen_qid = 1;
         let nonempty_queues = saved_state
             .worker_data
@@ -928,121 +970,193 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             None
         };
 
-        let proto_queues_count = saved_state
-            .worker_data
-            .io
-            .iter()
-            .filter(|q| {
-                q.queue_data.qid != 1 && q.queue_data.handler_data.pending_cmds.commands.is_empty()
-            })
-            .count();
+        if allow_lazy_restore {
+            // Original eager+proto restore path. Only qid=1 and queues with
+            // pending commands are eagerly restored; empty queues become proto
+            // queues restored on demand. Does NOT guarantee IV ordering.
+            let proto_queues_count = saved_state
+                .worker_data
+                .io
+                .iter()
+                .filter(|q| {
+                    q.queue_data.qid != 1
+                        && q.queue_data.handler_data.pending_cmds.commands.is_empty()
+                })
+                .count();
 
-        // Precreate waiters for proto queues and for QID 1 (when empty) before
-        // creating and starting eager queues. This ensures that if all eager
-        // non-empty queues drain before we're able to create the proto queues
-        // (or before QID 1's turn in the loop), they will still receive the
-        // signal and not wait forever.
-        let drain_after_restore_for_proto_queues: Vec<_> = (0..proto_queues_count)
-            .map(|_| drain_after_restore_template.new_self_drained())
-            .collect();
+            // Precreate waiters for proto queues and for QID 1 (when empty) before
+            // creating and starting eager queues. This ensures that if all eager
+            // non-empty queues drain before we're able to create the proto queues
+            // (or before QID 1's turn in the loop), they will still receive the
+            // signal and not wait forever.
+            let drain_after_restore_for_proto_queues: Vec<_> = (0..proto_queues_count)
+                .map(|_| drain_after_restore_template.new_self_drained())
+                .collect();
 
-        let mut drain_after_restore_for_qid1 = saved_state
-            .worker_data
-            .io
-            .iter()
-            .find(|q| q.queue_data.qid == 1)
-            .filter(|q| q.queue_data.handler_data.pending_cmds.commands.is_empty())
-            .map(|_| drain_after_restore_template.new_self_drained());
+            let mut drain_after_restore_for_qid1 = saved_state
+                .worker_data
+                .io
+                .iter()
+                .find(|q| q.queue_data.qid == 1)
+                .filter(|q| q.queue_data.handler_data.pending_cmds.commands.is_empty())
+                .map(|_| drain_after_restore_template.new_self_drained());
 
-        worker.io = saved_state
-            .worker_data
-            .io
-            .iter()
-            .filter(|q| {
-                q.queue_data.qid == 1 || !q.queue_data.handler_data.pending_cmds.commands.is_empty()
-            })
-            .flat_map(|q| -> Result<IoQueue<D>, anyhow::Error> {
-                let qid = q.queue_data.qid;
-                let cpu = q.cpu;
-                tracing::info!(qid, cpu, ?pci_id, "restoring queue");
-                max_seen_qid = max_seen_qid.max(qid);
-                let interrupt = worker.device.map_interrupt(q.iv, q.cpu).with_context(|| {
-                    format!(
-                        "failed to map interrupt for {}, cpu {}, iv {}",
-                        pci_id, q.cpu, q.iv
+            worker.io = saved_state
+                .worker_data
+                .io
+                .iter()
+                .filter(|q| {
+                    q.queue_data.qid == 1
+                        || !q.queue_data.handler_data.pending_cmds.commands.is_empty()
+                })
+                .flat_map(|q| -> Result<IoQueue<D>, anyhow::Error> {
+                    let qid = q.queue_data.qid;
+                    let cpu = q.cpu;
+                    tracing::info!(qid, cpu, ?pci_id, "restoring queue");
+                    max_seen_qid = max_seen_qid.max(qid);
+                    let interrupt =
+                        worker.device.map_interrupt(q.iv, q.cpu).with_context(|| {
+                            format!(
+                                "failed to map interrupt for {}, cpu {}, iv {}",
+                                pci_id, q.cpu, q.iv
+                            )
+                        })?;
+                    tracing::info!(qid, cpu, ?pci_id, "restoring queue: search for mem block");
+                    let mem_block = restored_memory
+                        .iter()
+                        .find(|mem| {
+                            mem.len() == q.queue_data.mem_len
+                                && q.queue_data.base_pfn == mem.pfns()[0]
+                        })
+                        .expect("unable to find restored mem block")
+                        .to_owned();
+                    tracing::info!(qid, cpu, ?pci_id, "restoring queue: restore IoQueue");
+                    let q = IoQueue::restore(
+                        driver.clone(),
+                        interrupt,
+                        registers.clone(),
+                        mem_block,
+                        &pci_id,
+                        q,
+                        bounce_buffer,
+                        if q.queue_data.handler_data.pending_cmds.commands.is_empty() {
+                            drain_after_restore_for_qid1
+                                .take()
+                                .expect("only QID 1 should be empty in eager restore")
+                        } else {
+                            drain_after_restore_template.new_draining()
+                        },
+                    )?;
+                    tracing::info!(qid, cpu, ?pci_id, "restoring queue: create issuer");
+                    let issuer = IoIssuer {
+                        issuer: q.queue.issuer().clone(),
+                        cpu: q.cpu,
+                    };
+                    this.io_issuers.per_cpu[q.cpu as usize].set(issuer).unwrap();
+                    Ok(q)
+                })
+                .collect();
+
+            // Create prototype entries for any queues that don't currently have
+            // outstanding commands. They will be restored on demand later.
+            worker.proto_io = saved_state
+                .worker_data
+                .io
+                .iter()
+                .filter(|q| {
+                    q.queue_data.qid != 1
+                        && q.queue_data.handler_data.pending_cmds.commands.is_empty()
+                })
+                .zip(drain_after_restore_for_proto_queues)
+                .map(|(q, drain_after_restore)| {
+                    tracing::info!(
+                        qid = q.queue_data.qid,
+                        cpu = q.cpu,
+                        ?pci_id,
+                        "creating prototype io queue entry",
+                    );
+                    max_seen_qid = max_seen_qid.max(q.queue_data.qid);
+                    let mem_block = restored_memory
+                        .iter()
+                        .find(|mem| {
+                            mem.len() == q.queue_data.mem_len
+                                && q.queue_data.base_pfn == mem.pfns()[0]
+                        })
+                        .expect("unable to find restored mem block")
+                        .to_owned();
+                    (
+                        q.cpu,
+                        ProtoIoQueue {
+                            save_state: q.clone(),
+                            mem: mem_block,
+                            drain_after_restore,
+                        },
                     )
-                })?;
-                tracing::info!(qid, cpu, ?pci_id, "restoring queue: search for mem block");
-                let mem_block = restored_memory
-                    .iter()
-                    .find(|mem| {
-                        mem.len() == q.queue_data.mem_len && q.queue_data.base_pfn == mem.pfns()[0]
-                    })
-                    .expect("unable to find restored mem block")
-                    .to_owned();
-                tracing::info!(qid, cpu, ?pci_id, "restoring queue: restore IoQueue");
-                let q = IoQueue::restore(
-                    driver.clone(),
-                    interrupt,
-                    registers.clone(),
-                    mem_block,
-                    &pci_id,
-                    q,
-                    bounce_buffer,
-                    if q.queue_data.handler_data.pending_cmds.commands.is_empty() {
-                        drain_after_restore_for_qid1
-                            .take()
-                            .expect("only QID 1 should be empty in eager restore")
-                    } else {
-                        drain_after_restore_template.new_draining()
-                    },
-                )?;
-                tracing::info!(qid, cpu, ?pci_id, "restoring queue: create issuer");
-                let issuer = IoIssuer {
-                    issuer: q.queue.issuer().clone(),
-                    cpu: q.cpu,
-                };
-                this.io_issuers.per_cpu[q.cpu as usize].set(issuer).unwrap();
-                Ok(q)
-            })
-            .collect();
+                })
+                .collect();
+        } else {
+            // Eager restore path: restore ALL queues sorted by interrupt
+            // vector for ordered VPci allocation (MSI-X ordering workaround).
+            //
+            // Devnote: Safety of inline new_self_drained(): This loop is fully
+            // synchronous (no .await). Although IoQueue::restore() spawns
+            // queue handler tasks, they don't poll until the async runtime
+            // yields — which happens only after .collect() completes. So all
+            // new_self_drained() and new_draining() calls finish before any
+            // handler can fire the drain-complete signal. If this loop is ever
+            // refactored to be async, the waiters for empty queues must be
+            // pre-created (as done in the lazy path above).
+            let mut sorted_io: Vec<_> = saved_state.worker_data.io.iter().collect();
+            sorted_io.sort_by_key(|q| q.iv);
 
-        // (2) Create prototype entries for any queues that don't currently have outstanding commands.
-        // They will be restored on demand later.
-        worker.proto_io = saved_state
-            .worker_data
-            .io
-            .iter()
-            .filter(|q| {
-                q.queue_data.qid != 1 && q.queue_data.handler_data.pending_cmds.commands.is_empty()
-            })
-            .zip(drain_after_restore_for_proto_queues)
-            .map(|(q, drain_after_restore)| {
-                // Create a prototype IO queue entry.
-                tracing::info!(
-                    qid = q.queue_data.qid,
-                    cpu = q.cpu,
-                    ?pci_id,
-                    "creating prototype io queue entry",
-                );
-                max_seen_qid = max_seen_qid.max(q.queue_data.qid);
-                let mem_block = restored_memory
-                    .iter()
-                    .find(|mem| {
-                        mem.len() == q.queue_data.mem_len && q.queue_data.base_pfn == mem.pfns()[0]
-                    })
-                    .expect("unable to find restored mem block")
-                    .to_owned();
-                (
-                    q.cpu,
-                    ProtoIoQueue {
-                        save_state: q.clone(),
-                        mem: mem_block,
-                        drain_after_restore,
-                    },
-                )
-            })
-            .collect();
+            worker.io = sorted_io
+                .into_iter()
+                .flat_map(|q| -> Result<IoQueue<D>, anyhow::Error> {
+                    let qid = q.queue_data.qid;
+                    let cpu = q.cpu;
+                    tracing::info!(qid, cpu, iv = q.iv, ?pci_id, "restoring queue");
+                    max_seen_qid = max_seen_qid.max(qid);
+                    let interrupt =
+                        worker.device.map_interrupt(q.iv, q.cpu).with_context(|| {
+                            format!(
+                                "failed to map interrupt for {}, cpu {}, iv {}",
+                                pci_id, q.cpu, q.iv
+                            )
+                        })?;
+                    tracing::info!(qid, cpu, ?pci_id, "restoring queue: search for mem block");
+                    let mem_block = restored_memory
+                        .iter()
+                        .find(|mem| {
+                            mem.len() == q.queue_data.mem_len
+                                && q.queue_data.base_pfn == mem.pfns()[0]
+                        })
+                        .expect("unable to find restored mem block")
+                        .to_owned();
+                    tracing::info!(qid, cpu, ?pci_id, "restoring queue: restore IoQueue");
+                    let q = IoQueue::restore(
+                        driver.clone(),
+                        interrupt,
+                        registers.clone(),
+                        mem_block,
+                        &pci_id,
+                        q,
+                        bounce_buffer,
+                        if q.queue_data.handler_data.pending_cmds.commands.is_empty() {
+                            drain_after_restore_template.new_self_drained()
+                        } else {
+                            drain_after_restore_template.new_draining()
+                        },
+                    )?;
+                    tracing::info!(qid, cpu, ?pci_id, "restoring queue: create issuer");
+                    let issuer = IoIssuer {
+                        issuer: q.queue.issuer().clone(),
+                        cpu: q.cpu,
+                    };
+                    this.io_issuers.per_cpu[q.cpu as usize].set(issuer).unwrap();
+                    Ok(q)
+                })
+                .collect();
+        }
 
         // Update next_ioq_id to avoid reusing qids.
         worker.next_ioq_id = max_seen_qid + 1;
@@ -1194,32 +1308,29 @@ impl<D: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<D> {
         stop: &mut task_control::StopTask<'_>,
         state: &mut WorkerState,
     ) -> Result<(), task_control::Cancelled> {
-        let r = stop
-            .until_stopped(async {
-                loop {
-                    match self.recv.next().await {
-                        Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
-                            rpc.handle(async |cpu| self.create_io_issuer(state, cpu).await)
-                                .await
-                        }
-                        Some(NvmeWorkerRequest::Save(rpc)) => {
-                            rpc.handle(async |span| {
-                                let child_span = tracing::info_span!(
-                                    parent: &span,
-                                    "nvme_worker_save",
-                                    pci_id = %self.device.id()
-                                );
-                                self.save(state).instrument(child_span).await
-                            })
-                            .await
-                        }
-                        None => break,
-                    }
+        loop {
+            let cmd = stop.until_stopped(self.recv.next()).await?;
+            match cmd {
+                Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
+                    rpc.handle(async |cpu| self.create_io_issuer(state, cpu).await)
+                        .await
                 }
-            })
-            .await;
-        tracing::info!(pci_id = %self.device.id(), "nvme worker task exiting");
-        r
+                Some(NvmeWorkerRequest::Save(rpc)) => {
+                    rpc.handle(async |span| {
+                        let child_span = tracing::info_span!(
+                            parent: &span,
+                            "nvme_worker_save",
+                            pci_id = %self.device.id()
+                        );
+                        self.save(state).instrument(child_span).await
+                    })
+                    .await
+                }
+                None => break,
+            }
+        }
+        tracing::info!(pci_id = %self.device.id(), "nvme worker task exiting cleanly");
+        Ok(())
     }
 }
 
@@ -1310,9 +1421,10 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             }
         }
 
+        let pci_id = self.device.id().to_owned();
         let issuer = match self
             .create_io_queue(state, cpu)
-            .instrument(info_span!("create_nvme_io_queue", cpu))
+            .instrument(info_span!("create_nvme_io_queue", cpu, pci_id = ?pci_id))
             .await
         {
             Ok(issuer) => issuer,
@@ -1427,15 +1539,19 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
 
         // Add the queue pair before aliasing its memory with the device so
         // that it can be torn down correctly on failure.
-        self.io.push(IoQueue { queue, iv, cpu });
-        let io_queue = self.io.last_mut().unwrap();
+        let io_queue = self.io.push_mut(IoQueue { queue, iv, cpu });
 
         let admin = self.admin.as_ref().unwrap().issuer().as_ref();
+        let pci_id_str = self.device.id().to_owned();
 
         let mut created_completion_queue = false;
         let r = async {
-            admin
-                .issue_raw(spec::Command {
+            Self::issue_admin_with_diagnostic(
+                admin,
+                &self.driver,
+                &pci_id_str,
+                spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE,
+                spec::Command {
                     cdw10: spec::Cdw10CreateIoQueue::new()
                         .with_qid(qid)
                         .with_qsize_z(state.qsize - 1)
@@ -1447,14 +1563,19 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
                         .into(),
                     dptr: [io_cq_addr, 0],
                     ..admin_cmd(spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE)
-                })
-                .await
-                .map_err(|err| DeviceError::IoCompletionQueueFailure(err.into(), qid))?;
+                },
+            )
+            .await
+            .map_err(|err| DeviceError::IoCompletionQueueFailure(err.into(), qid))?;
 
             created_completion_queue = true;
 
-            admin
-                .issue_raw(spec::Command {
+            Self::issue_admin_with_diagnostic(
+                admin,
+                &self.driver,
+                &pci_id_str,
+                spec::AdminOpcode::CREATE_IO_SUBMISSION_QUEUE,
+                spec::Command {
                     cdw10: spec::Cdw10CreateIoQueue::new()
                         .with_qid(qid)
                         .with_qsize_z(state.qsize - 1)
@@ -1465,9 +1586,10 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
                         .into(),
                     dptr: [io_sq_addr, 0],
                     ..admin_cmd(spec::AdminOpcode::CREATE_IO_SUBMISSION_QUEUE)
-                })
-                .await
-                .map_err(|err| DeviceError::IoSubmissionQueueFailure(err.into(), qid))?;
+                },
+            )
+            .await
+            .map_err(|err| DeviceError::IoSubmissionQueueFailure(err.into(), qid))?;
 
             Ok(())
         };
@@ -1497,6 +1619,71 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             issuer: io_queue.queue.issuer().clone(),
             cpu,
         })
+    }
+
+    /// Issue an admin command with a diagnostic timer. If the command does not
+    /// complete within 10 seconds, requests a diagnostic dump from the admin
+    /// queue handler (CQ peek, pending count, interrupt count) and logs it.
+    /// The command is NOT aborted — it continues to be awaited after
+    /// diagnostics are emitted.
+    async fn issue_admin_with_diagnostic(
+        admin: &Issuer,
+        driver: &VmTaskDriver,
+        device_id: &str,
+        opcode: spec::AdminOpcode,
+        command: spec::Command,
+    ) -> Result<spec::Completion, RequestError> {
+        use futures::FutureExt;
+        use pal_async::timer::PolledTimer;
+        use std::time::Duration;
+
+        let mut cmd_future = std::pin::pin!(admin.issue_raw(command).fuse());
+
+        let mut timer = PolledTimer::new(driver);
+        let mut sleep = std::pin::pin!(timer.sleep(Duration::from_secs(10)).fuse());
+
+        futures::select! {
+            result = cmd_future => result,
+            _ = sleep => {
+                tracing::error!(
+                    pci_id = %device_id,
+                    opcode = opcode.0,
+                    "admin command not completed after 10s — requesting CQ diagnostic dump"
+                );
+
+                // Request a diagnostic dump from the admin QueueHandler.
+                // This peeks at the CQ head without advancing it.
+                if let Some(diag) = admin.request_diagnostic_dump().await {
+                    tracing::error!(
+                        pci_id = %device_id,
+                        opcode = opcode.0,
+                        cq_head = diag.head,
+                        expected_phase = diag.expected_phase,
+                        peek_phase_match = diag.peek_phase_match,
+                        peek_cid = diag.peek_cid,
+                        peek_sqid = diag.peek_sqid,
+                        peek_status_raw = format_args!("{:#x}", diag.peek_status_raw),
+                        pending_count = diag.pending_count,
+                        interrupt_count = diag.interrupt_count,
+                        "admin CQ diagnostic dump: {}",
+                        if diag.peek_phase_match {
+                            "COMPLETION PRESENT in CQ but interrupt not delivered — likely interrupt routing issue"
+                        } else {
+                            "no completion in CQ at head — device has not processed the command"
+                        }
+                    );
+                } else {
+                    tracing::error!(
+                        pci_id = %device_id,
+                        opcode = opcode.0,
+                        "failed to get diagnostic dump from admin queue handler"
+                    );
+                }
+
+                // Continue awaiting the original command (do NOT abort).
+                cmd_future.await
+            }
+        }
     }
 
     /// Save NVMe driver state for servicing.
@@ -1582,6 +1769,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             io,
             qsize: worker_state.qsize,
             max_io_queues: worker_state.max_io_queues,
+            allow_lazy_restore: Some(false), // For now, we always restore eagerly to work around device bugs.
         })
     }
 }
@@ -1640,6 +1828,9 @@ pub mod save_restore {
         /// Max number of IO queue pairs.
         #[mesh(4)]
         pub max_io_queues: u16,
+        /// Whether to allow lazy restore of IO queues that had no pending commands at the time of save.
+        #[mesh(5)]
+        pub allow_lazy_restore: Option<bool>,
     }
 
     /// Save/restore state for QueuePair.

@@ -3,17 +3,37 @@
 
 //! Centralized list of constants enumerating available ADO build pools.
 
-use flowey::node::prelude::FlowPlatformLinuxDistro;
 use flowey::pipeline::prelude::*;
 
-pub const WINDOWS_INTEL: &str = "HvLite-CI-Win-Pool";
-pub const WINDOWS_AMD: &str = "HvLite-CI-Win-Pool-WestUS2";
-pub const LINUX: &str = "HvLite-CI-Linux-Pool-CentralUS";
+use super::gh_pools::LINUX_IMAGE_AMD64;
+use super::gh_pools::WINDOWS_IMAGE_AMD64;
 
-pub fn default_x86_pool(platform: FlowPlatform) -> &'static str {
-    match platform {
-        FlowPlatform::Windows => WINDOWS_INTEL,
-        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => LINUX,
-        platform => panic!("unsupported platform {platform}"),
+pub const AMD_POOL_1ES: &str = "openvmm-ado-amd-westus2";
+pub const INTEL_POOL_1ES: &str = "openvmm-ado-intel-centralus";
+
+fn ado_pool_with_image_1es(pool: &str, image: &str) -> AdoPool {
+    AdoPool {
+        name: pool.into(),
+        demands: vec![format!("ImageOverride -equals {image}")],
     }
+}
+
+pub fn windows_amd_1es() -> AdoPool {
+    ado_pool_with_image_1es(AMD_POOL_1ES, WINDOWS_IMAGE_AMD64)
+}
+
+pub fn windows_intel_1es() -> AdoPool {
+    ado_pool_with_image_1es(INTEL_POOL_1ES, WINDOWS_IMAGE_AMD64)
+}
+
+pub fn linux_amd_1es() -> AdoPool {
+    ado_pool_with_image_1es(AMD_POOL_1ES, LINUX_IMAGE_AMD64)
+}
+
+pub fn default_windows() -> AdoPool {
+    windows_amd_1es()
+}
+
+pub fn default_linux() -> AdoPool {
+    linux_amd_1es()
 }

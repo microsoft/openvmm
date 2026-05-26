@@ -15,6 +15,8 @@ use crate::KvmPartitionInner;
 use crate::KvmProcessorBinder;
 use crate::KvmRunVpError;
 use crate::gsi::GsiRouting;
+use crate::gsi::KvmIrqFdState;
+use crate::gsi::MsiRouteBuilder;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
@@ -93,7 +95,24 @@ use zerocopy::IntoBytes;
 const MYSTERY_MSRS: &[u32] = &[0x88, 0x89, 0x8a, 0x116, 0x118, 0x119, 0x11a, 0x11b, 0x11e];
 
 #[derive(Debug)]
-pub struct Kvm;
+pub struct Kvm {
+    kvm: kvm::Kvm,
+}
+
+impl Kvm {
+    /// Creates a new KVM hypervisor instance.
+    pub fn new() -> Result<Self, KvmError> {
+        Ok(Self {
+            kvm: kvm::Kvm::new()?,
+        })
+    }
+
+    /// Creates a KVM hypervisor instance from a pre-opened `/dev/kvm` fd.
+    pub fn from_kvm(file: std::fs::File) -> Result<Self, KvmError> {
+        let kvm = kvm::Kvm::from(file);
+        Ok(Self { kvm })
+    }
+}
 
 /// CPUID leaf and flag for GB page support.
 const GB_PAGE_LEAF: u32 = 0x80000001;
@@ -110,6 +129,10 @@ impl virt::Hypervisor for Kvm {
     type Partition = KvmPartition;
     type Error = KvmError;
 
+    fn platform_info(&self) -> virt::PlatformInfo {
+        virt::PlatformInfo {}
+    }
+
     fn new_partition<'a>(
         &mut self,
         config: ProtoPartitionConfig<'a>,
@@ -118,8 +141,8 @@ impl virt::Hypervisor for Kvm {
             return Err(KvmError::IsolationNotSupported);
         }
 
-        let kvm = kvm::Kvm::new()?;
-        let mut cpuid_entries = kvm
+        let mut cpuid_entries = self
+            .kvm
             .supported_cpuid()?
             .into_iter()
             .filter_map(|entry| {
@@ -238,7 +261,7 @@ impl virt::Hypervisor for Kvm {
 
         let cpuid_entries = CpuidLeafSet::new(cpuid_entries);
 
-        let vm = kvm.new_vm()?;
+        let vm = self.kvm.new_vm()?;
         vm.enable_split_irqchip(virt::irqcon::IRQ_LINES as u32)?;
         vm.enable_x2apic_api()?;
         vm.enable_unknown_msr_exits()?;
@@ -248,14 +271,6 @@ impl virt::Hypervisor for Kvm {
             config,
             cpuid: cpuid_entries,
         })
-    }
-
-    fn is_available(&self) -> Result<bool, Self::Error> {
-        match std::fs::metadata("/dev/kvm") {
-            Ok(_) => Ok(true),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(KvmError::AvailableCheck(err)),
-        }
     }
 }
 
@@ -271,20 +286,33 @@ impl ProtoPartition for KvmProtoPartition<'_> {
     type Error = KvmError;
     type ProcessorBinder = KvmProcessorBinder;
 
-    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
-        self.cpuid.result(eax, ecx, &[0; 4])
-    }
-
     fn max_physical_address_size(&self) -> u8 {
-        max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid(eax, ecx))
+        max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid.result(eax, ecx, &[0; 4]))
     }
 
     fn build(
         mut self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        // Build topology leaves using the base cpuid before consuming it.
+        let mut topology_leaves = Vec::new();
+        virt::x86::topology::topology_cpuid(
+            self.config.processor_topology,
+            &|eax, ecx| self.cpuid.result(eax, ecx, &[0; 4]),
+            &mut topology_leaves,
+        )
+        .map_err(KvmError::TopologyCpuid)?;
+
+        // Work around a KVM bug where PSFD is advertised in guest CPUID
+        // but the SPEC_CTRL MSR is not accessible. Check the KVM-reported
+        // CPUID (before user overrides) since that determines what KVM
+        // will allow.
+        let psfd_fixup = strip_psfd_leaf(&self.cpuid);
+
         let mut cpuid = self.cpuid.into_leaves();
         cpuid.extend(config.cpuid);
+        cpuid.extend(topology_leaves);
+        cpuid.extend(psfd_fixup);
         let cpuid = CpuidLeafSet::new(cpuid);
 
         let bsp_apic_id = self.config.processor_topology.vp_arch(VpIndex::BSP).apic_id;
@@ -414,7 +442,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         gsi_routing.update_routes(&self.vm);
 
-        let partition = KvmPartitionInner {
+        let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
             memory: Default::default(),
             hv1_enabled: self.config.hv_config.is_some(),
@@ -435,10 +463,13 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             gsi_routing: Mutex::new(gsi_routing),
             caps,
             cpuid,
-        };
+            synic_ports: Default::default(),
+        });
 
         let partition = KvmPartition {
-            inner: Arc::new(partition),
+            synic_ports: Arc::new(virt::synic::SynicPorts::new(partition.clone())),
+            irqfd_state: Arc::new(KvmIrqFdState::new(partition.clone())),
+            inner: partition,
         };
 
         let vps = self
@@ -460,6 +491,41 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         }
 
         Ok((partition, vps))
+    }
+}
+
+/// KVM's `guest_has_spec_ctrl_msr()` decides whether a guest may access
+/// the SPEC_CTRL MSR by checking for IBRS, STIBP, and SSBD in CPUID.
+/// However, KVM also passes through AMD PSFD without including it in that
+/// check. PSFD is architecturally controlled via the SPEC_CTRL MSR, so a
+/// guest that sees PSFD and infers SPEC_CTRL MSR support (as Hyper-V
+/// does) will #GP when writing the MSR.
+///
+/// Returns a leaf that strips PSFD when it should not be advertised.
+fn strip_psfd_leaf(cpuid: &CpuidLeafSet) -> Option<CpuidLeaf> {
+    use x86defs::cpuid::ExtendedAddressSpaceSizesEbx;
+    use x86defs::cpuid::ExtendedFeatureSubleaf0Edx;
+
+    let leaf7 = cpuid.result(CpuidFunction::ExtendedFeatures.0, 0, &[0; 4]);
+    let leaf80000008 = cpuid.result(CpuidFunction::ExtendedAddressSpaceSizes.0, 0, &[0; 4]);
+
+    let edx = ExtendedFeatureSubleaf0Edx::from(leaf7[3]);
+    let ebx = ExtendedAddressSpaceSizesEbx::from(leaf80000008[1]);
+
+    // Mirror KVM's guest_has_spec_ctrl_msr() check.
+    let has_spec_ctrl_msr = edx.ibrs() || ebx.ibrs() || ebx.stibp() || ebx.ssbd();
+    if !has_spec_ctrl_msr && ebx.psfd() {
+        let psfd_mask = ExtendedAddressSpaceSizesEbx::new().with_psfd(true);
+        Some(
+            CpuidLeaf::new(CpuidFunction::ExtendedAddressSpaceSizes.0, [0, 0, 0, 0]).masked([
+                0,
+                u32::from(psfd_mask),
+                0,
+                0,
+            ]),
+        )
+    } else {
+        None
     }
 }
 
@@ -491,12 +557,6 @@ impl ResetPartition for KvmPartition {
     type Error = KvmError;
 
     fn reset(&self) -> Result<(), Self::Error> {
-        for vp in self.inner.vps() {
-            self.inner
-                .vp_state_access(vp.vp_info.base.vp_index)
-                .reset_all(&vp.vp_info)
-                .map_err(Box::new)?;
-        }
         let mut this = self;
         this.reset_all(&self.inner.bsp().vp_info)
             .map_err(Box::new)?;
@@ -516,8 +576,12 @@ impl Partition for KvmPartition {
         Some(self.clone())
     }
 
-    fn as_signal_msi(self: &Arc<Self>, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+    fn as_signal_msi(&self, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         Some(self.inner.clone())
+    }
+
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        Some(self.irqfd_state.clone())
     }
 
     fn caps(&self) -> &virt::PartitionCapabilities {
@@ -584,6 +648,10 @@ impl Hv1 for KvmPartition {
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
+    }
+
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic_ports.clone()
     }
 }
 
@@ -741,15 +809,19 @@ impl KvmProcessor<'_> {
     }
 }
 
-struct KvmMsi {
-    address_lo: u32,
-    address_hi: u32,
-    data: u32,
+pub(crate) struct KvmMsi {
+    pub(crate) address_lo: u32,
+    pub(crate) address_hi: u32,
+    pub(crate) data: u32,
 }
 
 impl KvmMsi {
-    fn new(request: MsiRequest) -> Self {
+    pub(crate) fn new(request: MsiRequest) -> Option<Self> {
+        // TODO: validate the high bits of the request as well, across the codebase.
         let request_address = MsiAddress::from(request.address as u32);
+        if request_address.address() != x86defs::msi::MSI_ADDRESS {
+            return None;
+        }
         let request_data = MsiData::from(request.data);
 
         // Although architecturally the destination mode bit is only supposed to
@@ -772,21 +844,29 @@ impl KvmMsi {
             .with_vector(request_data.vector())
             .into();
 
-        Self {
+        Some(Self {
             address_lo,
             address_hi,
             data,
-        }
+        })
     }
 }
 
 impl KvmPartitionInner {
     fn request_msi(&self, request: MsiRequest) {
-        let KvmMsi {
+        let Some(KvmMsi {
             address_lo,
             address_hi,
             data,
-        } = KvmMsi::new(request);
+        }) = KvmMsi::new(request)
+        else {
+            tracelimit::warn_ratelimited!(
+                address = request.address,
+                data = request.data,
+                "invalid MSI address"
+            );
+            return;
+        };
         if let Err(err) = self.kvm.request_msi(&kvm::kvm_msi {
             address_lo,
             address_hi,
@@ -805,20 +885,62 @@ impl KvmPartitionInner {
     }
 }
 
+struct KvmX86MsiRouteBuilder;
+
+impl MsiRouteBuilder for KvmX86MsiRouteBuilder {
+    fn routing_entry(
+        &self,
+        _partition: &KvmPartitionInner,
+        address: u64,
+        data: u32,
+        _devid: Option<u32>,
+    ) -> Option<kvm::RoutingEntry> {
+        let KvmMsi {
+            address_lo,
+            address_hi,
+            data,
+        } = KvmMsi::new(MsiRequest { address, data })?;
+        Some(kvm::RoutingEntry::Msi {
+            address_lo,
+            address_hi,
+            data,
+            devid: None,
+        })
+    }
+}
+
+impl virt::irqfd::IrqFd for KvmIrqFdState {
+    fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn virt::irqfd::IrqFdRoute>> {
+        Ok(Box::new(self.new_irqfd_route(KvmX86MsiRouteBuilder)?))
+    }
+}
+
 impl IoApicRouting for KvmPartitionInner {
     fn set_irq_route(&self, irq: u8, request: Option<MsiRequest>) {
-        let entry = request.map(|request| {
-            let KvmMsi {
-                address_lo,
-                address_hi,
-                data,
-            } = KvmMsi::new(request);
-            kvm::RoutingEntry::Msi {
-                address_lo,
-                address_hi,
-                data,
-            }
-        });
+        let entry = match request {
+            Some(request) => match KvmMsi::new(request) {
+                Some(KvmMsi {
+                    address_lo,
+                    address_hi,
+                    data,
+                }) => Some(kvm::RoutingEntry::Msi {
+                    address_lo,
+                    address_hi,
+                    data,
+                    devid: None,
+                }),
+                None => {
+                    tracelimit::warn_ratelimited!(
+                        irq,
+                        address = request.address,
+                        data = request.data,
+                        "invalid MSI address for IO-APIC route"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
         let mut gsi_routing = self.gsi_routing.lock();
         if gsi_routing.set(irq as u32, entry) {
             gsi_routing.update_routes(&self.kvm);
@@ -932,8 +1054,8 @@ impl DoorbellRegistration for KvmPartition {
     }
 }
 
-struct KvmHypercallExit<'a, T> {
-    bus: &'a T,
+struct KvmHypercallExit<'a> {
+    partition: &'a KvmPartitionInner,
     registers: KvmHypercallRegisters,
 }
 
@@ -943,22 +1065,20 @@ struct KvmHypercallRegisters {
     result: u64,
 }
 
-impl<T: CpuIo> KvmHypercallExit<'_, T> {
+impl KvmHypercallExit<'_> {
     const DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [hv1_hypercall::HvPostMessage, hv1_hypercall::HvSignalEvent],
     );
 }
 
-impl<'a, T: CpuIo> hv1_hypercall::AsHandler<KvmHypercallExit<'a, T>>
-    for &mut KvmHypercallExit<'a, T>
-{
-    fn as_handler(&mut self) -> &mut KvmHypercallExit<'a, T> {
+impl<'a> hv1_hypercall::AsHandler<KvmHypercallExit<'a>> for &mut KvmHypercallExit<'a> {
+    fn as_handler(&mut self) -> &mut KvmHypercallExit<'a> {
         self
     }
 }
 
-impl<T> hv1_hypercall::HypercallIo for KvmHypercallExit<'_, T> {
+impl hv1_hypercall::HypercallIo for KvmHypercallExit<'_> {
     fn advance_ip(&mut self) {
         // KVM automatically does this.
     }
@@ -1015,16 +1135,19 @@ impl<T> hv1_hypercall::HypercallIo for KvmHypercallExit<'_, T> {
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::PostMessage for KvmHypercallExit<'_, T> {
+impl hv1_hypercall::PostMessage for KvmHypercallExit<'_> {
     fn post_message(&mut self, connection_id: u32, message: &[u8]) -> hvdef::HvResult<()> {
-        self.bus
-            .post_synic_message(Vtl::Vtl0, connection_id, false, message)
+        self.partition
+            .synic_ports
+            .handle_post_message(Vtl::Vtl0, connection_id, false, message)
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::SignalEvent for KvmHypercallExit<'_, T> {
+impl hv1_hypercall::SignalEvent for KvmHypercallExit<'_> {
     fn signal_event(&mut self, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
-        self.bus.signal_synic_event(Vtl::Vtl0, connection_id, flag)
+        self.partition
+            .synic_ports
+            .handle_signal_event(Vtl::Vtl0, connection_id, flag)
     }
 }
 
@@ -1190,7 +1313,7 @@ impl Processor for KvmProcessor<'_> {
                     } => {
                         // N.B. this can only be SIGNAL_EVENT or POST_MESSAGE.
                         let mut handler = KvmHypercallExit {
-                            bus: dev,
+                            partition: self.partition,
                             registers: KvmHypercallRegisters {
                                 input,
                                 params,
@@ -1243,15 +1366,25 @@ impl Processor for KvmProcessor<'_> {
 
     fn flush_async_requests(&mut self) {}
 
+    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        self.partition
+            .vp_state_access(self.vpindex)
+            .reset_all(&self.inner.vp_info)
+    }
+
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);
         self.partition.vp_state_access(self.vpindex)
     }
 }
 
-impl virt::Synic for KvmPartition {
+impl virt::synic::Synic for KvmPartitionInner {
+    fn port_map(&self) -> &virt::synic::SynicPortMap {
+        &self.synic_ports
+    }
+
     fn post_message(&self, _vtl: Vtl, vp_index: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        let Some(vp) = self.inner.vp(vp_index) else {
+        let Some(vp) = self.vp(vp_index) else {
             tracelimit::warn_ratelimited!(?vp_index, "post_message for invalid vp_index");
             return;
         };
@@ -1261,20 +1394,20 @@ impl virt::Synic for KvmPartition {
             .enqueue_message(sint, &HvMessage::new(HvMessageType(typ), 0, payload));
 
         if wake {
-            self.inner.evaluate_vp(vp_index);
+            self.evaluate_vp(vp_index);
         }
     }
 
     fn new_guest_event_port(
-        &self,
+        self: Arc<Self>,
         _vtl: Vtl,
         vp: u32,
         sint: u8,
         flag: u16,
     ) -> Box<dyn GuestEventPort> {
         Box::new(KvmGuestEventPort {
-            partition: Arc::downgrade(&self.inner),
-            gm: self.inner.gm.clone(),
+            partition: Arc::downgrade(&self),
+            gm: self.gm.clone(),
             params: Arc::new(Mutex::new(KvmEventPortParams {
                 vp: VpIndex::new(vp),
                 sint,
@@ -1368,7 +1501,7 @@ impl GuestEventPort for KvmGuestEventPort {
 }
 
 impl SignalMsi for KvmPartitionInner {
-    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         self.request_msi(MsiRequest { address, data });
     }
 }

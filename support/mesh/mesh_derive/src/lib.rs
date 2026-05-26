@@ -848,6 +848,9 @@ fn derive_enum(
                             unsafe { #protobuf_mod::inplace::InplaceOption::new_init_unchecked(&mut *p.cast::<::core::mem::MaybeUninit::<#field_type>>()) }
                         }
                         _ => {
+                            // Drop the old variant before overwriting memory,
+                            // to avoid dropping corrupted data later.
+                            item.clear();
                             // Try to write the variant data in place. If the
                             // sizes match, then there is only one place for it.
                             // Otherwise, the tag is probably at the beginning,

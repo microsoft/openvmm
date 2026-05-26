@@ -3,17 +3,17 @@
 
 //! Build `openvmm` binaries
 
-use crate::run_cargo_build::common::CommonProfile;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonProfile;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum OpenvmmFeature {
     Gdb,
     Tpm,
-    UnstableWhp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -45,6 +45,7 @@ impl Artifact for OpenvmmOutput {}
 flowey_request! {
     pub struct Request {
         pub params: OpenvmmBuildParams,
+        pub version: Option<ReadVar<(u16, u16, u16, u16)>>,
         pub openvmm: WriteVar<OpenvmmOutput>,
     }
 }
@@ -60,11 +61,20 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let installed_apt_deps =
-            ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
-                package_names: vec!["libssl-dev".into(), "build-essential".into()],
-                done: v,
-            });
+        let mut pre_build_deps = Vec::new();
+
+        // TODO: install build tools for other platforms
+        if matches!(
+            ctx.platform(),
+            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
+        ) {
+            pre_build_deps.push(ctx.reqv(|v| {
+                flowey_lib_common::install_dist_pkg::Request::Install {
+                    package_names: vec!["libssl-dev".into(), "pkg-config".into()],
+                    done: v,
+                }
+            }));
+        }
 
         for Request {
             params:
@@ -73,28 +83,25 @@ impl FlowNode for Node {
                     target,
                     features,
                 },
+            version,
             openvmm: openvmm_bin,
         } in requests
         {
-            let mut pre_build_deps = vec![installed_apt_deps.clone()];
-
-            // TODO: also need to take into account any default features in
-            // openvmm's Cargo.toml?
-            //
-            // maybe we can do something clever and parse the openvmm Cargo.toml
-            // file to discover these defaults?
-            for feat in &features {
-                match feat {
-                    OpenvmmFeature::Gdb => {}
-                    OpenvmmFeature::Tpm => pre_build_deps.push(ctx.reqv(|v| {
-                        flowey_lib_common::install_dist_pkg::Request::Install {
-                            package_names: vec!["build-essential".into()],
-                            done: v,
-                        }
-                    })),
-                    OpenvmmFeature::UnstableWhp => {}
-                }
-            }
+            // Set the OPENVMM_* env vars for version information (if provided).
+            let extra_env = version.map(|version| {
+                ctx.emit_minor_rust_stepv("set openvmm version env vars", |ctx| {
+                    let version = version.claim(ctx);
+                    |rt| {
+                        let mut env = BTreeMap::new();
+                        let (major, minor, patch, revision) = rt.read(version);
+                        env.insert("OPENVMM_MAJOR".into(), major.to_string());
+                        env.insert("OPENVMM_MINOR".into(), minor.to_string());
+                        env.insert("OPENVMM_PATCH".into(), patch.to_string());
+                        env.insert("OPENVMM_REVISION".into(), revision.to_string());
+                        env
+                    }
+                })
+            });
 
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openvmm".into(),
@@ -108,7 +115,6 @@ impl FlowNode for Node {
                             match f {
                                 OpenvmmFeature::Gdb => "gdb",
                                 OpenvmmFeature::Tpm => "tpm",
-                                OpenvmmFeature::UnstableWhp => "unstable_whp",
                             }
                             .into()
                         })
@@ -116,8 +122,8 @@ impl FlowNode for Node {
                 ),
                 target: target.as_triple(),
                 no_split_dbg_info: false,
-                extra_env: None,
-                pre_build_deps,
+                extra_env,
+                pre_build_deps: pre_build_deps.clone(),
                 output: v,
             });
 

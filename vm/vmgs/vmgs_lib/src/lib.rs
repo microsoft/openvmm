@@ -23,6 +23,7 @@ use vmgs::Vmgs;
 use vmgs_format::FileId;
 use vmgs_format::VMGS_BYTES_PER_BLOCK;
 use vmgs_format::VMGS_DEFAULT_CAPACITY;
+use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
 
 #[repr(u32)]
 pub enum VmgsError {
@@ -48,7 +49,8 @@ pub enum VmgsError {
 /// # Safety
 ///
 /// `file_path` must point to a valid null-terminated utf-8 string.
-/// `in_len` must be the size of `in_buf` in bytes and match the value returned from query_size_vmgs
+/// `encryption_key` must be null-terminated and nonnull if using encryption
+/// `in_buf` must be the size of `in_len` bytes and match the value returned from query_size_vmgs
 // SAFETY: In this library this function name is unique.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn read_vmgs(
@@ -84,9 +86,13 @@ pub unsafe extern "C" fn read_vmgs(
             if encryption_key.is_null() {
                 return VmgsError::NullParam;
             }
-            match CStr::from_ptr(encryption_key).to_str() {
-                Ok(res) => Some(res.as_bytes()),
+            let bytes = match CStr::from_ptr(encryption_key).to_str() {
+                Ok(res) => res.as_bytes(),
                 Err(_res) => return VmgsError::InvalidString,
+            };
+            match bytes.try_into() {
+                Ok(key) => Some(key),
+                Err(_) => return VmgsError::InvalidString,
             }
         },
         false => None,
@@ -120,7 +126,7 @@ fn open_disk(file_path: &str, read_only: bool) -> Result<Disk, VmgsError> {
 async fn do_read(
     file_path: &str,
     file_id: FileId,
-    key: Option<&[u8]>,
+    key: Option<&[u8; VMGS_ENCRYPTION_KEY_SIZE]>,
 ) -> Result<Vec<u8>, VmgsError> {
     let mut vmgs = Vmgs::open(open_disk(file_path, true)?, None)
         .await
@@ -182,9 +188,13 @@ pub unsafe extern "C" fn write_vmgs(
                 return VmgsError::NullParam;
             }
             // SAFETY: `encryption_key` guaranteed by caller to be null-terminated and nonnull if using encryption
-            match unsafe { CStr::from_ptr(encryption_key) }.to_str() {
-                Ok(res) => Some(res.as_bytes()),
+            let bytes = match unsafe { CStr::from_ptr(encryption_key) }.to_str() {
+                Ok(res) => res.as_bytes(),
                 Err(_res) => return VmgsError::InvalidString,
+            };
+            match bytes.try_into() {
+                Ok(key) => Some(key),
+                Err(_) => return VmgsError::InvalidString,
             }
         }
         false => None,
@@ -198,7 +208,7 @@ pub unsafe extern "C" fn write_vmgs(
 async fn do_write(
     file_path: &str,
     data_path: &str,
-    key: Option<&[u8]>,
+    key: Option<&[u8; VMGS_ENCRYPTION_KEY_SIZE]>,
     file_id: FileId,
 ) -> Result<(), VmgsError> {
     let mut buf = Vec::new();

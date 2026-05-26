@@ -43,7 +43,6 @@ impl RunContext<'_> {
                 processor_topology: &self.state.processor_topology,
                 hv_config: None,
                 vmtime: self.vmtime_source,
-                user_mode_apic: self.state.opts.disable_offloads,
                 isolation: virt::IsolationType::None,
             })
             .context("failed to create proto partition")?;

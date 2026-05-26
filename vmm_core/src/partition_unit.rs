@@ -14,6 +14,8 @@ pub use vp_set::VpRunner;
 pub use vp_set::block_on_vp;
 
 use self::vp_set::RegisterSetError;
+#[cfg(feature = "dump")]
+use anyhow::Context as _;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -35,6 +37,8 @@ use std::sync::Arc;
 use thiserror::Error;
 use virt::InitialRegs;
 use virt::PageVisibility;
+#[cfg(feature = "dump")]
+use virt::VpIndex;
 use vm_topology::processor::ProcessorTopology;
 use vmcore::save_restore::ProtobufSaveRestore;
 use vmcore::save_restore::RestoreError;
@@ -63,6 +67,14 @@ pub trait VmPartition: 'static + Send + Sync + InspectMut + ProtobufSaveRestore 
         &mut self,
         pages: Vec<(MemoryRange, PageVisibility)>,
     ) -> anyhow::Result<()>;
+
+    /// Returns the guest OS ID (from `HV_X64_MSR_GUEST_OS_ID`).
+    ///
+    /// Returns 0 if the guest hasn't written the MSR (unenlightened guest)
+    /// or if the backend doesn't support reading it.
+    fn guest_os_id(&self) -> u64 {
+        0
+    }
 }
 
 /// An object to run the VM partition state unit.
@@ -121,6 +133,9 @@ enum PartitionRequest {
     ),
     StopVps(Rpc<(), ()>),
     StartVps,
+    /// Build the partition state blob for a dump file.
+    #[cfg(feature = "dump")]
+    BuildDumpPartitionState(Rpc<(), anyhow::Result<Vec<u8>>>),
 }
 
 pub struct PartitionUnitParams<'a> {
@@ -285,6 +300,19 @@ impl PartitionUnit {
             .await
             .unwrap()
     }
+
+    /// Builds the partition state blob for a `.vmrs` dump file.
+    ///
+    /// Stops VPs internally for a consistent snapshot and resumes them
+    /// afterward. Returns the serialized partition state (VP registers
+    /// as hypervisor save/restore chunks).
+    #[cfg(feature = "dump")]
+    pub async fn build_dump_partition_state(&mut self) -> anyhow::Result<Vec<u8>> {
+        self.req_send
+            .call(PartitionRequest::BuildDumpPartitionState, ())
+            .await
+            .unwrap()
+    }
 }
 
 impl PartitionUnitRunner {
@@ -349,15 +377,15 @@ impl PartitionUnitRunner {
                             .await
                     }
                     PartitionRequest::StopVps(rpc) => {
-                        rpc.handle(async |()| {
-                            self.vp_set.stop().await;
-                            self.vp_stop_count += 1;
-                        })
-                        .await
+                        rpc.handle(async |()| self.stop_vps().await).await
                     }
                     PartitionRequest::StartVps => {
-                        self.vp_stop_count -= 1;
-                        self.try_start();
+                        self.resume_vps();
+                    }
+                    #[cfg(feature = "dump")]
+                    PartitionRequest::BuildDumpPartitionState(rpc) => {
+                        rpc.handle(async |()| self.build_dump_partition_state().await)
+                            .await
                     }
                 },
                 #[cfg(feature = "gdb")]
@@ -448,6 +476,10 @@ impl PartitionUnitRunner {
             self.partition
                 .scrub_vtl(vtl)
                 .map_err(InitialRegError::ScrubVtl)?;
+            self.vp_set
+                .scrub(vtl)
+                .await
+                .map_err(InitialRegError::ScrubVtl)?;
             self.needs_reset = false;
         }
 
@@ -476,6 +508,62 @@ impl PartitionUnitRunner {
             self.needs_reset = true;
             self.vp_set.start();
         }
+    }
+
+    async fn stop_vps(&mut self) {
+        self.vp_set.stop().await;
+        self.vp_stop_count += 1;
+    }
+
+    fn resume_vps(&mut self) {
+        assert!(
+            self.vp_stop_count > 0,
+            "resume_vps called without matching stop"
+        );
+        self.vp_stop_count -= 1;
+        self.try_start();
+    }
+}
+
+#[cfg(feature = "dump")]
+impl PartitionUnitRunner {
+    /// Builds the partition state blob for a `.vmrs` dump file.
+    ///
+    /// Collects VP register state and assembles the chunk stream.
+    async fn build_dump_partition_state(&mut self) -> anyhow::Result<Vec<u8>> {
+        // Stop VPs for a consistent snapshot (and to ensure guest_os_id
+        // doesn't block on backends that retrieve it from a VP).
+        self.stop_vps().await;
+        let result = self.build_dump_partition_state_inner().await;
+        self.resume_vps();
+        result
+    }
+
+    async fn build_dump_partition_state_inner(&mut self) -> anyhow::Result<Vec<u8>> {
+        use hyperv_dump::PartitionStateBuilder;
+        use hyperv_dump::ProcessorArch;
+
+        #[cfg(guest_arch = "x86_64")]
+        let arch = ProcessorArch::X64;
+        #[cfg(guest_arch = "aarch64")]
+        let arch = ProcessorArch::Aarch64;
+
+        let mut builder = PartitionStateBuilder::new(arch);
+        builder.set_os_id(self.partition.guest_os_id());
+
+        let vp_count = self.topology.vp_count();
+        for vp_idx in 0..vp_count {
+            let vtl = Vtl::Vtl0;
+            let vp_state = self
+                .vp_set
+                .get_dump_vp_state(VpIndex::new(vp_idx), vtl)
+                .await
+                .with_context(|| format!("failed to get state for VP {vp_idx}"))?;
+
+            builder.add_vp(vp_idx, vec![(vtl, vp_state)]);
+        }
+
+        Ok(builder.finish())
     }
 }
 
@@ -507,6 +595,7 @@ impl StateUnit for PartitionUnitRunner {
 
     async fn reset(&mut self) -> anyhow::Result<()> {
         self.partition.reset()?;
+        self.vp_set.reset().await?;
         self.clear_halt();
         self.needs_reset = false;
         Ok(())

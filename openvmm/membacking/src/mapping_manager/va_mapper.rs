@@ -23,6 +23,7 @@
 // low level memory manipulation functions.
 #![expect(unsafe_code)]
 
+use super::manager::DmaRegionProvider;
 use super::manager::MapperId;
 use super::manager::MapperRequest;
 use super::manager::MappingParams;
@@ -30,6 +31,7 @@ use super::manager::MappingRequest;
 use crate::RemoteProcess;
 use futures::executor::block_on;
 use guestmem::GuestMemoryAccess;
+use guestmem::GuestMemorySharing;
 use guestmem::PageFaultAction;
 use guestmem::PageFaultError;
 use memory_range::MemoryRange;
@@ -42,9 +44,17 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use thiserror::Error;
 
+/// A virtual address space mapper for guest memory.
+///
+/// Maintains a reserved VA range and maps file-backed or anonymous memory
+/// into it as directed by the mapping manager.
 pub struct VaMapper {
     inner: Arc<MapperInner>,
     process: Option<RemoteProcess>,
+    /// Ranges backed by private anonymous memory.
+    /// Page faults in these ranges commit pages directly instead of
+    /// requesting a file-backed mapping from the MappingManager.
+    private_ranges: Vec<MemoryRange>,
     _thread: JoinHandle<()>,
 }
 
@@ -110,6 +120,7 @@ impl MapperTask {
                     mappable,
                     writable,
                     file_offset,
+                    ..
                 }) => {
                     tracing::debug!(%range, "mapping received for range");
 
@@ -161,6 +172,8 @@ pub enum VaMapperError {
     MemoryManagerGone(#[source] RpcError),
     #[error("failed to reserve address space")]
     Reserve(#[source] std::io::Error),
+    #[error("remote mappers are not supported when any RAM backing uses private memory")]
+    RemoteWithPrivateMemory,
 }
 
 #[derive(Debug, Error)]
@@ -195,9 +208,14 @@ impl VaMapper {
         req_send: mesh::Sender<MappingRequest>,
         len: u64,
         remote_process: Option<RemoteProcess>,
+        private_ranges: Vec<MemoryRange>,
+        minimum_alignment: Option<usize>,
     ) -> Result<Self, VaMapperError> {
         let mapping = match &remote_process {
-            None => SparseMapping::new(len as usize),
+            None => SparseMapping::new_with_minimum_alignment(
+                len as usize,
+                minimum_alignment.unwrap_or(1),
+            ),
             Some(process) => match process {
                 #[cfg(not(windows))]
                 _ => unreachable!(),
@@ -210,6 +228,9 @@ impl VaMapper {
             },
         }
         .map_err(VaMapperError::Reserve)?;
+
+        // Name the VA reservation so it's identifiable in /proc/{pid}/smaps.
+        mapping.set_name(0, mapping.len(), "guest-memory");
 
         let (send, req_recv) = mesh::channel();
         let id = req_send
@@ -239,8 +260,14 @@ impl VaMapper {
         Ok(VaMapper {
             inner,
             process: remote_process,
+            private_ranges,
             _thread: thread,
         })
+    }
+
+    /// Returns true if `addr` falls within a private range.
+    fn is_private(&self, addr: u64) -> bool {
+        self.private_ranges.iter().any(|r| r.contains_addr(addr))
     }
 
     /// Ensures a mapping has been established for the given range.
@@ -248,16 +275,54 @@ impl VaMapper {
         self.inner.request_mapping(range, false).await
     }
 
+    /// Returns the base pointer of the VA reservation.
     pub fn as_ptr(&self) -> *mut u8 {
         self.inner.mapping.as_ptr().cast()
     }
 
+    /// Returns the length of the VA reservation in bytes.
     pub fn len(&self) -> usize {
         self.inner.mapping.len()
     }
 
+    /// Returns the remote process, if this mapper maps into a remote process.
     pub fn process(&self) -> Option<&RemoteProcess> {
         self.process.as_ref()
+    }
+
+    /// Allocates private anonymous memory for a range within the mapping.
+    ///
+    /// This replaces the placeholder at the given offset with committed
+    /// anonymous memory.
+    pub(crate) fn alloc_range(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
+        self.inner.mapping.alloc(offset, len)
+    }
+
+    /// Names a range within the mapping for debugging (visible in smaps).
+    pub fn set_range_name(&self, offset: usize, len: usize, name: &str) {
+        self.inner.mapping.set_name(offset, len, name);
+    }
+
+    /// Marks a range as eligible for Transparent Huge Pages.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn madvise_hugepage(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
+        self.inner.mapping.madvise_hugepage(offset, len)
+    }
+
+    /// Decommits a range of private RAM, releasing physical pages back to the
+    /// host.
+    ///
+    /// The caller must ensure this is only called on ranges backed by
+    /// private anonymous memory (allocated via [`alloc_range`](Self::alloc_range)).
+    #[expect(dead_code)] // Will be used by ballooning / memory hot-remove.
+    pub fn decommit(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
+        assert!(
+            self.private_ranges
+                .iter()
+                .any(|r| r.contains(&MemoryRange::new(offset as u64..offset as u64 + len as u64))),
+            "decommit called on non-private range"
+        );
+        self.inner.mapping.decommit(offset, len)
     }
 }
 
@@ -286,6 +351,37 @@ unsafe impl GuestMemoryAccess for VaMapper {
         bitmap_failure: bool,
     ) -> PageFaultAction {
         assert!(!bitmap_failure, "bitmaps are not used");
+
+        if self.is_private(address) {
+            // Private RAM: commit the page(s) directly.
+            #[cfg(windows)]
+            {
+                // Commit in 64KB-aligned chunks to amortize overhead.
+                let commit_start = address & !0xFFFF; // round down to 64KB
+                let commit_end = ((address + len as u64) + 0xFFFF) & !0xFFFF; // round up
+                let commit_end = commit_end.min(self.inner.mapping.len() as u64);
+                let commit_len = (commit_end - commit_start) as usize;
+
+                if let Err(err) = self.inner.mapping.commit(commit_start as usize, commit_len) {
+                    return PageFaultAction::Fail(PageFaultError::new(
+                        guestmem::GuestMemoryErrorKind::Other,
+                        err,
+                    ));
+                }
+                return PageFaultAction::Retry;
+            }
+            #[cfg(unix)]
+            {
+                // On Linux, the kernel handles page faults transparently.
+                // If we get here, something is wrong.
+                return PageFaultAction::Fail(PageFaultError::new(
+                    guestmem::GuestMemoryErrorKind::Other,
+                    std::io::Error::other("unexpected page fault in private RAM range on Linux"),
+                ));
+            }
+        }
+
+        // File-backed path: request mapping from MappingManager.
         // `block_on` is OK to call here (will not deadlock) because this is
         // never called from the page fault handler thread or any threads it
         // depends on.
@@ -302,5 +398,128 @@ unsafe impl GuestMemoryAccess for VaMapper {
             ));
         }
         PageFaultAction::Retry
+    }
+
+    fn sharing(&self) -> Option<GuestMemorySharing> {
+        if !self.private_ranges.is_empty() {
+            return None;
+        }
+        Some(GuestMemorySharing::new(DmaRegionProvider {
+            req_send: self.inner.req_send.clone(),
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use sparse_mmap::SparseMapping;
+
+    /// Tests that private RAM pages can be allocated, written to, and read from.
+    #[test]
+    fn test_private_ram_alloc_write_read() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(4 * page_size).unwrap();
+
+        // Allocate (commit) the first two pages.
+        mapping.alloc(0, 2 * page_size).unwrap();
+
+        // Write and read through SparseMapping methods.
+        let data = [0xABu8; 128];
+        mapping.write_at(0, &data).unwrap();
+
+        let mut buf = [0u8; 128];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, data);
+
+        // Verify zeros at an untouched offset within committed range.
+        let mut zero_buf = [0xFFu8; 64];
+        mapping.read_at(page_size, &mut zero_buf).unwrap();
+        assert!(
+            zero_buf.iter().all(|&b| b == 0),
+            "untouched committed memory should be zeros"
+        );
+    }
+
+    /// Tests that decommitting pages releases their contents (zeros on re-read on Linux).
+    #[test]
+    fn test_private_ram_decommit_zeros() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(4 * page_size).unwrap();
+
+        // Commit and write data.
+        mapping.alloc(0, 2 * page_size).unwrap();
+        let pattern = vec![0xABu8; 64];
+        mapping.write_at(0, &pattern).unwrap();
+        mapping.write_at(page_size, &pattern).unwrap();
+
+        // Decommit first page.
+        mapping.decommit(0, page_size).unwrap();
+
+        // On Linux, decommitted pages read as zeros.
+        #[cfg(unix)]
+        {
+            let mut buf = vec![0xFFu8; 64];
+            mapping.read_at(0, &mut buf).unwrap();
+            assert!(
+                buf.iter().all(|&b| b == 0),
+                "decommitted page should be zeros on Linux"
+            );
+        }
+
+        // Second page should still have its data.
+        let mut buf2 = vec![0u8; 64];
+        mapping.read_at(page_size, &mut buf2).unwrap();
+        assert_eq!(buf2, pattern);
+    }
+
+    /// Tests that recommitting pages after decommit provides zeroed memory.
+    #[test]
+    fn test_private_ram_recommit_after_decommit() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(4 * page_size).unwrap();
+
+        // Commit, write, decommit, recommit.
+        mapping.alloc(0, page_size).unwrap();
+        let pattern = vec![0xCDu8; 64];
+        mapping.write_at(0, &pattern).unwrap();
+
+        mapping.decommit(0, page_size).unwrap();
+        mapping.commit(0, page_size).unwrap();
+
+        // After recommit, the page should be zeros (old data is gone).
+        let mut buf = vec![0xFFu8; 64];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert!(
+            buf.iter().all(|&b| b == 0),
+            "recommitted page should be zeros"
+        );
+
+        // Can write and read new data.
+        let new_data = vec![0xEFu8; 64];
+        mapping.write_at(0, &new_data).unwrap();
+        let mut buf2 = vec![0u8; 64];
+        mapping.read_at(0, &mut buf2).unwrap();
+        assert_eq!(buf2, new_data);
+    }
+
+    /// Tests that commit is idempotent (committing already-committed pages is
+    /// a no-op).
+    #[test]
+    fn test_private_ram_commit_idempotent() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(4 * page_size).unwrap();
+
+        // Alloc then commit the same range again.
+        mapping.alloc(0, 2 * page_size).unwrap();
+        mapping.commit(0, 2 * page_size).unwrap();
+        mapping.commit(0, page_size).unwrap();
+
+        // Write and read should work.
+        let pattern = vec![0xEFu8; 64];
+        mapping.write_at(0, &pattern).unwrap();
+        let mut buf = vec![0u8; 64];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, pattern);
     }
 }

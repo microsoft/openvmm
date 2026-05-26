@@ -14,8 +14,6 @@ use flowey_core::node::steps::rust::RustRuntimeServices;
 use flowey_core::node::user_facing::ClaimedGhParam;
 use flowey_core::node::user_facing::GhPermission;
 use flowey_core::node::user_facing::GhPermissionValue;
-use flowey_core::pipeline::HostExt;
-use flowey_core::pipeline::PipelineBackendHint;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -54,9 +52,6 @@ impl ExecSnippet {
             dry_run,
         } = self;
 
-        let flow_platform = FlowPlatform::host(PipelineBackendHint::Local);
-        let flow_arch = FlowArch::host(PipelineBackendHint::Local);
-
         let mut runtime_var_db = super::var_db::open_var_db(job_idx)?;
 
         let working_dir: PathBuf = {
@@ -76,7 +71,10 @@ impl ExecSnippet {
             flow_backend,
             var_db_backend_kind: _,
             job_reqs,
+            job_configs,
             job_command_wrappers,
+            job_platforms,
+            job_archs,
         } = {
             let current_exe = std::env::current_exe()
                 .context("failed to get path to current flowey executable")?;
@@ -84,6 +82,13 @@ impl ExecSnippet {
                 fs_err::File::open(current_exe.with_file_name("pipeline.json"))?;
             serde_json::from_reader(pipeline_static_db)?
         };
+
+        let flow_platform = *job_platforms
+            .get(&job_idx)
+            .context("invalid job_idx: missing platform")?;
+        let flow_arch = *job_archs
+            .get(&job_idx)
+            .context("invalid job_idx: missing arch")?;
 
         let command_wrapper = job_command_wrappers.get(&job_idx).cloned();
 
@@ -101,6 +106,12 @@ impl ExecSnippet {
                 .iter()
                 .map(|v| v.0.clone())
                 .collect::<Vec<_>>();
+
+            let raw_config_bytes: Vec<Box<[u8]>> = job_configs
+                .get(&job_idx)
+                .and_then(|m| m.get(&node_modpath))
+                .map(|v| v.iter().map(|v| v.0.clone()).collect())
+                .unwrap_or_default();
 
             let Some(node_handle) = NodeHandle::try_from_modpath(&node_modpath) else {
                 anyhow::bail!("could not find node with that name")
@@ -156,7 +167,7 @@ impl ExecSnippet {
             );
 
             let mut ctx = flowey_core::node::new_node_ctx(&mut ctx_backend);
-            node.emit(raw_json_reqs.clone(), &mut ctx)?;
+            node.emit(raw_config_bytes, raw_json_reqs.clone(), &mut ctx)?;
 
             match ctx_backend.into_result() {
                 Some(res) => res?,
@@ -225,6 +236,10 @@ impl<'a, 'b> ExecSnippetCtx<'a, 'b> {
 impl flowey_core::node::NodeCtxBackend for ExecSnippetCtx<'_, '_> {
     fn on_request(&mut self, _node_handle: NodeHandle, _req: anyhow::Result<Box<[u8]>>) {
         // nothing to do - filing requests only matters pre-exec
+    }
+
+    fn on_config(&mut self, _node_handle: NodeHandle, _config: anyhow::Result<Box<[u8]>>) {
+        // nothing to do - config is already merged pre-exec
     }
 
     fn on_new_var(&mut self) -> String {
@@ -350,7 +365,11 @@ pub(crate) struct FloweyPipelineStaticDb {
     pub flow_backend: FlowBackendCli,
     pub var_db_backend_kind: VarDbBackendKind,
     pub job_reqs: BTreeMap<usize, BTreeMap<String, Vec<SerializedRequest>>>,
+    #[serde(default)]
+    pub job_configs: BTreeMap<usize, BTreeMap<String, Vec<SerializedRequest>>>,
     pub job_command_wrappers: BTreeMap<usize, flowey_core::shell::CommandWrapperKind>,
+    pub job_platforms: BTreeMap<usize, FlowPlatform>,
+    pub job_archs: BTreeMap<usize, FlowArch>,
 }
 
 // encode requests as JSON stored in a JSON string (to make human inspection

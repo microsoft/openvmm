@@ -1,6 +1,27 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Higher-level channel types and utilities built on top of `mesh_channel_core`.
+//!
+//! This crate provides the ergonomic channel abstractions that most mesh users
+//! interact with:
+//!
+//! - **[`channel()`] / [`oneshot()`]** — re-exported from `mesh_channel_core`
+//!   for basic message passing.
+//! - **[`rpc`]** — `Rpc<I, R>` and `FailableRpc<I, R>` for request/response
+//!   patterns where the caller awaits a reply.
+//! - **[`cell`]** — `Cell<T>` / `CellUpdater<T>` for reactive push-based
+//!   configuration updates.
+//! - **[`cancel`]** — `CancelContext` for cooperative cancellation with
+//!   optional deadlines, transferable across processes.
+//! - **[`pipe`]** — `ReadPipe` / `WritePipe` implementing `AsyncRead` /
+//!   `AsyncWrite` over mesh with backpressure.
+//! - **[`error`]** — `RemoteError` and `RemoteResult` for error propagation
+//!   across process boundaries.
+//!
+//! Most code should use the `mesh` facade crate rather than depending on this
+//! crate directly.
+
 #![expect(missing_docs)]
 
 mod bidir;

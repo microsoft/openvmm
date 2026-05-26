@@ -25,6 +25,11 @@ pub enum Error {
     Loader(#[source] loader::uefi::Error),
     #[error("UEFI requires at least two MMIO ranges")]
     UnsupportedMmio,
+    #[error("failed to build PCIe ACPI tables")]
+    PcieAcpi(#[source] vmm_core::acpi_builder::PcieAcpiBuildError),
+    #[cfg(guest_arch = "aarch64")]
+    #[error("UEFI boot with GICv2 is not supported")]
+    GicV2NotSupported,
 }
 
 pub struct UefiLoadSettings {
@@ -49,7 +54,7 @@ pub fn load_uefi(
     gm: &GuestMemory,
     processor_topology: &ProcessorTopology,
     mem_layout: &MemoryLayout,
-    pcie_host_bridges: &Vec<PcieHostBridge>,
+    pcie_host_bridges: &[PcieHostBridge],
     load_settings: UefiLoadSettings,
     madt: &[u8],
     srat: &[u8],
@@ -152,10 +157,20 @@ pub fn load_uefi(
     .add(&flags);
 
     #[cfg(guest_arch = "aarch64")]
-    cfg.add(&config::Gic {
-        gic_distributor_base: processor_topology.gic_distributor_base(),
-        gic_redistributors_base: processor_topology.gic_redistributors_base(),
-    });
+    {
+        let redistributors_base = match processor_topology.gic_version() {
+            vm_topology::processor::aarch64::GicVersion::V3 {
+                redistributors_base,
+            } => redistributors_base,
+            vm_topology::processor::aarch64::GicVersion::V2 { .. } => {
+                return Err(Error::GicV2NotSupported);
+            }
+        };
+        cfg.add(&config::Gic {
+            gic_distributor_base: processor_topology.gic_distributor_base(),
+            gic_redistributors_base: redistributors_base,
+        });
+    }
 
     if let Some(mcfg) = mcfg {
         cfg.add_raw(config::BlobStructureType::Mcfg, mcfg);
@@ -166,19 +181,32 @@ pub fn load_uefi(
     }
 
     if !pcie_host_bridges.is_empty() {
-        let mut ssdt = acpi::ssdt::Ssdt::new();
-        for bridge in pcie_host_bridges {
-            ssdt.add_pcie(
-                bridge.index,
-                bridge.segment,
-                bridge.start_bus,
-                bridge.end_bus,
-                bridge.ecam_range,
-                bridge.low_mmio,
-                bridge.high_mmio,
-            );
+        let pcie_tables = vmm_core::acpi_builder::build_pcie_acpi_tables(pcie_host_bridges)
+            .map_err(Error::PcieAcpi)?;
+        cfg.add_raw(config::BlobStructureType::Ssdt, &pcie_tables.ssdt);
+        if let Some(cedt) = pcie_tables.cedt {
+            cfg.add_raw(config::BlobStructureType::AcpiTable, &cedt);
         }
-        cfg.add_raw(config::BlobStructureType::Ssdt, &ssdt.to_bytes());
+    }
+
+    if !pcie_host_bridges.is_empty() {
+        let entries: Vec<config::PcieBarApertureEntry> = pcie_host_bridges
+            .iter()
+            .map(|b| config::PcieBarApertureEntry {
+                segment: b.segment,
+                start_bus: b.start_bus,
+                end_bus: b.end_bus,
+                uid: b.index,
+                low_mmio_base: b.low_mmio.start(),
+                low_mmio_length: b.low_mmio.len(),
+                high_mmio_base: b.high_mmio.start(),
+                high_mmio_length: b.high_mmio.len(),
+            })
+            .collect();
+        cfg.add_raw(
+            config::BlobStructureType::PcieBarApertures,
+            entries.as_bytes(),
+        );
     }
 
     let mut loader = Loader::new(gm.clone(), mem_layout, hvdef::Vtl::Vtl0);

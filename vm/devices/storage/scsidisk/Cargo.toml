@@ -12,7 +12,6 @@ scsi_buffers.workspace = true
 scsi_core.workspace = true
 scsi_defs.workspace = true
 scsidisk_resources.workspace = true
-hvdef.workspace = true
 pal_async.workspace = true
 vm_resource.workspace = true
 
@@ -33,10 +32,11 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-getrandom.workspace = true
 
 [dev-dependencies]
 disk_prwrap.workspace = true
+getrandom.workspace = true
+hvdef.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

@@ -1,0 +1,26 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "openvmm_vhost"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+disk_backend_resources.workspace = true
+disk_file.workspace = true
+pal_async.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+vhost_user_backend.workspace = true
+virtio.workspace = true
+virtio_blk.workspace = true
+virtio_resources.workspace = true
+vm_resource.workspace = true
+vmcore.workspace = true
+
+[lints]
+workspace = true

@@ -274,7 +274,7 @@ mod test {
 
         let builder = Arc::new_cyclic_builder();
 
-        let gadget = futures_executor::block_on(async {
+        let gadget = futures::executor::block_on(async {
             Gadget::async_new(builder.weak(), 1, inc_on_drop.clone()).await
         });
         assert!(builder.weak().upgrade().is_none());

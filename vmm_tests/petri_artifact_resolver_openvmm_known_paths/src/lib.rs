@@ -6,11 +6,33 @@
 #![forbid(unsafe_code)]
 
 use petri_artifacts_common::tags::MachineArch;
+use petri_artifacts_core::ArtifactSource;
+use petri_artifacts_core::AsArtifactHandle;
 use petri_artifacts_core::ErasedArtifactHandle;
 use std::env::consts::EXE_EXTENSION;
 use std::path::Path;
 use std::path::PathBuf;
+use vmm_test_images::CONTAINER;
 use vmm_test_images::KnownTestArtifacts;
+use vmm_test_images::STORAGE_ACCOUNT;
+
+/// Returns the Cargo build profile directory name for cross-compiled
+/// artifacts (e.g., pipette).
+///
+/// Infers the profile from the currently running binary's path (looking
+/// for a `release` component in the executable path). Defaults to `"debug"`.
+// DEVNOTE: `pub` in order to re-use in perf_tests and other crates.
+pub fn cargo_build_profile() -> &'static str {
+    static PROFILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PROFILE.get_or_init(|| {
+        if let Ok(exe) = std::env::current_exe() {
+            if exe.components().any(|c| c.as_os_str() == "release") {
+                return "release".to_string();
+            }
+        }
+        "debug".to_string()
+    })
+}
 
 /// An implementation of [`petri_artifacts_core::ResolveTestArtifact`]
 /// that resolves artifacts to various "known paths" within the context of
@@ -29,6 +51,7 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
     fn resolve(&self, id: ErasedArtifactHandle) -> anyhow::Result<PathBuf> {
         use petri_artifacts_common::artifacts as common;
         use petri_artifacts_vmm_test::artifacts::*;
+        use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
 
         match id {
             _ if id == common::PIPETTE_WINDOWS_X64 => pipette_path(MachineArch::X86_64, PipetteFlavor::Windows),
@@ -39,11 +62,17 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == common::TEST_LOG_DIRECTORY => test_log_directory_path(self.0),
 
             _ if id == OPENVMM_NATIVE => openvmm_native_executable_path(),
+            #[cfg(target_os = "linux")]
+            _ if id == OPENVMM_VHOST_NATIVE => openvmm_vhost_native_executable_path(),
 
             _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64 => linux_direct_x64_test_kernel_path(),
+            _ if id == loadable::LINUX_DIRECT_TEST_BZIMAGE_X64 => linux_direct_x64_test_bzimage_path(),
             _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => linux_direct_arm_image_path(),
             _ if id == loadable::LINUX_DIRECT_TEST_INITRD_X64 => linux_direct_test_initrd_path(MachineArch::X86_64),
             _ if id == loadable::LINUX_DIRECT_TEST_INITRD_AARCH64 => linux_direct_test_initrd_path(MachineArch::Aarch64),
+
+            _ if id == petritools::PETRITOOLS_EROFS_X64 => petritools_erofs_path(MachineArch::X86_64),
+            _ if id == petritools::PETRITOOLS_EROFS_AARCH64 => petritools_erofs_path(MachineArch::Aarch64),
 
             _ if id == loadable::PCAT_FIRMWARE_X64 => pcat_firmware_path(),
             _ if id == loadable::SVGA_FIRMWARE_X64 => svga_firmware_path(),
@@ -66,22 +95,21 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
 
             _ if id == test_vhd::GUEST_TEST_UEFI_X64 => guest_test_uefi_disk_path(MachineArch::X86_64),
             _ if id == test_vhd::GUEST_TEST_UEFI_AARCH64 => guest_test_uefi_disk_path(MachineArch::Aarch64),
-            _ if id == test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64 => get_test_artifact_path(KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd),
-            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64 => get_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd),
-            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 => get_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd),
-            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED => get_prepped_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd),
-            _ if id == test_vhd::FREE_BSD_13_2_X64 => get_test_artifact_path(KnownTestArtifacts::FreeBsd13_2X64Vhd),
-            _ if id == test_vhd::ALPINE_3_23_X64 => get_test_artifact_path(KnownTestArtifacts::Alpine323X64Vhd),
-            _ if id == test_vhd::ALPINE_3_23_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Alpine323Aarch64Vhd),
-            _ if id == test_vhd::UBUNTU_2404_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2404ServerX64Vhd),
-            _ if id == test_vhd::UBUNTU_2504_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2504ServerX64Vhd),
-            _ if id == test_vhd::UBUNTU_2404_SERVER_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd),
-            _ if id == test_vhd::WINDOWS_11_ENTERPRISE_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx),
 
-            _ if id == test_iso::FREE_BSD_13_2_X64 => get_test_artifact_path(KnownTestArtifacts::FreeBsd13_2X64Iso),
-
-            _ if id == test_vmgs::VMGS_WITH_BOOT_ENTRY => get_test_artifact_path(KnownTestArtifacts::VmgsWithBootEntry),
-            _ if id == test_vmgs::VMGS_WITH_16K_TPM => get_test_artifact_path(KnownTestArtifacts::VmgsWith16kTpm),
+            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED => {
+                let base_filename = test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::FILENAME;
+                let prepped_filename = base_filename.replace(".vhd", "-prepped.vhd");
+                let images_dir = std::env::var("VMM_TEST_IMAGES");
+                let full_path = Path::new(images_dir.as_deref().unwrap_or("images"));
+                get_path(
+                    full_path,
+                    prepped_filename,
+                    MissingCommand::Run {
+                        description: "prepped test image",
+                        package: "prep_steps",
+                    },
+                )
+            }
 
             _ if id == tmks::TMK_VMM_NATIVE => tmk_vmm_native_executable_path(),
             _ if id == tmks::TMK_VMM_LINUX_X64_MUSL => tmk_vmm_paravisor_path(MachineArch::X86_64),
@@ -102,7 +130,81 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
                 test_igvm_agent_rpc_server_windows_path(MachineArch::X86_64)
             }
 
+            // Blob-hosted artifacts: resolved via blob_artifact_info.
+            _ if let Some(artifact) = KnownTestArtifacts::from_handle(id) => {
+                get_test_artifact_path(artifact)
+            }
+
             _ => anyhow::bail!("no support for given artifact type"),
+        }
+    }
+
+    fn resolve_source(&self, id: ErasedArtifactHandle) -> anyhow::Result<ArtifactSource> {
+        // Try local resolution first.
+        let local_err = match self.resolve(id) {
+            Ok(path) => return Ok(ArtifactSource::Local(path)),
+            Err(e) => e,
+        };
+
+        // Fall back to remote URL for artifacts hosted on Azure Blob Storage,
+        // but only for formats the blob disk backend supports (fixed VHD1 and flat).
+        if let Some(artifact) = KnownTestArtifacts::from_handle(id) {
+            if artifact.supports_blob_disk() {
+                let url = format!(
+                    "https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/{}",
+                    artifact.filename()
+                );
+                return Ok(ArtifactSource::Remote { url });
+            }
+        }
+
+        // No local path and no remote URL available — return the original error.
+        Err(local_err)
+    }
+}
+
+/// Returns the bundle-relative file name for the given artifact.
+///
+/// This is the `file_name` argument that [`get_path`] would use when
+/// resolving this artifact. When creating a self-contained bundle for
+/// deployment, place the artifact at this relative path within the
+/// bundle directory, then set `VMM_TESTS_CONTENT_DIR` to the bundle
+/// directory at runtime.
+///
+/// Returns `None` for artifacts that don't have a fixed bundle name
+/// (e.g., log directories).
+pub fn resolve_bundle_name(id: ErasedArtifactHandle) -> Option<&'static str> {
+    use petri_artifacts_common::artifacts as common;
+    use petri_artifacts_vmm_test::artifacts::*;
+
+    match id {
+        _ if id == common::PIPETTE_LINUX_X64 => Some("pipette"),
+        _ if id == common::PIPETTE_LINUX_AARCH64 => Some("pipette"),
+        _ if id == common::PIPETTE_WINDOWS_X64 => Some("pipette.exe"),
+        _ if id == common::PIPETTE_WINDOWS_AARCH64 => Some("pipette.exe"),
+        _ if id == OPENVMM_NATIVE => Some(if cfg!(windows) {
+            "openvmm.exe"
+        } else {
+            "openvmm"
+        }),
+        _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64 => Some("x64/vmlinux"),
+        _ if id == loadable::LINUX_DIRECT_TEST_BZIMAGE_X64 => Some("x64/bzImage"),
+        _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => Some("aarch64/Image"),
+        _ if id == loadable::LINUX_DIRECT_TEST_INITRD_X64 => Some("x64/initrd"),
+        _ if id == loadable::LINUX_DIRECT_TEST_INITRD_AARCH64 => Some("aarch64/initrd"),
+        _ if id == petritools::PETRITOOLS_EROFS_X64 => Some("x64/petritools.erofs"),
+        _ if id == petritools::PETRITOOLS_EROFS_AARCH64 => Some("aarch64/petritools.erofs"),
+        _ if id == loadable::UEFI_FIRMWARE_X64 => {
+            Some("hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd")
+        }
+        _ if id == loadable::UEFI_FIRMWARE_AARCH64 => {
+            Some("hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV/MSVM.fd")
+        }
+        _ => {
+            // For test VHDs, the bundle name is the artifact filename from
+            // IsHostedOnHvliteAzureBlobStore. Use resolve_test_vhd_bundle_name
+            // for those.
+            None
         }
     }
 }
@@ -160,24 +262,9 @@ fn get_test_artifact_path(artifact: KnownTestArtifacts) -> Result<PathBuf, anyho
                 "guest-test",
                 "download-image",
                 "--artifacts",
-                &artifact.name(),
+                artifact.name(),
             ],
             description: "test artifact",
-        },
-    )
-}
-
-fn get_prepped_test_artifact_path(artifact: KnownTestArtifacts) -> Result<PathBuf, anyhow::Error> {
-    let images_dir = std::env::var("VMM_TEST_IMAGES");
-    let full_path = Path::new(images_dir.as_deref().unwrap_or("images"));
-    let prepped_filename = artifact.filename().replace(".vhd", "-prepped.vhd");
-
-    get_path(
-        full_path,
-        prepped_filename,
-        MissingCommand::Run {
-            description: "prepped test image",
-            package: "prep_steps",
         },
     )
 }
@@ -216,7 +303,7 @@ fn pipette_path(arch: MachineArch, os_flavor: PipetteFlavor) -> anyhow::Result<P
     for (index, target_suffix) in target_suffixes.iter().enumerate() {
         let target = format!("{}-{}", target_arch_path(arch), target_suffix);
         match get_path(
-            format!("target/{target}/debug"),
+            format!("target/{target}/{}", cargo_build_profile()),
             binary,
             MissingCommand::Build {
                 package: "pipette",
@@ -243,6 +330,12 @@ fn pipette_path(arch: MachineArch, os_flavor: PipetteFlavor) -> anyhow::Result<P
 /// Path to the output location of the openvmm executable.
 fn openvmm_native_executable_path() -> anyhow::Result<PathBuf> {
     get_output_executable_path("openvmm")
+}
+
+/// Path to the output location of the openvmm_vhost executable.
+#[cfg(target_os = "linux")]
+fn openvmm_vhost_native_executable_path() -> anyhow::Result<PathBuf> {
+    get_output_executable_path("openvmm_vhost")
 }
 
 /// Path to the output location of the tmk_vmm executable.
@@ -336,37 +429,66 @@ fn simple_tmk_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
 
 /// Path to our packaged linux direct test kernel.
 fn linux_direct_x64_test_kernel_path() -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::loadable;
     get_path(
         ".packages/underhill-deps-private",
-        "x64/vmlinux",
+        resolve_bundle_name(loadable::LINUX_DIRECT_TEST_KERNEL_X64.erase()).unwrap(),
         MissingCommand::Restore {
             description: "linux direct test kernel",
         },
     )
 }
 
-/// Path to our packaged linux direct test initrd.
-fn linux_direct_test_initrd_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+/// Path to our packaged linux direct test bzImage.
+fn linux_direct_x64_test_bzimage_path() -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::loadable;
     get_path(
         ".packages/underhill-deps-private",
-        format!(
-            "{}/initrd",
-            match arch {
-                MachineArch::X86_64 => "x64",
-                MachineArch::Aarch64 => "aarch64",
-            }
-        ),
+        resolve_bundle_name(loadable::LINUX_DIRECT_TEST_BZIMAGE_X64.erase()).unwrap(),
+        MissingCommand::Restore {
+            description: "linux direct test bzImage",
+        },
+    )
+}
+
+/// Path to our packaged linux direct test initrd.
+fn linux_direct_test_initrd_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::loadable;
+    let id = match arch {
+        MachineArch::X86_64 => loadable::LINUX_DIRECT_TEST_INITRD_X64.erase(),
+        MachineArch::Aarch64 => loadable::LINUX_DIRECT_TEST_INITRD_AARCH64.erase(),
+    };
+    get_path(
+        ".packages/underhill-deps-private",
+        resolve_bundle_name(id).unwrap(),
         MissingCommand::Restore {
             description: "linux direct test initrd",
         },
     )
 }
 
-/// Path to our packaged linux direct test kernel.
-fn linux_direct_arm_image_path() -> anyhow::Result<PathBuf> {
+/// Path to our packaged petritools erofs image.
+fn petritools_erofs_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::petritools;
+    let id = match arch {
+        MachineArch::X86_64 => petritools::PETRITOOLS_EROFS_X64.erase(),
+        MachineArch::Aarch64 => petritools::PETRITOOLS_EROFS_AARCH64.erase(),
+    };
     get_path(
         ".packages/underhill-deps-private",
-        "aarch64/Image",
+        resolve_bundle_name(id).unwrap(),
+        MissingCommand::Restore {
+            description: "petritools erofs image",
+        },
+    )
+}
+
+/// Path to our packaged linux direct test kernel.
+fn linux_direct_arm_image_path() -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::loadable;
+    get_path(
+        ".packages/underhill-deps-private",
+        resolve_bundle_name(loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64.erase()).unwrap(),
         MissingCommand::Restore {
             description: "linux direct test kernel",
         },
@@ -397,16 +519,14 @@ fn svga_firmware_path() -> anyhow::Result<PathBuf> {
 
 /// Path to our packaged UEFI firmware image.
 fn uefi_firmware_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::loadable;
+    let id = match arch {
+        MachineArch::X86_64 => loadable::UEFI_FIRMWARE_X64.erase(),
+        MachineArch::Aarch64 => loadable::UEFI_FIRMWARE_AARCH64.erase(),
+    };
     get_path(
         ".packages",
-        match arch {
-            MachineArch::X86_64 => {
-                "hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd"
-            }
-            MachineArch::Aarch64 => {
-                "hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_VS2022/FV/MSVM.fd"
-            }
-        },
+        resolve_bundle_name(id).unwrap(),
         MissingCommand::Restore {
             description: "UEFI firmware binary",
         },

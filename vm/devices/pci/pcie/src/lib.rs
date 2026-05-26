@@ -5,12 +5,18 @@
 
 #![forbid(unsafe_code)]
 
+pub mod its;
 pub(crate) mod port;
+pub use port::PciePortSettings;
+pub use port::PortBarDefinition;
+pub use port::PortBarSubregionDefinition;
+pub use port::PortBarSubregionKind;
 pub mod root;
 pub mod switch;
 
-#[cfg(test)]
-mod test_helpers;
+#[cfg(any(test, feature = "fuzz"))]
+#[expect(missing_docs)]
+pub mod test_helpers;
 
 const PAGE_SIZE: usize = 4096;
 const PAGE_SIZE64: u64 = 4096;

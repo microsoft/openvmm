@@ -111,8 +111,8 @@ impl LockedIoVecs {
     }
 }
 
-impl LockedRange for LockedIoVecs {
-    fn push_sub_range(&mut self, sub_range: &[AtomicU8]) {
+impl<'a> LockedRange<'a> for LockedIoVecs {
+    fn push_sub_range(&mut self, sub_range: &'a [AtomicU8]) {
         self.0.push(sub_range.into());
     }
 }

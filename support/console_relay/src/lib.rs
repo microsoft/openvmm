@@ -35,26 +35,48 @@ pub struct ConsoleLaunchOptions {
     pub window_title: Option<String>,
 }
 
+/// Relay stdin/stdout to the given async read/write halves.
+///
+/// Uses sync stdio (with a separate thread for input) because polling for stdio
+/// readiness is difficult, especially on Windows.
+async fn relay_stdio(
+    read: impl AsyncRead + Unpin,
+    mut write: impl AsyncWrite + Unpin + Send + 'static,
+    console_title: &str,
+) -> anyhow::Result<()> {
+    set_raw_console(true).expect("failed to set raw console mode");
+    if let Err(err) = set_console_title(console_title) {
+        tracing::warn!("failed to set console title: {}", err);
+    }
+
+    std::thread::Builder::new()
+        .name("input_thread".into())
+        .spawn(move || {
+            block_on(futures::io::copy(
+                AllowStdIo::new(std::io::stdin()),
+                &mut write,
+            ))
+        })
+        .unwrap();
+
+    futures::io::copy(read, &mut AllowStdIo::new(raw_stdout())).await?;
+    // Don't wait for the input thread, since it is probably blocking in the stdin read.
+    Ok(())
+}
+
 /// Synchronously relays stdio to the pipe (Windows) or socket (Unix) pointed to
 /// by `path`.
 pub fn relay_console(path: &Path, console_title: &str) -> anyhow::Result<()> {
-    // We use async to read/write to the pipe/socket since on Windows you cannot
-    // synchronously read and write to a pipe simultaneously (without overlapped
-    // IO).
-    //
-    // But we use sync to read/write to stdio because it's quite challenging to
-    // poll for stdio readiness, especially on Windows. So we use a separate
-    // thread for input and output.
     block_with_io(async |driver| {
         #[cfg(unix)]
-        let (read, mut write) = {
+        let (read, write) = {
             let pipe = pal_async::socket::PolledSocket::connect_unix(&driver, path)
                 .await
                 .context("failed to connect to console socket")?;
             pipe.split()
         };
         #[cfg(windows)]
-        let (read, mut write) = {
+        let (read, write) = {
             let pipe = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -65,26 +87,20 @@ pub fn relay_console(path: &Path, console_title: &str) -> anyhow::Result<()> {
             AsyncReadExt::split(pipe)
         };
 
-        set_raw_console(true).expect("failed to set raw console mode");
-        if let Err(err) = set_console_title(console_title) {
-            tracing::warn!("failed to set console title: {}", err);
-        }
+        relay_stdio(read, write, console_title).await
+    })
+}
 
-        std::thread::Builder::new()
-            .name("input_thread".into())
-            .spawn({
-                move || {
-                    block_on(futures::io::copy(
-                        AllowStdIo::new(std::io::stdin()),
-                        &mut write,
-                    ))
-                }
-            })
-            .unwrap();
-
-        futures::io::copy(read, &mut AllowStdIo::new(raw_stdout())).await?;
-        // Don't wait for the input thread, since it is probably blocking in the stdin read.
-        Ok(())
+/// Synchronously relays stdio to an already-connected pipe.
+///
+/// This is useful when the caller is the pipe server rather than the client.
+#[cfg(windows)]
+pub fn relay_console_pipe(pipe: std::fs::File, console_title: &str) -> anyhow::Result<()> {
+    block_with_io(async |driver| {
+        let pipe = pal_async::pipe::PolledPipe::new(&driver, pipe)
+            .context("failed to create polled pipe")?;
+        let (read, write) = AsyncReadExt::split(pipe);
+        relay_stdio(read, write, console_title).await
     })
 }
 

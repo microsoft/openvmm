@@ -19,7 +19,8 @@ use uefi_specs::uefi::common::EfiStatus;
 pub trait NvramServicesExt {
     /// Get a variable identified by `name` (as a Rust string) + `vendor`,
     /// returning the variable's attributes and data.
-    #[allow(dead_code)]
+    #[expect(clippy::allow_attributes)]
+    #[allow(dead_code, reason = "helpful to have for debugging")]
     async fn get_variable(
         &mut self,
         vendor: Guid,
@@ -28,7 +29,6 @@ pub trait NvramServicesExt {
 
     /// Get a variable identified by `name` (as a UCS-2 string) + `vendor`,
     /// returning the variable's attributes and data.
-    #[allow(dead_code)]
     async fn get_variable_ucs2(
         &mut self,
         vendor: Guid,

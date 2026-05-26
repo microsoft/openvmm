@@ -23,14 +23,16 @@ impl Worker {
     pub(crate) async fn launch(
         host: &WorkerHost,
         cfg: Config,
+        shared_memory: Option<openvmm_defs::worker::SharedMemoryFd>,
     ) -> anyhow::Result<(Self, mesh::Receiver<HaltReason>)> {
         let (vm_rpc, rpc_recv) = mesh::channel();
         let (notify_send, notify_recv) = mesh::channel();
 
         let params = VmWorkerParameters {
-            hypervisor: None,
+            hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
             cfg,
             saved_state: None,
+            shared_memory,
             rpc: rpc_recv,
             notify: notify_send,
         };
@@ -45,8 +47,17 @@ impl Worker {
         ))
     }
 
+    pub(crate) async fn pause(&self) -> Result<bool, RpcError> {
+        self.rpc.call(VmRpc::Pause, ()).await
+    }
+
     pub(crate) async fn resume(&self) -> Result<bool, RpcError> {
         self.rpc.call(VmRpc::Resume, ()).await
+    }
+
+    pub(crate) async fn save(&self) -> anyhow::Result<mesh::payload::message::ProtobufMessage> {
+        let msg = self.rpc.call_failable(VmRpc::Save, ()).await?;
+        Ok(msg)
     }
 
     pub(crate) async fn reset(&self) -> anyhow::Result<()> {
@@ -86,6 +97,24 @@ impl Worker {
     pub(crate) async fn update_command_line(&self, command_line: &str) -> anyhow::Result<()> {
         self.rpc
             .call_failable(VmRpc::UpdateCliParams, command_line.to_string())
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn add_pcie_device(
+        &self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn remove_pcie_device(&self, port_name: String) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::RemovePcieDevice, port_name)
             .await?;
         Ok(())
     }

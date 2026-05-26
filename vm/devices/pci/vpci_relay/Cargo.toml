@@ -10,7 +10,6 @@ edition.workspace = true
 chipset_device.workspace = true
 memory_range.workspace = true
 pci_core.workspace = true
-sparse_mmap.workspace = true
 state_unit.workspace = true
 tdisp.workspace = true
 openhcl_tdisp.workspace = true
@@ -24,17 +23,18 @@ vmotherboard.workspace = true
 
 inspect.workspace = true
 mesh.workspace = true
-tracelimit.workspace = true
 
 anyhow.workspace = true
-fs-err.workspace = true
 futures.workspace = true
 slab.workspace = true
 tracing.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+fs-err.workspace = true
 hcl.workspace = true
 hvdef.workspace = true
+sparse_mmap.workspace = true
+tracelimit.workspace = true
 
 [dev-dependencies]
 vpci.workspace = true
