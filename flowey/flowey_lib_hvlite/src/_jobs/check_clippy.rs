@@ -181,8 +181,8 @@ impl SimpleFlowNode for Node {
         // We don't add the CI feature here, as it's used purely to exclude
         // tests that can't run in CI. We still want those tests to be linted.
         //
-        // Adding the "crypto/allow-multiple-backends" feature is also used
-        // since we're running over the whole workspace.
+        // We add the "crypto/allow-multiple-backends" feature since we're
+        // running over the whole workspace.
         let features = if matches!(
             target.operating_system,
             target_lexicon::OperatingSystem::Windows | target_lexicon::OperatingSystem::Darwin(_)
