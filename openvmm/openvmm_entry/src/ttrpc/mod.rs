@@ -902,14 +902,13 @@ impl VmService {
                         .clone();
                     Ok(async move {
                         for port in consomme.ports {
-                            let protocol =
-                                if port.protocol == vmservice::IpProtocol::Tcp as i32 {
-                                    HostPortProtocol::Tcp
-                                } else if port.protocol == vmservice::IpProtocol::Udp as i32 {
-                                    HostPortProtocol::Udp
-                                } else {
-                                    anyhow::bail!("invalid protocol {}", port.protocol);
-                                };
+                            let protocol = if port.protocol == vmservice::IpProtocol::Tcp as i32 {
+                                HostPortProtocol::Tcp
+                            } else if port.protocol == vmservice::IpProtocol::Udp as i32 {
+                                HostPortProtocol::Udp
+                            } else {
+                                anyhow::bail!("invalid protocol {}", port.protocol);
+                            };
                             let cfg = HostPortConfig {
                                 protocol,
                                 host_address: None,
@@ -942,14 +941,13 @@ impl VmService {
                         .clone();
                     Ok(async move {
                         for port in consomme.ports {
-                            let protocol =
-                                if port.protocol == vmservice::IpProtocol::Tcp as i32 {
-                                    HostPortProtocol::Tcp
-                                } else if port.protocol == vmservice::IpProtocol::Udp as i32 {
-                                    HostPortProtocol::Udp
-                                } else {
-                                    anyhow::bail!("invalid protocol {}", port.protocol);
-                                };
+                            let protocol = if port.protocol == vmservice::IpProtocol::Tcp as i32 {
+                                HostPortProtocol::Tcp
+                            } else if port.protocol == vmservice::IpProtocol::Udp as i32 {
+                                HostPortProtocol::Udp
+                            } else {
+                                anyhow::bail!("invalid protocol {}", port.protocol);
+                            };
                             let cfg = HostPortConfig {
                                 protocol,
                                 host_address: None,
