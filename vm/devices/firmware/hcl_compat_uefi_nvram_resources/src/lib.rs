@@ -3,6 +3,8 @@
 
 //! Resources for instantiating HCL-compatible UEFI nvram variable storage.
 
+#![forbid(unsafe_code)]
+
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
 
