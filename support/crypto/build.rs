@@ -4,7 +4,7 @@
 #![expect(missing_docs)]
 
 fn main() {
-    println!("cargo::rerun-if-env-changed=CARGO_FEATURE_ALLOW_MULTIPLE_BACKENDS");
+    println!("cargo::rerun-if-env-changed=CARGO_FEATURE_ALLOW-MULTIPLE-BACKENDS");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_NATIVE");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_OPENSSL");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_RUST");
@@ -26,7 +26,7 @@ fn main() {
 
     let profile = std::env::var("PROFILE").unwrap();
     let allow_multiple_backends =
-        std::env::var_os("CARGO_FEATURE_ALLOW_MULTIPLE_BACKENDS").is_some();
+        std::env::var_os("CARGO_FEATURE_ALLOW-MULTIPLE-BACKENDS").is_some();
 
     let linux = std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "linux";
 

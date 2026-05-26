@@ -171,7 +171,7 @@ impl FlowNode for Node {
             // Adding the "ci" feature is used to skip certain tests that
             // fail in CI.
             //
-            // Adding the "crypto/allow_multiple_backends" feature is also used
+            // Adding the "crypto/allow-multiple-backends" feature is also used
             // since we're running over the whole workspace.
             let features = if matches!(
                 target.operating_system,
@@ -179,7 +179,7 @@ impl FlowNode for Node {
             ) {
                 CargoFeatureSet::Specific(vec![
                     "ci".into(),
-                    "crypto/allow_multiple_backends".into(),
+                    "crypto/allow-multiple-backends".into(),
                 ])
             } else {
                 CargoFeatureSet::All

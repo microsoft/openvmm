@@ -1,3 +1,3 @@
-# Specify the allow_multiple_backends feature so that workspace-wide analysis works correctly.
+# Specify the allow-multiple-backends feature so that workspace-wide analysis works correctly.
 [cargo]
-features = ["crypto/allow_multiple_backends"]
+features = ["crypto/allow-multiple-backends"]

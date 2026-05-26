@@ -181,13 +181,13 @@ impl SimpleFlowNode for Node {
         // We don't add the CI feature here, as it's used purely to exclude
         // tests that can't run in CI. We still want those tests to be linted.
         //
-        // Adding the "crypto/allow_multiple_backends" feature is also used
+        // Adding the "crypto/allow-multiple-backends" feature is also used
         // since we're running over the whole workspace.
         let features = if matches!(
             target.operating_system,
             target_lexicon::OperatingSystem::Windows | target_lexicon::OperatingSystem::Darwin(_)
         ) {
-            CargoFeatureSet::Specific(vec!["crypto/allow_multiple_backends".into()])
+            CargoFeatureSet::Specific(vec!["crypto/allow-multiple-backends".into()])
         } else {
             CargoFeatureSet::All
         };
