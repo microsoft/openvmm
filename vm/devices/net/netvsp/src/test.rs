@@ -1619,7 +1619,7 @@ impl<'a> TestNicChannel<'a> {
 
         buf_writer.write(packet.as_bytes()).unwrap();
 
-        const VLAN_TCP_HEADER_OFFSET: u16 = 38; // Ethernet (18) + IPv4 (20)
+        const VLAN_TCP_HEADER_OFFSET: u16 = 34; // Ethernet (14) + IPv4 (20); tag is in PPI only
         if tcp_checksum || udp_checksum {
             let checksum_info = rndisprot::TxTcpIpChecksumInfo::new_zeroed()
                 .set_is_ipv4(true)
@@ -6225,21 +6225,22 @@ async fn rndis_send_tcp_checksum_packet_zero_transport_header_offset_ipv6(driver
     );
 }
 
-fn build_vlan_ipv4_tcp_packet(vlan_id: u16) -> Vec<u8> {
+fn build_vlan_ipv4_tcp_packet(_vlan_id: u16) -> Vec<u8> {
+    // Real guests (Windows/Linux netvsc) send the VLAN info ONLY in the
+    // PPI — the frame data has a standard 14-byte Ethernet header without
+    // the 802.1Q tag inline.
     let mut data = vec![0u8; 60];
 
-    data[..6].copy_from_slice(&[0x10, 0x11, 0x12, 0x13, 0x14, 0x15]);
-    data[6..12].copy_from_slice(&[0x20, 0x21, 0x22, 0x23, 0x24, 0x25]);
-    data[12..14].copy_from_slice(&0x8100u16.to_be_bytes());
-    data[14..16].copy_from_slice(&(vlan_id & 0x0fff).to_be_bytes());
-    data[16..18].copy_from_slice(&0x0800u16.to_be_bytes());
+    data[..6].copy_from_slice(&[0x10, 0x11, 0x12, 0x13, 0x14, 0x15]); // dst MAC
+    data[6..12].copy_from_slice(&[0x20, 0x21, 0x22, 0x23, 0x24, 0x25]); // src MAC
+    data[12..14].copy_from_slice(&0x0800u16.to_be_bytes()); // EtherType = IPv4
 
-    data[18] = 0x45; // IPv4, 20-byte header
-    data[20..22].copy_from_slice(&(42u16).to_be_bytes());
-    data[26] = 64; // TTL
-    data[27] = 6; // TCP
+    data[14] = 0x45; // IPv4, 20-byte header
+    data[16..18].copy_from_slice(&(42u16).to_be_bytes()); // total length
+    data[22] = 64; // TTL
+    data[23] = 6; // Protocol = TCP
 
-    data[38 + 12] = 0x50; // TCP data offset = 5 (20 bytes)
+    data[34 + 12] = 0x50; // TCP data offset = 5 (20 bytes)
 
     data
 }
@@ -6302,12 +6303,12 @@ async fn rndis_send_tcp_checksum_packet_with_vlan_ppi(driver: DefaultDriver) {
     assert!(metadata.flags.offload_ip_header_checksum());
     assert!(metadata.flags.is_ipv4());
     assert_eq!(
-        metadata.l2_len, 18,
-        "VLAN-tagged packets must use an 18-byte L2 header"
+        metadata.l2_len, 14,
+        "VLAN tag is in PPI only; frame data has a standard 14-byte L2 header"
     );
     assert_eq!(
         metadata.l3_len, 20,
-        "VLAN-tagged IPv4 packets must keep a 20-byte L3 header"
+        "IPv4 packets must keep a 20-byte L3 header"
     );
     assert_eq!(
         read_netvsp_counter(&nic.channel, "queues/0/tx_vlan_packets").await,
@@ -6375,12 +6376,12 @@ async fn rndis_send_lso_packet_with_vlan_ppi(driver: DefaultDriver) {
     assert!(metadata.flags.offload_ip_header_checksum());
     assert!(metadata.flags.is_ipv4());
     assert_eq!(
-        metadata.l2_len, 18,
-        "VLAN-tagged packets must use an 18-byte L2 header"
+        metadata.l2_len, 14,
+        "VLAN tag is in PPI only; frame data has a standard 14-byte L2 header"
     );
     assert_eq!(
         metadata.l3_len, 20,
-        "VLAN-tagged IPv4 packets must keep a 20-byte L3 header"
+        "IPv4 packets must keep a 20-byte L3 header"
     );
     assert_eq!(metadata.max_segment_size, 1460);
     assert_eq!(

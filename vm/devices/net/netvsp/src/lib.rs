@@ -2610,11 +2610,10 @@ impl<T: RingMem> NetChannel<T> {
                 ppi = rest;
             }
 
-            metadata.l2_len = if metadata.vlan.is_some() {
-                net_backend::ETHERNET_VLAN_HEADER_LEN
-            } else {
-                net_backend::ETHERNET_HEADER_LEN
-            } as u8;
+            // The frame data always has a 14-byte Ethernet header; when
+            // VLAN is present it arrives out-of-band in the PPI (not inline
+            // in the frame), so l2_len is unconditionally 14.
+            metadata.l2_len = net_backend::ETHERNET_HEADER_LEN as u8;
 
             if metadata.flags.offload_tcp_checksum() || metadata.flags.offload_udp_checksum() {
                 // The offset must be set if we're handling checksums; we already know from the above logic
