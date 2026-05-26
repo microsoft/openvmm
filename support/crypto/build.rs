@@ -11,7 +11,6 @@ fn main() {
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_SYMCRYPT");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_VENDORED");
     println!("cargo::rerun-if-env-changed=CARGO_CFG_TARGET_OS");
-    println!("cargo::rerun-if-env-changed=PROFILE");
 
     println!("cargo::rustc-check-cfg=cfg(native)");
     println!("cargo::rustc-check-cfg=cfg(openssl)");
@@ -24,7 +23,6 @@ fn main() {
     let symcrypt = std::env::var_os("CARGO_FEATURE_SYMCRYPT").is_some();
     let vendored = std::env::var_os("CARGO_FEATURE_VENDORED").is_some();
 
-    let profile = std::env::var("PROFILE").unwrap();
     let allow_multiple_backends =
         std::env::var_os("CARGO_FEATURE_ALLOW_MULTIPLE_BACKENDS").is_some();
 
@@ -69,9 +67,8 @@ fn main() {
         }
     }
     // If we see multiple backends enabled that's an error. However if we see
-    // allow-multiple-backends is enabled, or we're doing a debug build, print
-    // a warning and allow it.
-    else if allow_multiple_backends || profile == "debug" {
+    // if allow-multiple-backends is enabled print a warning and allow it.
+    else if allow_multiple_backends {
         println!(
             "cargo::warning=allow-multiple-backends is enabled, this may produce insecure binaries."
         );
@@ -80,7 +77,7 @@ fn main() {
         if openssl {
             println!("cargo::warning=Using OpenSSL backend.");
             println!("cargo::rustc-cfg=openssl");
-        } else if symcrypt {
+        } else if symcrypt && !vendored {
             println!("cargo::warning=Using Symcrypt backend.");
             println!("cargo::rustc-cfg=symcrypt");
         } else if rust {

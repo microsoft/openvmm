@@ -215,7 +215,7 @@ impl FlowNode for Node {
             // linux targets too, but we don't currently have a prebuilt
             // library for them.
             let mut crypto_feature_sets = vec![
-                ("none", CargoFeatureSet::Specific(vec!["native".into()])),
+                ("native", CargoFeatureSet::Specific(vec!["native".into()])),
                 ("rust", CargoFeatureSet::Specific(vec!["rust".into()])),
             ];
             if matches!(
