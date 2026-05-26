@@ -653,6 +653,9 @@ impl VmService {
                     Some(vmservice::nic_config::Backend::Consomme(_))
                 );
                 let recv = if is_consomme {
+                    if consomme_rpc.is_some() {
+                        anyhow::bail!("only one consomme NIC is supported");
+                    }
                     let (send, recv) = mesh::channel();
                     consomme_rpc = Some(send);
                     Some(recv)
@@ -899,15 +902,25 @@ impl VmService {
                         .clone();
                     Ok(async move {
                         for port in consomme.ports {
-                            let cfg = HostPortConfig {
-                                protocol: if port.protocol == vmservice::IpProtocol::Udp as i32 {
+                            let protocol =
+                                if port.protocol == vmservice::IpProtocol::Tcp as i32 {
+                                    HostPortProtocol::Tcp
+                                } else if port.protocol == vmservice::IpProtocol::Udp as i32 {
                                     HostPortProtocol::Udp
                                 } else {
-                                    HostPortProtocol::Tcp
-                                },
+                                    anyhow::bail!("invalid protocol {}", port.protocol);
+                                };
+                            let cfg = HostPortConfig {
+                                protocol,
                                 host_address: None,
-                                host_port: port.host_port as u16,
-                                guest_port: port.guest_port as u16,
+                                host_port: port
+                                    .host_port
+                                    .try_into()
+                                    .context("host port out of range")?,
+                                guest_port: port
+                                    .guest_port
+                                    .try_into()
+                                    .context("guest port out of range")?,
                             };
                             consomme_rpc
                                 .call_failable(ConsommeRequest::Bind, cfg)
@@ -929,15 +942,25 @@ impl VmService {
                         .clone();
                     Ok(async move {
                         for port in consomme.ports {
-                            let cfg = HostPortConfig {
-                                protocol: if port.protocol == vmservice::IpProtocol::Udp as i32 {
+                            let protocol =
+                                if port.protocol == vmservice::IpProtocol::Tcp as i32 {
+                                    HostPortProtocol::Tcp
+                                } else if port.protocol == vmservice::IpProtocol::Udp as i32 {
                                     HostPortProtocol::Udp
                                 } else {
-                                    HostPortProtocol::Tcp
-                                },
+                                    anyhow::bail!("invalid protocol {}", port.protocol);
+                                };
+                            let cfg = HostPortConfig {
+                                protocol,
                                 host_address: None,
-                                host_port: port.host_port as u16,
-                                guest_port: port.guest_port as u16,
+                                host_port: port
+                                    .host_port
+                                    .try_into()
+                                    .context("host port out of range")?,
+                                guest_port: port
+                                    .guest_port
+                                    .try_into()
+                                    .context("guest port out of range")?,
                             };
                             consomme_rpc
                                 .call_failable(ConsommeRequest::Unbind, cfg)

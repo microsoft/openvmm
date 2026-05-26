@@ -1812,6 +1812,9 @@ fn parse_endpoint(
     let _ = resources;
     let endpoint = match &cli_cfg.endpoint {
         EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            if resources.consomme_rpc.is_some() {
+                anyhow::bail!("only one consomme endpoint is supported");
+            }
             let ports = host_fwd
                 .iter()
                 .map(|fwd| {
