@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 //! Resources for instantiating HCL-compatible UEFI nvram variable storage.
 
 use inspect::Inspect;
