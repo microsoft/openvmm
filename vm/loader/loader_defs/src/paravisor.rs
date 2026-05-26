@@ -571,12 +571,6 @@ pub mod container_policy {
         #[mesh(5)]
         pub require_secure_avic: bool,
 
-        // NOTE: `#[mesh(6)]` was previously used by a `debug_mode`
-        // flag that has since been removed (each `require_*` check
-        // is independently togglable via the manifest, making the
-        // global escape hatch redundant). Per the
-        // never-reuse-a-tag rule, tag 6 is permanently reserved
-        // and MUST NOT be allocated to a new field.
         /// Custom UEFI JSON bytes embedded into the measured policy
         /// payload. In manifest JSON the field is a **base64-encoded
         /// string** (RFC 4648 standard alphabet); the field's serde
@@ -585,7 +579,7 @@ pub mod container_policy {
         /// raw bytes on deserialize. Manifest authors can embed
         /// arbitrary binary directly in JSON without referencing an
         /// out-of-band file.
-        #[mesh(7)]
+        #[mesh(6)]
         #[cfg_attr(feature = "manifest", serde(default, with = "custom_uefi_json_serde"))]
         pub custom_uefi_json: Vec<u8>,
     }
