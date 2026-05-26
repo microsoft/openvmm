@@ -4,12 +4,9 @@
 //! X.509 certificate parsing and verification using the `x509-cert` RustCrypto crate.
 
 use super::X509Error;
-use core::str::FromStr;
 use der::Decode;
 use der::Encode;
 use x509_cert::Certificate;
-use x509_cert::builder::Builder;
-use x509_cert::name::Name;
 
 #[cfg(symcrypt)]
 fn der_err(err: der::Error, op: &'static str) -> X509Error {
@@ -143,12 +140,14 @@ impl X509CertificateInner {
         Ok(true)
     }
 
+    #[cfg(any(test, feature = "test_helpers"))]
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
         self.0
             .to_der()
             .map_err(|e| der_err(e, "encoding certificate as DER"))
     }
 
+    #[cfg(any(test, feature = "test_helpers"))]
     pub fn build_self_signed(
         key: &crate::rsa::RsaKeyPair,
         country: &str,
@@ -157,6 +156,10 @@ impl X509CertificateInner {
         organization: &str,
         common_name: &str,
     ) -> anyhow::Result<Self> {
+        use core::str::FromStr;
+        use x509_cert::builder::Builder;
+        use x509_cert::name::Name;
+
         // Profile that produces a basic self-signed certificate with no
         // extensions and the same `Name` for both the subject and issuer.
         struct SelfSignedProfile {
@@ -225,7 +228,7 @@ impl X509CertificateInner {
 /// Adapters that implement the `signature` and `spki` traits required by
 /// `x509_cert::builder::CertificateBuilder::build` on top of SymCrypt's
 /// PKCS#1 v1.5 signing primitive.
-#[cfg(symcrypt)]
+#[cfg(all(symcrypt, any(test, feature = "test_helpers")))]
 mod symcrypt_signer {
     use der::Encode;
 

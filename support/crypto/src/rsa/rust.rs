@@ -9,7 +9,6 @@ use super::RsaError;
 use crate::HashAlgorithm;
 use getrandom::SysRng;
 use pkcs8::DecodePrivateKey;
-use pkcs8::EncodePrivateKey;
 use rsa::Oaep;
 use rsa::Pkcs1v15Sign;
 use rsa::RsaPrivateKey;
@@ -26,6 +25,7 @@ const fn rng() -> impl rand_core::CryptoRng {
 pub struct RsaKeyPairInner(pub(crate) RsaPrivateKey);
 
 impl RsaKeyPairInner {
+    #[cfg(any(test, feature = "test_helpers"))]
     pub fn generate(bits: u32) -> Result<Self, RsaError> {
         let rsa = RsaPrivateKey::new(&mut rng(), bits as usize)
             .map_err(|e| RsaError(e, "generating RSA key"))?;
@@ -38,7 +38,9 @@ impl RsaKeyPairInner {
         Ok(Self(parsed))
     }
 
+    #[cfg(any(test, feature = "test_helpers"))]
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
+        use pkcs8::EncodePrivateKey;
         Ok(self
             .0
             .to_pkcs8_der()

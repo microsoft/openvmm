@@ -14,6 +14,7 @@ fn err(err: openssl::error::ErrorStack, op: &'static str) -> RsaError {
 pub struct RsaKeyPairInner(pub(crate) openssl::pkey::PKey<openssl::pkey::Private>);
 
 impl RsaKeyPairInner {
+    #[cfg(any(test, feature = "test_helpers"))]
     pub fn generate(bits: u32) -> Result<Self, RsaError> {
         let rsa = openssl::rsa::Rsa::generate(bits).map_err(|e| err(e, "generating RSA key"))?;
         let pkey =
@@ -29,6 +30,7 @@ impl RsaKeyPairInner {
         Ok(Self(pkey))
     }
 
+    #[cfg(any(test, feature = "test_helpers"))]
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
         self.0
             .private_key_to_pkcs8()
