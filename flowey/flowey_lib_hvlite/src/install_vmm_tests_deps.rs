@@ -170,6 +170,13 @@ fn install_windows_deps(
         features_to_enable.append(&mut WHP_TESTS_REQUIRED_FEATURES.into());
     }
 
+    // write commands for vmm_tests_run build only mode
+    for feature in features_to_enable.iter() {
+        commands.push(format!(
+            "DISM.exe /Online /NoRestart /Enable-Feature /All /FeatureName:{feature}"
+        ));
+    }
+
     // Check if features are already enabled (requires admin, so skip if not auto_install)
     if installing && auto_install && !features_to_enable.is_empty() {
         let features = flowey::shell_cmd!(rt, "DISM.exe /Online /Get-Features").output()?;
@@ -215,7 +222,7 @@ fn install_windows_deps(
             );
         } else {
             anyhow::bail!(
-                "Hyper-V is not installed. Re-run in an Administrator window with `--install-missing-deps`"
+                "Hyper-V is not installed or your user account is not in the \"Hyper-V Administrators\" group. Re-run in an Administrator window with `--install-missing-deps`"
             );
         }
 
@@ -261,9 +268,6 @@ Otherwise, press `ctrl-c` to cancel the run.
             )
             .run()?;
         }
-        commands.push(format!(
-            "DISM.exe /Online /NoRestart /Enable-Feature /All /FeatureName:{feature}"
-        ));
     }
 
     // Select required reg keys
@@ -286,6 +290,13 @@ Otherwise, press `ctrl-c` to cancel the run.
                 .entry(HYPERVISOR_REG_PATH)
                 .or_insert(BTreeMap::new())
                 .insert("EnableHardwareIsolation", ("REG_DWORD", "0x1", true));
+        }
+    }
+
+    // write commands for vmm_tests_run build only mode
+    for (p, k) in reg_keys_to_set.iter() {
+        for (v, (t, d, _)) in k {
+            commands.push(format!("reg.exe add \"{p}\" /v {v} /t {t} /d {d} /f"));
         }
     }
 
@@ -317,16 +328,14 @@ Otherwise, press `ctrl-c` to cancel the run.
         .into_iter()
         .flat_map(|(p, k)| k.into_iter().map(move |(v, (t, d, _))| (p, v, t, d)))
         .collect::<Vec<_>>();
-    let mut reg_cmds = reg_keys_to_set
-        .iter()
-        .map(|(p, v, t, d)| format!("reg.exe add \"{p}\" /v {v} /t {t} /d {d} /f"))
-        .collect::<Vec<_>>();
 
     // Prompt before changing registry when running locally
     if installing && !reg_keys_to_set.is_empty() && matches!(rt.backend(), FlowBackend::Local) {
         let mut reg_keys_to_set_string = String::new();
-        for cmd in reg_cmds.iter() {
-            reg_keys_to_set_string.push_str(cmd);
+        for (p, v, _, _) in reg_keys_to_set.iter() {
+            reg_keys_to_set_string.push_str(*p);
+            reg_keys_to_set_string.push(' ');
+            reg_keys_to_set_string.push_str(*v);
             reg_keys_to_set_string.push('\n');
         }
 
@@ -360,10 +369,7 @@ Please re-run in an Administrator window with `--install-missing-deps`.
     }
 
     // Modify the registry
-    commands.append(&mut reg_cmds);
     for (p, v, t, d) in reg_keys_to_set {
-        // TODO: figure out why reg.exe is not found if I
-        // render the command as a string first and share
         if installing && auto_install {
             flowey::shell_cmd!(rt, "reg.exe add {p} /v {v} /t {t} /d {d} /f").run()?;
         }
