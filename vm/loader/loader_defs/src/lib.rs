@@ -1,12 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Type definitions for loading guest firmware, available as no_std if no
-//! features are defined. The `manifest` feature pulls in `std` so the
-//! build-side manifest types can use `std::path::PathBuf` / `std::fs` 
-//! for path-based inputs.
+//! Type definitions for loading guest firmware. The crate is `no_std`;
+//! the `manifest` feature pulls in `serde` + `base64` (both `alloc`)
+//! for build-side manifest deserialization.
 
-#![cfg_attr(not(feature = "manifest"), no_std)]
+#![no_std]
 #![forbid(unsafe_code)]
 
 pub mod linux;

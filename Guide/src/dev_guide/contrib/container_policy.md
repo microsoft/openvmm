@@ -1,11 +1,17 @@
 # ContainerPolicy: Adding a new container product
 
-OpenHCL has an optional measured VTL2 page called **ContainerPolicy**. When
-the IGVM file is built with a container policy configured, the page is
-imported as a measured (and therefore attestable) page carrying a
-product-specific policy body. At runtime, OpenHCL reads the page (via a
-pointer in [`ParavisorMeasuredVtl2Config`]) and decodes it back into the
-strongly-typed [`ContainerPolicy`] enum, or refuses to boot if the page is
+OpenHCL has an optional measured VTL2 payload called **ContainerPolicy**.
+When the IGVM file is built with a container policy configured, the
+payload is appended in-place after [`ParavisorMeasuredVtl2Config`] on
+the same measured config region. The struct carries a
+`container_policy_size: u32` field that tells the runtime exactly how
+many bytes follow; a value of zero means absent. The build picks the
+region's page count to fit `sizeof(struct) + policy_size`, up to a
+hard cap of `PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES`.
+
+At runtime, OpenHCL reads the struct, then reads the next
+`container_policy_size` bytes and mesh-decodes them into the strongly
+typed [`ContainerPolicy`] enum, or refuses to boot if the bytes are
 malformed.
 
 The first real product is **CWCOW** (Confidential Windows Container
@@ -40,7 +46,7 @@ parser trait, and no central dispatch.
    wire format for an existing product.
 2. **Never derive `serde::Serialize`** on `ContainerPolicy` or any
    `*Policy` body. Field-level `#[serde(deserialize_with)]` adapters
-   (such as CWCOW's `custom_uefi_json` path reader) are inherently
+   (such as CWCOW's `custom_uefi_json` base64 decoder) are inherently
    asymmetric — a symmetric Serialize impl would silently round-trip
    wire bytes back to JSON instead of the original input shape.
 
@@ -83,17 +89,17 @@ Manifest authors can then write:
 
 ### Build-time work on individual fields
 
-When a manifest field needs build-side processing (file I/O, base64
-decoding, etc.), attach a `#[serde(deserialize_with = "…")]` adapter to
-the *field*. The wire type stays a single struct; only the field's JSON
-shape diverges from its byte shape. CWCOW does this for
+When a manifest field needs build-side processing (base64 decoding,
+shape conversion, etc.), attach a `#[serde(deserialize_with = "…")]`
+adapter to the *field*. The wire type stays a single struct; only the
+field's JSON shape diverges from its byte shape. CWCOW does this for
 `custom_uefi_json`:
 
 ```rust
 #[mesh(7)]
 #[cfg_attr(
     feature = "manifest",
-    serde(default, deserialize_with = "read_custom_uefi_json_path")
+    serde(default, deserialize_with = "decode_custom_uefi_json_base64")
 )]
 pub custom_uefi_json: Vec<u8>,
 ```
@@ -103,40 +109,58 @@ stays minimal:
 
 ```rust
 #[cfg(feature = "manifest")]
-fn read_custom_uefi_json_path<'de, D>(d: D) -> Result<Vec<u8>, D::Error>
+fn decode_custom_uefi_json_base64<'de, D>(d: D) -> Result<Vec<u8>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let path = std::path::PathBuf::deserialize(d)?;
-    std::fs::read(&path).map_err(|e| serde::de::Error::custom(format!(...)))
+    use base64::Engine as _;
+    let s = String::deserialize(d)?;
+    base64::engine::general_purpose::STANDARD
+        .decode(s.as_bytes())
+        .map_err(serde::de::Error::custom)
 }
 ```
 
-In manifest JSON the field is a path string; in the wire bytes it is
-the file contents.
+In manifest JSON the field is a base64-encoded string (standard RFC
+4648 alphabet, padding optional); in the wire bytes it is the decoded
+raw payload. Embedding the bytes inline keeps manifests self-contained
+and avoids out-of-band file dependencies during the build.
 
-## Wire framing
+## Region layout
 
-The measured page payload starts with a 4-byte little-endian `u32` length
-prefix followed by the `mesh_protobuf`-encoded `ContainerPolicy`. The
-length prefix is required because mesh_protobuf does not natively tolerate
-the trailing zero padding that the IGVM importer pads to a page boundary.
-Use `encode_container_policy_page` / `decode_container_policy_page` from
-`loader_defs::paravisor` so both ends share the same framing helpers.
+`ParavisorMeasuredVtl2Config` carries a `container_policy_size: u32`
+field at offset `[16..20]`. The build records the encoded policy length
+in this field; the runtime reads exactly that many bytes from
+`CONTAINER_POLICY_INLINE_OFFSET` and mesh-decodes them. There is no
+length-prefix framing — the struct field IS the framing.
+
+```
+0..8         ParavisorMeasuredVtl2Config.magic
+8            vtom_offset_bit
+9..16        padding
+16..20       container_policy_size: u32  (0 ⇒ absent)
+20..24       reserved
+24..24+N     mesh_protobuf-encoded ContainerPolicy (N = container_policy_size)
+24+N..end    zero padding to the next page boundary
+```
+
+The struct is 24 bytes; the region's *actual* page count is computed at
+build time by `measured_vtl2_config_pages_for_policy(N)`. An absent
+policy occupies exactly `PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES` (= 1)
+page, identical to legacy builds. A larger policy grows the region up
+to `PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES` pages.
+
+The GPA-space reservation in the parameter region is sized for the
+maximum (4 pages today); the IGVM file only imports the pages actually
+needed. Builds that don't enable the policy import a single zero-padded
+page — byte-for-byte identical to pre-feature builds.
 
 ## Measurement implications
 
-Enabling ContainerPolicy alters the IGVM measurement because new measured
-page contents are added. Existing recipes do **not** opt in by default,
-so IGVMs built from those recipes preserve their prior measurements. The
-region's address-space reservation is the same regardless of whether a
-policy is configured, so a build's downstream layout is stable.
-
-The page location is recorded in
-`ParavisorMeasuredVtl2Config::container_policy_location`, a packed
-`(page_index, page_count)` `u64` (low 52 bits + high 12 bits). A
-`page_count` of zero means absent — older IGVMs that pre-date the field
-read as zero because the page is zero-padded to 4 KiB before measurement.
+Enabling ContainerPolicy alters the IGVM measurement because new
+measured bytes are added. Existing recipes do **not** opt in by default,
+so IGVMs built from those recipes import the same single zero-padded
+page as before and preserve their prior measurements.
 
 ## Optional: recipe + manifest
 

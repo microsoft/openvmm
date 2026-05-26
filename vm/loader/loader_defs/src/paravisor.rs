@@ -75,19 +75,30 @@ pub const PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX: u64 =
 // region.
 /// Size in pages the list of accepted memory
 pub const PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_SIZE_PAGES: u64 = 1;
-/// Size in pages of VTL2 specific measured config
-pub const PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES: u64 = 1;
-/// Maximum size in pages of the optional ContainerPolicy measured page
-/// region. The region is always reserved in the layout so page indices are
-/// deterministic, but its pages are only imported into the IGVM file when a
-/// container policy is configured at build time.
-pub const PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES: u64 = 2;
 
-/// Count for vtl 2 measured config region size.
+/// Minimum size in pages of the VTL2 measured config region.
+///
+/// The region always contains the [`ParavisorMeasuredVtl2Config`]
+/// struct itself. An optional [`ContainerPolicy`] payload is appended
+/// in-place after the struct (see [`CONTAINER_POLICY_INLINE_OFFSET`]
+/// and [`ParavisorMeasuredVtl2Config::container_policy_size`]); the
+/// build picks the actual region size at IGVM creation time using
+/// [`measured_vtl2_config_pages_for_policy`], up to
+/// [`PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES`].
+pub const PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES: u64 = 1;
+
+/// Upper bound on the VTL2 measured config region's page count. The
+/// runtime parameter region in the IGVM file reserves this many pages
+/// for the measured config; the actual number imported depends on the
+/// configured container policy size at build time.
+pub const PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES: u64 = 4;
+
+/// Count for vtl 2 measured config region size — the **reservation**
+/// in the GPA layout. The build may import fewer pages within this
+/// reservation depending on the policy size.
 pub const PARAVISOR_MEASURED_VTL2_CONFIG_REGION_PAGE_COUNT: u64 =
     PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_SIZE_PAGES
-        + PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES
-        + PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES;
+        + PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES;
 
 // Measured config comes after the unmeasured config
 /// The page index to the list of accepted pages
@@ -99,14 +110,6 @@ pub const PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_PAGE_INDEX: u64 =
 pub const PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX: u64 =
     PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_PAGE_INDEX
         + PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_SIZE_PAGES;
-
-/// The page index for the optional ContainerPolicy measured page(s).
-/// The first page contains the framed [`ContainerPolicy`] mesh-encoded
-/// payload (see [`encode_container_policy_page`]); subsequent pages (up
-/// to [`PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES`]
-/// total) hold the remainder of the body when needed.
-pub const PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_PAGE_INDEX: u64 =
-    PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX + PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES;
 
 /// The maximum size in pages out of all isolation architectures.
 pub const PARAVISOR_VTL2_CONFIG_REGION_PAGE_COUNT_MAX: u64 =
@@ -371,6 +374,14 @@ pub const PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_X64: u64 = 0;
 pub const PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_AARCH64: u64 = 16 << (20 - 12);
 
 /// Paravisor measured config for vtl2.
+///
+/// May be followed in-place (on the same measured region) by an
+/// optional [`ContainerPolicy`] payload starting at byte
+/// [`CONTAINER_POLICY_INLINE_OFFSET`]. The payload's size in bytes is
+/// recorded in [`Self::container_policy_size`]; the build sizes the
+/// measured config region (in pages) to fit the struct plus that many
+/// bytes. A size of zero — including all-zero trailing bytes in IGVMs
+/// that pre-date the container policy feature — signals absent.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[cfg_attr(feature = "inspect", derive(Inspect))]
@@ -381,107 +392,87 @@ pub struct ParavisorMeasuredVtl2Config {
     pub vtom_offset_bit: u8,
     /// Padding.
     pub padding: [u8; 7],
-    /// Packed pointer locating the optional [`ContainerPolicy`] measured
-    /// page(s) within the VTL2 config region.
+    /// Byte length of the [`ContainerPolicy`] payload that follows the
+    /// struct on the same measured region. A value of `0` means no
+    /// policy is configured (the typical / legacy state).
     ///
-    /// Encoding:
-    /// - **low 52 bits** = page index (region-relative, same convention as
-    ///   the other `*_PAGE_INDEX` constants in this module).
-    /// - **high 12 bits** = page count.
-    ///
-    /// A `page_count` of zero means absent (no container policy is
-    /// configured). Older IGVMs that pre-date this field naturally read
-    /// back as zero because the page is zero-padded to 4 KiB before
-    /// measurement.
-    ///
-    /// Use [`Self::pack_container_policy_location`] /
-    /// [`Self::container_policy_page_index`] /
-    /// [`Self::container_policy_page_count`] for unambiguous access.
-    container_policy_location: u64,
+    /// The runtime reads exactly this many bytes from
+    /// [`CONTAINER_POLICY_INLINE_OFFSET`] and decodes them as the
+    /// `mesh_protobuf`-encoded [`ContainerPolicy`].
+    pub container_policy_size: u32,
+    /// Reserved for future use. Must be zero on builds that don't use
+    /// it (and is naturally zero in pre-feature IGVMs).
+    pub reserved: [u8; 4],
 }
 
 impl ParavisorMeasuredVtl2Config {
     /// Magic value for the measured config, which is "OHCLVTL2".
     pub const MAGIC: u64 = 0x4F48434C56544C32;
-
-    /// Number of bits used to encode the page index in
-    /// [`Self::container_policy_location`].
-    pub const CONTAINER_POLICY_INDEX_BITS: u32 = 52;
-
-    /// Bit mask covering the page index half of
-    /// [`Self::container_policy_location`].
-    pub const CONTAINER_POLICY_INDEX_MASK: u64 = (1u64 << Self::CONTAINER_POLICY_INDEX_BITS) - 1;
-
-    /// Number of bits used to encode the page count in
-    /// [`Self::container_policy_location`].
-    pub const CONTAINER_POLICY_COUNT_BITS: u32 = 64 - Self::CONTAINER_POLICY_INDEX_BITS;
-
-    /// Maximum representable page index in
-    /// [`Self::container_policy_location`].
-    pub const CONTAINER_POLICY_INDEX_MAX: u64 = Self::CONTAINER_POLICY_INDEX_MASK;
-
-    /// Maximum representable page count in
-    /// [`Self::container_policy_location`].
-    pub const CONTAINER_POLICY_COUNT_MAX: u64 = (1u64 << Self::CONTAINER_POLICY_COUNT_BITS) - 1;
-
-    /// Pack a (page_index, page_count) pair into the wire encoding used
-    /// by [`Self::container_policy_location`].
-    ///
-    /// Panics in debug builds if either component exceeds its respective
-    /// bit budget. Release builds wrap, so callers should always be
-    /// bound by the corresponding constants.
-    #[inline]
-    pub const fn pack_container_policy_location(page_index: u64, page_count: u64) -> u64 {
-        debug_assert!(page_index <= Self::CONTAINER_POLICY_INDEX_MAX);
-        debug_assert!(page_count <= Self::CONTAINER_POLICY_COUNT_MAX);
-        (page_index & Self::CONTAINER_POLICY_INDEX_MASK)
-            | ((page_count & Self::CONTAINER_POLICY_COUNT_MAX) << Self::CONTAINER_POLICY_INDEX_BITS)
-    }
-
-    /// Region-relative page index of the container policy page(s), or
-    /// undefined if [`Self::container_policy_page_count`] returns zero.
-    #[inline]
-    pub const fn container_policy_page_index(&self) -> u64 {
-        self.container_policy_location & Self::CONTAINER_POLICY_INDEX_MASK
-    }
-
-    /// Number of container policy pages, or zero if no container policy
-    /// was configured at IGVM build time.
-    #[inline]
-    pub const fn container_policy_page_count(&self) -> u64 {
-        self.container_policy_location >> Self::CONTAINER_POLICY_INDEX_BITS
-    }
 }
 
 const_assert_eq!(size_of::<ParavisorMeasuredVtl2Config>(), 24);
 
-pub use container_policy::CONTAINER_POLICY_LEN_PREFIX_BYTES;
+/// Byte offset within the measured VTL2 config region at which the
+/// optional [`ContainerPolicy`] payload begins. Builders write the
+/// `mesh_protobuf`-encoded body at this offset; runtime readers
+/// consume the next
+/// [`ParavisorMeasuredVtl2Config::container_policy_size`] bytes.
+pub const CONTAINER_POLICY_INLINE_OFFSET: usize = size_of::<ParavisorMeasuredVtl2Config>();
+
+/// Maximum byte size of a [`ContainerPolicy`] payload supported by this
+/// build. Equal to
+/// `PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES * HV_PAGE_SIZE` minus the
+/// struct that precedes it.
+#[inline]
+pub const fn container_policy_max_size_bytes() -> usize {
+    (PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES as usize) * (HV_PAGE_SIZE as usize)
+        - CONTAINER_POLICY_INLINE_OFFSET
+}
+
+/// Number of pages the build needs to allocate for the measured VTL2
+/// config region given a container policy payload size in bytes. The
+/// return value is always at least
+/// [`PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES`] (the struct itself) and
+/// never exceeds [`PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES`].
+///
+/// Pass `0` (no policy configured) and the result is the minimum.
+#[inline]
+pub const fn measured_vtl2_config_pages_for_policy(policy_size: usize) -> u64 {
+    let total = CONTAINER_POLICY_INLINE_OFFSET + policy_size;
+    let page = HV_PAGE_SIZE as usize;
+    let pages = (total + page - 1) / page;
+    let pages = pages as u64;
+    if pages < PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES {
+        PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES
+    } else {
+        pages
+    }
+}
+
 pub use container_policy::ContainerPolicy;
 pub use container_policy::ContainerPolicyDecodeError;
 pub use container_policy::CwcowPolicy;
 pub use container_policy::decode_container_policy_page;
 pub use container_policy::encode_container_policy_page;
 
-/// On-wire types for the optional measured container policy page.
+/// On-wire types for the optional measured container policy payload.
 ///
-/// The page (when present) holds a small framing prefix followed by a
-/// `mesh_protobuf`-encoded [`ContainerPolicy`]. The location of the page
-/// within the VTL2 config region is recorded in
-/// [`ParavisorMeasuredVtl2Config::container_policy_location`].
+/// The payload (when present) is appended in-place to the same measured
+/// VTL2 config region that carries [`ParavisorMeasuredVtl2Config`],
+/// starting at byte [`CONTAINER_POLICY_INLINE_OFFSET`]. Its length in
+/// bytes is recorded in
+/// [`ParavisorMeasuredVtl2Config::container_policy_size`]; a size of
+/// zero — including all-zero trailing bytes in IGVMs that pre-date the
+/// feature — signals absent.
 ///
-/// # Page payload framing
+/// # Build-time sizing
 ///
-/// The pages start with a fixed
-/// [`CONTAINER_POLICY_LEN_PREFIX_BYTES`]-byte little-endian `u32` length
-/// header giving the size of the protobuf payload that follows. The
-/// remainder of the reserved page span is zero-padded. The length
-/// prefix is required because `mesh_protobuf` does not natively tolerate
-/// trailing zero bytes after a complete message (it interprets them as
-/// the start of additional fields and errors out).
-///
-/// Use [`encode_container_policy_page`] / [`decode_container_policy_page`]
-/// to produce / consume the page bytes; both ends of the wire share the
-/// same framing helpers so the format can only ever change in lockstep.
+/// The build computes the region's actual page count from the policy
+/// size using [`measured_vtl2_config_pages_for_policy`]; absent policies
+/// occupy exactly [`PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES`] page,
+/// preserving the measurement of legacy builds. Policies that need
+/// more space grow the region up to
+/// [`PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES`].
 ///
 /// # Onboarding a new product
 ///
@@ -489,8 +480,9 @@ pub use container_policy::encode_container_policy_page;
 ///   1. Define a `#[derive(mesh_protobuf::Protobuf)]` body struct with
 ///      `#[cfg_attr(feature = "manifest", derive(serde::Deserialize))]`.
 ///   2. Add a `#[mesh(N)] Foo(FooPolicy)` variant to [`ContainerPolicy`]
-///      with a **fresh** mesh tag (never reuse a tag — it would silently
-///      change the measured wire format for an existing product).
+///      with a **fresh** mesh tag (never reuse a tag — it would
+///      silently change the measured wire format for an existing
+///      product).
 ///
 /// **Build-side translation when needed** (e.g. a manifest field is a
 /// file path whose contents must be embedded into the measured bytes):
@@ -504,16 +496,12 @@ pub use container_policy::encode_container_policy_page;
 /// **Never** derive `serde::Serialize` on [`ContainerPolicy`] or any of
 /// its body structs. The wire bytes are the only canonical export; a
 /// symmetric Serialize impl would silently break the asymmetry of any
-/// `deserialize_with` adapter (e.g. a path read in via deserialize would
-/// round-trip back as raw bytes, not a path).
+/// `deserialize_with` adapter (e.g. a path read in via deserialize
+/// would round-trip back as raw bytes, not a path).
 pub mod container_policy {
     extern crate alloc;
 
     use alloc::vec::Vec;
-
-    /// Number of bytes in the length-prefix framing header that precedes
-    /// the mesh-encoded payload on the measured container policy page.
-    pub const CONTAINER_POLICY_LEN_PREFIX_BYTES: usize = 4;
 
     /// The wire format for the optional measured container policy page.
     ///
@@ -581,91 +569,73 @@ pub mod container_policy {
         #[mesh(5)]
         pub require_secure_avic: bool,
 
-        /// Debug mode relaxes the secure-boot **presence** check
-        /// (`require_secure_boot` and `require_secure_boot_vars`)
-        /// to aid local development. All other checks (Secure
-        /// AVIC, BCD integrity, VMGS read-only) remain in force.
-        #[mesh(6)]
-        pub debug_mode: bool,
-
-        /// Custom UEFI JSON file embedded into the measured policy
-        /// page. The manifest schema accepts a **path** (string)
-        /// which is read into bytes at IGVM build time via the
-        /// field-level [`read_custom_uefi_json_path`] adapter; the
-        /// wire format only carries the bytes.
+        // NOTE: `#[mesh(6)]` was previously used by a `debug_mode`
+        // flag that has since been removed (each `require_*` check
+        // is independently togglable via the manifest, making the
+        // global escape hatch redundant). Per the
+        // never-reuse-a-tag rule, tag 6 is permanently reserved
+        // and MUST NOT be allocated to a new field.
+        /// Custom UEFI JSON bytes embedded into the measured policy
+        /// payload. In manifest JSON the field is a **base64-encoded
+        /// string**; the build-side adapter decodes it into bytes via
+        /// [`decode_custom_uefi_json_base64`]. The wire format only
+        /// carries the decoded bytes — the base64 framing is a
+        /// manifest convenience that lets authors embed arbitrary
+        /// binary directly in JSON without referencing an out-of-band
+        /// file.
         #[mesh(7)]
         #[cfg_attr(
             feature = "manifest",
-            serde(default, deserialize_with = "read_custom_uefi_json_path")
+            serde(default, deserialize_with = "decode_custom_uefi_json_base64")
         )]
         pub custom_uefi_json: Vec<u8>,
     }
 
     /// Field-level serde adapter for [`CwcowPolicy::custom_uefi_json`].
-    /// In manifest JSON the field is a path string; at deserialization
-    /// time we read the file into the byte buffer embedded into the
-    /// wire enum. This keeps the wire type single-struct — no separate
-    /// `*Input` mirror — while still allowing the build to absorb
-    /// out-of-band assets.
     ///
-    /// `Default::default()` (empty) is accepted via `serde(default)` so
-    /// builds that don't ship a custom UEFI JSON work out of the box.
+    /// In manifest JSON the field is a base64-encoded string; this
+    /// adapter decodes it into the raw byte buffer embedded in the
+    /// wire enum. Standard (RFC 4648) base64 alphabet with optional
+    /// padding is accepted.
+    ///
+    /// `Default::default()` (empty) is accepted via `serde(default)`
+    /// so builds that don't ship a custom UEFI JSON work out of the
+    /// box; the empty string also decodes to an empty `Vec`.
     #[cfg(feature = "manifest")]
-    fn read_custom_uefi_json_path<'de, D>(d: D) -> Result<Vec<u8>, D::Error>
+    fn decode_custom_uefi_json_base64<'de, D>(d: D) -> Result<Vec<u8>, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
+        use base64::Engine as _;
         use serde::Deserialize;
 
-        // Manifest accepts a JSON string holding the path.
-        let path = std::path::PathBuf::deserialize(d)?;
-        if path.as_os_str().is_empty() {
+        let s = alloc::string::String::deserialize(d)?;
+        if s.is_empty() {
             return Ok(Vec::new());
         }
-        std::fs::read(&path).map_err(|e| {
-            serde::de::Error::custom(format!(
-                "failed to read custom UEFI JSON at {}: {}",
-                path.display(),
-                e
-            ))
-        })
+        // Standard base64 (with or without `=` padding) so manifest
+        // authors can paste output from common tools (`base64`,
+        // `openssl base64`, etc.) verbatim.
+        base64::engine::general_purpose::STANDARD
+            .decode(s.as_bytes())
+            .map_err(|e| {
+                serde::de::Error::custom(alloc::format!(
+                    "failed to base64-decode custom UEFI JSON: {e}"
+                ))
+            })
     }
 
-    /// Errors that may arise while decoding the framed measured page
-    /// bytes back into a [`ContainerPolicy`].
+    /// Errors that may arise while decoding the inline measured
+    /// container policy bytes back into a [`ContainerPolicy`].
     #[derive(Debug)]
     pub enum ContainerPolicyDecodeError {
-        /// Buffer was too small to contain the length prefix.
-        PrefixMissing {
-            /// Bytes available in the buffer.
-            available: usize,
-        },
-        /// Buffer was big enough for the length prefix, but the
-        /// declared body length runs past the buffer end.
-        TruncatedBody {
-            /// Declared body length (bytes after the prefix).
-            declared: usize,
-            /// Actual bytes available after the prefix.
-            available: usize,
-        },
-        /// The mesh_protobuf decoder rejected the body bytes.
+        /// The mesh_protobuf decoder rejected the bytes.
         Mesh(mesh_protobuf::Error),
     }
 
     impl core::fmt::Display for ContainerPolicyDecodeError {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             match self {
-                Self::PrefixMissing { available } => write!(
-                    f,
-                    "container policy buffer too small for length prefix: {available} bytes"
-                ),
-                Self::TruncatedBody {
-                    declared,
-                    available,
-                } => write!(
-                    f,
-                    "container policy declared {declared} body bytes but only {available} available"
-                ),
                 Self::Mesh(_) => write!(f, "container policy mesh decode error"),
             }
         }
@@ -675,51 +645,29 @@ pub mod container_policy {
         fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
             match self {
                 Self::Mesh(e) => Some(e),
-                _ => None,
             }
         }
     }
 
-    /// Encode a [`ContainerPolicy`] into the on-wire framed bytes that
-    /// will be measured onto the policy page(s).
-    ///
-    /// The returned buffer is NOT zero-padded to a page boundary; the
-    /// IGVM importer pads when it calls `import_pages`.
+    /// Encode a [`ContainerPolicy`] into the on-wire bytes that will be
+    /// appended in-place to the measured config region after
+    /// [`super::ParavisorMeasuredVtl2Config`]. The build records the
+    /// returned length in
+    /// [`super::ParavisorMeasuredVtl2Config::container_policy_size`]
+    /// so the runtime knows how many bytes to read.
     pub fn encode_container_policy_page(policy: &ContainerPolicy) -> Vec<u8> {
-        let body = mesh_protobuf::encode(policy.clone());
-        let mut out = Vec::with_capacity(CONTAINER_POLICY_LEN_PREFIX_BYTES + body.len());
-        // Length is bounded by the region capacity (< 8 KiB), but we
-        // store it as u32 LE for forward headroom.
-        let len = u32::try_from(body.len()).expect("policy body fits in u32");
-        out.extend_from_slice(&len.to_le_bytes());
-        out.extend_from_slice(&body);
-        out
+        mesh_protobuf::encode(policy.clone())
     }
 
-    /// Decode the framed page bytes back into a [`ContainerPolicy`].
-    ///
-    /// `bytes` may include arbitrary trailing zero padding (typical for
-    /// a page-aligned read) — only the declared `declared_len` body
-    /// bytes after the prefix are interpreted.
+    /// Decode `bytes` (exactly the byte range
+    /// `[CONTAINER_POLICY_INLINE_OFFSET .. CONTAINER_POLICY_INLINE_OFFSET +
+    /// container_policy_size]`) into a [`ContainerPolicy`]. Callers
+    /// must check `container_policy_size != 0` before invoking — a
+    /// size of zero means no policy was configured.
     pub fn decode_container_policy_page(
         bytes: &[u8],
     ) -> Result<ContainerPolicy, ContainerPolicyDecodeError> {
-        if bytes.len() < CONTAINER_POLICY_LEN_PREFIX_BYTES {
-            return Err(ContainerPolicyDecodeError::PrefixMissing {
-                available: bytes.len(),
-            });
-        }
-        let mut prefix = [0u8; CONTAINER_POLICY_LEN_PREFIX_BYTES];
-        prefix.copy_from_slice(&bytes[..CONTAINER_POLICY_LEN_PREFIX_BYTES]);
-        let declared = u32::from_le_bytes(prefix) as usize;
-        let payload = &bytes[CONTAINER_POLICY_LEN_PREFIX_BYTES..];
-        if payload.len() < declared {
-            return Err(ContainerPolicyDecodeError::TruncatedBody {
-                declared,
-                available: payload.len(),
-            });
-        }
-        mesh_protobuf::decode(&payload[..declared]).map_err(ContainerPolicyDecodeError::Mesh)
+        mesh_protobuf::decode(bytes).map_err(ContainerPolicyDecodeError::Mesh)
     }
 }
 
@@ -731,118 +679,25 @@ mod tests {
     use alloc::vec;
 
     // ---------------------------------------------------------------
-    // ParavisorMeasuredVtl2Config: pack / unpack helpers
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn pack_zero_is_absent() {
-        let packed = ParavisorMeasuredVtl2Config::pack_container_policy_location(0, 0);
-        assert_eq!(packed, 0);
-        let cfg = ParavisorMeasuredVtl2Config {
-            magic: ParavisorMeasuredVtl2Config::MAGIC,
-            vtom_offset_bit: 0,
-            padding: [0; 7],
-            container_policy_location: packed,
-        };
-        assert_eq!(cfg.container_policy_page_index(), 0);
-        assert_eq!(cfg.container_policy_page_count(), 0);
-    }
-
-    #[test]
-    fn pack_unpack_round_trip_representative_pairs() {
-        let pairs: &[(u64, u64)] = &[(0, 1), (1, 0), (1, 1), (106, 2), (4095, 1)];
-        for &(index, count) in pairs {
-            let packed = ParavisorMeasuredVtl2Config::pack_container_policy_location(index, count);
-            let cfg = ParavisorMeasuredVtl2Config {
-                magic: ParavisorMeasuredVtl2Config::MAGIC,
-                vtom_offset_bit: 0,
-                padding: [0; 7],
-                container_policy_location: packed,
-            };
-            assert_eq!(
-                cfg.container_policy_page_index(),
-                index,
-                "pair: {:?}",
-                (index, count)
-            );
-            assert_eq!(
-                cfg.container_policy_page_count(),
-                count,
-                "pair: {:?}",
-                (index, count)
-            );
-        }
-    }
-
-    #[test]
-    fn pack_bit_layout_count_in_high_bits() {
-        // count==1, index==0 -> bit 52 set, no other bits.
-        let packed = ParavisorMeasuredVtl2Config::pack_container_policy_location(0, 1);
-        assert_eq!(packed, 1u64 << 52);
-        // count==0, index==1 -> bit 0 set.
-        let packed = ParavisorMeasuredVtl2Config::pack_container_policy_location(1, 0);
-        assert_eq!(packed, 1);
-    }
-
-    #[test]
-    fn pack_unpack_boundary_max_values() {
-        let index = ParavisorMeasuredVtl2Config::CONTAINER_POLICY_INDEX_MAX;
-        let count = ParavisorMeasuredVtl2Config::CONTAINER_POLICY_COUNT_MAX;
-        let packed = ParavisorMeasuredVtl2Config::pack_container_policy_location(index, count);
-        let cfg = ParavisorMeasuredVtl2Config {
-            magic: ParavisorMeasuredVtl2Config::MAGIC,
-            vtom_offset_bit: 0,
-            padding: [0; 7],
-            container_policy_location: packed,
-        };
-        assert_eq!(cfg.container_policy_page_index(), index);
-        assert_eq!(cfg.container_policy_page_count(), count);
-        // All 64 bits used at the maximum.
-        assert_eq!(packed, u64::MAX);
-    }
-
-    #[test]
-    #[should_panic]
-    #[cfg(debug_assertions)]
-    fn pack_panics_on_index_overflow() {
-        let _ = ParavisorMeasuredVtl2Config::pack_container_policy_location(
-            ParavisorMeasuredVtl2Config::CONTAINER_POLICY_INDEX_MAX + 1,
-            0,
-        );
-    }
-
-    #[test]
-    #[should_panic]
-    #[cfg(debug_assertions)]
-    fn pack_panics_on_count_overflow() {
-        let _ = ParavisorMeasuredVtl2Config::pack_container_policy_location(
-            0,
-            ParavisorMeasuredVtl2Config::CONTAINER_POLICY_COUNT_MAX + 1,
-        );
-    }
-
-    // ---------------------------------------------------------------
-    // ParavisorMeasuredVtl2Config: struct layout & legacy back-compat
+    // ParavisorMeasuredVtl2Config: struct layout
     // ---------------------------------------------------------------
 
     #[test]
     fn measured_vtl2_config_size_is_24_bytes() {
-        // Static guard against accidental field-add that would change the
-        // measured wire format.
+        // Static guard against accidental field-add. The struct grew
+        // from 16 to 24 bytes when container_policy_size + reserved
+        // were added; further growth needs an explicit decision.
         assert_eq!(size_of::<ParavisorMeasuredVtl2Config>(), 24);
     }
 
     #[test]
     fn measured_vtl2_config_field_offsets() {
-        // Spot-check that the binary layout matches the documented
-        // encoding so older readers / hardware analysers stay happy.
         let cfg = ParavisorMeasuredVtl2Config {
             magic: 0x1122_3344_5566_7788,
             vtom_offset_bit: 0x99,
             padding: [0; 7],
-            container_policy_location: ParavisorMeasuredVtl2Config::pack_container_policy_location(
-                0xABCD, 0x002,
-            ),
+            container_policy_size: 0xABCDu32,
+            reserved: [0; 4],
         };
         let bytes = cfg.as_bytes();
         // magic at [0..8] (little-endian).
@@ -851,9 +706,10 @@ mod tests {
         assert_eq!(bytes[8], 0x99);
         // padding at [9..16].
         assert_eq!(&bytes[9..16], &[0u8; 7]);
-        // container_policy_location at [16..24].
-        let location = ParavisorMeasuredVtl2Config::pack_container_policy_location(0xABCD, 0x002);
-        assert_eq!(&bytes[16..24], &location.to_le_bytes());
+        // container_policy_size at [16..20].
+        assert_eq!(&bytes[16..20], &0xABCDu32.to_le_bytes());
+        // reserved at [20..24].
+        assert_eq!(&bytes[20..24], &[0u8; 4]);
     }
 
     #[test]
@@ -862,70 +718,63 @@ mod tests {
             magic: ParavisorMeasuredVtl2Config::MAGIC,
             vtom_offset_bit: 47,
             padding: [0; 7],
-            container_policy_location: ParavisorMeasuredVtl2Config::pack_container_policy_location(
-                106, 2,
-            ),
+            container_policy_size: 256,
+            reserved: [0; 4],
         };
         let bytes = cfg.as_bytes().to_vec();
         let (decoded, rest) = ParavisorMeasuredVtl2Config::ref_from_prefix(&bytes).unwrap();
         assert!(rest.is_empty());
         assert_eq!(decoded.magic, ParavisorMeasuredVtl2Config::MAGIC);
         assert_eq!(decoded.vtom_offset_bit, 47);
-        assert_eq!(decoded.container_policy_page_index(), 106);
-        assert_eq!(decoded.container_policy_page_count(), 2);
+        assert_eq!(decoded.container_policy_size, 256);
     }
 
     #[test]
-    fn legacy_zero_padded_page_decodes_as_absent() {
-        // Pre-change builders wrote 16 bytes onto a zero-padded 4 KiB
-        // page. Read with the new (24-byte) struct, those bytes must
-        // round-trip the original magic / vtom_offset_bit and present an
-        // absent container policy.
-        let mut page = [0u8; HV_PAGE_SIZE as usize];
-        // Hand-craft the legacy 16-byte struct.
-        page[0..8].copy_from_slice(&ParavisorMeasuredVtl2Config::MAGIC.to_le_bytes());
-        page[8] = 17; // vtom_offset_bit
-        // bytes 9..16 are padding (zero), and bytes 16.. (the new field)
-        // are also zero — that's the "absent" signal.
+    fn container_policy_inline_offset_matches_struct_size() {
+        assert_eq!(
+            CONTAINER_POLICY_INLINE_OFFSET,
+            size_of::<ParavisorMeasuredVtl2Config>()
+        );
+    }
 
+    #[test]
+    fn pages_for_policy_grows_with_size() {
+        // Absent policy fits in the minimum page count.
+        assert_eq!(
+            measured_vtl2_config_pages_for_policy(0),
+            PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES
+        );
+        // Tiny policy still fits in MIN_PAGES.
+        assert_eq!(
+            measured_vtl2_config_pages_for_policy(100),
+            PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES
+        );
+        // A policy that overflows MIN_PAGES grows the count.
+        let just_over_one_page = (HV_PAGE_SIZE as usize) - CONTAINER_POLICY_INLINE_OFFSET + 1;
+        assert!(
+            measured_vtl2_config_pages_for_policy(just_over_one_page)
+                > PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES
+        );
+        // The maximum supported policy still fits in MAX_PAGES.
+        assert_eq!(
+            measured_vtl2_config_pages_for_policy(container_policy_max_size_bytes()),
+            PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES
+        );
+    }
+
+    #[test]
+    fn pre_feature_zeroed_page_decodes_as_absent() {
+        // Pre-change builders wrote 16 bytes onto a zero-padded page.
+        // The new struct read at offset 0 gets magic + vtom intact, and
+        // bytes 16..24 (container_policy_size + reserved) are all zero
+        // ⇒ size == 0 ⇒ runtime treats the policy as absent.
+        let mut page = [0u8; HV_PAGE_SIZE as usize];
+        page[0..8].copy_from_slice(&ParavisorMeasuredVtl2Config::MAGIC.to_le_bytes());
+        page[8] = 17;
         let (decoded, _rest) = ParavisorMeasuredVtl2Config::ref_from_prefix(&page).unwrap();
         assert_eq!(decoded.magic, ParavisorMeasuredVtl2Config::MAGIC);
         assert_eq!(decoded.vtom_offset_bit, 17);
-        assert_eq!(decoded.container_policy_location, 0);
-        assert_eq!(decoded.container_policy_page_index(), 0);
-        assert_eq!(decoded.container_policy_page_count(), 0);
-    }
-
-    // ---------------------------------------------------------------
-    // Region layout constants
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn container_policy_region_layout() {
-        // The container policy region must come immediately after the
-        // existing measured VTL2 config page so the build-side default
-        // placement remains deterministic.
-        assert_eq!(
-            PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_PAGE_INDEX,
-            PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX + PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES
-        );
-        assert_eq!(
-            PARAVISOR_MEASURED_VTL2_CONFIG_REGION_PAGE_COUNT,
-            PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_SIZE_PAGES
-                + PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES
-                + PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES
-        );
-    }
-
-    #[test]
-    fn region_budget_includes_container_policy() {
-        let measured = PARAVISOR_MEASURED_VTL2_CONFIG_REGION_PAGE_COUNT;
-        let max = PARAVISOR_VTL2_CONFIG_REGION_PAGE_COUNT_MAX;
-        let unmeasured = PARAVISOR_UNMEASURED_VTL2_CONFIG_REGION_PAGE_COUNT_MAX;
-        assert!(
-            max >= unmeasured + measured,
-            "VTL2 config region budget {max} does not fit unmeasured ({unmeasured}) + measured ({measured})"
-        );
+        assert_eq!(decoded.container_policy_size, 0);
     }
 
     // ---------------------------------------------------------------
@@ -939,100 +788,53 @@ mod tests {
             require_secure_boot_vars: true,
             require_bcd_integrity: true,
             require_secure_avic: false,
-            debug_mode: false,
             custom_uefi_json: vec![0xDE, 0xAD, 0xBE, 0xEF],
         }
     }
 
     #[test]
-    fn container_policy_round_trip_default_cwcow() {
-        // All-false / empty body to exercise the cheapest encoding.
+    fn encode_decode_round_trip_default_cwcow() {
         let policy = ContainerPolicy::Cwcow(CwcowPolicy::default());
-        let bytes = mesh_protobuf::encode(policy.clone());
-        let decoded: ContainerPolicy = mesh_protobuf::decode(&bytes).unwrap();
-        assert_eq!(decoded, policy);
-    }
-
-    #[test]
-    fn container_policy_round_trip_nontrivial_cwcow() {
-        let policy = ContainerPolicy::Cwcow(sample_cwcow_policy());
-        let bytes = mesh_protobuf::encode(policy.clone());
-        let decoded: ContainerPolicy = mesh_protobuf::decode(&bytes).unwrap();
-        assert_eq!(decoded, policy);
-    }
-
-    #[test]
-    fn container_policy_decode_tolerates_trailing_zero_padding() {
-        let policy = ContainerPolicy::Cwcow(sample_cwcow_policy());
-        let mut bytes = encode_container_policy_page(&policy);
-        // Simulate a page-padded buffer (the IGVM importer zero-pads to
-        // the page boundary).
-        bytes.resize(HV_PAGE_SIZE as usize, 0);
+        let bytes = encode_container_policy_page(&policy);
         let decoded = decode_container_policy_page(&bytes).unwrap();
         assert_eq!(decoded, policy);
     }
 
     #[test]
-    fn container_policy_decode_rejects_garbage() {
-        // Random bytes that don't form a valid framed message must fail
-        // to decode rather than silently round-tripping garbage. We
-        // feed a buffer whose length prefix declares more bytes than
-        // are available, plus an empty buffer that lacks a prefix.
-        let truncated_prefix = [0xFFu8, 0xFE]; // < CONTAINER_POLICY_LEN_PREFIX_BYTES
-        assert!(matches!(
-            decode_container_policy_page(&truncated_prefix),
-            Err(ContainerPolicyDecodeError::PrefixMissing { .. })
-        ));
+    fn encode_decode_round_trip_nontrivial_cwcow() {
+        let policy = ContainerPolicy::Cwcow(sample_cwcow_policy());
+        let bytes = encode_container_policy_page(&policy);
+        let decoded = decode_container_policy_page(&bytes).unwrap();
+        assert_eq!(decoded, policy);
+    }
 
-        // Prefix declares 1000 bytes but only 4 (the prefix itself) are
-        // available — truncated body error.
-        let mut header_only = vec![0u8; 4];
-        let declared_len: u32 = 1000;
-        header_only[..4].copy_from_slice(&declared_len.to_le_bytes());
+    #[test]
+    fn decode_rejects_garbage() {
+        let bad = [0xFFu8, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8];
         assert!(matches!(
-            decode_container_policy_page(&header_only),
-            Err(ContainerPolicyDecodeError::TruncatedBody { .. })
-        ));
-
-        // Length prefix that declares a small but malformed body
-        // produces a mesh decode error.
-        let mut bad_body = vec![0u8; 4 + 8];
-        let declared_len: u32 = 8;
-        bad_body[..4].copy_from_slice(&declared_len.to_le_bytes());
-        bad_body[4..].copy_from_slice(&[0xFFu8, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8]);
-        assert!(matches!(
-            decode_container_policy_page(&bad_body),
+            decode_container_policy_page(&bad),
             Err(ContainerPolicyDecodeError::Mesh(_))
         ));
     }
 
     #[test]
-    fn container_policy_page_round_trip() {
-        // End-to-end framing helper round-trip.
+    fn decode_rejects_truncated() {
         let policy = ContainerPolicy::Cwcow(sample_cwcow_policy());
-        let bytes = encode_container_policy_page(&policy);
-        let decoded = decode_container_policy_page(&bytes).unwrap();
-        assert_eq!(decoded, policy);
-        // Length prefix matches the declared body length.
-        let mut prefix = [0u8; CONTAINER_POLICY_LEN_PREFIX_BYTES];
-        prefix.copy_from_slice(&bytes[..CONTAINER_POLICY_LEN_PREFIX_BYTES]);
-        let declared = u32::from_le_bytes(prefix) as usize;
-        assert_eq!(declared, bytes.len() - CONTAINER_POLICY_LEN_PREFIX_BYTES);
+        let mut bytes = encode_container_policy_page(&policy);
+        bytes.pop();
+        assert!(matches!(
+            decode_container_policy_page(&bytes),
+            Err(ContainerPolicyDecodeError::Mesh(_))
+        ));
     }
 
     #[test]
-    fn container_policy_encoded_size_within_region_budget() {
-        // A CWCOW policy with a modest custom UEFI JSON payload must
-        // fit comfortably in the reserved region. Oversize cases are
-        // exercised in the loader crate's tests where the size check
-        // lives.
+    fn encoded_size_fits_within_max() {
         let mut p = sample_cwcow_policy();
         p.custom_uefi_json = vec![0u8; 1024];
         let policy = ContainerPolicy::Cwcow(p);
         let bytes = encode_container_policy_page(&policy);
-        let region_capacity =
-            (PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES * HV_PAGE_SIZE) as usize;
-        assert!(bytes.len() <= region_capacity);
+        assert!(bytes.len() <= container_policy_max_size_bytes());
     }
 
     // ---------------------------------------------------------------
@@ -1056,7 +858,6 @@ mod tests {
                     "require_secure_boot_vars": true,
                     "require_bcd_integrity": true,
                     "require_secure_avic": true,
-                    "debug_mode": false,
                     "custom_uefi_json": ""
                 }
             }"#;
@@ -1068,7 +869,6 @@ mod tests {
                     assert!(p.require_secure_boot_vars);
                     assert!(p.require_bcd_integrity);
                     assert!(p.require_secure_avic);
-                    assert!(!p.debug_mode);
                     assert!(p.custom_uefi_json.is_empty());
                 }
             }
@@ -1076,36 +876,36 @@ mod tests {
 
         #[test]
         fn deserialize_cwcow_omits_custom_uefi_json() {
-            // The field is `serde(default)` so absent keys default to
-            // an empty body.
             let json = r#"{
                 "cwcow": {
                     "vmgs_read_only": false,
                     "require_secure_boot": true,
                     "require_secure_boot_vars": false,
                     "require_bcd_integrity": false,
-                    "require_secure_avic": false,
-                    "debug_mode": true
+                    "require_secure_avic": false
                 }
             }"#;
             let policy: ContainerPolicy = from_json(json).unwrap();
             match policy {
                 ContainerPolicy::Cwcow(p) => {
-                    assert!(p.debug_mode);
+                    assert!(p.require_secure_boot);
                     assert!(p.custom_uefi_json.is_empty());
                 }
             }
         }
 
         #[test]
-        fn deserialize_cwcow_reads_path_into_bytes() {
-            // Write a temp file and reference it from the manifest;
-            // the field-level adapter must read its contents into the
-            // wire `custom_uefi_json` bytes.
-            let path = std::env::temp_dir().join("container_policy_cwcow_test.json");
-            let contents = b"{\"uefi\": \"sample\"}";
-            std::fs::write(&path, contents).expect("write temp");
-            let json = format!(
+        fn deserialize_cwcow_decodes_base64_custom_uefi_json() {
+            // Standard RFC 4648 base64 with padding. The decoded
+            // bytes match the original string content.
+            //
+            // payload: b"{\"uefi\": \"sample\"}"
+            //          base64: e30iOiAic2FtcGxlIn0= ❌ (wrong — recompute)
+            // payload: b"{\"uefi\": \"sample\"}" (18 bytes)
+            //          base64 of "{\"uefi\": \"sample\"}" -> "eyJ1ZWZpIjogInNhbXBsZSJ9"
+            let payload = b"{\"uefi\": \"sample\"}";
+            let b64 = "eyJ1ZWZpIjogInNhbXBsZSJ9";
+            let json = alloc::format!(
                 r#"{{
                     "cwcow": {{
                         "vmgs_read_only": false,
@@ -1113,21 +913,18 @@ mod tests {
                         "require_secure_boot_vars": false,
                         "require_bcd_integrity": false,
                         "require_secure_avic": false,
-                        "debug_mode": false,
-                        "custom_uefi_json": "{}"
+                        "custom_uefi_json": "{b64}"
                     }}
-                }}"#,
-                path.to_str().unwrap().replace('\\', "\\\\")
+                }}"#
             );
             let policy: ContainerPolicy = from_json(&json).unwrap();
             match policy {
-                ContainerPolicy::Cwcow(p) => assert_eq!(p.custom_uefi_json, contents.to_vec()),
+                ContainerPolicy::Cwcow(p) => assert_eq!(p.custom_uefi_json, payload.to_vec()),
             }
-            let _ = std::fs::remove_file(&path);
         }
 
         #[test]
-        fn deserialize_cwcow_missing_path_is_an_error() {
+        fn deserialize_cwcow_decodes_empty_base64_as_empty_bytes() {
             let json = r#"{
                 "cwcow": {
                     "vmgs_read_only": false,
@@ -1135,12 +932,31 @@ mod tests {
                     "require_secure_boot_vars": false,
                     "require_bcd_integrity": false,
                     "require_secure_avic": false,
-                    "debug_mode": false,
-                    "custom_uefi_json": "/nonexistent/path/to/uefi.json"
+                    "custom_uefi_json": ""
+                }
+            }"#;
+            let policy: ContainerPolicy = from_json(json).unwrap();
+            match policy {
+                ContainerPolicy::Cwcow(p) => assert!(p.custom_uefi_json.is_empty()),
+            }
+        }
+
+        #[test]
+        fn deserialize_cwcow_invalid_base64_is_an_error() {
+            // `***` is not valid base64; the adapter must surface a
+            // serde error rather than panic.
+            let json = r#"{
+                "cwcow": {
+                    "vmgs_read_only": false,
+                    "require_secure_boot": false,
+                    "require_secure_boot_vars": false,
+                    "require_bcd_integrity": false,
+                    "require_secure_avic": false,
+                    "custom_uefi_json": "***"
                 }
             }"#;
             let err = from_json(json);
-            assert!(err.is_err(), "expected error, got: {err:?}");
+            assert!(err.is_err(), "expected base64 error, got: {err:?}");
         }
 
         #[test]
@@ -1151,7 +967,6 @@ mod tests {
 
         #[test]
         fn deserialize_rejects_unknown_field() {
-            // `deny_unknown_fields` on CwcowPolicy.
             let err = from_json(
                 r#"{"cwcow":{
                     "vmgs_read_only": false,
@@ -1159,7 +974,6 @@ mod tests {
                     "require_secure_boot_vars": false,
                     "require_bcd_integrity": false,
                     "require_secure_avic": false,
-                    "debug_mode": false,
                     "extra": 0
                 }}"#,
             );
@@ -1168,7 +982,6 @@ mod tests {
 
         #[test]
         fn deserialize_rejects_pascal_case_variant() {
-            // `rename_all = "snake_case"` on ContainerPolicy.
             let err = from_json(r#"{"Cwcow":{}}"#);
             assert!(err.is_err(), "expected error, got: {err:?}");
         }

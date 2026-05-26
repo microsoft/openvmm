@@ -406,8 +406,7 @@ mod test {
                         "require_secure_boot": true,
                         "require_secure_boot_vars": true,
                         "require_bcd_integrity": true,
-                        "require_secure_avic": false,
-                        "debug_mode": false
+                        "require_secure_avic": false
                     }
                 }
             }
@@ -424,7 +423,6 @@ mod test {
                     assert!(p.require_secure_boot_vars);
                     assert!(p.require_bcd_integrity);
                     assert!(!p.require_secure_avic);
-                    assert!(!p.debug_mode);
                     assert!(p.custom_uefi_json.is_empty());
                 }
             },
@@ -433,7 +431,9 @@ mod test {
     }
 
     #[test]
-    fn openhcl_image_with_cwcow_debug_mode_accepted() {
+    fn openhcl_image_with_cwcow_partial_relaxation_accepted() {
+        // With `debug_mode` removed, partial-relaxation builds are
+        // expressed by flipping the individual `require_*` flags.
         let json = r#"{
             "openhcl": {
                 "command_line": "",
@@ -444,8 +444,7 @@ mod test {
                     "require_secure_boot": false,
                     "require_secure_boot_vars": false,
                     "require_bcd_integrity": false,
-                    "require_secure_avic": false,
-                    "debug_mode": true
+                    "require_secure_avic": false
                 } }
             }
         }"#;
@@ -454,7 +453,10 @@ mod test {
             Image::Openhcl {
                 container_policy: Some(ContainerPolicy::Cwcow(p)),
                 ..
-            } => assert!(p.debug_mode),
+            } => {
+                assert!(!p.vmgs_read_only);
+                assert!(!p.require_secure_boot);
+            }
             other => panic!("unexpected parse: {other:?}"),
         }
     }
@@ -506,7 +508,6 @@ mod test {
                     "require_secure_boot_vars": false,
                     "require_bcd_integrity": false,
                     "require_secure_avic": false,
-                    "debug_mode": false,
                     "extra": 0
                 } }
             }

@@ -25,7 +25,7 @@
                             "require_secure_boot_vars": false,
                             "require_bcd_integrity": false,
                             "require_secure_avic": false,
-                            "debug_mode": true
+                            "custom_uefi_json": "ewogICJTZWN1cmVCb290RW5hYmxlIjogdHJ1ZSwKICAiU2V0dXBNb2RlIjogZmFsc2UsCiAgIkJvb3RDb25maWd1cmF0aW9uRGF0YUhhc2giOiAiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMCIKfQ=="
                         }
                     }
                 }
@@ -53,7 +53,7 @@
                             "require_secure_boot_vars": false,
                             "require_bcd_integrity": false,
                             "require_secure_avic": false,
-                            "debug_mode": true
+                            "custom_uefi_json": "ewogICJTZWN1cmVCb290RW5hYmxlIjogdHJ1ZSwKICAiU2V0dXBNb2RlIjogZmFsc2UsCiAgIkJvb3RDb25maWd1cmF0aW9uRGF0YUhhc2giOiAiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMCIKfQ=="
                         }
                     }
                 }
@@ -80,7 +80,7 @@
                             "require_secure_boot_vars": false,
                             "require_bcd_integrity": false,
                             "require_secure_avic": false,
-                            "debug_mode": true
+                            "custom_uefi_json": "ewogICJTZWN1cmVCb290RW5hYmxlIjogdHJ1ZSwKICAiU2V0dXBNb2RlIjogZmFsc2UsCiAgIkJvb3RDb25maWd1cmF0aW9uRGF0YUhhc2giOiAiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMCIKfQ=="
                         }
                     }
                 }

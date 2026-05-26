@@ -4131,6 +4131,7 @@ dependencies = [
 name = "loader_defs"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "bitfield-struct 0.11.0",
  "hvdef",
  "igvm_defs",

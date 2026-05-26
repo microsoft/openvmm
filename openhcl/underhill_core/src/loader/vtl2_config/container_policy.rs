@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Runtime parser for the optional measured [`ContainerPolicy`] page.
+//! Runtime parser for the optional measured [`ContainerPolicy`] payload.
 //!
 //! The wire format and the runtime decoded representation are
 //! intentionally the same type — `loader_defs::paravisor::ContainerPolicy`
@@ -10,43 +10,46 @@
 //! adding a new product means adding a new variant in `loader_defs` and
 //! writing the consumer code in OpenHCL that reads it.
 //!
-//! The measured page payload is **framed**: a fixed
-//! [`loader_defs::paravisor::CONTAINER_POLICY_LEN_PREFIX_BYTES`]-byte
-//! little-endian `u32` length precedes the `mesh_protobuf` body so the
-//! runtime can ignore the page-aligned zero padding the IGVM importer
-//! produces. Without this framing `mesh_protobuf` would interpret
-//! trailing zero bytes as additional fields and error out.
+//! The payload is appended in-place after
+//! [`loader_defs::paravisor::ParavisorMeasuredVtl2Config`] on the same
+//! measured config region, starting at byte
+//! [`loader_defs::paravisor::CONTAINER_POLICY_INLINE_OFFSET`]. Its
+//! byte length is recorded in the struct's
+//! `container_policy_size` field; a length of zero — including the
+//! all-zero trailing bytes of pre-feature IGVMs — means absent.
 //!
-//! All error paths must propagate via `Result`; OpenHCL refuses to boot
-//! when an attested policy fails to decode.
+//! All structural errors must propagate via `Result`; OpenHCL refuses
+//! to boot when an attested policy fails to decode.
 
 use loader_defs::paravisor::ContainerPolicy;
 use loader_defs::paravisor::decode_container_policy_page;
 
-/// Decode the framed measured page bytes into a [`ContainerPolicy`].
+/// Decode the mesh-encoded bytes following
+/// [`ParavisorMeasuredVtl2Config`] on the measured config region into a
+/// [`ContainerPolicy`].
 ///
-/// `page_bytes` is the full container policy region (length-prefix +
-/// mesh-encoded body + zero padding). Any decode failure is reported as
-/// an error so the boot path can hard-fail consistently.
-pub fn read_container_policy(page_bytes: &[u8]) -> anyhow::Result<ContainerPolicy> {
-    decode_container_policy_page(page_bytes)
-        .map_err(|e| anyhow::Error::new(e).context("container policy page decode"))
+/// `bytes` is exactly the byte range
+/// `[CONTAINER_POLICY_INLINE_OFFSET .. CONTAINER_POLICY_INLINE_OFFSET +
+///   container_policy_size]`. Callers must arrange the slice so it
+/// contains the policy body and nothing more; the build records the
+/// exact byte length in
+/// [`ParavisorMeasuredVtl2Config::container_policy_size`].
+///
+/// Returns `Err(_)` on any mesh decode failure. The boot path must
+/// propagate this so an attested-but-corrupted policy refuses to start.
+///
+/// [`ParavisorMeasuredVtl2Config`]: loader_defs::paravisor::ParavisorMeasuredVtl2Config
+/// [`ParavisorMeasuredVtl2Config::container_policy_size`]: loader_defs::paravisor::ParavisorMeasuredVtl2Config::container_policy_size
+pub fn read_container_policy(bytes: &[u8]) -> anyhow::Result<ContainerPolicy> {
+    decode_container_policy_page(bytes)
+        .map_err(|e| anyhow::Error::new(e).context("container policy decode"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hvdef::HV_PAGE_SIZE;
     use loader_defs::paravisor::CwcowPolicy;
-    use loader_defs::paravisor::PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES;
     use loader_defs::paravisor::encode_container_policy_page;
-
-    fn region_buf() -> Vec<u8> {
-        vec![
-            0u8;
-            (PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES * HV_PAGE_SIZE) as usize
-        ]
-    }
 
     fn sample_cwcow() -> ContainerPolicy {
         ContainerPolicy::Cwcow(CwcowPolicy {
@@ -55,110 +58,47 @@ mod tests {
             require_secure_boot_vars: true,
             require_bcd_integrity: true,
             require_secure_avic: false,
-            debug_mode: false,
             custom_uefi_json: vec![1, 2, 3, 4, 5],
         })
-    }
-
-    /// Helper: build a full region buffer carrying a framed policy plus
-    /// page-aligned zero padding, simulating what the IGVM importer
-    /// produces.
-    fn build_region(policy: &ContainerPolicy) -> Vec<u8> {
-        let mut buf = region_buf();
-        let encoded = encode_container_policy_page(policy);
-        buf[..encoded.len()].copy_from_slice(&encoded);
-        buf
     }
 
     #[test]
     fn known_cwcow_variant_round_trips() {
         let policy = sample_cwcow();
-        let buf = build_region(&policy);
-        let decoded = read_container_policy(&buf).unwrap();
+        let bytes = encode_container_policy_page(&policy);
+        let decoded = read_container_policy(&bytes).unwrap();
         assert_eq!(decoded, policy);
     }
 
     #[test]
-    fn trailing_zero_padding_is_tolerated() {
-        // build_region() already pads to the full reserved size — that
-        // exercises the typical page-aligned scenario.
+    fn default_cwcow_round_trips() {
         let policy = ContainerPolicy::Cwcow(CwcowPolicy::default());
-        let buf = build_region(&policy);
-        let decoded = read_container_policy(&buf).unwrap();
+        let bytes = encode_container_policy_page(&policy);
+        let decoded = read_container_policy(&bytes).unwrap();
         assert_eq!(decoded, policy);
-    }
-
-    #[test]
-    fn all_zero_buffer_is_an_error() {
-        // An all-zero region (length prefix = 0, empty body) does NOT
-        // form a valid encoded ContainerPolicy: a length of zero means
-        // no body, but mesh_protobuf cannot reconstruct a variant from
-        // zero bytes. This must hard-fail rather than producing a
-        // spurious "default" value.
-        let buf = region_buf();
-        let err = read_container_policy(&buf).unwrap_err();
-        let msg = format!("{err:?}");
-        assert!(
-            msg.contains("decode") || msg.contains("Mesh") || msg.contains("policy"),
-            "unexpected error: {msg}"
-        );
     }
 
     #[test]
     fn garbage_bytes_are_rejected() {
-        let mut buf = region_buf();
-        // Length prefix declaring 8 garbage bytes.
-        buf[..4].copy_from_slice(&8u32.to_le_bytes());
-        buf[4..12].copy_from_slice(&[0xFFu8, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8]);
-        assert!(read_container_policy(&buf).is_err());
+        let bytes = [0xFFu8, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8];
+        assert!(read_container_policy(&bytes).is_err());
     }
 
     #[test]
     fn truncated_buffer_is_rejected() {
-        let policy = ContainerPolicy::Cwcow(CwcowPolicy {
-            custom_uefi_json: vec![0u8; 64],
-            ..Default::default()
-        });
+        let policy = sample_cwcow();
         let mut bytes = encode_container_policy_page(&policy);
-        // Drop the last byte of the encoded payload.
         bytes.pop();
         assert!(read_container_policy(&bytes).is_err());
     }
 
     #[test]
-    fn multi_page_payload_round_trips() {
-        // Construct a policy whose framed encoding crosses a page boundary.
-        let policy = ContainerPolicy::Cwcow(CwcowPolicy {
-            require_secure_boot: true,
-            custom_uefi_json: vec![0xAB; HV_PAGE_SIZE as usize + 1],
-            ..Default::default()
-        });
-        let buf = build_region(&policy);
-        let decoded = read_container_policy(&buf).unwrap();
-        assert_eq!(decoded, policy);
-    }
-
-    #[test]
-    fn buffer_too_small_for_prefix_is_rejected() {
-        // A buffer shorter than CONTAINER_POLICY_LEN_PREFIX_BYTES cannot
-        // even hold the length header.
-        let buf = vec![0u8, 0u8];
-        let err = read_container_policy(&buf).unwrap_err();
-        let msg = format!("{err:?}");
-        assert!(
-            msg.to_lowercase().contains("prefix")
-                || msg.to_lowercase().contains("too small")
-                || msg.to_lowercase().contains("decode"),
-            "unexpected error: {msg}"
-        );
-    }
-
-    #[test]
-    fn declared_length_exceeds_buffer_is_rejected() {
-        let mut buf = region_buf();
-        // Declare a body length larger than the region itself.
-        buf[..4].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(read_container_policy(&buf).is_err());
+    fn empty_buffer_is_rejected() {
+        // Empty bytes cannot be decoded into a variant: the caller
+        // promised at least one byte by passing a non-zero
+        // container_policy_size. A zero size MUST NOT reach this
+        // function (the caller checks first); if it does, we error.
+        assert!(read_container_policy(&[]).is_err());
     }
 
     #[test]
@@ -167,9 +107,6 @@ mod tests {
         // varying length must produce a Result (no unwinding).
         for seed in 0u32..16 {
             let mut buf = Vec::new();
-            // Length prefix drawn from the seed.
-            buf.extend_from_slice(&seed.wrapping_mul(0xDEAD_BEEFu32).to_le_bytes());
-            // Body bytes: a deterministic stream.
             let len = (seed * 7) as usize;
             for i in 0..len {
                 buf.push((seed.wrapping_add(i as u32) & 0xFF) as u8);
