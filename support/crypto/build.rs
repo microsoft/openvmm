@@ -4,52 +4,96 @@
 #![expect(missing_docs)]
 
 fn main() {
+    println!("cargo::rerun-if-env-changed=CARGO_FEATURE_ALLOW_MULTIPLE_BACKENDS");
+    println!("cargo::rerun-if-env-changed=CARGO_FEATURE_NATIVE");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_OPENSSL");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_RUST");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_SYMCRYPT");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_VENDORED");
     println!("cargo::rerun-if-env-changed=CARGO_CFG_TARGET_OS");
+    println!("cargo::rerun-if-env-changed=PROFILE");
 
     println!("cargo::rustc-check-cfg=cfg(native)");
     println!("cargo::rustc-check-cfg=cfg(openssl)");
     println!("cargo::rustc-check-cfg=cfg(rust)");
     println!("cargo::rustc-check-cfg=cfg(symcrypt)");
 
+    let native = std::env::var_os("CARGO_FEATURE_NATIVE").is_some();
     let openssl = std::env::var_os("CARGO_FEATURE_OPENSSL").is_some();
     let rust = std::env::var_os("CARGO_FEATURE_RUST").is_some();
     let symcrypt = std::env::var_os("CARGO_FEATURE_SYMCRYPT").is_some();
     let vendored = std::env::var_os("CARGO_FEATURE_VENDORED").is_some();
+
+    let profile = std::env::var("PROFILE").unwrap();
+    let allow_multiple_backends =
+        std::env::var_os("CARGO_FEATURE_ALLOW_MULTIPLE_BACKENDS").is_some();
+
     let linux = std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "linux";
 
-    let all_features = openssl && rust && symcrypt && vendored;
-    let backend_count = openssl as u8 + rust as u8 + symcrypt as u8;
+    let backend_count = openssl as u8 + rust as u8 + symcrypt as u8 + native as u8;
 
-    // If we see multiple backends enabled that's an error. However if we see every
-    // backend, and vendoring, enabled, it's likely we're in an --all-features session.
-    // Since this is a common rust-analyzer configuration, allow it and fall back to
-    // platform defaults.
-    if backend_count > 1 && !all_features {
-        panic!("Multiple crypto backends enabled, but only one can be selected");
-    } else if backend_count == 0 || all_features {
-        // Default to openssl on linux, the dependencies are also marked
-        // non-optional and there is no native backend available
-        if linux {
+    let mut backend_list = Vec::new();
+    if openssl {
+        backend_list.push("openssl");
+    }
+    if symcrypt {
+        backend_list.push("symcrypt");
+    }
+    if rust {
+        backend_list.push("rust");
+    }
+    if native {
+        backend_list.push("native");
+    }
+    let backend_list_str = backend_list.join(", ");
+
+    // If no backends are enabled, abort. Binaries must choose a backend.
+    if backend_count == 0 {
+        panic!("No crypto backend enabled. Enable one in your binary's dependencies.");
+    }
+    // If exactly one backend is enabled, use it.
+    else if backend_count == 1 {
+        if openssl {
             println!("cargo::rustc-cfg=openssl");
-        } else {
+        } else if symcrypt {
+            if vendored {
+                panic!("Symcrypt does not support vendoring.");
+            }
+            println!("cargo::rustc-cfg=symcrypt");
+        } else if rust {
+            println!("cargo::rustc-cfg=rust");
+        } else if native && !linux {
             println!("cargo::rustc-cfg=native");
+        } else if native && linux {
+            println!("cargo::rustc-cfg=openssl");
         }
     }
-    // Symcrypt does not support vendoring, so fail early if the user tries to
-    // enable both the symcrypt backend and the vendored feature.
-    else if vendored && symcrypt {
-        panic!("The symcrypt backend does not support vendoring");
-    }
-    // Output a single config flag to indicate which backend should be used.
-    else if openssl {
-        println!("cargo::rustc-cfg=openssl");
-    } else if symcrypt {
-        println!("cargo::rustc-cfg=symcrypt");
-    } else if rust {
-        println!("cargo::rustc-cfg=rust");
+    // If we see multiple backends enabled that's an error. However if we see
+    // allow-multiple-backends is enabled, or we're doing a debug build, print
+    // a warning and allow it.
+    else if allow_multiple_backends || profile == "debug" {
+        println!(
+            "cargo::warning=allow-multiple-backends is enabled, this may produce insecure binaries."
+        );
+        eprintln!("Backends enabled: {}", backend_list_str);
+
+        if openssl {
+            eprintln!("Using OpenSSL backend.");
+            println!("cargo::rustc-cfg=openssl");
+        } else if symcrypt {
+            eprintln!("Using Symcrypt backend.");
+            println!("cargo::rustc-cfg=symcrypt");
+        } else if rust {
+            eprintln!("Using Rust backend.");
+            println!("cargo::rustc-cfg=rust");
+        } else if native {
+            eprintln!("Using native backend.");
+            println!("cargo::rustc-cfg=native");
+        }
+    } else {
+        eprintln!("Backends enabled: {}", backend_list_str);
+        panic!(
+            "Multiple crypto backends enabled. Please enable only one in your binary's dependencies."
+        );
     }
 }

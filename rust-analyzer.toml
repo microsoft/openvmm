@@ -1,0 +1,2 @@
+[cargo]
+features = ["crypto/allow_multiple_backends"]

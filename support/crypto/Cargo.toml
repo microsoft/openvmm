@@ -7,6 +7,10 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
+# Allow multiple crypto backends to be enabled at the same time.
+# This is intended for testing purposes and should not be used in production.
+allow-multiple-backends = []
+
 # Enable test-only helper functions.
 test_helpers = ["x509-cert?/builder"]
 
@@ -14,6 +18,9 @@ test_helpers = ["x509-cert?/builder"]
 # If the chosen backend is natively available, this feature is a no-op.
 # If the chosen backend is not natively available and can't be vendored, this will trigger a compile error.
 vendored = ["openssl?/vendored"]
+
+# Require use of the native crypto backend (OpenSSL on Linux).
+native = []
 
 # Use OpenSSL instead of any native backend.
 openssl = ["dep:openssl", "dep:openssl_kdf"]
