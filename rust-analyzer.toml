@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 # Specify the allow-multiple-backends feature so that workspace-wide analysis works correctly.
 [cargo]
 features = ["crypto/allow-multiple-backends"]

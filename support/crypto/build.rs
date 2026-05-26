@@ -66,8 +66,8 @@ fn main() {
             println!("cargo::rustc-cfg=openssl");
         }
     }
-    // If we see multiple backends enabled that's an error. However if we see
-    // if allow-multiple-backends is enabled print a warning and allow it.
+    // If we see multiple backends enabled that's an error. However if
+    // allow-multiple-backends is enabled print a warning and allow it.
     else if allow_multiple_backends {
         println!(
             "cargo::warning=allow-multiple-backends is enabled, this may produce insecure binaries."
