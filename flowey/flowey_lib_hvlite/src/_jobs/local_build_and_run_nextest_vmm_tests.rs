@@ -178,11 +178,10 @@ impl SimpleFlowNode for Node {
                 || build.pipette_linux
                 || build.openvmm_vhost
                 || build.tmk_vmm_linux
-                || build.tpm_guest_tests_linux
                 || build.tpm_guest_tests_linux)
         {
             anyhow::bail!(
-                "Selected tests require artifacts that can only be build on linux. Try building from WSL2."
+                "Selected tests require artifacts that can only be built on linux. Try building from WSL2."
             );
         }
 
@@ -192,35 +191,35 @@ impl SimpleFlowNode for Node {
             } else {
                 OpenvmmHclBuildProfile::Debug
             };
-            let mut openhcl_recipies = Vec::new();
+            let mut openhcl_recipes = Vec::new();
             match arch {
                 CommonArch::X86_64 => {
                     if build.openhcl_standard {
-                        openhcl_recipies.push(OpenhclIgvmRecipe::X64);
+                        openhcl_recipes.push(OpenhclIgvmRecipe::X64);
                     }
                     if build.openhcl_standard_dev {
-                        openhcl_recipies.push(OpenhclIgvmRecipe::X64Devkern);
+                        openhcl_recipes.push(OpenhclIgvmRecipe::X64Devkern);
                     }
                     if build.openhcl_cvm {
-                        openhcl_recipies.push(OpenhclIgvmRecipe::X64Cvm);
+                        openhcl_recipes.push(OpenhclIgvmRecipe::X64Cvm);
                     }
                     if build.openhcl_linux_direct {
-                        openhcl_recipies.push(OpenhclIgvmRecipe::X64TestLinuxDirect);
+                        openhcl_recipes.push(OpenhclIgvmRecipe::X64TestLinuxDirect);
                     }
                 }
                 CommonArch::Aarch64 => {
                     if build.openhcl_standard {
-                        openhcl_recipies.push(OpenhclIgvmRecipe::Aarch64);
+                        openhcl_recipes.push(OpenhclIgvmRecipe::Aarch64);
                     }
                     if build.openhcl_standard_dev {
-                        openhcl_recipies.push(OpenhclIgvmRecipe::Aarch64Devkern);
+                        openhcl_recipes.push(OpenhclIgvmRecipe::Aarch64Devkern);
                     }
                 }
             };
             let openhcl_extras_dir = extras_dir.join("openhcl");
 
             let mut register_openhcl_igvm_files = Vec::new();
-            for recipe in openhcl_recipies {
+            for recipe in openhcl_recipes {
                 let (read_built_openvmm_hcl, built_openvmm_hcl) = ctx.new_var();
                 let (read_built_openhcl_igvm, built_openhcl_igvm) = ctx.new_var();
                 let (read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();

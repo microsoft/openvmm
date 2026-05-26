@@ -16,6 +16,7 @@ use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::BuildSelect
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelections;
 use flowey_lib_hvlite::common::CommonTriple;
 use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelections;
+use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelectionsWindows;
 use petri_artifacts_core::ArtifactId;
 use petri_artifacts_core::ArtifactListOutput;
 use std::collections::BTreeMap;
@@ -592,11 +593,13 @@ fn selections_from_resolved(
         artifacts: resolved.downloads.into_iter().collect(),
         build: resolved.build.clone(),
         deps: match target_os {
-            target_lexicon::OperatingSystem::Windows => VmmTestsDepSelections::Windows {
-                hyperv: resolved.needs_hyperv,
-                whp: resolved.build.openvmm,
-                hardware_isolation: resolved.needs_hardware_isolation,
-            },
+            target_lexicon::OperatingSystem::Windows => {
+                VmmTestsDepSelections::Windows(VmmTestsDepSelectionsWindows {
+                    hyperv: resolved.needs_hyperv,
+                    whp: resolved.build.openvmm,
+                    hardware_isolation: resolved.needs_hardware_isolation,
+                })
+            }
             target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
             _ => unreachable!(),
         },

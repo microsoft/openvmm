@@ -21,12 +21,15 @@ const HYPERVISOR_REG_PATH: &str = r#"HKLM\System\CurrentControlSet\Control\Hyper
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum VmmTestsDepSelections {
-    Windows {
-        hyperv: bool,
-        whp: bool,
-        hardware_isolation: bool,
-    },
+    Windows(VmmTestsDepSelectionsWindows),
     Linux,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct VmmTestsDepSelectionsWindows {
+    pub hyperv: bool,
+    pub whp: bool,
+    pub hardware_isolation: bool,
 }
 
 flowey_config! {
@@ -36,8 +39,7 @@ flowey_config! {
         pub selections: Option<VmmTestsDepSelections>,
         /// Automatically install dependencies (requires admin privileges).
         ///
-        /// When false, assume all dependencies are already present and skip
-        /// checks that require admin privileges (e.g., DISM.exe).
+        /// When false, skip checks that require admin privileges.
         ///
         /// Must be set to true/false when running locally.
         pub auto_install: Option<bool>,
@@ -90,11 +92,7 @@ impl FlowNodeWithConfig for Node {
         let installing = !installed.is_empty();
 
         match selections {
-            VmmTestsDepSelections::Windows {
-                hyperv,
-                whp,
-                hardware_isolation,
-            } => {
+            VmmTestsDepSelections::Windows(selections) => {
                 ctx.emit_rust_step("install vmm tests deps (windows)", move |ctx| {
                     installed.claim(ctx);
                     let write_commands = write_commands.claim(ctx);
@@ -104,9 +102,7 @@ impl FlowNodeWithConfig for Node {
                             rt,
                             installing,
                             auto_install,
-                            hyperv,
-                            whp,
-                            hardware_isolation,
+                            selections,
                             write_commands,
                         )
                     }
@@ -136,11 +132,14 @@ fn install_windows_deps(
     rt: &mut RustRuntimeServices<'_>,
     installing: bool,
     auto_install: Option<bool>,
-    hyperv: bool,
-    whp: bool,
-    hardware_isolation: bool,
+    selections: VmmTestsDepSelectionsWindows,
     write_commands: Vec<WriteVar<Vec<String>, VarClaimed>>,
 ) -> anyhow::Result<()> {
+    let VmmTestsDepSelectionsWindows {
+        hyperv,
+        whp,
+        hardware_isolation,
+    } = selections;
     let mut commands = Vec::new();
     let mut needs_restart = false;
 
@@ -300,7 +299,7 @@ Otherwise, press `ctrl-c` to cancel the run.
         }
     }
 
-    // Check if reg keys are set (skip if not auto_install, assume already set)
+    // Check if reg keys are set
     if installing && !reg_keys_to_set.is_empty() {
         for (path, keys) in reg_keys_to_set.iter_mut() {
             let output = flowey::shell_cmd!(rt, "reg.exe query {path}").output()?;
@@ -333,9 +332,9 @@ Otherwise, press `ctrl-c` to cancel the run.
     if installing && !reg_keys_to_set.is_empty() && matches!(rt.backend(), FlowBackend::Local) {
         let mut reg_keys_to_set_string = String::new();
         for (p, v, _, _) in reg_keys_to_set.iter() {
-            reg_keys_to_set_string.push_str(*p);
+            reg_keys_to_set_string.push_str(p);
             reg_keys_to_set_string.push(' ');
-            reg_keys_to_set_string.push_str(*v);
+            reg_keys_to_set_string.push_str(v);
             reg_keys_to_set_string.push('\n');
         }
 
