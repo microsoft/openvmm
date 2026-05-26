@@ -7,6 +7,7 @@
 //! dependencies are installed, etc...
 
 use crate::_util::cargo_output;
+use crate::run_cargo_build::CargoFeatureSet;
 use flowey::node::prelude::*;
 use flowey::shell::FloweyCmd;
 use std::collections::BTreeMap;
@@ -106,6 +107,8 @@ pub struct DocPackage {
     pub no_deps: bool,
     /// Whether to document private items (i.e: pass `--document-private-items`)
     pub document_private_items: bool,
+    /// The features to enable for the documented packages.
+    pub features: CargoFeatureSet,
 }
 
 flowey_request! {
@@ -119,13 +122,19 @@ flowey_request! {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct DocKey {
+    no_deps: bool,
+    document_private_items: bool,
+    features: CargoFeatureSet,
+}
+
 #[derive(Default)]
 struct ResolvedDocPackages {
-    // where each (bool, bool) represents (no_deps, document_private_items)
-    workspace: Option<(bool, bool)>,
+    workspace: Option<DocKey>,
     exclude: Vec<String>,
-    crates: BTreeMap<(bool, bool), Vec<String>>,
-    crates_no_std: BTreeMap<(bool, bool), Vec<String>>,
+    crates: BTreeMap<DocKey, Vec<String>>,
+    crates_no_std: BTreeMap<DocKey, Vec<String>>,
 }
 
 new_flow_node!(struct Node);
@@ -159,6 +168,7 @@ impl FlowNode for Node {
                 kind,
                 no_deps,
                 document_private_items,
+                features,
             } in packages
             {
                 match kind {
@@ -167,16 +177,28 @@ impl FlowNode for Node {
                             anyhow::bail!("cannot pass Workspace variant multiple times")
                         }
                         targets.exclude.extend(exclude);
-                        targets.workspace = Some((no_deps, document_private_items))
+                        targets.workspace = Some(DocKey {
+                            no_deps,
+                            document_private_items,
+                            features,
+                        })
                     }
                     DocPackageKind::Crate(name) => targets
                         .crates
-                        .entry((no_deps, document_private_items))
+                        .entry(DocKey {
+                            no_deps,
+                            document_private_items,
+                            features,
+                        })
                         .or_default()
                         .push(name),
                     DocPackageKind::NoStdCrate(name) => targets
                         .crates_no_std
-                        .entry((no_deps, document_private_items))
+                        .entry(DocKey {
+                            no_deps,
+                            document_private_items,
+                            features,
+                        })
                         .or_default()
                         .push(name),
                 }
@@ -209,7 +231,12 @@ impl FlowNode for Node {
                         crates_no_std,
                     } = doc_targets;
 
-                    let base_cmd = |no_deps: bool, document_private_items: bool| -> Vec<String> {
+                    let base_cmd = |key| -> Vec<String> {
+                        let DocKey {
+                            no_deps,
+                            document_private_items,
+                            features,
+                        } = key;
                         let mut v = Vec::new();
                         v.push("cargo".into());
                         if let Some(rust_toolchain) = &rust_toolchain {
@@ -231,16 +258,17 @@ impl FlowNode for Node {
                         if document_private_items {
                             v.push("--document-private-items".into())
                         }
+                        v.extend(features.to_cargo_arg_strings());
                         v
                     };
 
                     // first command to run should be the workspace-level
                     // command (if one was provided)
-                    if let Some((no_deps, document_private_items)) = workspace {
+                    if let Some(key) = workspace {
                         // subsume crates with the same options
-                        crates.remove(&(no_deps, document_private_items));
+                        crates.remove(&key);
 
-                        let mut v = base_cmd(no_deps, document_private_items);
+                        let mut v = base_cmd(key);
 
                         v.push("--workspace".into());
 
@@ -255,8 +283,8 @@ impl FlowNode for Node {
                     }
 
                     // subsequently: document any specific std crates
-                    for ((no_deps, document_private_items), crates) in crates {
-                        let mut v = base_cmd(no_deps, document_private_items);
+                    for (key, crates) in crates {
+                        let mut v = base_cmd(key);
 
                         for c in crates {
                             v.push("-p".into());
@@ -267,8 +295,8 @@ impl FlowNode for Node {
                     }
 
                     // lastly: document any no_std crates
-                    for ((no_deps, document_private_items), crates) in crates_no_std {
-                        let mut v = base_cmd(no_deps, document_private_items);
+                    for (key, crates) in crates_no_std {
+                        let mut v = base_cmd(key);
 
                         for c in crates {
                             v.push("-p".into());

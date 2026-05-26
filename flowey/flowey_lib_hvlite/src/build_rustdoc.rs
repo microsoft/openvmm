@@ -4,6 +4,7 @@
 //! Document crates in the hvlite repo using rustdoc (via `cargo doc`).
 
 use flowey::node::prelude::*;
+use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use flowey_lib_common::run_cargo_doc::DocPackage;
 use flowey_lib_common::run_cargo_doc::DocPackageKind;
 
@@ -75,11 +76,15 @@ impl FlowNode for Node {
                             },
                             no_deps,
                             document_private_items,
+                            features: CargoFeatureSet::Specific(vec![
+                                "crypto/allow-multiple-backends".into(),
+                            ]),
                         },
                         DocPackage {
                             kind: DocPackageKind::NoStdCrate("guest_test_uefi".into()),
                             no_deps,
                             document_private_items,
+                            features: CargoFeatureSet::None,
                         },
                     ],
                     target_triple: target_triple.clone(),
