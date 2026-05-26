@@ -4232,6 +4232,7 @@ impl Coordinator {
         stop: &mut StopTask<'_>,
         state: &mut CoordinatorState,
     ) -> Result<(), task_control::Cancelled> {
+        tracing::info!("beginning restart cycle");
         stop.until_stopped(self.stop_workers()).await?;
 
         // All workers are stopped and cannot push new messages.
@@ -4857,9 +4858,16 @@ impl<T: RingMem + 'static> Worker<T> {
                     };
 
                     // Wake up the coordinator task to start the queues.
-                    let _ = self
+                    if let Err(err) = self
                         .coordinator_send
-                        .try_send(CoordinatorMessage::Restart { channel_idx: 0 });
+                        .try_send(CoordinatorMessage::Restart { channel_idx: 0 })
+                    {
+                        tracelimit::error_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            channel_idx = self.channel_idx,
+                            "failed to send restart message to coordinator"
+                        );
+                    }
 
                     tracelimit::info_ratelimited!("network initialized");
                     self.state = WorkerState::WaitingForCoordinator(Some(state));
