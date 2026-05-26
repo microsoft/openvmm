@@ -86,6 +86,7 @@ openssl.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
+x509-cert = { workspace = true, features = ["builder"] }
 
 [lints]
 workspace = true
