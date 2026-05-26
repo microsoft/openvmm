@@ -518,8 +518,8 @@ pub mod container_policy {
     )]
     #[mesh(package = "openhcl.container_policy")]
     pub enum ContainerPolicy {
-        /// Confidential Windows Container Optimized Workload (CWCOW)
-        /// policy: locks down OpenHCL behaviour for the CWCOW product
+        /// Confidential Windows Container on Windows (CWCOW) policy:
+        /// locks down OpenHCL behaviour for the CWCOW product
         /// family (read-only VMGS, required secure boot variables,
         /// required BCD integrity, required Secure AVIC on platforms
         /// that support it, etc.).

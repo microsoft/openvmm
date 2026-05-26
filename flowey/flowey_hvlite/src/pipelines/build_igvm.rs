@@ -23,7 +23,7 @@ pub enum OpenhclRecipeCli {
     /// X64 OpenHCL, with CVM support using the dev kernel in VTL2
     X64CvmDevkern,
     /// X64 OpenHCL with CVM support and the CWCOW (Confidential Windows
-    /// Container) container policy enabled.
+    /// Container on Windows) container policy enabled.
     X64CvmCwcow,
     /// X64 OpenHCL booting VTL0 using a test linux-direct kernel + initrd (no
     /// UEFI).

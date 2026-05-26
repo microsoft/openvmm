@@ -15,7 +15,7 @@ typed [`ContainerPolicy`] enum, or refuses to boot if the bytes are
 malformed.
 
 The first real product is **CWCOW** (Confidential Windows Container
-Optimized Workload). The bundled `X64CvmCwcow` recipe + the two
+on Windows). The bundled `X64CvmCwcow` recipe + the two
 `openhcl-x64-cvm-cwcow-{dev,release}.json` manifests are the canonical
 end-to-end example.
 

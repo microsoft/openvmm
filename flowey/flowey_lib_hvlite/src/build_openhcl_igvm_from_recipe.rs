@@ -87,7 +87,7 @@ pub enum OpenhclIgvmRecipe {
     X64Cvm,
     X64CvmDevkern,
     /// X64 OpenHCL with CVM support and the CWCOW (Confidential Windows
-    /// Container) container policy enabled.
+    /// Container on Windows) container policy enabled.
     X64CvmCwcow,
     Aarch64,
     Aarch64Devkern,
