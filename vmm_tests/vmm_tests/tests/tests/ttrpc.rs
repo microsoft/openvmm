@@ -143,6 +143,7 @@ fn test_ttrpc_interface(
                                     backend: Some(vmservice::nic_config::Backend::Consomme(
                                         vmservice::ConsommeBackend {
                                             cidr: String::new(),
+                                            ports: vec![],
                                         },
                                     )),
                                     ..Default::default()

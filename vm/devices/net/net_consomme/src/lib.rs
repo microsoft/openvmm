@@ -438,6 +438,12 @@ fn execute_bind(
     consomme: &mut consomme::Access<'_, impl consomme::Client>,
     cfg: &HostPortConfig,
 ) -> anyhow::Result<()> {
+    if cfg.guest_port == 0 {
+        anyhow::bail!("guest_port must be non-zero");
+    }
+    if cfg.host_port == 0 {
+        anyhow::bail!("host_port must be non-zero (ephemeral port selection is not supported)");
+    }
     let protocol: IpProtocol = cfg.protocol.clone().into();
     let ip_addr = cfg.host_address.as_ref().map(|a| IpAddr::from(a.clone()));
     let socket = create_bound_socket(&protocol, ip_addr, cfg.host_port)

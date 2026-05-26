@@ -887,6 +887,15 @@ impl VmService {
             }
             Resource::NicConfig(nic) => {
                 if request.r#type == vmservice::ModifyType::Add as i32 {
+                    if matches!(
+                        nic.backend,
+                        Some(vmservice::nic_config::Backend::Consomme(_))
+                    ) {
+                        anyhow::bail!(
+                            "adding a consomme NIC via ModifyResource is not supported; \
+                             configure it at VM creation time"
+                        );
+                    }
                     let config = parse_nic_config(nic, None)?;
                     let recv = vm.worker_rpc.call_failable(VmRpc::AddVmbusDevice, config);
                     Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
