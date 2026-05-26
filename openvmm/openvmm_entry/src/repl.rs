@@ -35,6 +35,9 @@ use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
+use net_backend_resources::consomme::ConsommeRequest;
+use net_backend_resources::consomme::HostPortConfig;
+use net_backend_resources::consomme::HostPortProtocol;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerRequest;
 use openvmm_defs::config::DeviceVtl;
@@ -315,6 +318,26 @@ enum InteractiveCommand {
 
     /// Use KVP to interact with the guest.
     Kvp(kvp::KvpCommand),
+
+    /// Bind a host port to forward traffic to the guest (consomme).
+    BindPort {
+        /// The protocol to forward (tcp or udp).
+        #[clap(long, default_value = "tcp")]
+        protocol: PortProtocolArg,
+        /// The host port to listen on.
+        host_port: u16,
+        /// The guest port to forward to.
+        guest_port: u16,
+    },
+
+    /// Unbind a previously forwarded port (consomme).
+    UnbindPort {
+        /// The protocol of the port to unbind (tcp or udp).
+        #[clap(long, default_value = "tcp")]
+        protocol: PortProtocolArg,
+        /// The guest port to unbind.
+        guest_port: u16,
+    },
 }
 
 /// Subcommands for managing VTL2 settings.
@@ -362,6 +385,22 @@ enum Vtl2SettingsCommand {
     },
 }
 
+/// Protocol argument for port bind/unbind commands.
+#[derive(Clone, clap::ValueEnum)]
+enum PortProtocolArg {
+    Tcp,
+    Udp,
+}
+
+impl PortProtocolArg {
+    fn to_host_port_protocol(&self) -> HostPortProtocol {
+        match self {
+            PortProtocolArg::Tcp => HostPortProtocol::Tcp,
+            PortProtocolArg::Udp => HostPortProtocol::Udp,
+        }
+    }
+}
+
 struct CommandParser {
     app: clap::Command,
 }
@@ -393,6 +432,7 @@ pub(crate) struct ReplResources {
     pub vm_controller_events: mesh::Receiver<VmControllerEvent>,
     pub scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     pub nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
+    pub consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
     pub shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
     pub kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     pub console_in: Option<Box<dyn AsyncWrite + Send + Unpin>>,
@@ -410,6 +450,7 @@ pub(crate) async fn run_repl(
         mut vm_controller_events,
         mut scsi_rpc,
         mut nvme_vtl2_rpc,
+        consomme_rpc,
         shutdown_ic,
         kvp_ic,
         console_in,
@@ -1467,6 +1508,55 @@ pub(crate) async fn run_repl(
                 };
                 if let Err(err) = kvp::handle_kvp(kvp, command).await {
                     eprintln!("error: {err:#}");
+                }
+            }
+            InteractiveCommand::BindPort {
+                protocol,
+                host_port,
+                guest_port,
+            } => {
+                let action = async {
+                    let rpc = consomme_rpc.as_ref().context("no consomme device")?;
+                    let cfg = HostPortConfig {
+                        protocol: protocol.to_host_port_protocol(),
+                        host_address: None,
+                        host_port,
+                        guest_port,
+                    };
+                    rpc.call_failable(ConsommeRequest::Bind, cfg).await?;
+                    anyhow::Ok(())
+                };
+                match action.await {
+                    Ok(()) => {
+                        tracing::info!(host_port, guest_port, "port forward bound");
+                    }
+                    Err(error) => {
+                        tracing::error!(error = error.as_error(), "error binding port");
+                    }
+                }
+            }
+            InteractiveCommand::UnbindPort {
+                protocol,
+                guest_port,
+            } => {
+                let action = async {
+                    let rpc = consomme_rpc.as_ref().context("no consomme device")?;
+                    let cfg = HostPortConfig {
+                        protocol: protocol.to_host_port_protocol(),
+                        host_address: None,
+                        host_port: 0,
+                        guest_port,
+                    };
+                    rpc.call_failable(ConsommeRequest::Unbind, cfg).await?;
+                    anyhow::Ok(())
+                };
+                match action.await {
+                    Ok(()) => {
+                        tracing::info!(guest_port, "port forward unbound");
+                    }
+                    Err(error) => {
+                        tracing::error!(error = error.as_error(), "error unbinding port");
+                    }
                 }
             }
             InteractiveCommand::Input { .. } | InteractiveCommand::InputMode => unreachable!(),

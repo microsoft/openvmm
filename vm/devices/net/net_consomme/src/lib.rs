@@ -272,8 +272,8 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             c.refresh_driver();
             let mut bound: Vec<(IpProtocol, u16)> = Vec::new();
             for fwd in &port_forwards {
-                let guest_port = fwd.guest_port;
                 let protocol: IpProtocol = fwd.protocol.clone().into();
+                let guest_port = fwd.guest_port;
                 let ip_addr = fwd.host_address.as_ref().map(|a| IpAddr::from(a.clone()));
                 let socket =
                     create_bound_socket(&protocol, ip_addr, fwd.host_port).map_err(|e| {
