@@ -5,9 +5,12 @@ When the IGVM file is built with a container policy configured, the
 payload is appended in-place after [`ParavisorMeasuredVtl2Config`] on
 the same measured config region. The struct carries a
 `container_policy_size: u32` field that tells the runtime exactly how
-many bytes follow; a value of zero means absent. The build picks the
-region's page count to fit `sizeof(struct) + policy_size`, up to a
-hard cap of `PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES`.
+many bytes follow; a value of zero means absent. The region is a
+fixed `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES` pages (currently 1).
+If a new policy's mesh-encoded body would overflow that budget, the
+IGVM build hard-panics so a developer is forced to consciously bump
+`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES` — and accept the
+attestation-measurement change for every IGVM built from that point on.
 
 At runtime, OpenHCL reads the struct, then reads the next
 `container_policy_size` bytes and mesh-decodes them into the strongly
@@ -162,16 +165,27 @@ length-prefix framing — the struct field IS the framing.
 24+N..end    zero padding to the next page boundary
 ```
 
-The struct is 24 bytes; the region's *actual* page count is computed at
-build time by `measured_vtl2_config_pages_for_policy(N)`. An absent
-policy occupies exactly `PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES` (= 1)
-page, identical to legacy builds. A larger policy grows the region up
-to `PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES` pages.
+The struct is 24 bytes; the region occupies exactly
+`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES * HV_PAGE_SIZE` bytes
+(currently a single 4 KiB page) regardless of whether a policy is
+present. The struct sits at offset 0; the optional `container_policy_size`
+bytes of mesh-encoded policy sit immediately after; the remainder is
+zero-padded to the page boundary.
 
-The GPA-space reservation in the parameter region is sized for the
-maximum (4 pages today); the IGVM file only imports the pages actually
-needed. Builds that don't enable the policy import a single zero-padded
-page — byte-for-byte identical to pre-feature builds.
+Builds that don't enable the policy import a single zero-padded page —
+byte-for-byte identical to pre-feature builds, so the measurement of
+those IGVMs is unchanged.
+
+If a future container product's encoded policy exceeds the per-page
+budget (`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES * HV_PAGE_SIZE -
+CONTAINER_POLICY_INLINE_OFFSET`, i.e. 4072 bytes today),
+`encode_container_policy_bytes` will `panic!` at IGVM-build time with
+a message that names `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`. The
+fix is to bump that constant (e.g. to 2) in
+`vm/loader/loader_defs/src/paravisor.rs`. Bumping it is a measurement
+change — every IGVM, with or without a configured policy, will have a
+new measurement after the bump — so it must be reviewed against the
+attestation policy for each affected product.
 
 ## Measurement implications
 

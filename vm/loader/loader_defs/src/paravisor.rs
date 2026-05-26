@@ -76,29 +76,27 @@ pub const PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX: u64 =
 /// Size in pages the list of accepted memory
 pub const PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_SIZE_PAGES: u64 = 1;
 
-/// Minimum size in pages of the VTL2 measured config region.
+/// Size in pages of the VTL2 measured config region.
 ///
-/// The region always contains the [`ParavisorMeasuredVtl2Config`]
-/// struct itself. An optional [`ContainerPolicy`] payload is appended
-/// in-place after the struct (see [`CONTAINER_POLICY_INLINE_OFFSET`]
-/// and [`ParavisorMeasuredVtl2Config::container_policy_size`]); the
-/// build picks the actual region size at IGVM creation time using
-/// [`measured_vtl2_config_pages_for_policy`], up to
-/// [`PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES`].
-pub const PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES: u64 = 1;
+/// The region carries the [`ParavisorMeasuredVtl2Config`] struct
+/// followed in-place by the optional [`ContainerPolicy`] payload (see
+/// [`CONTAINER_POLICY_INLINE_OFFSET`] and
+/// [`ParavisorMeasuredVtl2Config::container_policy_size`]). The region
+/// has a fixed page count; the encoded policy body must fit within
+/// `SIZE_PAGES * HV_PAGE_SIZE - sizeof::<ParavisorMeasuredVtl2Config>()`
+/// bytes (see [`container_policy_max_size_bytes`]).
+///
+/// If a product's encoded policy outgrows this budget the IGVM build
+/// will panic. Bumping this constant to fit a larger payload is
+/// intentional friction: it changes the measured size of every IGVM
+/// (including ones that don't carry a policy) and therefore the
+/// attestation contract — the bump needs to be a conscious decision.
+pub const PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES: u64 = 1;
 
-/// Upper bound on the VTL2 measured config region's page count. The
-/// runtime parameter region in the IGVM file reserves this many pages
-/// for the measured config; the actual number imported depends on the
-/// configured container policy size at build time.
-pub const PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES: u64 = 4;
-
-/// Count for vtl 2 measured config region size — the **reservation**
-/// in the GPA layout. The build may import fewer pages within this
-/// reservation depending on the policy size.
+/// Count for vtl 2 measured config region size.
 pub const PARAVISOR_MEASURED_VTL2_CONFIG_REGION_PAGE_COUNT: u64 =
     PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_SIZE_PAGES
-        + PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES;
+        + PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES;
 
 // Measured config comes after the unmeasured config
 /// The page index to the list of accepted pages
@@ -421,32 +419,12 @@ pub const CONTAINER_POLICY_INLINE_OFFSET: usize = size_of::<ParavisorMeasuredVtl
 
 /// Maximum byte size of a [`ContainerPolicy`] payload supported by this
 /// build. Equal to
-/// `PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES * HV_PAGE_SIZE` minus the
+/// `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES * HV_PAGE_SIZE` minus the
 /// struct that precedes it.
 #[inline]
 pub const fn container_policy_max_size_bytes() -> usize {
-    (PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES as usize) * (HV_PAGE_SIZE as usize)
+    (PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES as usize) * (HV_PAGE_SIZE as usize)
         - CONTAINER_POLICY_INLINE_OFFSET
-}
-
-/// Number of pages the build needs to allocate for the measured VTL2
-/// config region given a container policy payload size in bytes. The
-/// return value is always at least
-/// [`PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES`] (the struct itself) and
-/// never exceeds [`PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES`].
-///
-/// Pass `0` (no policy configured) and the result is the minimum.
-#[inline]
-pub const fn measured_vtl2_config_pages_for_policy(policy_size: usize) -> u64 {
-    let total = CONTAINER_POLICY_INLINE_OFFSET + policy_size;
-    let page = HV_PAGE_SIZE as usize;
-    let pages = (total + page - 1) / page;
-    let pages = pages as u64;
-    if pages < PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES {
-        PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES
-    } else {
-        pages
-    }
 }
 
 pub use container_policy::ContainerPolicy;
@@ -467,12 +445,16 @@ pub use container_policy::encode_container_policy_page;
 ///
 /// # Build-time sizing
 ///
-/// The build computes the region's actual page count from the policy
-/// size using [`measured_vtl2_config_pages_for_policy`]; absent policies
-/// occupy exactly [`PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES`] page,
-/// preserving the measurement of legacy builds. Policies that need
-/// more space grow the region up to
-/// [`PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES`].
+/// The measured config region is a fixed
+/// [`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`] pages — currently one
+/// — for every IGVM regardless of whether a policy is configured, so
+/// the absent case is byte-for-byte identical to legacy builds. The
+/// encoded policy body must fit in
+/// [`container_policy_max_size_bytes`]; the IGVM builder panics
+/// otherwise, and the developer adding the policy must bump
+/// [`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`] (which also changes
+/// the measurement of every IGVM and therefore the attestation
+/// contract).
 ///
 /// # Onboarding a new product
 ///
@@ -749,27 +731,11 @@ mod tests {
     }
 
     #[test]
-    fn pages_for_policy_grows_with_size() {
-        // Absent policy fits in the minimum page count.
+    fn container_policy_max_size_matches_region_minus_struct() {
         assert_eq!(
-            measured_vtl2_config_pages_for_policy(0),
-            PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES
-        );
-        // Tiny policy still fits in MIN_PAGES.
-        assert_eq!(
-            measured_vtl2_config_pages_for_policy(100),
-            PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES
-        );
-        // A policy that overflows MIN_PAGES grows the count.
-        let just_over_one_page = (HV_PAGE_SIZE as usize) - CONTAINER_POLICY_INLINE_OFFSET + 1;
-        assert!(
-            measured_vtl2_config_pages_for_policy(just_over_one_page)
-                > PARAVISOR_MEASURED_VTL2_CONFIG_MIN_PAGES
-        );
-        // The maximum supported policy still fits in MAX_PAGES.
-        assert_eq!(
-            measured_vtl2_config_pages_for_policy(container_policy_max_size_bytes()),
-            PARAVISOR_MEASURED_VTL2_CONFIG_MAX_PAGES
+            container_policy_max_size_bytes(),
+            (PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES as usize) * (HV_PAGE_SIZE as usize)
+                - CONTAINER_POLICY_INLINE_OFFSET
         );
     }
 
