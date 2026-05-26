@@ -191,6 +191,21 @@ change — every IGVM, with or without a configured policy, will have a
 new measurement after the bump — so it must be reviewed against the
 attestation policy for each affected product.
 
+## Required fields and build-time invariants
+
+CWCOW's manifest contract is intentionally strict: **every field of
+`CwcowPolicy` must appear in the manifest JSON**. None of the booleans
+have a serde default, and `custom_uefi_json` is now also mandatory (no
+`#[serde(default)]`). Omitting any field is a deserialization error,
+not a silent default.
+
+In addition, `encode_container_policy_bytes` panics at IGVM build time
+if `custom_uefi_json` is empty: the CWCOW product relies on the custom
+UEFI JSON to lock down secure-boot variables and BCD integrity, so an
+empty payload would produce an attested-but-meaningless image. New
+products should enforce their own equivalent invariants in
+`validate_container_policy_for_build`.
+
 ## Measurement implications
 
 Enabling ContainerPolicy alters the IGVM measurement because new

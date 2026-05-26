@@ -113,7 +113,14 @@ pub enum Error {
 /// [`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`] (and accept the
 /// resulting measurement change for every IGVM, with or without a
 /// configured policy).
+///
+/// Per-product semantic invariants are also enforced here. For CWCOW,
+/// `custom_uefi_json` must be non-empty — an empty payload has no
+/// CWCOW-meaningful interpretation (the JSON locks down secure-boot
+/// variables and BCD integrity) and is treated as a build-time
+/// programmer error.
 fn encode_container_policy_bytes(policy: &ContainerPolicy) -> Vec<u8> {
+    validate_container_policy_for_build(policy);
     let bytes = encode_container_policy_page(policy);
     let max = container_policy_max_size_bytes();
     assert!(
@@ -124,6 +131,22 @@ fn encode_container_policy_bytes(policy: &ContainerPolicy) -> Vec<u8> {
         PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES,
     );
     bytes
+}
+
+/// Validate that the [`ContainerPolicy`] is well-formed enough to put
+/// into an IGVM. Each product variant enforces its own non-optional
+/// invariants here; violations panic so the developer fixes the
+/// manifest (or the call site that constructed the policy) rather
+/// than shipping an IGVM that can't enforce its own contract.
+fn validate_container_policy_for_build(policy: &ContainerPolicy) {
+    match policy {
+        ContainerPolicy::Cwcow(cwcow) => {
+            assert!(
+                !cwcow.custom_uefi_json.is_empty(),
+                "CWCOW container policy requires a non-empty custom_uefi_json;                  manifest authors must explicitly supply the base64-encoded                  UEFI JSON bytes (the field has no serde default)"
+            );
+        }
+    }
 }
 
 /// Build the byte image of the measured VTL2 config region. The
@@ -1734,6 +1757,23 @@ mod container_policy_tests {
         let bytes = encode_container_policy_bytes(&policy);
         let decoded = decode_container_policy_page(&bytes).unwrap();
         assert_eq!(decoded, policy);
+    }
+
+    #[test]
+    #[should_panic(expected = "non-empty custom_uefi_json")]
+    fn encode_container_policy_bytes_panics_on_empty_custom_uefi_json() {
+        // CWCOW requires custom_uefi_json to be non-empty — empty
+        // payloads must be caught at IGVM build time, not silently
+        // shipped.
+        let policy = ContainerPolicy::Cwcow(CwcowPolicy {
+            vmgs_read_only: true,
+            require_secure_boot: true,
+            require_secure_boot_vars: true,
+            require_bcd_integrity: true,
+            require_secure_avic: false,
+            custom_uefi_json: vec![],
+        });
+        let _ = encode_container_policy_bytes(&policy);
     }
 
     #[test]

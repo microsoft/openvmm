@@ -561,14 +561,22 @@ pub mod container_policy {
 
         /// Custom UEFI JSON bytes embedded into the measured policy
         /// payload. In manifest JSON the field is a **base64-encoded
-        /// string** (RFC 4648 standard alphabet); the field's serde
-        /// adapter handles both directions symmetrically — encoding
+        /// string** (RFC 4648 standard alphabet) and is **mandatory**
+        /// — there is no serde default, so omitting it in a CWCOW
+        /// manifest is a deserialization error. The field's serde
+        /// adapter handles both directions symmetrically: encoding
         /// raw bytes back to base64 on serialize, decoding base64 to
         /// raw bytes on deserialize. Manifest authors can embed
         /// arbitrary binary directly in JSON without referencing an
         /// out-of-band file.
+        ///
+        /// The bytes themselves must be **non-empty**; an empty
+        /// payload is rejected at IGVM build time with a panic from
+        /// `encode_container_policy_bytes`, because CWCOW relies on
+        /// the custom UEFI JSON to lock down secure-boot variables
+        /// and BCD integrity.
         #[mesh(6)]
-        #[cfg_attr(feature = "manifest", serde(default, with = "custom_uefi_json_serde"))]
+        #[cfg_attr(feature = "manifest", serde(with = "custom_uefi_json_serde"))]
         pub custom_uefi_json: Vec<u8>,
     }
 
@@ -858,7 +866,10 @@ mod tests {
         }
 
         #[test]
-        fn deserialize_cwcow_omits_custom_uefi_json() {
+        fn deserialize_cwcow_missing_custom_uefi_json_is_an_error() {
+            // `custom_uefi_json` is mandatory in the manifest JSON —
+            // omitting it must fail deserialization rather than
+            // silently defaulting to an empty payload.
             let json = r#"{
                 "cwcow": {
                     "vmgs_read_only": false,
@@ -868,13 +879,12 @@ mod tests {
                     "require_secure_avic": false
                 }
             }"#;
-            let policy: ContainerPolicy = from_json(json).unwrap();
-            match policy {
-                ContainerPolicy::Cwcow(p) => {
-                    assert!(p.require_secure_boot);
-                    assert!(p.custom_uefi_json.is_empty());
-                }
-            }
+            let err = from_json(json).unwrap_err();
+            let msg = alloc::format!("{err}");
+            assert!(
+                msg.contains("custom_uefi_json"),
+                "expected error to mention custom_uefi_json, got: {msg}"
+            );
         }
 
         #[test]

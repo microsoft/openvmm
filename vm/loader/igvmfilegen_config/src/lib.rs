@@ -401,7 +401,8 @@ mod test {
                         "require_secure_boot": true,
                         "require_secure_boot_vars": true,
                         "require_bcd_integrity": true,
-                        "require_secure_avic": false
+                        "require_secure_avic": false,
+                        "custom_uefi_json": "ZGVhZGJlZWY="
                     }
                 }
             }
@@ -418,7 +419,7 @@ mod test {
                     assert!(p.require_secure_boot_vars);
                     assert!(p.require_bcd_integrity);
                     assert!(!p.require_secure_avic);
-                    assert!(p.custom_uefi_json.is_empty());
+                    assert_eq!(p.custom_uefi_json, b"deadbeef");
                 }
             },
             other => panic!("unexpected parse: {other:?}"),
@@ -439,7 +440,8 @@ mod test {
                     "require_secure_boot": false,
                     "require_secure_boot_vars": false,
                     "require_bcd_integrity": false,
-                    "require_secure_avic": false
+                    "require_secure_avic": false,
+                    "custom_uefi_json": "ZGVhZGJlZWY="
                 } }
             }
         }"#;
