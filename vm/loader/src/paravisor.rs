@@ -1611,7 +1611,9 @@ mod container_policy_tests {
             _page_count: u32,
             _debug_tag: &str,
         ) -> anyhow::Result<ParameterAreaIndex> {
-            unimplemented!("MockImporter: not used by container_policy tests")
+            anyhow::bail!(
+                "MockImporter: parameter areas are not exercised by container_policy tests"
+            )
         }
 
         fn create_parameter_area_with_data(
@@ -1621,7 +1623,9 @@ mod container_policy_tests {
             _debug_tag: &str,
             _initial_data: &[u8],
         ) -> anyhow::Result<ParameterAreaIndex> {
-            unimplemented!("MockImporter: not used by container_policy tests")
+            anyhow::bail!(
+                "MockImporter: parameter areas are not exercised by container_policy tests"
+            )
         }
 
         fn import_parameter(
@@ -1630,7 +1634,9 @@ mod container_policy_tests {
             _byte_offset: u32,
             _parameter_type: IgvmParameterType,
         ) -> anyhow::Result<()> {
-            unimplemented!("MockImporter: not used by container_policy tests")
+            anyhow::bail!(
+                "MockImporter: parameter areas are not exercised by container_policy tests"
+            )
         }
 
         fn import_pages(
