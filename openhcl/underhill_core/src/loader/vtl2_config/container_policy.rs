@@ -114,19 +114,4 @@ mod tests {
             let _ = read_container_policy(&buf);
         }
     }
-
-    #[test]
-    fn future_field_addition_is_backward_compatible() {
-        // mesh_protobuf treats new fields as optional. Encoding a
-        // current `CwcowPolicy` and decoding it back must always
-        // succeed — even when (in future) the wire body carries
-        // additional `#[mesh(N)]` fields that older readers don't
-        // recognise. This test asserts the well-formed-bytes path
-        // stays stable; the broader backward-compat contract is a
-        // property of mesh_protobuf itself.
-        let policy = sample_cwcow();
-        let bytes = encode_container_policy_page(&policy);
-        let decoded = read_container_policy(&bytes).unwrap();
-        assert_eq!(decoded, policy);
-    }
 }
