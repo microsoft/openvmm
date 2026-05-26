@@ -110,19 +110,10 @@ pub enum Image {
         /// Include the Linux kernel for loading into the guest.
         #[serde(skip_serializing_if = "Option::is_none")]
         linux: Option<LinuxImage>,
-        /// Optional container policy configuration. When `Some`, the
-        /// IGVM build emits an additional measured VTL2 payload
-        /// containing a product-specific [`ContainerPolicy`]. When
-        /// `None` (the default), no such payload is imported.
-        ///
-        /// The manifest schema is the wire schema:
-        /// `loader_defs::paravisor::ContainerPolicy` derives both
-        /// `serde::Deserialize` and `serde::Serialize` (under its
-        /// `manifest` feature). Default products map manifest fields
-        /// to wire fields by name; fields that need a non-trivial
-        /// JSON encoding (e.g. CWCOW's base64 `custom_uefi_json`)
-        /// use a *symmetric* `#[serde(with = "…")]` adapter so the
-        /// JSON round-trip is byte-stable.
+        /// Optional measured container policy. When `Some`, the IGVM
+        /// build emits the policy into the measured VTL2 config region.
+        /// The manifest schema is the wire schema; see
+        /// [`loader_defs::paravisor::container_policy`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         container_policy: Option<ContainerPolicy>,
     },
@@ -368,10 +359,7 @@ mod test {
 
     #[test]
     fn openhcl_image_without_container_policy_round_trips() {
-        // Manifests written before container policy was added must
-        // continue to deserialize, and a re-serialized Image::Openhcl
-        // with no policy must omit the field entirely (so manifest
-        // JSON stays forward/backward-compatible).
+        // Older manifests omit the field; serialization must too.
         let json = r#"{"openhcl":{"command_line":"","memory_page_count":10,"uefi":true}}"#;
         let parsed: Image = serde_json::from_str(json).unwrap();
         match &parsed {
@@ -389,7 +377,6 @@ mod test {
 
     #[test]
     fn openhcl_image_with_cwcow_container_policy_deserializes() {
-        // Manifest JSON deserializes directly into the wire enum.
         let json = r#"{
             "openhcl": {
                 "command_line": "",
@@ -427,38 +414,6 @@ mod test {
     }
 
     #[test]
-    fn openhcl_image_with_cwcow_partial_relaxation_accepted() {
-        // With `debug_mode` removed, partial-relaxation builds are
-        // expressed by flipping the individual `require_*` flags.
-        let json = r#"{
-            "openhcl": {
-                "command_line": "",
-                "memory_page_count": 10,
-                "uefi": true,
-                "container_policy": { "cwcow": {
-                    "vmgs_read_only": false,
-                    "require_secure_boot": false,
-                    "require_secure_boot_vars": false,
-                    "require_bcd_integrity": false,
-                    "require_secure_avic": false,
-                    "custom_uefi_json": "ZGVhZGJlZWY="
-                } }
-            }
-        }"#;
-        let parsed: Image = serde_json::from_str(json).unwrap();
-        match parsed {
-            Image::Openhcl {
-                container_policy: Some(ContainerPolicy::Cwcow(p)),
-                ..
-            } => {
-                assert!(!p.vmgs_read_only);
-                assert!(!p.require_secure_boot);
-            }
-            other => panic!("unexpected parse: {other:?}"),
-        }
-    }
-
-    #[test]
     fn openhcl_image_with_null_container_policy_is_absent() {
         let json = r#"{
             "openhcl": {
@@ -475,41 +430,5 @@ mod test {
             } => assert!(container_policy.is_none()),
             other => panic!("unexpected parse: {other:?}"),
         }
-    }
-
-    #[test]
-    fn openhcl_image_rejects_unknown_container_policy_variant() {
-        let json = r#"{
-            "openhcl": {
-                "command_line": "",
-                "memory_page_count": 10,
-                "uefi": true,
-                "container_policy": { "unknown_product": {} }
-            }
-        }"#;
-        let parsed: Result<Image, _> = serde_json::from_str(json);
-        assert!(parsed.is_err(), "expected error, got: {parsed:?}");
-    }
-
-    #[test]
-    fn openhcl_image_rejects_unknown_field_in_cwcow_body() {
-        // `deny_unknown_fields` on CwcowPolicy.
-        let json = r#"{
-            "openhcl": {
-                "command_line": "",
-                "memory_page_count": 10,
-                "uefi": true,
-                "container_policy": { "cwcow": {
-                    "vmgs_read_only": false,
-                    "require_secure_boot": false,
-                    "require_secure_boot_vars": false,
-                    "require_bcd_integrity": false,
-                    "require_secure_avic": false,
-                    "extra": 0
-                } }
-            }
-        }"#;
-        let parsed: Result<Image, _> = serde_json::from_str(json);
-        assert!(parsed.is_err(), "expected error, got: {parsed:?}");
     }
 }

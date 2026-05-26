@@ -16,6 +16,7 @@ use cvm_tracing::CVM_ALLOWED;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use loader_defs::paravisor::CONTAINER_POLICY_INLINE_OFFSET;
+use loader_defs::paravisor::CONTAINER_POLICY_MAX_SIZE_BYTES;
 use loader_defs::paravisor::PARAVISOR_CONFIG_PPTT_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_CONFIG_SLIT_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX;
@@ -24,7 +25,6 @@ use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_SIZE_PAGES;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_SIZE_PAGES;
 use loader_defs::paravisor::ParavisorMeasuredVtl2Config;
-use loader_defs::paravisor::container_policy_max_size_bytes;
 use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
 use sparse_mmap::SparseMapping;
@@ -445,10 +445,10 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
             // region. The IGVM importer enforces this at build time;
             // a non-conforming runtime image must hard-fail rather
             // than silently truncating.
-            if size > container_policy_max_size_bytes() {
+            if size > CONTAINER_POLICY_MAX_SIZE_BYTES {
                 anyhow::bail!(
                     "container policy size {size} exceeds maximum {}",
-                    container_policy_max_size_bytes()
+                    CONTAINER_POLICY_MAX_SIZE_BYTES
                 );
             }
             let off = (PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX * HV_PAGE_SIZE) as usize

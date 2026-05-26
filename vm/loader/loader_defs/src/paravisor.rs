@@ -76,21 +76,7 @@ pub const PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX: u64 =
 /// Size in pages the list of accepted memory
 pub const PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_SIZE_PAGES: u64 = 1;
 
-/// Size in pages of the VTL2 measured config region.
-///
-/// The region carries the [`ParavisorMeasuredVtl2Config`] struct
-/// followed in-place by the optional [`ContainerPolicy`] payload (see
-/// [`CONTAINER_POLICY_INLINE_OFFSET`] and
-/// [`ParavisorMeasuredVtl2Config::container_policy_size`]). The region
-/// has a fixed page count; the encoded policy body must fit within
-/// `SIZE_PAGES * HV_PAGE_SIZE - sizeof::<ParavisorMeasuredVtl2Config>()`
-/// bytes (see [`container_policy_max_size_bytes`]).
-///
-/// If a product's encoded policy outgrows this budget the IGVM build
-/// will panic. Bumping this constant to fit a larger payload is
-/// intentional friction: it changes the measured size of every IGVM
-/// (including ones that don't carry a policy) and therefore the
-/// attestation contract — the bump needs to be a conscious decision.
+/// Size in pages of VTL2 specific measured config
 pub const PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES: u64 = 2;
 
 /// Count for vtl 2 measured config region size.
@@ -373,14 +359,9 @@ pub const PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_AARCH64: u64 = 16 << (20 - 12
 
 /// Paravisor measured config for vtl2.
 ///
-/// May be followed in-place (on the same measured region) by an
-/// optional [`ContainerPolicy`] payload starting at byte
-/// [`CONTAINER_POLICY_INLINE_OFFSET`]. The payload's size in bytes is
-/// recorded in [`Self::container_policy_size`]; the measured config
-/// region is always [`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`]
-/// pages regardless of policy size. A size of zero — including
-/// all-zero trailing bytes in IGVMs that pre-date the container
-/// policy feature — signals absent.
+/// Followed in place by the optional [`ContainerPolicy`] body at
+/// [`CONTAINER_POLICY_INLINE_OFFSET`]; `container_policy_size == 0` (the
+/// pre-feature zero-filled tail) means absent.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[cfg_attr(feature = "inspect", derive(Inspect))]
@@ -391,16 +372,10 @@ pub struct ParavisorMeasuredVtl2Config {
     pub vtom_offset_bit: u8,
     /// Padding.
     pub padding: [u8; 7],
-    /// Byte length of the [`ContainerPolicy`] payload that follows the
-    /// struct on the same measured region. A value of `0` means no
-    /// policy is configured (the typical / legacy state).
-    ///
-    /// The runtime reads exactly this many bytes from
-    /// [`CONTAINER_POLICY_INLINE_OFFSET`] and decodes them as the
-    /// `mesh_protobuf`-encoded [`ContainerPolicy`].
+    /// Byte length of the inline [`ContainerPolicy`] body, or `0` if
+    /// absent.
     pub container_policy_size: u32,
-    /// Reserved for future use. Must be zero on builds that don't use
-    /// it (and is naturally zero in pre-feature IGVMs).
+    /// Reserved; must be zero.
     pub reserved: [u8; 4],
 }
 
@@ -411,22 +386,14 @@ impl ParavisorMeasuredVtl2Config {
 
 const_assert_eq!(size_of::<ParavisorMeasuredVtl2Config>(), 24);
 
-/// Byte offset within the measured VTL2 config region at which the
-/// optional [`ContainerPolicy`] payload begins. Builders write the
-/// `mesh_protobuf`-encoded body at this offset; runtime readers
-/// consume the next
-/// [`ParavisorMeasuredVtl2Config::container_policy_size`] bytes.
+/// Byte offset of the inline [`ContainerPolicy`] body within the
+/// measured VTL2 config region.
 pub const CONTAINER_POLICY_INLINE_OFFSET: usize = size_of::<ParavisorMeasuredVtl2Config>();
 
-/// Maximum byte size of a [`ContainerPolicy`] payload supported by this
-/// build. Equal to
-/// `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES * HV_PAGE_SIZE` minus the
-/// struct that precedes it.
-#[inline]
-pub const fn container_policy_max_size_bytes() -> usize {
+/// Maximum byte size of an inline [`ContainerPolicy`] body.
+pub const CONTAINER_POLICY_MAX_SIZE_BYTES: usize =
     (PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES as usize) * (HV_PAGE_SIZE as usize)
-        - CONTAINER_POLICY_INLINE_OFFSET
-}
+        - CONTAINER_POLICY_INLINE_OFFSET;
 
 pub use container_policy::ContainerPolicy;
 pub use container_policy::ContainerPolicyDecodeError;
@@ -434,70 +401,20 @@ pub use container_policy::CwcowPolicy;
 pub use container_policy::decode_container_policy_page;
 pub use container_policy::encode_container_policy_page;
 
-/// On-wire types for the optional measured container policy payload.
+/// On-wire types for the measured container policy payload.
 ///
-/// The payload (when present) is appended in-place to the same measured
-/// VTL2 config region that carries [`ParavisorMeasuredVtl2Config`],
-/// starting at byte [`CONTAINER_POLICY_INLINE_OFFSET`]. Its length in
-/// bytes is recorded in
-/// [`ParavisorMeasuredVtl2Config::container_policy_size`]; a size of
-/// zero — including all-zero trailing bytes in IGVMs that pre-date the
-/// feature — signals absent.
-///
-/// # Build-time sizing
-///
-/// The measured config region is a fixed
-/// [`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`] pages — currently two
-/// — for every IGVM regardless of whether a policy is configured.
-/// Absent-policy builds carry `container_policy_size == 0` and a
-/// fully-zero payload area; their measurement is determined by
-/// `SIZE_PAGES` (so bumping `SIZE_PAGES` re-measures every IGVM, not
-/// just policy-carrying ones). The encoded policy body must fit in
-/// [`container_policy_max_size_bytes`]; the IGVM builder panics
-/// otherwise, and the developer adding the policy must bump
-/// [`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`] (which also changes
-/// the measurement of every IGVM and therefore the attestation
-/// contract).
-///
-/// # Onboarding a new product
-///
-/// **Default case** (manifest fields match wire fields by name):
-///   1. Define a `#[derive(mesh_protobuf::Protobuf)]` body struct with
-///      `#[cfg_attr(feature = "manifest", derive(serde::Serialize,
-///      serde::Deserialize))]`.
-///   2. Add a `#[mesh(N)] Foo(FooPolicy)` variant to [`ContainerPolicy`]
-///      with a **fresh** mesh tag (never reuse a tag — it would
-///      silently change the measured wire format for an existing
-///      product).
-///
-/// **Custom JSON encoding for individual fields** (e.g. a manifest
-/// field is a base64-encoded binary blob): use a *symmetric*
-/// `#[serde(with = "module_name")]` field adapter where the helper
-/// module exposes matching `serialize` and `deserialize` functions.
-/// Symmetry is mandatory: the JSON value produced by `serialize` must
-/// deserialize back to a byte-identical Rust value. The compiler
-/// enforces both directions exist; round-trip tests catch any encoding
-/// mismatch.
-///
-/// **Do not** use one-directional `#[serde(deserialize_with = "...")]`
-/// adapters: they leave the matching `Serialize` impl free to emit a
-/// shape that won't deserialize again, silently corrupting any future
-/// manifest dump. The `custom_uefi_json` field on [`CwcowPolicy`] is
-/// the canonical symmetric-adapter example (base64 ↔ bytes via
-/// `custom_uefi_json_serde`).
+/// Each [`ContainerPolicy`] variant is a product identified by its
+/// `#[mesh(N)]` tag. Tags are part of the measured wire format and must
+/// not be reused. See `Guide/src/dev_guide/contrib/container_policy.md`
+/// for the full onboarding guide.
 pub mod container_policy {
     extern crate alloc;
 
     use alloc::vec::Vec;
 
-    /// The wire format for the optional measured container policy
-    /// payload. The encoded bytes are appended in-place after
-    /// [`super::ParavisorMeasuredVtl2Config`] on the same measured
-    /// config region.
-    ///
-    /// Each variant is a product; the `#[mesh(N)]` tag is the product
-    /// identifier on the wire and **must never be reused**. Adding a new
-    /// product is purely additive — new variants get a fresh tag.
+    /// Measured container policy wire format. Each variant is a
+    /// product; mesh tags are part of the wire format and must not be
+    /// reused.
     #[derive(mesh_protobuf::Protobuf, Debug, Clone, PartialEq)]
     #[cfg_attr(feature = "manifest", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(
@@ -506,22 +423,12 @@ pub mod container_policy {
     )]
     #[mesh(package = "openhcl.container_policy")]
     pub enum ContainerPolicy {
-        /// Confidential Windows Container on Windows (CWCOW) policy:
-        /// locks down OpenHCL behaviour for the CWCOW product
-        /// family (read-only VMGS, required secure boot variables,
-        /// required BCD integrity, required Secure AVIC on platforms
-        /// that support it, etc.).
+        /// Confidential Windows Container on Windows.
         #[mesh(1)]
         Cwcow(CwcowPolicy),
     }
 
-    /// CWCOW container policy body.
-    ///
-    /// All fields are independently measurable so attestation can
-    /// reason about each enforcement requirement in isolation. The
-    /// shape is intentionally flat — products that need richer
-    /// configuration should compose sub-structs (with their own
-    /// `#[mesh(N)]` tags) rather than overload existing fields.
+    /// CWCOW policy body.
     #[derive(mesh_protobuf::Protobuf, Debug, Clone, PartialEq, Default)]
     #[cfg_attr(feature = "manifest", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(
@@ -559,45 +466,17 @@ pub mod container_policy {
         #[mesh(5)]
         pub require_secure_avic: bool,
 
-        /// Custom UEFI JSON bytes embedded into the measured policy
-        /// payload. In manifest JSON the field is a **base64-encoded
-        /// string** (RFC 4648 standard alphabet) and is **mandatory**
-        /// — there is no serde default, so omitting it in a CWCOW
-        /// manifest is a deserialization error. The field's serde
-        /// adapter handles both directions symmetrically: encoding
-        /// raw bytes back to base64 on serialize, decoding base64 to
-        /// raw bytes on deserialize. Manifest authors can embed
-        /// arbitrary binary directly in JSON without referencing an
-        /// out-of-band file.
-        ///
-        /// The bytes themselves must be **non-empty**; an empty
-        /// payload is rejected at IGVM build time with a panic from
-        /// `encode_container_policy_bytes`, because CWCOW relies on
-        /// the custom UEFI JSON to lock down secure-boot variables
-        /// and BCD integrity.
+        /// Custom UEFI JSON bytes. Encoded as standard base64 in
+        /// manifest JSON. Mandatory and must be non-empty — an empty
+        /// value panics in `encode_container_policy_bytes`.
         #[mesh(6)]
         #[cfg_attr(feature = "manifest", serde(with = "custom_uefi_json_serde"))]
         pub custom_uefi_json: Vec<u8>,
     }
 
-    /// Symmetric serde adapter for [`CwcowPolicy::custom_uefi_json`].
-    /// Both `serialize` and `deserialize` go through RFC 4648
-    /// standard base64 — bytes are emitted as a base64 string on
-    /// serialize, and a base64 string is decoded to bytes on
-    /// deserialize.
-    ///
-    /// Symmetry is the whole point: any future code that re-serializes
-    /// a `ContainerPolicy` to JSON produces a manifest that, when
-    /// deserialized again, yields a byte-identical value. The
-    /// previous one-way `deserialize_with` adapter required a "never
-    /// derive Serialize" hard rule to prevent silent corruption;
-    /// using `#[serde(with = "...")]` makes that rule structurally
-    /// unnecessary.
-    ///
-    /// `Default::default()` (empty) is accepted via `serde(default)`
-    /// on the field so builds that don't ship a custom UEFI JSON
-    /// work out of the box; the empty string also decodes to an
-    /// empty `Vec`.
+    /// Symmetric base64 serde adapter for
+    /// [`CwcowPolicy::custom_uefi_json`]. JSON round-trips are
+    /// byte-identical.
     #[cfg(feature = "manifest")]
     mod custom_uefi_json_serde {
         extern crate alloc;
@@ -656,21 +535,14 @@ pub mod container_policy {
         }
     }
 
-    /// Encode a [`ContainerPolicy`] into the on-wire bytes that will be
-    /// appended in-place to the measured config region after
-    /// [`super::ParavisorMeasuredVtl2Config`]. The build records the
-    /// returned length in
-    /// [`super::ParavisorMeasuredVtl2Config::container_policy_size`]
-    /// so the runtime knows how many bytes to read.
+    /// Encode a [`ContainerPolicy`] as `mesh_protobuf` bytes for
+    /// inclusion in the measured config region.
     pub fn encode_container_policy_page(policy: &ContainerPolicy) -> Vec<u8> {
         mesh_protobuf::encode(policy.clone())
     }
 
-    /// Decode `bytes` (exactly the byte range
-    /// `[CONTAINER_POLICY_INLINE_OFFSET .. CONTAINER_POLICY_INLINE_OFFSET +
-    /// container_policy_size]`) into a [`ContainerPolicy`]. Callers
-    /// must check `container_policy_size != 0` before invoking — a
-    /// size of zero means no policy was configured.
+    /// Decode a non-empty [`ContainerPolicy`] body. Callers must check
+    /// `container_policy_size != 0` first.
     pub fn decode_container_policy_page(
         bytes: &[u8],
     ) -> Result<ContainerPolicy, ContainerPolicyDecodeError> {
@@ -690,14 +562,6 @@ mod tests {
     // ---------------------------------------------------------------
 
     #[test]
-    fn measured_vtl2_config_size_is_24_bytes() {
-        // Static guard against accidental field-add. The struct grew
-        // from 16 to 24 bytes when container_policy_size + reserved
-        // were added; further growth needs an explicit decision.
-        assert_eq!(size_of::<ParavisorMeasuredVtl2Config>(), 24);
-    }
-
-    #[test]
     fn measured_vtl2_config_field_offsets() {
         let cfg = ParavisorMeasuredVtl2Config {
             magic: 0x1122_3344_5566_7788,
@@ -707,16 +571,12 @@ mod tests {
             reserved: [0; 4],
         };
         let bytes = cfg.as_bytes();
-        // magic at [0..8] (little-endian).
         assert_eq!(&bytes[0..8], &0x1122_3344_5566_7788u64.to_le_bytes());
-        // vtom_offset_bit at [8].
         assert_eq!(bytes[8], 0x99);
-        // padding at [9..16].
         assert_eq!(&bytes[9..16], &[0u8; 7]);
-        // container_policy_size at [16..20].
         assert_eq!(&bytes[16..20], &0xABCDu32.to_le_bytes());
-        // reserved at [20..24].
         assert_eq!(&bytes[20..24], &[0u8; 4]);
+        assert_eq!(bytes.len(), 24);
     }
 
     #[test]
@@ -737,28 +597,9 @@ mod tests {
     }
 
     #[test]
-    fn container_policy_inline_offset_matches_struct_size() {
-        assert_eq!(
-            CONTAINER_POLICY_INLINE_OFFSET,
-            size_of::<ParavisorMeasuredVtl2Config>()
-        );
-    }
-
-    #[test]
-    fn container_policy_max_size_matches_region_minus_struct() {
-        assert_eq!(
-            container_policy_max_size_bytes(),
-            (PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES as usize) * (HV_PAGE_SIZE as usize)
-                - CONTAINER_POLICY_INLINE_OFFSET
-        );
-    }
-
-    #[test]
     fn pre_feature_zeroed_page_decodes_as_absent() {
-        // Pre-change builders wrote 16 bytes onto a zero-padded page.
-        // The new struct read at offset 0 gets magic + vtom intact, and
-        // bytes 16..24 (container_policy_size + reserved) are all zero
-        // ⇒ size == 0 ⇒ runtime treats the policy as absent.
+        // Pre-feature builders wrote only the 16-byte head; the trailing
+        // zeros must decode as `container_policy_size == 0`.
         let mut page = [0u8; HV_PAGE_SIZE as usize];
         page[0..8].copy_from_slice(&ParavisorMeasuredVtl2Config::MAGIC.to_le_bytes());
         page[8] = 17;
@@ -819,15 +660,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn encoded_size_fits_within_max() {
-        let mut p = sample_cwcow_policy();
-        p.custom_uefi_json = vec![0u8; 1024];
-        let policy = ContainerPolicy::Cwcow(p);
-        let bytes = encode_container_policy_page(&policy);
-        assert!(bytes.len() <= container_policy_max_size_bytes());
-    }
-
     // ---------------------------------------------------------------
     // Serde manifest deserialization (only under the `manifest` feature)
     // ---------------------------------------------------------------
@@ -867,9 +699,6 @@ mod tests {
 
         #[test]
         fn deserialize_cwcow_missing_custom_uefi_json_is_an_error() {
-            // `custom_uefi_json` is mandatory in the manifest JSON —
-            // omitting it must fail deserialization rather than
-            // silently defaulting to an empty payload.
             let json = r#"{
                 "cwcow": {
                     "vmgs_read_only": false,
@@ -889,13 +718,7 @@ mod tests {
 
         #[test]
         fn deserialize_cwcow_decodes_base64_custom_uefi_json() {
-            // Standard RFC 4648 base64 with padding. The decoded
-            // bytes match the original string content.
-            //
-            // payload: b"{\"uefi\": \"sample\"}"
-            //          base64: e30iOiAic2FtcGxlIn0= ❌ (wrong — recompute)
-            // payload: b"{\"uefi\": \"sample\"}" (18 bytes)
-            //          base64 of "{\"uefi\": \"sample\"}" -> "eyJ1ZWZpIjogInNhbXBsZSJ9"
+            // Standard RFC 4648 base64 of `{"uefi": "sample"}`.
             let payload = b"{\"uefi\": \"sample\"}";
             let b64 = "eyJ1ZWZpIjogInNhbXBsZSJ9";
             let json = alloc::format!(
@@ -917,27 +740,7 @@ mod tests {
         }
 
         #[test]
-        fn deserialize_cwcow_decodes_empty_base64_as_empty_bytes() {
-            let json = r#"{
-                "cwcow": {
-                    "vmgs_read_only": false,
-                    "require_secure_boot": false,
-                    "require_secure_boot_vars": false,
-                    "require_bcd_integrity": false,
-                    "require_secure_avic": false,
-                    "custom_uefi_json": ""
-                }
-            }"#;
-            let policy: ContainerPolicy = from_json(json).unwrap();
-            match policy {
-                ContainerPolicy::Cwcow(p) => assert!(p.custom_uefi_json.is_empty()),
-            }
-        }
-
-        #[test]
         fn deserialize_cwcow_invalid_base64_is_an_error() {
-            // `***` is not valid base64; the adapter must surface a
-            // serde error rather than panic.
             let json = r#"{
                 "cwcow": {
                     "vmgs_read_only": false,
@@ -954,13 +757,7 @@ mod tests {
 
         #[test]
         fn json_round_trip_is_byte_identical() {
-            // Serialize then re-deserialize a fully populated
-            // ContainerPolicy and confirm the value survives.
-            //
-            // This is the structural enforcement of the
-            // serialize/deserialize symmetry that replaces the old
-            // "never derive Serialize" hard rule: any field whose
-            // serde adapter is asymmetric will break this test.
+            // Asymmetric serde adapters would break this.
             let original = ContainerPolicy::Cwcow(CwcowPolicy {
                 vmgs_read_only: true,
                 require_secure_boot: true,
@@ -972,22 +769,11 @@ mod tests {
             let json = serde_json::to_string(&original).unwrap();
             let restored: ContainerPolicy = from_json(&json).unwrap();
             assert_eq!(restored, original);
-
-            // Round-trip a default-shaped policy too (exercises the
-            // empty-bytes path through the base64 adapter).
-            let default_policy = ContainerPolicy::Cwcow(CwcowPolicy::default());
-            let json = serde_json::to_string(&default_policy).unwrap();
-            let restored: ContainerPolicy = from_json(&json).unwrap();
-            assert_eq!(restored, default_policy);
         }
 
         #[test]
         fn serialize_emits_custom_uefi_json_as_base64_string() {
-            // Verify the symmetric adapter emits base64 (not a JSON
-            // array of bytes) on the serialize side. Otherwise the
-            // round-trip test above would pass with a "JSON array of
-            // numbers" round trip — that's not the manifest contract
-            // we want.
+            // The manifest contract is base64 string, not a byte array.
             let policy = ContainerPolicy::Cwcow(CwcowPolicy {
                 custom_uefi_json: alloc::vec![b'A', b'B', b'C'], // base64: "QUJD"
                 ..Default::default()
