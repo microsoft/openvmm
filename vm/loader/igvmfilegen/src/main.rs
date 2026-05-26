@@ -39,6 +39,7 @@ use loader::linux::InitrdConfig;
 use loader::paravisor::CommandLineType;
 use loader::paravisor::Vtl0Config;
 use loader::paravisor::Vtl0Linux;
+use loader_defs::paravisor::ContainerPolicy;
 use std::io::Seek;
 use std::io::Write;
 use std::path::PathBuf;
@@ -443,6 +444,7 @@ trait IgvmfilegenRegister: IgvmLoaderRegister + 'static {
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
+        container_policy: Option<&ContainerPolicy>,
     ) -> Result<(), loader::paravisor::Error>
     where
         F: std::io::Read + Seek;
@@ -485,6 +487,7 @@ impl IgvmfilegenRegister for X86Register {
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
+        container_policy: Option<&ContainerPolicy>,
     ) -> Result<(), loader::paravisor::Error>
     where
         F: std::io::Read + Seek,
@@ -499,6 +502,7 @@ impl IgvmfilegenRegister for X86Register {
             memory_page_base,
             memory_page_count,
             vtl0_config,
+            container_policy,
         )
     }
 }
@@ -541,6 +545,7 @@ impl IgvmfilegenRegister for Aarch64Register {
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
+        container_policy: Option<&ContainerPolicy>,
     ) -> Result<(), loader::paravisor::Error>
     where
         F: std::io::Read + Seek,
@@ -554,6 +559,7 @@ impl IgvmfilegenRegister for Aarch64Register {
             memory_page_base,
             memory_page_count,
             vtl0_config,
+            container_policy,
         )
     }
 }
@@ -583,6 +589,7 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
             memory_page_count,
             uefi,
             ref linux,
+            ref container_policy,
         } => {
             if uefi && linux.is_some() {
                 anyhow::bail!("cannot include both UEFI and Linux images in OpenHCL image");
@@ -667,6 +674,12 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                 CommandLineType::HostAppendable(command_line)
             };
 
+            // The manifest's `container_policy` field already
+            // deserializes directly into the wire `ContainerPolicy` enum
+            // — no translation needed. Default products: field names
+            // match by name. Custom products: use `#[serde(try_from)]`
+            // on their body type to do build-side work during
+            // deserialization.
             R::load_openhcl(
                 loader,
                 &mut kernel,
@@ -677,6 +690,7 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                 memory_page_base,
                 memory_page_count,
                 vtl0_load_config,
+                container_policy.as_ref(),
             )
             .context("underhill kernel loader")?;
         }

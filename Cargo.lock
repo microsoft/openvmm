@@ -3719,6 +3719,7 @@ dependencies = [
 name = "igvmfilegen_config"
 version = "0.0.0"
 dependencies = [
+ "loader_defs",
  "serde",
  "serde_json",
 ]
@@ -4137,6 +4138,8 @@ dependencies = [
  "memory_range",
  "mesh_protobuf",
  "open_enum",
+ "serde",
+ "serde_json",
  "static_assertions",
  "zerocopy",
 ]

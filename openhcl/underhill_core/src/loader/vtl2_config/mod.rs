@@ -17,7 +17,9 @@ use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use loader_defs::paravisor::PARAVISOR_CONFIG_PPTT_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_CONFIG_SLIT_PAGE_INDEX;
+use loader_defs::paravisor::PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES;
 use loader_defs::paravisor::PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX;
+use loader_defs::paravisor::PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_SIZE_PAGES;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX;
@@ -31,6 +33,10 @@ use vm_topology::memory::MemoryRangeWithNode;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
+
+pub mod container_policy;
+
+use loader_defs::paravisor::ContainerPolicy;
 
 /// Structure that holds parameters provided at runtime. Some are read from the
 /// guest address space, and others from openhcl_boot provided via devicetree.
@@ -93,6 +99,14 @@ pub struct MeasuredVtl2Info {
     #[inspect(with = "inspect_helpers::accepted_regions")]
     accepted_regions: Vec<MemoryRange>,
     pub vtom_offset_bit: Option<u8>,
+    /// Optional [`ContainerPolicy`] decoded from the measured page.
+    /// `Some` when the IGVM file was built with a container policy and
+    /// the runtime parser successfully decoded it. A malformed pointer
+    /// or unrecognised payload is a hard error from
+    /// [`read_vtl2_params`].
+    #[expect(dead_code, reason = "consumers are wired up in follow-up PRs")]
+    #[inspect(skip)]
+    pub container_policy: Option<ContainerPolicy>,
 }
 
 impl MeasuredVtl2Info {
@@ -411,11 +425,19 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         Vec::new()
     };
 
+    // Read the measured VTL2 config struct first. It carries the
+    // `container_policy_location` pointer (page index + page count) that
+    // describes where the optional ContainerPolicy lives within the
+    // region. A `page_count` of zero means no policy was configured at
+    // IGVM build time.
     let measured_config = mapping
         .read_plain::<ParavisorMeasuredVtl2Config>(
             (PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX * HV_PAGE_SIZE) as usize,
         )
         .context("failed to read measured vtl2 config")?;
+
+    let container_policy = read_container_policy_from_mapping(&mapping, &measured_config)
+        .context("failed to parse container policy")?;
 
     drop(mapping);
 
@@ -440,9 +462,56 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
     let measured_vtl2_info = MeasuredVtl2Info {
         accepted_regions,
         vtom_offset_bit,
+        container_policy,
     };
 
     Ok((runtime_params, measured_vtl2_info))
+}
+
+/// Read and parse the optional [`ContainerPolicy`] page from the VTL2
+/// config region, using the (page_index, page_count) pointer recorded in
+/// `measured_config.container_policy_location`.
+///
+/// Hard-fails on:
+/// - `page_count` exceeding the reserved region budget.
+/// - `index + count` running past the configured region.
+/// - mesh/protobuf decode errors (any payload that does not deserialize
+///   cleanly into a known `ContainerPolicy` variant).
+///
+/// A `page_count == 0` cleanly signals "no policy configured" and yields
+/// `Ok(None)`.
+fn read_container_policy_from_mapping(
+    mapping: &Vtl2ParamsMap<'_>,
+    measured_config: &ParavisorMeasuredVtl2Config,
+) -> anyhow::Result<Option<ContainerPolicy>> {
+    let count = measured_config.container_policy_page_count();
+    if count == 0 {
+        return Ok(None);
+    }
+    if count > PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES {
+        anyhow::bail!(
+            "container policy page count {count} exceeds reserved budget {}",
+            PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES
+        );
+    }
+    let index = measured_config.container_policy_page_index();
+
+    let region_end = PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX
+        + PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES
+        + PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES;
+    if index + count > region_end {
+        anyhow::bail!(
+            "container policy range index={index} count={count} runs past region end {region_end}"
+        );
+    }
+
+    let mut bytes = vec![0u8; (count * HV_PAGE_SIZE) as usize];
+    mapping
+        .read_at((index * HV_PAGE_SIZE) as usize, bytes.as_mut_slice())
+        .context("failed to read container policy bytes")?;
+    let policy = container_policy::read_container_policy(&bytes)
+        .context("container policy decode failed")?;
+    Ok(Some(policy))
 }
 
 mod inspect_helpers {

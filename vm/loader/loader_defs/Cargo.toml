@@ -8,12 +8,16 @@ rust-version.workspace = true
 
 [features]
 inspect = ["dep:inspect"]
+# Pull in serde::Deserialize derives on manifest-shaped types
+# (e.g. `ContainerPolicy`). The runtime crate does NOT enable this.
+# Implies std because the build-side manifest adapter for the CWCOW
+# `custom_uefi_json` field reads a file path from disk.
+manifest = ["dep:serde", "serde/std"]
 
 [dependencies]
 hvdef.workspace = true
 open_enum.workspace = true
 
-inspect = { workspace = true, optional = true }
 mesh_protobuf.workspace = true
 memory_range = { workspace = true, features = ["mesh"] }
 
@@ -21,5 +25,13 @@ bitfield-struct.workspace = true
 igvm_defs.workspace = true
 static_assertions.workspace = true
 zerocopy.workspace = true
+
+# Optional, feature-gated.
+inspect = { workspace = true, optional = true }
+serde = { workspace = true, optional = true, features = ["derive", "alloc"] }
+
+[dev-dependencies]
+serde_json = { workspace = true, features = ["std"] }
+
 [lints]
 workspace = true

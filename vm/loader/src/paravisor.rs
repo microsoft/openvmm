@@ -101,6 +101,70 @@ pub enum Error {
     InitrdRead(#[source] std::io::Error),
     #[error("PageTableBuilder: {0}")]
     PageTableBuilder(#[from] page_table::Error),
+    #[error("container policy encoded size {encoded_len} exceeds maximum {max} bytes")]
+    ContainerPolicyTooLarge {
+        /// Encoded size of the framed page payload.
+        encoded_len: usize,
+        /// Maximum permitted size (the reserved region in bytes).
+        max: usize,
+    },
+}
+
+/// Encode a [`ContainerPolicy`] into the framed bytes that the IGVM
+/// importer will lay onto the measured page(s). Returns the bytes
+/// (length-prefix + mesh-encoded body) for the caller to import; the
+/// caller declares the full reserved page count to `import_pages`, which
+/// zero-pads to a page boundary.
+fn encode_container_policy_bytes(policy: &ContainerPolicy) -> Result<Vec<u8>, Error> {
+    let bytes = encode_container_policy_page(policy);
+    let max = (PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES * HV_PAGE_SIZE) as usize;
+    if bytes.len() > max {
+        return Err(Error::ContainerPolicyTooLarge {
+            encoded_len: bytes.len(),
+            max,
+        });
+    }
+    Ok(bytes)
+}
+
+/// Compute the `container_policy_location` value for
+/// [`ParavisorMeasuredVtl2Config`] given the already-encoded policy
+/// bytes. `None` (no policy) yields zero, signalling absence to the
+/// runtime.
+fn pack_container_policy_location(policy_bytes: Option<&[u8]>) -> u64 {
+    match policy_bytes {
+        None => 0,
+        Some(bytes) => {
+            let count = (bytes.len() as u64).div_ceil(HV_PAGE_SIZE);
+            ParavisorMeasuredVtl2Config::pack_container_policy_location(
+                PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_PAGE_INDEX,
+                count,
+            )
+        }
+    }
+}
+
+/// Import the encoded container policy bytes onto the measured page
+/// range that [`ParavisorMeasuredVtl2Config::container_policy_location`]
+/// points at.
+fn import_container_policy_page<R>(
+    importer: &mut dyn ImageLoad<R>,
+    config_region_page_base: u64,
+    encoded_bytes: &[u8],
+) -> Result<(), Error>
+where
+    R: crate::importer::GuestArch,
+{
+    importer
+        .import_pages(
+            config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_PAGE_INDEX,
+            PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES,
+            "underhill-container-policy",
+            BootPageAcceptance::Exclusive,
+            encoded_bytes,
+        )
+        .map_err(Error::Importer)?;
+    Ok(())
 }
 
 /// Kernel Command line type.
@@ -130,6 +194,7 @@ pub fn load_openhcl_x64<F>(
     memory_page_base: Option<u64>,
     memory_page_count: u64,
     vtl0_config: Vtl0Config<'_>,
+    container_policy: Option<&ContainerPolicy>,
 ) -> Result<(), Error>
 where
     F: Read + Seek,
@@ -885,10 +950,20 @@ where
         )
         .map_err(Error::Importer)?;
 
+    // Encode the container policy bytes ahead of time so the
+    // ParavisorMeasuredVtl2Config we measure carries an accurate pointer
+    // (page index + page count) before the bytes themselves are imported.
+    let container_policy_bytes = container_policy
+        .map(encode_container_policy_bytes)
+        .transpose()?;
+
     let vtl2_measured_config = ParavisorMeasuredVtl2Config {
         magic: ParavisorMeasuredVtl2Config::MAGIC,
         vtom_offset_bit: shared_gpa_boundary_bits.unwrap_or(0),
         padding: [0; 7],
+        container_policy_location: pack_container_policy_location(
+            container_policy_bytes.as_deref(),
+        ),
     };
 
     importer
@@ -900,6 +975,10 @@ where
             vtl2_measured_config.as_bytes(),
         )
         .map_err(Error::Importer)?;
+
+    if let Some(bytes) = container_policy_bytes.as_deref() {
+        import_container_policy_page(importer, config_region_page_base, bytes)?;
+    }
 
     let imported_region_base =
         config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_PAGE_INDEX;
@@ -948,6 +1027,7 @@ pub fn load_openhcl_arm64<F>(
     memory_page_base: Option<u64>,
     memory_page_count: u64,
     vtl0_config: Vtl0Config<'_>,
+    container_policy: Option<&ContainerPolicy>,
 ) -> Result<(), Error>
 where
     F: Read + Seek,
@@ -1449,10 +1529,17 @@ where
     )?;
     importer.import_parameter(dt_parameter_area, 0, IgvmParameterType::DeviceTree)?;
 
+    let container_policy_bytes = container_policy
+        .map(encode_container_policy_bytes)
+        .transpose()?;
+
     let vtl2_measured_config = ParavisorMeasuredVtl2Config {
         magic: ParavisorMeasuredVtl2Config::MAGIC,
         vtom_offset_bit: 0,
         padding: [0; 7],
+        container_policy_location: pack_container_policy_location(
+            container_policy_bytes.as_deref(),
+        ),
     };
 
     importer
@@ -1465,10 +1552,406 @@ where
         )
         .map_err(Error::Importer)?;
 
+    if let Some(bytes) = container_policy_bytes.as_deref() {
+        import_container_policy_page(importer, config_region_page_base, bytes)?;
+    }
+
     let imported_region_base =
         config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_PAGE_INDEX;
 
     importer.set_imported_regions_config_page(imported_region_base);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod container_policy_tests {
+    use super::*;
+    use crate::importer::Aarch64Register;
+    use crate::importer::GuestArch;
+    use crate::importer::ParameterAreaIndex;
+    use std::cell::RefCell;
+    use zerocopy::FromBytes;
+
+    /// Record of a single `import_pages` call captured by the mock importer.
+    #[derive(Debug, Clone)]
+    struct ImportCall {
+        page_base: u64,
+        page_count: u64,
+        debug_tag: String,
+        acceptance: BootPageAcceptance,
+        data: Vec<u8>,
+    }
+
+    /// A minimal in-test `ImageLoad` that records the sequence of
+    /// `import_pages` calls.
+    struct MockImporter<R> {
+        calls: RefCell<Vec<ImportCall>>,
+        accepted_ranges: RefCell<Vec<(u64, u64)>>,
+        _phantom: std::marker::PhantomData<fn() -> R>,
+    }
+
+    impl<R: GuestArch> MockImporter<R> {
+        fn new() -> Self {
+            Self {
+                calls: RefCell::new(vec![]),
+                accepted_ranges: RefCell::new(vec![]),
+                _phantom: std::marker::PhantomData,
+            }
+        }
+    }
+
+    impl<R: GuestArch> ImageLoad<R> for MockImporter<R> {
+        fn isolation_config(&self) -> IsolationConfig {
+            IsolationConfig {
+                isolation_type: IsolationType::None,
+                paravisor_present: true,
+                shared_gpa_boundary_bits: None,
+            }
+        }
+
+        fn create_parameter_area(
+            &mut self,
+            _page_base: u64,
+            _page_count: u32,
+            _debug_tag: &str,
+        ) -> anyhow::Result<ParameterAreaIndex> {
+            unimplemented!("MockImporter: not used by container_policy tests")
+        }
+
+        fn create_parameter_area_with_data(
+            &mut self,
+            _page_base: u64,
+            _page_count: u32,
+            _debug_tag: &str,
+            _initial_data: &[u8],
+        ) -> anyhow::Result<ParameterAreaIndex> {
+            unimplemented!("MockImporter: not used by container_policy tests")
+        }
+
+        fn import_parameter(
+            &mut self,
+            _parameter_area: ParameterAreaIndex,
+            _byte_offset: u32,
+            _parameter_type: IgvmParameterType,
+        ) -> anyhow::Result<()> {
+            unimplemented!("MockImporter: not used by container_policy tests")
+        }
+
+        fn import_pages(
+            &mut self,
+            page_base: u64,
+            page_count: u64,
+            debug_tag: &str,
+            acceptance: BootPageAcceptance,
+            data: &[u8],
+        ) -> anyhow::Result<()> {
+            // Mirror the real importer's overlap check.
+            for &(existing_base, existing_count) in self.accepted_ranges.borrow().iter() {
+                let existing_end = existing_base + existing_count;
+                let new_end = page_base + page_count;
+                if page_base < existing_end && existing_base < new_end {
+                    anyhow::bail!(
+                        "imported range [{page_base},{new_end}) overlaps existing \
+                         [{existing_base},{existing_end})"
+                    );
+                }
+            }
+            self.accepted_ranges
+                .borrow_mut()
+                .push((page_base, page_count));
+            self.calls.borrow_mut().push(ImportCall {
+                page_base,
+                page_count,
+                debug_tag: debug_tag.to_string(),
+                acceptance,
+                data: data.to_vec(),
+            });
+            Ok(())
+        }
+
+        fn import_vp_register(&mut self, _register: R) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn verify_startup_memory_available(
+            &mut self,
+            _page_base: u64,
+            _page_count: u64,
+            _memory_type: StartupMemoryType,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn set_vp_context_page(&mut self, _page_base: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn relocation_region(
+            &mut self,
+            _gpa: u64,
+            _size_bytes: u64,
+            _relocation_alignment: u64,
+            _minimum_relocation_gpa: u64,
+            _maximum_relocation_gpa: u64,
+            _apply_rip_offset: bool,
+            _apply_gdtr_offset: bool,
+            _vp_index: u16,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn page_table_relocation(
+            &mut self,
+            _page_table_gpa: u64,
+            _size_pages: u64,
+            _used_pages: u64,
+            _vp_index: u16,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn set_imported_regions_config_page(&mut self, _page_base: u64) {}
+    }
+
+    // ---------------------------------------------------------------
+    // Encoding helper round trips
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn encode_container_policy_bytes_round_trip() {
+        let policy = ContainerPolicy::Cwcow(CwcowPolicy {
+            vmgs_read_only: true,
+            require_secure_boot: true,
+            custom_uefi_json: vec![0xAA, 0xBB, 0xCC, 0xDD],
+            ..Default::default()
+        });
+        let bytes = encode_container_policy_bytes(&policy).unwrap();
+        let decoded = decode_container_policy_page(&bytes).unwrap();
+        assert_eq!(decoded, policy);
+    }
+
+    #[test]
+    fn encode_container_policy_bytes_rejects_oversize() {
+        let policy = ContainerPolicy::Cwcow(CwcowPolicy {
+            custom_uefi_json: vec![0u8; 16 * 1024],
+            ..Default::default()
+        });
+        let err = encode_container_policy_bytes(&policy).unwrap_err();
+        assert!(matches!(err, Error::ContainerPolicyTooLarge { .. }));
+    }
+
+    #[test]
+    fn pack_container_policy_location_absent() {
+        assert_eq!(pack_container_policy_location(None), 0);
+    }
+
+    #[test]
+    fn pack_container_policy_location_one_page() {
+        let bytes = vec![0u8; 128];
+        let loc = pack_container_policy_location(Some(&bytes));
+        let cfg = ParavisorMeasuredVtl2Config {
+            magic: ParavisorMeasuredVtl2Config::MAGIC,
+            vtom_offset_bit: 0,
+            padding: [0; 7],
+            container_policy_location: loc,
+        };
+        assert_eq!(
+            cfg.container_policy_page_index(),
+            PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_PAGE_INDEX
+        );
+        assert_eq!(cfg.container_policy_page_count(), 1);
+    }
+
+    #[test]
+    fn pack_container_policy_location_two_pages() {
+        let bytes = vec![0u8; HV_PAGE_SIZE as usize + 1];
+        let loc = pack_container_policy_location(Some(&bytes));
+        let cfg = ParavisorMeasuredVtl2Config {
+            magic: ParavisorMeasuredVtl2Config::MAGIC,
+            vtom_offset_bit: 0,
+            padding: [0; 7],
+            container_policy_location: loc,
+        };
+        assert_eq!(cfg.container_policy_page_count(), 2);
+    }
+
+    // ---------------------------------------------------------------
+    // Mock-importer integration: the measured-config sequence
+    // ---------------------------------------------------------------
+
+    /// Manually invoke the measured-config sequence in isolation
+    /// (extracted from `load_openhcl_x64` / `load_openhcl_arm64`) and
+    /// assert on the recorded `import_pages` log. We don't call the
+    /// real entry points because they require kernel/shim file handles
+    /// and a vp-context buffer; the container-policy-relevant logic is
+    /// small and self-contained.
+    fn run_measured_config<R: GuestArch>(
+        importer: &mut dyn ImageLoad<R>,
+        policy: Option<&ContainerPolicy>,
+    ) -> Result<u64, Error> {
+        let config_region_page_base = 1000u64;
+
+        let bytes = policy.map(encode_container_policy_bytes).transpose()?;
+
+        let vtl2_measured_config = ParavisorMeasuredVtl2Config {
+            magic: ParavisorMeasuredVtl2Config::MAGIC,
+            vtom_offset_bit: 0,
+            padding: [0; 7],
+            container_policy_location: pack_container_policy_location(bytes.as_deref()),
+        };
+
+        importer
+            .import_pages(
+                config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX,
+                PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES,
+                "underhill-vtl2-measured-config",
+                BootPageAcceptance::Exclusive,
+                vtl2_measured_config.as_bytes(),
+            )
+            .map_err(Error::Importer)?;
+
+        if let Some(b) = bytes.as_deref() {
+            import_container_policy_page(importer, config_region_page_base, b)?;
+        }
+
+        Ok(config_region_page_base)
+    }
+
+    fn assert_acceptance_is_exclusive(acc: BootPageAcceptance) {
+        assert!(
+            matches!(acc, BootPageAcceptance::Exclusive),
+            "expected BootPageAcceptance::Exclusive, got {acc:?}"
+        );
+    }
+
+    #[test]
+    fn measured_config_absent_policy_records_zero_location() {
+        let mut importer = MockImporter::<X86Register>::new();
+        let base = run_measured_config(&mut importer, None).unwrap();
+
+        let calls = importer.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        let cfg_call = &calls[0];
+        assert_eq!(
+            cfg_call.page_base,
+            base + PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX
+        );
+        assert_eq!(
+            cfg_call.page_count,
+            PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES
+        );
+        assert_eq!(cfg_call.debug_tag, "underhill-vtl2-measured-config");
+        assert_acceptance_is_exclusive(cfg_call.acceptance);
+        let cfg = ParavisorMeasuredVtl2Config::ref_from_prefix(&cfg_call.data)
+            .unwrap()
+            .0;
+        assert_eq!(cfg.container_policy_location, 0);
+    }
+
+    #[test]
+    fn measured_config_present_policy_imports_in_correct_order_x64() {
+        let mut importer = MockImporter::<X86Register>::new();
+        let policy = ContainerPolicy::Cwcow(CwcowPolicy {
+            require_secure_boot: true,
+            custom_uefi_json: vec![1, 2, 3, 4],
+            ..Default::default()
+        });
+        let base = run_measured_config(&mut importer, Some(&policy)).unwrap();
+
+        let calls = importer.calls.borrow();
+        assert_eq!(calls.len(), 2, "expected config + policy imports");
+
+        // (1) Config page first.
+        let cfg_call = &calls[0];
+        assert_eq!(cfg_call.debug_tag, "underhill-vtl2-measured-config");
+        assert_eq!(
+            cfg_call.page_base,
+            base + PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX
+        );
+
+        // (2) Policy page second.
+        let pol_call = &calls[1];
+        assert_eq!(pol_call.debug_tag, "underhill-container-policy");
+        assert_acceptance_is_exclusive(pol_call.acceptance);
+        assert_eq!(
+            pol_call.page_base,
+            base + PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_PAGE_INDEX
+        );
+        // Full reserved size declared so the importer zero-pads.
+        assert_eq!(
+            pol_call.page_count,
+            PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES
+        );
+        // Imported bytes decode back to the original policy.
+        let decoded = decode_container_policy_page(&pol_call.data).unwrap();
+        assert_eq!(decoded, policy);
+
+        // Config page records the location the policy was placed at.
+        let cfg = ParavisorMeasuredVtl2Config::ref_from_prefix(&cfg_call.data)
+            .unwrap()
+            .0;
+        assert_eq!(
+            cfg.container_policy_page_index(),
+            PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_PAGE_INDEX
+        );
+        assert!(cfg.container_policy_page_count() >= 1);
+    }
+
+    #[test]
+    fn measured_config_present_policy_imports_in_correct_order_arm64() {
+        let mut importer = MockImporter::<Aarch64Register>::new();
+        let policy = ContainerPolicy::Cwcow(CwcowPolicy {
+            require_secure_avic: true,
+            custom_uefi_json: vec![0xCAu8, 0xFE, 0xBA, 0xBE],
+            ..Default::default()
+        });
+        let _base = run_measured_config(&mut importer, Some(&policy)).unwrap();
+        let calls = importer.calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].debug_tag, "underhill-vtl2-measured-config");
+        assert_eq!(calls[1].debug_tag, "underhill-container-policy");
+        // Per-architecture parity: same payload sizes and ordering.
+        assert_eq!(
+            calls[0].page_count,
+            PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES
+        );
+        assert_eq!(
+            calls[1].page_count,
+            PARAVISOR_MEASURED_VTL2_CONFIG_CONTAINER_POLICY_SIZE_PAGES
+        );
+    }
+
+    #[test]
+    fn measured_config_rejects_oversize_policy() {
+        let mut importer = MockImporter::<X86Register>::new();
+        let policy = ContainerPolicy::Cwcow(CwcowPolicy {
+            custom_uefi_json: vec![0u8; 16 * 1024],
+            ..Default::default()
+        });
+        let err = run_measured_config(&mut importer, Some(&policy)).unwrap_err();
+        assert!(matches!(err, Error::ContainerPolicyTooLarge { .. }));
+        // No partial state — nothing was imported.
+        assert!(importer.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn imported_ranges_do_not_overlap() {
+        let mut importer = MockImporter::<X86Register>::new();
+        let policy = ContainerPolicy::Cwcow(CwcowPolicy {
+            custom_uefi_json: vec![0u8; 64],
+            ..Default::default()
+        });
+        let _base = run_measured_config(&mut importer, Some(&policy)).unwrap();
+        let ranges = importer.accepted_ranges.borrow();
+        assert_eq!(ranges.len(), 2);
+        let (a_base, a_count) = ranges[0];
+        let (b_base, b_count) = ranges[1];
+        let a_end = a_base + a_count;
+        let b_end = b_base + b_count;
+        assert!(
+            a_end <= b_base || b_end <= a_base,
+            "ranges overlap: [{a_base},{a_end}) and [{b_base},{b_end})"
+        );
+    }
 }
