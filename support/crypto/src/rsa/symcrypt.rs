@@ -20,7 +20,6 @@ fn der_err(e: der::Error, op: &'static str) -> RsaError {
 pub struct RsaKeyPairInner(pub(crate) RsaKey);
 
 impl RsaKeyPairInner {
-    #[cfg(any(test, feature = "test_helpers"))]
     pub fn generate(bits: u32) -> Result<Self, RsaError> {
         let rsa = RsaKey::generate_key_pair(bits, None, RsaKeyUsage::SignAndEncrypt)
             .map_err(|e| err(e, "generating RSA key"))?;

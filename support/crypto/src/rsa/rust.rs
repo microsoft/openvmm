@@ -25,7 +25,6 @@ const fn rng() -> impl rand_core::CryptoRng {
 pub struct RsaKeyPairInner(pub(crate) RsaPrivateKey);
 
 impl RsaKeyPairInner {
-    #[cfg(any(test, feature = "test_helpers"))]
     pub fn generate(bits: u32) -> Result<Self, RsaError> {
         let rsa = RsaPrivateKey::new(&mut rng(), bits as usize)
             .map_err(|e| RsaError(e, "generating RSA key"))?;

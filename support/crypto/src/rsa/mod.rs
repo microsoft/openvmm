@@ -45,7 +45,6 @@ pub struct RsaError(
 pub struct RsaKeyPair(pub(crate) sys::RsaKeyPairInner);
 
 impl RsaKeyPair {
-    #[cfg(any(test, feature = "test_helpers"))]
     /// Generate a new RSA key pair with the given bit size.
     pub fn generate(bits: u32) -> Result<Self, RsaError> {
         sys::RsaKeyPairInner::generate(bits).map(Self)
