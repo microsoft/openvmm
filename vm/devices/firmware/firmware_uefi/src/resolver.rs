@@ -15,15 +15,16 @@ use firmware_uefi_resources::ResolvedUefiWatchdogPlatform;
 use firmware_uefi_resources::UefiCommandSet;
 use firmware_uefi_resources::UefiDeviceHandle;
 use firmware_uefi_resources::UefiLoggerHandleKind;
-use firmware_uefi_resources::UefiNvramStorageHandleKind;
 use firmware_uefi_resources::UefiVsmConfigHandleKind;
 use firmware_uefi_resources::UefiWatchdogPlatformHandleKind;
+use hcl_compat_uefi_nvram_storage::HclCompatNvram;
 use thiserror::Error;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::ChipsetDeviceHandleKind;
+use vm_resource::kind::NonVolatileStoreKind;
 
 /// Resolver for the Hyper-V UEFI helper device.
 pub struct UefiDeviceResolver;
@@ -76,6 +77,7 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, UefiDeviceHandle> for UefiDev
     ) -> Result<Self::Output, Self::Error> {
         let UefiDeviceHandle {
             config,
+            storage_quirks,
             generation_id_recv,
             logger,
             nvram_storage,
@@ -90,7 +92,7 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, UefiDeviceHandle> for UefiDev
             .map_err(ResolveUefiDeviceError::ResolveLogger)?
             .0;
         let nvram_storage = resolver
-            .resolve::<UefiNvramStorageHandleKind, _>(nvram_storage, ())
+            .resolve::<NonVolatileStoreKind, _>(nvram_storage, &())
             .await
             .map_err(ResolveUefiDeviceError::ResolveNvramStorage)?
             .0;
@@ -130,6 +132,13 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, UefiDeviceHandle> for UefiDev
                     .new_line(IRQ_LINE_SET, "genid", GENERATION_ID_IRQ)
             }
         };
+
+        let nvram_storage = Box::new(HclCompatNvram::new(
+            vmm_core::emuplat::hcl_compat_uefi_nvram_storage::VmgsStorageBackendAdapter(
+                nvram_storage,
+            ),
+            storage_quirks,
+        ));
 
         let gm = input.encrypted_guest_memory.clone();
         let runtime_deps = UefiRuntimeDeps {

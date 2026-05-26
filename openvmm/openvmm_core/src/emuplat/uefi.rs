@@ -4,80 +4,18 @@
 //! Resolvers for the per-platform [`firmware_uefi`] dependencies.
 
 use crate::partition::HvlitePartition;
-use crate::vmgs_non_volatile_store::HvLiteVmgsNonVolatileStore;
 use anyhow::Context as _;
 use async_trait::async_trait;
-use firmware_uefi_resources::EphemeralNvramStorageHandle;
-use firmware_uefi_resources::ResolvedUefiNvramStorage;
 use firmware_uefi_resources::ResolvedUefiWatchdogPlatform;
-use firmware_uefi_resources::UefiNvramStorageHandleKind;
 use firmware_uefi_resources::UefiWatchdogPlatformHandleKind;
-use firmware_uefi_resources::VmgsNvramStorageHandle;
-use hcl_compat_uefi_nvram_storage::HclCompatNvram;
 use std::sync::Arc;
-use uefi_nvram_storage::VmmNvramStorage;
-use uefi_nvram_storage::in_memory::InMemoryNvram;
 use vm_resource::AsyncResolveResource;
 use vm_resource::PlatformResource;
-use vm_resource::ResolveResource;
 use vmcore::non_volatile_store::EphemeralNonVolatileStore;
-use vmm_core::emuplat::hcl_compat_uefi_nvram_storage::VmgsStorageBackendAdapter;
 use vmm_core::partition_unit::Halt;
 use watchdog_core::platform::BaseWatchdogPlatform;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
-
-/// Resolver that produces UEFI NVRAM storage backed by the host VMGS file.
-pub struct VmgsUefiNvramStorageResolver {
-    vmgs_client: vmgs_broker::VmgsClient,
-}
-
-impl VmgsUefiNvramStorageResolver {
-    pub fn new(vmgs_client: vmgs_broker::VmgsClient) -> Self {
-        Self { vmgs_client }
-    }
-}
-
-impl ResolveResource<UefiNvramStorageHandleKind, VmgsNvramStorageHandle>
-    for VmgsUefiNvramStorageResolver
-{
-    type Output = ResolvedUefiNvramStorage;
-    type Error = anyhow::Error;
-
-    fn resolve(
-        &self,
-        _resource: VmgsNvramStorageHandle,
-        _input: (),
-    ) -> Result<Self::Output, Self::Error> {
-        let storage: Box<dyn VmmNvramStorage> = Box::new(HclCompatNvram::new(
-            VmgsStorageBackendAdapter(
-                self.vmgs_client
-                    .as_non_volatile_store(vmgs::FileId::BIOS_NVRAM, true)
-                    .context("failed to instantiate UEFI NVRAM store")?,
-            ),
-            None,
-        ));
-        Ok(ResolvedUefiNvramStorage(storage))
-    }
-}
-
-/// Resolver that produces a fresh ephemeral in-memory UEFI NVRAM store.
-pub struct EphemeralUefiNvramStorageResolver;
-
-impl ResolveResource<UefiNvramStorageHandleKind, EphemeralNvramStorageHandle>
-    for EphemeralUefiNvramStorageResolver
-{
-    type Output = ResolvedUefiNvramStorage;
-    type Error = std::convert::Infallible;
-
-    fn resolve(
-        &self,
-        _resource: EphemeralNvramStorageHandle,
-        _input: (),
-    ) -> Result<Self::Output, Self::Error> {
-        Ok(ResolvedUefiNvramStorage(Box::new(InMemoryNvram::new())))
-    }
-}
 
 /// Resolver that produces a fresh [`BaseWatchdogPlatform`] (and the matching
 /// receiver) for the UEFI watchdog on each resolution.

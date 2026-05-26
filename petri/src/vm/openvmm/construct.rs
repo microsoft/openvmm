@@ -383,9 +383,9 @@ impl PetriVmConfigOpenVmm {
                 EfiDiagnosticsLogLevel::Full => firmware_uefi_resources::LogLevel::make_full(),
             };
             let nvram_storage = if vmgs.disk().is_some() {
-                firmware_uefi_resources::VmgsNvramStorageHandle.into_resource()
+                VmgsFileHandle::new(vmgs_format::FileId::BIOS_NVRAM, true).into_resource()
             } else {
-                firmware_uefi_resources::EphemeralNvramStorageHandle.into_resource()
+                EphemeralNonVolatileStoreHandle.into_resource()
             };
             chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
                 match arch {
@@ -396,6 +396,7 @@ impl PetriVmConfigOpenVmm {
                 secure_boot,
                 log_level,
                 nvram_storage,
+                None,
             ));
         }
 

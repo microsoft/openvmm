@@ -36,11 +36,11 @@ use chipset_resources::pm::HyperVPowerManagementDeviceHandle;
 use chipset_resources::pm::PIIX4_PM_BDF;
 use chipset_resources::pm::Piix4PowerManagementDeviceHandle;
 use firmware_uefi_custom_vars::CustomVars;
+use firmware_uefi_resources::HclCompatNvramQuirks;
 use firmware_uefi_resources::LogLevel;
 use firmware_uefi_resources::UefiCommandSet;
 use firmware_uefi_resources::UefiConfig;
 use firmware_uefi_resources::UefiDeviceHandle;
-use firmware_uefi_resources::UefiNvramStorageHandleKind;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
@@ -53,6 +53,7 @@ use vm_resource::IntoResource;
 use vm_resource::PlatformResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::NonVolatileStoreKind;
 use vm_resource::kind::SerialBackendHandle;
 pub use vmm_core_defs::LayoutConfig;
 use vmotherboard::ChipsetDeviceHandle;
@@ -81,10 +82,12 @@ pub struct VmManifestBuilder {
 pub struct UefiManifest {
     /// Static configuration for the UEFI device.
     pub config: UefiConfig,
+    /// Quirks for the NVRAM storage.
+    pub storage_quirks: Option<HclCompatNvramQuirks>,
     /// Channel receiver for guest generation ID updates.
     pub generation_id_recv: mesh::Receiver<[u8; 16]>,
     /// NVRAM backing storage resource.
-    pub nvram_storage: Resource<UefiNvramStorageHandleKind>,
+    pub nvram_storage: Resource<NonVolatileStoreKind>,
     /// Whether to wire up the platform VSM configuration resource.
     pub vsm_config: bool,
     /// Time source resource for UEFI time services.
@@ -107,7 +110,8 @@ impl UefiManifest {
         custom_uefi_vars: CustomVars,
         secure_boot: bool,
         diagnostics_log_level: LogLevel,
-        nvram_storage: Resource<UefiNvramStorageHandleKind>,
+        nvram_storage: Resource<NonVolatileStoreKind>,
+        storage_quirks: Option<HclCompatNvramQuirks>,
     ) -> Self {
         let mut initial_generation_id = [0; 16];
         getrandom::fill(&mut initial_generation_id).expect("rng failure");
@@ -123,6 +127,7 @@ impl UefiManifest {
                 },
                 diagnostics_log_level,
             },
+            storage_quirks,
             generation_id_recv: mesh::channel().1,
             nvram_storage,
             vsm_config: false,
@@ -652,6 +657,7 @@ impl VmChipsetResult {
     fn attach_uefi(&mut self, uefi: UefiManifest) -> &mut Self {
         let UefiManifest {
             config,
+            storage_quirks,
             generation_id_recv,
             nvram_storage,
             vsm_config,
@@ -661,6 +667,7 @@ impl VmChipsetResult {
             name: "uefi".to_owned(),
             resource: UefiDeviceHandle {
                 config,
+                storage_quirks,
                 generation_id_recv,
                 logger: PlatformResource.into_resource(),
                 nvram_storage,

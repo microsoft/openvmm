@@ -69,6 +69,7 @@ use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend_resources::BlockDeviceDiskHandle;
 use disk_blockdevice::resolver::BlockDeviceResolver;
+use firmware_uefi_resources::HclCompatNvramQuirks;
 use firmware_uefi_resources::LogLevel;
 use firmware_uefi_resources::UefiCommandSet;
 use futures::executor::block_on;
@@ -2486,12 +2487,10 @@ async fn new_underhill_vm(
         // Register the platform resolvers used by the resource-model UEFI
         // device.
         resolver.add_resolver(UnderhillUefiLoggerResolver::new(get_client.clone()));
-        let nvram_storage = if let Some(vmgs_client) = vmgs_client.clone() {
-            resolver.add_resolver(UnderhillUefiNvramStorageResolver::new(vmgs_client));
-            firmware_uefi_resources::VmgsNvramStorageHandle.into_resource()
+        let nvram_storage = if vmgs_client.is_some() {
+            VmgsFileHandle::new(vmgs::FileId::BIOS_NVRAM, true).into_resource()
         } else {
-            resolver.add_resolver(EphemeralUefiNvramStorageResolver);
-            firmware_uefi_resources::EphemeralNvramStorageHandle.into_resource()
+            EphemeralNonVolatileStoreHandle.into_resource()
         };
         resolver.add_async_resolver(UnderhillUefiWatchdogPlatformResolver::new(
             get_client.clone(),
@@ -2509,6 +2508,9 @@ async fn new_underhill_vm(
 
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest {
             config,
+            storage_quirks: Some(HclCompatNvramQuirks {
+                skip_corrupt_vars_with_missing_null_term: true,
+            }),
             generation_id_recv,
             nvram_storage,
             vsm_config: true,

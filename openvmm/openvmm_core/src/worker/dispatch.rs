@@ -1205,10 +1205,6 @@ impl InitializedVm {
                 resolver.add_resolver(emuplat::firmware::MeshLoggerResolver::new(
                     cfg.firmware_event_send.clone(),
                 ));
-                if let Some(vmgs_client) = vmgs_client_inspect_handle.clone() {
-                    resolver.add_resolver(VmgsUefiNvramStorageResolver::new(vmgs_client));
-                }
-                resolver.add_resolver(EphemeralUefiNvramStorageResolver);
                 resolver.add_async_resolver(OpenvmmUefiWatchdogPlatformResolver::new(
                     partition.clone(),
                     halt_vps.clone(),

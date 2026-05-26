@@ -239,6 +239,7 @@ uefi_nvram_specvars = { path = "vm/devices/firmware/uefi_nvram_specvars" }
 hyperv_secure_boot_templates = { path = "vm/devices/firmware/hyperv_secure_boot_templates" }
 hyperv_uefi_custom_vars_json = { path = "vm/devices/firmware/hyperv_uefi_custom_vars_json" }
 framebuffer = { path = "vm/devices/framebuffer" }
+hcl_compat_uefi_nvram_resources = { path = "vm/devices/firmware/hcl_compat_uefi_nvram_resources" }
 hcl_compat_uefi_nvram_storage = { path = "vm/devices/firmware/hcl_compat_uefi_nvram_storage" }
 generation_id = { path = "vm/devices/firmware/generation_id" }
 get_helpers = { path = "vm/devices/get/get_helpers" }

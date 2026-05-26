@@ -12,13 +12,14 @@
 #![forbid(unsafe_code)]
 #![expect(missing_docs)]
 
+pub use hcl_compat_uefi_nvram_resources::HclCompatNvramQuirks;
+
 use chipset_resources::CmosRtcTimeSourceHandleKind;
 use firmware_uefi_custom_vars::CustomVars;
 use inspect::Inspect;
 use mesh::MeshPayload;
 use mesh_protobuf::Protobuf;
 use std::borrow::Cow;
-use uefi_nvram_storage::VmmNvramStorage;
 use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
 use uefi_specs::hyperv::debug_level::DEBUG_FLAG_NAMES;
 use uefi_specs::hyperv::debug_level::DEBUG_INFO;
@@ -28,6 +29,7 @@ use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::ResourceKind;
 use vm_resource::kind::ChipsetDeviceHandleKind;
+use vm_resource::kind::NonVolatileStoreKind;
 use watchdog_core::platform::WatchdogPlatform;
 
 /// A centralized place to expose various service-specific interface traits that
@@ -149,7 +151,7 @@ pub fn debug_level_to_string(debug_level: u32) -> Cow<'static, str> {
 }
 
 /// Static configuration for the UEFI device.
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Clone, Protobuf)]
 pub struct UefiConfig {
     pub custom_uefi_vars: CustomVars,
     pub secure_boot: bool,
@@ -171,39 +173,6 @@ pub struct ResolvedUefiLogger(pub Box<dyn platform::UefiLogger>);
 
 impl CanResolveTo<ResolvedUefiLogger> for UefiLoggerHandleKind {
     type Input<'a> = ();
-}
-
-/// Resource kind for the platform-provided UEFI NVRAM storage.
-pub enum UefiNvramStorageHandleKind {}
-
-impl ResourceKind for UefiNvramStorageHandleKind {
-    const NAME: &'static str = "uefi_nvram_storage";
-}
-
-/// Resolved UEFI NVRAM storage.
-pub struct ResolvedUefiNvramStorage(pub Box<dyn VmmNvramStorage>);
-
-impl CanResolveTo<ResolvedUefiNvramStorage> for UefiNvramStorageHandleKind {
-    type Input<'a> = ();
-}
-
-/// Handle for VMGS-backed UEFI NVRAM storage. Resolved by the platform's
-/// VMGS-backed NVRAM storage resolver, which has access to the host VMGS
-/// client.
-#[derive(MeshPayload)]
-pub struct VmgsNvramStorageHandle;
-
-impl ResourceId<UefiNvramStorageHandleKind> for VmgsNvramStorageHandle {
-    const ID: &'static str = "uefi_vmgs";
-}
-
-/// Handle for an ephemeral, in-memory UEFI NVRAM store. Resolves to a fresh
-/// [`uefi_nvram_storage::in_memory::InMemoryNvram`] each time.
-#[derive(MeshPayload)]
-pub struct EphemeralNvramStorageHandle;
-
-impl ResourceId<UefiNvramStorageHandleKind> for EphemeralNvramStorageHandle {
-    const ID: &'static str = "uefi_ephemeral";
 }
 
 /// Resource kind for the UEFI watchdog platform implementation.
@@ -243,12 +212,14 @@ impl CanResolveTo<ResolvedUefiVsmConfig> for UefiVsmConfigHandleKind {
 pub struct UefiDeviceHandle {
     /// Static configuration data.
     pub config: UefiConfig,
+    /// Quirks for the NVRAM storage.
+    pub storage_quirks: Option<HclCompatNvramQuirks>,
     /// Channel receiver for updated generation ID values.
     pub generation_id_recv: mesh::Receiver<[u8; 16]>,
     /// Platform-provided UEFI event logger.
     pub logger: Resource<UefiLoggerHandleKind>,
-    /// Platform-provided UEFI NVRAM backing storage.
-    pub nvram_storage: Resource<UefiNvramStorageHandleKind>,
+    /// UEFI NVRAM backing storage.
+    pub nvram_storage: Resource<NonVolatileStoreKind>,
     /// Platform-provided UEFI watchdog hooks (NMI on x64, halt on aarch64,
     /// etc.).
     pub watchdog_platform: Resource<UefiWatchdogPlatformHandleKind>,

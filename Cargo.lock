@@ -2040,6 +2040,7 @@ dependencies = [
  "getrandom 0.4.2",
  "guestmem",
  "guid",
+ "hcl_compat_uefi_nvram_storage",
  "inspect",
  "jiff",
  "local_clock",
@@ -2056,6 +2057,7 @@ dependencies = [
  "uefi_specs",
  "vm_resource",
  "vmcore",
+ "vmm_core",
  "watchdog_core",
  "wchar",
  "zerocopy",
@@ -2077,6 +2079,7 @@ version = "0.0.0"
 dependencies = [
  "chipset_resources",
  "firmware_uefi_custom_vars",
+ "hcl_compat_uefi_nvram_resources",
  "inspect",
  "mesh",
  "mesh_protobuf",
@@ -3178,6 +3181,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hcl_compat_uefi_nvram_resources"
+version = "0.0.0"
+dependencies = [
+ "inspect",
+ "mesh_protobuf",
+]
+
+[[package]]
 name = "hcl_compat_uefi_nvram_storage"
 version = "0.0.0"
 dependencies = [
@@ -3185,6 +3196,7 @@ dependencies = [
  "async-trait",
  "cvm_tracing",
  "guid",
+ "hcl_compat_uefi_nvram_resources",
  "inspect",
  "open_enum",
  "pal_async",
