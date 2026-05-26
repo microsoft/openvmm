@@ -7,6 +7,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
+# Enable test-only helper functions.
+test_helpers = ["x509-cert?/builder"]
+
 # If the chosen backend supports it, vendor it.
 # If the chosen backend is natively available, this feature is a no-op.
 # If the chosen backend is not natively available and can't be vendored, this will trigger a compile error.
@@ -62,7 +65,7 @@ rsa = { workspace = true, optional = true, features = ["encoding", "sha2"] }
 sha1 = { workspace = true, optional = true, features = ["oid"] }
 sha2 = { workspace = true, optional = true }
 signature = { workspace = true, optional = true, features = ["alloc"] }
-x509-cert = { workspace = true, optional = true, features = ["builder"] }
+x509-cert = { workspace = true, optional = true }
 
 anyhow.workspace = true
 thiserror.workspace = true

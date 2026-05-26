@@ -30,6 +30,7 @@ thiserror.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+crypto = { workspace = true, features = ["test_helpers"] }
 disklayer_ram.workspace = true
 disk_backend.workspace = true
 vmgs = { workspace = true, features = ["encryption", "test_helpers"] }

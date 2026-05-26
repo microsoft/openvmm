@@ -45,6 +45,7 @@ pub struct RsaError(
 pub struct RsaKeyPair(pub(crate) sys::RsaKeyPairInner);
 
 impl RsaKeyPair {
+    #[cfg(any(test, feature = "test_helpers"))]
     /// Generate a new RSA key pair with the given bit size.
     pub fn generate(bits: u32) -> Result<Self, RsaError> {
         sys::RsaKeyPairInner::generate(bits).map(Self)
@@ -55,6 +56,7 @@ impl RsaKeyPair {
         sys::RsaKeyPairInner::from_pkcs8_der(der).map(Self)
     }
 
+    #[cfg(any(test, feature = "test_helpers"))]
     /// Convert the RSA private key to PKCS#8 DER-encoded bytes.
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
         self.0.to_pkcs8_der()
