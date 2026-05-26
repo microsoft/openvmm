@@ -91,7 +91,7 @@ pub const PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_SIZE_PAGES: u64 = 1;
 /// intentional friction: it changes the measured size of every IGVM
 /// (including ones that don't carry a policy) and therefore the
 /// attestation contract — the bump needs to be a conscious decision.
-pub const PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES: u64 = 1;
+pub const PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES: u64 = 2;
 
 /// Count for vtl 2 measured config region size.
 pub const PARAVISOR_MEASURED_VTL2_CONFIG_REGION_PAGE_COUNT: u64 =
@@ -446,7 +446,7 @@ pub use container_policy::encode_container_policy_page;
 /// # Build-time sizing
 ///
 /// The measured config region is a fixed
-/// [`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`] pages — currently one
+/// [`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`] pages — currently two
 /// — for every IGVM regardless of whether a policy is configured, so
 /// the absent case is byte-for-byte identical to legacy builds. The
 /// encoded policy body must fit in

@@ -6,7 +6,7 @@ payload is appended in-place after [`ParavisorMeasuredVtl2Config`] on
 the same measured config region. The struct carries a
 `container_policy_size: u32` field that tells the runtime exactly how
 many bytes follow; a value of zero means absent. The region is a
-fixed `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES` pages (currently 1).
+fixed `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES` pages (currently 2).
 If a new policy's mesh-encoded body would overflow that budget, the
 IGVM build hard-panics so a developer is forced to consciously bump
 `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES` — and accept the
@@ -167,7 +167,7 @@ length-prefix framing — the struct field IS the framing.
 
 The struct is 24 bytes; the region occupies exactly
 `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES * HV_PAGE_SIZE` bytes
-(currently a single 4 KiB page) regardless of whether a policy is
+(currently two 4 KiB pages) regardless of whether a policy is
 present. The struct sits at offset 0; the optional `container_policy_size`
 bytes of mesh-encoded policy sit immediately after; the remainder is
 zero-padded to the page boundary.
@@ -178,7 +178,7 @@ those IGVMs is unchanged.
 
 If a future container product's encoded policy exceeds the per-page
 budget (`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES * HV_PAGE_SIZE -
-CONTAINER_POLICY_INLINE_OFFSET`, i.e. 4072 bytes today),
+CONTAINER_POLICY_INLINE_OFFSET`, i.e. 8168 bytes today),
 `encode_container_policy_bytes` will `panic!` at IGVM-build time with
 a message that names `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`. The
 fix is to bump that constant (e.g. to 2) in
