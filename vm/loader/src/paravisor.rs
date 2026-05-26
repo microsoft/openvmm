@@ -134,9 +134,12 @@ fn encode_container_policy_bytes(policy: &ContainerPolicy) -> Vec<u8> {
 /// `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES * HV_PAGE_SIZE` bytes,
 /// zero-padded after the policy body; every byte is measured.
 ///
-/// The region's page count is fixed. The absent-policy case is
-/// byte-for-byte identical to legacy builds (every trailing byte is
-/// zero, including `container_policy_size`).
+/// The region's page count is fixed at
+/// [`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`]; absent-policy builds
+/// just have `container_policy_size == 0` and a fully-zero payload
+/// area. The measurement is therefore a function of `SIZE_PAGES`, so
+/// bumping that constant re-measures every IGVM, not only ones with a
+/// configured policy.
 fn build_measured_vtl2_config_region(
     mut config: ParavisorMeasuredVtl2Config,
     policy_bytes: Option<&[u8]>,
@@ -941,9 +944,9 @@ where
         )
         .map_err(Error::Importer)?;
 
-    // Encode the optional container policy first; the build then
-    // sizes the measured config region (struct + policy bytes) and
-    // imports it as one variable-length range. The struct's
+    // Encode the optional container policy, then build the fixed-size
+    // measured config region image (struct + policy bytes, zero-padded
+    // to PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES). The struct's
     // `container_policy_size` field is populated inside
     // build_measured_vtl2_config_region so the runtime knows how many
     // trailing bytes to read.
@@ -1750,8 +1753,8 @@ mod container_policy_tests {
     fn build_region_absent_records_zero_size_in_struct() {
         let cfg = empty_config();
         let region = build_measured_vtl2_config_region(cfg, None);
-        // Region is always SIZE_PAGES * HV_PAGE_SIZE bytes — same
-        // measurement as legacy builds that never had a policy field.
+        // Region is always SIZE_PAGES * HV_PAGE_SIZE bytes, regardless
+        // of whether a policy is configured.
         assert_eq!(
             region.len(),
             (PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES as usize) * (HV_PAGE_SIZE as usize)
@@ -1845,7 +1848,7 @@ mod container_policy_tests {
             cfg_call.page_base,
             base + PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX
         );
-        // Region is always SIZE_PAGES — same as legacy builds.
+        // Region is always exactly SIZE_PAGES, regardless of policy.
         assert_eq!(
             cfg_call.page_count,
             PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES

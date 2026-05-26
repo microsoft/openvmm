@@ -370,8 +370,8 @@ mod test {
     fn openhcl_image_without_container_policy_round_trips() {
         // Manifests written before container policy was added must
         // continue to deserialize, and a re-serialized Image::Openhcl
-        // with no policy must omit the field entirely (preserving
-        // existing measurements).
+        // with no policy must omit the field entirely (so manifest
+        // JSON stays forward/backward-compatible).
         let json = r#"{"openhcl":{"command_line":"","memory_page_count":10,"uefi":true}}"#;
         let parsed: Image = serde_json::from_str(json).unwrap();
         match &parsed {

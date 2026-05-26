@@ -162,7 +162,7 @@ length-prefix framing — the struct field IS the framing.
 16..20       container_policy_size: u32  (0 ⇒ absent)
 20..24       reserved
 24..24+N     mesh_protobuf-encoded ContainerPolicy (N = container_policy_size)
-24+N..end    zero padding to the next page boundary
+24+N..end    zero padding to the end of the fixed SIZE_PAGES region
 ```
 
 The struct is 24 bytes; the region occupies exactly
@@ -172,16 +172,20 @@ present. The struct sits at offset 0; the optional `container_policy_size`
 bytes of mesh-encoded policy sit immediately after; the remainder is
 zero-padded to the page boundary.
 
-Builds that don't enable the policy import a single zero-padded page —
-byte-for-byte identical to pre-feature builds, so the measurement of
-those IGVMs is unchanged.
+Builds that don't enable the policy still import the same fixed
+`SIZE_PAGES` measured region; the struct's `container_policy_size`
+field is `0` and every trailing byte is zero. The measurement is fully
+determined by `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES` plus the
+struct contents, so any bump to `SIZE_PAGES` retroactively changes the
+measurement of *every* IGVM built from this branch — including ones
+without a configured policy.
 
 If a future container product's encoded policy exceeds the per-page
 budget (`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES * HV_PAGE_SIZE -
 CONTAINER_POLICY_INLINE_OFFSET`, i.e. 8168 bytes today),
 `encode_container_policy_bytes` will `panic!` at IGVM-build time with
 a message that names `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`. The
-fix is to bump that constant (e.g. to 2) in
+fix is to bump that constant (e.g. from 2 to 3) in
 `vm/loader/loader_defs/src/paravisor.rs`. Bumping it is a measurement
 change — every IGVM, with or without a configured policy, will have a
 new measurement after the bump — so it must be reviewed against the
@@ -190,9 +194,13 @@ attestation policy for each affected product.
 ## Measurement implications
 
 Enabling ContainerPolicy alters the IGVM measurement because new
-measured bytes are added. Existing recipes do **not** opt in by default,
-so IGVMs built from those recipes import the same single zero-padded
-page as before and preserve their prior measurements.
+measured bytes are added. Recipes that don't opt in at all still see a
+measurement change relative to pre-feature builds, because the measured
+config region is now fixed at `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`
+(currently 2). Within this branch, recipes without a policy stay at a
+stable measurement as long as nobody bumps `SIZE_PAGES`; bumping
+`SIZE_PAGES` to fit a larger policy is itself a measurement change for
+every recipe, with or without a policy configured.
 
 ## Optional: recipe + manifest
 

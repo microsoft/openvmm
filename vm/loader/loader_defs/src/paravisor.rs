@@ -376,10 +376,11 @@ pub const PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_AARCH64: u64 = 16 << (20 - 12
 /// May be followed in-place (on the same measured region) by an
 /// optional [`ContainerPolicy`] payload starting at byte
 /// [`CONTAINER_POLICY_INLINE_OFFSET`]. The payload's size in bytes is
-/// recorded in [`Self::container_policy_size`]; the build sizes the
-/// measured config region (in pages) to fit the struct plus that many
-/// bytes. A size of zero — including all-zero trailing bytes in IGVMs
-/// that pre-date the container policy feature — signals absent.
+/// recorded in [`Self::container_policy_size`]; the measured config
+/// region is always [`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`]
+/// pages regardless of policy size. A size of zero — including
+/// all-zero trailing bytes in IGVMs that pre-date the container
+/// policy feature — signals absent.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[cfg_attr(feature = "inspect", derive(Inspect))]
@@ -447,9 +448,11 @@ pub use container_policy::encode_container_policy_page;
 ///
 /// The measured config region is a fixed
 /// [`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`] pages — currently two
-/// — for every IGVM regardless of whether a policy is configured, so
-/// the absent case is byte-for-byte identical to legacy builds. The
-/// encoded policy body must fit in
+/// — for every IGVM regardless of whether a policy is configured.
+/// Absent-policy builds carry `container_policy_size == 0` and a
+/// fully-zero payload area; their measurement is determined by
+/// `SIZE_PAGES` (so bumping `SIZE_PAGES` re-measures every IGVM, not
+/// just policy-carrying ones). The encoded policy body must fit in
 /// [`container_policy_max_size_bytes`]; the IGVM builder panics
 /// otherwise, and the developer adding the policy must bump
 /// [`PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES`] (which also changes
@@ -487,7 +490,10 @@ pub mod container_policy {
 
     use alloc::vec::Vec;
 
-    /// The wire format for the optional measured container policy page.
+    /// The wire format for the optional measured container policy
+    /// payload. The encoded bytes are appended in-place after
+    /// [`super::ParavisorMeasuredVtl2Config`] on the same measured
+    /// config region.
     ///
     /// Each variant is a product; the `#[mesh(N)]` tag is the product
     /// identifier on the wire and **must never be reused**. Adding a new
