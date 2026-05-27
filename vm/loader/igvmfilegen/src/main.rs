@@ -674,12 +674,6 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                 CommandLineType::HostAppendable(command_line)
             };
 
-            // The manifest's `container_policy` field already
-            // deserializes directly into the wire `ContainerPolicy` enum
-            // — no translation needed. Default products: field names
-            // match by name. Custom products: use `#[serde(try_from)]`
-            // on their body type to do build-side work during
-            // deserialization.
             R::load_openhcl(
                 loader,
                 &mut kernel,
