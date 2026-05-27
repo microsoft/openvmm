@@ -4059,8 +4059,9 @@ impl Coordinator {
             // whether to run the restart cycle.
             self.drain_pending_messages(state).await;
 
-            // If anything (primary, sub, or endpoint) requested a restart, do
-            // it. Then loop back to re-drain in case more messages arrived.
+            // Restart is set to true by either:
+            // `CoordinatorMessage::Restart` from Primary or sub-channel worker.
+            // `EndpointAction::RestartRequired` in previous loop.
             if self.restart {
                 self.run_restart_cycle(stop, state).await?;
             }
@@ -4217,9 +4218,9 @@ impl Coordinator {
     }
 
     /// Called at the top of each iteration of [`Self::process`] loop.
-    /// Coalesce Sub-channel restart requests into `self.restart = true`.
-    /// Any Primary message landing concurrently with a `Restart` is
-    /// handled prior to running the restart cycle.
+    /// Sub-channel restart requests are coalesced into `self.restart = true`.
+    /// Any Primary message landing concurrently with a `Restart` will be
+    /// handled prior to the worker restart.
     async fn drain_pending_messages(&mut self, state: &mut CoordinatorState) {
         while let Ok(Some(msg)) = self.recv.try_next() {
             self.handle_coordinator_message(msg, state).await;
@@ -4237,7 +4238,7 @@ impl Coordinator {
         stop.until_stopped(self.stop_workers()).await?;
 
         // All workers are stopped and cannot push new messages.
-        // Drain any messages that arrived prior to the stop.
+        // Drain any messages that arrived prior to or during the stop.
         self.drain_pending_messages(state).await;
 
         // The queue restart operation is not restartable; do not poll on stop here.
@@ -4863,8 +4864,8 @@ impl<T: RingMem + 'static> Worker<T> {
                         .coordinator_send
                         .try_send(CoordinatorMessage::Restart { channel_idx: 0 })
                     {
-                        // Coordinator channel was sized at `max_queues` capacity,
-                        // so `try_send` should not fail in practice.
+                        // Coordinator channel is sized to `max_queues` capacity,
+                        // so `try_send` should not fail.
                         tracelimit::error_ratelimited!(
                             error = &err as &dyn std::error::Error,
                             channel_idx = self.channel_idx,
