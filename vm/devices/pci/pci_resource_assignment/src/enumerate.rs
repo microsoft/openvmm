@@ -372,10 +372,10 @@ async fn probe_sriov_bus_requirement(
             return Some(max_bus);
         }
 
-        offset = next;
-        if offset == 0 {
+        if next == 0 || next <= offset {
             break;
         }
+        offset = next;
     }
     None
 }

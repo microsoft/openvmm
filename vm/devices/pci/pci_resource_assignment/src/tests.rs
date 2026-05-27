@@ -944,10 +944,8 @@ async fn sriov_bus_reservation_exceeding_end_bus_returns_error() {
     let mut cfg = mock;
     let result = assign_pci_resources_inner(&mut cfg, &params).await;
 
-    // SR-IOV VFs need bus 2, but end_bus is 1. The code should return
+    // SR-IOV VFs need bus 2, but end_bus is 1. The code returns
     // BusExhaustion because the VF bus range exceeds the allowed range.
-    // BUG: currently the code silently sets subordinate_bus = 2 (past
-    // end_bus) instead of returning an error.
     assert!(
         matches!(result, Err(crate::AssignmentError::BusExhaustion { .. })),
         "expected BusExhaustion when SR-IOV reservation exceeds end_bus, got {result:?}"

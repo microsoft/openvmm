@@ -83,10 +83,10 @@ pub fn assign_addresses(
 ) -> Result<AssignmentResult, AssignmentError> {
     let mut entries = Vec::new();
 
-    // Phase 1: Bottom-up — compute total resource requirements.
+    // Step 1: Bottom-up — compute total resource requirements.
     let root_req = compute_subtree_requirement(devices);
 
-    // Phase 2: Top-down — allocate from apertures and assign addresses.
+    // Step 2: Top-down — allocate from apertures and assign addresses.
     // Align the effective base to the root's alignment requirement so that
     // internal bump allocation matches the sizing (which starts from zero).
     if root_req.mem32 > 0 {
@@ -430,21 +430,14 @@ pub async fn program_assignments(cfg: &mut impl PciConfigAccess, result: &Assign
         // (write-readback) doesn't mistake zeroed registers for a valid window.
         if entry.secondary_bus.is_some() {
             // I/O window — we don't assign I/O BARs, so always disable.
-            // Read-modify-write to preserve the secondary status bits.
-            let sec_status = cfg
-                .read_u32(
-                    entry.bus,
-                    entry.device,
-                    entry.function,
-                    HeaderType01::SEC_STATUS_IO_RANGE.0,
-                )
-                .await;
+            // Write zeros to the upper 16 bits (Secondary Status) since
+            // those bits are W1C — writing back a read value would clear them.
             cfg.write_u32(
                 entry.bus,
                 entry.device,
                 entry.function,
                 HeaderType01::SEC_STATUS_IO_RANGE.0,
-                (sec_status & 0xFFFF_0000) | 0x00F0, // base 0xF0 > limit 0x00
+                0x0000_00F0, // base 0xF0 > limit 0x00, status bits zeroed
             )
             .await;
 
@@ -466,63 +459,46 @@ pub async fn program_assignments(cfg: &mut impl PciConfigAccess, result: &Assign
             .await;
 
             // Prefetchable memory window (64-bit capable).
-            if let (Some(base), Some(limit)) = (entry.prefetchable_base, entry.prefetchable_limit) {
+            // Use base > limit to disable when no window is assigned.
+            let (pf_range, pf_base_upper, pf_limit_upper) = if let (Some(base), Some(limit)) =
+                (entry.prefetchable_base, entry.prefetchable_limit)
+            {
                 let pf_base_reg =
                     ((base >> 16) as u16 & MEMORY_BASE_LIMIT_ADDRESS_MASK) as u32 | 0x1;
                 let pf_limit_reg =
                     ((limit >> 16) as u16 & MEMORY_BASE_LIMIT_ADDRESS_MASK) as u32 | 0x1;
-                cfg.write_u32(
-                    entry.bus,
-                    entry.device,
-                    entry.function,
-                    HeaderType01::PREFETCH_RANGE.0,
+                (
                     pf_base_reg | (pf_limit_reg << 16),
-                )
-                .await;
-                cfg.write_u32(
-                    entry.bus,
-                    entry.device,
-                    entry.function,
-                    HeaderType01::PREFETCH_BASE_UPPER.0,
                     (base >> 32) as u32,
-                )
-                .await;
-                cfg.write_u32(
-                    entry.bus,
-                    entry.device,
-                    entry.function,
-                    HeaderType01::PREFETCH_LIMIT_UPPER.0,
                     (limit >> 32) as u32,
                 )
-                .await;
             } else {
-                // Disable: write limit upper first, then base > limit, then
-                // base upper high so the range is clearly invalid.
-                cfg.write_u32(
-                    entry.bus,
-                    entry.device,
-                    entry.function,
-                    HeaderType01::PREFETCH_LIMIT_UPPER.0,
-                    0,
-                )
-                .await;
-                cfg.write_u32(
-                    entry.bus,
-                    entry.device,
-                    entry.function,
-                    HeaderType01::PREFETCH_RANGE.0,
-                    0x0000_fff0, // base 0xFFF0 > limit 0x0000
-                )
-                .await;
-                cfg.write_u32(
-                    entry.bus,
-                    entry.device,
-                    entry.function,
-                    HeaderType01::PREFETCH_BASE_UPPER.0,
-                    0xFFFF_FFFF,
-                )
-                .await;
-            }
+                (0x0000_fff0, 0xFFFF_FFFF, 0)
+            };
+            cfg.write_u32(
+                entry.bus,
+                entry.device,
+                entry.function,
+                HeaderType01::PREFETCH_LIMIT_UPPER.0,
+                pf_limit_upper,
+            )
+            .await;
+            cfg.write_u32(
+                entry.bus,
+                entry.device,
+                entry.function,
+                HeaderType01::PREFETCH_RANGE.0,
+                pf_range,
+            )
+            .await;
+            cfg.write_u32(
+                entry.bus,
+                entry.device,
+                entry.function,
+                HeaderType01::PREFETCH_BASE_UPPER.0,
+                pf_base_upper,
+            )
+            .await;
         }
 
         if entry.bars.is_empty() {
