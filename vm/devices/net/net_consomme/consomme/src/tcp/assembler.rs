@@ -9,10 +9,16 @@ use inspect::Inspect;
 /// segments are dropped — the sender retransmits and gaps fill over time.
 const MAX_RANGES: usize = 4;
 
-/// The assembler's range table is full and the new segment does not overlap
-/// or touch any existing range, so it cannot be tracked.
 #[derive(Debug, PartialEq, Eq)]
-pub struct TooManyGaps;
+pub enum AddError {
+    /// The range table is full and the new segment does not overlap or touch
+    /// any existing range, so it cannot be tracked.
+    TooManyGaps,
+    /// The segment contains data beyond an already-latched FIN.
+    DataPastFin,
+    /// The segment's FIN precedes data already tracked by the assembler.
+    FinBeforeData,
+}
 
 /// Result of an `add` call.
 #[derive(Debug, PartialEq, Eq)]
@@ -75,10 +81,42 @@ impl Assembler {
         self.count == 0
     }
 
+    /// Returns whether accepting this segment would add data or FIN state that
+    /// is not already represented by the assembler.
+    pub fn would_make_progress(&self, offset: u32, len: u32, fin: bool) -> bool {
+        let end = offset + len;
+        if self.validate_fin(offset, len, fin).is_err() {
+            return false;
+        }
+        let adds_data = len != 0
+            && !self.ranges[..self.count as usize]
+                .iter()
+                .any(|&(start, range_end)| offset >= start && end <= range_end);
+        let adds_fin = fin && self.fin_offset.is_none();
+        adds_data || adds_fin
+    }
+
+    fn validate_fin(&self, offset: u32, len: u32, fin: bool) -> Result<(), AddError> {
+        let end = offset + len;
+        if len != 0 && self.fin_offset.is_some_and(|fin_offset| end > fin_offset) {
+            return Err(AddError::DataPastFin);
+        }
+        if fin && self.fin_offset.is_none() {
+            if self.ranges[..self.count as usize]
+                .last()
+                .is_some_and(|&(_, range_end)| range_end > end)
+            {
+                return Err(AddError::FinBeforeData);
+            }
+        }
+        Ok(())
+    }
+
     /// Record that bytes `[offset, offset + len)` have been received.
     /// If `fin` is true, a FIN is present at offset `offset + len` (i.e.,
-    /// immediately after this segment's data). The FIN is latched and will
-    /// be delivered when the contiguous prefix reaches it.
+    /// immediately after this segment's data). The first FIN is latched and
+    /// will be delivered when the contiguous prefix reaches it. Conflicting
+    /// FIN offsets are ignored.
     ///
     /// If this extends the contiguous prefix starting at offset 0, the prefix
     /// is consumed: the first range is removed and all remaining ranges are
@@ -86,25 +124,22 @@ impl Assembler {
     /// bytes consumed. `AddResult::fin` is true if the FIN is now in-order
     /// (all preceding data received).
     ///
-    /// Returns `Err(TooManyGaps)` if the range table is full and the segment
-    /// doesn't merge with any existing range. In that case the assembler is
-    /// unchanged (the FIN is still latched if `fin` was true) and the caller
-    /// should drop the segment (don't write it to the ring).
-    pub fn add(&mut self, offset: u32, len: u32, fin: bool) -> Result<AddResult, TooManyGaps> {
-        // Latch the FIN if present. The FIN sits at offset + len in
-        // data-offset space. We record it *before* processing the data
-        // range so that if this segment also completes the contiguous
-        // prefix, the FIN is delivered in the same call.
-        if fin {
-            self.fin_offset = Some(offset + len);
-        }
-
+    /// Returns an error if the range table cannot track the segment or the
+    /// segment contains data beyond an already-latched FIN. The assembler is
+    /// unchanged on error, and the caller should drop the segment without
+    /// writing it to the ring.
+    pub fn add(&mut self, offset: u32, len: u32, fin: bool) -> Result<AddResult, AddError> {
+        self.validate_fin(offset, len, fin)?;
+        let end = offset + len;
         if len == 0 {
+            if fin && self.fin_offset.is_none() {
+                self.fin_offset = Some(end);
+            }
             return Ok(self.try_fin(0));
         }
 
         let new_start = offset;
-        let new_end = offset + len;
+        let new_end = end;
 
         // Find the range of existing entries that overlap or are adjacent to
         // the new range. Two half-open ranges [s,e) and [ns,ne)
@@ -116,6 +151,16 @@ impl Assembler {
         let last = ranges
             .iter()
             .rposition(|&(s, e)| s <= new_end && new_start <= e);
+
+        if first.is_none() && self.count as usize >= MAX_RANGES {
+            return Err(AddError::TooManyGaps);
+        }
+
+        // Latch the FIN only after all rejection checks so errors leave the
+        // assembler unchanged.
+        if fin && self.fin_offset.is_none() {
+            self.fin_offset = Some(end);
+        }
 
         match (first, last) {
             (Some(first), Some(last)) => {
@@ -133,9 +178,6 @@ impl Assembler {
             (None, None) => {
                 // No overlap: insert as a new entry.
                 let count = self.count as usize;
-                if count >= MAX_RANGES {
-                    return Err(TooManyGaps);
-                }
                 let pos = ranges
                     .iter()
                     .position(|&(s, _)| s > new_start)
@@ -458,9 +500,21 @@ mod tests {
         assert_eq!(a.ranges(), &[(10, 11), (20, 21), (30, 31), (40, 41)]);
 
         let r = a.add(50, 1, false);
-        assert_eq!(r, Err(TooManyGaps));
+        assert_eq!(r, Err(AddError::TooManyGaps));
         // State unchanged.
         assert_eq!(a.ranges(), &[(10, 11), (20, 21), (30, 31), (40, 41)]);
+    }
+
+    #[test]
+    fn test_table_full_reject_does_not_latch_fin() {
+        let mut a = Assembler::new();
+        a.add(10, 1, false).unwrap();
+        a.add(20, 1, false).unwrap();
+        a.add(30, 1, false).unwrap();
+        a.add(40, 1, false).unwrap();
+
+        assert_eq!(a.add(50, 1, true), Err(AddError::TooManyGaps));
+        assert_eq!(a.fin_offset, None);
     }
 
     #[test]
@@ -517,6 +571,7 @@ mod tests {
     #[test]
     fn test_duplicate_segment() {
         let mut a = Assembler::new();
+        assert!(a.would_make_progress(5, 5, false));
         let r = a.add(5, 5, false).unwrap();
         assert_eq!(
             r,
@@ -525,6 +580,7 @@ mod tests {
                 fin: false
             }
         );
+        assert!(!a.would_make_progress(5, 5, false));
         let r = a.add(5, 5, false).unwrap();
         assert_eq!(
             r,
@@ -620,6 +676,73 @@ mod tests {
             }
         );
         assert_eq!(a.ranges(), &[]);
+    }
+
+    #[test]
+    fn test_conflicting_fin_does_not_replace_latched_fin() {
+        let mut a = Assembler::new();
+        assert!(a.would_make_progress(10, 0, true));
+        a.add(10, 0, true).unwrap();
+        assert_eq!(a.fin_offset, Some(10));
+
+        assert!(!a.would_make_progress(20, 0, true));
+        a.add(20, 0, true).unwrap();
+        assert_eq!(a.fin_offset, Some(10));
+    }
+
+    #[test]
+    fn test_data_past_fin_is_rejected() {
+        let mut a = Assembler::new();
+        a.add(10, 0, true).unwrap();
+
+        assert!(!a.would_make_progress(0, 20, false));
+        assert_eq!(a.add(0, 20, false), Err(AddError::DataPastFin));
+        assert_eq!(a.fin_offset, Some(10));
+        assert!(a.ranges().is_empty());
+
+        assert_eq!(
+            a.add(0, 10, false).unwrap(),
+            AddResult {
+                consumed: 10,
+                fin: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_fin_before_buffered_data_is_rejected() {
+        let mut a = Assembler::new();
+        a.add(3, 7, false).unwrap();
+
+        assert!(!a.would_make_progress(3, 0, true));
+        assert_eq!(a.add(3, 0, true), Err(AddError::FinBeforeData));
+        assert_eq!(a.fin_offset, None);
+        assert_eq!(a.ranges(), &[(3, 10)]);
+
+        assert_eq!(
+            a.add(0, 3, false).unwrap(),
+            AddResult {
+                consumed: 10,
+                fin: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_fin_after_buffered_data_is_accepted() {
+        let mut a = Assembler::new();
+        a.add(5, 5, false).unwrap();
+
+        assert!(a.would_make_progress(0, 10, true));
+        assert_eq!(
+            a.add(0, 10, true).unwrap(),
+            AddResult {
+                consumed: 10,
+                fin: true,
+            }
+        );
+        assert_eq!(a.fin_offset, None);
+        assert!(a.ranges().is_empty());
     }
 
     #[test]

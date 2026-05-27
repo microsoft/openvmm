@@ -141,6 +141,14 @@ ramp up to a large window. Embedders can override the bounds via the
 `[16 KiB, 4 MiB]` and rounded up to a power of two. Setting
 `initial == max` pins a fixed size and disables growth.
 
+Connections waiting for a TCP close handshake to make progress use a
+60-second inactivity timeout by default, including connections closed before
+their initial handshake completes. ACKs and newly accepted data restart the
+timeout. Embedders can override it with the `tcp_close_timeout` field on
+`ConsommeParams`. The same duration is used for `TimeWait`, where it
+represents the 2*MSL wait required by RFC 9293. A separate fixed 60-second
+timeout bounds initial handshakes that receive no close request.
+
 Inbound connections require explicit port forwarding — OpenVMM can
 programmatically bind host ports and forward them into the guest.
 
