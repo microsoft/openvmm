@@ -58,6 +58,8 @@ use std::net::SocketAddrV6;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
+use std::time::Duration;
+use std::time::Instant;
 use thiserror::Error;
 
 #[derive(InspectMut)]
@@ -82,6 +84,8 @@ struct TcpAggregateStats {
     connections_closed_peer_rst: Counter,
     /// Connections closed due to local errors (socket failures, invalid handshake).
     connections_closed_local_error: Counter,
+    /// Connections reaped after the peer did not finish the shutdown handshake.
+    connections_closed_timeout: Counter,
 }
 
 impl TcpAggregateStats {
@@ -91,6 +95,10 @@ impl TcpAggregateStats {
             ConnectionCloseReason::PeerRst => self.connections_closed_peer_rst.increment(),
             ConnectionCloseReason::LocalError => self.connections_closed_local_error.increment(),
         }
+    }
+
+    fn record_timeout_close(&mut self) {
+        self.connections_closed_timeout.increment();
     }
 }
 
@@ -161,6 +169,12 @@ struct TcpConnection {
 struct TcpConnectionInner {
     loopback_port: LoopbackPortInfo,
     state: TcpState,
+
+    /// Deadline at which a connection in a half-closed state (`FinWait1`,
+    /// `FinWait2`, `Closing`, `LastAck`, or `TimeWait`) should be forcibly
+    /// reclaimed.
+    #[inspect(with = "|x| x.is_some()")]
+    close_deadline: Option<Instant>,
 
     #[inspect(with = "|x| x.len()")]
     rx_buffer: ring::Ring,
@@ -395,7 +409,38 @@ impl<T: Client> Access<'_, T> {
                 Err(_) => false,
             });
         // Check for any new incoming data
+        let now = Instant::now();
         self.inner.tcp.connections.retain(|ft, conn| {
+            // Reap connections whose half-closed cleanup timer has expired.
+            // This covers FinWait1/FinWait2/Closing/LastAck/TimeWait.
+            // Without this, sockets that reach these states can sit in the
+            // map indefinitely (e.g. the host socket may already be closed,
+            // so no I/O event will wake them up), leaking the connection
+            // entry.
+            if conn.inner.close_deadline.is_some_and(|d| now >= d) {
+                tracing::debug!(
+                    src = %ft.src,
+                    dst = %ft.dst,
+                    state = ?conn.inner.state,
+                    "half-closed timer expired, reclaiming connection",
+                );
+                match &conn.inner.state {
+                    TcpState::FinWait1
+                    | TcpState::FinWait2
+                    | TcpState::Closing
+                    | TcpState::LastAck => self.inner.tcp.aggregate_stats.record_timeout_close(),
+                    TcpState::TimeWait => self
+                        .inner
+                        .tcp
+                        .aggregate_stats
+                        .record_close(ConnectionCloseReason::Normal),
+                    state => {
+                        unreachable!("close deadline armed in unexpected TCP state: {state:?}")
+                    }
+                }
+                return false;
+            }
+
             let mut sender = Sender {
                 ft,
                 state: &mut self.inner.state,
@@ -723,6 +768,7 @@ impl TcpConnection {
         TcpConnectionInner {
             loopback_port: LoopbackPortInfo::None,
             state: TcpState::Connecting,
+            close_deadline: None,
             rx_buffer: ring::Ring::new(0),
             rx_window_cap: rx_buffer_size,
             rx_window_scale,
@@ -925,7 +971,7 @@ impl TcpConnectionInner {
                     if n == 0 {
                         // EOF — close the connection.
                         if !self.state.tx_fin() {
-                            self.close();
+                            self.close(sender.state.params.tcp_close_timeout);
                         }
                         break;
                     }
@@ -1041,7 +1087,7 @@ impl TcpConnectionInner {
                     match Pin::new(&mut *socket).poll_read_vectored(cx, &mut bufs) {
                         Poll::Ready(Ok(n)) => {
                             if n == 0 {
-                                self.close();
+                                self.close(sender.state.params.tcp_close_timeout);
                                 break;
                             }
                             self.tx_buffer.extend_by(n);
@@ -1324,14 +1370,16 @@ impl TcpConnectionInner {
         assert!(self.tx_send <= tx_end);
     }
 
-    fn close(&mut self) {
+    fn close(&mut self, close_timeout: Duration) {
         tracing::trace!("fin");
         match self.state {
             TcpState::SynSent | TcpState::SynReceived | TcpState::Established => {
                 self.state = TcpState::FinWait1;
+                self.arm_close_deadline(close_timeout);
             }
             TcpState::CloseWait => {
                 self.state = TcpState::LastAck;
+                self.arm_close_deadline(close_timeout);
             }
             TcpState::Connecting
             | TcpState::FinWait1
@@ -1341,6 +1389,16 @@ impl TcpConnectionInner {
             | TcpState::LastAck => unreachable!("fin in {:?}", self.state),
         }
         self.tx_fin_buffered = true;
+    }
+
+    /// Arm (or reset) the half-closed cleanup timer. Called on entry to any
+    /// of `FinWait1`, `FinWait2`, `Closing`, `LastAck`, or `TimeWait` so
+    /// that the connection cannot leak if the peer never completes the
+    /// shutdown handshake. Also called from the `TimeWait` packet handler
+    /// per RFC 793 (the TIME_WAIT timer must restart on any received
+    /// segment so that retransmitted FINs can still be ack'd).
+    fn arm_close_deadline(&mut self, close_timeout: Duration) {
+        self.close_deadline = Some(Instant::now() + close_timeout);
     }
 
     /// Send an ACK using the current state of the connection.
@@ -1498,8 +1556,14 @@ impl TcpConnectionInner {
                 self.tx_fin_buffered = false;
                 consumed -= 1;
                 match self.state {
-                    TcpState::FinWait1 => self.state = TcpState::FinWait2,
-                    TcpState::Closing => self.state = TcpState::TimeWait,
+                    TcpState::FinWait1 => {
+                        self.state = TcpState::FinWait2;
+                        self.arm_close_deadline(sender.state.params.tcp_close_timeout);
+                    }
+                    TcpState::Closing => {
+                        self.state = TcpState::TimeWait;
+                        self.arm_close_deadline(sender.state.params.tcp_close_timeout);
+                    }
                     TcpState::LastAck => {
                         self.last_close_reason = ConnectionCloseReason::Normal;
                         return Ok(false);
@@ -1598,7 +1662,9 @@ impl TcpConnectionInner {
             TcpState::CloseWait | TcpState::Closing | TcpState::LastAck => {}
             TcpState::TimeWait => {
                 self.ack(sender);
-                // TODO: restart timer
+                // Per RFC 793, restart the TIME_WAIT timer on any received
+                // segment so that retransmitted FINs can still be ack'd.
+                self.arm_close_deadline(sender.state.params.tcp_close_timeout);
             }
         }
 
@@ -1611,10 +1677,13 @@ impl TcpConnectionInner {
                 }
                 TcpState::FinWait1 => {
                     self.state = TcpState::Closing;
+                    self.arm_close_deadline(sender.state.params.tcp_close_timeout);
                 }
                 TcpState::FinWait2 => {
                     self.state = TcpState::TimeWait;
-                    // TODO: start timer
+                    // RFC 793 also mentions the need for FIN retransmission, but no packet loss
+                    // is expected.
+                    self.arm_close_deadline(sender.state.params.tcp_close_timeout);
                 }
                 TcpState::CloseWait
                 | TcpState::Closing
