@@ -177,12 +177,12 @@ impl MockConfigSpace {
 }
 
 impl PciConfigAccess for MockConfigSpace {
-    async fn read_u32(&mut self, bus: u8, device: u8, function: u8, offset: u16) -> u32 {
-        self.read_reg(bus, device, function, offset)
+    async fn read_u32(&mut self, bus: u8, devfn: u8, offset: u16) -> u32 {
+        self.read_reg(bus, devfn >> 3, devfn & 0x7, offset)
     }
 
-    async fn write_u32(&mut self, bus: u8, device: u8, function: u8, offset: u16, value: u32) {
-        self.write_reg(bus, device, function, offset, value);
+    async fn write_u32(&mut self, bus: u8, devfn: u8, offset: u16, value: u32) {
+        self.write_reg(bus, devfn >> 3, devfn & 0x7, offset, value);
     }
 }
 

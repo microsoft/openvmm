@@ -403,25 +403,13 @@ pub async fn program_assignments(cfg: &mut impl PciConfigAccess, result: &Assign
         // Program BAR addresses.
         for bar in &entry.bars {
             let offset = HeaderType00::BAR0.0 + (bar.index as u16) * 4;
-            cfg.write_u32(
-                entry.bus,
-                entry.device,
-                entry.function,
-                offset,
-                bar.address as u32,
-            )
-            .await;
+            entry.write_cfg(cfg, offset, bar.address as u32).await;
 
             if bar.is_64bit {
                 let upper_offset = HeaderType00::BAR0.0 + ((bar.index + 1) as u16) * 4;
-                cfg.write_u32(
-                    entry.bus,
-                    entry.device,
-                    entry.function,
-                    upper_offset,
-                    (bar.address >> 32) as u32,
-                )
-                .await;
+                entry
+                    .write_cfg(cfg, upper_offset, (bar.address >> 32) as u32)
+                    .await;
             }
         }
 
@@ -432,14 +420,9 @@ pub async fn program_assignments(cfg: &mut impl PciConfigAccess, result: &Assign
             // I/O window — we don't assign I/O BARs, so always disable.
             // Write zeros to the upper 16 bits (Secondary Status) since
             // those bits are W1C — writing back a read value would clear them.
-            cfg.write_u32(
-                entry.bus,
-                entry.device,
-                entry.function,
-                HeaderType01::SEC_STATUS_IO_RANGE.0,
-                0x0000_00F0, // base 0xF0 > limit 0x00, status bits zeroed
-            )
-            .await;
+            entry
+                .write_cfg(cfg, HeaderType01::SEC_STATUS_IO_RANGE.0, 0x0000_00F0)
+                .await;
 
             // Non-prefetchable memory window (32-bit only).
             let value = if let (Some(base), Some(limit)) = (entry.memory_base, entry.memory_limit) {
@@ -447,16 +430,11 @@ pub async fn program_assignments(cfg: &mut impl PciConfigAccess, result: &Assign
                 let mem_limit_reg = ((limit >> 16) as u16 & MEMORY_BASE_LIMIT_ADDRESS_MASK) as u32;
                 mem_base_reg | (mem_limit_reg << 16)
             } else {
-                0x0000_fff0 // base 0xFFF0 > limit 0x0000
+                0x0000_fff0
             };
-            cfg.write_u32(
-                entry.bus,
-                entry.device,
-                entry.function,
-                HeaderType01::MEMORY_RANGE.0,
-                value,
-            )
-            .await;
+            entry
+                .write_cfg(cfg, HeaderType01::MEMORY_RANGE.0, value)
+                .await;
 
             // Prefetchable memory window (64-bit capable).
             // Use base > limit to disable when no window is assigned.
@@ -475,30 +453,15 @@ pub async fn program_assignments(cfg: &mut impl PciConfigAccess, result: &Assign
             } else {
                 (0x0000_fff0, 0xFFFF_FFFF, 0)
             };
-            cfg.write_u32(
-                entry.bus,
-                entry.device,
-                entry.function,
-                HeaderType01::PREFETCH_LIMIT_UPPER.0,
-                pf_limit_upper,
-            )
-            .await;
-            cfg.write_u32(
-                entry.bus,
-                entry.device,
-                entry.function,
-                HeaderType01::PREFETCH_RANGE.0,
-                pf_range,
-            )
-            .await;
-            cfg.write_u32(
-                entry.bus,
-                entry.device,
-                entry.function,
-                HeaderType01::PREFETCH_BASE_UPPER.0,
-                pf_base_upper,
-            )
-            .await;
+            entry
+                .write_cfg(cfg, HeaderType01::PREFETCH_LIMIT_UPPER.0, pf_limit_upper)
+                .await;
+            entry
+                .write_cfg(cfg, HeaderType01::PREFETCH_RANGE.0, pf_range)
+                .await;
+            entry
+                .write_cfg(cfg, HeaderType01::PREFETCH_BASE_UPPER.0, pf_base_upper)
+                .await;
         }
 
         if entry.bars.is_empty() {

@@ -73,14 +73,22 @@ async fn scan_bus(
 
     for device_num in 0..32u8 {
         let vendor = cfg
-            .read_u32(bus, device_num, 0, CommonHeader::DEVICE_VENDOR.0)
+            .read_u32(
+                bus,
+                crate::devfn(device_num, 0),
+                CommonHeader::DEVICE_VENDOR.0,
+            )
             .await;
         if vendor == !0u32 {
             continue;
         }
 
         let bist_header_raw = cfg
-            .read_u32(bus, device_num, 0, HeaderType00::BIST_HEADER.0)
+            .read_u32(
+                bus,
+                crate::devfn(device_num, 0),
+                HeaderType00::BIST_HEADER.0,
+            )
             .await;
         let bist = BistHeader::from(bist_header_raw);
         let header_type = bist.header_type();
@@ -89,9 +97,11 @@ async fn scan_bus(
         let max_func = if multi_function { 8 } else { 1 };
 
         for function in 0..max_func {
+            let devfn = crate::devfn(device_num, function);
+
             if function > 0 {
                 let vendor = cfg
-                    .read_u32(bus, device_num, function, CommonHeader::DEVICE_VENDOR.0)
+                    .read_u32(bus, devfn, CommonHeader::DEVICE_VENDOR.0)
                     .await;
                 if vendor == !0u32 {
                     continue;
@@ -99,16 +109,14 @@ async fn scan_bus(
             }
 
             let func_header = if function > 0 {
-                let bh = cfg
-                    .read_u32(bus, device_num, function, HeaderType00::BIST_HEADER.0)
-                    .await;
+                let bh = cfg.read_u32(bus, devfn, HeaderType00::BIST_HEADER.0).await;
                 BistHeader::from(bh).header_type()
             } else {
                 header_type
             };
 
             let is_bridge = func_header == 1;
-            let bars = probe_bars(cfg, bus, device_num, function, is_bridge).await;
+            let bars = probe_bars(cfg, bus, devfn, is_bridge).await;
 
             let mut dev = DiscoveredDevice {
                 bus,
@@ -135,14 +143,8 @@ async fn scan_bus(
                 *next_bus = next_bus.wrapping_add(1);
 
                 let bus_reg = (bus as u32) | ((secondary as u32) << 8) | ((end_bus as u32) << 16);
-                cfg.write_u32(
-                    bus,
-                    device_num,
-                    function,
-                    HeaderType01::LATENCY_BUS_NUMBERS.0,
-                    bus_reg,
-                )
-                .await;
+                cfg.write_u32(bus, devfn, HeaderType01::LATENCY_BUS_NUMBERS.0, bus_reg)
+                    .await;
 
                 // NOTE: This is still logically recursive (scan_bus calls
                 // itself indirectly via this path), but the Rust compiler
@@ -154,14 +156,8 @@ async fn scan_bus(
                 let subordinate = next_bus.wrapping_sub(1).max(secondary);
                 let bus_reg =
                     (bus as u32) | ((secondary as u32) << 8) | ((subordinate as u32) << 16);
-                cfg.write_u32(
-                    bus,
-                    device_num,
-                    function,
-                    HeaderType01::LATENCY_BUS_NUMBERS.0,
-                    bus_reg,
-                )
-                .await;
+                cfg.write_u32(bus, devfn, HeaderType01::LATENCY_BUS_NUMBERS.0, bus_reg)
+                    .await;
 
                 dev.secondary_bus = Some(secondary);
                 dev.subordinate_bus = Some(subordinate);
@@ -177,9 +173,7 @@ async fn scan_bus(
                 );
             } else {
                 // Reserve bus numbers for SR-IOV VFs on this endpoint.
-                if let Some(max_vf_bus) =
-                    probe_sriov_bus_requirement(cfg, bus, device_num, function).await
-                {
+                if let Some(max_vf_bus) = probe_sriov_bus_requirement(cfg, bus, devfn).await {
                     if max_vf_bus > end_bus {
                         return Err(AssignmentError::BusExhaustion {
                             bus,
@@ -217,8 +211,7 @@ async fn scan_bus(
 async fn probe_bars(
     cfg: &mut impl PciConfigAccess,
     bus: u8,
-    device: u8,
-    function: u8,
+    devfn: u8,
     is_bridge: bool,
 ) -> Vec<DiscoveredBar> {
     let max_bars: u8 = if is_bridge { 2 } else { 6 };
@@ -229,15 +222,14 @@ async fn probe_bars(
     // The command register is left with MMIO disabled; program_assignments
     // will enable it once valid addresses have been programmed.
     let cmd = cfg
-        .read_u32(bus, device, function, CommonHeader::STATUS_COMMAND.0)
+        .read_u32(bus, devfn, CommonHeader::STATUS_COMMAND.0)
         .await;
     let command = Command::from(cmd as u16);
     if command.mmio_enabled() {
         // Status bits are W1C, so avoid writing them.
         cfg.write_u32(
             bus,
-            device,
-            function,
+            devfn,
             CommonHeader::STATUS_COMMAND.0,
             command.with_mmio_enabled(false).into_bits().into(),
         )
@@ -249,8 +241,8 @@ async fn probe_bars(
         let offset = HeaderType00::BAR0.0 + (i as u16) * 4;
 
         // Write all-ones to probe size.
-        cfg.write_u32(bus, device, function, offset, !0u32).await;
-        let readback = cfg.read_u32(bus, device, function, offset).await;
+        cfg.write_u32(bus, devfn, offset, !0u32).await;
+        let readback = cfg.read_u32(bus, devfn, offset).await;
 
         if readback == 0 {
             // BAR not implemented.
@@ -272,9 +264,8 @@ async fn probe_bars(
         let size = if is_64bit && (i + 1) < max_bars {
             // Probe upper 32 bits.
             let upper_offset = HeaderType00::BAR0.0 + ((i + 1) as u16) * 4;
-            cfg.write_u32(bus, device, function, upper_offset, !0u32)
-                .await;
-            let upper_readback = cfg.read_u32(bus, device, function, upper_offset).await;
+            cfg.write_u32(bus, devfn, upper_offset, !0u32).await;
+            let upper_readback = cfg.read_u32(bus, devfn, upper_offset).await;
 
             let mask = ((upper_readback as u64) << 32) | (readback as u64 & !0xF);
             if mask == 0 {
@@ -324,8 +315,7 @@ mod sriov {
 async fn probe_sriov_bus_requirement(
     cfg: &mut impl PciConfigAccess,
     bus: u8,
-    device: u8,
-    function: u8,
+    devfn: u8,
 ) -> Option<u8> {
     // Walk extended capabilities starting at 0x100.
     let mut offset = EXT_CAP_START;
@@ -333,7 +323,7 @@ async fn probe_sriov_bus_requirement(
         if offset < EXT_CAP_START || offset & 0x3 != 0 {
             break;
         }
-        let header = cfg.read_u32(bus, device, function, offset).await;
+        let header = cfg.read_u32(bus, devfn, offset).await;
         if header == 0 || header == !0u32 {
             break;
         }
@@ -343,7 +333,7 @@ async fn probe_sriov_bus_requirement(
         if cap_id == ExtendedCapabilityId::SRIOV.0 {
             // Read TotalVFs.
             let vfs_dword = cfg
-                .read_u32(bus, device, function, offset + sriov::INITIAL_TOTAL_VFS)
+                .read_u32(bus, devfn, offset + sriov::INITIAL_TOTAL_VFS)
                 .await;
             let total_vfs = (vfs_dword >> 16) as u16;
             if total_vfs == 0 {
@@ -352,7 +342,7 @@ async fn probe_sriov_bus_requirement(
 
             // Read VF Offset and VF Stride.
             let offset_stride = cfg
-                .read_u32(bus, device, function, offset + sriov::VF_OFFSET_STRIDE)
+                .read_u32(bus, devfn, offset + sriov::VF_OFFSET_STRIDE)
                 .await;
             let vf_offset = offset_stride as u16;
             let vf_stride = (offset_stride >> 16) as u16;
@@ -362,9 +352,9 @@ async fn probe_sriov_bus_requirement(
             }
 
             // Compute the BDF of the last VF.
-            // First VF routing ID = (bus << 8 | device << 3 | function) + vf_offset
+            // First VF routing ID = (bus << 8 | devfn) + vf_offset
             // Last VF routing ID = first + (total_vfs - 1) * vf_stride
-            let pf_rid = (bus as u16) << 8 | (device as u16) << 3 | function as u16;
+            let pf_rid = (bus as u16) << 8 | devfn as u16;
             let last_vf_rid = pf_rid
                 .wrapping_add(vf_offset)
                 .wrapping_add((total_vfs - 1).wrapping_mul(vf_stride));

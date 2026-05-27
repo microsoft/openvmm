@@ -20,6 +20,13 @@ mod assign;
 mod enumerate;
 mod tests;
 
+/// Compute the devfn byte from a device number and function number.
+///
+/// This is the standard PCI encoding: `(device << 3) | function`.
+pub fn devfn(device: u8, function: u8) -> u8 {
+    (device << 3) | function
+}
+
 /// Trait abstracting PCI configuration space access.
 ///
 /// The methods are async because PCI config space accesses can be deferred
@@ -27,20 +34,13 @@ mod tests;
 /// implementation handles deferred completions; tests use a synchronous mock.
 pub trait PciConfigAccess {
     /// Read a 32-bit value from PCI config space.
-    fn read_u32(
-        &mut self,
-        bus: u8,
-        device: u8,
-        function: u8,
-        offset: u16,
-    ) -> impl Future<Output = u32>;
+    fn read_u32(&mut self, bus: u8, devfn: u8, offset: u16) -> impl Future<Output = u32>;
 
     /// Write a 32-bit value to PCI config space.
     fn write_u32(
         &mut self,
         bus: u8,
-        device: u8,
-        function: u8,
+        devfn: u8,
         offset: u16,
         value: u32,
     ) -> impl Future<Output = ()>;
@@ -124,6 +124,16 @@ struct AssignmentEntry {
     prefetchable_base: Option<u64>,
     /// For bridges: the prefetchable memory window limit (64-bit capable).
     prefetchable_limit: Option<u64>,
+}
+
+impl AssignmentEntry {
+    fn devfn(&self) -> u8 {
+        devfn(self.device, self.function)
+    }
+
+    async fn write_cfg(&self, cfg: &mut impl PciConfigAccess, offset: u16, value: u32) {
+        cfg.write_u32(self.bus, self.devfn(), offset, value).await
+    }
 }
 
 /// A BAR address assignment.
