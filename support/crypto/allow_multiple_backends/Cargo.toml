@@ -11,3 +11,6 @@ crypto = { workspace = true, features = ["allow-multiple-backends"] }
 
 [lints]
 workspace = true
+
+[package.metadata.xtask.unused-deps]
+ignored = ["crypto"]
