@@ -5,11 +5,13 @@
 
 pub mod cargo_lock;
 pub mod cargo_toml;
+pub mod rust_analyzer_toml;
 pub mod rust_toolchain_toml;
 pub mod rustfmt_toml;
 
 pub use self::cargo_lock::CargoLock;
 pub use self::cargo_toml::CargoToml;
+pub use self::rust_analyzer_toml::RustAnalyzerToml;
 pub use self::rust_toolchain_toml::RustToolchainToml;
 pub use self::rustfmt_toml::RustfmtToml;
 
@@ -50,6 +52,7 @@ mod custom_meta {
         pub profile: bool,
         pub patch: bool,
         pub workspace: InheritWorkspace,
+        pub rust_analyzer: bool,
         pub rust_toolchain: InheritRustToolchain,
         pub rustfmt: bool,
     }

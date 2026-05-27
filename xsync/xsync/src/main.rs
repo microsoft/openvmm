@@ -57,6 +57,7 @@ struct Cli {
 enum Commands {
     CargoToml(tasks::CargoToml),
     CargoLock(tasks::CargoLock),
+    RustAnalyzerToml(tasks::RustAnalyzerToml),
     RustToolchainToml(tasks::RustToolchainToml),
     RustfmtToml(tasks::RustfmtToml),
 }
@@ -100,6 +101,7 @@ fn try_main() -> anyhow::Result<()> {
         Some(cmd) => match cmd {
             Commands::CargoToml(task) => task.run(ctx),
             Commands::CargoLock(task) => task.run(ctx),
+            Commands::RustAnalyzerToml(task) => task.run(ctx),
             Commands::RustToolchainToml(task) => task.run(ctx),
             Commands::RustfmtToml(task) => task.run(ctx),
         },
@@ -125,6 +127,14 @@ fn do_full_sync(ctx: &CmdCtx, check: bool) -> Result<(), anyhow::Error> {
     );
     tasks::RustToolchainToml {
         cmd: tasks::rust_toolchain_toml::Command::Regen,
+    }
+    .run(ctx.clone())?;
+
+    log::info!(
+        "running xsync cmd: `rust-analyzer regen`    (syncing overlay-repo's `rust-analyzer.toml` to base-repo's `rust-analyzer.toml`)"
+    );
+    tasks::RustAnalyzerToml {
+        cmd: tasks::rust_analyzer_toml::Command::Regen,
     }
     .run(ctx.clone())?;
 
