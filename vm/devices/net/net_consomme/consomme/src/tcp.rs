@@ -1111,15 +1111,7 @@ impl TcpConnectionInner {
         // read from the socket and no ACK is pending, send_data will find
         // nothing to do anyway.
         self.send_next(sender, AckPolicy::Flush);
-
-        // Detect normal connection closure (same logic as DNS backend).
-        let closing = self.state == TcpState::TimeWait
-            || self.state == TcpState::LastAck
-            || (self.state.tx_fin() && self.state.rx_fin() && self.tx_buffer.is_empty());
-        if closing {
-            self.last_close_reason = ConnectionCloseReason::Normal;
-        }
-        !closing
+        true
     }
 
     fn handle_connect_error(
