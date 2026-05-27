@@ -246,14 +246,19 @@ enum AckPolicy {
 struct TcpConnStats {
     /// Bytes sent from host to guest.
     bytes_tx_to_guest: Counter,
-    /// Bytes received from guest to host.
+    /// Payload bytes received from guest to host (excludes pure ACKs and
+    /// FIN-only segments).
     bytes_rx_from_guest: Counter,
-    /// Packets sent from host to guest.
+    /// Data segments sent from host to guest via `send_data` (every such
+    /// segment carries an ACK; this does not include standalone ACKs).
     pkts_tx_to_guest: Counter,
-    /// Packets received from guest to host.
-    pkts_rx_from_guest: Counter,
-    /// ACKs sent.
-    acks_tx: Counter,
+    /// Data segments received from guest to host (payload-bearing only;
+    /// excludes pure ACKs and FIN-only segments).
+    data_segments_rx_from_guest: Counter,
+    /// Standalone ACKs sent via `ack()` in response to unacceptable
+    /// segments (duplicate, out-of-order, out-of-window). Data segments
+    /// sent via `send_data` are counted in `pkts_tx_to_guest` instead.
+    standalone_acks_tx: Counter,
     /// RSTs sent.
     rsts_tx: Counter,
     /// Times send_data broke out because rx_mtu was 0 (no guest rx buffers).
@@ -1301,7 +1306,6 @@ impl TcpConnectionInner {
             self.stats.pkts_tx_to_guest.increment();
             self.stats.bytes_tx_to_guest.add(payload_len as u64);
             self.stats.tx_segment_size.add_sample(payload_len as u64);
-            self.stats.acks_tx.increment();
             self.tx_send = tx_next;
             self.needs_ack = false;
         }
@@ -1353,7 +1357,7 @@ impl TcpConnectionInner {
         trace_tcp_packet(sender.ft, &tcp, 0, "ack");
 
         sender.send_packet(&tcp, None);
-        self.stats.acks_tx.increment();
+        self.stats.standalone_acks_tx.increment();
     }
 
     fn handle_listen_syn(
@@ -1532,7 +1536,7 @@ impl TcpConnectionInner {
             TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2 => {
                 if !payload.is_empty() || fin {
                     if !payload.is_empty() {
-                        self.stats.pkts_rx_from_guest.increment();
+                        self.stats.data_segments_rx_from_guest.increment();
                         self.stats.bytes_rx_from_guest.add(payload.len() as u64);
                         self.stats.rx_segment_size.add_sample(payload.len() as u64);
                     }

@@ -453,6 +453,15 @@ impl net_backend::Queue for ConsommeQueue {
             };
 
             // Reuse the scratch buffer to avoid per-packet heap allocation.
+            // TSO caps the assembled packet at 64 KiB; assert so a buggy
+            // upstream caller can't permanently inflate the scratch buffer
+            // (and thus the queue's steady-state memory) by feeding an
+            // oversized `meta.len`.
+            debug_assert!(
+                meta.len as usize <= 64 * 1024,
+                "tx packet len {} exceeds 64 KiB TSO bound",
+                meta.len
+            );
             let mut buf = std::mem::take(&mut self.state.tx_scratch);
             buf.clear();
             buf.resize(meta.len as usize, 0);
