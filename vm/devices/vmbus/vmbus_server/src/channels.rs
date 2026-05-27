@@ -306,6 +306,27 @@ impl ConnectionState {
             false
         }
     }
+
+    /// Gets the monitor info for a channel if the current connection is using monitor pages.
+    ///
+    /// When creating the OpenParams for a channel, this method ensures the monitor info is included
+    /// only when it's actually being used. This makes sure that a ModifyConnection message that
+    /// changes the monitor pages can succeed even if a channel that ostensibly has monitor info
+    /// was opened while the server was not using monitor pages.
+    ///
+    /// This happens when the server is hosting a VM using an OpenHCL VMBus relay, which opens
+    /// reserved channels as non-reserved on the host, and leaves them open across ModifyConnection
+    /// requests. These are typically used for networking channels, which can have MNF enabled, but
+    /// minivmbus (which opens the channel as reserved) does not support monitor pages.
+    fn channel_monitor_info(&self, channel: &Channel) -> Option<MonitorInfo> {
+        if let ConnectionState::Connected(info) = self {
+            if info.monitor_page.is_some() {
+                return channel.handled_monitor_info();
+            }
+        }
+
+        None
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1494,7 +1515,7 @@ impl Server {
         Ok(OpenParams::from_request(
             &info,
             &request,
-            channel.handled_monitor_info(),
+            self.state.channel_monitor_info(channel),
             reserved_state.map(|state| state.target),
         ))
     }
@@ -1553,6 +1574,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .info
             .ok_or_else(|| RestoreError::MissingChannel(channel.offer.key()))?;
 
+        // In this case the monitor info is needed even if the server is not connected, so do not
+        // use ConnectionState::channel_monitor_info()
         if let Some(monitor_info) = channel.handled_monitor_info() {
             if !self
                 .inner
@@ -1616,7 +1639,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                             OpenParams::from_request(
                                 &info,
                                 &request,
-                                channel.handled_monitor_info(),
+                                self.inner.state.channel_monitor_info(channel),
                                 None,
                             ),
                             self.inner.state.get_version().expect("must be connected"),
@@ -1637,7 +1660,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                             OpenParams::from_request(
                                 &info,
                                 &request,
-                                channel.handled_monitor_info(),
+                                self.inner.state.channel_monitor_info(channel),
                                 reserved_state.map(|state| state.target),
                             ),
                             self.inner.state.get_version().expect("must be connected"),
@@ -2979,7 +3002,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 OpenParams::from_request(
                     info,
                     input,
-                    channel.handled_monitor_info(),
+                    self.inner.state.channel_monitor_info(channel),
                     reserved_state.map(|state| state.target),
                 ),
                 self.inner.state.get_version().expect("must be connected"),
