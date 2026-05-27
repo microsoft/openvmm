@@ -89,16 +89,20 @@ pub fn assign_addresses(
     // Step 2: Top-down — allocate from apertures and assign addresses.
     // Align the effective base to the root's alignment requirement so that
     // internal bump allocation matches the sizing (which starts from zero).
+    // Track where mem32 ends so that mem64 can start after it when
+    // sharing the same aperture.
+    let mut mem32_end: Option<u64> = None;
+
     if root_req.mem32 > 0 {
-        let aperture =
-            params
-                .low_mmio
-                .or(params.high_mmio)
-                .ok_or(AssignmentError::MmioExhaustion {
-                    required: root_req.mem32,
-                    available: 0,
-                    aperture: "low_mmio",
-                })?;
+        // 32-bit BARs and non-prefetchable bridge windows are inherently
+        // 32-bit, so the aperture must be below 4 GB. Do not fall back
+        // to high_mmio — placing 32-bit BARs above 4 GB would silently
+        // truncate addresses.
+        let aperture = params.low_mmio.ok_or(AssignmentError::MmioExhaustion {
+            required: root_req.mem32,
+            available: 0,
+            aperture: "low_mmio",
+        })?;
 
         let base = align_up(aperture.base, root_req.align32);
         let aperture_end = aperture.base + aperture.len;
@@ -112,6 +116,7 @@ pub fn assign_addresses(
         }
 
         assign_subtree(devices, false, base, &mut entries);
+        mem32_end = Some(base + root_req.mem32);
     }
 
     if root_req.mem64 > 0 {
@@ -125,11 +130,12 @@ pub fn assign_addresses(
                     aperture: "high_mmio",
                 })?;
 
-        // If sharing the same aperture as mem32, allocate after them.
-        let base = if params.high_mmio.is_some() {
-            align_up(aperture.base, root_req.align64)
+        // If sharing the same aperture as mem32, allocate after the
+        // actual aligned mem32 end to avoid overlapping assignments.
+        let base = if let Some(end) = mem32_end.filter(|_| params.high_mmio.is_none()) {
+            align_up(end, root_req.align64)
         } else {
-            align_up(aperture.base + root_req.mem32, root_req.align64)
+            align_up(aperture.base, root_req.align64)
         };
 
         let aperture_end = aperture.base + aperture.len;

@@ -162,6 +162,23 @@ pub enum AssignmentError {
         /// Function number of the bridge.
         function: u8,
     },
+    /// SR-IOV VF bus numbers conflict with buses already assigned to bridges.
+    #[error(
+        "SR-IOV VF bus conflict at {bus:02x}:{device:02x}.{function}: \
+         VFs need bus {max_vf_bus} but buses up to {next_bus} are already assigned"
+    )]
+    SriovBusConflict {
+        /// Bus of the PF.
+        bus: u8,
+        /// Device number of the PF.
+        device: u8,
+        /// Function number of the PF.
+        function: u8,
+        /// Highest bus number needed by VFs.
+        max_vf_bus: u16,
+        /// Next bus number already allocated (VF buses below this are taken).
+        next_bus: u16,
+    },
     /// Not enough MMIO space for all BAR allocations.
     #[error("{aperture} MMIO exhaustion: need {required:#x} bytes, have {available:#x}")]
     MmioExhaustion {

@@ -56,7 +56,7 @@ pub async fn enumerate_and_probe(
     cfg: &mut impl PciConfigAccess,
     params: &AssignmentParams,
 ) -> Result<Vec<DiscoveredDevice>, AssignmentError> {
-    let mut next_bus = params.start_bus.wrapping_add(1);
+    let mut next_bus = params.start_bus as u16 + 1;
     scan_bus(cfg, params.start_bus, params.end_bus, &mut next_bus).await
 }
 
@@ -67,7 +67,7 @@ async fn scan_bus(
     cfg: &mut impl PciConfigAccess,
     bus: u8,
     end_bus: u8,
-    next_bus: &mut u8,
+    next_bus: &mut u16,
 ) -> Result<Vec<DiscoveredDevice>, AssignmentError> {
     let mut devices = Vec::new();
 
@@ -132,15 +132,15 @@ async fn scan_bus(
             };
 
             if is_bridge {
-                if *next_bus > end_bus {
+                if *next_bus > end_bus as u16 {
                     return Err(AssignmentError::BusExhaustion {
                         bus,
                         device: device_num,
                         function,
                     });
                 }
-                let secondary = *next_bus;
-                *next_bus = next_bus.wrapping_add(1);
+                let secondary = *next_bus as u8;
+                *next_bus += 1;
 
                 let bus_reg = (bus as u32) | ((secondary as u32) << 8) | ((end_bus as u32) << 16);
                 cfg.write_u32(bus, devfn, HeaderType01::LATENCY_BUS_NUMBERS.0, bus_reg)
@@ -153,7 +153,7 @@ async fn scan_bus(
                 // box it to avoid infinite-size futures.
                 let children = Box::pin(scan_bus(cfg, secondary, end_bus, next_bus)).await?;
 
-                let subordinate = next_bus.wrapping_sub(1).max(secondary);
+                let subordinate = (*next_bus - 1).max(secondary as u16) as u8;
                 let bus_reg =
                     (bus as u32) | ((secondary as u32) << 8) | ((subordinate as u32) << 16);
                 cfg.write_u32(bus, devfn, HeaderType01::LATENCY_BUS_NUMBERS.0, bus_reg)
@@ -174,15 +174,29 @@ async fn scan_bus(
             } else {
                 // Reserve bus numbers for SR-IOV VFs on this endpoint.
                 if let Some(max_vf_bus) = probe_sriov_bus_requirement(cfg, bus, devfn).await {
-                    if max_vf_bus > end_bus {
+                    if max_vf_bus > end_bus as u16 {
                         return Err(AssignmentError::BusExhaustion {
                             bus,
                             device: device_num,
                             function,
                         });
                     }
-                    if max_vf_bus >= *next_bus {
-                        *next_bus = max_vf_bus.wrapping_add(1);
+                    // VF bus numbers are fixed by the device's VF Offset
+                    // and VF Stride. VFs that stay on the PF's own bus
+                    // don't need any bus reservation. VFs that extend to
+                    // other buses must not collide with buses already
+                    // assigned to sibling bridges.
+                    if max_vf_bus > bus as u16 {
+                        if max_vf_bus < *next_bus {
+                            return Err(AssignmentError::SriovBusConflict {
+                                bus,
+                                device: device_num,
+                                function,
+                                max_vf_bus,
+                                next_bus: *next_bus,
+                            });
+                        }
+                        *next_bus = max_vf_bus + 1;
                     }
                 }
 
@@ -316,7 +330,7 @@ async fn probe_sriov_bus_requirement(
     cfg: &mut impl PciConfigAccess,
     bus: u8,
     devfn: u8,
-) -> Option<u8> {
+) -> Option<u16> {
     // Walk extended capabilities starting at 0x100.
     let mut offset = EXT_CAP_START;
     loop {
@@ -351,14 +365,12 @@ async fn probe_sriov_bus_requirement(
                 return None;
             }
 
-            // Compute the BDF of the last VF.
+            // Compute the BDF of the last VF in u32 to detect overflow.
             // First VF routing ID = (bus << 8 | devfn) + vf_offset
             // Last VF routing ID = first + (total_vfs - 1) * vf_stride
-            let pf_rid = (bus as u16) << 8 | devfn as u16;
-            let last_vf_rid = pf_rid
-                .wrapping_add(vf_offset)
-                .wrapping_add((total_vfs - 1).wrapping_mul(vf_stride));
-            let max_bus = (last_vf_rid >> 8) as u8;
+            let pf_rid = (bus as u32) << 8 | devfn as u32;
+            let last_vf_rid = pf_rid + vf_offset as u32 + (total_vfs - 1) as u32 * vf_stride as u32;
+            let max_bus = (last_vf_rid >> 8) as u16;
             return Some(max_bus);
         }
 
