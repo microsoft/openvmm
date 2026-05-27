@@ -52,7 +52,7 @@ impl SimpleFlowNode for Node {
 
                 let path = rt.read(openvmm_repo_path);
                 rt.sh.change_dir(path);
-                flowey::shell_cmd!(rt, "cargo test --locked --doc --workspace --no-fail-fast --target {target} --profile {profile}").run()?;
+                flowey::shell_cmd!(rt, "cargo test --locked --doc --workspace --no-fail-fast --target {target} --profile {profile} --features crypto/allow-multiple-backends").run()?;
 
                 Ok(())
             }
