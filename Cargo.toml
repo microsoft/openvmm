@@ -54,6 +54,8 @@ members = [
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
+  # crypto workspace feature unification hack
+  "support/crypto/allow_multiple_backends",
   # opentmk
   "opentmk",
   # support crates consumed by closed-source only

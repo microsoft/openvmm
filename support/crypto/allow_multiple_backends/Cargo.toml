@@ -1,0 +1,13 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "crypto_allow_multiple_backends"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+crypto = { workspace = true, features = ["allow-multiple-backends"] }
+
+[lints]
+workspace = true

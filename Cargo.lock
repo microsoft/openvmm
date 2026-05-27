@@ -1113,6 +1113,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto_allow_multiple_backends"
+version = "0.0.0"
+dependencies = [
+ "crypto",
+]
+
+[[package]]
 name = "ctrlc"
 version = "3.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
