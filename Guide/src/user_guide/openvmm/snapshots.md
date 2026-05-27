@@ -22,9 +22,9 @@ These are stored as three files in a snapshot directory:
 
 ## Prerequisites
 
-Snapshots require **file-backed guest memory**. You must pass
-`--memory-backing-file` when launching the VM so that guest RAM is written
-to a file on disk rather than held in anonymous memory.
+Snapshots require **file-backed guest memory**. Pass `file=<PATH>` in the
+`--memory` option when launching the VM so that guest RAM is written to a
+file on disk rather than held in anonymous memory.
 
 ```admonish warning
 The memory backing file and the snapshot directory must be on the **same
@@ -41,8 +41,7 @@ Start a VM with file-backed memory:
 cargo run -- \
   --uefi \
   --disk memdiff:file:path/to/disk.vhdx \
-  --memory-backing-file path/to/memory.bin \
-  --memory 4096
+  --memory size=4096M,file=path/to/memory.bin
 ```
 
 Once the VM is running, open the interactive console and issue a save command,
@@ -69,13 +68,13 @@ To restore, pass the snapshot directory with `--restore-snapshot`:
 cargo run -- \
   --uefi \
   --disk memdiff:file:path/to/disk.vhdx \
-  --memory 4096 \
+  --memory size=4096M \
   --processors 4 \
   --restore-snapshot path/to/snapshot-dir
 ```
 
 `--restore-snapshot` automatically opens `memory.bin` from the snapshot
-directory, so `--memory-backing-file` should not be specified (the two
+directory, so `file=...` should not be specified in `--memory` (the two
 options are mutually exclusive).
 
 ```admonish note

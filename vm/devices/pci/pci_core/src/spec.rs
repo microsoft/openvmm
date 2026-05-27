@@ -262,6 +262,24 @@ pub mod cfg_space {
 
     pub const HEADER_TYPE_00_SIZE: u16 = 0x40;
 
+    /// The BIST / Header Type / Latency Timer / Cache Line Size DWORD
+    /// at config space offset 0x0C.
+    ///
+    /// | Bits 31-24 | Bits 23-16  | Bits 15-8       | Bits 7-0         |
+    /// |------------|-------------|-----------------|------------------|
+    /// | BIST       | Header Type | Latency Timer   | Cache Line Size  |
+    #[bitfield(u32)]
+    pub struct BistHeader {
+        pub cache_line_size: u8,
+        pub latency_timer: u8,
+        /// Header layout type (0 = standard, 1 = PCI-to-PCI bridge).
+        #[bits(7)]
+        pub header_type: u8,
+        /// When set, the device is part of a multi-function package.
+        pub multi_function: bool,
+        pub bist: u8,
+    }
+
     open_enum::open_enum! {
         /// Offsets into the type 01h configuration space header.
         ///
@@ -306,6 +324,13 @@ pub mod cfg_space {
     }
 
     pub const HEADER_TYPE_01_SIZE: u16 = 0x40;
+
+    /// The low 4 bits of the memory base/limit registers are reserved.
+    pub const MEMORY_BASE_LIMIT_ADDRESS_MASK: u16 = 0xFFF0;
+
+    /// The low bit of the prefetchable memory base/limit registers indicates
+    /// whether the range is 64-bit or 32-bit.
+    pub const PREFETCH_MEMORY_BASE_LIMIT_64BIT: u16 = 0x1;
 
     /// BAR in-band encoding bits.
     ///
@@ -414,6 +439,31 @@ pub mod caps {
             MSIX            = 0x11,
         }
     }
+
+    open_enum::open_enum! {
+
+        /// PCIe Extended Capability IDs (offsets 0x100+ in config space).
+        ///
+        /// Sources: PCI Express Base Specification
+        ///
+        /// NOTE: this is a non-exhaustive list, so don't be afraid to add new
+        /// variants on an as-needed basis!
+        pub enum ExtendedCapabilityId: u16 {
+            #![expect(missing_docs)] // self explanatory variants
+            ACS   = 0x0D,
+            ARI   = 0x0E,
+            SRIOV = 0x10,
+            REBAR = 0x15,
+            DVSEC = 0x23,
+        }
+    }
+
+    /// Starting offset of the PCIe extended capability region in config space.
+    pub const EXT_CAP_START: u16 = 0x100;
+    /// Ending offset (exclusive) of the PCIe extended capability region in config space.
+    pub const EXT_CAP_END: u16 = 0x1000;
+    /// Ending offset (exclusive) of the common config header region.
+    pub const COMMON_HEADER_END: u16 = 0x40;
 
     /// MSI
     #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
@@ -1058,6 +1108,124 @@ pub mod caps {
         pub struct SlotStatus2 {
             #[bits(16)]
             _reserved: u16,
+        }
+    }
+
+    /// Access Control Services (ACS) extended capability
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod acs {
+        use bitfield_struct::bitfield;
+        use inspect::Inspect;
+        use zerocopy::FromBytes;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        /// Default ACS capability mask: SV, TB, RR, CR, UF, DT (no egress control vector).
+        pub const DEFAULT_ACS_CAP_MASK: u16 = 0x005f;
+
+        open_enum::open_enum! {
+            /// Offsets into the ACS Extended Capability structure.
+            ///
+            /// | Offset    | Bits 31-16                | Bits 15-0               |
+            /// |-----------|---------------------------|-------------------------|
+            /// | Ext + 0x0 | Next Cap Ptr + Version    | Extended Capability ID  |
+            /// | Ext + 0x4 | ACS Control Register      | ACS Capability Register |
+            /// | Ext + 0x8 | Egress Control Vector (DWORD 0, if required)        |
+            /// | Ext + 0xC | Egress Control Vector (additional DWORDs, optional) |
+            pub enum AcsExtendedCapabilityHeader: u16 {
+                HEADER = 0x00,
+                CAPS_CONTROL = 0x04,
+                EGRESS_CONTROL_VECTOR = 0x08,
+            }
+        }
+
+        /// Access Control Services Capability register.
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct AcsCapabilities {
+            pub source_validation: bool,
+            pub translation_blocking: bool,
+            pub p2p_request_redirect: bool,
+            pub p2p_completion_redirect: bool,
+            pub upstream_forwarding: bool,
+            pub p2p_egress_control: bool,
+            pub direct_translated_p2p: bool,
+            #[bits(9)]
+            _reserved: u16,
+        }
+
+        /// Access Control Services Control register.
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct AcsControl {
+            pub source_validation_enable: bool,
+            pub translation_blocking_enable: bool,
+            pub p2p_request_redirect_enable: bool,
+            pub p2p_completion_redirect_enable: bool,
+            pub upstream_forwarding_enable: bool,
+            pub p2p_egress_control_enable: bool,
+            pub direct_translated_p2p_enable: bool,
+            #[bits(9)]
+            _reserved: u16,
+        }
+    }
+
+    /// Designated Vendor-Specific Extended Capability (DVSEC)
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod dvsec {
+        use bitfield_struct::bitfield;
+        use inspect::Inspect;
+        use zerocopy::FromBytes;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        open_enum::open_enum! {
+            /// Offsets into the DVSEC Extended Capability structure.
+            ///
+            /// | Offset    | Bits 31-16               | Bits 15-0               |
+            /// |-----------|--------------------------|-------------------------|
+            /// | Ext + 0x0 | Next Cap Ptr + Version   | Extended Capability ID  |
+            /// | Ext + 0x4 | DVSEC Length + Revision  | DVSEC Vendor ID         |
+            /// | Ext + 0x8 | Reserved                 | DVSEC ID                |
+            pub enum DvsecExtendedCapabilityHeader: u16 {
+                HEADER = 0x00,
+                DVSEC_HEADER1 = 0x04,
+                DVSEC_HEADER2 = 0x08,
+            }
+        }
+
+        /// DVSEC Header 1 register.
+        ///
+        /// Software should qualify the DVSEC Vendor ID before interpreting the
+        /// DVSEC Revision field.
+        ///
+        /// | Bits 31-20   | Bits 19-16      | Bits 15-0        |
+        /// |--------------|-----------------|------------------|
+        /// | DVSEC Length | DVSEC Revision  | DVSEC Vendor ID  |
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DvsecHeader1 {
+            pub dvsec_vendor_id: u16,
+            #[bits(4)]
+            pub dvsec_revision: u8,
+            #[bits(12)]
+            pub dvsec_length: u16,
+        }
+
+        /// DVSEC Header 2 register.
+        ///
+        /// Software should qualify the DVSEC Vendor ID before interpreting the
+        /// DVSEC ID field.
+        ///
+        /// | Bits 15-0 |
+        /// |-----------|
+        /// | DVSEC ID  |
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DvsecHeader2 {
+            pub dvsec_id: u16,
         }
     }
 }

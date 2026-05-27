@@ -328,7 +328,7 @@ improvements should focus on primary scope first.
 | fuzz_ide | `ide/src/` | `scsidisk/src/scsidvd/`, `scsidisk/src/atapi_scsi.rs`, `disk_backend/`, `disklayer_ram/` | `pci_core/`, `vmcore/`, `guestmem/` (infrastructure) |
 | fuzz_storvsp | `storvsp/src/` | `scsidisk/src/lib.rs`, `vmbus_ring/`, `vmbus_async/`, `disk_backend/` | `vmbus_channel/`, `vmbus_core/` (infrastructure) |
 | fuzz_nvme_driver | `nvme_driver/src/` | `nvme/src/`, `nvme_spec/`, `user_driver/` | `page_pool_alloc/`, `vmcore/` |
-| fuzz_firmware_uefi_nvram | `firmware_uefi/src/service/nvram/` | `uefi_nvram_specvars/` | `openssl` (infrastructure) |
+| fuzz_firmware_uefi_nvram | `firmware_uefi/src/service/nvram/` | `uefi_nvram_specvars/` | `crypto`, `openssl` (infrastructure) |
 | fuzz_firmware_uefi_diagnostics | `firmware_uefi/src/service/diagnostics/` | — | `guestmem/` |
 | fuzz_chipset_cmos_rtc | `chipset/src/cmos_rtc/` | `chipset_device_fuzz/` | `pal_async/`, `vmcore/` |
 | fuzz_scsi_buffers | `scsi_buffers/src/` | — | `guestmem/` |

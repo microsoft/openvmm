@@ -3,7 +3,9 @@
 
 //! AMD SEV-SNP specific definitions.
 
+use crate::ApicRegisterValue;
 use bitfield_struct::bitfield;
+use static_assertions::const_assert_eq;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -120,15 +122,16 @@ pub struct SevFeatures {
     pub vmgexit_param: bool,
     pub pmc_virt: bool,
     pub ibs_virt: bool,
-    rsvd: bool,
+    pub guest_intercept_control: bool,
     pub vmsa_reg_prot: bool,
     pub smt_prot: bool,
     pub secure_avic: bool,
     #[bits(4)]
-    _reserved: u64,
+    _reserved0: u64,
     pub ibpb_on_entry: bool,
-    #[bits(42)]
-    _unused: u64,
+    #[bits(41)]
+    _reserved1: u64,
+    pub allowed_sev_features_enable: bool,
 }
 
 #[bitfield(u64)]
@@ -138,16 +141,21 @@ pub struct SevVirtualInterruptControl {
     pub irq: bool,
     pub gif: bool,
     pub intr_shadow: bool,
-    #[bits(5)]
+    pub nmi: bool,
+    pub nmi_mask: bool,
+    #[bits(3)]
     _rsvd1: u64,
     #[bits(4)]
     pub priority: u64,
     pub ignore_tpr: bool,
-    #[bits(11)]
+    #[bits(5)]
     _rsvd2: u64,
+    pub nmi_enable: bool,
+    #[bits(5)]
+    _rsvd3: u64,
     pub vector: u8,
     #[bits(23)]
-    _rsvd3: u64,
+    _rsvd4: u64,
     pub guest_busy: bool,
 }
 
@@ -209,6 +217,160 @@ pub struct SevNpfInfo {
     pub npt_supervisor_shadow_stack: bool,
     #[bits(26)]
     rsvd38_63: u64,
+}
+
+/// SEV secure AVIC control register
+#[bitfield(u64)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
+pub struct SecureAvicControl {
+    pub secure_avic_en: bool,
+    pub allowed_nmi: bool,
+    #[bits(10)]
+    _rsvd: u64,
+    #[bits(52)]
+    pub guest_apic_backing_page_ptr: u64,
+}
+
+/// AVIC exit info1 for the incomplete IPI exit
+#[bitfield(u64)]
+pub struct SevAvicIncompleteIpiInfo1 {
+    pub icr_low: u32,
+    pub icr_high: u32,
+}
+
+open_enum::open_enum! {
+    pub enum SevAvicIpiFailure: u32 {
+        INVALID_TYPE = 0,
+        NOT_RUNNING = 1,
+        INVALID_TARGET = 2,
+        INVALID_BACKING_PAGE = 3,
+        INVALID_VECTOR = 4,
+        UNACCELERATED_IPI = 5,
+    }
+}
+
+impl SevAvicIpiFailure {
+    const fn into_bits(self) -> u32 {
+        self.0
+    }
+
+    const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+}
+
+/// AVIC exit info2 for the incomplete IPI exit
+#[bitfield(u64)]
+pub struct SevAvicIncompleteIpiInfo2 {
+    #[bits(8)]
+    pub index: u32,
+    #[bits(24)]
+    _mbz: u32,
+    #[bits(32)]
+    pub failure: SevAvicIpiFailure,
+}
+
+open_enum::open_enum! {
+    pub enum SevAvicRegisterNumber: u32 {
+        /// APIC ID Register.
+        APIC_ID = 0x2,
+        /// APIC Version Register.
+        VERSION = 0x3,
+        /// Task Priority Register
+        TPR = 0x8,
+        /// Arbitration Priority Register.
+        APR = 0x9,
+        /// Processor Priority Register.
+        PPR = 0xA,
+        /// End Of Interrupt Register.
+        EOI = 0xB,
+        /// Remote Read Register
+        REMOTE_READ = 0xC,
+        /// Logical Destination Register.
+        LDR = 0xD,
+        /// Destination Format Register.
+        DFR = 0xE,
+        /// Spurious Interrupt Vector.
+        SPURIOUS = 0xF,
+        /// In-Service Registers.
+        ISR0 = 0x10,
+        ISR1 = 0x11,
+        ISR2 = 0x12,
+        ISR3 = 0x13,
+        ISR4 = 0x14,
+        ISR5 = 0x15,
+        ISR6 = 0x16,
+        ISR7 = 0x17,
+        /// Trigger Mode Registers.
+        TMR0 = 0x18,
+        TMR1 = 0x19,
+        TMR2 = 0x1A,
+        TMR3 = 0x1B,
+        TMR4 = 0x1C,
+        TMR5 = 0x1D,
+        TMR6 = 0x1E,
+        TMR7 = 0x1F,
+        /// Interrupt Request Registers.
+        IRR0 = 0x20,
+        IRR1 = 0x21,
+        IRR2 = 0x22,
+        IRR3 = 0x23,
+        IRR4 = 0x24,
+        IRR5 = 0x25,
+        IRR6 = 0x26,
+        IRR7 = 0x27,
+        /// Error Status Register.
+        ERROR = 0x28,
+        /// ICR Low.
+        ICR_LOW = 0x30,
+        /// ICR High.
+        ICR_HIGH = 0x31,
+        /// LVT Timer Register.
+        TIMER_LVT = 0x32,
+        /// LVT Thermal Register.
+        THERMAL_LVT = 0x33,
+        /// LVT Performance Monitor Register.
+        PERFMON_LVT = 0x34,
+        /// LVT Local Int0 Register.
+        LINT0_LVT = 0x35,
+        /// LVT Local Int1 Register.
+        LINT1_LVT = 0x36,
+        /// LVT Error Register.
+        ERROR_LVT = 0x37,
+        /// Initial count Register.
+        INITIAL_COUNT = 0x38,
+        /// R/O Current count Register.
+        CURRENT_COUNT = 0x39,
+        /// Divide configuration Register.
+        DIVIDER = 0x3e,
+        /// Self IPI register, only present in x2APIC.
+        SELF_IPI = 0x3f,
+    }
+}
+
+impl SevAvicRegisterNumber {
+    const fn into_bits(self) -> u32 {
+        self.0
+    }
+
+    const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+}
+
+/// AVIC SEV exit info1 for the no acceleration exit
+#[bitfield(u64)]
+pub struct SevAvicNoAccelInfo {
+    #[bits(4)]
+    _rsvd1: u64,
+    #[bits(8)]
+    pub apic_register_number: SevAvicRegisterNumber,
+    #[bits(20)]
+    _rsvd2: u64,
+    #[bits(1)]
+    pub write_access: bool,
+    #[bits(31)]
+    _rsvd3: u64,
 }
 
 /// SEV VMSA structure representing CPU state
@@ -349,7 +511,7 @@ pub struct SevVmsa {
     pub rcx: u64,
     pub rdx: u64,
     pub rbx: u64,
-    pub vmsa_reserved8: u64, // MBZ
+    pub secure_avic_control: SecureAvicControl,
     pub rbp: u64,
     pub rsi: u64,
     pub rdi: u64,
@@ -420,6 +582,65 @@ pub struct SevVmsa {
     // YMM high registers
     pub ymm_registers: [SevXmmRegister; 16],
 }
+
+#[repr(C)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+/// Structure representing the SEV-ES AVIC IRR register.
+///
+/// If the UpdateIRR bit is set in the VMCB, the guest-controlled AllowedIRR mask
+/// is logically AND-ed with the host-controlled RequestedIRR and then is logically
+/// OR-ed into the IRR field in the Guest APIC Backing page.
+pub struct SevAvicIrrRegister {
+    pub value: u32,
+    pub allowed: u32,
+    _reserved: [u32; 2],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+/// Structure representing the SEV-ES AVIC backing page.
+/// Specification: "AMD64 PPR Vol3 System Programming", 15.29.3  AVIC Backing Page.
+pub struct SevAvicPage {
+    pub reserved_0: [ApicRegisterValue; 2],
+    pub id: ApicRegisterValue,
+    pub version: ApicRegisterValue,
+    pub reserved_4: [ApicRegisterValue; 4],
+    pub tpr: ApicRegisterValue,
+    pub apr: ApicRegisterValue,
+    pub ppr: ApicRegisterValue,
+    pub eoi: ApicRegisterValue,
+    pub rrd: ApicRegisterValue,
+    pub ldr: ApicRegisterValue,
+    pub dfr: ApicRegisterValue,
+    pub svr: ApicRegisterValue,
+    pub isr: [ApicRegisterValue; 8],
+    pub tmr: [ApicRegisterValue; 8],
+    pub irr: [SevAvicIrrRegister; 8],
+    pub esr: ApicRegisterValue,
+    pub reserved_29: [ApicRegisterValue; 6],
+    pub lvt_cmci: ApicRegisterValue,
+    pub icr: [ApicRegisterValue; 2],
+    pub lvt_timer: ApicRegisterValue,
+    pub lvt_thermal: ApicRegisterValue,
+    pub lvt_pmc: ApicRegisterValue,
+    pub lvt_lint0: ApicRegisterValue,
+    pub lvt_lint1: ApicRegisterValue,
+    pub lvt_error: ApicRegisterValue,
+    pub timer_icr: ApicRegisterValue,
+    pub timer_ccr: ApicRegisterValue,
+    pub reserved_3a: [ApicRegisterValue; 4],
+    pub timer_dcr: ApicRegisterValue,
+    pub self_ipi: ApicRegisterValue,
+    pub eafr: ApicRegisterValue,
+    pub eacr: ApicRegisterValue,
+    pub seoi: ApicRegisterValue,
+    pub reserved_44: [ApicRegisterValue; 0x5],
+    pub ier: [ApicRegisterValue; 8],
+    pub ei_lv_tr: [ApicRegisterValue; 3],
+    pub reserved_54: [ApicRegisterValue; 0xad],
+}
+
+const_assert_eq!(size_of::<SevAvicPage>(), 4096);
 
 // Info codes for the GHCB MSR protocol.
 open_enum::open_enum! {
@@ -775,14 +996,16 @@ pub struct SevStatusMsr {
     pub debug_swap: bool,
     pub prevent_host_ibs: bool,
     pub snp_btb_isolation: bool,
-    pub _rsvd1: bool,
+    pub vmpl_sss: bool,
     pub secure_tsc: bool,
-    pub _rsvd2: bool,
-    pub _rsvd3: bool,
-    pub _rsvd4: bool,
-    pub _rsvd5: bool,
+    pub vmgexit_param: bool,
+    _rsvd3: bool,
+    pub ibs_virt: bool,
+    _rsvd5: bool,
     pub vmsa_reg_prot: bool,
-    #[bits(6)]
+    pub smt_prot: bool,
+    pub secure_avic: bool,
+    #[bits(4)]
     _reserved: u64,
     pub ibpb_on_entry: bool,
     #[bits(40)]
@@ -1036,3 +1259,374 @@ static_assertions::const_assert_eq!(
     64,
     size_of::<SnpDerivedKeyResp>()
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zerocopy::FromZeros;
+
+    // ---- SecureAvicControl bitfield tests ----
+
+    #[test]
+    fn secure_avic_control_default_is_zero() {
+        let ctrl = SecureAvicControl::new();
+        assert_eq!(ctrl.into_bits(), 0);
+        assert_eq!(ctrl.secure_avic_en(), false);
+        assert_eq!(ctrl.allowed_nmi(), false);
+        assert_eq!(ctrl.guest_apic_backing_page_ptr(), 0);
+    }
+
+    #[test]
+    fn secure_avic_control_enable_bit() {
+        let ctrl = SecureAvicControl::new().with_secure_avic_en(true);
+        assert_eq!(ctrl.secure_avic_en(), true);
+        assert_eq!(ctrl.into_bits() & 1, 1);
+    }
+
+    #[test]
+    fn secure_avic_control_allowed_nmi_bit() {
+        let ctrl = SecureAvicControl::new().with_allowed_nmi(true);
+        assert_eq!(ctrl.allowed_nmi(), true);
+        assert_eq!(ctrl.into_bits() & 0b10, 0b10);
+    }
+
+    #[test]
+    fn secure_avic_control_page_ptr() {
+        // The page pointer is in bits [63:12], representing a PFN.
+        let pfn = 0xDEAD_BEEF_u64;
+        let ctrl = SecureAvicControl::new()
+            .with_secure_avic_en(true)
+            .with_guest_apic_backing_page_ptr(pfn);
+        assert_eq!(ctrl.guest_apic_backing_page_ptr(), pfn);
+        assert_eq!(ctrl.secure_avic_en(), true);
+        // The PFN should be in bits [63:12]
+        assert_eq!(ctrl.into_bits() >> 12, pfn);
+    }
+
+    #[test]
+    fn secure_avic_control_roundtrip() {
+        let raw = 0xABCD_1234_5678_9001_u64;
+        let ctrl = SecureAvicControl::from(raw);
+        assert_eq!(ctrl.into_bits(), raw);
+    }
+
+    // ---- SevAvicNoAccelInfo bitfield tests ----
+
+    #[test]
+    fn no_accel_info_register_number_extraction() {
+        // Register number is in bits [11:4].
+        let info = SevAvicNoAccelInfo::new().with_apic_register_number(SevAvicRegisterNumber::EOI);
+        assert_eq!(info.apic_register_number(), SevAvicRegisterNumber::EOI);
+        // EOI = 0xB, stored in bits [11:4]
+        assert_eq!((info.into_bits() >> 4) & 0xFF, 0xB);
+    }
+
+    #[test]
+    fn no_accel_info_write_access_bit() {
+        // Write access is bit 32.
+        let info = SevAvicNoAccelInfo::new().with_write_access(true);
+        assert!(info.write_access());
+        assert_eq!(info.into_bits() & (1 << 32), 1 << 32);
+
+        let info_read = SevAvicNoAccelInfo::new().with_write_access(false);
+        assert!(!info_read.write_access());
+    }
+
+    #[test]
+    fn no_accel_info_combined() {
+        let info = SevAvicNoAccelInfo::new()
+            .with_apic_register_number(SevAvicRegisterNumber::ICR_LOW)
+            .with_write_access(true);
+        assert_eq!(info.apic_register_number(), SevAvicRegisterNumber::ICR_LOW);
+        assert!(info.write_access());
+    }
+
+    #[test]
+    fn no_accel_info_all_register_numbers_roundtrip() {
+        let registers = [
+            SevAvicRegisterNumber::APIC_ID,
+            SevAvicRegisterNumber::VERSION,
+            SevAvicRegisterNumber::TPR,
+            SevAvicRegisterNumber::APR,
+            SevAvicRegisterNumber::PPR,
+            SevAvicRegisterNumber::EOI,
+            SevAvicRegisterNumber::LDR,
+            SevAvicRegisterNumber::DFR,
+            SevAvicRegisterNumber::SPURIOUS,
+            SevAvicRegisterNumber::ISR0,
+            SevAvicRegisterNumber::ISR7,
+            SevAvicRegisterNumber::TMR0,
+            SevAvicRegisterNumber::TMR7,
+            SevAvicRegisterNumber::IRR0,
+            SevAvicRegisterNumber::IRR7,
+            SevAvicRegisterNumber::ERROR,
+            SevAvicRegisterNumber::ICR_LOW,
+            SevAvicRegisterNumber::ICR_HIGH,
+            SevAvicRegisterNumber::TIMER_LVT,
+            SevAvicRegisterNumber::INITIAL_COUNT,
+            SevAvicRegisterNumber::CURRENT_COUNT,
+            SevAvicRegisterNumber::DIVIDER,
+            SevAvicRegisterNumber::SELF_IPI,
+        ];
+        for reg in registers {
+            let info = SevAvicNoAccelInfo::new().with_apic_register_number(reg);
+            assert_eq!(
+                info.apic_register_number(),
+                reg,
+                "register number roundtrip failed for {reg:#x?}"
+            );
+        }
+    }
+
+    // ---- SevAvicIncompleteIpiInfo1/2 bitfield tests ----
+
+    #[test]
+    fn incomplete_ipi_info1_icr_fields() {
+        let icr_low = 0x0004_10FFu32;
+        let icr_high = 0x0200_0000u32;
+        let info = SevAvicIncompleteIpiInfo1::new()
+            .with_icr_low(icr_low)
+            .with_icr_high(icr_high);
+        assert_eq!(info.icr_low(), icr_low);
+        assert_eq!(info.icr_high(), icr_high);
+        assert_eq!(info.into_bits(), icr_low as u64 | ((icr_high as u64) << 32));
+    }
+
+    #[test]
+    fn incomplete_ipi_info2_fields() {
+        let info = SevAvicIncompleteIpiInfo2::new()
+            .with_index(42)
+            .with_failure(SevAvicIpiFailure::NOT_RUNNING);
+        assert_eq!(info.index(), 42);
+        assert_eq!(info.failure(), SevAvicIpiFailure::NOT_RUNNING);
+    }
+
+    #[test]
+    fn incomplete_ipi_info2_all_failure_codes() {
+        let failures = [
+            SevAvicIpiFailure::INVALID_TYPE,
+            SevAvicIpiFailure::NOT_RUNNING,
+            SevAvicIpiFailure::INVALID_TARGET,
+            SevAvicIpiFailure::INVALID_BACKING_PAGE,
+            SevAvicIpiFailure::INVALID_VECTOR,
+            SevAvicIpiFailure::UNACCELERATED_IPI,
+        ];
+        for failure in failures {
+            let info = SevAvicIncompleteIpiInfo2::new().with_failure(failure);
+            assert_eq!(
+                info.failure(),
+                failure,
+                "failure code roundtrip failed for {failure:#x?}"
+            );
+        }
+    }
+
+    // ---- SevFeatures secure AVIC fields ----
+
+    #[test]
+    fn sev_features_secure_avic_bit() {
+        let features = SevFeatures::new().with_secure_avic(true);
+        assert!(features.secure_avic());
+        // secure_avic is bit 16 (0-indexed).
+        assert_ne!(features.into_bits() & (1 << 16), 0);
+    }
+
+    #[test]
+    fn sev_features_guest_intercept_control_bit() {
+        let features = SevFeatures::new().with_guest_intercept_control(true);
+        assert!(features.guest_intercept_control());
+        // guest_intercept_control is bit 13.
+        assert_ne!(features.into_bits() & (1 << 13), 0);
+    }
+
+    #[test]
+    fn sev_features_secure_avic_with_no_alternate_injection() {
+        // Secure AVIC and alternate injection are mutually exclusive per the
+        // init_vmsa logic.
+        let features = SevFeatures::new()
+            .with_secure_avic(true)
+            .with_guest_intercept_control(true)
+            .with_alternate_injection(false);
+        assert!(features.secure_avic());
+        assert!(features.guest_intercept_control());
+        assert!(!features.alternate_injection());
+    }
+
+    #[test]
+    fn sev_features_alternate_injection_without_secure_avic() {
+        let features = SevFeatures::new()
+            .with_alternate_injection(true)
+            .with_secure_avic(false);
+        assert!(features.alternate_injection());
+        assert!(!features.secure_avic());
+    }
+
+    // ---- SevStatusMsr secure AVIC field ----
+
+    #[test]
+    fn sev_status_msr_secure_avic_bit() {
+        let status = SevStatusMsr::new().with_secure_avic(true);
+        assert!(status.secure_avic());
+        // secure_avic is bit 18 in SevStatusMsr (after sev_enabled, es_enabled,
+        // snp_enabled, vtom, reflect_vc, restrict_injection, alternate_injection,
+        // debug_swap, prevent_host_ibs, snp_btb_isolation, vmpl_sss, secure_tsc,
+        // vmgexit_param, _rsvd3, ibs_virt, _rsvd5, vmsa_reg_prot, smt_prot).
+        assert_ne!(status.into_bits() & (1 << 18), 0);
+    }
+
+    // ---- SevVirtualInterruptControl NMI fields ----
+
+    #[test]
+    fn v_intr_cntrl_nmi_fields() {
+        let ctrl = SevVirtualInterruptControl::new()
+            .with_nmi(true)
+            .with_nmi_mask(true)
+            .with_nmi_enable(true);
+        assert!(ctrl.nmi());
+        assert!(ctrl.nmi_mask());
+        assert!(ctrl.nmi_enable());
+    }
+
+    // ---- SevAvicPage layout tests ----
+
+    #[test]
+    fn sev_avic_page_size_is_4096() {
+        // Already asserted at compile time, but verify at runtime too.
+        assert_eq!(size_of::<SevAvicPage>(), 4096);
+    }
+
+    #[test]
+    fn sev_avic_irr_register_size() {
+        // Each IRR register has value + allowed + reserved = 16 bytes,
+        // same as a standard ApicRegisterValue.
+        assert_eq!(
+            size_of::<SevAvicIrrRegister>(),
+            size_of::<ApicRegisterValue>()
+        );
+    }
+
+    #[test]
+    fn sev_avic_page_field_offsets() {
+        // Verify key field offsets match the APIC register map.
+        // Each "register" is 16 bytes (128 bits per the AMD spec).
+        let page = SevAvicPage::new_zeroed();
+        let base = core::ptr::from_ref(&page) as usize;
+
+        // id is at register index 2 (offset 0x20)
+        let id_offset = core::ptr::from_ref(&page.id) as usize - base;
+        assert_eq!(id_offset, 2 * 16, "APIC ID offset");
+
+        // version is at register index 3 (offset 0x30)
+        let version_offset = core::ptr::from_ref(&page.version) as usize - base;
+        assert_eq!(version_offset, 3 * 16, "version offset");
+
+        // TPR is at register index 8 (offset 0x80)
+        let tpr_offset = core::ptr::from_ref(&page.tpr) as usize - base;
+        assert_eq!(tpr_offset, 8 * 16, "TPR offset");
+
+        // ISR starts at register index 0x10 (offset 0x100)
+        let isr_offset = core::ptr::from_ref(&page.isr) as usize - base;
+        assert_eq!(isr_offset, 0x10 * 16, "ISR offset");
+
+        // TMR starts at register index 0x18 (offset 0x180)
+        let tmr_offset = core::ptr::from_ref(&page.tmr) as usize - base;
+        assert_eq!(tmr_offset, 0x18 * 16, "TMR offset");
+
+        // IRR starts at register index 0x20 (offset 0x200)
+        let irr_offset = core::ptr::from_ref(&page.irr) as usize - base;
+        assert_eq!(irr_offset, 0x20 * 16, "IRR offset");
+
+        // ICR is at register index 0x30 (offset 0x300)
+        let icr_offset = core::ptr::from_ref(&page.icr) as usize - base;
+        assert_eq!(icr_offset, 0x30 * 16, "ICR offset");
+    }
+
+    // ---- VMSA SecureAvicControl field offset test ----
+
+    #[test]
+    fn vmsa_secure_avic_control_at_rsp_offset() {
+        // In the VMSA, secure_avic_control occupies the RSP slot (between RBX and RBP).
+        // Verify it's at the expected offset by checking it doesn't overlap GPRs.
+        let vmsa = SevVmsa::new_zeroed();
+        let base = core::ptr::from_ref(&vmsa) as usize;
+        let rbx_offset = core::ptr::from_ref(&vmsa.rbx) as usize - base;
+        let savic_offset = core::ptr::from_ref(&vmsa.secure_avic_control) as usize - base;
+        let rbp_offset = core::ptr::from_ref(&vmsa.rbp) as usize - base;
+
+        // secure_avic_control should be right after rbx and before rbp.
+        assert_eq!(savic_offset, rbx_offset + 8);
+        assert_eq!(rbp_offset, savic_offset + 8);
+    }
+
+    // ---- SevAvicRegisterNumber to x2APIC MSR mapping ----
+
+    #[test]
+    fn avic_register_number_matches_apic_register_enum() {
+        // The SevAvicRegisterNumber values should match the corresponding
+        // x86defs::apic::ApicRegisterValue values, ensuring correct MSR computation.
+        use crate::apic::ApicRegister;
+        assert_eq!(SevAvicRegisterNumber::APIC_ID.0, ApicRegister::ID.0 as u32);
+        assert_eq!(
+            SevAvicRegisterNumber::VERSION.0,
+            ApicRegister::VERSION.0 as u32
+        );
+        assert_eq!(SevAvicRegisterNumber::TPR.0, ApicRegister::TPR.0 as u32);
+        assert_eq!(SevAvicRegisterNumber::EOI.0, ApicRegister::EOI.0 as u32);
+        assert_eq!(SevAvicRegisterNumber::LDR.0, ApicRegister::LDR.0 as u32);
+        assert_eq!(
+            SevAvicRegisterNumber::SPURIOUS.0,
+            ApicRegister::SVR.0 as u32
+        );
+        assert_eq!(SevAvicRegisterNumber::ISR0.0, ApicRegister::ISR0.0 as u32);
+        assert_eq!(SevAvicRegisterNumber::TMR0.0, ApicRegister::TMR0.0 as u32);
+        assert_eq!(SevAvicRegisterNumber::IRR0.0, ApicRegister::IRR0.0 as u32);
+        assert_eq!(SevAvicRegisterNumber::ERROR.0, ApicRegister::ESR.0 as u32);
+        assert_eq!(
+            SevAvicRegisterNumber::ICR_LOW.0,
+            ApicRegister::ICR0.0 as u32
+        );
+        assert_eq!(
+            SevAvicRegisterNumber::ICR_HIGH.0,
+            ApicRegister::ICR1.0 as u32
+        );
+        assert_eq!(
+            SevAvicRegisterNumber::TIMER_LVT.0,
+            ApicRegister::LVT_TIMER.0 as u32
+        );
+        assert_eq!(
+            SevAvicRegisterNumber::INITIAL_COUNT.0,
+            ApicRegister::TIMER_ICR.0 as u32
+        );
+        assert_eq!(
+            SevAvicRegisterNumber::CURRENT_COUNT.0,
+            ApicRegister::TIMER_CCR.0 as u32
+        );
+        assert_eq!(
+            SevAvicRegisterNumber::DIVIDER.0,
+            ApicRegister::TIMER_DCR.0 as u32
+        );
+        assert_eq!(
+            SevAvicRegisterNumber::SELF_IPI.0,
+            ApicRegister::SELF_IPI.0 as u32
+        );
+    }
+
+    #[test]
+    fn avic_register_to_x2apic_msr() {
+        // Verify the MSR computation: X2APIC_MSR_BASE + register_number.
+        use crate::apic::X2APIC_MSR_BASE;
+        let msr = X2APIC_MSR_BASE + SevAvicRegisterNumber::EOI.0;
+        assert_eq!(msr, 0x80B); // EOI is register 0xB
+
+        let msr = X2APIC_MSR_BASE + SevAvicRegisterNumber::ICR_LOW.0;
+        assert_eq!(msr, 0x830); // ICR_LOW is register 0x30
+    }
+
+    // ---- SevExitCode AVIC constants ----
+
+    #[test]
+    fn sev_exit_code_avic_values() {
+        assert_eq!(SevExitCode::AVIC_INCOMPLETE_IPI.0, 0x401);
+        assert_eq!(SevExitCode::AVIC_NOACCEL.0, 0x402);
+    }
+}

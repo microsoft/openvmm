@@ -81,6 +81,7 @@ use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::vmtime::VmTimeAccess;
+use x86defs::ApicRegisterValue;
 use x86defs::RFlags;
 use x86defs::X64_CR0_ET;
 use x86defs::X64_CR0_NE;
@@ -102,8 +103,6 @@ use x86defs::tdx::TdxGp;
 use x86defs::tdx::TdxInstructionInfo;
 use x86defs::tdx::TdxL2Ctls;
 use x86defs::tdx::TdxVpEnterRaxResult;
-use x86defs::vmx::ApicPage;
-use x86defs::vmx::ApicRegister;
 use x86defs::vmx::CR_ACCESS_TYPE_LMSW;
 use x86defs::vmx::CR_ACCESS_TYPE_MOV_TO_CR;
 use x86defs::vmx::CrAccessQualification;
@@ -125,6 +124,7 @@ use x86defs::vmx::SecondaryProcessorControls;
 use x86defs::vmx::VMX_ENTRY_CONTROL_LONG_MODE_GUEST;
 use x86defs::vmx::VMX_FEATURE_CONTROL_LOCKED;
 use x86defs::vmx::VmcsField;
+use x86defs::vmx::VmxApicPage;
 use x86defs::vmx::VmxEptExitQualification;
 use x86defs::vmx::VmxExit;
 use x86defs::vmx::VmxExitBasic;
@@ -3626,7 +3626,7 @@ impl UhProcessor<'_, TdxBacked> {
 
 struct TdxApicClient<'a, T> {
     partition: &'a UhPartitionInner,
-    apic_page: &'a mut ApicPage,
+    apic_page: &'a mut VmxApicPage,
     dev: &'a T,
     vmtime: &'a VmTimeAccess,
     vtl: GuestVtl,
@@ -3662,7 +3662,7 @@ impl<T: CpuIo> ApicClient for TdxApicClient<'_, T> {
     }
 }
 
-fn pull_apic_offload(page: &mut ApicPage) -> ([u32; 8], [u32; 8]) {
+fn pull_apic_offload(page: &mut VmxApicPage) -> ([u32; 8], [u32; 8]) {
     let mut irr = [0; 8];
     let mut isr = [0; 8];
     for (((irr, page_irr), isr), page_isr) in irr
@@ -3687,29 +3687,12 @@ impl hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, TdxBacked> {
     }
 
     fn gp(&mut self, n: hv1_hypercall::X64HypercallRegister) -> u64 {
-        let gps = self.vp.runner.tdx_enter_guest_gps();
-        match n {
-            hv1_hypercall::X64HypercallRegister::Rax => gps[TdxGp::RAX],
-            hv1_hypercall::X64HypercallRegister::Rcx => gps[TdxGp::RCX],
-            hv1_hypercall::X64HypercallRegister::Rdx => gps[TdxGp::RDX],
-            hv1_hypercall::X64HypercallRegister::Rbx => gps[TdxGp::RBX],
-            hv1_hypercall::X64HypercallRegister::Rsi => gps[TdxGp::RSI],
-            hv1_hypercall::X64HypercallRegister::Rdi => gps[TdxGp::RDI],
-            hv1_hypercall::X64HypercallRegister::R8 => gps[TdxGp::R8],
-        }
+        self.vp.runner.tdx_enter_guest_gps()[n as usize]
     }
 
     fn set_gp(&mut self, n: hv1_hypercall::X64HypercallRegister, value: u64) {
         let gps = self.vp.runner.tdx_enter_guest_gps_mut();
-        match n {
-            hv1_hypercall::X64HypercallRegister::Rax => gps[TdxGp::RAX] = value,
-            hv1_hypercall::X64HypercallRegister::Rcx => gps[TdxGp::RCX] = value,
-            hv1_hypercall::X64HypercallRegister::Rdx => gps[TdxGp::RDX] = value,
-            hv1_hypercall::X64HypercallRegister::Rbx => gps[TdxGp::RBX] = value,
-            hv1_hypercall::X64HypercallRegister::Rsi => gps[TdxGp::RSI] = value,
-            hv1_hypercall::X64HypercallRegister::Rdi => gps[TdxGp::RDI] = value,
-            hv1_hypercall::X64HypercallRegister::R8 => gps[TdxGp::R8] = value,
-        }
+        gps[n as usize] = value;
     }
 
     // TODO: cleanup xmm to not use same as mshv
@@ -4276,7 +4259,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
 /// Compute the index of the highest vector set in IRR/ISR, or 0
 /// if no vector is set. (Vectors 0-15 are invalid so this is not
 /// ambiguous.)
-fn top_vector(reg: &[ApicRegister; 8]) -> u8 {
+fn top_vector(reg: &[ApicRegisterValue; 8]) -> u8 {
     reg.iter()
         .enumerate()
         .rev()

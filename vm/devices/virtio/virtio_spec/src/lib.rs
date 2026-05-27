@@ -9,6 +9,7 @@
 
 #![expect(missing_docs)]
 
+pub mod blk;
 pub mod fs;
 
 use bitfield_struct::bitfield;

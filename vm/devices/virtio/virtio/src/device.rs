@@ -33,6 +33,10 @@ pub trait VirtioDevice: InspectMut + Send {
     /// Must be a power of two, >0, and ≤ [`crate::MAX_QUEUE_SIZE`]. The
     /// transport validates these invariants at construction time.
     ///
+    /// `queue_index` must be less than `traits().max_queues`. The caller
+    /// is responsible for bounds checking; implementations may panic on
+    /// out-of-range indices.
+    ///
     /// Override to provide per-device or per-queue sizes. The default
     /// returns [`DEFAULT_QUEUE_SIZE`] (256).
     fn queue_size(&self, _queue_index: u16) -> u16 {

@@ -164,8 +164,8 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                     .map(|(name, range)| ((*name).into(), *range.start(), *range.end()))
                     .collect(),
             }),
-            pci: device.supports_pci().map(|p| PciInit {
-                suggested_bdf: p.suggested_bdf(),
+            pci: device.supports_pci().map(|pci| PciInit {
+                suggested_bdf: pci.suggested_bdf(),
             }),
         });
 

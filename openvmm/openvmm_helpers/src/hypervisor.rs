@@ -20,14 +20,37 @@ pub fn choose_hypervisor() -> anyhow::Result<Resource<HypervisorKind>> {
     anyhow::bail!("no hypervisor available");
 }
 
-/// Returns a [`Resource<HypervisorKind>`] for the named backend.
+/// Parses a hypervisor specifier of the form `name` or `name:key=val,key,...`.
 ///
-/// This validates that the name matches a registered probe and checks
-/// availability.
-pub fn hypervisor_resource(name: &str) -> anyhow::Result<Resource<HypervisorKind>> {
+/// Returns `(name, params)` where `params` is a list of `(key, value)` pairs.
+/// A bare key (no `=`) is treated as a boolean flag with value `"true"`.
+fn parse_hypervisor_spec(spec: &str) -> anyhow::Result<(&str, Vec<(&str, &str)>)> {
+    let (name, rest) = spec.split_once(':').unwrap_or((spec, ""));
+    anyhow::ensure!(!name.is_empty(), "empty hypervisor name in spec: {spec}");
+    let params = if rest.is_empty() {
+        Vec::new()
+    } else {
+        rest.split(',')
+            .filter(|item| !item.is_empty())
+            .map(|item| {
+                let (key, val) = item.split_once('=').unwrap_or((item, "true"));
+                anyhow::ensure!(!key.is_empty(), "empty parameter key in spec: {spec}");
+                Ok((key, val))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
+    };
+    Ok((name, params))
+}
+
+/// Returns a [`Resource<HypervisorKind>`] for the named backend, with
+/// optional parameters.
+///
+/// The specifier format is `name` or `name:key=val,key,...`.
+/// Each backend validates its own parameters — see the probe
+/// implementations for supported keys.
+pub fn hypervisor_resource(spec: &str) -> anyhow::Result<Resource<HypervisorKind>> {
+    let (name, params) = parse_hypervisor_spec(spec)?;
     let probe = hypervisor_resources::probe_by_name(name)
         .ok_or_else(|| anyhow::anyhow!("unknown hypervisor: {name}"))?;
-    probe
-        .try_new_resource()?
-        .ok_or_else(|| anyhow::anyhow!("hypervisor {name} is not available"))
+    probe.new_resource(&params)
 }

@@ -12,6 +12,7 @@ save_restore_derive.workspace = true
 vm_resource.workspace = true
 
 inspect = { workspace = true, features = ["defer"] }
+loan_cell.workspace = true
 mesh.workspace = true
 pal_event = { workspace = true, features = ["mesh"] }
 pal_async.workspace = true

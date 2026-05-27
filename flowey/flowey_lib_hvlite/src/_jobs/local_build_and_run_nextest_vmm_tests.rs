@@ -9,11 +9,11 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
+use crate::common::CommonArch;
+use crate::common::CommonPlatform;
+use crate::common::CommonProfile;
+use crate::common::CommonTriple;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonPlatform;
-use crate::run_cargo_build::common::CommonProfile;
-use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::gen_cargo_nextest_run_cmd::CommandShell;
 use flowey_lib_common::gen_cargo_nextest_run_cmd::RunKindDeps;
@@ -53,30 +53,7 @@ pub struct BuildSelections {
     pub test_igvm_agent_rpc_server: bool,
 }
 
-// Build everything we can by default
-impl Default for BuildSelections {
-    fn default() -> Self {
-        Self {
-            prep_steps: true,
-            openhcl: true,
-            openvmm: true,
-            openvmm_vhost: true,
-            pipette_windows: true,
-            pipette_linux: true,
-            guest_test_uefi: true,
-            tmks: true,
-            tmk_vmm_windows: true,
-            tmk_vmm_linux: true,
-            vmgstool: true,
-            tpm_guest_tests_windows: true,
-            tpm_guest_tests_linux: true,
-            test_igvm_agent_rpc_server: true,
-        }
-    }
-}
-
 impl BuildSelections {
-    /// No selections (build nothing)
     pub fn none() -> Self {
         Self {
             prep_steps: false,
@@ -105,8 +82,6 @@ flowey_request! {
 
         pub selections: VmmTestSelections,
 
-        /// Use unstable WHP interfaces
-        pub unstable_whp: bool,
         /// Release build instead of debug build
         pub release: bool,
 
@@ -122,6 +97,10 @@ flowey_request! {
 
         /// Skip the interactive VHD download prompt
         pub skip_vhd_prompt: bool,
+
+        pub nextest_profile: crate::run_cargo_nextest_run::NextestProfile,
+
+        pub reuse_prepped_vhds: bool,
 
         pub done: WriteVar<SideEffect>,
     }
@@ -164,13 +143,14 @@ impl SimpleFlowNode for Node {
             target,
             test_content_dir,
             selections,
-            unstable_whp,
             release,
             build_only,
             copy_extras,
             custom_kernel_modules,
             custom_kernel,
             skip_vhd_prompt,
+            nextest_profile,
+            reuse_prepped_vhds,
             done,
         } = request;
 
@@ -269,6 +249,7 @@ impl SimpleFlowNode for Node {
                     recipe: recipe_to_use,
                     custom_target: None,
                     extra_features: BTreeSet::new(),
+                    disable_secure_avic: false,
                     built_openvmm_hcl,
                     built_openhcl_boot,
                     built_openhcl_igvm,
@@ -325,12 +306,9 @@ impl SimpleFlowNode for Node {
                     target: target.clone(),
                     profile: CommonProfile::from_release(release),
                     // FIXME: this relies on openvmm default features
-                    features: if unstable_whp {
-                        [crate::build_openvmm::OpenvmmFeature::UnstableWhp].into()
-                    } else {
-                        [].into()
-                    },
+                    features: [].into(),
                 },
+                version: None,
                 openvmm: v,
             });
             if copy_extras {
@@ -501,7 +479,6 @@ impl SimpleFlowNode for Node {
                     arch,
                     platform: CommonPlatform::WindowsMsvc,
                 },
-                unstable_whp,
                 profile: CommonProfile::from_release(release),
                 tmk_vmm: v,
             });
@@ -525,7 +502,6 @@ impl SimpleFlowNode for Node {
                     arch,
                     platform: CommonPlatform::LinuxMusl,
                 },
-                unstable_whp,
                 profile: CommonProfile::from_release(release),
                 tmk_vmm: v,
             });
@@ -725,6 +701,8 @@ impl SimpleFlowNode for Node {
             get_env: v,
             release_igvm_files,
             use_relative_paths: build_only,
+            disable_remote_artifacts: false,
+            reuse_prepped_vhds,
         });
 
         let mut side_effects = Vec::new();
@@ -768,11 +746,11 @@ impl SimpleFlowNode for Node {
             move |rt| {
                 let dep_install_cmds = rt.read(dep_install_cmds);
 
-                for cmd in &dep_install_cmds {
-                    log::info!("{cmd}");
-                }
-
                 if !dep_install_cmds.is_empty() {
+                    log::info!("Dependency install commands (written to install_deps.ps1):");
+                    for cmd in &dep_install_cmds {
+                        log::info!("  {cmd}");
+                    }
                     let script_contents = dep_install_cmds.join("\n");
                     fs_err::write(test_content_dir.join("install_deps.ps1"), script_contents)?;
                 }
@@ -780,8 +758,6 @@ impl SimpleFlowNode for Node {
                 Ok(())
             }
         }));
-
-        let nextest_profile = crate::run_cargo_nextest_run::NextestProfile::Default;
 
         let nextest_run_cmd = ctx.reqv(|v| flowey_lib_common::gen_cargo_nextest_run_cmd::Request {
             run_kind_deps: RunKindDeps::RunFromArchive {
@@ -862,6 +838,7 @@ impl SimpleFlowNode for Node {
                 target: Some(ReadVar::from_static(target_triple.clone())),
                 extra_env,
                 pre_run_deps: side_effects,
+                hugetlb_2mb_overcommit_pages: None,
                 results: v,
             });
 

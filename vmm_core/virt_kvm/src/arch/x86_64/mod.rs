@@ -15,6 +15,8 @@ use crate::KvmPartitionInner;
 use crate::KvmProcessorBinder;
 use crate::KvmRunVpError;
 use crate::gsi::GsiRouting;
+use crate::gsi::KvmIrqFdState;
+use crate::gsi::MsiRouteBuilder;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
@@ -301,9 +303,16 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         )
         .map_err(KvmError::TopologyCpuid)?;
 
+        // Work around a KVM bug where PSFD is advertised in guest CPUID
+        // but the SPEC_CTRL MSR is not accessible. Check the KVM-reported
+        // CPUID (before user overrides) since that determines what KVM
+        // will allow.
+        let psfd_fixup = strip_psfd_leaf(&self.cpuid);
+
         let mut cpuid = self.cpuid.into_leaves();
         cpuid.extend(config.cpuid);
         cpuid.extend(topology_leaves);
+        cpuid.extend(psfd_fixup);
         let cpuid = CpuidLeafSet::new(cpuid);
 
         let bsp_apic_id = self.config.processor_topology.vp_arch(VpIndex::BSP).apic_id;
@@ -459,7 +468,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         let partition = KvmPartition {
             synic_ports: Arc::new(virt::synic::SynicPorts::new(partition.clone())),
-            irqfd_state: Arc::new(crate::gsi::KvmIrqFdState::new(partition.clone())),
+            irqfd_state: Arc::new(KvmIrqFdState::new(partition.clone())),
             inner: partition,
         };
 
@@ -482,6 +491,41 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         }
 
         Ok((partition, vps))
+    }
+}
+
+/// KVM's `guest_has_spec_ctrl_msr()` decides whether a guest may access
+/// the SPEC_CTRL MSR by checking for IBRS, STIBP, and SSBD in CPUID.
+/// However, KVM also passes through AMD PSFD without including it in that
+/// check. PSFD is architecturally controlled via the SPEC_CTRL MSR, so a
+/// guest that sees PSFD and infers SPEC_CTRL MSR support (as Hyper-V
+/// does) will #GP when writing the MSR.
+///
+/// Returns a leaf that strips PSFD when it should not be advertised.
+fn strip_psfd_leaf(cpuid: &CpuidLeafSet) -> Option<CpuidLeaf> {
+    use x86defs::cpuid::ExtendedAddressSpaceSizesEbx;
+    use x86defs::cpuid::ExtendedFeatureSubleaf0Edx;
+
+    let leaf7 = cpuid.result(CpuidFunction::ExtendedFeatures.0, 0, &[0; 4]);
+    let leaf80000008 = cpuid.result(CpuidFunction::ExtendedAddressSpaceSizes.0, 0, &[0; 4]);
+
+    let edx = ExtendedFeatureSubleaf0Edx::from(leaf7[3]);
+    let ebx = ExtendedAddressSpaceSizesEbx::from(leaf80000008[1]);
+
+    // Mirror KVM's guest_has_spec_ctrl_msr() check.
+    let has_spec_ctrl_msr = edx.ibrs() || ebx.ibrs() || ebx.stibp() || ebx.ssbd();
+    if !has_spec_ctrl_msr && ebx.psfd() {
+        let psfd_mask = ExtendedAddressSpaceSizesEbx::new().with_psfd(true);
+        Some(
+            CpuidLeaf::new(CpuidFunction::ExtendedAddressSpaceSizes.0, [0, 0, 0, 0]).masked([
+                0,
+                u32::from(psfd_mask),
+                0,
+                0,
+            ]),
+        )
+    } else {
+        None
     }
 }
 
@@ -772,8 +816,12 @@ pub(crate) struct KvmMsi {
 }
 
 impl KvmMsi {
-    pub(crate) fn new(request: MsiRequest) -> Self {
+    pub(crate) fn new(request: MsiRequest) -> Option<Self> {
+        // TODO: validate the high bits of the request as well, across the codebase.
         let request_address = MsiAddress::from(request.address as u32);
+        if request_address.address() != x86defs::msi::MSI_ADDRESS {
+            return None;
+        }
         let request_data = MsiData::from(request.data);
 
         // Although architecturally the destination mode bit is only supposed to
@@ -796,21 +844,29 @@ impl KvmMsi {
             .with_vector(request_data.vector())
             .into();
 
-        Self {
+        Some(Self {
             address_lo,
             address_hi,
             data,
-        }
+        })
     }
 }
 
 impl KvmPartitionInner {
     fn request_msi(&self, request: MsiRequest) {
-        let KvmMsi {
+        let Some(KvmMsi {
             address_lo,
             address_hi,
             data,
-        } = KvmMsi::new(request);
+        }) = KvmMsi::new(request)
+        else {
+            tracelimit::warn_ratelimited!(
+                address = request.address,
+                data = request.data,
+                "invalid MSI address"
+            );
+            return;
+        };
         if let Err(err) = self.kvm.request_msi(&kvm::kvm_msi {
             address_lo,
             address_hi,
@@ -829,20 +885,62 @@ impl KvmPartitionInner {
     }
 }
 
+struct KvmX86MsiRouteBuilder;
+
+impl MsiRouteBuilder for KvmX86MsiRouteBuilder {
+    fn routing_entry(
+        &self,
+        _partition: &KvmPartitionInner,
+        address: u64,
+        data: u32,
+        _devid: Option<u32>,
+    ) -> Option<kvm::RoutingEntry> {
+        let KvmMsi {
+            address_lo,
+            address_hi,
+            data,
+        } = KvmMsi::new(MsiRequest { address, data })?;
+        Some(kvm::RoutingEntry::Msi {
+            address_lo,
+            address_hi,
+            data,
+            devid: None,
+        })
+    }
+}
+
+impl virt::irqfd::IrqFd for KvmIrqFdState {
+    fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn virt::irqfd::IrqFdRoute>> {
+        Ok(Box::new(self.new_irqfd_route(KvmX86MsiRouteBuilder)?))
+    }
+}
+
 impl IoApicRouting for KvmPartitionInner {
     fn set_irq_route(&self, irq: u8, request: Option<MsiRequest>) {
-        let entry = request.map(|request| {
-            let KvmMsi {
-                address_lo,
-                address_hi,
-                data,
-            } = KvmMsi::new(request);
-            kvm::RoutingEntry::Msi {
-                address_lo,
-                address_hi,
-                data,
-            }
-        });
+        let entry = match request {
+            Some(request) => match KvmMsi::new(request) {
+                Some(KvmMsi {
+                    address_lo,
+                    address_hi,
+                    data,
+                }) => Some(kvm::RoutingEntry::Msi {
+                    address_lo,
+                    address_hi,
+                    data,
+                    devid: None,
+                }),
+                None => {
+                    tracelimit::warn_ratelimited!(
+                        irq,
+                        address = request.address,
+                        data = request.data,
+                        "invalid MSI address for IO-APIC route"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
         let mut gsi_routing = self.gsi_routing.lock();
         if gsi_routing.set(irq as u32, entry) {
             gsi_routing.update_routes(&self.kvm);
@@ -1403,7 +1501,7 @@ impl GuestEventPort for KvmGuestEventPort {
 }
 
 impl SignalMsi for KvmPartitionInner {
-    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         self.request_msi(MsiRequest { address, data });
     }
 }

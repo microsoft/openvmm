@@ -85,6 +85,7 @@ impl Endpoint for NullEndpoint {
             tcp: true,
             udp: true,
             tso: true,
+            uso: true,
         }
     }
 

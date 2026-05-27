@@ -10,6 +10,7 @@ rust-version.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+crypto = { workspace = true, features = ["vendored"] }
 disk_backend.workspace = true
 disk_vhd1.workspace = true
 futures.workspace = true
@@ -18,3 +19,7 @@ vmgs = { workspace = true, features = ["encryption"] }
 
 [lints]
 workspace = true
+
+[package.metadata.xtask.unused-deps]
+# keep the crypto dep so we can specify the vendored feature
+ignored = ["crypto"]

@@ -9,6 +9,8 @@ extern crate self as pal_async;
 #[cfg(unix)]
 pub mod fd;
 pub mod interest;
+#[cfg(target_os = "linux")]
+pub mod io_uring;
 pub mod local;
 pub mod pipe;
 pub mod socket;

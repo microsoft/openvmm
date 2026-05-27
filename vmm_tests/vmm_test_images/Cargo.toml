@@ -11,6 +11,7 @@ clap = ["dep:clap"]
 serde = ["dep:serde"]
 
 [dependencies]
+petri_artifacts_core.workspace = true
 petri_artifacts_vmm_test.workspace = true
 
 clap = { workspace = true, features = ["derive"], optional = true }

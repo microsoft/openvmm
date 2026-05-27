@@ -53,7 +53,7 @@ fn build(
                 &resolver,
                 MachineArch::X86_64,
                 UefiGuest::Vhd(BootImageConfig::from_vhd(
-                    resolver.require(petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64),
+                    resolver.require_source(petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64, petri::RemoteAccess::Allow),
                 )),
             ),
             MachineArch::X86_64,
@@ -92,7 +92,15 @@ fn run(
             .replace(".vhd", "-prepped.vhd"),
     );
     if result_disk.exists() {
-        tracing::warn!("Result disk already exists, recreating it.");
+        if std::env::var("PETRI_REUSE_PREPPED_VHDS")
+            .ok()
+            .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        {
+            tracing::info!("Result disk already exists, skipping...");
+            return Ok(());
+        } else {
+            tracing::warn!("Result disk already exists, recreating it.");
+        }
     } else {
         tracing::info!("Copying source disk to result disk.");
     }
@@ -101,7 +109,16 @@ fn run(
     let drop_guard = DeleteFileOnDrop(result_disk.clone());
     std::fs::copy(source_disk, &result_disk)?;
     tracing::info!("Copied source disk successfully.");
-    let result_disk = openvmm_helpers::disk::open_disk_type(&result_disk, false)?;
+    let result_disk = DefaultPool::run_with(async |_driver| {
+        openvmm_helpers::disk::open_disk_type(
+            &result_disk,
+            openvmm_helpers::disk::OpenDiskOptions {
+                read_only: false,
+                direct: false,
+            },
+        )
+        .await
+    })?;
 
     DefaultPool::run_with(async move |driver| {
         let (vm, agent) = PetriVmBuilder::new(

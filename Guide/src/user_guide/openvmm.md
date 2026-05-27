@@ -9,8 +9,8 @@ At the moment, OpenVMM can be built and run on the following host platforms:
 | Host OS | Architecture  | Virtualization API                |
 | ------- | ------------- | --------------------------------- |
 | Windows | x64 / Aarch64 | WHP (Windows Hypervisor Platform) |
-| Linux   | x64           | KVM                               |
-|         | x64           | MSHV (Microsoft Hypervisor)       |
+| Linux   | x64 / Aarch64 | KVM                               |
+|         | x64 / Aarch64 | MSHV (Microsoft Hypervisor)       |
 | macOS   | Aarch64       | Hypervisor.framework              |
 
 When compiled, OpenVMM consists of a single standalone `openvmm` / `openvmm.exe`

@@ -152,7 +152,10 @@ async fn sidecar_aps_unused<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), anyhow::Error> {
-    let (vm, agent) = configure_for_sidecar(config, 8, 2).run().await?;
+    let (vm, agent) = configure_for_sidecar(config, 8, 2)
+        .with_openhcl_command_line("OPENHCL_SIDECAR=log")
+        .run()
+        .await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
@@ -272,7 +275,7 @@ async fn vpci_relay_tdisp_device(
 }
 
 /// Boot with a virtio-blk disk via virtio-mmio and verify the device appears in the guest.
-#[openvmm_test(linux_direct_x64)]
+#[openvmm_test(unstable_linux_direct_x64)]
 async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     use disk_backend_resources::LayeredDiskHandle;
     use disk_backend_resources::layer::RamDiskLayerHandle;

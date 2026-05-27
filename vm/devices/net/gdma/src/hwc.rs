@@ -10,7 +10,7 @@ use anyhow::anyhow;
 use gdma_defs::GDMA_EQE_HWC_INIT_DATA;
 use gdma_defs::GDMA_EQE_HWC_INIT_DONE;
 use gdma_defs::GDMA_EQE_HWC_INIT_EQ_ID_DB;
-use gdma_defs::GDMA_EQE_HWC_RECONFIG_VF;
+use gdma_defs::GDMA_EQE_HWC_RESET_REQUEST;
 use gdma_defs::GDMA_EQE_TEST_EVENT;
 use gdma_defs::GdmaChangeMsixVectorIndexForEq;
 use gdma_defs::GdmaCreateDmaRegionReq;
@@ -226,6 +226,19 @@ impl HwControl {
                 .read_plain()
                 .context("reading request message header")?;
 
+            if hdr.req.msg_size as u64 > PAGE_SIZE64 {
+                anyhow::bail!(
+                    "request message size {} exceeds page size {PAGE_SIZE64}",
+                    hdr.req.msg_size
+                );
+            }
+            if hdr.resp.msg_size as u64 > PAGE_SIZE64 {
+                anyhow::bail!(
+                    "response message size {} exceeds page size {PAGE_SIZE64}",
+                    hdr.resp.msg_size
+                );
+            }
+
             let mut read = MemoryRead::limit(read, hdr.req.msg_size as usize);
             read.skip(size_of_val(&hdr))
                 .context("message size too small")?;
@@ -303,13 +316,12 @@ impl HwControl {
 
                 0
             }
-            GdmaRequestType::GDMA_GENERATE_RECONFIG_VF_EVENT => {
-                let req: GdmaGenerateTestEventReq = read
-                    .read_plain()
-                    .context("reading test vf reconfig request")?;
+            GdmaRequestType::GDMA_GENERATE_RESET_REQUEST_EQE => {
+                let req: GdmaGenerateTestEventReq =
+                    read.read_plain().context("reading reset request EQE")?;
                 self.state
                     .queues
-                    .post_eq(req.queue_index, GDMA_EQE_HWC_RECONFIG_VF, &[]);
+                    .post_eq(req.queue_index, GDMA_EQE_HWC_RESET_REQUEST, &[]);
                 0
             }
             GdmaRequestType::GDMA_VERIFY_VF_DRIVER_VERSION => {

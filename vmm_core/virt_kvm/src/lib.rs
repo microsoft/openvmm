@@ -10,7 +10,6 @@
 #![expect(clippy::undocumented_unsafe_blocks)]
 
 mod arch;
-#[cfg(guest_arch = "x86_64")]
 mod gsi;
 
 pub use arch::Kvm;
@@ -86,9 +85,8 @@ pub struct KvmPartition {
     inner: Arc<KvmPartitionInner>,
     #[inspect(skip)]
     synic_ports: Arc<virt::synic::SynicPorts<KvmPartitionInner>>,
-    #[cfg(guest_arch = "x86_64")]
     #[inspect(skip)]
-    irqfd_state: Arc<dyn virt::irqfd::IrqFd>,
+    irqfd_state: Arc<gsi::KvmIrqFdState>,
 }
 
 #[derive(Inspect)]
@@ -100,7 +98,6 @@ struct KvmPartitionInner {
     gm: GuestMemory,
     #[inspect(skip)]
     vps: Vec<KvmVpInner>,
-    #[cfg(guest_arch = "x86_64")]
     #[inspect(skip)]
     gsi_routing: Mutex<gsi::GsiRouting>,
     caps: virt::PartitionCapabilities,
@@ -113,9 +110,14 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
     _gic_device: kvm::Device,
+    /// The ITS device fd, kept alive for the VM lifetime.
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
-    gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
+    _its_device: Option<kvm::Device>,
+    /// MSI controller configuration (v2m, ITS, or none).
+    #[cfg(guest_arch = "aarch64")]
+    #[inspect(skip)]
+    gic_msi: vm_topology::processor::aarch64::GicMsiController,
     /// Total configured GIC interrupt count (SGIs + PPIs + SPIs).
     #[cfg(guest_arch = "aarch64")]
     gic_nr_irqs: u32,

@@ -55,6 +55,8 @@ pub enum VmControllerRpc {
     ),
     /// Save a VM snapshot to a directory.
     SaveSnapshot(Rpc<String, Result<(), mesh::error::RemoteError>>),
+    /// Dump VM state (VP registers + memory) to a `.vmrs` file.
+    DumpState(Rpc<String, Result<(), mesh::error::RemoteError>>),
     /// Service (update) the VTL2 firmware.
     ServiceVtl2(Rpc<ServiceVtl2Params, Result<u64, mesh::error::RemoteError>>),
     /// Stop the VM and quit.
@@ -108,11 +110,11 @@ pub struct VmController {
     pub(crate) vm_worker: WorkerHandle,
     pub(crate) vnc_worker: Option<WorkerHandle>,
     pub(crate) gdb_worker: Option<WorkerHandle>,
-    pub(crate) diag_inspector: DiagInspector,
+    pub(crate) diag_inspector: Option<DiagInspector>,
     pub(crate) vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
     pub(crate) ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
     pub(crate) vm_rpc: mesh::Sender<VmRpc>,
-    pub(crate) paravisor_diag: Arc<diag_client::DiagClient>,
+    pub(crate) paravisor_diag: Option<Arc<diag_client::DiagClient>>,
     pub(crate) igvm_path: Option<PathBuf>,
     pub(crate) memory_backing_file: Option<PathBuf>,
     pub(crate) memory: u64,
@@ -122,7 +124,7 @@ pub struct VmController {
 
 impl VmController {
     /// Run the controller, processing RPCs and worker events until the VM
-    /// stops or the REPL sends Quit.
+    /// stops or the caller (REPL or ttrpc server) sends Quit.
     pub async fn run(
         mut self,
         mut rpc_recv: mesh::Receiver<VmControllerRpc>,
@@ -138,12 +140,17 @@ impl VmController {
         }
 
         let mut quit = false;
+        let mut rpc_closed = false;
         loop {
             let event = {
                 let rpc = pin!(async {
-                    match rpc_recv.next().await {
-                        Some(msg) => Event::Rpc(msg),
-                        None => Event::RpcClosed,
+                    if rpc_closed {
+                        std::future::pending().await
+                    } else {
+                        match rpc_recv.next().await {
+                            Some(msg) => Event::Rpc(msg),
+                            None => Event::RpcClosed,
+                        }
                     }
                 });
                 let vm = (&mut self.vm_worker).map(Event::Worker);
@@ -164,10 +171,12 @@ impl VmController {
                     self.handle_rpc(rpc, &mut quit).await;
                 }
                 Event::RpcClosed => {
-                    // REPL disconnected. Stop the VM.
-                    tracing::info!("REPL disconnected, stopping VM");
+                    // Controller RPC channel closed (REPL/ttrpc disconnected).
+                    // Stop the VM.
+                    tracing::info!("controller RPC channel closed, stopping VM");
                     self.vm_worker.stop();
                     quit = true;
+                    rpc_closed = true;
                 }
                 Event::Worker(event) => match event {
                     WorkerEvent::Stopped => {
@@ -299,6 +308,11 @@ impl VmController {
                 let result = self.handle_save_snapshot(Path::new(&dir)).await;
                 req.complete(result.map_err(mesh::error::RemoteError::new));
             }
+            VmControllerRpc::DumpState(req) => {
+                let (path, req) = req.split();
+                let result = self.handle_dump_state(Path::new(&path)).await;
+                req.complete(result.map_err(mesh::error::RemoteError::new));
+            }
             VmControllerRpc::ServiceVtl2(req) => {
                 let (params, req) = req.split();
                 let result = self.handle_service_vtl2(params).await;
@@ -346,7 +360,9 @@ impl VmController {
                     .field("gdb", self.gdb_worker.as_ref());
             }
             InspectTarget::Paravisor => {
-                self.diag_inspector.inspect_mut(req);
+                if let Some(inspector) = &mut self.diag_inspector {
+                    inspector.inspect_mut(req);
+                }
             }
         });
         deferred.inspect(obj);
@@ -403,11 +419,41 @@ impl VmController {
         Ok(())
     }
 
+    async fn handle_dump_state(&self, path: &Path) -> anyhow::Result<()> {
+        // Write to a temporary file in the same directory, then rename into
+        // place so readers never see a partially-written dump.
+        let parent = path.parent().unwrap_or(Path::new("."));
+        let tmp_file = tempfile::NamedTempFile::new_in(parent)
+            .context("failed to create temp file for dump")?;
+
+        // Dump state to the temp file (worker pauses, collects VP state +
+        // streams memory, then resumes).
+        self.vm_rpc
+            .call_failable(VmRpc::DumpState, tmp_file.as_file().try_clone()?)
+            .await
+            .context("failed to dump state")?;
+
+        // Persist the temp file to the final path.
+        tmp_file.persist(path).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to rename temp file to {}: {}",
+                path.display(),
+                e.error
+            )
+        })?;
+
+        Ok(())
+    }
+
     async fn handle_service_vtl2(&self, params: ServiceVtl2Params) -> anyhow::Result<u64> {
         let start;
         if params.user_mode_only {
             start = Instant::now();
-            self.paravisor_diag.restart().await?;
+            self.paravisor_diag
+                .as_ref()
+                .context("no paravisor diagnostics client")?
+                .restart()
+                .await?;
         } else {
             let igvm = params
                 .igvm

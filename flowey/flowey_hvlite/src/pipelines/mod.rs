@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use cca_tests::CcaTestsCli;
 use flowey::pipeline::prelude::*;
 use restore_packages::RestorePackagesCli;
 use vmm_tests_run::VmmTestsRunCli;
@@ -8,6 +9,7 @@ use vmm_tests_run::VmmTestsRunCli;
 pub mod build_docs;
 pub mod build_igvm;
 pub mod build_reproducible;
+pub mod cca_tests;
 pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
 pub mod restore_packages;
@@ -36,6 +38,9 @@ pub enum OpenvmmPipelines {
 
     /// Build and run VMM tests with automatic artifact discovery
     VmmTestsRun(VmmTestsRunCli),
+
+    /// Build and run CCA tests with installation of emulation environment supported
+    CcaTests(CcaTestsCli),
 }
 
 #[derive(clap::Subcommand)]
@@ -64,6 +69,7 @@ impl IntoPipeline for OpenvmmPipelines {
             },
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTestsRun(cmd) => cmd.into_pipeline(pipeline_hint),
+            OpenvmmPipelines::CcaTests(cmd) => cmd.into_pipeline(pipeline_hint),
         }
     }
 }

@@ -196,6 +196,11 @@ impl MemoryBlock {
         self.as_slice()[offset..][..size_of::<T>()].atomic_write_obj(data);
     }
 
+    /// Zeroes `len` bytes in the buffer starting at `offset`.
+    pub fn write_zeros(&self, offset: usize, len: usize) {
+        self.as_slice()[offset..][..len].atomic_fill(0);
+    }
+
     /// Returns the offset of the beginning of the buffer in the first page
     /// returned by [`Self::pfns`].
     pub fn offset_in_page(&self) -> u32 {

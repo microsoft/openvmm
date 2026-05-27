@@ -206,11 +206,9 @@ async fn send_dump(
         // Compute stats
         let wrote_bytes_total = streamer.wrote_bytes_total();
         let nanos = now.elapsed().as_nanos();
-        let speed = if nanos != 0 {
-            (wrote_bytes_total as u128) * 1_000_000_000 / nanos
-        } else {
-            0
-        };
+        let speed = (wrote_bytes_total as u128 * 1_000_000_000)
+            .checked_div(nanos)
+            .unwrap_or(0);
         tracing::info!(size = wrote_bytes_total, speed, "Reported crash");
 
         Ok::<(), anyhow::Error>(())

@@ -231,7 +231,7 @@ impl FlowNode for Node {
                             }
                             v.push("-p".into());
                             v.push(crate_name.clone());
-                            v.extend(features.to_cargo_arg_strings().into_iter());
+                            v.extend(features.to_cargo_arg_strings());
                             if let Some(target) = &target {
                                 v.push("--target".into());
                                 v.push(target.to_string());

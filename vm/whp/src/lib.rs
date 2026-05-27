@@ -1495,29 +1495,32 @@ impl<'a> Processor<'a> {
         }
     }
 
-    pub fn get_apic(&self) -> Result<Vec<u8>> {
-        let mut r = Vec::with_capacity(4096);
+    pub fn get_apic(&self) -> Result<[u8; 1024]> {
+        // Only the first 1024 bytes are used but the API requires a full page,
+        // for some unknown reason.
+        let mut r = [[0u8; 1024]; 4];
         unsafe {
             let mut n = 0;
             check_hresult(api::WHvGetVirtualProcessorInterruptControllerState2(
                 self.partition.handle,
                 self.index,
-                r.as_mut_ptr(),
-                r.capacity() as u32,
+                r.as_mut_ptr().cast(),
+                size_of_val(&r) as u32,
                 &mut n,
             ))?;
-            r.set_len(n as usize);
+            assert_eq!(n, size_of_val(&r) as u32);
         }
-        Ok(r)
+        Ok(r[0])
     }
 
-    pub fn set_apic(&self, data: &[u8]) -> Result<()> {
+    pub fn set_apic(&self, data: &[u8; 1024]) -> Result<()> {
+        let r = [*data, [0u8; 1024], [0u8; 1024], [0u8; 1024]];
         unsafe {
             check_hresult(api::WHvSetVirtualProcessorInterruptControllerState2(
                 self.partition.handle,
                 self.index,
-                data.as_ptr(),
-                data.len() as u32,
+                r.as_ptr().cast(),
+                size_of_val(&r) as u32,
             ))
         }
     }

@@ -112,6 +112,13 @@ enum InteractiveCommand {
         dir: PathBuf,
     },
 
+    /// Dump VM state (VP registers + memory) to a .vmrs file for WinDbg.
+    #[clap(visible_alias = "dump")]
+    DumpState {
+        /// Path for the output .vmrs file.
+        path: PathBuf,
+    },
+
     /// Do a pulsed save restore (pause, save, reset, restore, resume) to the VM.
     #[clap(visible_alias = "psr")]
     PulseSaveRestore,
@@ -832,6 +839,27 @@ pub(crate) async fn run_repl(
                     }
                 }
             }
+            InteractiveCommand::DumpState { path } => {
+                match vm_controller
+                    .call(
+                        VmControllerRpc::DumpState,
+                        path.to_string_lossy().into_owned(),
+                    )
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|r| Ok(r?))
+                {
+                    Ok(()) => {
+                        tracing::info!(
+                            path = %path.display(),
+                            "VM state dumped to VMRS file"
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("error: dump-state failed: {err:#}");
+                    }
+                }
+            }
             InteractiveCommand::PulseSaveRestore => {
                 state_change(
                     driver,
@@ -891,8 +919,15 @@ pub(crate) async fn run_repl(
                     let disk_type = match ram {
                         None => {
                             let path = file_path.context("no filename passed")?;
-                            openvmm_helpers::disk::open_disk_type(path.as_ref(), read_only)
-                                .with_context(|| format!("failed to open {}", path.display()))?
+                            openvmm_helpers::disk::open_disk_type(
+                                path.as_ref(),
+                                openvmm_helpers::disk::OpenDiskOptions {
+                                    read_only,
+                                    direct: false,
+                                },
+                            )
+                            .await
+                            .with_context(|| format!("failed to open {}", path.display()))?
                         }
                         Some(size) => {
                             Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
@@ -1079,10 +1114,15 @@ pub(crate) async fn run_repl(
                 let action = async {
                     let nvme = nvme_vtl2_rpc.as_ref().context("no vtl2 nvme controller")?;
                     let disk_type = match (ram, file_path) {
-                        (None, Some(path)) => {
-                            openvmm_helpers::disk::open_disk_type(path.as_ref(), read_only)
-                                .with_context(|| format!("failed to open {}", path.display()))?
-                        }
+                        (None, Some(path)) => openvmm_helpers::disk::open_disk_type(
+                            path.as_ref(),
+                            openvmm_helpers::disk::OpenDiskOptions {
+                                read_only,
+                                direct: false,
+                            },
+                        )
+                        .await
+                        .with_context(|| format!("failed to open {}", path.display()))?,
                         (Some(size), None) => {
                             Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
                                 RamDiskLayerHandle {

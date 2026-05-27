@@ -8,7 +8,7 @@ use crate::artifact_openhcl_igvm_from_recipe_extras::OpenhclIgvmExtras;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_openvmm_hcl::OpenvmmHclFeature;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 use std::collections::BTreeSet;
 
@@ -82,6 +82,7 @@ impl SimpleFlowNode for Node {
                 release_cfg: *release_cfg,
                 recipe: recipe.clone(),
                 extra_features: extra_features.clone(),
+                disable_secure_avic: false,
                 built_openvmm_hcl,
                 built_openhcl_boot,
                 built_openhcl_igvm,

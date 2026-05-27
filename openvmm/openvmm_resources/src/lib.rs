@@ -6,11 +6,29 @@
 
 #![forbid(unsafe_code)]
 
+mod hypervisor_resolvers;
+
 // Resources.
 vm_resource::register_static_resolvers! {
     // Chipset devices
     #[cfg(guest_arch = "x86_64")]
     chipset::i8042::resolver::I8042Resolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset_legacy::piix4_uhci::resolver::Piix4PciUsbUhciStubResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset_legacy::piix4_pci_isa_bridge::resolver::Piix4PciIsaBridgeResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset_legacy::piix4_pm::resolver::Piix4PowerManagementResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset::pit::resolver::PitResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset::pic::resolver::PicResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset::ioapic::resolver::GenericIoApicResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset::pm::resolver::HyperVPowerManagementResolver,
+    chipset_resources::cmos_rtc_time_source::SystemTimeClockResolver,
+    firmware_uefi::resolver::UefiDeviceResolver,
     missing_dev::resolver::MissingDevResolver,
     #[cfg(feature = "tpm")]
     tpm_device::resolver::TpmDeviceResolver,
@@ -21,6 +39,7 @@ vm_resource::register_static_resolvers! {
     #[cfg(guest_arch = "aarch64")]
     serial_pl011::resolver::SerialPl011Resolver,
     chipset::battery::resolver::BatteryResolver,
+    guest_watchdog::resolver::HyperVGuestWatchdogResolver,
 
     // Non-volatile stores
     vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreResolver,
@@ -46,6 +65,8 @@ vm_resource::register_static_resolvers! {
     #[cfg(feature = "disk_crypt")]
     disk_crypt::resolver::DiskCryptResolver,
     disk_file::FileDiskResolver,
+    #[cfg(target_os = "linux")]
+    disk_blockdevice::resolver::StaticBlockDeviceResolver,
     disk_prwrap::DiskWithReservationsResolver,
     disk_delay::resolver::DelayDiskResolver,
     disk_vhd1::Vhd1Resolver,
@@ -60,6 +81,7 @@ vm_resource::register_static_resolvers! {
     disklayer_sqlite::resolver::SqliteDiskLayerResolver,
 
     // PCI devices
+    cxl_spec::test::resolver::CxlTestDeviceResolver,
     gdma::resolver::GdmaDeviceResolver,
     nvme::resolver::NvmeControllerResolver,
     nvme_test::resolver::NvmeFaultControllerResolver,
@@ -107,15 +129,15 @@ mesh_worker::register_workers! {
 
 // Hypervisor backend resolvers.
 vm_resource::register_static_resolvers! {
-    #[cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native, guest_arch = "x86_64"))]
-    openvmm_hypervisors::mshv::MshvResolver,
+    #[cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native))]
+    hypervisor_resolvers::mshv::MshvResolver,
 
     #[cfg(all(target_os = "linux", feature = "virt_kvm", guest_is_native))]
-    openvmm_hypervisors::kvm::KvmResolver,
+    hypervisor_resolvers::kvm::KvmResolver,
 
     #[cfg(all(target_os = "windows", feature = "virt_whp", guest_is_native))]
-    openvmm_hypervisors::whp::WhpResolver,
+    hypervisor_resolvers::whp::WhpResolver,
 
     #[cfg(all(target_os = "macos", guest_arch = "aarch64", guest_is_native, feature = "virt_hvf"))]
-    openvmm_hypervisors::hvf::HvfResolver,
+    hypervisor_resolvers::hvf::HvfResolver,
 }

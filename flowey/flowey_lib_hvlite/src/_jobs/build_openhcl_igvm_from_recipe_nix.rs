@@ -11,8 +11,8 @@
 //! like `checkin_gates` inject it across all jobs via `inject_all_jobs_with`.
 
 use crate::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmBuildParams;
+use crate::common::CommonArch;
 use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
-use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
 
 flowey_request! {

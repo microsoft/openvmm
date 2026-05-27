@@ -3,7 +3,6 @@
 
 mod lints;
 mod rustfmt;
-mod unused_deps;
 mod verify_flowey;
 
 use crate::Xtask;
@@ -55,7 +54,6 @@ enum PassName {
     // Keep Rustfmt first since some lints may depend on proper formatting
     Rustfmt,
     Lints,
-    UnusedDeps,
     VerifyFuzzers,
     VerifyFlowey,
 }
@@ -94,7 +92,6 @@ impl Xtask for Fmt {
                 vec![
                     PassName::Rustfmt,
                     PassName::Lints,
-                    PassName::UnusedDeps,
                     PassName::VerifyFuzzers,
                     PassName::VerifyFlowey,
                 ]
@@ -120,9 +117,6 @@ impl Xtask for Fmt {
                         }),
                         PassName::VerifyFlowey => wrapper(&ctx, name, {
                             move |ctx| verify_flowey::VerifyFlowey.run(ctx)
-                        }),
-                        PassName::UnusedDeps => wrapper(&ctx, name, {
-                            move |ctx| unused_deps::UnusedDeps { fix: ctx.fix }.run(ctx.ctx)
                         }),
                     }
                 })

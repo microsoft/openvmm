@@ -13,13 +13,11 @@
 #### Flowey Build Dependencies
 
 # On Linux, install gcc and rust to build flowey.
-# The apt-get retries below avoid failures in CI that can be
-# intermittently caused by other processes temporarily holding
-# the necessary dpkg or apt locks.
+# The package install commands are replaced at pipeline generation time
+# with the appropriate commands for the target distro.
 - run: |
     set -x
-    i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-    sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+    {{LINUX_INSTALL_DEPS}}
     curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain={{RUSTUP_TOOLCHAIN}} -y
     . "$HOME/.cargo/env"
     echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"

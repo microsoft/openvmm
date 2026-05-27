@@ -9,8 +9,6 @@ rust-version.workspace = true
 [features]
 gdb = ["vmm_core/gdb"]
 
-unstable_whp = ["virt_whp/unstable_whp"]
-
 [dependencies]
 hypervisor_resources.workspace = true
 openvmm_defs.workspace = true
@@ -29,8 +27,10 @@ vmgs_resources.workspace = true
 
 aarch64defs.workspace = true
 acpi.workspace = true
+cxl_spec.workspace = true
 floppy_resources.workspace = true
 hvdef.workspace = true
+hyperv_dump.workspace = true
 ide_resources.workspace = true
 igvm.workspace = true
 igvm_defs.workspace = true
@@ -39,7 +39,7 @@ virt.workspace = true
 vm_loader.workspace = true
 vmgs.workspace = true
 vmgs_broker.workspace = true
-vmm_core.workspace = true
+vmm_core = { workspace = true, features = ["dump"] }
 vmm_core_defs.workspace = true
 state_unit.workspace = true
 
@@ -52,15 +52,14 @@ chipset_legacy.workspace = true
 chipset_device.workspace = true
 chipset_device_resources.workspace = true
 chipset_device_worker.workspace = true
+chipset_resources.workspace = true
 closeable_mutex.workspace = true
 disk_backend.workspace = true
 firmware_pcat.workspace = true
 firmware_uefi_custom_vars.workspace = true
-firmware_uefi.workspace = true
-uefi_nvram_storage = { workspace = true, features = ["save_restore"] }
+firmware_uefi_resources.workspace = true
 framebuffer.workspace = true
 get_resources.workspace = true
-hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect", "save_restore"] }
 ide.workspace = true
 floppy.workspace = true
 input_core.workspace = true
@@ -69,6 +68,7 @@ pci_bus.workspace = true
 pci_core.workspace = true
 pci_resources.workspace = true
 pcie.workspace = true
+smmu.workspace = true
 scsi_core.workspace = true
 scsidisk.workspace = true
 serial_16550_resources.workspace = true
@@ -84,7 +84,6 @@ debug_ptr.workspace = true
 fdt.workspace = true
 guid.workspace = true
 inspect.workspace = true
-local_clock.workspace = true
 mesh_worker.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
@@ -109,6 +108,8 @@ virt_whp = { workspace = true, optional = true }
 vmswitch.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+vfio_assigned_device.workspace = true
+vfio_assigned_device_resources.workspace = true
 vmgs_broker = { workspace = true, features = ["encryption"] }
 
 [build-dependencies]

@@ -7,8 +7,8 @@
 //! backends), per-backend handle types, and the [`HypervisorProbe`] trait +
 //! distributed slice used for auto-detection.
 //!
-//! Backends register probes via the `register_hypervisor_probes!` macro in
-//! `openvmm_core`. Callers use [`probes()`] to iterate registered backends
+//! Backends register probes via the [`register_hypervisor_probes!`] macro.
+//! Callers use [`probes()`] to iterate registered backends
 //! and [`probe_by_name()`] to look up a specific one.
 
 use mesh::MeshPayload;
@@ -43,7 +43,10 @@ impl ResourceId<HypervisorKind> for KvmHandle {
 
 /// Handle for the MSHV hypervisor backend.
 #[derive(MeshPayload)]
-pub struct MshvHandle;
+pub struct MshvHandle {
+    /// An open `/dev/mshv` file descriptor.
+    pub mshv: std::fs::File,
+}
 
 impl ResourceId<HypervisorKind> for MshvHandle {
     const ID: &'static str = "mshv";
@@ -51,7 +54,27 @@ impl ResourceId<HypervisorKind> for MshvHandle {
 
 /// Handle for the WHP hypervisor backend.
 #[derive(MeshPayload)]
-pub struct WhpHandle;
+pub struct WhpHandle {
+    /// Use the user-mode APIC emulator instead of the in-hypervisor one.
+    ///
+    /// Only supported on x86_64. Setting this on aarch64 will cause partition
+    /// creation to fail.
+    pub user_mode_apic: bool,
+    /// Use the hypervisor's in-built enlightenment support if available.
+    ///
+    /// Only supported on x86_64. Setting this to `false` on aarch64 will cause
+    /// partition creation to fail.
+    pub offload_enlightenments: bool,
+}
+
+impl Default for WhpHandle {
+    fn default() -> Self {
+        Self {
+            user_mode_apic: false,
+            offload_enlightenments: true,
+        }
+    }
+}
 
 impl ResourceId<HypervisorKind> for WhpHandle {
     const ID: &'static str = "whp";
@@ -74,10 +97,24 @@ pub trait HypervisorProbe: Send + Sync + 'static {
     fn name(&self) -> &str;
 
     /// Checks whether this backend is available and, if so, returns a new
-    /// [`Resource<HypervisorKind>`] for it.
+    /// [`Resource<HypervisorKind>`] for it with default settings.
     ///
-    /// Returns `Ok(None)` if the backend is not available on this system.
+    /// Used for auto-detection: backends are tried in priority order, and
+    /// `Ok(None)` means "skip me, try the next one".
     fn try_new_resource(&self) -> anyhow::Result<Option<Resource<HypervisorKind>>>;
+
+    /// Constructs a [`Resource<HypervisorKind>`] for an explicitly selected
+    /// backend, with optional parameters.
+    ///
+    /// Unlike [`try_new_resource`](Self::try_new_resource), this returns
+    /// `Err` (not `Ok(None)`) if the backend is unavailable, so the caller
+    /// gets a specific error message.
+    ///
+    /// `params` contains backend-specific key-value pairs parsed from the
+    /// `--hypervisor name:key=val,...` CLI syntax. A bare key (no `=`) is
+    /// passed as `(key, "true")`. Backends should return an error for
+    /// unrecognized keys.
+    fn new_resource(&self, params: &[(&str, &str)]) -> anyhow::Result<Resource<HypervisorKind>>;
 }
 
 /// Private module for linkme infrastructure.
@@ -114,4 +151,43 @@ pub fn probes() -> impl Iterator<Item = &'static dyn HypervisorProbe> {
 /// Looks up a probe by backend name.
 pub fn probe_by_name(name: &str) -> Option<&'static dyn HypervisorProbe> {
     probes().find(|p| p.name() == name)
+}
+
+/// Registers hypervisor backend probes for auto-detection.
+///
+/// Each entry is a unit struct implementing
+/// [`HypervisorProbe`].
+///
+/// Probes are checked in registration order when auto-detecting the
+/// hypervisor, so register them from highest to lowest priority.
+///
+/// Resource resolvers should be registered separately via
+/// [`vm_resource::register_static_resolvers!`].
+///
+/// # Example
+///
+/// ```ignore
+/// hypervisor_resources::register_hypervisor_probes! {
+///     #[cfg(all(target_os = "linux", feature = "virt_kvm", guest_is_native))]
+///     openvmm_hypervisors::kvm::KvmProbe,
+/// }
+/// ```
+#[macro_export]
+macro_rules! register_hypervisor_probes {
+    {} => {};
+    { $( $(#[$a:meta])* $probe:path ),+ $(,)? } => {
+        $(
+        $(#[$a])*
+        const _: () = {
+            static PROBE_INSTANCE: $probe = $probe;
+
+            #[hypervisor_resources::private::linkme::distributed_slice(
+                hypervisor_resources::private::HYPERVISOR_PROBES
+            )]
+            #[linkme(crate = hypervisor_resources::private::linkme)]
+            static PROBE: Option<&'static dyn hypervisor_resources::HypervisorProbe> =
+                Some(&PROBE_INSTANCE);
+        };
+        )*
+    };
 }

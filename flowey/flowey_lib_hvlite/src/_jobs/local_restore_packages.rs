@@ -1,10 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::download_uefi_mu_msvm::MuMsvmArch;
-use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
-use crate::resolve_openvmm_deps::OpenvmmDepsArch;
-use crate::run_cargo_build::common::CommonArch;
+use crate::common::CommonArch;
 use flowey::node::prelude::*;
 
 flowey_request! {
@@ -44,18 +41,18 @@ impl SimpleFlowNode for Node {
                     if matches!(ctx.platform(), FlowPlatform::Linux(_)) {
                         deps.extend_from_slice(&[ctx
                             .reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
-                                arch: OpenvmmSysrootArch::X64,
+                                arch: CommonArch::X86_64,
                                 path: v,
                             })
                             .into_side_effect()]);
                     }
                     deps.extend_from_slice(&[
                         ctx.reqv(|done| crate::init_openvmm_magicpath_uefi_mu_msvm::Request {
-                            arch: MuMsvmArch::X86_64,
+                            arch: CommonArch::X86_64,
                             done,
                         }),
                         ctx.reqv(|done| crate::init_openvmm_magicpath_openvmm_deps::Request {
-                            arch: OpenvmmDepsArch::X86_64,
+                            arch: CommonArch::X86_64,
                             done,
                         }),
                     ]);
@@ -64,18 +61,18 @@ impl SimpleFlowNode for Node {
                     if matches!(ctx.platform(), FlowPlatform::Linux(_)) {
                         deps.extend_from_slice(&[ctx
                             .reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
-                                arch: OpenvmmSysrootArch::Aarch64,
+                                arch: CommonArch::Aarch64,
                                 path: v,
                             })
                             .into_side_effect()]);
                     }
                     deps.extend_from_slice(&[
                         ctx.reqv(|done| crate::init_openvmm_magicpath_uefi_mu_msvm::Request {
-                            arch: MuMsvmArch::Aarch64,
+                            arch: CommonArch::Aarch64,
                             done,
                         }),
                         ctx.reqv(|done| crate::init_openvmm_magicpath_openvmm_deps::Request {
-                            arch: OpenvmmDepsArch::Aarch64,
+                            arch: CommonArch::Aarch64,
                             done,
                         }),
                     ]);

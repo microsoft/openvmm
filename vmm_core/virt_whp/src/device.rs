@@ -106,7 +106,7 @@ impl Drop for Device {
 }
 
 impl SignalMsi for Device {
-    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         if let Err(err) = self.device().interrupt(address, data) {
             tracelimit::warn_ratelimited!(
                 address,

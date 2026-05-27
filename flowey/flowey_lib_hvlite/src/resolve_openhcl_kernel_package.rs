@@ -4,6 +4,7 @@
 //! Resolve OpenHCL kernel packages - either by downloading from GitHub Release
 //! or using local paths
 
+use crate::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -15,19 +16,13 @@ pub enum OpenhclKernelPackageKind {
     CvmDev,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
-pub enum OpenhclKernelPackageArch {
-    X86_64,
-    Aarch64,
-}
-
 flowey_config! {
     /// Config for the resolve_openhcl_kernel_package node.
     pub struct Config {
         /// Version strings keyed by package kind.
         pub versions: BTreeMap<OpenhclKernelPackageKind, String>,
         /// Local paths keyed by architecture (kernel binary, modules directory).
-        pub local_paths: BTreeMap<OpenhclKernelPackageArch, (ConfigVar<PathBuf>, ConfigVar<PathBuf>)>,
+        pub local_paths: BTreeMap<CommonArch, (ConfigVar<PathBuf>, ConfigVar<PathBuf>)>,
     }
 }
 
@@ -37,25 +32,25 @@ flowey_request! {
         /// Get path to the kernel binary
         GetKernel {
             kind: OpenhclKernelPackageKind,
-            arch: OpenhclKernelPackageArch,
+            arch: CommonArch,
             kernel: WriteVar<PathBuf>,
         },
         /// Get path to the kernel modules directory
         GetModules {
             kind: OpenhclKernelPackageKind,
-            arch: OpenhclKernelPackageArch,
+            arch: CommonArch,
             modules: WriteVar<PathBuf>,
         },
         /// Get path to the package root (for metadata files, etc)
         GetPackageRoot {
             kind: OpenhclKernelPackageKind,
-            arch: OpenhclKernelPackageArch,
+            arch: CommonArch,
             pkg: WriteVar<PathBuf>,
         },
         /// Get path to the kernel build metadata file
         GetMetadata {
             kind: OpenhclKernelPackageKind,
-            arch: OpenhclKernelPackageArch,
+            arch: CommonArch,
             metadata: WriteVar<PathBuf>,
         },
     }
@@ -80,19 +75,17 @@ impl FlowNodeWithConfig for Node {
         let versions = config.versions;
         let local_paths = config.local_paths;
         let mut kernel_reqs: BTreeMap<
-            (OpenhclKernelPackageKind, OpenhclKernelPackageArch),
+            (OpenhclKernelPackageKind, CommonArch),
             Vec<WriteVar<PathBuf>>,
         > = BTreeMap::new();
         let mut modules_reqs: BTreeMap<
-            (OpenhclKernelPackageKind, OpenhclKernelPackageArch),
+            (OpenhclKernelPackageKind, CommonArch),
             Vec<WriteVar<PathBuf>>,
         > = BTreeMap::new();
-        let mut pkg_reqs: BTreeMap<
-            (OpenhclKernelPackageKind, OpenhclKernelPackageArch),
-            Vec<WriteVar<PathBuf>>,
-        > = BTreeMap::new();
+        let mut pkg_reqs: BTreeMap<(OpenhclKernelPackageKind, CommonArch), Vec<WriteVar<PathBuf>>> =
+            BTreeMap::new();
         let mut metadata_reqs: BTreeMap<
-            (OpenhclKernelPackageKind, OpenhclKernelPackageArch),
+            (OpenhclKernelPackageKind, CommonArch),
             Vec<WriteVar<PathBuf>>,
         > = BTreeMap::new();
 
@@ -125,16 +118,14 @@ impl FlowNodeWithConfig for Node {
         }
 
         // Collect all architectures that need resolution
-        let all_reqs: std::collections::BTreeSet<(
-            OpenhclKernelPackageKind,
-            OpenhclKernelPackageArch,
-        )> = kernel_reqs
-            .keys()
-            .chain(modules_reqs.keys())
-            .chain(pkg_reqs.keys())
-            .chain(metadata_reqs.keys())
-            .cloned()
-            .collect();
+        let all_reqs: std::collections::BTreeSet<(OpenhclKernelPackageKind, CommonArch)> =
+            kernel_reqs
+                .keys()
+                .chain(modules_reqs.keys())
+                .chain(pkg_reqs.keys())
+                .chain(metadata_reqs.keys())
+                .cloned()
+                .collect();
 
         // Verify we have either local paths or versions for each requested architecture
         for (kind, arch) in &all_reqs {
@@ -285,8 +276,8 @@ impl FlowNodeWithConfig for Node {
                     OpenhclKernelPackageKind::Cvm | OpenhclKernelPackageKind::CvmDev => "-cvm",
                 },
                 match arch {
-                    OpenhclKernelPackageArch::X86_64 => "x64",
-                    OpenhclKernelPackageArch::Aarch64 => "arm64",
+                    CommonArch::X86_64 => "x64",
+                    CommonArch::Aarch64 => "arm64",
                 },
             );
 
@@ -301,8 +292,8 @@ impl FlowNodeWithConfig for Node {
                 });
 
             let kernel_file_name = match arch {
-                OpenhclKernelPackageArch::X86_64 => "vmlinux",
-                OpenhclKernelPackageArch::Aarch64 => "Image",
+                CommonArch::X86_64 => "vmlinux",
+                CommonArch::Aarch64 => "Image",
             };
 
             let has_kernel_req = kernel_reqs_download.contains_key(&(kind, arch));

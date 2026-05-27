@@ -125,6 +125,7 @@ jobs:
             --file /dev/null \
             --metadata \
               "ghpr=$SOURCE_PR" \
+              "ghbranch=$SOURCE_BRANCH" \
             --auth-mode login
         env:
           run_id: ${{ github.event.workflow_run.id }}

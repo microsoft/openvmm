@@ -10,10 +10,10 @@ use flowey_lib_common::git_checkout::RepoSource;
 use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmBuildParams;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use flowey_lib_hvlite::build_openvmm_hcl::OpenvmmHclBuildProfile;
+use flowey_lib_hvlite::common::CommonArch;
+use flowey_lib_hvlite::common::CommonPlatform;
+use flowey_lib_hvlite::common::CommonTriple;
 use flowey_lib_hvlite::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
-use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
-use flowey_lib_hvlite::run_cargo_build::common::CommonPlatform;
-use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
 use std::collections::BTreeSet;
 use target_lexicon::Triple;
 

@@ -22,7 +22,6 @@ use crate::vtl2_settings::Vtl2StorageControllerBuilder;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
-use memory_range::MemoryRange;
 use mesh::CancelContext;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use pal_async::DefaultDriver;
@@ -37,7 +36,9 @@ use petri_artifacts_common::tags::IsTestVmgs;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
+use petri_artifacts_core::ArtifactSource;
 use petri_artifacts_core::ResolvedArtifact;
+use petri_artifacts_core::ResolvedArtifactSource;
 use petri_artifacts_core::ResolvedOptionalArtifact;
 use pipette_client::PipetteClient;
 use std::collections::BTreeMap;
@@ -179,6 +180,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     enable_screenshots: bool,
     // Pre-built initrd with pipette already injected (skips runtime injection).
     prebuilt_initrd: Option<PathBuf>,
+    // Use virtio vsock instead of VMBus-based hvsocket for guest communication.
+    use_virtio_vsock: bool,
 }
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
@@ -199,6 +202,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("enable_serial", &self.enable_serial)
             .field("enable_screenshots", &self.enable_screenshots)
             .field("prebuilt_initrd", &self.prebuilt_initrd)
+            .field("use_virtio_vsock", &self.use_virtio_vsock)
             .finish()
     }
 }
@@ -224,6 +228,19 @@ pub struct PetriVmConfig {
     pub tpm: Option<TpmConfig>,
     /// Storage controllers and associated disks
     pub vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
+    /// PCIe NVMe drives.
+    pub pcie_nvme_drives: Vec<PcieNvmeDrive>,
+}
+
+/// PCIe NVMe drive configuration.
+#[derive(Debug)]
+pub struct PcieNvmeDrive {
+    /// PCIe root port name (e.g. "s0rc0rp0").
+    pub port_name: String,
+    /// NVMe namespace ID.
+    pub nsid: u32,
+    /// The drive to attach.
+    pub drive: Drive,
 }
 
 /// Static properties about the VM for convenience during contruction and
@@ -253,6 +270,8 @@ pub struct PetriVmProperties {
     pub prebuilt_initrd: Option<PathBuf>,
     /// Whether the VM has a CIDATA agent disk attached
     pub has_agent_disk: bool,
+    /// Use virtio vsock instead of VMBus-based hvsocket
+    pub use_virtio_vsock: bool,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -396,6 +415,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 vmgs: PetriVmgsResource::Ephemeral,
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
+                pcie_nvme_drives: Vec::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -417,6 +437,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_serial: true,
             enable_screenshots: true,
             prebuilt_initrd: None,
+            use_virtio_vsock: false,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
@@ -468,6 +489,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 vmgs: PetriVmgsResource::Ephemeral,
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
+                pcie_nvme_drives: Vec::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -489,6 +511,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_serial: false,
             enable_screenshots: true,
             prebuilt_initrd: None,
+            use_virtio_vsock: false,
         })
     }
 
@@ -581,6 +604,21 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// eliminating the "No change in framebuffer" debug log lines.
     pub fn without_screenshots(mut self) -> Self {
         self.enable_screenshots = false;
+        self
+    }
+
+    /// Use virtio vsock instead of VMBus-based hvsocket for guest communication.
+    /// The virtio-vsock device will use PCIe, so a PCIe root topology must be
+    /// configured.
+    ///
+    /// When enabled, a virtio-vsock device is added to the VM. This device uses
+    /// the same Unix socket relay path that hvsocket would otherwise use, so
+    /// pipette will connect using this.
+    ///
+    /// For Linux direct boot, this also adjusts the kernel command line to
+    /// blacklist hv_sock instead of virtio_vsock.
+    pub fn with_virtio_vsock(mut self) -> Self {
+        self.use_virtio_vsock = true;
         self
     }
 
@@ -818,6 +856,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                     ),
                 BootDeviceType::NvmeViaScsi => todo!(),
                 BootDeviceType::NvmeViaNvme => todo!(),
+                BootDeviceType::PcieNvme => {
+                    self.config.pcie_nvme_drives.push(PcieNvmeDrive {
+                        port_name: "s0rc0rp0".into(),
+                        nsid: 1,
+                        drive: boot_drive,
+                    });
+                    self
+                }
             }
         } else {
             self
@@ -851,6 +897,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_serial: self.enable_serial,
             prebuilt_initrd: self.prebuilt_initrd.clone(),
             has_agent_disk: self.has_agent_disk(),
+            use_virtio_vsock: self.use_virtio_vsock,
         }
     }
 
@@ -1269,6 +1316,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Sets the UEFI diagnostics log level filter.
+    ///
+    /// By default only ERROR and WARN level entries are forwarded to the
+    /// host tracing infrastructure. Use this to also surface INFO (or all)
+    /// entries when a test needs to observe them.
+    pub fn with_efi_diagnostics_log_level(mut self, level: EfiDiagnosticsLogLevel) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("EFI diagnostics log level is only supported for UEFI firmware.")
+            .efi_diagnostics_log_level = level;
+        self
+    }
+
     /// Sets whether UEFI should always attempt a default boot.
     pub fn with_default_boot_always_attempt(mut self, enable: bool) -> Self {
         self.config
@@ -1333,7 +1394,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Use the specified backing VMGS file
     pub fn with_initial_vmgs(self, disk: ResolvedArtifact<impl IsTestVmgs>) -> Self {
-        self.with_backing_vmgs(Disk::Differencing(disk.into()))
+        self.with_backing_vmgs(Disk::Differencing(DiskPath::Local(disk.into())))
     }
 
     /// Use the specified backing VMGS file
@@ -1518,7 +1579,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     }
 
     /// Wait for the VM to halt, returning the reason for the halt.
-    pub async fn wait_for_halt(&mut self) -> anyhow::Result<PetriHaltReason> {
+    pub async fn wait_for_halt(&mut self) -> anyhow::Result<PetriHaltReasonDetail> {
         tracing::info!("Waiting for VM to halt...");
         let halt_reason = self.runtime.wait_for_halt(false).await?;
         tracing::info!("VM halted: {halt_reason:?}. Cancelling watchdogs...");
@@ -1529,7 +1590,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Wait for the VM to cleanly shutdown.
     pub async fn wait_for_clean_shutdown(&mut self) -> anyhow::Result<()> {
         let halt_reason = self.wait_for_halt().await?;
-        if halt_reason != PetriHaltReason::PowerOff {
+        if halt_reason.reason != PetriHaltReason::PowerOff {
             anyhow::bail!("Expected PowerOff, got {halt_reason:?}");
         }
         tracing::info!("VM was cleanly powered off and torn down.");
@@ -1538,7 +1599,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
 
     /// Wait for the VM to halt, returning the reason for the halt,
     /// and tear down the VM.
-    pub async fn wait_for_teardown(mut self) -> anyhow::Result<PetriHaltReason> {
+    pub async fn wait_for_teardown(mut self) -> anyhow::Result<PetriHaltReasonDetail> {
         let halt_reason = self.wait_for_halt().await?;
         self.teardown().await?;
         Ok(halt_reason)
@@ -1566,7 +1627,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     async fn wait_for_reset_core(&mut self) -> anyhow::Result<()> {
         tracing::info!("Waiting for VM to reset...");
         let halt_reason = self.runtime.wait_for_halt(true).await?;
-        if halt_reason != PetriHaltReason::Reset {
+        if halt_reason.reason != PetriHaltReason::Reset {
             anyhow::bail!("Expected reset, got {halt_reason:?}");
         }
         tracing::info!("VM reset.");
@@ -1906,7 +1967,7 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     async fn teardown(self) -> anyhow::Result<()>;
     /// Wait for the VM to halt, returning the reason for the halt. The VM
     /// should automatically restart the VM on reset if `allow_reset` is true.
-    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason>;
+    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReasonDetail>;
     /// Wait for a connection from a pipette agent
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>;
     /// Get an OpenHCL diagnostics handler for the VM
@@ -2082,16 +2143,6 @@ pub enum ApicMode {
     X2apicEnabled,
 }
 
-/// Mmio configuration.
-#[derive(Debug)]
-pub enum MmioConfig {
-    /// The platform provided default.
-    Platform,
-    /// Custom mmio gaps.
-    /// TODO: Not supported on all platforms (ie Hyper-V).
-    Custom(Vec<MemoryRange>),
-}
-
 /// Common memory configuration information for the VM.
 #[derive(Debug)]
 pub struct MemoryConfig {
@@ -2102,8 +2153,9 @@ pub struct MemoryConfig {
     ///
     /// Dynamic memory will be disabled if this is `None`.
     pub dynamic_memory_range: Option<(u64, u64)>,
-    /// Specifies the mmio gaps to use, either platform or custom.
-    pub mmio_gaps: MmioConfig,
+    /// Per-NUMA-node memory sizes. When set, RAM is distributed across
+    /// vNUMA nodes instead of assigning all RAM to node 0.
+    pub numa_mem_sizes: Option<Vec<u64>>,
 }
 
 impl Default for MemoryConfig {
@@ -2111,7 +2163,7 @@ impl Default for MemoryConfig {
         Self {
             startup_bytes: 4 * 1024 * 1024 * 1024, // 4 GiB
             dynamic_memory_range: None,
-            mmio_gaps: MmioConfig::Platform,
+            numa_mem_sizes: None,
         }
     }
 }
@@ -2129,6 +2181,8 @@ pub struct UefiConfig {
     pub default_boot_always_attempt: bool,
     /// Enable vPCI boot (for NVMe)
     pub enable_vpci_boot: bool,
+    /// EFI diagnostics log level filter
+    pub efi_diagnostics_log_level: EfiDiagnosticsLogLevel,
 }
 
 impl Default for UefiConfig {
@@ -2139,8 +2193,24 @@ impl Default for UefiConfig {
             disable_frontpage: true,
             default_boot_always_attempt: false,
             enable_vpci_boot: false,
+            efi_diagnostics_log_level: EfiDiagnosticsLogLevel::Default,
         }
     }
+}
+
+/// EFI diagnostics log level filter.
+///
+/// Controls which UEFI diagnostics log entries are forwarded to the host
+/// tracing infrastructure (and thus visible via kmsg / test output).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EfiDiagnosticsLogLevel {
+    /// Default log level (ERROR and WARN only).
+    #[default]
+    Default,
+    /// Include INFO logs (ERROR, WARN, and INFO).
+    Info,
+    /// All log levels.
+    Full,
 }
 
 /// Control the logging configuration of OpenVMM/OpenHCL.
@@ -2345,6 +2415,8 @@ pub enum BootDeviceType {
     NvmeViaScsi,
     /// Boot from NVMe via NVMe to VTL2.
     NvmeViaNvme,
+    /// Boot from NVMe attached to a PCIe root port.
+    PcieNvme,
 }
 
 impl BootDeviceType {
@@ -2353,7 +2425,8 @@ impl BootDeviceType {
             BootDeviceType::None
             | BootDeviceType::Ide
             | BootDeviceType::Scsi
-            | BootDeviceType::Nvme => false,
+            | BootDeviceType::Nvme
+            | BootDeviceType::PcieNvme => false,
             BootDeviceType::IdeViaScsi
             | BootDeviceType::IdeViaNvme
             | BootDeviceType::ScsiViaScsi
@@ -2384,6 +2457,18 @@ impl Firmware {
                 kernel: resolver.require(LINUX_DIRECT_TEST_KERNEL_AARCH64).erase(),
                 initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_AARCH64).erase(),
             },
+        }
+    }
+
+    /// Constructs a [`Firmware::LinuxDirect`] configuration that uses a
+    /// compressed bzImage kernel instead of an uncompressed ELF.
+    ///
+    /// This is x86_64-only, as bzImage is an x86-specific format.
+    pub fn linux_direct_bzimage(resolver: &ArtifactResolver<'_>) -> Self {
+        use petri_artifacts_vmm_test::artifacts::loadable::*;
+        Firmware::LinuxDirect {
+            kernel: resolver.require(LINUX_DIRECT_TEST_BZIMAGE_X64).erase(),
+            initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_X64).erase(),
         }
     }
 
@@ -2688,18 +2773,13 @@ impl Firmware {
         match self {
             Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => None,
             Firmware::Pcat { guest, .. } | Firmware::OpenhclPcat { guest, .. } => {
-                Some((guest.artifact().to_owned(), guest.is_dvd()))
+                Some((guest.disk_path(), guest.is_dvd()))
             }
             Firmware::Uefi { guest, .. } | Firmware::OpenhclUefi { guest, .. } => {
-                guest.artifact().map(|a| (a.to_owned(), false))
+                guest.disk_path().map(|dp| (dp, false))
             }
         }
-        .map(|(artifact, is_dvd)| {
-            Drive::new(
-                Some(Disk::Differencing(artifact.get().to_path_buf())),
-                is_dvd,
-            )
-        })
+        .map(|(disk_path, is_dvd)| Drive::new(Some(Disk::Differencing(disk_path)), is_dvd))
     }
 
     fn vtl2_settings(&mut self) -> Option<&mut Vtl2Settings> {
@@ -2737,10 +2817,10 @@ pub enum PcatGuest {
 }
 
 impl PcatGuest {
-    fn artifact(&self) -> &ResolvedArtifact {
+    fn disk_path(&self) -> DiskPath {
         match self {
-            PcatGuest::Vhd(disk) => &disk.artifact,
-            PcatGuest::Iso(disk) => &disk.artifact,
+            PcatGuest::Vhd(disk) => disk.disk_path(),
+            PcatGuest::Iso(disk) => disk.disk_path(),
         }
     }
 
@@ -2772,10 +2852,10 @@ impl UefiGuest {
         UefiGuest::GuestTestUefi(artifact)
     }
 
-    fn artifact(&self) -> Option<&ResolvedArtifact> {
+    fn disk_path(&self) -> Option<DiskPath> {
         match self {
-            UefiGuest::Vhd(vhd) => Some(&vhd.artifact),
-            UefiGuest::GuestTestUefi(p) => Some(p),
+            UefiGuest::Vhd(vhd) => Some(vhd.disk_path()),
+            UefiGuest::GuestTestUefi(p) => Some(DiskPath::Local(p.get().to_path_buf())),
             UefiGuest::None => None,
         }
     }
@@ -2808,8 +2888,8 @@ pub mod boot_image_type {
 /// Configuration information for the boot drive of the VM.
 #[derive(Debug)]
 pub struct BootImageConfig<T: boot_image_type::BootImageType> {
-    /// Artifact handle corresponding to the boot media.
-    artifact: ResolvedArtifact,
+    /// Artifact source corresponding to the boot media (local or remote).
+    artifact: ResolvedArtifactSource,
     /// The OS flavor.
     os_flavor: OsFlavor,
     /// Any quirks needed to boot the guest.
@@ -2820,9 +2900,19 @@ pub struct BootImageConfig<T: boot_image_type::BootImageType> {
     _type: core::marker::PhantomData<T>,
 }
 
+impl<T: boot_image_type::BootImageType> BootImageConfig<T> {
+    /// Get a [`DiskPath`] from the artifact source.
+    fn disk_path(&self) -> DiskPath {
+        match self.artifact.get() {
+            ArtifactSource::Local(p) => DiskPath::Local(p.clone()),
+            ArtifactSource::Remote { url } => DiskPath::Remote { url: url.clone() },
+        }
+    }
+}
+
 impl BootImageConfig<boot_image_type::Vhd> {
-    /// Create a new BootImageConfig from a VHD artifact handle
-    pub fn from_vhd<A>(artifact: ResolvedArtifact<A>) -> Self
+    /// Create a new BootImageConfig from a VHD artifact source
+    pub fn from_vhd<A>(artifact: ResolvedArtifactSource<A>) -> Self
     where
         A: petri_artifacts_common::tags::IsTestVhd,
     {
@@ -2836,8 +2926,8 @@ impl BootImageConfig<boot_image_type::Vhd> {
 }
 
 impl BootImageConfig<boot_image_type::Iso> {
-    /// Create a new BootImageConfig from an ISO artifact handle
-    pub fn from_iso<A>(artifact: ResolvedArtifact<A>) -> Self
+    /// Create a new BootImageConfig from an ISO artifact source
+    pub fn from_iso<A>(artifact: ResolvedArtifactSource<A>) -> Self
     where
         A: petri_artifacts_common::tags::IsTestIso,
     {
@@ -2875,13 +2965,31 @@ pub struct OpenHclServicingFlags {
     pub stop_timeout_hint_secs: Option<u16>,
 }
 
+/// Where a disk image is located.
+#[derive(Debug, Clone)]
+pub enum DiskPath {
+    /// A local file path.
+    Local(PathBuf),
+    /// A remote URL (fetched on demand via HTTP Range requests).
+    Remote {
+        /// The URL where the disk can be fetched.
+        url: String,
+    },
+}
+
+impl From<PathBuf> for DiskPath {
+    fn from(path: PathBuf) -> Self {
+        DiskPath::Local(path)
+    }
+}
+
 /// Petri disk
 #[derive(Debug, Clone)]
 pub enum Disk {
     /// Memory backed with specified size
     Memory(u64),
-    /// Memory differencing disk backed by a VHD
-    Differencing(PathBuf),
+    /// Memory differencing disk backed by a VHD (local or remote)
+    Differencing(DiskPath),
     /// Persistent VHD
     Persistent(PathBuf),
     /// Disk backed by a temporary VHD
@@ -3024,6 +3132,25 @@ pub enum PetriHaltReason {
     Other,
 }
 
+impl PetriHaltReason {
+    /// Construct a halt reason with detailed debug info
+    pub fn with_detail(self, detail: String) -> PetriHaltReasonDetail {
+        PetriHaltReasonDetail {
+            reason: self,
+            detail,
+        }
+    }
+}
+
+/// The reason that the VM halted, with optional addition debug details
+#[derive(Debug, Clone)]
+pub struct PetriHaltReasonDetail {
+    /// The reason for the halt
+    pub reason: PetriHaltReason,
+    /// More details about the halt
+    pub detail: String,
+}
+
 fn append_cmdline(cmd: &mut Option<String>, add_cmd: impl AsRef<str>) {
     if let Some(cmd) = cmd.as_mut() {
         cmd.push(' ');
@@ -3159,6 +3286,37 @@ impl VmbusStorageController {
 
         lun
     }
+}
+
+/// Returns the cache directory for lazy-fetched disk artifacts.
+pub(crate) fn petri_disk_cache_dir() -> String {
+    if let Ok(dir) = std::env::var("PETRI_CACHE_DIR") {
+        return dir;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{home}/Library/Caches/petri");
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            return format!("{local}\\petri\\cache");
+        }
+    }
+
+    // Linux / fallback: XDG
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+        return format!("{xdg}/petri");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return format!("{home}/.cache/petri");
+    }
+
+    ".cache/petri".to_string()
 }
 
 #[cfg(test)]

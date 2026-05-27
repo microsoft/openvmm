@@ -5,20 +5,17 @@
 //! with a customizable configuration of semi-standardized device.
 
 use crate::ChipsetDeviceHandle;
+use crate::LegacyPciChipsetDeviceHandle;
 use crate::PowerEvent;
 use crate::chipset::ChipsetBuilder;
 use crate::chipset::backing::arc_mutex::device::AddDeviceError;
 use crate::chipset::backing::arc_mutex::services::ArcMutexChipsetServices;
 use chipset::*;
-use chipset_device::interrupt::LineInterruptTarget;
-use chipset_device_resources::BSP_LINT_LINE_SET;
 use chipset_device_resources::ConfigureChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use closeable_mutex::CloseableMutex;
-use cvm_tracing::CVM_ALLOWED;
-use firmware_uefi::UefiCommandSet;
 use framebuffer::Framebuffer;
 use framebuffer::FramebufferDevice;
 use framebuffer::FramebufferLocalControl;
@@ -46,6 +43,8 @@ pub enum BaseChipsetBuilderError {
     FeatureGatedDevice(&'static str),
     #[error("no valid ISA DMA controller for floppy")]
     NoDmaForFloppy,
+    #[error("failed to resolve resource")]
+    ResolveResource(#[source] vm_resource::ResolveError),
 }
 
 /// A grab-bag of device-specific interfaces that may need to be wired up into
@@ -76,6 +75,7 @@ pub struct BaseChipsetBuilder<'a> {
     foundation: options::BaseChipsetFoundation<'a>,
     devices: options::BaseChipsetDevices,
     device_handles: Vec<ChipsetDeviceHandle>,
+    pci_device_handles: Vec<LegacyPciChipsetDeviceHandle>,
     expected_manifest: Option<options::BaseChipsetManifest>,
     fallback_mmio_device: Option<Arc<CloseableMutex<dyn chipset_device::ChipsetDevice>>>,
     flags: BaseChipsetBuilderFlags,
@@ -96,6 +96,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             foundation,
             devices,
             device_handles: Vec::new(),
+            pci_device_handles: Vec::new(),
             expected_manifest: None,
             fallback_mmio_device: None,
             flags: BaseChipsetBuilderFlags {
@@ -132,6 +133,15 @@ impl<'a> BaseChipsetBuilder<'a> {
     /// Adds device handles to be resolved and instantiated.
     pub fn with_device_handles(mut self, mut device_handles: Vec<ChipsetDeviceHandle>) -> Self {
         self.device_handles.append(&mut device_handles);
+        self
+    }
+
+    /// Adds legacy PCI device handles to be resolved and instantiated.
+    pub fn with_pci_device_handles(
+        mut self,
+        mut pci_device_handles: Vec<LegacyPciChipsetDeviceHandle>,
+    ) -> Self {
+        self.pci_device_handles.append(&mut pci_device_handles);
         self
     }
 
@@ -175,6 +185,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             foundation,
             devices,
             device_handles,
+            pci_device_handles,
             expected_manifest,
             fallback_mmio_device,
             flags,
@@ -189,7 +200,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             framebuffer_local_control: None,
         };
 
-        let mut builder = ChipsetBuilder::new(
+        let builder = ChipsetBuilder::new(
             driver_source,
             units,
             foundation.debug_event_handler.clone(),
@@ -203,59 +214,21 @@ impl<'a> BaseChipsetBuilder<'a> {
         // oh boy, time to build all the devices!
         let options::BaseChipsetDevices {
             deps_generic_cmos_rtc,
-            deps_generic_ioapic,
             deps_generic_isa_dma,
             deps_generic_isa_floppy,
             deps_generic_pci_bus,
-            deps_generic_pic,
-            deps_generic_pit,
             deps_generic_psp: _, // not actually a device... yet
             deps_hyperv_firmware_pcat,
-            deps_hyperv_firmware_uefi,
             deps_hyperv_framebuffer,
-            deps_hyperv_guest_watchdog,
             deps_hyperv_ide,
-            deps_hyperv_power_management,
             deps_hyperv_vga,
             deps_i440bx_host_pci_bridge,
             deps_piix4_cmos_rtc,
             deps_piix4_pci_bus,
-            deps_piix4_pci_isa_bridge,
-            deps_piix4_pci_usb_uhci_stub,
-            deps_piix4_power_management,
             deps_underhill_vga_proxy,
             deps_winbond_super_io_and_floppy_stub,
             deps_winbond_super_io_and_floppy_full,
         } = devices;
-
-        if let Some(options::dev::GenericPicDeps {}) = deps_generic_pic {
-            builder.arc_mutex_device("pic").add(|services| {
-                // Map IRQ2 to PIC IRQ0 (used by the PIT), since PIC IRQ2 is used to
-                // cascade the secondary PIC's output onto the primary.
-                //
-                // Don't map IRQ0 at all.
-                services.add_line_target(IRQ_LINE_SET, 1..=1, 1);
-                services.add_line_target(IRQ_LINE_SET, 2..=2, 0);
-                services.add_line_target(IRQ_LINE_SET, 3..=15, 3);
-
-                // Raise interrupt requests by raising the BSP's LINT0.
-                pic::DualPic::new(
-                    services.new_line(BSP_LINT_LINE_SET, "ready", 0),
-                    &mut services.register_pio(),
-                )
-            })?;
-        }
-
-        if let Some(options::dev::GenericIoApicDeps {
-            num_entries,
-            routing,
-        }) = deps_generic_ioapic
-        {
-            builder.arc_mutex_device("ioapic").add(|services| {
-                services.add_line_target(IRQ_LINE_SET, 0..=num_entries as u32 - 1, 0);
-                ioapic::IoApicDevice::new(num_entries, routing)
-            })?;
-        }
 
         if let Some(options::dev::GenericPciBusDeps {
             bus_id,
@@ -312,48 +285,6 @@ impl<'a> BaseChipsetBuilder<'a> {
                 None
             }
         };
-
-        if let Some(options::dev::Piix4PciIsaBridgeDeps { attached_to }) = deps_piix4_pci_isa_bridge
-        {
-            // TODO: use PowerRequestHandleKind
-            let reset = {
-                let power = foundation.power_event_handler.clone();
-                Box::new(move || power.on_power_event(PowerEvent::Reset))
-            };
-
-            let set_a20_signal = Box::new(move |active| {
-                tracing::info!(CVM_ALLOWED, active, "setting stubbed A20 signal")
-            });
-
-            builder
-                .arc_mutex_device("piix4-pci-isa-bridge")
-                .on_pci_bus(attached_to)
-                .add(|_| {
-                    chipset_legacy::piix4_pci_isa_bridge::PciIsaBridge::new(
-                        reset.clone(),
-                        set_a20_signal,
-                    )
-                })?;
-        }
-
-        if let Some(options::dev::Piix4PciUsbUhciStubDeps { attached_to }) =
-            deps_piix4_pci_usb_uhci_stub
-        {
-            builder
-                .arc_mutex_device("piix4-usb-uhci-stub")
-                .on_pci_bus(attached_to)
-                .add(|_| chipset_legacy::piix4_uhci::Piix4UsbUhciStub::new())?;
-        }
-
-        if let Some(options::dev::GenericPitDeps {}) = deps_generic_pit {
-            // hard-coded IRQ lines, as per x86 spec
-            builder.arc_mutex_device("pit").add(|services| {
-                pit::PitDevice::new(
-                    services.new_line(IRQ_LINE_SET, "timer0", 2),
-                    services.register_vmtime().access("pit"),
-                )
-            })?;
-        }
 
         let _ = dma;
         #[cfg(feature = "dev_generic_isa_floppy")]
@@ -476,9 +407,13 @@ impl<'a> BaseChipsetBuilder<'a> {
             initial_cmos,
         }) = deps_generic_cmos_rtc
         {
+            let resolved = resolver
+                .resolve(time_source, ())
+                .await
+                .map_err(BaseChipsetBuilderError::ResolveResource)?;
             builder.arc_mutex_device("rtc").add(|services| {
                 cmos_rtc::Rtc::new(
-                    time_source,
+                    resolved.0,
                     services.new_line(IRQ_LINE_SET, "interrupt", irq),
                     services.register_vmtime(),
                     century_reg_idx,
@@ -494,11 +429,15 @@ impl<'a> BaseChipsetBuilder<'a> {
             enlightened_interrupts,
         }) = deps_piix4_cmos_rtc
         {
+            let resolved = resolver
+                .resolve(time_source, ())
+                .await
+                .map_err(BaseChipsetBuilderError::ResolveResource)?;
             builder.arc_mutex_device("piix4-rtc").add(|services| {
                 // hard-coded to IRQ line 8, as per PIIX4 spec
                 let rtc_interrupt = services.new_line(IRQ_LINE_SET, "interrupt", 8);
                 chipset_legacy::piix4_cmos_rtc::Piix4CmosRtc::new(
-                    time_source,
+                    resolved.0,
                     rtc_interrupt,
                     services.register_vmtime(),
                     initial_cmos,
@@ -510,140 +449,6 @@ impl<'a> BaseChipsetBuilder<'a> {
         // The ACPI GPE0 line to use for generation ID. This must match the
         // value in the DSDT.
         const GPE0_LINE_GENERATION_ID: u32 = 0;
-        // for ARM64, 3 + 32 (SPI range start) = 35,
-        // the SYSTEM_SPI_GENCOUNTER vector for the GIC
-        const GENERATION_ID_IRQ: u32 = 3;
-
-        // TODO: use PowerRequestHandleKind
-        let pm_action = || {
-            let power = foundation.power_event_handler.clone();
-            move |action: pm::PowerAction| {
-                tracing::info!(CVM_ALLOWED, ?action, "guest initiated");
-                let req = match action {
-                    pm::PowerAction::PowerOff => PowerEvent::PowerOff,
-                    pm::PowerAction::Hibernate => PowerEvent::Hibernate,
-                    pm::PowerAction::Reboot => PowerEvent::Reset,
-                };
-                power.on_power_event(req);
-            }
-        };
-
-        if let Some(options::dev::HyperVPowerManagementDeps {
-            acpi_irq,
-            pio_base: pio_dynamic_reg_base,
-            pm_timer_assist,
-        }) = deps_hyperv_power_management
-        {
-            builder.arc_mutex_device("pm").add(|services| {
-                let pm = pm::PowerManagementDevice::new(
-                    Box::new(pm_action()),
-                    services.new_line(IRQ_LINE_SET, "gpe0", acpi_irq),
-                    &mut services.register_pio(),
-                    services.register_vmtime().access("pm"),
-                    Some(pm::EnableAcpiMode {
-                        default_pio_dynamic: pio_dynamic_reg_base,
-                    }),
-                    pm_timer_assist,
-                );
-                for range in pm.valid_lines() {
-                    services.add_line_target(GPE0_LINE_SET, range.clone(), *range.start());
-                }
-                pm
-            })?;
-        }
-
-        if let Some(options::dev::Piix4PowerManagementDeps {
-            attached_to,
-            pm_timer_assist,
-        }) = deps_piix4_power_management
-        {
-            builder
-                .arc_mutex_device("piix4-pm")
-                .on_pci_bus(attached_to)
-                .add(|services| {
-                    // hard-coded to IRQ line 9, as per PIIX4 spec
-                    let interrupt = services.new_line(IRQ_LINE_SET, "acpi", 9);
-                    let pm = chipset_legacy::piix4_pm::Piix4Pm::new(
-                        Box::new(pm_action()),
-                        interrupt,
-                        &mut services.register_pio(),
-                        services.register_vmtime().access("piix4-pm"),
-                        pm_timer_assist,
-                    );
-                    for range in pm.valid_lines() {
-                        services.add_line_target(GPE0_LINE_SET, range.clone(), *range.start());
-                    }
-                    pm
-                })?;
-        }
-
-        if let Some(options::dev::HyperVGuestWatchdogDeps {
-            watchdog_platform,
-            port_base: pio_wdat_port,
-        }) = deps_hyperv_guest_watchdog
-        {
-            builder
-                .arc_mutex_device("guest-watchdog")
-                .add_async(async |services| {
-                    let vmtime = services.register_vmtime();
-                    let mut register_pio = services.register_pio();
-                    guest_watchdog::GuestWatchdogServices::new(
-                        vmtime.access("guest-watchdog-time"),
-                        watchdog_platform,
-                        &mut register_pio,
-                        pio_wdat_port,
-                        foundation.is_restoring,
-                    )
-                    .await
-                })
-                .await?;
-        }
-
-        if let Some(options::dev::HyperVFirmwareUefi {
-            config,
-            logger,
-            nvram_storage,
-            generation_id_recv,
-            watchdog_platform,
-            watchdog_recv,
-            vsm_config,
-            time_source,
-        }) = deps_hyperv_firmware_uefi
-        {
-            builder
-                .arc_mutex_device("uefi")
-                .try_add_async(async |services| {
-                    let notify_interrupt = match config.command_set {
-                        UefiCommandSet::X64 => {
-                            services.new_line(GPE0_LINE_SET, "genid", GPE0_LINE_GENERATION_ID)
-                        }
-                        UefiCommandSet::Aarch64 => {
-                            services.new_line(IRQ_LINE_SET, "genid", GENERATION_ID_IRQ)
-                        }
-                    };
-                    let vmtime = services.register_vmtime();
-                    let gm = foundation.trusted_vtl0_dma_memory.clone();
-                    let runtime_deps = firmware_uefi::UefiRuntimeDeps {
-                        gm: gm.clone(),
-                        nvram_storage,
-                        logger,
-                        vmtime,
-                        watchdog_platform,
-                        watchdog_recv,
-                        generation_id_deps: generation_id::GenerationIdRuntimeDeps {
-                            generation_id_recv,
-                            gm,
-                            notify_interrupt,
-                        },
-                        vsm_config,
-                        time_source,
-                    };
-
-                    firmware_uefi::UefiDevice::new(runtime_deps, config, foundation.is_restoring)
-                        .await
-                })
-                .await?;
-        }
 
         if let Some(options::dev::HyperVFirmwarePcat {
             config,
@@ -739,14 +544,52 @@ impl<'a> BaseChipsetBuilder<'a> {
         );
 
         for device in device_handles {
+            let ChipsetDeviceHandle { name, resource } = device;
+
             builder
-                .arc_mutex_device(device.name.as_ref())
+                .arc_mutex_device(name.as_ref())
                 .try_add_async(async |services| {
                     resolver
                         .resolve(
-                            device.resource,
+                            resource,
                             ResolveChipsetDeviceHandleParams {
-                                device_name: device.name.as_ref(),
+                                device_name: name.as_ref(),
+                                guest_memory: &foundation.untrusted_dma_memory,
+                                encrypted_guest_memory: &foundation.trusted_vtl0_dma_memory,
+                                vmtime: foundation.vmtime,
+                                is_restoring: foundation.is_restoring,
+                                task_driver_source: driver_source,
+                                register_mmio: &mut services.register_mmio(),
+                                register_pio: &mut services.register_pio(),
+                                configure: services,
+                            },
+                        )
+                        .await
+                        .map(|dev| dev.0)
+                })
+                .await?;
+        }
+
+        for device in pci_device_handles {
+            let LegacyPciChipsetDeviceHandle {
+                name,
+                resource,
+                pci_bus_name,
+                bdf,
+            } = device;
+
+            let (bus, slot, function) = bdf;
+
+            builder
+                .arc_mutex_device(name.as_ref())
+                .on_pci_bus(crate::BusId::new(pci_bus_name.as_str()))
+                .with_pci_addr(bus, slot, function)
+                .try_add_async(async |services| {
+                    resolver
+                        .resolve(
+                            resource,
+                            ResolveChipsetDeviceHandleParams {
+                                device_name: name.as_ref(),
                                 guest_memory: &foundation.untrusted_dma_memory,
                                 encrypted_guest_memory: &foundation.trusted_vtl0_dma_memory,
                                 vmtime: foundation.vmtime,
@@ -941,7 +784,7 @@ mod weak_mutex_pci {
                 })
         }
 
-        fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+        fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo> {
             self.lock().downstream_ports()
         }
     }
@@ -962,23 +805,38 @@ mod weak_mutex_pci {
                 })
         }
 
-        fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+        fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo> {
             self.lock().downstream_ports()
         }
     }
 }
 
+#[cfg(any(
+    feature = "dev_generic_isa_floppy",
+    feature = "dev_winbond_super_io_and_floppy_full",
+    feature = "dev_winbond_super_io_and_floppy_stub"
+))]
 pub struct ArcMutexIsaDmaChannel {
     channel_num: u8,
     dma: Arc<CloseableMutex<dma::DmaController>>,
 }
 
+#[cfg(any(
+    feature = "dev_generic_isa_floppy",
+    feature = "dev_winbond_super_io_and_floppy_full",
+    feature = "dev_winbond_super_io_and_floppy_stub"
+))]
 impl ArcMutexIsaDmaChannel {
     pub fn new(dma: Arc<CloseableMutex<dma::DmaController>>, channel_num: u8) -> Self {
         Self { dma, channel_num }
     }
 }
 
+#[cfg(any(
+    feature = "dev_generic_isa_floppy",
+    feature = "dev_winbond_super_io_and_floppy_full",
+    feature = "dev_winbond_super_io_and_floppy_stub"
+))]
 impl vmcore::isa_dma_channel::IsaDmaChannel for ArcMutexIsaDmaChannel {
     fn check_transfer_size(&mut self) -> u16 {
         self.dma.lock().check_transfer_size(self.channel_num.into())
@@ -1125,29 +983,20 @@ pub mod options {
 
         devices {
             generic_cmos_rtc:            dev::GenericCmosRtcDeps,
-            generic_ioapic:              dev::GenericIoApicDeps,
             generic_isa_dma:             dev::GenericIsaDmaDeps,
             generic_isa_floppy:          dev::GenericIsaFloppyDeps,
             generic_pci_bus:             dev::GenericPciBusDeps,
-            generic_pic:                 dev::GenericPicDeps,
-            generic_pit:                 dev::GenericPitDeps,
             generic_psp:                 dev::GenericPspDeps,
 
             hyperv_firmware_pcat:        dev::HyperVFirmwarePcat,
-            hyperv_firmware_uefi:        dev::HyperVFirmwareUefi,
             hyperv_framebuffer:          dev::HyperVFramebufferDeps,
-            hyperv_guest_watchdog:       dev::HyperVGuestWatchdogDeps,
             hyperv_ide:                  dev::HyperVIdeDeps,
-            hyperv_power_management:     dev::HyperVPowerManagementDeps,
             hyperv_vga:                  dev::HyperVVgaDeps,
 
             i440bx_host_pci_bridge:      dev::I440BxHostPciBridgeDeps,
 
             piix4_cmos_rtc:              dev::Piix4CmosRtcDeps,
             piix4_pci_bus:               dev::Piix4PciBusDeps,
-            piix4_pci_isa_bridge:        dev::Piix4PciIsaBridgeDeps,
-            piix4_pci_usb_uhci_stub:     dev::Piix4PciUsbUhciStubDeps,
-            piix4_power_management:      dev::Piix4PowerManagementDeps,
 
             underhill_vga_proxy:         dev::UnderhillVgaProxyDeps,
 
@@ -1156,12 +1005,26 @@ pub mod options {
         }
     }
 
+    /// Derived capabilities for the configured chipset devices.
+    #[derive(MeshPayload, Debug, Copy, Clone)]
+    pub struct VmChipsetCapabilities {
+        /// Whether the VM exposes an IOAPIC.
+        pub with_ioapic: bool,
+        /// Whether the VM exposes a legacy PIC.
+        pub with_pic: bool,
+        /// Whether the VM exposes a PIT.
+        pub with_pit: bool,
+        /// Whether the VM exposes a PSP.
+        pub with_psp: bool,
+        /// Whether the VM exposes the Hyper-V guest watchdog device.
+        pub with_guest_watchdog: bool,
+    }
+
     /// Device specific dependencies
     pub mod dev {
         use super::*;
         use crate::BusIdPci;
         use chipset_resources::battery::HostBatteryUpdate;
-        use local_clock::InspectableLocalClock;
 
         macro_rules! feature_gated {
             (
@@ -1180,12 +1043,6 @@ pub mod options {
             };
         }
 
-        /// PIIX4 PCI-ISA bridge (fixed pci address: 0:7.0)
-        pub struct Piix4PciIsaBridgeDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
-        }
-
         /// Hyper-V IDE controller (fixed pci address: 0:7.1)
         // TODO: this device needs to be broken down further, into a PIIX4 IDE
         // device (without the Hyper-V enlightenments), and then a Generic IDE
@@ -1199,35 +1056,8 @@ pub mod options {
             pub secondary_channel_drives: [Option<ide::DriveMedia>; 2],
         }
 
-        /// PIIX4 USB UHCI controller (fixed pci address: 0:7.2)
-        ///
-        /// NOTE: current implementation is a minimal stub, implementing just
-        /// enough to keep the PCAT BIOS happy.
-        pub struct Piix4PciUsbUhciStubDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
-        }
-
-        /// PIIX4 power management device (fixed pci address: 0:7.3)
-        pub struct Piix4PowerManagementDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
-            /// Interface to enable/disable PM timer assist
-            pub pm_timer_assist: Option<Box<dyn pm::PmTimerAssist>>,
-        }
-
         /// Generic dual 8237A ISA DMA controllers
         pub struct GenericIsaDmaDeps;
-
-        /// Hyper-V specific ACPI-compatible power management device
-        pub struct HyperVPowerManagementDeps {
-            /// IRQ line triggered on ACPI power event
-            pub acpi_irq: u32,
-            /// Base port io address of the device's register region
-            pub pio_base: u16,
-            /// Interface to enable/disable PM timer assist
-            pub pm_timer_assist: Option<Box<dyn pm::PmTimerAssist>>,
-        }
 
         /// AMD Platform Security Processor (PSP)
         pub struct GenericPspDeps;
@@ -1304,9 +1134,6 @@ pub mod options {
             pub adjust_gpa_range: Box<dyn chipset_legacy::i440bx_host_pci_bridge::AdjustGpaRange>,
         }
 
-        /// Generic Intel 8253/8254 Programmable Interval Timer (PIT)
-        pub struct GenericPitDeps;
-
         feature_gated! {
             feature = "dev_hyperv_vga";
 
@@ -1320,23 +1147,12 @@ pub mod options {
             }
         }
 
-        /// Generic Dual 8259 Programmable Interrupt Controllers  (PIC)
-        pub struct GenericPicDeps {}
-
-        /// Generic IO Advanced Programmable Interrupt Controller (IOAPIC)
-        pub struct GenericIoApicDeps {
-            /// Number of IO-APIC entries
-            pub num_entries: u8,
-            /// Trait allowing the IO-APIC device to assert VM interrupts.
-            pub routing: Box<dyn ioapic::IoApicRouting>,
-        }
-
         /// Generic MC146818A compatible RTC + CMOS device
         pub struct GenericCmosRtcDeps {
             /// IRQ line to signal RTC device events
             pub irq: u32,
-            /// A source of "real time"
-            pub time_source: Box<dyn InspectableLocalClock>,
+            /// A time source resource, resolved at device build time.
+            pub time_source: vm_resource::Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
             /// Which CMOS RAM register contains the century register
             pub century_reg_idx: u8,
             /// Initial state of CMOS RAM
@@ -1345,8 +1161,8 @@ pub mod options {
 
         /// PIIX4 "flavored" MC146818A compatible RTC + CMOS device
         pub struct Piix4CmosRtcDeps {
-            /// A source of "real time"
-            pub time_source: Box<dyn InspectableLocalClock>,
+            /// A time source resource, resolved at device build time.
+            pub time_source: vm_resource::Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
             /// Initial state of CMOS RAM
             pub initial_cmos: Option<[u8; 256]>,
             /// Whether enlightened interrupts are enabled. Needed when
@@ -1366,15 +1182,6 @@ pub mod options {
             pub battery_status_recv: mesh::Receiver<HostBatteryUpdate>,
         }
 
-        /// Hyper-V specific Guest Watchdog device
-        pub struct HyperVGuestWatchdogDeps {
-            /// Port io address of the device's register region
-            pub port_base: u16,
-            /// Device-specific functions the platform must provide in order to
-            /// use this device.
-            pub watchdog_platform: Box<dyn watchdog_core::platform::WatchdogPlatform>,
-        }
-
         /// Hyper-V specific UEFI Helper Device
         pub struct HyperVFirmwarePcat {
             /// Bundle of static configuration required by the PCAT BIOS
@@ -1390,29 +1197,6 @@ pub mod options {
             /// Trigger the partition to replay the initially-set MTRRs across
             /// all VPs.
             pub replay_mtrrs: Box<dyn Send + FnMut()>,
-        }
-
-        /// Hyper-V specific UEFI Helper Device
-        pub struct HyperVFirmwareUefi {
-            /// Bundle of static configuration required by the Hyper-V UEFI
-            /// helper device
-            pub config: firmware_uefi::UefiConfig,
-            /// Interface to log UEFI BIOS events
-            pub logger: Box<dyn firmware_uefi::platform::logger::UefiLogger>,
-            /// Interface for storing/retrieving UEFI NVRAM variables
-            pub nvram_storage: Box<dyn uefi_nvram_storage::VmmNvramStorage>,
-            /// Channel to receive updated generation ID values
-            pub generation_id_recv: mesh::Receiver<[u8; 16]>,
-            /// Device-specific functions the platform must provide in order
-            /// to use the UEFI watchdog device.
-            pub watchdog_platform: Box<dyn watchdog_core::platform::WatchdogPlatform>,
-            /// Channel receiver for watchdog timeout notifications.
-            pub watchdog_recv: mesh::Receiver<()>,
-            /// Interface to revoke VSM on `ExitBootServices()` if requested
-            /// by the guest.
-            pub vsm_config: Option<Box<dyn firmware_uefi::platform::nvram::VsmConfig>>,
-            /// Time source
-            pub time_source: Box<dyn InspectableLocalClock>,
         }
 
         /// Hyper-V specific framebuffer device

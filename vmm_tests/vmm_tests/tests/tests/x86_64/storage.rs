@@ -381,7 +381,74 @@ async fn storvsp_hyperv<T: PetriVmmBackend>(
     Ok(())
 }
 
-/// Test an OpenHCL Linux Stripe VM with two SCSI disk assigned to VTL2 via NVMe Emulator
+/// Test a Hyper-V OpenHCL Linux VM with an NVMe emulator device assigned to
+/// VTL2, relayed to VTL0 via SCSI. Validates that the guest can discover and
+/// perform IO on the disk.
+#[cfg(windows)]
+#[vmm_test(unstable_hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
+async fn storvsp_nvme_hyperv<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
+    let vtl0_nvme_lun = 0;
+    let nvme_nsid = 1;
+    let nvme_vsid = Guid::new_random();
+    let scsi_instance = Guid::new_random();
+    const NVME_DISK_SECTORS: u64 = 0x5_0000;
+    const SECTOR_SIZE: u64 = 512;
+    const EXPECTED_NVME_DISK_SIZE_BYTES: u64 = NVME_DISK_SECTORS * SECTOR_SIZE;
+
+    let mut vhd =
+        tempfile::NamedTempFile::with_suffix("nvme.vhd").context("create temp nvme vhd")?;
+    vhd.as_file()
+        .set_len(EXPECTED_NVME_DISK_SIZE_BYTES)
+        .context("set file length")?;
+
+    disk_vhd1::Vhd1Disk::make_fixed(vhd.as_file_mut()).context("make fixed")?;
+
+    // Close the handle without deleting the file, so Hyper-V can open it.
+    let vhd_path = vhd.into_temp_path();
+
+    let (vm, agent) = config
+        .with_vmbus_redirect(true)
+        .add_vmbus_storage_controller(&nvme_vsid, petri::Vtl::Vtl2, petri::VmbusStorageType::Nvme)
+        .add_vmbus_drive(
+            petri::Drive::new(Some(petri::Disk::Persistent(vhd_path.to_path_buf())), false),
+            &nvme_vsid,
+            Some(nvme_nsid),
+        )
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_instance)
+                .add_lun(
+                    Vtl2LunBuilder::disk()
+                        .with_location(vtl0_nvme_lun)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Nvme,
+                            nvme_vsid,
+                            nvme_nsid,
+                        )),
+                )
+                .build(),
+        )
+        .run()
+        .await?;
+
+    test_storage_linux(
+        &agent,
+        scsi_instance,
+        vec![ExpectedGuestDevice {
+            lun: vtl0_nvme_lun,
+            disk_size_sectors: NVME_DISK_SECTORS as usize,
+            friendly_name: "nvme".to_string(),
+        }],
+    )
+    .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
 #[openvmm_test(
     openhcl_linux_direct_x64,
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))

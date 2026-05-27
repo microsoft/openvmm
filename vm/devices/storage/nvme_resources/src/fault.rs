@@ -315,6 +315,42 @@ pub struct CommandMatch {
     pub mask: [u8; 64],
 }
 
+/// A fault configuration for overriding the device's hardware configuration
+/// (i.e. the values reported in PCI configuration space).
+///
+/// When a field is `Some`, its value replaces the corresponding field reported
+/// by the NVMe fault controller's PCI hardware IDs. When `None`, the real
+/// hardware ID value is used unchanged. Unlike most other faults in this
+/// module, hardware config faults are applied at device construction time
+/// and are therefore not gated by the `fault_active` flag.
+///
+/// # Example
+/// Override the Vendor ID and Device ID reported in PCI config space.
+/// ```no_run
+/// use mesh::CellUpdater;
+/// use nvme_resources::fault::FaultConfiguration;
+/// use nvme_resources::fault::HardwareConfigFaultConfig;
+///
+/// pub fn hardware_config_fault() -> FaultConfiguration {
+///     let mut fault_start_updater = CellUpdater::new(false);
+///     FaultConfiguration::new(fault_start_updater.cell())
+///         .with_hardware_config_fault(
+///             HardwareConfigFaultConfig::new()
+///                 .with_vendor_id(0x1414)
+///                 .with_device_id(0x00a9),
+///         )
+/// }
+/// ```
+#[derive(Debug, Copy, Clone, Default, MeshPayload)]
+pub struct HardwareConfigFaultConfig {
+    /// Override for the device's PCI Vendor ID. When `None`, the real Vendor
+    /// ID is used.
+    pub vendor_id: Option<u16>,
+    /// Override for the device's PCI Device ID. When `None`, the real Device
+    /// ID is used.
+    pub device_id: Option<u16>,
+}
+
 /// Fault configuration for the NVMe fault controller.
 ///
 /// This struct defines behaviors that inject faults into the NVMe fault controller logic,
@@ -390,6 +426,8 @@ pub struct FaultConfiguration {
     pub namespace_fault: NamespaceFaultConfig,
     /// Fault to apply to all IO queues
     pub io_fault: Arc<IoQueueFaultConfig>,
+    /// Fault to apply to the Hardware Configuration
+    pub hardware_config_fault: Option<HardwareConfigFaultConfig>,
 }
 
 impl FaultConfiguration {
@@ -404,6 +442,7 @@ impl FaultConfiguration {
             pci_fault: Some(PciFaultConfig::new()),
             namespace_fault: NamespaceFaultConfig::new(mesh::channel().1),
             io_fault: Arc::new(IoQueueFaultConfig::new(fault_active)),
+            hardware_config_fault: None,
         }
     }
 
@@ -428,6 +467,35 @@ impl FaultConfiguration {
     /// Add a namespace fault configuration to the fault configuration
     pub fn with_namespace_fault(mut self, namespace_fault: NamespaceFaultConfig) -> Self {
         self.namespace_fault = namespace_fault;
+        self
+    }
+
+    /// Add a hardware config fault configuration to the fault configuration
+    pub fn with_hardware_config_fault(
+        mut self,
+        hardware_config_fault: HardwareConfigFaultConfig,
+    ) -> Self {
+        self.hardware_config_fault = Some(hardware_config_fault);
+        self
+    }
+}
+
+impl HardwareConfigFaultConfig {
+    /// Create a new no-op hardware config fault configuration. All fields
+    /// default to `None`, meaning the real hardware values are used.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Override the PCI Vendor ID reported by the device.
+    pub fn with_vendor_id(mut self, vendor_id: u16) -> Self {
+        self.vendor_id = Some(vendor_id);
+        self
+    }
+
+    /// Override the PCI Device ID reported by the device.
+    pub fn with_device_id(mut self, device_id: u16) -> Self {
+        self.device_id = Some(device_id);
         self
     }
 }

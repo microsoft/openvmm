@@ -1100,7 +1100,8 @@ macro_rules! delayload {
 
         pub mod is_supported {
             #![expect(non_snake_case)]
-            #![allow(dead_code)]
+            #[expect(clippy::allow_attributes)]
+            #[allow(dead_code)]
             $(
                 $(#[$a])*
                 pub fn $name() -> bool {

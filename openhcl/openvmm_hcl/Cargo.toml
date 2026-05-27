@@ -17,6 +17,9 @@ mem-profile-tracing = ["underhill_entry/mem-profile-tracing"]
 # Enable mimalloc secure mode.
 mi-secure = ["underhill_entry/mi-secure"]
 
+# Disable secure AVIC support for SNP.
+disable_secure_avic = ["underhill_entry/disable_secure_avic"]
+
 # Enable vmbus UI devices.
 uidevices = ["openvmm_hcl_resources/uidevices", "openvmm_hcl_resources/vnc_worker"]
 

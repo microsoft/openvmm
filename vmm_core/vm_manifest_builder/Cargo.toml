@@ -8,6 +8,9 @@ rust-version.workspace = true
 
 [dependencies]
 chipset_resources.workspace = true
+firmware_uefi_custom_vars.workspace = true
+firmware_uefi_resources.workspace = true
+getrandom.workspace = true
 input_core.workspace = true
 missing_dev_resources.workspace = true
 serial_16550_resources.workspace = true
@@ -15,6 +18,7 @@ serial_core.workspace = true
 serial_debugcon_resources.workspace = true
 serial_pl011_resources.workspace = true
 vm_resource.workspace = true
+vmm_core_defs.workspace = true
 vmotherboard.workspace = true
 
 mesh.workspace = true

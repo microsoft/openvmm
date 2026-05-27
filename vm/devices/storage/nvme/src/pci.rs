@@ -144,6 +144,7 @@ impl NvmeController {
                     None,
                 )),
             ],
+            Vec::new(),
             bars,
         );
 

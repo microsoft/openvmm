@@ -19,6 +19,7 @@ use aarch64defs::ExceptionClass;
 use aarch64defs::IssDataAbort;
 use aarch64defs::IssSystem;
 use aarch64defs::MpidrEl1;
+use aarch64defs::Vendor;
 use aarch64defs::smccc::FastCall;
 use aarch64defs::smccc::PsciError;
 use aarch64defs::smccc::SmcCall;
@@ -96,6 +97,7 @@ impl virt::Hypervisor for HvfHypervisor {
         virt::PlatformInfo {
             platform_gsiv: None,
             supports_gic_v3: true,
+            supports_its: false,
         }
     }
 
@@ -163,8 +165,10 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
 
         let inner = Arc::new(HvfPartitionInner {
             caps: Aarch64PartitionCapabilities {
+                isolation: virt::IsolationType::None,
                 // Apple Silicon does not support aarch32.
                 supports_aarch32_el0: false,
+                vendor: Vendor::ARM,
             },
             virt_timer_ppi: self.config.processor_topology.virt_timer_ppi(),
             vps: self

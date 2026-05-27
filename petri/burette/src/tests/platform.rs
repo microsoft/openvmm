@@ -284,7 +284,7 @@ mod linux {
         );
 
         // Sort by private descending.
-        mappings.sort_by(|a, b| b.private_kib.cmp(&a.private_kib));
+        mappings.sort_by_key(|a| std::cmp::Reverse(a.private_kib));
 
         // Sum private bytes from mappings named [anon:guest-ram-*].
         let mut guest_ram_private_kib: u64 = mappings

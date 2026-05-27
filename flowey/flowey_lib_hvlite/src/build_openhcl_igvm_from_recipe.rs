@@ -13,14 +13,11 @@ use crate::build_openhcl_initrd::OpenhclInitrdExtraParams;
 use crate::build_openvmm_hcl::MaxTraceLevel;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_openvmm_hcl::OpenvmmHclFeature;
-use crate::download_uefi_mu_msvm::MuMsvmArch;
-use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageArch;
+use crate::common::CommonArch;
+use crate::common::CommonPlatform;
+use crate::common::CommonTriple;
 use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
-use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use crate::run_cargo_build::BuildProfile;
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonPlatform;
-use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use igvmfilegen_config::ResourceType;
 use std::collections::BTreeMap;
@@ -254,6 +251,8 @@ flowey_request! {
         pub custom_target: Option<CommonTriple>,
         /// Additional features to enable on top of the recipe's defaults.
         pub extra_features: BTreeSet<OpenvmmHclFeature>,
+        /// Patch the manifest to set secure_avic to disabled for SNP configs.
+        pub disable_secure_avic: bool,
 
         pub built_openvmm_hcl: WriteVar<crate::build_openvmm_hcl::OpenvmmHclOutput>,
         pub built_openhcl_boot: WriteVar<crate::build_openhcl_boot::OpenhclBootOutput>,
@@ -275,6 +274,8 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_sidecar::Node>();
         ctx.import::<crate::resolve_openhcl_kernel_package::Node>();
         ctx.import::<crate::resolve_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
+        ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::run_igvmfilegen::Node>();
@@ -288,6 +289,7 @@ impl SimpleFlowNode for Node {
             recipe,
             custom_target,
             extra_features,
+            disable_secure_avic,
             built_openvmm_hcl,
             built_openhcl_boot,
             built_openhcl_igvm,
@@ -329,14 +331,9 @@ impl SimpleFlowNode for Node {
 
         let target = custom_target.unwrap_or(target);
         let arch = CommonArch::from_triple(&target.as_triple())
-            .ok_or_else(|| anyhow::anyhow!("cannot build openHCL from recipe on {target}"))?;
+            .with_context(|| format!("cannot build openHCL from recipe on {target}"))?;
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
-
-        let kernel_arch = match arch {
-            CommonArch::X86_64 => OpenhclKernelPackageArch::X86_64,
-            CommonArch::Aarch64 => OpenhclKernelPackageArch::Aarch64,
-        };
 
         let kernel_kind = match openhcl_kernel_package {
             OpenhclKernelPackage::Main => OpenhclKernelPackageKind::Main,
@@ -350,7 +347,7 @@ impl SimpleFlowNode for Node {
             ctx.reqv(
                 |v| crate::resolve_openhcl_kernel_package::Request::GetPackageRoot {
                     kind: kernel_kind,
-                    arch: kernel_arch,
+                    arch,
                     pkg: v,
                 },
             );
@@ -360,7 +357,7 @@ impl SimpleFlowNode for Node {
             ctx.reqv(
                 |v| crate::resolve_openhcl_kernel_package::Request::GetModules {
                     kind: kernel_kind,
-                    arch: kernel_arch,
+                    arch,
                     modules: v,
                 },
             );
@@ -370,19 +367,14 @@ impl SimpleFlowNode for Node {
             ctx.reqv(
                 |v| crate::resolve_openhcl_kernel_package::Request::GetMetadata {
                     kind: kernel_kind,
-                    arch: kernel_arch,
+                    arch,
                     metadata: v,
                 },
             );
 
         let uefi_resource = with_uefi.then(|| UefiResource {
-            msvm_fd: ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
-                arch: match arch {
-                    CommonArch::X86_64 => MuMsvmArch::X86_64,
-                    CommonArch::Aarch64 => MuMsvmArch::Aarch64,
-                },
-                msvm_fd: v,
-            }),
+            msvm_fd: ctx
+                .reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v }),
         });
 
         let vtl0_kernel_resource = vtl0_kernel_type.map(|typ| {
@@ -391,12 +383,10 @@ impl SimpleFlowNode for Node {
             } else {
                 match typ {
                     Vtl0KernelType::Example => ctx.reqv(|v| {
-                        crate::resolve_openvmm_deps::Request::Get(
-                            crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestKernel,
-                            match arch {
-                                CommonArch::X86_64 => OpenvmmDepsArch::X86_64,
-                                CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
-                            },
+                        crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                            crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
+                            arch,
+                            crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
                             v,
                         )
                     }),
@@ -405,14 +395,7 @@ impl SimpleFlowNode for Node {
             };
 
             let initrd = ctx.reqv(|v| {
-                crate::resolve_openvmm_deps::Request::Get(
-                    crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestInitrd,
-                    match arch {
-                        CommonArch::X86_64 => OpenvmmDepsArch::X86_64,
-                        CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
-                    },
-                    v,
-                )
+                crate::resolve_openvmm_test_initrd::Request::Get(arch, v)
             });
 
             Vtl0KernelResource { kernel, initrd }
@@ -486,11 +469,7 @@ impl SimpleFlowNode for Node {
         };
 
         // build igvmfilegen (always built for host arch)
-        let igvmfilegen_arch = match ctx.arch() {
-            FlowArch::X86_64 => CommonArch::X86_64,
-            FlowArch::Aarch64 => CommonArch::Aarch64,
-            arch => anyhow::bail!("unsupported arch {arch}"),
-        };
+        let igvmfilegen_arch: CommonArch = ctx.arch().try_into()?;
 
         let igvmfilegen = ctx.reqv(|v| crate::build_igvmfilegen::Request {
             build_params: crate::build_igvmfilegen::IgvmfilegenBuildParams {
@@ -606,7 +585,7 @@ impl SimpleFlowNode for Node {
             ctx.reqv(
                 |v| crate::resolve_openhcl_kernel_package::Request::GetKernel {
                     kind: kernel_kind,
-                    arch: kernel_arch,
+                    arch,
                     kernel: v,
                 },
             )
@@ -653,6 +632,7 @@ impl SimpleFlowNode for Node {
             igvmfilegen,
             manifest,
             resources,
+            disable_secure_avic,
             igvm: built_openhcl_igvm,
         });
 

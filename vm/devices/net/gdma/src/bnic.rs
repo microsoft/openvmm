@@ -5,6 +5,7 @@ use self::bnic_defs::CQE_RX_TRUNCATED;
 use self::bnic_defs::CQE_TX_GDMA_ERR;
 use self::bnic_defs::CQE_TX_OKAY;
 use self::bnic_defs::MANA_CQE_COMPLETION;
+use self::bnic_defs::MANA_LONG_PKT_FMT;
 use self::bnic_defs::ManaCommandCode;
 use self::bnic_defs::ManaCqeHeader;
 use self::bnic_defs::ManaQueryVportCfgReq;
@@ -139,6 +140,11 @@ impl BufferAccess for GuestBuffers {
             },
         }
 
+        if let Some(vlan) = &metadata.vlan {
+            flags.set_rx_vlantag_present(true);
+            flags.set_rx_vlan_id(vlan.vlan_id() as u32);
+        }
+
         let packet = &mut self.rx_packets[id.0 as usize];
 
         let cqe_type = if metadata.len > packet.len as usize {
@@ -159,8 +165,16 @@ impl BufferAccess for GuestBuffers {
     }
 }
 
+/// Configuration for the emulated BNIC device.
+#[derive(Default)]
+pub struct BnicConfig {
+    /// Adapter link speed in megabits per second.
+    pub adapter_link_speed_mbps: u32,
+}
+
 pub struct BasicNic {
     vports: Vec<Vport>,
+    config: BnicConfig,
 }
 
 impl InspectMut for BasicNic {
@@ -197,7 +211,7 @@ struct QueueCfg {
 }
 
 impl BasicNic {
-    pub fn new(vports: Vec<VportConfig>) -> Self {
+    pub fn new(vports: Vec<VportConfig>, config: BnicConfig) -> Self {
         assert!(!vports.is_empty());
 
         let vports = vports
@@ -219,7 +233,7 @@ impl BasicNic {
             )
             .collect();
 
-        Self { vports }
+        Self { vports, config }
     }
 
     pub async fn handle_req(
@@ -231,7 +245,16 @@ impl BasicNic {
     ) -> anyhow::Result<usize> {
         tracing::debug!(msg_type = ?ManaCommandCode(hdr.req.msg_type), "bnic request");
 
-        let response_len = match ManaCommandCode(hdr.req.msg_type) {
+        // Zero the guest response buffer before writing the actual response
+        // to maintain forward compatibility: a newer VF driver may request
+        // fields added in a later protocol version that this emulator does
+        // not yet populate. Zeroing ensures those fields read as zero rather
+        // than containing undefined data.
+        let guest_resp_size = MemoryWrite::len(&write);
+        let mut zero_write = write.clone();
+        zero_write.write(&vec![0u8; guest_resp_size])?;
+
+        match ManaCommandCode(hdr.req.msg_type) {
             ManaCommandCode::MANA_QUERY_DEV_CONFIG => {
                 let _req: ManaQueryDeviceCfgReq = read
                     .read_plain()
@@ -245,10 +268,14 @@ impl BasicNic {
                     max_num_vports: self.vports.len() as u16,
                     reserved: 0,
                     max_num_eqs: 64,
+                    adapter_mtu: 0,
+                    reserved2: 0,
+                    adapter_link_speed_mbps: self.config.adapter_link_speed_mbps,
                 };
 
-                write.write(resp.as_bytes())?;
-                size_of_val(&resp)
+                let resp_bytes = resp.as_bytes();
+                let write_len = guest_resp_size.min(resp_bytes.len());
+                write.write(&resp_bytes[..write_len])?;
             }
             ManaCommandCode::MANA_CONFIG_VPORT_TX => {
                 let req: ManaConfigVportReq = read
@@ -265,7 +292,6 @@ impl BasicNic {
                     reserved: 0,
                 };
                 write.write(resp.as_bytes())?;
-                size_of_val(&resp)
             }
             ManaCommandCode::MANA_CREATE_WQ_OBJ => {
                 let req: ManaCreateWqobjReq =
@@ -317,7 +343,6 @@ impl BasicNic {
                 // Take ownership of the DMA regions.
                 state.remove_dma_region(req.wq_gdma_region).unwrap();
                 state.remove_dma_region(req.cq_gdma_region).unwrap();
-                size_of_val(&resp)
             }
             ManaCommandCode::MANA_DESTROY_WQ_OBJ => {
                 let req: ManaDestroyWqobjReq = read
@@ -339,7 +364,6 @@ impl BasicNic {
                 let (wq_id, cq_id) = queues.take().context("specified queue does not exist")?;
                 state.queues.free_wq(is_send, wq_id).unwrap();
                 state.queues.free_cq(cq_id).unwrap();
-                0
             }
             ManaCommandCode::MANA_CONFIG_VPORT_RX => {
                 let req: ManaCfgRxSteerReq = read
@@ -398,7 +422,6 @@ impl BasicNic {
                     }
                     _ => {}
                 }
-                0
             }
             ManaCommandCode::MANA_VTL2_MOVE_FILTER => {
                 anyhow::bail!("unsupported command MANA_VTL2_MOVE_FILTER");
@@ -418,7 +441,6 @@ impl BasicNic {
                 };
 
                 write.write(resp.as_bytes())?;
-                size_of_val(&resp)
             }
             ManaCommandCode::MANA_QUERY_VPORT_CONFIG => {
                 let req: ManaQueryVportCfgReq = read
@@ -440,7 +462,6 @@ impl BasicNic {
                 };
 
                 write.write(resp.as_bytes())?;
-                size_of_val(&resp)
             }
             ManaCommandCode::MANA_VTL2_ASSIGN_SERIAL_NUMBER => {
                 let req: ManaSetVportSerialNo =
@@ -450,11 +471,10 @@ impl BasicNic {
                     .get_mut(req.vport as usize)
                     .context("invalid vport")?;
                 vport.serial_no = req.serial_no;
-                0
             }
             n => anyhow::bail!("unsupported request {:?}", n),
-        };
-        Ok(response_len)
+        }
+        Ok(guest_resp_size)
     }
 }
 
@@ -534,6 +554,21 @@ impl TxRxTask {
 
         let sge0 = sqe.sgl().first().context("no sgl")?;
         let total_len: usize = sqe.sgl().iter().map(|sge| sge.size as usize).sum();
+        let (l2_len, vlan) =
+            if oob.s_oob.pkt_fmt() == MANA_LONG_PKT_FMT && oob.l_oob.inject_vlan_pri_tag() {
+                (
+                    net_backend::ETHERNET_VLAN_HEADER_LEN,
+                    Some(
+                        net_backend::VlanMetadata::new()
+                            .with_priority(oob.l_oob.pcp())
+                            .with_drop_eligible_indicator(oob.l_oob.dei())
+                            .with_vlan_id(oob.l_oob.vlan_id()),
+                    ),
+                )
+            } else {
+                (net_backend::ETHERNET_HEADER_LEN, None)
+            };
+
         let mut meta = TxMetadata {
             id: TxId(0),
             segment_count: sqe.sgl().len().try_into().unwrap(),
@@ -544,17 +579,19 @@ impl TxRxTask {
                 .with_offload_udp_checksum(oob.s_oob.comp_udp_csum())
                 .with_is_ipv4(oob.s_oob.is_outer_ipv4())
                 .with_is_ipv6(oob.s_oob.is_outer_ipv6() && !oob.s_oob.is_outer_ipv4()),
-            l2_len: 14,
-            l3_len: oob.s_oob.trans_off().clamp(14, 255) - 14,
+            l2_len: l2_len as u8,
+            l3_len: oob.s_oob.trans_off().clamp(l2_len as u16, 255) - l2_len as u16,
             l4_len: 0,
-            max_tcp_segment_size: 0,
+            transport_header_offset: oob.s_oob.trans_off(),
+            max_segment_size: 0,
+            vlan,
         };
 
         if sqe.header.params.client_oob_in_sgl() {
             meta.l4_len =
                 sge0.size
                     .saturating_sub(meta.l2_len as u32 + meta.l3_len as u32) as u8;
-            meta.max_tcp_segment_size = sqe.header.params.gd_client_unit_data();
+            meta.max_segment_size = sqe.header.params.gd_client_unit_data();
             meta.flags.set_offload_tcp_segmentation(true);
         }
 

@@ -3,14 +3,9 @@
 
 //! Download pre-built mu_msvm package from its GitHub Release.
 
+use crate::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum MuMsvmArch {
-    X86_64,
-    Aarch64,
-}
 
 flowey_config! {
     /// Config for the download_uefi_mu_msvm node.
@@ -18,7 +13,7 @@ flowey_config! {
         /// Specify version of mu_msvm to use
         pub version: Option<String>,
         /// Use a local MSVM.fd path, keyed by architecture
-        pub local_paths: BTreeMap<MuMsvmArch, ConfigVar<PathBuf>>,
+        pub local_paths: BTreeMap<CommonArch, ConfigVar<PathBuf>>,
     }
 }
 
@@ -26,7 +21,7 @@ flowey_request! {
     pub enum Request {
         /// Download the mu_msvm package for the given arch
         GetMsvmFd {
-            arch: MuMsvmArch,
+            arch: CommonArch,
             msvm_fd: WriteVar<PathBuf>
         }
     }
@@ -50,7 +45,7 @@ impl FlowNodeWithConfig for Node {
     ) -> anyhow::Result<()> {
         let version = config.version;
         let local_paths = config.local_paths;
-        let mut reqs: BTreeMap<MuMsvmArch, Vec<WriteVar<PathBuf>>> = BTreeMap::new();
+        let mut reqs: BTreeMap<CommonArch, Vec<WriteVar<PathBuf>>> = BTreeMap::new();
 
         for req in requests {
             match req {
@@ -89,8 +84,8 @@ impl FlowNodeWithConfig for Node {
                             log::info!(
                                 "using local uefi for {} at path {:?}",
                                 match arch {
-                                    MuMsvmArch::X86_64 => "x64",
-                                    MuMsvmArch::Aarch64 => "aarch64",
+                                    CommonArch::X86_64 => "x64",
+                                    CommonArch::Aarch64 => "aarch64",
                                 },
                                 msvm_fd
                             );
@@ -105,15 +100,15 @@ impl FlowNodeWithConfig for Node {
         }
 
         let version = version.expect("local paths handled above");
-        let extract_zip_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
+        let extract_archive_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
 
         for (arch, out_vars) in reqs {
             let file_name = match arch {
-                MuMsvmArch::X86_64 => "RELEASE-X64-artifacts.zip",
-                MuMsvmArch::Aarch64 => "RELEASE-AARCH64-artifacts.zip",
+                CommonArch::X86_64 => "RELEASE-X64-VS2022-artifacts.tar.gz",
+                CommonArch::Aarch64 => "RELEASE-AARCH64-CLANGPDB-artifacts.tar.gz",
             };
 
-            let mu_msvm_zip = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
+            let mu_msvm_archive = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
                 repo_owner: "microsoft".into(),
                 repo_name: "mu_msvm".into(),
                 needs_auth: false,
@@ -122,30 +117,30 @@ impl FlowNodeWithConfig for Node {
                 path: v,
             });
 
-            let zip_file_version = format!("{version}-{file_name}");
+            let archive_file_version = format!("{version}-{file_name}");
 
             ctx.emit_rust_step(
                 {
                     format!(
                         "unpack mu_msvm package ({})",
                         match arch {
-                            MuMsvmArch::X86_64 => "x64",
-                            MuMsvmArch::Aarch64 => "aarch64",
+                            CommonArch::X86_64 => "x64",
+                            CommonArch::Aarch64 => "aarch64",
                         },
                     )
                 },
                 |ctx| {
-                    let extract_zip_deps = extract_zip_deps.clone().claim(ctx);
+                    let extract_archive_deps = extract_archive_deps.clone().claim(ctx);
                     let out_vars = out_vars.claim(ctx);
-                    let mu_msvm_zip = mu_msvm_zip.claim(ctx);
+                    let mu_msvm_archive = mu_msvm_archive.claim(ctx);
                     move |rt| {
-                        let mu_msvm_zip = rt.read(mu_msvm_zip);
+                        let mu_msvm_archive = rt.read(mu_msvm_archive);
 
                         let extract_dir = flowey_lib_common::_util::extract::extract_zip_if_new(
                             rt,
-                            extract_zip_deps,
-                            &mu_msvm_zip,
-                            &zip_file_version,
+                            extract_archive_deps,
+                            &mu_msvm_archive,
+                            &archive_file_version,
                         )?;
 
                         let msvm_fd = extract_dir.join("FV/MSVM.fd");

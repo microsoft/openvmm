@@ -92,6 +92,9 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
     /// Gets the [`SignalMsi`] interface for a particular VTL.
     fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>>;
 
+    /// Gets the irqfd routing interface, if supported.
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>>;
+
     /// Returns whether virtual devices are supported.
     fn supports_virtual_devices(&self) -> bool;
 
@@ -121,6 +124,7 @@ pub trait BasicPartitionStateAccess: 'static + Send + Sync + Inspect {
     fn scrub_vtl(&self, vtl: Vtl) -> anyhow::Result<()>;
     fn accept_initial_pages(&self, pages: Vec<(MemoryRange, PageVisibility)>)
     -> anyhow::Result<()>;
+    fn guest_os_id(&self) -> u64;
 }
 
 impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
@@ -164,11 +168,25 @@ impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
             .accept_initial_pages(&pages)?;
         Ok(())
     }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn guest_os_id(&self) -> u64 {
+        self.access_state(Vtl::Vtl0)
+            .hypercall()
+            .map_or(0, |msrs| msrs.guest_os_id)
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    fn guest_os_id(&self) -> u64 {
+        // TODO: implement guest OS ID for aarch64 once there is
+        // an equivalent to HV_X64_MSR_GUEST_OS_ID.
+        0
+    }
 }
 
 impl<T> HvlitePartition for T
 where
-    T: BasicPartitionStateAccess + ArchPartition + PartitionMemoryMapper,
+    T: BasicPartitionStateAccess + ArchPartition + PartitionMemoryMapper + PartitionAccessState,
 {
     #[cfg(guest_arch = "x86_64")]
     fn into_lint_target(self: Arc<Self>, vtl: Vtl) -> Arc<dyn LineSetTarget> {
@@ -211,6 +229,10 @@ where
 
     fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         self.as_signal_msi(minimum_vtl)
+    }
+
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        Partition::irqfd(self)
     }
 
     fn supports_virtual_devices(&self) -> bool {
@@ -263,6 +285,10 @@ impl VmPartition for WrappedPartition {
         pages: Vec<(MemoryRange, PageVisibility)>,
     ) -> anyhow::Result<()> {
         self.0.accept_initial_pages(pages)
+    }
+
+    fn guest_os_id(&self) -> u64 {
+        self.0.guest_os_id()
     }
 }
 
