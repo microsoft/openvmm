@@ -342,6 +342,8 @@ pub struct VmArg {
 enum VmId {
     #[cfg(windows)]
     HyperV(String),
+    #[cfg(windows)]
+    HyperVId(guid::Guid),
     HybridVsock(PathBuf),
 }
 
@@ -353,10 +355,18 @@ impl FromStr for VmId {
             Ok(Self::HybridVsock(Path::new(s).to_owned()))
         } else {
             #[cfg(windows)]
-            if let Some(s) = s.strip_prefix("hyperv:") {
-                return Ok(Self::HyperV(s.to_owned()));
-            } else if !pal::windows::fs::is_unix_socket(s.as_ref()).unwrap_or(false) {
-                return Ok(Self::HyperV(s.to_owned()));
+            {
+                // Strip optional "hyperv:" prefix for all Hyper-V variants.
+                let s = s.strip_prefix("hyperv:").unwrap_or(s);
+
+                // Try parsing as a GUID first (with or without braces).
+                if let Ok(guid) = s.parse::<guid::Guid>() {
+                    return Ok(Self::HyperVId(guid));
+                }
+
+                if !pal::windows::fs::is_unix_socket(s.as_ref()).unwrap_or(false) {
+                    return Ok(Self::HyperV(s.to_owned()));
+                }
             }
             // Default to hybrid vsock since this is what OpenVMM supports for
             // Underhill.
@@ -475,6 +485,8 @@ fn new_client(driver: impl Driver + Spawn + Clone, input: &VmArg) -> anyhow::Res
     let client = match &input.id {
         #[cfg(windows)]
         VmId::HyperV(name) => DiagClient::from_hyperv_name(driver, name)?,
+        #[cfg(windows)]
+        VmId::HyperVId(guid) => DiagClient::from_hyperv_id(driver, *guid),
         VmId::HybridVsock(path) => DiagClient::from_hybrid_vsock(driver, path),
     };
     Ok(client)
@@ -657,6 +669,12 @@ pub fn main() -> anyhow::Result<()> {
 
                     let vm_name = match &vm.id {
                         VmId::HyperV(name) => name,
+                        #[cfg(windows)]
+                        VmId::HyperVId(_) => {
+                            anyhow::bail!(
+                                "--serial requires a VM name, not a GUID. Use a named VM instead."
+                            )
+                        }
                         _ => anyhow::bail!("--serial is only supported for Hyper-V VMs"),
                     };
 
@@ -758,6 +776,12 @@ pub fn main() -> anyhow::Result<()> {
                     #[cfg(windows)]
                     VmId::HyperV(name) => {
                         let vm_id = diag_client::hyperv::vm_id_from_name(&name)?;
+                        let stream =
+                            diag_client::hyperv::connect_vsock(&driver, vm_id, port).await?;
+                        PolledSocket::new(&driver, socket2::Socket::from(stream))?
+                    }
+                    #[cfg(windows)]
+                    VmId::HyperVId(vm_id) => {
                         let stream =
                             diag_client::hyperv::connect_vsock(&driver, vm_id, port).await?;
                         PolledSocket::new(&driver, socket2::Socket::from(stream))?
@@ -903,6 +927,13 @@ pub fn main() -> anyhow::Result<()> {
                             let vm_id = diag_client::hyperv::vm_id_from_name(name)?;
                             let stream =
                                 diag_client::hyperv::connect_vsock(&driver, vm_id, vsock_port)
+                                    .await?;
+                            PolledSocket::new(&driver, socket2::Socket::from(stream))?
+                        }
+                        #[cfg(windows)]
+                        VmId::HyperVId(ref vm_id) => {
+                            let stream =
+                                diag_client::hyperv::connect_vsock(&driver, *vm_id, vsock_port)
                                     .await?;
                             PolledSocket::new(&driver, socket2::Socket::from(stream))?
                         }

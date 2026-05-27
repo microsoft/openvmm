@@ -211,6 +211,44 @@ impl GuestEmulationTransportClient {
             None
         };
 
+        // Log VTL2 settings receipt with byte count and hex preview for validation
+        match json.v2.r#static.vtl2_settings.as_ref() {
+            Some(settings) => {
+                let len = settings.len();
+                let preview_len = len.min(64);
+                let hex_preview: String = settings[..preview_len]
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let content_preview = if settings.first() == Some(&b'{') {
+                    let s = String::from_utf8_lossy(settings);
+                    if s.len() > 256 {
+                        format!("{}...", &s[..256])
+                    } else {
+                        s.into_owned()
+                    }
+                } else {
+                    format!("(protobuf, {} bytes)", len)
+                };
+                tracing::info!(
+                    CVM_ALLOWED,
+                    bytes = len,
+                    hex_preview = %hex_preview,
+                    content = %content_preview,
+                    "VTL2_SETTINGS_RECEIVED: blob present, {} bytes, content: {}",
+                    len,
+                    content_preview,
+                );
+            }
+            None => {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    "VTL2_SETTINGS_RECEIVED: no vtl2_settings blob in DPS response",
+                );
+            }
+        }
+
         Ok(platform_settings::DevicePlatformSettings {
             smbios: platform_settings::Smbios {
                 serial_number: json.v1.serial_number.into(),
