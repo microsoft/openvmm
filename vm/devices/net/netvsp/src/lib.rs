@@ -1548,8 +1548,9 @@ impl Nic {
         driver_builder.run_on_target(!self.adapter.tx_fast_completions);
 
         #[expect(clippy::disallowed_methods)] // TODO
-        // Capacity equals the number of workers.
-        // Each channel (primary or subchannel) can send at most one message.
+        // Setting `capacity == number of workers` prevents `try_send` failure,
+        // as long as each worker (primary or sub-channel) holds at most one
+        // outstanding message.
         let (send, recv) = mpsc::channel(self.adapter.max_queues as usize);
         self.coordinator_send = Some(send);
         self.coordinator.insert(
@@ -4232,7 +4233,7 @@ impl Coordinator {
         stop: &mut StopTask<'_>,
         state: &mut CoordinatorState,
     ) -> Result<(), task_control::Cancelled> {
-        tracing::info!("beginning restart cycle");
+        tracelimit::info_ratelimited!("beginning restart cycle");
         stop.until_stopped(self.stop_workers()).await?;
 
         // All workers are stopped and cannot push new messages.
@@ -4269,7 +4270,7 @@ impl Coordinator {
     ) {
         match msg {
             CoordinatorMessage::Restart { channel_idx } if channel_idx != 0 => {
-                tracing::info!(channel_idx, "sub-channel triggered restart");
+                tracelimit::info_ratelimited!(channel_idx, "sub-channel triggered restart");
                 self.restart = true;
             }
             _ => self.handle_primary_message(msg, state).await,
@@ -4319,7 +4320,7 @@ impl Coordinator {
             }
             CoordinatorMessage::Restart { channel_idx } => {
                 assert_eq!(channel_idx, 0);
-                tracing::info!(channel_idx, "primary-channel triggered restart");
+                tracelimit::info_ratelimited!(channel_idx, "primary-channel triggered restart");
                 self.restart = true;
             }
         }
@@ -4862,6 +4863,8 @@ impl<T: RingMem + 'static> Worker<T> {
                         .coordinator_send
                         .try_send(CoordinatorMessage::Restart { channel_idx: 0 })
                     {
+                        // Coordinator channel was sized at `max_queues` capacity,
+                        // so `try_send` should not fail in practice.
                         tracelimit::error_ratelimited!(
                             error = &err as &dyn std::error::Error,
                             channel_idx = self.channel_idx,
