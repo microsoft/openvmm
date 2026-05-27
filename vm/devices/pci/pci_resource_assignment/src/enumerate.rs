@@ -180,6 +180,13 @@ async fn scan_bus(
                 if let Some(max_vf_bus) =
                     probe_sriov_bus_requirement(cfg, bus, device_num, function).await
                 {
+                    if max_vf_bus > end_bus {
+                        return Err(AssignmentError::BusExhaustion {
+                            bus,
+                            device: device_num,
+                            function,
+                        });
+                    }
                     if max_vf_bus >= *next_bus {
                         *next_bus = max_vf_bus.wrapping_add(1);
                     }

@@ -6027,6 +6027,7 @@ dependencies = [
 name = "pci_resource_assignment"
 version = "0.0.0"
 dependencies = [
+ "pal_async",
  "parking_lot",
  "pci_core",
  "thiserror 2.0.16",

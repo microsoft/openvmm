@@ -58,7 +58,6 @@ members = [
   "opentmk",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
-  "vm/devices/pci/pci_resource_assignment",
 ]
 exclude = [
   "xsync",

@@ -33,6 +33,11 @@ impl<'a> EcamConfigAccess<'a> {
     /// ECAM layout: each function gets a 4 KiB page.
     /// GPA = ecam_base + ((bus - start_bus) << 20) + (device << 15) + (function << 12) + offset
     fn ecam_addr(&self, bus: u8, device: u8, function: u8, offset: u16) -> u64 {
+        assert!(
+            bus >= self.start_bus,
+            "bus {bus} is below start_bus {}",
+            self.start_bus
+        );
         let bus_offset = (bus - self.start_bus) as u64;
         self.ecam_base
             + (bus_offset << 20)
