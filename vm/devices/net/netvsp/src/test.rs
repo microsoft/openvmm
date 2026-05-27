@@ -6225,10 +6225,7 @@ async fn rndis_send_tcp_checksum_packet_zero_transport_header_offset_ipv6(driver
     );
 }
 
-fn build_vlan_ipv4_tcp_packet(_vlan_id: u16) -> Vec<u8> {
-    // Real guests (Windows/Linux netvsc) send the VLAN info ONLY in the
-    // PPI — the frame data has a standard 14-byte Ethernet header without
-    // the 802.1Q tag inline.
+fn build_ipv4_tcp_packet() -> Vec<u8> {
     let mut data = vec![0u8; 60];
 
     data[..6].copy_from_slice(&[0x10, 0x11, 0x12, 0x13, 0x14, 0x15]); // dst MAC
@@ -6236,7 +6233,7 @@ fn build_vlan_ipv4_tcp_packet(_vlan_id: u16) -> Vec<u8> {
     data[12..14].copy_from_slice(&0x0800u16.to_be_bytes()); // EtherType = IPv4
 
     data[14] = 0x45; // IPv4, 20-byte header
-    data[16..18].copy_from_slice(&(42u16).to_be_bytes()); // total length
+    data[16..18].copy_from_slice(&(46u16).to_be_bytes()); // total length
     data[22] = 64; // TTL
     data[23] = 6; // Protocol = TCP
 
@@ -6284,7 +6281,7 @@ async fn rndis_send_tcp_checksum_packet_with_vlan_ppi(driver: DefaultDriver) {
     assert_eq!(initialize_complete.request_id, 123);
     assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
 
-    let data = build_vlan_ipv4_tcp_packet(37);
+    let data = build_ipv4_tcp_packet();
     let vlan_info = rndisprot::EthVlanInfo::read_from_bytes(&(37u32 << 4).to_le_bytes()).unwrap();
     channel
         .send_rndis_packet_offload_with_vlan(&data, true, false, false, vlan_info)
@@ -6356,7 +6353,7 @@ async fn rndis_send_lso_packet_with_vlan_ppi(driver: DefaultDriver) {
     assert_eq!(initialize_complete.request_id, 123);
     assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
 
-    let data = build_vlan_ipv4_tcp_packet(91);
+    let data = build_ipv4_tcp_packet();
     let vlan_info = rndisprot::EthVlanInfo::read_from_bytes(&(91u32 << 4).to_le_bytes()).unwrap();
     channel
         .send_rndis_packet_offload_with_vlan(&data, false, false, true, vlan_info)
@@ -7316,7 +7313,7 @@ async fn vlan_tx_counter_increments(driver: DefaultDriver) {
         .unwrap();
 
     // Send a VLAN-tagged packet.
-    let data = build_vlan_ipv4_tcp_packet(42);
+    let data = build_ipv4_tcp_packet();
     let vlan_info = rndisprot::EthVlanInfo::read_from_bytes(&(42u32 << 4).to_le_bytes()).unwrap();
     channel
         .send_rndis_packet_offload_with_vlan(&data, true, false, false, vlan_info)
