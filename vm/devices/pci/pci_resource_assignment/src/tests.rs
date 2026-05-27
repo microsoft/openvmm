@@ -951,3 +951,151 @@ async fn sriov_bus_reservation_exceeding_end_bus_returns_error() {
         "expected BusExhaustion when SR-IOV reservation exceeds end_bus, got {result:?}"
     );
 }
+
+/// Bug B: When low_mmio is None, 32-bit (non-prefetchable) BARs fall back
+/// to high_mmio via `.or(params.high_mmio)`. If high_mmio is above 4 GB,
+/// the BAR address is truncated by `bar.address as u32` and bridge memory
+/// base/limit registers (inherently 32-bit) silently lose upper bits.
+/// 32-bit BARs must never be placed above 4 GB.
+#[async_test]
+async fn mem32_bar_must_not_be_placed_above_4gb() {
+    let mock = MockConfigSpace::new();
+
+    // 32-bit non-prefetchable BAR.
+    mock.add_endpoint(0, 0, 0, &[(0, 0x10000, false, false)]);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: None,
+        high_mmio: Some(MmioAperture {
+            base: 0x1_0000_0000, // Above 4 GB
+            len: 0x1_0000_0000,
+        }),
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources_inner(&mut cfg, &params).await;
+
+    // No sub-4GB aperture exists, so 32-bit BARs cannot be placed.
+    // Must fail rather than silently placing them above 4 GB.
+    assert!(
+        result.is_err(),
+        "expected error when only aperture is above 4 GB, but got assignments: {:#?}",
+        result.unwrap().entries
+    );
+}
+
+/// Bug C: When both mem32 and mem64 pools share the same aperture (only
+/// one of low_mmio/high_mmio is provided), the mem64 base is computed
+/// from `aperture.base + root_req.mem32` instead of from the actual
+/// aligned mem32 end address. If aperture.base needs alignment for mem32,
+/// mem64 can start inside the mem32 region, causing overlapping
+/// assignments.
+#[async_test]
+async fn shared_aperture_mem32_mem64_must_not_overlap() {
+    let mock = MockConfigSpace::new();
+
+    // Device 0: 4 MB 32-bit non-prefetchable BAR (needs 4 MB alignment).
+    mock.add_endpoint(0, 0, 0, &[(0, 0x40_0000, false, false)]);
+    // Device 1: 1 MB 64-bit prefetchable BAR.
+    mock.add_endpoint(0, 1, 0, &[(0, 0x10_0000, true, true)]);
+
+    // Single aperture, misaligned so that mem32 alignment pushes its base
+    // forward, creating a gap between aperture.base and mem32 start.
+    // aperture.base = 0x1020_0000 (2 MB past a 4 MB boundary)
+    // mem32 aligns up to 0x1040_0000, occupies [0x1040_0000, 0x1080_0000)
+    // Bug: mem64 base = align_up(0x1020_0000 + 0x40_0000, 1MB)
+    //                  = 0x1060_0000, which is INSIDE the mem32 region.
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1020_0000,
+            len: 0x0100_0000, // 16 MB — plenty of room
+        }),
+        high_mmio: None,
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+
+    // Collect all BAR regions and verify no overlaps.
+    let mut regions: Vec<(u64, u64, String)> = Vec::new();
+    for entry in &result.entries {
+        for bar in &entry.bars {
+            regions.push((
+                bar.address,
+                bar.address + bar.size,
+                format!(
+                    "{:02x}:{:02x}.{} BAR{}",
+                    entry.bus, entry.device, entry.function, bar.index
+                ),
+            ));
+        }
+    }
+
+    for i in 0..regions.len() {
+        for j in (i + 1)..regions.len() {
+            let (a_start, a_end, a_name) = &regions[i];
+            let (b_start, b_end, b_name) = &regions[j];
+            assert!(
+                a_end <= b_start || b_end <= a_start,
+                "BAR regions overlap: {a_name} [{a_start:#x}..{a_end:#x}) vs \
+                 {b_name} [{b_start:#x}..{b_end:#x})"
+            );
+        }
+    }
+}
+
+/// Bug A: When bus 255 is consumed (by a bridge secondary or SR-IOV VF
+/// range), `wrapping_add(1)` wraps `*next_bus` to 0. The subsequent
+/// `*next_bus > end_bus` guard (0 > 255) is false, so the next bridge
+/// gets secondary bus 0, colliding with the host bridge. Should return
+/// BusExhaustion instead.
+#[async_test]
+async fn bus_wrap_to_zero_must_return_exhaustion() {
+    let mock = MockConfigSpace::new();
+
+    // Bridge 0 on bus 0 → secondary = 1.
+    mock.add_bridge(0, 0, 0);
+
+    // Endpoint on bus 1 with SR-IOV: 256 VFs, offset = 0x100, stride = 1.
+    // PF routing ID = (1 << 8) | 0 = 0x100
+    // Last VF routing ID = 0x100 + 0x100 + 255*1 = 0x2FF → bus 2
+    // But we'll craft it so max_vf_bus = 255:
+    // PF on bus 1, devfn 0. vf_offset = 0x700, stride = 1, total_vfs = 1.
+    // First VF RID = 0x100 + 0x700 = 0x800 → bus 8? No...
+    // We want last VF on bus 255. RID of last VF = 0xFF00..0xFFFF → bus 255.
+    // PF RID = (1 << 8) | 0 = 0x100.
+    // last_vf_rid = 0x100 + vf_offset + (total_vfs - 1) * vf_stride = 0xFF00
+    // With total_vfs=1, stride=1: last_vf_rid = 0x100 + vf_offset = 0xFF00
+    // → vf_offset = 0xFE00
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.add_sriov(1, 0, 0, 1, 0xFE00, 1);
+
+    // Second bridge on bus 0 → needs secondary bus, but next_bus wrapped to 0.
+    mock.add_bridge(0, 1, 0);
+    // Empty device behind it (bus 256 which doesn't exist).
+    // The bridge just needs to exist to trigger the next bus allocation.
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources_inner(&mut cfg, &params).await;
+
+    // The SR-IOV reservation consumes up through bus 255. The next bridge
+    // should fail with BusExhaustion, not silently wrap to bus 0.
+    assert!(
+        matches!(result, Err(crate::AssignmentError::BusExhaustion { .. })),
+        "expected BusExhaustion when next_bus wraps past 255, got {result:?}"
+    );
+}
