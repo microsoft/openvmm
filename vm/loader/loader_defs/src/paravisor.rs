@@ -398,8 +398,8 @@ pub const CONTAINER_POLICY_MAX_SIZE_BYTES: usize =
 pub use container_policy::ContainerPolicy;
 pub use container_policy::ContainerPolicyDecodeError;
 pub use container_policy::CwcowPolicy;
-pub use container_policy::decode_container_policy_page;
-pub use container_policy::encode_container_policy_page;
+pub use container_policy::decode_container_policy;
+pub use container_policy::encode_container_policy;
 
 /// On-wire types for the measured container policy payload.
 ///
@@ -537,13 +537,13 @@ pub mod container_policy {
 
     /// Encode a [`ContainerPolicy`] as `mesh_protobuf` bytes for
     /// inclusion in the measured config region.
-    pub fn encode_container_policy_page(policy: &ContainerPolicy) -> Vec<u8> {
+    pub fn encode_container_policy(policy: &ContainerPolicy) -> Vec<u8> {
         mesh_protobuf::encode(policy.clone())
     }
 
     /// Decode a non-empty [`ContainerPolicy`] body. Callers must check
     /// `container_policy_size != 0` first.
-    pub fn decode_container_policy_page(
+    pub fn decode_container_policy(
         bytes: &[u8],
     ) -> Result<ContainerPolicy, ContainerPolicyDecodeError> {
         mesh_protobuf::decode(bytes).map_err(ContainerPolicyDecodeError::Mesh)
@@ -627,16 +627,16 @@ mod tests {
     #[test]
     fn encode_decode_round_trip_default_cwcow() {
         let policy = ContainerPolicy::Cwcow(CwcowPolicy::default());
-        let bytes = encode_container_policy_page(&policy);
-        let decoded = decode_container_policy_page(&bytes).unwrap();
+        let bytes = encode_container_policy(&policy);
+        let decoded = decode_container_policy(&bytes).unwrap();
         assert_eq!(decoded, policy);
     }
 
     #[test]
     fn encode_decode_round_trip_nontrivial_cwcow() {
         let policy = ContainerPolicy::Cwcow(sample_cwcow_policy());
-        let bytes = encode_container_policy_page(&policy);
-        let decoded = decode_container_policy_page(&bytes).unwrap();
+        let bytes = encode_container_policy(&policy);
+        let decoded = decode_container_policy(&bytes).unwrap();
         assert_eq!(decoded, policy);
     }
 
@@ -644,7 +644,7 @@ mod tests {
     fn decode_rejects_garbage() {
         let bad = [0xFFu8, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8];
         assert!(matches!(
-            decode_container_policy_page(&bad),
+            decode_container_policy(&bad),
             Err(ContainerPolicyDecodeError::Mesh(_))
         ));
     }
@@ -652,10 +652,10 @@ mod tests {
     #[test]
     fn decode_rejects_truncated() {
         let policy = ContainerPolicy::Cwcow(sample_cwcow_policy());
-        let mut bytes = encode_container_policy_page(&policy);
+        let mut bytes = encode_container_policy(&policy);
         bytes.pop();
         assert!(matches!(
-            decode_container_policy_page(&bytes),
+            decode_container_policy(&bytes),
             Err(ContainerPolicyDecodeError::Mesh(_))
         ));
     }

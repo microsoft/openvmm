@@ -111,7 +111,7 @@ pub enum Error {
 /// exceeds [`CONTAINER_POLICY_MAX_SIZE_BYTES`].
 fn encode_container_policy_bytes(policy: &ContainerPolicy) -> Vec<u8> {
     validate_container_policy_for_build(policy);
-    let bytes = encode_container_policy_page(policy);
+    let bytes = encode_container_policy(policy);
     let max = CONTAINER_POLICY_MAX_SIZE_BYTES;
     assert!(
         bytes.len() <= max,
@@ -1723,7 +1723,7 @@ mod container_policy_tests {
             ..Default::default()
         });
         let bytes = encode_container_policy_bytes(&policy);
-        let decoded = decode_container_policy_page(&bytes).unwrap();
+        let decoded = decode_container_policy(&bytes).unwrap();
         assert_eq!(decoded, policy);
     }
 
@@ -1790,7 +1790,7 @@ mod container_policy_tests {
             &region[CONTAINER_POLICY_INLINE_OFFSET..CONTAINER_POLICY_INLINE_OFFSET + bytes.len()],
             bytes.as_slice()
         );
-        let decoded = decode_container_policy_page(
+        let decoded = decode_container_policy(
             &region[CONTAINER_POLICY_INLINE_OFFSET..CONTAINER_POLICY_INLINE_OFFSET + bytes.len()],
         )
         .unwrap();
@@ -1880,7 +1880,7 @@ mod container_policy_tests {
         let (cfg, _) = ParavisorMeasuredVtl2Config::ref_from_prefix(&cfg_call.data).unwrap();
         let size = cfg.container_policy_size as usize;
         assert!(size > 0);
-        let decoded = decode_container_policy_page(
+        let decoded = decode_container_policy(
             &cfg_call.data[CONTAINER_POLICY_INLINE_OFFSET..CONTAINER_POLICY_INLINE_OFFSET + size],
         )
         .unwrap();
@@ -1901,7 +1901,7 @@ mod container_policy_tests {
         assert_eq!(calls[0].debug_tag, "underhill-vtl2-measured-config");
         let (cfg, _) = ParavisorMeasuredVtl2Config::ref_from_prefix(&calls[0].data).unwrap();
         let size = cfg.container_policy_size as usize;
-        let decoded = decode_container_policy_page(
+        let decoded = decode_container_policy(
             &calls[0].data[CONTAINER_POLICY_INLINE_OFFSET..CONTAINER_POLICY_INLINE_OFFSET + size],
         )
         .unwrap();
