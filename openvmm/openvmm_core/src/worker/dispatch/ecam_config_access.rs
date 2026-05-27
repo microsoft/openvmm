@@ -17,14 +17,16 @@ struct EcamConfigAccess<'a> {
     chipset: &'a Chipset,
     ecam_base: u64,
     start_bus: u8,
+    end_bus: u8,
 }
 
 impl<'a> EcamConfigAccess<'a> {
-    fn new(chipset: &'a Chipset, ecam_base: u64, start_bus: u8) -> Self {
+    fn new(chipset: &'a Chipset, ecam_base: u64, start_bus: u8, end_bus: u8) -> Self {
         Self {
             chipset,
             ecam_base,
             start_bus,
+            end_bus,
         }
     }
 
@@ -34,9 +36,10 @@ impl<'a> EcamConfigAccess<'a> {
     /// GPA = ecam_base + ((bus - start_bus) << 20) + (device << 15) + (function << 12) + offset
     fn ecam_addr(&self, bus: u8, device: u8, function: u8, offset: u16) -> u64 {
         assert!(
-            bus >= self.start_bus,
-            "bus {bus} is below start_bus {}",
-            self.start_bus
+            bus >= self.start_bus && bus <= self.end_bus,
+            "bus {bus} is outside range {}..={}",
+            self.start_bus,
+            self.end_bus
         );
         let bus_offset = (bus - self.start_bus) as u64;
         self.ecam_base
@@ -68,7 +71,8 @@ pub async fn assign_pci_resources_for_root_complexes(
                 len: hb.high_mmio.len(),
             }),
         };
-        let mut ecam = EcamConfigAccess::new(chipset, hb.ecam_range.start(), hb.start_bus);
+        let mut ecam =
+            EcamConfigAccess::new(chipset, hb.ecam_range.start(), hb.start_bus, hb.end_bus);
         pci_resource_assignment::assign_pci_resources(&mut ecam, &params).await?;
     }
     Ok(())
