@@ -1272,7 +1272,8 @@ impl OpenParams {
             },
             connection_id,
             event_flag,
-            monitor_info,
+            // Only include monitor info if the request has interrupts enabled.
+            monitor_info: request.target_vp.and(monitor_info),
             flags: request.flags.with_unused(0),
             reserved_target,
             channel_id: info.channel_id,
