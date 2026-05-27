@@ -58,6 +58,7 @@ members = [
   "opentmk",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
+  "vm/devices/pci/pci_resource_assignment",
 ]
 exclude = [
   "xsync",
@@ -290,6 +291,7 @@ vfio_assigned_device = { path = "vm/devices/pci/vfio_assigned_device" }
 vfio_assigned_device_resources = { path = "vm/devices/pci/vfio_assigned_device_resources" }
 pci_bus = { path = "vm/devices/pci/pci_bus" }
 pci_core = { path = "vm/devices/pci/pci_core" }
+pci_resource_assignment = { path = "vm/devices/pci/pci_resource_assignment" }
 pci_resources = { path = "vm/devices/pci/pci_resources" }
 pcie = { path = "vm/devices/pci/pcie" }
 smmu = { path = "vm/devices/iommu/smmu" }

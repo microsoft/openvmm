@@ -5433,6 +5433,7 @@ dependencies = [
  "pal_async",
  "pci_bus",
  "pci_core",
+ "pci_resource_assignment",
  "pci_resources",
  "pcie",
  "range_map_vec",
@@ -6020,6 +6021,16 @@ dependencies = [
  "tracing",
  "vmcore",
  "zerocopy",
+]
+
+[[package]]
+name = "pci_resource_assignment"
+version = "0.0.0"
+dependencies = [
+ "parking_lot",
+ "pci_core",
+ "thiserror 2.0.16",
+ "tracing",
 ]
 
 [[package]]
