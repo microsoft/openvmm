@@ -4,7 +4,6 @@
 //! Helpers for unit tests.
 
 #![cfg_attr(not(test), expect(dead_code))]
-#![expect(missing_docs)]
 
 use crate::PacketError;
 use crate::Storvsc;
@@ -215,12 +214,14 @@ fn parse_storvsp_packet<T: RingMem>(
     })
 }
 
+/// Test worker for driving a storvsc instance in unit tests.
 pub struct TestStorvscWorker<T: Send + Sync + RingMem> {
     task: TaskControl<StorvscState, Storvsc<T>>,
     new_request_sender: Option<Sender<StorvscRequest>>,
 }
 
 impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
+    /// Creates a storvsc test worker.
     pub fn new() -> Self {
         Self {
             task: TaskControl::new(StorvscState),
@@ -228,6 +229,7 @@ impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
         }
     }
 
+    /// Starts the storvsc task on `channel`.
     pub fn start(&mut self, spawner: impl Spawn, channel: RawAsyncChannel<T>) {
         let (new_request_sender, new_request_receiver) = mesh_channel::channel::<StorvscRequest>();
         let storvsc = Storvsc::new(
@@ -245,10 +247,12 @@ impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
         self.task.start();
     }
 
+    /// Stops the storvsc task.
     pub async fn stop(&mut self) {
         self.task.stop().await;
     }
 
+    /// Resumes the storvsc task.
     pub async fn resume(&mut self) {
         self.task.start();
     }
@@ -257,6 +261,7 @@ impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
         self.task.get_mut().1.unwrap()
     }
 
+    /// Stops and removes the storvsc task.
     pub async fn teardown(&mut self) {
         self.task.stop().await;
         self.task.remove();
