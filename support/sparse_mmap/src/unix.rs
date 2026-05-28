@@ -587,7 +587,7 @@ unsafe fn mbind_range(addr: *mut c_void, len: usize, numa_node: u32) -> io::Resu
     // Cap the node ID to prevent accidental large allocations for the
     // nodemask bitmask below.
     if numa_node > 0xffff {
-        return Err(io::Error::new(
+        return Err(Error::new(
             io::ErrorKind::InvalidInput,
             "NUMA node exceeds maximum supported value",
         ));
