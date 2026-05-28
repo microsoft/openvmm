@@ -26,4 +26,3 @@ pal_async.workspace = true
 
 [lints]
 workspace = true
-
