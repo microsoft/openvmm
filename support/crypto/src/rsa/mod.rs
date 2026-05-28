@@ -253,11 +253,12 @@ mod tests {
     /// recovers the salt from the signature rather than requiring a fixed
     /// value across backends.
     ///
-    /// Uses a 3072-bit key to match the SHA-384 security level (NIST
-    /// SP 800-57: SHA-384 pairs with 3072-bit RSA at ~128-bit security).
+    /// Uses a 2048-bit key for test speed; SHA-384's matched-strength
+    /// key size is 3072 (NIST SP 800-57) but key generation in the
+    /// pure-Rust backend is too slow at that size for unit tests.
     #[test]
     fn pss_sign_verify_roundtrip_sha384() {
-        let key = RsaKeyPair::generate(3072).unwrap();
+        let key = RsaKeyPair::generate(2048).unwrap();
         let message = b"the message that needs to be hashed before signing";
         let signature = key.pss_sign(message, HashAlgorithm::Sha384).unwrap();
         let valid = key
@@ -269,7 +270,7 @@ mod tests {
     /// A tampered message must fail PSS verification with `Ok(false)`.
     #[test]
     fn pss_verify_rejects_tampered_message_sha384() {
-        let key = RsaKeyPair::generate(3072).unwrap();
+        let key = RsaKeyPair::generate(2048).unwrap();
         let message = b"original message";
         let signature = key.pss_sign(message, HashAlgorithm::Sha384).unwrap();
         let tampered = b"tampered message";
@@ -282,7 +283,7 @@ mod tests {
     /// A truncated PSS signature must be rejected with `Ok(false)`.
     #[test]
     fn pss_verify_rejects_truncated_signature_sha384() {
-        let key = RsaKeyPair::generate(3072).unwrap();
+        let key = RsaKeyPair::generate(2048).unwrap();
         let message = b"original message";
         let mut signature = key.pss_sign(message, HashAlgorithm::Sha384).unwrap();
         signature.truncate(signature.len() - 1);
