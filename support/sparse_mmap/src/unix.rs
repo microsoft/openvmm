@@ -286,8 +286,9 @@ impl SparseMapping {
     /// `alloc`, `map_file`, etc.) before calling this.
     #[cfg(target_os = "linux")]
     pub fn mbind_at(&self, offset: usize, len: usize, numa_node: u32) -> Result<(), Error> {
-        // SAFETY: the caller has mapped this range within the
-        // SparseMapping, so `self.address + offset` is valid for `len` bytes.
+        let _ = self.validate_offset_len(offset, len)?;
+        // SAFETY: validate_offset_len confirmed offset+len is within the
+        // mapping, so `self.address + offset` is valid for `len` bytes.
         unsafe { mbind_range(self.address.add(offset), len, numa_node) }
     }
 
@@ -583,6 +584,15 @@ pub fn alloc_shared_memory_hugetlb(
 /// `addr` must point to a valid mapped region of at least `len` bytes.
 #[cfg(target_os = "linux")]
 unsafe fn mbind_range(addr: *mut c_void, len: usize, numa_node: u32) -> io::Result<()> {
+    // Cap the node ID to prevent accidental large allocations for the
+    // nodemask bitmask below.
+    if numa_node > 0xffff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NUMA node exceeds maximum supported value",
+        ));
+    }
+
     // Build nodemask bitmask. The kernel expects an array of unsigned long with
     // bit `numa_node` set.
     //
