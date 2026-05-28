@@ -23,7 +23,6 @@ use vmcore::line_interrupt::LineInterrupt;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
-use vmcore::save_restore::SavedStateNotSupported;
 
 /// SMMUv3 device configuration.
 #[derive(Debug, Clone)]
@@ -727,14 +726,208 @@ impl ChangeDeviceState for SmmuDevice {
 }
 
 impl SaveRestore for SmmuDevice {
-    type SavedState = SavedStateNotSupported;
+    type SavedState = state::SavedState;
 
     fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-        Err(SaveError::NotSupported)
+        let &mut SmmuDevice {
+            // Static configuration — not saved.
+            mmio_region: _,
+            mmio_base: _,
+            guest_memory: _,
+            ref shared_state,
+
+            // Identification registers — read-only, not saved.
+            idr0: _,
+            idr1: _,
+            idr2: _,
+            idr3: _,
+            idr4: _,
+            idr5: _,
+            iidr: _,
+            aidr: _,
+
+            // Control registers.
+            cr0,
+            cr0ack: _, // mirror of cr0 (immediate ack)
+            cr1,
+            cr2,
+            gbpa,
+
+            // Interrupt control.
+            irq_ctrl,
+            irq_ctrlack: _, // mirror of irq_ctrl (immediate ack)
+
+            // Stream table base.
+            strtab_base,
+            strtab_base_cfg,
+
+            // Command queue.
+            cmdq_base,
+            cmdq_prod,
+            cmdq_cons,
+
+            // Event queue base register.
+            evtq_base,
+
+            // MSI configuration.
+            ref gerror_msi,
+            ref evtq_msi,
+            ref cmdq_msi,
+        } = self;
+
+        let queue = shared_state.save_queue_state();
+
+        Ok(state::SavedState {
+            cr0: cr0.into(),
+            cr1: cr1.into(),
+            cr2: cr2.into(),
+            gbpa: gbpa.into(),
+            irq_ctrl: irq_ctrl.into(),
+            strtab_base,
+            strtab_base_cfg: strtab_base_cfg.into(),
+            cmdq_base,
+            cmdq_prod,
+            cmdq_cons: cmdq_cons.into(),
+            evtq_base,
+            gerror_msi: state::SavedMsiConfig::save(gerror_msi),
+            evtq_msi: state::SavedMsiConfig::save(evtq_msi),
+            cmdq_msi: state::SavedMsiConfig::save(cmdq_msi),
+            evtq_prod: queue.evtq_prod,
+            evtq_cons: queue.evtq_cons,
+            gerror: queue.gerror,
+            gerrorn: queue.gerrorn,
+        })
     }
 
-    fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-        match state {}
+    fn restore(&mut self, saved: Self::SavedState) -> Result<(), RestoreError> {
+        let state::SavedState {
+            cr0,
+            cr1,
+            cr2,
+            gbpa,
+            irq_ctrl,
+            strtab_base,
+            strtab_base_cfg,
+            cmdq_base,
+            cmdq_prod,
+            cmdq_cons,
+            evtq_base,
+            gerror_msi,
+            evtq_msi,
+            cmdq_msi,
+            evtq_prod,
+            evtq_cons,
+            gerror,
+            gerrorn,
+        } = saved;
+
+        self.cr0 = registers::Cr0::from(cr0);
+        self.cr0ack = self.cr0; // immediate ack
+        self.cr1 = registers::Cr1::from(cr1);
+        self.cr2 = registers::Cr2::from(cr2);
+        self.gbpa = registers::Gbpa::from(gbpa);
+
+        self.irq_ctrl = registers::IrqCtrl::from(irq_ctrl);
+        self.irq_ctrlack = self.irq_ctrl; // immediate ack
+
+        self.strtab_base = strtab_base;
+        self.strtab_base_cfg = registers::StrtabBaseCfg::from(strtab_base_cfg);
+
+        self.cmdq_base = cmdq_base;
+        self.cmdq_prod = cmdq_prod;
+        self.cmdq_cons = registers::CmdqCons::from(cmdq_cons);
+
+        self.evtq_base = evtq_base;
+
+        self.gerror_msi = gerror_msi.restore();
+        self.evtq_msi = evtq_msi.restore();
+        self.cmdq_msi = cmdq_msi.restore();
+
+        // Re-sync derived state in SmmuSharedState.
+        self.shared_state.set_enabled(self.cr0.smmuen());
+        self.sync_strtab_to_shared();
+        self.sync_evtq_to_shared();
+        self.shared_state.set_evtq_enabled(self.cr0.eventqen());
+        self.shared_state
+            .set_irq_ctrl(self.irq_ctrl.eventq_irqen(), self.irq_ctrl.gerror_irqen());
+        self.shared_state
+            .restore_queue_state(crate::shared::SavedQueueState {
+                evtq_prod,
+                evtq_cons,
+                gerror,
+                gerrorn,
+            });
+
+        Ok(())
+    }
+}
+
+mod state {
+    use mesh::payload::Protobuf;
+    use vmcore::save_restore::SavedStateRoot;
+
+    #[derive(Protobuf, SavedStateRoot)]
+    #[mesh(package = "iommu.smmu")]
+    pub struct SavedState {
+        #[mesh(1)]
+        pub(super) cr0: u32,
+        #[mesh(2)]
+        pub(super) cr1: u32,
+        #[mesh(3)]
+        pub(super) cr2: u32,
+        #[mesh(4)]
+        pub(super) gbpa: u32,
+        #[mesh(5)]
+        pub(super) irq_ctrl: u32,
+        #[mesh(6)]
+        pub(super) strtab_base: u64,
+        #[mesh(7)]
+        pub(super) strtab_base_cfg: u32,
+        #[mesh(8)]
+        pub(super) cmdq_base: u64,
+        #[mesh(9)]
+        pub(super) cmdq_prod: u32,
+        #[mesh(10)]
+        pub(super) cmdq_cons: u32,
+        #[mesh(11)]
+        pub(super) evtq_base: u64,
+        #[mesh(12)]
+        pub(super) gerror_msi: SavedMsiConfig,
+        #[mesh(13)]
+        pub(super) evtq_msi: SavedMsiConfig,
+        #[mesh(14)]
+        pub(super) cmdq_msi: SavedMsiConfig,
+        #[mesh(15)]
+        pub(super) evtq_prod: u32,
+        #[mesh(16)]
+        pub(super) evtq_cons: u32,
+        #[mesh(17)]
+        pub(super) gerror: u32,
+        #[mesh(18)]
+        pub(super) gerrorn: u32,
+    }
+
+    #[derive(Protobuf)]
+    #[mesh(package = "iommu.smmu")]
+    pub struct SavedMsiConfig {
+        #[mesh(1)]
+        pub addr: u64,
+        #[mesh(2)]
+        pub data: u32,
+        #[mesh(3)]
+        pub attr: u32,
+    }
+
+    impl SavedMsiConfig {
+        pub(super) fn save(msi: &super::MsiConfig) -> Self {
+            let super::MsiConfig { addr, data, attr } = *msi;
+            Self { addr, data, attr }
+        }
+
+        pub(super) fn restore(self) -> super::MsiConfig {
+            let Self { addr, data, attr } = self;
+            super::MsiConfig { addr, data, attr }
+        }
     }
 }
 
@@ -2158,6 +2351,241 @@ mod tests {
         assert_eq!(
             event.input_addr, unmapped_iova,
             "Fault IOVA must match access"
+        );
+    }
+
+    // =========================================================================
+    // Save/Restore tests
+    // =========================================================================
+
+    /// Verifies that DMA translation through SmmuTranslatingMemory
+    /// continues to work after a save/restore cycle.
+    ///
+    /// This tests the critical restore path: re-syncing SharedStateInner
+    /// (enabled, strtab_base, strtab_log2size) and QueueErrorState from
+    /// the restored register values. If any of these are missed, the
+    /// translating memory wrapper — which holds the same Arc<SmmuSharedState>
+    /// — will see stale state and translation will break.
+    #[pal_async::async_test]
+    async fn test_save_restore_translation_roundtrip() {
+        use crate::spec::cd::Cd;
+        use crate::spec::cd::CdDw0;
+        use crate::spec::cd::CdDw1;
+        use crate::spec::cd::Ips;
+        use crate::spec::cd::Tg0;
+        use crate::spec::pt::ApBits;
+        use crate::spec::pt::PtDesc;
+        use crate::spec::ste::STE_SIZE;
+        use crate::spec::ste::Ste;
+        use crate::spec::ste::SteConfig;
+        use crate::spec::ste::SteDw0;
+        use crate::spec::ste::SteDw1;
+        use pci_core::bus_range::AssignedBusRange;
+
+        const STRTAB_GPA: u64 = 0x10_0000;
+        const STRTAB_LOG2SIZE: u8 = 10;
+        const CD_GPA: u64 = 0x40_0000;
+        const PT_L1_GPA: u64 = 0x50_1000;
+        const PT_L2_GPA: u64 = 0x50_2000;
+        const PT_L3_GPA: u64 = 0x50_3000;
+        const DATA_GPA: u64 = 0x60_0000;
+        const DMA_IOVA: u64 = 0x0000_0000;
+        const BUS: u8 = 1;
+        const STREAM_ID_BASE: u32 = 0;
+        const STREAM_ID: u32 = (BUS as u32) << 8;
+
+        let gm = GuestMemory::allocate(0x80_0000);
+        let mut dev = SmmuDevice::new(
+            TEST_MMIO_BASE,
+            gm.clone(),
+            &SmmuConfig::default(),
+            None,
+            None,
+        );
+
+        // Set up stream table, CD, and page tables in guest memory.
+        let ste = Ste {
+            qw0: SteDw0::new()
+                .with_v(true)
+                .with_config(SteConfig::S1_TRANS.0)
+                .with_s1_context_ptr(CD_GPA >> 6)
+                .with_s1_cd_max(0),
+            qw1: SteDw1::new(),
+            _qw2_7: [0u64; 6],
+        };
+        let ste_addr = STRTAB_GPA + (STREAM_ID as u64) * (STE_SIZE as u64);
+        gm.write_plain(ste_addr, &ste).unwrap();
+
+        let cd = Cd {
+            qw0: CdDw0::new()
+                .with_v(true)
+                .with_t0sz(32)
+                .with_tg0(Tg0::GRAN_4K.0)
+                .with_ips(Ips::IPS_40.0)
+                .with_aa64(true)
+                .with_a(true)
+                .with_asid(1),
+            qw1: CdDw1::new().with_ttb0(PT_L1_GPA >> 4),
+            _qw2: 0,
+            mair0: 0xFF440C0400,
+            mair1: 0,
+            _qw5_7: [0; 3],
+        };
+        gm.write_plain(CD_GPA, &cd).unwrap();
+
+        // L1[0] → L2, L2[0] → L3, L3[0] → DATA_GPA
+        let l1 = PtDesc::new()
+            .with_valid(true)
+            .with_desc_type(true)
+            .with_addr_bits(PT_L2_GPA >> 12);
+        gm.write_plain::<u64>(PT_L1_GPA, &l1.into()).unwrap();
+        let l2 = PtDesc::new()
+            .with_valid(true)
+            .with_desc_type(true)
+            .with_addr_bits(PT_L3_GPA >> 12);
+        gm.write_plain::<u64>(PT_L2_GPA, &l2.into()).unwrap();
+        let l3 = PtDesc::new()
+            .with_valid(true)
+            .with_desc_type(true)
+            .with_af(true)
+            .with_ap(ApBits::RW_EL1.0)
+            .with_addr_bits(DATA_GPA >> 12);
+        gm.write_plain::<u64>(PT_L3_GPA, &l3.into()).unwrap();
+
+        // Program SMMU registers: STRTAB_BASE, STRTAB_BASE_CFG, enable.
+        write64(
+            &mut dev,
+            STRTAB_BASE,
+            StrtabBase::new().with_addr_bits(STRTAB_GPA >> 6).into(),
+        );
+        write32(
+            &mut dev,
+            STRTAB_BASE_CFG,
+            StrtabBaseCfg::new()
+                .with_log2size(STRTAB_LOG2SIZE)
+                .with_fmt(0)
+                .into(),
+        );
+        write32(
+            &mut dev,
+            CR0,
+            Cr0::new()
+                .with_smmuen(true)
+                .with_cmdqen(true)
+                .with_eventqen(true)
+                .into(),
+        );
+
+        // Create translating memory wrapper (holds Arc to same shared state).
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(BUS, BUS);
+        let translating_gm =
+            dev.shared_state()
+                .create_translating_memory(bus_range, STREAM_ID_BASE, &gm);
+
+        // Write test data and verify DMA read works.
+        let test_data = b"save-restore-test";
+        gm.write_at(DATA_GPA, test_data).unwrap();
+        let mut buf = vec![0u8; test_data.len()];
+        translating_gm.read_at(DMA_IOVA, &mut buf).unwrap();
+        assert_eq!(&buf, test_data, "DMA must work before save");
+
+        // Save.
+        let saved = dev.save().expect("save must succeed");
+
+        // Reset the device, as the state unit framework would between
+        // save and restore (e.g., hibernate/migrate cycle). This clears
+        // all register and shared state.
+        dev.reset().await;
+
+        // With SMMU disabled after reset, DMA bypasses translation
+        // (IOVA = GPA). Reading at DMA_IOVA (0x0) should now return
+        // whatever is at GPA 0x0 instead of DATA_GPA.
+        gm.write_at(0, b"BYPASS!BYPASS!BYP").unwrap();
+        let mut buf2 = vec![0u8; test_data.len()];
+        translating_gm.read_at(DMA_IOVA, &mut buf2).unwrap();
+        assert_eq!(
+            &buf2, b"BYPASS!BYPASS!BYP",
+            "after reset, DMA must bypass (read raw GPA)"
+        );
+
+        // Restore.
+        dev.restore(saved).expect("restore must succeed");
+
+        // DMA must work again through the same translating memory wrapper.
+        let mut buf3 = vec![0u8; test_data.len()];
+        translating_gm.read_at(DMA_IOVA, &mut buf3).unwrap();
+        assert_eq!(&buf3, test_data, "DMA must work after restore");
+
+        // Verify the SMMU is actually translating (not just bypassing).
+        // Write different data at GPA 0x0 (the IOVA value). If the SMMU
+        // is bypassing, we'd read this instead of DATA_GPA's contents.
+        gm.write_at(0, b"BYPASS!BYPASS!BYP").unwrap();
+        let mut buf4 = vec![0u8; test_data.len()];
+        translating_gm.read_at(DMA_IOVA, &mut buf4).unwrap();
+        assert_eq!(
+            &buf4, test_data,
+            "must read from DATA_GPA, not bypass to IOVA address"
+        );
+    }
+
+    /// Verifies that a CMDQ error (split across cmdq_cons.err in the
+    /// device and gerror/gerrorn in shared state) survives save/restore
+    /// and continues to block command processing until acknowledged.
+    #[test]
+    fn test_save_restore_cmdq_error_persists() {
+        let mut dev = make_cmdq_test_device();
+
+        // Trigger CMDQ error with an unknown opcode.
+        write_cmdq_entry(&dev, 0, &CmdEntry { qw0: 0xFF, qw1: 0 });
+        write32(&mut dev, CMDQ_PROD, 1);
+
+        // Verify error is active.
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.err(), CmdqError::CERROR_ILL.0, "error must be set");
+        assert_eq!(cons.rd(), 0, "CONS must not advance past error");
+        let gerror = Gerror::from(read32(&mut dev, GERROR));
+        assert!(gerror.cmdq_err(), "GERROR.CMDQ_ERR must be toggled");
+
+        // Save and restore.
+        let saved = dev.save().expect("save");
+        dev.restore(saved).expect("restore");
+
+        // Error must still be active after restore.
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(
+            cons.err(),
+            CmdqError::CERROR_ILL.0,
+            "error must survive restore"
+        );
+        let gerror = Gerror::from(read32(&mut dev, GERROR));
+        assert!(gerror.cmdq_err(), "GERROR.CMDQ_ERR must survive restore");
+
+        // Processing must still be blocked: write a valid command and
+        // advance PROD, verify CONS doesn't advance.
+        write_cmdq_entry(
+            &dev,
+            1,
+            &CmdEntry {
+                qw0: CmdOpcode::TLBI_NH_ALL.0 as u64,
+                qw1: 0,
+            },
+        );
+        write32(&mut dev, CMDQ_PROD, 2);
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(
+            cons.rd(),
+            0,
+            "CMDQ must remain blocked until error is acknowledged"
+        );
+
+        // Acknowledge the error.
+        write32(&mut dev, GERRORN, gerror.into());
+
+        // Now the error should be cleared and processing should resume.
+        assert!(
+            !dev.shared_state.cmdq_err_active(),
+            "error must be cleared after acknowledge"
         );
     }
 }

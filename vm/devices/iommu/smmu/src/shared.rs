@@ -161,6 +161,19 @@ struct QueueErrorState {
     gerror_irqen: bool,
 }
 
+/// Saved portion of [`QueueErrorState`] for state save/restore.
+///
+/// Only the producer/consumer indices and error toggle registers need
+/// saving — the remaining fields (`evtq_base_addr`, `evtq_log2size`,
+/// `evtq_enabled`, `evtq_irqen`, `gerror_irqen`) are derived from
+/// SMMU register state and re-synced on restore.
+pub(crate) struct SavedQueueState {
+    pub evtq_prod: u32,
+    pub evtq_cons: u32,
+    pub gerror: u32,
+    pub gerrorn: u32,
+}
+
 impl SmmuSharedState {
     /// Creates a new shared state with the SMMU disabled.
     ///
@@ -329,6 +342,52 @@ impl SmmuSharedState {
         qs.gerror = registers::Gerror::new();
         qs.gerrorn = registers::Gerror::new();
         qs.gerror_irqen = false;
+        self.update_gerror_irq(&qs);
+    }
+
+    /// Saves the queue and error state that must be persisted.
+    ///
+    /// Fields derived from SMMU registers (`evtq_base_addr`, `evtq_log2size`,
+    /// `evtq_enabled`, `evtq_irqen`, `gerror_irqen`) are re-synced on
+    /// restore and are not included in the saved state.
+    pub(crate) fn save_queue_state(&self) -> SavedQueueState {
+        let qs = self.queue_state.lock();
+        // Exhaustively destructure to get a compile error if a field is added.
+        let QueueErrorState {
+            evtq_base_addr: _,
+            evtq_log2size: _,
+            evtq_enabled: _,
+            evtq_irqen: _,
+            evtq_prod,
+            evtq_cons,
+            gerror,
+            gerrorn,
+            gerror_irqen: _,
+        } = *qs;
+        SavedQueueState {
+            evtq_prod,
+            evtq_cons,
+            gerror: gerror.into(),
+            gerrorn: gerrorn.into(),
+        }
+    }
+
+    /// Restores the queue and error state from a saved snapshot.
+    ///
+    /// The caller must re-sync derived fields (`set_evtq_config`,
+    /// `set_evtq_enabled`, `set_irq_ctrl`) separately after this call.
+    pub(crate) fn restore_queue_state(&self, state: SavedQueueState) {
+        let SavedQueueState {
+            evtq_prod,
+            evtq_cons,
+            gerror,
+            gerrorn,
+        } = state;
+        let mut qs = self.queue_state.lock();
+        qs.evtq_prod = evtq_prod;
+        qs.evtq_cons = evtq_cons;
+        qs.gerror = registers::Gerror::from(gerror);
+        qs.gerrorn = registers::Gerror::from(gerrorn);
         self.update_gerror_irq(&qs);
     }
 
