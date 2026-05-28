@@ -646,7 +646,6 @@ mod tests {
             ports: Vec::new(),
             cxl: None,
             iommu: None,
-            vnode: None,
         }
     }
 
@@ -760,7 +759,6 @@ mod tests {
                 ports: Vec::new(),
                 cxl: None,
                 iommu: None,
-                vnode: None,
             },
             PcieRootComplexConfig {
                 index: 1,
@@ -773,7 +771,6 @@ mod tests {
                 ports: Vec::new(),
                 cxl: None,
                 iommu: None,
-                vnode: None,
             },
         ];
         let mut config = input(2 * GB, None, None);
@@ -810,7 +807,6 @@ mod tests {
             ports: Vec::new(),
             cxl: None,
             iommu: None,
-            vnode: None,
         }];
         let mut config = input(2 * GB, None, None);
         config.pcie_root_complexes = &root_complexes;

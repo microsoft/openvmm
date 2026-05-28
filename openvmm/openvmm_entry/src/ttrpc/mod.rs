@@ -671,7 +671,6 @@ impl VmService {
                         vtl: DeviceVtl::Vtl0,
                         instance_id: Guid::new_random(),
                         resource: VirtioPciDeviceHandle(resource).into_resource(),
-                        vnode: None,
                     });
                 } else {
                     config.virtio_devices.push((VirtioBus::Mmio, resource));
@@ -695,7 +694,6 @@ impl VmService {
                             vtl: DeviceVtl::Vtl0,
                             instance_id: Guid::new_random(),
                             resource: VirtioPciDeviceHandle(resource).into_resource(),
-                            vnode: None,
                         });
                     } else {
                         config.virtio_devices.push((VirtioBus::Mmio, resource));

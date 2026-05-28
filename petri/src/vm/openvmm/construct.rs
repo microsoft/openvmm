@@ -1378,7 +1378,6 @@ async fn vmbus_storage_controllers_to_openvmm(
                         requests: None,
                     }
                     .into_resource(),
-                    vnode: None,
                 });
             }
             VmbusStorageType::VirtioBlk => {
@@ -1410,7 +1409,6 @@ async fn vmbus_storage_controllers_to_openvmm(
                             .into_resource(),
                         )
                         .into_resource(),
-                        vnode: None,
                     });
                 }
             }
