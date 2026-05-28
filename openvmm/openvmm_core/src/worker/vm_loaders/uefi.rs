@@ -43,6 +43,10 @@ pub struct UefiLoadSettings {
     pub uefi_console_mode: Option<UefiConsoleMode>,
     pub default_boot_always_attempt: bool,
     pub bios_guid: Guid,
+    /// Whether VMBus is present in this VM. When `false`, the `MmioRanges`
+    /// blob structure is omitted and the firmware's `vmbus_disabled` flag is
+    /// set; the firmware must support this mode.
+    pub vmbus: bool,
 }
 
 /// Loads the UEFI firmware.
@@ -115,7 +119,8 @@ pub fn load_uefi(
                 UefiConsoleMode::None => config::ConsolePort::None,
             },
         )
-        .with_default_boot_always_attempt(load_settings.default_boot_always_attempt);
+        .with_default_boot_always_attempt(load_settings.default_boot_always_attempt)
+        .with_vmbus_disabled(!load_settings.vmbus);
 
     let mut cfg = config::Blob::new();
     cfg.add(&config::BiosInformation {

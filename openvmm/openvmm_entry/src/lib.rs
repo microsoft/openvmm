@@ -962,6 +962,9 @@ async fn vm_config_from_command_line(
         tx.send(HostBatteryUpdate::default_present());
         chipset = chipset.with_battery(rx);
     }
+    if opt.no_vmbus {
+        chipset = chipset.without_vmbus();
+    }
     if let Some(cfg) = &opt.debugcon {
         chipset = chipset.with_debugcon(
             debugcon_cfg.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
@@ -1119,6 +1122,7 @@ async fn vm_config_from_command_line(
             }),
             default_boot_always_attempt: opt.default_boot_always_attempt,
             bios_guid,
+            enable_vmbus: !opt.no_vmbus,
         };
     } else {
         // Linux Direct
@@ -1459,7 +1463,7 @@ async fn vm_config_from_command_line(
         None
     };
 
-    if with_hv {
+    if with_hv && !opt.no_vmbus {
         let (shutdown_send, shutdown_recv) = mesh::channel();
         resources.shutdown_ic = Some(shutdown_send);
         let (kvp_send, kvp_recv) = mesh::channel();
@@ -1760,7 +1764,7 @@ async fn vm_config_from_command_line(
         vga_firmware,
         vtl2_gfx: opt.vtl2_gfx,
         virtio_devices,
-        vmbus: with_hv.then_some(VmbusConfig {
+        vmbus: (with_hv && !opt.no_vmbus).then_some(VmbusConfig {
             vsock_listener: vtl0_vsock_listener,
             vsock_path: opt.vmbus_vsock_path.clone(),
             vtl2_redirect: opt.vmbus_redirect,
