@@ -336,6 +336,9 @@ pub struct UnderhillRemoteConsoleCfg {
     pub synth_video: bool,
     pub input: mesh::Receiver<InputData>,
     pub framebuffer: Option<framebuffer::Framebuffer>,
+    /// Channel to forward dirty rectangles from the synthetic video device
+    /// to the VNC worker. None when no VNC server is configured.
+    pub dirt_send: Option<mesh::Sender<Vec<video_core::DirtyRect>>>,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -444,6 +447,7 @@ impl Worker for UnderhillVmWorker {
                     synth_video: false,
                     input: mesh::Receiver::new(),
                     framebuffer: None,
+                    dirt_send: None,
                 },
                 debugger_rpc: None,
                 vm_rpc: state.vm_rpc,
@@ -3450,6 +3454,7 @@ async fn new_underhill_vm(
         vmbus_device_handles.push(
             uidevices_resources::SynthVideoHandle {
                 framebuffer: video_core::SharedFramebufferHandle.into_resource(),
+                dirt_send: remote_console_cfg.dirt_send,
             }
             .into_resource(),
         );

@@ -1092,6 +1092,7 @@ impl PetriVmConfigSetupCore<'_> {
                 DeviceVtl::Vtl0,
                 SynthVideoHandle {
                     framebuffer: SharedFramebufferHandle.into_resource(),
+                    dirt_send: None,
                 }
                 .into_resource(),
             )),

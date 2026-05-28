@@ -81,7 +81,11 @@ use vnc_worker_defs::VncParameters;
 
 fn new_underhill_remote_console_cfg(
     framebuffer_gpa_base: Option<u64>,
-) -> anyhow::Result<(UnderhillRemoteConsoleCfg, Option<FramebufferAccess>)> {
+) -> anyhow::Result<(
+    UnderhillRemoteConsoleCfg,
+    Option<FramebufferAccess>,
+    Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
+)> {
     if let Some(framebuffer_gpa_base) = framebuffer_gpa_base {
         // Underhill accesses the framebuffer by using /dev/mshv_vtl_low to read
         // from a second mapping placed after the end of RAM at a static
@@ -103,6 +107,8 @@ fn new_underhill_remote_console_cfg(
             .context("allocating framebuffer")?;
         tracing::debug!("framebuffer_gpa_base: {:#x}", framebuffer_gpa_base);
 
+        let (dirt_send, dirt_recv) = mesh::channel();
+
         Ok((
             UnderhillRemoteConsoleCfg {
                 synth_keyboard: true,
@@ -110,8 +116,10 @@ fn new_underhill_remote_console_cfg(
                 synth_video: true,
                 input: mesh::Receiver::new(),
                 framebuffer: Some(fb),
+                dirt_send: Some(dirt_send),
             },
             Some(fba),
+            Some(dirt_recv),
         ))
     } else {
         Ok((
@@ -121,7 +129,9 @@ fn new_underhill_remote_console_cfg(
                 synth_video: false,
                 input: mesh::Receiver::new(),
                 framebuffer: None,
+                dirt_send: None,
             },
+            None,
             None,
         ))
     }
@@ -341,7 +351,7 @@ async fn launch_workers(
         servicing_timeout_dump_collection_in_ms: opt.servicing_timeout_dump_collection_in_ms,
     };
 
-    let (mut remote_console_cfg, framebuffer_access) =
+    let (mut remote_console_cfg, framebuffer_access, dirty_rect_recv) =
         new_underhill_remote_console_cfg(opt.framebuffer_gpa_base)?;
 
     let mut vnc_worker = None;
@@ -363,6 +373,9 @@ async fn launch_workers(
                         listener,
                         framebuffer,
                         input_send,
+                        dirty_recv: dirty_rect_recv,
+                        max_clients: 16,
+                        evict_oldest: false,
                     },
                 )
                 .await?,
