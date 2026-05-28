@@ -11,9 +11,13 @@ pub(crate) const TILE_SIZE: u16 = 16;
 /// A rectangle in pixel coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
+    /// Left edge, in pixels.
     pub x: u16,
+    /// Top edge, in pixels.
     pub y: u16,
+    /// Width, in pixels.
     pub w: u16,
+    /// Height, in pixels.
     pub h: u16,
 }
 

@@ -78,17 +78,26 @@ pub struct Server<F, I> {
     missed_dirty: Option<Arc<AtomicBool>>,
 }
 
+/// External handle that nudges the server's main loop to do an update pass.
+/// Cloneable so the caller can hold one per timer or signal source. Drops
+/// silently when the matching `Server` is gone.
 #[derive(Debug, Clone)]
 pub struct Updater(async_channel::Sender<()>);
 
 impl Updater {
+    /// Signals the server to look for new dirty regions on its next loop
+    /// iteration. Non-blocking; coalesces multiple signals into one via the
+    /// capacity-1 channel.
     pub fn update(&mut self) {
-        // Capacity-1 channel coalesces multiple signals into one.
         let _ = self.0.try_send(());
     }
 }
 
 impl<F: Framebuffer, I: Input> Server<F, I> {
+    /// Builds a new `Server` bound to one client socket. `dirty_recv` (and
+    /// `missed_dirty`) are produced by the multi-client coordinator when
+    /// the synth video device is forwarding dirty rectangles; pass `None`
+    /// for both to fall back to whole-framebuffer tile-diff detection.
     pub fn new(
         name: String,
         socket: PolledSocket<socket2::Socket>,
@@ -115,10 +124,15 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
         }
     }
 
+    /// Returns an [`Updater`] handle that, when its `update` method is
+    /// called, wakes this server's main loop to look for new dirty regions.
     pub fn updater(&mut self) -> Updater {
         Updater(self.update_send.clone())
     }
 
+    /// Consumes the server and returns ownership of the embedder-supplied
+    /// framebuffer and input handles back to the caller. Used by the
+    /// coordinator after a client disconnects to reuse those resources.
     pub fn done(self) -> (F, I) {
         (self.fb, self.input)
     }

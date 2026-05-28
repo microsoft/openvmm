@@ -1,7 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![expect(missing_docs)]
+//! Public worker IDs and parameter types for launching the VNC worker.
+//!
+//! This crate is the shared boundary between the VNC worker process and
+//! its launcher (openvmm or openhcl). Two worker variants exist: a TCP
+//! listener (used by openvmm) and a vmsocket listener (used by openhcl's
+//! paravisor).
+
 #![forbid(unsafe_code)]
 
 use mesh::MeshPayload;
@@ -29,8 +35,12 @@ pub struct VncParameters<T> {
     pub evict_oldest: bool,
 }
 
+/// Worker ID for the TCP-listening VNC worker. Used by openvmm, where the
+/// server is reachable directly over a host TCP socket.
 pub const VNC_WORKER_TCP: WorkerId<VncParameters<TcpListener>> = WorkerId::new("VncWorkerTcp");
 
+/// Worker ID for the vmsocket-listening VNC worker. Used by openhcl's
+/// paravisor, where the server is reachable from the host via vsock.
 #[cfg(any(windows, target_os = "linux"))]
 pub const VNC_WORKER_VMSOCKET: WorkerId<VncParameters<vmsocket::VmListener>> =
     WorkerId::new("VncWorkerVmSocket");

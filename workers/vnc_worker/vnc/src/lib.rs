@@ -30,7 +30,6 @@
 //!
 //! See `Guide/src/reference/devices/vnc/keyboard.md` for full details.
 
-#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod dirty_bitmap;
