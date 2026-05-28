@@ -52,7 +52,7 @@ pub struct GenericPcieRootComplex {
     cxl_component_registers: Option<CxlComponentRegisters>,
     /// Devices on the root complex bus, sorted by devfn
     /// (device << 3 | function).
-    #[inspect(skip)]
+    #[inspect(with = "|x| inspect::iter_by_key(x.iter().map(|(k, v)| (k, v)))")]
     devices: Vec<(u8, BusDevice)>,
 }
 
@@ -65,6 +65,19 @@ enum BusDevice {
         name: Arc<str>,
         dev: Box<dyn GenericPciBusDevice>,
     },
+}
+
+impl Inspect for BusDevice {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        match self {
+            BusDevice::RootPort { port, .. } => {
+                port.as_ref().inspect(req);
+            }
+            BusDevice::Rciep { name, .. } => {
+                req.value(name.as_ref());
+            }
+        }
+    }
 }
 
 /// Information about a downstream port in a PCIe topology.
@@ -86,6 +99,49 @@ pub struct GenericPcieRootPortDefinition {
     pub hotplug: bool,
     /// Express-level port settings (ACS, etc.).
     pub settings: PciePortSettings,
+}
+
+/// A flat description of a PCIe switch without hierarchy.
+pub struct GenericSwitchDefinition {
+    /// The name of the switch.
+    pub name: Arc<str>,
+    /// Number of downstream ports.
+    pub num_downstream_ports: u8,
+    /// The parent port this switch is connected to.
+    pub parent_port: Arc<str>,
+    /// Whether hotplug is enabled for this switch.
+    pub hotplug: bool,
+    /// Express-level settings for downstream switch ports.
+    pub dsp_settings: PciePortSettings,
+}
+
+impl GenericSwitchDefinition {
+    /// Create a new switch definition.
+    pub fn new(
+        name: impl Into<Arc<str>>,
+        num_downstream_ports: u8,
+        parent_port: impl Into<Arc<str>>,
+        hotplug: bool,
+        dsp_settings: PciePortSettings,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            num_downstream_ports,
+            parent_port: parent_port.into(),
+            hotplug,
+            dsp_settings,
+        }
+    }
+}
+
+enum DecodedEcamAccess<'a> {
+    UnexpectedIntercept,
+    Unroutable,
+    InternalBus(&'a mut RootPort, u16),
+    DownstreamPort(&'a mut RootPort, u8, u8, u16),
+    /// A Root Complex Integrated Endpoint (RCiEP) on the start bus.
+    /// Fields: device, function, config offset.
+    Rciep(&'a mut dyn GenericPciBusDevice, u8, u16),
 }
 
 /// Builder for [`GenericPcieRootComplex`].
@@ -210,49 +266,6 @@ impl<'a> GenericPcieRootComplexBuilder<'a> {
             devices,
         }
     }
-}
-
-/// A flat description of a PCIe switch without hierarchy.
-pub struct GenericSwitchDefinition {
-    /// The name of the switch.
-    pub name: Arc<str>,
-    /// Number of downstream ports.
-    pub num_downstream_ports: u8,
-    /// The parent port this switch is connected to.
-    pub parent_port: Arc<str>,
-    /// Whether hotplug is enabled for this switch.
-    pub hotplug: bool,
-    /// Express-level settings for downstream switch ports.
-    pub dsp_settings: PciePortSettings,
-}
-
-impl GenericSwitchDefinition {
-    /// Create a new switch definition.
-    pub fn new(
-        name: impl Into<Arc<str>>,
-        num_downstream_ports: u8,
-        parent_port: impl Into<Arc<str>>,
-        hotplug: bool,
-        dsp_settings: PciePortSettings,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            num_downstream_ports,
-            parent_port: parent_port.into(),
-            hotplug,
-            dsp_settings,
-        }
-    }
-}
-
-enum DecodedEcamAccess<'a> {
-    UnexpectedIntercept,
-    Unroutable,
-    InternalBus(&'a mut RootPort, u16),
-    DownstreamPort(&'a mut RootPort, u8, u8, u16),
-    /// A Root Complex Integrated Endpoint (RCiEP) on the start bus.
-    /// Fields: device, function, config offset.
-    Rciep(&'a mut dyn GenericPciBusDevice, u8, u16),
 }
 
 impl GenericPcieRootComplex {
