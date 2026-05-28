@@ -12,6 +12,12 @@ use crate::chipset::backing::arc_mutex::device::AddDeviceError;
 use crate::chipset::backing::arc_mutex::services::ArcMutexChipsetServices;
 use chipset::*;
 use chipset_device::ChipsetDevice;
+#[cfg(any(
+    feature = "dev_generic_isa_floppy",
+    feature = "dev_winbond_super_io_and_floppy_full",
+    feature = "dev_winbond_super_io_and_floppy_stub"
+))]
+use chipset_device::isa_dma::IsaDmaController;
 use chipset_device_resources::ConfigureChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
