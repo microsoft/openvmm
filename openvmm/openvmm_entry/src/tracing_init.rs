@@ -54,12 +54,18 @@ pub fn enable_tracing() -> anyhow::Result<()> {
         BoxMakeWriter::new(std::io::stderr)
     };
 
+    let span_events = if std::env::var("OPENVMM_LOG_SPANS").is_ok_and(|v| !v.is_empty()) {
+        FmtSpan::NEW | FmtSpan::CLOSE
+    } else {
+        FmtSpan::NONE
+    };
+
     let format = Format::default()
         .with_timer(uptime())
         .with_ansi(is_terminal);
     let fmt_layer = tracing_subscriber::fmt::layer()
         .event_format(format)
-        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+        .with_span_events(span_events)
         .fmt_fields(tracing_helpers::formatter::FieldFormatter)
         .log_internal_errors(true)
         .with_writer(writer);
