@@ -1680,4 +1680,126 @@ mod tests {
         rc.mmio_write(SUBORDINATE_BUS_NUM_REG, &[30]).unwrap();
         assert_eq!(bus_range.bus_range(), (20, 30));
     }
+
+    #[test]
+    fn test_rciep_ecam_read_write() {
+        // Create a root complex with root ports starting at device 1,
+        // leaving device 0 free for an RCiEP.
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let start_bus: u8 = 0;
+        let end_bus: u8 = 0;
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
+        let rc_bus_range = AssignedBusRange::new();
+        rc_bus_range.set_bus_range(start_bus, end_bus);
+        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+        let port_defs = vec![GenericPcieRootPortDefinition {
+            name: "port-0".into(),
+            hotplug: false,
+            settings: PciePortSettings::default(),
+        }];
+        let mut rc = GenericPcieRootComplex::builder(&mut register_mmio, start_bus..=end_bus, ecam)
+            .root_ports(port_defs, msi_conn.target())
+            .first_port_device_number(1)
+            .build();
+
+        // Attach an RCiEP at device 0 function 0 (devfn 0).
+        let rciep = TestPcieEndpoint::new(
+            |offset, value| {
+                if offset == 0 {
+                    *value = 0xDEAD_BEEF;
+                }
+                Some(IoResult::Ok)
+            },
+            |_, _| Some(IoResult::Ok),
+        );
+        rc.add_rciep(0, "rciep-0", Box::new(rciep)).unwrap();
+
+        // ECAM read at device 0, function 0 should hit the RCiEP.
+        let mut vendor_device: u32 = 0;
+        rc.mmio_read(0, vendor_device.as_mut_bytes()).unwrap();
+        assert_eq!(vendor_device, 0xDEAD_BEEF);
+
+        // ECAM write at device 0, function 0 should route to the RCiEP
+        // (the test endpoint accepts all writes).
+        rc.mmio_write(0, &0x1234_5678u32.to_le_bytes()).unwrap();
+
+        // Root port at device 1 should still be accessible.
+        let mut root_port_vendor: u32 = 0;
+        // device 1, function 0 → devfn 8 → offset 8 * 4096
+        rc.mmio_read(8 * 4096, root_port_vendor.as_mut_bytes())
+            .unwrap();
+        assert_eq!(root_port_vendor, 0xC030_1414);
+
+        // An unoccupied device slot should return all-1s.
+        let mut empty: u32 = 0;
+        // device 2, function 0 → devfn 16 → offset 16 * 4096
+        rc.mmio_read(16 * 4096, empty.as_mut_bytes()).unwrap();
+        assert_eq!(empty, 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn test_rciep_function0_fallback() {
+        // Test that a config read to function 1 of an RCiEP device falls
+        // back to the function-0 device via pci_cfg_read_with_routing,
+        // which by default returns all-1s for non-zero functions.
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let start_bus: u8 = 0;
+        let end_bus: u8 = 0;
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
+        let mut rc =
+            GenericPcieRootComplex::builder(&mut register_mmio, start_bus..=end_bus, ecam).build();
+
+        let rciep = TestPcieEndpoint::new(
+            |offset, value| {
+                if offset == 0 {
+                    *value = 0xCAFE_F00D;
+                }
+                Some(IoResult::Ok)
+            },
+            |_, _| Some(IoResult::Ok),
+        );
+        rc.add_rciep(0, "rciep-0", Box::new(rciep)).unwrap();
+
+        // Function 0 should return the device's vendor/device ID.
+        let mut val: u32 = 0;
+        rc.mmio_read(0, val.as_mut_bytes()).unwrap();
+        assert_eq!(val, 0xCAFE_F00D);
+
+        // Function 1 (devfn 1) falls back to the function-0 device's
+        // pci_cfg_read_with_routing, which returns all-1s by default.
+        let mut val_fn1: u32 = 0;
+        // devfn 1 → offset 1 * 4096
+        rc.mmio_read(4096, val_fn1.as_mut_bytes()).unwrap();
+        assert_eq!(val_fn1, 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn test_rciep_collision_with_root_port() {
+        // Verify that adding an RCiEP at a devfn already occupied by a
+        // root port returns an error with the port's name.
+        let mut rc = instantiate_root_complex(0, 0, 1);
+
+        let rciep = TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
+        // Root port 0 sits at devfn 0; adding an RCiEP there should fail.
+        let err = rc
+            .add_rciep(0, "rciep-collision", Box::new(rciep))
+            .expect_err("should fail: devfn occupied by root port");
+        assert_eq!(err.as_ref(), "test-port-0");
+    }
+
+    #[test]
+    fn test_rciep_collision_with_rciep() {
+        // Verify that adding two RCiEPs at the same devfn returns an error.
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(0, 0));
+        let mut rc = GenericPcieRootComplex::builder(&mut register_mmio, 0..=0u8, ecam).build();
+
+        let rciep1 = TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
+        let rciep2 = TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
+        rc.add_rciep(0, "rciep-first", Box::new(rciep1)).unwrap();
+        let err = rc
+            .add_rciep(0, "rciep-second", Box::new(rciep2))
+            .expect_err("should fail: devfn already has an RCiEP");
+        assert_eq!(err.as_ref(), "rciep-first");
+    }
 }
