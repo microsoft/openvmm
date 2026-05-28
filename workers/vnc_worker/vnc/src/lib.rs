@@ -10,10 +10,10 @@
 //!
 //! # Components
 //!
-//! - [`Encoder`]: per-connection zlib state and pixel format conversion.
-//! - [`UpdateState`]: framebuffer snapshots and dirty detection (device rects
+//! - `Encoder`: per-connection zlib state and pixel format conversion.
+//! - `UpdateState`: framebuffer snapshots and dirty detection (device rects
 //!   or tile diff fallback).
-//! - [`ClientState`]: per-connection mutable state (format, resolution, flags).
+//! - `ClientState`: per-connection mutable state (format, resolution, flags).
 //! - [`Server`]: ties the above together with the RFB protocol state machine.
 //!
 //! # Keyboard Handling
