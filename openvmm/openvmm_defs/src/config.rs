@@ -58,7 +58,6 @@ pub struct Config {
     /// Memory layout sizing for the layout engine. Determines chipset MMIO
     /// range sizes; addresses are allocated dynamically by the resolver.
     pub layout: vmm_core_defs::LayoutConfig,
-    pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
     /// allow the guest to reset without notifying the client
@@ -198,6 +197,14 @@ pub enum PcieMmioRangeConfig {
 }
 
 #[derive(Debug, MeshPayload)]
+pub struct RootComplexCxlConfig {
+    /// HDM window size in bytes for this CXL root complex.
+    pub hdm_size: u64,
+    /// CFMWS HDM window restrictions bitmask.
+    pub hdm_window_restrictions: u16,
+}
+
+#[derive(Debug, MeshPayload)]
 pub struct PcieRootComplexConfig {
     pub index: u32,
     pub name: String,
@@ -207,13 +214,23 @@ pub struct PcieRootComplexConfig {
     pub low_mmio: PcieMmioRangeConfig,
     pub high_mmio: PcieMmioRangeConfig,
     pub ports: Vec<PcieRootPortConfig>,
+    /// Optional CXL configuration for root-complex CXL mode.
+    pub cxl: Option<RootComplexCxlConfig>,
 }
 
 #[derive(Debug, MeshPayload)]
 pub struct PcieRootPortConfig {
+    /// Root-port name used for topology wiring and lookup.
     pub name: String,
+    /// Enables PCIe hotplug capabilities for this root port.
     pub hotplug: bool,
+    /// Optional ACS capability bitmask to expose on this root port.
     pub acs_capabilities_supported: Option<u16>,
+    /// Marks this root port as CXL-capable.
+    ///
+    /// Runtime port construction derives required BAR/subregion layout from
+    /// this flag (currently CXL component registers for BAR0).
+    pub cxl: bool,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -297,11 +314,25 @@ pub enum GicMsiConfig {
     },
 }
 
+/// Per-instance SMMUv3 configuration for an aarch64 VM.
+///
+/// Each instance covers one PCIe root complex, identified by name.
+/// The SMMU's MMIO address is allocated dynamically by the memory layout
+/// engine.
+#[derive(Debug, Protobuf, Clone)]
+pub struct SmmuInstanceConfig {
+    /// Name of the PCIe root complex this SMMU covers.
+    pub rc_name: String,
+}
+
 #[derive(Debug, Protobuf, Default, Clone)]
 pub struct Aarch64TopologyConfig {
     pub gic_config: Option<GicConfig>,
     pub pmu_gsiv: PmuGsivConfig,
     pub gic_msi: GicMsiConfig,
+    /// SMMUv3 IOMMU instances. Each entry creates an SMMU for one PCIe root
+    /// complex (identified by name). Empty means no SMMU.
+    pub smmu: Vec<SmmuInstanceConfig>,
 }
 
 /// GIC configuration for the virtual machine.

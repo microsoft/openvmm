@@ -9,8 +9,11 @@ use crate::manager::VfioManagerClient;
 use anyhow::Context as _;
 use async_trait::async_trait;
 use membacking::DmaMapperClient;
+use pal_async::task::Spawn as _;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
+use std::sync::Arc;
+use vfio_assigned_device_resources::VfioCdevDeviceHandle;
 use vfio_assigned_device_resources::VfioDeviceHandle;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceResolver;
@@ -60,6 +63,15 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
     ) -> Result<Self::Output, Self::Error> {
         let VfioDeviceHandle { pci_id, group } = resource;
 
+        if input.software_iommu {
+            anyhow::bail!(
+                "VFIO device {pci_id} is behind a software IOMMU that cannot \
+                 program the host IOMMU for passthrough DMA. Place the device \
+                 on a root complex without a software IOMMU, or wait for \
+                 iommufd nested translation support."
+            );
+        }
+
         tracing::info!(pci_id, "opening VFIO device");
 
         // Ask the container manager to prepare (or reuse) a container and
@@ -78,6 +90,88 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             binding,
             pci_id,
             input.driver_source,
+            input.register_mmio,
+            input.msi_target,
+            memory_mapper,
+        )
+        .await?;
+
+        Ok(device.into())
+    }
+}
+
+/// Resource resolver for [`VfioCdevDeviceHandle`] (cdev + iommufd path).
+///
+/// Spawns a `VfioCdevManager` task internally and communicates with it via RPC
+/// to share IOAS contexts across devices referencing the same iommu ID.
+pub struct VfioCdevDeviceResolver {
+    client: crate::manager::VfioCdevManagerClient,
+    _task: pal_async::task::Task<()>,
+}
+
+impl VfioCdevDeviceResolver {
+    /// Create a new cdev resolver, spawning the cdev dispatcher task.
+    pub fn new(
+        spawner: impl pal_async::task::Spawn + 'static,
+        dma_mapper_client: DmaMapperClient,
+    ) -> Self {
+        // Arc the spawner so the dispatcher can spawn per-iommu manager tasks.
+        let spawner: Arc<dyn pal_async::task::Spawn> = Arc::new(spawner);
+        let mut manager = crate::manager::VfioCdevManager::new(spawner.clone(), dma_mapper_client);
+        let client = manager.client();
+        let task = spawner.spawn("vfio-cdev-dispatch", manager.run());
+        Self {
+            client,
+            _task: task,
+        }
+    }
+
+    /// Returns a handle for the VM's inspect tree.
+    pub fn inspect_handle(&self) -> crate::manager::VfioCdevManagerClient {
+        self.client.clone()
+    }
+}
+
+#[async_trait]
+impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCdevDeviceResolver {
+    type Output = ResolvedPciDevice;
+    type Error = anyhow::Error;
+
+    async fn resolve(
+        &self,
+        _resolver: &ResourceResolver,
+        resource: VfioCdevDeviceHandle,
+        input: ResolvePciDeviceHandleParams<'_>,
+    ) -> Result<Self::Output, Self::Error> {
+        let VfioCdevDeviceHandle {
+            pci_id,
+            cdev,
+            iommufd,
+            iommu_id,
+        } = resource;
+
+        tracing::info!(pci_id, iommu_id, "opening VFIO cdev device with iommufd");
+
+        let resp = self
+            .client
+            .prepare_device(crate::manager::CdevPrepareRequest {
+                pci_id: pci_id.clone(),
+                cdev,
+                iommufd,
+                iommu_id,
+            })
+            .await
+            .context("VFIO cdev manager failed")?;
+
+        let cdev_binding = crate::manager::VfioCdevBinding::from_response(resp, pci_id.clone());
+
+        let memory_mapper = input
+            .shared_mem_mapper
+            .context("memory mapper is required for VFIO device assignment")?;
+
+        let device = VfioAssignedPciDevice::from_cdev(
+            cdev_binding,
+            pci_id,
             input.register_mmio,
             input.msi_target,
             memory_mapper,

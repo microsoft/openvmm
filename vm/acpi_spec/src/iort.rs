@@ -18,9 +18,11 @@ pub const IORT_NODE_OFFSET: u32 = size_of::<crate::Header>() as u32 + size_of::<
 
 pub const IORT_NODE_TYPE_ITS_GROUP: u8 = 0x00;
 pub const IORT_NODE_TYPE_PCI_ROOT_COMPLEX: u8 = 0x02;
+pub const IORT_NODE_TYPE_SMMUV3: u8 = 0x04;
 
 pub const IORT_PCI_ROOT_COMPLEX_REVISION: u8 = 3;
 pub const IORT_ITS_GROUP_REVISION: u8 = 1;
+pub const IORT_SMMUV3_REVISION: u8 = 5;
 
 pub const IORT_NODE_COHERENT: u32 = 0x00000001;
 pub const IORT_MEMORY_ACCESS_COHERENCY: u8 = 1 << 0;
@@ -203,3 +205,99 @@ impl IortItsGroup {
 }
 
 const_assert_eq!(size_of::<IortItsGroup>(), 20);
+
+/// SMMUv3 node flags.
+pub const IORT_SMMUV3_FLAG_COHACC: u32 = 1 << 0;
+/// `device_id_mapping_index` is valid (IORT rev E.e / node rev 5+).
+pub const IORT_SMMUV3_FLAG_DEVICEID_VALID: u32 = 1 << 4;
+
+/// SMMUv3 model: generic SMMU-v3.
+pub const IORT_SMMUV3_MODEL_GENERIC: u32 = 0;
+
+/// SMMUv3 node per IORT spec DEN0049E §E.4.
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
+pub struct IortSmmuV3 {
+    pub header: IortNodeHeader,
+    pub base_address: u64_ne,
+    pub flags: u32_ne,
+    pub reserved: u32_ne,
+    pub vatos_address: u64_ne,
+    pub model: u32_ne,
+    pub event_gsiv: u32_ne,
+    pub pri_gsiv: u32_ne,
+    pub gerr_gsiv: u32_ne,
+    pub sync_gsiv: u32_ne,
+    pub proximity_domain: u32_ne,
+    pub device_id_mapping_index: u32_ne,
+}
+
+impl IortSmmuV3 {
+    /// Create an SMMUv3 node with COHACC set, wired SPI interrupts (GSIVs),
+    /// and the specified number of ID mappings. The `length` field in the
+    /// header includes space for `mapping_count` trailing `IortIdMapping`
+    /// entries, which must be appended separately.
+    pub fn new(
+        identifier: u32,
+        base_address: u64,
+        mapping_count: u32,
+        event_gsiv: u32,
+        gerr_gsiv: u32,
+    ) -> Self {
+        Self::new_with_device_id_mapping(
+            identifier,
+            base_address,
+            mapping_count,
+            event_gsiv,
+            gerr_gsiv,
+            0,
+        )
+    }
+
+    /// Create an SMMUv3 node with an explicit `device_id_mapping_index`.
+    ///
+    /// `device_id_mapping_index` selects which ID mapping entry Linux uses
+    /// for the SMMU's own MSI domain lookup. That mapping must have the
+    /// `IORT_ID_SINGLE_MAPPING` flag set. When set, the `DEVICEID_VALID`
+    /// flag is automatically added to the node flags.
+    pub fn new_with_device_id_mapping(
+        identifier: u32,
+        base_address: u64,
+        mapping_count: u32,
+        event_gsiv: u32,
+        gerr_gsiv: u32,
+        device_id_mapping_index: u32,
+    ) -> Self {
+        let mut header = IortNodeHeader::new::<Self>(
+            IORT_NODE_TYPE_SMMUV3,
+            IORT_SMMUV3_REVISION,
+            identifier,
+            mapping_count,
+        );
+        let total =
+            size_of::<Self>() as u16 + (mapping_count as u16) * size_of::<IortIdMapping>() as u16;
+        header.length = total.into();
+        Self {
+            header,
+            base_address: base_address.into(),
+            flags: (IORT_SMMUV3_FLAG_COHACC
+                | if mapping_count > 0 {
+                    IORT_SMMUV3_FLAG_DEVICEID_VALID
+                } else {
+                    0
+                })
+            .into(),
+            reserved: 0.into(),
+            vatos_address: 0.into(),
+            model: IORT_SMMUV3_MODEL_GENERIC.into(),
+            event_gsiv: event_gsiv.into(),
+            pri_gsiv: 0.into(),
+            gerr_gsiv: gerr_gsiv.into(),
+            sync_gsiv: 0.into(),
+            proximity_domain: 0.into(),
+            device_id_mapping_index: device_id_mapping_index.into(),
+        }
+    }
+}
+
+const_assert_eq!(size_of::<IortSmmuV3>(), 68);

@@ -17,6 +17,7 @@ tdcall = { workspace = true, features = ["tracing"] }
 x86defs.workspace = true
 inspect.workspace = true
 user_driver.workspace = true
+aarch64defs.workspace = true
 
 anyhow.workspace = true
 arrayvec.workspace = true

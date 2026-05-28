@@ -230,6 +230,8 @@ pub struct PetriVmConfig {
     pub vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
     /// PCIe NVMe drives.
     pub pcie_nvme_drives: Vec<PcieNvmeDrive>,
+    /// Physical NVMe devices to attach.
+    pub physical_nvme_devices: Vec<PhysicalNvmeDevice>,
 }
 
 /// PCIe NVMe drive configuration.
@@ -241,6 +243,20 @@ pub struct PcieNvmeDrive {
     pub nsid: u32,
     /// The drive to attach.
     pub drive: Drive,
+}
+
+/// Physical NVMe device to assign to a VM.
+/// Only used in closed-source HyperV tests
+#[derive(Debug, Clone)]
+pub struct PhysicalNvmeDevice {
+    /// The VTL to assign the physical NVMe device to.
+    pub target_vtl: Vtl,
+    /// VSID for the device.
+    pub vsid: Guid,
+    /// NVMe namespace ID.
+    pub nsid: u32,
+    /// Namespace size in MiB
+    pub namespace_size_mib: u64,
 }
 
 /// Static properties about the VM for convenience during contruction and
@@ -416,6 +432,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
                 pcie_nvme_drives: Vec::new(),
+                physical_nvme_devices: Vec::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -490,6 +507,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
                 pcie_nvme_drives: Vec::new(),
+                physical_nvme_devices: Vec::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -1525,6 +1543,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .expect("Host IDE requires PCAT with no HCL")[controller_number as usize]
             [controller_location as usize] = Some(drive);
 
+        self
+    }
+
+    /// Add a physical NVMe device to the VM.
+    pub fn add_physical_nvme_device(mut self, device: PhysicalNvmeDevice) -> Self {
+        self.config.physical_nvme_devices.push(device);
         self
     }
 

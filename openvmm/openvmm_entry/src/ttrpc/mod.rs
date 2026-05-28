@@ -613,7 +613,6 @@ impl VmService {
             pci_chipset_devices: chipset.pci_chipset_devices,
             chipset_capabilities: chipset.capabilities,
             layout: layout_config,
-            generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             automatic_guest_reset: true,
             efi_diagnostics_log_level: Default::default(),

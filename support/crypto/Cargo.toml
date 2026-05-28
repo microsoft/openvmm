@@ -7,6 +7,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
+# Enable test-only helper functions.
+test_helpers = ["x509-cert?/builder"]
+
 # If the chosen backend supports it, vendor it.
 # If the chosen backend is natively available, this feature is a no-op.
 # If the chosen backend is not natively available and can't be vendored, this will trigger a compile error.
@@ -26,7 +29,7 @@ symcrypt = [
     "dep:der",
     "dep:pkcs1",
     "dep:pkcs8",
-    "dep:rsa",
+    "dep:signature",
     "dep:x509-cert",
 ]
 
@@ -57,11 +60,12 @@ cms = { workspace = true, optional = true }
 der = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true, features = ["sys_rng"] }
 pkcs1 = { workspace = true, optional = true }
-pkcs8 = { workspace = true, optional = true }
+pkcs8 = { workspace = true, optional = true, features = ["alloc"] }
 rsa = { workspace = true, optional = true, features = ["encoding", "sha2"] }
 sha1 = { workspace = true, optional = true, features = ["oid"] }
 sha2 = { workspace = true, optional = true }
-x509-cert = { workspace = true, optional = true, features = ["builder"] }
+signature = { workspace = true, optional = true, features = ["alloc"] }
+x509-cert = { workspace = true, optional = true }
 
 anyhow.workspace = true
 thiserror.workspace = true
@@ -82,6 +86,7 @@ openssl.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
+x509-cert = { workspace = true, features = ["builder"] }
 
 [lints]
 workspace = true

@@ -16,7 +16,6 @@ use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use closeable_mutex::CloseableMutex;
-use firmware_uefi::UefiCommandSet;
 use framebuffer::Framebuffer;
 use framebuffer::FramebufferDevice;
 use framebuffer::FramebufferLocalControl;
@@ -220,7 +219,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_generic_pci_bus,
             deps_generic_psp: _, // not actually a device... yet
             deps_hyperv_firmware_pcat,
-            deps_hyperv_firmware_uefi,
             deps_hyperv_framebuffer,
             deps_hyperv_ide,
             deps_hyperv_vga,
@@ -451,55 +449,6 @@ impl<'a> BaseChipsetBuilder<'a> {
         // The ACPI GPE0 line to use for generation ID. This must match the
         // value in the DSDT.
         const GPE0_LINE_GENERATION_ID: u32 = 0;
-        // for ARM64, 3 + 32 (SPI range start) = 35,
-        // the SYSTEM_SPI_GENCOUNTER vector for the GIC
-        const GENERATION_ID_IRQ: u32 = 3;
-
-        if let Some(options::dev::HyperVFirmwareUefi {
-            config,
-            logger,
-            nvram_storage,
-            generation_id_recv,
-            watchdog_platform,
-            watchdog_recv,
-            vsm_config,
-            time_source,
-        }) = deps_hyperv_firmware_uefi
-        {
-            builder
-                .arc_mutex_device("uefi")
-                .try_add_async(async |services| {
-                    let notify_interrupt = match config.command_set {
-                        UefiCommandSet::X64 => {
-                            services.new_line(GPE0_LINE_SET, "genid", GPE0_LINE_GENERATION_ID)
-                        }
-                        UefiCommandSet::Aarch64 => {
-                            services.new_line(IRQ_LINE_SET, "genid", GENERATION_ID_IRQ)
-                        }
-                    };
-                    let vmtime = services.register_vmtime();
-                    let gm = foundation.trusted_vtl0_dma_memory.clone();
-                    let runtime_deps = firmware_uefi::UefiRuntimeDeps {
-                        gm: gm.clone(),
-                        nvram_storage,
-                        logger,
-                        vmtime,
-                        watchdog_platform,
-                        watchdog_recv,
-                        generation_id_deps: generation_id::GenerationIdRuntimeDeps {
-                            generation_id_recv,
-                            gm,
-                            notify_interrupt,
-                        },
-                        vsm_config,
-                        time_source,
-                    };
-
-                    firmware_uefi::UefiDevice::new(runtime_deps, config, foundation.is_restoring)
-                        .await
-                })
-                .await?;
-        }
 
         if let Some(options::dev::HyperVFirmwarePcat {
             config,
@@ -862,17 +811,32 @@ mod weak_mutex_pci {
     }
 }
 
+#[cfg(any(
+    feature = "dev_generic_isa_floppy",
+    feature = "dev_winbond_super_io_and_floppy_full",
+    feature = "dev_winbond_super_io_and_floppy_stub"
+))]
 pub struct ArcMutexIsaDmaChannel {
     channel_num: u8,
     dma: Arc<CloseableMutex<dma::DmaController>>,
 }
 
+#[cfg(any(
+    feature = "dev_generic_isa_floppy",
+    feature = "dev_winbond_super_io_and_floppy_full",
+    feature = "dev_winbond_super_io_and_floppy_stub"
+))]
 impl ArcMutexIsaDmaChannel {
     pub fn new(dma: Arc<CloseableMutex<dma::DmaController>>, channel_num: u8) -> Self {
         Self { dma, channel_num }
     }
 }
 
+#[cfg(any(
+    feature = "dev_generic_isa_floppy",
+    feature = "dev_winbond_super_io_and_floppy_full",
+    feature = "dev_winbond_super_io_and_floppy_stub"
+))]
 impl vmcore::isa_dma_channel::IsaDmaChannel for ArcMutexIsaDmaChannel {
     fn check_transfer_size(&mut self) -> u16 {
         self.dma.lock().check_transfer_size(self.channel_num.into())
@@ -1025,7 +989,6 @@ pub mod options {
             generic_psp:                 dev::GenericPspDeps,
 
             hyperv_firmware_pcat:        dev::HyperVFirmwarePcat,
-            hyperv_firmware_uefi:        dev::HyperVFirmwareUefi,
             hyperv_framebuffer:          dev::HyperVFramebufferDeps,
             hyperv_ide:                  dev::HyperVIdeDeps,
             hyperv_vga:                  dev::HyperVVgaDeps,
@@ -1062,7 +1025,6 @@ pub mod options {
         use super::*;
         use crate::BusIdPci;
         use chipset_resources::battery::HostBatteryUpdate;
-        use local_clock::InspectableLocalClock;
 
         macro_rules! feature_gated {
             (
@@ -1235,29 +1197,6 @@ pub mod options {
             /// Trigger the partition to replay the initially-set MTRRs across
             /// all VPs.
             pub replay_mtrrs: Box<dyn Send + FnMut()>,
-        }
-
-        /// Hyper-V specific UEFI Helper Device
-        pub struct HyperVFirmwareUefi {
-            /// Bundle of static configuration required by the Hyper-V UEFI
-            /// helper device
-            pub config: firmware_uefi::UefiConfig,
-            /// Interface to log UEFI BIOS events
-            pub logger: Box<dyn firmware_uefi::platform::logger::UefiLogger>,
-            /// Interface for storing/retrieving UEFI NVRAM variables
-            pub nvram_storage: Box<dyn uefi_nvram_storage::VmmNvramStorage>,
-            /// Channel to receive updated generation ID values
-            pub generation_id_recv: mesh::Receiver<[u8; 16]>,
-            /// Device-specific functions the platform must provide in order
-            /// to use the UEFI watchdog device.
-            pub watchdog_platform: Box<dyn watchdog_core::platform::WatchdogPlatform>,
-            /// Channel receiver for watchdog timeout notifications.
-            pub watchdog_recv: mesh::Receiver<()>,
-            /// Interface to revoke VSM on `ExitBootServices()` if requested
-            /// by the guest.
-            pub vsm_config: Option<Box<dyn firmware_uefi::platform::nvram::VsmConfig>>,
-            /// Time source
-            pub time_source: Box<dyn InspectableLocalClock>,
         }
 
         /// Hyper-V specific framebuffer device

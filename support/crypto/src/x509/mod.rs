@@ -55,15 +55,22 @@ impl X509Certificate {
     }
 
     /// Check if this certificate (acting as issuer) issued `subject`.
+    ///
+    /// This performs only deterministic structural comparisons - it does not
+    /// cryptographically verify the issuer's signature on `subject`. Callers
+    /// that need to establish a trust relationship must additionally call
+    /// [`X509Certificate::verify`] with the issuer's public key.
     pub fn issued(&self, subject: &X509Certificate) -> Result<bool, X509Error> {
         self.0.issued(&subject.0)
     }
 
+    #[cfg(any(test, feature = "test_helpers"))]
     /// Encode this certificate as DER bytes.
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
         self.0.to_der()
     }
 
+    #[cfg(any(test, feature = "test_helpers"))]
     /// Build a self-signed never-expiring X.509 certificate (for testing).
     pub fn build_self_signed(
         key: &crate::rsa::RsaKeyPair,

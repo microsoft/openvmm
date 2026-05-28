@@ -454,6 +454,7 @@ pub mod caps {
             ARI   = 0x0E,
             SRIOV = 0x10,
             REBAR = 0x15,
+            DVSEC = 0x23,
         }
     }
 
@@ -1167,6 +1168,64 @@ pub mod caps {
             pub direct_translated_p2p_enable: bool,
             #[bits(9)]
             _reserved: u16,
+        }
+    }
+
+    /// Designated Vendor-Specific Extended Capability (DVSEC)
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod dvsec {
+        use bitfield_struct::bitfield;
+        use inspect::Inspect;
+        use zerocopy::FromBytes;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        open_enum::open_enum! {
+            /// Offsets into the DVSEC Extended Capability structure.
+            ///
+            /// | Offset    | Bits 31-16               | Bits 15-0               |
+            /// |-----------|--------------------------|-------------------------|
+            /// | Ext + 0x0 | Next Cap Ptr + Version   | Extended Capability ID  |
+            /// | Ext + 0x4 | DVSEC Length + Revision  | DVSEC Vendor ID         |
+            /// | Ext + 0x8 | Reserved                 | DVSEC ID                |
+            pub enum DvsecExtendedCapabilityHeader: u16 {
+                HEADER = 0x00,
+                DVSEC_HEADER1 = 0x04,
+                DVSEC_HEADER2 = 0x08,
+            }
+        }
+
+        /// DVSEC Header 1 register.
+        ///
+        /// Software should qualify the DVSEC Vendor ID before interpreting the
+        /// DVSEC Revision field.
+        ///
+        /// | Bits 31-20   | Bits 19-16      | Bits 15-0        |
+        /// |--------------|-----------------|------------------|
+        /// | DVSEC Length | DVSEC Revision  | DVSEC Vendor ID  |
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DvsecHeader1 {
+            pub dvsec_vendor_id: u16,
+            #[bits(4)]
+            pub dvsec_revision: u8,
+            #[bits(12)]
+            pub dvsec_length: u16,
+        }
+
+        /// DVSEC Header 2 register.
+        ///
+        /// Software should qualify the DVSEC Vendor ID before interpreting the
+        /// DVSEC ID field.
+        ///
+        /// | Bits 15-0 |
+        /// |-----------|
+        /// | DVSEC ID  |
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DvsecHeader2 {
+            pub dvsec_id: u16,
         }
     }
 }

@@ -7,8 +7,8 @@
 //! backends), per-backend handle types, and the [`HypervisorProbe`] trait +
 //! distributed slice used for auto-detection.
 //!
-//! Backends register probes via the `register_hypervisor_probes!` macro in
-//! `openvmm_core`. Callers use [`probes()`] to iterate registered backends
+//! Backends register probes via the [`register_hypervisor_probes!`] macro.
+//! Callers use [`probes()`] to iterate registered backends
 //! and [`probe_by_name()`] to look up a specific one.
 
 use mesh::MeshPayload;
@@ -151,4 +151,43 @@ pub fn probes() -> impl Iterator<Item = &'static dyn HypervisorProbe> {
 /// Looks up a probe by backend name.
 pub fn probe_by_name(name: &str) -> Option<&'static dyn HypervisorProbe> {
     probes().find(|p| p.name() == name)
+}
+
+/// Registers hypervisor backend probes for auto-detection.
+///
+/// Each entry is a unit struct implementing
+/// [`HypervisorProbe`].
+///
+/// Probes are checked in registration order when auto-detecting the
+/// hypervisor, so register them from highest to lowest priority.
+///
+/// Resource resolvers should be registered separately via
+/// [`vm_resource::register_static_resolvers!`].
+///
+/// # Example
+///
+/// ```ignore
+/// hypervisor_resources::register_hypervisor_probes! {
+///     #[cfg(all(target_os = "linux", feature = "virt_kvm", guest_is_native))]
+///     openvmm_hypervisors::kvm::KvmProbe,
+/// }
+/// ```
+#[macro_export]
+macro_rules! register_hypervisor_probes {
+    {} => {};
+    { $( $(#[$a:meta])* $probe:path ),+ $(,)? } => {
+        $(
+        $(#[$a])*
+        const _: () = {
+            static PROBE_INSTANCE: $probe = $probe;
+
+            #[hypervisor_resources::private::linkme::distributed_slice(
+                hypervisor_resources::private::HYPERVISOR_PROBES
+            )]
+            #[linkme(crate = hypervisor_resources::private::linkme)]
+            static PROBE: Option<&'static dyn hypervisor_resources::HypervisorProbe> =
+                Some(&PROBE_INSTANCE);
+        };
+        )*
+    };
 }

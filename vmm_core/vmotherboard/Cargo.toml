@@ -27,8 +27,6 @@ chipset_legacy.workspace = true
 chipset.workspace = true
 chipset_resources.workspace = true
 firmware_pcat.workspace = true
-firmware_uefi.workspace = true
-uefi_nvram_storage = { workspace = true, features = ["inspect"] }
 framebuffer.workspace = true
 floppy = { optional = true, workspace = true }
 floppy_pcat_stub = { optional = true, workspace = true }
@@ -39,7 +37,6 @@ pci_bus.workspace = true
 pcie.workspace = true
 vga_proxy = { optional = true, workspace = true }
 vga = { optional = true, workspace = true }
-watchdog_core.workspace = true
 
 address_filter.workspace = true
 arc_cyclic_builder.workspace = true
@@ -47,7 +44,6 @@ closeable_mutex.workspace = true
 cvm_tracing.workspace = true
 inspect_counters.workspace = true
 inspect.workspace = true
-local_clock.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 range_map_vec.workspace = true

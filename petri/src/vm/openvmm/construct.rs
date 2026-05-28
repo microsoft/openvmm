@@ -118,7 +118,12 @@ impl PetriVmConfigOpenVmm {
             tpm: tpm_config,
             vmbus_storage_controllers,
             pcie_nvme_drives,
+            physical_nvme_devices,
         } = petri_vm_config;
+
+        if !physical_nvme_devices.is_empty() {
+            anyhow::bail!("Physical NVMe devices are only supported with the Hyper-V backend");
+        }
 
         tracing::debug!(?firmware, ?arch, "Petri VM firmware configuration");
 
@@ -349,6 +354,57 @@ impl PetriVmConfigOpenVmm {
         let mut vsock_listener = Some(vsock_listener);
         let vsock_path_string = vsock_path.to_string_lossy();
 
+        // Configure the UEFI helper device on the chipset for Firmware::Uefi.
+        // OpenhclUefi uses BaseChipsetType::HclHost, so it does not need this.
+        if matches!(firmware, Firmware::Uefi { .. }) {
+            let uefi_cfg = firmware.uefi_config();
+            let custom_uefi_vars =
+                uefi_cfg.map_or_else(Default::default, |c| match (arch, c.secure_boot_template) {
+                    (MachineArch::X86_64, Some(SecureBootTemplate::MicrosoftWindows)) => {
+                        hyperv_secure_boot_templates::x64::microsoft_windows()
+                    }
+                    (
+                        MachineArch::X86_64,
+                        Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
+                    ) => hyperv_secure_boot_templates::x64::microsoft_uefi_ca(),
+                    (MachineArch::Aarch64, Some(SecureBootTemplate::MicrosoftWindows)) => {
+                        hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                    }
+                    (
+                        MachineArch::Aarch64,
+                        Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
+                    ) => hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca(),
+                    (_, None) => Default::default(),
+                });
+            let secure_boot = uefi_cfg.is_some_and(|c| c.secure_boot_enabled);
+            let log_level = match uefi_cfg
+                .map(|c| c.efi_diagnostics_log_level)
+                .unwrap_or_default()
+            {
+                EfiDiagnosticsLogLevel::Default => {
+                    firmware_uefi_resources::LogLevel::make_default()
+                }
+                EfiDiagnosticsLogLevel::Info => firmware_uefi_resources::LogLevel::make_info(),
+                EfiDiagnosticsLogLevel::Full => firmware_uefi_resources::LogLevel::make_full(),
+            };
+            let nvram_storage = if vmgs.disk().is_some() {
+                VmgsFileHandle::new(vmgs_format::FileId::BIOS_NVRAM, true).into_resource()
+            } else {
+                EphemeralNonVolatileStoreHandle.into_resource()
+            };
+            chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
+                match arch {
+                    MachineArch::X86_64 => vm_manifest_builder::MachineArch::X86_64,
+                    MachineArch::Aarch64 => vm_manifest_builder::MachineArch::Aarch64,
+                },
+                custom_uefi_vars,
+                secure_boot,
+                log_level,
+                nvram_storage,
+                None,
+            ));
+        }
+
         let layout_config = chipset.layout_config();
         let chipset = chipset
             .build()
@@ -551,7 +607,6 @@ impl PetriVmConfigOpenVmm {
             #[cfg(windows)]
             vpci_resources: vec![],
             debugger_rpc: None,
-            generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             efi_diagnostics_log_level: match firmware
                 .uefi_config()

@@ -38,6 +38,7 @@ use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use cli_args::VmgsCli;
 use crash_dump::spawn_dump_handler;
+use cxl_spec::test::CxlTestDeviceHandle;
 use disk_backend_resources::DelayDiskHandle;
 use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::layer::DiskLayerHandle;
@@ -78,6 +79,7 @@ use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
+use openvmm_defs::config::RootComplexCxlConfig;
 use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
@@ -714,14 +716,24 @@ async fn vm_config_from_command_line(
             }),
     );
 
-    let mut pcie_root_complexes = Vec::new();
+    for cxl_test in &opt.cxl_test {
+        pcie_devices.push(PcieDeviceConfig {
+            port_name: cxl_test.pcie_port.clone(),
+            resource: CxlTestDeviceHandle {
+                hdm_size_bytes: cxl_test.hdm_size,
+            }
+            .into_resource(),
+        });
+    }
 
     #[cfg(guest_arch = "aarch64")]
     let arch = MachineArch::Aarch64;
     #[cfg(guest_arch = "x86_64")]
     let arch = MachineArch::X86_64;
+
+    let mut pcie_root_complexes = Vec::new();
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
-        let ports = opt
+        let ports: Vec<PcieRootPortConfig> = opt
             .pcie_root_port
             .iter()
             .filter(|port_cli| port_cli.root_complex_name == rc_cli.name)
@@ -729,15 +741,29 @@ async fn vm_config_from_command_line(
                 name: port_cli.name.clone(),
                 hotplug: port_cli.hotplug,
                 acs_capabilities_supported: port_cli.acs_capabilities_supported,
+                cxl: port_cli.cxl,
             })
             .collect();
 
         const ONE_MB: u64 = 1024 * 1024;
+        // Keep all PCI windows 1MB-granular to match layout and downstream placement rules.
         let low_mmio_size = (rc_cli.low_mmio as u64).next_multiple_of(ONE_MB);
         let high_mmio_size = rc_cli
             .high_mmio
             .checked_next_multiple_of(ONE_MB)
             .context("high mmio rounding error")?;
+
+        // Count CXL-capable ports under the root bus. If the root bus has CXL root ports, it needs CHBCR.
+        let cxl_port_count = ports.iter().filter(|port| port.cxl).count() as u64;
+
+        let cxl = if cxl_port_count != 0 {
+            Some(RootComplexCxlConfig {
+                hdm_size: rc_cli.hdm,
+                hdm_window_restrictions: rc_cli.hdm_window_restrictions.bits(),
+            })
+        } else {
+            None
+        };
         pcie_root_complexes.push(PcieRootComplexConfig {
             index: i as u32,
             name: rc_cli.name.clone(),
@@ -750,6 +776,7 @@ async fn vm_config_from_command_line(
             high_mmio: PcieMmioRangeConfig::Dynamic {
                 size: high_mmio_size,
             },
+            cxl,
             ports,
         });
     }
@@ -757,37 +784,108 @@ async fn vm_config_from_command_line(
     let pcie_switches = build_switch_list(&opt.pcie_switch);
 
     #[cfg(target_os = "linux")]
-    let vfio_pcie_devices: Vec<PcieDeviceConfig> = opt
-        .vfio
-        .iter()
-        .map(|cli_cfg| {
-            use vm_resource::IntoResource;
+    let vfio_pcie_devices: Vec<PcieDeviceConfig> = {
+        use std::collections::HashMap;
+        use vm_resource::IntoResource;
 
-            let sysfs_path = Path::new("/sys/bus/pci/devices").join(&cli_cfg.pci_id);
-            let iommu_group_link = std::fs::read_link(sysfs_path.join("iommu_group"))
-                .with_context(|| format!("failed to read IOMMU group for {}", cli_cfg.pci_id))?;
-            let group_id: u64 = iommu_group_link
-                .file_name()
-                .and_then(|s| s.to_str())
-                .context("invalid iommu_group symlink")?
-                .parse()
-                .context("failed to parse IOMMU group ID")?;
-            let group = std::fs::OpenOptions::new()
+        // Process --iommu flags: open /dev/iommu for each declared context.
+        let mut iommu_map: HashMap<String, std::fs::File> = HashMap::new();
+        for iommu_cli in &opt.iommu {
+            anyhow::ensure!(
+                !iommu_map.contains_key(&iommu_cli.id),
+                "duplicate --iommu id={}",
+                iommu_cli.id
+            );
+            let file = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
-                .open(format!("/dev/vfio/{group_id}"))
-                .with_context(|| format!("failed to open /dev/vfio/{group_id}"))?;
+                .open("/dev/iommu")
+                .context("failed to open /dev/iommu (is iommufd available?)")?;
+            iommu_map.insert(iommu_cli.id.clone(), file);
+        }
 
-            Ok(PcieDeviceConfig {
-                port_name: cli_cfg.port_name.clone(),
-                resource: vfio_assigned_device_resources::VfioDeviceHandle {
-                    pci_id: cli_cfg.pci_id.clone(),
-                    group,
+        opt.vfio
+            .iter()
+            .map(|cli_cfg| {
+                let sysfs_path = Path::new("/sys/bus/pci/devices").join(&cli_cfg.pci_id);
+
+                if let Some(iommu_id) = &cli_cfg.iommu {
+                    // cdev + iommufd path
+                    let iommufd = iommu_map.get(iommu_id).with_context(|| {
+                        format!(
+                            "--vfio device {} references iommu={iommu_id}, \
+                             but no --iommu id={iommu_id} was specified",
+                            cli_cfg.pci_id
+                        )
+                    })?;
+                    // Clone the iommufd fd so the per-iommu manager can own it.
+                    // The first device for a given iommu ID uses the cloned fd
+                    // to create the IoasManager; subsequent devices reuse the
+                    // existing manager and the cloned fd is dropped.
+                    let iommufd = iommufd.try_clone().with_context(|| {
+                        format!("failed to dup iommufd fd for iommu={iommu_id}")
+                    })?;
+
+                    // Open the cdev device node.
+                    let vfio_dev_dir = sysfs_path.join("vfio-dev");
+                    let entry = std::fs::read_dir(&vfio_dev_dir)
+                        .with_context(|| {
+                            format!(
+                                "failed to read {}: is {} bound to vfio-pci?",
+                                vfio_dev_dir.display(),
+                                cli_cfg.pci_id
+                            )
+                        })?
+                        .next()
+                        .context("no vfio-dev entry found")?
+                        .context("failed to read vfio-dev entry")?;
+                    let dev_path = Path::new("/dev/vfio/devices").join(entry.file_name());
+                    let cdev = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&dev_path)
+                        .with_context(|| format!("failed to open {}", dev_path.display()))?;
+
+                    Ok(PcieDeviceConfig {
+                        port_name: cli_cfg.port_name.clone(),
+                        resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                            pci_id: cli_cfg.pci_id.clone(),
+                            cdev,
+                            iommufd,
+                            iommu_id: iommu_id.clone(),
+                        }
+                        .into_resource(),
+                    })
+                } else {
+                    // Legacy group/container path
+                    let iommu_group_link = std::fs::read_link(sysfs_path.join("iommu_group"))
+                        .with_context(|| {
+                            format!("failed to read IOMMU group for {}", cli_cfg.pci_id)
+                        })?;
+                    let group_id: u64 = iommu_group_link
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .context("invalid iommu_group symlink")?
+                        .parse()
+                        .context("failed to parse IOMMU group ID")?;
+                    let group = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(format!("/dev/vfio/{group_id}"))
+                        .with_context(|| format!("failed to open /dev/vfio/{group_id}"))?;
+
+                    Ok(PcieDeviceConfig {
+                        port_name: cli_cfg.port_name.clone(),
+                        resource: vfio_assigned_device_resources::VfioDeviceHandle {
+                            pci_id: cli_cfg.pci_id.clone(),
+                            group,
+                        }
+                        .into_resource(),
+                    })
                 }
-                .into_resource(),
             })
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+            .collect::<anyhow::Result<Vec<_>>>()?
+    };
 
     #[cfg(windows)]
     let vpci_resources: Vec<_> = opt
@@ -867,6 +965,75 @@ async fn vm_config_from_command_line(
             debugcon_cfg.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
             cfg.port,
         );
+    }
+
+    let custom_uefi_vars = {
+        use firmware_uefi_custom_vars::CustomVars;
+
+        // load base vars from specified template, or use an empty set of base
+        // vars if none was specified.
+        let base_vars = match opt.secure_boot_template {
+            Some(template) => match (arch, template) {
+                (MachineArch::X86_64, SecureBootTemplateCli::Windows) => {
+                    hyperv_secure_boot_templates::x64::microsoft_windows()
+                }
+                (MachineArch::X86_64, SecureBootTemplateCli::UefiCa) => {
+                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
+                }
+                (MachineArch::Aarch64, SecureBootTemplateCli::Windows) => {
+                    hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                }
+                (MachineArch::Aarch64, SecureBootTemplateCli::UefiCa) => {
+                    hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
+                }
+            },
+            None => CustomVars::default(),
+        };
+
+        // TODO: fallback to VMGS read if no command line flag was given
+
+        let custom_uefi_json_data = match &opt.custom_uefi_json {
+            Some(file) => Some(fs_err::read(file).context("opening custom uefi json file")?),
+            None => None,
+        };
+
+        // obtain the final custom uefi vars by applying the delta onto the base vars
+        match custom_uefi_json_data {
+            Some(data) => {
+                let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
+                base_vars.apply_delta(delta)?
+            }
+            None => base_vars,
+        }
+    };
+
+    let efi_diagnostics_log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
+        EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::Default,
+        EfiDiagnosticsLogLevelCli::Info => EfiDiagnosticsLogLevelType::Info,
+        EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::Full,
+    };
+
+    if opt.uefi {
+        let log_level = match efi_diagnostics_log_level {
+            EfiDiagnosticsLogLevelType::Default => {
+                firmware_uefi_resources::LogLevel::make_default()
+            }
+            EfiDiagnosticsLogLevelType::Info => firmware_uefi_resources::LogLevel::make_info(),
+            EfiDiagnosticsLogLevelType::Full => firmware_uefi_resources::LogLevel::make_full(),
+        };
+        let nvram_storage = if opt.vmgs.is_some() {
+            VmgsFileHandle::new(vmgs_format::FileId::BIOS_NVRAM, true).into_resource()
+        } else {
+            EphemeralNonVolatileStoreHandle.into_resource()
+        };
+        chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
+            arch,
+            custom_uefi_vars.clone(),
+            opt.secure_boot,
+            log_level,
+            nvram_storage,
+            None,
+        ));
     }
 
     // TODO: load from VMGS file if it exists
@@ -1174,46 +1341,6 @@ async fn vm_config_from_command_line(
         });
     }
 
-    let custom_uefi_vars = {
-        use firmware_uefi_custom_vars::CustomVars;
-
-        // load base vars from specified template, or use an empty set of base
-        // vars if none was specified.
-        let base_vars = match opt.secure_boot_template {
-            Some(template) => match (arch, template) {
-                (MachineArch::X86_64, SecureBootTemplateCli::Windows) => {
-                    hyperv_secure_boot_templates::x64::microsoft_windows()
-                }
-                (MachineArch::X86_64, SecureBootTemplateCli::UefiCa) => {
-                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
-                }
-                (MachineArch::Aarch64, SecureBootTemplateCli::Windows) => {
-                    hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                }
-                (MachineArch::Aarch64, SecureBootTemplateCli::UefiCa) => {
-                    hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
-                }
-            },
-            None => CustomVars::default(),
-        };
-
-        // TODO: fallback to VMGS read if no command line flag was given
-
-        let custom_uefi_json_data = match &opt.custom_uefi_json {
-            Some(file) => Some(fs_err::read(file).context("opening custom uefi json file")?),
-            None => None,
-        };
-
-        // obtain the final custom uefi vars by applying the delta onto the base vars
-        match custom_uefi_json_data {
-            Some(data) => {
-                let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
-                base_vars.apply_delta(delta)?
-            }
-            None => base_vars,
-        }
-    };
-
     let vga_firmware = if opt.pcat {
         Some(openvmm_pcat_locator::find_svga_bios(
             opt.vga_firmware.as_deref(),
@@ -1277,6 +1404,13 @@ async fn vm_config_from_command_line(
     }
 
     #[cfg(guest_arch = "aarch64")]
+    let smmu_instances: Vec<openvmm_defs::config::SmmuInstanceConfig> = opt
+        .smmu
+        .iter()
+        .map(|s| openvmm_defs::config::SmmuInstanceConfig { rc_name: s.clone() })
+        .collect();
+
+    #[cfg(guest_arch = "aarch64")]
     let topology_arch = openvmm_defs::config::ArchTopologyConfig::Aarch64(
         openvmm_defs::config::Aarch64TopologyConfig {
             // TODO: allow this to be configured from the command line
@@ -1289,6 +1423,7 @@ async fn vm_config_from_command_line(
                     openvmm_defs::config::GicMsiConfig::V2m { spi_count: None }
                 }
             },
+            smmu: smmu_instances,
         },
     );
     #[cfg(guest_arch = "x86_64")]
@@ -1642,7 +1777,6 @@ async fn vm_config_from_command_line(
         custom_uefi_vars,
         firmware_event_send: None,
         debugger_rpc: None,
-        generation_id_recv: None,
         rtc_delta_milliseconds: 0,
         automatic_guest_reset: !opt.halt_on_reset,
         efi_diagnostics_log_level: {

@@ -18,6 +18,7 @@ use crate::gsi::GsiRouting;
 use crate::gsi::KvmIrqFdState;
 use crate::gsi::MsiRouteBuilder;
 use aarch64defs::SystemReg;
+use aarch64defs::Vendor;
 use aarch64defs::gic::GicV2mRegister;
 use bitfield_struct::bitfield;
 use core::panic;
@@ -824,6 +825,8 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                 pfr0 & 0xf == 2
             };
             PartitionCapabilities {
+                isolation: virt::IsolationType::None,
+                vendor: Vendor::ARM,
                 supports_aarch32_el0,
             }
         };

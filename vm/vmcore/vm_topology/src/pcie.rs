@@ -3,7 +3,18 @@
 
 //! PCI Express topology types.
 
+use crate::cxl::CfmwsWindowRestrictions;
 use memory_range::MemoryRange;
+
+/// CXL-specific host bridge metadata.
+pub struct PcieHostBridgeCxlInfo {
+    /// Memory range reserved for the CHBCR aperture.
+    pub chbcr_range: MemoryRange,
+    /// Memory range reserved for the HDM decoder.
+    pub hdm_range: MemoryRange,
+    /// CFMWS HDM window restrictions.
+    pub hdm_window_restrictions: CfmwsWindowRestrictions,
+}
 
 /// A description of a PCI Express Root Complex, as visible to the CPU.
 pub struct PcieHostBridge {
@@ -21,4 +32,6 @@ pub struct PcieHostBridge {
     pub low_mmio: MemoryRange,
     /// Memory range used for high MMIO.
     pub high_mmio: MemoryRange,
+    /// CXL metadata when this host bridge supports CXL.
+    pub cxl: Option<PcieHostBridgeCxlInfo>,
 }

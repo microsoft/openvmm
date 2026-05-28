@@ -20,15 +20,18 @@ pub(crate) mod symcrypt;
 #[cfg(symcrypt)]
 pub(crate) use symcrypt as sys;
 
+use crate::HashAlgorithm;
 use thiserror::Error;
 
 /// An error for RSA operations.
+// TODO: Make this clone once RustCrypto rsa::errors::Error is cloneable
 #[cfg(not(rust))]
 #[derive(Debug, Error)]
 #[error("RSA error")]
 pub struct RsaError(#[source] pub(crate) super::BackendError);
 
 /// An error for RSA operations.
+// TODO: Make this clone once RustCrypto rsa::errors::Error is cloneable
 #[cfg(rust)]
 #[derive(Debug, Error)]
 #[error("RSA error during {1}")]
@@ -36,15 +39,6 @@ pub struct RsaError(
     #[source] pub(crate) rsa::errors::Error,
     pub(crate) &'static str,
 );
-
-/// Hash algorithm for RSA operations.
-#[derive(Debug, Clone, Copy)]
-pub enum HashAlgorithm {
-    /// SHA-1
-    Sha1,
-    /// SHA-256
-    Sha256,
-}
 
 /// An RSA private key (key pair).
 #[repr(transparent)] // Needed for the transmute in deref.
@@ -61,6 +55,7 @@ impl RsaKeyPair {
         sys::RsaKeyPairInner::from_pkcs8_der(der).map(Self)
     }
 
+    #[cfg(any(test, feature = "test_helpers"))]
     /// Convert the RSA private key to PKCS#8 DER-encoded bytes.
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
         self.0.to_pkcs8_der()
@@ -215,6 +210,7 @@ mod tests {
 
     /// OAEP encrypt/decrypt round-trip with both supported hash algorithms.
     #[test]
+    #[expect(deprecated)]
     fn oaep_roundtrip() {
         let key = RsaKeyPair::generate(2048).unwrap();
         let payload = b"a secret message";

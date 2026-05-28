@@ -36,10 +36,10 @@ pub struct KbkdfError(#[source] super::BackendError);
 pub fn kbkdf_hmac_sha256(
     key: &[u8],
     context: &[u8],
-    salt: &[u8],
+    label: &[u8],
     output_len: usize,
 ) -> Result<Vec<u8>, KbkdfError> {
-    sys::kbkdf_hmac_sha256(key, context, salt, output_len)
+    sys::kbkdf_hmac_sha256(key, context, label, output_len)
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@
 //! Implementation of the key retrieval logic for the [`KeyProtector`].
 
 use crate::Keys;
-use crypto::rsa::HashAlgorithm;
+use crypto::HashAlgorithm;
 use crypto::rsa::RsaKeyPair;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
