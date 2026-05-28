@@ -2312,18 +2312,20 @@ async fn run_control_inner(
 
     let mut vnc_worker = None;
     if opt.gfx || opt.vnc.vnc {
-        // Parse the listen address. Try as a bare IP first, then as addr:port.
-        let addr: std::net::SocketAddr = if let Ok(ip) =
-            opt.vnc.vnc_listen.parse::<std::net::IpAddr>()
+        // Parse the listen address. Try as a full SocketAddr (host:port) first;
+        // fall back to a bare IP, using the configured port.
+        let addr: std::net::SocketAddr = if let Ok(sa) =
+            opt.vnc.vnc_listen.parse::<std::net::SocketAddr>()
         {
-            std::net::SocketAddr::new(ip, opt.vnc.vnc_port)
+            sa
         } else {
-            opt.vnc.vnc_listen.parse().with_context(|| {
+            let ip: std::net::IpAddr = opt.vnc.vnc_listen.parse().with_context(|| {
                 format!(
                     "invalid VNC listen address: {} (expected IP address or socket address like [::1]:5900)",
                     opt.vnc.vnc_listen
                 )
-            })?
+            })?;
+            std::net::SocketAddr::new(ip, opt.vnc.vnc_port)
         };
 
         let socket = socket2::Socket::new(

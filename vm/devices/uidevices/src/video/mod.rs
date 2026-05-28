@@ -12,6 +12,7 @@ use mesh::payload::Protobuf;
 use std::io::IoSlice;
 use task_control::StopTask;
 use thiserror::Error;
+use video_core::DirtyRect;
 use video_core::FramebufferControl;
 use video_core::FramebufferFormat;
 use vmbus_async::async_dgram::AsyncRecv;
@@ -148,8 +149,6 @@ fn parse_packet(buf: &[u8]) -> Result<Request, Error> {
     };
     Ok(request)
 }
-
-use video_core::DirtyRect;
 
 /// Vmbus synthetic video device.
 pub struct Video {

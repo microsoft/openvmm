@@ -365,6 +365,7 @@ options:
     #[clap(long, requires("vtl2"), conflicts_with("gfx"))]
     pub vtl2_gfx: bool,
 
+    /// VNC server configuration (listen address, port, client limit, etc.).
     #[clap(flatten)]
     pub vnc: VncCli,
 

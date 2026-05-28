@@ -274,10 +274,8 @@ impl DirtyBitmap {
                 // before we clamp to `self.width` / `self.height`.
                 let x_u32 = run_start as u32 * TILE_SIZE as u32;
                 let y_u32 = ty as u32 * TILE_SIZE as u32;
-                let right_u32 =
-                    (run_end as u32 * TILE_SIZE as u32).min(self.width as u32);
-                let bottom_u32 = ((ty + h_tiles) as u32 * TILE_SIZE as u32)
-                    .min(self.height as u32);
+                let right_u32 = (run_end as u32 * TILE_SIZE as u32).min(self.width as u32);
+                let bottom_u32 = ((ty + h_tiles) as u32 * TILE_SIZE as u32).min(self.height as u32);
                 out.push(Rect {
                     x: x_u32 as u16,
                     y: y_u32 as u16,

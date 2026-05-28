@@ -1411,11 +1411,11 @@ mod tests {
     use pal_async::local::block_with_io;
     use pal_async::socket::PolledSocket;
     use pal_async::timer::PolledTimer;
+    use parking_lot::Mutex;
     use std::io::Read;
     use std::io::Write;
     use std::net::TcpListener;
     use std::net::TcpStream;
-    use parking_lot::Mutex;
     use std::thread;
     use std::time::Duration;
     use zerocopy::FromBytes;
@@ -1477,9 +1477,7 @@ mod tests {
 
     impl Input for RecordingInput {
         fn key(&mut self, scancode: u16, is_down: bool) {
-            self.events
-                .lock()
-                .push(InputEvent::Key(scancode, is_down));
+            self.events.lock().push(InputEvent::Key(scancode, is_down));
         }
 
         fn mouse(&mut self, button_mask: u8, x: u16, y: u16) {
