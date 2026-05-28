@@ -389,6 +389,12 @@ impl SmmuSharedState {
         qs.gerror = registers::Gerror::from(gerror);
         qs.gerrorn = registers::Gerror::from(gerrorn);
         self.update_gerror_irq(&qs);
+        // Sync EVTQ wired interrupt line to match restored queue state.
+        if qs.evtq_irqen {
+            if let Some(irq) = &self.evtq_irq {
+                irq.set_level(qs.evtq_prod != qs.evtq_cons);
+            }
+        }
     }
 
     /// Translate an IOVA to a GPA for the given stream ID.
