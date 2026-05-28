@@ -823,12 +823,16 @@ mod weak_mutex_pci {
     impl RegisterWeakMutexPcie for Arc<CloseableMutex<pcie::root::GenericPcieRootComplex>> {
         fn add_pcie_device(
             &mut self,
-            port: u8,
+            port_devfn: u8,
             name: Arc<str>,
             dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
         ) -> Result<(), PcieConflict> {
             self.lock()
-                .add_pcie_device(port, name.clone(), Box::new(WeakMutexPciDeviceWrapper(dev)))
+                .add_pcie_device(
+                    port_devfn,
+                    name.clone(),
+                    Box::new(WeakMutexPciDeviceWrapper(dev)),
+                )
                 .map_err(|existing_dev_name| PcieConflict {
                     reason: PcieConflictReason::ExistingDev(existing_dev_name),
                     conflict_dev: name,
@@ -841,13 +845,13 @@ mod weak_mutex_pci {
 
         fn add_rciep(
             &mut self,
-            device: u8,
+            devfn: u8,
             name: Arc<str>,
             dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
         ) -> Result<(), PcieConflict> {
             self.lock()
                 .add_rciep(
-                    device,
+                    devfn,
                     name.clone(),
                     Box::new(WeakMutexPciDeviceWrapper(dev)),
                 )
@@ -862,12 +866,12 @@ mod weak_mutex_pci {
     impl RegisterWeakMutexPcie for Arc<CloseableMutex<pcie::switch::GenericPcieSwitch>> {
         fn add_pcie_device(
             &mut self,
-            port: u8,
+            port_devfn: u8,
             name: Arc<str>,
             dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
         ) -> Result<(), PcieConflict> {
             self.lock()
-                .add_pcie_device(port, &name, Box::new(WeakMutexPciDeviceWrapper(dev)))
+                .add_pcie_device(port_devfn, &name, Box::new(WeakMutexPciDeviceWrapper(dev)))
                 .map_err(|err| PcieConflict {
                     reason: PcieConflictReason::ExistingDev(err.to_string().into()),
                     conflict_dev: name,

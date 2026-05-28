@@ -77,11 +77,11 @@ impl BusResolverWeakMutexPci {
 /// is able to route accesses to `Weak<CloseableMutex<dyn ChipsetDevice>>`
 /// devices via downstream ports.
 pub trait RegisterWeakMutexPcie: Send {
-    /// Try to add a PCIe device to the enumerator at the specified port,
+    /// Try to add a PCIe device to the enumerator at the specified port devfn,
     /// reporting any conflicts.
     fn add_pcie_device(
         &mut self,
-        port: u8,
+        port_devfn: u8,
         name: Arc<str>,
         device: Weak<CloseableMutex<dyn ChipsetDevice>>,
     ) -> Result<(), PcieConflict>;
@@ -90,13 +90,13 @@ pub trait RegisterWeakMutexPcie: Send {
     fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo>;
 
     /// Try to add a Root Complex Integrated Endpoint (RCiEP) at the given
-    /// PCI device number (0-31) on the start bus of the root complex.
+    /// devfn (device << 3 | function) on the start bus of the root complex.
     ///
     /// Not all enumerators support RCiEPs — only root complexes do.
     /// The default implementation returns an error.
     fn add_rciep(
         &mut self,
-        _device: u8,
+        _devfn: u8,
         name: Arc<str>,
         _device_handle: Weak<CloseableMutex<dyn ChipsetDevice>>,
     ) -> Result<(), PcieConflict> {
@@ -115,7 +115,7 @@ pub struct WeakMutexPcieDeviceEntry {
 
 pub struct WeakMutexPcieRciepEntry {
     pub bus_id_enumerator: BusIdPcieEnumerator,
-    pub device: u8,
+    pub devfn: u8,
     pub name: Arc<str>,
     pub dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
 }
@@ -138,7 +138,7 @@ impl BusResolverWeakMutexPcie {
             dev,
         } in self.devices
         {
-            let (port_number, bus_id_enumerator) = match self.ports.get(&bus_id_port) {
+            let (devfn, bus_id_enumerator) = match self.ports.get(&bus_id_port) {
                 Some(v) => v,
                 None => {
                     errs.push(PcieConflict {
@@ -160,7 +160,7 @@ impl BusResolverWeakMutexPcie {
                 }
             };
 
-            match enumerator.add_pcie_device(*port_number, name, dev) {
+            match enumerator.add_pcie_device(*devfn, name, dev) {
                 Ok(()) => {}
                 Err(conflict) => {
                     errs.push(conflict);
@@ -171,7 +171,7 @@ impl BusResolverWeakMutexPcie {
 
         for WeakMutexPcieRciepEntry {
             bus_id_enumerator,
-            device,
+            devfn,
             name,
             dev,
         } in self.rcieps
@@ -187,7 +187,7 @@ impl BusResolverWeakMutexPcie {
                 }
             };
 
-            match enumerator.add_rciep(device, name, dev) {
+            match enumerator.add_rciep(devfn, name, dev) {
                 Ok(()) => {}
                 Err(conflict) => {
                     errs.push(conflict);

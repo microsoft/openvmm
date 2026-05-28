@@ -139,14 +139,9 @@ where
     ///
     /// RCiEPs are Type 0 PCI functions that sit directly on the start bus
     /// alongside root ports, without a downstream port above them (e.g., an
-    /// AMD IOMMU). The device occupies function 0 of the given PCI device
-    /// number (0-31).
-    pub fn on_pcie_root_complex(
-        mut self,
-        enumerator_id: BusIdPcieEnumerator,
-        device: u8,
-    ) -> Self {
-        self.pcie_rciep = Some((enumerator_id, device));
+    /// AMD IOMMU). `devfn` is `device << 3 | function`.
+    pub fn on_pcie_root_complex(mut self, enumerator_id: BusIdPcieEnumerator, devfn: u8) -> Self {
+        self.pcie_rciep = Some((enumerator_id, devfn));
         self
     }
 
@@ -200,9 +195,9 @@ where
 
                 if let Some(bus_id_port) = self.pcie_port {
                     self.services.register_static_pcie(bus_id_port);
-                } else if let Some((enumerator_id, device)) = self.pcie_rciep {
+                } else if let Some((enumerator_id, devfn)) = self.pcie_rciep {
                     self.services
-                        .register_static_pcie_rciep(enumerator_id, device);
+                        .register_static_pcie_rciep(enumerator_id, devfn);
                 } else {
                     // static pci registration
                     let bdf = match (self.pci_addr, dev.suggested_bdf()) {

@@ -228,7 +228,7 @@ impl<'a> ChipsetBuilder<'a> {
         for port_info in downstream_ports {
             let existing = inner.bus_resolver.pcie.ports.insert(
                 BusId::new(&port_info.name),
-                (port_info.port_number, bus_id.clone()),
+                (port_info.devfn, bus_id.clone()),
             );
             assert!(
                 existing.is_none(),
@@ -259,7 +259,7 @@ impl<'a> ChipsetBuilder<'a> {
     pub(crate) fn register_weak_mutex_pcie_rciep(
         &self,
         bus_id_enumerator: BusIdPcieEnumerator,
-        device: u8,
+        devfn: u8,
         name: Arc<str>,
         dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
     ) {
@@ -270,7 +270,7 @@ impl<'a> ChipsetBuilder<'a> {
             .rcieps
             .push(WeakMutexPcieRciepEntry {
                 bus_id_enumerator,
-                device,
+                devfn,
                 name,
                 dev,
             });

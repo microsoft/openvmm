@@ -204,14 +204,10 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
         );
     }
 
-    pub fn register_static_pcie_rciep(
-        &mut self,
-        enumerator_id: BusIdPcieEnumerator,
-        device: u8,
-    ) {
+    pub fn register_static_pcie_rciep(&mut self, enumerator_id: BusIdPcieEnumerator, devfn: u8) {
         self.builder.register_weak_mutex_pcie_rciep(
             enumerator_id,
-            device,
+            devfn,
             self.dev_name.clone(),
             self.dev.clone(),
         );
