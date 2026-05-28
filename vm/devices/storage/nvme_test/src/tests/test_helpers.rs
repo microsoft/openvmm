@@ -46,8 +46,7 @@ impl TestPciInterruptController {
 }
 
 impl SignalMsi for TestPciInterruptController {
-    fn signal_msi(&self, rid: u32, address: u64, data: u32) {
-        assert_eq!(rid, 0);
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         self.inner.msi_requests.lock().push_back((address, data));
     }
 }

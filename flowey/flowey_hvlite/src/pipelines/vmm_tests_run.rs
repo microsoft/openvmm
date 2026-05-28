@@ -60,9 +60,6 @@ pub struct VmmTestsRunCli {
     #[clap(long)]
     install_missing_deps: bool,
 
-    /// Use unstable WHP interfaces
-    #[clap(long)]
-    unstable_whp: bool,
     /// Release build instead of debug build
     #[clap(long)]
     release: bool,
@@ -152,7 +149,6 @@ impl IntoPipeline for VmmTestsRunCli {
             filter,
             verbose,
             install_missing_deps,
-            unstable_whp,
             release,
             build_only,
             copy_extras,
@@ -332,7 +328,6 @@ impl IntoPipeline for VmmTestsRunCli {
                     target,
                     test_content_dir,
                     selections: selections_from_resolved(filter, resolved, target_os),
-                    unstable_whp,
                     release,
                     build_only,
                     copy_extras,
@@ -692,6 +687,7 @@ impl ResolvedArtifactSelections {
             // Loadable firmware artifacts (these come from deps, not built)
             petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64::GLOBAL_UNIQUE_ID
             | petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_BZIMAGE_X64::GLOBAL_UNIQUE_ID
             | petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64::GLOBAL_UNIQUE_ID
             | petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_AARCH64::GLOBAL_UNIQUE_ID
             | petri_artifacts_vmm_test::artifacts::loadable::PCAT_FIRMWARE_X64::GLOBAL_UNIQUE_ID

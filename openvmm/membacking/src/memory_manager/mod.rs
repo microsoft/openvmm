@@ -28,14 +28,14 @@ use std::io;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use thiserror::Error;
-use vm_topology::memory::MemoryLayout;
 
 /// The OpenVMM memory manager.
 #[derive(Debug, Inspect)]
 pub struct GuestMemoryManager {
-    /// Guest RAM allocation. None in private memory mode.
+    /// Guest RAM allocations. One per backing request. Empty only when
+    /// there are no backing requests (no RAM at all).
     #[inspect(skip)]
-    guest_ram: Option<Mappable>,
+    guest_ram: Vec<RamBacking>,
 
     #[inspect(skip)]
     ram_regions: Arc<Vec<RamRegion>>,
@@ -54,6 +54,20 @@ pub struct GuestMemoryManager {
 
     vtl0_alias_map_offset: Option<u64>,
     pin_mappings: bool,
+}
+
+/// A single RAM backing allocation — one memfd or anonymous region.
+#[derive(Debug)]
+struct RamBacking {
+    /// The file-backed memory handle. `None` for private (anonymous) backings.
+    mappable: Option<Mappable>,
+    /// GPA ranges covered by this backing.
+    ranges: Vec<MemoryRange>,
+    /// Prefetch pages at build time.
+    prefetch: bool,
+    /// THP is enabled for this backing.
+    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
+    transparent_hugepages: bool,
 }
 
 #[derive(Debug)]
@@ -109,8 +123,8 @@ pub enum MemoryBuildError {
     /// Private memory is incompatible with x86 legacy support.
     #[error("private memory is incompatible with x86 legacy support")]
     PrivateMemoryWithLegacy,
-    /// Private memory is incompatible with existing memory backing.
-    #[error("private memory is incompatible with existing memory backing")]
+    /// Private memory is incompatible with an existing memory backing.
+    #[error("private memory is incompatible with an existing memory backing")]
     PrivateMemoryWithExistingBacking,
     /// Failed to allocate private RAM range.
     #[error("failed to allocate private RAM range {1}")]
@@ -165,10 +179,71 @@ pub enum MemoryBuildError {
 
 const DEFAULT_HUGEPAGE_SIZE: u64 = 2 * 1024 * 1024;
 
-/// Explicit hugetlb memfd backing configuration.
-#[derive(Debug, Copy, Clone)]
-struct HugepageConfig {
-    size: Option<u64>,
+/// A request to allocate one RAM backing region (one memfd or anonymous
+/// allocation). For non-NUMA VMs, a single request covers all RAM. For
+/// NUMA VMs, one request per node with memory.
+///
+/// Construct via [`RamBackingRequest::new`].
+#[derive(Debug)]
+pub struct RamBackingRequest {
+    ranges: Vec<MemoryRange>,
+    prefetch: bool,
+    private_memory: bool,
+    transparent_hugepages: bool,
+    hugepages: bool,
+    hugepage_size: Option<u64>,
+    existing_mappable: Option<Mappable>,
+}
+
+impl RamBackingRequest {
+    /// Creates a new backing request covering the given GPA ranges.
+    ///
+    /// The backing's allocation size is the sum of the range lengths.
+    /// Defaults to shared file-backed memory with no prefetch.
+    pub fn new(ranges: Vec<MemoryRange>) -> Self {
+        Self {
+            ranges,
+            prefetch: false,
+            private_memory: false,
+            transparent_hugepages: false,
+            hugepages: false,
+            hugepage_size: None,
+            existing_mappable: None,
+        }
+    }
+
+    /// Prefetch (pre-fault) all pages at build time.
+    pub fn prefetch(mut self, enable: bool) -> Self {
+        self.prefetch = enable;
+        self
+    }
+
+    /// Use private anonymous memory instead of shared file-backed memory.
+    pub fn private_memory(mut self, enable: bool) -> Self {
+        self.private_memory = enable;
+        self
+    }
+
+    /// Enable Transparent Huge Pages (requires `private_memory`, Linux only).
+    pub fn transparent_hugepages(mut self, enable: bool) -> Self {
+        self.transparent_hugepages = enable;
+        self
+    }
+
+    /// Enable explicit hugetlb memfd backing with an optional size
+    /// override (default: 2 MB). Incompatible with `private_memory`.
+    pub fn hugepages(mut self, size: Option<u64>) -> Self {
+        self.hugepages = true;
+        self.hugepage_size = size;
+        self
+    }
+
+    /// Reuse an existing file-backed memory handle (restore path).
+    /// When set, no new allocation is performed for this backing.
+    pub fn existing_mappable(mut self, mappable: Mappable) -> Self {
+        self.existing_mappable = Some(mappable);
+        self
+    }
 }
 
 fn validate_hugepage_size(size: u64) -> Result<usize, MemoryBuildError> {
@@ -230,35 +305,21 @@ fn validate_hugepage_ram_alignment(
 
 /// A builder for [`GuestMemoryManager`].
 pub struct GuestMemoryBuilder {
-    existing_mapping: Option<SharedMemoryBacking>,
     vtl0_alias_map: Option<u64>,
-    prefetch_ram: bool,
     pin_mappings: bool,
     x86_legacy_support: bool,
-    private_memory: bool,
-    transparent_hugepages: bool,
-    hugepages: Option<HugepageConfig>,
+    backing_requests: Vec<RamBackingRequest>,
 }
 
 impl GuestMemoryBuilder {
     /// Returns a new builder.
     pub fn new() -> Self {
         Self {
-            existing_mapping: None,
             vtl0_alias_map: None,
             pin_mappings: false,
-            prefetch_ram: false,
             x86_legacy_support: false,
-            private_memory: false,
-            transparent_hugepages: false,
-            hugepages: None,
+            backing_requests: Vec::new(),
         }
-    }
-
-    /// Specifies an existing memory backing to use.
-    pub fn existing_backing(mut self, mapping: Option<SharedMemoryBacking>) -> Self {
-        self.existing_mapping = mapping;
-        self
     }
 
     /// Specifies the offset of the VTL0 alias map, if enabled for VTL2. This is
@@ -274,13 +335,6 @@ impl GuestMemoryBuilder {
     /// for all addresses.
     pub fn pin_mappings(mut self, enable: bool) -> Self {
         self.pin_mappings = enable;
-        self
-    }
-
-    /// Specify whether to prefetch RAM mappings. This improves boot performance
-    /// by reducing memory intercepts at the cost of pre-allocating all of RAM.
-    pub fn prefetch_ram(mut self, enable: bool) -> Self {
-        self.prefetch_ram = enable;
         self
     }
 
@@ -301,124 +355,142 @@ impl GuestMemoryBuilder {
         self
     }
 
-    /// Enables private anonymous memory for guest RAM.
-    ///
-    /// When set, guest RAM is backed by anonymous pages (`mmap
-    /// MAP_ANONYMOUS` on Linux, `VirtualAlloc` on Windows) rather than
-    /// shared file-backed sections. This supports decommit to release
-    /// physical pages back to the host.
-    ///
-    /// This is incompatible with [`x86_legacy_support`](Self::x86_legacy_support)
-    /// and [`existing_backing`](Self::existing_backing).
-    pub fn private_memory(mut self, enable: bool) -> Self {
-        self.private_memory = enable;
+    /// Adds a RAM backing request. Call once per backing (one per NUMA node,
+    /// or once for a non-NUMA VM).
+    pub fn add_backing(mut self, request: RamBackingRequest) -> Self {
+        self.backing_requests.push(request);
         self
     }
 
-    /// Enables Transparent Huge Pages for guest RAM.
+    /// Builds the memory backing, allocating one memfd or anonymous region
+    /// per backing request.
     ///
-    /// When set, `madvise(MADV_HUGEPAGE)` is called on private RAM allocations
-    /// to allow khugepaged to collapse 4K pages into 2MB huge pages.
-    /// Requires [`private_memory`](Self::private_memory) and Linux; `build()`
-    /// will return an error if either condition is not met.
-    pub fn transparent_hugepages(mut self, enable: bool) -> Self {
-        self.transparent_hugepages = enable;
-        self
-    }
+    /// Each [`RamBackingRequest`] produces one RAM backing. File-backed
+    /// requests allocate a memfd (or reuse `existing_mappable` if set);
+    /// private requests use anonymous pages.
+    pub async fn build(self, max_addr: u64) -> Result<GuestMemoryManager, MemoryBuildError> {
+        let backing_requests = self.backing_requests;
 
-    /// Enables explicit hugetlb memfd backing for guest RAM.
-    pub fn hugepages(mut self, size: Option<u64>) -> Self {
-        self.hugepages = Some(HugepageConfig { size });
-        self
-    }
-
-    /// Builds the memory backing, allocating memory if existing memory was not
-    /// provided by [`existing_backing`](Self::existing_backing).
-    pub async fn build(
-        self,
-        mem_layout: &MemoryLayout,
-    ) -> Result<GuestMemoryManager, MemoryBuildError> {
-        // Validate private memory constraints.
-        if self.private_memory {
-            if self.x86_legacy_support {
+        // Validate per-request constraints.
+        for req in &backing_requests {
+            if req.private_memory && self.x86_legacy_support {
                 return Err(MemoryBuildError::PrivateMemoryWithLegacy);
             }
-            if self.existing_mapping.is_some() {
+            if req.private_memory && req.existing_mappable.is_some() {
                 return Err(MemoryBuildError::PrivateMemoryWithExistingBacking);
             }
+            if req.transparent_hugepages {
+                if !req.private_memory {
+                    return Err(MemoryBuildError::ThpWithoutPrivateMemory);
+                }
+                if !cfg!(target_os = "linux") {
+                    return Err(MemoryBuildError::ThpUnsupportedPlatform);
+                }
+            }
+            if req.hugepages {
+                if !cfg!(target_os = "linux") {
+                    return Err(MemoryBuildError::HugepagesUnsupportedPlatform);
+                }
+                if req.private_memory {
+                    return Err(MemoryBuildError::HugepagesWithPrivateMemory);
+                }
+                if self.x86_legacy_support {
+                    return Err(MemoryBuildError::HugepagesWithLegacy);
+                }
+            }
         }
 
-        // Validate THP constraints.
-        if self.transparent_hugepages {
-            if !self.private_memory {
-                return Err(MemoryBuildError::ThpWithoutPrivateMemory);
-            }
-            if !cfg!(target_os = "linux") {
-                return Err(MemoryBuildError::ThpUnsupportedPlatform);
+        // Validate x86 legacy support: at least one backing must contain a
+        // range starting at GPA 0 and covering at least 1MB.
+        if self.x86_legacy_support {
+            let has_low_mem = backing_requests.iter().any(|req| {
+                req.ranges
+                    .iter()
+                    .any(|r| r.start() == 0 && r.end() >= 0x100000)
+            });
+            if !has_low_mem {
+                return Err(MemoryBuildError::InvalidRamForX86);
             }
         }
 
-        let ram_size = mem_layout.ram_size() + mem_layout.vtl2_range().map_or(0, |r| r.len());
-
-        let mut ram_ranges = mem_layout
-            .ram()
-            .iter()
-            .map(|x| x.range)
-            .chain(mem_layout.vtl2_range())
-            .collect::<Vec<_>>();
-
-        let hugepage_size = if let Some(hugepages) = self.hugepages {
-            if !cfg!(target_os = "linux") {
-                return Err(MemoryBuildError::HugepagesUnsupportedPlatform);
+        // Compute the maximum hugepage size across all backings (used for
+        // VA alignment in the MappingManager).
+        let max_hugepage_size = {
+            let mut max: Option<usize> = None;
+            for req in &backing_requests {
+                if req.hugepages {
+                    let size =
+                        validate_hugepage_size(req.hugepage_size.unwrap_or(DEFAULT_HUGEPAGE_SIZE))?;
+                    max = Some(max.map_or(size, |m: usize| m.max(size)));
+                }
             }
-            if self.private_memory {
-                return Err(MemoryBuildError::HugepagesWithPrivateMemory);
-            }
-            if self.existing_mapping.is_some() {
-                return Err(MemoryBuildError::HugepagesWithExistingBacking);
-            }
-            if self.x86_legacy_support {
-                return Err(MemoryBuildError::HugepagesWithLegacy);
-            }
-            let size = validate_hugepage_size(hugepages.size.unwrap_or(DEFAULT_HUGEPAGE_SIZE))?;
-            validate_hugepage_ram_alignment(ram_size, &ram_ranges, size as u64)?;
-            Some(size)
-        } else {
-            None
+            max
         };
 
-        let memory: Option<Mappable> = if self.private_memory {
-            // Private memory mode: no shared file-backed allocation.
-            // RAM will be backed by anonymous pages in the VaMapper's SparseMapping.
-            None
-        } else if let Some(memory) = self.existing_mapping {
-            Some(memory.guest_ram)
-        } else {
-            let ram_size = ram_size
-                .try_into()
-                .map_err(|_| MemoryBuildError::RamTooLarge(MemorySize(ram_size)))?;
-            let guest_ram = if let Some(hugepage_size) = hugepage_size {
-                sparse_mmap::alloc_shared_memory_hugetlb(ram_size, "guest-ram", Some(hugepage_size))
+        // Allocate per-backing memory and collect private ranges.
+        let num_backings = backing_requests.len();
+        let mut backings = Vec::with_capacity(num_backings);
+        let mut private_ranges = Vec::new();
+        for (i, req) in backing_requests.into_iter().enumerate() {
+            let size: u64 = req.ranges.iter().map(|r| r.len()).sum();
+
+            if req.private_memory {
+                private_ranges.extend_from_slice(&req.ranges);
+                backings.push(RamBacking {
+                    mappable: None,
+                    ranges: req.ranges,
+                    prefetch: req.prefetch,
+                    transparent_hugepages: req.transparent_hugepages,
+                });
+                continue;
+            }
+
+            // Shared (file-backed) backing: reuse existing or allocate fresh.
+            let mappable = if let Some(existing) = req.existing_mappable {
+                existing
+            } else {
+                let backing_size: usize = size
+                    .try_into()
+                    .map_err(|_| MemoryBuildError::RamTooLarge(MemorySize(size)))?;
+                let name = if num_backings == 1 {
+                    "guest-ram".into()
+                } else {
+                    format!("guest-ram-{i}")
+                };
+                if req.hugepages {
+                    let hugepage_size =
+                        validate_hugepage_size(req.hugepage_size.unwrap_or(DEFAULT_HUGEPAGE_SIZE))?;
+                    validate_hugepage_ram_alignment(size, &req.ranges, hugepage_size as u64)?;
+                    sparse_mmap::alloc_shared_memory_hugetlb(
+                        backing_size,
+                        &name,
+                        Some(hugepage_size),
+                    )
                     .map_err(|error| MemoryBuildError::HugepageAllocationFailed {
-                        size: MemorySize(ram_size as u64),
+                        size: MemorySize(size),
                         hugepage_size: MemorySize(hugepage_size as u64),
-                        page_count: ram_size / hugepage_size,
+                        page_count: backing_size / hugepage_size,
                         error,
                     })?
-            } else {
-                sparse_mmap::alloc_shared_memory(ram_size, "guest-ram")
-                    .map_err(MemoryBuildError::AllocationFailed)?
+                    .into()
+                } else {
+                    sparse_mmap::alloc_shared_memory(backing_size, &name)
+                        .map_err(MemoryBuildError::AllocationFailed)?
+                        .into()
+                }
             };
-            Some(guest_ram.into())
-        };
+            backings.push(RamBacking {
+                mappable: Some(mappable),
+                ranges: req.ranges,
+                prefetch: req.prefetch,
+                transparent_hugepages: false,
+            });
+        }
 
         // Spawn a thread to handle memory requests.
         //
         // FUTURE: move this to a task once the GuestMemory deadlocks are resolved.
         let (thread, spawner) = DefaultPool::spawn_on_thread("memory_manager");
-
-        let max_addr =
-            (mem_layout.end_of_layout()).max(mem_layout.vtl2_range().map_or(0, |r| r.end()));
 
         let vtl0_alias_map_offset = if let Some(offset) = self.vtl0_alias_map {
             if max_addr > offset {
@@ -430,7 +502,8 @@ impl GuestMemoryBuilder {
         };
 
         let mapping_manager =
-            MappingManager::new(&spawner, max_addr, self.private_memory, hugepage_size);
+            MappingManager::new(&spawner, max_addr, private_ranges, max_hugepage_size);
+
         let va_mapper = mapping_manager
             .client()
             .new_mapper()
@@ -439,114 +512,89 @@ impl GuestMemoryBuilder {
 
         let region_manager = RegionManager::new(&spawner, mapping_manager.client().clone());
 
-        if self.x86_legacy_support {
-            if ram_ranges[0].start() != 0 || ram_ranges[0].end() < 0x100000 {
-                return Err(MemoryBuildError::InvalidRamForX86);
-            }
+        // Build RAM regions from each backing's ranges.
+        let mut ram_regions = Vec::new();
+        for backing in &backings {
+            let mut file_offset = 0u64;
+            for range in &backing.ranges {
+                // Split for x86 legacy PAM/VGA regions if needed.
+                let sub_ranges =
+                    if self.x86_legacy_support && range.start() == 0 && range.end() >= 0x100000 {
+                        let range_end = range.end();
+                        let range_starts = [
+                            0u64, 0xa0000, 0xc0000, 0xc4000, 0xc8000, 0xcc000, 0xd0000, 0xd4000,
+                            0xd8000, 0xdc000, 0xe0000, 0xe4000, 0xe8000, 0xec000, 0xf0000,
+                            0x100000, range_end,
+                        ];
+                        range_starts
+                            .iter()
+                            .zip(range_starts.iter().skip(1))
+                            .map(|(&s, &e)| MemoryRange::new(s..e))
+                            .collect::<Vec<_>>()
+                    } else {
+                        vec![*range]
+                    };
 
-            // Split RAM ranges to support PAM registers and VGA RAM.
-            let range_starts = [
-                0,
-                0xa0000,
-                0xc0000,
-                0xc4000,
-                0xc8000,
-                0xcc000,
-                0xd0000,
-                0xd4000,
-                0xd8000,
-                0xdc000,
-                0xe0000,
-                0xe4000,
-                0xe8000,
-                0xec000,
-                0xf0000,
-                0x100000,
-                ram_ranges[0].end(),
-            ];
+                for sub_range in &sub_ranges {
+                    let region = region_manager
+                        .client()
+                        .new_region("ram".into(), *sub_range, RAM_PRIORITY, true)
+                        .await
+                        .expect("regions cannot overlap yet");
 
-            ram_ranges.splice(
-                0..1,
-                range_starts
-                    .iter()
-                    .zip(range_starts.iter().skip(1))
-                    .map(|(&start, &end)| MemoryRange::new(start..end)),
-            );
-        }
-
-        // In private memory mode, eagerly commit all RAM ranges with
-        // anonymous memory. alloc_range() handles both Linux (mmap MAP_FIXED)
-        // and Windows (MEM_REPLACE_PLACEHOLDER).
-        if self.private_memory {
-            for range in &ram_ranges {
-                va_mapper
-                    .alloc_range(range.start() as usize, range.len() as usize)
-                    .map_err(|e| MemoryBuildError::PrivateRamAlloc(e, *range))?;
-                va_mapper.set_range_name(
-                    range.start() as usize,
-                    range.len() as usize,
-                    "guest-ram-private",
-                );
-            }
-
-            // Mark private RAM as THP-eligible so khugepaged can collapse
-            // 4K pages into 2MB huge pages.
-            #[cfg(target_os = "linux")]
-            if self.transparent_hugepages {
-                for range in &ram_ranges {
-                    if let Err(e) =
-                        va_mapper.madvise_hugepage(range.start() as usize, range.len() as usize)
-                    {
-                        tracing::warn!(
-                            error = &e as &dyn std::error::Error,
-                            range = %range,
-                            "failed to mark RAM as THP eligible"
+                    if let Some(ref mappable) = backing.mappable {
+                        region
+                            .add_mapping(
+                                MemoryRange::new(0..sub_range.len()),
+                                mappable.clone(),
+                                file_offset,
+                                true,
+                            )
+                            .await;
+                    } else {
+                        va_mapper
+                            .alloc_range(sub_range.start() as usize, sub_range.len() as usize)
+                            .map_err(|e| MemoryBuildError::PrivateRamAlloc(e, *sub_range))?;
+                        va_mapper.set_range_name(
+                            sub_range.start() as usize,
+                            sub_range.len() as usize,
+                            "guest-ram-private",
                         );
+
+                        #[cfg(target_os = "linux")]
+                        if backing.transparent_hugepages {
+                            if let Err(e) = va_mapper.madvise_hugepage(
+                                sub_range.start() as usize,
+                                sub_range.len() as usize,
+                            ) {
+                                tracing::warn!(
+                                    error = &e as &dyn std::error::Error,
+                                    range = %sub_range,
+                                    "failed to mark RAM as THP eligible"
+                                );
+                            }
+                        }
                     }
+
+                    region
+                        .map(MapParams {
+                            writable: true,
+                            executable: true,
+                            prefetch: backing.prefetch && backing.mappable.is_some(),
+                        })
+                        .await;
+
+                    ram_regions.push(RamRegion {
+                        range: *sub_range,
+                        handle: region,
+                    });
+                    file_offset += sub_range.len();
                 }
             }
         }
 
-        let mut ram_regions = Vec::new();
-        let mut start = 0;
-        for range in &ram_ranges {
-            let region = region_manager
-                .client()
-                .new_region("ram".into(), *range, RAM_PRIORITY, true)
-                .await
-                .expect("regions cannot overlap yet");
-
-            if let Some(ref memory) = memory {
-                // File-backed mode: add mapping for this RAM range.
-                region
-                    .add_mapping(
-                        MemoryRange::new(0..range.len()),
-                        memory.clone(),
-                        start,
-                        true,
-                    )
-                    .await;
-            }
-            // In private_memory mode, skip add_mapping — no file-backed RAM.
-            // The SparseMapping VA is already committed via alloc_range() above.
-
-            region
-                .map(MapParams {
-                    writable: true,
-                    executable: true,
-                    prefetch: self.prefetch_ram && !self.private_memory,
-                })
-                .await;
-
-            ram_regions.push(RamRegion {
-                range: *range,
-                handle: region,
-            });
-            start += range.len();
-        }
-
         let gm = GuestMemoryManager {
-            guest_ram: memory,
+            guest_ram: backings,
             _thread: thread,
             ram_regions: Arc::new(ram_regions),
             mapping_manager,
@@ -569,6 +617,11 @@ impl SharedMemoryBacking {
     /// Create a SharedMemoryBacking from a mappable handle/fd.
     pub fn from_mappable(guest_ram: Mappable) -> Self {
         Self { guest_ram }
+    }
+
+    /// Returns the mappable, consuming this backing.
+    pub fn into_mappable(self) -> Mappable {
+        self.guest_ram
     }
 }
 
@@ -628,16 +681,23 @@ impl GuestMemoryManager {
     /// Returns the shared memory resources that can be used to reconstruct the
     /// memory backing.
     ///
-    /// This can be used with [`GuestMemoryBuilder::existing_backing`] to create a
-    /// new memory manager with the same memory state. Only one instance of this
-    /// type should be managing a given memory backing at a time, though, or the
+    /// The returned mappable can be passed back via
+    /// [`RamBackingRequest::existing_mappable`] to create a new memory
+    /// manager with the same memory state. Only one instance of this type
+    /// should be managing a given memory backing at a time, though, or the
     /// guest may see unpredictable results.
     ///
-    /// Returns `None` in private memory mode, where there is no shared
-    /// file-backed allocation.
+    /// Returns `None` unless there is exactly one backing and it is
+    /// file-backed. This currently means multi-backing and private-memory
+    /// configurations cannot be restarted.
     pub fn shared_memory_backing(&self) -> Option<SharedMemoryBacking> {
-        let guest_ram = self.guest_ram.clone()?;
-        Some(SharedMemoryBacking { guest_ram })
+        // Require exactly one backing, and it must be file-backed.
+        if self.guest_ram.len() != 1 {
+            return None;
+        }
+        Some(SharedMemoryBacking {
+            guest_ram: self.guest_ram[0].mappable.clone()?,
+        })
     }
 
     /// Attaches the guest memory to a partition, mapping it to the guest
@@ -752,6 +812,27 @@ mod tests {
     use super::*;
     use std::error::Error as _;
 
+    /// Build a GuestMemoryManager with the given backing range groups,
+    /// and return a GuestMemory handle for read/write testing.
+    async fn build_and_get_memory(
+        backing_ranges: &[&[MemoryRange]],
+    ) -> (GuestMemoryManager, GuestMemory) {
+        let max_addr = backing_ranges
+            .iter()
+            .flat_map(|ranges| ranges.iter())
+            .map(|r| r.end())
+            .max()
+            .unwrap_or(0);
+
+        let mut builder = GuestMemoryBuilder::new();
+        for ranges in backing_ranges {
+            builder = builder.add_backing(RamBackingRequest::new(ranges.to_vec()));
+        }
+        let mgr = builder.build(max_addr).await.unwrap();
+        let gm = mgr.client().guest_memory().await.unwrap();
+        (mgr, gm)
+    }
+
     #[test]
     fn test_validate_hugepage_size() {
         let page_size = SparseMapping::page_size() as u64;
@@ -837,5 +918,112 @@ mod tests {
             error.source().unwrap().to_string(),
             "Cannot allocate memory"
         );
+    }
+
+    #[test]
+    fn test_single_backing() {
+        DefaultPool::run_with(|_| async {
+            let page = SparseMapping::page_size() as u64;
+            let r = MemoryRange::new(0..4 * page);
+            let (_mgr, gm) = build_and_get_memory(&[&[r]]).await;
+
+            let pattern = vec![0xAB; page as usize];
+            gm.write_at(0, &pattern).unwrap();
+            let mut buf = vec![0u8; page as usize];
+            gm.read_at(0, &mut buf).unwrap();
+            assert_eq!(buf, pattern);
+
+            // Second page should be zeroed.
+            gm.read_at(page, &mut buf).unwrap();
+            assert_eq!(buf, vec![0u8; page as usize]);
+        });
+    }
+
+    #[test]
+    fn test_two_backings() {
+        DefaultPool::run_with(|_| async {
+            let page = SparseMapping::page_size() as u64;
+            let r0 = MemoryRange::new(0..2 * page);
+            let r1 = MemoryRange::new(2 * page..4 * page);
+            let (_mgr, gm) = build_and_get_memory(&[&[r0], &[r1]]).await;
+
+            // Write distinct patterns into each backing's region.
+            let pattern_a = vec![0xAA; page as usize];
+            let pattern_b = vec![0xBB; page as usize];
+            gm.write_at(0, &pattern_a).unwrap();
+            gm.write_at(2 * page, &pattern_b).unwrap();
+
+            let mut buf = vec![0u8; page as usize];
+            gm.read_at(0, &mut buf).unwrap();
+            assert_eq!(buf, pattern_a, "backing 0 should have pattern_a");
+
+            gm.read_at(2 * page, &mut buf).unwrap();
+            assert_eq!(buf, pattern_b, "backing 1 should have pattern_b");
+
+            // Unwritten pages within each backing should be zeroed.
+            gm.read_at(page, &mut buf).unwrap();
+            assert_eq!(buf, vec![0u8; page as usize]);
+            gm.read_at(3 * page, &mut buf).unwrap();
+            assert_eq!(buf, vec![0u8; page as usize]);
+        });
+    }
+
+    #[test]
+    fn test_two_backings_different_sizes() {
+        DefaultPool::run_with(|_| async {
+            let page = SparseMapping::page_size() as u64;
+            let r0 = MemoryRange::new(0..page);
+            let r1 = MemoryRange::new(page..4 * page);
+            let (_mgr, gm) = build_and_get_memory(&[&[r0], &[r1]]).await;
+
+            let pattern_a = vec![0x11; page as usize];
+            let pattern_b = vec![0x22; page as usize];
+            gm.write_at(0, &pattern_a).unwrap();
+            gm.write_at(page, &pattern_b).unwrap();
+
+            let mut buf = vec![0u8; page as usize];
+            gm.read_at(0, &mut buf).unwrap();
+            assert_eq!(buf, pattern_a);
+            gm.read_at(page, &mut buf).unwrap();
+            assert_eq!(buf, pattern_b);
+
+            // Last page of backing 1.
+            let pattern_c = vec![0x33; page as usize];
+            gm.write_at(3 * page, &pattern_c).unwrap();
+            gm.read_at(3 * page, &mut buf).unwrap();
+            assert_eq!(buf, pattern_c);
+
+            // Middle page of backing 1 should be zeroed.
+            gm.read_at(2 * page, &mut buf).unwrap();
+            assert_eq!(buf, vec![0u8; page as usize]);
+        });
+    }
+
+    #[test]
+    fn test_two_backings_with_gap() {
+        DefaultPool::run_with(|_| async {
+            let page = SparseMapping::page_size() as u64;
+            let r0 = MemoryRange::new(0..2 * page);
+            let r1 = MemoryRange::new(4 * page..6 * page);
+
+            let mgr = GuestMemoryBuilder::new()
+                .add_backing(RamBackingRequest::new(vec![r0]))
+                .add_backing(RamBackingRequest::new(vec![r1]))
+                .build(r1.end())
+                .await
+                .unwrap();
+            let gm = mgr.client().guest_memory().await.unwrap();
+
+            let pattern_a = vec![0xCC; page as usize];
+            let pattern_b = vec![0xDD; page as usize];
+            gm.write_at(0, &pattern_a).unwrap();
+            gm.write_at(4 * page, &pattern_b).unwrap();
+
+            let mut buf = vec![0u8; page as usize];
+            gm.read_at(0, &mut buf).unwrap();
+            assert_eq!(buf, pattern_a);
+            gm.read_at(4 * page, &mut buf).unwrap();
+            assert_eq!(buf, pattern_b);
+        });
     }
 }

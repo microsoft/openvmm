@@ -13,16 +13,19 @@ use crate::PAGE_SIZE64;
 use crate::ROOT_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
 use crate::port::PcieDownstreamPort;
+use crate::port::PciePortSettings;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use cxl_spec::CxlComponentRegisters;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
+use pci_core::bus_range::AssignedBusRange;
 use pci_core::msi::MsiTarget;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::ClassCode;
@@ -43,9 +46,24 @@ pub struct GenericPcieRootComplex {
     end_bus: u8,
     /// Intercept control for the ECAM MMIO region.
     ecam: Box<dyn ControlMmioIntercept>,
+    /// Intercept control for the CHBCR MMIO region, when present.
+    chbcr: Option<Box<dyn ControlMmioIntercept>>,
+    /// CXL Component Registers backing CHBCR accesses in CXL mode.
+    cxl_component_registers: Option<CxlComponentRegisters>,
     /// Map of root ports attached to the root complex, indexed by combined device and function numbers.
     #[inspect(with = "|x| inspect::iter_by_key(x).map_value(|(_, v)| v)")]
     ports: HashMap<u8, (Arc<str>, RootPort)>,
+}
+
+/// Information about a downstream port in a PCIe topology.
+pub struct DownstreamPortInfo {
+    /// The port number (device/function index).
+    pub port_number: u8,
+    /// The port name.
+    pub name: Arc<str>,
+    /// Shared bus range, updated by the config space emulator when the
+    /// guest programs secondary/subordinate bus numbers.
+    pub bus_range: AssignedBusRange,
 }
 
 /// A description of a generic PCIe root port.
@@ -54,6 +72,8 @@ pub struct GenericPcieRootPortDefinition {
     pub name: Arc<str>,
     /// Whether hotplug is enabled for this root port.
     pub hotplug: bool,
+    /// Express-level port settings (ACS, etc.).
+    pub settings: PciePortSettings,
 }
 
 /// A flat description of a PCIe switch without hierarchy.
@@ -66,6 +86,8 @@ pub struct GenericSwitchDefinition {
     pub parent_port: Arc<str>,
     /// Whether hotplug is enabled for this switch.
     pub hotplug: bool,
+    /// Express-level settings for downstream switch ports.
+    pub dsp_settings: PciePortSettings,
 }
 
 impl GenericSwitchDefinition {
@@ -75,12 +97,14 @@ impl GenericSwitchDefinition {
         num_downstream_ports: u8,
         parent_port: impl Into<Arc<str>>,
         hotplug: bool,
+        dsp_settings: PciePortSettings,
     ) -> Self {
         Self {
             name: name.into(),
             num_downstream_ports,
             parent_port: parent_port.into(),
             hotplug,
+            dsp_settings,
         }
     }
 }
@@ -102,6 +126,7 @@ impl GenericPcieRootComplex {
         register_mmio: &mut dyn RegisterMmioIntercept,
         start_bus: u8,
         end_bus: u8,
+        chbcr_range: Option<MemoryRange>,
         ecam_range: MemoryRange,
         ports: Vec<GenericPcieRootPortDefinition>,
         msi_target: &MsiTarget,
@@ -114,6 +139,24 @@ impl GenericPcieRootComplex {
         let mut ecam = register_mmio.new_io_region("ecam", ecam_range.len());
         ecam.map(ecam_range.start());
 
+        // Presence of CHBCR range indicates CXL mode, which needs a component-register
+        // backing object even if no capability payload blocks are registered yet.
+        let cxl_component_registers = chbcr_range.as_ref().map(|_| CxlComponentRegisters::new());
+
+        let chbcr = chbcr_range.map(|range| {
+            tracing::info!(
+                root_bus_start = start_bus,
+                root_bus_end = end_bus,
+                start = range.start(),
+                end = range.end(),
+                len = range.len(),
+                "pcie root complex CHBCR range"
+            );
+            let mut region = register_mmio.new_io_region("chbcr", range.len());
+            region.map(range.start());
+            region
+        });
+
         let port_map: HashMap<u8, (Arc<str>, RootPort)> = ports
             .into_iter()
             .enumerate()
@@ -125,8 +168,15 @@ impl GenericPcieRootComplex {
                 } else {
                     None
                 };
-                let root_port =
-                    RootPort::new(definition.name.clone(), hotplug_slot_number, msi_target);
+                // Derive a per-port MSI target with this port's devfn.
+                let port_msi_target = msi_target.with_devfn(device_number);
+                let root_port = RootPort::new(
+                    register_mmio,
+                    definition.name.clone(),
+                    hotplug_slot_number,
+                    &port_msi_target,
+                    definition.settings,
+                );
                 (device_number, (definition.name, root_port))
             })
             .collect();
@@ -135,7 +185,43 @@ impl GenericPcieRootComplex {
             start_bus,
             end_bus,
             ecam,
+            chbcr,
+            cxl_component_registers,
             ports: port_map,
+        }
+    }
+
+    /// Reads CHBCR bytes from the CXL component-register backing object.
+    ///
+    /// `offset` is relative to the start of the CHBCR MMIO range.
+    fn read_chbcr_component_registers(&self, offset: u16, data: &mut [u8]) -> IoResult {
+        let Some(component_regs) = &self.cxl_component_registers else {
+            data.fill(0);
+            return IoResult::Ok;
+        };
+
+        match component_regs.read(offset, data) {
+            IoResult::Err(IoError::InvalidRegister) => {
+                // Treat unmapped CHBCR offsets as reserved MMIO reads.
+                data.fill(0);
+                IoResult::Ok
+            }
+            res => res,
+        }
+    }
+
+    /// Writes CHBCR bytes into the CXL component-register backing object.
+    ///
+    /// `offset` is relative to the start of the CHBCR MMIO range.
+    fn write_chbcr_component_registers(&mut self, offset: u16, data: &[u8]) -> IoResult {
+        let Some(component_regs) = &mut self.cxl_component_registers else {
+            return IoResult::Ok;
+        };
+
+        match component_regs.write(offset, data) {
+            // Treat unmapped CHBCR offsets as handled MMIO writes.
+            IoResult::Err(IoError::InvalidRegister) => IoResult::Ok,
+            res => res,
         }
     }
 
@@ -169,14 +255,15 @@ impl GenericPcieRootComplex {
     }
 
     /// Enumerate the downstream ports of the root complex.
-    pub fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
-        let ports: Vec<(u8, Arc<str>)> = self
-            .ports
+    pub fn downstream_ports(&self) -> Vec<DownstreamPortInfo> {
+        self.ports
             .iter()
-            .map(|(port, (name, _))| (*port, name.clone()))
-            .collect();
-
-        ports
+            .map(|(port, (name, rp))| DownstreamPortInfo {
+                port_number: *port,
+                name: name.clone(),
+                bus_range: rp.port.bus_range(),
+            })
+            .collect()
     }
 
     /// Hot-add a device to a named port.
@@ -250,6 +337,55 @@ impl GenericPcieRootComplex {
 
         DecodedEcamAccess::UnexpectedIntercept
     }
+
+    fn mmio_read_non_ecam(&mut self, addr: u64, data: &mut [u8]) -> Option<IoResult> {
+        if let Some(chbcr) = &self.chbcr {
+            if let Some(offset) = chbcr.offset_of(addr) {
+                let Some(offset) = u16::try_from(offset).ok() else {
+                    data.fill(0);
+                    return Some(IoResult::Ok);
+                };
+                return Some(self.read_chbcr_component_registers(offset, data));
+            }
+        }
+
+        for (_, port) in self.ports.values_mut() {
+            if let Some((bar, offset)) = port.port.find_bar(addr) {
+                if let Err(err) =
+                    validate_aligned_access(addr, data.len(), &BAR_ALLOWED_ACCESS_SIZES)
+                {
+                    return Some(IoResult::Err(err));
+                }
+                return Some(port.port.bar_mmio_read(bar, offset, data));
+            }
+        }
+
+        None
+    }
+
+    fn mmio_write_non_ecam(&mut self, addr: u64, data: &[u8]) -> Option<IoResult> {
+        if let Some(chbcr) = &self.chbcr {
+            if let Some(offset) = chbcr.offset_of(addr) {
+                let Some(offset) = u16::try_from(offset).ok() else {
+                    return Some(IoResult::Err(IoError::InvalidRegister));
+                };
+                return Some(self.write_chbcr_component_registers(offset, data));
+            }
+        }
+
+        for (_, port) in self.ports.values_mut() {
+            if let Some((bar, offset)) = port.port.find_bar(addr) {
+                if let Err(err) =
+                    validate_aligned_access(addr, data.len(), &BAR_ALLOWED_ACCESS_SIZES)
+                {
+                    return Some(IoResult::Err(err));
+                }
+                return Some(port.port.bar_mmio_write(bar, offset, data));
+            }
+        }
+
+        None
+    }
 }
 
 fn ecam_size_from_bus_numbers(start_bus: u8, end_bus: u8) -> u64 {
@@ -276,19 +412,23 @@ impl ChipsetDevice for GenericPcieRootComplex {
     }
 }
 
-macro_rules! validate_ecam_intercept {
-    ($address:ident, $data:ident) => {
-        if !matches!($data.len(), 1 | 2 | 4) {
-            return IoResult::Err(IoError::InvalidAccessSize);
-        }
+const ECAM_ALLOWED_ACCESS_SIZES: [usize; 3] = [1, 2, 4];
+const BAR_ALLOWED_ACCESS_SIZES: [usize; 4] = [1, 2, 4, 8];
 
-        if !((($data.len() == 4) && ($address & 3 == 0))
-            || (($data.len() == 2) && ($address & 1 == 0))
-            || ($data.len() == 1))
-        {
-            return IoResult::Err(IoError::UnalignedAccess);
-        }
-    };
+fn validate_aligned_access(
+    address: u64,
+    len: usize,
+    allowed_sizes: &[usize],
+) -> Result<(), IoError> {
+    if !allowed_sizes.contains(&len) {
+        return Err(IoError::InvalidAccessSize);
+    }
+
+    if !address.is_multiple_of(len as u64) {
+        return Err(IoError::UnalignedAccess);
+    }
+
+    Ok(())
 }
 
 macro_rules! check_result {
@@ -304,7 +444,13 @@ macro_rules! check_result {
 
 impl MmioIntercept for GenericPcieRootComplex {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
-        validate_ecam_intercept!(addr, data);
+        if let Some(result) = self.mmio_read_non_ecam(addr, data) {
+            return result;
+        }
+
+        if let Err(err) = validate_aligned_access(addr, data.len(), &ECAM_ALLOWED_ACCESS_SIZES) {
+            return IoResult::Err(err);
+        }
 
         // N.B. Emulators internally only support 4-byte aligned accesses to
         // 4-byte registers, but the guest can use 1-, 2-, or 4 byte memory
@@ -344,7 +490,13 @@ impl MmioIntercept for GenericPcieRootComplex {
     }
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
-        validate_ecam_intercept!(addr, data);
+        if let Some(result) = self.mmio_write_non_ecam(addr, data) {
+            return result;
+        }
+
+        if let Err(err) = validate_aligned_access(addr, data.len(), &ECAM_ALLOWED_ACCESS_SIZES) {
+            return IoResult::Err(err);
+        }
 
         // N.B. Emulators internally only support 4-byte aligned accesses to
         // 4-byte registers, but the guest can use 1-, 2-, or 4-byte memory
@@ -412,12 +564,16 @@ impl RootPort {
     /// * `name` - The name for this root port
     /// * `hotplug_slot_number` - The slot number for hotplug support. `Some(slot_number)` enables hotplug, `None` disables it
     /// * `msi_target` - MSI target for interrupt delivery
+    /// * `settings` - Express-level port settings (ACS, etc.)
     pub fn new(
+        register_mmio: &mut dyn RegisterMmioIntercept,
         name: impl Into<Arc<str>>,
         hotplug_slot_number: Option<u32>,
         msi_target: &MsiTarget,
+        settings: PciePortSettings,
     ) -> Self {
         let name_str = name.into();
+
         let hardware_ids = HardwareIds {
             vendor_id: VENDOR_ID,
             device_id: ROOT_PORT_DEVICE_ID,
@@ -436,6 +592,9 @@ impl RootPort {
             false,
             hotplug_slot_number,
             msi_target,
+            settings,
+            Some(register_mmio),
+            None,
         );
 
         Self { port }
@@ -510,11 +669,13 @@ mod save_restore {
 
     mod state {
         use super::ConfigSpaceType1Emulator;
+        use super::CxlComponentRegisters;
         use super::SaveRestore;
         use mesh::payload::Protobuf;
         use vmcore::save_restore::SavedStateRoot;
 
         type RootPortCfgSpaceSavedState = <ConfigSpaceType1Emulator as SaveRestore>::SavedState;
+        type CxlComponentRegistersSavedState = <CxlComponentRegisters as SaveRestore>::SavedState;
 
         /// Saved state for a single root port.
         #[derive(Protobuf)]
@@ -526,6 +687,9 @@ mod save_restore {
             /// The root port Type 1 configuration space state.
             #[mesh(2)]
             pub cfg_space: RootPortCfgSpaceSavedState,
+            /// Optional CXL component-register state for this port.
+            #[mesh(3)]
+            pub cxl_component_registers: Option<CxlComponentRegistersSavedState>,
         }
 
         /// Saved state for the GenericPcieRootComplex.
@@ -541,6 +705,9 @@ mod save_restore {
             /// Saved state for each root port.
             #[mesh(3)]
             pub ports: Vec<PortSavedState>,
+            /// Optional CXL component-register state for CHBCR-backed root complexes.
+            #[mesh(4)]
+            pub cxl_component_registers: Option<CxlComponentRegistersSavedState>,
         }
     }
 
@@ -554,6 +721,7 @@ mod save_restore {
                 ports.push(state::PortSavedState {
                     port_number,
                     cfg_space: root_port.port.cfg_space.save()?,
+                    cxl_component_registers: root_port.port.save_cxl_component_registers_state()?,
                 });
             }
             ports.sort_by_key(|p| p.port_number);
@@ -562,6 +730,11 @@ mod save_restore {
                 start_bus: self.start_bus,
                 end_bus: self.end_bus,
                 ports,
+                cxl_component_registers: self
+                    .cxl_component_registers
+                    .as_mut()
+                    .map(|regs| regs.save())
+                    .transpose()?,
             })
         }
 
@@ -570,6 +743,7 @@ mod save_restore {
                 start_bus,
                 end_bus,
                 ports,
+                cxl_component_registers,
             } = state;
 
             // Validate that bus numbers match
@@ -605,10 +779,28 @@ mod save_restore {
 
                 if let Some((_, root_port)) = self.ports.get_mut(&port_state.port_number) {
                     root_port.port.cfg_space.restore(port_state.cfg_space)?;
+                    root_port.port.restore_cxl_component_registers_state(
+                        port_state.cxl_component_registers,
+                    )?;
                 } else {
                     return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
                         "root port {} not found",
                         port_state.port_number
+                    )));
+                }
+            }
+
+            match (&mut self.cxl_component_registers, cxl_component_registers) {
+                (Some(current), Some(saved)) => current.restore(saved)?,
+                (None, None) => {}
+                (Some(_), None) => {
+                    return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                        "CXL mode mismatch: current root complex has CHBCR registers but saved state does not"
+                    )));
+                }
+                (None, Some(_)) => {
+                    return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                        "CXL mode mismatch: saved state has CHBCR registers but current root complex does not"
                     )));
                 }
             }
@@ -622,6 +814,8 @@ mod save_restore {
 mod tests {
     use super::*;
     use crate::test_helpers::*;
+    use cxl_spec::CxlComponentRegisterType;
+    use cxl_spec::component_registers::test_helper::TestCxlComponentRegisterBlock;
     use pal_async::async_test;
 
     fn instantiate_root_complex(
@@ -633,16 +827,54 @@ mod tests {
             .map(|i| GenericPcieRootPortDefinition {
                 name: format!("test-port-{}", i).into(),
                 hotplug: false,
+                settings: PciePortSettings::default(),
             })
             .collect();
 
         let mut register_mmio = TestPcieMmioRegistration {};
         let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
-        let msi_conn = pci_core::msi::MsiConnection::new();
+        let rc_bus_range = AssignedBusRange::new();
+        rc_bus_range.set_bus_range(start_bus, end_bus);
+        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
         GenericPcieRootComplex::new(
             &mut register_mmio,
             start_bus,
             end_bus,
+            None,
+            ecam,
+            port_defs,
+            msi_conn.target(),
+        )
+    }
+
+    fn instantiate_root_complex_with_chbcr(
+        start_bus: u8,
+        end_bus: u8,
+        port_count: u8,
+        chbcr_start: u64,
+    ) -> GenericPcieRootComplex {
+        let port_defs = (0..port_count)
+            .map(|i| GenericPcieRootPortDefinition {
+                name: format!("test-port-{}", i).into(),
+                hotplug: false,
+                settings: PciePortSettings::default(),
+            })
+            .collect();
+
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
+        let chbcr = MemoryRange::new(
+            chbcr_start..(chbcr_start + cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES),
+        );
+        let rc_bus_range = AssignedBusRange::new();
+        rc_bus_range.set_bus_range(start_bus, end_bus);
+        let msi_conn = pci_core::msi::MsiConnection::new(rc_bus_range, 0);
+
+        GenericPcieRootComplex::new(
+            &mut register_mmio,
+            start_bus,
+            end_bus,
+            Some(chbcr),
             ecam,
             port_defs,
             msi_conn.target(),
@@ -846,6 +1078,94 @@ mod tests {
         assert_eq!(value_32, 0xDEAD_BEEF);
     }
 
+    #[test]
+    fn test_chbcr_reads_cxl_component_header_in_cxl_mode() {
+        let chbcr_start = 0x2000_0000;
+        let mut rc = instantiate_root_complex_with_chbcr(0, 0, 1, chbcr_start);
+
+        // CHBCR + 0x1000 maps to cache/mem page 0 header dword.
+        let mut header: u32 = 0;
+        rc.mmio_read(chbcr_start + 0x1000, header.as_mut_bytes())
+            .unwrap();
+        assert_eq!(header, 0x0011_0001);
+    }
+
+    #[test]
+    fn test_chbcr_read_write_redirects_to_component_registers() {
+        let chbcr_start = 0x3000_0000;
+        let mut rc = instantiate_root_complex_with_chbcr(0, 0, 1, chbcr_start);
+
+        // Install one payload register block into the component-register space.
+        assert!(
+            rc.cxl_component_registers
+                .as_mut()
+                .expect("CXL mode must allocate component registers")
+                .add_register(Box::new(TestCxlComponentRegisterBlock::new(
+                    CxlComponentRegisterType::CXL_CACHE_MEM_REGISTER,
+                    16,
+                )))
+        );
+
+        let value = 0x1122_3344u32;
+        rc.mmio_write(chbcr_start + 0x1008, value.as_bytes())
+            .unwrap();
+
+        let mut read_back: u32 = 0;
+        rc.mmio_read(chbcr_start + 0x1008, read_back.as_mut_bytes())
+            .unwrap();
+        assert_eq!(read_back, value);
+    }
+
+    #[test]
+    fn test_chbcr_8byte_read_write_redirects_to_component_registers() {
+        let chbcr_start = 0x3001_0000;
+        let mut rc = instantiate_root_complex_with_chbcr(0, 0, 1, chbcr_start);
+
+        // Install one payload register block into the component-register space.
+        assert!(
+            rc.cxl_component_registers
+                .as_mut()
+                .expect("CXL mode must allocate component registers")
+                .add_register(Box::new(TestCxlComponentRegisterBlock::new(
+                    CxlComponentRegisterType::CXL_CACHE_MEM_REGISTER,
+                    16,
+                )))
+        );
+
+        let value = 0x1122_3344_5566_7788u64;
+        rc.mmio_write(chbcr_start + 0x1008, value.as_bytes())
+            .unwrap();
+
+        let mut read_back: u64 = 0;
+        rc.mmio_read(chbcr_start + 0x1008, read_back.as_mut_bytes())
+            .unwrap();
+        assert_eq!(read_back, value);
+    }
+
+    #[test]
+    fn test_chbcr_unmapped_read_is_handled() {
+        let chbcr_start = 0x3002_0000;
+        let mut rc = instantiate_root_complex_with_chbcr(0, 0, 1, chbcr_start);
+
+        // This offset is not synthesized/populated and should still be
+        // treated as a handled CHBCR MMIO read.
+        let mut value: u64 = 0;
+        rc.mmio_read(chbcr_start + 0x800, value.as_mut_bytes())
+            .unwrap();
+        assert_eq!(value, 0);
+    }
+
+    #[test]
+    fn test_chbcr_unmapped_write_is_handled() {
+        let chbcr_start = 0x3003_0000;
+        let mut rc = instantiate_root_complex_with_chbcr(0, 0, 1, chbcr_start);
+
+        // Unmapped CHBCR writes should be ignored but treated as handled.
+        let value = 0x0123_4567_89ab_cdefu64;
+        rc.mmio_write(chbcr_start + 0x800, value.as_bytes())
+            .unwrap();
+    }
+
     #[async_test]
     async fn test_reset() {
         const COMMAND_REG: u64 = 0x4;
@@ -894,8 +1214,15 @@ mod tests {
     fn test_root_port_hotplug_options() {
         // Test with hotplug disabled (None)
         let root_port_no_hotplug = {
-            let c = pci_core::msi::MsiConnection::new();
-            RootPort::new("test-port-no-hotplug", None, c.target())
+            let mut register_mmio = TestPcieMmioRegistration {};
+            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+            RootPort::new(
+                &mut register_mmio,
+                "test-port-no-hotplug",
+                None,
+                c.target(),
+                PciePortSettings::default(),
+            )
         };
         // We can't easily verify hotplug is disabled without accessing internal state,
         // but we can verify the port was created successfully
@@ -910,8 +1237,15 @@ mod tests {
 
         // Test with hotplug enabled (Some(slot_number))
         let root_port_with_hotplug = {
-            let c = pci_core::msi::MsiConnection::new();
-            RootPort::new("test-port-hotplug", Some(5), c.target())
+            let mut register_mmio = TestPcieMmioRegistration {};
+            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+            RootPort::new(
+                &mut register_mmio,
+                "test-port-hotplug",
+                Some(5),
+                c.target(),
+                PciePortSettings::default(),
+            )
         };
         let mut vendor_device_id_hotplug: u32 = 0;
         root_port_with_hotplug
@@ -927,8 +1261,15 @@ mod tests {
     #[test]
     fn test_root_port_invalid_bus_range_handling() {
         let mut root_port = {
-            let c = pci_core::msi::MsiConnection::new();
-            RootPort::new("test-port", None, c.target())
+            let mut register_mmio = TestPcieMmioRegistration {};
+            let c = pci_core::msi::MsiConnection::new(AssignedBusRange::new(), 0);
+            RootPort::new(
+                &mut register_mmio,
+                "test-port",
+                None,
+                c.target(),
+                PciePortSettings::default(),
+            )
         };
 
         // Don't configure bus numbers, so the range should be 0..=0 (invalid)
@@ -1083,5 +1424,78 @@ mod tests {
         // Restore should fail because port counts don't match
         let result = rc2.restore(saved_state);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_save_restore_with_cxl_component_registers() {
+        use vmcore::save_restore::SaveRestore;
+
+        let chbcr_start = 0x3004_0000;
+        let mut rc = instantiate_root_complex_with_chbcr(0, 0, 1, chbcr_start);
+
+        assert!(
+            rc.cxl_component_registers
+                .as_mut()
+                .expect("CXL mode must allocate component registers")
+                .add_register(Box::new(TestCxlComponentRegisterBlock::new(
+                    CxlComponentRegisterType::CXL_CACHE_MEM_REGISTER,
+                    16,
+                )))
+        );
+
+        let programmed = 0x3344_5566u32;
+        rc.mmio_write(chbcr_start + 0x1008, programmed.as_bytes())
+            .unwrap();
+
+        let saved_state = rc.save().expect("save should succeed");
+
+        let mut rc2 = instantiate_root_complex_with_chbcr(0, 0, 1, chbcr_start);
+        assert!(
+            rc2.cxl_component_registers
+                .as_mut()
+                .expect("CXL mode must allocate component registers")
+                .add_register(Box::new(TestCxlComponentRegisterBlock::new(
+                    CxlComponentRegisterType::CXL_CACHE_MEM_REGISTER,
+                    16,
+                )))
+        );
+
+        rc2.restore(saved_state).expect("restore should succeed");
+
+        let mut read_back: u32 = 0;
+        rc2.mmio_read(chbcr_start + 0x1008, read_back.as_mut_bytes())
+            .unwrap();
+        assert_eq!(read_back, programmed);
+    }
+
+    #[test]
+    fn test_bus_range_updated_on_cfg_write() {
+        const SECONDARY_BUS_NUM_REG: u64 = 0x19;
+        const SUBORDINATE_BUS_NUM_REG: u64 = 0x1A;
+
+        let mut rc = instantiate_root_complex(0, 255, 1);
+
+        let endpoint = TestPcieEndpoint::new(
+            |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
+            |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
+        );
+
+        // Get the bus_range from the port before attaching a device.
+        let bus_range = rc.downstream_ports().into_iter().next().unwrap().bus_range;
+        assert_eq!(bus_range.bus_range(), (0, 0));
+
+        rc.add_pcie_device(0, "ep", Box::new(endpoint)).unwrap();
+
+        // Program secondary=5, subordinate=10 via ECAM MMIO writes.
+        rc.mmio_write(SECONDARY_BUS_NUM_REG, &[5]).unwrap();
+        rc.mmio_write(SUBORDINATE_BUS_NUM_REG, &[10]).unwrap();
+
+        // The shared AssignedBusRange should reflect the new values.
+        assert_eq!(bus_range.bus_range(), (5, 10));
+
+        // Reprogram bus numbers and verify tracking follows.
+        rc.mmio_write(SECONDARY_BUS_NUM_REG, &[20]).unwrap();
+        rc.mmio_write(SUBORDINATE_BUS_NUM_REG, &[30]).unwrap();
+        assert_eq!(bus_range.bus_range(), (20, 30));
     }
 }

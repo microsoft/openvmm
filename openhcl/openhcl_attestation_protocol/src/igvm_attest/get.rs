@@ -99,6 +99,8 @@ open_enum! {
         TVM_REPORT = 3,
         /// TDX report
         TDX_VM_REPORT = 4,
+        /// CCA report
+        CCA_VM_REPORT = 5,
     }
 }
 

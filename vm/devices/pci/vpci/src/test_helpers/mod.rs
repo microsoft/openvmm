@@ -76,8 +76,7 @@ impl TestVpciInterruptControllerInner {
 }
 
 impl SignalMsi for TestVpciInterruptControllerInner {
-    fn signal_msi(&self, rid: u32, address: u64, data: u32) {
-        assert_eq!(rid, 0);
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         self.deliver_interrupt(address, data);
     }
 }

@@ -3,7 +3,7 @@
 
 //! XTS-AES-256 encryption and decryption.
 
-#![cfg(any(openssl, all(native, windows)))]
+#![cfg(any(openssl, symcrypt, all(native, windows)))]
 
 #[cfg(openssl)]
 mod ossl;
@@ -14,6 +14,11 @@ use ossl as sys;
 mod win;
 #[cfg(all(native, windows))]
 use win as sys;
+
+#[cfg(symcrypt)]
+mod symcrypt;
+#[cfg(symcrypt)]
+use symcrypt as sys;
 
 use thiserror::Error;
 
@@ -52,7 +57,10 @@ pub struct XtsAes256EncCtx<'a>(sys::XtsAes256EncCtxInner<'a>);
 
 impl XtsAes256EncCtx<'_> {
     /// Encrypts `data` using the provided `tweak`.
-    pub fn cipher(&mut self, tweak: u128, data: &mut [u8]) -> Result<(), XtsAes256Error> {
+    // BCrypt only supports 64-bit tweaks, internally padding out the high 8
+    // bytes with zeroes (Why?). This is fine for our purposes but it's a
+    // bit annoying. We restrict all backends to 64-bit tweaks for consistency.
+    pub fn cipher(&mut self, tweak: u64, data: &mut [u8]) -> Result<(), XtsAes256Error> {
         self.0.cipher(tweak, data)
     }
 }
@@ -62,7 +70,10 @@ pub struct XtsAes256DecCtx<'a>(sys::XtsAes256DecCtxInner<'a>);
 
 impl XtsAes256DecCtx<'_> {
     /// Decrypts `data` using the provided `tweak`.
-    pub fn cipher(&mut self, tweak: u128, data: &mut [u8]) -> Result<(), XtsAes256Error> {
+    // BCrypt only supports 64-bit tweaks, internally padding out the high 8
+    // bytes with zeroes (Why?). This is fine for our purposes but it's a
+    // bit annoying. We restrict all backends to 64-bit tweaks for consistency.
+    pub fn cipher(&mut self, tweak: u64, data: &mut [u8]) -> Result<(), XtsAes256Error> {
         self.0.cipher(tweak, data)
     }
 }
@@ -80,7 +91,7 @@ mod tests {
              3141592653589793238462643383279502884197169399375105820974944592",
         )
         .unwrap();
-        let tweak: u128 = 0;
+        let tweak = 0;
         let plain = hex::decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
             .unwrap();
         let expected_ciphertext =

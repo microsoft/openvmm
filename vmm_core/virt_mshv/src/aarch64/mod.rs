@@ -19,6 +19,7 @@ use crate::create_vm_with_retry;
 use aarch64defs::EsrEl2;
 use aarch64defs::ExceptionClass;
 use aarch64defs::IssDataAbort;
+use aarch64defs::Vendor;
 use guestmem::DoorbellRegistration;
 use hvdef::HvArm64RegisterName;
 use hvdef::HvDeliverabilityNotificationsRegister;
@@ -57,6 +58,7 @@ impl virt::Hypervisor for LinuxMshv {
             platform_gsiv: None,
             // TODO: query from hypervisor
             supports_gic_v3: true,
+            supports_its: false,
         }
     }
 
@@ -136,7 +138,9 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
         let caps = Aarch64PartitionCapabilities {
+            isolation: virt::IsolationType::None,
             supports_aarch32_el0: false,
+            vendor: Vendor::ARM,
         };
 
         let inner = Arc::new(MshvPartitionInner {
@@ -192,7 +196,7 @@ impl virt::Partition for MshvPartition {
     }
 
     fn request_msi(&self, _vtl: Vtl, request: MsiRequest) {
-        self.inner.signal_msi(0, request.address, request.data);
+        self.inner.signal_msi(None, request.address, request.data);
     }
 
     fn request_yield(&self, vp_index: VpIndex) {
@@ -294,7 +298,7 @@ impl virt::DeviceBuilder for MshvPartition {
 }
 
 impl SignalMsi for MshvPartitionInner {
-    fn signal_msi(&self, _rid: u32, _address: u64, data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, _address: u64, data: u32) {
         self.set_spi_irq(data, true);
     }
 }
@@ -361,7 +365,16 @@ impl MshvProcessor<'_> {
 
         match ec {
             ExceptionClass::DATA_ABORT_LOWER => {
-                let iss = IssDataAbort::from(syndrome.iss());
+                let iss = IssDataAbort::from(
+                    u32::from(syndrome.lower_iss())
+                        | (u32::from(syndrome.wnr()) << 6)
+                        | (u32::from(syndrome.mid_iss()) << 7)
+                        | (u32::from(syndrome.b_srt()) << 16)
+                        | (u32::from(syndrome.a()) << 21)
+                        | (u32::from(syndrome.b()) << 22)
+                        | (u32::from(syndrome.c()) << 23)
+                        | (u32::from(syndrome.d()) << 24),
+                );
                 if !iss.isv() {
                     return Err(dev.fatal_error(
                         "data abort with no valid ISS (instruction syndrome not valid)"

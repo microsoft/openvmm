@@ -51,7 +51,10 @@ use thiserror::Error;
 pub struct VaMapper {
     inner: Arc<MapperInner>,
     process: Option<RemoteProcess>,
-    private_ram: bool,
+    /// Ranges backed by private anonymous memory.
+    /// Page faults in these ranges commit pages directly instead of
+    /// requesting a file-backed mapping from the MappingManager.
+    private_ranges: Vec<MemoryRange>,
     _thread: JoinHandle<()>,
 }
 
@@ -169,7 +172,7 @@ pub enum VaMapperError {
     MemoryManagerGone(#[source] RpcError),
     #[error("failed to reserve address space")]
     Reserve(#[source] std::io::Error),
-    #[error("remote mappers are not supported in private memory mode")]
+    #[error("remote mappers are not supported when any RAM backing uses private memory")]
     RemoteWithPrivateMemory,
 }
 
@@ -205,7 +208,7 @@ impl VaMapper {
         req_send: mesh::Sender<MappingRequest>,
         len: u64,
         remote_process: Option<RemoteProcess>,
-        private_ram: bool,
+        private_ranges: Vec<MemoryRange>,
         minimum_alignment: Option<usize>,
     ) -> Result<Self, VaMapperError> {
         let mapping = match &remote_process {
@@ -257,9 +260,14 @@ impl VaMapper {
         Ok(VaMapper {
             inner,
             process: remote_process,
-            private_ram,
+            private_ranges,
             _thread: thread,
         })
+    }
+
+    /// Returns true if `addr` falls within a private range.
+    fn is_private(&self, addr: u64) -> bool {
+        self.private_ranges.iter().any(|r| r.contains_addr(addr))
     }
 
     /// Ensures a mapping has been established for the given range.
@@ -285,9 +293,8 @@ impl VaMapper {
     /// Allocates private anonymous memory for a range within the mapping.
     ///
     /// This replaces the placeholder at the given offset with committed
-    /// anonymous memory. Only valid when private_ram mode is enabled.
-    pub fn alloc_range(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
-        assert!(self.private_ram, "alloc_range requires private RAM mode");
+    /// anonymous memory.
+    pub(crate) fn alloc_range(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
         self.inner.mapping.alloc(offset, len)
     }
 
@@ -297,24 +304,24 @@ impl VaMapper {
     }
 
     /// Marks a range as eligible for Transparent Huge Pages.
-    ///
-    /// Only valid when private_ram mode is enabled.
     #[cfg(target_os = "linux")]
-    pub fn madvise_hugepage(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
-        assert!(
-            self.private_ram,
-            "madvise_hugepage requires private RAM mode"
-        );
+    pub(crate) fn madvise_hugepage(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
         self.inner.mapping.madvise_hugepage(offset, len)
     }
 
     /// Decommits a range of private RAM, releasing physical pages back to the
     /// host.
     ///
-    /// Only valid when private_ram mode is enabled.
+    /// The caller must ensure this is only called on ranges backed by
+    /// private anonymous memory (allocated via [`alloc_range`](Self::alloc_range)).
     #[expect(dead_code)] // Will be used by ballooning / memory hot-remove.
     pub fn decommit(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
-        assert!(self.private_ram, "decommit requires private RAM mode");
+        assert!(
+            self.private_ranges
+                .iter()
+                .any(|r| r.contains(&MemoryRange::new(offset as u64..offset as u64 + len as u64))),
+            "decommit called on non-private range"
+        );
         self.inner.mapping.decommit(offset, len)
     }
 }
@@ -345,8 +352,8 @@ unsafe impl GuestMemoryAccess for VaMapper {
     ) -> PageFaultAction {
         assert!(!bitmap_failure, "bitmaps are not used");
 
-        if self.private_ram {
-            // Private RAM mode: commit the page(s) directly.
+        if self.is_private(address) {
+            // Private RAM: commit the page(s) directly.
             #[cfg(windows)]
             {
                 // Commit in 64KB-aligned chunks to amortize overhead.
@@ -369,7 +376,7 @@ unsafe impl GuestMemoryAccess for VaMapper {
                 // If we get here, something is wrong.
                 return PageFaultAction::Fail(PageFaultError::new(
                     guestmem::GuestMemoryErrorKind::Other,
-                    std::io::Error::other("unexpected page fault in private RAM mode on Linux"),
+                    std::io::Error::other("unexpected page fault in private RAM range on Linux"),
                 ));
             }
         }
@@ -394,7 +401,7 @@ unsafe impl GuestMemoryAccess for VaMapper {
     }
 
     fn sharing(&self) -> Option<GuestMemorySharing> {
-        if self.private_ram {
+        if !self.private_ranges.is_empty() {
             return None;
         }
         Some(GuestMemorySharing::new(DmaRegionProvider {

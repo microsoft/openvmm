@@ -36,6 +36,7 @@ use pal_async::timer::PolledTimer;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
 use parking_lot::Mutex;
+use pci_core::bus_range::AssignedBusRange;
 use pci_core::msi::MsiConnection;
 use pci_core::spec::caps::CapabilityId;
 use pci_core::spec::cfg_space;
@@ -1391,7 +1392,7 @@ impl VirtioPciTestDevice {
     ) -> Self {
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
         let mem = GuestMemory::new("test", test_mem.clone());
-        let msi_conn = MsiConnection::new();
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
 
         let dev = VirtioPciDevice::new(
@@ -2875,7 +2876,7 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
 async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
-    let msi_conn = MsiConnection::new();
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
 
     let mut dev = VirtioPciDevice::new(
         Box::new(FailingTestDevice {
@@ -3713,7 +3714,7 @@ impl PciTestTransport {
     fn new(device: Box<dyn DynVirtioDevice>, driver: &DefaultDriver, num_queues: u16) -> Self {
         let test_mem = VirtioTestMemoryAccess::new();
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem;
-        let msi_conn = MsiConnection::new();
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
 
         let mut dev = VirtioPciDevice::new(
             device,
@@ -4227,7 +4228,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     assert_ne!(saved.common.driver_feature_banks[0] & 2, 0);
 
     // Create a new device that does NOT support that device-specific feature.
-    let msi_conn = MsiConnection::new();
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
     let mut dev2 = VirtioPciDevice::new(
         Box::new(TestDevice::new(
             &driver_source,
@@ -4261,7 +4262,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
 async fn pci_save_not_supported_device(_driver: DefaultDriver) {
     use vmcore::save_restore::SaveRestore;
 
-    let msi_conn = MsiConnection::new();
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
 
     // FailingTestDevice does not override supports_save_restore (default false).
     let mut dev = VirtioPciDevice::new(

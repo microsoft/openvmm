@@ -128,6 +128,12 @@ pub struct BuildIgvmCliCustomizations {
     #[clap(long)]
     pub with_mi_secure: bool,
 
+    /// Disable secure AVIC support for SNP. This adds the
+    /// `disable_secure_avic` cargo feature and sets `secure_avic` to
+    /// `disabled` in the IGVM manifest.
+    #[clap(long)]
+    pub disable_secure_avic: bool,
+
     /// Path to custom openvmm_hcl binary, none means openhcl will be built.
     #[clap(long)]
     pub custom_openvmm_hcl: Option<PathBuf>,
@@ -297,6 +303,7 @@ impl IntoPipeline for BuildIgvmCli {
                     with_perf_tools,
                     with_debuginfo,
                     with_mi_secure,
+                    disable_secure_avic,
                     custom_openvmm_hcl,
                     custom_openhcl_boot,
                     custom_uefi,
@@ -431,6 +438,7 @@ impl IntoPipeline for BuildIgvmCli {
                 with_perf_tools,
                 with_debuginfo,
                 with_mi_secure,
+                disable_secure_avic,
                 override_kernel_pkg: override_kernel_pkg.map(|p| match p {
                     KernelPackageKindCli::Main => OpenhclKernelPackage::Main,
                     KernelPackageKindCli::Cvm => OpenhclKernelPackage::Cvm,

@@ -144,6 +144,58 @@ attached to a root port to appear as PCIe devices in the guest.
 --pcie-root-complex rc0 --pcie-root-port rc0:rp0
 ```
 
+`--pcie-root-complex` accepts optional comma-separated options after the root
+complex name:
+
+```sh
+--pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255
+```
+
+- `segment=<N>`: PCIe segment number for the root complex.
+- `start_bus=<N>` and `end_bus=<N>`: inclusive bus range assigned to that
+  root complex.
+- `low_mmio=<SIZE>` and `high_mmio=<SIZE>`: low/high MMIO window sizes.
+- `hdm=<SIZE>`: CXL HDM decoder MMIO window size (CFMWS window). Default
+  is `1G`.
+- `hdm_window_restrictions=<MASK>`: CFMWS window restrictions bitmask
+  (`u16`, decimal or `0x`-prefixed hex). Default is `0x1`
+  (`DEVICE_COHERENT`, bit 0 set).
+  Defined bits:
+  0: device coherent
+  1: host-only coherent
+  2: volatile
+  3: persistent
+  4: fixed device configuration
+  5: BI
+  Bits 15:6 are reserved and rejected.
+
+### Root port and switch options
+
+`--pcie-root-port` accepts optional comma-separated options after the port
+name:
+
+```sh
+--pcie-root-port rc0:rp0,hotplug,acs=0x005f,cxl
+```
+
+- `hotplug`: enables hotplug support for that root port.
+- `acs=<mask>`: sets the Access Control Services capability mask for the
+  root port. The value can be decimal or hexadecimal. Default is `0x005f`.
+  Use `acs=0` to disable ACS for a root port.
+- `cxl`: marks the root port as CXL-capable.
+
+`--pcie-switch` accepts optional comma-separated options as well:
+
+```sh
+--pcie-switch rp0:switch0,num_downstream_ports=4,acs=0x005f
+```
+
+- `num_downstream_ports=<N>`: number of downstream ports for the switch.
+- `hotplug`: enables hotplug support on all downstream switch ports.
+- `acs=<mask>`: ACS capability mask requested for downstream switch ports.
+  The upstream switch port does not expose ACS. Default is `0x005f`.
+  Use `acs=0` to disable ACS for switch downstream ports.
+
 ### Attaching devices to PCIe
 
 Several device types support the `pcie_port=<name>` option to attach to a
@@ -156,6 +208,16 @@ PCIe root port. The syntax varies slightly between device types:
 --nvme file:/path/to/disk.raw,pcie_port=rp0
 --disk file:/path/to/disk.raw,pcie_port=rp0
 ```
+
+**CXL test endpoint** (comma-separated option): `--cxl-test`
+
+```sh
+--cxl-test mem:1G,pcie_port=rp0
+```
+
+`--cxl-test` creates a CXL Type-3 test endpoint with one component-register
+BAR.
+The `mem:<len>` value sets the emulated HDM size and allocates backing memory.
 
 **NICs** (colon-prefixed): `--net`, `--virtio-net`, `--mana`
 
@@ -189,8 +251,30 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs,pcie_port=rp0
 ```
 
-**VFIO device assignment** (Linux only): `--vfio`
+**VFIO device assignment** (Linux only): `--vfio` (and optional `--iommu`)
 
 ```sh
---vfio rp0:0000:01:00.0
+# Legacy VFIO group/container path:
+--vfio host=0000:01:00.0,port=rp0
+
+# Modern VFIO cdev + iommufd path (Linux >= 6.6):
+--iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
 ```
+
+### SMMU (aarch64 only)
+
+`--smmu <RC_NAME>` enables an emulated Arm SMMUv3 IOMMU for the named
+root complex. The flag is repeatable — use one `--smmu` per root complex
+that should have an SMMU. Devices behind a covered root complex get
+software IOVA→GPA translation for DMA and MSI addresses.
+
+```sh
+# Enable SMMU on root complex rc0
+--smmu rc0
+
+# Multiple root complexes
+--smmu rc0 --smmu rc1
+```
+
+VFIO devices cannot currently be placed behind an SMMU-covered root
+complex because iommufd nested translation is not yet available.

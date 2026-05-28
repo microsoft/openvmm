@@ -516,6 +516,7 @@ pub fn write_dt(
         IsolationType::Vbs => "vbs",
         IsolationType::Snp => "snp",
         IsolationType::Tdx => "tdx",
+        IsolationType::Cca => "cca",
     };
     openhcl_builder = openhcl_builder.add_str(p_isolation_type, isolation_type)?;
 

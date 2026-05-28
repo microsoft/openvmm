@@ -95,6 +95,7 @@ pub use memory_manager::GuestMemoryClient;
 pub use memory_manager::GuestMemoryManager;
 pub use memory_manager::MemoryBuildError;
 pub use memory_manager::PartitionAttachError;
+pub use memory_manager::RamBackingRequest;
 pub use memory_manager::RamVisibility;
 pub use memory_manager::RamVisibilityControl;
 pub use memory_manager::SharedMemoryBacking;

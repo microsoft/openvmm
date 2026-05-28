@@ -110,9 +110,14 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
     _gic_device: kvm::Device,
+    /// The ITS device fd, kept alive for the VM lifetime.
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
-    gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
+    _its_device: Option<kvm::Device>,
+    /// MSI controller configuration (v2m, ITS, or none).
+    #[cfg(guest_arch = "aarch64")]
+    #[inspect(skip)]
+    gic_msi: vm_topology::processor::aarch64::GicMsiController,
     /// Total configured GIC interrupt count (SGIs + PPIs + SPIs).
     #[cfg(guest_arch = "aarch64")]
     gic_nr_irqs: u32,

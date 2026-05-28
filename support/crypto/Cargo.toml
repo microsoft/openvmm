@@ -7,6 +7,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
+# Enable test-only helper functions.
+test_helpers = ["x509-cert?/builder"]
+
 # If the chosen backend supports it, vendor it.
 # If the chosen backend is natively available, this feature is a no-op.
 # If the chosen backend is not natively available and can't be vendored, this will trigger a compile error.
@@ -22,8 +25,27 @@ symcrypt = [
     "dep:symcrypt",
     "symcrypt/sha1",
     # The Symcrypt backend uses RustCrypto crates for de/serialization only.
+    "dep:cms",
     "dep:der",
+    "dep:pkcs1",
+    "dep:pkcs8",
+    "dep:signature",
+    "dep:x509-cert",
+]
+
+# Use RustCrypto crates instead of any native backend.
+# Note that some of these crates have known security issues.
+# This backend should not be used in production scenarios.
+rust = [
+    "dep:aes-kw",
+    "dep:cms",
+    "dep:der",
+    "dep:getrandom",
+    "dep:pkcs1",
+    "dep:pkcs8",
     "dep:rsa",
+    "dep:sha1",
+    "dep:sha2",
     "dep:x509-cert",
 ]
 
@@ -33,9 +55,17 @@ openssl = { workspace = true, optional = true }
 
 symcrypt = { workspace = true, optional = true }
 
+aes-kw = { workspace = true, optional = true }
+cms = { workspace = true, optional = true }
 der = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true, features = ["sys_rng"] }
+pkcs1 = { workspace = true, optional = true }
+pkcs8 = { workspace = true, optional = true, features = ["alloc"] }
 rsa = { workspace = true, optional = true, features = ["encoding", "sha2"] }
-x509-cert = { workspace = true, optional = true, features = ["builder"] }
+sha1 = { workspace = true, optional = true, features = ["oid"] }
+sha2 = { workspace = true, optional = true }
+signature = { workspace = true, optional = true, features = ["alloc"] }
+x509-cert = { workspace = true, optional = true }
 
 anyhow.workspace = true
 thiserror.workspace = true
@@ -56,6 +86,7 @@ openssl.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
+x509-cert = { workspace = true, features = ["builder"] }
 
 [lints]
 workspace = true

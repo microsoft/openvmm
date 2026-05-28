@@ -4,6 +4,7 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod bzimage;
 #[warn(missing_docs)]
 pub mod common;
 pub mod cpuid;

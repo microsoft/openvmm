@@ -11,6 +11,8 @@ use guestmem::GuestMemory;
 use hvdef::Vtl;
 use pal_async::DefaultDriver;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use user_driver::DmaClient;
 use virt::PartitionCapabilities;
 use virt::Processor;
 use virt::StopVpSource;
@@ -27,11 +29,152 @@ use zerocopy::TryFromBytes as _;
 
 pub const COMMAND_ADDRESS: u64 = 0xffff_0000;
 
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+mod cca {
+    use super::DmaClient;
+    use super::MemoryLayout;
+    use super::Options;
+    use crate::HypervisorOpt;
+    use anyhow::Context as _;
+    use core::ops::Range;
+    use memory_range::MemoryRange;
+    use std::sync::Arc;
+    use underhill_mem::MemoryAcceptor;
+    use user_driver::lockmem::LockedMemorySpawner;
+    use user_driver::memory::MemoryBlock;
+    use user_driver::memory::PAGE_SIZE;
+    use user_driver::memory::PAGE_SIZE64;
+    use virt::IsolationType;
+    use vm_topology::memory::MemoryRangeWithNode;
+
+    pub(super) struct CcaState {
+        pub(super) private_dma_client: Arc<dyn DmaClient>,
+        pub(super) _guest_ram_backing: MemoryBlock,
+    }
+
+    pub(super) fn build(
+        opts: &Options,
+        memory_layout: &mut MemoryLayout,
+        ram_size: u64,
+    ) -> anyhow::Result<Option<CcaState>> {
+        let hv = opts.hv.expect("hv must have a finalized value");
+        match hv {
+            HypervisorOpt::Cca => {
+                let mut map_size = ram_size as usize;
+                let private_dma_client: Arc<dyn DmaClient> = Arc::new(LockedMemorySpawner);
+
+                let (private_memory, private_ram_pfn) = {
+                    const BITMAP_ALIGNMENT: u64 = PAGE_SIZE64 * 8;
+                    const MAX_ALLOC_ATTEMPTS: usize = 4;
+                    let mut selected = None;
+
+                    for _attempt in 0..MAX_ALLOC_ATTEMPTS {
+                        let private_memory = private_dma_client
+                            .allocate_dma_buffer(map_size)
+                            .with_context(|| {
+                                format!(
+                                    "failed to allocate private CCA RAM buffer of size {map_size}"
+                                )
+                            })?;
+
+                        let asking_size = ram_size
+                            .checked_add(BITMAP_ALIGNMENT - PAGE_SIZE64)
+                            .context("private CCA RAM search size overflowed")?;
+                        if let Some(pfns) =
+                            contiguous_subpfns(&private_memory, asking_size as usize)
+                        {
+                            let page_count = (ram_size as usize).div_ceil(PAGE_SIZE);
+                            if let Some(start_index) = pfns
+                                .iter()
+                                .position(|pfn| {
+                                    (pfn * PAGE_SIZE64).is_multiple_of(BITMAP_ALIGNMENT)
+                                })
+                                .filter(|&start_index| pfns.len() - start_index >= page_count)
+                            {
+                                selected = Some((private_memory, pfns[start_index]));
+                                break;
+                            }
+                        }
+
+                        map_size = map_size
+                            .checked_mul(2)
+                            .context("private CCA RAM allocation size overflowed while retrying")?;
+                    }
+
+                    selected.with_context(|| {
+                        format!(
+                            "failed to allocate private CCA RAM with {ram_size} contiguous bytes after {MAX_ALLOC_ATTEMPTS} attempts"
+                        )
+                    })?
+                };
+
+                private_memory.write_zeros(0, private_memory.len());
+
+                let pa = private_ram_pfn * PAGE_SIZE64;
+                let start = pa;
+                let end = pa
+                    .checked_add(ram_size)
+                    .context("private CCA RAM range overflowed")?;
+
+                *memory_layout = MemoryLayout::new_from_ranges(
+                    &[MemoryRangeWithNode {
+                        range: MemoryRange::new(Range { start, end }),
+                        vnode: 0,
+                    }],
+                    &[],
+                )
+                .context("bad memory layout")?;
+
+                // Grant GPA to Plane1 (eqv. VTL0)
+                let ram = memory_layout.ram().iter().map(|r| r.range);
+                let acceptor = MemoryAcceptor::new(IsolationType::Cca)?;
+                for range in ram {
+                    acceptor.apply_initial_lower_vtl_protections(range)?;
+                }
+
+                Ok(Some(CcaState {
+                    private_dma_client,
+                    _guest_ram_backing: private_memory,
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Returns a sorted contiguous subset of PFNs large enough for `asking_size` bytes.
+    fn contiguous_subpfns(memory: &MemoryBlock, asking_size: usize) -> Option<Vec<u64>> {
+        let page_count = asking_size.div_ceil(PAGE_SIZE);
+        if page_count == 0 {
+            return Some(Vec::new());
+        }
+
+        let mut pfns = memory.pfns().to_vec();
+        pfns.sort_unstable();
+
+        let mut run_start = 0;
+        for i in 1..=pfns.len() {
+            let run_ended = i == pfns.len() || pfns[i - 1] + 1 != pfns[i];
+            if run_ended {
+                if i - run_start >= page_count {
+                    pfns.truncate(run_start + page_count);
+                    pfns.drain(..run_start);
+                    return Some(pfns);
+                }
+                run_start = i;
+            }
+        }
+
+        None
+    }
+}
+
 pub struct CommonState {
     pub driver: DefaultDriver,
     pub opts: Options,
     pub processor_topology: ProcessorTopology,
     pub memory_layout: MemoryLayout,
+    #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+    cca: Option<cca::CcaState>,
 }
 
 pub struct RunContext<'a> {
@@ -51,6 +194,20 @@ pub enum TestResult {
 }
 
 impl CommonState {
+    #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+    pub fn cca_private_dma_client(&self) -> Arc<dyn DmaClient> {
+        self.cca
+            .as_ref()
+            .expect("CCA private DMA client is only available when running with --hv cca")
+            .private_dma_client
+            .clone()
+    }
+
+    #[cfg(all(target_os = "linux", not(guest_arch = "aarch64")))]
+    pub fn cca_private_dma_client(&self) -> Arc<dyn DmaClient> {
+        panic!("CCA private DMA client is only available on aarch64")
+    }
+
     pub async fn new(driver: DefaultDriver, opts: Options) -> anyhow::Result<Self> {
         #[cfg(guest_arch = "x86_64")]
         let processor_topology = TopologyBuilder::new_x86()
@@ -65,7 +222,7 @@ impl CommonState {
                 gic_version: vm_topology::processor::aarch64::GicVersion::V3 {
                     redistributors_base: 0xff020000,
                 },
-                gic_v2m: None,
+                gic_msi: vm_topology::processor::aarch64::GicMsiController::None,
                 pmu_gsiv: None,
                 virt_timer_ppi: 20, // DEFAULT_VIRT_TIMER_PPI
                 gic_nr_irqs: 256,
@@ -74,14 +231,23 @@ impl CommonState {
             .context("failed to build processor topology")?;
 
         let ram_size = 0x400000;
-        let memory_layout =
+
+        #[cfg_attr(
+            not(all(target_os = "linux", guest_arch = "aarch64")),
+            expect(unused_mut)
+        )]
+        let mut memory_layout =
             MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
+        #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+        let cca = cca::build(&opts, &mut memory_layout, ram_size)?;
 
         Ok(Self {
             driver,
             opts,
             processor_topology,
             memory_layout,
+            #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+            cca,
         })
     }
 
