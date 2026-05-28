@@ -1323,7 +1323,7 @@ mod tests {
         }
 
         // Verify the downstream port bus range is set
-        if let Some((_, downstream_port)) = switch.downstream_ports.get(0) {
+        if let Some((_, downstream_port)) = switch.downstream_ports.first() {
             let bus_range = downstream_port.cfg_space().assigned_bus_range();
             assert_eq!(*bus_range.start(), 10);
             assert_eq!(*bus_range.end(), 20);
@@ -1343,7 +1343,7 @@ mod tests {
         let mut switch2 = GenericPcieSwitch::new(definition2);
 
         // Verify the new switch has default bus range on downstream port before restore
-        if let Some((_, downstream_port)) = switch2.downstream_ports.get(0) {
+        if let Some((_, downstream_port)) = switch2.downstream_ports.first() {
             let default_bus_range = downstream_port.cfg_space().assigned_bus_range();
             assert_eq!(default_bus_range, 0..=0);
         }
@@ -1354,7 +1354,7 @@ mod tests {
             .expect("restore should succeed");
 
         // Verify the downstream port bus range is restored
-        if let Some((_, downstream_port)) = switch2.downstream_ports.get(0) {
+        if let Some((_, downstream_port)) = switch2.downstream_ports.first() {
             let restored_bus_range = downstream_port.cfg_space().assigned_bus_range();
             assert_eq!(*restored_bus_range.start(), 10);
             assert_eq!(*restored_bus_range.end(), 20);
