@@ -395,16 +395,13 @@ impl GenericPcieRootComplex {
     /// bus alongside root ports (e.g., an AMD IOMMU at device 0).
     /// They do not sit behind a downstream port and have a fixed BDF.
     ///
-    /// For a single-function RCiEP, register at function 0. Config space
+    /// Most RCiEPs should be registered at function 0. Config space
     /// accesses to other functions of the same device will be forwarded
     /// to the function 0 device via
     /// [`pci_cfg_read_with_routing`](GenericPciBusDevice::pci_cfg_read_with_routing),
     /// whose default implementation returns all-1s (no device present).
-    ///
-    /// For a multi-function RCiEP, either register each function as a
-    /// separate `GenericPciBusDevice`, or register a single device at
-    /// function 0 and override `pci_cfg_read_with_routing` /
-    /// `pci_cfg_write_with_routing` to handle non-zero functions.
+    /// A multi-function RCiEP should override `pci_cfg_read_with_routing`
+    /// and `pci_cfg_write_with_routing` to handle non-zero functions.
     pub fn add_rciep(
         &mut self,
         devfn: u8,

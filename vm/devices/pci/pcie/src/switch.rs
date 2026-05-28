@@ -172,7 +172,7 @@ pub struct GenericPcieSwitch {
     /// The upstream switch port that connects to the parent.
     upstream_port: UpstreamSwitchPort,
     /// Downstream switch ports indexed by devfn.
-    #[inspect(skip)]
+    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(|(_, v)| v)")]
     downstream_ports: Vec<(Arc<str>, DownstreamSwitchPort)>,
 }
 
