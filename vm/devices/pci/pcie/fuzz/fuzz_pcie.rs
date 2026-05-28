@@ -259,7 +259,7 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
 
     let mut rc = FuzzRootComplex::new(&topology, ecam_range);
 
-    // Port keys: device number 0, 1, etc.
+    // Port keys: port 0 = device_number 0, port 1 = device_number 8 (1 << 3)
     let port0_key: u8 = 0;
 
     match topology {
