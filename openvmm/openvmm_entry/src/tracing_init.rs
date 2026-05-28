@@ -30,6 +30,10 @@ pub fn enable_tracing() -> anyhow::Result<()> {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
+    fn env_bool(result: Result<String, std::env::VarError>) -> bool {
+        result.is_ok_and(|v| !v.is_empty() && v != "0")
+    }
+
     // Enable tracing for paravisor_log by default since this is passed through
     // from the guest (but still allow it to be disabled via OPENVMM_LOG).
     let base = "paravisor_log=trace";
@@ -42,7 +46,7 @@ pub fn enable_tracing() -> anyhow::Result<()> {
             .add_directive(base.parse().unwrap())
     };
 
-    if legacy_openvmm_env("OPENVMM_DISABLE_TRACING_RATELIMITS").is_ok_and(|v| !v.is_empty()) {
+    if env_bool(legacy_openvmm_env("OPENVMM_DISABLE_TRACING_RATELIMITS")) {
         tracelimit::disable_rate_limiting(true);
     }
 
@@ -54,7 +58,7 @@ pub fn enable_tracing() -> anyhow::Result<()> {
         BoxMakeWriter::new(std::io::stderr)
     };
 
-    let span_events = if std::env::var("OPENVMM_LOG_SPANS").is_ok_and(|v| !v.is_empty()) {
+    let span_events = if env_bool(std::env::var("OPENVMM_LOG_SPANS")) {
         FmtSpan::NEW | FmtSpan::CLOSE
     } else {
         FmtSpan::NONE
