@@ -336,8 +336,10 @@ pub struct UnderhillRemoteConsoleCfg {
     pub synth_video: bool,
     pub input: mesh::Receiver<InputData>,
     pub framebuffer: Option<framebuffer::Framebuffer>,
-    /// Channel to forward dirty rectangles from the synthetic video device
-    /// to the VNC worker. None when no VNC server is configured.
+    /// Sender side of the channel that forwards dirty-rectangle hints from
+    /// the synth video device to the VNC worker. `None` when no synth video
+    /// device is in play; the VNC worker then relies on whole-framebuffer
+    /// tile-diff scanning.
     pub dirt_send: Option<mesh::Sender<Vec<video_core::DirtyRect>>>,
 }
 

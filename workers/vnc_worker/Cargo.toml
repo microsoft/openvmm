@@ -22,6 +22,7 @@ tracing_helpers.workspace = true
 vmsocket.workspace = true
 
 anyhow.workspace = true
+async-channel.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
 unicycle.workspace = true

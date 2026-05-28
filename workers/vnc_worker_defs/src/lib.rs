@@ -17,8 +17,11 @@ pub struct VncParameters<T> {
     pub framebuffer: framebuffer::FramebufferAccess,
     /// A channel to send input to.
     pub input_send: mesh::Sender<input_core::InputData>,
-    /// Receives dirty rectangles from the synthetic video device.
-    /// None when the video device is not configured.
+    /// Receives dirty-rectangle hints from the synthetic video device.
+    /// `None` when no synth video device is present (e.g. `--pcat` or any
+    /// guest using a non-synth framebuffer path like VGA BIOS / UEFI GOP);
+    /// the server still has a framebuffer to display and falls back to
+    /// whole-framebuffer tile-diff scanning to detect changes.
     pub dirty_recv: Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
     /// Maximum concurrent VNC clients.
     pub max_clients: usize,

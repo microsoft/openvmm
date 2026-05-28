@@ -10,6 +10,8 @@ rust-version.workspace = true
 pal_async.workspace = true
 video_core.workspace = true
 
+async-channel.workspace = true
+bitvec = { workspace = true, features = ["std"] }
 flate2.workspace = true
 futures.workspace = true
 thiserror.workspace = true

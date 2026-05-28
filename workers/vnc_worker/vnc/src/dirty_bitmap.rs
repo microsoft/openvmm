@@ -3,6 +3,8 @@
 
 //! Dirty tile bitmap for tracking framebuffer regions that need updating.
 
+use bitvec::prelude::*;
+
 /// 16x16 pixel tiles balance precision vs overhead for dirty tracking.
 pub(crate) const TILE_SIZE: u16 = 16;
 
@@ -19,7 +21,7 @@ pub struct Rect {
 /// (need sending to a VNC client). At 1920x1080, this is 120x68 = 8160 tiles,
 /// fitting in ~1KB of bitmap data.
 pub struct DirtyBitmap {
-    bits: Vec<u64>,
+    bits: BitVec<u64, Lsb0>,
     tiles_per_row: u16,
     tiles_per_col: u16,
     width: u16,
@@ -33,18 +35,16 @@ impl DirtyBitmap {
         let tiles_per_row = width.div_ceil(TILE_SIZE);
         let tiles_per_col = height.div_ceil(TILE_SIZE);
         let total_tiles = tiles_per_row as usize * tiles_per_col as usize;
-        // Pack bits into u64 words; set all bits to mark everything dirty.
-        let words = total_tiles.div_ceil(64);
-        let bits = vec![u64::MAX; words];
-        let mut bitmap = Self {
+        // BitVec is sized to exactly `total_tiles`, so there are no padding
+        // bits to mask off after setting everything dirty.
+        let bits = bitvec![u64, Lsb0; 1; total_tiles];
+        Self {
             bits,
             tiles_per_row,
             tiles_per_col,
             width,
             height,
-        };
-        bitmap.mask_trailing_bits();
-        bitmap
+        }
     }
 
     /// Resize the bitmap for a new framebuffer resolution. Marks everything
@@ -79,38 +79,7 @@ impl DirtyBitmap {
             let row_start = ty as usize * self.tiles_per_row as usize;
             let first = row_start + tile_left as usize;
             let last = row_start + tile_right as usize;
-
-            // Set bits [first..=last]. When the range spans full u64 words,
-            // set them in bulk instead of per-bit.
-            let first_word = first / 64;
-            let last_word = last / 64;
-
-            if first_word == last_word {
-                // All bits in a single word.
-                let hi = last % 64;
-                let lo = first % 64;
-                let top = if hi == 63 {
-                    u64::MAX
-                } else {
-                    (1u64 << (hi + 1)) - 1
-                };
-                let mask = top & !((1u64 << lo) - 1);
-                self.bits[first_word] |= mask;
-            } else {
-                // Partial first word.
-                self.bits[first_word] |= !((1u64 << (first % 64)) - 1);
-                // Full middle words.
-                for w in (first_word + 1)..last_word {
-                    self.bits[w] = u64::MAX;
-                }
-                // Partial last word.
-                let hi = last % 64;
-                self.bits[last_word] |= if hi == 63 {
-                    u64::MAX
-                } else {
-                    (1u64 << (hi + 1)) - 1
-                };
-            }
+            self.bits[first..=last].fill(true);
         }
     }
 
@@ -127,46 +96,31 @@ impl DirtyBitmap {
             self.tiles_per_col
         );
         let idx = tile_y as usize * self.tiles_per_row as usize + tile_x as usize;
-        if idx / 64 < self.bits.len() {
-            self.bits[idx / 64] |= 1u64 << (idx % 64);
+        if idx < self.bits.len() {
+            self.bits.set(idx, true);
         }
     }
 
     /// Mark every tile dirty (e.g. for a full screen refresh request).
     pub fn mark_all(&mut self) {
-        self.bits.fill(u64::MAX);
-        self.mask_trailing_bits();
-    }
-
-    /// Clear unused trailing bits in the last word so they don't appear as
-    /// phantom tiles.
-    fn mask_trailing_bits(&mut self) {
-        let total_tiles = self.tiles_per_row as usize * self.tiles_per_col as usize;
-        let remainder = total_tiles % 64;
-        if remainder != 0 {
-            if let Some(last) = self.bits.last_mut() {
-                *last &= (1u64 << remainder) - 1;
-            }
-        }
+        self.bits.fill(true);
     }
 
     /// Clear all dirty bits (nothing needs updating).
     pub fn clear(&mut self) {
-        self.bits.fill(0);
+        self.bits.fill(false);
     }
 
     /// Returns true if no tiles are dirty.
     pub fn is_empty(&self) -> bool {
-        self.bits.iter().all(|&w| w == 0)
+        !self.bits.any()
     }
 
     /// Accumulate dirty regions from another bitmap: `self |= other`.
     /// Both bitmaps must have the same dimensions.
     pub fn or_from(&mut self, other: &DirtyBitmap) {
         debug_assert_eq!(self.bits.len(), other.bits.len());
-        for (a, b) in self.bits.iter_mut().zip(other.bits.iter()) {
-            *a |= *b;
-        }
+        self.bits |= &other.bits;
     }
 
     /// Accumulate dirty regions from source, then clear the source:
@@ -174,10 +128,8 @@ impl DirtyBitmap {
     /// accumulator into a per-client bitmap.
     pub fn take_from(&mut self, source: &mut DirtyBitmap) {
         debug_assert_eq!(self.bits.len(), source.bits.len());
-        for (a, b) in self.bits.iter_mut().zip(source.bits.iter_mut()) {
-            *a |= *b;
-            *b = 0;
-        }
+        self.bits |= &source.bits;
+        source.bits.fill(false);
     }
 
     /// Iterate over individual dirty tiles, yielding `(x, y, w, h)` in pixel
@@ -187,25 +139,16 @@ impl DirtyBitmap {
         let tiles_per_row = self.tiles_per_row;
         let width = self.width;
         let height = self.height;
-
-        self.bits
-            .iter()
-            .enumerate()
-            .flat_map(move |(word_idx, &word)| {
-                // Skip entirely clean words quickly.
-                let base_bit = word_idx * 64;
-                BitIter(word).map(move |bit_offset| {
-                    let idx = base_bit + bit_offset;
-                    let tx = (idx % tiles_per_row as usize) as u16;
-                    let ty = (idx / tiles_per_row as usize) as u16;
-                    let x = tx * TILE_SIZE;
-                    let y = ty * TILE_SIZE;
-                    // Edge tiles may be narrower/shorter than TILE_SIZE.
-                    let w = TILE_SIZE.min(width - x);
-                    let h = TILE_SIZE.min(height - y);
-                    Rect { x, y, w, h }
-                })
-            })
+        self.bits.iter_ones().map(move |idx| {
+            let tx = (idx % tiles_per_row as usize) as u16;
+            let ty = (idx / tiles_per_row as usize) as u16;
+            let x = tx * TILE_SIZE;
+            let y = ty * TILE_SIZE;
+            // Edge tiles may be narrower/shorter than TILE_SIZE.
+            let w = TILE_SIZE.min(width - x);
+            let h = TILE_SIZE.min(height - y);
+            Rect { x, y, w, h }
+        })
     }
 
     /// Merges adjacent dirty tiles into larger rectangles. Returns a new
@@ -234,7 +177,7 @@ impl DirtyBitmap {
     /// once per call (~1KB for a 1080p framebuffer).
     pub fn merge_into(&self, out: &mut Vec<Rect>) {
         out.clear();
-        let mut scratch: Vec<u64> = self.bits.clone();
+        let mut scratch = self.bits.clone();
         let tiles_per_row = self.tiles_per_row as usize;
         let tiles_per_col = self.tiles_per_col as usize;
 
@@ -242,19 +185,14 @@ impl DirtyBitmap {
             let row_base = ty * tiles_per_row;
             let mut tx = 0;
             while tx < tiles_per_row {
-                let idx = row_base + tx;
-                if (scratch[idx / 64] >> (idx % 64)) & 1 == 0 {
+                if !scratch[row_base + tx] {
                     tx += 1;
                     continue;
                 }
                 // Find the horizontal run starting at `tx`.
                 let run_start = tx;
                 let mut run_end = tx + 1;
-                while run_end < tiles_per_row {
-                    let i = row_base + run_end;
-                    if (scratch[i / 64] >> (i % 64)) & 1 == 0 {
-                        break;
-                    }
+                while run_end < tiles_per_row && scratch[row_base + run_end] {
                     run_end += 1;
                 }
                 // Extend downward while every column in the run stays dirty.
@@ -262,8 +200,7 @@ impl DirtyBitmap {
                 'extend: while ty + h_tiles < tiles_per_col {
                     let below = (ty + h_tiles) * tiles_per_row;
                     for c in run_start..run_end {
-                        let i = below + c;
-                        if (scratch[i / 64] >> (i % 64)) & 1 == 0 {
+                        if !scratch[below + c] {
                             break 'extend;
                         }
                     }
@@ -285,31 +222,11 @@ impl DirtyBitmap {
                 // Clear the covered tiles so later iterations skip them.
                 for dy in 0..h_tiles {
                     let row = (ty + dy) * tiles_per_row;
-                    for c in run_start..run_end {
-                        let i = row + c;
-                        scratch[i / 64] &= !(1u64 << (i % 64));
-                    }
+                    scratch[row + run_start..row + run_end].fill(false);
                 }
                 tx = run_end;
             }
         }
-    }
-}
-
-/// Iterator that yields the bit positions of set bits in a u64, lowest first.
-struct BitIter(u64);
-
-impl Iterator for BitIter {
-    type Item = usize;
-
-    fn next(&mut self) -> Option<usize> {
-        if self.0 == 0 {
-            return None;
-        }
-        let pos = self.0.trailing_zeros() as usize;
-        // Clear the lowest set bit.
-        self.0 &= self.0 - 1;
-        Some(pos)
     }
 }
 

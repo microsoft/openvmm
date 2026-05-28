@@ -57,8 +57,10 @@ use zerocopy::IntoBytes;
 const TILE_SIZE: u16 = dirty_bitmap::TILE_SIZE;
 
 /// Receiver type for device-reported dirty rectangles. Arc-wrapped to avoid
-/// cloning the Vec during per-client broadcast.
-pub type DirtyRectReceiver = mpsc::Receiver<Arc<Vec<video_core::DirtyRect>>>;
+/// cloning the Vec during per-client broadcast. Backed by `async-channel`
+/// (bounded) so the coordinator's broadcast applies backpressure without
+/// being able to block — a full channel falls back to a missed-dirty flag.
+pub type DirtyRectReceiver = async_channel::Receiver<Arc<Vec<video_core::DirtyRect>>>;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -75,7 +77,7 @@ pub enum Error {
     #[error("resolution changed but client does not support DesktopSize")]
     ResizeUnsupported,
     #[error("zlib compression failed")]
-    ZlibCompression(#[from] flate2::CompressError),
+    ZlibCompression(#[source] flate2::CompressError),
     #[error("socket error")]
     Io(#[from] std::io::Error),
 }
@@ -270,11 +272,14 @@ impl Encoder {
         loop {
             let in_offset = (self.zlib_stream.total_in() - before_in) as usize;
             let out_offset = (self.zlib_stream.total_out() - before_out) as usize;
-            let status = self.zlib_stream.compress(
-                &self.tile_buf[in_offset..],
-                &mut self.zlib_buf[out_offset..],
-                FlushCompress::Sync,
-            )?;
+            let status = self
+                .zlib_stream
+                .compress(
+                    &self.tile_buf[in_offset..],
+                    &mut self.zlib_buf[out_offset..],
+                    FlushCompress::Sync,
+                )
+                .map_err(Error::ZlibCompression)?;
             let out_used = (self.zlib_stream.total_out() - before_out) as usize;
             let in_done = (self.zlib_stream.total_in() - before_in) as usize >= self.tile_buf.len();
             if in_done && status == flate2::Status::Ok {
@@ -484,15 +489,16 @@ impl UpdateState {
         let mut got_device_dirty = false;
         if let Some(recv) = dirty_recv {
             loop {
-                match recv.try_next() {
-                    Ok(Some(rects)) => {
+                match recv.try_recv() {
+                    Ok(rects) => {
                         for r in rects.iter() {
                             self.pending_dirty
                                 .mark_rect(r.left, r.top, r.right, r.bottom);
                         }
                         got_device_dirty = true;
                     }
-                    Ok(None) => {
+                    Err(async_channel::TryRecvError::Empty) => break,
+                    Err(async_channel::TryRecvError::Closed) => {
                         // Channel closed (upstream video device reset or
                         // coordinator dropped senders). Reset to tile diff
                         // and stop polling the dead channel.
@@ -503,7 +509,6 @@ impl UpdateState {
                         *dirty_recv = None;
                         break;
                     }
-                    Err(_) => break, // Empty, nothing pending
                 }
             }
         }
@@ -1897,8 +1902,7 @@ mod tests {
 
     #[test]
     fn e2e_dirty_channel_close_falls_back_to_tile_diff() {
-        #[expect(clippy::disallowed_methods)]
-        let (tx, rx) = mpsc::channel(4);
+        let (tx, rx) = async_channel::bounded(4);
         let fb = SharedFramebuffer::new(32, 32, 0);
         let tx = Arc::new(Mutex::new(Some(tx)));
 
@@ -1915,7 +1919,7 @@ mod tests {
 
                 fb.set(2, 2, pixel(0xaa, 0xbb, 0xcc));
                 tx.lock()
-                    .as_mut()
+                    .as_ref()
                     .unwrap()
                     .try_send(Arc::new(vec![video_core::DirtyRect {
                         left: 0,
@@ -2146,9 +2150,8 @@ mod tests {
         let _ = state.collect_dirty(&mut fb, &mut None, true, &None);
         state.commit();
 
-        // Simulate device dirty rect via mpsc channel.
-        #[expect(clippy::disallowed_methods)]
-        let (mut tx, rx) = mpsc::channel(4);
+        // Simulate device dirty rect via async-channel.
+        let (tx, rx) = async_channel::bounded(4);
         let _ = tx.try_send(Arc::new(vec![video_core::DirtyRect {
             left: 0,
             top: 0,
@@ -2179,8 +2182,7 @@ mod tests {
         state.commit();
 
         // Device-dirty cycle: only tile (0,0) reported dirty.
-        #[expect(clippy::disallowed_methods)]
-        let (mut tx, rx) = mpsc::channel(4);
+        let (tx, rx) = async_channel::bounded(4);
         let _ = tx.try_send(Arc::new(vec![video_core::DirtyRect {
             left: 0,
             top: 0,

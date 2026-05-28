@@ -40,8 +40,9 @@ impl ResourceId<VmbusDeviceHandleKind> for SynthMouseHandle {
 pub struct SynthVideoHandle {
     /// The framebuffer memory to map into the guest for rendering.
     pub framebuffer: Resource<FramebufferHandleKind>,
-    /// Channel to forward dirty rectangles to the VNC worker.
-    /// None when no VNC server is configured.
+    /// Channel for the synth video device to forward dirty-rectangle hints
+    /// to a consumer (typically the VNC worker). `None` when no consumer is
+    /// wired up — the device still runs, it just doesn't publish hints.
     pub dirt_send: Option<mesh::Sender<Vec<video_core::DirtyRect>>>,
 }
 

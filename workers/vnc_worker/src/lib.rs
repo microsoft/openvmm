@@ -155,6 +155,16 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
     }
 }
 
+/// Coordinator-side handle for one connected VNC client's dirty-rect broadcast
+/// channel. `try_send` on `sender` is non-blocking; if the channel is full the
+/// coordinator sets `missed_dirty` so the client knows to do a full refresh
+/// once it catches up.
+struct ClientDirtySender {
+    id: u64,
+    sender: async_channel::Sender<Arc<Vec<video_core::DirtyRect>>>,
+    missed_dirty: Arc<AtomicBool>,
+}
+
 /// A multi-client VNC server that accepts and manages concurrent connections.
 struct MultiClientServer<T: Listener> {
     listener: PolledSocket<T>,
@@ -169,11 +179,7 @@ struct MultiClientServer<T: Listener> {
     /// Per-client dirty rect senders. The coordinator broadcasts device rects
     /// to all clients via these channels. Each client accumulates rects in
     /// its own pending bitmap -- no shared state, no clearing issues.
-    dirty_senders: Vec<(
-        u64,
-        futures::channel::mpsc::Sender<Arc<Vec<video_core::DirtyRect>>>,
-        Arc<AtomicBool>,
-    )>,
+    dirty_senders: Vec<ClientDirtySender>,
     /// Futures for all active client connections. Each resolves to the
     /// client's id when the connection ends.
     clients: unicycle::FuturesUnordered<Pin<Box<dyn Future<Output = u64>>>>,
@@ -270,7 +276,7 @@ impl<T: Listener> MultiClientServer<T> {
                                 "evicting oldest VNC client for new connection"
                             );
                             abort.send(());
-                            self.dirty_senders.retain(|(cid, _, _)| *cid != oldest_id);
+                            self.dirty_senders.retain(|s| s.id != oldest_id);
                         } else {
                             // Drop the socket to close the connection immediately.
                             tracing::warn!(
@@ -295,7 +301,7 @@ impl<T: Listener> MultiClientServer<T> {
                 }
                 Event::ClientDone(id) => {
                     self.abort_senders.retain(|(cid, _)| *cid != id);
-                    self.dirty_senders.retain(|(cid, _, _)| *cid != id);
+                    self.dirty_senders.retain(|s| s.id != id);
                     tracing::info!(id, count = self.clients.len(), "VNC client disconnected");
                 }
                 Event::DirtyRects(rects) => {
@@ -306,11 +312,11 @@ impl<T: Listener> MultiClientServer<T> {
                     // Broadcast to all connected clients. Arc avoids cloning
                     // the rect Vec for each client (only ref-count bump).
                     let rects = Arc::new(rects);
-                    for (cid, sender, missed) in &mut self.dirty_senders {
-                        if sender.try_send(Arc::clone(&rects)).is_err() {
-                            missed.store(true, Ordering::Relaxed);
+                    for s in &mut self.dirty_senders {
+                        if s.sender.try_send(Arc::clone(&rects)).is_err() {
+                            s.missed_dirty.store(true, Ordering::Relaxed);
                             tracing::debug!(
-                                id = cid,
+                                id = s.id,
                                 "client dirty channel full, flagged for full refresh"
                             );
                         }
@@ -348,12 +354,16 @@ impl<T: Listener> MultiClientServer<T> {
         let (abort_send, abort_recv) = mesh::oneshot();
         // Per-client channel for receiving device dirty rects from the coordinator.
         // Capacity 4: enough to buffer a few batches without blocking the coordinator.
-        #[expect(clippy::disallowed_methods)]
-        let (dirty_send, dirty_recv) =
-            futures::channel::mpsc::channel::<Arc<Vec<video_core::DirtyRect>>>(4);
+        // Bounded so a slow client can't unboundedly buffer broadcast batches —
+        // when full, the coordinator sets `missed_dirty` and the client falls
+        // back to a full refresh on the next pass.
+        let (dirty_send, dirty_recv) = async_channel::bounded::<Arc<Vec<video_core::DirtyRect>>>(4);
         let missed_dirty = Arc::new(AtomicBool::new(false));
-        self.dirty_senders
-            .push((id, dirty_send, missed_dirty.clone()));
+        self.dirty_senders.push(ClientDirtySender {
+            id,
+            sender: dirty_send,
+            missed_dirty: missed_dirty.clone(),
+        });
 
         // Each client gets its own VNC server instance with independent
         // zlib state and pixel format, sharing only the framebuffer and

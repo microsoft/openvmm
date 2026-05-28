@@ -10408,6 +10408,8 @@ dependencies = [
 name = "vnc"
 version = "0.0.0"
 dependencies = [
+ "async-channel",
+ "bitvec",
  "flate2",
  "futures",
  "pal_async",
@@ -10425,6 +10427,7 @@ name = "vnc_worker"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "framebuffer",
  "futures",
  "input_core",
