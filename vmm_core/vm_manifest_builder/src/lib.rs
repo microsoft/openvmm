@@ -208,6 +208,7 @@ impl VmManifestBuilder {
     /// Create a new VM manifest builder for the given chipset type and
     /// architecture.
     pub fn new(ty: BaseChipsetType, arch: MachineArch) -> Self {
+        let vmbus = !matches!(ty, BaseChipsetType::UnenlightenedLinuxDirect);
         VmManifestBuilder {
             ty,
             arch,
@@ -222,7 +223,7 @@ impl VmManifestBuilder {
             platform_pm_timer_assist: false,
             uefi: None,
             debugcon: None,
-            vmbus: true,
+            vmbus,
         }
     }
 

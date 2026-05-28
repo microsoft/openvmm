@@ -621,3 +621,25 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+/// Boot a guest with VMBus entirely disabled.
+///
+/// Uses PCIe NVMe for the boot disk, virtio-vsock for pipette communication,
+/// and a second PCIe NVMe controller for the cidata agent disk. Validates
+/// that the guest boots and pipette is reachable without any VMBus devices.
+#[openvmm_test(uefi_x64(vhd(alpine_3_23_x64)))]
+async fn boot_no_vmbus_pcie_nvme(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .with_boot_device_type(petri::BootDeviceType::PcieNvme)
+        .with_default_boot_always_attempt(true)
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
+        .run()
+        .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}

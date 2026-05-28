@@ -182,6 +182,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     prebuilt_initrd: Option<PathBuf>,
     // Use virtio vsock instead of VMBus-based hvsocket for guest communication.
     use_virtio_vsock: bool,
+    // Disable VMBus entirely (no vmbus server, no vmbus storage controllers).
+    no_vmbus: bool,
 }
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
@@ -203,6 +205,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("enable_screenshots", &self.enable_screenshots)
             .field("prebuilt_initrd", &self.prebuilt_initrd)
             .field("use_virtio_vsock", &self.use_virtio_vsock)
+            .field("no_vmbus", &self.no_vmbus)
             .finish()
     }
 }
@@ -288,6 +291,8 @@ pub struct PetriVmProperties {
     pub has_agent_disk: bool,
     /// Use virtio vsock instead of VMBus-based hvsocket
     pub use_virtio_vsock: bool,
+    /// VMBus is entirely disabled
+    pub no_vmbus: bool,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -377,6 +382,11 @@ pub(crate) const PETRI_NVME_BOOT_VTL0_CONTROLLER: Guid =
 pub(crate) const PETRI_NVME_BOOT_VTL2_CONTROLLER: Guid =
     guid::guid!("92bc8346-718b-449a-8751-edbf3dcd27e4");
 
+/// PCIe root port used by Petri for the agent/cidata disk (no-vmbus mode)
+pub(crate) const PETRI_PCIE_NVME_AGENT_PORT: &str = "s0rc0rp1";
+/// NVMe namespace ID used by Petri for the agent/cidata disk (no-vmbus mode)
+pub(crate) const PETRI_PCIE_NVME_AGENT_NSID: u32 = 1;
+
 /// A constructed Petri VM
 pub struct PetriVm<T: PetriVmmBackend> {
     resources: PetriVmResources,
@@ -455,6 +465,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_screenshots: true,
             prebuilt_initrd: None,
             use_virtio_vsock: false,
+            no_vmbus: false,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
@@ -530,6 +541,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_screenshots: true,
             prebuilt_initrd: None,
             use_virtio_vsock: false,
+            no_vmbus: false,
         })
     }
 
@@ -640,6 +652,18 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Disable VMBus entirely.
+    ///
+    /// This removes all VMBus storage controllers and forces virtio-vsock
+    /// for pipette communication. The guest must boot from a non-VMBus
+    /// device (e.g. PCIe NVMe).
+    pub fn with_no_vmbus(mut self) -> Self {
+        self.no_vmbus = true;
+        self.use_virtio_vsock = true;
+        self.config.vmbus_storage_controllers.clear();
+        self
+    }
+
     fn add_petri_scsi_controllers(self) -> Self {
         let builder = self.add_vmbus_storage_controller(
             &PETRI_SCSI_VTL0_CONTROLLER,
@@ -743,6 +767,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         }) else {
             return self;
         };
+
+        // When VMBus is disabled, route the agent disk through PCIe NVMe
+        // instead of VMBus SCSI.
+        if self.no_vmbus {
+            self.config.pcie_nvme_drives.push(PcieNvmeDrive {
+                port_name: PETRI_PCIE_NVME_AGENT_PORT.into(),
+                nsid: PETRI_PCIE_NVME_AGENT_NSID,
+                drive: Drive::new(
+                    Some(Disk::Temporary(Arc::new(agent_disk.into_temp_path()))),
+                    false,
+                ),
+            });
+            return self;
+        }
 
         // Ensure the storage controller exists (minimal mode doesn't
         // add controllers upfront).
@@ -916,6 +954,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             prebuilt_initrd: self.prebuilt_initrd.clone(),
             has_agent_disk: self.has_agent_disk(),
             use_virtio_vsock: self.use_virtio_vsock,
+            no_vmbus: self.no_vmbus,
         }
     }
 
