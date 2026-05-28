@@ -46,13 +46,29 @@ enum Vmm {
 }
 
 enum Firmware {
-    LinuxDirect,
-    LinuxDirectBzImage,
+    LinuxDirect(Option<LinuxKernelVersion>),
+    LinuxDirectBzImage(Option<LinuxKernelVersion>),
     Pcat(PcatGuest),
     Uefi(UefiGuest),
-    OpenhclLinuxDirect,
+    OpenhclLinuxDirect(Option<LinuxKernelVersion>),
     OpenhclPcat(PcatGuest),
     OpenhclUefi(OpenhclUefiOptions, UefiGuest),
+}
+
+/// Kernel version selection for linux-direct tests (macro-internal).
+#[derive(Clone, Copy)]
+enum LinuxKernelVersion {
+    V6_1,
+    V6_18,
+}
+
+impl LinuxKernelVersion {
+    fn name_prefix(self) -> String {
+        match self {
+            LinuxKernelVersion::V6_1 => "kernel_6_1".to_string(),
+            LinuxKernelVersion::V6_18 => "kernel_6_18".to_string(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -114,6 +130,17 @@ fn arch_to_tokens(arch: MachineArch) -> TokenStream {
     }
 }
 
+fn kernel_version_to_tokens(version: LinuxKernelVersion) -> TokenStream {
+    match version {
+        LinuxKernelVersion::V6_1 => {
+            quote!(::petri_artifacts_vmm_test::LinuxDirectKernelVersion::V6_1)
+        }
+        LinuxKernelVersion::V6_18 => {
+            quote!(::petri_artifacts_vmm_test::LinuxDirectKernelVersion::V6_18)
+        }
+    }
+}
+
 impl ResolvedConfig {
     fn name_prefix(&self) -> String {
         let arch_prefix = arch_to_str(self.arch);
@@ -124,30 +151,33 @@ impl ResolvedConfig {
         };
 
         let firmware_prefix = match &self.firmware {
-            Firmware::LinuxDirect => "linux",
-            Firmware::LinuxDirectBzImage => "linux_bzimage",
+            Firmware::LinuxDirect(_) => "linux",
+            Firmware::LinuxDirectBzImage(_) => "linux_bzimage",
             Firmware::Pcat(_) => "pcat",
             Firmware::Uefi(_) => "uefi",
-            Firmware::OpenhclLinuxDirect => "openhcl_linux",
+            Firmware::OpenhclLinuxDirect(_) => "openhcl_linux",
             Firmware::OpenhclPcat(..) => "openhcl_pcat",
             Firmware::OpenhclUefi(..) => "openhcl_uefi",
         };
 
         let guest_prefix = match &self.firmware {
-            Firmware::LinuxDirect | Firmware::LinuxDirectBzImage | Firmware::OpenhclLinuxDirect => {
-                None
-            }
+            Firmware::LinuxDirect(_)
+            | Firmware::LinuxDirectBzImage(_)
+            | Firmware::OpenhclLinuxDirect(_) => None,
             Firmware::Pcat(guest) | Firmware::OpenhclPcat(guest) => Some(guest.name_prefix()),
             Firmware::Uefi(guest) | Firmware::OpenhclUefi(_, guest) => guest.name_prefix(),
         };
 
         let options_prefix = match &self.firmware {
-            Firmware::LinuxDirect
-            | Firmware::LinuxDirectBzImage
+            Firmware::LinuxDirect(None)
+            | Firmware::LinuxDirectBzImage(None)
             | Firmware::Pcat(_)
             | Firmware::Uefi(_)
-            | Firmware::OpenhclLinuxDirect
+            | Firmware::OpenhclLinuxDirect(None)
             | Firmware::OpenhclPcat(_) => None,
+            Firmware::LinuxDirect(Some(v))
+            | Firmware::LinuxDirectBzImage(Some(v))
+            | Firmware::OpenhclLinuxDirect(Some(v)) => Some(v.name_prefix()),
             Firmware::OpenhclUefi(opt, _) => opt.name_prefix(),
         };
 
@@ -224,11 +254,19 @@ impl ToTokens for FirmwareAndArch {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let arch = arch_to_tokens(self.arch);
         tokens.extend(match &self.firmware {
-            Firmware::LinuxDirect => {
+            Firmware::LinuxDirect(None) => {
                 quote!(::petri::Firmware::linux_direct(resolver, #arch))
             }
-            Firmware::LinuxDirectBzImage => {
+            Firmware::LinuxDirect(Some(v)) => {
+                let version = kernel_version_to_tokens(*v);
+                quote!(::petri::Firmware::linux_direct_with_version(resolver, #arch, #version))
+            }
+            Firmware::LinuxDirectBzImage(None) => {
                 quote!(::petri::Firmware::linux_direct_bzimage(resolver))
+            }
+            Firmware::LinuxDirectBzImage(Some(v)) => {
+                let version = kernel_version_to_tokens(*v);
+                quote!(::petri::Firmware::linux_direct_bzimage_with_version(resolver, #version))
             }
             Firmware::Pcat(guest) => {
                 quote!(::petri::Firmware::pcat(resolver, #guest))
@@ -236,7 +274,14 @@ impl ToTokens for FirmwareAndArch {
             Firmware::Uefi(guest) => {
                 quote!(::petri::Firmware::uefi(resolver, #arch, #guest))
             }
-            Firmware::OpenhclLinuxDirect => {
+            Firmware::OpenhclLinuxDirect(None) => {
+                quote!(::petri::Firmware::openhcl_linux_direct(resolver, #arch))
+            }
+            Firmware::OpenhclLinuxDirect(Some(v)) => {
+                // OpenhclLinuxDirect uses IGVM files and doesn't directly select kernel version.
+                // For now, kernel version selection for openhcl_linux_direct is a no-op — the
+                // IGVM file embeds the kernel. Pass through as the default.
+                let _ = v;
                 quote!(::petri::Firmware::openhcl_linux_direct(resolver, #arch))
             }
             Firmware::OpenhclPcat(guest) => {
@@ -405,10 +450,22 @@ impl Parse for Config {
         };
 
         let (arch, firmware) = match remainder {
-            "linux_direct_x64" => (MachineArch::X86_64, Firmware::LinuxDirect),
-            "linux_direct_bzimage_x64" => (MachineArch::X86_64, Firmware::LinuxDirectBzImage),
-            "linux_direct_aarch64" => (MachineArch::Aarch64, Firmware::LinuxDirect),
-            "openhcl_linux_direct_x64" => (MachineArch::X86_64, Firmware::OpenhclLinuxDirect),
+            "linux_direct_x64" => {
+                let kver = parse_linux_kernel_version(input)?;
+                (MachineArch::X86_64, Firmware::LinuxDirect(kver))
+            }
+            "linux_direct_bzimage_x64" => {
+                let kver = parse_linux_kernel_version(input)?;
+                (MachineArch::X86_64, Firmware::LinuxDirectBzImage(kver))
+            }
+            "linux_direct_aarch64" => {
+                let kver = parse_linux_kernel_version(input)?;
+                (MachineArch::Aarch64, Firmware::LinuxDirect(kver))
+            }
+            "openhcl_linux_direct_x64" => {
+                let kver = parse_linux_kernel_version(input)?;
+                (MachineArch::X86_64, Firmware::OpenhclLinuxDirect(kver))
+            }
             "pcat_x64" => (
                 MachineArch::X86_64,
                 Firmware::Pcat(parse_pcat_guest(input)?),
@@ -465,6 +522,25 @@ fn parse_uefi_guest(input: ParseStream<'_>) -> syn::Result<UefiGuest> {
     let parens;
     syn::parenthesized!(parens in input);
     parens.parse::<UefiGuest>()
+}
+
+/// Parse an optional parenthesized kernel version, e.g. `(kernel_6_1)`.
+///
+/// Returns `None` if no parenthesized group follows, allowing the default
+/// kernel to be used.
+fn parse_linux_kernel_version(input: ParseStream<'_>) -> syn::Result<Option<LinuxKernelVersion>> {
+    if input.peek(syn::token::Paren) {
+        let content;
+        syn::parenthesized!(content in input);
+        let word = content.parse::<Ident>()?;
+        match &*word.to_string() {
+            "kernel_6_1" => Ok(Some(LinuxKernelVersion::V6_1)),
+            "kernel_6_18" => Ok(Some(LinuxKernelVersion::V6_18)),
+            _ => Err(Error::new(word.span(), "unrecognized kernel version")),
+        }
+    } else {
+        Ok(None)
+    }
 }
 
 impl Parse for PcatGuest {
@@ -691,8 +767,11 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 ///
 /// Valid configuration options are:
 /// - `{vmm}_linux_direct_{arch}`: Our provided Linux direct image
+/// - `{vmm}_linux_direct_{arch}(<kernel version>)`: Linux direct with a specific kernel version
 /// - `{vmm}_linux_direct_bzimage_x64`: Our provided Linux direct bzImage (compressed kernel, x86_64 only)
+/// - `{vmm}_linux_direct_bzimage_x64(<kernel version>)`: bzImage with a specific kernel version
 /// - `{vmm}_openhcl_linux_direct_{arch}`: Our provided Linux direct image with OpenHCL
+/// - `{vmm}_openhcl_linux_direct_{arch}(<kernel version>)`: OpenHCL Linux direct with a specific kernel version
 /// - `{vmm}_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration
 /// - `{vmm}_uefi_{arch}(<UEFI guest>)`: A Gen 2 configuration
 /// - `{vmm}_openhcl_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration with OpenHCL
@@ -738,6 +817,10 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `vbs`: Use VBS isolation.
 /// - `snp`: Use SNP isolation.
 /// - `tdx`: Use TDX isolation.
+///
+/// Valid kernel version options are:
+/// - `kernel_6_1`: Linux 6.1 kernel
+/// - `kernel_6_18`: Linux 6.18 kernel
 ///
 /// Each configuration can be optionally followed by a square-bracketed, comma-separated
 /// list of additional artifacts required for that particular configuration.

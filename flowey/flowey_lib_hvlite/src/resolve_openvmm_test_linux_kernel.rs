@@ -28,6 +28,7 @@ use std::collections::BTreeSet;
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LinuxTestKernelVersion {
     Linux6_1,
+    Linux6_18,
 }
 
 impl LinuxTestKernelVersion {
@@ -36,8 +37,12 @@ impl LinuxTestKernelVersion {
     pub fn artifact_tag(self) -> &'static str {
         match self {
             Self::Linux6_1 => "6.1",
+            Self::Linux6_18 => "6.18",
         }
     }
+
+    /// All supported kernel versions.
+    pub const ALL: &'static [LinuxTestKernelVersion] = &[Self::Linux6_1, Self::Linux6_18];
 }
 
 /// Which file to extract from a per-(arch, kver) `openvmm-test-linux` archive.

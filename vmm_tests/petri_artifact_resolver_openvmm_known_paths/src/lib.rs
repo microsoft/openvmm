@@ -71,6 +71,14 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == loadable::LINUX_DIRECT_TEST_INITRD_X64 => linux_direct_test_initrd_path(MachineArch::X86_64),
             _ if id == loadable::LINUX_DIRECT_TEST_INITRD_AARCH64 => linux_direct_test_initrd_path(MachineArch::Aarch64),
 
+            // Version-specific kernel artifacts
+            _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64_6_1 => linux_direct_versioned_kernel_path("x64", "6.1", "vmlinux"),
+            _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64_6_18 => linux_direct_versioned_kernel_path("x64", "6.18", "vmlinux"),
+            _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64_6_1 => linux_direct_versioned_kernel_path("aarch64", "6.1", "Image"),
+            _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64_6_18 => linux_direct_versioned_kernel_path("aarch64", "6.18", "Image"),
+            _ if id == loadable::LINUX_DIRECT_TEST_BZIMAGE_X64_6_1 => linux_direct_versioned_kernel_path("x64", "6.1", "bzImage"),
+            _ if id == loadable::LINUX_DIRECT_TEST_BZIMAGE_X64_6_18 => linux_direct_versioned_kernel_path("x64", "6.18", "bzImage"),
+
             _ if id == petritools::PETRITOOLS_EROFS_X64 => petritools_erofs_path(MachineArch::X86_64),
             _ if id == petritools::PETRITOOLS_EROFS_AARCH64 => petritools_erofs_path(MachineArch::Aarch64),
 
@@ -192,6 +200,13 @@ pub fn resolve_bundle_name(id: ErasedArtifactHandle) -> Option<&'static str> {
         _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => Some("aarch64/Image"),
         _ if id == loadable::LINUX_DIRECT_TEST_INITRD_X64 => Some("x64/initrd"),
         _ if id == loadable::LINUX_DIRECT_TEST_INITRD_AARCH64 => Some("aarch64/initrd"),
+        // Version-specific kernel bundle names
+        _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64_6_1 => Some("x64/6.1/vmlinux"),
+        _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64_6_18 => Some("x64/6.18/vmlinux"),
+        _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64_6_1 => Some("aarch64/6.1/Image"),
+        _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64_6_18 => Some("aarch64/6.18/Image"),
+        _ if id == loadable::LINUX_DIRECT_TEST_BZIMAGE_X64_6_1 => Some("x64/6.1/bzImage"),
+        _ if id == loadable::LINUX_DIRECT_TEST_BZIMAGE_X64_6_18 => Some("x64/6.18/bzImage"),
         _ if id == petritools::PETRITOOLS_EROFS_X64 => Some("x64/petritools.erofs"),
         _ if id == petritools::PETRITOOLS_EROFS_AARCH64 => Some("aarch64/petritools.erofs"),
         _ if id == loadable::UEFI_FIRMWARE_X64 => {
@@ -491,6 +506,22 @@ fn linux_direct_arm_image_path() -> anyhow::Result<PathBuf> {
         resolve_bundle_name(loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64.erase()).unwrap(),
         MissingCommand::Restore {
             description: "linux direct test kernel",
+        },
+    )
+}
+
+/// Path to a version-specific linux direct kernel or bzImage file.
+fn linux_direct_versioned_kernel_path(
+    arch_dir: &str,
+    version: &str,
+    filename: &str,
+) -> anyhow::Result<PathBuf> {
+    let bundle_name = format!("{arch_dir}/{version}/{filename}");
+    get_path(
+        ".packages/underhill-deps-private",
+        bundle_name,
+        MissingCommand::Restore {
+            description: "version-specific linux direct test kernel",
         },
     )
 }

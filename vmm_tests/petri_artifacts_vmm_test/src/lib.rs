@@ -5,6 +5,18 @@
 
 #![forbid(unsafe_code)]
 
+/// Which Linux kernel version to use for linux-direct tests.
+///
+/// Used by test macros and petri firmware selection to pick
+/// version-specific kernel artifacts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxDirectKernelVersion {
+    /// Linux 6.1
+    V6_1,
+    /// Linux 6.18
+    V6_18,
+}
+
 /// Artifact declarations
 pub mod artifacts {
     use petri_artifacts_common::tags::IsVmgsTool;
@@ -123,16 +135,31 @@ pub mod artifacts {
         > = petri_artifacts_core::ArtifactHandle::new();
 
         declare_artifacts! {
-            /// Test linux direct kernel (from OpenVMM deps)
+            /// Test linux direct kernel (from OpenVMM deps) — default version
             LINUX_DIRECT_TEST_KERNEL_X64,
             /// Test linux direct initrd (from OpenVMM deps)
             LINUX_DIRECT_TEST_INITRD_X64,
-            /// Test linux direct kernel (from OpenVMM deps)
+            /// Test linux direct kernel (from OpenVMM deps) — default version
             LINUX_DIRECT_TEST_KERNEL_AARCH64,
             /// Test linux direct initrd (from OpenVMM deps)
             LINUX_DIRECT_TEST_INITRD_AARCH64,
-            /// Test linux direct bzImage kernel (from OpenVMM deps)
+            /// Test linux direct bzImage kernel (from OpenVMM deps) — default version
             LINUX_DIRECT_TEST_BZIMAGE_X64,
+
+            // Version-specific kernel artifacts
+            /// Test linux direct kernel 6.1 (from OpenVMM deps)
+            LINUX_DIRECT_TEST_KERNEL_X64_6_1,
+            /// Test linux direct kernel 6.18 (from OpenVMM deps)
+            LINUX_DIRECT_TEST_KERNEL_X64_6_18,
+            /// Test linux direct kernel 6.1 (from OpenVMM deps)
+            LINUX_DIRECT_TEST_KERNEL_AARCH64_6_1,
+            /// Test linux direct kernel 6.18 (from OpenVMM deps)
+            LINUX_DIRECT_TEST_KERNEL_AARCH64_6_18,
+            /// Test linux direct bzImage kernel 6.1 (from OpenVMM deps)
+            LINUX_DIRECT_TEST_BZIMAGE_X64_6_1,
+            /// Test linux direct bzImage kernel 6.18 (from OpenVMM deps)
+            LINUX_DIRECT_TEST_BZIMAGE_X64_6_18,
+
             /// PCAT firmware DLL
             PCAT_FIRMWARE_X64,
             /// SVGA firmware DLL
@@ -160,6 +187,31 @@ pub mod artifacts {
         }
 
         impl IsLoadable for LINUX_DIRECT_TEST_BZIMAGE_X64 {
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
+
+        // Version-specific IsLoadable impls
+        impl IsLoadable for LINUX_DIRECT_TEST_KERNEL_X64_6_1 {
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
+
+        impl IsLoadable for LINUX_DIRECT_TEST_KERNEL_X64_6_18 {
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
+
+        impl IsLoadable for LINUX_DIRECT_TEST_KERNEL_AARCH64_6_1 {
+            const ARCH: MachineArch = MachineArch::Aarch64;
+        }
+
+        impl IsLoadable for LINUX_DIRECT_TEST_KERNEL_AARCH64_6_18 {
+            const ARCH: MachineArch = MachineArch::Aarch64;
+        }
+
+        impl IsLoadable for LINUX_DIRECT_TEST_BZIMAGE_X64_6_1 {
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
+
+        impl IsLoadable for LINUX_DIRECT_TEST_BZIMAGE_X64_6_18 {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
 

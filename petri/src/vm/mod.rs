@@ -2484,6 +2484,36 @@ impl Firmware {
         }
     }
 
+    /// Constructs a [`Firmware::LinuxDirect`] configuration with a specific
+    /// kernel version.
+    pub fn linux_direct_with_version(
+        resolver: &ArtifactResolver<'_>,
+        arch: MachineArch,
+        version: petri_artifacts_vmm_test::LinuxDirectKernelVersion,
+    ) -> Self {
+        use petri_artifacts_vmm_test::LinuxDirectKernelVersion;
+        use petri_artifacts_vmm_test::artifacts::loadable::*;
+        let kernel = match (arch, version) {
+            (MachineArch::X86_64, LinuxDirectKernelVersion::V6_1) => {
+                resolver.require(LINUX_DIRECT_TEST_KERNEL_X64_6_1).erase()
+            }
+            (MachineArch::X86_64, LinuxDirectKernelVersion::V6_18) => {
+                resolver.require(LINUX_DIRECT_TEST_KERNEL_X64_6_18).erase()
+            }
+            (MachineArch::Aarch64, LinuxDirectKernelVersion::V6_1) => resolver
+                .require(LINUX_DIRECT_TEST_KERNEL_AARCH64_6_1)
+                .erase(),
+            (MachineArch::Aarch64, LinuxDirectKernelVersion::V6_18) => resolver
+                .require(LINUX_DIRECT_TEST_KERNEL_AARCH64_6_18)
+                .erase(),
+        };
+        let initrd = match arch {
+            MachineArch::X86_64 => resolver.require(LINUX_DIRECT_TEST_INITRD_X64).erase(),
+            MachineArch::Aarch64 => resolver.require(LINUX_DIRECT_TEST_INITRD_AARCH64).erase(),
+        };
+        Firmware::LinuxDirect { kernel, initrd }
+    }
+
     /// Constructs a [`Firmware::LinuxDirect`] configuration that uses a
     /// compressed bzImage kernel instead of an uncompressed ELF.
     ///
@@ -2492,6 +2522,28 @@ impl Firmware {
         use petri_artifacts_vmm_test::artifacts::loadable::*;
         Firmware::LinuxDirect {
             kernel: resolver.require(LINUX_DIRECT_TEST_BZIMAGE_X64).erase(),
+            initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_X64).erase(),
+        }
+    }
+
+    /// Constructs a [`Firmware::LinuxDirect`] bzImage configuration with a
+    /// specific kernel version.
+    pub fn linux_direct_bzimage_with_version(
+        resolver: &ArtifactResolver<'_>,
+        version: petri_artifacts_vmm_test::LinuxDirectKernelVersion,
+    ) -> Self {
+        use petri_artifacts_vmm_test::LinuxDirectKernelVersion;
+        use petri_artifacts_vmm_test::artifacts::loadable::*;
+        let kernel = match version {
+            LinuxDirectKernelVersion::V6_1 => {
+                resolver.require(LINUX_DIRECT_TEST_BZIMAGE_X64_6_1).erase()
+            }
+            LinuxDirectKernelVersion::V6_18 => {
+                resolver.require(LINUX_DIRECT_TEST_BZIMAGE_X64_6_18).erase()
+            }
+        };
+        Firmware::LinuxDirect {
+            kernel,
             initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_X64).erase(),
         }
     }

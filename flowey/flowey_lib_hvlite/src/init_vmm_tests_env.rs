@@ -140,6 +140,36 @@ impl SimpleFlowNode for Node {
                     })
                 });
 
+        // Request all supported kernel versions for version-specific paths
+        let versioned_kernels: Vec<_> =
+            crate::resolve_openvmm_test_linux_kernel::LinuxTestKernelVersion::ALL
+                .iter()
+                .map(|&kver| {
+                    let kernel = ctx.reqv(|v| {
+                        crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                            crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
+                            arch,
+                            kver,
+                            v,
+                        )
+                    });
+                    let bzimage =
+                        crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::BzImage
+                            .is_available_for(arch)
+                            .then(|| {
+                                ctx.reqv(|v| {
+                                    crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                                        crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::BzImage,
+                                        arch,
+                                        kver,
+                                        v,
+                                    )
+                                })
+                            });
+                    (kver, kernel, bzimage)
+                })
+                .collect();
+
         let uefi =
             ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v });
 
@@ -164,6 +194,10 @@ impl SimpleFlowNode for Node {
             let test_linux_initrd = test_linux_initrd.claim(ctx);
             let test_linux_kernel = test_linux_kernel.claim(ctx);
             let test_linux_bzimage = test_linux_bzimage.claim(ctx);
+            let versioned_kernels: Vec<_> = versioned_kernels
+                .into_iter()
+                .map(|(kver, kernel, bzimage)| (kver, kernel.claim(ctx), bzimage.claim(ctx)))
+                .collect();
             let uefi = uefi.claim(ctx);
             let release_igvm_files_dir = release_igvm_files.claim(ctx);
             move |rt| {
@@ -453,6 +487,16 @@ impl SimpleFlowNode for Node {
                         bzimage_path,
                         test_content_dir.join(arch_dir).join("bzImage"),
                     )?;
+                }
+
+                // Place version-specific kernels at versioned paths
+                for (kver, kernel_var, bzimage_var) in versioned_kernels {
+                    let version_dir = test_content_dir.join(arch_dir).join(kver.artifact_tag());
+                    fs_err::create_dir_all(&version_dir)?;
+                    fs_err::copy(rt.read(kernel_var), version_dir.join(kernel_file_name))?;
+                    if let Some(bz_var) = bzimage_var {
+                        fs_err::copy(rt.read(bz_var), version_dir.join("bzImage"))?;
+                    }
                 }
 
                 let uefi_dir = test_content_dir.join(match arch {
