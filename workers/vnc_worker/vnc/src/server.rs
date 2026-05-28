@@ -19,8 +19,6 @@ use crate::update_state::UpdateState;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
-use futures::StreamExt;
-use futures::channel::mpsc;
 use futures::future::OptionFuture;
 use pal_async::socket::PolledSocket;
 use std::sync::Arc;
@@ -63,8 +61,8 @@ pub struct Server<F, I> {
     socket: PolledSocket<socket2::Socket>,
     fb: F,
     input: I,
-    update_recv: mpsc::Receiver<()>,
-    update_send: mpsc::Sender<()>,
+    update_recv: async_channel::Receiver<()>,
+    update_send: async_channel::Sender<()>,
     name: String,
 
     /// Ctrl-Alt-P paste intercept: tracks modifier key state (left or right).
@@ -81,7 +79,7 @@ pub struct Server<F, I> {
 }
 
 #[derive(Debug, Clone)]
-pub struct Updater(mpsc::Sender<()>);
+pub struct Updater(async_channel::Sender<()>);
 
 impl Updater {
     pub fn update(&mut self) {
@@ -99,8 +97,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
         dirty_recv: Option<DirtyRectReceiver>,
         missed_dirty: Option<Arc<AtomicBool>>,
     ) -> Server<F, I> {
-        #[expect(clippy::disallowed_methods)] // TODO
-        let (update_send, update_recv) = mpsc::channel(1);
+        let (update_send, update_recv) = async_channel::bounded(1);
         Self {
             socket,
             fb,
@@ -638,10 +635,14 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
             let mut socket_ready = false;
             let mut update_ready = false;
             let mut message_type = 0u8;
-            let update_recv = &mut self.update_recv;
+            let update_recv = &self.update_recv;
+            // async_channel::Receiver is not Unpin, so box the recv() future
+            // and fuse it for futures::select!. A Closed error is unreachable
+            // in practice (this Server owns the matching Sender for its whole
+            // lifetime); the loop body checks pending_dirty regardless.
             let mut update: OptionFuture<_> = cs
                 .ready_for_update
-                .then(|| update_recv.select_next_some())
+                .then(|| Box::pin(update_recv.recv()).fuse())
                 .into();
             futures::select! { // merge semantics
                 _ = update => update_ready = true,
