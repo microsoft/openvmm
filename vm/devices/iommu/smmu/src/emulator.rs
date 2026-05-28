@@ -2532,8 +2532,8 @@ mod tests {
     /// Verifies that a CMDQ error (split across cmdq_cons.err in the
     /// device and gerror/gerrorn in shared state) survives save/restore
     /// and continues to block command processing until acknowledged.
-    #[test]
-    fn test_save_restore_cmdq_error_persists() {
+    #[pal_async::async_test]
+    async fn test_save_restore_cmdq_error_persists() {
         let mut dev = make_cmdq_test_device();
 
         // Trigger CMDQ error with an unknown opcode.
@@ -2547,8 +2547,10 @@ mod tests {
         let gerror = Gerror::from(read32(&mut dev, GERROR));
         assert!(gerror.cmdq_err(), "GERROR.CMDQ_ERR must be toggled");
 
-        // Save and restore.
+        // Save, reset, and restore — matching the state-unit lifecycle
+        // (hibernate/migration resets between save and restore).
         let saved = dev.save().expect("save");
+        dev.reset().await;
         dev.restore(saved).expect("restore");
 
         // Error must still be active after restore.

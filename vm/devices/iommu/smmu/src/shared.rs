@@ -375,7 +375,8 @@ impl SmmuSharedState {
     /// Restores the queue and error state from a saved snapshot.
     ///
     /// The caller must re-sync derived fields (`set_evtq_config`,
-    /// `set_evtq_enabled`, `set_irq_ctrl`) separately after this call.
+    /// `set_evtq_enabled`, `set_irq_ctrl`) before this call, since
+    /// this function uses `evtq_irqen` to sync the EVTQ interrupt line.
     pub(crate) fn restore_queue_state(&self, state: SavedQueueState) {
         let SavedQueueState {
             evtq_prod,
