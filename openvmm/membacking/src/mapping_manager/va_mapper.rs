@@ -115,67 +115,14 @@ impl MapperTask {
                         .unmap(range.start() as usize, range.len() as usize)
                         .expect("invalidate request should be valid");
                 }),
-                MapperRequest::Map(MappingParams {
-                    range,
-                    mappable,
-                    writable,
-                    file_offset,
-                    numa_node,
-                    ..
-                }) => {
-                    tracing::debug!(%range, "mapping received for range");
+                MapperRequest::Map(params) => {
+                    tracing::debug!(range = %params.range, "mapping received for range");
 
-                    let map_result = {
-                        #[cfg(unix)]
-                        {
-                            self.inner.mapping.map_file(
-                                range.start() as usize,
-                                range.len() as usize,
-                                &mappable,
-                                file_offset,
-                                writable,
-                            )
-                        }
-                        #[cfg(windows)]
-                        {
-                            self.inner.mapping.map_file_numa(
-                                range.start() as usize,
-                                range.len() as usize,
-                                &mappable,
-                                file_offset,
-                                writable,
-                                numa_node,
-                            )
-                        }
-                    };
-
-                    match map_result {
-                        Ok(()) => {
-                            #[cfg(target_os = "linux")]
-                            if let Some(node) = numa_node {
-                                if let Err(e) = self.inner.mapping.mbind_at(
-                                    range.start() as usize,
-                                    range.len() as usize,
-                                    node,
-                                ) {
-                                    tracing::error!(
-                                        error = &e as &dyn std::error::Error,
-                                        %range,
-                                        node,
-                                        "NUMA binding failed, using default placement"
-                                    );
-                                }
-                            }
-                            self.wake_waiters(range, Some(writable));
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                error = &e as &dyn std::error::Error,
-                                %range,
-                                "failed to map file for range"
-                            );
-                            self.wake_waiters(range, None);
-                        }
+                    let (range, writable) = (params.range, params.writable);
+                    if self.map_file(params) {
+                        self.wake_waiters(range, Some(writable));
+                    } else {
+                        self.wake_waiters(range, None);
                     }
                 }
                 MapperRequest::NoMapping(range) => {
@@ -190,6 +137,80 @@ impl MapperTask {
         *self.inner.waiters.lock() = None;
         // Invalidate everything.
         let _ = self.inner.mapping.unmap(0, self.inner.mapping.len());
+    }
+
+    /// Maps a file-backed region into the VA space, applying NUMA policy where
+    /// supported. Returns `true` on success.
+    fn map_file(&self, params: MappingParams) -> bool {
+        let MappingParams {
+            range,
+            mappable,
+            writable,
+            file_offset,
+            numa_node,
+            ..
+        } = params;
+
+        let map_result = cfg_select! {
+            windows => {
+                self.inner.mapping.map_file_numa(
+                    range.start() as usize,
+                    range.len() as usize,
+                    &mappable,
+                    file_offset,
+                    writable,
+                    numa_node,
+                )
+            }
+            _ => {
+                self.inner.mapping.map_file(
+                    range.start() as usize,
+                    range.len() as usize,
+                    &mappable,
+                    file_offset,
+                    writable,
+                )
+            }
+        };
+
+        if let Err(e) = map_result {
+            tracing::error!(
+                error = &e as &dyn std::error::Error,
+                %range,
+                "failed to map file for range"
+            );
+            return false;
+        }
+
+        cfg_select! {
+            target_os = "linux" => {
+                if let Some(node) = numa_node {
+                    if let Err(e) = self.inner.mapping.mbind_at(
+                        range.start() as usize,
+                        range.len() as usize,
+                        node,
+                    ) {
+                        tracing::error!(
+                            error = &e as &dyn std::error::Error,
+                            %range,
+                            node,
+                            "NUMA binding failed, using default placement"
+                        );
+                    }
+                }
+            }
+            windows => {
+                // NUMA handled by map_file_numa above.
+                let _ = numa_node;
+            }
+            _ => {
+                if numa_node.is_some() {
+                    tracing::warn!(%range, "NUMA not supported on this platform, using default placement");
+                }
+            }
+        }
+
+        true
     }
 
     fn wake_waiters(&mut self, range: MemoryRange, writable: Option<bool>) {
@@ -336,24 +357,35 @@ impl VaMapper {
     ///
     /// This replaces the placeholder at the given offset with committed
     /// anonymous memory.
+    ///
+    /// Caution: on Linux, if NUMA binding fails, the allocation itself has
+    /// still succeeded — the returned error does not imply the memory is
+    /// unmapped.
     pub(crate) fn alloc_range(
         &self,
         offset: usize,
         len: usize,
         numa_node: Option<u32>,
     ) -> Result<(), std::io::Error> {
-        #[cfg(windows)]
-        {
-            self.inner.mapping.alloc_numa(offset, len, numa_node)
-        }
-        #[cfg(unix)]
-        {
-            self.inner.mapping.alloc(offset, len)?;
-            #[cfg(target_os = "linux")]
-            if let Some(node) = numa_node {
-                self.inner.mapping.mbind_at(offset, len, node)?;
+        cfg_select! {
+            windows => {
+                self.inner.mapping.alloc_numa(offset, len, numa_node)
             }
-            Ok(())
+            target_os = "linux" => {
+                self.inner.mapping.alloc(offset, len)?;
+                if let Some(node) = numa_node {
+                    self.inner.mapping.mbind_at(offset, len, node)?;
+                }
+                Ok(())
+            }
+            _ => {
+                if numa_node.is_some() {
+                    return Err(std::io::Error::other(
+                        "NUMA allocation not supported on this platform",
+                    ));
+                }
+                self.inner.mapping.alloc(offset, len)
+            }
         }
     }
 
