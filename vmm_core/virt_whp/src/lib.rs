@@ -1371,7 +1371,7 @@ impl VtlPartition {
         #[cfg(guest_arch = "x86_64")]
         if nested_virt {
             match whp_config.set_property(whp::PartitionProperty::NestedVirtualization(true)) {
-                Ok(()) => {}
+                Ok(_) => {}
                 Err(whp::WHvError::WHV_E_UNKNOWN_PROPERTY) => {
                     return Err(Error::NestedVirtUnsupported);
                 }
