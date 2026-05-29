@@ -8,7 +8,7 @@
 //! or any guest code is executed, and therefore it can not leak anything
 //! sensitive.
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
 use crate::arch::tdx::TdxIoAccess;
 use crate::host_params::shim_params::IsolationType;
 use crate::single_threaded::SingleThreaded;
@@ -26,7 +26,7 @@ enum Logger {
     Serial(Serial<InstrIoAccess>),
     #[cfg(target_arch = "aarch64")]
     Serial(Serial),
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
     TdxSerial(Serial<TdxIoAccess>),
     None,
 }
@@ -35,7 +35,7 @@ impl Logger {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         match self {
             Logger::Serial(serial) => serial.write_str(s),
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
             Logger::TdxSerial(serial) => serial.write_str(s),
             Logger::None => Ok(()),
         }
@@ -86,7 +86,7 @@ pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_avail
         (IsolationType::None, true) => Logger::Serial(Serial::init(InstrIoAccess)),
         #[cfg(target_arch = "aarch64")]
         (IsolationType::None, true) => Logger::Serial(Serial::init()),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
         (IsolationType::Tdx, true) => Logger::TdxSerial(Serial::init(TdxIoAccess)),
         _ => Logger::None,
     };
