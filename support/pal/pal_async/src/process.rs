@@ -10,8 +10,9 @@
 //! futures-based `wait()` method.
 //!
 //! [`ProcessWaitDriver`] is an extension trait, not part of [`Driver`]. On
-//! Linux it is blanket-implemented for all [`FdReadyDriver`] types via pidfd
-//! polling. Platform-specific driver implementations live in the `unix` and
+//! Linux it is blanket-implemented for all `FdReadyDriver` types via pidfd
+//! polling. On Windows it is blanket-implemented for all `WaitDriver` types.
+//! Platform-specific driver implementations live in the `unix` and
 //! `windows` backend modules.
 
 use crate::driver::Driver;

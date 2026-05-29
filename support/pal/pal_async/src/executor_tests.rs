@@ -201,14 +201,57 @@ pub async fn socket_tests(driver: impl Driver) {
 }
 
 /// Runs process wait tests.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub async fn process_tests(driver: impl crate::process::DynProcessWaitDriver) {
     use crate::process::PolledChild;
     type StdPolledChild = PolledChild<std::process::Child>;
 
+    fn success_command() -> std::process::Command {
+        #[cfg(unix)]
+        {
+            std::process::Command::new("/bin/true")
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = std::process::Command::new("cmd.exe");
+            cmd.args(["/c", "exit", "0"]);
+            cmd
+        }
+    }
+
+    fn failure_command() -> std::process::Command {
+        #[cfg(unix)]
+        {
+            std::process::Command::new("/bin/false")
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = std::process::Command::new("cmd.exe");
+            cmd.args(["/c", "exit", "1"]);
+            cmd
+        }
+    }
+
+    fn long_running_command() -> std::process::Command {
+        #[cfg(unix)]
+        {
+            let mut cmd = std::process::Command::new("sleep");
+            cmd.arg("60");
+            cmd
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = std::process::Command::new("ping");
+            cmd.args(["-n", "60", "127.0.0.1"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            cmd
+        }
+    }
+
     // std child exits successfully
     {
-        let child = std::process::Command::new("/bin/true").spawn().unwrap();
+        let child = success_command().spawn().unwrap();
         let mut polled = StdPolledChild::new(&driver, child).unwrap();
         let status = polled.wait().await.unwrap();
         assert!(status.success());
@@ -216,7 +259,7 @@ pub async fn process_tests(driver: impl crate::process::DynProcessWaitDriver) {
 
     // std child exits with nonzero status
     {
-        let child = std::process::Command::new("/bin/false").spawn().unwrap();
+        let child = failure_command().spawn().unwrap();
         let mut polled = StdPolledChild::new(&driver, child).unwrap();
         let status = polled.wait().await.unwrap();
         assert!(!status.success());
@@ -224,10 +267,7 @@ pub async fn process_tests(driver: impl crate::process::DynProcessWaitDriver) {
 
     // wait remains pending while child is still running
     {
-        let child = std::process::Command::new("sleep")
-            .arg("60")
-            .spawn()
-            .unwrap();
+        let child = long_running_command().spawn().unwrap();
         let mut polled = StdPolledChild::new(&driver, child).unwrap();
         let pending = poll_fn(|cx| Poll::Ready(polled.poll_wait(cx))).await;
         assert!(pending.is_pending());
@@ -238,10 +278,7 @@ pub async fn process_tests(driver: impl crate::process::DynProcessWaitDriver) {
 
     // into_inner returns a usable child
     {
-        let child = std::process::Command::new("sleep")
-            .arg("60")
-            .spawn()
-            .unwrap();
+        let child = long_running_command().spawn().unwrap();
         let polled = StdPolledChild::new(&driver, child).unwrap();
         let mut child = polled.into_inner();
         child.kill().unwrap();
@@ -251,7 +288,7 @@ pub async fn process_tests(driver: impl crate::process::DynProcessWaitDriver) {
 
     // after async wait, try_wait observes the cached status
     {
-        let child = std::process::Command::new("/bin/true").spawn().unwrap();
+        let child = success_command().spawn().unwrap();
         let mut polled = StdPolledChild::new(&driver, child).unwrap();
         let status = polled.wait().await.unwrap();
         assert!(status.success());

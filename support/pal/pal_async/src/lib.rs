@@ -37,6 +37,7 @@ pub mod windows {
     pub use super::sys::iocp::IocpPool;
     pub use super::sys::overlapped;
     pub use super::sys::pipe;
+    pub use super::sys::process::PolledProcess;
     pub use super::sys::tp::TpPool;
 }
 
