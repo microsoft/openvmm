@@ -900,19 +900,13 @@ impl InitializedVm {
         H: virt::Hypervisor<Partition = P>,
         P: 'static + HvlitePartition,
     {
-        let total_mem_size: u64 = cfg
-            .numa
-            .nodes
-            .iter()
-            .filter_map(|n| n.mem.as_ref())
-            .map(|m| m.mem_size)
-            .sum();
-        let numa_mem_sizes: Vec<u64> = cfg
+        let node_mem_sizes: Vec<u64> = cfg
             .numa
             .nodes
             .iter()
             .map(|n| n.mem.as_ref().map_or(0, |m| m.mem_size))
             .collect();
+        let total_mem_size: u64 = node_mem_sizes.iter().sum();
         tracing::info!(mem_size = total_mem_size, "guest RAM config");
 
         // Validate NUMA topology.
@@ -1022,14 +1016,6 @@ impl InitializedVm {
             None
         };
 
-        // Choose the memory layout of the VM.
-        //
-        // When numa_mem_sizes is set, distribute guest RAM across vNUMA nodes
-        // for ACPI SRAT / FDT reporting.
-        //
-        // TODO: The vNUMA nodes reported are meant for test usage only, as they
-        // are not aligned to any physical NUMA node. There is more work to do
-        // to support useful vNUMA reporting.
         let virtio_mmio_count = cfg
             .virtio_devices
             .iter()
@@ -1064,8 +1050,7 @@ impl InitializedVm {
             0
         };
         let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
-            mem_size: total_mem_size,
-            numa_mem_sizes: Some(&numa_mem_sizes),
+            node_mem_sizes: &node_mem_sizes,
             layout: cfg.layout.clone(),
             pcie_root_complexes: &cfg.pcie_root_complexes,
             virtio_mmio_count,
