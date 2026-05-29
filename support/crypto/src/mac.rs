@@ -70,11 +70,6 @@ unsafe extern "C" {
 /// constructed directly from the return value of CF/Security APIs.
 pub(crate) struct CfHandle(pub(crate) CFTypeRef);
 
-// SAFETY: Owned CF objects we use are read-only or internally synchronized,
-// so they are safe to move between threads.
-unsafe impl Send for CfHandle {}
-// SAFETY: see above.
-unsafe impl Sync for CfHandle {}
 
 impl Drop for CfHandle {
     fn drop(&mut self) {
