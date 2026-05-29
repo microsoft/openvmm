@@ -206,7 +206,7 @@ mod linux {
     #![expect(unsafe_code)]
 
     use super::*;
-    use crate::sys::process::FdProcessWait;
+    use crate::sys::process::linux::FdProcessWait;
     use std::os::unix::prelude::*;
 
     /// Opens a pidfd for an existing process.

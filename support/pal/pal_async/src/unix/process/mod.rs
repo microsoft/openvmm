@@ -4,12 +4,10 @@
 //! Unix process wait implementations.
 
 #[cfg(target_os = "linux")]
-mod linux;
+pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
-#[cfg(target_os = "linux")]
-pub(crate) use linux::FdProcessWait;
 #[cfg(target_os = "linux")]
 pub(crate) use linux::WaitInner;
 #[cfg(target_os = "macos")]
