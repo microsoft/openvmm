@@ -318,7 +318,8 @@ impl Driver for VmTaskDriver {
     fn new_dyn_process_wait(
         &self,
         pid: i32,
-    ) -> std::io::Result<pal_async::driver::PollImpl<dyn pal_async::process::macos::PollProcessWait>> {
+    ) -> std::io::Result<pal_async::driver::PollImpl<dyn pal_async::process::macos::PollProcessWait>>
+    {
         self.inner.driver().new_dyn_process_wait(pid)
     }
 }
@@ -586,8 +587,9 @@ pub mod thread {
         fn new_dyn_process_wait(
             &self,
             pid: i32,
-        ) -> std::io::Result<pal_async::driver::PollImpl<dyn pal_async::process::macos::PollProcessWait>>
-        {
+        ) -> std::io::Result<
+            pal_async::driver::PollImpl<dyn pal_async::process::macos::PollProcessWait>,
+        > {
             self.with_driver(|d| d.new_dyn_process_wait(pid))
         }
     }
