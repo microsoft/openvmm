@@ -289,7 +289,7 @@ mod macos_impl {
             if child.try_wait()?.is_some() {
                 return Ok(Self::exited(child));
             }
-            let wait = driver.new_dyn_process_wait(child.id() as i32)?;
+            let wait = driver.new_dyn_process_wait(child.id())?;
             Ok(Self {
                 wait: Some(WaitInner::new(wait)),
                 child,
