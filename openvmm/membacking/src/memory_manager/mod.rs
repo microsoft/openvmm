@@ -143,6 +143,9 @@ pub enum MemoryBuildError {
     /// Hugepages are only supported on Linux.
     #[error("hugepages are only supported on Linux")]
     HugepagesUnsupportedPlatform,
+    /// Host NUMA node binding is only supported on Linux and Windows.
+    #[error("host NUMA node binding is only supported on Linux and Windows")]
+    HostNumaNodeUnsupportedPlatform,
     /// Hugepages require shared memory mode.
     #[error("hugepages require shared memory mode")]
     HugepagesWithPrivateMemory,
@@ -251,6 +254,10 @@ impl RamBackingRequest {
 
     /// Bind this backing's memory to a specific host NUMA node
     /// (Linux: `mbind(MPOL_BIND)`, Windows: `MemExtendedParameterNumaNode`).
+    ///
+    /// Only supported on Linux and Windows; returns
+    /// [`MemoryBuildError::HostNumaNodeUnsupportedPlatform`] at build time on
+    /// other targets.
     pub fn host_numa_node(mut self, node: Option<u32>) -> Self {
         self.host_numa_node = node;
         self
@@ -397,6 +404,9 @@ impl GuestMemoryBuilder {
                 if !cfg!(target_os = "linux") {
                     return Err(MemoryBuildError::ThpUnsupportedPlatform);
                 }
+            }
+            if req.host_numa_node.is_some() && cfg!(not(any(target_os = "linux", target_os = "windows"))) {
+                return Err(MemoryBuildError::HostNumaNodeUnsupportedPlatform);
             }
             if req.hugepages {
                 if !cfg!(target_os = "linux") {

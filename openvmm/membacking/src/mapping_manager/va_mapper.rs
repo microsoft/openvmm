@@ -204,9 +204,7 @@ impl MapperTask {
                 let _ = numa_node;
             }
             _ => {
-                if numa_node.is_some() {
-                    tracing::warn!(%range, "NUMA not supported on this platform, using default placement");
-                }
+                assert!(numa_node.is_none(), "NUMA not supported on this platform; should have been rejected at build time");
             }
         }
 
@@ -379,11 +377,7 @@ impl VaMapper {
                 Ok(())
             }
             _ => {
-                if numa_node.is_some() {
-                    return Err(std::io::Error::other(
-                        "NUMA allocation not supported on this platform",
-                    ));
-                }
+                assert!(numa_node.is_none(), "NUMA not supported on this platform; should have been rejected at build time");
                 self.inner.mapping.alloc(offset, len)
             }
         }

@@ -149,10 +149,14 @@ unsafe fn map_view_of_file(
 }
 
 /// Returns a NUMA node `MEM_EXTENDED_PARAMETER`, if a node is specified.
+///
+/// See <https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-mem_extended_parameter>
 fn numa_extended_param(numa_node: Option<u32>) -> Option<Memory::MEM_EXTENDED_PARAMETER> {
     let node = numa_node?;
-    // SAFETY: MEM_EXTENDED_PARAMETER is a C union struct; zeroing is valid.
-    let mut param: Memory::MEM_EXTENDED_PARAMETER = unsafe { std::mem::zeroed() };
+    let mut param = Memory::MEM_EXTENDED_PARAMETER::default();
+    // The `_bitfield` layout is: Type in the low 8 bits, Reserved in the
+    // upper 56 bits. windows-rs 0.62 does not expose typed accessors for
+    // this bitfield struct, so we set it directly.
     param.Anonymous1._bitfield = Memory::MemExtendedParameterNumaNode as u64 & 0xff;
     param.Anonymous2.ULong = node;
     Some(param)
