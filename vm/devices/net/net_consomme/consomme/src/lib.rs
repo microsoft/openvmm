@@ -130,12 +130,12 @@ pub struct ConsommeParams {
     /// With SLAAC (Stateless Address Autoconfiguration), the guest generates
     /// its own IPv6 address using the advertised prefix and its interface identifier.
     /// This field is learned from incoming IPv6 traffic from the guest.
-    #[inspect(with = "Option::is_some")]
+    #[inspect(with = "|x| x.map(inspect::AsDisplay)")]
     pub client_ip_ipv6: Option<Ipv6Address>,
     /// Current routable IPv6 address learned from guest via SLAAC (if any).
     /// The guest will typically have two addresses: a local and a routable one.
     /// This field is learned from incoming IPv6 traffic from the guest.
-    #[inspect(with = "Option::is_some")]
+    #[inspect(with = "|x| x.map(inspect::AsDisplay)")]
     pub client_ip_ipv6_routable: Option<Ipv6Address>,
     /// Idle timeout for UDP connections.
     #[inspect(debug)]
