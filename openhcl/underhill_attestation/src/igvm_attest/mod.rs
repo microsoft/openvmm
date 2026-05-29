@@ -509,6 +509,7 @@ mod tests {
             tpm_persisted: false,
             filtered_vpci_devices_allowed: true,
             vm_unique_id: String::new(),
+            vmgs_provisioner: None,
         };
         let result = serde_json::to_string(&attestation_vm_config);
         assert!(result.is_ok());
@@ -531,6 +532,7 @@ mod tests {
             tpm_persisted: false,
             filtered_vpci_devices_allowed: true,
             vm_unique_id: String::new(),
+            vmgs_provisioner: None,
         };
         let attestation_vm_config =
             attestation_vm_config_with_time(&attestation_vm_config, 1691103220);
