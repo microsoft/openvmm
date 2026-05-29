@@ -202,7 +202,7 @@ pub async fn socket_tests(driver: impl Driver) {
 
 /// Runs process wait tests.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-pub async fn process_tests(driver: impl crate::process::DynProcessWaitDriver) {
+pub async fn process_tests(driver: impl Driver) {
     use crate::process::PolledChild;
     type StdPolledChild = PolledChild<std::process::Child>;
 

@@ -4,121 +4,40 @@
 //! Process wait functionality.
 //!
 //! Provides async primitives for waiting on child process exit without
-//! consuming the child object. The low-level [`ProcessWaitDriver`] and
-//! [`PollProcessWait`] traits define a platform-specific wait source, while
-//! the high-level [`PolledChild`] wrapper owns a child process and provides a
-//! futures-based `wait()` method.
-//!
-//! [`ProcessWaitDriver`] is an extension trait, not part of [`Driver`]. On
-//! Linux it is blanket-implemented for all `FdReadyDriver` types via pidfd
-//! polling. On Windows it is blanket-implemented for all `WaitDriver` types.
-//! Platform-specific driver implementations live in the `unix` and
-//! `windows` backend modules.
+//! consuming the child object. On Linux and Windows, [`PolledChild`]
+//! constructs the wait directly from existing [`Driver`]
+//! primitives (fd readiness and waitable handles). On macOS,
+//! `Driver::new_dyn_process_wait` dispatches to the kqueue `EVFILT_PROC`
+//! mechanism via the `ProcessWaitDriver` trait.
 
 use crate::driver::Driver;
-use crate::driver::PollImpl;
 use std::future::Future;
 use std::future::poll_fn;
 use std::io;
 #[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd;
-#[cfg(windows)]
-use std::os::windows::prelude::*;
 use std::task::Context;
 use std::task::Poll;
 
-/// A trait for driving process exit waits.
-///
-/// This is an extension trait, not part of [`Driver`]. Not all executors
-/// support process waits on all platforms.
-pub trait ProcessWaitDriver: Unpin {
-    /// The process wait object.
-    type ProcessWait: 'static + PollProcessWait;
-
-    /// Creates a new process wait from a waitable process handle.
-    #[cfg(windows)]
-    fn new_process_wait_handle(&self, handle: RawHandle) -> io::Result<Self::ProcessWait>;
-
-    /// Creates a new process wait from a pidfd.
-    #[cfg(target_os = "linux")]
-    fn new_process_wait_pidfd(&self, pidfd: RawFd) -> io::Result<Self::ProcessWait>;
-
-    /// Creates a new process wait from a process ID.
-    #[cfg(target_os = "macos")]
-    fn new_process_wait_pid(&self, pid: libc::pid_t) -> io::Result<Self::ProcessWait>;
+/// macOS-specific process wait types.
+#[cfg(target_os = "macos")]
+pub mod macos {
+    pub use crate::sys::process::macos::NoProcessWait;
+    pub use crate::sys::process::macos::PollProcessWait;
+    pub use crate::sys::process::macos::ProcessWaitDriver;
+    pub use crate::sys::process::macos::ProcessWaitImpl;
 }
-
-/// A trait for polling process exit.
-///
-/// Implementations must not reap the child process and must not consume a
-/// signal by reading from a pidfd or other process wait source. The caller
-/// is responsible for obtaining the exit status through the child object's
-/// native API after this poll returns [`Poll::Ready`].
-pub trait PollProcessWait: Unpin + Send + Sync {
-    /// Polls until the process exit wait source is signaled.
-    fn poll_process_exit(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>>;
-}
-
-impl std::fmt::Debug for dyn PollProcessWait {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.pad("PollProcessWait")
-    }
-}
-
-/// A type-erased process wait implementation.
-pub type ProcessWaitImpl = PollImpl<dyn PollProcessWait>;
-
-/// Extension trait for drivers that support type-erased process waits.
-///
-/// A blanket implementation is provided for any `T: Driver +
-/// ProcessWaitDriver`. Call sites that only hold `&dyn Driver` cannot use
-/// this trait directly.
-pub trait DynProcessWaitDriver: Driver {
-    /// Creates a new type-erased process wait from a waitable process handle.
-    #[cfg(windows)]
-    fn new_dyn_process_wait_handle(&self, handle: RawHandle) -> io::Result<ProcessWaitImpl>;
-
-    /// Creates a new type-erased process wait from a pidfd.
-    #[cfg(target_os = "linux")]
-    fn new_dyn_process_wait_pidfd(&self, pidfd: RawFd) -> io::Result<ProcessWaitImpl>;
-
-    /// Creates a new type-erased process wait from a process ID.
-    #[cfg(target_os = "macos")]
-    fn new_dyn_process_wait_pid(&self, pid: libc::pid_t) -> io::Result<ProcessWaitImpl>;
-}
-
-impl<T: Driver + ProcessWaitDriver> DynProcessWaitDriver for T {
-    #[cfg(windows)]
-    fn new_dyn_process_wait_handle(&self, handle: RawHandle) -> io::Result<ProcessWaitImpl> {
-        Ok(smallbox::smallbox!(self.new_process_wait_handle(handle)?))
-    }
-
-    #[cfg(target_os = "linux")]
-    fn new_dyn_process_wait_pidfd(&self, pidfd: RawFd) -> io::Result<ProcessWaitImpl> {
-        Ok(smallbox::smallbox!(self.new_process_wait_pidfd(pidfd)?))
-    }
-
-    #[cfg(target_os = "macos")]
-    fn new_dyn_process_wait_pid(&self, pid: libc::pid_t) -> io::Result<ProcessWaitImpl> {
-        Ok(smallbox::smallbox!(self.new_process_wait_pid(pid)?))
-    }
-}
-
-// --- High-level PolledChild wrapper ---
 
 /// An owned child process with an asynchronous exit wait.
 ///
-/// The `wait` field is declared before `child` so that the backend wait
+/// The wait field is declared before `child` so that the backend wait
 /// registration is dropped before the child's underlying handle or fd.
-///
-/// Platform-specific constructors are provided in the `unix` and `windows`
-/// backend modules.
 pub struct PolledChild<C> {
-    pub(crate) wait: Option<ProcessWaitImpl>,
+    wait: Option<crate::sys::process::WaitInner>,
     #[cfg(target_os = "linux")]
     #[expect(dead_code)] // Held for drop ordering; keeps the fd alive.
-    pub(crate) owned_pidfd: Option<OwnedFd>,
-    pub(crate) child: C,
+    owned_pidfd: Option<OwnedFd>,
+    child: C,
 }
 
 impl<C> PolledChild<C> {
@@ -138,16 +57,32 @@ impl<C> PolledChild<C> {
     }
 }
 
-// --- PolledChild<std::process::Child> polling ---
+// --- std::process::Child ---
 
 impl PolledChild<std::process::Child> {
+    /// Creates a new `PolledChild` wrapping a [`std::process::Child`].
+    pub fn new(
+        driver: &(impl ?Sized + Driver),
+        mut child: std::process::Child,
+    ) -> io::Result<Self> {
+        // Guard against pid reuse: std::process::Child identifies the process
+        // by pid, which the OS can recycle after the child is reaped. If the
+        // caller already called wait(), pidfd_open or EVFILT_PROC could
+        // silently attach to an unrelated process. Check try_wait() first so
+        // we never touch the pid of a reaped child.
+        if let Some(_status) = child.try_wait()? {
+            return Ok(Self::exited(child));
+        }
+        Self::new_inner(driver, child)
+    }
+
     /// Polls for the child process to exit.
     pub fn poll_wait(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<io::Result<std::process::ExitStatus>> {
         if let Some(wait) = &mut self.wait {
-            match wait.poll_process_exit(cx) {
+            match wait.poll_exit(cx) {
                 Poll::Ready(Ok(())) => {}
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending,
@@ -170,5 +105,239 @@ impl PolledChild<std::process::Child> {
         &mut self,
     ) -> impl '_ + Unpin + Future<Output = io::Result<std::process::ExitStatus>> {
         poll_fn(move |cx| self.poll_wait(cx))
+    }
+}
+
+// --- pal::unix::process::Child ---
+
+#[cfg(unix)]
+impl PolledChild<pal::unix::process::Child> {
+    /// Creates a new `PolledChild` wrapping a [`pal::unix::process::Child`].
+    pub fn new(
+        driver: &(impl ?Sized + Driver),
+        mut child: pal::unix::process::Child,
+    ) -> io::Result<Self> {
+        // macOS uses EVFILT_PROC which takes a pid, so we need the same
+        // pid-reuse guard as std::process::Child above. Linux doesn't need
+        // this: pal::unix::process::Child owns a pidfd, which is a stable
+        // kernel reference that cannot be confused with another process.
+        if cfg!(target_os = "macos") && child.try_wait()?.is_some() {
+            return Ok(Self::exited(child));
+        }
+        Self::new_inner(driver, child)
+    }
+
+    /// Polls for the child process to exit.
+    pub fn poll_wait(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<std::process::ExitStatus>> {
+        if let Some(wait) = &mut self.wait {
+            match wait.poll_exit(cx) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        match self.child.try_wait() {
+            Ok(Some(status)) => Poll::Ready(Ok(status)),
+            Ok(None) => {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            Err(e) => Poll::Ready(Err(e)),
+        }
+    }
+
+    /// Waits for the child process to exit.
+    pub fn wait(
+        &mut self,
+    ) -> impl '_ + Unpin + Future<Output = io::Result<std::process::ExitStatus>> {
+        poll_fn(move |cx| self.poll_wait(cx))
+    }
+}
+
+// --- pal::windows::Process ---
+
+/// An owned process handle with an asynchronous exit wait.
+///
+/// Unlike [`PolledChild`], this type wraps a cloneable process handle
+/// (not a child with cached exit status). The exit code is returned
+/// as a `u32` matching the API of [`pal::windows::Process`].
+///
+/// The `wait` field is declared before `process` so that the backend
+/// wait registration is dropped before the process handle.
+#[cfg(windows)]
+pub struct PolledProcess {
+    wait: Option<crate::sys::process::WaitInner>,
+    process: pal::windows::Process,
+}
+
+#[cfg(windows)]
+impl PolledProcess {
+    /// Creates a new `PolledProcess` wrapping a [`pal::windows::Process`].
+    ///
+    /// Waits on the process handle to detect exit.
+    pub fn new(
+        driver: &(impl ?Sized + Driver),
+        process: pal::windows::Process,
+    ) -> io::Result<Self> {
+        use crate::sys::process::HandleProcessWait;
+        use std::os::windows::prelude::*;
+
+        let handle = process.as_handle().as_raw_handle();
+        let wait = driver.new_dyn_wait(handle)?;
+        Ok(Self {
+            wait: Some(HandleProcessWait::new(wait)),
+            process,
+        })
+    }
+
+    /// Returns the inner process, dropping the wait registration.
+    pub fn into_inner(self) -> pal::windows::Process {
+        self.process
+    }
+
+    /// Gets a reference to the inner process.
+    pub fn get(&self) -> &pal::windows::Process {
+        &self.process
+    }
+
+    /// Polls for the process to exit, returning its exit code.
+    pub fn poll_wait(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<u32>> {
+        if let Some(wait) = &mut self.wait {
+            match wait.poll_exit(cx) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        Poll::Ready(Ok(self.process.exit_code()))
+    }
+
+    /// Waits for the process to exit, returning its exit code.
+    pub fn wait(&mut self) -> impl '_ + Unpin + Future<Output = io::Result<u32>> {
+        poll_fn(move |cx| self.poll_wait(cx))
+    }
+}
+
+// --- Platform-specific construction helpers ---
+
+/// Helper to create a `PolledChild` for an already-exited child.
+impl<C> PolledChild<C> {
+    fn exited(child: C) -> Self {
+        Self {
+            wait: None,
+            #[cfg(target_os = "linux")]
+            owned_pidfd: None,
+            child,
+        }
+    }
+}
+
+/// Linux: open a pidfd and poll fd readiness.
+#[cfg(target_os = "linux")]
+mod linux {
+    // UNSAFETY: Needed for the pidfd_open syscall.
+    #![expect(unsafe_code)]
+
+    use super::*;
+    use crate::sys::process::FdProcessWait;
+    use std::os::unix::prelude::*;
+
+    /// Opens a pidfd for an existing process.
+    fn pidfd_open(pid: i32) -> io::Result<OwnedFd> {
+        // SAFETY: pidfd_open is a simple syscall that creates a new file
+        // descriptor for monitoring the given pid.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0 as libc::c_int) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: pidfd_open returned a valid file descriptor on success.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd as RawFd) })
+    }
+
+    impl PolledChild<std::process::Child> {
+        pub(super) fn new_inner(
+            driver: &(impl ?Sized + Driver),
+            child: std::process::Child,
+        ) -> io::Result<Self> {
+            let pidfd = pidfd_open(child.id() as i32)?;
+            let fd_ready = driver.new_dyn_fd_ready(pidfd.as_fd().as_raw_fd())?;
+            Ok(Self {
+                wait: Some(FdProcessWait::new(fd_ready)),
+                owned_pidfd: Some(pidfd),
+                child,
+            })
+        }
+    }
+
+    impl PolledChild<pal::unix::process::Child> {
+        pub(super) fn new_inner(
+            driver: &(impl ?Sized + Driver),
+            child: pal::unix::process::Child,
+        ) -> io::Result<Self> {
+            let fd_ready = driver.new_dyn_fd_ready(child.as_fd().as_raw_fd())?;
+            Ok(Self {
+                wait: Some(FdProcessWait::new(fd_ready)),
+                owned_pidfd: None,
+                child,
+            })
+        }
+    }
+}
+
+/// macOS: use kqueue EVFILT_PROC via `Driver::new_dyn_process_wait`.
+#[cfg(target_os = "macos")]
+mod macos_impl {
+    use super::*;
+    use crate::sys::process::WaitInner;
+
+    impl PolledChild<std::process::Child> {
+        pub(super) fn new_inner(
+            driver: &(impl ?Sized + Driver),
+            child: std::process::Child,
+        ) -> io::Result<Self> {
+            let wait = driver.new_dyn_process_wait(child.id() as i32)?;
+            Ok(Self {
+                wait: Some(WaitInner::new(wait)),
+                child,
+            })
+        }
+    }
+
+    impl PolledChild<pal::unix::process::Child> {
+        pub(super) fn new_inner(
+            driver: &(impl ?Sized + Driver),
+            child: pal::unix::process::Child,
+        ) -> io::Result<Self> {
+            let wait = driver.new_dyn_process_wait(child.id() as i32)?;
+            Ok(Self {
+                wait: Some(WaitInner::new(wait)),
+                child,
+            })
+        }
+    }
+}
+
+/// Windows: wait on process handle via `Driver::new_dyn_wait`.
+#[cfg(windows)]
+mod windows {
+    use super::*;
+    use crate::sys::process::HandleProcessWait;
+    use std::os::windows::prelude::*;
+
+    impl PolledChild<std::process::Child> {
+        pub(super) fn new_inner(
+            driver: &(impl ?Sized + Driver),
+            child: std::process::Child,
+        ) -> io::Result<Self> {
+            let handle = child.as_handle().as_raw_handle();
+            let wait = driver.new_dyn_wait(handle)?;
+            Ok(Self {
+                wait: Some(HandleProcessWait::new(wait)),
+                child,
+            })
+        }
     }
 }

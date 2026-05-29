@@ -12,8 +12,8 @@ use crate::interest::PollInterestSet;
 use crate::io_pool::IoBackend;
 use crate::io_pool::IoDriver;
 use crate::io_pool::IoPool;
-use crate::process::PollProcessWait;
-use crate::process::ProcessWaitDriver;
+use crate::process::macos::PollProcessWait;
+use crate::process::macos::ProcessWaitDriver;
 use crate::timer::Instant;
 use crate::timer::PollTimer;
 use crate::timer::TimerDriver;
@@ -513,11 +513,7 @@ impl ProcessWaitOp {
 pub struct ProcessWait {
     op: Arc<ProcessWaitOp>,
     kqueue: Arc<KqueueBackend>,
-    pid: libc::pid_t,
-    /// Whether kqueue registration was issued (and thus needs `EV_DELETE`
-    /// on drop). One-shot events auto-remove after delivery, but if the
-    /// event hasn't fired yet we must clean up.
-    registered: bool,
+    pid: i32,
 }
 
 impl PollProcessWait for ProcessWait {
@@ -533,21 +529,19 @@ impl PollProcessWait for ProcessWait {
 
 impl Drop for ProcessWait {
     fn drop(&mut self) {
-        if self.registered {
-            // Try to remove the one-shot event. If the process already
-            // exited, the event was already delivered and auto-removed, so
-            // ENOENT is expected.
-            let _ = self.kqueue.kqfd.run(
-                &[libc::kevent64_s {
-                    ident: self.pid as u64,
-                    filter: libc::EVFILT_PROC,
-                    flags: libc::EV_DELETE,
-                    ..empty_event()
-                }],
-                &mut [],
-                Some(&zero_timespec()),
-            );
-        }
+        // Try to remove the one-shot event. If the process already
+        // exited, the event was already delivered and auto-removed, so
+        // ENOENT is expected.
+        let _ = self.kqueue.kqfd.run(
+            &[libc::kevent64_s {
+                ident: self.pid as u64,
+                filter: libc::EVFILT_PROC,
+                flags: libc::EV_DELETE,
+                ..empty_event()
+            }],
+            &mut [],
+            Some(&zero_timespec()),
+        );
 
         // SAFETY: Reclaiming the reference added in new_process_wait_pid.
         let op = unsafe { Arc::from_raw(Arc::as_ptr(&self.op)) };
@@ -565,7 +559,7 @@ impl Drop for ProcessWait {
 impl ProcessWaitDriver for KqueueDriver {
     type ProcessWait = ProcessWait;
 
-    fn new_process_wait_pid(&self, pid: libc::pid_t) -> io::Result<Self::ProcessWait> {
+    fn new_process_wait_pid(&self, pid: i32) -> io::Result<Self::ProcessWait> {
         let op = Arc::new(ProcessWaitOp {
             inner: Mutex::new(ProcessWaitInner {
                 signaled: false,
@@ -573,7 +567,7 @@ impl ProcessWaitDriver for KqueueDriver {
             }),
         });
         let udata = Arc::as_ptr(&op) as usize as u64;
-        let result = self.inner.kqfd.run(
+        self.inner.kqfd.run(
             &[libc::kevent64_s {
                 ident: pid as u64,
                 filter: libc::EVFILT_PROC,
@@ -584,18 +578,7 @@ impl ProcessWaitDriver for KqueueDriver {
             }],
             &mut [],
             Some(&zero_timespec()),
-        );
-
-        let registered = match result {
-            Ok(_) => true,
-            Err(e) if e.0 == libc::ESRCH => {
-                // Process already exited. Mark as signaled so poll_process_exit
-                // returns immediately.
-                op.inner.lock().signaled = true;
-                false
-            }
-            Err(e) => return Err(e.into()),
-        };
+        )?;
 
         // Add reference owned by the kqueue event, reclaimed in drop.
         let _ = Arc::into_raw(op.clone());
@@ -604,7 +587,6 @@ impl ProcessWaitDriver for KqueueDriver {
             op,
             kqueue: self.inner.clone(),
             pid,
-            registered,
         })
     }
 }
