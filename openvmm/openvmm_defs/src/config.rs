@@ -420,7 +420,7 @@ pub struct NumaDistance {
     pub src: u32,
     /// Destination node index.
     pub dst: u32,
-    /// Distance value (10 = local, 20 = default cross-node, range 10-254).
+    /// Distance value (10 = local, 20 = default cross-node, 255 = unreachable).
     pub distance: u8,
 }
 

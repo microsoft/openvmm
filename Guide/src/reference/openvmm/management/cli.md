@@ -111,7 +111,8 @@ as well as the generated CLI help (via `cargo run -- --help`).
 
 * `--numa-distance <SRC:DST:DIST>`: Specify inter-node NUMA distance
   (repeatable). `SRC` and `DST` are 0-based node indices, `DIST` is
-  10–254 (10 = local). Each direction must be specified explicitly.
+  10–255 (10 = local, 255 = unreachable). Each direction must be specified
+  explicitly.
 
   ```bash
   --numa-distance 0:1:30 --numa-distance 1:0:30

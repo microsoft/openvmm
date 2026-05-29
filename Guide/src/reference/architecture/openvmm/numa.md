@@ -36,7 +36,8 @@ Explicit VP lists must be disjoint (no VP in two nodes), complete
 
 NUMA distances control the ACPI SLIT that the guest sees — an N×N
 matrix describing the relative cost of accessing memory across nodes.
-Distances range from 10 (local) to 254, and self-distance must be 10.
+Distances range from 10 (local) to 255 (unreachable), and self-distance
+must be 10.
 
 When no distances are specified, OpenVMM uses defaults: 10 for local,
 20 for cross-node. The SLIT is only generated when there is more than

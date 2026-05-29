@@ -1514,6 +1514,7 @@ mod test {
             mem_layout,
             cache_topology: None,
             pcie_host_bridges,
+            slit_info: None,
             arch: AcpiArchConfig::Aarch64 {
                 hypervisor_vendor_identity: 0,
                 virt_timer_ppi: 20,

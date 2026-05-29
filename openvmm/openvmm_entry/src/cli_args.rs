@@ -104,7 +104,7 @@ pub struct NumaDistanceCli {
     pub src: u32,
     /// Destination node index.
     pub dst: u32,
-    /// Distance value (10-254).
+    /// Distance value (10-255, 255 = unreachable).
     pub distance: u8,
 }
 
@@ -185,7 +185,7 @@ Examples:
 
     /// NUMA distance (repeatable). Format: SRC:DST:DISTANCE.
     ///
-    /// SRC and DST are 0-based node indices. DISTANCE is 10-254 (10 = local).
+    /// SRC and DST are 0-based node indices. DISTANCE is 10-255 (10 = local, 255 = unreachable).
     /// Specify each direction explicitly (not auto-symmetric).
     #[clap(long, value_name = "SRC:DST:DIST", value_parser = parse_numa_distance, conflicts_with = "memory")]
     pub numa_distance: Option<Vec<NumaDistanceCli>>,
