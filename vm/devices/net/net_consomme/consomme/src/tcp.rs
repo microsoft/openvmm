@@ -337,9 +337,9 @@ impl<T: Client> Access<'_, T> {
                                     if let LoopbackPortInfo::ProxyForGuestPort{sending_port, guest_port} = connection.inner.loopback_port {
                                         if sending_port == other_addr.port() {
                                             other_addr.set_port(guest_port);
+                                            break;
                                         }
                                     }
-                                    break;
                                 }
                             }
                         }

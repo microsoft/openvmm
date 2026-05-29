@@ -324,18 +324,21 @@ impl<T: Client> Access<'_, T> {
         // Don't claim the address if it belongs to the guest. If the guest does not yet have an
         // address, only respond for the gateway so as not to interfere with the client's address
         // configuration.
-        if self
-            .inner
-            .state
-            .params
+        let params = &self.inner.state.params;
+        let target_is_client = params
             .client_ip_ipv6
-            .map(|client_ip| client_ip == target_addr)
-            .unwrap_or(self.inner.state.params.gateway_link_local_ipv6 != target_addr)
-        {
+            .is_some_and(|client_ip| client_ip == target_addr)
+            || params
+                .client_ip_ipv6_routable
+                .is_some_and(|client_ip| client_ip == target_addr);
+        let client_ip_known =
+            params.client_ip_ipv6.is_some() || params.client_ip_ipv6_routable.is_some();
+        if target_is_client || (!client_ip_known && params.gateway_link_local_ipv6 != target_addr) {
             tracing::debug!(
                 target_addr = %target_addr,
-                client_ip = ?self.inner.state.params.client_ip_ipv6,
-                gateway = %self.inner.state.params.gateway_link_local_ipv6,
+                client_ip = ?params.client_ip_ipv6,
+                client_ip_routable = ?params.client_ip_ipv6_routable,
+                gateway = %params.gateway_link_local_ipv6,
                 "Ignoring NS target"
             );
             return Ok(());

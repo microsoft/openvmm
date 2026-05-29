@@ -81,6 +81,10 @@ impl LocalAddrMap {
         loop {
             if self.next_ipv4_offset_from_end == 0 {
                 // Wrapped around — pool exhausted.
+                tracelimit::warn_ratelimited!(
+                    real_addr = %real_addr,
+                    "Local IPv4 virtual address pool exhausted"
+                );
                 return None;
             }
             let offset_from_end = self.next_ipv4_offset_from_end;
@@ -91,6 +95,10 @@ impl LocalAddrMap {
             if host_part == 0 {
                 // Reached the network address — pool exhausted.
                 self.next_ipv4_offset_from_end = 0;
+                tracelimit::warn_ratelimited!(
+                    real_addr = %real_addr,
+                    "Local IPv4 virtual address pool exhausted"
+                );
                 return None;
             }
             let candidate_u32 = base_u32 | host_part;

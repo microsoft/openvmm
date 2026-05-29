@@ -1053,7 +1053,6 @@ async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
     let guest_mac = consomme.params_mut().client_mac;
     let gateway_mac = consomme.params_mut().gateway_mac;
     let guest_ip = consomme.params_mut().client_ip;
-    let dst_ip: Ipv4Address = Ipv4Addr::LOCALHOST;
     let guest_port = 7777u16;
     let received = client.received_packets.clone();
     let mut buf = vec![0u8; 1514];
@@ -1109,7 +1108,7 @@ async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
         })
         .cloned()
         .expect("should have SYN");
-    let (_, _, syn_tcp) = parse_tcp_packet(&syn_pkt);
+    let (syn_src_ip, _, syn_tcp) = parse_tcp_packet(&syn_pkt);
     let server_isn = syn_tcp.seq_number;
     let server_window_scale = syn_tcp.window_scale.unwrap_or(0);
     assert!(
@@ -1136,7 +1135,14 @@ async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
         timestamp: None,
         payload: &[],
     };
-    let len = build_tcp_packet(&mut buf, guest_mac, gateway_mac, guest_ip, dst_ip, &syn_ack);
+    let len = build_tcp_packet(
+        &mut buf,
+        guest_mac,
+        gateway_mac,
+        guest_ip,
+        syn_src_ip,
+        &syn_ack,
+    );
     consomme
         .access(&mut client)
         .send(&buf[..len], &ChecksumState::NONE)
@@ -1153,7 +1159,7 @@ async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
     // because handle_listen_syn doesn't activate it.
     let ft = FourTuple {
         src: SocketAddr::V4(SocketAddrV4::new(guest_ip, guest_port)),
-        dst: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, syn_tcp.src_port)),
+        dst: SocketAddr::V4(SocketAddrV4::new(syn_src_ip, syn_tcp.src_port)),
     };
     let conn = consomme
         .tcp
