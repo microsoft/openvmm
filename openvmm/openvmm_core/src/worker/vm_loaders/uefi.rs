@@ -43,9 +43,10 @@ pub struct UefiLoadSettings {
     pub uefi_console_mode: Option<UefiConsoleMode>,
     pub default_boot_always_attempt: bool,
     pub bios_guid: Guid,
-    /// Whether VMBus is present in this VM. When `false`, the `MmioRanges`
-    /// blob structure is omitted and the firmware's `vmbus_disabled` flag is
-    /// set; the firmware must support this mode.
+    /// Whether VMBus is present in this VM. When `false`, the firmware's
+    /// `vmbus_disabled` flag is set; the `MmioRanges` blob is still provided
+    /// but the high MMIO range will be empty. The firmware must support this
+    /// mode.
     pub vmbus: bool,
 }
 

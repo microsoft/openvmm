@@ -929,8 +929,8 @@ mod tests {
         assert!(low.contains(&ARCH_RESERVED));
         assert!(result.chipset_mmio.high.is_empty());
         // The reported ranges must appear in MemoryLayout::mmio() preserving
-        // the positional contract: [0] = low, [1] = high (EMPTY placeholder).
-        assert_eq!(result.memory_layout.mmio(), &[low, MemoryRange::EMPTY]);
+        // the positional contract: [0] = low, [1] = high (empty placeholder).
+        assert_eq!(result.memory_layout.mmio(), &[low, result.chipset_mmio.high]);
     }
 
     #[test]
