@@ -33,6 +33,9 @@ mod windows;
 /// Standard DNS port number.
 const DNS_PORT: u16 = 53;
 
+/// Default per-connection TCP ring buffer size in bytes.
+const DEFAULT_TCP_BUFFER_SIZE: usize = 256 * 1024;
+
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::driver::Driver;
@@ -144,6 +147,14 @@ pub struct ConsommeParams {
     /// routable IPv6 address.
     #[inspect(display)]
     pub skip_ipv6_checks: bool,
+    /// Per-connection TCP receive ring buffer size (guest-to-host). Clamped
+    /// and rounded to a power of two in [16 KiB, 4 MiB]. Takes effect for
+    /// new connections only.
+    pub tcp_rx_buffer_size: usize,
+    /// Per-connection TCP transmit ring buffer size (host-to-guest). Clamped
+    /// and rounded to a power of two in [16 KiB, 4 MiB]. Takes effect for
+    /// new connections only.
+    pub tcp_tx_buffer_size: usize,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -177,6 +188,8 @@ impl ConsommeParams {
             // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
             udp_timeout: Duration::from_secs(300),
             skip_ipv6_checks: false,
+            tcp_rx_buffer_size: DEFAULT_TCP_BUFFER_SIZE,
+            tcp_tx_buffer_size: DEFAULT_TCP_BUFFER_SIZE,
         })
     }
 
@@ -669,13 +682,15 @@ impl Consomme {
                 }
             };
         let timeout = params.udp_timeout;
+        let tcp_rx_buffer_size = params.tcp_rx_buffer_size;
+        let tcp_tx_buffer_size = params.tcp_tx_buffer_size;
         Self {
             state: ConsommeState {
                 params,
                 buffer: Box::new([0; 65536]),
                 local_addr_map: local_addr_map::LocalAddrMap::new(),
             },
-            tcp: tcp::Tcp::new(),
+            tcp: tcp::Tcp::new(tcp_rx_buffer_size, tcp_tx_buffer_size),
             udp: udp::Udp::new(timeout),
             icmp: icmp::Icmp::new(),
             dns,

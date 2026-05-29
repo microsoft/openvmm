@@ -117,13 +117,13 @@ pub enum TcpError {
 }
 
 impl Tcp {
-    pub fn new() -> Self {
+    pub fn new(rx_buffer_size: usize, tx_buffer_size: usize) -> Self {
         Self {
             connections: HashMap::new(),
             listeners: HashMap::new(),
             connection_params: ConnectionParams {
-                rx_buffer_size: 256 * 1024,
-                tx_buffer_size: 256 * 1024,
+                rx_buffer_size,
+                tx_buffer_size,
             },
             aggregate_stats: TcpAggregateStats::default(),
         }
