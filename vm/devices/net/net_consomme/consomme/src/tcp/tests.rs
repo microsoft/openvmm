@@ -7,6 +7,8 @@ use crate::ChecksumState;
 use crate::Client;
 use crate::Consomme;
 use crate::ConsommeParams;
+use crate::IpVersion;
+use crate::PortForwardKey;
 use futures::AsyncRead;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
@@ -14,8 +16,11 @@ use parking_lot::Mutex;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Repr;
+use std::io::ErrorKind;
 use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 use std::net::SocketAddrV4;
+use std::net::SocketAddrV6;
 use std::sync::Arc;
 
 // ── Mock client ────────────────────────────────────────────────────
@@ -584,7 +589,11 @@ async fn test_tcp_bind_port_forward(driver: DefaultDriver) {
             .expect("bind should succeed");
 
         assert!(
-            access.inner.tcp.listeners.contains_key(&guest_port),
+            access
+                .inner
+                .tcp
+                .listeners
+                .contains_key(&PortForwardKey::new(IpVersion::Ipv4, guest_port)),
             "listener should be registered"
         );
     }
@@ -744,6 +753,55 @@ async fn test_tcp_bind_duplicate_port(driver: DefaultDriver) {
     assert!(
         matches!(err, BindError::PortAlreadyBound(_)),
         "error should be PortAlreadyBound"
+    );
+}
+
+/// Test that the same guest TCP port can be bound separately for IPv4 and IPv6.
+#[pal_async::async_test]
+async fn test_tcp_bind_same_port_different_families(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut client = TestClient::new(driver);
+
+    let guest_port = 8889;
+
+    let socket_v4 = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+    socket_v4
+        .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+        .unwrap();
+
+    let socket_v6 = Socket::new(Domain::IPV6, Type::STREAM, None).unwrap();
+    socket_v6.set_only_v6(true).unwrap();
+    match socket_v6.bind(&SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0).into()) {
+        Ok(()) => {}
+        Err(err)
+            if matches!(
+                err.kind(),
+                ErrorKind::AddrNotAvailable | ErrorKind::Unsupported
+            ) =>
+        {
+            return;
+        }
+        Err(err) => panic!("IPv6 bind failed: {err}"),
+    }
+
+    let mut access = consomme.access(&mut client);
+    access
+        .bind_tcp_port(socket_v4, guest_port)
+        .expect("IPv4 bind should succeed");
+    access
+        .bind_tcp_port(socket_v6, guest_port)
+        .expect("IPv6 bind should succeed");
+
+    access
+        .unbind_tcp_port(IpVersion::Ipv4, guest_port)
+        .expect("IPv4 unbind should succeed");
+    assert!(
+        access
+            .inner
+            .tcp
+            .listeners
+            .contains_key(&PortForwardKey::new(IpVersion::Ipv6, guest_port)),
+        "IPv6 listener should remain registered"
     );
 }
 
