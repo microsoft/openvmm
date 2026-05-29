@@ -35,9 +35,9 @@ pub mod macos {
 /// registration is dropped before the child's underlying handle or fd.
 pub struct PolledChild<C> {
     wait: Option<crate::sys::process::WaitInner>,
+    // Drop order: after `wait`, which may have a RawFd copy of this.
     #[cfg(target_os = "linux")]
-    #[expect(dead_code)] // Held for drop ordering; keeps the fd alive.
-    owned_pidfd: Option<OwnedFd>,
+    _owned_pidfd: Option<OwnedFd>,
     child: C,
 }
 
@@ -193,7 +193,7 @@ impl<C> PolledChild<C> {
         Self {
             wait: None,
             #[cfg(target_os = "linux")]
-            owned_pidfd: None,
+            _owned_pidfd: None,
             child,
         }
     }
@@ -235,7 +235,7 @@ mod linux {
             let fd_ready = driver.new_dyn_fd_ready(pidfd.as_fd().as_raw_fd())?;
             Ok(Self {
                 wait: Some(FdProcessWait::new(fd_ready)),
-                owned_pidfd: Some(pidfd),
+                _owned_pidfd: Some(pidfd),
                 child,
             })
         }
@@ -249,7 +249,7 @@ mod linux {
             let fd_ready = driver.new_dyn_fd_ready(child.as_fd().as_raw_fd())?;
             Ok(Self {
                 wait: Some(FdProcessWait::new(fd_ready)),
-                owned_pidfd: None,
+                _owned_pidfd: None,
                 child,
             })
         }
