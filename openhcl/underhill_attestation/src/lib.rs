@@ -246,6 +246,8 @@ pub enum AttestationType {
     Tdx,
     /// Use the VBS TEE for attestation.
     Vbs,
+    /// Use the CCA TEE for attestation,
+    Cca,
     /// Use trusted host-based attestation.
     Host,
 }

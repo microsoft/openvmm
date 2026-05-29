@@ -5,6 +5,7 @@
 
 use self::vtl2_config::RuntimeParameters;
 use crate::loader::vtl0_config::LinuxInfo;
+use crate::worker::ChipsetMmioRanges;
 use crate::worker::FirmwareType;
 use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::api::platform_settings::DevicePlatformSettings;
@@ -78,9 +79,6 @@ pub enum Error {
     InvalidAcpiTableLength,
     #[error("invalid acpi table: unknown header signature {0:?}")]
     InvalidAcpiTableSignature([u8; 4]),
-    #[cfg(guest_arch = "x86_64")]
-    #[error("acpi tables require at least two mmio ranges")]
-    UnsupportedMmio,
     #[cfg(guest_arch = "aarch64")]
     #[error("expected GICv3 topology")]
     ExpectedGicV3,
@@ -115,6 +113,7 @@ pub fn load(
     config: Config,
     caps: &virt::PartitionCapabilities,
     isolated: bool,
+    chipset_mmio: &ChipsetMmioRanges,
 ) -> Result<VpContext, Error> {
     let context = match load_kind {
         LoadKind::None => {
@@ -137,6 +136,7 @@ pub fn load(
                 platform_config,
                 caps,
                 isolated,
+                chipset_mmio,
             )?;
             uefi_info.vp_context.clone()
         }
@@ -188,6 +188,7 @@ pub fn load(
                 processor_topology,
                 platform_config,
                 chipset_capabilities,
+                chipset_mmio,
                 kernel_range: *kernel_range,
                 kernel_entrypoint: *kernel_entrypoint,
                 initrd: *initrd,
@@ -236,6 +237,7 @@ struct LoadLinuxParams<'a> {
     processor_topology: &'a ProcessorTopology,
     platform_config: &'a DevicePlatformSettings,
     chipset_capabilities: VmChipsetCapabilities,
+    chipset_mmio: &'a ChipsetMmioRanges,
     /// The region of memory used by the kernel.
     kernel_range: MemoryRange,
     /// The entrypoint of the kernel.
@@ -261,6 +263,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         processor_topology,
         platform_config,
         chipset_capabilities,
+        chipset_mmio,
         kernel_range,
         kernel_entrypoint,
         initrd,
@@ -287,11 +290,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         },
     };
 
-    if mem_layout.mmio().len() < 2 {
-        return Err(Error::UnsupportedMmio);
-    }
-
-    let acpi_tables = acpi_builder.build_acpi_tables(ACPI_BASE, |mem_layout, dsdt| {
+    let acpi_tables = acpi_builder.build_acpi_tables(ACPI_BASE, |dsdt| {
         dsdt.add_apic();
 
         // Add serial ports if enabled.
@@ -315,7 +314,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
             );
         }
 
-        dsdt.add_mmio_module(mem_layout.mmio()[0], mem_layout.mmio()[1]);
+        dsdt.add_mmio_module(chipset_mmio.low, chipset_mmio.high);
         // TODO: change this once PCI is running in underhill
         dsdt.add_vmbus(false, None);
         dsdt.add_rtc();
@@ -425,6 +424,7 @@ pub fn write_uefi_config(
     platform_config: &DevicePlatformSettings,
     caps: &virt::PartitionCapabilities,
     isolated: bool,
+    chipset_mmio: &ChipsetMmioRanges,
 ) -> Result<(), Error> {
     use guest_emulation_transport::api::platform_settings::UefiConsoleMode;
 
@@ -492,6 +492,7 @@ pub fn write_uefi_config(
                 // Not used for MADT/SRAT generation; only matters for FADT.
                 hypervisor_vendor_identity: 0,
                 virt_timer_ppi: processor_topology.virt_timer_ppi(),
+                smmu: Vec::new(),
             },
         };
 
@@ -523,8 +524,7 @@ pub fn write_uefi_config(
         )
         .add_raw(
             config::BlobStructureType::MmioRanges,
-            mem_layout
-                .mmio()
+            [chipset_mmio.low, chipset_mmio.high]
                 .iter()
                 .map(|range| config::Mmio {
                     mmio_page_number_start: range.start() / HV_PAGE_SIZE,

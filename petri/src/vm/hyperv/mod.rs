@@ -4,6 +4,7 @@
 mod hvc;
 pub mod powershell;
 pub mod vm;
+
 use vmsocket::VmAddress;
 use vmsocket::VmSocket;
 
@@ -48,6 +49,7 @@ use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
+pub use powershell::request_physical_nvme;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::io::Write;
@@ -398,6 +400,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             com_3: supports_com3,
             imc_hiv,
             management_vtl_settings,
+
             ..HyperVNewCustomVMArgs::from_config(&config, &properties)?
         };
 

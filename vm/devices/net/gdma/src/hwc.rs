@@ -20,6 +20,7 @@ use gdma_defs::GdmaCreateQueueResp;
 use gdma_defs::GdmaDevId;
 use gdma_defs::GdmaDevType;
 use gdma_defs::GdmaDisableQueueReq;
+use gdma_defs::GdmaGenerateResetEventReq;
 use gdma_defs::GdmaGenerateTestEventReq;
 use gdma_defs::GdmaListDevicesResp;
 use gdma_defs::GdmaQueryMaxResourcesResp;
@@ -317,11 +318,13 @@ impl HwControl {
                 0
             }
             GdmaRequestType::GDMA_GENERATE_RESET_REQUEST_EQE => {
-                let req: GdmaGenerateTestEventReq =
+                let req: GdmaGenerateResetEventReq =
                     read.read_plain().context("reading reset request EQE")?;
-                self.state
-                    .queues
-                    .post_eq(req.queue_index, GDMA_EQE_HWC_RESET_REQUEST, &[]);
+                self.state.queues.post_eq(
+                    req.queue_index,
+                    GDMA_EQE_HWC_RESET_REQUEST,
+                    req.data.as_bytes(),
+                );
                 0
             }
             GdmaRequestType::GDMA_VERIFY_VF_DRIVER_VERSION => {

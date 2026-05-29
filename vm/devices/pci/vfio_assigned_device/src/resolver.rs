@@ -63,6 +63,15 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
     ) -> Result<Self::Output, Self::Error> {
         let VfioDeviceHandle { pci_id, group } = resource;
 
+        if input.software_iommu {
+            anyhow::bail!(
+                "VFIO device {pci_id} is behind a software IOMMU that cannot \
+                 program the host IOMMU for passthrough DMA. Place the device \
+                 on a root complex without a software IOMMU, or wait for \
+                 iommufd nested translation support."
+            );
+        }
+
         tracing::info!(pci_id, "opening VFIO device");
 
         // Ask the container manager to prepare (or reuse) a container and

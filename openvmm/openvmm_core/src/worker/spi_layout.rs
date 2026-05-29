@@ -34,7 +34,6 @@ impl SpiAllocator {
     }
 
     /// Allocates a single SPI, returning its GIC INTID.
-    #[expect(dead_code)] // used when SMMU instances are configured
     fn alloc(&mut self, tag: &str) -> anyhow::Result<u32> {
         if self.cursor <= self.range_start {
             anyhow::bail!("SPI exhausted allocating {tag}");
@@ -65,12 +64,25 @@ pub(super) struct SpiLayoutInput {
     /// Number of SPIs to reserve for GICv2m MSI delivery. `None` when using
     /// ITS (no v2m block needed).
     pub v2m_spi_count: Option<u32>,
+    /// Number of SMMUv3 instances. Each instance gets two SPIs (event queue
+    /// and global error).
+    pub smmu_count: usize,
 }
 
 /// Resolved SPI assignments for all platform devices.
 pub(super) struct ResolvedSpiLayout {
     /// GICv2m SPI base INTID. `None` when using ITS.
     pub v2m_spi_base: Option<u32>,
+    /// Per-SMMU SPI assignments, one entry per instance.
+    pub smmu: Vec<SmmuSpiAllocation>,
+}
+
+/// Allocated SPI pair for a single SMMUv3 instance.
+pub(super) struct SmmuSpiAllocation {
+    /// GIC INTID for the event queue interrupt.
+    pub evtq_intid: u32,
+    /// GIC INTID for the global error interrupt.
+    pub gerr_intid: u32,
 }
 
 /// Resolves SPI assignments for all platform devices.
@@ -91,7 +103,16 @@ pub(super) fn resolve_spi_layout(input: &SpiLayoutInput) -> anyhow::Result<Resol
         .map(|count| spi.alloc_block("gicv2m", count))
         .transpose()?;
 
-    Ok(ResolvedSpiLayout { v2m_spi_base })
+    // 2. SMMU instance SPIs (2 per instance: evtq + gerror).
+    let mut smmu = Vec::with_capacity(input.smmu_count);
+    for idx in 0..input.smmu_count {
+        smmu.push(SmmuSpiAllocation {
+            evtq_intid: spi.alloc(&format!("smmu{idx}-evtq"))?,
+            gerr_intid: spi.alloc(&format!("smmu{idx}-gerr"))?,
+        });
+    }
+
+    Ok(ResolvedSpiLayout { v2m_spi_base, smmu })
 }
 
 #[cfg(test)]
@@ -99,14 +120,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn v2m_allocation() {
+    fn v2m_then_smmu() {
         let result = resolve_spi_layout(&SpiLayoutInput {
             gic_nr_irqs: 992,
             v2m_spi_count: Some(64),
+            smmu_count: 2,
         })
         .unwrap();
 
         assert_eq!(result.v2m_spi_base, Some(928));
+        assert_eq!(result.smmu[0].evtq_intid, 927);
+        assert_eq!(result.smmu[0].gerr_intid, 926);
+        assert_eq!(result.smmu[1].evtq_intid, 925);
+        assert_eq!(result.smmu[1].gerr_intid, 924);
     }
 
     #[test]
@@ -114,9 +140,25 @@ mod tests {
         let result = resolve_spi_layout(&SpiLayoutInput {
             gic_nr_irqs: 992,
             v2m_spi_count: None,
+            smmu_count: 1,
         })
         .unwrap();
 
         assert_eq!(result.v2m_spi_base, None);
+        assert_eq!(result.smmu[0].evtq_intid, 991);
+        assert_eq!(result.smmu[0].gerr_intid, 990);
+    }
+
+    #[test]
+    fn no_devices() {
+        let result = resolve_spi_layout(&SpiLayoutInput {
+            gic_nr_irqs: 992,
+            v2m_spi_count: None,
+            smmu_count: 0,
+        })
+        .unwrap();
+
+        assert_eq!(result.v2m_spi_base, None);
+        assert!(result.smmu.is_empty());
     }
 }

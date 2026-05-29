@@ -18,6 +18,9 @@ mem-profile-tracing = [
 # Enable gdbstub support
 gdb = ["debug_worker_defs", "vmm_core/gdb", "virt_mshv_vtl/gdb"]
 
+# Disable secure AVIC support for SNP
+disable_secure_avic = ["virt_mshv_vtl/disable_secure_avic"]
+
 # Enable TIO support for SEV-SNP
 dev_snp_ohcl_tio_support = ["tee_call/dev_snp_ohcl_tio_support"]
 
@@ -54,18 +57,14 @@ disk_backend_resources.workspace = true
 disk_blockdevice.workspace = true
 disk_get_vmgs.workspace = true
 disk_nvme.workspace = true
-firmware_uefi.workspace = true
 firmware_uefi_custom_vars.workspace = true
+firmware_uefi_resources.workspace = true
 gdma_defs.workspace = true
 hyperv_ic_guest.workspace = true
 hyperv_ic_resources.workspace = true
 hyperv_secure_boot_templates.workspace = true
 hyperv_uefi_custom_vars_json.workspace = true
 framebuffer.workspace = true
-hcl_compat_uefi_nvram_storage = { workspace = true, features = [
-    "inspect",
-    "save_restore",
-] }
 get_helpers.workspace = true
 get_protocol.workspace = true
 guest_emulation_transport.workspace = true
@@ -95,7 +94,6 @@ tpm_protocol.workspace = true
 tpm_resources.workspace = true
 tpm_device = { workspace = true, features = ["tpm"] }
 tracelimit.workspace = true
-uefi_nvram_storage.workspace = true
 uidevices_resources.workspace = true
 underhill_attestation.workspace = true
 underhill_confidentiality = { workspace = true, features = ["std"] }

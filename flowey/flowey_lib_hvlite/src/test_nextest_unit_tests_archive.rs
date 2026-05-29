@@ -11,6 +11,7 @@ use crate::build_nextest_unit_tests::NextestUnitTestArchive;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_nextest_run::TestResults;
+use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Request {
@@ -60,7 +61,12 @@ impl FlowNode for Node {
                 nextest_working_dir: None,
                 nextest_config_file: None,
                 run_ignored: false,
-                extra_env: None,
+                // Prevent tests from silently skipping when optional
+                // dependencies (e.g., Windows SDK DLLs) are missing.
+                extra_env: Some(ReadVar::from_static(BTreeMap::from([(
+                    "OPENVMM_NO_TEST_SKIP".into(),
+                    "1".into(),
+                )]))),
                 pre_run_deps: Vec::new(), // FIXME: ensure all deps are installed
                 results,
             })

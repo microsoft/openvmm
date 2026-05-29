@@ -35,6 +35,12 @@ use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
 use chipset_resources::pm::HyperVPowerManagementDeviceHandle;
 use chipset_resources::pm::PIIX4_PM_BDF;
 use chipset_resources::pm::Piix4PowerManagementDeviceHandle;
+use firmware_uefi_custom_vars::CustomVars;
+use firmware_uefi_resources::HclCompatNvramQuirks;
+use firmware_uefi_resources::LogLevel;
+use firmware_uefi_resources::UefiCommandSet;
+use firmware_uefi_resources::UefiConfig;
+use firmware_uefi_resources::UefiDeviceHandle;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
@@ -47,6 +53,7 @@ use vm_resource::IntoResource;
 use vm_resource::PlatformResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::NonVolatileStoreKind;
 use vm_resource::kind::SerialBackendHandle;
 pub use vmm_core_defs::LayoutConfig;
 use vmotherboard::ChipsetDeviceHandle;
@@ -67,7 +74,69 @@ pub struct VmManifestBuilder {
     guest_watchdog: bool,
     psp: bool,
     platform_pm_timer_assist: bool,
+    uefi: Option<UefiManifest>,
     debugcon: Option<(Resource<SerialBackendHandle>, u16)>,
+}
+
+/// Configuration for the Hyper-V UEFI helper device.
+pub struct UefiManifest {
+    /// Static configuration for the UEFI device.
+    pub config: UefiConfig,
+    /// Quirks for the NVRAM storage.
+    pub storage_quirks: Option<HclCompatNvramQuirks>,
+    /// Channel receiver for guest generation ID updates.
+    pub generation_id_recv: mesh::Receiver<[u8; 16]>,
+    /// NVRAM backing storage resource.
+    pub nvram_storage: Resource<NonVolatileStoreKind>,
+    /// Whether to wire up the platform VSM configuration resource.
+    pub vsm_config: bool,
+    /// Time source resource for UEFI time services.
+    pub time_source: Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
+}
+
+impl UefiManifest {
+    /// Construct a [`UefiManifest`] with sensible defaults for the given
+    /// architecture:
+    ///
+    /// - `command_set` and `use_mmio` are derived from `arch`.
+    /// - `initial_generation_id` is randomized.
+    /// - `generation_id_recv` is a disconnected receiver (no host updates).
+    /// - `vsm_config` is disabled.
+    /// - `time_source` is a [`SystemTimeClockHandle`] with no delta.
+    ///
+    /// [`SystemTimeClockHandle`]: chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle
+    pub fn new(
+        arch: MachineArch,
+        custom_uefi_vars: CustomVars,
+        secure_boot: bool,
+        diagnostics_log_level: LogLevel,
+        nvram_storage: Resource<NonVolatileStoreKind>,
+        storage_quirks: Option<HclCompatNvramQuirks>,
+    ) -> Self {
+        let mut initial_generation_id = [0; 16];
+        getrandom::fill(&mut initial_generation_id).expect("rng failure");
+        Self {
+            config: UefiConfig {
+                custom_uefi_vars,
+                secure_boot,
+                initial_generation_id,
+                use_mmio: !matches!(arch, MachineArch::X86_64),
+                command_set: match arch {
+                    MachineArch::X86_64 => UefiCommandSet::X64,
+                    MachineArch::Aarch64 => UefiCommandSet::Aarch64,
+                },
+                diagnostics_log_level,
+            },
+            storage_quirks,
+            generation_id_recv: mesh::channel().1,
+            nvram_storage,
+            vsm_config: false,
+            time_source: chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle {
+                delta_milliseconds: 0,
+            }
+            .into_resource(),
+        }
+    }
 }
 
 /// The VM's base chipset type, which determines the set of core devices (such
@@ -144,6 +213,7 @@ impl VmManifestBuilder {
             guest_watchdog: false,
             psp: false,
             platform_pm_timer_assist: false,
+            uefi: None,
             debugcon: None,
         }
     }
@@ -242,6 +312,21 @@ impl VmManifestBuilder {
         self
     }
 
+    /// Enable the Hyper-V UEFI helper device.
+    ///
+    /// All platform-specific dependencies (logger, NVRAM storage, watchdog
+    /// platform, optional VSM config, time source) are resolved via
+    /// [`vm_resource::PlatformResource`] resolvers that the caller must
+    /// register with the resource resolver.
+    ///
+    /// Only supported by [`BaseChipsetType::HypervGen2Uefi`]. Panics
+    /// otherwise.
+    pub fn with_uefi(mut self, uefi: UefiManifest) -> Self {
+        assert!(matches!(self.ty, BaseChipsetType::HypervGen2Uefi));
+        self.uefi = Some(uefi);
+        self
+    }
+
     /// Build the VM manifest.
     pub fn build(self) -> Result<VmChipsetResult, Error> {
         let mut result = VmChipsetResult {
@@ -285,7 +370,6 @@ impl VmManifestBuilder {
                     with_generic_pci_bus: false,
                     with_generic_psp: false,
                     with_hyperv_firmware_pcat: true,
-                    with_hyperv_firmware_uefi: false,
                     with_hyperv_framebuffer: !self.proxy_vga,
                     with_hyperv_ide: true,
                     with_hyperv_vga: !self.proxy_vga,
@@ -314,7 +398,6 @@ impl VmManifestBuilder {
                     with_generic_pci_bus: false,
                     with_generic_psp: self.psp,
                     with_hyperv_firmware_pcat: false,
-                    with_hyperv_firmware_uefi: false,
                     with_hyperv_framebuffer: self.framebuffer,
                     with_hyperv_ide: false,
                     with_hyperv_vga: false,
@@ -358,7 +441,6 @@ impl VmManifestBuilder {
                     with_generic_pci_bus: false,
                     with_generic_psp: self.psp,
                     with_hyperv_firmware_pcat: false,
-                    with_hyperv_firmware_uefi: matches!(self.ty, BaseChipsetType::HypervGen2Uefi),
                     with_hyperv_framebuffer: self.framebuffer,
                     with_hyperv_ide: false,
                     with_hyperv_vga: false,
@@ -388,6 +470,12 @@ impl VmManifestBuilder {
                 }
                 if self.guest_watchdog {
                     result.attach_guest_watchdog();
+                }
+                if matches!(self.ty, BaseChipsetType::HypervGen2Uefi) {
+                    result.attach_uefi(
+                        self.uefi
+                            .expect("must have called .with_uefi to enable uefi"),
+                    );
                 }
             }
             BaseChipsetType::HclHost => {
@@ -562,6 +650,32 @@ impl VmChipsetResult {
             resource: Piix4PowerManagementDeviceHandle { pm_timer_assist }.into_resource(),
             pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
             bdf: PIIX4_PM_BDF,
+        });
+        self
+    }
+
+    fn attach_uefi(&mut self, uefi: UefiManifest) -> &mut Self {
+        let UefiManifest {
+            config,
+            storage_quirks,
+            generation_id_recv,
+            nvram_storage,
+            vsm_config,
+            time_source,
+        } = uefi;
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "uefi".to_owned(),
+            resource: UefiDeviceHandle {
+                config,
+                storage_quirks,
+                generation_id_recv,
+                logger: PlatformResource.into_resource(),
+                nvram_storage,
+                watchdog_platform: PlatformResource.into_resource(),
+                vsm_config: vsm_config.then(|| PlatformResource.into_resource()),
+                time_source,
+            }
+            .into_resource(),
         });
         self
     }

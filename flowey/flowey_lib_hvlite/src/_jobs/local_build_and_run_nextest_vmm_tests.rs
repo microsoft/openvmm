@@ -249,6 +249,7 @@ impl SimpleFlowNode for Node {
                     recipe: recipe_to_use,
                     custom_target: None,
                     extra_features: BTreeSet::new(),
+                    disable_secure_avic: false,
                     built_openvmm_hcl,
                     built_openhcl_boot,
                     built_openhcl_igvm,

@@ -181,7 +181,13 @@ mod linux {
                 {
                     continue;
                 }
-                for entry in fs_err::read_dir(cpu_path.join("cache"))? {
+                let cache_dir = cpu_path.join("cache");
+                let cache_entries = match fs_err::read_dir(&cache_dir) {
+                    Ok(entries) => entries,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e),
+                };
+                for entry in cache_entries {
                     let entry = entry?;
                     let path = entry.path();
                     if !path
@@ -193,16 +199,26 @@ mod linux {
                         continue;
                     }
 
-                    let associativity = fs_err::read_to_string(path.join("ways_of_associativity"))?
-                        .trim_end()
-                        .parse()
-                        .unwrap();
+                    // Some environments (e.g. QEMU) don't expose all cache
+                    // sysfs files. Skip entries that are missing required files.
+                    let read_optional_file = |name: &str| -> std::io::Result<Option<String>> {
+                        match fs_err::read_to_string(path.join(name)) {
+                            Ok(s) => Ok(Some(s)),
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                            Err(e) => Err(e),
+                        }
+                    };
 
+                    let Some(assoc_str) = read_optional_file("ways_of_associativity")? else {
+                        continue;
+                    };
+                    let associativity: u32 = assoc_str.trim_end().parse().unwrap();
+
+                    let Some(cpu_list_str) = read_optional_file("shared_cpu_list")? else {
+                        continue;
+                    };
                     let mut cpus = Vec::new();
-                    for range in fs_err::read_to_string(path.join("shared_cpu_list"))?
-                        .trim_end()
-                        .split(',')
-                    {
+                    for range in cpu_list_str.trim_end().split(',') {
                         if let Some((start, end)) = range.split_once('-') {
                             cpus.extend(
                                 start.parse::<u32>().unwrap()..=end.parse::<u32>().unwrap(),
@@ -212,27 +228,31 @@ mod linux {
                         }
                     }
 
-                    let line_size_result = fs_err::read_to_string(path.join("coherency_line_size"));
-                    let line_size = match line_size_result {
-                        Ok(s) => s.trim_end().parse::<u32>().unwrap(),
-                        Err(e) => match e.kind() {
-                            std::io::ErrorKind::NotFound => 64,
-                            _ => return std::io::Result::Err(e),
-                        },
+                    let line_size = match read_optional_file("coherency_line_size")? {
+                        Some(s) => s.trim_end().parse::<u32>().unwrap(),
+                        None => 64,
                     };
+
+                    let Some(level_str) = read_optional_file("level")? else {
+                        continue;
+                    };
+                    let Some(type_str) = read_optional_file("type")? else {
+                        continue;
+                    };
+                    let Some(size_str) = read_optional_file("size")? else {
+                        continue;
+                    };
+
                     caches.push(Cache {
                         cpus,
-                        level: fs_err::read_to_string(path.join("level"))?
-                            .trim_end()
-                            .parse()
-                            .unwrap(),
-                        cache_type: match fs_err::read_to_string(path.join("type"))?.trim_end() {
+                        level: level_str.trim_end().parse().unwrap(),
+                        cache_type: match type_str.trim_end() {
                             "Data" => super::CacheType::Data,
                             "Instruction" => super::CacheType::Instruction,
                             "Unified" => super::CacheType::Unified,
                             _ => continue,
                         },
-                        size: fs_err::read_to_string(path.join("size"))?
+                        size: size_str
                             .strip_suffix("K\n")
                             .unwrap()
                             .parse::<u32>()

@@ -381,41 +381,6 @@ impl MemoryLayout {
         self.ram.last().expect("mmio set").range.end()
     }
 
-    /// The bytes of RAM below 4GB.
-    pub fn ram_below_4gb(&self) -> u64 {
-        self.ram
-            .iter()
-            .filter(|r| r.range.end() < FOUR_GB)
-            .map(|r| r.range.len())
-            .sum()
-    }
-
-    /// The bytes of RAM at or above 4GB.
-    pub fn ram_above_4gb(&self) -> u64 {
-        self.ram
-            .iter()
-            .filter(|r| r.range.end() >= FOUR_GB)
-            .map(|r| r.range.len())
-            .sum()
-    }
-
-    /// The bytes of RAM above the high MMIO gap.
-    ///
-    /// Returns None if there aren't exactly 2 MMIO gaps.
-    pub fn ram_above_high_mmio(&self) -> Option<u64> {
-        if self.mmio.len() != 2 {
-            return None;
-        }
-
-        Some(
-            self.ram
-                .iter()
-                .filter(|r| r.range.start() >= self.mmio[1].end())
-                .map(|r| r.range.len())
-                .sum(),
-        )
-    }
-
     /// The ending RAM address below 4GB.
     ///
     /// Returns None if there is no RAM mapped below 4GB.

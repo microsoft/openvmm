@@ -17,6 +17,7 @@ petri_artifacts_vmm_test.workspace = true
 chipset_device_worker_defs.workspace = true
 chipset_resources.workspace = true
 diag_client.workspace = true
+firmware_uefi_resources.workspace = true
 disk_vhd1.workspace = true
 openvmm_defs.workspace = true
 openvmm_helpers.workspace = true

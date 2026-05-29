@@ -292,8 +292,11 @@ fn run_vp_once(command_page: &mut CommandPage) -> Result<bool, ()> {
     // SAFETY: no safety requirements for this hypercall.
     unsafe {
         core::arch::asm! {
+            "fxrstor fs:[0x80]",
             "push rbp",
             "push rbx",
+            "mov rbx, fs:[0x20]",
+            "mov cr2, rbx",
             "mov rbp, fs:[0x28]",
             "mov rbx, fs:[0x18]",
             "call rax",

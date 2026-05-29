@@ -967,6 +967,75 @@ async fn vm_config_from_command_line(
         );
     }
 
+    let custom_uefi_vars = {
+        use firmware_uefi_custom_vars::CustomVars;
+
+        // load base vars from specified template, or use an empty set of base
+        // vars if none was specified.
+        let base_vars = match opt.secure_boot_template {
+            Some(template) => match (arch, template) {
+                (MachineArch::X86_64, SecureBootTemplateCli::Windows) => {
+                    hyperv_secure_boot_templates::x64::microsoft_windows()
+                }
+                (MachineArch::X86_64, SecureBootTemplateCli::UefiCa) => {
+                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
+                }
+                (MachineArch::Aarch64, SecureBootTemplateCli::Windows) => {
+                    hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                }
+                (MachineArch::Aarch64, SecureBootTemplateCli::UefiCa) => {
+                    hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
+                }
+            },
+            None => CustomVars::default(),
+        };
+
+        // TODO: fallback to VMGS read if no command line flag was given
+
+        let custom_uefi_json_data = match &opt.custom_uefi_json {
+            Some(file) => Some(fs_err::read(file).context("opening custom uefi json file")?),
+            None => None,
+        };
+
+        // obtain the final custom uefi vars by applying the delta onto the base vars
+        match custom_uefi_json_data {
+            Some(data) => {
+                let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
+                base_vars.apply_delta(delta)?
+            }
+            None => base_vars,
+        }
+    };
+
+    let efi_diagnostics_log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
+        EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::Default,
+        EfiDiagnosticsLogLevelCli::Info => EfiDiagnosticsLogLevelType::Info,
+        EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::Full,
+    };
+
+    if opt.uefi {
+        let log_level = match efi_diagnostics_log_level {
+            EfiDiagnosticsLogLevelType::Default => {
+                firmware_uefi_resources::LogLevel::make_default()
+            }
+            EfiDiagnosticsLogLevelType::Info => firmware_uefi_resources::LogLevel::make_info(),
+            EfiDiagnosticsLogLevelType::Full => firmware_uefi_resources::LogLevel::make_full(),
+        };
+        let nvram_storage = if opt.vmgs.is_some() {
+            VmgsFileHandle::new(vmgs_format::FileId::BIOS_NVRAM, true).into_resource()
+        } else {
+            EphemeralNonVolatileStoreHandle.into_resource()
+        };
+        chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
+            arch,
+            custom_uefi_vars.clone(),
+            opt.secure_boot,
+            log_level,
+            nvram_storage,
+            None,
+        ));
+    }
+
     // TODO: load from VMGS file if it exists
     let bios_guid = Guid::new_random();
 
@@ -1272,46 +1341,6 @@ async fn vm_config_from_command_line(
         });
     }
 
-    let custom_uefi_vars = {
-        use firmware_uefi_custom_vars::CustomVars;
-
-        // load base vars from specified template, or use an empty set of base
-        // vars if none was specified.
-        let base_vars = match opt.secure_boot_template {
-            Some(template) => match (arch, template) {
-                (MachineArch::X86_64, SecureBootTemplateCli::Windows) => {
-                    hyperv_secure_boot_templates::x64::microsoft_windows()
-                }
-                (MachineArch::X86_64, SecureBootTemplateCli::UefiCa) => {
-                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
-                }
-                (MachineArch::Aarch64, SecureBootTemplateCli::Windows) => {
-                    hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                }
-                (MachineArch::Aarch64, SecureBootTemplateCli::UefiCa) => {
-                    hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
-                }
-            },
-            None => CustomVars::default(),
-        };
-
-        // TODO: fallback to VMGS read if no command line flag was given
-
-        let custom_uefi_json_data = match &opt.custom_uefi_json {
-            Some(file) => Some(fs_err::read(file).context("opening custom uefi json file")?),
-            None => None,
-        };
-
-        // obtain the final custom uefi vars by applying the delta onto the base vars
-        match custom_uefi_json_data {
-            Some(data) => {
-                let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
-                base_vars.apply_delta(delta)?
-            }
-            None => base_vars,
-        }
-    };
-
     let vga_firmware = if opt.pcat {
         Some(openvmm_pcat_locator::find_svga_bios(
             opt.vga_firmware.as_deref(),
@@ -1375,6 +1404,13 @@ async fn vm_config_from_command_line(
     }
 
     #[cfg(guest_arch = "aarch64")]
+    let smmu_instances: Vec<openvmm_defs::config::SmmuInstanceConfig> = opt
+        .smmu
+        .iter()
+        .map(|s| openvmm_defs::config::SmmuInstanceConfig { rc_name: s.clone() })
+        .collect();
+
+    #[cfg(guest_arch = "aarch64")]
     let topology_arch = openvmm_defs::config::ArchTopologyConfig::Aarch64(
         openvmm_defs::config::Aarch64TopologyConfig {
             // TODO: allow this to be configured from the command line
@@ -1387,6 +1423,7 @@ async fn vm_config_from_command_line(
                     openvmm_defs::config::GicMsiConfig::V2m { spi_count: None }
                 }
             },
+            smmu: smmu_instances,
         },
     );
     #[cfg(guest_arch = "x86_64")]
@@ -1740,7 +1777,6 @@ async fn vm_config_from_command_line(
         custom_uefi_vars,
         firmware_event_send: None,
         debugger_rpc: None,
-        generation_id_recv: None,
         rtc_delta_milliseconds: 0,
         automatic_guest_reset: !opt.halt_on_reset,
         efi_diagnostics_log_level: {

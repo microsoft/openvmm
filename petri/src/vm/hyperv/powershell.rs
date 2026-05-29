@@ -293,6 +293,8 @@ pub struct HyperVNewCustomVMArgs {
     pub storage_controllers: HashMap<Guid, HyperVVmbusStorageController>,
     /// IDE controllers and associated drives/disks
     pub ide_controllers: HashMap<u32, HashMap<u8, HyperVDrive>>,
+    /// Physical NVMe devices, used exclusively in closed source tests
+    pub physical_nvme_devices: Vec<crate::PhysicalNvmeDevice>,
     /// Temporary file containing initial machine configuration data
     pub imc_hiv: Option<NamedTempFile>,
     /// Enable COM1 at \\.\pipe\<VMID>-1
@@ -458,6 +460,7 @@ impl HyperVNewCustomVMArgs {
             proc_topology,
             vmgs,
             tpm,
+            physical_nvme_devices,
             ..
         } = config;
 
@@ -579,6 +582,7 @@ impl HyperVNewCustomVMArgs {
             com_3: false,
             imc_hiv: None,
             management_vtl_settings: None,
+            physical_nvme_devices: physical_nvme_devices.clone(),
         })
     }
 }
@@ -718,6 +722,22 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
         Some(ps::HashTable::new(nvme_entries))
     };
 
+    let physical_nvme_controllers = if args.physical_nvme_devices.is_empty() {
+        None
+    } else {
+        Some(ps::HashTable::new(args.physical_nvme_devices.iter().map(
+            |dev| {
+                (
+                    format!("\"{}\"", dev.vsid),
+                    ps::Value::new(ps::HashTable::new([
+                        ("Vtl", ps::Value::new(dev.target_vtl as u32)),
+                        ("Nsid", ps::Value::new(dev.nsid)),
+                    ])),
+                )
+            },
+        )))
+    };
+
     let builder = PowerShellBuilder::new()
         .cmdlet("Import-Module")
         .positional(ps_mod)
@@ -762,6 +782,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             .arg_opt("ScsiControllers", scsi_controllers)
             .arg_opt("IdeControllers", ide_controllers)
             .arg_opt("NvmeControllers", nvme_controllers)
+            .arg_opt("PhysicalNvmeControllers", physical_nvme_controllers)
             .arg_opt("ImcHive", args.imc_hiv.as_ref().map(|f| f.path()))
             .arg("Com1", args.com_1)
             .arg("Com3", args.com_3)
@@ -794,6 +815,38 @@ pub async fn run_remove_vm(vmid: &Guid) -> anyhow::Result<()> {
     .await
     .map(|_| ())
     .context("remove_vm")
+}
+
+/// Request a physical NVMe device via closed-source script
+pub async fn request_physical_nvme(
+    namespace_size_mib: u64,
+    target_vtl: crate::Vtl,
+) -> anyhow::Result<crate::PhysicalNvmeDevice> {
+    let output = run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional("PhysicalNvme")
+            .next()
+            .cmdlet("Get-PhysicalNvmeDevices")
+            .arg("Count", 1u64)
+            .arg("NamespaceSizeMiB", namespace_size_mib)
+            .finish()
+            .build(),
+    )
+    .await
+    .context("physical NVMe device discovery")?;
+
+    let nsid: u32 =
+        serde_json::from_str(&output).context("failed to parse PhysicalNvme discovery output")?;
+
+    let vsid = Guid::new_random();
+
+    Ok(crate::PhysicalNvmeDevice {
+        target_vtl,
+        vsid,
+        nsid,
+        namespace_size_mib,
+    })
 }
 
 /// Arguments for the Set-VMProcessor powershell cmdlet

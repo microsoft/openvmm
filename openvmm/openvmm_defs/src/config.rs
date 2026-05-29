@@ -58,7 +58,6 @@ pub struct Config {
     /// Memory layout sizing for the layout engine. Determines chipset MMIO
     /// range sizes; addresses are allocated dynamically by the resolver.
     pub layout: vmm_core_defs::LayoutConfig,
-    pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
     /// allow the guest to reset without notifying the client
@@ -315,11 +314,25 @@ pub enum GicMsiConfig {
     },
 }
 
+/// Per-instance SMMUv3 configuration for an aarch64 VM.
+///
+/// Each instance covers one PCIe root complex, identified by name.
+/// The SMMU's MMIO address is allocated dynamically by the memory layout
+/// engine.
+#[derive(Debug, Protobuf, Clone)]
+pub struct SmmuInstanceConfig {
+    /// Name of the PCIe root complex this SMMU covers.
+    pub rc_name: String,
+}
+
 #[derive(Debug, Protobuf, Default, Clone)]
 pub struct Aarch64TopologyConfig {
     pub gic_config: Option<GicConfig>,
     pub pmu_gsiv: PmuGsivConfig,
     pub gic_msi: GicMsiConfig,
+    /// SMMUv3 IOMMU instances. Each entry creates an SMMU for one PCIe root
+    /// complex (identified by name). Empty means no SMMU.
+    pub smmu: Vec<SmmuInstanceConfig>,
 }
 
 /// GIC configuration for the virtual machine.

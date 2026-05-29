@@ -10,6 +10,7 @@ use crate::importer::SegmentRegister;
 use crate::importer::TableRegister;
 use crate::importer::X86Register;
 use hvdef::HV_PAGE_SIZE;
+use memory_range::MemoryRange;
 use std::io::Read;
 use std::io::Seek;
 use thiserror::Error;
@@ -99,23 +100,16 @@ pub fn import_default_gdt(
     Ok(())
 }
 
-/// Returned when the MMIO layout is not supported.
-#[derive(Debug, Error)]
-#[error("exactly two MMIO gaps are required")]
-pub struct UnsupportedMmio;
-
 /// Computes the x86 variable MTRRs that describe the given memory layout. This
 /// is intended to be used to setup MTRRs for booting a guest with two mmio
 /// gaps, such as booting Linux, UEFI, or PCAT.
-///
-/// N.B. Currently this panics if there are not exactly two MMIO ranges.
 pub fn compute_variable_mtrrs(
     memory: &MemoryLayout,
     physical_address_width: u8,
-) -> Result<Vec<X86Register>, UnsupportedMmio> {
+    chipset_low_mmio: MemoryRange,
+    chipset_high_mmio: MemoryRange,
+) -> Vec<X86Register> {
     const WRITEBACK: u64 = 0x6;
-
-    let &[mmio_gap_low, mmio_gap_high] = memory.mmio().try_into().map_err(|_| UnsupportedMmio)?;
 
     // Clamp the width to something reasonable.
     let gpa_space_size = physical_address_width.clamp(36, 52);
@@ -141,26 +135,47 @@ pub fn compute_variable_mtrrs(
         result.push(X86Register::MtrrPhysBase1(pcat_mtrr_size | WRITEBACK));
         result.push(X86Register::MtrrPhysMask1(mtrr_mask(
             gpa_space_size,
-            mmio_gap_low.start() - 1,
+            chipset_low_mmio.start() - 1,
         )));
     }
 
     // If there is more than ~3.8GB of memory, use MTRR 204 and MTRR Mask 205 to cover
     // the amount of memory above 4GB.
-    if memory.end_of_ram() > mmio_gap_low.end() {
-        result.push(X86Register::MtrrPhysBase2(mmio_gap_low.end() | WRITEBACK));
-        result.push(X86Register::MtrrPhysMask2(mtrr_mask(
-            gpa_space_size,
-            mmio_gap_high.start() - 1,
-        )));
+    if memory.end_of_ram() > chipset_low_mmio.end() {
+        result.push(X86Register::MtrrPhysBase2(
+            chipset_low_mmio.end() | WRITEBACK,
+        ));
+        if chipset_high_mmio.is_empty() {
+            // No high MMIO gap — RAM above the low gap is contiguous.
+            // Cover to the 8TB boundary (or GPA space limit) using the
+            // same split as the >64GB path below.
+            result.push(X86Register::MtrrPhysMask2(mtrr_mask(
+                gpa_space_size,
+                (1 << std::cmp::min(gpa_space_size, 43)) - 1,
+            )));
+            if gpa_space_size > 43 {
+                result.push(X86Register::MtrrPhysBase3((1 << 43) | WRITEBACK));
+                result.push(X86Register::MtrrPhysMask3(mtrr_mask(
+                    gpa_space_size,
+                    (1 << gpa_space_size) - 1,
+                )));
+            }
+        } else {
+            result.push(X86Register::MtrrPhysMask2(mtrr_mask(
+                gpa_space_size,
+                chipset_high_mmio.start() - 1,
+            )));
+        }
     }
 
     // If there is more memory than 64GB then use MTRR 206 and MTRR Mask 207 and possibly
     // MTRR 208 and MTRR Mask 209 depending on maximum address width. Both MTRR pairs are
     // used with the magic 8TB boundary to work around a bug in older Linux kernels
     // (e.g. RHEL 6.x, etc.)
-    if memory.end_of_ram() > mmio_gap_high.end() {
-        result.push(X86Register::MtrrPhysBase3(mmio_gap_high.end() | WRITEBACK));
+    if !chipset_high_mmio.is_empty() && memory.end_of_ram() > chipset_high_mmio.end() {
+        result.push(X86Register::MtrrPhysBase3(
+            chipset_high_mmio.end() | WRITEBACK,
+        ));
         result.push(X86Register::MtrrPhysMask3(mtrr_mask(
             gpa_space_size,
             (1 << std::cmp::min(gpa_space_size, 43)) - 1,
@@ -174,7 +189,7 @@ pub fn compute_variable_mtrrs(
         }
     }
 
-    Ok(result)
+    result
 }
 
 fn mtrr_mask(gpa_space_size: u8, maximum_address: u64) -> u64 {
@@ -391,5 +406,143 @@ impl ChunkBuf {
         }
         file.rewind()?;
         Ok(hasher.finalize())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GB: u64 = 1024 * 1024 * 1024;
+    const MB: u64 = 1024 * 1024;
+
+    fn standard_low_mmio() -> MemoryRange {
+        // 128 MB gap below 4 GiB, matching the typical x86_64 config.
+        MemoryRange::new(4 * GB - 128 * MB..4 * GB)
+    }
+
+    fn standard_high_mmio() -> MemoryRange {
+        // 512 MB immediately above 4 GiB.
+        MemoryRange::new(4 * GB..4 * GB + 512 * MB)
+    }
+
+    fn make_layout(ram_size: u64) -> MemoryLayout {
+        MemoryLayout::new(
+            ram_size,
+            &[standard_low_mmio(), standard_high_mmio()],
+            &[],
+            &[],
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Count MTRR base/mask pairs in the register list.
+    fn pair_count(regs: &[X86Register]) -> usize {
+        assert_eq!(regs.len() % 2, 0, "MTRR registers come in pairs");
+        regs.len() / 2
+    }
+
+    #[test]
+    fn mtrr_128mb_exactly() {
+        // 128 MB = pcat_mtrr_size → only pair 0 (base covers 128 MB)
+        let layout = make_layout(128 * MB);
+        let regs = compute_variable_mtrrs(&layout, 46, standard_low_mmio(), standard_high_mmio());
+        assert_eq!(pair_count(&regs), 1);
+        assert_eq!(regs[0], X86Register::MtrrPhysBase0(0x6));
+    }
+
+    #[test]
+    fn mtrr_256mb() {
+        // 256 MB: pair 0 (128 MB) + pair 1 (128 MB..low_gap_start)
+        let layout = make_layout(256 * MB);
+        let regs = compute_variable_mtrrs(&layout, 46, standard_low_mmio(), standard_high_mmio());
+        assert_eq!(pair_count(&regs), 2);
+        assert_eq!(regs[0], X86Register::MtrrPhysBase0(0x6));
+        // Pair 1 base = 128 MB | WRITEBACK
+        assert_eq!(regs[2], X86Register::MtrrPhysBase1((128 * MB) | 0x6));
+    }
+
+    #[test]
+    fn mtrr_2gb() {
+        // 2 GB: same structure as 256 MB (RAM is below 4 GiB)
+        let layout = make_layout(2 * GB);
+        let regs = compute_variable_mtrrs(&layout, 46, standard_low_mmio(), standard_high_mmio());
+        assert_eq!(pair_count(&regs), 2);
+        assert_eq!(regs[2], X86Register::MtrrPhysBase1((128 * MB) | 0x6));
+    }
+
+    #[test]
+    fn mtrr_8gb() {
+        // 8 GB: RAM above 4 GiB and above high MMIO end → pairs 0–4
+        let layout = make_layout(8 * GB);
+        let regs = compute_variable_mtrrs(&layout, 46, standard_low_mmio(), standard_high_mmio());
+        // Pair 0: 0..128 MB
+        // Pair 1: 128 MB..low gap start
+        // Pair 2: low gap end (4 GiB)..high gap start (4 GiB) — effectively empty but still emitted
+        // Pair 3: high gap end..8 TB boundary
+        // Pair 4: 8 TB.. (gpa_space_size > 43)
+        assert_eq!(pair_count(&regs), 5);
+
+        // Verify key base addresses
+        assert_eq!(regs[0], X86Register::MtrrPhysBase0(0x6));
+        assert_eq!(regs[2], X86Register::MtrrPhysBase1((128 * MB) | 0x6));
+        assert_eq!(
+            regs[4],
+            X86Register::MtrrPhysBase2(standard_low_mmio().end() | 0x6)
+        );
+        assert_eq!(
+            regs[6],
+            X86Register::MtrrPhysBase3(standard_high_mmio().end() | 0x6)
+        );
+        assert_eq!(regs[8], X86Register::MtrrPhysBase4((1u64 << 43) | 0x6));
+    }
+
+    #[test]
+    fn mtrr_8gb_no_high_mmio() {
+        // New behavior: no high MMIO gap. RAM above 4 GiB is contiguous.
+        // Uses the is_empty() branch.
+        let low = standard_low_mmio();
+        let layout = MemoryLayout::new(8 * GB, &[low], &[], &[], None).unwrap();
+        let regs = compute_variable_mtrrs(&layout, 46, low, MemoryRange::EMPTY);
+        // Pair 0: 0..128 MB
+        // Pair 1: 128 MB..low gap start
+        // Pair 2: low gap end..8 TB boundary (is_empty branch)
+        // Pair 3: 8 TB..GPA limit (gpa_space_size > 43)
+        assert_eq!(pair_count(&regs), 4);
+        assert_eq!(regs[4], X86Register::MtrrPhysBase2(low.end() | 0x6));
+        assert_eq!(regs[6], X86Register::MtrrPhysBase3((1u64 << 43) | 0x6));
+    }
+
+    #[test]
+    fn mtrr_narrow_address_width() {
+        // 40-bit address width (< 43): the 8 TB split is not needed.
+        let layout = make_layout(8 * GB);
+        let regs = compute_variable_mtrrs(&layout, 40, standard_low_mmio(), standard_high_mmio());
+        // No pair 4 because gpa_space_size <= 43
+        assert_eq!(pair_count(&regs), 4);
+        assert_eq!(
+            regs[6],
+            X86Register::MtrrPhysBase3(standard_high_mmio().end() | 0x6)
+        );
+    }
+
+    #[test]
+    fn mtrr_masks_have_enabled_bit() {
+        // Every mask register should have the ENABLED bit (bit 11) set.
+        let layout = make_layout(8 * GB);
+        let regs = compute_variable_mtrrs(&layout, 46, standard_low_mmio(), standard_high_mmio());
+        for (i, reg) in regs.iter().enumerate() {
+            match reg {
+                X86Register::MtrrPhysMask0(v)
+                | X86Register::MtrrPhysMask1(v)
+                | X86Register::MtrrPhysMask2(v)
+                | X86Register::MtrrPhysMask3(v)
+                | X86Register::MtrrPhysMask4(v) => {
+                    assert!(v & (1 << 11) != 0, "mask at index {i} missing ENABLED bit");
+                }
+                _ => {} // base registers
+            }
+        }
     }
 }
