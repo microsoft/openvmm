@@ -892,7 +892,7 @@ impl MeshInner {
             tracing::Span::current().record("pid", pid);
 
             pal_async::windows::PolledProcess::new(&self.node_driver, child)
-                .context("failed to create process wait")?
+                .expect("failed to create process wait")
         };
         #[cfg(unix)]
         let child = {
@@ -945,7 +945,7 @@ impl MeshInner {
             tracing::Span::current().record("pid", pid);
 
             pal_async::process::PolledChild::<process::Child>::new(&self.node_driver, child)
-                .context("failed to create process wait")?
+                .expect("failed to create process wait")
         };
 
         let id = self.hosts.insert(MeshHostInner {
