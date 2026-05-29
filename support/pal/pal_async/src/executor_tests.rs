@@ -200,6 +200,67 @@ pub async fn socket_tests(driver: impl Driver) {
     }
 }
 
+/// Runs process wait tests.
+#[cfg(target_os = "linux")]
+pub async fn process_tests(driver: impl crate::process::DynProcessWaitDriver) {
+    use crate::process::PolledChild;
+    type StdPolledChild = PolledChild<std::process::Child>;
+
+    // std child exits successfully
+    {
+        let child = std::process::Command::new("/bin/true").spawn().unwrap();
+        let mut polled = StdPolledChild::new(&driver, child).unwrap();
+        let status = polled.wait().await.unwrap();
+        assert!(status.success());
+    }
+
+    // std child exits with nonzero status
+    {
+        let child = std::process::Command::new("/bin/false").spawn().unwrap();
+        let mut polled = StdPolledChild::new(&driver, child).unwrap();
+        let status = polled.wait().await.unwrap();
+        assert!(!status.success());
+    }
+
+    // wait remains pending while child is still running
+    {
+        let child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let mut polled = StdPolledChild::new(&driver, child).unwrap();
+        let pending = poll_fn(|cx| Poll::Ready(polled.poll_wait(cx))).await;
+        assert!(pending.is_pending());
+        polled.get_mut().kill().unwrap();
+        let status = polled.wait().await.unwrap();
+        assert!(!status.success());
+    }
+
+    // into_inner returns a usable child
+    {
+        let child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let polled = StdPolledChild::new(&driver, child).unwrap();
+        let mut child = polled.into_inner();
+        child.kill().unwrap();
+        let status = child.wait().unwrap();
+        assert!(!status.success());
+    }
+
+    // after async wait, try_wait observes the cached status
+    {
+        let child = std::process::Command::new("/bin/true").spawn().unwrap();
+        let mut polled = StdPolledChild::new(&driver, child).unwrap();
+        let status = polled.wait().await.unwrap();
+        assert!(status.success());
+        let status2 = polled.get_mut().try_wait().unwrap();
+        assert!(status2.is_some());
+        assert!(status2.unwrap().success());
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub mod io_uring_tests {
     //! io-uring submission tests.

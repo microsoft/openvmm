@@ -11,6 +11,8 @@ use cfg_if::cfg_if;
 
 pub mod local;
 pub mod pipe;
+#[cfg(target_os = "linux")]
+pub mod process;
 pub mod wait;
 
 cfg_if! {

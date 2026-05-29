@@ -13,6 +13,7 @@ pub mod interest;
 pub mod io_uring;
 pub mod local;
 pub mod pipe;
+pub mod process;
 pub mod socket;
 pub mod timer;
 pub mod wait;
