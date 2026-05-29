@@ -303,7 +303,7 @@ struct HclNetworkVFManagerWorker {
     #[inspect(skip)]
     dma_clients: VfioDmaClients,
     #[inspect(skip)]
-    vf_reset_request_receiver: Option<mesh::Receiver<()>>,
+    vf_reset_request_receiver: Option<mesh::Receiver<bool>>,
 }
 
 impl HclNetworkVFManagerWorker {
@@ -670,7 +670,7 @@ impl HclNetworkVFManagerWorker {
             ManagerMessage(HclNetworkVfManagerMessage),
             ManaDeviceArrived,
             ManaDeviceRemoved,
-            VfReconfig,
+            VfReconfig(bool),
             VfReconfigRestart,
             ExitWorker,
         }
@@ -722,7 +722,7 @@ impl HclNetworkVFManagerWorker {
                     .vf_reset_request_receiver
                     .as_mut()
                     .unwrap()
-                    .map(|()| NextWorkItem::VfReconfig);
+                    .map(NextWorkItem::VfReconfig);
                 let reconfig_restart_deadline = vf_reconfig_backoff.map(|backoff| backoff.deadline);
                 let wait_for_reconfig = futures::stream::once(async {
                     match reconfig_restart_deadline {
@@ -946,7 +946,7 @@ impl HclNetworkVFManagerWorker {
                     // Exit worker thread.
                     return;
                 }
-                NextWorkItem::VfReconfig => {
+                NextWorkItem::VfReconfig(revoke_vtl0_vf) => {
                     if self.is_shutdown_active
                         || matches!(vtl2_device_state, Vtl2DeviceState::Missing)
                     {
@@ -960,10 +960,14 @@ impl HclNetworkVFManagerWorker {
                     }
 
                     tracing::info!("VTL2 VF reconfiguration requested");
-                    // Remove VTL0 VF if present
-                    *self.guest_state.vtl0_vfid.lock().await = None;
-                    if self.guest_state.is_offered_to_guest().await {
-                        tracing::warn!("VTL0 VF being removed as a result of VF Reconfiguration.");
+                    // Remove VTL0 VF if requested
+                    if revoke_vtl0_vf && self.guest_state.is_offered_to_guest().await {
+                        *self.guest_state.vtl0_vfid.lock().await = None;
+                        tracing::warn!(
+                            vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control),
+                            vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control),
+                            "VTL0 VF being removed as a result of VF Reconfiguration."
+                        );
                         self.try_notify_guest_and_revoke_vtl0_vf(&Vtl0Bus::NotPresent)
                             .await;
                     }
