@@ -405,7 +405,9 @@ impl GuestMemoryBuilder {
                     return Err(MemoryBuildError::ThpUnsupportedPlatform);
                 }
             }
-            if req.host_numa_node.is_some() && cfg!(not(any(target_os = "linux", target_os = "windows"))) {
+            if req.host_numa_node.is_some()
+                && cfg!(not(any(target_os = "linux", target_os = "windows")))
+            {
                 return Err(MemoryBuildError::HostNumaNodeUnsupportedPlatform);
             }
             if req.hugepages {
