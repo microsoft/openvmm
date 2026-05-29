@@ -70,7 +70,6 @@ unsafe extern "C" {
 /// constructed directly from the return value of CF/Security APIs.
 pub(crate) struct CfHandle(pub(crate) CFTypeRef);
 
-
 impl Drop for CfHandle {
     fn drop(&mut self) {
         if !self.0.is_null() {
