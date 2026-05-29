@@ -1880,8 +1880,14 @@ impl virt::Hv1 for WhpPartition {
         Some(self)
     }
 
-    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
-        self.synic_ports.clone()
+    fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
+        // The Windows hypervisor does not yet support synic
+        // message/event ports on nested-virt-capable partitions.
+        #[cfg(guest_arch = "x86_64")]
+        if self.inner.caps.nested_virt {
+            anyhow::bail!("vmbus is not yet supported with nested virtualization on WHP");
+        }
+        Ok(self.synic_ports.clone())
     }
 }
 

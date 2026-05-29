@@ -382,40 +382,15 @@ mod x86 {
         }
 
         fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
-            // WHP encodes L2 VMCS/VMCB plus the extended pending-event
-            // registers in an opaque blob. The current WHP implementation
-            // returns `WHV_X64_NESTED_STATE` (~8 KiB), but we don't bake
-            // that size in — start with 8 KiB and double on
-            // `WHV_E_INSUFFICIENT_BUFFER` so future growth is handled
-            // automatically.
-            let mut data = vec![0u8; 0x2000];
-            loop {
-                match self
-                    .run
-                    .vp
-                    .whp(self.vtl)
-                    .get_state(whp::abi::WHvVirtualProcessorStateTypeNestedState, &mut data)
-                {
-                    Ok(n) => {
-                        data.truncate(n);
-                        return Ok(vp::NestedState { data });
-                    }
-                    Err(whp::WHvError::WHV_E_INSUFFICIENT_BUFFER) => {
-                        // The hypervisor reports the required size in
-                        // the out parameter of the underlying API even
-                        // on failure, but our `get_state` wrapper
-                        // discards it. Double the buffer and retry.
-                        let new_len = data.len().saturating_mul(2);
-                        data.resize(new_len, 0);
-                    }
-                    Err(err) => {
-                        return Err(Error::Whp {
-                            operation: "get nested state",
-                            source: err,
-                        });
-                    }
-                }
-            }
+            let mut data = vec![0u8; whp::abi::WHV_X64_NESTED_STATE_SIZE];
+            let n = self
+                .run
+                .vp
+                .whp(self.vtl)
+                .get_state(whp::abi::WHvVirtualProcessorStateTypeNestedState, &mut data)
+                .for_op("get nested state")?;
+            data.truncate(n);
+            Ok(vp::NestedState { data })
         }
 
         fn set_nested_state(&mut self, value: &vp::NestedState) -> Result<(), Self::Error> {

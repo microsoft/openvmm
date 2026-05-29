@@ -1013,11 +1013,17 @@ pub const WHvVirtualProcessorStateTypeInterruptControllerState2: WHV_VIRTUAL_PRO
     WHV_VIRTUAL_PROCESSOR_STATE_TYPE(0x00001000);
 pub const WHvVirtualProcessorStateTypeXsaveState: WHV_VIRTUAL_PROCESSOR_STATE_TYPE =
     WHV_VIRTUAL_PROCESSOR_STATE_TYPE(0x00001001);
-/// Opaque nested-virtualization state (x86-64 only). Carries the L2 VMCS/VMCB
+/// Nested-virtualization state (x86-64 only). Carries the L2 VMCS/VMCB
 /// plus pending-event-ex registers that the hypervisor exposes only when the
 /// partition was created with `WHvPartitionPropertyCodeNestedVirtualization`.
 pub const WHvVirtualProcessorStateTypeNestedState: WHV_VIRTUAL_PROCESSOR_STATE_TYPE =
     WHV_VIRTUAL_PROCESSOR_STATE_TYPE(0x00001002);
+
+/// Size in bytes of `WHV_X64_NESTED_STATE` — a union of
+/// `WHV_X64_VMX_NESTED_STATE` and `WHV_X64_SVM_NESTED_STATE`, each containing a
+/// page-aligned 4 KiB VMCS/VMCB region. The Windows SDK header enforces this
+/// with `C_ASSERT(sizeof(WHV_X64_NESTED_STATE) == (2 * 4096))`.
+pub const WHV_X64_NESTED_STATE_SIZE: usize = 2 * 4096;
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone)]

@@ -108,7 +108,7 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
     fn reference_time_source(&self) -> Option<ReferenceTimeSource>;
 
     /// Returns the partition's synic port access implementation.
-    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess>;
+    fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>>;
 
     /// Gets an interface to support downcasting to specific partition types.
     ///
@@ -255,7 +255,7 @@ where
         self.reference_time_source()
     }
 
-    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+    fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
         self.synic()
     }
 

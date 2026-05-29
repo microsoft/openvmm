@@ -664,7 +664,11 @@ pub trait Hv1 {
     ///
     /// This is used by VMBus and other synic consumers to register message
     /// and event ports for communication with the guest.
-    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess>;
+    ///
+    /// Returns an error if the backend does not support synic in its current
+    /// configuration (e.g. nested virtualization on a host whose hypervisor
+    /// does not yet support synic message/event ports for nested partitions).
+    fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>>;
 }
 
 pub trait DeviceBuilder: Hv1 {

@@ -2152,7 +2152,9 @@ impl InitializedVm {
                 anyhow::bail!("vmbus required hypervisor enlightements");
             }
 
-            let synic = partition.synic();
+            let synic = partition
+                .synic()
+                .context("failed to get partition synic access for vmbus")?;
 
             vmbus_redirect = vmbus_cfg.vtl2_redirect;
             let hvsock_channel = HvsockRelayChannel::new();

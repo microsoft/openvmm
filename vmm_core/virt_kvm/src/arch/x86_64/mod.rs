@@ -650,8 +650,8 @@ impl Hv1 for KvmPartition {
         None
     }
 
-    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
-        self.synic_ports.clone()
+    fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
+        Ok(self.synic_ports.clone())
     }
 }
 
