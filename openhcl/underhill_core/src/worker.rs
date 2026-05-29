@@ -2021,30 +2021,27 @@ async fn new_underhill_vm(
     let prov_claims = if let Some((_, vmgs)) = vmgs.as_mut() {
         let prov_info = vmgs.get_file_info(vmgs::FileId::PROVENANCE_DOC);
         if prov_info.is_ok() {
-            vmgs.read_file(vmgs::FileId::PROVENANCE_DOC)
-                .await
-                .or_else(|err| {
+            match vmgs.read_file(vmgs::FileId::PROVENANCE_DOC).await {
+                Ok(file) => match underhill_attestation::get_provenance_claims(&file) {
+                    Ok(prov_claims) => Some(prov_claims),
+                    Err(err) => {
+                        tracing::warn!(
+                            CVM_ALLOWED,
+                            error = &err as &dyn std::error::Error,
+                            "failed to get provenance claims"
+                        );
+                        None
+                    }
+                },
+                Err(err) => {
                     tracing::warn!(
                         CVM_ALLOWED,
                         error = &err as &dyn std::error::Error,
                         "failed to read provenance doc"
                     );
-                    Err(err)
-                })
-                .map(|file| {
-                    underhill_attestation::get_provenance_claims(&file)
-                        .or_else(|err| {
-                            tracing::warn!(
-                                CVM_ALLOWED,
-                                error = &err as &dyn std::error::Error,
-                                "failed to get provenance claims"
-                            );
-                            Err(err)
-                        })
-                        .ok()
-                })
-                .ok()
-                .flatten()
+                    None
+                }
+            }
         } else {
             None
         }
