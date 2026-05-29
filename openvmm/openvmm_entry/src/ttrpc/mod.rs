@@ -611,6 +611,7 @@ impl VmService {
             debugger_rpc: None,
             chipset_devices: chipset.chipset_devices,
             pci_chipset_devices: chipset.pci_chipset_devices,
+            isa_dma_controller: chipset.isa_dma_controller,
             chipset_capabilities: chipset.capabilities,
             layout: layout_config,
             rtc_delta_milliseconds: 0,
