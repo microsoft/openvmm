@@ -53,16 +53,10 @@ as well as the generated CLI help (via `cargo run -- --help`).
     in-hypervisor APIC
   * `no_enlightenments` — disable in-hypervisor Hyper-V enlightenment support
   * `nested_virt` — expose VMX/SVM to the guest so it can run its own
-    hypervisor (Hyper-V, KVM, etc.). Requires the in-hypervisor APIC
-    (i.e. must not be combined with `user_mode_apic`) and a host WHP
-    implementation that advertises nested-virt support. The Hyper-V
-    VM hosting OpenVMM must also have virtualization extensions exposed
-    to it — on Windows hosts, this typically means running
-    `Set-VMProcessor -VMName <name> -ExposeVirtualizationExtensions $true`
-    while the VM is off. When restoring a saved state taken with
-    `nested_virt`, the restore command line must include `nested_virt`
-    as well — the partition property is set at partition-creation time
-    and must match.
+    hypervisor (Hyper-V, KVM, etc.). Cannot be combined with
+    `user_mode_apic` or `--hv` (vmbus is not yet supported with nested
+    virt). The host must expose virtualization extensions to the VM
+    running OpenVMM.
 
   Examples:
   ```bash

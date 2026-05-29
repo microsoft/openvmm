@@ -407,13 +407,10 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
-        // Nested-virt save/restore is virt_whp-only today. Gated off via
-        // `X86PartitionCapabilities::nested_virt = false`, so this is
-        // never called by `save_all`/`restore_all`.
-        Ok(vp::NestedState::default())
+        Err(ErrorInner::NotSupported.into())
     }
 
     fn set_nested_state(&mut self, _value: &vp::NestedState) -> Result<(), Self::Error> {
-        Ok(())
+        Err(ErrorInner::NotSupported.into())
     }
 }

@@ -389,7 +389,7 @@ mod x86 {
                 .whp(self.vtl)
                 .get_state(whp::abi::WHvVirtualProcessorStateTypeNestedState, &mut data)
                 .for_op("get nested state")?;
-            data.truncate(n);
+            assert_eq!(n, data.len());
             Ok(vp::NestedState { data })
         }
 

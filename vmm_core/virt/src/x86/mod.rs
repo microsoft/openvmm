@@ -91,10 +91,7 @@ pub struct X86PartitionCapabilities {
     /// EFER.NXE is forced on. This is set for TDX 1.5 partitions, which require
     /// this.
     pub nxe_forced_on: bool,
-    /// The partition was created with nested virtualization enabled, so the L1
-    /// guest can run an L2 hypervisor. Backends that support saving and
-    /// restoring nested state should set this to `true` so that
-    /// `vp::NestedState` is included in save/restore.
+    /// Nested virtualization is enabled for this partition.
     pub nested_virt: bool,
 }
 
