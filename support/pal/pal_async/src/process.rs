@@ -185,10 +185,9 @@ impl PolledProcess {
     }
 }
 
-// --- Platform-specific construction helpers ---
-
-/// Helper to create a `PolledChild` for an already-exited child.
 impl<C> PolledChild<C> {
+    #[cfg_attr(windows, expect(dead_code))]
+    /// Creates a `PolledChild` for an already-exited child.
     fn exited(child: C) -> Self {
         Self {
             wait: None,

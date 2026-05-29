@@ -206,6 +206,14 @@ pub async fn process_tests(driver: impl Driver) {
     use crate::process::PolledChild;
     type StdPolledChild = PolledChild<std::process::Child>;
 
+    #[cfg(windows)]
+    fn cmd() -> std::process::Command {
+        let mut cmd = std::process::Command::new("cmd.exe");
+        // Avoid complaints about running in a UNC path for WSL.
+        cmd.current_dir(std::env::var_os("WINDIR").unwrap());
+        cmd
+    }
+
     fn success_command() -> std::process::Command {
         #[cfg(unix)]
         {
@@ -213,7 +221,7 @@ pub async fn process_tests(driver: impl Driver) {
         }
         #[cfg(windows)]
         {
-            let mut cmd = std::process::Command::new("cmd.exe");
+            let mut cmd = cmd();
             cmd.args(["/c", "exit", "0"]);
             cmd
         }
@@ -226,7 +234,7 @@ pub async fn process_tests(driver: impl Driver) {
         }
         #[cfg(windows)]
         {
-            let mut cmd = std::process::Command::new("cmd.exe");
+            let mut cmd = cmd();
             cmd.args(["/c", "exit", "1"]);
             cmd
         }
@@ -241,10 +249,9 @@ pub async fn process_tests(driver: impl Driver) {
         }
         #[cfg(windows)]
         {
-            let mut cmd = std::process::Command::new("ping");
-            cmd.args(["-n", "60", "127.0.0.1"])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
+            let mut cmd = cmd();
+            cmd.args(["/c", "pause"])
+                .stdout(std::process::Stdio::null());
             cmd
         }
     }
@@ -317,6 +324,89 @@ pub async fn process_tests(driver: impl Driver) {
         assert!(status.is_none(), "child was reaped or killed by drop");
         child.kill().unwrap();
         child.wait().unwrap();
+    }
+
+    // --- pal::unix::process::Child tests ---
+    #[cfg(unix)]
+    {
+        type PalChild = PolledChild<pal::unix::process::Child>;
+
+        fn pal_success_child() -> pal::unix::process::Child {
+            pal::unix::process::Builder::new("/usr/bin/true")
+                .spawn()
+                .unwrap()
+        }
+
+        fn pal_failure_child() -> pal::unix::process::Child {
+            pal::unix::process::Builder::new("/usr/bin/false")
+                .spawn()
+                .unwrap()
+        }
+
+        // pal child exits successfully
+        {
+            let child = pal_success_child();
+            let mut polled = PalChild::new(&driver, child).unwrap();
+            let status = polled.wait().await.unwrap();
+            assert!(status.success());
+        }
+
+        // pal child exits with failure
+        {
+            let child = pal_failure_child();
+            let mut polled = PalChild::new(&driver, child).unwrap();
+            let status = polled.wait().await.unwrap();
+            assert!(!status.success());
+        }
+
+        // after async wait, try_wait observes the cached status
+        {
+            let child = pal_success_child();
+            let mut polled = PalChild::new(&driver, child).unwrap();
+            let status = polled.wait().await.unwrap();
+            assert!(status.success());
+            let status2 = polled.get_mut().try_wait().unwrap();
+            assert!(status2.is_some());
+            assert!(status2.unwrap().success());
+        }
+    }
+
+    // --- pal::windows::Process tests (via PolledProcess) ---
+    #[cfg(windows)]
+    {
+        use crate::windows::PolledProcess;
+        use std::os::windows::io::OwnedHandle;
+
+        // PolledProcess exits successfully
+        {
+            let std_child = success_command().spawn().unwrap();
+            let handle = OwnedHandle::from(std_child);
+            let process = pal::windows::Process::from(handle);
+            let mut polled = PolledProcess::new(&driver, process).unwrap();
+            let exit_code = polled.wait().await.unwrap();
+            assert_eq!(exit_code, 0);
+        }
+
+        // PolledProcess exits with nonzero code
+        {
+            let std_child = failure_command().spawn().unwrap();
+            let handle = OwnedHandle::from(std_child);
+            let process = pal::windows::Process::from(handle);
+            let mut polled = PolledProcess::new(&driver, process).unwrap();
+            let exit_code = polled.wait().await.unwrap();
+            assert_ne!(exit_code, 0);
+        }
+
+        // PolledProcess kill + wait
+        {
+            let std_child = long_running_command().spawn().unwrap();
+            let handle = OwnedHandle::from(std_child);
+            let process = pal::windows::Process::from(handle);
+            let mut polled = PolledProcess::new(&driver, process).unwrap();
+            polled.get().kill(42).unwrap();
+            let exit_code = polled.wait().await.unwrap();
+            assert_eq!(exit_code, 42);
+        }
     }
 }
 

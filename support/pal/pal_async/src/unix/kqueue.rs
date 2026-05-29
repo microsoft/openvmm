@@ -531,8 +531,9 @@ impl Drop for ProcessWait {
     fn drop(&mut self) {
         // Try to remove the one-shot event. If the process already
         // exited, the event was already delivered and auto-removed, so
-        // ENOENT is expected.
-        let _ = self.kqueue.kqfd.run(
+        // ENOENT is expected. ESRCH can also occur if the process has
+        // been reaped.
+        match self.kqueue.kqfd.run(
             &[libc::kevent64_s {
                 ident: self.pid as u64,
                 filter: libc::EVFILT_PROC,
@@ -541,7 +542,10 @@ impl Drop for ProcessWait {
             }],
             &mut [],
             Some(&zero_timespec()),
-        );
+        ) {
+            Ok(_) | Err(Errno(libc::ENOENT)) | Err(Errno(libc::ESRCH)) => {}
+            Err(err) => panic!("kevent64 unexpectedly failed: {err:?}"),
+        }
 
         // SAFETY: Reclaiming the reference added in new_process_wait_pid.
         let op = unsafe { Arc::from_raw(Arc::as_ptr(&self.op)) };
