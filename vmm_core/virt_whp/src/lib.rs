@@ -86,10 +86,7 @@ pub struct Whp {
     pub user_mode_apic: bool,
     /// Use the hypervisor's in-built enlightenment support if available.
     pub offload_enlightenments: bool,
-    /// Configure the partition to be nested-virtualization capable, so
-    /// that the guest can run its own hypervisor (VMX on Intel, SVM on
-    /// AMD). Only supported on x86_64, and requires the in-hypervisor
-    /// APIC (i.e. `user_mode_apic = false`).
+    /// Enable nested virtualization (VMX/SVM) for the guest.
     pub nested_virt: bool,
 }
 
@@ -770,21 +767,11 @@ pub enum Error {
     UnsupportedParameter(&'static str),
     #[error("WHP does not support nested virtualization on this host")]
     NestedVirtUnsupported,
-    #[error("nested_virt requires the in-hypervisor APIC; pass user_mode_apic=false")]
+    #[error("nested_virt requires the in-hypervisor APIC")]
     NestedVirtIncompatibleWithUserModeApic,
-    #[error(
-        "nested_virt cannot be combined with VTL2; the Windows hypervisor \
-         refuses to install a generic hypercall intercept on a \
-         nested-virt-capable partition, and the VTL2 hypercall dispatcher \
-         requires that intercept"
-    )]
+    #[error("nested_virt is incompatible with VTL2")]
     NestedVirtIncompatibleWithVtl2,
-    #[error(
-        "nested_virt cannot be combined with isolation; the Windows hypervisor \
-         refuses to install a generic hypercall intercept on a \
-         nested-virt-capable partition, and isolation hypercalls require that \
-         intercept"
-    )]
+    #[error("nested_virt is incompatible with isolation")]
     NestedVirtIncompatibleWithIsolation,
 }
 
@@ -829,7 +816,7 @@ impl virt::Hypervisor for Whp {
         let offload_enlightenments = self.offload_enlightenments;
         let nested_virt = self.nested_virt;
 
-        // Nested virt is x86-only; on other arches reject the request.
+        // Nested virt is x86-only.
         #[cfg(guest_arch = "x86_64")]
         if nested_virt && user_mode_apic {
             return Err(Error::NestedVirtIncompatibleWithUserModeApic);
@@ -839,15 +826,8 @@ impl virt::Hypervisor for Whp {
             return Err(Error::UnsupportedParameter("nested_virt"));
         }
 
-        // The Windows hypervisor refuses to install a generic hypercall
-        // intercept on a nested-virt-capable partition
-        // (`onecore/hv/hvx/im/common/ImCpuCommon.c:ImInstallHypercallIntercept`
-        // — *"For now, hypercall exits are not supported with nested."*).
-        // We avoid installing that intercept for plain `--hv` partitions
-        // (the narrower `UnknownSynicConnection` / `RetargetUnknownVpciDevice`
-        // intercepts go through a separate install path with no such
-        // restriction), but VTL2 and isolation both rely on the broader
-        // hypercall dispatcher, so reject those combinations up front.
+        // The HV rejects the generic hypercall intercept on nested
+        // partitions, which VTL2 and isolation both need.
         if nested_virt {
             if let Some(hv_config) = &config.hv_config {
                 if hv_config.vtl2.is_some() {
@@ -1481,19 +1461,9 @@ impl VtlPartition {
 
         let mut with_overlays = false;
         if let Some(hv_config) = &config.hv_config {
-            // The generic hypercall intercept is only needed when the
-            // VTL2 or isolation hypercall dispatchers will actually run.
-            // For plain `--hv` partitions, OpenVMM only cares about
-            // hypercalls that go through the narrower
-            // `UnknownSynicConnection` / `RetargetUnknownVpciDevice`
-            // intercepts (registered further down for the offloaded-
-            // enlightenments path), and those use a separate HV install
-            // path. The Windows hypervisor rejects the generic
-            // hypercall intercept on nested-virt-capable partitions
-            // (`onecore/hv/hvx/im/common/ImCpuCommon.c:ImInstallHypercallIntercept`
-            // — *"For now, hypercall exits are not supported with
-            // nested."*), so keeping this off when not needed is also
-            // what makes `whp:nested_virt + --hv` viable.
+            // Only request the generic hypercall intercept for VTL2/isolation.
+            // The HV rejects it on nested partitions, and other
+            // partitions don't need it.
             if hv_config.vtl2.is_some() || config.isolation.is_isolated() {
                 extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::HypercallExit;
             }
@@ -1562,15 +1532,9 @@ impl VtlPartition {
                         features.bank0 |= F::DirectSyntheticTimers;
                     }
 
-                    // For nested virt on Intel, opt the L1 guest into
-                    // the enlightened-VMCS fast path and allow nonzero
-                    // `IA32_DEBUGCTL` while nested. Both bits are Intel
-                    // VMX concepts (VMCS, `IA32_DEBUGCTL`), and the
-                    // hypervisor rejects partition setup with
-                    // `HV_STATUS_INVALID_PARAMETER` if either is set on
-                    // an AMD nested-capable partition. Capability-gated
-                    // so that older Windows builds silently degrade
-                    // rather than failing partition setup.
+                    // On Intel, opt into enlightened VMCS and nested
+                    // DebugCtl for nested virt. These are Intel-only;
+                    // the HV rejects them on AMD.
                     #[cfg(guest_arch = "x86_64")]
                     if nested_virt
                         && whp::capabilities::processor_vendor().for_op("get processor vendor")?
@@ -1863,11 +1827,9 @@ impl virt::Hv1 for WhpPartition {
     }
 
     fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
-        // The Windows hypervisor does not yet support synic
-        // message/event ports on nested-virt-capable partitions.
         #[cfg(guest_arch = "x86_64")]
         if self.inner.caps.nested_virt {
-            anyhow::bail!("vmbus is not yet supported with nested virtualization on WHP");
+            anyhow::bail!("synic ports are not supported with nested virtualization on Windows");
         }
         Ok(self.synic_ports.clone())
     }

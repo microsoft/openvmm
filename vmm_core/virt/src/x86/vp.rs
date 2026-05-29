@@ -1898,12 +1898,7 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for SynicEventFlagsPage {
     }
 }
 
-/// Opaque nested-virtualization save state.
-///
-/// The hypervisor encodes the L2 VMCS/VMCB plus extended pending-event
-/// registers in an opaque blob. We don't interpret it — we just round-trip the
-/// bytes across save/restore. The state is only present when the partition was
-/// created with nested virtualization enabled.
+/// Opaque nested-virtualization state blob for save/restore.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
 #[inspect(skip)]
@@ -1918,13 +1913,10 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for NestedState {
     }
 
     fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
-        // A freshly reset VP has no L2 state.
         Self::default()
     }
 
     fn can_compare(_caps: &X86PartitionCapabilities) -> bool {
-        // The blob is opaque and the hypervisor may not produce
-        // byte-identical output for the same logical state.
         false
     }
 }
@@ -1980,9 +1972,6 @@ state_trait! {
     ),
     (104, "synic_timers", synic_timers, set_synic_timers, SynicTimers),
 
-    // Nested virtualization state. Only present when the partition was
-    // created with nested virtualization enabled. The blob is opaque to
-    // virt-* — only the backend that produced it can consume it.
     (200, "nested_state", nested_state, set_nested_state, NestedState),
 }
 
