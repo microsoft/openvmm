@@ -30,6 +30,33 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+/// Lower bound for the auto-tuned request queue count. Two queues let the
+/// guest's FUSE-request hashing send concurrent operations on different
+/// inodes to different host workers, which is the whole point of having
+/// more than one queue.
+const MIN_REQUEST_QUEUES: u32 = 2;
+
+/// Upper bound for the request queue count. Past this, virtio-fs's
+/// hash-based queue selection has diminishing returns (the birthday
+/// paradox saturates), and each extra queue costs a guest MSI-X vector
+/// plus a kernel worker thread.
+const MAX_REQUEST_QUEUES: u32 = 8;
+
+/// Default request queue count derived from the parallelism available to
+/// this process, clamped into [`MIN_REQUEST_QUEUES`, `MAX_REQUEST_QUEUES`].
+///
+/// Note that `available_parallelism()` reports the *host* CPU count when
+/// the device runs in a host user-mode process (e.g., `wsldevicehost`).
+/// That's usually a reasonable proxy for guest parallelism on typical
+/// deployments, but callers that know the guest vCPU count should pass
+/// an explicit value via [`VirtioFsDevice::with_num_request_queues`].
+fn default_num_request_queues() -> u32 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(MIN_REQUEST_QUEUES)
+        .clamp(MIN_REQUEST_QUEUES, MAX_REQUEST_QUEUES)
+}
+
 /// PCI configuration space values for virtio-fs devices.
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout)]
@@ -54,10 +81,15 @@ pub struct VirtioFsDevice {
     shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
     #[inspect(skip)]
     notify_corruption: Arc<dyn Fn() + Sync + Send>,
+    num_request_queues: u32,
 }
 
 impl VirtioFsDevice {
     /// Creates a new `VirtioFsDevice` with the specified mount tag.
+    ///
+    /// The number of FUSE request queues defaults to a function of the
+    /// available parallelism. Callers that know the guest vCPU count can
+    /// instead use [`Self::with_num_request_queues`].
     pub fn new<Fs>(
         driver_source: &VmTaskDriverSource,
         tag: &str,
@@ -68,9 +100,34 @@ impl VirtioFsDevice {
     where
         Fs: 'static + fuse::Fuse + Send + Sync,
     {
+        Self::with_num_request_queues(
+            driver_source,
+            tag,
+            fs,
+            shmem_size,
+            notify_corruption,
+            default_num_request_queues(),
+        )
+    }
+
+    /// Creates a new `VirtioFsDevice` with an explicit number of FUSE
+    /// request queues. The value is clamped to `[1, MAX_REQUEST_QUEUES]`.
+    pub fn with_num_request_queues<Fs>(
+        driver_source: &VmTaskDriverSource,
+        tag: &str,
+        fs: Fs,
+        shmem_size: u64,
+        notify_corruption: Option<Arc<dyn Fn() + Sync + Send>>,
+        num_request_queues: u32,
+    ) -> Self
+    where
+        Fs: 'static + fuse::Fuse + Send + Sync,
+    {
+        let num_request_queues = num_request_queues.clamp(1, MAX_REQUEST_QUEUES);
+
         let mut config = VirtioFsDeviceConfig {
             tag: [0; 36],
-            num_request_queues: 1,
+            num_request_queues,
         };
 
         let notify_corruption = if let Some(notify) = notify_corruption {
@@ -92,6 +149,7 @@ impl VirtioFsDevice {
             shmem_size,
             shared_memory_region: None,
             notify_corruption,
+            num_request_queues,
         }
     }
 }
@@ -104,7 +162,7 @@ impl VirtioDevice for VirtioFsDevice {
                 .with_ring_event_idx(true)
                 .with_ring_indirect_desc(true)
                 .with_ring_packed(true),
-            max_queues: 2,
+            max_queues: 1 + self.num_request_queues as u16,
             device_register_length: self.config.as_bytes().len() as u32,
             shared_memory: DeviceTraitsSharedMemory {
                 id: 0,
@@ -362,5 +420,79 @@ impl fuse::Mapper for VirtioMapper<'_> {
                 "Failed to unmap shared memory"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VirtioFs;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use test_with_tracing::test;
+    use vmcore::vm_task::SingleDriverBackend;
+
+    fn make_device(
+        driver: &DefaultDriver,
+        num_request_queues: Option<u32>,
+    ) -> (VirtioFsDevice, tempfile::TempDir) {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let device = match num_request_queues {
+            Some(n) => {
+                VirtioFsDevice::with_num_request_queues(&driver_source, "testfs", fs, 0, None, n)
+            }
+            None => VirtioFsDevice::new(&driver_source, "testfs", fs, 0, None),
+        };
+        (device, tmpdir)
+    }
+
+    #[test]
+    fn default_num_request_queues_in_range() {
+        let n = default_num_request_queues();
+        assert!(
+            (MIN_REQUEST_QUEUES..=MAX_REQUEST_QUEUES).contains(&n),
+            "default {} outside [{}, {}]",
+            n,
+            MIN_REQUEST_QUEUES,
+            MAX_REQUEST_QUEUES,
+        );
+    }
+
+    #[async_test]
+    async fn new_uses_default_num_request_queues(driver: DefaultDriver) {
+        let (device, _tmp) = make_device(&driver, None);
+        let expected = default_num_request_queues();
+        assert_eq!(device.num_request_queues, expected);
+        assert_eq!(device.config.num_request_queues, expected);
+        assert_eq!(device.traits().max_queues, 1 + expected as u16);
+    }
+
+    #[async_test]
+    async fn with_num_request_queues_clamps_above_max(driver: DefaultDriver) {
+        let (device, _tmp) = make_device(&driver, Some(1000));
+        assert_eq!(device.num_request_queues, MAX_REQUEST_QUEUES);
+        assert_eq!(device.config.num_request_queues, MAX_REQUEST_QUEUES);
+        assert_eq!(device.traits().max_queues, 1 + MAX_REQUEST_QUEUES as u16);
+    }
+
+    #[async_test]
+    async fn with_num_request_queues_clamps_below_one(driver: DefaultDriver) {
+        // A request for zero queues must be clamped up to one so the device
+        // always exposes at least one request virtqueue.
+        let (device, _tmp) = make_device(&driver, Some(0));
+        assert_eq!(device.num_request_queues, 1);
+        assert_eq!(device.config.num_request_queues, 1);
+        // 1 hiprio queue + 1 request queue.
+        assert_eq!(device.traits().max_queues, 2);
+    }
+
+    #[async_test]
+    async fn with_num_request_queues_accepts_value_in_range(driver: DefaultDriver) {
+        let (device, _tmp) = make_device(&driver, Some(3));
+        assert_eq!(device.num_request_queues, 3);
+        assert_eq!(device.config.num_request_queues, 3);
+        assert_eq!(device.traits().max_queues, 4);
     }
 }
