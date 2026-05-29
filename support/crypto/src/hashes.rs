@@ -40,8 +40,8 @@ impl HashAlgorithm {
     #[cfg(all(native, windows))]
     pub(crate) fn hash(self, data: &[u8]) -> Vec<u8> {
         let mut out = vec![0u8; self.output_size()];
-        // SAFETY: alg is a static pseudo-handle valid for the process; the
-        // input and output slices are valid for the call. Status must be
+        // SAFETY: the handle is a static pseudo-handle valid for the process;
+        // the input and output slices are valid for the call. Status must be
         // success because all inputs are known-good (fixed alg, fixed-size
         // output buffer matching the digest size).
         unsafe {
