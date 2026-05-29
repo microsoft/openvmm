@@ -18,6 +18,7 @@ use std::io;
 use std::os::fd::OwnedFd;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 
 /// macOS-specific process wait types.
 #[cfg(target_os = "macos")]
@@ -57,22 +58,26 @@ impl<C> PolledChild<C> {
     }
 }
 
+/// Polls the wait backend for process exit, then calls `try_wait`.
+///
+/// This is the shared implementation of `PolledChild::poll_wait` for all
+/// child-process types.
+fn poll_child_exit(
+    cx: &mut Context<'_>,
+    wait: &mut Option<crate::sys::process::WaitInner>,
+    mut try_wait: impl FnMut() -> io::Result<Option<std::process::ExitStatus>>,
+) -> Poll<io::Result<std::process::ExitStatus>> {
+    if let Some(w) = wait {
+        ready!(w.poll_exit(cx))?;
+    }
+    Ok(try_wait()?.expect("wait backend signaled readiness but process has not exited")).into()
+}
+
 // --- std::process::Child ---
 
 impl PolledChild<std::process::Child> {
     /// Creates a new `PolledChild` wrapping a [`std::process::Child`].
-    pub fn new(
-        driver: &(impl ?Sized + Driver),
-        mut child: std::process::Child,
-    ) -> io::Result<Self> {
-        // Guard against pid reuse: std::process::Child identifies the process
-        // by pid, which the OS can recycle after the child is reaped. If the
-        // caller already called wait(), pidfd_open or EVFILT_PROC could
-        // silently attach to an unrelated process. Check try_wait() first so
-        // we never touch the pid of a reaped child.
-        if let Some(_status) = child.try_wait()? {
-            return Ok(Self::exited(child));
-        }
+    pub fn new(driver: &(impl ?Sized + Driver), child: std::process::Child) -> io::Result<Self> {
         Self::new_inner(driver, child)
     }
 
@@ -81,23 +86,7 @@ impl PolledChild<std::process::Child> {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<io::Result<std::process::ExitStatus>> {
-        if let Some(wait) = &mut self.wait {
-            match wait.poll_exit(cx) {
-                Poll::Ready(Ok(())) => {}
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-        match self.child.try_wait() {
-            Ok(Some(status)) => Poll::Ready(Ok(status)),
-            Ok(None) => {
-                // Spurious readiness. Wake to retry without waiting for
-                // another fd readiness edge (the signaled state is cached).
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            Err(e) => Poll::Ready(Err(e)),
-        }
+        poll_child_exit(cx, &mut self.wait, || self.child.try_wait())
     }
 
     /// Waits for the child process to exit.
@@ -115,15 +104,8 @@ impl PolledChild<pal::unix::process::Child> {
     /// Creates a new `PolledChild` wrapping a [`pal::unix::process::Child`].
     pub fn new(
         driver: &(impl ?Sized + Driver),
-        mut child: pal::unix::process::Child,
+        child: pal::unix::process::Child,
     ) -> io::Result<Self> {
-        // macOS uses EVFILT_PROC which takes a pid, so we need the same
-        // pid-reuse guard as std::process::Child above. Linux doesn't need
-        // this: pal::unix::process::Child owns a pidfd, which is a stable
-        // kernel reference that cannot be confused with another process.
-        if cfg!(target_os = "macos") && child.try_wait()?.is_some() {
-            return Ok(Self::exited(child));
-        }
         Self::new_inner(driver, child)
     }
 
@@ -132,21 +114,7 @@ impl PolledChild<pal::unix::process::Child> {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<io::Result<std::process::ExitStatus>> {
-        if let Some(wait) = &mut self.wait {
-            match wait.poll_exit(cx) {
-                Poll::Ready(Ok(())) => {}
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-        match self.child.try_wait() {
-            Ok(Some(status)) => Poll::Ready(Ok(status)),
-            Ok(None) => {
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            Err(e) => Poll::Ready(Err(e)),
-        }
+        poll_child_exit(cx, &mut self.wait, || self.child.try_wait())
     }
 
     /// Waits for the child process to exit.
@@ -206,11 +174,7 @@ impl PolledProcess {
     /// Polls for the process to exit, returning its exit code.
     pub fn poll_wait(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<u32>> {
         if let Some(wait) = &mut self.wait {
-            match wait.poll_exit(cx) {
-                Poll::Ready(Ok(())) => {}
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => return Poll::Pending,
-            }
+            ready!(wait.poll_exit(cx))?;
         }
         Poll::Ready(Ok(self.process.exit_code()))
     }
@@ -260,8 +224,13 @@ mod linux {
     impl PolledChild<std::process::Child> {
         pub(super) fn new_inner(
             driver: &(impl ?Sized + Driver),
-            child: std::process::Child,
+            mut child: std::process::Child,
         ) -> io::Result<Self> {
+            // If the caller already reaped the child, don't try to register
+            // notifications on its pid.
+            if child.try_wait()?.is_some() {
+                return Ok(Self::exited(child));
+            }
             let pidfd = pidfd_open(child.id() as i32)?;
             let fd_ready = driver.new_dyn_fd_ready(pidfd.as_fd().as_raw_fd())?;
             Ok(Self {
@@ -296,8 +265,13 @@ mod macos_impl {
     impl PolledChild<std::process::Child> {
         pub(super) fn new_inner(
             driver: &(impl ?Sized + Driver),
-            child: std::process::Child,
+            mut child: std::process::Child,
         ) -> io::Result<Self> {
+            // If the caller already reaped the child, don't try to register
+            // notifications on its pid.
+            if child.try_wait()?.is_some() {
+                return Ok(Self::exited(child));
+            }
             let wait = driver.new_dyn_process_wait(child.id() as i32)?;
             Ok(Self {
                 wait: Some(WaitInner::new(wait)),
@@ -309,8 +283,13 @@ mod macos_impl {
     impl PolledChild<pal::unix::process::Child> {
         pub(super) fn new_inner(
             driver: &(impl ?Sized + Driver),
-            child: pal::unix::process::Child,
+            mut child: pal::unix::process::Child,
         ) -> io::Result<Self> {
+            // If the caller already reaped the child, don't try to register
+            // notifications on its pid.
+            if child.try_wait()?.is_some() {
+                return Ok(Self::exited(child));
+            }
             let wait = driver.new_dyn_process_wait(child.id() as i32)?;
             Ok(Self {
                 wait: Some(WaitInner::new(wait)),
