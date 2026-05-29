@@ -148,12 +148,14 @@ pub struct ConsommeParams {
     #[inspect(display)]
     pub skip_ipv6_checks: bool,
     /// Per-connection TCP receive ring buffer size (guest-to-host). Clamped
-    /// and rounded to a power of two in [16 KiB, 4 MiB]. Takes effect for
-    /// new connections only.
+    /// and rounded to a power of two in [16 KiB, 4 MiB]. Read only when the
+    /// connection's `Consomme` is constructed via [`Consomme::new`]; runtime
+    /// updates through [`Consomme::params_mut`] are ignored.
     pub tcp_rx_buffer_size: usize,
     /// Per-connection TCP transmit ring buffer size (host-to-guest). Clamped
-    /// and rounded to a power of two in [16 KiB, 4 MiB]. Takes effect for
-    /// new connections only.
+    /// and rounded to a power of two in [16 KiB, 4 MiB]. Read only when the
+    /// connection's `Consomme` is constructed via [`Consomme::new`]; runtime
+    /// updates through [`Consomme::params_mut`] are ignored.
     pub tcp_tx_buffer_size: usize,
 }
 
