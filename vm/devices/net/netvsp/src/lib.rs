@@ -203,7 +203,7 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
                 worker.channel.can_use_ring_size_opt,
             );
 
-            if let WorkerState::Ready(state) = &worker.state {
+            if let Some(state) = worker.state.ready() {
                 resp.field(
                     "outstanding_tx_packets",
                     state.state.pending_tx_packets.len() - state.state.free_tx_packets.len(),
@@ -239,18 +239,16 @@ enum WorkerState {
 
 impl WorkerState {
     fn ready(&self) -> Option<&ReadyState> {
-        if let Self::Ready(state) = self {
-            Some(state)
-        } else {
-            None
+        match self {
+            Self::Ready(state) | Self::WaitingForCoordinator(Some(state)) => Some(state),
+            _ => None,
         }
     }
 
     fn ready_mut(&mut self) -> Option<&mut ReadyState> {
-        if let Self::Ready(state) = self {
-            Some(state)
-        } else {
-            None
+        match self {
+            Self::Ready(state) | Self::WaitingForCoordinator(Some(state)) => Some(state),
+            _ => None,
         }
     }
 }
@@ -1548,10 +1546,7 @@ impl Nic {
         driver_builder.run_on_target(!self.adapter.tx_fast_completions);
 
         #[expect(clippy::disallowed_methods)] // TODO
-        // Setting `capacity == number of workers` prevents `try_send` failure,
-        // as long as each worker (primary or sub-channel) holds at most one
-        // outstanding message.
-        let (send, recv) = mpsc::channel(self.adapter.max_queues as usize);
+        let (send, recv) = mpsc::channel(1);
         self.coordinator_send = Some(send);
         self.coordinator.insert(
             &self.adapter.driver,
@@ -4055,15 +4050,11 @@ impl Coordinator {
         state: &mut CoordinatorState,
     ) -> Result<(), task_control::Cancelled> {
         loop {
-            // Drain any messages already queued on `recv` to decide
-            // whether to run the restart cycle.
-            self.drain_pending_messages(state).await;
-
-            // Restart is set to true by either:
+            // `self.restart` is set in a prior iteration when either:
             // `CoordinatorMessage::Restart` from Primary or sub-channel worker.
-            // `EndpointAction::RestartRequired` in previous loop.
+            // `EndpointAction::RestartRequired`.
             if self.restart {
-                self.run_restart_cycle(stop, state).await?;
+                self.restart_worker_queues(stop, state).await?;
             }
 
             // Ensure that all workers except the primary are started. The
@@ -4191,23 +4182,8 @@ impl Coordinator {
                     }
                     self.sleep_deadline = None;
                 }
-                Message::UpdateFromEndpoint(EndpointAction::RestartRequired) => self.restart = true,
-                Message::UpdateFromEndpoint(EndpointAction::LinkStatusNotify(connect)) => {
-                    self.workers[0].stop().await;
-
-                    // These are the only link state transitions that are tracked.
-                    // 1. up -> down or down -> up
-                    // 2. up -> down -> up or down -> up -> down.
-                    // All other state transitions are coalesced into one of the above cases.
-                    // For example, up -> down -> up -> down is treated as up -> down.
-                    // N.B - Always queue up the incoming state to minimize the effects of loss
-                    //       of any notifications (for example, during vtl2 servicing).
-                    if let Some(primary) = self.primary_mut() {
-                        primary.pending_link_action = PendingLinkAction::Active(connect);
-                    }
-
-                    // If there is any existing sleep timer running, cancel it out.
-                    self.sleep_deadline = None;
+                Message::UpdateFromEndpoint(endpoint_action) => {
+                    self.handle_endpoint_action(endpoint_action).await;
                 }
                 Message::ChannelDisconnected => {
                     break;
@@ -4217,29 +4193,50 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Called at the top of each iteration of [`Self::process`] loop.
-    /// Sub-channel restart requests are coalesced into `self.restart = true`.
-    /// Any Primary message landing concurrently with a `Restart` will be
-    /// handled prior to the worker restart.
-    async fn drain_pending_messages(&mut self, state: &mut CoordinatorState) {
-        while let Ok(Some(msg)) = self.recv.try_next() {
-            self.handle_coordinator_message(msg, state).await;
+    async fn handle_endpoint_action(&mut self, action: EndpointAction) {
+        match action {
+            EndpointAction::RestartRequired => self.restart = true,
+            EndpointAction::LinkStatusNotify(connect) => {
+                self.workers[0].stop().await;
+
+                // These are the only link state transitions that are tracked.
+                // 1. up -> down or down -> up
+                // 2. up -> down -> up or down -> up -> down.
+                // All other state transitions are coalesced into one of the above cases.
+                // For example, up -> down -> up -> down is treated as up -> down.
+                // N.B - Always queue up the incoming state to minimize the effects of loss
+                //       of any notifications (for example, during vtl2 servicing).
+                if let Some(primary) = self.primary_mut() {
+                    primary.pending_link_action = PendingLinkAction::Active(connect);
+                }
+
+                // If there is any existing sleep timer running, cancel it out.
+                self.sleep_deadline = None;
+            }
         }
     }
 
     /// Called from the [`Self::process`] loop when a `Restart` message has
     /// been observed from any channel.
-    async fn run_restart_cycle(
+    async fn restart_worker_queues(
         &mut self,
         stop: &mut StopTask<'_>,
         state: &mut CoordinatorState,
     ) -> Result<(), task_control::Cancelled> {
-        tracelimit::info_ratelimited!("beginning restart cycle");
         stop.until_stopped(self.stop_workers()).await?;
 
         // All workers are stopped and cannot push new messages.
         // Drain any messages that arrived prior to or during the stop.
-        self.drain_pending_messages(state).await;
+        // Coalesce restart messages. Handle non-restart Primary messages.
+        while let Ok(Some(msg)) = self.recv.try_next() {
+            self.handle_coordinator_message(msg, state).await;
+        }
+
+        // Handle any endpoint actions queued at this moment.
+        // Best-effort attempt to coalesce `RestartRequired` into this operation.
+        while let Some(action) = state.endpoint.wait_for_endpoint_action().now_or_never() {
+            self.handle_endpoint_action(action).await;
+        }
 
         // The queue restart operation is not restartable; do not poll on stop here.
         if let Err(err) = self
@@ -4321,7 +4318,6 @@ impl Coordinator {
             }
             CoordinatorMessage::Restart { channel_idx } => {
                 assert_eq!(channel_idx, 0);
-                tracelimit::info_ratelimited!(channel_idx, "primary-channel triggered restart");
                 self.restart = true;
             }
         }

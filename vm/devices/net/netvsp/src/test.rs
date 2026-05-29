@@ -16,6 +16,7 @@ use futures::Future;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
+use futures_concurrency::future::Race;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use guestmem::ranges::PagedRanges;
@@ -151,6 +152,9 @@ struct TestNicEndpointState {
     /// Per-queue one-shot trigger: when `tx_restart_triggers[idx]` is true,
     /// the next `tx_poll` call on queue `idx` returns `TxError::TryRestart(_)`.
     pub tx_restart_triggers: Vec<bool>,
+    /// Sender for injecting arbitrary `EndpointAction`s into the endpoint's
+    /// `wait_for_endpoint_action` path. Populated by `TestNicEndpoint::new`.
+    pub endpoint_action_updater: Option<mesh::Sender<EndpointAction>>,
 }
 
 impl TestNicEndpointState {
@@ -166,6 +170,7 @@ impl TestNicEndpointState {
             sync_tx: true,
             tx_metadata: Vec::new(),
             tx_restart_triggers: Vec::new(),
+            endpoint_action_updater: None,
         }))
     }
 
@@ -217,14 +222,17 @@ struct TestNicEndpoint {
     multiqueue_support: MultiQueueSupport,
     link_status_rx: mesh::Receiver<VecDeque<bool>>,
     pending_link_status_updates: VecDeque<bool>,
+    endpoint_action_rx: mesh::Receiver<EndpointAction>,
 }
 
 impl TestNicEndpoint {
     pub fn new(endpoint_state: Option<Arc<parking_lot::Mutex<TestNicEndpointState>>>) -> Self {
         let (link_status_tx, link_status_rx) = mesh::channel();
+        let (endpoint_action_tx, endpoint_action_rx) = mesh::channel();
         if let Some(endpoint_state) = endpoint_state.as_ref() {
             let mut locked_state = endpoint_state.lock();
             locked_state.link_status_updater = Some(link_status_tx);
+            locked_state.endpoint_action_updater = Some(endpoint_action_tx);
         }
         let inner = TestNicEndpointInner::new(endpoint_state);
         let tx_offload_support = TxOffloadSupport {
@@ -245,6 +253,7 @@ impl TestNicEndpoint {
             multiqueue_support,
             link_status_rx,
             pending_link_status_updates: VecDeque::new(),
+            endpoint_action_rx,
         }
     }
 }
@@ -362,11 +371,17 @@ impl net_backend::Endpoint for TestNicEndpoint {
     }
 
     async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
-        if self.pending_link_status_updates.is_empty() {
-            self.pending_link_status_updates
-                .append(&mut self.link_status_rx.select_next_some().await);
-        }
-        EndpointAction::LinkStatusNotify(self.pending_link_status_updates.pop_front().unwrap())
+        let pending = &mut self.pending_link_status_updates;
+        let link_rx = &mut self.link_status_rx;
+        let action_rx = &mut self.endpoint_action_rx;
+        let link = async {
+            if pending.is_empty() {
+                pending.append(&mut link_rx.select_next_some().await);
+            }
+            EndpointAction::LinkStatusNotify(pending.pop_front().unwrap())
+        };
+        let action = action_rx.select_next_some();
+        (link, action).race().await
     }
 }
 
@@ -7611,12 +7626,20 @@ async fn subchannel_tx_restart(driver: DefaultDriver) {
     // Arm a one-shot TryRestart on every sub-channel queue and wake each
     // one by routing an RX packet through it. Each sub-channel's main_loop
     // will call tx_poll, hit TryRestart, and route a Restart to the coordinator.
+    // Additionally inject an `EndpointAction::RestartRequired` so the
+    // coordinator races sub-channel `Restart` messages against an endpoint
+    // restart request - both must coalesce into a single `restart_queues` call.
     {
         let mut locked = endpoint_state.lock();
         for idx in 1..TOTAL_QUEUES as usize {
             locked.trigger_tx_restart(idx);
             locked.send_rx(idx, vec![0xAA + idx as u8; 60]);
         }
+        locked
+            .endpoint_action_updater
+            .as_ref()
+            .expect("endpoint_action_updater populated by TestNicEndpoint::new")
+            .send(EndpointAction::RestartRequired);
     }
 
     // Wait for the coordinator to observe at least one Restart message and
@@ -7644,7 +7667,7 @@ async fn subchannel_tx_restart(driver: DefaultDriver) {
     let cycles = stop_after - stop_before;
     assert_eq!(
         cycles, 1,
-        "expected exactly 1 restart cycle (pass B coalesces all in-flight sub-channel TryRestarts), got {cycles}",
+        "expected exactly 1 restart cycle (coordinator coalesces all in-flight sub-channel TryRestarts and the injected EndpointAction::RestartRequired into a single restart_queues call), got {cycles}",
     );
 
     // The `Update` filter change being visible on every sub-channel proves
