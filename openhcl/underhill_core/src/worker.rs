@@ -7,6 +7,7 @@ cfg_if::cfg_if! {
     if #[cfg(guest_arch = "x86_64")] {
         pub use hvdef::HvX64RegisterName as HvArchRegisterName;
         use chipset_device_resources::BSP_LINT_LINE_SET;
+        use chipset_resources::cmos_rtc::Piix4CmosRtcDeviceHandle;
         use chipset_resources::pm::DEFAULT_ACPI_IRQ;
         use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
         use vmm_core::acpi_builder::AcpiTablesBuilder;
@@ -63,8 +64,6 @@ use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
 use chipset_resources::cmos_rtc::GenericCmosRtcDeviceHandle;
-#[cfg(guest_arch = "x86_64")]
-use chipset_resources::cmos_rtc::Piix4CmosRtcDeviceHandle;
 use closeable_mutex::CloseableMutex;
 use cvm_tracing::CVM_ALLOWED;
 use debug_ptr::DebugPtr;
@@ -3048,7 +3047,6 @@ async fn new_underhill_vm(
     };
 
     let devices = BaseChipsetDevices {
-        deps_generic_cmos_rtc: None,
         deps_generic_psp,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,

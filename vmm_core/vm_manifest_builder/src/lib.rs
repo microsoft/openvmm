@@ -388,7 +388,6 @@ impl VmManifestBuilder {
                     self.serial.unwrap_or_else(|| [(); 4].map(|_| None)),
                 );
                 result.chipset = BaseChipsetManifest {
-                    with_generic_cmos_rtc: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: false,
@@ -413,7 +412,6 @@ impl VmManifestBuilder {
             BaseChipsetType::UnenlightenedLinuxDirect => {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
-                    with_generic_cmos_rtc: is_x86,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: self.psp,
@@ -453,7 +451,6 @@ impl VmManifestBuilder {
             BaseChipsetType::HypervGen2Uefi | BaseChipsetType::HyperVGen2LinuxDirect => {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
-                    with_generic_cmos_rtc: is_x86,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: self.psp,

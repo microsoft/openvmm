@@ -236,7 +236,6 @@ impl<'a> BaseChipsetBuilder<'a> {
 
         // oh boy, time to build all the devices!
         let options::BaseChipsetDevices {
-            deps_generic_cmos_rtc: _,
             deps_generic_isa_floppy,
             deps_generic_pci_bus,
             deps_generic_psp: _, // not actually a device... yet
@@ -963,7 +962,6 @@ pub mod options {
         }
 
         devices {
-            generic_cmos_rtc:            dev::GenericCmosRtcDeps,
             generic_isa_floppy:          dev::GenericIsaFloppyDeps,
             generic_pci_bus:             dev::GenericPciBusDeps,
             generic_psp:                 dev::GenericPspDeps,
@@ -1118,18 +1116,6 @@ pub mod options {
                 /// handled externally, by the platform itself)
                 pub rom: Option<Box<dyn guestmem::MapRom>>,
             }
-        }
-
-        /// Generic MC146818A compatible RTC + CMOS device
-        pub struct GenericCmosRtcDeps {
-            /// IRQ line to signal RTC device events
-            pub irq: u32,
-            /// A time source resource, resolved at device build time.
-            pub time_source: Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
-            /// Which CMOS RAM register contains the century register
-            pub century_reg_idx: u8,
-            /// Initial state of CMOS RAM
-            pub initial_cmos: Option<[u8; 256]>,
         }
 
         /// PIIX4 "flavored" MC146818A compatible RTC + CMOS device

@@ -1626,11 +1626,11 @@ impl InitializedVm {
 
         let mut chipset_device_handles = cfg.chipset_devices;
 
-        // Emit CMOS RTC device handles based on load mode and manifest flags.
-        // PCAT (x86-only) uses the PIIX4 variant; other configurations use
-        // the generic variant when enabled by the manifest.
+        // Emit CMOS RTC device handles based on load mode.
+        // PCAT (x86-only) uses the PIIX4 variant; other x86 configurations
+        // use the generic variant.
         #[cfg(guest_arch = "x86_64")]
-        let emit_generic_rtc = if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {
+        if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {
             let initial_rtc_cmos = Some(firmware_pcat::default_cmos_values(&mem_layout));
             chipset_device_handles.push(ChipsetDeviceHandle {
                 name: "piix4-rtc".to_owned(),
@@ -1644,13 +1644,7 @@ impl InitializedVm {
                 }
                 .into_resource(),
             });
-            false
         } else {
-            cfg.chipset.with_generic_cmos_rtc
-        };
-        #[cfg(not(guest_arch = "x86_64"))]
-        let emit_generic_rtc = cfg.chipset.with_generic_cmos_rtc;
-        if emit_generic_rtc {
             chipset_device_handles.push(ChipsetDeviceHandle {
                 name: "rtc".to_owned(),
                 resource: GenericCmosRtcDeviceHandle {
@@ -1775,7 +1769,6 @@ impl InitializedVm {
 
         let base_chipset_devices = {
             BaseChipsetDevices {
-                deps_generic_cmos_rtc: None,
                 deps_generic_isa_floppy,
                 deps_generic_pci_bus,
                 deps_generic_psp,
