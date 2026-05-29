@@ -139,7 +139,8 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
             },
         )
         .with_default_boot_always_attempt(settings.default_boot_always_attempt)
-        .with_vmbus_disabled(!settings.vmbus);
+        .with_vmbus_disabled(!settings.vmbus)
+        .with_pci_resources_pre_assigned(true);
 
     let mut cfg = config::Blob::new();
     cfg.add(&config::BiosInformation {
