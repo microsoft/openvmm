@@ -170,12 +170,16 @@ Options:
     hugepages=on|off         allocate RAM from hugetlb pages
     hugepage_size=<SIZE>     hugetlb page size; requires hugepages=on
     host_numa_node=<N>       bind allocation to host NUMA node N
-    vps=<LIST>               explicit VP indices (e.g. "0,1,2,3")
+    vps=<LIST>               explicit VP indices (e.g. "[0,1,2,3]")
+
+  VP lists use bracket syntax with comma-separated indices and dash
+  ranges: vps=[0,1] or vps=[0-3] or vps=[0,1,4-5].
 
 Examples:
     --numa size=2G --numa size=2G
     --numa size=2G,host_numa_node=0 --numa size=2G,host_numa_node=1
-    --numa size=2G,hugepages=on,vps=0,1 --numa size=2G,vps=2,3"#
+    --numa size=2G,hugepages=on,vps=[0,1] --numa size=2G,vps=[2,3]
+    --numa size=2G,vps=[0-3] --numa size=2G,vps=[4-7]"#
     )]
     pub numa: Option<Vec<NumaNodeCli>>,
 
@@ -1470,12 +1474,61 @@ fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
     accum.finish(DEFAULT_MEMORY_SIZE, file)
 }
 
+/// Split a comma-delimited option string, but skip commas inside `[]`.
+fn split_options(s: &str) -> anyhow::Result<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut depth = 0u32;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                anyhow::ensure!(depth > 0, "unmatched ']' in '{s}'");
+                depth -= 1;
+            }
+            ',' if depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    anyhow::ensure!(depth == 0, "unmatched '[' in '{s}'");
+    parts.push(&s[start..]);
+    Ok(parts)
+}
+
+/// Parse a VP list value in bracket syntax: `[0,1,4-5]`.
+/// Returns individual VP indices.
+fn parse_vp_list(value: &str) -> anyhow::Result<Vec<u32>> {
+    let inner = value
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .with_context(|| {
+            format!("vps value must use bracket syntax, e.g. [0,1,2-3], got '{value}'")
+        })?;
+
+    let mut vps = Vec::new();
+    for item in inner.split(',') {
+        let item = item.trim();
+        if let Some((lo, hi)) = item.split_once('-') {
+            let lo = lo.trim().parse::<u32>().context("invalid vp index")?;
+            let hi = hi.trim().parse::<u32>().context("invalid vp index")?;
+            anyhow::ensure!(lo <= hi, "invalid vp range {lo}-{hi}");
+            vps.extend(lo..=hi);
+        } else {
+            vps.push(item.parse::<u32>().context("invalid vp index")?);
+        }
+    }
+    Ok(vps)
+}
+
 fn parse_numa_node(s: &str) -> anyhow::Result<NumaNodeCli> {
     let mut accum = MemoryOptionAccum::default();
     let mut host_numa_node = None;
     let mut vps: Option<Vec<u32>> = None;
 
-    for part in s.split(',') {
+    for part in split_options(s)? {
         let (key, value) = part
             .split_once('=')
             .with_context(|| format!("invalid numa option '{part}', expected key=value"))?;
@@ -1492,12 +1545,8 @@ fn parse_numa_node(s: &str) -> anyhow::Result<NumaNodeCli> {
                 host_numa_node = Some(value.parse::<u32>().context("invalid host_numa_node")?);
             }
             "vps" => {
-                // VP indices can appear as multiple vps= entries or as
-                // a dash-separated range within a single value.
-                let vp_list = vps.get_or_insert_with(Vec::new);
-                for vp_str in value.split('-') {
-                    vp_list.push(vp_str.trim().parse::<u32>().context("invalid vp index")?);
-                }
+                anyhow::ensure!(vps.is_none(), "duplicate numa option 'vps'");
+                vps = Some(parse_vp_list(value)?);
             }
             _ => anyhow::bail!("unknown numa option '{key}'"),
         }
@@ -4723,6 +4772,7 @@ mod tests {
     }
 
     #[test]
+    #[test]
     fn test_nvme_controller_cli_pcie() {
         let c = NvmeControllerCli::from_str("id=nvme0,pcie_port=p0").unwrap();
         assert_eq!(c.id, "nvme0");
@@ -4895,5 +4945,124 @@ mod tests {
         assert!(OpenhclControllerCli::from_str("id=foo,type=ide").is_err());
         // Invalid guid.
         assert!(OpenhclControllerCli::from_str("id=foo,type=scsi,guid=bad").is_err());
+    }
+
+    #[test]
+    fn test_parse_vp_list() {
+        use super::parse_vp_list;
+
+        // Individual indices.
+        assert_eq!(parse_vp_list("[0,1,2,3]").unwrap(), vec![0, 1, 2, 3]);
+
+        // Single index.
+        assert_eq!(parse_vp_list("[5]").unwrap(), vec![5]);
+
+        // Dash range.
+        assert_eq!(parse_vp_list("[0-3]").unwrap(), vec![0, 1, 2, 3]);
+
+        // Mixed indices and ranges.
+        assert_eq!(
+            parse_vp_list("[0,1,4-6,10]").unwrap(),
+            vec![0, 1, 4, 5, 6, 10]
+        );
+
+        // Whitespace tolerance.
+        assert_eq!(parse_vp_list("[0, 1, 2-4]").unwrap(), vec![0, 1, 2, 3, 4]);
+
+        // Missing brackets.
+        assert!(parse_vp_list("0,1,2").is_err());
+        assert!(parse_vp_list("0-3").is_err());
+
+        // Inverted range.
+        assert!(parse_vp_list("[3-0]").is_err());
+
+        // Non-numeric.
+        assert!(parse_vp_list("[a,b]").is_err());
+    }
+
+    #[test]
+    fn test_split_options_brackets() {
+        use super::split_options;
+
+        // No brackets — plain comma split.
+        assert_eq!(
+            split_options("a=1,b=2,c=3").unwrap(),
+            vec!["a=1", "b=2", "c=3"]
+        );
+
+        // Brackets protect inner commas.
+        assert_eq!(
+            split_options("size=2G,vps=[0,1,2]").unwrap(),
+            vec!["size=2G", "vps=[0,1,2]"]
+        );
+
+        // Brackets with ranges and trailing option.
+        assert_eq!(
+            split_options("size=2G,vps=[0-1,4-5],host_numa_node=0").unwrap(),
+            vec!["size=2G", "vps=[0-1,4-5]", "host_numa_node=0"]
+        );
+
+        // Unmatched brackets.
+        assert!(split_options("vps=[0,1").is_err());
+        assert!(split_options("vps=0,1]").is_err());
+    }
+
+    #[test]
+    fn test_parse_numa_node() {
+        use super::parse_numa_node;
+
+        // Basic node with size only.
+        let n = parse_numa_node("size=2G").unwrap();
+        assert_eq!(n.memory.mem_size, 2 * 1024 * 1024 * 1024);
+        assert!(n.vps.is_none());
+        assert!(n.host_numa_node.is_none());
+
+        // Node with bracket VP list.
+        let n = parse_numa_node("size=1G,vps=[0,1,2,3]").unwrap();
+        assert_eq!(n.vps.unwrap(), vec![0, 1, 2, 3]);
+
+        // Node with VP range in brackets.
+        let n = parse_numa_node("size=1G,vps=[0-3]").unwrap();
+        assert_eq!(n.vps.unwrap(), vec![0, 1, 2, 3]);
+
+        // Node with host_numa_node.
+        let n = parse_numa_node("size=1G,host_numa_node=1").unwrap();
+        assert_eq!(n.host_numa_node, Some(1));
+
+        // All options together.
+        let n = parse_numa_node("size=1G,vps=[0,1],host_numa_node=0,hugepages=on").unwrap();
+        assert_eq!(n.vps.unwrap(), vec![0, 1]);
+        assert_eq!(n.host_numa_node, Some(0));
+        assert!(n.memory.hugepages);
+
+        // Missing size.
+        assert!(parse_numa_node("vps=[0,1]").is_err());
+
+        // Bare vps without brackets.
+        assert!(parse_numa_node("size=1G,vps=0,1").is_err());
+
+        // Duplicate vps.
+        assert!(parse_numa_node("size=1G,vps=[0],vps=[1]").is_err());
+    }
+
+    #[test]
+    fn test_parse_numa_distance() {
+        use super::parse_numa_distance;
+
+        let d = parse_numa_distance("0:1:20").unwrap();
+        assert_eq!(d.src, 0);
+        assert_eq!(d.dst, 1);
+        assert_eq!(d.distance, 20);
+
+        // Self-distance.
+        let d = parse_numa_distance("0:0:10").unwrap();
+        assert_eq!(d.distance, 10);
+
+        // Distance below minimum.
+        assert!(parse_numa_distance("0:1:5").is_err());
+
+        // Wrong format.
+        assert!(parse_numa_distance("0:1").is_err());
+        assert!(parse_numa_distance("0:1:20:extra").is_err());
     }
 }

@@ -93,15 +93,18 @@ as well as the generated CLI help (via `cargo run -- --help`).
 
   Supported keys (in addition to all `--memory` keys except `file`):
   * `host_numa_node=<N>` - bind memory allocation to host NUMA node N
-  * `vps=<LIST>` - explicit VP indices for this node (e.g. `0,1,2,3`).
-    When omitted, VPs are assigned by round-robin sockets across nodes.
+  * `vps=<LIST>` - explicit VP indices for this node. Uses bracket syntax
+    with comma-separated indices and dash ranges: `vps=[0,1]`,
+    `vps=[0-3]`, `vps=[0,1,4-5]`. When omitted, VPs are assigned by
+    round-robin sockets across nodes.
 
   Examples:
 
   ```bash
   --numa size=2G --numa size=2G
   --numa size=2G,host_numa_node=0 --numa size=2G,host_numa_node=1
-  --numa size=2G,hugepages=on,vps=0,1 --numa size=2G,vps=2,3
+  --numa size=2G,hugepages=on,vps=[0,1] --numa size=2G,vps=[2,3]
+  --numa size=2G,vps=[0-3] --numa size=2G,vps=[4-7]
   ```
 
   See [NUMA Topology](../../architecture/openvmm/numa.md) for details.

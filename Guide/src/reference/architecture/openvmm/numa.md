@@ -105,8 +105,8 @@ openvmm --numa size=2G,host_numa_node=0 \
         --numa size=2G,host_numa_node=1 ...
 
 # Per-node hugepages with explicit VP assignment
-openvmm --numa size=2G,hugepages=on,vps=0,1 \
-        --numa size=2G,vps=2,3 ...
+openvmm --numa size=2G,hugepages=on,vps=[0,1] \
+        --numa size=2G,vps=[2,3] ...
 
 # Custom inter-node distances
 openvmm --numa size=2G --numa size=2G \
