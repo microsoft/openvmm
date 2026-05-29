@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 mod dump;
+mod ecam_config_access;
 mod pcie_wiring;
 mod smmu_wiring;
 
@@ -741,6 +742,7 @@ struct LoadedVmInner {
     client_notify_send: mesh::Sender<HaltReason>,
     /// allow the guest to reset without notifying the client
     automatic_guest_reset: bool,
+    chipset: Arc<vmotherboard::Chipset>,
     pcie_host_bridges: Vec<PcieHostBridge>,
     pcie_root_complexes: Vec<Arc<closeable_mutex::CloseableMutex<GenericPcieRootComplex>>>,
     /// SMMU configurations, one per instance.
@@ -2632,6 +2634,7 @@ impl InitializedVm {
                 halt_recv,
                 client_notify_send,
                 automatic_guest_reset: cfg.automatic_guest_reset,
+                chipset: chipset.chipset.clone(),
                 pcie_host_bridges,
                 pcie_root_complexes,
                 pcie_hotplug_devices: Vec::new(),
@@ -2648,6 +2651,7 @@ impl InitializedVm {
                 .context("loadedvm restore failed")?;
         } else {
             this.inner.load_firmware(false).await?;
+            this.assign_pci_resources().await?;
         }
 
         Ok(this)
@@ -2943,6 +2947,45 @@ impl LoadedVm {
         self.state_units.stop().await;
         self.running = false;
         true
+    }
+
+    /// Assign PCI bus numbers and BAR addresses for Linux direct boot.
+    ///
+    /// UEFI and PCAT firmware perform their own PCI enumeration, so this
+    /// is only needed when booting without firmware. This is called after
+    /// `load_firmware` on both initial boot and reset.
+    ///
+    /// Config space accesses go through device state units (via the ECAM
+    /// MMIO path), so devices must be running. This method temporarily
+    /// starts state units with VPs held stopped, performs the assignment,
+    /// then stops state units again. The caller is responsible for
+    /// resuming normally afterward.
+    async fn assign_pci_resources(&mut self) -> anyhow::Result<()> {
+        if !matches!(self.inner.load_mode, LoadMode::Linux { .. })
+            || self.inner.pcie_host_bridges.is_empty()
+        {
+            return Ok(());
+        }
+
+        // Hold VPs so they don't execute when state units start the
+        // partition unit.
+        let stop_guard = self.inner.partition_unit.temporarily_stop_vps().await;
+
+        // Start state units so device config space is accessible.
+        self.state_units.start().await;
+
+        let result = ecam_config_access::assign_pci_resources_for_root_complexes(
+            &self.inner.chipset,
+            &self.inner.pcie_host_bridges,
+        )
+        .await
+        .context("PCI resource assignment failed");
+
+        // Stop state units again; the caller will resume normally.
+        self.state_units.stop().await;
+        drop(stop_guard);
+
+        result
     }
 
     pub async fn run(
@@ -3476,6 +3519,7 @@ impl LoadedVm {
         // Load again
         if reload_firmware {
             self.inner.load_firmware(false).await?;
+            self.assign_pci_resources().await?;
         }
 
         if resume {

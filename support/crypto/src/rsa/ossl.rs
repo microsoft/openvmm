@@ -68,6 +68,26 @@ impl RsaKeyPairInner {
         signer.sign_to_vec().map_err(|e| err(e, "signer sign"))
     }
 
+    pub fn pss_sign(
+        &self,
+        data: &[u8],
+        hash_algorithm: HashAlgorithm,
+    ) -> Result<Vec<u8>, RsaError> {
+        let mut signer = openssl::sign::Signer::new(hash_algorithm.into(), &self.0)
+            .map_err(|e| err(e, "creating signer"))?;
+        signer
+            .set_rsa_padding(openssl::rsa::Padding::PKCS1_PSS)
+            .map_err(|e| err(e, "setting RSA padding"))?;
+        signer
+            .set_rsa_mgf1_md(hash_algorithm.into())
+            .map_err(|e| err(e, "setting MGF1 hash"))?;
+        signer
+            .set_rsa_pss_saltlen(openssl::sign::RsaPssSaltlen::DIGEST_LENGTH)
+            .map_err(|e| err(e, "setting PSS salt length"))?;
+        signer.update(data).map_err(|e| err(e, "signer update"))?;
+        signer.sign_to_vec().map_err(|e| err(e, "signer sign"))
+    }
+
     pub(crate) fn as_pub(&self) -> &RsaPublicKeyInner {
         // SAFETY: PKey<Private> can be safely treated as PKey<Public> for read-only operations.
         unsafe { std::mem::transmute::<&RsaKeyPairInner, &RsaPublicKeyInner>(self) }
@@ -118,6 +138,31 @@ impl RsaPublicKeyInner {
         verifier
             .set_rsa_padding(openssl::rsa::Padding::PKCS1)
             .map_err(|e| err(e, "setting RSA padding"))?;
+        verifier
+            .update(message)
+            .map_err(|e| err(e, "verifier update"))?;
+        verifier
+            .verify(signature)
+            .map_err(|e| err(e, "verifier verify"))
+    }
+
+    pub fn pss_verify(
+        &self,
+        message: &[u8],
+        signature: &[u8],
+        hash_algorithm: HashAlgorithm,
+    ) -> Result<bool, RsaError> {
+        let mut verifier = openssl::sign::Verifier::new(hash_algorithm.into(), &self.0)
+            .map_err(|e| err(e, "creating verifier"))?;
+        verifier
+            .set_rsa_padding(openssl::rsa::Padding::PKCS1_PSS)
+            .map_err(|e| err(e, "setting RSA padding"))?;
+        verifier
+            .set_rsa_mgf1_md(hash_algorithm.into())
+            .map_err(|e| err(e, "setting MGF1 hash"))?;
+        verifier
+            .set_rsa_pss_saltlen(openssl::sign::RsaPssSaltlen::DIGEST_LENGTH)
+            .map_err(|e| err(e, "setting PSS salt length"))?;
         verifier
             .update(message)
             .map_err(|e| err(e, "verifier update"))?;
