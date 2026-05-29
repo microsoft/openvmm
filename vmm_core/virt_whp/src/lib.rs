@@ -14,8 +14,6 @@ pub mod device;
 mod emu;
 mod hypercalls;
 mod memory;
-#[cfg(guest_arch = "x86_64")]
-mod nested_virt;
 mod regs;
 mod synic;
 mod vm_state;
@@ -132,10 +130,6 @@ struct WhpPartitionInner {
     #[inspect(skip)]
     gic_msi: vm_topology::processor::aarch64::GicMsiController,
     synic_ports: virt::synic::SynicPortMap,
-    /// What the host WHP implementation reports about its nested-virt
-    /// support. Probed once at partition creation. Diagnostic-only.
-    #[cfg(guest_arch = "x86_64")]
-    nested_virt_capability: nested_virt::NestedVirtCapability,
 }
 
 #[derive(Inspect)]
@@ -835,12 +829,11 @@ impl virt::Hypervisor for Whp {
         let offload_enlightenments = self.offload_enlightenments;
         let nested_virt = self.nested_virt;
 
-        // Validate nested-virt against host capability up front. The
-        // capability is also kept around so the partition can surface
-        // it via `inspect`. Nested virt is x86-only; on other arches we
-        // simply reject the request without probing.
+        // Nested virt is x86-only; on other arches reject the request.
         #[cfg(guest_arch = "x86_64")]
-        let nested_virt_capability = nested_virt::validate(nested_virt, user_mode_apic)?;
+        if nested_virt && user_mode_apic {
+            return Err(Error::NestedVirtIncompatibleWithUserModeApic);
+        }
         #[cfg(not(guest_arch = "x86_64"))]
         if nested_virt {
             return Err(Error::UnsupportedParameter("nested_virt"));
@@ -896,8 +889,6 @@ impl virt::Hypervisor for Whp {
             user_mode_apic,
             offload_enlightenments,
             nested_virt,
-            #[cfg(guest_arch = "x86_64")]
-            nested_virt_capability,
         })
     }
 }
@@ -915,8 +906,6 @@ pub struct WhpProtoPartition<'a> {
     user_mode_apic: bool,
     offload_enlightenments: bool,
     nested_virt: bool,
-    #[cfg(guest_arch = "x86_64")]
-    nested_virt_capability: nested_virt::NestedVirtCapability,
 }
 
 impl ProtoPartition for WhpProtoPartition<'_> {
@@ -962,8 +951,6 @@ impl ProtoPartition for WhpProtoPartition<'_> {
             self.user_mode_apic,
             self.offload_enlightenments,
             self.nested_virt,
-            #[cfg(guest_arch = "x86_64")]
-            self.nested_virt_capability,
         )?);
 
         let with_vtl0 = Arc::new(WhpPartitionAndVtl {
@@ -1054,7 +1041,6 @@ impl WhpPartitionInner {
         user_mode_apic: bool,
         offload_enlightenments: bool,
         nested_virt: bool,
-        #[cfg(guest_arch = "x86_64")] nested_virt_capability: nested_virt::NestedVirtCapability,
     ) -> Result<Self, Error> {
         // These are validated by VtlPartition::new and only consumed on x86_64.
         let _ = (user_mode_apic, offload_enlightenments, nested_virt);
@@ -1251,8 +1237,6 @@ impl WhpPartitionInner {
             #[cfg(guest_arch = "aarch64")]
             gic_msi: proto_config.processor_topology.gic_msi(),
             synic_ports: Default::default(),
-            #[cfg(guest_arch = "x86_64")]
-            nested_virt_capability,
         };
 
         Ok(inner)
@@ -1404,19 +1388,17 @@ impl VtlPartition {
             ))
             .for_op("set processor count")?;
 
-        // Enable nested virtualization on the partition before
-        // `WHvSetupPartition`. This is the master switch — it causes the
-        // underlying Hyper-V partition to be created with the
-        // `NESTED_VIRTUALIZATION_CAPABLE` flag, which is what allows the
-        // guest CPUID/MSR view to advertise VMX/SVM and what lets the
-        // hypervisor accept nested-state save/restore later. The
-        // `nested_virt` flag was already validated against the host's
-        // capability + `user_mode_apic` in `Whp::new_partition`.
         #[cfg(guest_arch = "x86_64")]
         if nested_virt {
-            whp_config
-                .set_property(whp::PartitionProperty::NestedVirtualization(true))
-                .for_op("enable nested virtualization")?;
+            match whp_config.set_property(whp::PartitionProperty::NestedVirtualization(true)) {
+                Ok(()) => {}
+                Err(whp::WHvError::WHV_E_UNKNOWN_PROPERTY) => {
+                    return Err(Error::NestedVirtUnsupported);
+                }
+                Err(err) => {
+                    return Err(err).for_op("enable nested virtualization");
+                }
+            }
         }
 
         #[cfg(guest_arch = "x86_64")]
