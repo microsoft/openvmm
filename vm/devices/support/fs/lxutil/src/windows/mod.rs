@@ -405,6 +405,64 @@ impl LxVolume {
             Default::default(),
         )?;
 
+        // NT's POSIX rename (used by NTFS) natively enforces several Linux rename
+        // semantics. The classic non-POSIX path used by FAT/exFAT does not, so
+        // replicate them explicitly here. NTFS is left untouched: it returns the
+        // same errors from NT directly.
+        if !self
+            .state
+            .fs_context
+            .compatibility_flags
+            .supports_posix_unlink_rename()
+        {
+            let is_dir = |h: &OwnedHandle| -> lx::Result<bool> {
+                Ok(
+                    util::query_information_file::<FileSystem::FILE_BASIC_INFORMATION>(h)?
+                        .FileAttributes
+                        & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0
+                        != 0,
+                )
+            };
+            let source_is_dir = is_dir(&handle)?;
+
+            // Linux returns EINVAL when renaming a directory into one of its own
+            // descendants; NT's classic rename instead reports STATUS_ACCESS_DENIED
+            // (-> EACCES). `Path::starts_with` compares whole path components, so
+            // "a/bc" is not treated as a descendant of "a/b". Only directories can
+            // have descendants, so non-directory sources are unaffected.
+            // N.B. The comparison is case-sensitive, so a case-only descendant such
+            //      as renaming "a/b" into "a/B/c" on a case-insensitive volume is not
+            //      caught here; NT still rejects it (as EACCES) so no data is lost.
+            if source_is_dir && new_path != path && new_path.starts_with(path) {
+                return Err(lx::Error::EINVAL);
+            }
+
+            // Linux forbids replacing a file with a directory (ENOTDIR) or a
+            // directory with a file (EISDIR). The classic non-POSIX path would
+            // instead silently supersede a file with a directory and report only a
+            // generic collision for the reverse, so detect type-incompatible targets
+            // up front before the destructive rename is attempted.
+            // N.B. `open_file` always sets FILE_OPEN_REPARSE_POINT, so a symlink
+            //      target is classified as the (non-directory) reparse point itself,
+            //      matching Linux. On case-insensitive volumes a case-only rename
+            //      (foo -> FOO) opens the same object as source and target, yielding
+            //      equal types and thus no false error.
+            match self.open_file(new_path, W32Fs::FILE_READ_ATTRIBUTES, Default::default()) {
+                Ok(target_handle) => {
+                    let target_is_dir = is_dir(&target_handle)?;
+                    if source_is_dir && !target_is_dir {
+                        return Err(lx::Error::ENOTDIR);
+                    }
+                    if !source_is_dir && target_is_dir {
+                        return Err(lx::Error::EISDIR);
+                    }
+                }
+                // A missing target is fine; the rename creates it.
+                Err(err) if err.value() == lx::ENOENT => {}
+                Err(err) => return Err(err),
+            }
+        }
+
         let flags = fs::RenameFlags::default();
         let error = match fs::rename(&handle, &self.root, new_path, &self.state.fs_context, flags) {
             Ok(_) => return Ok(()),
@@ -425,7 +483,11 @@ impl LxVolume {
                 .compatibility_flags
                 .supports_posix_unlink_rename()
         {
-            match self.open_file(new_path, W32Fs::DELETE, Default::default()) {
+            match self.open_file(
+                new_path,
+                W32Fs::FILE_READ_ATTRIBUTES | W32Fs::DELETE,
+                Default::default(),
+            ) {
                 Ok(target_handle) => self.delete_file(&target_handle)?,
                 Err(err) => {
                     // ENOENT means the rename can proceed.
@@ -699,6 +761,22 @@ impl LxVolume {
     ) -> lx::Result<OwnedHandle> {
         assert!(path.is_relative() && !path.as_os_str().is_empty());
         self.check_sandbox_enforcement(path)?;
+
+        // Symlinks are always implemented as reparse points (either an LX
+        // symlink reparse tag or an NT symlink). Filesystems that don't support
+        // reparse points (e.g. FAT) cannot store a symlink at all, so report
+        // EPERM up front rather than creating the file and then failing to set
+        // the reparse point (which would surface as EOPNOTSUPP). This matches
+        // the conventional Linux errno for symlink() on such filesystems and
+        // mirrors the hard link check in link_helper.
+        if !self
+            .state
+            .fs_context
+            .compatibility_flags
+            .supports_reparse_points()
+        {
+            return Err(lx::Error::EPERM);
+        }
 
         // Convert the target to its native Windows format.
         let win_target = Path::from_lx(target);

@@ -21,10 +21,15 @@ pub use section::SectionFs;
 use file::VirtioFsFile;
 use fuse::protocol::*;
 use fuse::*;
+use inode::AggregateState;
+use inode::DedupKey;
+use inode::SyntheticChild;
 use inode::VirtioFsInode;
+use inode::Volume;
 pub use lxutil::LxVolumeOptions;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::path::Path;
 use std::path::PathBuf;
@@ -47,6 +52,65 @@ pub struct VirtioFs {
     inodes: RwLock<InodeMap>,
     files: RwLock<HandleMap<Arc<VirtioFsFile>>>,
     readonly: bool,
+    /// `Some` only for aggregate devices. Held so that `Drop` can mark the
+    /// state as `TearingDown`, causing any externally-held
+    /// [`VirtiofsAggregateHandle`] to start rejecting `add_child`.
+    aggregate_state: Option<Arc<AggregateState>>,
+}
+
+impl Drop for VirtioFs {
+    fn drop(&mut self) {
+        if let Some(state) = &self.aggregate_state {
+            state.mark_tearing_down();
+        }
+    }
+}
+
+/// Handle to a live aggregate virtio-fs device that can append new
+/// children after construction. Obtained from
+/// [`VirtioFs::aggregate_handle`]; `add_child` is visible to the guest on
+/// the next LOOKUP/READDIR. Cloning shares the underlying state.
+#[derive(Clone)]
+pub struct VirtiofsAggregateHandle {
+    state: Arc<AggregateState>,
+}
+
+impl VirtiofsAggregateHandle {
+    /// Append a new child to the live aggregate.
+    ///
+    /// Errors:
+    /// - `EAGAIN` — the owning device has begun tearing down.
+    /// - `EINVAL` — `child.name` failed validation, or its readonly setting
+    ///   does not match the aggregate's.
+    /// - `EEXIST` — a child with this name is already present.
+    /// - any `lx::Error` propagated from `LxVolume` construction.
+    ///
+    /// Slow operations (volume creation, root stat) run outside the
+    /// children write lock so they do not block concurrent LOOKUP/READDIR.
+    pub fn add_child(&self, child: VirtioFsChild) -> lx::Result<()> {
+        inode::validate_child_name_bytes(child.name.as_bytes())?;
+
+        // Fast-fail without paying for volume construction if the device is
+        // already tearing down. The duplicate-name check is enforced
+        // authoritatively (under the lock) by `AggregateState::add_child`.
+        if !self.state.is_active() {
+            return Err(lx::Error::EAGAIN);
+        }
+
+        // Reject a readonly mismatch before building the (expensive) volume.
+        // The aggregate's readonly value is fixed at construction. The check
+        // is repeated authoritatively under the lock in
+        // `AggregateState::add_child`.
+        let child_readonly = child.readonly();
+        if child_readonly != self.state.readonly() {
+            return Err(lx::Error::EINVAL);
+        }
+
+        let volume = child.build_volume()?;
+        let name = lx::LxString::from_vec(child.name.into_bytes());
+
+        self.state.add_child(name, volume, child_readonly)
+    }
 }
 
 impl Fuse for VirtioFs {
@@ -67,6 +131,25 @@ impl Fuse for VirtioFs {
         // coherency issues with the host, but applications still need mmap.
         if info.capable2() & FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 != 0 {
             info.want2 |= FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
+        }
+
+        // Opt in to FUSE_SUBMOUNTS so the kernel honors the
+        // `FUSE_ATTR_SUBMOUNT` flag returned on the root inode of each
+        // child of an aggregate (multi-path) virtio-fs root. The flag is
+        // harmless when single-root mounts never set the attr bit.
+        //
+        // N.B. FUSE_SUBMOUNTS is best-effort isolation: when honored it
+        // gives each child its own superblock (distinct `st_dev`). But
+        // whether the kernel actually instantiates the submount depends on
+        // guest-side mount mechanics (e.g. WSL bind-mounts each child from a
+        // subpath of the synthetic root, which can pin the child dentry as a
+        // plain, non-automount dentry so the submount never fires). The
+        // correctness of the aggregate therefore does *not* rely on
+        // submounts: child inode numbers are namespaced per share (see
+        // `Volume::namespaced_ino`) so `(st_dev, st_ino)` collisions across
+        // children are avoided even under a single shared superblock.
+        if info.capable() & FUSE_SUBMOUNTS != 0 {
+            info.want |= FUSE_SUBMOUNTS;
         }
     }
 
@@ -138,6 +221,14 @@ impl Fuse for VirtioFs {
     }
 
     fn forget(&self, node_id: u64, lookup_count: u64) {
+        // The FUSE protocol guarantees that the kernel never forgets the
+        // root inode. Defend against malformed/forged guest requests
+        // anyway: dropping the root would corrupt all subsequent lookups
+        // (every path resolves through FUSE_ROOT_ID).
+        if node_id == FUSE_ROOT_ID {
+            tracing::warn!(lookup_count, "ignoring forget on root inode");
+            return;
+        }
         // This must be done under lock so an inode can't be resurrected between the lookup count
         // reaching zero and removing it from the list.
         let mut inodes = self.inodes.write();
@@ -174,7 +265,7 @@ impl Fuse for VirtioFs {
         // on the inode number (if this is a non-exclusive create), so make sure to associate the
         // file with the returned inode.
         let (new_inode, node_id) = self.insert_inode(new_inode);
-        let file = VirtioFsFile::new(file, new_inode);
+        let file = VirtioFsFile::new_real(file, new_inode);
         let fh = self.insert_file(file);
         Ok(CreateOut {
             entry: fuse_entry_out::new(node_id, ENTRY_TIMEOUT, ATTRIBUTE_TIMEOUT, attr),
@@ -320,7 +411,22 @@ impl Fuse for VirtioFs {
         let inode = self.get_inode(request.node_id())?;
         let new_inode = self.get_inode(new_dir)?;
         self.check_writable()?;
-        inode.rename(name, &new_inode, new_name, flags)
+        inode.rename(name, &new_inode, new_name, flags)?;
+        // On path-keyed (non-stable-id) volumes a rename moves data between
+        // paths without preserving inode identity, so detach both the source
+        // path (now vacated) and the destination path (its prior occupant, if
+        // any, was replaced) from any node ids they referenced. This avoids a
+        // later lookup aliasing a stale node id. (Descendants of a renamed
+        // directory keep stale path keys; this is a known, narrow limitation
+        // — FAT cannot preserve inode identity across rename regardless.)
+        let mut inodes = self.inodes.write();
+        if let Some(key) = inode.child_path_dedup_key(name) {
+            inodes.evict_dedup_key(&key);
+        }
+        if let Some(key) = new_inode.child_path_dedup_key(new_name) {
+            inodes.evict_dedup_key(&key);
+        }
+        Ok(())
     }
 
     fn statfs(&self, request: &Request) -> lx::Result<fuse_kstatfs> {
@@ -440,23 +546,103 @@ impl VirtioFs {
         mount_options: Option<&LxVolumeOptions>,
     ) -> lx::Result<Self> {
         let readonly = mount_options.is_some_and(|o| o.is_readonly());
-        let volume = if let Some(mount_options) = mount_options {
-            mount_options.new_volume(root_path)
-        } else {
-            lxutil::LxVolume::new(root_path)
-        }?;
-        let mut inodes = InodeMap::new(volume.supports_stable_file_id());
-        let (root_inode, _) = VirtioFsInode::new(Arc::new(volume), PathBuf::new())?;
+        let volume = Volume::open(root_path, mount_options)?;
+        let (root_inode, _) = VirtioFsInode::new(volume, PathBuf::new())?;
+        Ok(Self::from_root_inode(root_inode, readonly, None))
+    }
+
+    /// Assemble a `VirtioFs` from an already-built root inode. Shared tail
+    /// of `new` and `new_aggregate`: inserts `root_inode` at
+    /// [`FUSE_ROOT_ID`] and initializes the remaining fields.
+    fn from_root_inode(
+        root_inode: VirtioFsInode,
+        readonly: bool,
+        aggregate_state: Option<Arc<AggregateState>>,
+    ) -> Self {
+        let mut inodes = InodeMap::new();
         assert!(inodes.insert(root_inode).1 == FUSE_ROOT_ID);
-        Ok(Self {
+        Self {
             inodes: RwLock::new(inodes),
             files: RwLock::new(HandleMap::new()),
             readonly,
-        })
+            aggregate_state,
+        }
+    }
+
+    /// Create a new virtio-fs that aggregates multiple host paths under a
+    /// synthetic read-only root. Each child appears at `/<name>` and is
+    /// auto-mounted as a separate Linux superblock via `FUSE_ATTR_SUBMOUNT`
+    /// (requires guest kernel negotiating `FUSE_SUBMOUNTS`, Linux >= 5.10).
+    /// All children must share the same readonly setting.
+    ///
+    /// Use [`VirtioFs::aggregate_handle`] to obtain a
+    /// [`VirtiofsAggregateHandle`] for appending further children to the
+    /// live device.
+    pub fn new_aggregate(children: Vec<VirtioFsChild>) -> lx::Result<Self> {
+        if children.is_empty() {
+            return Err(lx::Error::EINVAL);
+        }
+
+        // Validate child names + uniqueness, and determine the shared
+        // readonly setting, before opening any host volumes.
+        let mut seen: HashSet<&[u8]> = HashSet::with_capacity(children.len());
+        let mut readonly: Option<bool> = None;
+        for child in &children {
+            inode::validate_child_name_bytes(child.name.as_bytes())?;
+            if !seen.insert(child.name.as_bytes()) {
+                tracing::warn!(
+                    name = ?child.name,
+                    "duplicate child name in aggregate virtio-fs"
+                );
+                return Err(lx::Error::EEXIST);
+            }
+            let child_readonly = child.readonly();
+            match readonly {
+                None => readonly = Some(child_readonly),
+                Some(r) if r != child_readonly => {
+                    tracing::warn!(
+                        "aggregate virtio-fs children must all share the same readonly setting"
+                    );
+                    return Err(lx::Error::EINVAL);
+                }
+                _ => (),
+            }
+        }
+        let readonly = readonly.unwrap_or(false);
+
+        // Build a `Volume` per child.
+        let mut synthetic_children: Vec<SyntheticChild> = Vec::with_capacity(children.len());
+        for child in children {
+            let volume = child.build_volume()?;
+            synthetic_children.push(SyntheticChild {
+                name: lx::LxString::from_vec(child.name.into_bytes()),
+                volume,
+            });
+        }
+
+        let state = AggregateState::new(synthetic_children, readonly);
+        let root_inode = VirtioFsInode::new_synthetic_root(Arc::clone(&state));
+        Ok(Self::from_root_inode(root_inode, readonly, Some(state)))
+    }
+
+    /// Obtain a [`VirtiofsAggregateHandle`] for appending children to a
+    /// live aggregate device. Returns `None` for non-aggregate devices
+    /// (those created via [`VirtioFs::new`]). Each call returns a fresh
+    /// clone that shares the underlying aggregate state.
+    pub fn aggregate_handle(&self) -> Option<VirtiofsAggregateHandle> {
+        self.aggregate_state
+            .as_ref()
+            .map(|state| VirtiofsAggregateHandle {
+                state: Arc::clone(state),
+            })
     }
 
     /// Perform lookup on a specified directory inode.
-    fn lookup_helper(&self, inode: &VirtioFsInode, name: &lx::LxStr) -> lx::Result<fuse_entry_out> {
+    pub(crate) fn lookup_helper(
+        &self,
+        inode: &VirtioFsInode,
+        name: &lx::LxStr,
+    ) -> lx::Result<fuse_entry_out> {
         let (new_inode, attr) = inode.lookup_child(name)?;
         let (_, new_inode_nr) = self.insert_inode(new_inode);
         Ok(fuse_entry_out::new(
@@ -471,7 +657,14 @@ impl VirtioFs {
     fn unlink_helper(&self, request: &Request, name: &lx::LxStr, flags: i32) -> lx::Result<()> {
         let inode = self.get_inode(request.node_id())?;
         self.check_writable()?;
-        inode.unlink(name, flags)
+        inode.unlink(name, flags)?;
+        // On path-keyed (non-stable-id) volumes the path is the inode's
+        // identity, so detach it from any node id now that it is gone; a
+        // later create at the same path must not alias the removed inode.
+        if let Some(key) = inode.child_path_dedup_key(name) {
+            self.inodes.write().evict_dedup_key(&key);
+        }
+        Ok(())
     }
 
     /// Retrieve the inode with the specified node ID.
@@ -566,30 +759,29 @@ impl<T> HandleMap<T> {
     }
 }
 
-/// Assigns node IDs to inodes, and keeps track of in-use inodes by their actual inode number.
+/// Assigns node IDs to inodes, and keeps track of in-use inodes by their actual
+/// (volume_id, inode_nr) pair.
 ///
 /// We cannot use the real inode number as the FUSE node ID:
 /// - FUSE node ID 1 is reserved for the root, so this would break if a file system used that inode
 ///   number.
-/// - When we want to support multiple volumes in a single file system, node IDs still need to be
-///   globally unique, whereas inode numbers are per-volume.
+/// - Multiple volumes can share the same inode number value, so the key must include the
+///   volume id.
 struct InodeMap {
     inodes_by_node_id: HandleMap<Arc<VirtioFsInode>>,
-    inodes_by_inode_nr: Option<HashMap<lx::ino_t, (Arc<VirtioFsInode>, u64)>>,
+    /// Maps a [`DedupKey`] to the registered inode and its FUSE node id, for
+    /// inodes eligible for deduplication. Stable-id volumes key by inode
+    /// number ([`DedupKey::Ino`]); volumes that recycle inode numbers
+    /// (FAT/exFAT) key by path ([`DedupKey::Path`]). The synthetic root and
+    /// empty-path submount/volume roots are not entered here.
+    inodes_by_key: HashMap<DedupKey, (Arc<VirtioFsInode>, u64)>,
 }
 
 impl InodeMap {
-    /// Create a new `InodeMap`.
-    pub fn new(supports_stable_file_id: bool) -> Self {
-        // TODO: Once multiple volumes are supported, the inodes_by_inode_nr map should be per
-        // volume.
+    pub fn new() -> Self {
         Self {
             inodes_by_node_id: HandleMap::new(),
-            inodes_by_inode_nr: if supports_stable_file_id {
-                Some(HashMap::new())
-            } else {
-                None
-            },
+            inodes_by_key: HashMap::new(),
         }
     }
 
@@ -601,15 +793,15 @@ impl InodeMap {
 
     /// Insert an inode into the map, returning its node ID.
     pub fn insert(&mut self, inode: VirtioFsInode) -> (Arc<VirtioFsInode>, u64) {
-        // If stable inode numbers are supported, look for the inode by its number.
-        if let Some(inodes_by_inode_nr) = self.inodes_by_inode_nr.as_mut() {
-            match inodes_by_inode_nr.entry(inode.inode_nr()) {
+        // If this inode has a valid dedup key, look for it in the map.
+        if let Some(key) = inode.dedup_key() {
+            match self.inodes_by_key.entry(key) {
                 Entry::Occupied(entry) => {
                     // Inode found; increment its count and return the existing FUSE node ID.
                     let new_path = inode.clone_path();
-                    let (inode, node_id) = entry.get();
-                    inode.lookup(new_path);
-                    return (Arc::clone(inode), *node_id);
+                    let (existing, node_id) = entry.get();
+                    existing.lookup(new_path);
+                    return (Arc::clone(existing), *node_id);
                 }
                 Entry::Vacant(entry) => {
                     // Inode not found, so insert it into both maps.
@@ -621,7 +813,8 @@ impl InodeMap {
             }
         }
 
-        // No support for stable inode numbers, so just use node ID.
+        // Inode is not eligible for dedup (synthetic root or
+        // non-stable-inode volume); just allocate a fresh node id.
         let inode = Arc::new(inode);
         let node_id = self.inodes_by_node_id.insert(Arc::clone(&inode));
         (inode, node_id)
@@ -630,8 +823,31 @@ impl InodeMap {
     /// Remove an inode with the specified FUSE node ID from the map.
     pub fn remove(&mut self, node_id: u64) {
         let inode = self.inodes_by_node_id.remove(node_id).unwrap();
-        if let Some(inodes_by_inode_nr) = self.inodes_by_inode_nr.as_mut() {
-            inodes_by_inode_nr.remove(&inode.inode_nr());
+        if let Some(key) = inode.dedup_key() {
+            // Only drop the by-key entry if it still points at THIS node.
+            // For path-keyed volumes a delete+recreate (or an explicit
+            // `evict_dedup_key`) can repoint the path to a newer inode while
+            // this (older) one lingers behind a live fd or inotify watch;
+            // removing it unconditionally would orphan that newer inode.
+            if let Entry::Occupied(entry) = self.inodes_by_key.entry(key) {
+                if entry.get().1 == node_id {
+                    entry.remove();
+                }
+            }
+        }
+    }
+
+    /// Detach a [`DedupKey::Path`] entry from whatever inode it currently
+    /// maps to, leaving that inode in `inodes_by_node_id` (a live fd or
+    /// inotify watch may still reference it) but no longer reachable for
+    /// dedup. A subsequent create at the same path therefore gets a fresh
+    /// node id rather than aliasing the removed/renamed file.
+    ///
+    /// No-op for [`DedupKey::Ino`] keys: stable-id volumes get a different
+    /// inode number on recreate, so the stale key cannot alias.
+    pub fn evict_dedup_key(&mut self, key: &DedupKey) {
+        if matches!(key, DedupKey::Path(..)) {
+            self.inodes_by_key.remove(key);
         }
     }
 
@@ -643,10 +859,38 @@ impl InodeMap {
         // Re-insert the root inode.
         assert!(self.inodes_by_node_id.insert(Arc::clone(&root_inode)) == FUSE_ROOT_ID);
 
-        // Clear the inode number map if it's supported.
-        if let Some(inodes_by_inode_nr) = self.inodes_by_inode_nr.as_mut() {
-            inodes_by_inode_nr.clear();
-            inodes_by_inode_nr.insert(root_inode.inode_nr(), (root_inode, FUSE_ROOT_ID));
+        // Rebuild the dedup map containing only the root, if eligible.
+        self.inodes_by_key.clear();
+        if let Some(key) = root_inode.dedup_key() {
+            self.inodes_by_key.insert(key, (root_inode, FUSE_ROOT_ID));
         }
+    }
+}
+
+/// Description of one child path to expose at a named subdirectory of an
+/// aggregate (multi-path) virtio-fs root. See [`VirtioFs::new_aggregate`].
+pub struct VirtioFsChild {
+    /// Name of the child as it appears in the synthetic root directory.
+    /// Must be non-empty, not contain `/` or NUL, and not be `.` or `..`.
+    pub name: String,
+    /// Host path to use as the root of this child volume.
+    pub root_path: PathBuf,
+    /// Optional mount options. If supplied, all children passed in the
+    /// same call must agree on the `readonly` setting.
+    pub options: Option<LxVolumeOptions>,
+}
+
+impl VirtioFsChild {
+    /// The readonly setting for this child (defaults to read-write when no
+    /// options are supplied).
+    fn readonly(&self) -> bool {
+        self.options.as_ref().is_some_and(|o| o.is_readonly())
+    }
+
+    /// Open the backing host volume for this child. Borrows `self` so the
+    /// caller can subsequently move `self.name` after the (slow) volume
+    /// construction succeeds.
+    fn build_volume(&self) -> lx::Result<Arc<Volume>> {
+        Volume::open_aggregate_child(&self.root_path, self.options.as_ref())
     }
 }
