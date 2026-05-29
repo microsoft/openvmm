@@ -1089,10 +1089,10 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn set_gp(&mut self, reg: x86emu::Gp, v: u64) {
-        if reg == x86emu::Gp::RSP {
-            self.cache.rsp = v;
+        match reg {
+            x86emu::Gp::RSP => self.cache.rsp = v,
+            _ => self.vp.runner.cpu_context_mut().gps[reg as usize] = v,
         }
-        self.vp.runner.cpu_context_mut().gps[reg as usize] = v;
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
