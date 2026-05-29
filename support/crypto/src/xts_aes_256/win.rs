@@ -28,7 +28,7 @@ static XTS_AES_256: LazyLock<Result<AlgHandle, XtsAes256Error>> = LazyLock::new(
 });
 
 fn err(err: windows_result::Error, op: &'static str) -> XtsAes256Error {
-    XtsAes256Error(crate::BackendError(err, op))
+    XtsAes256Error(crate::BackendError::Bcrypt(err, op))
 }
 
 pub struct XtsAes256Inner {

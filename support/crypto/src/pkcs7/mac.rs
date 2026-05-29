@@ -11,18 +11,8 @@
 #![expect(unsafe_code)]
 
 use super::*;
-use crate::mac::OsStatusCode;
-use std::ffi::c_void;
+use crate::mac::*;
 use std::ptr;
-
-// === Core Foundation FFI types ===
-
-type CFTypeRef = *const c_void;
-type CFAllocatorRef = *const c_void;
-type CFDataRef = *const c_void;
-type CFArrayRef = *const c_void;
-type CFErrorRef = *const c_void;
-type CFIndex = isize;
 
 // === Security FFI types ===
 
@@ -51,8 +41,6 @@ struct CFArrayCallBacks {
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     static kCFTypeArrayCallBacks: CFArrayCallBacks;
-    fn CFRelease(cf: CFTypeRef);
-    fn CFDataCreate(allocator: CFAllocatorRef, bytes: *const u8, length: CFIndex) -> CFDataRef;
     fn CFArrayCreate(
         allocator: CFAllocatorRef,
         values: *const CFTypeRef,
@@ -94,26 +82,14 @@ unsafe extern "C" {
     ) -> OsStatusCode;
 }
 
-/// RAII wrapper for any CoreFoundation type. Released with `CFRelease`.
-struct CfHandle(CFTypeRef);
-
-impl Drop for CfHandle {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: pointer is a valid CFTypeRef that we own.
-            unsafe { CFRelease(self.0) };
-        }
-    }
-}
-
 /// Create a Pkcs7Error from an OsStatusCode and operation description.
 fn os_err(status: OsStatusCode, op: &'static str) -> Pkcs7Error {
-    Pkcs7Error(crate::BackendError::os_status(status, op))
+    Pkcs7Error(crate::BackendError::OsStatus(status, op))
 }
 
 /// Create a Pkcs7Error for a null return with no OS error code.
 fn null_err(op: &'static str) -> Pkcs7Error {
-    Pkcs7Error(crate::BackendError::null(op))
+    Pkcs7Error(crate::BackendError::Null(op))
 }
 
 pub struct Pkcs7CertStoreInner {
@@ -130,21 +106,14 @@ impl Pkcs7CertStoreInner {
     }
 
     pub fn add_cert_der(&mut self, data: &[u8]) -> Result<(), Pkcs7Error> {
-        // SAFETY: CFDataCreate and SecCertificateCreateWithData are safe to
-        // call with valid byte slices. Both return owned CF objects.
-        unsafe {
-            let cf_data = CFDataCreate(ptr::null(), data.as_ptr(), data.len() as CFIndex);
-            if cf_data.is_null() {
-                return Err(null_err("create CFData for certificate"));
-            }
-            let _cf_data = CfHandle(cf_data);
-
-            let cert = SecCertificateCreateWithData(ptr::null(), cf_data);
-            if cert.is_null() {
-                return Err(null_err("create SecCertificate from DER"));
-            }
-            self.certs.push(CfHandle(cert));
+        let cf_data = cf_data(data, "create CFData for certificate").map_err(Pkcs7Error)?;
+        // SAFETY: cf_data wraps a valid CFDataRef; SecCertificateCreateWithData
+        // is safe with valid CFData input.
+        let cert = unsafe { SecCertificateCreateWithData(ptr::null(), cf_data.0) };
+        if cert.is_null() {
+            return Err(null_err("create SecCertificate from DER"));
         }
+        self.certs.push(CfHandle(cert));
         Ok(())
     }
 
@@ -198,21 +167,14 @@ impl Pkcs7SignedDataInner {
         signed_content: &[u8],
         uefi_mode: bool,
     ) -> Result<bool, Pkcs7Error> {
+        // Provide the detached content that was signed.
+        let content_data =
+            cf_data(signed_content, "create CFData for signed content").map_err(Pkcs7Error)?;
+
         // SAFETY: all CF/Security API calls use valid handles produced by
         // earlier successful calls. RAII wrappers ensure proper cleanup.
         unsafe {
-            // Provide the detached content that was signed.
-            let content_data = CFDataCreate(
-                ptr::null(),
-                signed_content.as_ptr(),
-                signed_content.len() as CFIndex,
-            );
-            if content_data.is_null() {
-                return Err(null_err("create CFData for signed content"));
-            }
-            let _content_data = CfHandle(content_data);
-
-            let status = CMSDecoderSetDetachedContent(self.decoder.0, content_data);
+            let status = CMSDecoderSetDetachedContent(self.decoder.0, content_data.0);
             if !status.success() {
                 return Err(os_err(status, "set detached content"));
             }

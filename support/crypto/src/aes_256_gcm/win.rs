@@ -42,7 +42,7 @@ static AES_256_GCM: LazyLock<Result<AlgHandle, Aes256GcmError>> = LazyLock::new(
 });
 
 fn err(err: windows_result::Error, op: &'static str) -> Aes256GcmError {
-    Aes256GcmError(crate::BackendError(err, op))
+    Aes256GcmError(crate::BackendError::Bcrypt(err, op))
 }
 
 pub struct Aes256GcmInner {

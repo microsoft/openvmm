@@ -10,7 +10,7 @@ use windows::Win32::Foundation::NTE_BAD_SIGNATURE;
 use windows::Win32::Security::Cryptography::*;
 
 fn err(e: windows_result::Error, op: &'static str) -> Pkcs7Error {
-    Pkcs7Error(crate::BackendError(e, op))
+    Pkcs7Error(crate::BackendError::Bcrypt(e, op))
 }
 
 /// RAII wrapper for HCERTSTORE.

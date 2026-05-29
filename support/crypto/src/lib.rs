@@ -26,7 +26,6 @@ pub mod xts_aes_256;
 
 mod hashes;
 
-#[cfg(any(openssl, rust, symcrypt))]
 pub use hashes::HashAlgorithm;
 
 pub(crate) mod mac;
@@ -43,8 +42,17 @@ pub(crate) struct BackendError(#[source] openssl::error::ErrorStack, &'static st
 /// operation being performed when the error occurred.
 #[cfg(all(native, windows))]
 #[derive(Clone, Debug, thiserror::Error)]
-#[error("windows crypto error during {1}")]
-pub(crate) struct BackendError(#[source] windows_result::Error, &'static str);
+pub(crate) enum BackendError {
+    /// An error from a BCrypt / CryptoAPI call.
+    #[error("windows crypto error during {1}")]
+    Bcrypt(#[source] windows_result::Error, &'static str),
+    /// An error from encoding or decoding PKCS#8.
+    #[error("PKCS#8 error during {1}")]
+    Pkcs8(#[source] pkcs8::Error, &'static str),
+    /// An error from DER encoding or decoding.
+    #[error("DER error during {1}")]
+    Der(#[source] der::Error, &'static str),
+}
 
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.
@@ -61,4 +69,21 @@ pub(crate) enum BackendError {
 }
 
 #[cfg(all(native, target_os = "macos"))]
-pub(crate) use mac::BackendError;
+#[derive(Clone, Debug, thiserror::Error)]
+pub(crate) enum BackendError {
+    /// An OSStatus error from a Security.framework or CoreFoundation API.
+    #[error("{1} returned a failure status code")]
+    OsStatus(#[source] mac::OsStatusCode, &'static str),
+    /// A Security.framework or CoreFoundation API returned a null pointer.
+    #[error("{0}: returned null")]
+    Null(&'static str),
+    /// A Security.framework API returned an error via CFErrorRef.
+    #[error("Security.framework error during {1}: {0}")]
+    Sec(String, &'static str),
+    /// An error from encoding or decoding PKCS#8.
+    #[error("PKCS#8 error during {1}")]
+    Pkcs8(#[source] pkcs8::Error, &'static str),
+    /// An error from DER encoding or decoding.
+    #[error("DER error during {1}")]
+    Der(#[source] der::Error, &'static str),
+}
