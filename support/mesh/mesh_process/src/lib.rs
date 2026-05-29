@@ -59,7 +59,6 @@ use std::os::windows::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::thread;
 use tracing::Instrument;
 use tracing::instrument;
 use unicycle::FuturesUnordered;
@@ -388,7 +387,7 @@ struct MeshInner {
     requests: mesh::Receiver<MeshRequest>,
     hosts: Slab<MeshHostInner>,
     /// Handles for spawned host processes.
-    waiters: FuturesUnordered<OneshotReceiver<usize>>,
+    waiters: FuturesUnordered<Task<usize>>,
     /// Mesh node for host process communication.
     node: IpcNode,
     /// IO driver for the mesh node, used for listener accept loops,
@@ -675,7 +674,7 @@ impl MeshInner {
         loop {
             let event = futures::select! { // merge semantics
                 request = self.requests.select_next_some() => Event::Request(request),
-                n = self.waiters.select_next_some() => Event::Done(n.unwrap()),
+                n = self.waiters.select_next_some() => Event::Done(n),
                 complete => break,
             };
 
@@ -841,7 +840,7 @@ impl MeshInner {
         let name = config.name.clone();
 
         #[cfg(windows)]
-        let wait = {
+        let child = {
             let (invitation, handle) = self.node.invite(recv).context("mesh node invite error")?;
             node_id = invitation.node_id();
             let (credentials, directory) = invitation.into_parts();
@@ -885,24 +884,18 @@ impl MeshInner {
 
             // Launch the child process on a separate thread to isolate
             // the CreateProcess call from other IO pools.
-            let child = thread::scope(|s| s.spawn(|| builder.spawn()).join().unwrap())
+            let child = std::thread::scope(|s| s.spawn(|| builder.spawn()).join().unwrap())
                 .context("failed to launch mesh process")?;
             // Wait for the child to connect to the mesh. TODO: timeout
             handle.await;
             pid = child.id() as i32;
             tracing::Span::current().record("pid", pid);
-            move || {
-                child.wait();
-                let code = child.exit_code();
-                if code == 0 {
-                    tracing::info!(pid, name = name.as_str(), "mesh child exited successfully");
-                } else {
-                    tracing::error!(pid, name = name.as_str(), code, "mesh child abnormal exit");
-                }
-            }
+
+            pal_async::windows::PolledProcess::new(&self.node_driver, child)
+                .context("failed to create process wait")?
         };
         #[cfg(unix)]
-        let mut wait = {
+        let child = {
             use pal::unix::process;
 
             let invitation = self
@@ -946,26 +939,14 @@ impl MeshInner {
 
             // Launch the child process on a separate thread to isolate
             // the fork() call from other IO pools.
-            let mut child = thread::scope(|s| s.spawn(|| command.spawn()).join().unwrap())
+            let child = std::thread::scope(|s| s.spawn(|| command.spawn()).join().unwrap())
                 .context("failed to launch mesh process")?;
             pid = child.id();
             tracing::Span::current().record("pid", pid);
-            move || {
-                let exit_status = child.wait().expect("mesh child wait failure");
-                if let Some(0) = exit_status.code() {
-                    tracing::info!(pid, name = name.as_str(), "mesh child exited successfully");
-                } else {
-                    tracing::error!(
-                        pid,
-                        name = name.as_str(),
-                        %exit_status,
-                        "mesh child abnormal exit"
-                    );
-                }
-            }
-        };
 
-        let (wait_send, wait_recv) = mesh::oneshot();
+            pal_async::process::PolledChild::<process::Child>::new(&self.node_driver, child)
+                .context("failed to create process wait")?
+        };
 
         let id = self.hosts.insert(MeshHostInner {
             name: config.name,
@@ -974,16 +955,59 @@ impl MeshInner {
             send: request_send,
         });
 
-        thread::Builder::new()
-            .name(format!("wait-mesh-child-{}", pid))
-            .spawn(move || {
-                wait();
-                wait_send.send(id);
-            })
-            .unwrap();
+        let task = self
+            .node_driver
+            .spawn(format!("wait-mesh-child-{}", pid), async move {
+                wait_mesh_child(child, &name, pid).await;
+                id
+            });
 
-        self.waiters.push(wait_recv);
+        self.waiters.push(task);
         Ok(pid)
+    }
+}
+
+#[cfg(windows)]
+async fn wait_mesh_child(mut child: pal_async::windows::PolledProcess, name: &str, pid: i32) {
+    match child.wait().await {
+        Ok(0) => {
+            tracing::info!(pid, name, "mesh child exited successfully");
+        }
+        Ok(code) => {
+            tracing::error!(pid, name, code, "mesh child abnormal exit");
+        }
+        Err(e) => {
+            tracing::error!(
+                pid,
+                name,
+                error = &e as &dyn std::error::Error,
+                "mesh child wait failed"
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn wait_mesh_child(
+    mut child: pal_async::process::PolledChild<pal::unix::process::Child>,
+    name: &str,
+    pid: i32,
+) {
+    match child.wait().await {
+        Ok(status) if status.code() == Some(0) => {
+            tracing::info!(pid, name, "mesh child exited successfully");
+        }
+        Ok(exit_status) => {
+            tracing::error!(pid, name, %exit_status, "mesh child abnormal exit");
+        }
+        Err(e) => {
+            tracing::error!(
+                pid,
+                name,
+                error = &e as &dyn std::error::Error,
+                "mesh child wait failed"
+            );
+        }
     }
 }
 
