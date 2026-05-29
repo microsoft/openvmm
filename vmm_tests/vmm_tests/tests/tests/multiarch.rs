@@ -29,6 +29,8 @@ mod dio_nic;
 mod ic;
 // Memory Validation tests.
 mod memstat;
+/// NUMA topology tests.
+mod numa;
 /// Servicing tests.
 mod openhcl_servicing;
 /// PCIe emulation tests.

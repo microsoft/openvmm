@@ -87,6 +87,33 @@ as well as the generated CLI help (via `cargo run -- --help`).
   On Linux, raw files and block devices use the `disk_blockdevice` backend
   (io_uring-based async I/O) by default. Append `;direct` to the path to
   bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct,on=scsi0`.
+* `--numa <PARAMS>`: Configure a guest NUMA node (repeatable, one per
+  node). Mutually exclusive with `--memory`. Each `--numa` specifies one
+  guest NUMA node with its own memory backing and optional VP assignment.
+
+  Supported keys (in addition to all `--memory` keys except `file`):
+  * `host_numa_node=<N>` - bind memory allocation to host NUMA node N
+  * `vps=<LIST>` - explicit VP indices for this node (e.g. `0,1,2,3`).
+    When omitted, VPs are assigned by round-robin sockets across nodes.
+
+  Examples:
+
+  ```bash
+  --numa size=2G --numa size=2G
+  --numa size=2G,host_numa_node=0 --numa size=2G,host_numa_node=1
+  --numa size=2G,hugepages=on,vps=0,1 --numa size=2G,vps=2,3
+  ```
+
+  See [NUMA Topology](../../architecture/openvmm/numa.md) for details.
+
+* `--numa-distance <SRC:DST:DIST>`: Specify inter-node NUMA distance
+  (repeatable). `SRC` and `DST` are 0-based node indices, `DIST` is
+  10–254 (10 = local). Each direction must be specified explicitly.
+
+  ```bash
+  --numa-distance 0:1:30 --numa-distance 1:0:30
+  ```
+
 * `--private-memory`, `--prefetch`, `--thp`, and
   `--memory-backing-file <PATH>`: Deprecated aliases for `--memory`
   parameters. Prefer `shared=off`, `prefetch=on`, `thp=on`, and
