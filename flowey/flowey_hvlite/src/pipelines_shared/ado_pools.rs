@@ -10,11 +10,19 @@ use super::gh_pools::WINDOWS_IMAGE_AMD64;
 
 pub const AMD_POOL_1ES: &str = "openvmm-ado-amd-westus2";
 pub const INTEL_POOL_1ES: &str = "openvmm-ado-intel-centralus";
+pub const INTEL_TDX_POOL: &str = "openvmm-ado-intel-tdx";
 
 fn ado_pool_with_image_1es(pool: &str, image: &str) -> AdoPool {
     AdoPool {
         name: pool.into(),
         demands: vec![format!("ImageOverride -equals {image}")],
+    }
+}
+
+pub fn windows_intel_tdx() -> AdoPool {
+    AdoPool {
+        name: INTEL_TDX_POOL.into(),
+        demands: vec![],
     }
 }
 

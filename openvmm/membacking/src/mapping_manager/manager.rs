@@ -218,6 +218,8 @@ pub struct MappingParams {
     /// that external consumers (vhost-user backends, etc.) can share the
     /// backing memory.
     pub dma_target: bool,
+    /// Host NUMA node for this mapping. `None` means OS default placement.
+    pub numa_node: Option<u32>,
 }
 
 struct Mappers {
@@ -440,6 +442,7 @@ mod tests {
                 file_offset: 0,
                 writable: true,
                 dma_target: true,
+                numa_node: None,
             })
             .await;
 
@@ -450,6 +453,7 @@ mod tests {
                 file_offset: 0,
                 writable: true,
                 dma_target: false,
+                numa_node: None,
             })
             .await;
 
@@ -481,6 +485,7 @@ mod tests {
                 file_offset: 0,
                 writable: true,
                 dma_target: false,
+                numa_node: None,
             })
             .await;
 

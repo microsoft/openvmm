@@ -14,6 +14,8 @@ pub enum HashAlgorithm {
     Sha1,
     /// SHA-256
     Sha256,
+    /// SHA-384
+    Sha384,
 }
 
 impl HashAlgorithm {
@@ -22,6 +24,7 @@ impl HashAlgorithm {
         match self {
             HashAlgorithm::Sha1 => symcrypt::hash::sha1(data).to_vec(),
             HashAlgorithm::Sha256 => symcrypt::hash::sha256(data).to_vec(),
+            HashAlgorithm::Sha384 => symcrypt::hash::sha384(data).to_vec(),
         }
     }
 
@@ -31,6 +34,7 @@ impl HashAlgorithm {
         match self {
             HashAlgorithm::Sha1 => sha1::Sha1::digest(data).to_vec(),
             HashAlgorithm::Sha256 => sha2::Sha256::digest(data).to_vec(),
+            HashAlgorithm::Sha384 => sha2::Sha384::digest(data).to_vec(),
         }
     }
 }
@@ -42,6 +46,7 @@ impl TryFrom<der::asn1::ObjectIdentifier> for HashAlgorithm {
     fn try_from(oid: der::asn1::ObjectIdentifier) -> Result<Self, Self::Error> {
         match oid {
             der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION => Ok(Self::Sha256),
+            der::oid::db::rfc5912::SHA_384_WITH_RSA_ENCRYPTION => Ok(Self::Sha384),
             der::oid::db::rfc5912::SHA_1_WITH_RSA_ENCRYPTION => Ok(Self::Sha1),
             _ => Err(der::ErrorKind::OidUnknown { oid }.to_error()),
         }
@@ -54,6 +59,7 @@ impl From<HashAlgorithm> for openssl::hash::MessageDigest {
         match hash_algorithm {
             HashAlgorithm::Sha1 => openssl::hash::MessageDigest::sha1(),
             HashAlgorithm::Sha256 => openssl::hash::MessageDigest::sha256(),
+            HashAlgorithm::Sha384 => openssl::hash::MessageDigest::sha384(),
         }
     }
 }
@@ -64,6 +70,7 @@ impl From<HashAlgorithm> for &'static openssl::md::MdRef {
         match hash_algorithm {
             HashAlgorithm::Sha1 => openssl::md::Md::sha1(),
             HashAlgorithm::Sha256 => openssl::md::Md::sha256(),
+            HashAlgorithm::Sha384 => openssl::md::Md::sha384(),
         }
     }
 }
@@ -74,6 +81,7 @@ impl From<HashAlgorithm> for symcrypt::hash::HashAlgorithm {
         match hash_algorithm {
             HashAlgorithm::Sha1 => symcrypt::hash::HashAlgorithm::Sha1,
             HashAlgorithm::Sha256 => symcrypt::hash::HashAlgorithm::Sha256,
+            HashAlgorithm::Sha384 => symcrypt::hash::HashAlgorithm::Sha384,
         }
     }
 }

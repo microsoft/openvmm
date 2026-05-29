@@ -190,12 +190,6 @@ impl SimpleFlowNode for Node {
                 openvmm_hcl_features.insert(OpenvmmHclFeature::MiSecure);
             }
 
-            if disable_secure_avic {
-                openvmm_hcl_features.insert(OpenvmmHclFeature::LocalOnlyCustom(
-                    "disable_secure_avic".into(),
-                ));
-            }
-
             if let Some(arch) = override_arch {
                 *target = match arch {
                     CommonArch::X86_64 => CommonTriple::X86_64_LINUX_MUSL,

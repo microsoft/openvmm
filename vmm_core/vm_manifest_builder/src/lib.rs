@@ -24,6 +24,7 @@ use chipset_resources::hyperv_guest_watchdog::DEFAULT_WDAT_PORT_BASE;
 use chipset_resources::hyperv_guest_watchdog::HyperVGuestWatchdogDeviceHandle;
 use chipset_resources::i8042::I8042DeviceHandle;
 use chipset_resources::ioapic::GenericIoApicDeviceHandle;
+use chipset_resources::isa_dma::GenericIsaDmaDeviceHandle;
 use chipset_resources::pic::PicDeviceHandle;
 use chipset_resources::piix4_pci_isa_bridge::PIIX4_PCI_ISA_BRIDGE_BDF;
 use chipset_resources::piix4_pci_isa_bridge::Piix4PciIsaBridgeDeviceHandle;
@@ -53,6 +54,7 @@ use vm_resource::IntoResource;
 use vm_resource::PlatformResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::IsaDmaControllerHandleKind;
 use vm_resource::kind::NonVolatileStoreKind;
 use vm_resource::kind::SerialBackendHandle;
 pub use vmm_core_defs::LayoutConfig;
@@ -176,6 +178,8 @@ pub struct VmChipsetResult {
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
     /// The list of legacy PCI chipset devices with explicit placement metadata.
     pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
+    /// Optional ISA DMA controller resource handle.
+    pub isa_dma_controller: Option<Resource<IsaDmaControllerHandleKind>>,
     /// Derived chipset capabilities needed by firmware and table generation.
     pub capabilities: VmChipsetCapabilities,
 }
@@ -333,10 +337,12 @@ impl VmManifestBuilder {
             chipset_devices: Vec::new(),
             pci_chipset_devices: Vec::new(),
             chipset: BaseChipsetManifest::empty(),
+            isa_dma_controller: None,
             capabilities: VmChipsetCapabilities {
                 with_ioapic: false,
                 with_pic: false,
                 with_pit: false,
+                with_generic_isa_dma: false,
                 with_psp: false,
                 with_guest_watchdog: false,
             },
@@ -356,6 +362,7 @@ impl VmManifestBuilder {
                     return Err(Error(ErrorInner::UnsupportedArch));
                 }
                 result.attach_i8042();
+                result.attach_generic_isa_dma();
                 result.attach_piix4_pci_usb_uhci_stub();
                 result.attach_piix4_pci_isa_bridge();
                 // This chipset always has a serial port even if not requested.
@@ -365,7 +372,6 @@ impl VmManifestBuilder {
                 );
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: false,
-                    with_generic_isa_dma: true,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: false,
@@ -393,7 +399,6 @@ impl VmManifestBuilder {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
-                    with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: self.psp,
@@ -436,7 +441,6 @@ impl VmManifestBuilder {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
-                    with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: self.psp,
@@ -538,6 +542,12 @@ impl VmChipsetResult {
             }
             .into_resource(),
         });
+        self
+    }
+
+    fn attach_generic_isa_dma(&mut self) -> &mut Self {
+        self.isa_dma_controller = Some(GenericIsaDmaDeviceHandle.into_resource());
+        self.capabilities.with_generic_isa_dma = true;
         self
     }
 

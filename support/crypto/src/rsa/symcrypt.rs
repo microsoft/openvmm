@@ -121,6 +121,21 @@ impl RsaKeyPairInner {
             .map_err(|e| err(e, "PKCS#1 signing"))
     }
 
+    pub fn pss_sign(
+        &self,
+        data: &[u8],
+        hash_algorithm: super::HashAlgorithm,
+    ) -> Result<Vec<u8>, RsaError> {
+        // SymCrypt's PSS signing expects a pre-hashed digest. Use a salt
+        // length equal to the hash output size, matching the COSE/JWS
+        // convention (RFC 8230 section 2).
+        let digest = hash_algorithm.hash(data);
+        let salt_length = digest.len();
+        self.0
+            .pss_sign(&digest, hash_algorithm.into(), salt_length)
+            .map_err(|e| err(e, "PSS signing"))
+    }
+
     pub(crate) fn as_pub(&self) -> &RsaPublicKeyInner {
         // SAFETY: RsaPublicKeyInner is just a wrapper around the same RsaKey.
         unsafe { std::mem::transmute::<&RsaKeyPairInner, &RsaPublicKeyInner>(self) }
@@ -165,7 +180,7 @@ impl RsaPublicKeyInner {
             // `SignatureVerificationFailure` is the expected error for an
             // invalid signature. `InvalidArgument` can also occur when the
             // signature bytes, interpreted as an integer, are >= the modulus
-            // or otherwise don't decode to a valid PKCS#1 v1.5 encoding —
+            // or otherwise don't decode to a valid PKCS#1 v1.5 encoding,
             // which happens probabilistically when verifying a signature
             // against the wrong public key. Both indicate "signature does
             // not verify", not a backend bug.
@@ -174,6 +189,31 @@ impl RsaPublicKeyInner {
                 | symcrypt::errors::SymCryptError::InvalidArgument,
             ) => Ok(false),
             Err(e) => Err(err(e, "PKCS#1 signature verification")),
+        }
+    }
+
+    pub fn pss_verify(
+        &self,
+        data: &[u8],
+        signature: &[u8],
+        hash_algorithm: super::HashAlgorithm,
+    ) -> Result<bool, RsaError> {
+        // SymCrypt's `pss_verify` expects the caller-supplied buffer to
+        // already be the hash digest of the message, and a salt length
+        // equal to the hash output size (COSE/JWS convention, RFC 8230
+        // section 2).
+        let digest = hash_algorithm.hash(data);
+        let salt_length = digest.len();
+        match self
+            .0
+            .pss_verify(&digest, signature, hash_algorithm.into(), salt_length)
+        {
+            Ok(()) => Ok(true),
+            Err(
+                symcrypt::errors::SymCryptError::SignatureVerificationFailure
+                | symcrypt::errors::SymCryptError::InvalidArgument,
+            ) => Ok(false),
+            Err(e) => Err(err(e, "PSS signature verification")),
         }
     }
 

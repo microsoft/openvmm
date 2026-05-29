@@ -68,6 +68,8 @@ struct RamBacking {
     /// THP is enabled for this backing.
     #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
     transparent_hugepages: bool,
+    /// Host NUMA node for this backing. `None` means OS default placement.
+    host_numa_node: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -141,6 +143,9 @@ pub enum MemoryBuildError {
     /// Hugepages are only supported on Linux.
     #[error("hugepages are only supported on Linux")]
     HugepagesUnsupportedPlatform,
+    /// Host NUMA node binding is only supported on Linux and Windows.
+    #[error("host NUMA node binding is only supported on Linux and Windows")]
+    HostNumaNodeUnsupportedPlatform,
     /// Hugepages require shared memory mode.
     #[error("hugepages require shared memory mode")]
     HugepagesWithPrivateMemory,
@@ -193,6 +198,7 @@ pub struct RamBackingRequest {
     hugepages: bool,
     hugepage_size: Option<u64>,
     existing_mappable: Option<Mappable>,
+    host_numa_node: Option<u32>,
 }
 
 impl RamBackingRequest {
@@ -209,6 +215,7 @@ impl RamBackingRequest {
             hugepages: false,
             hugepage_size: None,
             existing_mappable: None,
+            host_numa_node: None,
         }
     }
 
@@ -242,6 +249,17 @@ impl RamBackingRequest {
     /// When set, no new allocation is performed for this backing.
     pub fn existing_mappable(mut self, mappable: Mappable) -> Self {
         self.existing_mappable = Some(mappable);
+        self
+    }
+
+    /// Bind this backing's memory to a specific host NUMA node
+    /// (Linux: `mbind(MPOL_BIND)`, Windows: `MemExtendedParameterNumaNode`).
+    ///
+    /// Only supported on Linux and Windows; returns
+    /// [`MemoryBuildError::HostNumaNodeUnsupportedPlatform`] at build time on
+    /// other targets.
+    pub fn host_numa_node(mut self, node: Option<u32>) -> Self {
+        self.host_numa_node = node;
         self
     }
 }
@@ -387,6 +405,11 @@ impl GuestMemoryBuilder {
                     return Err(MemoryBuildError::ThpUnsupportedPlatform);
                 }
             }
+            if req.host_numa_node.is_some()
+                && cfg!(not(any(target_os = "linux", target_os = "windows")))
+            {
+                return Err(MemoryBuildError::HostNumaNodeUnsupportedPlatform);
+            }
             if req.hugepages {
                 if !cfg!(target_os = "linux") {
                     return Err(MemoryBuildError::HugepagesUnsupportedPlatform);
@@ -441,6 +464,7 @@ impl GuestMemoryBuilder {
                     ranges: req.ranges,
                     prefetch: req.prefetch,
                     transparent_hugepages: req.transparent_hugepages,
+                    host_numa_node: req.host_numa_node,
                 });
                 continue;
             }
@@ -479,11 +503,13 @@ impl GuestMemoryBuilder {
                         .into()
                 }
             };
+
             backings.push(RamBacking {
                 mappable: Some(mappable),
                 ranges: req.ranges,
                 prefetch: req.prefetch,
                 transparent_hugepages: false,
+                host_numa_node: req.host_numa_node,
             });
         }
 
@@ -549,11 +575,20 @@ impl GuestMemoryBuilder {
                                 mappable.clone(),
                                 file_offset,
                                 true,
+                                backing.host_numa_node,
                             )
                             .await;
+                        // TODO: file-backed RAM mappings are established lazily
+                        // via page faults, so NUMA binding errors are not
+                        // caught here. Replace lazy mapping with eager push
+                        // model to propagate errors at build time.
                     } else {
                         va_mapper
-                            .alloc_range(sub_range.start() as usize, sub_range.len() as usize)
+                            .alloc_range(
+                                sub_range.start() as usize,
+                                sub_range.len() as usize,
+                                backing.host_numa_node,
+                            )
                             .map_err(|e| MemoryBuildError::PrivateRamAlloc(e, *sub_range))?;
                         va_mapper.set_range_name(
                             sub_range.start() as usize,
