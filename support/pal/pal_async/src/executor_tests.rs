@@ -201,7 +201,7 @@ pub async fn socket_tests(driver: impl Driver) {
 }
 
 /// Runs process wait tests.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub async fn process_tests(driver: impl crate::process::DynProcessWaitDriver) {
     use crate::process::PolledChild;
     type StdPolledChild = PolledChild<std::process::Child>;
@@ -209,7 +209,7 @@ pub async fn process_tests(driver: impl crate::process::DynProcessWaitDriver) {
     fn success_command() -> std::process::Command {
         #[cfg(unix)]
         {
-            std::process::Command::new("/bin/true")
+            std::process::Command::new("true")
         }
         #[cfg(windows)]
         {
@@ -222,7 +222,7 @@ pub async fn process_tests(driver: impl crate::process::DynProcessWaitDriver) {
     fn failure_command() -> std::process::Command {
         #[cfg(unix)]
         {
-            std::process::Command::new("/bin/false")
+            std::process::Command::new("false")
         }
         #[cfg(windows)]
         {
@@ -295,6 +295,28 @@ pub async fn process_tests(driver: impl crate::process::DynProcessWaitDriver) {
         let status2 = polled.get_mut().try_wait().unwrap();
         assert!(status2.is_some());
         assert!(status2.unwrap().success());
+    }
+
+    // already-exited child completes immediately
+    {
+        let mut child = success_command().spawn().unwrap();
+        child.wait().unwrap(); // reap synchronously first
+        let mut polled = StdPolledChild::new(&driver, child).unwrap();
+        let status = polled.wait().await.unwrap();
+        assert!(status.success());
+    }
+
+    // dropping a pending PolledChild does not reap or kill the child
+    {
+        let child = long_running_command().spawn().unwrap();
+        let polled = StdPolledChild::new(&driver, child).unwrap();
+        // Drop the PolledChild while the child is still running.
+        let mut child = polled.into_inner();
+        // The child should still be alive — try_wait should return None.
+        let status = child.try_wait().unwrap();
+        assert!(status.is_none(), "child was reaped or killed by drop");
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 }
 

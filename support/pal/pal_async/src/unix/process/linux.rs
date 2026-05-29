@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Unix process wait implementations.
+//! Linux process wait implementations using pidfds.
 
 // UNSAFETY: Needed for the pidfd_open syscall.
 #![expect(unsafe_code)]
@@ -14,8 +14,6 @@ use crate::process::DynProcessWaitDriver;
 use crate::process::PollProcessWait;
 use crate::process::PolledChild;
 use crate::process::ProcessWaitDriver;
-use std::future::Future;
-use std::future::poll_fn;
 use std::io;
 use std::os::fd::OwnedFd;
 use std::os::unix::prelude::*;
@@ -73,8 +71,6 @@ fn pidfd_open(pid: i32) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd as RawFd) })
 }
 
-// --- PolledChild<std::process::Child> construction (Linux) ---
-
 impl PolledChild<std::process::Child> {
     /// Creates a new `PolledChild` wrapping a [`std::process::Child`].
     ///
@@ -93,8 +89,6 @@ impl PolledChild<std::process::Child> {
     }
 }
 
-// --- PolledChild<pal::unix::process::Child> ---
-
 impl PolledChild<pal::unix::process::Child> {
     /// Creates a new `PolledChild` wrapping a [`pal::unix::process::Child`].
     ///
@@ -109,34 +103,5 @@ impl PolledChild<pal::unix::process::Child> {
             owned_pidfd: None,
             child,
         })
-    }
-
-    /// Polls for the child process to exit.
-    pub fn poll_wait(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<io::Result<std::process::ExitStatus>> {
-        if let Some(wait) = &mut self.wait {
-            match wait.poll_process_exit(cx) {
-                Poll::Ready(Ok(())) => {}
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-        match self.child.try_wait() {
-            Ok(Some(status)) => Poll::Ready(Ok(status)),
-            Ok(None) => {
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            Err(e) => Poll::Ready(Err(e)),
-        }
-    }
-
-    /// Waits for the child process to exit.
-    pub fn wait(
-        &mut self,
-    ) -> impl '_ + Unpin + Future<Output = io::Result<std::process::ExitStatus>> {
-        poll_fn(move |cx| self.poll_wait(cx))
     }
 }

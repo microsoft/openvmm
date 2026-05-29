@@ -22,8 +22,6 @@ use std::future::poll_fn;
 use std::io;
 #[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd;
-#[cfg(unix)]
-use std::os::unix::prelude::*;
 #[cfg(windows)]
 use std::os::windows::prelude::*;
 use std::task::Context;
