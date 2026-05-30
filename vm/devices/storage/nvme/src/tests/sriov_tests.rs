@@ -35,6 +35,12 @@ const SRIOV_CONTROL_STATUS: u16 = SRIOV_BASE + 0x08;
 const SRIOV_NUM_VFS: u16 = SRIOV_BASE + 0x10;
 const SRIOV_VF_OFFSET_STRIDE: u16 = SRIOV_BASE + 0x14;
 
+// SR-IOV VF BAR register offsets relative to SRIOV_BASE.
+const SRIOV_VF_BAR0: u16 = SRIOV_BASE + 0x24;
+const SRIOV_VF_BAR1: u16 = SRIOV_BASE + 0x28; // upper 32 bits of 64-bit BAR0
+#[expect(dead_code)] // for future MSI-X BAR tests
+const SRIOV_VF_BAR4: u16 = SRIOV_BASE + 0x34;
+
 fn instantiate_sriov_controller(
     driver: DefaultDriver,
     total_vfs: u16,
@@ -380,4 +386,55 @@ async fn test_sriov_reset_clears_vf_mse(driver: DefaultDriver) {
     let ctl = cfg_read(&mut c, SRIOV_CONTROL_STATUS);
     assert_eq!(ctl & 0x8, 0, "VF MSE should be cleared by reset");
     assert_eq!(ctl & 0x1, 0, "VF Enable should be cleared by reset");
+}
+
+#[async_test]
+async fn test_sriov_vf_bar0_mmio_routing(driver: DefaultDriver) {
+    let (mut c, _gm) = instantiate_sriov_controller(driver, 2);
+
+    // Enable 2 VFs and set VF MSE.
+    set_num_vfs(&mut c, 2);
+    set_vf_enable(&mut c, true).unwrap();
+    set_vf_mse(&mut c, true);
+
+    // Set VF BAR0 base address. VF BAR0 is a 64-bit BAR.
+    // Place VF BAR0 region at GPA 0x80000 (well above PF BARs).
+    let vf_bar0_base: u64 = 0x80000;
+    c.pci_cfg_write(SRIOV_VF_BAR0, vf_bar0_base as u32).unwrap();
+    c.pci_cfg_write(SRIOV_VF_BAR1, (vf_bar0_base >> 32) as u32)
+        .unwrap();
+
+    // VF 0's BAR0 is at vf_bar0_base + 0 * BAR0_LEN.
+    // VF 1's BAR0 is at vf_bar0_base + 1 * BAR0_LEN.
+    // Read CAP register (offset 0) from VF 0 via MMIO — should return
+    // the NVMe CAP value, not zeros.
+    let vf0_bar0_addr = vf_bar0_base;
+    let mut cap = 0u64;
+    c.mmio_read(vf0_bar0_addr, cap.as_mut_bytes()).unwrap();
+    // CAP.MQES should be MAX_QES - 1 = 0xFF (bits 15:0).
+    assert_eq!(cap & 0xFFFF, 0xFF, "VF0 CAP.MQES should be 0xFF");
+
+    // Read CAP from VF 1 via MMIO.
+    let vf1_bar0_addr = vf_bar0_base + BAR0_LEN;
+    let mut cap1 = 0u64;
+    c.mmio_read(vf1_bar0_addr, cap1.as_mut_bytes()).unwrap();
+    assert_eq!(cap1 & 0xFFFF, 0xFF, "VF1 CAP.MQES should be 0xFF");
+
+    // Read Version register (offset 8) from VF 0.
+    let mut ver = 0u32;
+    c.mmio_read(vf0_bar0_addr + 8, ver.as_mut_bytes()).unwrap();
+    assert_eq!(ver, 0x00020000, "VF0 version should be NVMe 2.0");
+
+    // Write CC.EN = 0 should succeed (VF not online, so CFS is set,
+    // but the write itself should route correctly).
+    let cc_val = 0u32;
+    c.mmio_write(vf0_bar0_addr + 0x14, cc_val.as_bytes())
+        .unwrap();
+
+    // Read CSTS from VF 0 — should be valid (not an MMIO error).
+    let mut csts = 0u32;
+    c.mmio_read(vf0_bar0_addr + 0x1c, csts.as_mut_bytes())
+        .unwrap();
+    // CSTS should not have RDY set (controller not enabled).
+    assert!(!spec::Csts::from(csts).rdy(), "VF0 should not be ready");
 }
