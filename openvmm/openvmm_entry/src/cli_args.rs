@@ -195,7 +195,7 @@ Examples:
     pub shared_memory: bool,
 
     /// prefetch guest RAM
-    #[clap(long = "prefetch", hide = true)]
+    #[clap(long = "prefetch", hide = true, conflicts_with = "numa")]
     pub deprecated_prefetch: bool,
 
     /// back guest RAM with a file instead of anonymous memory.
@@ -219,11 +219,11 @@ Examples:
     pub restore_snapshot: Option<PathBuf>,
 
     /// use private anonymous memory for guest RAM
-    #[clap(long = "private-memory", hide = true, conflicts_with_all = ["deprecated_memory_backing_file", "restore_snapshot"])]
+    #[clap(long = "private-memory", hide = true, conflicts_with_all = ["deprecated_memory_backing_file", "restore_snapshot", "numa"])]
     pub deprecated_private_memory: bool,
 
     /// enable transparent huge pages for guest RAM (Linux only, requires --private-memory)
-    #[clap(long = "thp", hide = true)]
+    #[clap(long = "thp", hide = true, conflicts_with = "numa")]
     pub deprecated_thp: bool,
 
     /// start in paused state

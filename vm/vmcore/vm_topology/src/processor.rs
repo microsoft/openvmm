@@ -167,10 +167,18 @@ impl<
         self.smt_enabled
     }
 
-    /// Returns the number of VPs per socket.
+    /// Returns the configured number of VPs per socket.
     ///
-    /// This will always be a power of 2. The number of VPs actually populated
-    /// in a socket may be smaller than this.
+    /// This is the logical socket size before power-of-two rounding. Use
+    /// this for NUMA VP assignment and other logical topology queries.
+    pub fn vps_per_socket(&self) -> u32 {
+        self.vps_per_socket
+    }
+
+    /// Returns the number of VPs per socket, rounded up to a power of 2.
+    ///
+    /// This is the APIC-ID-space reservation per socket. The number of VPs
+    /// actually populated in a socket may be smaller than this.
     pub fn reserved_vps_per_socket(&self) -> u32 {
         self.vps_per_socket.next_power_of_two()
     }

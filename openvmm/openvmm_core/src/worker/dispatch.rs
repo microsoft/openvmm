@@ -970,10 +970,12 @@ impl InitializedVm {
         };
 
         // Resolve NUMA VP assignments and apply to the processor topology.
+        // Use the logical (non-rounded) socket size so that NUMA assignment
+        // matches the documented formula for non-power-of-two socket sizes.
         let vp_to_vnode = super::numa::resolve_vp_to_vnode(
             &cfg.numa,
             cfg.processor_topology.proc_count,
-            processor_topology.reserved_vps_per_socket(),
+            processor_topology.vps_per_socket(),
         );
         processor_topology.set_vnodes(&vp_to_vnode);
 

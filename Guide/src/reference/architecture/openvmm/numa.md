@@ -116,8 +116,8 @@ openvmm --numa size=2G --numa size=2G \
 ```
 
 `--numa` and `--memory` are mutually exclusive. All `--memory` options
-(shared, prefetch, thp, hugepages, hugepage_size) are available as
-per-node options in `--numa`.
+except `file` (shared, prefetch, thp, hugepages, hugepage_size) are
+available as per-node options in `--numa`.
 
 See [CLI](../../openvmm/management/cli.md) for the full option
 reference.
