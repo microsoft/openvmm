@@ -30,12 +30,6 @@ pub trait PollProcessWait: Unpin + Send + Sync {
     fn poll_process_exit(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>>;
 }
 
-impl std::fmt::Debug for dyn PollProcessWait {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.pad("PollProcessWait")
-    }
-}
-
 /// A [`PollProcessWait`] implementation that is never constructed.
 ///
 /// Used by drivers that do not support process waits (e.g., `LocalDriver`).

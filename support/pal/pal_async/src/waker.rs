@@ -18,10 +18,7 @@ impl WakerList {
         }
     }
 
-    #[cfg_attr(
-        not(any(windows, target_os = "linux", target_os = "macos")),
-        expect(dead_code)
-    )]
+    /// Pushes a waker onto the list.
     pub fn push(&mut self, waker: Waker) {
         self.0.push(waker);
     }
