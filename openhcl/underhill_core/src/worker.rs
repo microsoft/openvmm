@@ -2755,7 +2755,8 @@ async fn new_underhill_vm(
     }
 
     let emuplat_adjust_gpa_range;
-    let synic = virt::Hv1::synic(partition.as_ref());
+    let synic =
+        virt::Hv1::synic(partition.as_ref()).context("failed to get partition synic access")?;
 
     use vmotherboard::options::dev;
 
