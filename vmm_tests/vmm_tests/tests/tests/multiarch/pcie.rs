@@ -9,7 +9,9 @@ use net_backend_resources::mac_address::MacAddress;
 use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::PetriVmBuilder;
+use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
+use petri_artifacts_vmm_test::artifacts::petritools::PETRITOOLS_EROFS_X64;
 use petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WIN_DRIVERS;
 use pipette_client::PipetteClient;
 use std::fmt;
@@ -361,6 +363,7 @@ async fn pcie_hotplug(
         max_io_queues: 1,
         namespaces: vec![],
         requests: None,
+        sriov: None,
     });
     vm.add_pcie_device("s0rc0rp0".into(), nvme_resource).await?;
 
@@ -833,6 +836,162 @@ async fn virtio_net_windows(
         ping_output.contains("Reply from 10.0.0.1"),
         "ping to consomme gateway failed: {ping_output}"
     );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Test NVMe SR-IOV: enable VFs, bring secondary controller online,
+/// attach namespaces, perform IO through a VF, then tear down.
+///
+/// Uses petritools erofs for nvme-cli access.
+#[openvmm_test(unstable_linux_direct_x64[PETRITOOLS_EROFS_X64])]
+async fn pcie_nvme_sriov<T>(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    extra_deps: (ResolvedArtifact<T>,),
+) -> anyhow::Result<()> {
+    let total_vfs: u16 = 2;
+    let (erofs_artifact,) = extra_deps;
+
+    // Open the petritools erofs image to attach as a virtio-blk device.
+    let erofs_file = std::fs::File::open(&erofs_artifact)?;
+
+    let (vm, agent) = config
+        .modify_backend(move |b| {
+            use disk_backend_resources::FileDiskHandle;
+            use openvmm_defs::config::PcieDeviceConfig;
+            use vm_resource::IntoResource;
+
+            b.with_pcie_root_topology(1, 1, 4)
+                .with_pcie_nvme_sriov("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0], total_vfs)
+                .with_custom_config(|c| {
+                    // Attach petritools erofs as a read-only virtio-blk on rp1.
+                    c.pcie_devices.push(PcieDeviceConfig {
+                        port_name: "s0rc0rp1".into(),
+                        resource: virtio_resources::VirtioPciDeviceHandle(
+                            virtio_resources::blk::VirtioBlkHandle {
+                                disk: FileDiskHandle(erofs_file).into_resource(),
+                                read_only: true,
+                            }
+                            .into_resource(),
+                        )
+                        .into_resource(),
+                    });
+                })
+        })
+        .run()
+        .await?;
+
+    // Mount petritools erofs and prepare chroot for nvme-cli access.
+    agent
+        .mount("/dev/vda", "/perf", "erofs", 1 /* MS_RDONLY */, true)
+        .await?;
+    agent.prepare_chroot("/perf").await?;
+
+    let sh = agent.unix_shell();
+
+    // Confirm the PF NVMe controller enumerates and has a block device.
+    let nsid_output = cmd!(sh, "cat /sys/block/nvme0n1/nsid").read().await?;
+    assert_eq!(nsid_output.trim(), "1");
+
+    // Find the PF's PCI BDF (e.g. "0000:01:00.0").
+    let pf_pci_path = cmd!(sh, "readlink -f /sys/block/nvme0n1/device")
+        .read()
+        .await?;
+    let pf_bdf = pf_pci_path
+        .split('/')
+        .rev()
+        .find(|seg| seg.len() == 12 && seg.chars().nth(4) == Some(':'))
+        .expect("should find PF BDF in sysfs path");
+    let pf_sysfs = format!("/sys/bus/pci/devices/{pf_bdf}");
+    tracing::info!(pf_bdf, "PF PCI device found");
+
+    // Find the PF's NVMe character device (e.g. /dev/nvme0).
+    let pf_dev = "/dev/nvme0";
+
+    // 1. Enable VFs.
+    let num_vfs = total_vfs.to_string();
+    cmd!(sh, "echo {num_vfs} > {pf_sysfs}/sriov_numvfs")
+        .read()
+        .await?;
+
+    // 2. Verify VF PCI devices appear.
+    let guest_devices = parse_guest_pci_devices(OsFlavor::Linux, &agent).await?;
+    let nvme_count = guest_devices
+        .iter()
+        .filter(|d| d.class_code == 0x010802)
+        .count();
+    tracing::info!(nvme_count, "NVMe devices after VF enable");
+    assert_eq!(
+        nvme_count,
+        1 + total_vfs as usize,
+        "expected PF + {total_vfs} VFs"
+    );
+
+    // 3. Bring secondary controller online and attach namespace.
+    //    Secondary controller IDs start at 2 (PF is 1).
+    //    nvme virt-mgmt: action 8 = secondary online
+    let sec_cntlid = "2";
+
+    // Use chroot for nvme-cli commands (nvme-cli is in petritools).
+    let mut chroot_sh = agent.unix_shell();
+    chroot_sh.chroot("/perf");
+
+    // Bring secondary controller online.
+    cmd!(
+        chroot_sh,
+        "nvme virt-mgmt {pf_dev} --cntlid={sec_cntlid} --act=8"
+    )
+    .read()
+    .await?;
+
+    // 4. Attach PF namespace 1 to secondary controller 2.
+    cmd!(
+        chroot_sh,
+        "nvme ns-attach {pf_dev} --namespace-id=1 --controllers={sec_cntlid}"
+    )
+    .read()
+    .await?;
+
+    // 5. Verify nvme list shows the VF controller.
+    let nvme_list = cmd!(chroot_sh, "nvme list").read().await?;
+    tracing::info!(%nvme_list, "nvme list output");
+
+    // 6. IO through VF: write random data and read it back.
+    //    The VF's block device should appear as nvme1n1.
+    cmd!(
+        sh,
+        "dd if=/dev/urandom of=/dev/nvme1n1 bs=4096 count=16 oflag=direct"
+    )
+    .read()
+    .await?;
+    cmd!(
+        sh,
+        "dd if=/dev/nvme1n1 of=/tmp/vf_readback bs=4096 count=16 iflag=direct"
+    )
+    .read()
+    .await?;
+    // Read the same region from PF (same namespace) and compare.
+    cmd!(
+        sh,
+        "dd if=/dev/nvme0n1 of=/tmp/pf_readback bs=4096 count=16 iflag=direct"
+    )
+    .read()
+    .await?;
+    cmd!(sh, "cmp /tmp/vf_readback /tmp/pf_readback")
+        .run()
+        .await?;
+
+    // 7. Cleanup: disable VFs, verify they disappear.
+    cmd!(sh, "echo 0 > {pf_sysfs}/sriov_numvfs").read().await?;
+
+    let guest_devices = parse_guest_pci_devices(OsFlavor::Linux, &agent).await?;
+    let nvme_after = guest_devices
+        .iter()
+        .filter(|d| d.class_code == 0x010802)
+        .count();
+    assert_eq!(nvme_after, 1, "only PF should remain after VF disable");
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
