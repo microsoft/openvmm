@@ -531,10 +531,13 @@ impl PetriVmConfigOpenVmm {
         }
 
         // Set up virtio-vsock if enabled.
-        // Use the next available PCIe root port to avoid conflicting with
+        // Find the first unused PCIe root port to avoid conflicting with
         // NVMe devices that were already assigned.
         if properties.use_virtio_vsock {
-            let vsock_port = format!("s0rc0rp{}", pcie_devices.len());
+            let vsock_port = (0..)
+                .map(|i| format!("s0rc0rp{i}"))
+                .find(|name| !pcie_devices.iter().any(|d| d.port_name == *name))
+                .unwrap();
             pcie_devices.push(PcieDeviceConfig {
                 port_name: vsock_port,
                 resource: VirtioPciDeviceHandle(

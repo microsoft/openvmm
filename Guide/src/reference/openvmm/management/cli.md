@@ -41,7 +41,13 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --memory size=4G,file=path/to/memory.bin
   --memory size=4G,shared=off,thp=on
   ```
-* `--hv`: Exposes Hyper-V enlightenments and VMBus support.
+* `--hv`: Exposes Hyper-V enlightenments. VMBus is enabled by default
+  when `--hv` is active; pass `--no-vmbus` to suppress VMBus while keeping
+  enlightenments.
+* `--no-vmbus`: Disables the VMBus server and all VMBus devices, even when
+  `--hv` or `--uefi` is active. The guest boots using only standard PCIe
+  devices and virtio transports. Incompatible with `--disk`, `--pcat`,
+  `--vtl2`, and VMBus serial options.
 * `--hypervisor <SPEC>`: Select a specific hypervisor backend, optionally with
   backend-specific parameters. The format is `name` or `name:key=val,key,...`.
   Available backends: `whp` (Windows), `kvm` (Linux), `mshv` (Linux,
@@ -63,8 +69,9 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
-* `--disk file:<DISK>`: Exposes a single disk over VMBus. You must also
-  pass `--hv`. The `DISK` argument can be:
+* `--disk file:<DISK>`: Exposes a single disk over VMBus SCSI. You must also
+  pass `--hv`. Incompatible with `--no-vmbus`; use `--nvme` for PCIe-attached
+  storage instead. The `DISK` argument can be:
   * A flat binary disk image
   * A VHD file with an extension of .vhd (Windows host only)
   * A VHDX file with an extension of .vhdx (Windows host only)
