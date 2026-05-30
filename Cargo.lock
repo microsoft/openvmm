@@ -5550,6 +5550,7 @@ dependencies = [
  "serial_16550_resources",
  "serial_core",
  "serial_socket",
+ "sha2",
  "shell-words",
  "socket2",
  "sparse_mmap",

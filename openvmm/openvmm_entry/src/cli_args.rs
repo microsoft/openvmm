@@ -22,6 +22,7 @@ use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
 use cxl_spec::spec::CfmwsWindowRestrictions;
+use guid::Guid;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::PcatBootDevice;
@@ -252,11 +253,17 @@ flags:
 
 options:
     `pcie_port=<name>`             present the disk using pcie under the specified port, incompatible with `dvd`, `vtl2`, `uh`, and `uh-nvme`
+    `controller=<name>`            attach to a named controller (NVMe or SCSI), incompatible with `pcie_port`
+    `nsid=<N>`                     NVMe namespace ID (1-based), requires `controller`; auto-assigned if omitted
+    `lun=<N>`                      SCSI LUN (0-based), requires `controller`; auto-assigned if omitted
+    `relay=<ctrl>[:<loc>]`         relay through OpenHCL to the named OpenHCL controller, with optional location (LUN or NSID)
 "#)]
     #[clap(long, value_name = "FILE")]
     pub disk: Vec<DiskCli>,
 
-    /// attach a disk via an NVMe controller
+    /// \[deprecated\] attach a disk via an NVMe controller
+    ///
+    /// Use --nvme-controller and --disk controller=\<name\> instead.
     #[clap(long_help = r#"
 e.g: --nvme memdiff:file:/path/to/disk.vhd
 
@@ -290,6 +297,71 @@ options:
 "#)]
     #[clap(long)]
     pub nvme: Vec<DiskCli>,
+
+    /// create a named NVMe controller
+    #[clap(long_help = r#"
+Create a named NVMe controller with an explicit transport.
+
+syntax: id=<name>,pcie_port=<port> | id=<name>,vpci[=<guid>]
+
+The controller name can be referenced by `--disk` with the `controller=<name>`
+option to attach namespaces to this controller.
+
+options:
+    `id=<name>`                    controller name (required)
+    `pcie_port=<port>`             present on PCIe under the specified port
+    `vpci[=<guid>]`                present via VPCI; optional instance GUID
+    `vtl2`                         assign to VTL2 (default VTL0)
+
+Exactly one of `pcie_port` or `vpci` must be specified.
+
+Examples:
+    --nvme-controller id=nvme0,pcie_port=p0
+    --nvme-controller id=nvme1,vpci
+    --nvme-controller id=nvme2,vpci=008091f6-9688-497d-9091-af347dc9173c
+"#)]
+    #[clap(long = "nvme-controller")]
+    pub nvme_controller: Vec<NvmeControllerCli>,
+
+    /// create a named VMBus SCSI controller
+    #[clap(long_help = r#"
+Create a named VMBus SCSI controller.
+
+syntax: id=<name>[,sub_channels=<N>][,vtl2]
+
+The controller name can be referenced by `--disk` with the `controller=<name>`
+option to attach disks to this controller.
+
+options:
+    `id=<name>`                    controller name (required)
+    `sub_channels=<N>`             number of sub-channels (default 0)
+    `vtl2`                         assign to VTL2 (default VTL0)
+
+Examples:
+    --vmbus-scsi-controller id=scsi0
+    --vmbus-scsi-controller id=scsi1,sub_channels=4
+"#)]
+    #[clap(long = "vmbus-scsi-controller")]
+    pub vmbus_scsi_controller: Vec<ScsiControllerCli>,
+
+    /// register an OpenHCL-managed storage controller (relay target)
+    #[clap(long_help = r#"
+Register an OpenHCL-managed storage controller that can be used as a
+relay target with `--disk ... relay=<name>`.
+
+syntax: id=<name>,type=scsi|nvme[,guid=<guid>]
+
+options:
+    `id=<name>`                    controller name (required)
+    `type=scsi|nvme`               controller protocol (required)
+    `guid=<guid>`                  instance GUID (auto-derived from name if omitted)
+
+Examples:
+    --openhcl-controller id=vtl0-scsi,type=scsi
+    --openhcl-controller id=vtl0-nvme,type=nvme,guid=09a59b81-...
+"#)]
+    #[clap(long = "openhcl-controller")]
+    pub openhcl_controller: Vec<OpenhclControllerCli>,
 
     /// attach a CXL Type-3 test endpoint on a PCIe root port
     #[clap(long = "cxl-test", value_name = "mem:<len>,pcie_port=<name>")]
@@ -1603,6 +1675,10 @@ pub struct DiskCli {
     pub is_dvd: bool,
     pub underhill: Option<UnderhillDiskSource>,
     pub pcie_port: Option<String>,
+    pub controller: Option<String>,
+    pub nsid: Option<u32>,
+    pub lun: Option<u8>,
+    pub relay: Option<(String, Option<u32>)>,
 }
 
 #[derive(Copy, Clone)]
@@ -1623,6 +1699,10 @@ impl FromStr for DiskCli {
         let mut underhill = None;
         let mut vtl = DeviceVtl::Vtl0;
         let mut pcie_port = None;
+        let mut controller = None;
+        let mut nsid = None;
+        let mut lun = None;
+        let mut relay = None;
         for opt in opts {
             let mut s = opt.split('=');
             let opt = s.next().unwrap();
@@ -1644,6 +1724,35 @@ impl FromStr for DiskCli {
                     }
                     pcie_port = Some(String::from(port.unwrap()));
                 }
+                "controller" => {
+                    let name = s.next();
+                    if name.is_none_or(|n| n.is_empty()) {
+                        anyhow::bail!("`controller` requires a controller name");
+                    }
+                    controller = Some(String::from(name.unwrap()));
+                }
+                "nsid" => {
+                    let val = s.next().context("`nsid` requires a value")?;
+                    nsid = Some(val.parse::<u32>().context("invalid `nsid` value")?);
+                }
+                "lun" => {
+                    let val = s.next().context("`lun` requires a value")?;
+                    lun = Some(val.parse::<u8>().context("invalid `lun` value")?);
+                }
+                "relay" => {
+                    let val = s.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`relay` requires a target controller name");
+                    }
+                    let val = val.unwrap();
+                    // Parse "name" or "name:location"
+                    if let Some((name, loc)) = val.split_once(':') {
+                        let loc = loc.parse::<u32>().context("invalid relay location")?;
+                        relay = Some((name.to_string(), Some(loc)));
+                    } else {
+                        relay = Some((val.to_string(), None));
+                    }
+                }
                 opt => anyhow::bail!("unknown option: '{opt}'"),
             }
         }
@@ -1656,6 +1765,30 @@ impl FromStr for DiskCli {
             anyhow::bail!("`pcie_port` is incompatible with `uh`, `uh-nvme`, `vtl2`, and `dvd`");
         }
 
+        if controller.is_some() && pcie_port.is_some() {
+            anyhow::bail!("`controller` is incompatible with `pcie_port`");
+        }
+
+        if nsid.is_some() && controller.is_none() {
+            anyhow::bail!("`nsid` requires `controller`");
+        }
+
+        if lun.is_some() && controller.is_none() {
+            anyhow::bail!("`lun` requires `controller`");
+        }
+
+        if nsid.is_some() && lun.is_some() {
+            anyhow::bail!("`nsid` and `lun` are mutually exclusive");
+        }
+
+        if relay.is_some() && controller.is_none() {
+            anyhow::bail!("`relay` requires `controller`");
+        }
+
+        if relay.is_some() && underhill.is_some() {
+            anyhow::bail!("`relay` is incompatible with `uh` and `uh-nvme`");
+        }
+
         Ok(DiskCli {
             vtl,
             kind,
@@ -1663,6 +1796,205 @@ impl FromStr for DiskCli {
             is_dvd,
             underhill,
             pcie_port,
+            controller,
+            nsid,
+            lun,
+            relay,
+        })
+    }
+}
+
+/// The transport for a named NVMe controller.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NvmeControllerTransport {
+    /// Present via PCIe on the specified root port.
+    Pcie(String),
+    /// Present via VPCI with an optional instance GUID.
+    Vpci(Option<Guid>),
+}
+
+/// CLI arguments for a named NVMe controller.
+#[derive(Clone, Debug)]
+pub struct NvmeControllerCli {
+    /// Controller name, referenced by `--disk controller=<name>`.
+    pub id: String,
+    /// Transport configuration.
+    pub transport: NvmeControllerTransport,
+    /// VTL assignment (default VTL0).
+    pub vtl: DeviceVtl,
+}
+
+impl FromStr for NvmeControllerCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let mut id = None;
+        let mut pcie_port = None;
+        let mut vpci = None;
+        let mut vpci_set = false;
+        let mut vtl = DeviceVtl::Vtl0;
+
+        for part in s.split(',') {
+            let mut kv = part.split('=');
+            let key = kv.next().unwrap();
+            match key {
+                "id" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`id` requires a name");
+                    }
+                    id = Some(val.unwrap().to_string());
+                }
+                "pcie_port" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`pcie_port` requires a port name");
+                    }
+                    pcie_port = Some(val.unwrap().to_string());
+                }
+                "vpci" => {
+                    vpci_set = true;
+                    if let Some(val) = kv.next() {
+                        if !val.is_empty() {
+                            vpci = Some(val.parse::<Guid>().context("invalid GUID for `vpci`")?);
+                        }
+                    }
+                }
+                "vtl2" => {
+                    vtl = DeviceVtl::Vtl2;
+                }
+                other => anyhow::bail!("unknown option: '{other}'"),
+            }
+        }
+
+        let id = id.context("`id` is required")?;
+
+        let transport = match (pcie_port, vpci_set) {
+            (Some(port), false) => NvmeControllerTransport::Pcie(port),
+            (None, true) => NvmeControllerTransport::Vpci(vpci),
+            (Some(_), true) => {
+                anyhow::bail!("`pcie_port` and `vpci` are mutually exclusive")
+            }
+            (None, false) => {
+                anyhow::bail!("one of `pcie_port` or `vpci` is required")
+            }
+        };
+
+        Ok(NvmeControllerCli { id, transport, vtl })
+    }
+}
+
+/// CLI arguments for a named VMBus SCSI controller.
+#[derive(Clone, Debug)]
+pub struct ScsiControllerCli {
+    /// Controller name, referenced by `--disk controller=<name>`.
+    pub id: String,
+    /// Number of sub-channels.
+    pub sub_channels: u16,
+    /// VTL assignment (default VTL0).
+    pub vtl: DeviceVtl,
+}
+
+impl FromStr for ScsiControllerCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let mut id = None;
+        let mut sub_channels = 0u16;
+        let mut vtl = DeviceVtl::Vtl0;
+
+        for part in s.split(',') {
+            let mut kv = part.split('=');
+            let key = kv.next().unwrap();
+            match key {
+                "id" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`id` requires a name");
+                    }
+                    id = Some(val.unwrap().to_string());
+                }
+                "sub_channels" => {
+                    let val = kv.next().context("`sub_channels` requires a value")?;
+                    sub_channels = val.parse().context("invalid `sub_channels` value")?;
+                }
+                "vtl2" => {
+                    vtl = DeviceVtl::Vtl2;
+                }
+                other => anyhow::bail!("unknown option: '{other}'"),
+            }
+        }
+
+        let id = id.context("`id` is required")?;
+
+        Ok(ScsiControllerCli {
+            id,
+            sub_channels,
+            vtl,
+        })
+    }
+}
+
+/// Protocol type for an OpenHCL-managed controller.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum OpenhclControllerType {
+    Scsi,
+    Nvme,
+}
+
+/// CLI arguments for an OpenHCL-managed storage controller (relay target).
+#[derive(Clone, Debug)]
+pub struct OpenhclControllerCli {
+    /// Controller name, referenced by `--disk ... relay=<name>`.
+    pub id: String,
+    /// Controller protocol.
+    pub controller_type: OpenhclControllerType,
+    /// Instance GUID (auto-derived from name if omitted).
+    pub guid: Option<Guid>,
+}
+
+impl FromStr for OpenhclControllerCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let mut id = None;
+        let mut controller_type = None;
+        let mut guid = None;
+
+        for part in s.split(',') {
+            let mut kv = part.split('=');
+            let key = kv.next().unwrap();
+            match key {
+                "id" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`id` requires a name");
+                    }
+                    id = Some(val.unwrap().to_string());
+                }
+                "type" => {
+                    let val = kv.next().context("`type` requires a value")?;
+                    controller_type = Some(match val {
+                        "scsi" => OpenhclControllerType::Scsi,
+                        "nvme" => OpenhclControllerType::Nvme,
+                        other => anyhow::bail!("unknown controller type: '{other}'"),
+                    });
+                }
+                "guid" => {
+                    let val = kv.next().context("`guid` requires a value")?;
+                    guid = Some(val.parse::<Guid>().context("invalid GUID")?);
+                }
+                other => anyhow::bail!("unknown option: '{other}'"),
+            }
+        }
+
+        let id = id.context("`id` is required")?;
+        let controller_type = controller_type.context("`type` is required")?;
+
+        Ok(OpenhclControllerCli {
+            id,
+            controller_type,
+            guid,
         })
     }
 }
@@ -4211,5 +4543,180 @@ mod tests {
 
         // Empty id.
         assert!(IommuCli::from_str("id=").is_err());
+    }
+
+    #[test]
+    fn test_nvme_controller_cli_pcie() {
+        let c = NvmeControllerCli::from_str("id=nvme0,pcie_port=p0").unwrap();
+        assert_eq!(c.id, "nvme0");
+        assert_eq!(c.transport, NvmeControllerTransport::Pcie("p0".into()));
+    }
+
+    #[test]
+    fn test_nvme_controller_cli_vpci_no_guid() {
+        let c = NvmeControllerCli::from_str("id=nvme1,vpci").unwrap();
+        assert_eq!(c.id, "nvme1");
+        assert!(matches!(c.transport, NvmeControllerTransport::Vpci(None)));
+    }
+
+    #[test]
+    fn test_nvme_controller_cli_vpci_with_guid() {
+        let c = NvmeControllerCli::from_str("id=nvme2,vpci=008091f6-9688-497d-9091-af347dc9173c")
+            .unwrap();
+        assert_eq!(c.id, "nvme2");
+        assert!(matches!(
+            c.transport,
+            NvmeControllerTransport::Vpci(Some(_))
+        ));
+    }
+
+    #[test]
+    fn test_nvme_controller_cli_errors() {
+        // Missing id.
+        assert!(NvmeControllerCli::from_str("pcie_port=p0").is_err());
+        // Missing transport.
+        assert!(NvmeControllerCli::from_str("id=nvme0").is_err());
+        // Both transports.
+        assert!(NvmeControllerCli::from_str("id=nvme0,pcie_port=p0,vpci").is_err());
+        // Unknown option.
+        assert!(NvmeControllerCli::from_str("id=nvme0,pcie_port=p0,foo=bar").is_err());
+        // Empty id.
+        assert!(NvmeControllerCli::from_str("id=,pcie_port=p0").is_err());
+        // Empty pcie_port.
+        assert!(NvmeControllerCli::from_str("id=nvme0,pcie_port=").is_err());
+        // Invalid GUID.
+        assert!(NvmeControllerCli::from_str("id=nvme0,vpci=not-a-guid").is_err());
+    }
+
+    #[test]
+    fn test_disk_cli_controller() {
+        let d = DiskCli::from_str("file:disk.vhd,controller=nvme0").unwrap();
+        assert_eq!(d.controller.as_deref(), Some("nvme0"));
+        assert_eq!(d.nsid, None);
+    }
+
+    #[test]
+    fn test_disk_cli_controller_with_nsid() {
+        let d = DiskCli::from_str("file:disk.vhd,controller=nvme0,nsid=3").unwrap();
+        assert_eq!(d.controller.as_deref(), Some("nvme0"));
+        assert_eq!(d.nsid, Some(3));
+    }
+
+    #[test]
+    fn test_disk_cli_controller_errors() {
+        // nsid without controller.
+        assert!(DiskCli::from_str("file:disk.vhd,nsid=1").is_err());
+        // lun without controller.
+        assert!(DiskCli::from_str("file:disk.vhd,lun=0").is_err());
+        // controller with pcie_port.
+        assert!(DiskCli::from_str("file:disk.vhd,controller=nvme0,pcie_port=p0").is_err());
+        // Empty controller name.
+        assert!(DiskCli::from_str("file:disk.vhd,controller=").is_err());
+        // Invalid nsid.
+        assert!(DiskCli::from_str("file:disk.vhd,controller=nvme0,nsid=abc").is_err());
+        // nsid and lun together.
+        assert!(DiskCli::from_str("file:disk.vhd,controller=c,nsid=1,lun=0").is_err());
+    }
+
+    #[test]
+    fn test_disk_cli_controller_with_lun() {
+        let d = DiskCli::from_str("file:disk.vhd,controller=scsi0,lun=3").unwrap();
+        assert_eq!(d.controller.as_deref(), Some("scsi0"));
+        assert_eq!(d.lun, Some(3));
+        assert_eq!(d.nsid, None);
+    }
+
+    #[test]
+    fn test_scsi_controller_cli() {
+        let c = ScsiControllerCli::from_str("id=scsi0").unwrap();
+        assert_eq!(c.id, "scsi0");
+        assert_eq!(c.sub_channels, 0);
+    }
+
+    #[test]
+    fn test_scsi_controller_cli_with_sub_channels() {
+        let c = ScsiControllerCli::from_str("id=scsi1,sub_channels=4").unwrap();
+        assert_eq!(c.id, "scsi1");
+        assert_eq!(c.sub_channels, 4);
+    }
+
+    #[test]
+    fn test_scsi_controller_cli_errors() {
+        // Missing id.
+        assert!(ScsiControllerCli::from_str("sub_channels=4").is_err());
+        // Empty id.
+        assert!(ScsiControllerCli::from_str("id=").is_err());
+        // Unknown option.
+        assert!(ScsiControllerCli::from_str("id=scsi0,foo=bar").is_err());
+        // Invalid sub_channels.
+        assert!(ScsiControllerCli::from_str("id=scsi0,sub_channels=abc").is_err());
+    }
+
+    #[test]
+    fn test_disk_cli_relay() {
+        let d = DiskCli::from_str("file:disk.vhd,controller=src,relay=tgt").unwrap();
+        assert_eq!(d.relay.as_ref().unwrap().0, "tgt");
+        assert_eq!(d.relay.as_ref().unwrap().1, None);
+    }
+
+    #[test]
+    fn test_disk_cli_relay_with_location() {
+        let d = DiskCli::from_str("file:disk.vhd,controller=src,relay=tgt:3").unwrap();
+        assert_eq!(d.relay.as_ref().unwrap().0, "tgt");
+        assert_eq!(d.relay.as_ref().unwrap().1, Some(3));
+    }
+
+    #[test]
+    fn test_disk_cli_relay_errors() {
+        // relay without controller.
+        assert!(DiskCli::from_str("file:disk.vhd,relay=tgt").is_err());
+        // relay with uh.
+        assert!(DiskCli::from_str("file:disk.vhd,controller=src,relay=tgt,uh").is_err());
+        // relay with invalid location.
+        assert!(DiskCli::from_str("file:disk.vhd,controller=src,relay=tgt:abc").is_err());
+        // empty relay.
+        assert!(DiskCli::from_str("file:disk.vhd,controller=src,relay=").is_err());
+    }
+
+    #[test]
+    fn test_nvme_controller_cli_vtl2() {
+        let c = NvmeControllerCli::from_str("id=nvme0,vpci,vtl2").unwrap();
+        assert_eq!(c.vtl, DeviceVtl::Vtl2);
+    }
+
+    #[test]
+    fn test_scsi_controller_cli_vtl2() {
+        let c = ScsiControllerCli::from_str("id=scsi0,vtl2").unwrap();
+        assert_eq!(c.vtl, DeviceVtl::Vtl2);
+    }
+
+    #[test]
+    fn test_openhcl_controller_cli() {
+        let c = OpenhclControllerCli::from_str("id=vtl0-scsi,type=scsi").unwrap();
+        assert_eq!(c.id, "vtl0-scsi");
+        assert_eq!(c.controller_type, OpenhclControllerType::Scsi);
+        assert_eq!(c.guid, None);
+    }
+
+    #[test]
+    fn test_openhcl_controller_cli_nvme_with_guid() {
+        let c = OpenhclControllerCli::from_str(
+            "id=vtl0-nvme,type=nvme,guid=09a59b81-2bf6-4164-81d7-3a0dc977ba65",
+        )
+        .unwrap();
+        assert_eq!(c.controller_type, OpenhclControllerType::Nvme);
+        assert!(c.guid.is_some());
+    }
+
+    #[test]
+    fn test_openhcl_controller_cli_errors() {
+        // Missing id.
+        assert!(OpenhclControllerCli::from_str("type=scsi").is_err());
+        // Missing type.
+        assert!(OpenhclControllerCli::from_str("id=foo").is_err());
+        // Invalid type.
+        assert!(OpenhclControllerCli::from_str("id=foo,type=ide").is_err());
+        // Invalid guid.
+        assert!(OpenhclControllerCli::from_str("id=foo,type=scsi,guid=bad").is_err());
     }
 }

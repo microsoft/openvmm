@@ -453,6 +453,38 @@ async fn vm_config_from_command_line(
     let with_get = opt.get || (opt.vtl2 && !opt.no_get);
 
     let mut storage = storage_builder::StorageBuilder::new(with_get.then_some(openhcl_vtl));
+
+    // Register named controllers first, so that --disk controller=<name>
+    // references can be resolved.
+    for ctrl in &opt.nvme_controller {
+        let transport = match &ctrl.transport {
+            cli_args::NvmeControllerTransport::Pcie(port) => {
+                storage_builder::NvmeControllerTransport::Pcie(port.clone())
+            }
+            cli_args::NvmeControllerTransport::Vpci(guid) => {
+                let guid = guid.unwrap_or_else(|| storage_builder::deterministic_guid(&ctrl.id));
+                storage_builder::NvmeControllerTransport::Vpci(guid)
+            }
+        };
+        storage.add_nvme_controller(ctrl.id.clone(), ctrl.vtl, transport, None)?;
+    }
+
+    for ctrl in &opt.vmbus_scsi_controller {
+        let instance_id = storage_builder::deterministic_guid(&ctrl.id);
+        storage.add_scsi_controller(ctrl.id.clone(), ctrl.vtl, instance_id, ctrl.sub_channels)?;
+    }
+
+    for ctrl in &opt.openhcl_controller {
+        let controller_type = match ctrl.controller_type {
+            cli_args::OpenhclControllerType::Scsi => storage_builder::OpenhclControllerType::Scsi,
+            cli_args::OpenhclControllerType::Nvme => storage_builder::OpenhclControllerType::Nvme,
+        };
+        let instance_id = ctrl
+            .guid
+            .unwrap_or_else(|| storage_builder::deterministic_guid(&ctrl.id));
+        storage.add_openhcl_controller(ctrl.id.clone(), controller_type, instance_id)?;
+    }
+
     for &cli_args::DiskCli {
         vtl,
         ref kind,
@@ -460,17 +492,47 @@ async fn vm_config_from_command_line(
         is_dvd,
         underhill,
         ref pcie_port,
+        ref controller,
+        nsid,
+        lun,
+        ref relay,
     } in &opt.disk
     {
-        if pcie_port.is_some() {
-            anyhow::bail!("`--disk` is incompatible with PCIe");
+        if controller.is_none() && underhill.is_none() && relay.is_none() {
+            tracing::warn!(
+                "--disk without `controller` is deprecated; \
+                 use --vmbus-scsi-controller and --disk controller=<name> instead"
+            );
         }
+
+        let relay_target = relay
+            .as_ref()
+            .map(|(name, loc)| storage_builder::RelayTarget {
+                controller: name.clone(),
+                location: *loc,
+            });
+
+        let target = if let Some(name) = controller {
+            if pcie_port.is_some() {
+                anyhow::bail!("`controller` is incompatible with `pcie_port` on `--disk`");
+            }
+            storage_builder::DiskLocation::Named {
+                controller: name.clone(),
+                nsid,
+                lun,
+            }
+        } else if pcie_port.is_some() {
+            anyhow::bail!("`--disk` is incompatible with `pcie_port` without `controller`");
+        } else {
+            storage_builder::DiskLocation::Scsi(None)
+        };
 
         storage
             .add(
                 vtl,
                 underhill,
-                storage_builder::DiskLocation::Scsi(None),
+                relay_target,
+                target,
                 kind,
                 is_dvd,
                 read_only,
@@ -490,12 +552,34 @@ async fn vm_config_from_command_line(
             .add(
                 DeviceVtl::Vtl0,
                 None,
+                None,
                 storage_builder::DiskLocation::Ide(channel, device),
                 kind,
                 is_dvd,
                 read_only,
             )
             .await?;
+    }
+
+    if !opt.nvme.is_empty() {
+        tracing::warn!(
+            "--nvme is deprecated; use --nvme-controller and --disk controller=<name> instead"
+        );
+
+        // Pre-register implicit PCIe controllers for unique port names.
+        let mut registered_ports = std::collections::BTreeSet::new();
+        for disk in &opt.nvme {
+            if let Some(port) = &disk.pcie_port {
+                if registered_ports.insert(port.clone()) {
+                    storage.add_nvme_controller(
+                        port.clone(),
+                        DeviceVtl::Vtl0,
+                        storage_builder::NvmeControllerTransport::Pcie(port.clone()),
+                        None,
+                    )?;
+                }
+            }
+        }
     }
 
     for &cli_args::DiskCli {
@@ -505,17 +589,23 @@ async fn vm_config_from_command_line(
         is_dvd,
         underhill,
         ref pcie_port,
+        controller: _,
+        nsid: _,
+        lun: _,
+        relay: _,
     } in &opt.nvme
     {
+        let target = if let Some(port) = pcie_port {
+            storage_builder::DiskLocation::Named {
+                controller: port.clone(),
+                nsid: None,
+                lun: None,
+            }
+        } else {
+            storage_builder::DiskLocation::Nvme(None)
+        };
         storage
-            .add(
-                vtl,
-                underhill,
-                storage_builder::DiskLocation::Nvme(None, pcie_port.clone()),
-                kind,
-                is_dvd,
-                read_only,
-            )
+            .add(vtl, underhill, None, target, kind, is_dvd, read_only)
             .await?;
     }
 
@@ -526,6 +616,10 @@ async fn vm_config_from_command_line(
         is_dvd,
         ref underhill,
         ref pcie_port,
+        controller: _,
+        nsid: _,
+        lun: _,
+        relay: _,
     } in &opt.virtio_blk
     {
         if underhill.is_some() {
@@ -534,6 +628,7 @@ async fn vm_config_from_command_line(
         storage
             .add(
                 vtl,
+                None,
                 None,
                 storage_builder::DiskLocation::VirtioBlk(pcie_port.clone()),
                 kind,
@@ -1207,7 +1302,7 @@ async fn vm_config_from_command_line(
             version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
             fixed: Some(Default::default()),
             dynamic: Some(vtl2_settings_proto::Vtl2SettingsDynamic {
-                storage_controllers: storage.build_underhill(opt.vmbus_redirect),
+                storage_controllers: storage.build_openhcl_settings(opt.vmbus_redirect),
                 nic_devices: underhill_nics,
             }),
             namespace_settings: Vec::default(),
