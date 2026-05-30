@@ -1195,3 +1195,59 @@ async fn sriov_vf_bars_included_in_bridge_window() {
         "bridge window {window_size:#x} must be >= 0x5000 (PF BAR + 4 VF BARs)"
     );
 }
+
+/// Non-power-of-two VF counts must not panic. The total VF BAR space
+/// (total_vfs * per-VF BAR size) is not a power of two in this case,
+/// so alignment must use the per-VF BAR size, not the total size.
+#[async_test]
+async fn sriov_non_power_of_two_vf_count() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // PF with 3 VFs (not a power of two), each with a 4 KB VF BAR.
+    // Total VF BAR space: 3 * 4 KB = 12 KB (not a power of two).
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.set_multi_function(1, 0);
+    mock.add_sriov_with_bars(
+        1,
+        0,
+        0,
+        3, // 3 VFs
+        1,
+        1,
+        &[(0, 0x1000, false, false)],
+    );
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+
+    let bridge = result
+        .entries
+        .iter()
+        .find(|e| e.bus == 0 && e.device == 0)
+        .unwrap();
+    let window_base = bridge
+        .memory_base
+        .expect("bridge should have memory window");
+    let window_limit = bridge
+        .memory_limit
+        .expect("bridge should have memory limit");
+    let window_size = window_limit - window_base + 1;
+
+    // PF BAR = 0x1000, VF BARs = 3 * 0x1000 = 0x3000, total = 0x4000.
+    assert!(
+        window_size >= 0x4000,
+        "bridge window {window_size:#x} must be >= 0x4000 (PF BAR + 3 VF BARs)"
+    );
+}
