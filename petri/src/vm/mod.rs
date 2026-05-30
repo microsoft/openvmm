@@ -811,6 +811,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             panic!("boot device type {:?} requires vtl2", self.boot_device_type);
         }
 
+        if self.no_vmbus && self.boot_device_type.requires_vmbus() {
+            panic!(
+                "boot device type {:?} requires vmbus, but vmbus is disabled; \
+                 use with_boot_device_type(BootDeviceType::PcieNvme) or similar",
+                self.boot_device_type
+            );
+        }
+
         if self.boot_device_type.requires_vpci_boot() {
             self.config
                 .firmware
@@ -2504,6 +2512,20 @@ impl BootDeviceType {
             self,
             BootDeviceType::Nvme | BootDeviceType::NvmeViaScsi | BootDeviceType::NvmeViaNvme
         )
+    }
+
+    fn requires_vmbus(&self) -> bool {
+        match self {
+            BootDeviceType::None | BootDeviceType::Ide | BootDeviceType::PcieNvme => false,
+            BootDeviceType::IdeViaScsi
+            | BootDeviceType::IdeViaNvme
+            | BootDeviceType::Scsi
+            | BootDeviceType::ScsiViaScsi
+            | BootDeviceType::ScsiViaNvme
+            | BootDeviceType::Nvme
+            | BootDeviceType::NvmeViaScsi
+            | BootDeviceType::NvmeViaNvme => true,
+        }
     }
 }
 
