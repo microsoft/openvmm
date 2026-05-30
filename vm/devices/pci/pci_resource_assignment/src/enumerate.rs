@@ -33,6 +33,8 @@ pub struct DiscoveredDevice {
     pub secondary_bus: Option<u8>,
     /// For bridges: the subordinate bus number assigned during enumeration.
     pub subordinate_bus: Option<u8>,
+    /// For SR-IOV PFs: total VFs and per-VF BAR sizes.
+    pub(crate) sriov: Option<DiscoveredSriov>,
 }
 
 /// A discovered BAR with its size.
@@ -42,6 +44,15 @@ pub struct DiscoveredBar {
     pub size: u64,
     pub is_64bit: bool,
     pub is_prefetchable: bool,
+}
+
+/// SR-IOV information for a PF.
+#[derive(Debug, Clone)]
+pub(crate) struct DiscoveredSriov {
+    /// Total number of VFs.
+    pub total_vfs: u16,
+    /// Per-VF BAR sizes.
+    pub vf_bars: Vec<DiscoveredBar>,
 }
 
 /// Enumerate all devices starting from the host bridge's start bus,
@@ -129,6 +140,7 @@ async fn scan_bus(
                 children: Vec::new(),
                 secondary_bus: None,
                 subordinate_bus: None,
+                sriov: None,
             };
 
             if is_bridge {
@@ -172,8 +184,9 @@ async fn scan_bus(
                     "bridge enumerated"
                 );
             } else {
-                // Reserve bus numbers for SR-IOV VFs on this endpoint.
-                if let Some(max_vf_bus) = probe_sriov_bus_requirement(cfg, bus, devfn).await {
+                // Probe SR-IOV capability for bus reservation and VF BAR sizes.
+                if let Some(sriov_result) = probe_sriov(cfg, bus, devfn).await {
+                    let max_vf_bus = sriov_result.max_vf_bus;
                     if max_vf_bus > end_bus as u16 {
                         return Err(AssignmentError::BusExhaustion {
                             bus,
@@ -198,6 +211,11 @@ async fn scan_bus(
                         }
                         *next_bus = max_vf_bus + 1;
                     }
+
+                    dev.sriov = Some(DiscoveredSriov {
+                        total_vfs: sriov_result.total_vfs,
+                        vf_bars: sriov_result.vf_bars,
+                    });
                 }
 
                 tracing::debug!(
@@ -321,16 +339,27 @@ mod sriov {
     pub const INITIAL_TOTAL_VFS: u16 = 0x0C;
     /// Offset of the DWORD containing VF Offset (low u16) and VF Stride (high u16).
     pub const VF_OFFSET_STRIDE: u16 = 0x14;
+    /// Offset of VF BAR0 (6 consecutive DWORDs for VF BAR0–5).
+    pub const VF_BAR0: u16 = 0x24;
 }
 
-/// Probe SR-IOV capability to determine how many extra bus numbers
-/// this device's VFs will need. Returns the highest bus number a VF
-/// could land on, or `None` if the device has no SR-IOV capability.
-async fn probe_sriov_bus_requirement(
+/// Result of probing an SR-IOV capability.
+pub(crate) struct SriovProbeResult {
+    /// Highest bus number a VF could land on.
+    pub max_vf_bus: u16,
+    /// Total number of VFs.
+    pub total_vfs: u16,
+    /// VF BAR sizes discovered by probing (same format as device BARs).
+    pub vf_bars: Vec<DiscoveredBar>,
+}
+
+/// Probe SR-IOV capability to determine bus requirements and VF BAR sizes.
+/// Returns `None` if the device has no SR-IOV capability or has no VFs.
+async fn probe_sriov(
     cfg: &mut impl PciConfigAccess,
     bus: u8,
     devfn: u8,
-) -> Option<u16> {
+) -> Option<SriovProbeResult> {
     // Walk extended capabilities starting at 0x100.
     let mut offset = EXT_CAP_START;
     loop {
@@ -365,13 +394,19 @@ async fn probe_sriov_bus_requirement(
                 return None;
             }
 
-            // Compute the BDF of the last VF in u32 to detect overflow.
-            // First VF routing ID = (bus << 8 | devfn) + vf_offset
-            // Last VF routing ID = first + (total_vfs - 1) * vf_stride
+            // Compute the BDF of the last VF.
             let pf_rid = (bus as u32) << 8 | devfn as u32;
             let last_vf_rid = pf_rid + vf_offset as u32 + (total_vfs - 1) as u32 * vf_stride as u32;
-            let max_bus = (last_vf_rid >> 8) as u16;
-            return Some(max_bus);
+            let max_vf_bus = (last_vf_rid >> 8) as u16;
+
+            // Probe VF BAR sizes (same write-all-ones/readback technique).
+            let vf_bars = probe_vf_bars(cfg, bus, devfn, offset).await;
+
+            return Some(SriovProbeResult {
+                max_vf_bus,
+                total_vfs,
+                vf_bars,
+            });
         }
 
         if next == 0 || next <= offset {
@@ -380,4 +415,86 @@ async fn probe_sriov_bus_requirement(
         offset = next;
     }
     None
+}
+
+/// Probe VF BAR sizes from the SR-IOV capability's VF BAR registers.
+///
+/// VF BARs are at offsets 0x24–0x38 within the SR-IOV capability, and
+/// use the same write-all-ones/readback protocol as regular BARs.
+async fn probe_vf_bars(
+    cfg: &mut impl PciConfigAccess,
+    bus: u8,
+    devfn: u8,
+    sriov_offset: u16,
+) -> Vec<DiscoveredBar> {
+    let mut bars = Vec::new();
+    let mut i = 0u8;
+    while i < 6 {
+        let bar_offset = sriov_offset + sriov::VF_BAR0 + (i as u16) * 4;
+
+        // Save original value.
+        let original = cfg.read_u32(bus, devfn, bar_offset).await;
+
+        // Write all-ones to probe size.
+        cfg.write_u32(bus, devfn, bar_offset, !0u32).await;
+        let readback = cfg.read_u32(bus, devfn, bar_offset).await;
+
+        // Restore original value.
+        cfg.write_u32(bus, devfn, bar_offset, original).await;
+
+        if readback == 0 {
+            i += 1;
+            continue;
+        }
+
+        let is_io = BarEncodingBits::from(readback).use_pio();
+        if is_io {
+            i += 1;
+            continue;
+        }
+
+        let encoding = BarEncodingBits::from(readback);
+        let is_64bit = encoding.type_64_bit();
+        let is_prefetchable = encoding.prefetchable();
+
+        let size = if is_64bit && (i + 1) < 6 {
+            let upper_offset = sriov_offset + sriov::VF_BAR0 + ((i + 1) as u16) * 4;
+            let upper_original = cfg.read_u32(bus, devfn, upper_offset).await;
+            cfg.write_u32(bus, devfn, upper_offset, !0u32).await;
+            let upper_readback = cfg.read_u32(bus, devfn, upper_offset).await;
+            cfg.write_u32(bus, devfn, upper_offset, upper_original)
+                .await;
+
+            let mask = ((upper_readback as u64) << 32) | (readback as u64 & !0xF);
+            if mask == 0 {
+                i += 2;
+                continue;
+            }
+            (!mask).wrapping_add(1)
+        } else {
+            let mask = readback & !0xF;
+            if mask == 0 {
+                i += 1;
+                continue;
+            }
+            (!(mask as u64 | (!0u64 << 32))).wrapping_add(1)
+        };
+
+        if size > 0 {
+            bars.push(DiscoveredBar {
+                index: i,
+                size,
+                is_64bit,
+                is_prefetchable,
+            });
+        }
+
+        if is_64bit {
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    bars
 }

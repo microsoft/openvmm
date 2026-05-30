@@ -116,6 +116,7 @@ impl MockConfigSpace {
     /// Add an SR-IOV extended capability to a device.
     /// `total_vfs`: max VFs supported, `vf_offset`: routing ID offset to first VF,
     /// `vf_stride`: routing ID increment per VF.
+    /// `vf_bars`: VF BAR definitions as (bar_index, size, is_64bit, prefetchable).
     fn add_sriov(
         &self,
         bus: u8,
@@ -124,6 +125,19 @@ impl MockConfigSpace {
         total_vfs: u16,
         vf_offset: u16,
         vf_stride: u16,
+    ) {
+        self.add_sriov_with_bars(bus, device, function, total_vfs, vf_offset, vf_stride, &[]);
+    }
+
+    fn add_sriov_with_bars(
+        &self,
+        bus: u8,
+        device: u8,
+        function: u8,
+        total_vfs: u16,
+        vf_offset: u16,
+        vf_stride: u16,
+        vf_bars: &[(u8, u64, bool, bool)],
     ) {
         let mut inner = self.inner.lock();
         let key = |off: u16| (bus, device, function, off);
@@ -143,6 +157,28 @@ impl MockConfigSpace {
             key(0x100 + 0x14),
             (vf_stride as u32) << 16 | vf_offset as u32,
         );
+
+        // VF BARs at cap + 0x24..0x38.
+        for &(bar_idx, size, is_64bit, prefetchable) in vf_bars {
+            let offset = 0x100 + 0x24 + (bar_idx as u16) * 4;
+            let mut encoding: u32 = 0;
+            if is_64bit {
+                encoding |= 0x04;
+            }
+            if prefetchable {
+                encoding |= 0x08;
+            }
+            inner.regs.insert(key(offset), encoding);
+            let mask = (!(size - 1)) as u32;
+            inner.bar_masks.insert(key(offset), mask | encoding);
+
+            if is_64bit {
+                let upper_offset = offset + 4;
+                let upper_mask = ((!(size - 1)) >> 32) as u32;
+                inner.regs.insert(key(upper_offset), 0);
+                inner.bar_masks.insert(key(upper_offset), upper_mask);
+            }
+        }
     }
 
     fn read_reg(&self, bus: u8, device: u8, function: u8, offset: u16) -> u32 {
@@ -161,9 +197,8 @@ impl MockConfigSpace {
         let mut inner = self.inner.lock();
         let key = (bus, device, function, offset);
 
-        // Check if this is a BAR offset being probed.
-        let is_bar_offset = (0x10..=0x24).contains(&offset) && (offset & 0x3) == 0;
-        if is_bar_offset && inner.bar_masks.contains_key(&key) {
+        // Check if this offset has a BAR mask (device BAR or VF BAR).
+        if inner.bar_masks.contains_key(&key) {
             if value == !0u32 {
                 inner.bar_probing.insert(key, true);
                 return;
@@ -1097,5 +1132,66 @@ async fn bus_wrap_to_zero_must_return_exhaustion() {
     assert!(
         matches!(result, Err(crate::AssignmentError::BusExhaustion { .. })),
         "expected BusExhaustion when next_bus wraps past 255, got {result:?}"
+    );
+}
+
+/// VF BARs from SR-IOV capability must be included in bridge window sizing.
+/// Without this, the bridge window is too small for VF BAR space and VF
+/// MMIO accesses fault.
+#[async_test]
+async fn sriov_vf_bars_included_in_bridge_window() {
+    let mock = MockConfigSpace::new();
+
+    // Bridge on bus 0.
+    mock.add_bridge(0, 0, 0);
+
+    // PF on bus 1 with a 4 KB device BAR and SR-IOV with 4 VFs, each
+    // needing a 4 KB non-prefetchable VF BAR0.
+    // Total VF BAR space: 4 * 4 KB = 16 KB.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.set_multi_function(1, 0);
+    mock.add_sriov_with_bars(
+        1,
+        0,
+        0,
+        4,
+        1,
+        1,
+        &[(0, 0x1000, false, false)], // VF BAR0: 4 KB non-pref
+    );
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+
+    // Find the bridge entry and check that its memory window is large
+    // enough for both the PF BAR (4 KB) and VF BARs (4 * 4 KB = 16 KB).
+    let bridge = result
+        .entries
+        .iter()
+        .find(|e| e.bus == 0 && e.device == 0)
+        .unwrap();
+    let window_base = bridge
+        .memory_base
+        .expect("bridge should have memory window");
+    let window_limit = bridge
+        .memory_limit
+        .expect("bridge should have memory limit");
+    let window_size = window_limit - window_base + 1;
+
+    // PF BAR = 0x1000, VF BARs = 4 * 0x1000 = 0x4000, total = 0x5000.
+    // Bridge window is rounded up to 1 MB granularity.
+    assert!(
+        window_size >= 0x5000,
+        "bridge window {window_size:#x} must be >= 0x5000 (PF BAR + 4 VF BARs)"
     );
 }

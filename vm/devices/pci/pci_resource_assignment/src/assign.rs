@@ -217,6 +217,20 @@ fn compute_subtree_requirement(devices: &[DiscoveredDevice]) -> SubtreeRequireme
             });
         }
 
+        // SR-IOV PF: account for VF BAR space (TotalVFs * per-VF BAR size).
+        if let Some(sriov) = &dev.sriov {
+            for bar in &sriov.vf_bars {
+                let total_size = bar.size * sriov.total_vfs as u64;
+                demands.push(Demand {
+                    size: total_size,
+                    // VF BAR region base must be aligned to per-VF BAR size
+                    // (each VF's BAR is at base + n * bar_size).
+                    alignment: bar.size,
+                    is_mem64: is_mem64_bar(bar),
+                });
+            }
+        }
+
         if dev.is_bridge {
             let child_req = compute_subtree_requirement(&dev.children);
             if child_req.mem32 > 0 {
@@ -286,6 +300,11 @@ fn assign_subtree(
             dev_idx: usize,
             alignment: u64,
         },
+        /// VF BAR space — reserved for SR-IOV VFs. The guest programs VF BAR
+        /// addresses via the SR-IOV capability registers, so no explicit BAR
+        /// assignment is made, but the space must be accounted for in the
+        /// bridge window.
+        SriovVfBars,
     }
 
     let mut demands: Vec<(u64, Demand)> = Vec::new();
@@ -301,6 +320,16 @@ fn assign_subtree(
                         is_64bit: bar.is_64bit,
                     },
                 ));
+            }
+        }
+
+        // SR-IOV VF BARs: reserve total space in the bridge window.
+        if let Some(sriov) = &dev.sriov {
+            for bar in &sriov.vf_bars {
+                if is_mem64_bar(bar) == alloc_64bit {
+                    let total_size = bar.size * sriov.total_vfs as u64;
+                    demands.push((total_size, Demand::SriovVfBars));
+                }
             }
         }
 
@@ -329,7 +358,7 @@ fn assign_subtree(
     // produce consistent results.
     demands.sort_by_key(|d| {
         let alignment = match &d.1 {
-            Demand::Bar { .. } => d.0,
+            Demand::Bar { .. } | Demand::SriovVfBars => d.0,
             Demand::BridgeSubtree { alignment, .. } => *alignment,
         };
         std::cmp::Reverse(alignment)
@@ -342,7 +371,7 @@ fn assign_subtree(
         // Bridge subtrees are aligned to the max of bridge window
         // granularity and the largest internal alignment requirement.
         let alignment = match demand {
-            Demand::Bar { .. } => *size,
+            Demand::Bar { .. } | Demand::SriovVfBars => *size,
             Demand::BridgeSubtree { alignment, .. } => *alignment,
         };
         offset = align_up(offset, alignment);
@@ -381,6 +410,11 @@ fn assign_subtree(
 
                 // Recurse into children with this bridge's carved-out range.
                 assign_subtree(&dev.children, alloc_64bit, offset, entries);
+            }
+            Demand::SriovVfBars => {
+                // VF BAR space is reserved but not explicitly assigned.
+                // The guest programs VF BAR addresses through the SR-IOV
+                // capability registers.
             }
         }
 
