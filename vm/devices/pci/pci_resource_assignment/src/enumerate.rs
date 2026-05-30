@@ -247,7 +247,6 @@ async fn probe_bars(
     is_bridge: bool,
 ) -> Vec<DiscoveredBar> {
     let max_bars: u8 = if is_bridge { 2 } else { 6 };
-    let mut bars = Vec::new();
 
     // Disable MMIO decode so that writing all-ones to BARs during
     // probing does not cause the device to decode a bogus address range.
@@ -268,69 +267,20 @@ async fn probe_bars(
         .await;
     }
 
-    let mut i = 0u8;
-    while i < max_bars {
-        let offset = HeaderType00::BAR0.0 + (i as u16) * 4;
+    probe_bar_range(cfg, bus, devfn, HeaderType00::BAR0.0, max_bars).await
+}
 
-        // Write all-ones to probe size.
-        cfg.write_u32(bus, devfn, offset, !0u32).await;
-        let readback = cfg.read_u32(bus, devfn, offset).await;
-
-        if readback == 0 {
-            // BAR not implemented.
-            i += 1;
-            continue;
-        }
-
-        let is_io = BarEncodingBits::from(readback).use_pio();
-        if is_io {
-            // Skip I/O BARs for now.
-            i += 1;
-            continue;
-        }
-
-        let encoding = BarEncodingBits::from(readback);
-        let is_64bit = encoding.type_64_bit();
-        let is_prefetchable = encoding.prefetchable();
-
-        let size = if is_64bit && (i + 1) < max_bars {
-            // Probe upper 32 bits.
-            let upper_offset = HeaderType00::BAR0.0 + ((i + 1) as u16) * 4;
-            cfg.write_u32(bus, devfn, upper_offset, !0u32).await;
-            let upper_readback = cfg.read_u32(bus, devfn, upper_offset).await;
-
-            let mask = ((upper_readback as u64) << 32) | (readback as u64 & !0xF);
-            if mask == 0 {
-                i += 2;
-                continue;
-            }
-            (!mask).wrapping_add(1)
-        } else {
-            let mask = readback & !0xF;
-            if mask == 0 {
-                i += 1;
-                continue;
-            }
-            (!(mask as u64 | (!0u64 << 32))).wrapping_add(1)
-        };
-
-        if size > 0 {
-            bars.push(DiscoveredBar {
-                index: i,
-                size,
-                is_64bit,
-                is_prefetchable,
-            });
-        }
-
-        if is_64bit {
-            i += 2;
-        } else {
-            i += 1;
-        }
-    }
-
-    bars
+/// Probe VF BAR sizes from the SR-IOV capability's VF BAR registers.
+///
+/// VF BARs are at offsets 0x24–0x38 within the SR-IOV capability, and
+/// use the same write-all-ones/readback protocol as regular BARs.
+async fn probe_vf_bars(
+    cfg: &mut impl PciConfigAccess,
+    bus: u8,
+    devfn: u8,
+    sriov_offset: u16,
+) -> Vec<DiscoveredBar> {
+    probe_bar_range(cfg, bus, devfn, sriov_offset + sriov::VF_BAR0, 6).await
 }
 
 /// SR-IOV capability register offsets (relative to capability start).
@@ -417,38 +367,36 @@ async fn probe_sriov(
     None
 }
 
-/// Probe VF BAR sizes from the SR-IOV capability's VF BAR registers.
+/// Probe BAR sizes for a range of BAR registers starting at `base_offset`.
 ///
-/// VF BARs are at offsets 0x24–0x38 within the SR-IOV capability, and
-/// use the same write-all-ones/readback protocol as regular BARs.
-async fn probe_vf_bars(
+/// Writes all-ones to each BAR and reads back to determine size. BAR
+/// registers are left in an undefined state after probing.
+async fn probe_bar_range(
     cfg: &mut impl PciConfigAccess,
     bus: u8,
     devfn: u8,
-    sriov_offset: u16,
+    base_offset: u16,
+    max_bars: u8,
 ) -> Vec<DiscoveredBar> {
     let mut bars = Vec::new();
-    let mut i = 0u8;
-    while i < 6 {
-        let bar_offset = sriov_offset + sriov::VF_BAR0 + (i as u16) * 4;
 
-        // Save original value.
-        let original = cfg.read_u32(bus, devfn, bar_offset).await;
+    let mut i = 0u8;
+    while i < max_bars {
+        let offset = base_offset + (i as u16) * 4;
 
         // Write all-ones to probe size.
-        cfg.write_u32(bus, devfn, bar_offset, !0u32).await;
-        let readback = cfg.read_u32(bus, devfn, bar_offset).await;
-
-        // Restore original value.
-        cfg.write_u32(bus, devfn, bar_offset, original).await;
+        cfg.write_u32(bus, devfn, offset, !0u32).await;
+        let readback = cfg.read_u32(bus, devfn, offset).await;
 
         if readback == 0 {
+            // BAR not implemented.
             i += 1;
             continue;
         }
 
         let is_io = BarEncodingBits::from(readback).use_pio();
         if is_io {
+            // Skip I/O BARs.
             i += 1;
             continue;
         }
@@ -457,13 +405,11 @@ async fn probe_vf_bars(
         let is_64bit = encoding.type_64_bit();
         let is_prefetchable = encoding.prefetchable();
 
-        let size = if is_64bit && (i + 1) < 6 {
-            let upper_offset = sriov_offset + sriov::VF_BAR0 + ((i + 1) as u16) * 4;
-            let upper_original = cfg.read_u32(bus, devfn, upper_offset).await;
+        let size = if is_64bit && (i + 1) < max_bars {
+            // Probe upper 32 bits.
+            let upper_offset = base_offset + ((i + 1) as u16) * 4;
             cfg.write_u32(bus, devfn, upper_offset, !0u32).await;
             let upper_readback = cfg.read_u32(bus, devfn, upper_offset).await;
-            cfg.write_u32(bus, devfn, upper_offset, upper_original)
-                .await;
 
             let mask = ((upper_readback as u64) << 32) | (readback as u64 & !0xF);
             if mask == 0 {

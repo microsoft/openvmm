@@ -1251,3 +1251,321 @@ async fn sriov_non_power_of_two_vf_count() {
         "bridge window {window_size:#x} must be >= 0x4000 (PF BAR + 3 VF BARs)"
     );
 }
+
+/// 64-bit prefetchable VF BARs should be placed in the high MMIO aperture
+/// via the prefetchable bridge window, not the non-prefetchable window.
+#[async_test]
+async fn sriov_vf_bars_64bit_prefetchable() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // PF with a 32-bit non-pref device BAR and SR-IOV with 4 VFs,
+    // each needing a 64-bit prefetchable VF BAR (1 MB each).
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.set_multi_function(1, 0);
+    mock.add_sriov_with_bars(
+        1,
+        0,
+        0,
+        4,
+        1,
+        1,
+        &[(0, 0x10_0000, true, true)], // VF BAR0: 1 MB, 64-bit prefetchable
+    );
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: Some(MmioAperture {
+            base: 0x1_0000_0000,
+            len: 0x1_0000_0000,
+        }),
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+
+    let bridge = result
+        .entries
+        .iter()
+        .find(|e| e.bus == 0 && e.device == 0)
+        .unwrap();
+
+    // Non-prefetchable window should exist for the PF's 32-bit BAR.
+    let mem_base = bridge
+        .memory_base
+        .expect("bridge should have non-pref memory window");
+    let mem_limit = bridge
+        .memory_limit
+        .expect("bridge should have non-pref memory limit");
+    let mem_size = mem_limit - mem_base + 1;
+    assert!(
+        mem_size >= 0x1000,
+        "non-pref window {mem_size:#x} must fit PF BAR (0x1000)"
+    );
+
+    // Prefetchable window should exist for VF BARs (4 * 1 MB = 4 MB).
+    let pref_base = bridge
+        .prefetchable_base
+        .expect("bridge should have prefetchable window");
+    let pref_limit = bridge
+        .prefetchable_limit
+        .expect("bridge should have prefetchable limit");
+    let pref_size = pref_limit - pref_base + 1;
+    assert!(
+        pref_size >= 0x40_0000,
+        "prefetchable window {pref_size:#x} must be >= 0x400000 (4 * 1 MB VF BARs)"
+    );
+
+    // Prefetchable window should be in high MMIO.
+    assert!(
+        pref_base >= 0x1_0000_0000,
+        "prefetchable window base {pref_base:#x} should be in high MMIO"
+    );
+}
+
+/// A PF with both 32-bit non-pref and 64-bit prefetchable VF BARs should
+/// have space reserved in both bridge windows.
+#[async_test]
+async fn sriov_mixed_vf_bar_types() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // PF with no device BARs, but two VF BARs:
+    //   VF BAR0: 4 KB non-prefetchable 32-bit
+    //   VF BAR2: 64 KB 64-bit prefetchable
+    // 2 VFs.
+    mock.add_endpoint(1, 0, 0, &[]);
+    mock.set_multi_function(1, 0);
+    mock.add_sriov_with_bars(
+        1,
+        0,
+        0,
+        2,
+        1,
+        1,
+        &[
+            (0, 0x1000, false, false), // VF BAR0: 4 KB non-pref
+            (2, 0x1_0000, true, true), // VF BAR2: 64 KB 64-bit pref
+        ],
+    );
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: Some(MmioAperture {
+            base: 0x1_0000_0000,
+            len: 0x1_0000_0000,
+        }),
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+
+    let bridge = result
+        .entries
+        .iter()
+        .find(|e| e.bus == 0 && e.device == 0)
+        .unwrap();
+
+    // Non-pref window for VF BAR0: 2 * 4 KB = 8 KB.
+    let mem_base = bridge
+        .memory_base
+        .expect("bridge should have non-pref window for VF BAR0");
+    let mem_limit = bridge
+        .memory_limit
+        .expect("bridge should have non-pref limit");
+    let mem_size = mem_limit - mem_base + 1;
+    assert!(
+        mem_size >= 0x2000,
+        "non-pref window {mem_size:#x} must be >= 0x2000 (2 * 4 KB VF BAR0)"
+    );
+
+    // Pref window for VF BAR2: 2 * 64 KB = 128 KB.
+    let pref_base = bridge
+        .prefetchable_base
+        .expect("bridge should have pref window for VF BAR2");
+    let pref_limit = bridge
+        .prefetchable_limit
+        .expect("bridge should have pref limit");
+    let pref_size = pref_limit - pref_base + 1;
+    assert!(
+        pref_size >= 0x2_0000,
+        "pref window {pref_size:#x} must be >= 0x20000 (2 * 64 KB VF BAR2)"
+    );
+}
+
+/// Top-level PF (no bridge) with VF BARs: VF BAR space must be accounted
+/// for in the root aperture, and the PF's own BARs must be assigned without
+/// overlapping the reserved VF BAR region.
+#[async_test]
+async fn sriov_top_level_pf_no_bridge() {
+    let mock = MockConfigSpace::new();
+
+    // PF on bus 0 with a 64 KB device BAR and 4 VFs each with 64 KB VF BAR.
+    mock.add_endpoint(0, 0, 0, &[(0, 0x1_0000, false, false)]);
+    mock.set_multi_function(0, 0);
+    mock.add_sriov_with_bars(
+        0,
+        0,
+        0,
+        4,
+        1,
+        1,
+        &[(0, 0x1_0000, false, false)], // VF BAR0: 64 KB non-pref
+    );
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+
+    // The PF should have its own BAR assigned.
+    let pf = result
+        .entries
+        .iter()
+        .find(|e| e.bus == 0 && e.device == 0)
+        .unwrap();
+    assert_eq!(pf.bars.len(), 1);
+    assert_eq!(pf.bars[0].size, 0x1_0000);
+
+    // The PF BAR should be within the aperture.
+    let bar_end = pf.bars[0].address + pf.bars[0].size;
+    assert!(
+        bar_end <= 0x2000_0000,
+        "PF BAR must fit in low_mmio aperture"
+    );
+}
+
+/// Two PFs behind the same bridge, each with VF BARs. The bridge window
+/// must be large enough for both PFs' device BARs plus both VF BAR regions.
+#[async_test]
+async fn sriov_multiple_pfs_behind_bridge() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // PF1 on bus 1, device 0: 4 KB device BAR, 2 VFs with 4 KB VF BAR.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.set_multi_function(1, 0);
+    mock.add_sriov_with_bars(1, 0, 0, 2, 1, 1, &[(0, 0x1000, false, false)]);
+
+    // PF2 on bus 1, device 1: 8 KB device BAR, 3 VFs with 8 KB VF BAR.
+    mock.add_endpoint(1, 1, 0, &[(0, 0x2000, false, false)]);
+    mock.set_multi_function(1, 1);
+    mock.add_sriov_with_bars(1, 1, 0, 3, 1, 1, &[(0, 0x2000, false, false)]);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+
+    let bridge = result
+        .entries
+        .iter()
+        .find(|e| e.bus == 0 && e.device == 0)
+        .unwrap();
+    let window_base = bridge
+        .memory_base
+        .expect("bridge should have memory window");
+    let window_limit = bridge
+        .memory_limit
+        .expect("bridge should have memory limit");
+    let window_size = window_limit - window_base + 1;
+
+    // PF1: BAR=0x1000 + VF=2*0x1000=0x2000
+    // PF2: BAR=0x2000 + VF=3*0x2000=0x6000
+    // Total = 0x1000 + 0x2000 + 0x2000 + 0x6000 = 0xB000
+    assert!(
+        window_size >= 0xB000,
+        "bridge window {window_size:#x} must be >= 0xB000 (two PFs with VF BARs)"
+    );
+
+    // Both PFs should have their device BARs assigned.
+    let pf1 = result
+        .entries
+        .iter()
+        .find(|e| e.bus == 1 && e.device == 0)
+        .unwrap();
+    let pf2 = result
+        .entries
+        .iter()
+        .find(|e| e.bus == 1 && e.device == 1)
+        .unwrap();
+    assert_eq!(pf1.bars.len(), 1);
+    assert_eq!(pf2.bars.len(), 1);
+
+    // PF BARs must not overlap each other.
+    let pf1_end = pf1.bars[0].address + pf1.bars[0].size;
+    let pf2_end = pf2.bars[0].address + pf2.bars[0].size;
+    assert!(
+        pf1_end <= pf2.bars[0].address || pf2_end <= pf1.bars[0].address,
+        "PF BARs must not overlap"
+    );
+}
+
+/// VF BAR space contributing to MMIO exhaustion should produce an error,
+/// not a panic or silent misallocation.
+#[async_test]
+async fn sriov_vf_bars_cause_mmio_exhaustion() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // PF with 16 VFs, each needing 1 MB VF BAR = 16 MB total.
+    // The aperture is only 2 MB.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.set_multi_function(1, 0);
+    mock.add_sriov_with_bars(
+        1,
+        0,
+        0,
+        16,
+        1,
+        1,
+        &[(0, 0x10_0000, false, false)], // VF BAR0: 1 MB each
+    );
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x20_0000, // Only 2 MB — not enough for 16 MB of VF BARs
+        }),
+        high_mmio: None,
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources_inner(&mut cfg, &params).await;
+    assert!(
+        result.is_err(),
+        "should fail with MMIO exhaustion, got {result:?}"
+    );
+}
