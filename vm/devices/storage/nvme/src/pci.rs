@@ -32,7 +32,7 @@ use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
-use pci_core::capabilities::extended::sriov::SriovCallback;
+use pci_core::capabilities::extended::sriov::SriovBarDecode;
 use pci_core::capabilities::extended::sriov::SriovConfig;
 use pci_core::capabilities::extended::sriov::SriovExtendedCapability;
 use pci_core::capabilities::extended::sriov::VfBarConfig;
@@ -75,31 +75,14 @@ pub struct NvmeController {
 
 /// Internal SR-IOV state held by the PF.
 struct SriovState {
-    /// Shared callback state — receives VF Enable change notifications
-    /// from the SR-IOV extended capability during config space writes.
-    callback: Arc<SriovCallbackState>,
+    /// Shared VF BAR decode state — updated by the SR-IOV capability,
+    /// read by the MMIO handler for VF address routing, and used to
+    /// receive pending VF_Enable changes.
+    bar_decode: Arc<SriovBarDecode>,
     /// PF's MSI target, cloned per-VF with different devfn.
     msi_target: MsiTarget,
     /// SR-IOV configuration.
     config: NvmeSriovCaps,
-}
-
-/// Shared state between the SR-IOV callback and the NvmeController.
-/// The callback writes a pending change, and the controller drains it
-/// after each config space write completes.
-struct SriovCallbackState {
-    pending: Mutex<Option<SriovPendingChange>>,
-}
-
-struct SriovPendingChange {
-    enabled: bool,
-    num_vfs: u16,
-}
-
-impl SriovCallback for SriovCallbackState {
-    fn vf_enable_changed(&self, enabled: bool, num_vfs: u16) {
-        *self.pending.lock() = Some(SriovPendingChange { enabled, num_vfs });
-    }
 }
 
 #[derive(Inspect)]
@@ -186,12 +169,33 @@ impl NvmeController {
 
         // Build extended capabilities — add SR-IOV if configured.
         let (extended_caps, sriov, multi_function) = if let Some(sriov_caps) = caps.sriov {
-            let callback = Arc::new(SriovCallbackState {
-                pending: Mutex::new(None),
-            });
+            // Pre-allocate MMIO intercepts for all VFs, organized by BAR
+            // index. The SR-IOV capability owns these and maps/unmaps them
+            // directly when BAR/MSE/VF_Enable change.
+            let vf_bar_cfg = Self::vf_bar_config(sriov_caps.vf_msix_count);
+            let vf_bar0_len = vf_bar_cfg[0].as_ref().map_or(BAR0_LEN, |b| b.size);
+            let vf_bar4_len = vf_bar_cfg[4].as_ref().map_or(16, |b| b.size);
+
+            let bar0_intercepts: Vec<_> = (0..sriov_caps.total_vfs)
+                .map(|i| {
+                    BarMemoryKind::Intercept(
+                        register_mmio.new_io_region(&format!("vf{i}_bar0"), vf_bar0_len),
+                    )
+                })
+                .collect();
+            let bar4_intercepts: Vec<_> = (0..sriov_caps.total_vfs)
+                .map(|i| {
+                    BarMemoryKind::Intercept(
+                        register_mmio.new_io_region(&format!("vf{i}_msix"), vf_bar4_len),
+                    )
+                })
+                .collect();
+            let mut vf_bars: [Vec<_>; 6] = Default::default();
+            vf_bars[0] = bar0_intercepts;
+            vf_bars[4] = bar4_intercepts;
 
             // VFs start at function 1 with stride 1 (no ARI).
-            let sriov_cap = SriovExtendedCapability::new(
+            let (sriov_cap, bar_decode) = SriovExtendedCapability::new(
                 SriovConfig {
                     total_vfs: sriov_caps.total_vfs,
                     vf_device_id: sriov_caps.vf_device_id,
@@ -199,7 +203,7 @@ impl NvmeController {
                     vf_stride: 1,
                     vf_bars: Self::vf_bar_config(sriov_caps.vf_msix_count),
                 },
-                Some(callback.clone()),
+                vf_bars,
             );
 
             let extended_caps: Vec<
@@ -207,7 +211,7 @@ impl NvmeController {
             > = vec![Box::new(sriov_cap)];
 
             let state = SriovState {
-                callback,
+                bar_decode,
                 msi_target: msi_target.clone(),
                 config: sriov_caps,
             };
@@ -582,19 +586,16 @@ impl NvmeController {
         tracing::info!(count, "SR-IOV: disabled VFs");
     }
 
-    /// Drain any pending SR-IOV callback and handle VF lifecycle.
+    /// Drain any pending SR-IOV changes and handle VF lifecycle.
     fn drain_sriov_pending(&mut self) {
-        let pending = self
-            .sriov
-            .as_ref()
-            .and_then(|s| s.callback.pending.lock().take());
+        let Some(change) = self.sriov.as_ref().and_then(|s| s.bar_decode.take_pending_vf_change()) else {
+            return;
+        };
 
-        if let Some(change) = pending {
-            if change.enabled {
-                self.enable_vfs(change.num_vfs);
-            } else {
-                self.disable_vfs();
-            }
+        if change.enabled {
+            self.enable_vfs(change.num_vfs);
+        } else {
+            self.disable_vfs();
         }
     }
 
@@ -634,8 +635,8 @@ impl ChangeDeviceState for NvmeController {
         cfg_space.reset();
         *registers = RegState::new();
         *qe_sizes.lock() = Default::default();
-        // cfg_space.reset() will reset the SR-IOV capability, which fires
-        // the callback to disable VFs. Drain it.
+        // cfg_space.reset() resets the SR-IOV capability, which unmaps
+        // all VF MMIO intercepts. VFs were already drained above.
         vfs.clear();
     }
 }
@@ -652,19 +653,37 @@ impl ChipsetDevice for NvmeController {
 
 impl MmioIntercept for NvmeController {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
+        // Check PF BARs first.
         match self.cfg_space.find_bar(addr) {
-            Some((0, offset)) => self.read_bar0(offset, data),
+            Some((0, offset)) => return self.read_bar0(offset, data),
             Some((4, offset)) => {
                 read_as_u32_chunks(offset, data, |offset| self.msix.read_u32(offset));
-                IoResult::Ok
+                return IoResult::Ok;
             }
-            _ => IoResult::Err(InvalidRegister),
+            _ => {}
         }
+
+        // Check VF BARs using the shared address decode.
+        if let Some(sriov) = &self.sriov {
+            if let Some((vf_idx, offset)) = sriov.bar_decode.decode(0, addr) {
+                if let Some(Some(vf)) = self.vfs.get_mut(vf_idx) {
+                    return vf.read_bar0(offset, data);
+                }
+            }
+            if let Some((vf_idx, offset)) = sriov.bar_decode.decode(4, addr) {
+                if let Some(Some(vf)) = self.vfs.get_mut(vf_idx) {
+                    return vf.read_msix(offset, data);
+                }
+            }
+        }
+
+        IoResult::Err(InvalidRegister)
     }
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
+        // Check PF BARs first.
         match self.cfg_space.find_bar(addr) {
-            Some((0, offset)) => self.write_bar0(offset, data),
+            Some((0, offset)) => return self.write_bar0(offset, data),
             Some((4, offset)) => {
                 write_as_u32_chunks(offset, data, |offset, ty| match ty {
                     ReadWriteRequestType::Read => Some(self.msix.read_u32(offset)),
@@ -673,10 +692,26 @@ impl MmioIntercept for NvmeController {
                         None
                     }
                 });
-                IoResult::Ok
+                return IoResult::Ok;
             }
-            _ => IoResult::Err(InvalidRegister),
+            _ => {}
         }
+
+        // Check VF BARs using the shared address decode.
+        if let Some(sriov) = &self.sriov {
+            if let Some((vf_idx, offset)) = sriov.bar_decode.decode(0, addr) {
+                if let Some(Some(vf)) = self.vfs.get_mut(vf_idx) {
+                    return vf.write_bar0(offset, data);
+                }
+            }
+            if let Some((vf_idx, offset)) = sriov.bar_decode.decode(4, addr) {
+                if let Some(Some(vf)) = self.vfs.get_mut(vf_idx) {
+                    return vf.write_msix(offset, data);
+                }
+            }
+        }
+
+        IoResult::Err(InvalidRegister)
     }
 }
 

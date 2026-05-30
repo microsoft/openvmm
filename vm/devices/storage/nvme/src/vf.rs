@@ -4,10 +4,12 @@
 //! NVMe Virtual Function (VF) state for SR-IOV support.
 
 use chipset_device::io::IoResult;
+use device_emulators::ReadWriteRequestType;
+use device_emulators::read_as_u32_chunks;
+use device_emulators::write_as_u32_chunks;
 use inspect::Inspect;
 use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::capabilities::pci_express::PciExpressCapability;
-use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
 use pci_core::msi::MsiTarget;
@@ -16,21 +18,24 @@ use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 
-use crate::BAR0_LEN;
 use crate::VENDOR_ID;
 
 /// An NVMe Virtual Function (VF) with its own PCI config space.
 ///
 /// VFs are owned by the PF ([`super::NvmeController`]) and are created/destroyed
-/// when the SR-IOV capability's VF Enable bit changes. In this phase, VFs
-/// have config space identity and MSI-X capability but no NVMe controller
-/// logic — that is added in later phases.
+/// when the SR-IOV capability's VF Enable bit changes.
+///
+/// VFs do **not** have their own BAR registers. BAR addresses are defined by
+/// the PF's SR-IOV extended capability VF BAR registers — each VF's address
+/// is computed as `VF_BAR_base + vf_index * bar_size`. The PF manages MMIO
+/// intercepts on behalf of VFs and routes MMIO accesses to VF methods.
+///
+/// NVMe controller logic (admin/IO commands) is added in later phases.
 #[derive(Inspect)]
 pub(crate) struct NvmeVirtualFunction {
     cfg_space: ConfigSpaceType0Emulator,
-    // MSI-X emulator — unused until Phase 3 (VF MMIO handling).
     #[inspect(skip)]
-    _msix: MsixEmulator,
+    msix: MsixEmulator,
 }
 
 impl NvmeVirtualFunction {
@@ -43,11 +48,9 @@ impl NvmeVirtualFunction {
     pub fn new(vf_device_id: u16, msix_count: u16, msi_target: &MsiTarget) -> Self {
         let (msix, msix_cap) = MsixEmulator::new(4, msix_count, msi_target);
 
-        // VF BARs use Dummy backing for now. Actual MMIO intercepts are
-        // wired in Phase 3.
-        let bars = DeviceBars::new()
-            .bar0(BAR0_LEN, BarMemoryKind::Dummy)
-            .bar4(msix.bar_len(), BarMemoryKind::Dummy);
+        // VFs have no BARs in their own config space. BAR addresses come
+        // from the PF's SR-IOV extended capability VF BAR registers.
+        let bars = DeviceBars::new();
 
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
@@ -71,10 +74,7 @@ impl NvmeVirtualFunction {
             bars,
         );
 
-        Self {
-            cfg_space,
-            _msix: msix,
-        }
+        Self { cfg_space, msix }
     }
 
     /// Read from this VF's PCI config space.
@@ -85,5 +85,43 @@ impl NvmeVirtualFunction {
     /// Write to this VF's PCI config space.
     pub fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
         self.cfg_space.write_u32(offset, value)
+    }
+
+    /// Reads from the VF's BAR0 (NVMe registers).
+    ///
+    /// VF NVMe controller logic is not yet implemented — returns zeros for
+    /// all registers. Doorbells are silently ignored.
+    pub fn read_bar0(&mut self, _addr: u64, data: &mut [u8]) -> IoResult {
+        // Phase 5 will add a full NVMe controller state machine.
+        // For now, return zeros.
+        data.fill(0);
+        IoResult::Ok
+    }
+
+    /// Writes to the VF's BAR0 (NVMe registers).
+    ///
+    /// VF NVMe controller logic is not yet implemented — writes are
+    /// silently accepted and discarded.
+    pub fn write_bar0(&mut self, _addr: u64, _data: &[u8]) -> IoResult {
+        // Phase 5 will add a full NVMe controller state machine.
+        IoResult::Ok
+    }
+
+    /// Reads from the VF's MSI-X BAR.
+    pub fn read_msix(&mut self, offset: u64, data: &mut [u8]) -> IoResult {
+        read_as_u32_chunks(offset, data, |offset| self.msix.read_u32(offset));
+        IoResult::Ok
+    }
+
+    /// Writes to the VF's MSI-X BAR.
+    pub fn write_msix(&mut self, offset: u64, data: &[u8]) -> IoResult {
+        write_as_u32_chunks(offset, data, |offset, ty| match ty {
+            ReadWriteRequestType::Read => Some(self.msix.read_u32(offset)),
+            ReadWriteRequestType::Write(val) => {
+                self.msix.write_u32(offset, val);
+                None
+            }
+        });
+        IoResult::Ok
     }
 }
