@@ -59,6 +59,8 @@ const IOSQES: u8 = 6;
 const IOCQES: u8 = 4;
 const MAX_ASYNC_EVENT_REQUESTS: u8 = 4; // minimum recommended by spec
 const ERROR_LOG_PAGE_ENTRIES: u8 = 1;
+/// PF controller ID used in identify and virtualization management.
+const PF_CONTROLLER_ID: u16 = 1;
 
 #[derive(Inspect)]
 pub struct AdminConfig {
@@ -75,6 +77,64 @@ pub struct AdminConfig {
     pub max_sqs: u16,
     pub max_cqs: u16,
     pub qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
+    /// SR-IOV configuration. When set, the PF advertises virtualization
+    /// management in Identify and processes VM/NS Attachment commands.
+    pub sriov: Option<SriovAdminConfig>,
+}
+
+/// SR-IOV configuration passed from the PCI layer to the admin handler.
+#[derive(Debug, Clone, Inspect)]
+pub struct SriovAdminConfig {
+    /// Total number of VFs (secondary controllers).
+    pub total_vfs: u16,
+}
+
+/// Per-secondary-controller resource state tracked by the admin handler.
+#[derive(Debug, Clone, Inspect)]
+struct SecondaryControllerState {
+    /// Whether this secondary controller is online.
+    online: bool,
+    /// Namespace IDs attached to this secondary controller.
+    #[inspect(with = "|x| inspect::iter_by_key(x.iter().map(|p| (p, ())))")]
+    attached_namespaces: Vec<u32>,
+}
+
+/// SR-IOV admin state tracking secondary controller state.
+/// Owned by `AdminHandler`.
+#[derive(Debug, Clone, Inspect)]
+struct SriovAdminState {
+    /// Per-secondary-controller state, indexed by VF index (0-based).
+    #[inspect(iter_by_index)]
+    controllers: Vec<SecondaryControllerState>,
+}
+
+impl SriovAdminState {
+    fn new(total_vfs: u16) -> Self {
+        let controllers = (0..total_vfs)
+            .map(|_| SecondaryControllerState {
+                online: false,
+                attached_namespaces: Vec::new(),
+            })
+            .collect();
+        Self { controllers }
+    }
+
+    /// Looks up a secondary controller by its controller ID (1-based VF
+    /// index + PF_CONTROLLER_ID + 1).
+    fn secondary_index(&self, cntlid: u16) -> Option<usize> {
+        let idx = cntlid.checked_sub(PF_CONTROLLER_ID + 1)? as usize;
+        if idx < self.controllers.len() {
+            Some(idx)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the controller ID for a secondary controller at the given
+    /// 0-based VF index.
+    fn secondary_cntlid(vf_index: usize) -> u16 {
+        PF_CONTROLLER_ID + 1 + vf_index as u16
+    }
 }
 
 #[derive(Inspect)]
@@ -83,6 +143,8 @@ pub struct AdminHandler {
     config: AdminConfig,
     #[inspect(iter_by_key)]
     namespaces: BTreeMap<u32, Arc<Namespace>>,
+    /// SR-IOV admin state — present only when `config.sriov` is Some.
+    sriov_state: Option<SriovAdminState>,
 }
 
 #[derive(Inspect)]
@@ -359,10 +421,15 @@ pub enum AddNamespaceError {
 
 impl AdminHandler {
     pub fn new(driver: VmTaskDriver, config: AdminConfig) -> Self {
+        let sriov_state = config
+            .sriov
+            .as_ref()
+            .map(|s| SriovAdminState::new(s.total_vfs));
         Self {
             driver,
             config,
             namespaces: Default::default(),
+            sriov_state,
         }
     }
 
@@ -518,6 +585,13 @@ impl AdminHandler {
                             .await
                             .map(|()| Some(Default::default()))
                     }
+                    spec::AdminOpcode::VIRTUALIZATION_MANAGEMENT if self.sriov_state.is_some() => {
+                        self.handle_virtualization_management(&command)
+                            .map(|()| Some(Default::default()))
+                    }
+                    spec::AdminOpcode::NAMESPACE_ATTACHMENT if self.sriov_state.is_some() => self
+                        .handle_namespace_attachment(&command)
+                        .map(|()| Some(Default::default())),
                     opcode => {
                         tracelimit::warn_ratelimited!(?opcode, "unsupported opcode");
                         Err(spec::Status::INVALID_COMMAND_OPCODE.into())
@@ -625,6 +699,12 @@ impl AdminHandler {
                     tracing::debug!(nsid = command.nsid, "inactive namespace id");
                 }
             }
+            spec::Cns::PRIMARY_CONTROLLER_CAPABILITIES if self.sriov_state.is_some() => {
+                self.identify_primary_controller_capabilities(buf);
+            }
+            spec::Cns::SECONDARY_CONTROLLER_LIST if self.sriov_state.is_some() => {
+                self.identify_secondary_controller_list(command, buf)?;
+            }
             cns => {
                 tracelimit::warn_ratelimited!(?cns, "unsupported cns");
                 return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
@@ -635,6 +715,7 @@ impl AdminHandler {
     }
 
     fn identify_controller(&self, state: &AdminState) -> spec::IdentifyController {
+        let is_sriov = self.sriov_state.is_some();
         spec::IdentifyController {
             vid: VENDOR_ID,
             ssvid: VENDOR_ID,
@@ -665,8 +746,12 @@ impl AdminHandler {
                 .with_present(true)
                 .with_broadcast_flush_behavior(spec::BroadcastFlushBehavior::NOT_SUPPORTED.0),
             cntrltype: spec::ControllerType::IO_CONTROLLER,
+            cntlid: if is_sriov { PF_CONTROLLER_ID } else { 0 },
+            cmic: spec::Cmic::new().with_sriov(is_sriov),
             oacs: spec::OptionalAdminCommandSupport::new()
-                .with_doorbell_buffer_config(self.supports_shadow_doorbells(state)),
+                .with_doorbell_buffer_config(self.supports_shadow_doorbells(state))
+                .with_virtualization_management(is_sriov)
+                .with_ns_management(is_sriov),
             ..FromZeros::new_zeroed()
         }
     }
@@ -1074,6 +1159,162 @@ impl AdminHandler {
             .replace_mem(self.config.mem.clone(), shadow_db_gpa, Some(event_idx_gpa))
             .map_err(|err| NvmeError::new(spec::Status::DATA_TRANSFER_ERROR, err))?;
 
+        Ok(())
+    }
+
+    /// Fill the Primary Controller Capabilities structure (CNS 0x14).
+    fn identify_primary_controller_capabilities(&self, buf: &mut [u8]) {
+        let _sriov = self
+            .sriov_state
+            .as_ref()
+            .expect("SR-IOV must be configured");
+        let pcc = spec::PrimaryControllerCapabilities::mut_from_prefix(buf)
+            .unwrap()
+            .0;
+        pcc.cntlid = PF_CONTROLLER_ID;
+        pcc.portid = 0;
+        // CRT=0: no flexible resources supported. All VQ/VI resources are
+        // private (fixed at construction time).
+        pcc.crt = 0;
+        pcc.vqprt = self.config.max_sqs;
+        pcc.viprt = self.config.max_cqs;
+    }
+
+    /// Fill the Secondary Controller List (CNS 0x15).
+    fn identify_secondary_controller_list(
+        &self,
+        command: &spec::Command,
+        buf: &mut [u8],
+    ) -> Result<(), NvmeError> {
+        let sriov = self
+            .sriov_state
+            .as_ref()
+            .expect("SR-IOV must be configured");
+        let cdw10: spec::Cdw10Identify = command.cdw10.into();
+        let start_cntlid = cdw10.cntid();
+
+        let page = spec::SecondaryControllerList::mut_from_prefix(buf)
+            .unwrap()
+            .0;
+
+        let mut count = 0u8;
+        for (idx, sc) in sriov.controllers.iter().enumerate() {
+            let cntlid = SriovAdminState::secondary_cntlid(idx);
+            if cntlid < start_cntlid {
+                continue;
+            }
+            if count as usize >= page.entries.len() {
+                break;
+            }
+            let entry = &mut page.entries[count as usize];
+            entry.scid = cntlid;
+            entry.pcid = PF_CONTROLLER_ID;
+            entry.scs = if sc.online { 1 } else { 0 };
+            entry.vfn = idx as u16 + 1; // VF number is 1-based.
+            count += 1;
+        }
+        page.num_entries = count;
+        Ok(())
+    }
+
+    /// Handle the Virtualization Management admin command (opcode 0x1C).
+    fn handle_virtualization_management(
+        &mut self,
+        command: &spec::Command,
+    ) -> Result<(), NvmeError> {
+        let cdw10: spec::Cdw10VirtualizationManagement = command.cdw10.into();
+        let act = spec::VirtualizationManagementAction(cdw10.act());
+        let cntlid = cdw10.cntlid();
+
+        let sriov = self
+            .sriov_state
+            .as_mut()
+            .expect("SR-IOV must be configured");
+
+        match act {
+            spec::VirtualizationManagementAction::PRIMARY_FLEXIBLE_RESOURCES => {
+                // CRT=0: flexible resources not supported.
+                return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+            }
+            spec::VirtualizationManagementAction::SECONDARY_OFFLINE => {
+                let idx = sriov
+                    .secondary_index(cntlid)
+                    .ok_or(spec::Status::INVALID_CONTROLLER_IDENTIFIER)?;
+                sriov.controllers[idx].online = false;
+            }
+            spec::VirtualizationManagementAction::SECONDARY_ONLINE => {
+                let idx = sriov
+                    .secondary_index(cntlid)
+                    .ok_or(spec::Status::INVALID_CONTROLLER_IDENTIFIER)?;
+                sriov.controllers[idx].online = true;
+            }
+            spec::VirtualizationManagementAction::SECONDARY_ASSIGN => {
+                // CRT=0: flexible resources not supported.
+                return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+            }
+            _ => {
+                tracelimit::warn_ratelimited!(?act, "unsupported virtualization management action");
+                return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle the Namespace Attachment admin command (opcode 0x15).
+    fn handle_namespace_attachment(&mut self, command: &spec::Command) -> Result<(), NvmeError> {
+        let cdw10: spec::Cdw10NamespaceAttachment = command.cdw10.into();
+        let sel = spec::NamespaceAttachmentSelection(cdw10.sel());
+        let nsid = command.nsid;
+
+        if nsid == 0 || nsid == 0xffffffff {
+            return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+        }
+
+        // Verify the namespace exists on this controller.
+        if !self.namespaces.contains_key(&nsid) {
+            return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+        }
+
+        // Read the controller list from the data buffer.
+        let mut list_buf = [0u8; 4096];
+        PrpRange::parse(&self.config.mem, list_buf.len(), command.dptr)?
+            .read(&self.config.mem, &mut list_buf)?;
+        let controller_list = spec::ControllerList::ref_from_bytes(&list_buf).unwrap();
+
+        let sriov = self
+            .sriov_state
+            .as_mut()
+            .expect("SR-IOV must be configured");
+
+        for &cntlid in controller_list
+            .identifiers
+            .iter()
+            .take(controller_list.num_identifiers as usize)
+        {
+            let idx = sriov
+                .secondary_index(cntlid)
+                .ok_or(spec::Status::INVALID_CONTROLLER_IDENTIFIER)?;
+
+            match sel {
+                spec::NamespaceAttachmentSelection::ATTACH => {
+                    let ns_list = &mut sriov.controllers[idx].attached_namespaces;
+                    if ns_list.contains(&nsid) {
+                        return Err(spec::Status::NAMESPACE_ALREADY_ATTACHED.into());
+                    }
+                    ns_list.push(nsid);
+                    ns_list.sort();
+                }
+                spec::NamespaceAttachmentSelection::DETACH => {
+                    let ns_list = &mut sriov.controllers[idx].attached_namespaces;
+                    if let Some(pos) = ns_list.iter().position(|&n| n == nsid) {
+                        ns_list.remove(pos);
+                    } else {
+                        return Err(spec::Status::NAMESPACE_NOT_ATTACHED.into());
+                    }
+                }
+                _ => return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into()),
+            }
+        }
         Ok(())
     }
 }

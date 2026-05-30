@@ -252,6 +252,12 @@ impl NvmeController {
             .collect();
 
         let qe_sizes = Arc::new(Default::default());
+        let sriov_admin_config = caps
+            .sriov
+            .as_ref()
+            .map(|s| crate::workers::SriovAdminConfig {
+                total_vfs: s.total_vfs,
+            });
         let admin = NvmeWorkers::new(
             driver_source,
             guest_memory,
@@ -260,6 +266,7 @@ impl NvmeController {
             caps.max_io_queues,
             Arc::clone(&qe_sizes),
             caps.subsystem_id,
+            sriov_admin_config,
         );
 
         Self {

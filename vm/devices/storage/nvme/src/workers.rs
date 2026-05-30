@@ -8,6 +8,7 @@ mod coordinator;
 mod io;
 
 pub use admin::AddNamespaceError;
+pub use admin::SriovAdminConfig;
 pub use coordinator::NvmeControllerClient;
 pub use coordinator::NvmeWorkers;
 
