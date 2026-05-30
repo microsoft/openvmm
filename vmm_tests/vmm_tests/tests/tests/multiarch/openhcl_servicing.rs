@@ -1597,8 +1597,9 @@ async fn create_keepalive_test_config_default(
 }
 
 /// Creates a keepalive test config with a custom number of VPs with 1 VP per
-/// socket, each socket on its own NUMA node. It also creates an appropriate
-/// number of scsi sub-channels to ensure IO can be issued on all VPs.
+/// socket, each on its own NUMA node. All memory is assigned to node 0;
+/// remaining nodes are memoryless. It also creates an appropriate number of
+/// scsi sub-channels to ensure IO can be issued on all VPs.
 async fn create_keepalive_test_config_custom_vps(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
@@ -1607,10 +1608,13 @@ async fn create_keepalive_test_config_custom_vps(
     disk_size: u64,
     vp_count: u32,
 ) -> Result<(PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
-    // Configure one NUMA node per VP so that each socket is its own
-    // proximity domain. This ensures VTL2 Linux distributes storvsc
-    // sub-channel interrupts across CPUs, which IO-pinning tests rely on.
-    let per_node = MemoryConfig::default().startup_bytes / vp_count as u64;
+    // Configure one NUMA node per VP (1 VP per socket) so VTL2 Linux
+    // distributes storvsc sub-channel interrupts across CPUs, which IO-pinning
+    // tests rely on. All memory goes to node 0 to ensure there is enough
+    // contiguous memory for VTL2. The remaining nodes are memoryless CPU-only
+    // nodes.
+    let mut numa_sizes = vec![0u64; vp_count as usize];
+    numa_sizes[0] = MemoryConfig::default().startup_bytes;
     create_keepalive_test_config_custom(
         config,
         fault_configuration,
@@ -1623,7 +1627,7 @@ async fn create_keepalive_test_config_custom_vps(
             ..Default::default()
         },
         MemoryConfig {
-            numa_mem_sizes: Some(vec![per_node; vp_count as usize]),
+            numa_mem_sizes: Some(numa_sizes),
             ..Default::default()
         },
         &[],

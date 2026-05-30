@@ -906,14 +906,6 @@ impl InitializedVm {
             .iter()
             .map(|n| n.mem.as_ref().map_or(0, |m| m.mem_size))
             .collect();
-        // Validate NUMA topology.
-        super::numa::validate_numa_topology(&cfg.numa, cfg.processor_topology.proc_count)
-            .context("invalid NUMA topology")?;
-
-        tracing::info!(
-            mem_size = node_mem_sizes.iter().sum::<u64>(),
-            "guest RAM config"
-        );
 
         let vmtime_keeper = VmTimeKeeper::new(&driver_source.simple(), VmTime::from_100ns(0));
         let vmtime_source = vmtime_keeper
@@ -969,14 +961,13 @@ impl InitializedVm {
             result.processor_topology
         };
 
-        // Resolve NUMA VP assignments and apply to the processor topology.
-        // Use the logical (non-rounded) socket size so that NUMA assignment
-        // matches the documented formula for non-power-of-two socket sizes.
-        let vp_to_vnode = super::numa::resolve_vp_to_vnode(
+        // Validate NUMA topology and resolve VP-to-vnode assignments.
+        let vp_to_vnode = super::numa::resolve_numa_vp_assignment(
             &cfg.numa,
             cfg.processor_topology.proc_count,
             processor_topology.vps_per_socket(),
-        );
+        )
+        .context("invalid NUMA topology")?;
         processor_topology.set_vnodes(&vp_to_vnode);
 
         let proto = hypervisor

@@ -444,7 +444,7 @@ impl PetriVmConfigOpenVmm {
                     nodes: sizes
                         .into_iter()
                         .map(|size| NumaNode {
-                            mem: Some(make_mem(size)),
+                            mem: if size > 0 { Some(make_mem(size)) } else { None },
                             vps: VpAssignment::FromTopology,
                         })
                         .collect(),

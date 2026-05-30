@@ -1,71 +1,43 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! NUMA topology validation.
+//! NUMA topology validation and VP assignment resolution.
 
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::VpAssignment;
 
-/// Resolves a NUMA topology's VP assignments to a flat vp-to-vnode map.
+/// Validates the NUMA topology and resolves VP-to-vnode assignments in a
+/// single pass.
 ///
-/// Returns a `Vec<u32>` of length `proc_count` where `result[vp_index]` is the
-/// vnode for that VP.
+/// Returns a `Vec<u32>` of length `proc_count` where `result[vp_index]` is
+/// the vnode for that VP.
 ///
-/// `FromTopology` uses `(vp_index / vps_per_socket) % num_nodes`.
+/// Validation checks:
+/// - At least one node exists
+/// - All nodes use the same VP assignment mode (no mixing)
+/// - When `Explicit`, VP lists are disjoint, complete, and in range
+/// - Distance entries reference valid nodes, have values >= 10, and
+///   self-distances are exactly 10
+///
+/// `FromTopology` assigns VPs by `(vp_index / vps_per_socket) % num_nodes`.
 /// `Explicit` uses the specified VP-to-node assignments directly.
-///
-/// Call [`validate_numa_topology`] first to ensure the topology is valid.
-pub fn resolve_vp_to_vnode(
+pub fn resolve_numa_vp_assignment(
     topology: &NumaTopology,
     proc_count: u32,
     vps_per_socket: u32,
-) -> Vec<u32> {
-    let num_nodes = topology.nodes.len() as u32;
-    let has_explicit = topology
-        .nodes
-        .iter()
-        .any(|n| matches!(n.vps, VpAssignment::Explicit(_)));
-
-    if has_explicit {
-        let mut vp_to_vnode = vec![0u32; proc_count as usize];
-        for (node_idx, node) in topology.nodes.iter().enumerate() {
-            if let VpAssignment::Explicit(ref vps) = node.vps {
-                for &vp in vps {
-                    vp_to_vnode[vp as usize] = node_idx as u32;
-                }
-            }
-        }
-        vp_to_vnode
-    } else {
-        // FromTopology: (vp_index / vps_per_socket) % num_nodes
-        (0..proc_count)
-            .map(|vp| (vp / vps_per_socket) % num_nodes)
-            .collect()
-    }
-}
-
-/// Validates the NUMA topology configuration.
-///
-/// Checks:
-/// - At least one node exists
-/// - When any node uses `VpAssignment::Explicit`, the VP lists are disjoint,
-///   complete (cover `0..proc_count`), and contain valid indices
-/// - Distance entries reference valid node indices, have values ≥ 10, and
-///   self-distances are exactly 10
-pub fn validate_numa_topology(topology: &NumaTopology, proc_count: u32) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<u32>> {
     let num_nodes = topology.nodes.len();
     anyhow::ensure!(num_nodes >= 1, "NUMA topology must have at least one node");
 
-    // Validate VP assignment: when Explicit, lists must be disjoint,
-    // complete (cover all VPs), and contain valid indices.
-    let has_explicit = topology
-        .nodes
-        .iter()
-        .any(|n| matches!(n.vps, VpAssignment::Explicit(_)));
-    if has_explicit {
-        let mut assigned = vec![false; proc_count as usize];
-        for (i, node) in topology.nodes.iter().enumerate() {
-            if let VpAssignment::Explicit(ref vps) = node.vps {
+    // Classify nodes and build the vp-to-vnode map in one pass.
+    let mut explicit_count = 0usize;
+    let mut vp_to_vnode = vec![0u32; proc_count as usize];
+    let mut assigned = vec![false; proc_count as usize];
+
+    for (i, node) in topology.nodes.iter().enumerate() {
+        match &node.vps {
+            VpAssignment::Explicit(vps) => {
+                explicit_count += 1;
                 for &vp in vps {
                     anyhow::ensure!(
                         (vp as usize) < proc_count as usize,
@@ -76,11 +48,29 @@ pub fn validate_numa_topology(topology: &NumaTopology, proc_count: u32) -> anyho
                         "node {i}: VP {vp} assigned to multiple nodes"
                     );
                     assigned[vp as usize] = true;
+                    vp_to_vnode[vp as usize] = i as u32;
                 }
             }
+            VpAssignment::FromTopology => {}
         }
-        for (vp, is_assigned) in assigned.iter().enumerate() {
-            anyhow::ensure!(*is_assigned, "VP {vp} not assigned to any NUMA node");
+    }
+
+    if explicit_count > 0 {
+        // All nodes must be explicit — no mixing.
+        anyhow::ensure!(
+            explicit_count == num_nodes,
+            "cannot mix Explicit and FromTopology VP assignments; \
+             all nodes must use the same mode"
+        );
+        // Every VP must be assigned.
+        for (vp, &is_assigned) in assigned.iter().enumerate() {
+            anyhow::ensure!(is_assigned, "VP {vp} not assigned to any NUMA node");
+        }
+    } else {
+        // All FromTopology: assign by socket round-robin.
+        let num_nodes = num_nodes as u32;
+        for vp in 0..proc_count {
+            vp_to_vnode[vp as usize] = (vp / vps_per_socket) % num_nodes;
         }
     }
 
@@ -113,7 +103,7 @@ pub fn validate_numa_topology(topology: &NumaTopology, proc_count: u32) -> anyho
         }
     }
 
-    Ok(())
+    Ok(vp_to_vnode)
 }
 
 #[cfg(test)]
@@ -145,9 +135,14 @@ mod tests {
         }
     }
 
+    /// Helper: validate-only (uses vps_per_socket=1 as default).
+    fn validate(topo: &NumaTopology, proc_count: u32) -> anyhow::Result<Vec<u32>> {
+        resolve_numa_vp_assignment(topo, proc_count, 1)
+    }
+
     #[test]
     fn valid_single_node() {
-        validate_numa_topology(&single_node(), 4).unwrap();
+        validate(&single_node(), 4).unwrap();
     }
 
     #[test]
@@ -176,7 +171,7 @@ mod tests {
                 },
             ],
         };
-        validate_numa_topology(&topo, 4).unwrap();
+        validate(&topo, 4).unwrap();
     }
 
     #[test]
@@ -194,7 +189,7 @@ mod tests {
             ],
             distances: Vec::new(),
         };
-        validate_numa_topology(&topo, 4).unwrap();
+        validate(&topo, 4).unwrap();
     }
 
     #[test]
@@ -203,7 +198,7 @@ mod tests {
             nodes: Vec::new(),
             distances: Vec::new(),
         };
-        assert!(validate_numa_topology(&topo, 4).is_err());
+        assert!(validate(&topo, 4).is_err());
     }
 
     #[test]
@@ -221,7 +216,7 @@ mod tests {
             ],
             distances: Vec::new(),
         };
-        let err = validate_numa_topology(&topo, 4).unwrap_err();
+        let err = validate(&topo, 4).unwrap_err();
         assert!(err.to_string().contains("VP 1"), "{err}");
     }
 
@@ -240,7 +235,7 @@ mod tests {
             ],
             distances: Vec::new(),
         };
-        let err = validate_numa_topology(&topo, 4).unwrap_err();
+        let err = validate(&topo, 4).unwrap_err();
         assert!(err.to_string().contains("VP 2"), "{err}");
     }
 
@@ -253,7 +248,7 @@ mod tests {
             }],
             distances: Vec::new(),
         };
-        let err = validate_numa_topology(&topo, 4).unwrap_err();
+        let err = validate(&topo, 4).unwrap_err();
         assert!(err.to_string().contains("99"), "{err}");
     }
 
@@ -265,7 +260,7 @@ mod tests {
             dst: 5,
             distance: 20,
         });
-        assert!(validate_numa_topology(&topo, 4).is_err());
+        assert!(validate(&topo, 4).is_err());
     }
 
     #[test]
@@ -276,7 +271,7 @@ mod tests {
             dst: 0,
             distance: 5,
         });
-        assert!(validate_numa_topology(&topo, 4).is_err());
+        assert!(validate(&topo, 4).is_err());
     }
 
     #[test]
@@ -287,7 +282,7 @@ mod tests {
             dst: 0,
             distance: 15,
         });
-        let err = validate_numa_topology(&topo, 4).unwrap_err();
+        let err = validate(&topo, 4).unwrap_err();
         assert!(err.to_string().contains("must be 10"), "{err}");
     }
 
@@ -299,13 +294,13 @@ mod tests {
             dst: 0,
             distance: 10,
         });
-        validate_numa_topology(&topo, 4).unwrap();
+        validate(&topo, 4).unwrap();
     }
 
     #[test]
     fn resolve_single_node_from_topology() {
         let topo = single_node();
-        let map = resolve_vp_to_vnode(&topo, 4, 2);
+        let map = resolve_numa_vp_assignment(&topo, 4, 2).unwrap();
         // All VPs in one node: (vp / 2) % 1 == 0 for all.
         assert_eq!(map, vec![0, 0, 0, 0]);
     }
@@ -326,7 +321,7 @@ mod tests {
             distances: Vec::new(),
         };
         // vps_per_socket=2: vp0,1 -> socket 0 -> node 0; vp2,3 -> socket 1 -> node 1
-        let map = resolve_vp_to_vnode(&topo, 4, 2);
+        let map = resolve_numa_vp_assignment(&topo, 4, 2).unwrap();
         assert_eq!(map, vec![0, 0, 1, 1]);
     }
 
@@ -350,9 +345,28 @@ mod tests {
             ],
             distances: Vec::new(),
         };
-        let map = resolve_vp_to_vnode(&topo, 6, 1);
+        let map = resolve_numa_vp_assignment(&topo, 6, 1).unwrap();
         // (vp / 1) % 3: 0,1,2,0,1,2
         assert_eq!(map, vec![0, 1, 2, 0, 1, 2]);
+    }
+
+    #[test]
+    fn mixed_assignment_modes_rejected() {
+        let topo = NumaTopology {
+            nodes: vec![
+                NumaNode {
+                    mem: mem(1024 * 1024 * 1024),
+                    vps: VpAssignment::FromTopology,
+                },
+                NumaNode {
+                    mem: mem(1024 * 1024 * 1024),
+                    vps: VpAssignment::Explicit(vec![2, 3]),
+                },
+            ],
+            distances: Vec::new(),
+        };
+        let err = validate(&topo, 4).unwrap_err();
+        assert!(err.to_string().contains("cannot mix"), "{err}");
     }
 
     #[test]
@@ -370,7 +384,7 @@ mod tests {
             ],
             distances: Vec::new(),
         };
-        let map = resolve_vp_to_vnode(&topo, 4, 2);
+        let map = resolve_numa_vp_assignment(&topo, 4, 2).unwrap();
         assert_eq!(map, vec![0, 1, 1, 0]);
     }
 }
