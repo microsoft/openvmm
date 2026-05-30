@@ -910,7 +910,10 @@ impl InitializedVm {
         super::numa::validate_numa_topology(&cfg.numa, cfg.processor_topology.proc_count)
             .context("invalid NUMA topology")?;
 
-        tracing::info!(mem_size = node_mem_sizes.iter().sum(), "guest RAM config");
+        tracing::info!(
+            mem_size = node_mem_sizes.iter().sum::<u64>(),
+            "guest RAM config"
+        );
 
         let vmtime_keeper = VmTimeKeeper::new(&driver_source.simple(), VmTime::from_100ns(0));
         let vmtime_source = vmtime_keeper
