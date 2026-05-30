@@ -1461,10 +1461,11 @@ impl VtlPartition {
 
         let mut with_overlays = false;
         if let Some(hv_config) = &config.hv_config {
-            // Only request the generic hypercall intercept for VTL2/isolation.
-            // The HV rejects it on nested partitions, and other
-            // partitions don't need it.
-            if hv_config.vtl2.is_some() || config.isolation.is_isolated() {
+            // The HV rejects the generic hypercall intercept on nested
+            // partitions. Skip it when nested_virt is enabled. In all other
+            // cases, we need it for HvPostMessage at the very least
+            // (HvSignalEvent is covered by the unknown synic connection exit).
+            if !nested_virt {
                 extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::HypercallExit;
             }
             #[cfg(guest_arch = "x86_64")]
