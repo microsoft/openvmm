@@ -187,7 +187,7 @@ Examples:
     ///
     /// SRC and DST are 0-based node indices. DISTANCE is 10-255 (10 = local, 255 = unreachable).
     /// Specify each direction explicitly (not auto-symmetric).
-    #[clap(long, value_name = "SRC:DST:DIST", value_parser = parse_numa_distance, conflicts_with = "memory")]
+    #[clap(long, value_name = "SRC:DST:DIST", value_parser = parse_numa_distance, conflicts_with = "memory", requires = "numa")]
     pub numa_distance: Option<Vec<NumaDistanceCli>>,
 
     /// use shared memory segment
@@ -205,7 +205,7 @@ Examples:
         long = "memory-backing-file",
         value_name = "FILE",
         hide = true,
-        conflicts_with = "deprecated_private_memory"
+        conflicts_with_all = ["deprecated_private_memory", "numa"]
     )]
     pub deprecated_memory_backing_file: Option<PathBuf>,
 
@@ -214,7 +214,7 @@ Examples:
     #[clap(
         long,
         value_name = "DIR",
-        conflicts_with = "deprecated_memory_backing_file"
+        conflicts_with_all = ["deprecated_memory_backing_file", "numa"]
     )]
     pub restore_snapshot: Option<PathBuf>,
 
@@ -1507,6 +1507,10 @@ fn parse_vp_list(value: &str) -> anyhow::Result<Vec<u32>> {
         .with_context(|| {
             format!("vps value must use bracket syntax, e.g. [0,1,2-3], got '{value}'")
         })?;
+
+    if inner.is_empty() {
+        return Ok(Vec::new());
+    }
 
     let mut vps = Vec::new();
     for item in inner.split(',') {
@@ -5043,6 +5047,10 @@ mod tests {
 
         // Duplicate vps.
         assert!(parse_numa_node("size=1G,vps=[0],vps=[1]").is_err());
+
+        // Empty vps=[] for memory-only node.
+        let n = parse_numa_node("size=1G,vps=[]").unwrap();
+        assert_eq!(n.vps.unwrap(), Vec::<u32>::new());
     }
 
     #[test]

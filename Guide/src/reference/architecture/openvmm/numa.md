@@ -82,8 +82,9 @@ How the guest sees the NUMA topology depends on the boot mode:
 - **UEFI, PCAT, and Linux direct boot with ACPI** — ACPI tables: the
   **SRAT** maps each VP and memory range to a proximity domain (NUMA
   node), and the **SLIT** provides the inter-node distance matrix.
-- **IGVM / OpenHCL** — devicetree: each CPU and memory node carries a
-  `numa-node-id` property.
+- **IGVM / OpenHCL** — devicetree: the host provides each CPU and
+  memory node with a `numa-node-id` property (this is existing
+  infrastructure, not new to the NUMA topology feature).
 - **Linux direct boot with devicetree** — NUMA information is not yet
   included in the generated devicetree. Guests see a flat single-node
   topology regardless of the configured NUMA layout.
