@@ -12,8 +12,10 @@ use crate::MAX_QES;
 use crate::NVME_VERSION;
 use crate::NvmeControllerClient;
 use crate::PAGE_MASK;
+use crate::PAGE_SIZE;
 use crate::VENDOR_ID;
 use crate::spec;
+use crate::vf::NvmeVirtualFunction;
 use crate::workers::IoQueueEntrySizes;
 use crate::workers::NvmeWorkers;
 use chipset_device::ChipsetDevice;
@@ -30,6 +32,10 @@ use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
+use pci_core::capabilities::extended::sriov::SriovCallback;
+use pci_core::capabilities::extended::sriov::SriovConfig;
+use pci_core::capabilities::extended::sriov::SriovExtendedCapability;
+use pci_core::capabilities::extended::sriov::VfBarConfig;
 use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::BarMemoryKind;
@@ -59,6 +65,41 @@ pub struct NvmeController {
     qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
     #[inspect(flatten, mut)]
     workers: NvmeWorkers,
+
+    // SR-IOV support — None when SR-IOV is not configured.
+    #[inspect(skip)]
+    sriov: Option<SriovState>,
+    #[inspect(iter_by_index)]
+    vfs: Vec<Option<NvmeVirtualFunction>>,
+}
+
+/// Internal SR-IOV state held by the PF.
+struct SriovState {
+    /// Shared callback state — receives VF Enable change notifications
+    /// from the SR-IOV extended capability during config space writes.
+    callback: Arc<SriovCallbackState>,
+    /// PF's MSI target, cloned per-VF with different devfn.
+    msi_target: MsiTarget,
+    /// SR-IOV configuration.
+    config: NvmeSriovCaps,
+}
+
+/// Shared state between the SR-IOV callback and the NvmeController.
+/// The callback writes a pending change, and the controller drains it
+/// after each config space write completes.
+struct SriovCallbackState {
+    pending: Mutex<Option<SriovPendingChange>>,
+}
+
+struct SriovPendingChange {
+    enabled: bool,
+    num_vfs: u16,
+}
+
+impl SriovCallback for SriovCallbackState {
+    fn vf_enable_changed(&self, enabled: bool, num_vfs: u16) {
+        *self.pending.lock() = Some(SriovPendingChange { enabled, num_vfs });
+    }
 }
 
 #[derive(Inspect)]
@@ -104,6 +145,22 @@ pub struct NvmeControllerCaps {
     /// The subsystem ID, used as part of the subnqn field of the identify
     /// controller response.
     pub subsystem_id: Guid,
+    /// Optional SR-IOV configuration. When set, the controller exposes an
+    /// SR-IOV extended capability and can create VFs.
+    pub sriov: Option<NvmeSriovCaps>,
+}
+
+/// SR-IOV configuration for the NVMe controller.
+#[derive(Debug, Copy, Clone)]
+pub struct NvmeSriovCaps {
+    /// Total number of VFs the PF can support (1..=7 without ARI).
+    pub total_vfs: u16,
+    /// PCI Device ID to report for all VFs.
+    pub vf_device_id: u16,
+    /// Number of MSI-X vectors per VF.
+    pub vf_msix_count: u16,
+    /// Maximum number of IO queues per VF.
+    pub vf_max_io_queues: u16,
 }
 
 impl NvmeController {
@@ -127,7 +184,40 @@ impl NvmeController {
                 BarMemoryKind::Intercept(register_mmio.new_io_region("msix", msix.bar_len())),
             );
 
-        let cfg_space = ConfigSpaceType0Emulator::new(
+        // Build extended capabilities — add SR-IOV if configured.
+        let (extended_caps, sriov, multi_function) = if let Some(sriov_caps) = caps.sriov {
+            let callback = Arc::new(SriovCallbackState {
+                pending: Mutex::new(None),
+            });
+
+            // VFs start at function 1 with stride 1 (no ARI).
+            let sriov_cap = SriovExtendedCapability::new(
+                SriovConfig {
+                    total_vfs: sriov_caps.total_vfs,
+                    vf_device_id: sriov_caps.vf_device_id,
+                    first_vf_offset: 1,
+                    vf_stride: 1,
+                    vf_bars: Self::vf_bar_config(sriov_caps.vf_msix_count),
+                },
+                Some(callback.clone()),
+            );
+
+            let extended_caps: Vec<
+                Box<dyn pci_core::capabilities::extended::PciExtendedCapability>,
+            > = vec![Box::new(sriov_cap)];
+
+            let state = SriovState {
+                callback,
+                msi_target: msi_target.clone(),
+                config: sriov_caps,
+            };
+
+            (extended_caps, Some(state), true)
+        } else {
+            (Vec::new(), None, false)
+        };
+
+        let mut cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
                 vendor_id: VENDOR_ID,
                 device_id: DEVICE_ID,
@@ -145,9 +235,13 @@ impl NvmeController {
                     None,
                 )),
             ],
-            Vec::new(),
+            extended_caps,
             bars,
         );
+
+        if multi_function {
+            cfg_space = cfg_space.with_multi_function_bit(true);
+        }
 
         let interrupts = (0..caps.msix_count)
             .map(|i| msix.interrupt(i).unwrap())
@@ -170,7 +264,39 @@ impl NvmeController {
             registers: RegState::new(),
             workers: admin,
             qe_sizes,
+            sriov,
+            vfs: Vec::new(),
         }
+    }
+
+    /// Build VF BAR configuration for the SR-IOV capability.
+    fn vf_bar_config(vf_msix_count: u16) -> [Option<VfBarConfig>; 6] {
+        // Compute MSI-X BAR size: each vector needs 16 bytes for the table
+        // entry, plus pending bits array. Round up to power of 2 and at least
+        // PAGE_SIZE so that each VF gets its own page in the MMIO region.
+        let msix_table_size = vf_msix_count as u64 * 16;
+        let pending_bits_size = (vf_msix_count.div_ceil(32)) as u64 * 4;
+        let raw_msix_bar_size = msix_table_size + pending_bits_size;
+        let msix_bar_size = raw_msix_bar_size.next_power_of_two().max(PAGE_SIZE as u64);
+
+        let mut vf_bars: [Option<VfBarConfig>; 6] = [None; 6];
+        // VF BAR0: NVMe registers + doorbells (64-bit, prefetchable).
+        vf_bars[0] = Some(VfBarConfig {
+            size: BAR0_LEN,
+            is_64bit: true,
+            prefetchable: true,
+        });
+        // VF BAR1 consumed by 64-bit BAR0.
+        // VF BAR2: unused.
+        // VF BAR3: unused.
+        // VF BAR4: MSI-X table (64-bit, prefetchable).
+        vf_bars[4] = Some(VfBarConfig {
+            size: msix_bar_size,
+            is_64bit: true,
+            prefetchable: true,
+        });
+        // VF BAR5 consumed by 64-bit BAR4.
+        vf_bars
     }
 
     /// Returns a client for manipulating the NVMe controller at runtime.
@@ -426,6 +552,67 @@ impl NvmeController {
     pub fn fatal_error(&mut self) {
         self.registers.csts.set_cfs(true);
     }
+
+    /// Enable VFs by creating VF instances.
+    fn enable_vfs(&mut self, num_vfs: u16) {
+        let sriov = self.sriov.as_ref().expect("SR-IOV must be configured");
+        let config = &sriov.config;
+
+        self.vfs.clear();
+        self.vfs.reserve(num_vfs as usize);
+
+        for i in 0..num_vfs {
+            // VF function number: first_vf_offset + i * vf_stride.
+            // With offset=1, stride=1, VFs are at functions 1, 2, 3, ...
+            let vf_devfn = 1 + i as u8; // first_vf_offset=1, vf_stride=1
+            let vf_msi_target = sriov.msi_target.with_devfn(vf_devfn);
+
+            let vf =
+                NvmeVirtualFunction::new(config.vf_device_id, config.vf_msix_count, &vf_msi_target);
+            self.vfs.push(Some(vf));
+        }
+
+        tracing::info!(num_vfs, "SR-IOV: enabled VFs");
+    }
+
+    /// Disable all VFs.
+    fn disable_vfs(&mut self) {
+        let count = self.vfs.len();
+        self.vfs.clear();
+        tracing::info!(count, "SR-IOV: disabled VFs");
+    }
+
+    /// Drain any pending SR-IOV callback and handle VF lifecycle.
+    fn drain_sriov_pending(&mut self) {
+        let pending = self
+            .sriov
+            .as_ref()
+            .and_then(|s| s.callback.pending.lock().take());
+
+        if let Some(change) = pending {
+            if change.enabled {
+                self.enable_vfs(change.num_vfs);
+            } else {
+                self.disable_vfs();
+            }
+        }
+    }
+
+    /// Compute VF index from a PCI function number.
+    /// Returns `None` if the function does not correspond to a valid,
+    /// enabled VF.
+    fn vf_index_from_function(&self, function: u8) -> Option<usize> {
+        if function == 0 {
+            return None; // Function 0 is the PF.
+        }
+        // first_vf_offset = 1, vf_stride = 1
+        let idx = function.checked_sub(1)? as usize;
+        if idx < self.vfs.len() && self.vfs[idx].is_some() {
+            Some(idx)
+        } else {
+            None
+        }
+    }
 }
 
 impl ChangeDeviceState for NvmeController {
@@ -440,11 +627,16 @@ impl ChangeDeviceState for NvmeController {
             registers,
             qe_sizes,
             workers,
+            sriov: _,
+            vfs,
         } = self;
         workers.reset().await;
         cfg_space.reset();
         *registers = RegState::new();
         *qe_sizes.lock() = Default::default();
+        // cfg_space.reset() will reset the SR-IOV capability, which fires
+        // the callback to disable VFs. Drain it.
+        vfs.clear();
     }
 }
 
@@ -494,7 +686,57 @@ impl PciConfigSpace for NvmeController {
     }
 
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        self.cfg_space.write_u32(offset, value)
+        let result = self.cfg_space.write_u32(offset, value);
+        self.drain_sriov_pending();
+        result
+    }
+
+    fn pci_cfg_read_with_routing(
+        &mut self,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        offset: u16,
+        value: &mut u32,
+    ) -> IoResult {
+        if secondary_bus != target_bus {
+            *value = !0;
+            return IoResult::Ok;
+        }
+
+        if function == 0 {
+            return self.pci_cfg_read(offset, value);
+        }
+
+        match self.vf_index_from_function(function) {
+            Some(idx) => self.vfs[idx].as_mut().unwrap().pci_cfg_read(offset, value),
+            None => {
+                *value = !0; // No device present.
+                IoResult::Ok
+            }
+        }
+    }
+
+    fn pci_cfg_write_with_routing(
+        &mut self,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        offset: u16,
+        value: u32,
+    ) -> IoResult {
+        if secondary_bus != target_bus {
+            return IoResult::Ok;
+        }
+
+        if function == 0 {
+            return self.pci_cfg_write(offset, value);
+        }
+
+        match self.vf_index_from_function(function) {
+            Some(idx) => self.vfs[idx].as_mut().unwrap().pci_cfg_write(offset, value),
+            None => IoResult::Ok, // Silently drop writes to absent functions.
+        }
     }
 }
 

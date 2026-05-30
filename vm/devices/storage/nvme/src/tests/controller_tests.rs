@@ -48,6 +48,7 @@ fn instantiate_controller(
             msix_count: 64,
             max_io_queues: 64,
             subsystem_id: Guid::new_random(),
+            sriov: None,
         },
     );
 
