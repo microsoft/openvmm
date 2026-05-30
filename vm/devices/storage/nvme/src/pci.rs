@@ -15,12 +15,17 @@ use crate::workers::NvmeWorkers;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError::InvalidRegister;
 use chipset_device::io::IoResult;
+use chipset_device::io::deferred::DeferredWrite;
+use chipset_device::io::deferred::defer_write;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::PciConfigSpace;
+use chipset_device::poll_device::PollDevice;
 use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
+use futures::future::join_all;
+use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::InspectMut;
 use parking_lot::Mutex;
@@ -39,6 +44,7 @@ use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 use std::sync::Arc;
+use std::task::Context;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
@@ -63,10 +69,11 @@ pub struct NvmeController {
     sriov: Option<SriovState>,
     #[inspect(iter_by_index)]
     vfs: Vec<Option<NvmeVirtualFunction>>,
-    /// VFs that have been disabled but still have in-flight IOs being
-    /// drained. These are awaited in `stop()` and `reset()`.
+    /// Pending VF drain — set when VF_Enable is cleared, completed by
+    /// `poll_device` when all VF IOs have drained. Stalls the VCPU that
+    /// wrote VF_Enable=0 until drain is complete.
     #[inspect(skip)]
-    draining_vfs: Vec<NvmeVirtualFunction>,
+    vf_drain: Option<VfDrainState>,
 }
 
 /// Internal SR-IOV state held by the PF.
@@ -87,6 +94,18 @@ struct SriovState {
     guest_memory: GuestMemory,
     /// Subsystem ID for VF NVMe identity.
     subsystem_id: Guid,
+}
+
+/// State for an in-progress VF drain operation.
+///
+/// When VF_Enable is cleared, VFs are moved here and their workers are
+/// drained asynchronously via `poll_device`. When all VFs finish
+/// draining, the `DeferredWrite` is completed to resume the stalled VCPU.
+struct VfDrainState {
+    /// The VFs being drained.
+    vfs: Vec<NvmeVirtualFunction>,
+    /// Completes the deferred config-space write when drain is done.
+    deferred: DeferredWrite,
 }
 
 /// The NVMe controller's capabilities.
@@ -262,7 +281,7 @@ impl NvmeController {
             qe_sizes,
             sriov,
             vfs: Vec::new(),
-            draining_vfs: Vec::new(),
+            vf_drain: None,
         }
     }
 
@@ -354,36 +373,50 @@ impl NvmeController {
     /// Disable all VFs.
     ///
     /// Unmaps MMIO intercepts so VFs stop receiving new work, initiates
-    /// controller resets, and moves VFs to the draining list. The actual
-    /// IO drain happens asynchronously in [`stop()`](ChangeDeviceState::stop)
-    /// or [`reset()`](ChangeDeviceState::reset).
-    fn disable_vfs(&mut self) {
+    /// controller resets, and returns the VFs for async draining.
+    fn disable_vfs(&mut self) -> Vec<NvmeVirtualFunction> {
         let count = self.vfs.len();
-        // Initiate reset on each VF and move to draining list.
+        // Initiate reset on each VF and collect for draining.
+        let mut draining = Vec::new();
         for vf_opt in self.vfs.drain(..) {
             if let Some(mut vf) = vf_opt {
                 vf.initiate_reset();
-                self.draining_vfs.push(vf);
+                draining.push(vf);
             }
         }
-        tracing::info!(
-            count,
-            "SR-IOV: disabled VFs, {} draining",
-            self.draining_vfs.len()
-        );
+        tracing::info!(count, draining = draining.len(), "SR-IOV: disabled VFs");
+        draining
     }
 
     /// Drain any pending SR-IOV changes and handle VF lifecycle.
-    fn drain_sriov_pending(&mut self) {
-        let Some(change) = self.sriov.as_ref().and_then(|s| s.bar_decode.take_pending_vf_change()) else {
-            return;
-        };
+    ///
+    /// Returns `Some(IoResult::Defer(...))` if VF_Enable was cleared and the
+    /// config write must stall until VF IOs drain.
+    fn drain_sriov_pending(&mut self) -> Option<IoResult> {
+        let change = self.sriov.as_ref()?.bar_decode.take_pending_vf_change()?;
 
         if change.enabled {
-            self.enable_vfs(change.num_vfs);
+            // Don't allow VF_Enable=1 while a drain is in progress.
+            if self.vf_drain.is_some() {
+                tracelimit::warn_ratelimited!(
+                    "SR-IOV: ignoring VF_Enable=1 while VF drain is in progress"
+                );
+            } else {
+                self.enable_vfs(change.num_vfs);
+            }
         } else {
-            self.disable_vfs();
+            let draining_vfs = self.disable_vfs();
+            if !draining_vfs.is_empty() {
+                let (deferred, token) = defer_write();
+                self.vf_drain = Some(VfDrainState {
+                    vfs: draining_vfs,
+                    deferred,
+                });
+                return Some(IoResult::Defer(token));
+            }
         }
+
+        None
     }
 
     /// Compute VF index from a PCI function number.
@@ -446,12 +479,12 @@ impl ChangeDeviceState for NvmeController {
     fn start(&mut self) {}
 
     async fn stop(&mut self) {
-        // Drain any VFs that were disabled and are waiting for in-flight
-        // IOs to complete.
-        for vf in &mut self.draining_vfs {
-            vf.drain().await;
+        // Drain any pending VF drain — this can happen if the device is
+        // stopped while a VF_Enable=0 write is being processed.
+        if let Some(mut drain) = self.vf_drain.take() {
+            join_all(drain.vfs.iter_mut().map(|vf| vf.drain())).await;
+            drain.deferred.complete();
         }
-        self.draining_vfs.clear();
     }
 
     async fn reset(&mut self) {
@@ -463,20 +496,25 @@ impl ChangeDeviceState for NvmeController {
             workers,
             sriov: _,
             vfs,
-            draining_vfs,
+            vf_drain,
         } = self;
-        // Initiate reset on all active VFs, then drain them.
+        // Initiate reset on all active VFs, then drain them concurrently.
         for vf_opt in vfs.iter_mut() {
             if let Some(vf) = vf_opt {
                 vf.initiate_reset();
-                vf.drain().await;
             }
         }
-        // Drain any VFs already in teardown.
-        for vf in draining_vfs.iter_mut() {
-            vf.drain().await;
+        join_all(
+            vfs.iter_mut()
+                .filter_map(|opt| opt.as_mut())
+                .map(|vf| vf.drain()),
+        )
+        .await;
+        // Drain any pending VF drain from a VF_Enable=0 write.
+        if let Some(mut drain) = vf_drain.take() {
+            join_all(drain.vfs.iter_mut().map(|vf| vf.drain())).await;
+            drain.deferred.complete();
         }
-        draining_vfs.clear();
 
         workers.reset().await;
         cfg_space.reset();
@@ -495,6 +533,28 @@ impl ChipsetDevice for NvmeController {
 
     fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
         Some(self)
+    }
+
+    fn supports_poll_device(&mut self) -> Option<&mut dyn PollDevice> {
+        Some(self)
+    }
+}
+
+impl PollDevice for NvmeController {
+    fn poll_device(&mut self, cx: &mut Context<'_>) {
+        if let Some(drain) = &mut self.vf_drain {
+            // Poll every VF — must not short-circuit so that each VF
+            // registers cx.waker() with its underlying mesh channel.
+            let mut all_drained = true;
+            for vf in &mut drain.vfs {
+                all_drained &= vf.poll_drain(cx);
+            }
+            if all_drained {
+                let drain = self.vf_drain.take().unwrap();
+                drain.deferred.complete();
+                tracing::info!("SR-IOV: VF drain complete, VCPU resumed");
+            }
+        }
     }
 }
 
@@ -569,7 +629,9 @@ impl PciConfigSpace for NvmeController {
 
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
         let result = self.cfg_space.write_u32(offset, value);
-        self.drain_sriov_pending();
+        if let Some(defer) = self.drain_sriov_pending() {
+            return defer;
+        }
         result
     }
 

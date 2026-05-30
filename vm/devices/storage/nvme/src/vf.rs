@@ -311,6 +311,22 @@ impl NvmeVirtualFunction {
         self.workers = None;
     }
 
+    /// Non-blocking poll for drain completion. Returns `true` when all
+    /// workers have drained. Drops workers when done.
+    ///
+    /// Registers `cx.waker()` with the underlying channel so the caller
+    /// is woken when the drain makes progress.
+    pub fn poll_drain(&mut self, cx: &mut std::task::Context<'_>) -> bool {
+        let drained = match &mut self.workers {
+            Some(workers) => workers.poll_drain(cx),
+            None => true,
+        };
+        if drained {
+            self.workers = None;
+        }
+        drained
+    }
+
     /// Reads from the VF's MSI-X BAR.
     pub fn read_msix(&mut self, offset: u64, data: &mut [u8]) -> IoResult {
         read_as_u32_chunks(offset, data, |offset| self.msix.read_u32(offset));

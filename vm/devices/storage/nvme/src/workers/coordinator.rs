@@ -206,6 +206,40 @@ impl NvmeWorkers {
             }
         }
     }
+
+    /// Non-blocking poll for drain completion. Returns `true` when workers
+    /// have reached the `Disabled` state. Drives the state machine forward
+    /// from any state without blocking.
+    ///
+    /// Registers `cx.waker()` with the underlying channel so `poll_device`
+    /// is woken when the drain makes progress.
+    pub fn poll_drain(&mut self, cx: &mut std::task::Context<'_>) -> bool {
+        loop {
+            match &mut self.state {
+                EnableState::Disabled => return true,
+                EnableState::Enabling(recv) => {
+                    match std::pin::Pin::new(recv).poll(cx) {
+                        std::task::Poll::Ready(_) => {
+                            self.state = EnableState::Enabled;
+                            // Fall through to Enabled → controller_reset.
+                        }
+                        std::task::Poll::Pending => return false,
+                    }
+                }
+                EnableState::Enabled => {
+                    self.controller_reset();
+                    // Fall through to Resetting.
+                }
+                EnableState::Resetting(recv) => match std::pin::Pin::new(recv).poll(cx) {
+                    std::task::Poll::Ready(_) => {
+                        self.state = EnableState::Disabled;
+                        return true;
+                    }
+                    std::task::Poll::Pending => return false,
+                },
+            }
+        }
+    }
 }
 
 /// Client for modifying the NVMe controller state at runtime.
