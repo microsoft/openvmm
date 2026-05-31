@@ -421,7 +421,7 @@ fn assign_subtree(
 
     // Ensure bridge entries exist even if they have no BARs in this pool
     // (needed for bridges that only have resources in the other pool).
-    for dev in &*devices {
+    for dev in devices {
         if dev.is_bridge {
             let entry = find_or_create_entry(entries, dev.bus, dev.device, dev.function);
             entry.secondary_bus = dev.secondary_bus;
