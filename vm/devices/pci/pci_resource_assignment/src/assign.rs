@@ -220,7 +220,7 @@ fn compute_subtree_requirement(devices: &[DiscoveredDevice]) -> SubtreeRequireme
         // SR-IOV PF: account for VF BAR space (TotalVFs * per-VF BAR size).
         if let Some(sriov) = &dev.sriov {
             for bar in &sriov.vf_bars {
-                let total_size = bar.size * sriov.total_vfs as u64;
+                let total_size = bar.size.saturating_mul(sriov.total_vfs as u64);
                 demands.push(Demand {
                     size: total_size,
                     // VF BAR region base must be aligned to per-VF BAR size

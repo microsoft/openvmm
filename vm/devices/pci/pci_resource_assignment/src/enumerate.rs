@@ -344,9 +344,14 @@ async fn probe_sriov(
                 return None;
             }
 
-            // Compute the BDF of the last VF.
-            let pf_rid = (bus as u32) << 8 | devfn as u32;
-            let last_vf_rid = pf_rid + vf_offset as u32 + (total_vfs - 1) as u32 * vf_stride as u32;
+            // Compute the BDF of the last VF. Use checked arithmetic
+            // since these values come from hardware and could overflow.
+            // A routing ID is 16 bits (bus:8 | devfn:8).
+            let pf_rid = (bus as u16) << 8 | devfn as u16;
+            let last_vf_rid = (total_vfs - 1)
+                .checked_mul(vf_stride)?
+                .checked_add(vf_offset)?
+                .checked_add(pf_rid)?;
             let max_vf_bus = (last_vf_rid >> 8) as u16;
 
             // Probe VF BAR sizes (same write-all-ones/readback technique).
