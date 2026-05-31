@@ -167,9 +167,22 @@ message PropertiesVMRequest {
     repeated PropertiesType types = 1;
 }
 
+enum VmState {
+    Uninitialized = 0;
+    Paused = 1;
+    Running = 2;
+    Halted = 3;
+}
+
 message PropertiesVMResponse {
+    // Not yet populated; these require a worker-side stats source and are
+    // left unset until then.
     MemoryStats memory_stats = 1;
     ProcessorStats processor_stats = 2;
+    VmState state = 3;
+    // Present when state is Halted, e.g. "PowerOff" or "TripleFault". Absent
+    // otherwise, so callers can distinguish "no reason" from an empty string.
+    optional string halt_reason = 4;
 }
 
 message CapabilitiesVMResponse {
