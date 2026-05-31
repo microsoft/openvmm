@@ -88,8 +88,8 @@ pub(crate) async fn assign_pci_resources_inner(
     cfg: &mut impl PciConfigAccess,
     params: &AssignmentParams,
 ) -> Result<AssignmentResult, AssignmentError> {
-    let devices = enumerate::enumerate_and_probe(cfg, params).await?;
-    let assignments = assign::assign_addresses(&devices, params)?;
+    let mut devices = enumerate::enumerate_and_probe(cfg, params).await?;
+    let assignments = assign::assign_addresses(&mut devices, params)?;
     assign::program_assignments(cfg, &assignments).await;
     Ok(assignments)
 }

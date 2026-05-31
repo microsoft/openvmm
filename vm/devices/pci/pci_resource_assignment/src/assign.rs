@@ -46,7 +46,8 @@ fn find_or_create_entry(
 }
 
 /// Resource requirement for a subtree (bridge or root).
-struct SubtreeRequirement {
+#[derive(Debug, Clone)]
+pub(crate) struct SubtreeRequirement {
     /// Total aligned size needed in the mem32 (non-prefetchable) pool.
     mem32: u64,
     /// Total aligned size needed in the mem64 (prefetchable) pool.
@@ -78,12 +79,14 @@ struct SubtreeRequirement {
 ///
 /// Returns an error if any BAR cannot be placed.
 pub fn assign_addresses(
-    devices: &[DiscoveredDevice],
+    devices: &mut [DiscoveredDevice],
     params: &AssignmentParams,
 ) -> Result<AssignmentResult, AssignmentError> {
     let mut entries = Vec::new();
 
     // Step 1: Bottom-up — compute total resource requirements.
+    // This also stores per-bridge requirements on the DiscoveredDevice
+    // nodes so that the assignment pass can read them without recomputing.
     let root_req = compute_subtree_requirement(devices);
 
     // Step 2: Top-down — allocate from apertures and assign addresses.
@@ -116,6 +119,7 @@ pub fn assign_addresses(
         }
 
         assign_subtree(devices, false, base, &mut entries);
+
         mem32_end = Some(base + root_req.mem32);
     }
 
@@ -187,7 +191,7 @@ fn is_mem64_bar(bar: &crate::enumerate::DiscoveredBar) -> bool {
 
 /// Bottom-up: compute the total aligned resource requirement for a list
 /// of devices (which may be the root level or children behind a bridge).
-fn compute_subtree_requirement(devices: &[DiscoveredDevice]) -> SubtreeRequirement {
+fn compute_subtree_requirement(devices: &mut [DiscoveredDevice]) -> SubtreeRequirement {
     let mut mem32: u64 = 0;
     let mut mem64: u64 = 0;
 
@@ -232,7 +236,7 @@ fn compute_subtree_requirement(devices: &[DiscoveredDevice]) -> SubtreeRequireme
         }
 
         if dev.is_bridge {
-            let child_req = compute_subtree_requirement(&dev.children);
+            let child_req = compute_subtree_requirement(&mut dev.children);
             if child_req.mem32 > 0 {
                 let size = align_up(child_req.mem32, BRIDGE_WINDOW_ALIGN);
                 demands.push(Demand {
@@ -249,6 +253,7 @@ fn compute_subtree_requirement(devices: &[DiscoveredDevice]) -> SubtreeRequireme
                     is_mem64: true,
                 });
             }
+            dev.subtree_req = Some(child_req);
         }
     }
 
@@ -283,7 +288,7 @@ fn compute_subtree_requirement(devices: &[DiscoveredDevice]) -> SubtreeRequireme
 /// the given base address. `alloc_64bit` selects which pool (mem32 or
 /// mem64) we are assigning.
 fn assign_subtree(
-    devices: &[DiscoveredDevice],
+    devices: &mut [DiscoveredDevice],
     alloc_64bit: bool,
     base: u64,
     entries: &mut Vec<AssignmentEntry>,
@@ -342,7 +347,10 @@ fn assign_subtree(
         }
 
         if dev.is_bridge {
-            let child_req = compute_subtree_requirement(&dev.children);
+            let child_req = dev
+                .subtree_req
+                .as_ref()
+                .expect("subtree_req must be populated by compute_subtree_requirement");
             let (size, alignment) = if alloc_64bit {
                 (child_req.mem64, child_req.align64)
             } else {
@@ -375,34 +383,34 @@ fn assign_subtree(
 
     // Bump-allocate.
     let mut offset = base;
-    for (size, demand) in &demands {
+    for &(size, ref demand) in &demands {
         // BARs are naturally aligned to their size (always a power of two).
         // Bridge subtrees are aligned to the max of bridge window
         // granularity and the largest internal alignment requirement.
-        let alignment = match demand {
-            Demand::Bar { .. } => *size,
-            Demand::SriovVfBars { alignment, .. } => *alignment,
-            Demand::BridgeSubtree { alignment, .. } => *alignment,
+        let alignment = match *demand {
+            Demand::Bar { .. } => size,
+            Demand::SriovVfBars { alignment, .. } => alignment,
+            Demand::BridgeSubtree { alignment, .. } => alignment,
         };
         offset = align_up(offset, alignment);
 
-        match demand {
+        match *demand {
             Demand::Bar {
                 dev_idx,
                 bar_index,
                 is_64bit,
             } => {
-                let dev = &devices[*dev_idx];
+                let dev = &devices[dev_idx];
                 let entry = find_or_create_entry(entries, dev.bus, dev.device, dev.function);
                 entry.bars.push(BarAssignment {
-                    index: *bar_index,
+                    index: bar_index,
                     address: offset,
-                    size: *size,
-                    is_64bit: *is_64bit,
+                    size,
+                    is_64bit,
                 });
             }
             Demand::BridgeSubtree { dev_idx, .. } => {
-                let dev = &devices[*dev_idx];
+                let dev = &mut devices[dev_idx];
                 let entry = find_or_create_entry(entries, dev.bus, dev.device, dev.function);
                 entry.secondary_bus = dev.secondary_bus;
                 entry.subordinate_bus = dev.subordinate_bus;
@@ -419,7 +427,7 @@ fn assign_subtree(
                 }
 
                 // Recurse into children with this bridge's carved-out range.
-                assign_subtree(&dev.children, alloc_64bit, offset, entries);
+                assign_subtree(&mut dev.children, alloc_64bit, offset, entries);
             }
             Demand::SriovVfBars { .. } => {
                 // VF BAR space is reserved but not explicitly assigned.

@@ -35,6 +35,10 @@ pub struct DiscoveredDevice {
     pub subordinate_bus: Option<u8>,
     /// For SR-IOV PFs: total VFs and per-VF BAR sizes.
     pub(crate) sriov: Option<DiscoveredSriov>,
+    /// Computed during the sizing pass for bridges: the total resource
+    /// requirement of this bridge's children. Avoids recomputation during
+    /// address assignment.
+    pub(crate) subtree_req: Option<crate::assign::SubtreeRequirement>,
 }
 
 /// A discovered BAR with its size.
@@ -141,6 +145,7 @@ async fn scan_bus(
                 secondary_bus: None,
                 subordinate_bus: None,
                 sriov: None,
+                subtree_req: None,
             };
 
             if is_bridge {
