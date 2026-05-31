@@ -330,7 +330,7 @@ fn assign_subtree(
         if let Some(sriov) = &dev.sriov {
             for bar in &sriov.vf_bars {
                 if is_mem64_bar(bar) == alloc_64bit {
-                    let total_size = bar.size * sriov.total_vfs as u64;
+                    let total_size = bar.size.saturating_mul(sriov.total_vfs as u64);
                     demands.push((
                         total_size,
                         Demand::SriovVfBars {
