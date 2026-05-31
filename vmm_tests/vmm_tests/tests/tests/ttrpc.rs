@@ -117,6 +117,38 @@ fn test_ttrpc_interface(
             mesh_rpc::client::UnixDialier::new(driver.clone(), ttrpc_path),
         );
 
+        let query_props = || {
+            client.call().start(
+                vmservice::Vm::PropertiesVm,
+                vmservice::PropertiesVmRequest { types: Vec::new() },
+            )
+        };
+
+        // CapabilitiesVm and PropertiesVm answer without a created VM, so
+        // probe them before creating anything.
+        let caps = client
+            .call()
+            .start(vmservice::Vm::CapabilitiesVm, ())
+            .await
+            .unwrap();
+        assert!(
+            caps.supported_resources.iter().any(|r| r.resource
+                == vmservice::capabilities_vm_response::Resource::Scsi as i32
+                && r.add),
+            "SCSI add should be advertised as a supported resource"
+        );
+        assert!(
+            !caps.supported_guest_os.is_empty(),
+            "expected at least one supported guest OS"
+        );
+
+        let props = query_props().await.unwrap();
+        assert_eq!(
+            props.state,
+            vmservice::VmState::Uninitialized as i32,
+            "no VM created yet, expected UNINITIALIZED"
+        );
+
         // Backing files for the PCIe storage devices created on iteration 0
         // (virtio-blk and an NVMe namespace). They are plain raw disks.
         let nvme_disk_path = tempdir.path().join("nvme.img");
@@ -342,6 +374,18 @@ fn test_ttrpc_interface(
                 .await
                 .unwrap();
 
+            let props = query_props().await.unwrap();
+            assert_eq!(
+                props.state,
+                vmservice::VmState::Paused as i32,
+                "VM should be PAUSED immediately after CreateVm"
+            );
+            // Stats aren't wired up yet; they must be unset, not fabricated zeros.
+            assert!(
+                props.memory_stats.is_none() && props.processor_stats.is_none(),
+                "memory/processor stats should be unset, not zeroed"
+            );
+
             // Exercise the Consomme port-forwarding modify paths. Sending an
             // invalid protocol value drives the request through the
             // `ModifyResource(Update|Remove)` -> `consomme_rpc` wiring and the
@@ -474,6 +518,17 @@ fn test_ttrpc_interface(
                         .unwrap();
 
                     waiter.await.unwrap();
+
+                    let props = query_props().await.unwrap();
+                    assert_eq!(
+                        props.state,
+                        vmservice::VmState::Halted as i32,
+                        "guest powered off, expected HALTED"
+                    );
+                    assert!(
+                        props.halt_reason.as_deref().is_some_and(|r| !r.is_empty()),
+                        "HALTED state should carry a halt_reason"
+                    );
 
                     if i == 0 {
                         client
