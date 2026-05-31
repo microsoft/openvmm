@@ -325,11 +325,11 @@ controllers.
 ```bash
 # Default: no subchannels (all I/O on primary channel)
 openvmm --vmbus-scsi id=scsi0 \
-  --disk memdiff:file:disk.vhd,controller=scsi0
+  --disk memdiff:file:disk.vhd,on=scsi0
 
 # 4 subchannels (5 total channels: 1 primary + 4 sub)
 openvmm --vmbus-scsi id=scsi0,sub_channels=4 \
-  --disk memdiff:file:disk.vhd,controller=scsi0
+  --disk memdiff:file:disk.vhd,on=scsi0
 ```
 
 The enforced maximum is 1023 (one less than `MAX_PROCESSOR_COUNT`).

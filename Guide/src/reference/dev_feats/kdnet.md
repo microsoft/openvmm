@@ -24,13 +24,13 @@ for the network transport:
 # Without OpenHCL
 cargo run -- --uefi --hv --net consomme \
   --vmbus-scsi id=scsi0 \
-  --disk memdiff:file:path/to/windows.vhdx,controller=scsi0
+  --disk memdiff:file:path/to/windows.vhdx,on=scsi0
 
 # With OpenHCL
 cargo run -- --uefi --hv --vtl2 --net consomme \
   --igvm path/to/openhcl.igvm \
   --vmbus-scsi id=scsi0 \
-  --disk memdiff:file:path/to/windows.vhdx,controller=scsi0
+  --disk memdiff:file:path/to/windows.vhdx,on=scsi0
 ```
 
 ### Known Issues

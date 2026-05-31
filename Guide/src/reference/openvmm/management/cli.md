@@ -76,9 +76,9 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
 * `--vmbus-scsi id=<name>[,sub_channels=<N>][,vtl2]`: Creates a
-  named VMBus SCSI controller. Use with `--disk ...,controller=<name>` to
+  named VMBus SCSI controller. Use with `--disk ...,on=<name>` to
   attach disks.
-* `--disk file:<DISK>,controller=<name>`: Attaches a disk to the named
+* `--disk file:<DISK>,on=<name>`: Attaches a disk to the named
   controller. The `DISK` argument can be:
   * A flat binary disk image
   * A VHD file with an extension of .vhd (Windows host only)
@@ -86,7 +86,7 @@ as well as the generated CLI help (via `cargo run -- --help`).
 
   On Linux, raw files and block devices use the `disk_blockdevice` backend
   (io_uring-based async I/O) by default. Append `;direct` to the path to
-  bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct,controller=scsi0`.
+  bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct,on=scsi0`.
 * `--private-memory`, `--prefetch`, `--thp`, and
   `--memory-backing-file <PATH>`: Deprecated aliases for `--memory`
   parameters. Prefer `shared=off`, `prefetch=on`, `thp=on`, and
@@ -227,7 +227,7 @@ PCIe root port. The syntax varies slightly between device types:
 
 ```sh
 --virtio-blk file:/path/to/disk.raw,pcie_port=rp0
---nvme-pci id=nvme0,pcie_port=rp0 --disk file:/path/to/disk.raw,controller=nvme0
+--nvme-pci id=nvme0,pcie_port=rp0 --disk file:/path/to/disk.raw,on=nvme0
 ```
 
 **CXL test endpoint** (comma-separated option): `--cxl-test`

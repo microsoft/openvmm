@@ -98,7 +98,7 @@ The [Running OpenHCL with OpenVMM](../../../user_guide/openhcl/run/openvmm.md) p
 # Offer NVMe into VTL2 and expose storvsp-backed SCSI to VTL0
 --nvme-pci id=nvme0,vpci,vtl2 \
   --openhcl-controller id=relay0,type=scsi \
-  --disk mem:1G,controller=nvme0,relay=relay0 --vmbus-redirect
+  --disk mem:1G,on=nvme0,relay=relay0 --vmbus-redirect
 ```
 
 These examples show three separate decisions:

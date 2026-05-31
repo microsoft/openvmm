@@ -52,7 +52,7 @@ To fix this, **explicitly pass the firmware** using `--uefi-firmware`:
 ```shell
 openvmm --uefi --uefi-firmware path/to/MSVM.fd \
   --vmbus-scsi id=scsi0 \
-  --disk memdiff:path/to/disk.vhdx,controller=scsi0
+  --disk memdiff:path/to/disk.vhdx,on=scsi0
 ```
 
 If you ran `cargo xflowey restore-packages`, the firmware is at:
@@ -128,7 +128,7 @@ xflowey restore-packages`.
 ```shell
 cargo run -- --uefi \
   --vmbus-scsi id=scsi0 \
-  --disk memdiff:path/to/windows.vhdx,controller=scsi0 \
+  --disk memdiff:path/to/windows.vhdx,on=scsi0 \
   --gfx
 ```
 

@@ -118,7 +118,7 @@ cargo run -- \
   --vmbus-redirect \
   --nvme-pci id=nvme0,vpci,vtl2 \
   --openhcl-controller id=relay0,type=scsi \
-  --disk mem:1G,controller=nvme0,relay=relay0
+  --disk mem:1G,on=nvme0,relay=relay0
 ```
 
 This command creates a named NVMe controller (`nvme0`) offered to VTL2 via VPCI,
@@ -128,7 +128,7 @@ attaches a 1 GB memory-backed disk to `nvme0` relayed through `relay0`.
 ```admonish note
 Older examples use `--disk mem:1G,uh-nvme` as a shorthand. That syntax is
 deprecated; use `--nvme-pci`, `--openhcl-controller`, and
-`--disk controller=...,relay=...` instead.
+`--disk on=...,relay=...` instead.
 ```
 
 The guest-visible and backing sides remain distinct in the VTL2 settings model:
@@ -194,7 +194,7 @@ cargo run -- \
   --vmbus-redirect \
   --vmbus-scsi id=scsi0,vtl2 \
   --openhcl-controller id=relay0,type=scsi \
-  --disk file:ubuntu.img,controller=scsi0,relay=relay0
+  --disk file:ubuntu.img,on=scsi0,relay=relay0
 ```
 
 The guest-visible controller family (SCSI) happens to match the backing family
@@ -206,7 +206,7 @@ LUN on the backing controller to a guest LUN on the guest-visible controller.
 ```admonish note
 Older examples use `--disk file:ubuntu.img,uh` as a shorthand. That syntax is
 deprecated; use `--vmbus-scsi`, `--openhcl-controller`, and
-`--disk controller=...,relay=...` instead.
+`--disk on=...,relay=...` instead.
 ```
 
 In the VTL2 settings model, this path looks like:

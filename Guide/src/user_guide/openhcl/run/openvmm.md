@@ -94,7 +94,7 @@ You can assign a SCSI disk to VTL2 and have OpenHCL reassign it to VTL0:
 ```bash
 --vmbus-scsi id=scsi0,vtl2 \
   --openhcl-controller id=relay0,type=scsi \
-  --disk file:ubuntu.img,controller=scsi0,relay=relay0 --vmbus-redirect
+  --disk file:ubuntu.img,on=scsi0,relay=relay0 --vmbus-redirect
 ```
 
 ### Assigning NVME devices to VTL2
@@ -105,5 +105,5 @@ VMBus scsi device (see [Storage Translation](../../../reference/architecture/ope
 ```bash
 --nvme-pci id=nvme0,vpci,vtl2 \
   --openhcl-controller id=relay0,type=scsi \
-  --disk mem:1G,controller=nvme0,relay=relay0 --vmbus-redirect
+  --disk mem:1G,on=nvme0,relay=relay0 --vmbus-redirect
 ```
