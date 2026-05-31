@@ -433,10 +433,11 @@ pub mod caps {
         /// variants on an as-needed basis!
         pub enum CapabilityId: u8 {
             #![expect(missing_docs)] // self explanatory variants
-            MSI             = 0x05,
-            VENDOR_SPECIFIC = 0x09,
-            PCI_EXPRESS     = 0x10,
-            MSIX            = 0x11,
+            POWER_MANAGEMENT = 0x01,
+            MSI              = 0x05,
+            VENDOR_SPECIFIC  = 0x09,
+            PCI_EXPRESS      = 0x10,
+            MSIX             = 0x11,
         }
     }
 

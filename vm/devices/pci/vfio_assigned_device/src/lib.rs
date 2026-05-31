@@ -44,6 +44,26 @@ use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::vm_task::VmTaskDriverSource;
 
+/// Abstraction over PCI config space reads, allowing the capability
+/// discovery logic to be tested without a real VFIO device.
+trait ConfigSpaceRead {
+    /// Read a DWORD from PCI config space at the given DWORD-aligned offset.
+    fn read_u32(&self, offset: u16) -> anyhow::Result<u32>;
+}
+
+/// [`ConfigSpaceRead`] backed by a VFIO device file descriptor.
+struct VfioConfigSpaceReader<'a> {
+    file: &'a std::fs::File,
+    config_offset: u64,
+    config_size: u64,
+}
+
+impl ConfigSpaceRead for VfioConfigSpaceReader<'_> {
+    fn read_u32(&self, offset: u16) -> anyhow::Result<u32> {
+        read_config_u32(self.file, self.config_offset, self.config_size, offset)
+    }
+}
+
 /// VFIO BAR region information (offset and size within the device fd).
 #[derive(Debug, Clone, Copy, Inspect)]
 struct VfioBarInfo {
@@ -159,6 +179,16 @@ pub(crate) struct VfioAssignedPciDevice {
 
     /// Current MMIO-enabled state (from PCI Command register bit 1).
     mmio_enabled: bool,
+
+    /// Offset of the PMCSR register (PM capability offset + 4), if the
+    /// device has a PCI Power Management capability. Used to intercept
+    /// power state transitions and unmap BARs in non-D0 states.
+    #[inspect(hex)]
+    pm_csr_offset: Option<u16>,
+
+    /// Whether the device is currently in D0 power state. When false,
+    /// BARs are unmapped from guest address space per PCI spec §3.2.5.
+    in_d0: bool,
 
     /// Decoded BAR mappings when MMIO is enabled.
     active_bars: BarMappings,
@@ -343,14 +373,19 @@ impl VfioAssignedPciDevice {
                 .with_context(|| format!("failed to query VFIO mmap areas for BAR {i}"))?;
         }
 
-        // Discover MSI-X capability from physical device config space.
-        // This must happen BEFORE creating direct BAR mappings so we can
-        // exclude the MSI-X table/PBA regions.
-        let msix = discover_msix(vfio_device.as_ref(), config_offset, config_size, msi_target);
-
-        // Build the config space patch table: hides extended capabilities
-        // (SR-IOV, ARI, Resizable BAR) and clears the multi-function bit.
-        let config_patches = build_config_patches(vfio_device.as_ref(), config_offset, config_size);
+        // Walk both the standard and extended PCI capability chains in a
+        // single pass. This discovers MSI-X (for emulation) and PM (for
+        // BAR unmap on D-state transitions), and builds the config patch
+        // table that hides capabilities the guest shouldn't see.
+        let config_reader = VfioConfigSpaceReader {
+            file: vfio_device.as_ref(),
+            config_offset,
+            config_size,
+        };
+        let caps = discover_capabilities(&config_reader, msi_target);
+        let msix = caps.msix;
+        let pm_csr_offset = caps.pm_csr_offset;
+        let config_patches = caps.config_patches;
 
         // Cache whether the device supports VFIO_DEVICE_RESET so we can skip
         // the ioctl on every VM reset for devices that don't support it.
@@ -423,6 +458,8 @@ impl VfioAssignedPciDevice {
             bars: bar_flags, // Ignore the current BAR values--we don't care what the device thinks the BARs are.
             bar_flags,
             mmio_enabled: false,
+            pm_csr_offset,
+            in_d0: true,
             active_bars: BarMappings::default(),
             bar_mmio_controls,
             bar_regions,
@@ -557,7 +594,7 @@ impl VfioAssignedPciDevice {
     /// whose address actually changed. When MMIO is disabled, all BARs are
     /// treated as unmapped so the diff naturally tears everything down.
     fn update_bar_mappings(&mut self) {
-        let new_bars = if self.mmio_enabled {
+        let new_bars = if self.mmio_enabled && self.in_d0 {
             BarMappings::parse(&self.bars, &self.bar_masks)
         } else {
             BarMappings::default()
@@ -706,53 +743,90 @@ fn page_size() -> u64 {
     vfio_sys::host_page_size()
 }
 
-/// Walk the PCI capabilities list to find an MSI-X capability. If found,
-/// create an [`MsixEmulator`] and return the discovery info.
-fn discover_msix(
-    device_file: &std::fs::File,
-    config_offset: u64,
-    config_size: u64,
+/// Results from walking both the standard and extended PCI capability chains.
+struct DiscoveredCapabilities {
+    /// MSI-X emulation state, if the device has an MSI-X capability.
+    msix: Option<MsixEmulationState>,
+    /// Offset of the PMCSR register (PM cap offset + 4), if the device has
+    /// a Power Management capability.
+    pm_csr_offset: Option<u16>,
+    /// Config space patch table for filtering capabilities from the guest.
+    config_patches: BTreeMap<u16, ConfigPatch>,
+}
+
+/// Walk both the standard (0x34+) and extended (0x100+) PCI capability chains
+/// to discover capabilities we need to emulate or intercept, and build the
+/// config space patch table for filtering.
+///
+/// Standard cap chain: discovers MSI-X (for software emulation) and PM (for
+/// BAR unmap on D-state transitions).
+///
+/// Extended cap chain: builds patches to hide SR-IOV, ARI, Resizable BAR
+/// from the guest.
+fn discover_capabilities(
+    config: &dyn ConfigSpaceRead,
     msi_target: &MsiTarget,
-) -> Option<MsixEmulationState> {
-    // Read the Capabilities Pointer. Bottom 2 bits are reserved per PCI spec §6.7.
-    let cap_ptr_dword = read_config_u32(
-        device_file,
-        config_offset,
-        config_size,
-        HeaderType00::RESERVED_CAP_PTR.0,
-    )
-    .ok()?;
+) -> DiscoveredCapabilities {
+    let mut result = DiscoveredCapabilities {
+        msix: None,
+        pm_csr_offset: None,
+        config_patches: BTreeMap::new(),
+    };
+
+    // Clear multi-function bit so the device appears as single-function.
+    result.config_patches.insert(
+        HeaderType00::BIST_HEADER.0,
+        ConfigPatch {
+            mask: cfg_space::BistHeader::new()
+                .with_multi_function(true)
+                .into(),
+            value: 0,
+        },
+    );
+
+    // --- Standard capability chain (offsets < 0x100) ---
+
+    let cap_ptr_dword = match config.read_u32(HeaderType00::RESERVED_CAP_PTR.0) {
+        Ok(v) => v,
+        Err(_) => return result,
+    };
     let mut cap_ptr = (cap_ptr_dword & 0xFC) as u16; // mask off reserved bits [1:0]
     let mut iterations = 0usize;
 
     while cap_ptr != 0 {
         // Guard against malformed capability lists (cycles or excessive length).
-        // PCI config space is 256 bytes; capabilities are at least 4 bytes each.
         const MAX_CAPS: usize = 48;
         if iterations >= MAX_CAPS {
             tracing::warn!("PCI capability list exceeded {MAX_CAPS} entries, aborting walk");
-            return None;
+            break;
         }
         iterations += 1;
 
-        let header = read_config_u32(device_file, config_offset, config_size, cap_ptr).ok()?;
+        let header = match config.read_u32(cap_ptr) {
+            Ok(v) => v,
+            Err(_) => break,
+        };
         let cap_id = (header & 0xFF) as u8;
         let next_ptr = ((header >> 8) & 0xFC) as u16;
 
-        if cap_id == caps::CapabilityId::MSIX.0 {
+        if cap_id == caps::CapabilityId::MSIX.0 && result.msix.is_none() {
             // Message Control is in the upper 16 bits of the first DWORD.
             let msg_ctrl = (header >> 16) as u16;
             let table_count = (msg_ctrl & 0x7FF) + 1;
 
             // Table Offset/BIR (second DWORD of the capability).
-            let table_dword =
-                read_config_u32(device_file, config_offset, config_size, cap_ptr + 4).ok()?;
+            let table_dword = match config.read_u32(cap_ptr + 4) {
+                Ok(v) => v,
+                Err(_) => break,
+            };
             let table_bir = (table_dword & 0x7) as u8;
             let table_offset = table_dword & !0x7;
 
             // PBA Offset/BIR (third DWORD of the capability).
-            let pba_dword =
-                read_config_u32(device_file, config_offset, config_size, cap_ptr + 8).ok()?;
+            let pba_dword = match config.read_u32(cap_ptr + 8) {
+                Ok(v) => v,
+                Err(_) => break,
+            };
             let pba_bir = (pba_dword & 0x7) as u8;
             let pba_offset = pba_dword & !0x7;
 
@@ -772,7 +846,7 @@ fn discover_msix(
                 "discovered MSI-X capability"
             );
 
-            return Some(MsixEmulationState {
+            result.msix = Some(MsixEmulationState {
                 emulator,
                 capability: Box::new(msix_cap),
                 cap_offset: cap_ptr,
@@ -783,141 +857,93 @@ fn discover_msix(
                 pba_range: pba_offset as u64..pba_offset as u64 + pba_size,
                 enabled: false,
             });
+        } else if cap_id == caps::CapabilityId::POWER_MANAGEMENT.0 && result.pm_csr_offset.is_none()
+        {
+            let pmcsr_offset = cap_ptr + 4;
+            tracing::info!(
+                cap_offset = cap_ptr,
+                pmcsr_offset,
+                "discovered PCI Power Management capability"
+            );
+            result.pm_csr_offset = Some(pmcsr_offset);
         }
 
         cap_ptr = next_ptr;
     }
 
-    None
-}
+    // --- Extended capability chain (offsets 0x100+) ---
 
-/// Build the config-space patch table for a VFIO assigned device.
-///
-/// This walks the extended capability chain and inserts patches to:
-/// - Clear the multi-function bit in the Header Type register
-/// - Null out extended capabilities that don't make sense in a virtual topology
-///   (SR-IOV, ARI, Resizable BAR)
-///
-/// The resulting patches are applied on every config read via
-/// `(hw_value & !mask) | (value & mask)`.
-fn build_config_patches(
-    device_file: &std::fs::File,
-    config_offset: u64,
-    config_size: u64,
-) -> BTreeMap<u16, ConfigPatch> {
-    let mut patches = BTreeMap::new();
+    // Check if extended caps are reachable by probing the first offset.
+    if config.read_u32(caps::EXT_CAP_START).is_ok() {
+        let mut offset = caps::EXT_CAP_START;
+        let mut iterations = 0usize;
 
-    // Clear multi-function bit so the device appears as single-function.
-    patches.insert(
-        HeaderType00::BIST_HEADER.0,
-        ConfigPatch {
-            mask: cfg_space::BistHeader::new()
-                .with_multi_function(true)
-                .into(),
-            value: 0,
-        },
-    );
-
-    // Walk the extended capability chain (starting at offset 0x100) and
-    // insert patches to null out capabilities the guest shouldn't see.
-    parse_extended_capabilities(device_file, config_offset, config_size, &mut patches);
-
-    patches
-}
-
-/// Walk the PCIe extended capability chain (offsets 0x100+) and insert patches
-/// to null out capabilities that should be hidden from the guest.
-///
-/// Hidden capabilities have their cap ID zeroed (mask=0x0000_FFFF, value=0),
-/// which makes them appear as a null capability. The next-pointer field is
-/// preserved so the chain remains walkable.
-fn parse_extended_capabilities(
-    device_file: &std::fs::File,
-    config_offset: u64,
-    config_size: u64,
-    patches: &mut BTreeMap<u16, ConfigPatch>,
-) {
-    // Config space must be large enough for extended capabilities.
-    if config_size <= caps::EXT_CAP_START as u64 {
-        return;
-    }
-
-    let mut offset = caps::EXT_CAP_START;
-    let mut iterations = 0usize;
-
-    loop {
-        // Guard against malformed chains.
-        const MAX_EXT_CAPS: usize = 256;
-        if iterations >= MAX_EXT_CAPS {
-            tracing::warn!(
-                "extended capability list exceeded {MAX_EXT_CAPS} entries, aborting walk"
-            );
-            return;
-        }
-        iterations += 1;
-
-        let Ok(header) = read_config_u32(device_file, config_offset, config_size, offset) else {
-            return;
-        };
-
-        // A header of 0 means end of list (no capability at this offset).
-        if header == 0 {
-            return;
-        }
-
-        let cap_id = caps::ExtendedCapabilityId((header & 0xFFFF) as u16);
-        let cap_next = ((header >> 20) & 0xFFF) as u16;
-
-        tracing::debug!(
-            ?cap_id,
-            offset,
-            next = cap_next,
-            "discovered extended PCI capability"
-        );
-
-        match cap_id {
-            caps::ExtendedCapabilityId::SRIOV
-            | caps::ExtendedCapabilityId::ARI
-            | caps::ExtendedCapabilityId::REBAR => {
-                tracing::info!(
-                    ?cap_id,
-                    offset = format_args!("{offset:#x}"),
-                    "filtering extended capability from guest view"
+        loop {
+            const MAX_EXT_CAPS: usize = 256;
+            if iterations >= MAX_EXT_CAPS {
+                tracing::warn!(
+                    "extended capability list exceeded {MAX_EXT_CAPS} entries, aborting walk"
                 );
-                // Zero the cap ID field (low 16 bits) to make this a null
-                // capability. Preserve the version and next-pointer (high
-                // 16 bits) so the chain remains walkable.
-                patches.insert(
-                    offset,
-                    ConfigPatch {
-                        mask: 0x0000_FFFF,
-                        value: 0,
-                    },
-                );
+                break;
             }
-            _ => {}
-        }
+            iterations += 1;
 
-        if cap_next == 0 {
-            return;
-        }
+            let Ok(header) = config.read_u32(offset) else {
+                break;
+            };
 
-        // Validate the next pointer: must be within extended config space
-        // (>= 0x100), DWORD-aligned, and within the config region.
-        if cap_next < caps::EXT_CAP_START
-            || cap_next & 0x3 != 0
-            || cap_next as u64 + 4 > config_size
-        {
-            tracing::warn!(
-                cap_next = format_args!("{cap_next:#x}"),
-                offset = format_args!("{offset:#x}"),
-                "malformed extended capability next pointer, aborting walk"
+            if header == 0 {
+                break;
+            }
+
+            let cap_id = caps::ExtendedCapabilityId((header & 0xFFFF) as u16);
+            let cap_next = ((header >> 20) & 0xFFF) as u16;
+
+            tracing::debug!(
+                ?cap_id,
+                offset,
+                next = cap_next,
+                "discovered extended PCI capability"
             );
-            return;
-        }
 
-        offset = cap_next;
+            match cap_id {
+                caps::ExtendedCapabilityId::SRIOV
+                | caps::ExtendedCapabilityId::ARI
+                | caps::ExtendedCapabilityId::REBAR => {
+                    tracing::info!(
+                        ?cap_id,
+                        offset = format_args!("{offset:#x}"),
+                        "filtering extended capability from guest view"
+                    );
+                    result.config_patches.insert(
+                        offset,
+                        ConfigPatch {
+                            mask: 0x0000_FFFF,
+                            value: 0,
+                        },
+                    );
+                }
+                _ => {}
+            }
+
+            if cap_next == 0 {
+                break;
+            }
+
+            if cap_next < caps::EXT_CAP_START || cap_next & 0x3 != 0 {
+                tracing::warn!(
+                    cap_next = format_args!("{cap_next:#x}"),
+                    offset = format_args!("{offset:#x}"),
+                    "malformed extended capability next pointer, aborting walk"
+                );
+                break;
+            }
+
+            offset = cap_next;
+        }
     }
+
+    result
 }
 
 /// Read from the MSI-X emulator at the given offset, handling sub-DWORD
@@ -981,6 +1007,8 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
         self.update_bar_mappings();
 
         // Destructure to ensure every field is explicitly considered for reset.
+        self.in_d0 = true;
+
         let Self {
             pci_id,
             vfio_device,
@@ -990,6 +1018,8 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             bars,
             bar_flags,
             mmio_enabled: _,      // handled above
+            pm_csr_offset: _,     // immutable — discovered at init
+            in_d0: _,             // handled above
             active_bars: _,       // handled by update_bar_mappings()
             bar_mmio_controls: _, // handled by update_bar_mappings()
             bar_direct_maps: _,   // handled by update_bar_mappings()
@@ -1165,6 +1195,26 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                         return IoResult::Ok;
                     }
                 }
+                // Intercept PMCSR writes to track D0 ↔ non-D0 transitions.
+                // When the device leaves D0, BARs must be unmapped per PCI
+                // spec §3.2.5 (BARs don't decode in D1/D2/D3hot).
+                if let Some(pmcsr_offset) = self.pm_csr_offset {
+                    if offset == pmcsr_offset {
+                        let power_state = value & 0x3; // bits [1:0] = PowerState
+                        let new_in_d0 = power_state == 0;
+                        if new_in_d0 != self.in_d0 {
+                            self.in_d0 = new_in_d0;
+                            self.update_bar_mappings();
+                            tracing::debug!(
+                                pci_id = self.pci_id.as_str(),
+                                power_state,
+                                in_d0 = new_in_d0,
+                                "PM power state changed by guest"
+                            );
+                        }
+                    }
+                }
+
                 self.write_phys_config(offset, value);
             }
         }
@@ -1280,5 +1330,260 @@ impl SaveRestore for VfioAssignedPciDevice {
 
     fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
         match state {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pci_core::msi::MsiTarget;
+    use test_with_tracing::test;
+
+    /// In-memory config space backing store for unit tests.
+    struct MockConfigSpace {
+        data: Vec<u8>,
+    }
+
+    impl MockConfigSpace {
+        /// Create a mock config space of the given size, filled with zeros.
+        fn new(size: usize) -> Self {
+            Self {
+                data: vec![0; size],
+            }
+        }
+
+        /// Write a DWORD at the given offset (native endian, matching real
+        /// VFIO behavior on LE platforms).
+        fn write_u32(&mut self, offset: u16, value: u32) {
+            let off = offset as usize;
+            self.data[off..off + 4].copy_from_slice(&value.to_ne_bytes());
+        }
+
+        /// Build a standard capability header DWORD:
+        /// bits [7:0] = cap_id, bits [15:8] = next_ptr.
+        fn cap_header(cap_id: u8, next_ptr: u8) -> u32 {
+            cap_id as u32 | ((next_ptr as u32) << 8)
+        }
+
+        /// Build an extended capability header DWORD:
+        /// bits [15:0] = cap_id, bits [19:16] = version, bits [31:20] = next_ptr.
+        fn ext_cap_header(cap_id: u16, version: u8, next_ptr: u16) -> u32 {
+            cap_id as u32 | ((version as u32) << 16) | ((next_ptr as u32) << 20)
+        }
+    }
+
+    impl ConfigSpaceRead for MockConfigSpace {
+        fn read_u32(&self, offset: u16) -> anyhow::Result<u32> {
+            let off = offset as usize;
+            if off + 4 > self.data.len() {
+                anyhow::bail!("config read offset {offset:#x} out of range");
+            }
+            Ok(u32::from_ne_bytes(
+                self.data[off..off + 4].try_into().unwrap(),
+            ))
+        }
+    }
+
+    // --- PM capability discovery tests ---
+
+    #[test]
+    fn discover_pm_cap_single() {
+        let mut cfg = MockConfigSpace::new(256);
+        // Capabilities pointer at 0x34 → 0x40
+        cfg.write_u32(0x34, 0x40);
+        // PM capability at 0x40: cap_id=0x01, next=0
+        cfg.write_u32(0x40, MockConfigSpace::cap_header(0x01, 0x00));
+
+        let msi = MsiTarget::disconnected();
+        let caps = discover_capabilities(&cfg, &msi);
+
+        assert_eq!(caps.pm_csr_offset, Some(0x44)); // cap_offset + 4
+        assert!(caps.msix.is_none());
+    }
+
+    #[test]
+    fn discover_pm_cap_chained() {
+        let mut cfg = MockConfigSpace::new(256);
+        // Cap ptr → 0x50
+        cfg.write_u32(0x34, 0x50);
+        // Vendor-specific at 0x50, next → 0x60
+        cfg.write_u32(0x50, MockConfigSpace::cap_header(0x09, 0x60));
+        // PM at 0x60, next → 0
+        cfg.write_u32(0x60, MockConfigSpace::cap_header(0x01, 0x00));
+
+        let msi = MsiTarget::disconnected();
+        let caps = discover_capabilities(&cfg, &msi);
+
+        assert_eq!(caps.pm_csr_offset, Some(0x64));
+    }
+
+    #[test]
+    fn discover_no_capabilities() {
+        let cfg = MockConfigSpace::new(256);
+        // Cap ptr is 0 → no capabilities
+
+        let msi = MsiTarget::disconnected();
+        let caps = discover_capabilities(&cfg, &msi);
+
+        assert_eq!(caps.pm_csr_offset, None);
+        assert!(caps.msix.is_none());
+        // Should still have the multi-function patch
+        assert!(caps.config_patches.contains_key(&0x0C));
+    }
+
+    // --- MSI-X capability discovery tests ---
+
+    #[test]
+    fn discover_msix_cap() {
+        let mut cfg = MockConfigSpace::new(256);
+        // Cap ptr → 0x40
+        cfg.write_u32(0x34, 0x40);
+        // MSI-X at 0x40: cap_id=0x11, next=0, table_size=3 (msg_ctrl bits [10:0] = 2 → 3 vectors)
+        let msix_header = MockConfigSpace::cap_header(0x11, 0x00) | (0x0002 << 16); // 3 vectors
+        cfg.write_u32(0x40, msix_header);
+        // Table offset/BIR: table in BAR 2 at offset 0x1000
+        cfg.write_u32(0x44, 0x1000 | 2); // BIR=2, offset=0x1000
+        // PBA offset/BIR: PBA in BAR 2 at offset 0x2000
+        cfg.write_u32(0x48, 0x2000 | 2); // BIR=2, offset=0x2000
+
+        let msi = MsiTarget::disconnected();
+        let caps = discover_capabilities(&cfg, &msi);
+
+        let msix = caps.msix.as_ref().expect("MSI-X should be discovered");
+        assert_eq!(msix.vector_count, 3);
+        assert_eq!(msix.cap_offset, 0x40);
+        assert_eq!(msix.table_bar, 2);
+        assert_eq!(msix.table_range, 0x1000..0x1000 + 3 * 16);
+        assert_eq!(msix.pba_bar, 2);
+        assert_eq!(msix.pba_range, 0x2000..0x2008); // 3 vectors → 1 QWORD
+    }
+
+    // --- Combined PM + MSI-X discovery ---
+
+    #[test]
+    fn discover_pm_and_msix() {
+        let mut cfg = MockConfigSpace::new(256);
+        // Cap ptr → 0x40
+        cfg.write_u32(0x34, 0x40);
+        // PM at 0x40, next → 0x60
+        cfg.write_u32(0x40, MockConfigSpace::cap_header(0x01, 0x60));
+        // MSI-X at 0x60, next → 0, 1 vector (msg_ctrl=0)
+        let msix_header = MockConfigSpace::cap_header(0x11, 0x00);
+        cfg.write_u32(0x60, msix_header);
+        cfg.write_u32(0x64, 0); // table BIR=0, offset=0
+        cfg.write_u32(0x68, 0x1000); // PBA BIR=0, offset=0x1000
+
+        let msi = MsiTarget::disconnected();
+        let caps = discover_capabilities(&cfg, &msi);
+
+        assert_eq!(caps.pm_csr_offset, Some(0x44));
+        let msix = caps.msix.as_ref().expect("MSI-X should be discovered");
+        assert_eq!(msix.vector_count, 1);
+        assert_eq!(msix.table_bar, 0);
+    }
+
+    // --- Extended capability patch tests ---
+
+    #[test]
+    fn extended_caps_sriov_filtered() {
+        let mut cfg = MockConfigSpace::new(0x200);
+        // No standard caps
+        cfg.write_u32(0x34, 0x00);
+        // Extended cap at 0x100: SR-IOV (0x10), version=1, next=0
+        cfg.write_u32(0x100, MockConfigSpace::ext_cap_header(0x10, 1, 0));
+
+        let msi = MsiTarget::disconnected();
+        let caps = discover_capabilities(&cfg, &msi);
+
+        let patch = caps
+            .config_patches
+            .get(&0x100)
+            .expect("SR-IOV should be patched");
+        assert_eq!(patch.mask, 0x0000_FFFF);
+        assert_eq!(patch.value, 0);
+    }
+
+    #[test]
+    fn extended_caps_ari_and_rebar_filtered() {
+        let mut cfg = MockConfigSpace::new(0x300);
+        cfg.write_u32(0x34, 0x00);
+        // ARI (0x0E) at 0x100, next → 0x200
+        cfg.write_u32(0x100, MockConfigSpace::ext_cap_header(0x0E, 1, 0x200));
+        // REBAR (0x15) at 0x200, next → 0
+        cfg.write_u32(0x200, MockConfigSpace::ext_cap_header(0x15, 1, 0));
+
+        let msi = MsiTarget::disconnected();
+        let caps = discover_capabilities(&cfg, &msi);
+
+        assert!(
+            caps.config_patches.contains_key(&0x100),
+            "ARI should be patched"
+        );
+        assert!(
+            caps.config_patches.contains_key(&0x200),
+            "REBAR should be patched"
+        );
+    }
+
+    // --- Malformed capability chains ---
+
+    #[test]
+    fn malformed_cap_chain_cycle_terminates() {
+        let mut cfg = MockConfigSpace::new(256);
+        // Cap ptr → 0x40
+        cfg.write_u32(0x34, 0x40);
+        // Cap at 0x40 points to itself
+        cfg.write_u32(0x40, MockConfigSpace::cap_header(0x09, 0x40));
+
+        let msi = MsiTarget::disconnected();
+        // Should not hang — the 48-iteration limit catches cycles.
+        let caps = discover_capabilities(&cfg, &msi);
+
+        // We don't care about the result, just that it terminates.
+        assert_eq!(caps.pm_csr_offset, None);
+    }
+
+    #[test]
+    fn extended_cap_malformed_next_pointer() {
+        let mut cfg = MockConfigSpace::new(0x200);
+        cfg.write_u32(0x34, 0x00);
+        // Extended cap at 0x100 with next pointer below 0x100 (invalid).
+        cfg.write_u32(0x100, MockConfigSpace::ext_cap_header(0xFF, 1, 0x50));
+
+        let msi = MsiTarget::disconnected();
+        let caps = discover_capabilities(&cfg, &msi);
+
+        // Should terminate after the first cap without crashing.
+        assert!(!caps.config_patches.contains_key(&0x50));
+    }
+
+    #[test]
+    fn extended_cap_unaligned_next_pointer() {
+        let mut cfg = MockConfigSpace::new(0x300);
+        cfg.write_u32(0x34, 0x00);
+        // Extended cap at 0x100 with unaligned next pointer (0x103).
+        // The next pointer field is bits [31:20] = offset >> 0, so 0x103 means
+        // we encode it in the header. Since the field is 12 bits representing
+        // a DWORD-aligned offset, 0x103 with bit 0 set is malformed.
+        cfg.write_u32(0x100, MockConfigSpace::ext_cap_header(0xFF, 1, 0x103));
+
+        let msi = MsiTarget::disconnected();
+        let caps = discover_capabilities(&cfg, &msi);
+
+        // Should stop at the malformed pointer.
+        assert_eq!(caps.config_patches.len(), 1); // only multi-function
+    }
+
+    #[test]
+    fn cap_ptr_reserved_bits_masked() {
+        let mut cfg = MockConfigSpace::new(256);
+        // Cap ptr = 0x43 — bottom two bits should be masked to get 0x40.
+        cfg.write_u32(0x34, 0x43);
+        cfg.write_u32(0x40, MockConfigSpace::cap_header(0x01, 0x00));
+
+        let msi = MsiTarget::disconnected();
+        let caps = discover_capabilities(&cfg, &msi);
+
+        assert_eq!(caps.pm_csr_offset, Some(0x44));
     }
 }
