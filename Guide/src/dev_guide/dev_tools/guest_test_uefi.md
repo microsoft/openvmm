@@ -29,7 +29,9 @@ cargo build -p guest_test_uefi --target x86_64-unknown-uefi
 # create the disk image
 cargo xtask guest-test uefi --bootx64 ./target/x86_64-unknown-uefi/debug/guest_test_uefi.efi
 # test in OpenVMM
-cargo run -- --uefi --gfx --hv --processors 1 --disk memdiff:./target/x86_64-unknown-uefi/debug/guest_test_uefi.img
+cargo run -- --uefi --gfx --hv --processors 1 \
+  --vmbus-scsi id=scsi0 \
+  --disk memdiff:./target/x86_64-unknown-uefi/debug/guest_test_uefi.img,controller=scsi0
 ```
 
 Protip: this is a generic UEFI binary, and can be run outside of the OpenVMM

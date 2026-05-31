@@ -116,10 +116,20 @@ cargo run -- \
   --hv --vtl2 \
   --igvm path/to/openhcl.igvm \
   --vmbus-redirect \
-  --disk mem:1G,uh-nvme
+  --nvme-pci id=nvme0,vpci,vtl2 \
+  --openhcl-controller id=relay0,type=scsi \
+  --disk mem:1G,controller=nvme0,relay=relay0
 ```
 
-This command offers NVMe into VTL2 and lets OpenHCL expose guest-visible storage through its own controller model.
+This command creates a named NVMe controller (`nvme0`) offered to VTL2 via VPCI,
+an OpenHCL relay target (`relay0`) that presents a SCSI controller to VTL0, and
+attaches a 1 GB memory-backed disk to `nvme0` relayed through `relay0`.
+
+```admonish note
+Older examples use `--disk mem:1G,uh-nvme` as a shorthand. That syntax is
+deprecated; use `--nvme-pci`, `--openhcl-controller`, and
+`--disk controller=...,relay=...` instead.
+```
 
 The guest-visible and backing sides remain distinct in the VTL2 settings model:
 
@@ -170,7 +180,7 @@ If the guest-visible disk is striped, the backing side changes shape while the g
 ```
 
 ```admonish note
-The [NVMe Emulator](../../emulated/NVMe/overview.md) guide notes that the OpenVMM NVMe emulator can serve I/O workloads, but pragmatically is only used by OpenVMM for test scenarios today. Keep that test-oriented context in mind when using `uh-nvme` examples from the OpenVMM flow.
+The [NVMe Emulator](../../emulated/NVMe/overview.md) guide notes that the OpenVMM NVMe emulator can serve I/O workloads, but pragmatically is only used by OpenVMM for test scenarios today. Keep that test-oriented context in mind when reading the NVMe relay examples.
 ```
 
 ## Concrete example: vSCSI backing to SCSI guest target
@@ -182,10 +192,22 @@ cargo run -- \
   --hv --vtl2 \
   --igvm path/to/openhcl.igvm \
   --vmbus-redirect \
-  --disk file:ubuntu.img,uh
+  --vmbus-scsi id=scsi0,vtl2 \
+  --openhcl-controller id=relay0,type=scsi \
+  --disk file:ubuntu.img,controller=scsi0,relay=relay0
 ```
 
-The guest-visible controller family (SCSI) happens to match the backing family (also SCSI via storvsp), but the controller instances are different. The Root owns the backing SCSI controller. OpenHCL owns the guest-visible SCSI controller. The `sub_device_path` in the VTL2 settings maps a host LUN on the backing controller to a guest LUN on the guest-visible controller.
+The guest-visible controller family (SCSI) happens to match the backing family
+(also SCSI via storvsp), but the controller instances are different. The Root
+owns the backing SCSI controller (`scsi0`). OpenHCL owns the guest-visible SCSI
+controller (`relay0`). The `sub_device_path` in the VTL2 settings maps a host
+LUN on the backing controller to a guest LUN on the guest-visible controller.
+
+```admonish note
+Older examples use `--disk file:ubuntu.img,uh` as a shorthand. That syntax is
+deprecated; use `--vmbus-scsi`, `--openhcl-controller`, and
+`--disk controller=...,relay=...` instead.
+```
 
 In the VTL2 settings model, this path looks like:
 
@@ -222,7 +244,7 @@ This is also the path used in the [Hyper-V storage relay tutorial](../../../user
 
 | Component | Why read it | Source |
 |-----------|-------------|---------------------|
-| OpenVMM Underhill storage builder | Separates the backing device family from the guest-visible target and groups resulting children under guest-visible controllers | [`add_underhill()` and `build_underhill()`](https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_entry/src/storage_builder.rs#L249-L483) |
+| OpenVMM storage builder | Separates the backing device family from the guest-visible target and groups resulting children under guest-visible controllers | [`add_relay()` and `build_openhcl_settings()`](https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_entry/src/storage_builder.rs) |
 | Petri VTL2 settings helpers | Shows the builder-side model for backing devices, LUNs, and storage controllers | [`Vtl2StorageBackingDeviceBuilder`, `Vtl2LunBuilder`, and `Vtl2StorageControllerBuilder`](https://github.com/microsoft/openvmm/blob/main/petri/src/vm/vtl2_settings.rs#L19-L253) |
 | Underhill configuration model | Defines `PhysicalDevice`, `PhysicalDevices`, and the runtime controller and child types | [`PhysicalDevice`, `PhysicalDevices`, and controller structs`](https://github.com/microsoft/openvmm/blob/main/vm/devices/get/underhill_config/src/lib.rs#L27-L207) |
 | Underhill configuration schema | Shows how `Lun` objects are parsed into `Single`, `Striped`, and protocol-specific child types | [`impl ParseSchema<crate::PhysicalDevices> for Lun`](https://github.com/microsoft/openvmm/blob/main/vm/devices/get/underhill_config/src/schema/v1.rs#L233-L375) |

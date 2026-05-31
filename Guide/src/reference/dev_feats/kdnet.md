@@ -22,10 +22,15 @@ for the network transport:
 
 ```bash
 # Without OpenHCL
-cargo run -- --uefi --hv --net consomme --disk memdiff:file:path/to/windows.vhdx
+cargo run -- --uefi --hv --net consomme \
+  --vmbus-scsi id=scsi0 \
+  --disk memdiff:file:path/to/windows.vhdx,controller=scsi0
 
 # With OpenHCL
-cargo run -- --uefi --hv --vtl2 --net consomme --igvm path/to/openhcl.igvm --disk memdiff:file:path/to/windows.vhdx
+cargo run -- --uefi --hv --vtl2 --net consomme \
+  --igvm path/to/openhcl.igvm \
+  --vmbus-scsi id=scsi0 \
+  --disk memdiff:file:path/to/windows.vhdx,controller=scsi0
 ```
 
 ### Known Issues

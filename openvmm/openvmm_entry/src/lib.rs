@@ -454,9 +454,9 @@ async fn vm_config_from_command_line(
 
     let mut storage = storage_builder::StorageBuilder::new(with_get.then_some(openhcl_vtl));
 
-    // Register named controllers first, so that --disk controller=<name>
+    // Register named controllers first, so that --disk on=<name>
     // references can be resolved.
-    for ctrl in &opt.nvme_controller {
+    for ctrl in &opt.nvme_pci {
         let transport = match &ctrl.transport {
             cli_args::NvmeControllerTransport::Pcie(port) => {
                 storage_builder::NvmeControllerTransport::Pcie(port.clone())
@@ -469,7 +469,7 @@ async fn vm_config_from_command_line(
         storage.add_nvme_controller(ctrl.id.clone(), ctrl.vtl, transport, None)?;
     }
 
-    for ctrl in &opt.vmbus_scsi_controller {
+    for ctrl in &opt.vmbus_scsi {
         let instance_id = storage_builder::deterministic_guid(&ctrl.id);
         storage.add_scsi_controller(ctrl.id.clone(), ctrl.vtl, instance_id, ctrl.sub_channels)?;
     }
@@ -500,8 +500,8 @@ async fn vm_config_from_command_line(
     {
         if controller.is_none() && underhill.is_none() && relay.is_none() {
             tracing::warn!(
-                "--disk without `controller` is deprecated; \
-                 use --vmbus-scsi-controller and --disk controller=<name> instead"
+                "--disk without `on` is deprecated; \
+                 use --vmbus-scsi and --disk on=<name> instead"
             );
         }
 
@@ -514,7 +514,7 @@ async fn vm_config_from_command_line(
 
         let target = if let Some(name) = controller {
             if pcie_port.is_some() {
-                anyhow::bail!("`controller` is incompatible with `pcie_port` on `--disk`");
+                anyhow::bail!("`on` is incompatible with `pcie_port` on `--disk`");
             }
             storage_builder::DiskLocation::Named {
                 controller: name.clone(),
@@ -562,9 +562,7 @@ async fn vm_config_from_command_line(
     }
 
     if !opt.nvme.is_empty() {
-        tracing::warn!(
-            "--nvme is deprecated; use --nvme-controller and --disk controller=<name> instead"
-        );
+        tracing::warn!("--nvme is deprecated; use --nvme-pci and --disk on=<name> instead");
 
         // Pre-register implicit PCIe controllers for unique port names.
         let mut registered_ports = std::collections::BTreeSet::new();
@@ -576,7 +574,10 @@ async fn vm_config_from_command_line(
                         DeviceVtl::Vtl0,
                         storage_builder::NvmeControllerTransport::Pcie(port.clone()),
                         None,
-                    )?;
+                    ).with_context(|| format!(
+                        "legacy --nvme flag conflicts with an explicit controller named '{port}'; \
+                         use --nvme-pci and --disk on=<name> instead"
+                    ))?;
                 }
             }
         }
@@ -1298,6 +1299,7 @@ async fn vm_config_from_command_line(
     });
 
     if with_get && with_hv {
+        let has_vtl0_nvme = storage.has_vtl0_nvme();
         let vtl2_settings = vtl2_settings_proto::Vtl2Settings {
             version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
             fixed: Some(Default::default()),
@@ -1348,7 +1350,7 @@ async fn vm_config_from_command_line(
                         use get_resources::ged::UefiConsoleMode;
 
                         get_resources::ged::GuestFirmwareConfig::Uefi {
-                            enable_vpci_boot: storage.has_vtl0_nvme(),
+                            enable_vpci_boot: has_vtl0_nvme,
                             firmware_debug: opt.uefi_debug,
                             disable_frontpage: opt.disable_frontpage,
                             console_mode: match opt.uefi_console_mode.unwrap_or(UefiConsoleModeCli::Default) {

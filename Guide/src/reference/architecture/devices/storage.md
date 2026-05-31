@@ -154,7 +154,7 @@ The resource resolver connects configuration (CLI flags, VTL2 settings) to concr
 
 The storage resolver chain is recursive. An NVMe controller resolves each namespace's disk, which may be a layered disk, which resolves each layer in parallel, which may itself be a disk that needs resolving.
 
-**Example:** `--disk memdiff:file:path/to/disk.vhdx`
+**Example:** `--vmbus-scsi id=scsi0 --disk memdiff:file:path/to/disk.vhdx,controller=scsi0`
 
 1. CLI parses this into a `LayeredDiskHandle` with two layers:
    - Layer 0: `RamDiskLayerHandle { len: None, sector_size: None }` (RAM diff, inherits size and sector size from backing disk)
@@ -229,7 +229,7 @@ Two eject paths exist:
 
 ### CLI
 
-- `--disk file:my.iso,dvd` → SCSI optical drive.
+- `--disk file:my.iso,dvd,controller=scsi0` → SCSI optical drive.
 - `--ide file:my.iso,dvd` → IDE optical drive (ATAPI).
 
 The `dvd` flag implicitly sets `read_only = true`.

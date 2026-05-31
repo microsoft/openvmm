@@ -253,9 +253,9 @@ flags:
 
 options:
     `pcie_port=<name>`             present the disk using pcie under the specified port, incompatible with `dvd`, `vtl2`, `uh`, and `uh-nvme`
-    `controller=<name>`            attach to a named controller (NVMe or SCSI), incompatible with `pcie_port`
-    `nsid=<N>`                     NVMe namespace ID (1-based), requires `controller`; auto-assigned if omitted
-    `lun=<N>`                      SCSI LUN (0-based), requires `controller`; auto-assigned if omitted
+    `on=<name>`                    attach to a named controller (NVMe or SCSI), incompatible with `pcie_port`
+    `nsid=<N>`                     NVMe namespace ID (1-based), requires `on`; auto-assigned if omitted
+    `lun=<N>`                      SCSI LUN (0-based), requires `on`; auto-assigned if omitted
     `relay=<ctrl>[:<loc>]`         relay through OpenHCL to the named OpenHCL controller, with optional location (LUN or NSID)
 "#)]
     #[clap(long, value_name = "FILE")]
@@ -263,7 +263,7 @@ options:
 
     /// \[deprecated\] attach a disk via an NVMe controller
     ///
-    /// Use --nvme-controller and --disk controller=\<name\> instead.
+    /// Use --nvme-pci and --disk on=\<name\> instead.
     #[clap(long_help = r#"
 e.g: --nvme memdiff:file:/path/to/disk.vhd
 
@@ -304,7 +304,7 @@ Create a named NVMe controller with an explicit transport.
 
 syntax: id=<name>,pcie_port=<port> | id=<name>,vpci[=<guid>]
 
-The controller name can be referenced by `--disk` with the `controller=<name>`
+The controller name can be referenced by `--disk` with the `on=<name>`
 option to attach namespaces to this controller.
 
 options:
@@ -316,12 +316,12 @@ options:
 Exactly one of `pcie_port` or `vpci` must be specified.
 
 Examples:
-    --nvme-controller id=nvme0,pcie_port=p0
-    --nvme-controller id=nvme1,vpci
-    --nvme-controller id=nvme2,vpci=008091f6-9688-497d-9091-af347dc9173c
+    --nvme-pci id=nvme0,pcie_port=p0
+    --nvme-pci id=nvme1,vpci
+    --nvme-pci id=nvme2,vpci=008091f6-9688-497d-9091-af347dc9173c
 "#)]
-    #[clap(long = "nvme-controller")]
-    pub nvme_controller: Vec<NvmeControllerCli>,
+    #[clap(long = "nvme-pci")]
+    pub nvme_pci: Vec<NvmeControllerCli>,
 
     /// create a named VMBus SCSI controller
     #[clap(long_help = r#"
@@ -329,7 +329,7 @@ Create a named VMBus SCSI controller.
 
 syntax: id=<name>[,sub_channels=<N>][,vtl2]
 
-The controller name can be referenced by `--disk` with the `controller=<name>`
+The controller name can be referenced by `--disk` with the `on=<name>`
 option to attach disks to this controller.
 
 options:
@@ -338,11 +338,11 @@ options:
     `vtl2`                         assign to VTL2 (default VTL0)
 
 Examples:
-    --vmbus-scsi-controller id=scsi0
-    --vmbus-scsi-controller id=scsi1,sub_channels=4
+    --vmbus-scsi id=scsi0
+    --vmbus-scsi id=scsi1,sub_channels=4
 "#)]
-    #[clap(long = "vmbus-scsi-controller")]
-    pub vmbus_scsi_controller: Vec<ScsiControllerCli>,
+    #[clap(long = "vmbus-scsi")]
+    pub vmbus_scsi: Vec<ScsiControllerCli>,
 
     /// register an OpenHCL-managed storage controller (relay target)
     #[clap(long_help = r#"
@@ -1724,10 +1724,10 @@ impl FromStr for DiskCli {
                     }
                     pcie_port = Some(String::from(port.unwrap()));
                 }
-                "controller" => {
+                "on" => {
                     let name = s.next();
                     if name.is_none_or(|n| n.is_empty()) {
-                        anyhow::bail!("`controller` requires a controller name");
+                        anyhow::bail!("`on` requires a controller name");
                     }
                     controller = Some(String::from(name.unwrap()));
                 }
@@ -1766,15 +1766,15 @@ impl FromStr for DiskCli {
         }
 
         if controller.is_some() && pcie_port.is_some() {
-            anyhow::bail!("`controller` is incompatible with `pcie_port`");
+            anyhow::bail!("`on` is incompatible with `pcie_port`");
         }
 
         if nsid.is_some() && controller.is_none() {
-            anyhow::bail!("`nsid` requires `controller`");
+            anyhow::bail!("`nsid` requires `on`");
         }
 
         if lun.is_some() && controller.is_none() {
-            anyhow::bail!("`lun` requires `controller`");
+            anyhow::bail!("`lun` requires `on`");
         }
 
         if nsid.is_some() && lun.is_some() {
@@ -1782,7 +1782,7 @@ impl FromStr for DiskCli {
         }
 
         if relay.is_some() && controller.is_none() {
-            anyhow::bail!("`relay` requires `controller`");
+            anyhow::bail!("`relay` requires `on`");
         }
 
         if relay.is_some() && underhill.is_some() {
@@ -1816,7 +1816,7 @@ pub enum NvmeControllerTransport {
 /// CLI arguments for a named NVMe controller.
 #[derive(Clone, Debug)]
 pub struct NvmeControllerCli {
-    /// Controller name, referenced by `--disk controller=<name>`.
+    /// Controller name, referenced by `--disk on=<name>`.
     pub id: String,
     /// Transport configuration.
     pub transport: NvmeControllerTransport,
@@ -1887,7 +1887,7 @@ impl FromStr for NvmeControllerCli {
 /// CLI arguments for a named VMBus SCSI controller.
 #[derive(Clone, Debug)]
 pub struct ScsiControllerCli {
-    /// Controller name, referenced by `--disk controller=<name>`.
+    /// Controller name, referenced by `--disk on=<name>`.
     pub id: String,
     /// Number of sub-channels.
     pub sub_channels: u16,
@@ -4590,37 +4590,37 @@ mod tests {
 
     #[test]
     fn test_disk_cli_controller() {
-        let d = DiskCli::from_str("file:disk.vhd,controller=nvme0").unwrap();
+        let d = DiskCli::from_str("file:disk.vhd,on=nvme0").unwrap();
         assert_eq!(d.controller.as_deref(), Some("nvme0"));
         assert_eq!(d.nsid, None);
     }
 
     #[test]
     fn test_disk_cli_controller_with_nsid() {
-        let d = DiskCli::from_str("file:disk.vhd,controller=nvme0,nsid=3").unwrap();
+        let d = DiskCli::from_str("file:disk.vhd,on=nvme0,nsid=3").unwrap();
         assert_eq!(d.controller.as_deref(), Some("nvme0"));
         assert_eq!(d.nsid, Some(3));
     }
 
     #[test]
     fn test_disk_cli_controller_errors() {
-        // nsid without controller.
+        // nsid without on.
         assert!(DiskCli::from_str("file:disk.vhd,nsid=1").is_err());
-        // lun without controller.
+        // lun without on.
         assert!(DiskCli::from_str("file:disk.vhd,lun=0").is_err());
-        // controller with pcie_port.
-        assert!(DiskCli::from_str("file:disk.vhd,controller=nvme0,pcie_port=p0").is_err());
+        // on with pcie_port.
+        assert!(DiskCli::from_str("file:disk.vhd,on=nvme0,pcie_port=p0").is_err());
         // Empty controller name.
-        assert!(DiskCli::from_str("file:disk.vhd,controller=").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,on=").is_err());
         // Invalid nsid.
-        assert!(DiskCli::from_str("file:disk.vhd,controller=nvme0,nsid=abc").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,on=nvme0,nsid=abc").is_err());
         // nsid and lun together.
-        assert!(DiskCli::from_str("file:disk.vhd,controller=c,nsid=1,lun=0").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,on=c,nsid=1,lun=0").is_err());
     }
 
     #[test]
     fn test_disk_cli_controller_with_lun() {
-        let d = DiskCli::from_str("file:disk.vhd,controller=scsi0,lun=3").unwrap();
+        let d = DiskCli::from_str("file:disk.vhd,on=scsi0,lun=3").unwrap();
         assert_eq!(d.controller.as_deref(), Some("scsi0"));
         assert_eq!(d.lun, Some(3));
         assert_eq!(d.nsid, None);
@@ -4654,28 +4654,28 @@ mod tests {
 
     #[test]
     fn test_disk_cli_relay() {
-        let d = DiskCli::from_str("file:disk.vhd,controller=src,relay=tgt").unwrap();
+        let d = DiskCli::from_str("file:disk.vhd,on=src,relay=tgt").unwrap();
         assert_eq!(d.relay.as_ref().unwrap().0, "tgt");
         assert_eq!(d.relay.as_ref().unwrap().1, None);
     }
 
     #[test]
     fn test_disk_cli_relay_with_location() {
-        let d = DiskCli::from_str("file:disk.vhd,controller=src,relay=tgt:3").unwrap();
+        let d = DiskCli::from_str("file:disk.vhd,on=src,relay=tgt:3").unwrap();
         assert_eq!(d.relay.as_ref().unwrap().0, "tgt");
         assert_eq!(d.relay.as_ref().unwrap().1, Some(3));
     }
 
     #[test]
     fn test_disk_cli_relay_errors() {
-        // relay without controller.
+        // relay without on.
         assert!(DiskCli::from_str("file:disk.vhd,relay=tgt").is_err());
         // relay with uh.
-        assert!(DiskCli::from_str("file:disk.vhd,controller=src,relay=tgt,uh").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,on=src,relay=tgt,uh").is_err());
         // relay with invalid location.
-        assert!(DiskCli::from_str("file:disk.vhd,controller=src,relay=tgt:abc").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,on=src,relay=tgt:abc").is_err());
         // empty relay.
-        assert!(DiskCli::from_str("file:disk.vhd,controller=src,relay=").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,on=src,relay=").is_err());
     }
 
     #[test]

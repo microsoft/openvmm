@@ -90,6 +90,12 @@ struct ScsiControllerEntry {
     devices: Vec<ScsiDeviceAndPath>,
 }
 
+/// A named controller entry (NVMe or SCSI).
+enum ControllerEntry {
+    Nvme(NvmeControllerEntry),
+    Scsi(ScsiControllerEntry),
+}
+
 /// Protocol type for an OpenHCL-managed controller.
 #[derive(Copy, Clone, PartialEq)]
 pub enum OpenhclControllerType {
@@ -119,8 +125,7 @@ pub(super) struct StorageBuilder {
     vtl2_scsi_devices: Vec<ScsiDeviceAndPath>,
     vtl0_nvme_namespaces: Vec<NamespaceDefinition>,
     vtl2_nvme_namespaces: Vec<NamespaceDefinition>,
-    nvme_controllers: BTreeMap<String, NvmeControllerEntry>,
-    scsi_controllers: BTreeMap<String, ScsiControllerEntry>,
+    controllers: BTreeMap<String, ControllerEntry>,
     openhcl_controllers: BTreeMap<String, OpenhclControllerEntry>,
     pcie_virtio_blk_disks: Vec<(String, VirtioBlkDisk)>,
     underhill_scsi_luns: Vec<Lun>,
@@ -184,8 +189,7 @@ impl StorageBuilder {
             vtl2_scsi_devices: Vec::new(),
             vtl0_nvme_namespaces: Vec::new(),
             vtl2_nvme_namespaces: Vec::new(),
-            nvme_controllers: BTreeMap::new(),
-            scsi_controllers: BTreeMap::new(),
+            controllers: BTreeMap::new(),
             openhcl_controllers: BTreeMap::new(),
             pcie_virtio_blk_disks: Vec::new(),
             underhill_scsi_luns: Vec::new(),
@@ -207,17 +211,23 @@ impl StorageBuilder {
         transport: NvmeControllerTransport,
         requests: Option<mesh::Receiver<NvmeControllerRequest>>,
     ) -> anyhow::Result<()> {
-        if self.nvme_controllers.contains_key(&name) {
-            anyhow::bail!("duplicate NVMe controller name: '{name}'");
+        if let Some(existing) = self.controllers.get(&name) {
+            let kind = match existing {
+                ControllerEntry::Nvme(_) => "NVMe",
+                ControllerEntry::Scsi(_) => "SCSI",
+            };
+            anyhow::bail!(
+                "cannot add NVMe controller '{name}': name already used by a {kind} controller"
+            );
         }
-        self.nvme_controllers.insert(
+        self.controllers.insert(
             name,
-            NvmeControllerEntry {
+            ControllerEntry::Nvme(NvmeControllerEntry {
                 vtl,
                 transport,
                 namespaces: Vec::new(),
                 requests,
-            },
+            }),
         );
         Ok(())
     }
@@ -230,17 +240,23 @@ impl StorageBuilder {
         instance_id: Guid,
         sub_channels: u16,
     ) -> anyhow::Result<()> {
-        if self.scsi_controllers.contains_key(&name) {
-            anyhow::bail!("duplicate SCSI controller name: '{name}'");
+        if let Some(existing) = self.controllers.get(&name) {
+            let kind = match existing {
+                ControllerEntry::Nvme(_) => "NVMe",
+                ControllerEntry::Scsi(_) => "SCSI",
+            };
+            anyhow::bail!(
+                "cannot add SCSI controller '{name}': name already used by a {kind} controller"
+            );
         }
-        self.scsi_controllers.insert(
+        self.controllers.insert(
             name,
-            ScsiControllerEntry {
+            ControllerEntry::Scsi(ScsiControllerEntry {
                 vtl,
                 instance_id,
                 sub_channels,
                 devices: Vec::new(),
-            },
+            }),
         );
         Ok(())
     }
@@ -398,8 +414,8 @@ impl StorageBuilder {
                 controller,
                 nsid,
                 lun,
-            } => {
-                if let Some(nvme) = self.nvme_controllers.get_mut(&controller) {
+            } => match self.controllers.get_mut(&controller) {
+                Some(ControllerEntry::Nvme(nvme)) => {
                     if lun.is_some() {
                         anyhow::bail!("`lun` is not valid for NVMe controller '{controller}'");
                     }
@@ -413,7 +429,8 @@ impl StorageBuilder {
                         read_only,
                     });
                     Some(nsid)
-                } else if let Some(scsi) = self.scsi_controllers.get_mut(&controller) {
+                }
+                Some(ControllerEntry::Scsi(scsi)) => {
                     if nsid.is_some() {
                         anyhow::bail!("`nsid` is not valid for SCSI controller '{controller}'");
                     }
@@ -441,10 +458,11 @@ impl StorageBuilder {
                         device,
                     });
                     Some(lun.into())
-                } else {
+                }
+                None => {
                     anyhow::bail!("unknown controller: '{controller}'");
                 }
-            }
+            },
             DiskLocation::VirtioBlk(pcie_port) => {
                 if vtl != DeviceVtl::Vtl0 {
                     anyhow::bail!("virtio-blk only supported for VTL0");
@@ -477,8 +495,8 @@ impl StorageBuilder {
     ) -> anyhow::Result<()> {
         // Look up the source controller to determine VTL and instance ID.
         let (source_vtl, device_type, device_path) = match &target {
-            DiskLocation::Named { controller, .. } => {
-                if let Some(nvme) = self.nvme_controllers.get(controller) {
+            DiskLocation::Named { controller, .. } => match self.controllers.get(controller) {
+                Some(ControllerEntry::Nvme(nvme)) => {
                     let instance_id = match &nvme.transport {
                         NvmeControllerTransport::Vpci(guid) => *guid,
                         NvmeControllerTransport::Pcie(_) => {
@@ -490,16 +508,16 @@ impl StorageBuilder {
                         vtl2_settings_proto::physical_device::DeviceType::Nvme,
                         instance_id,
                     )
-                } else if let Some(scsi) = self.scsi_controllers.get(controller) {
-                    (
-                        scsi.vtl,
-                        vtl2_settings_proto::physical_device::DeviceType::Vscsi,
-                        scsi.instance_id,
-                    )
-                } else {
+                }
+                Some(ControllerEntry::Scsi(scsi)) => (
+                    scsi.vtl,
+                    vtl2_settings_proto::physical_device::DeviceType::Vscsi,
+                    scsi.instance_id,
+                ),
+                None => {
                     anyhow::bail!("unknown source controller: '{controller}'");
                 }
-            }
+            },
             _ => {
                 anyhow::bail!("`relay` requires a named source controller");
             }
@@ -516,7 +534,15 @@ impl StorageBuilder {
             .get_mut(&relay.controller)
             .with_context(|| format!("unknown OpenHCL controller: '{}'", relay.controller))?;
 
-        let location = relay.location.unwrap_or(openhcl.luns.len() as u32);
+        // NVMe namespace IDs are 1-based (0 is invalid per spec),
+        // while SCSI LUNs are 0-based.
+        let location = relay.location.unwrap_or_else(|| {
+            let base = openhcl.luns.len() as u32;
+            match openhcl.controller_type {
+                OpenhclControllerType::Nvme => base + 1,
+                OpenhclControllerType::Scsi => base,
+            }
+        });
 
         openhcl.luns.push(Lun {
             location,
@@ -675,20 +701,69 @@ impl StorageBuilder {
             ));
         }
 
-        // Emit named SCSI controllers.
-        for (_name, ctrl) in std::mem::take(&mut self.scsi_controllers) {
-            config.vmbus_devices.push((
-                ctrl.vtl,
-                ScsiControllerHandle {
-                    instance_id: ctrl.instance_id,
-                    max_sub_channel_count: ctrl.sub_channels,
-                    devices: ctrl.devices,
-                    io_queue_depth: None,
-                    requests: None,
-                    poll_mode_queue_depth: None,
+        // Emit named controllers.
+        for (name, entry) in std::mem::take(&mut self.controllers) {
+            match entry {
+                ControllerEntry::Scsi(ctrl) => {
+                    config.vmbus_devices.push((
+                        ctrl.vtl,
+                        ScsiControllerHandle {
+                            instance_id: ctrl.instance_id,
+                            max_sub_channel_count: ctrl.sub_channels,
+                            devices: ctrl.devices,
+                            io_queue_depth: None,
+                            requests: None,
+                            poll_mode_queue_depth: None,
+                        }
+                        .into_resource(),
+                    ));
                 }
-                .into_resource(),
-            ));
+                ControllerEntry::Nvme(ctrl) => {
+                    if ctrl.namespaces.is_empty() && ctrl.requests.is_none() {
+                        tracing::warn!(name, "named NVMe controller has no namespaces");
+                    }
+                    let subsystem_id = deterministic_guid(&name);
+                    match ctrl.transport {
+                        NvmeControllerTransport::Pcie(port_name) => {
+                            config.pcie_devices.push(PcieDeviceConfig {
+                                port_name,
+                                resource: NvmeControllerHandle {
+                                    subsystem_id,
+                                    namespaces: ctrl.namespaces,
+                                    max_io_queues: 64,
+                                    msix_count: 64,
+                                    requests: ctrl.requests,
+                                }
+                                .into_resource(),
+                            });
+                        }
+                        NvmeControllerTransport::Vpci(instance_id) => {
+                            config.vpci_devices.push(VpciDeviceConfig {
+                                vtl: ctrl.vtl,
+                                instance_id,
+                                resource: NvmeControllerHandle {
+                                    subsystem_id,
+                                    namespaces: ctrl.namespaces,
+                                    max_io_queues: 64,
+                                    msix_count: 64,
+                                    requests: ctrl.requests,
+                                }
+                                .into_resource(),
+                            });
+
+                            // Tell UEFI to try to enumerate VPCI devices since there
+                            // might be an NVMe namespace to boot from.
+                            if let LoadMode::Uefi {
+                                enable_vpci_boot: vpci_boot,
+                                ..
+                            } = &mut config.load_mode
+                            {
+                                *vpci_boot = true;
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         if !self.vtl0_nvme_namespaces.is_empty() {
@@ -742,53 +817,6 @@ impl StorageBuilder {
                 .into_resource(),
             });
             resources.nvme_vtl2_rpc = Some(send);
-        }
-
-        // Emit named NVMe controllers.
-        for (name, ctrl) in std::mem::take(&mut self.nvme_controllers) {
-            if ctrl.namespaces.is_empty() && ctrl.requests.is_none() {
-                tracing::warn!(name, "named NVMe controller has no namespaces");
-            }
-            let subsystem_id = deterministic_guid(&name);
-            match ctrl.transport {
-                NvmeControllerTransport::Pcie(port_name) => {
-                    config.pcie_devices.push(PcieDeviceConfig {
-                        port_name,
-                        resource: NvmeControllerHandle {
-                            subsystem_id,
-                            namespaces: ctrl.namespaces,
-                            max_io_queues: 64,
-                            msix_count: 64,
-                            requests: ctrl.requests,
-                        }
-                        .into_resource(),
-                    });
-                }
-                NvmeControllerTransport::Vpci(instance_id) => {
-                    config.vpci_devices.push(VpciDeviceConfig {
-                        vtl: ctrl.vtl,
-                        instance_id,
-                        resource: NvmeControllerHandle {
-                            subsystem_id,
-                            namespaces: ctrl.namespaces,
-                            max_io_queues: 64,
-                            msix_count: 64,
-                            requests: ctrl.requests,
-                        }
-                        .into_resource(),
-                    });
-
-                    // Tell UEFI to try to enumerate VPCI devices since there
-                    // might be an NVMe namespace to boot from.
-                    if let LoadMode::Uefi {
-                        enable_vpci_boot: vpci_boot,
-                        ..
-                    } = &mut config.load_mode
-                    {
-                        *vpci_boot = true;
-                    }
-                }
-            }
         }
 
         for (i, vblk) in std::mem::take(&mut self.vtl0_virtio_blk_disks)

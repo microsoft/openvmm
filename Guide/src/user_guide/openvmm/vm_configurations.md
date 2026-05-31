@@ -26,7 +26,8 @@ Windows and Linux guests.
 ```bash
 cargo run -- \
   --uefi \
-  --disk memdiff:file:path/to/disk.vhdx \
+  --vmbus-scsi id=scsi0 \
+  --disk memdiff:file:path/to/disk.vhdx,controller=scsi0 \
   -p 4 -m 4GB \
   --gfx
 ```
@@ -34,7 +35,8 @@ cargo run -- \
 Key flags:
 - `--uefi` — boot using `mu_msvm` UEFI firmware (implicitly enables Hyper-V
   enlightenments and VMBus, so `--hv` is not needed separately)
-- `--disk` — exposes a disk over VMBus (SCSI-equivalent)
+- `--vmbus-scsi` — creates a named SCSI controller
+- `--disk ...,controller=scsi0` — attaches a disk to that controller
 
 ## Gen1-equivalent (PCAT BIOS boot)
 
@@ -73,7 +75,8 @@ even though other flags like `--uefi` imply it internally.
 cargo run -- \
   --hv --vtl2 \
   --igvm path/to/openhcl.igvm \
-  --disk memdiff:file:path/to/disk.vhdx \
+  --vmbus-scsi id=scsi0 \
+  --disk memdiff:file:path/to/disk.vhdx,controller=scsi0 \
   -p 4 -m 4GB
 ```
 
@@ -91,9 +94,9 @@ for full setup instructions.
 
 | Scenario | Flags | Notes |
 |----------|-------|-------|
-| Modern Windows/Linux guest | `--uefi --disk memdiff:file:disk.vhdx` | Most common |
+| Modern Windows/Linux guest | `--uefi --vmbus-scsi id=scsi0 --disk memdiff:file:disk.vhdx,controller=scsi0` | Most common |
 | With graphical console | add `--gfx` | VNC-based, see [Graphical Console](../../reference/openvmm/graphical_console.md) |
 | With networking | add `--nic` | Consomme user-mode NAT |
-| With OpenHCL | `--hv --vtl2 --igvm path/to/openhcl.igvm --disk memdiff:file:disk.vhdx` | IGVM carries the paravisor; no `--uefi`/`--pcat` needed |
+| With OpenHCL | `--hv --vtl2 --igvm path/to/openhcl.igvm --vmbus-scsi id=scsi0 --disk memdiff:file:disk.vhdx,controller=scsi0` | IGVM carries the paravisor; no `--uefi`/`--pcat` needed |
 | Legacy OS (DOS, old Windows) | `--pcat --ide memdiff:file:disk.vhd --gfx` | IDE storage, BIOS boot |
 | Linux direct boot (no firmware) | `--kernel vmlinux --initrd initrd` | Skips UEFI/PCAT entirely |
