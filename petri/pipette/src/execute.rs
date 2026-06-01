@@ -5,7 +5,6 @@
 // UNSAFETY: Required for libc::chroot() and libc::chdir() in pre_exec on Linux.
 #![cfg_attr(target_os = "linux", expect(unsafe_code))]
 
-use anyhow::Context;
 use futures::executor::block_on;
 use futures::io::AllowStdIo;
 use pal_async::DefaultDriver;
@@ -15,7 +14,7 @@ use pal_async::task::Spawn;
 use std::os::unix::process::CommandExt;
 use std::process::Stdio;
 
-pub async fn handle_execute(
+pub fn handle_execute(
     driver: &DefaultDriver,
     mut request: pipette_protocol::ExecuteRequest,
 ) -> anyhow::Result<pipette_protocol::ExecuteResponse> {
@@ -111,8 +110,7 @@ pub async fn handle_execute(
         });
     }
 
-    let child = PolledChild::<std::process::Child>::new(driver, child)
-        .context("failed to create process wait for execute")?;
+    let child: PolledChild<_> = PolledChild::new(driver, child).unwrap();
     driver
         .spawn(format!("wait-execute-child-{pid}"), async move {
             wait_for_child(child, pid, send).await;
@@ -126,17 +124,11 @@ async fn wait_for_child(
     pid: u32,
     send: mesh::OneshotSender<pipette_protocol::ExitStatus>,
 ) {
-    let status = match child.wait().await {
-        Ok(exit_status) => convert_exit_status(exit_status),
-        Err(err) => {
-            tracing::error!(
-                pid,
-                error = &err as &dyn std::error::Error,
-                "failed to wait for process"
-            );
-            pipette_protocol::ExitStatus::Unknown
-        }
-    };
+    let status = child
+        .wait()
+        .await
+        .ok()
+        .map_or(pipette_protocol::ExitStatus::Unknown, convert_exit_status);
     tracing::debug!(pid, ?status, "process exited");
     send.send(status);
 }

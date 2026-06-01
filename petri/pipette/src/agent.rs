@@ -152,10 +152,7 @@ async fn handle_request(
             tracing::info!("ping");
         }),
         PipetteRequest::Execute(rpc) => {
-            rpc.handle_failable(async |request| {
-                crate::execute::handle_execute(driver, request).await
-            })
-            .await
+            rpc.handle_failable_sync(|request| crate::execute::handle_execute(driver, request))
         }
         PipetteRequest::Shutdown(rpc) => {
             rpc.handle_sync(|request| {
