@@ -4148,16 +4148,22 @@ impl Coordinator {
             };
             match message {
                 Message::Internal(msg) => {
+                    self.stop_workers().await;
                     self.handle_coordinator_message(msg, state).await;
+                    // If a restart message has been queued, handle it now
+                    // to ensure worker queues are restarted prior to
+                    // `worker.start()` in the next loop.
+                    self.handle_queued_coordinator_messages(state).await;
                 }
                 Message::UpdateFromVf(rpc) => {
+                    self.stop_workers().await;
                     rpc.handle(async |_| {
                         self.update_guest_vf_state(state).await;
                     })
                     .await;
                 }
                 Message::OfferVfDevice => {
-                    self.workers[0].stop().await;
+                    self.stop_workers().await;
                     if let Some(primary) = self.primary_mut() {
                         if matches!(
                             primary.guest_vf_state,
@@ -4170,11 +4176,12 @@ impl Coordinator {
                     state.pending_vf_state = CoordinatorStatePendingVfState::Pending;
                 }
                 Message::PendingVfStateComplete => {
+                    // Worker state unchanged, calling `stop_workers()` is not necessary.
                     state.pending_vf_state = CoordinatorStatePendingVfState::Ready;
                 }
                 Message::TimerExpired => {
                     // Kick the worker as requested.
-                    self.workers[0].stop().await;
+                    self.stop_workers().await;
                     if let Some(primary) = self.primary_mut() {
                         if let PendingLinkAction::Delay(up) = primary.pending_link_action {
                             primary.pending_link_action = PendingLinkAction::Active(up);
@@ -4197,8 +4204,7 @@ impl Coordinator {
         match action {
             EndpointAction::RestartRequired => self.restart = true,
             EndpointAction::LinkStatusNotify(connect) => {
-                self.workers[0].stop().await;
-
+                self.stop_workers().await;
                 // These are the only link state transitions that are tracked.
                 // 1. up -> down or down -> up
                 // 2. up -> down -> up or down -> up -> down.
@@ -4216,8 +4222,8 @@ impl Coordinator {
         }
     }
 
-    /// Called from the [`Self::process`] loop when a `Restart` message has
-    /// been observed from any channel.
+    /// Called from the [`Self::process`] loop when either `CoordinatorMessage::Restart`
+    /// or `EndpointAction::RestartRequired` is observed.
     async fn restart_worker_queues(
         &mut self,
         stop: &mut StopTask<'_>,
@@ -4228,12 +4234,10 @@ impl Coordinator {
         // All workers are stopped and cannot push new messages.
         // Drain any messages that arrived prior to or during the stop.
         // Coalesce restart messages. Handle non-restart Primary messages.
-        while let Ok(Some(msg)) = self.recv.try_next() {
-            self.handle_coordinator_message(msg, state).await;
-        }
+        self.handle_queued_coordinator_messages(state).await;
 
-        // Handle any endpoint actions queued at this moment.
-        // Best-effort attempt to coalesce `RestartRequired` into this operation.
+        // Best-effort attempt to coalesce any `RestartRequired` endpoint
+        // action into this restart operation.
         while let Some(action) = state.endpoint.wait_for_endpoint_action().now_or_never() {
             self.handle_endpoint_action(action).await;
         }
@@ -4259,6 +4263,12 @@ impl Coordinator {
         self.restore_guest_vf_state(state).await;
         self.restart = false;
         Ok(())
+    }
+
+    async fn handle_queued_coordinator_messages(&mut self, state: &mut CoordinatorState) {
+        while let Ok(Some(msg)) = self.recv.try_next() {
+            self.handle_coordinator_message(msg, state).await;
+        }
     }
 
     async fn handle_coordinator_message(
@@ -4803,7 +4813,6 @@ impl Coordinator {
     }
 
     async fn update_guest_vf_state(&mut self, c_state: &mut CoordinatorState) {
-        self.workers[0].stop().await;
         self.restore_guest_vf_state(c_state).await;
     }
 }

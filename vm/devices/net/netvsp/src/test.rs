@@ -7596,13 +7596,12 @@ async fn subchannel_tx_restart(driver: DefaultDriver) {
     assert_eq!(set_complete.request_id, request_id);
     assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
 
-    // Send a SECOND OID_GEN_CURRENT_PACKET_FILTER SET with a different
-    // filter value. The primary worker handles this OID inline, then pushes
-    // a `CoordinatorMessage::Update` to the coordinator.
+    // Queue a filter-change SET without awaiting its completion.
+    // The primary worker sends `CoordinatorMessage::Update`.
     const NEW_FILTER: u32 = rndisprot::NDIS_PACKET_TYPE_DIRECTED;
     let request_id_filter_change = 457;
     channel
-        .send_rndis_control_message(
+        .send_rndis_control_message_no_completion(
             rndisprot::MESSAGE_TYPE_SET_MSG,
             rndisprot::SetRequest {
                 request_id: request_id_filter_change,
@@ -7614,27 +7613,19 @@ async fn subchannel_tx_restart(driver: DefaultDriver) {
             &NEW_FILTER.to_le_bytes(),
         )
         .await;
-    let set_complete: rndisprot::SetComplete = channel
-        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
-        .await
-        .unwrap();
-    assert_eq!(set_complete.request_id, request_id_filter_change);
-    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
 
     let stop_before = endpoint_state.lock().stop_endpoint_counter;
 
-    // Arm a one-shot TryRestart on every sub-channel queue and wake each
-    // one by routing an RX packet through it. Each sub-channel's main_loop
-    // will call tx_poll, hit TryRestart, and route a Restart to the coordinator.
-    // Additionally inject an `EndpointAction::RestartRequired` so the
-    // coordinator races sub-channel `Restart` messages against an endpoint
-    // restart request - both must coalesce into a single `restart_queues` call.
     {
+        // Arm a one-shot TryRestart on every sub-channel queue and wake each
+        // one by routing an RX packet through it.
+        // Each sub-channel sends `CoordinatorMessage::Restart`.
         let mut locked = endpoint_state.lock();
         for idx in 1..TOTAL_QUEUES as usize {
             locked.trigger_tx_restart(idx);
             locked.send_rx(idx, vec![0xAA + idx as u8; 60]);
         }
+        // Additionally inject an `EndpointAction::RestartRequired`.
         locked
             .endpoint_action_updater
             .as_ref()
@@ -7642,9 +7633,33 @@ async fn subchannel_tx_restart(driver: DefaultDriver) {
             .send(EndpointAction::RestartRequired);
     }
 
-    // Wait for the coordinator to observe at least one Restart message and
+    // Drain primary-channel packets until we observe the SET_CMPLT for the
+    // filter change.
+    let parser = channel.rndis_message_parser();
+    let mut received_set_complete = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !received_set_complete {
+        if std::time::Instant::now() >= deadline {
+            panic!("timeout waiting for SET_CMPLT for filter change");
+        }
+        channel
+            .read_with_timeout(Duration::from_secs(1), |packet| match packet {
+                IncomingPacket::Completion(_) => {}
+                IncomingPacket::Data(data) => {
+                    let (rndis_header, external_ranges) = parser.parse_control_message(data);
+                    assert_eq!(rndis_header.message_type, rndisprot::MESSAGE_TYPE_SET_CMPLT);
+                    let set_complete: rndisprot::SetComplete = parser.get(&external_ranges);
+                    assert_eq!(set_complete.request_id, request_id_filter_change);
+                    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+                    received_set_complete = true;
+                }
+            })
+            .await
+            .expect("packet from primary channel during racing phase");
+    }
+
+    // Wait for the coordinator to observe at least one Restart-trigger and
     // run restart_queues (which calls endpoint.stop()).
-    // All three `Restart` messages coalesce into a single restart cycle.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         if endpoint_state.lock().stop_endpoint_counter > stop_before {
@@ -7662,28 +7677,35 @@ async fn subchannel_tx_restart(driver: DefaultDriver) {
         let _ = ctx.until_cancelled(pending::<()>()).await;
     }
 
-    // Bound the number of restart cycles.
+    // The coordinator must coalesce restarts into one cycle.
     let stop_after = endpoint_state.lock().stop_endpoint_counter;
     let cycles = stop_after - stop_before;
-    assert_eq!(
-        cycles, 1,
-        "expected exactly 1 restart cycle (coordinator coalesces all in-flight sub-channel TryRestarts and the injected EndpointAction::RestartRequired into a single restart_queues call), got {cycles}",
-    );
+    assert_eq!(cycles, 1, "expected exactly 1 restart cycle, got {cycles}");
 
-    // The `Update` filter change being visible on every sub-channel proves
-    // the Primary channel message was not lost.
-    for idx in 1..TOTAL_QUEUES as usize {
-        let current =
-            read_netvsp_counter(&channel.nic.channel, &format!("queues/{idx}/packet_filter")).await
-                as u32;
-        assert_eq!(
-            current, NEW_FILTER,
-            "sub-channel {idx} packet_filter not propagated before restart cycle finished",
-        );
+    // Poll the packet-filter counter on every sub-channel until it
+    // converges to NEW_FILTER.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut all_match = true;
+        for idx in 1..TOTAL_QUEUES as usize {
+            let current =
+                read_netvsp_counter(&channel.nic.channel, &format!("queues/{idx}/packet_filter"))
+                    .await as u32;
+            if current != NEW_FILTER {
+                all_match = false;
+                break;
+            }
+        }
+        if all_match {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("packet filter did not update on all sub-channels");
+        }
     }
 
     // Deliver another RX packet on every sub-channel and verify each worker
-    // is alive and functional.
+    // is alive and functional after the restart cycle.
     {
         let locked = endpoint_state.lock();
         for idx in 1..TOTAL_QUEUES as usize {
