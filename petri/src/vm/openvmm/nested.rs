@@ -337,8 +337,13 @@ impl NestedL2Builder {
         let client = mesh_rpc::Client::new(&self.driver, ExistingConnection::new(ttrpc_duplex));
 
         // 8. Build and send CreateVm request.
+        // Build the L2 kernel command line. The `8250.nr_uarts=1` parameter
+        // is critical for nested-virt performance: the 16550 UART probe
+        // does repeated I/O port reads, and each port I/O under nested
+        // virt requires a double-VMEXIT (L2→L1→L0). Without this, the
+        // kernel spends ~50 seconds probing the 3 unused COM ports.
         let cmdline = {
-            let mut s = String::from("console=ttyS0");
+            let mut s = String::from("console=ttyS0 8250.nr_uarts=1");
             for token in &self.extra_cmdline {
                 s.push(' ');
                 s.push_str(token);
@@ -354,6 +359,8 @@ impl NestedL2Builder {
                     config: Some(vmservice::VmConfig {
                         memory_config: Some(vmservice::MemoryConfig {
                             memory_mb: self.memory_bytes / (1024 * 1024),
+                            private_memory: true,
+                            transparent_hugepages: true,
                             ..Default::default()
                         }),
                         processor_config: Some(vmservice::ProcessorConfig {
