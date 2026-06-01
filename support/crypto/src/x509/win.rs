@@ -194,19 +194,15 @@ impl X509CertificateInner {
             }
         };
 
-        // SAFETY: ToBeSigned describes a valid byte range within cert_der.
-        let tbs = unsafe {
-            std::slice::from_raw_parts(
-                signed.value.ToBeSigned.pbData,
-                signed.value.ToBeSigned.cbData as usize,
-            )
-        };
-        // SAFETY: Signature.pbData describes a valid byte range within cert_der.
-        let sig = unsafe {
-            std::slice::from_raw_parts(
-                signed.value.Signature.pbData,
-                signed.value.Signature.cbData as usize,
-            )
+        let tbs = blob_as_slice(&signed.value.ToBeSigned);
+        // Signature is a CRYPT_BIT_BLOB; reject empty/null defensively.
+        let sig_bits = &signed.value.Signature;
+        let sig = if sig_bits.cbData == 0 || sig_bits.pbData.is_null() {
+            &[][..]
+        } else {
+            // SAFETY: pbData is non-null and describes cbData bytes owned
+            // by the decoded CERT_SIGNED_CONTENT_INFO allocation.
+            unsafe { std::slice::from_raw_parts(sig_bits.pbData, sig_bits.cbData as usize) }
         };
 
         issuer_public_key.pkcs1_verify(tbs, sig, hash)
@@ -483,18 +479,25 @@ impl X509CertificateInner {
     }
 }
 
+/// Safely view a `CRYPT_INTEGER_BLOB` as a byte slice, returning an empty
+/// slice when the blob is empty or its pointer is null. `from_raw_parts`
+/// requires a non-null pointer even for zero-length slices, so blob fields
+/// originating from CryptoAPI-decoded structures (driven by potentially
+/// untrusted certificate data) must be checked before use.
+fn blob_as_slice(blob: &CRYPT_INTEGER_BLOB) -> &[u8] {
+    if blob.cbData == 0 || blob.pbData.is_null() {
+        return &[];
+    }
+    // SAFETY: pbData is non-null and describes cbData bytes owned by the
+    // containing CryptoAPI allocation.
+    unsafe { std::slice::from_raw_parts(blob.pbData, blob.cbData as usize) }
+}
+
 fn blob_eq(a: &CRYPT_INTEGER_BLOB, b: &CRYPT_INTEGER_BLOB) -> bool {
     if a.cbData != b.cbData {
         return false;
     }
-    if a.cbData == 0 {
-        return true;
-    }
-    // SAFETY: blobs describe valid byte ranges.
-    let sa = unsafe { std::slice::from_raw_parts(a.pbData, a.cbData as usize) };
-    // SAFETY: blobs describe valid byte ranges.
-    let sb = unsafe { std::slice::from_raw_parts(b.pbData, b.cbData as usize) };
-    sa == sb
+    blob_as_slice(a) == blob_as_slice(b)
 }
 
 /// Find an extension by OID in a CERT_INFO. Returns `None` if not present.
@@ -542,8 +545,16 @@ fn decode_object<T: Copy>(
 ) -> Result<Decoded<T>, X509Error> {
     use windows::Win32::Security::Cryptography::CRYPT_DECODE_ALLOC_FLAG;
 
-    // SAFETY: blob describes a valid byte range owned by the cert context.
-    let encoded = unsafe { std::slice::from_raw_parts(blob.pbData, blob.cbData as usize) };
+    // Reject malformed inputs (non-zero length with a null pointer) before
+    // calling into CryptoAPI; `from_raw_parts` with a null pointer would
+    // be immediate UB even if the API would have tolerated it.
+    if blob.cbData != 0 && blob.pbData.is_null() {
+        return Err(err(
+            windows_result::Error::from_hresult(windows::core::HRESULT(-1)),
+            "CryptDecodeObjectEx: input blob has null pbData with non-zero cbData",
+        ));
+    }
+    let encoded = blob_as_slice(blob);
     let mut raw: *mut c_void = std::ptr::null_mut();
     let mut size: u32 = 0;
     // SAFETY: We pass CRYPT_DECODE_ALLOC_FLAG so the API allocates the
@@ -566,8 +577,24 @@ fn decode_object<T: Copy>(
             "CryptDecodeObjectEx returned null",
         ));
     }
-    // SAFETY: raw points to a `T` written by CryptoAPI. We copy it out so
-    // that `value` lives at a stable address.
+    // Validate the API actually wrote a `T`-sized header before reading
+    // it. A short buffer here would mean `read_unaligned` reads past the
+    // allocation.
+    if (size as usize) < size_of::<T>() {
+        // SAFETY: raw was allocated by CryptoAPI via CRYPT_DECODE_ALLOC_FLAG.
+        unsafe {
+            let _ = windows::Win32::Foundation::LocalFree(Some(
+                windows::Win32::Foundation::HLOCAL(raw),
+            ));
+        }
+        return Err(err(
+            windows_result::Error::from_hresult(windows::core::HRESULT(-1)),
+            "CryptDecodeObjectEx returned buffer smaller than expected struct",
+        ));
+    }
+    // SAFETY: raw points to a `T` written by CryptoAPI (validated above to
+    // be at least size_of::<T>() bytes). We copy it out so that `value`
+    // lives at a stable address.
     let value = unsafe { std::ptr::read_unaligned(raw.cast::<T>()) };
     Ok(Decoded {
         raw,
@@ -611,7 +638,8 @@ fn encode_object(
     Ok(out)
 }
 
-/// Build a single-RDN-per-component DN as `C=…, ST=…, L=…, O=…, CN=…`.
+/// Convert a Unix timestamp (seconds since 1970-01-01) to a Windows
+/// `FILETIME` (100-ns intervals since 1601-01-01).
 #[cfg(any(test, feature = "test_helpers"))]
 fn unix_to_filetime(unix_secs: i64) -> windows::Win32::Foundation::FILETIME {
     // FILETIME counts 100-ns intervals since 1601-01-01; Unix epoch is
@@ -623,6 +651,7 @@ fn unix_to_filetime(unix_secs: i64) -> windows::Win32::Foundation::FILETIME {
     }
 }
 
+/// Build a single-RDN-per-component DN as `C=…, ST=…, L=…, O=…, CN=…`.
 #[cfg(any(test, feature = "test_helpers"))]
 fn encode_x500_name(
     country: &str,
