@@ -595,6 +595,14 @@ async fn process_channel(
 
                     // Wait for the next guest packet, or for a demand change
                     // that should re-sync the update features on the next pass.
+                    // We must select on both: a client can disconnect while the
+                    // guest is idle (sending no packets), and we still need to
+                    // disable reporting. Cancelling `recv_packet` when the demand
+                    // branch wins is safe: message-mode `MessagePipe::recv`
+                    // commits the ring read offset only on the poll that returns
+                    // a complete packet, so a pending-then-dropped read leaves the
+                    // stream untouched and the next call re-reads from the same
+                    // offset.
                     let mut demand_closed = false;
                     let packet = if let Some(recv) = updates_needed_recv.as_mut() {
                         let recv_packet = std::pin::pin!(packet_buf.recv_packet(channel));

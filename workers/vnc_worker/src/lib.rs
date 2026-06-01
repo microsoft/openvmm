@@ -691,6 +691,7 @@ mod tests {
         format_send: mesh::Sender<FramebufferFormat>,
         input_recv: mesh::Receiver<InputData>,
         dirty_send: Option<mesh::Sender<Vec<DirtyRect>>>,
+        updates_needed_recv: mesh::Receiver<bool>,
         stop_send: Option<mesh::OneshotSender<()>>,
         join: Option<JoinHandle<anyhow::Result<()>>>,
     }
@@ -758,6 +759,7 @@ mod tests {
             (None, None)
         };
         let (stop_send, stop_recv) = mesh::oneshot();
+        let (updates_needed_send, updates_needed_recv) = mesh::channel();
 
         let join = thread::spawn(move || {
             block_with_io(async |driver| -> anyhow::Result<()> {
@@ -772,7 +774,7 @@ mod tests {
                     next_client_id: 0,
                     max_clients,
                     evict_oldest,
-                    updates_needed_send: None,
+                    updates_needed_send: Some(updates_needed_send),
                 };
 
                 futures::select! {
@@ -788,6 +790,7 @@ mod tests {
             format_send,
             input_recv,
             dirty_send,
+            updates_needed_recv,
             stop_send: Some(stop_send),
             join: Some(join),
         }
@@ -801,6 +804,51 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         panic!("timed out waiting for input");
+    }
+
+    fn wait_for_signal(recv: &mut mesh::Receiver<bool>) -> bool {
+        for _ in 0..200 {
+            if let Ok(v) = recv.try_recv() {
+                return v;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("timed out waiting for updates-needed signal");
+    }
+
+    #[test]
+    fn e2e_signals_updates_needed_on_presence_and_idle_dirt() {
+        let mut server = start_server(32, 32, true);
+
+        // Startup with no clients signals "not needed".
+        assert!(!wait_for_signal(&mut server.updates_needed_recv));
+
+        // First client connect signals "needed".
+        let client = Client::connect(server.addr);
+        assert!(wait_for_signal(&mut server.updates_needed_recv));
+
+        // Last client disconnect signals "not needed". (The disconnect signal
+        // is sent after the client is removed from the active set, so by the
+        // time we observe it the coordinator has no clients.)
+        drop(client);
+        assert!(!wait_for_signal(&mut server.updates_needed_recv));
+
+        // Dirt arriving while idle re-asserts "not needed": this is the
+        // self-heal for a device that re-handshaked and returned to its
+        // enabled default while a client is not connected.
+        server
+            .dirty_send
+            .as_ref()
+            .unwrap()
+            .send(vec![DirtyRect {
+                left: 0,
+                top: 0,
+                right: 16,
+                bottom: 16,
+            }]);
+        assert!(!wait_for_signal(&mut server.updates_needed_recv));
+
+        server.stop();
     }
 
     #[test]
