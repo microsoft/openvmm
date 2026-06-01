@@ -194,9 +194,21 @@ impl X509CertificateInner {
             }
         };
 
-        let tbs = blob_as_slice(&signed.value.ToBeSigned);
+        let tbs = blob_as_slice(&signed.value.ToBeSigned).ok_or_else(|| {
+            rsa_err(
+                windows_result::Error::from_hresult(windows::core::HRESULT(-1)),
+                "malformed ToBeSigned blob",
+            )
+        })?;
         // Signature is a CRYPT_BIT_BLOB; reject empty/null defensively.
         let sig_bits = &signed.value.Signature;
+        // For X.509 RSA signatures the BIT STRING must be byte-aligned;
+        // a non-zero cUnusedBits means the encoding is malformed for this
+        // algorithm. Treat as an invalid signature rather than verifying
+        // bytes that don't reflect the encoded value.
+        if sig_bits.cUnusedBits != 0 {
+            return Ok(false);
+        }
         let sig = if sig_bits.cbData == 0 || sig_bits.pbData.is_null() {
             &[][..]
         } else {
@@ -262,7 +274,9 @@ impl X509CertificateInner {
                             windows::Win32::Security::Cryptography::X509_OCTET_STRING,
                             &ext.Value,
                         )?;
-                        if !blob_eq(&akid.value.KeyId, &skid.value) {
+                        let a = blob_as_slice(&akid.value.KeyId);
+                        let b = blob_as_slice(&skid.value);
+                        if a.is_none() || b.is_none() || a != b {
                             return Ok(false);
                         }
                     }
@@ -270,13 +284,12 @@ impl X509CertificateInner {
                 }
             }
 
-            if akid.value.AuthorityCertSerialNumber.cbData != 0
-                && !blob_eq(
-                    &akid.value.AuthorityCertSerialNumber,
-                    &issuer_info.SerialNumber,
-                )
-            {
-                return Ok(false);
+            if akid.value.AuthorityCertSerialNumber.cbData != 0 {
+                let a = blob_as_slice(&akid.value.AuthorityCertSerialNumber);
+                let b = blob_as_slice(&issuer_info.SerialNumber);
+                if a.is_none() || b.is_none() || a != b {
+                    return Ok(false);
+                }
             }
 
             // AuthorityCertIssuer (a CERT_ALT_NAME_INFO): if any
@@ -479,25 +492,20 @@ impl X509CertificateInner {
     }
 }
 
-/// Safely view a `CRYPT_INTEGER_BLOB` as a byte slice, returning an empty
-/// slice when the blob is empty or its pointer is null. `from_raw_parts`
-/// requires a non-null pointer even for zero-length slices, so blob fields
-/// originating from CryptoAPI-decoded structures (driven by potentially
-/// untrusted certificate data) must be checked before use.
-fn blob_as_slice(blob: &CRYPT_INTEGER_BLOB) -> &[u8] {
-    if blob.cbData == 0 || blob.pbData.is_null() {
-        return &[];
+/// View a `CRYPT_INTEGER_BLOB` as a byte slice. Returns `None` if the blob
+/// is malformed (non-zero `cbData` with a null `pbData`), since
+/// `from_raw_parts` would be immediate UB in that case. An empty blob
+/// returns `Some(&[])`.
+fn blob_as_slice(blob: &CRYPT_INTEGER_BLOB) -> Option<&[u8]> {
+    if blob.cbData == 0 {
+        return Some(&[]);
+    }
+    if blob.pbData.is_null() {
+        return None;
     }
     // SAFETY: pbData is non-null and describes cbData bytes owned by the
     // containing CryptoAPI allocation.
-    unsafe { std::slice::from_raw_parts(blob.pbData, blob.cbData as usize) }
-}
-
-fn blob_eq(a: &CRYPT_INTEGER_BLOB, b: &CRYPT_INTEGER_BLOB) -> bool {
-    if a.cbData != b.cbData {
-        return false;
-    }
-    blob_as_slice(a) == blob_as_slice(b)
+    Some(unsafe { std::slice::from_raw_parts(blob.pbData, blob.cbData as usize) })
 }
 
 /// Find an extension by OID in a CERT_INFO. Returns `None` if not present.
@@ -545,16 +553,12 @@ fn decode_object<T: Copy>(
 ) -> Result<Decoded<T>, X509Error> {
     use windows::Win32::Security::Cryptography::CRYPT_DECODE_ALLOC_FLAG;
 
-    // Reject malformed inputs (non-zero length with a null pointer) before
-    // calling into CryptoAPI; `from_raw_parts` with a null pointer would
-    // be immediate UB even if the API would have tolerated it.
-    if blob.cbData != 0 && blob.pbData.is_null() {
-        return Err(err(
+    let encoded = blob_as_slice(blob).ok_or_else(|| {
+        err(
             windows_result::Error::from_hresult(windows::core::HRESULT(-1)),
             "CryptDecodeObjectEx: input blob has null pbData with non-zero cbData",
-        ));
-    }
-    let encoded = blob_as_slice(blob);
+        )
+    })?;
     let mut raw: *mut c_void = std::ptr::null_mut();
     let mut size: u32 = 0;
     // SAFETY: We pass CRYPT_DECODE_ALLOC_FLAG so the API allocates the
