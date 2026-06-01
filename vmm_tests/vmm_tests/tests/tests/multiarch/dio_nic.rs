@@ -26,12 +26,15 @@
 #![cfg(windows)]
 
 use anyhow::Context;
+use pal_async::DefaultDriver;
+use pal_async::timer::PolledTimer;
 use petri::PetriVmBuilder;
 use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::openvmm::find_switch;
 use petri::pipette::cmd;
 use pipette_client::shell::UnixShell;
+use std::time::Duration;
 use vmm_test_macros::openvmm_test;
 
 /// Find the network interface matching [`NIC_MAC_ADDRESS`] by scanning
@@ -84,7 +87,11 @@ fn parse_default_gw(route: &str, iface: &str) -> anyhow::Result<String> {
 
 /// End-to-end test for `-net dio`.
 #[openvmm_test(uefi_x64(vhd(ubuntu_2504_server_x64)))]
-async fn dio_nic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+async fn dio_nic(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
     let switch = find_switch().ok_or_else(|| {
         anyhow::anyhow!(
             "no Hyper-V vmswitch could be opened on this host (Default Switch absent and \
@@ -104,20 +111,49 @@ async fn dio_nic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<
     let iface = find_nic_by_mac(&sh).await?;
     tracing::info!(iface, "found DIO-backed NIC interface");
 
-    // Bring the interface up and request a DHCP lease from the Default
-    // Switch's NAT. The image ships busybox `udhcpc`.
+    // Configure systemd-networkd to DHCP this interface and reload. The
+    // Ubuntu cloud image runs systemd-networkd as its default network
+    // manager, and cloud-init's network-config drop-in for `eth0` may
+    // have raced the link bring-up of the DIO NIC, so we install an
+    // explicit drop-in matched by name and ask networkd to reconfigure.
     cmd!(sh, "ip link set {iface} up").run().await?;
-    cmd!(sh, "udhcpc -i {iface} -q -f -n -t 10 -T 3")
+    let drop_in = format!("[Match]\nName={iface}\n\n[Network]\nDHCP=ipv4\n");
+    cmd!(sh, "mkdir -p /run/systemd/network").run().await?;
+    cmd!(sh, "tee /run/systemd/network/99-petri-dio.network")
+        .stdin(drop_in)
+        .ignore_stdout()
         .run()
         .await
-        .context("DHCP failed on DIO-backed NIC")?;
+        .context("failed to write systemd-networkd drop-in")?;
+    cmd!(sh, "networkctl reload")
+        .run()
+        .await
+        .context("networkctl reload failed")?;
+    cmd!(sh, "networkctl reconfigure {iface}")
+        .ignore_status()
+        .run()
+        .await?;
 
-    let addr = cmd!(sh, "ip -4 -br addr show {iface}").read().await?;
-    tracing::info!(addr, "ipv4 lease on DIO-backed NIC");
-    assert!(
-        addr.contains('/'),
-        "expected an IPv4 lease on {iface}, got: {addr}"
+    // Poll for an IPv4 lease from the Default Switch's NAT.
+    let mut timer = PolledTimer::new(&driver);
+    let mut addr = String::new();
+    let mut got_lease = false;
+    for _ in 0..30 {
+        addr = cmd!(sh, "ip -4 -br addr show {iface}").read().await?;
+        if addr
+            .split_whitespace()
+            .any(|w| w.contains('/') && w.contains('.'))
+        {
+            got_lease = true;
+            break;
+        }
+        timer.sleep(Duration::from_secs(1)).await;
+    }
+    anyhow::ensure!(
+        got_lease,
+        "no IPv4 lease on {iface} after 30s; current addrs: {addr}"
     );
+    tracing::info!(addr, "ipv4 lease on DIO-backed NIC");
 
     let route = cmd!(sh, "ip route show default").read().await?;
     tracing::info!(route, "default route");
