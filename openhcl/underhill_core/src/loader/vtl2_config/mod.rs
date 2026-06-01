@@ -476,7 +476,7 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
     if let Err(_) = openhcl_product_policy::init(product_policy) {
         anyhow::bail!("conflicting product policy already installed");
     }
-    
+
     let measured_vtl2_info = MeasuredVtl2Info {
         accepted_regions,
         vtom_offset_bit,

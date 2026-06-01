@@ -1583,6 +1583,20 @@ async fn new_underhill_vm(
         dps
     };
 
+    // Aggressively halt the paravisor if the product policy refuses
+    // this configuration. With `panic = "abort"`, panic! immediately
+    // terminates the process — no further boot side effects occur.
+    if let Err(err) = openhcl_product_policy::cwcow::policy()
+        .validate_secure_boot_enabled(dps.general.secure_boot_enabled)
+    {
+        tracing::error!(
+            CVM_ALLOWED,
+            error = err.as_ref() as &dyn std::error::Error,
+            "product policy validation failed; aborting",
+        );
+        panic!("product policy violation: {err:#}");
+    }
+
     let driver_source = VmTaskDriverSource::new(ThreadpoolBackend::new(tp.clone()));
 
     let is_restoring = servicing_state.is_some();

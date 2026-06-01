@@ -76,7 +76,11 @@ mod custom_uefi_json_serde {
     }
 }
 
-crate::product_view!(CwcowPolicyView, CwcowPolicy, crate::wire::ProductPolicy::Cwcow);
+crate::product_view!(
+    CwcowPolicyView,
+    CwcowPolicy,
+    crate::wire::ProductPolicy::Cwcow
+);
 
 #[cfg(feature = "std")]
 impl<'a> CwcowPolicyView<'a> {
@@ -119,6 +123,13 @@ mod tests {
         assert!(v.is_active());
         assert!(v.validate_secure_boot_enabled(false).is_ok());
         assert!(v.validate_secure_boot_enabled(true).is_ok());
+    }
+
+    #[test]
+    fn should_pass_when_policy_is_empty() {
+        crate::init(None).unwrap();
+        let r = policy().validate_secure_boot_enabled(false);
+        assert!(r.is_ok());
     }
 
     #[test]
