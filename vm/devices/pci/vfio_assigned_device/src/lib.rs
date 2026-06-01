@@ -979,17 +979,15 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
         self.update_bar_mappings();
 
         // Destructure to ensure every field is explicitly considered for reset.
-        self.in_d0 = true;
-
         let Self {
             ref pci_id,
             ref vfio_device,
             bar_masks: _, // immutable device geometry
             ref mut bars,
             bar_flags,
-            mmio_enabled: _, // handled above
-            pm_csr_offset,
-            in_d0: _,             // handled above
+            mmio_enabled: _,  // handled above
+            pm_csr_offset: _, // not used during reset
+            ref mut in_d0,
             active_bars: _,       // handled by update_bar_mappings()
             bar_mmio_controls: _, // handled by update_bar_mappings()
             bar_direct_maps: _,   // handled by update_bar_mappings()
@@ -1013,31 +1011,18 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
         *bars = bar_flags;
 
         // Reset the physical device via VFIO so it starts in a clean state.
-        let reset_ok = supports_reset
-            && vfio_device
-                .device
-                .reset()
-                .inspect_err(|err| {
-                    tracing::warn!(
-                        pci_id = pci_id.as_str(),
-                        error = err.as_ref() as &dyn std::error::Error,
-                        "failed to reset VFIO device"
-                    )
-                })
-                .is_ok();
-
-        // If we couldn't reset the device, at least ensure it's in D0.
-        // Without a reset, the device may still be in D3hot from the
-        // previous guest session, and VFIO won't allow BAR mappings
-        // until the device is back in D0.
-        if !reset_ok {
-            if let Some(pmcsr_offset) = pm_csr_offset {
-                if let Ok(pmcsr) = vfio_device.read_config_u32(pmcsr_offset) {
-                    if pmcsr & 0x3 != 0 {
-                        let _ = vfio_device.write_config_u32(pmcsr_offset, pmcsr & !0x3);
-                    }
-                }
+        //
+        // TODO: handle the case where the physical device does not support reset,
+        // or when the reset operation fails.
+        if supports_reset {
+            if let Err(err) = vfio_device.device.reset() {
+                tracing::warn!(
+                    pci_id = pci_id.as_str(),
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "failed to reset VFIO device"
+                );
             }
+            *in_d0 = true;
         }
     }
 }
@@ -1135,53 +1120,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                     self.update_bar_mappings();
                 }
             }
-            // All other registers: pass through to physical device.
-            _ => {
-                // Intercept MSI-X capability writes to track enable/disable
-                // state in the software emulator. Do NOT forward the MSI-X
-                // control register to hardware via write_phys_config — VFIO
-                // manages the hardware MSI-X enable bit internally via
-                // VFIO_DEVICE_SET_IRQS. Writing it again through config space
-                // causes VFIO to tear down and re-setup MSI-X, losing the
-                // eventfd associations.
-                if let Some(msix) = &mut self.msix {
-                    if offset == msix.cap_offset {
-                        let new_enabled = value & 0x8000_0000 != 0;
-                        let was_enabled = msix.enabled;
-
-                        if new_enabled && !was_enabled {
-                            // Install irqfd routes BEFORE writing the
-                            // capability, so that when the capability
-                            // processes the enable transition it can call
-                            // enable() on the already-installed routes.
-                            match self.msix_enable() {
-                                Ok(()) => {
-                                    let msix = self.msix.as_mut().unwrap();
-                                    msix.capability.write_u32(0, value);
-                                    msix.enabled = true;
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        error = e.as_ref() as &dyn std::error::Error,
-                                        pci_id = self.pci_id.as_str(),
-                                        "failed to enable MSI-X"
-                                    );
-                                }
-                            }
-                        } else if was_enabled && !new_enabled {
-                            // Write capability first to disable vectors,
-                            // then tear down VFIO mapping.
-                            msix.capability.write_u32(0, value);
-                            self.msix_disable();
-                            self.msix.as_mut().unwrap().enabled = false;
-                        } else {
-                            // No enable/disable transition — just forward.
-                            msix.capability.write_u32(0, value);
-                        }
-                        // Skip write_phys_config for MSI-X control register.
-                        return IoResult::Ok;
-                    }
-                }
+            _ if Some(offset) == self.pm_csr_offset => {
                 // Intercept PMCSR writes to track D0/non-D0 transitions. When
                 // the device leaves D0, VFIO will invalidate mapped MMIO pages.
                 // Unmap them from the guest to avoid generating unresolvable
@@ -1189,34 +1128,84 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                 //
                 // When returning to D0, write PMCSR first so the faults are
                 // resolvable before remapping MMIO into guest space.
-                if let Some(pmcsr_offset) = self.pm_csr_offset {
-                    if offset == pmcsr_offset {
-                        let power_state = value & 0x3; // bits [1:0] = PowerState
-                        let new_in_d0 = power_state == 0;
-                        if new_in_d0 != self.in_d0 {
-                            if new_in_d0 {
-                                // Entering D0: forward first, then remap BARs.
-                                self.write_phys_config(offset, value);
-                            }
-                            self.in_d0 = new_in_d0;
-                            self.update_bar_mappings();
-                            if !new_in_d0 {
-                                // Leaving D0: unmap BARs first, then forward.
-                                self.write_phys_config(offset, value);
-                            }
-                            tracing::debug!(
-                                pci_id = self.pci_id.as_str(),
-                                power_state,
-                                in_d0 = new_in_d0,
-                                "PM power state changed by guest"
-                            );
-                            return IoResult::Ok;
-                        }
+                let power_state = value & 0x3; // bits [1:0] = PowerState
+                let new_in_d0 = power_state == 0;
+                let old_in_d0 = self.in_d0;
+                if new_in_d0 {
+                    // Entering D0: forward first, then remap BARs.
+                    // If the write fails, leave BARs unmapped to
+                    // avoid SIGBUS from VFIO mmaps that are still
+                    // faulting.
+                    if let Err(e) = self.vfio_device.write_config_u32(offset, value) {
+                        tracelimit::warn_ratelimited!(
+                            offset,
+                            error = e.as_ref() as &dyn std::error::Error,
+                            "VFIO config space write failed"
+                        );
+                        return IoResult::Ok;
                     }
                 }
-
-                self.write_phys_config(offset, value);
+                self.in_d0 = new_in_d0;
+                self.update_bar_mappings();
+                if !new_in_d0 {
+                    // Leaving D0: unmap BARs first, then forward.
+                    self.write_phys_config(offset, value);
+                }
+                if new_in_d0 && !old_in_d0 {
+                    tracing::debug!(
+                        pci_id = self.pci_id.as_str(),
+                        power_state,
+                        in_d0 = new_in_d0,
+                        "PM power state changed by guest"
+                    );
+                }
+                return IoResult::Ok;
             }
+            _ if Some(offset) == self.msix.as_ref().map(|m| m.cap_offset) => {
+                // Intercept MSI-X capability writes to track enable/disable
+                // state in the software emulator. Do NOT forward the MSI-X
+                // control register to hardware via write_phys_config — VFIO
+                // manages the hardware MSI-X enable bit internally via
+                // VFIO_DEVICE_SET_IRQS. Writing it again through config space
+                // causes VFIO to tear down and re-setup MSI-X, losing the
+                // eventfd associations.
+                let new_enabled = value & 0x8000_0000 != 0;
+                let was_enabled = msix.enabled;
+
+                if new_enabled && !was_enabled {
+                    // Install irqfd routes BEFORE writing the
+                    // capability, so that when the capability
+                    // processes the enable transition it can call
+                    // enable() on the already-installed routes.
+                    match self.msix_enable() {
+                        Ok(()) => {
+                            let msix = self.msix.as_mut().unwrap();
+                            msix.capability.write_u32(0, value);
+                            msix.enabled = true;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = e.as_ref() as &dyn std::error::Error,
+                                pci_id = self.pci_id.as_str(),
+                                "failed to enable MSI-X"
+                            );
+                        }
+                    }
+                } else if was_enabled && !new_enabled {
+                    // Write capability first to disable vectors,
+                    // then tear down VFIO mapping.
+                    msix.capability.write_u32(0, value);
+                    self.msix_disable();
+                    self.msix.as_mut().unwrap().enabled = false;
+                } else {
+                    // No enable/disable transition — just forward.
+                    msix.capability.write_u32(0, value);
+                }
+                // Skip write_phys_config for MSI-X control register.
+                return IoResult::Ok;
+            }
+            // All other registers: pass through to physical device.
+            _ => self.write_phys_config(offset, value),
         }
 
         IoResult::Ok
