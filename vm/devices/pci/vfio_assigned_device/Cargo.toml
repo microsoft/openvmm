@@ -29,7 +29,6 @@ tracelimit.workspace = true
 tracing.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-pci_core.workspace = true
 test_with_tracing.workspace = true
 
 [lints]
