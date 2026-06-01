@@ -2,17 +2,21 @@
 // Licensed under the MIT License.
 
 //! Handler for the execute request.
-
 // UNSAFETY: Required for libc::chroot() and libc::chdir() in pre_exec on Linux.
 #![cfg_attr(target_os = "linux", expect(unsafe_code))]
 
+use anyhow::Context;
 use futures::executor::block_on;
 use futures::io::AllowStdIo;
+use pal_async::DefaultDriver;
+use pal_async::process::PolledChild;
+use pal_async::task::Spawn;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 use std::process::Stdio;
 
-pub fn handle_execute(
+pub async fn handle_execute(
+    driver: &DefaultDriver,
     mut request: pipette_protocol::ExecuteRequest,
 ) -> anyhow::Result<pipette_protocol::ExecuteResponse> {
     tracing::debug!(?request, "execute request");
@@ -107,13 +111,34 @@ pub fn handle_execute(
         });
     }
 
-    std::thread::spawn(move || {
-        let exit_status = child.wait().unwrap();
-        let status = convert_exit_status(exit_status);
-        tracing::debug!(pid, ?status, "process exited");
-        send.send(status);
-    });
+    let child = PolledChild::<std::process::Child>::new(driver, child)
+        .context("failed to create process wait for execute")?;
+    driver
+        .spawn(format!("wait-execute-child-{pid}"), async move {
+            wait_for_child(child, pid, send).await;
+        })
+        .detach();
     Ok(pipette_protocol::ExecuteResponse { pid, result: recv })
+}
+
+async fn wait_for_child(
+    mut child: PolledChild<std::process::Child>,
+    pid: u32,
+    send: mesh::OneshotSender<pipette_protocol::ExitStatus>,
+) {
+    let status = match child.wait().await {
+        Ok(exit_status) => convert_exit_status(exit_status),
+        Err(err) => {
+            tracing::error!(
+                pid,
+                error = &err as &dyn std::error::Error,
+                "failed to wait for process"
+            );
+            pipette_protocol::ExitStatus::Unknown
+        }
+    };
+    tracing::debug!(pid, ?status, "process exited");
+    send.send(status);
 }
 
 fn convert_exit_status(exit_status: std::process::ExitStatus) -> pipette_protocol::ExitStatus {
