@@ -423,26 +423,6 @@ pub(crate) async fn run_repl(
     thread::Builder::new()
         .name("stdio-thread".to_string())
         .spawn(move || {
-            // The REPL is interactive: it toggles the terminal in and out of
-            // raw mode, runs rustyline, and pumps stdin into the guest's
-            // serial console. None of that makes sense when stdin is not a
-            // tty (e.g. when openvmm is launched programmatically by a test
-            // harness or a wrapper script with stdin redirected). In that
-            // case calling `term::set_raw_console` returns ENXIO and the
-            // unwrap below would panic and tear the process down. Instead,
-            // park this thread so that `console_command_send` stays alive;
-            // dropping it would close `console_command_recv` and the event
-            // loop's `chain(repeat_with(Quit))` would shut the VM down.
-            // The VM continues to run, driven by the VmController task,
-            // until a Quit event arrives from another source (e.g. a
-            // guest-initiated shutdown).
-            if !io::stdin().is_terminal() {
-                tracing::info!("stdin is not a tty; skipping interactive REPL");
-                loop {
-                    thread::park();
-                }
-            }
-
             // install panic hook to restore cooked terminal (linux)
             #[cfg(unix)]
             if io::stderr().is_terminal() {

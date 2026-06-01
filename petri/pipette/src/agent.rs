@@ -205,21 +205,11 @@ async fn handle_request(
         PipetteRequest::Mount(rpc) => {
             rpc.handle_failable_sync(|_| anyhow::bail!("mount not supported on this platform"))
         }
-        #[cfg(target_os = "linux")]
         PipetteRequest::RelayUnixSocket(rpc) => {
             rpc.handle_failable_sync(|req| crate::relay::handle_relay_unix_socket(driver, req))
         }
-        #[cfg(not(target_os = "linux"))]
-        PipetteRequest::RelayUnixSocket(rpc) => rpc.handle_failable_sync(|_| {
-            anyhow::bail!("relay-unix-socket not supported on this platform")
-        }),
-        #[cfg(target_os = "linux")]
         PipetteRequest::RelayConnectUnixSocket(rpc) => rpc.handle_failable_sync(|req| {
             crate::relay::handle_relay_connect_unix_socket(driver, req)
-        }),
-        #[cfg(not(target_os = "linux"))]
-        PipetteRequest::RelayConnectUnixSocket(rpc) => rpc.handle_failable_sync(|_| {
-            anyhow::bail!("relay-connect-unix-socket not supported on this platform")
         }),
     }
 }

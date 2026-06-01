@@ -168,22 +168,10 @@ impl HostContext {
     }
 }
 
-/// Best-effort probe for whether the host can run a guest with nested
-/// virtualization enabled.
-///
-/// On Linux, checks whether the `kvm_intel` or `kvm_amd` module has
-/// `nested=Y` (or `1`) set. The probe is intentionally cheap and
-/// returns `false` on any error or unsupported configuration.
-///
-/// On Windows, the probe currently returns `false` until the `virt_whp`
-/// nested-virtualization capability helper is exposed publicly; until
-/// then, tests gated on this requirement will skip on Windows hosts.
+/// Probe whether the host can run a guest with nested virtualization.
 fn nested_virt_capable_probe() -> bool {
     #[cfg(target_os = "linux")]
     {
-        // `/dev/kvm` must exist for KVM-based nested virt to be usable
-        // at all. Cheap existence check; opening it would require root
-        // or kvm-group membership on many distros.
         if !std::path::Path::new("/dev/kvm").exists() {
             return false;
         }
@@ -201,8 +189,7 @@ fn nested_virt_capable_probe() -> bool {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        // TODO: probe WHP for nested-virt support once virt_whp exposes
-        // its `nested_virt_capability()` helper as a public API.
+        // TODO: probe WHP for nested-virt support.
         false
     }
 }

@@ -18,7 +18,6 @@ mod execute;
 mod init;
 #[cfg(target_os = "linux")]
 mod mount;
-#[cfg(target_os = "linux")]
 mod relay;
 #[cfg(any(target_os = "linux", windows))]
 mod shutdown;
