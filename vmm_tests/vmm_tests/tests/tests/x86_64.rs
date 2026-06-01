@@ -572,7 +572,7 @@ async fn snapshot_save_to_disk(
 /// The L1 is a standard linux-direct VM. The L2 is spawned inside L1 by
 /// the helper [`PetriVmBuilder::with_nested_l2`], which stages a
 /// statically-linked `openvmm` binary, kernel, and initrd into a
-/// virtio-fs share that L1 mounts read-only. After L1 boots and pipette
+/// virtio-fs share. After L1 boots and pipette
 /// connects, the helper spawns the in-L1 openvmm with its own pipette;
 /// the test then asks the L2 to run `uname -a` and checks that Linux
 /// reported itself.
