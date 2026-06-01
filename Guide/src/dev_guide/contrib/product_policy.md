@@ -92,7 +92,7 @@ Both the enum and body struct use
 
 The default flow is two edits in `openhcl/openhcl_product_policy/src/wire.rs`:
 
-```rust
+```rust,ignore
 /// 1. Define a body struct (mesh + symmetric serde under the
 ///    `manifest` feature). Manifest field names match wire field
 ///    names by default.
@@ -136,7 +136,7 @@ attach a *symmetric* `#[serde(with = "…")]` adapter to the field. The
 helper module supplies matching `serialize` and `deserialize`
 functions so JSON round-trips are byte-stable:
 
-```rust
+```rust,ignore
 #[mesh(6)]
 #[cfg_attr(
     feature = "manifest",
@@ -145,7 +145,7 @@ functions so JSON round-trips are byte-stable:
 pub custom_uefi_json: Vec<u8>,
 ```
 
-```rust
+```rust,ignore
 #[cfg(feature = "manifest")]
 mod custom_uefi_json_serde {
     use base64::Engine as _;
