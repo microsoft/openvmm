@@ -121,6 +121,10 @@ pub struct ConsommeParams {
     /// routable IPv6 address.
     #[inspect(display)]
     pub skip_ipv6_checks: bool,
+    /// If true, allow guest traffic destined for host-local addresses
+    /// (loopback, unspecified, link-local).
+    #[inspect(display)]
+    pub allow_host_local_access: bool,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -153,6 +157,7 @@ impl ConsommeParams {
             // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
             udp_timeout: Duration::from_secs(300),
             skip_ipv6_checks: false,
+            allow_host_local_access: false,
         })
     }
 
@@ -403,6 +408,10 @@ pub enum DropReason {
     /// since IP reassembly is not supported.
     #[error("packet fragmentation is not supported")]
     FragmentedPacket,
+    /// The destination address is not allowed (e.g., loopback, unspecified,
+    /// or link-local when host-local access is disabled).
+    #[error("destination address not allowed")]
+    DestinationNotAllowed,
 }
 
 /// An error from a port bind or unbind operation.
@@ -644,6 +653,18 @@ impl<T: Client> Access<'_, T> {
             return Err(DropReason::Ipv4Checksum);
         }
 
+        fn is_blocked_host_local_ipv4(addr: std::net::Ipv4Addr) -> bool {
+            addr.is_loopback() || addr.is_unspecified() || addr.is_link_local()
+        }
+
+        // Reject guest traffic to host-local-only destinations.
+        if !self.inner.state.params.allow_host_local_access {
+            let dst_ip = std::net::Ipv4Addr::from(ipv4.dst_addr().octets());
+            if is_blocked_host_local_ipv4(dst_ip) {
+                return Err(DropReason::DestinationNotAllowed);
+            }
+        }
+
         let addresses = Ipv4Addresses {
             src_addr: ipv4.src_addr(),
             dst_addr: ipv4.dst_addr(),
@@ -683,6 +704,17 @@ impl<T: Client> Access<'_, T> {
             let required_len = smoltcp::wire::IPV6_HEADER_LEN + ipv6.payload_len() as usize;
             if payload.len() < required_len {
                 return Err(DropReason::MalformedPacket);
+            }
+        }
+
+        // Reject guest traffic to host-local-only destinations.
+        if !self.inner.state.params.allow_host_local_access {
+            let dst_ip = std::net::Ipv6Addr::from(ipv6.dst_addr().octets());
+            if dst_ip.is_unspecified()
+                || dst_ip.is_loopback()
+                || dst_ip.is_unicast_link_local()
+            {
+                return Err(DropReason::DestinationNotAllowed);
             }
         }
 
@@ -730,3 +762,6 @@ impl<T: Client> Access<'_, T> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
