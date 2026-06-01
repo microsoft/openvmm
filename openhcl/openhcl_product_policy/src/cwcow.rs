@@ -1,13 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! CWCOW (Confidential Windows Container on Windows) view.
-//!
-//! Usage:
-//! ```ignore
-//! openhcl_product_policy::cwcow::policy().validate_secure_boot_enabled(on)?;
-//! ```
-
+//! CWCOW (Confidential Windows Container on Windows) policy + view.
 
 extern crate alloc;
 
@@ -23,38 +17,27 @@ use alloc::vec::Vec;
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
 #[mesh(package = "openhcl.product_policy")]
 pub struct CwcowPolicy {
-    /// Enforce read-only mode for the VMGS partition. With this
-    /// set, OpenHCL refuses writes to the VMGS (including any
-    /// host-initiated change attempt).
+    /// Refuse VMGS writes when set.
     #[mesh(1)]
     pub vmgs_read_only: bool,
 
-    /// Require secure-boot-only mode: refuse to boot if secure
-    /// boot is not enabled.
+    /// Refuse to boot unless secure boot is enabled.
     #[mesh(2)]
     pub require_secure_boot: bool,
 
-    /// Require the presence of secure boot variables (PK, KEK,
-    /// db, dbx, etc.) in the UEFI nvram. Builds without the
-    /// expected variables are refused.
+    /// Refuse to boot unless PK/KEK/db/dbx variables are present.
     #[mesh(3)]
     pub require_secure_boot_vars: bool,
 
-    /// Require the `BootConfigurationDataHash` UEFI variable to
-    /// be set via the custom UEFI JSON below, providing BCD
-    /// integrity at boot.
+    /// Refuse to boot unless `BootConfigurationDataHash` is set.
     #[mesh(4)]
     pub require_bcd_integrity: bool,
 
-    /// Require Secure AVIC to be enabled on platforms that
-    /// support it (currently Turin SNP). OpenHCL refuses to
-    /// continue if this is set but Secure AVIC is disabled.
+    /// Refuse to boot unless Secure AVIC is enabled.
     #[mesh(5)]
     pub require_secure_avic: bool,
 
-    /// Custom UEFI JSON bytes. Encoded as standard base64 in
-    /// manifest JSON. Mandatory and must be non-empty — an empty
-    /// value panics in `encode_product_policy_bytes`.
+    /// Custom UEFI JSON bytes. Base64 in manifest JSON; mandatory.
     #[mesh(6)]
     #[cfg_attr(feature = "manifest", serde(with = "custom_uefi_json_serde"))]
     #[cfg_attr(feature = "inspect", inspect(with = "Vec::<u8>::len"))]
@@ -93,20 +76,11 @@ mod custom_uefi_json_serde {
     }
 }
 
-// Generates `pub struct CwcowPolicyView<'a>`, scaffolding methods
-// (`from_policy` / `empty` / `is_active` / `body`), `current()` and
-// the module-level `pub fn policy()`.
 crate::product_view!(CwcowPolicyView, CwcowPolicy, crate::wire::ProductPolicy::Cwcow);
 
 #[cfg(feature = "std")]
 impl<'a> CwcowPolicyView<'a> {
-    /// Fail unless secure boot is enabled, when the CWCOW policy
-    /// requires it. No-op when no CWCOW policy is in effect or when
-    /// the policy does not require secure boot.
-    ///
-    /// Additional `validate_*` helpers (vmgs read-only, secure-boot
-    /// variables, BCD integrity, Secure AVIC, custom UEFI JSON) land
-    /// in follow-up commits alongside their consumer wire-up.
+    /// Fail if the policy requires secure boot and `on` is false.
     pub fn validate_secure_boot_enabled(&self, on: bool) -> anyhow::Result<()> {
         if let Some(p) = self.body() {
             if p.require_secure_boot && !on {

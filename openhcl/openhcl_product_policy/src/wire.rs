@@ -1,12 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! On-wire types for the measured product policy payload.
-//!
-//! Each [`ProductPolicy`] variant is a product identified by its
-//! `#[mesh(N)]` tag. Tags are part of the measured wire format and
-//! must not be reused. See `Guide/src/dev_guide/contrib/product_policy.md`
-//! for the full onboarding guide.
+//! On-wire product policy types. Mesh tags are part of the measured
+//! wire format and must never be reused.
 
 extern crate alloc;
 
@@ -14,9 +10,7 @@ use alloc::vec::Vec;
 
 use crate::cwcow::CwcowPolicy;
 
-/// Measured product policy wire format. Each variant is a
-/// product; mesh tags are part of the wire format and must not be
-/// reused.
+/// Measured product policy. Each variant is one product.
 #[derive(mesh_protobuf::Protobuf, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "manifest", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(
@@ -33,8 +27,7 @@ pub enum ProductPolicy {
 }
 
 impl ProductPolicy {
-    /// Short tag identifying the product variant. Useful for logs and
-    /// other diagnostic surfaces. New variants must extend this match.
+    /// Short variant tag for logs.
     pub fn name(&self) -> &'static str {
         match self {
             ProductPolicy::Cwcow(_) => "cwcow",
@@ -42,12 +35,10 @@ impl ProductPolicy {
     }
 }
 
-
-/// Errors that may arise while decoding the inline measured
-/// product policy bytes back into a [`ProductPolicy`].
+/// Errors from [`decode_product_policy`].
 #[derive(Debug)]
 pub enum ProductPolicyDecodeError {
-    /// The mesh_protobuf decoder rejected the bytes.
+    /// mesh_protobuf rejected the bytes.
     Mesh(mesh_protobuf::Error),
 }
 
@@ -67,14 +58,12 @@ impl core::error::Error for ProductPolicyDecodeError {
     }
 }
 
-/// Encode a [`ProductPolicy`] as `mesh_protobuf` bytes for
-/// inclusion in the measured config region.
+/// Encode as `mesh_protobuf` bytes.
 pub fn encode_product_policy(policy: &ProductPolicy) -> Vec<u8> {
     mesh_protobuf::encode(policy.clone())
 }
 
-/// Decode a non-empty [`ProductPolicy`] body. Callers must check
-/// `product_policy_size != 0` first.
+/// Decode `mesh_protobuf` bytes. Callers must check non-empty first.
 pub fn decode_product_policy(bytes: &[u8]) -> Result<ProductPolicy, ProductPolicyDecodeError> {
     mesh_protobuf::decode(bytes).map_err(ProductPolicyDecodeError::Mesh)
 }
