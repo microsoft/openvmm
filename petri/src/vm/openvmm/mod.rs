@@ -205,28 +205,52 @@ struct PetriVmResourcesOpenVmm {
     _switch_ports: Vec<vmswitch::kernel::SwitchPort>,
 }
 
-/// The GUID of the Hyper-V Default Switch, which provides NAT'd networking
-/// when Hyper-V is installed.
-#[cfg(windows)]
-pub const DEFAULT_SWITCH_GUID: Guid = guid::guid!("c08cb7b8-9b3c-408e-8e30-5e16a3aeb444");
-
-/// Returns whether the Hyper-V Default Switch is available on this host.
+/// Discovers a usable Hyper-V virtual switch for `-net dio` tests.
 ///
-/// This is `true` only on Windows hosts where Hyper-V is installed and the
-/// Default Switch network is reachable. Tests that require DirectIO (`-net
-/// dio`) networking should use this to skip gracefully on hosts that do not
-/// meet the requirements.
+/// Tries the well-known Default Switch GUID first (which is provisioned
+/// automatically when Hyper-V is installed). If that switch is not
+/// available (e.g. it was removed, or this host uses a different default
+/// switch SKU), falls back to enumerating all HCN networks and returning
+/// the first one reported.
+///
+/// Returns `None` when no switch can be opened — typically because
+/// Hyper-V is not installed, the user lacks privileges, or
+/// `computenetwork.dll` is missing.
 #[cfg(windows)]
-pub fn default_switch_available() -> bool {
-    vmswitch::hcn::Network::open(&DEFAULT_SWITCH_GUID).is_ok()
+pub fn find_switch() -> Option<Guid> {
+    if vmswitch::hcn::Network::open(&vmswitch::hcn::DEFAULT_SWITCH).is_ok() {
+        return Some(vmswitch::hcn::DEFAULT_SWITCH);
+    }
+    let networks = match vmswitch::hcn::enumerate_networks() {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(
+                error = &e as &dyn std::error::Error,
+                "failed to enumerate HCN networks"
+            );
+            return None;
+        }
+    };
+    networks.into_iter().find(|guid| {
+        if let Err(e) = vmswitch::hcn::Network::open(guid) {
+            tracing::debug!(
+                %guid,
+                error = &e as &dyn std::error::Error,
+                "skipping unopenable HCN network"
+            );
+            false
+        } else {
+            true
+        }
+    })
 }
 
-/// Returns whether the Hyper-V Default Switch is available on this host.
+/// Discovers a usable Hyper-V virtual switch.
 ///
-/// Always `false` on non-Windows platforms.
+/// Always `None` on non-Windows platforms.
 #[cfg(not(windows))]
-pub fn default_switch_available() -> bool {
-    false
+pub fn find_switch() -> Option<Guid> {
+    None
 }
 
 async fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {

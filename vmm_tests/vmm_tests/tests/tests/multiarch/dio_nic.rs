@@ -1,25 +1,27 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Smoke test for the Windows vmswitch DirectIO (`-net dio`) network
-//! backend.
+//! End-to-end test for the Windows vmswitch DirectIO (`-net dio`)
+//! network backend.
 //!
 //! This is the only whole-VM test that exercises the `net_dio` endpoint,
 //! resolver, and queue, and the vmswitch `SwitchPort` interop. All other
 //! petri NIC helpers go through the userspace `Consomme` backend.
 //!
-//! **Scope:** Boot a Linux UEFI guest with a synthetic NIC bridged to the
-//! Hyper-V Default Switch via DirectIO. DHCP an IPv4 lease from the
-//! Default Switch's NAT and verify a default route exists. Ping the
-//! gateway to drive packets through
-//! `netvsp` → `DioEndpoint::tx_avail` → `vmswitch` and back, which is
-//! the meaningful regression signal for `-net dio`.
+//! **Scope:** Boot a Linux UEFI guest with a synthetic NIC bridged to a
+//! Hyper-V vmswitch via DirectIO. DHCP an IPv4 lease from the switch's
+//! NAT and verify a default route exists. Ping the gateway to drive
+//! packets through `netvsp` → `DioEndpoint::tx_avail` → `vmswitch` and
+//! back, which is the meaningful regression signal for `-net dio`.
 //!
-//! **Host requirements:** Windows host with Hyper-V installed and the
-//! Default Switch available. The test self-skips with a warning when
-//! those requirements are not met (Hyper-V not installed, Default
-//! Switch removed, etc.). On non-Windows hosts the test is gated out at
-//! compile time.
+//! **Host requirements:** Windows host with Hyper-V installed and at
+//! least one vmswitch (the Default Switch by preference). The test
+//! discovers a switch at runtime — preferring the well-known Default
+//! Switch GUID, falling back to the first switch reported by HCN — and
+//! fails fast (rather than silently skipping) when no switch can be
+//! found, so that a missing Hyper-V install in CI is reported as a
+//! regression instead of being mistaken for success. On non-Windows
+//! hosts the test is gated out at compile time.
 
 #![cfg(windows)]
 
@@ -27,7 +29,7 @@ use anyhow::Context;
 use petri::PetriVmBuilder;
 use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::OpenVmmPetriBackend;
-use petri::openvmm::default_switch_available;
+use petri::openvmm::find_switch;
 use petri::pipette::cmd;
 use pipette_client::shell::UnixShell;
 use vmm_test_macros::openvmm_test;
@@ -52,37 +54,49 @@ async fn find_nic_by_mac(sh: &UnixShell<'_>) -> anyhow::Result<String> {
     anyhow::bail!("no interface found with MAC address {expected_mac}")
 }
 
-/// Parse the IPv4 gateway from `ip route show default` output.
+/// Parse the IPv4 gateway from `ip route show default` output, requiring
+/// an exact `dev <iface>` match so we do not pick up a sibling interface
+/// whose name is a substring of `iface` (e.g. `eth0` vs `eth0.100`).
 fn parse_default_gw(route: &str, iface: &str) -> anyhow::Result<String> {
     for line in route.lines() {
-        if !line.contains(iface) {
-            continue;
-        }
-        // Expected form: "default via 172.x.y.z dev <iface> ..."
         let mut tokens = line.split_whitespace();
+        let mut gateway: Option<&str> = None;
+        let mut dev_matches = false;
         while let Some(tok) = tokens.next() {
-            if tok == "via" {
-                if let Some(gw) = tokens.next() {
-                    return Ok(gw.to_string());
+            match tok {
+                "via" => gateway = tokens.next(),
+                "dev" => {
+                    if tokens.next() == Some(iface) {
+                        dev_matches = true;
+                    }
                 }
+                _ => {}
+            }
+        }
+        if dev_matches {
+            if let Some(gw) = gateway {
+                return Ok(gw.to_string());
             }
         }
     }
     anyhow::bail!("no default route via {iface} found in: {route}")
 }
 
-/// End-to-end smoke test for `-net dio`.
+/// End-to-end test for `-net dio`.
 #[openvmm_test(uefi_x64(vhd(ubuntu_2504_server_x64)))]
-async fn dio_nic_smoke(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
-    if !default_switch_available() {
-        tracing::warn!(
-            "skipping dio_nic_smoke: Hyper-V Default Switch is not available on this host"
-        );
-        return Ok(());
-    }
+async fn dio_nic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let switch = find_switch().ok_or_else(|| {
+        anyhow::anyhow!(
+            "no Hyper-V vmswitch could be opened on this host (Default Switch absent and \
+             HCN enumeration returned nothing); DIO test cannot run. If the runner \
+             intentionally lacks Hyper-V, exclude this test by filter rather than letting \
+             it silently no-op."
+        )
+    })?;
+    tracing::info!(%switch, "using vmswitch for DIO test");
 
     let (vm, agent) = config
-        .modify_backend(|c| c.with_dio_nic(None))
+        .modify_backend(move |c| c.with_dio_nic(Some(switch)))
         .run()
         .await?;
     let sh = agent.unix_shell();

@@ -23,7 +23,7 @@ use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
 
-/// Smoke test for the Windows DirectIO (`-net dio`) network backend.
+/// Test for the Windows DirectIO (`-net dio`) network backend.
 mod dio_nic;
 /// Tests for Hyper-V integration components.
 mod ic;

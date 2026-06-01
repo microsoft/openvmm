@@ -208,11 +208,11 @@ impl PetriVmConfigOpenVmm {
     ///
     /// `switch_id`, when `None`, defaults to the Hyper-V Default Switch.
     /// This requires the host to have Hyper-V installed and the chosen
-    /// switch available; tests that call this method must gate themselves
-    /// behind [`super::default_switch_available`] (or an equivalent
-    /// runtime probe) to skip gracefully on hosts that do not meet those
-    /// requirements. The method panics if the switch cannot be opened or
-    /// a port cannot be created.
+    /// switch available; tests that call this method should pre-resolve
+    /// a switch via [`super::find_switch`] (or an equivalent runtime
+    /// probe) and bail out with a clear error when the host does not
+    /// meet those requirements. The method itself panics if the switch
+    /// cannot be opened or a port cannot be created.
     ///
     /// The created vmswitch port handle is held in the petri (parent)
     /// process for the lifetime of the VM. The kernel switch port object
@@ -221,7 +221,7 @@ impl PetriVmConfigOpenVmm {
     #[cfg(windows)]
     pub fn with_dio_nic(mut self, switch_id: Option<Guid>) -> Self {
         let switch_port_id = vmswitch::kernel::SwitchPortId {
-            switch: switch_id.unwrap_or(super::DEFAULT_SWITCH_GUID),
+            switch: switch_id.unwrap_or(vmswitch::hcn::DEFAULT_SWITCH),
             port: Guid::new_random(),
         };
         let _ = vmswitch::hcn::Network::open(&switch_port_id.switch)
