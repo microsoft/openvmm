@@ -1182,22 +1182,35 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                         return IoResult::Ok;
                     }
                 }
-                // Intercept PMCSR writes to track D0 ↔ non-D0 transitions.
-                // When the device leaves D0, BARs must be unmapped per PCI
-                // spec §3.2.5 (BARs don't decode in D1/D2/D3hot).
+                // Intercept PMCSR writes to track D0/non-D0 transitions. When
+                // the device leaves D0, VFIO will invalidate mapped MMIO pages.
+                // Unmap them from the guest to avoid generating unresolvable
+                // faults on guest access.
+                //
+                // When returning to D0, write PMCSR first so the faults are
+                // resolvable before remapping MMIO into guest space.
                 if let Some(pmcsr_offset) = self.pm_csr_offset {
                     if offset == pmcsr_offset {
                         let power_state = value & 0x3; // bits [1:0] = PowerState
                         let new_in_d0 = power_state == 0;
                         if new_in_d0 != self.in_d0 {
+                            if new_in_d0 {
+                                // Entering D0: forward first, then remap BARs.
+                                self.write_phys_config(offset, value);
+                            }
                             self.in_d0 = new_in_d0;
                             self.update_bar_mappings();
+                            if !new_in_d0 {
+                                // Leaving D0: unmap BARs first, then forward.
+                                self.write_phys_config(offset, value);
+                            }
                             tracing::debug!(
                                 pci_id = self.pci_id.as_str(),
                                 power_state,
                                 in_d0 = new_in_d0,
                                 "PM power state changed by guest"
                             );
+                            return IoResult::Ok;
                         }
                     }
                 }
