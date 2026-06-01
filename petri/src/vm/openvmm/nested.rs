@@ -357,7 +357,10 @@ impl NestedL2Builder {
         // virt requires a double-VMEXIT (L2→L1→L0). Without this, the
         // kernel spends ~50 seconds probing the 3 unused COM ports.
         let cmdline = {
-            let mut s = String::from("console=ttyS0 8250.nr_uarts=1 rdinit=/pipette");
+            let mut s = String::from(
+                "console=ttyS0 8250.nr_uarts=1 panic=-1 rdinit=/pipette \
+                 initcall_blacklist=virtio_vsock_init",
+            );
             for token in &self.extra_cmdline {
                 s.push(' ');
                 s.push_str(token);
