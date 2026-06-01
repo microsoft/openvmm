@@ -470,10 +470,24 @@ impl IpAddresses {
     }
 }
 
+/// Returns `true` if the given IPv4 destination is host-local
+/// (loopback, unspecified, or link-local) and should be blocked
+/// when `allow_host_local_access` is disabled.
+fn is_blocked_host_local_ipv4(addr: std::net::Ipv4Addr) -> bool {
+    addr.is_loopback() || addr.is_unspecified() || addr.is_link_local()
+}
+
+/// Returns `true` if the given IPv6 destination is host-local
+/// (loopback, unspecified, or link-local) and should be blocked
+/// when `allow_host_local_access` is disabled.
+fn is_blocked_host_local_ipv6(addr: &std::net::Ipv6Addr) -> bool {
+    addr.is_loopback() || addr.is_unspecified() || addr.is_unicast_link_local()
+}
+
 /// Returns `true` if the given IPv6 address is a globally routable unicast
 /// address (i.e., not loopback, unspecified, or link-local).
 fn is_routable_ipv6(addr: &std::net::Ipv6Addr) -> bool {
-    !addr.is_loopback() && !addr.is_unspecified() && !addr.is_unicast_link_local()
+    !is_blocked_host_local_ipv6(addr)
 }
 
 impl Consomme {
@@ -653,10 +667,6 @@ impl<T: Client> Access<'_, T> {
             return Err(DropReason::Ipv4Checksum);
         }
 
-        fn is_blocked_host_local_ipv4(addr: std::net::Ipv4Addr) -> bool {
-            addr.is_loopback() || addr.is_unspecified() || addr.is_link_local()
-        }
-
         // Reject guest traffic to host-local-only destinations.
         if !self.inner.state.params.allow_host_local_access {
             let dst_ip = std::net::Ipv4Addr::from(ipv4.dst_addr().octets());
@@ -710,10 +720,7 @@ impl<T: Client> Access<'_, T> {
         // Reject guest traffic to host-local-only destinations.
         if !self.inner.state.params.allow_host_local_access {
             let dst_ip = std::net::Ipv6Addr::from(ipv6.dst_addr().octets());
-            if dst_ip.is_unspecified()
-                || dst_ip.is_loopback()
-                || dst_ip.is_unicast_link_local()
-            {
+            if is_blocked_host_local_ipv6(&dst_ip) {
                 return Err(DropReason::DestinationNotAllowed);
             }
         }
