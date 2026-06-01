@@ -165,8 +165,22 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
         .context("failed to stage in-guest openvmm binary")?;
         fs_err::copy(&cfg.kernel, staging_dir.path().join(STAGED_KERNEL_NAME))
             .context("failed to stage L2 kernel")?;
-        fs_err::copy(&cfg.initrd, staging_dir.path().join(STAGED_INITRD_NAME))
-            .context("failed to stage L2 initrd")?;
+
+        // Inject pipette into the L2 initrd so the L2 guest can run
+        // pipette as PID 1 (via rdinit=/pipette on the kernel cmdline).
+        // This is the same mechanism petri uses for L1 linux-direct boots.
+        let pipette_path = self
+            .pipette_binary
+            .as_ref()
+            .context("nested L2 requires a pipette binary on the L1 builder")?;
+        let initrd_gz = fs_err::read(&cfg.initrd).context("failed to read L2 initrd")?;
+        let pipette_data = fs_err::read(pipette_path.get())
+            .context("failed to read pipette binary for L2 initrd injection")?;
+        let merged_gz =
+            crate::cpio::inject_into_initrd(&initrd_gz, "pipette", &pipette_data, 0o100755)
+                .context("failed to inject pipette into L2 initrd")?;
+        fs_err::write(staging_dir.path().join(STAGED_INITRD_NAME), &merged_gz)
+            .context("failed to write L2 initrd with pipette")?;
 
         let driver = self.resources.driver.clone();
         let log_source = self.resources.log_source.clone();
@@ -343,7 +357,7 @@ impl NestedL2Builder {
         // virt requires a double-VMEXIT (L2→L1→L0). Without this, the
         // kernel spends ~50 seconds probing the 3 unused COM ports.
         let cmdline = {
-            let mut s = String::from("console=ttyS0 8250.nr_uarts=1");
+            let mut s = String::from("console=ttyS0 8250.nr_uarts=1 rdinit=/pipette");
             for token in &self.extra_cmdline {
                 s.push(' ');
                 s.push_str(token);
