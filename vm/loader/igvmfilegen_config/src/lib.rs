@@ -7,6 +7,7 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+use openhcl_product_policy::ProductPolicy;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -109,6 +110,12 @@ pub enum Image {
         /// Include the Linux kernel for loading into the guest.
         #[serde(skip_serializing_if = "Option::is_none")]
         linux: Option<LinuxImage>,
+        /// Optional measured product policy. When `Some`, the IGVM
+        /// build emits the policy into the measured VTL2 config region.
+        /// The manifest schema is the wire schema; see
+        /// [`openhcl_product_policy`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        product_policy: Option<ProductPolicy>,
     },
     /// Load the Linux kernel.
     /// TODO: Currently, this only works with underhill.
@@ -348,5 +355,76 @@ mod test {
         let required = vec![ResourceType::Uefi];
         let result = resources.check_required(&required);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn openhcl_image_without_product_policy_round_trips() {
+        // Older manifests omit the field; serialization must too.
+        let json = r#"{"openhcl":{"command_line":"","memory_page_count":10,"uefi":true}}"#;
+        let parsed: Image = serde_json::from_str(json).unwrap();
+        match &parsed {
+            Image::Openhcl { product_policy, .. } => assert!(product_policy.is_none()),
+            other => panic!("unexpected parse: {other:?}"),
+        }
+        let reserialized = serde_json::to_string(&parsed).unwrap();
+        assert!(
+            !reserialized.contains("product_policy"),
+            "policy field should be omitted when None: {reserialized}"
+        );
+    }
+
+    #[test]
+    fn openhcl_image_with_cwcow_product_policy_deserializes() {
+        let json = r#"{
+            "openhcl": {
+                "command_line": "",
+                "memory_page_count": 10,
+                "uefi": true,
+                "product_policy": {
+                    "cwcow": {
+                        "vmgs_read_only": true,
+                        "require_secure_boot": true,
+                        "require_secure_boot_vars": true,
+                        "require_bcd_integrity": true,
+                        "require_secure_avic": false,
+                        "custom_uefi_json": "ZGVhZGJlZWY="
+                    }
+                }
+            }
+        }"#;
+        let parsed: Image = serde_json::from_str(json).unwrap();
+        match parsed {
+            Image::Openhcl {
+                product_policy: Some(policy),
+                ..
+            } => match policy {
+                ProductPolicy::Cwcow(p) => {
+                    assert!(p.vmgs_read_only);
+                    assert!(p.require_secure_boot);
+                    assert!(p.require_secure_boot_vars);
+                    assert!(p.require_bcd_integrity);
+                    assert!(!p.require_secure_avic);
+                    assert_eq!(p.custom_uefi_json, b"deadbeef");
+                }
+            },
+            other => panic!("unexpected parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn openhcl_image_with_null_product_policy_is_absent() {
+        let json = r#"{
+            "openhcl": {
+                "command_line": "",
+                "memory_page_count": 10,
+                "uefi": true,
+                "product_policy": null
+            }
+        }"#;
+        let parsed: Image = serde_json::from_str(json).unwrap();
+        match parsed {
+            Image::Openhcl { product_policy, .. } => assert!(product_policy.is_none()),
+            other => panic!("unexpected parse: {other:?}"),
+        }
     }
 }

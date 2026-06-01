@@ -22,6 +22,8 @@ use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_SIZE_PAGES;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_SIZE_PAGES;
+use loader_defs::paravisor::PRODUCT_POLICY_INLINE_OFFSET;
+use loader_defs::paravisor::PRODUCT_POLICY_MAX_SIZE_BYTES;
 use loader_defs::paravisor::ParavisorMeasuredVtl2Config;
 use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
@@ -411,15 +413,49 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         Vec::new()
     };
 
+    // The measured VTL2 config struct sits at the start of its
+    // region; any optional `ProductPolicy` payload is appended
+    // in-place immediately after the struct. Its byte length is
+    // stored in `product_policy_size`; a value of zero — including
+    // the all-zero trailing bytes of pre-feature IGVMs — means absent.
     let measured_config = mapping
         .read_plain::<ParavisorMeasuredVtl2Config>(
             (PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX * HV_PAGE_SIZE) as usize,
         )
         .context("failed to read measured vtl2 config")?;
 
-    drop(mapping);
-
     assert_eq!(measured_config.magic, ParavisorMeasuredVtl2Config::MAGIC);
+
+    let product_policy = {
+        let size = measured_config.product_policy_size as usize;
+        if size == 0 {
+            None
+        } else {
+            // Defence-in-depth: refuse to read past the reserved
+            // region. The IGVM importer enforces this at build time;
+            // a non-conforming runtime image must hard-fail rather
+            // than silently truncating.
+            if size > PRODUCT_POLICY_MAX_SIZE_BYTES {
+                anyhow::bail!(
+                    "product policy size {size} exceeds maximum {}",
+                    PRODUCT_POLICY_MAX_SIZE_BYTES
+                );
+            }
+            let off = (PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX * HV_PAGE_SIZE) as usize
+                + PRODUCT_POLICY_INLINE_OFFSET;
+            let mut buf = vec![0u8; size];
+            mapping
+                .read_at(off, buf.as_mut_slice())
+                .context("failed to read product policy bytes")?;
+            Some(
+                openhcl_product_policy::decode_product_policy(&buf)
+                    .map_err(anyhow::Error::from)
+                    .context("product policy decode failed")?,
+            )
+        }
+    };
+
+    drop(mapping);
 
     let vtom_offset_bit = if measured_config.vtom_offset_bit == 0 {
         None
@@ -437,6 +473,10 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         bootshim_log_dropped,
     };
 
+    if let Err(_) = openhcl_product_policy::init(product_policy) {
+        anyhow::bail!("conflicting product policy already installed");
+    }
+    
     let measured_vtl2_info = MeasuredVtl2Info {
         accepted_regions,
         vtom_offset_bit,

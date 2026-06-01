@@ -3703,6 +3703,7 @@ dependencies = [
  "loader",
  "loader_defs",
  "memory_range",
+ "openhcl_product_policy",
  "range_map_vec",
  "serde",
  "serde_json",
@@ -3719,6 +3720,7 @@ dependencies = [
 name = "igvmfilegen_config"
 version = "0.0.0"
 dependencies = [
+ "openhcl_product_policy",
  "serde",
  "serde_json",
 ]
@@ -4118,6 +4120,7 @@ dependencies = [
  "memory_range",
  "object 0.37.3",
  "open_enum",
+ "openhcl_product_policy",
  "page_table",
  "thiserror 2.0.16",
  "tracing",
@@ -5266,6 +5269,20 @@ dependencies = [
  "user_driver",
  "virt",
  "vmcore",
+]
+
+[[package]]
+name = "openhcl_product_policy"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "cvm_tracing",
+ "inspect",
+ "mesh_protobuf",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -8591,6 +8608,7 @@ dependencies = [
  "nvme_spec",
  "openhcl_attestation_protocol",
  "openhcl_dma_manager",
+ "openhcl_product_policy",
  "pal",
  "pal_async",
  "pal_uring",

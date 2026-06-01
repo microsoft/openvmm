@@ -75,6 +75,7 @@ pub const PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX: u64 =
 // region.
 /// Size in pages the list of accepted memory
 pub const PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_SIZE_PAGES: u64 = 1;
+
 /// Size in pages of VTL2 specific measured config
 pub const PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES: u64 = 1;
 
@@ -357,6 +358,10 @@ pub const PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_X64: u64 = 0;
 pub const PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_AARCH64: u64 = 16 << (20 - 12);
 
 /// Paravisor measured config for vtl2.
+///
+/// Followed in place by the optional [`ProductPolicy`] body at
+/// [`PRODUCT_POLICY_INLINE_OFFSET`]; `product_policy_size == 0` (the
+/// pre-feature zero-filled tail) means absent.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[cfg_attr(feature = "inspect", derive(Inspect))]
@@ -367,9 +372,81 @@ pub struct ParavisorMeasuredVtl2Config {
     pub vtom_offset_bit: u8,
     /// Padding.
     pub padding: [u8; 7],
+    /// Byte length of the inline [`ProductPolicy`] body, or `0` if
+    /// absent.
+    pub product_policy_size: u32,
+    /// Reserved; must be zero.
+    pub reserved: [u8; 4],
 }
 
 impl ParavisorMeasuredVtl2Config {
     /// Magic value for the measured config, which is "OHCLVTL2".
     pub const MAGIC: u64 = 0x4F48434C56544C32;
+}
+
+const_assert_eq!(size_of::<ParavisorMeasuredVtl2Config>(), 24);
+
+/// Byte offset of the inline [`ProductPolicy`] body within the
+/// measured VTL2 config region.
+pub const PRODUCT_POLICY_INLINE_OFFSET: usize = size_of::<ParavisorMeasuredVtl2Config>();
+
+/// Maximum byte size of an inline [`ProductPolicy`] body.
+pub const PRODUCT_POLICY_MAX_SIZE_BYTES: usize =
+    (PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES as usize) * (HV_PAGE_SIZE as usize)
+        - PRODUCT_POLICY_INLINE_OFFSET;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // ---------------------------------------------------------------
+    // ParavisorMeasuredVtl2Config: struct layout
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn measured_vtl2_config_field_offsets() {
+        let cfg = ParavisorMeasuredVtl2Config {
+            magic: 0x1122_3344_5566_7788,
+            vtom_offset_bit: 0x99,
+            padding: [0; 7],
+            product_policy_size: 0xABCDu32,
+            reserved: [0; 4],
+        };
+        let bytes = cfg.as_bytes();
+        assert_eq!(&bytes[0..8], &0x1122_3344_5566_7788u64.to_le_bytes());
+        assert_eq!(bytes[8], 0x99);
+        assert_eq!(&bytes[9..16], &[0u8; 7]);
+        assert_eq!(&bytes[16..20], &0xABCDu32.to_le_bytes());
+        assert_eq!(&bytes[20..24], &[0u8; 4]);
+        assert_eq!(bytes.len(), 24);
+    }
+
+    #[test]
+    fn measured_vtl2_config_round_trips() {
+        let cfg = ParavisorMeasuredVtl2Config {
+            magic: ParavisorMeasuredVtl2Config::MAGIC,
+            vtom_offset_bit: 47,
+            padding: [0; 7],
+            product_policy_size: 256,
+            reserved: [0; 4],
+        };
+        let bytes = cfg.as_bytes().to_vec();
+        let (decoded, rest) = ParavisorMeasuredVtl2Config::ref_from_prefix(&bytes).unwrap();
+        assert!(rest.is_empty());
+        assert_eq!(decoded.magic, ParavisorMeasuredVtl2Config::MAGIC);
+        assert_eq!(decoded.vtom_offset_bit, 47);
+        assert_eq!(decoded.product_policy_size, 256);
+    }
+
+    #[test]
+    fn pre_feature_zeroed_page_decodes_as_absent() {
+        // Pre-feature builders wrote only the 16-byte head; the trailing
+        // zeros must decode as `product_policy_size == 0`.
+        let mut page = [0u8; HV_PAGE_SIZE as usize];
+        page[0..8].copy_from_slice(&ParavisorMeasuredVtl2Config::MAGIC.to_le_bytes());
+        page[8] = 17;
+        let (decoded, _rest) = ParavisorMeasuredVtl2Config::ref_from_prefix(&page).unwrap();
+        assert_eq!(decoded.magic, ParavisorMeasuredVtl2Config::MAGIC);
+        assert_eq!(decoded.vtom_offset_bit, 17);
+        assert_eq!(decoded.product_policy_size, 0);
+    }
 }

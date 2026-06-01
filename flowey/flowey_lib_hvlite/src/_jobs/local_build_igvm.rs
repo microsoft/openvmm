@@ -335,6 +335,7 @@ pub fn non_production_build_igvm_tool_out_name(recipe: &OpenhclIgvmRecipe) -> &'
         OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => "x64-test-linux-direct-devkern",
         OpenhclIgvmRecipe::X64Cvm => "x64-cvm",
         OpenhclIgvmRecipe::X64CvmDevkern => "x64-cvm-devkern",
+        OpenhclIgvmRecipe::X64CvmCwcow => "x64-cvm-cwcow",
         OpenhclIgvmRecipe::Aarch64 => "aarch64",
         OpenhclIgvmRecipe::Aarch64Devkern => "aarch64-devkern",
         OpenhclIgvmRecipe::LocalOnlyCustom(_) => unreachable!(),

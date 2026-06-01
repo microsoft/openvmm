@@ -7,6 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+openhcl_product_policy = { workspace = true, features = ["manifest"] }
 serde = { workspace = true, features = ["std", "derive"] }
 
 [dev-dependencies]

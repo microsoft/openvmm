@@ -132,6 +132,7 @@ hvdef.workspace = true
 igvm.workspace = true
 igvm_defs.workspace = true
 loader_defs = { workspace = true, features = ["inspect"] }
+openhcl_product_policy = { workspace = true, features = ["std", "inspect"] }
 loader.workspace = true
 memory_range.workspace = true
 vm_topology.workspace = true

@@ -1,0 +1,37 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "openhcl_product_policy"
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+# Pull in serde::Serialize/Deserialize derives on the wire types
+# (manifest authoring). Mirrors the same-named feature that previously
+# lived on `loader_defs`.
+manifest = ["dep:serde", "dep:base64"]
+# Derive `inspect::Inspect` on the wire types.
+inspect = ["dep:inspect"]
+# Enables the OnceLock-backed global (init/get) and the
+# anyhow-returning validate_* methods on the product views. Only
+# OpenHCL runtime crates enable this.
+std = ["dep:anyhow"]
+
+[dependencies]
+mesh_protobuf.workspace = true
+
+# CVM_ALLOWED-gated tracing in `init()`.
+cvm_tracing.workspace = true
+tracing.workspace = true
+
+anyhow = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true, features = ["alloc"] }
+inspect = { workspace = true, optional = true }
+serde = { workspace = true, optional = true, features = ["alloc", "derive"] }
+
+[dev-dependencies]
+serde_json = { workspace = true, features = ["alloc"] }
+
+[lints]
+workspace = true
