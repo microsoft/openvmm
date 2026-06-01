@@ -75,10 +75,6 @@ message MemoryConfig {
     uint64 low_mmio_gap_in_mb = 7;
     uint64 high_mmio_base_in_mb = 8;
     uint64 high_mmio_gap_in_mb = 9;
-    // Use private anonymous memory instead of shared file-backed memory.
-    bool private_memory = 10;
-    // Enable transparent huge pages for guest RAM.
-    bool transparent_hugepages = 11;
 }
 
 message ProcessorConfig {

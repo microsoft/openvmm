@@ -575,14 +575,8 @@ impl VmService {
             memory: MemoryConfig {
                 mem_size: config_mem_size,
                 prefetch_memory: false,
-                private_memory: req_config
-                    .memory_config
-                    .as_ref()
-                    .is_some_and(|c| c.private_memory),
-                transparent_hugepages: req_config
-                    .memory_config
-                    .as_ref()
-                    .is_some_and(|c| c.transparent_hugepages),
+                private_memory: false,
+                transparent_hugepages: false,
                 hugepages: false,
                 hugepage_size: None,
                 numa_mem_sizes: None,
