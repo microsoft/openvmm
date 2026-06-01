@@ -25,7 +25,6 @@ use crate::dispatch::vtl2_settings_worker::wait_for_mana;
 use crate::emuplat::EmuplatServicing;
 use crate::emuplat::cmos_rtc_time_source::UnderhillCmosRtcTimeSourceResolver;
 use crate::emuplat::framebuffer::FramebufferRemoteControl;
-use crate::emuplat::i440bx_host_pci_bridge::ArcMutexGetBackedAdjustGpaRange;
 use crate::emuplat::i440bx_host_pci_bridge::GetBackedAdjustGpaRange;
 use crate::emuplat::local_clock::ArcMutexUnderhillLocalClock;
 use crate::emuplat::local_clock::UnderhillLocalClock;
@@ -336,6 +335,11 @@ pub struct UnderhillRemoteConsoleCfg {
     pub synth_video: bool,
     pub input: mesh::Receiver<InputData>,
     pub framebuffer: Option<framebuffer::Framebuffer>,
+    /// Sender side of the channel that forwards dirty-rectangle hints from
+    /// the synth video device to the VNC worker. `None` when no synth video
+    /// device is in play; the VNC worker then relies on whole-framebuffer
+    /// tile-diff scanning.
+    pub dirt_send: Option<mesh::Sender<Vec<video_core::DirtyRect>>>,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -444,6 +448,7 @@ impl Worker for UnderhillVmWorker {
                     synth_video: false,
                     input: mesh::Receiver::new(),
                     framebuffer: None,
+                    dirt_send: None,
                 },
                 debugger_rpc: None,
                 vm_rpc: state.vm_rpc,
@@ -2014,6 +2019,42 @@ async fn new_underhill_vm(
         tracing::warn!(CVM_ALLOWED, "confidential debug enabled");
     }
 
+    // Get VMGS provenance claims. If the provenance doc can't be read or if it
+    // isn't valid, proceed as if it doesn't exist. In that case, OpenHCL will
+    // not produce attestation claims for provenance. It's up to the VM owner's
+    // key release policy to enforce the presence of provenance claims.
+    let prov_claims = if let Some((_, vmgs)) = vmgs.as_mut() {
+        let prov_info = vmgs.get_file_info(vmgs::FileId::PROVENANCE_DOC);
+        if prov_info.is_ok() {
+            vmgs.read_file(vmgs::FileId::PROVENANCE_DOC)
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        error = e as &dyn std::error::Error,
+                        "failed to read provenance doc"
+                    )
+                })
+                .map(|file| {
+                    underhill_attestation::get_provenance_claims(&file)
+                        .inspect_err(|e| {
+                            tracing::warn!(
+                                CVM_ALLOWED,
+                                error = e as &dyn std::error::Error,
+                                "failed to get provenance claims"
+                            )
+                        })
+                        .ok()
+                })
+                .ok()
+                .flatten()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Create the `AttestationVmConfig` from `dps`, which will be used in
     // - stateful mode (the attestation is not suppressed)
     // - stateless mode (isolated VM with attestation suppressed)
@@ -2036,6 +2077,7 @@ async fn new_underhill_vm(
             && dps.general.vpci_boot_enabled
             && isolation.is_isolated(),
         vm_unique_id: dps.general.bios_guid.to_string(),
+        vmgs_provisioner: prov_claims.clone(),
     };
 
     let tee_call: Option<Box<dyn tee_call::TeeCall>> = match isolation {
@@ -2101,6 +2143,21 @@ async fn new_underhill_vm(
             }
         }
     };
+
+    // Check VMGS ID from provisioner
+    if let Some(prov) = prov_claims {
+        let vmgs = vmgs.as_mut().unwrap();
+        let vmgsid_file = vmgs
+            .1
+            .read_file(vmgs::FileId::PLATFORM_SEED)
+            .await
+            .context("failed to read VMGSID seed doc")?;
+        let derived_vmgsid = underhill_attestation::derive_vmgsid(&vmgsid_file)?;
+        if derived_vmgsid != prov.id {
+            tracing::error!(CVM_ALLOWED, "provisioning VMGSID mismatch");
+            anyhow::bail!("provisioning VMGSID mismatch");
+        }
+    }
 
     let mut resolver = ResourceResolver::new();
     // Make the GET available for other resources.
@@ -2555,6 +2612,7 @@ async fn new_underhill_vm(
         chipset,
         mut chipset_devices,
         pci_chipset_devices,
+        isa_dma_controller,
         capabilities,
     } = chipset
         .build()
@@ -2754,7 +2812,8 @@ async fn new_underhill_vm(
     }
 
     let emuplat_adjust_gpa_range;
-    let synic = virt::Hv1::synic(partition.as_ref());
+    let synic =
+        virt::Hv1::synic(partition.as_ref()).context("failed to get partition synic access")?;
 
     use vmotherboard::options::dev;
 
@@ -2764,51 +2823,43 @@ async fn new_underhill_vm(
         bus_id: pci_bus_id_piix4.clone(),
     });
 
-    let deps_i440bx_host_pci_bridge = if chipset.with_i440bx_host_pci_bridge {
-        Some(dev::I440BxHostPciBridgeDeps {
-            attached_to: pci_bus_id_piix4.clone(),
-            adjust_gpa_range: {
-                // TODO: improve slot range allocation, when there are more API consumers
-                let base_slot = 0;
-                // The host will only consider the first available RAM block when
-                // creating PCAT mappings, so we need to do the same. This only
-                // works because everybody keeps things sorted.
-                const SIZE_1_MB: u64 = 1024 * 1024;
-                const SIZE_4_GB: u64 = 4 * 1024 * SIZE_1_MB;
-                let first_mem_block = &mem_layout.ram()[0];
-                anyhow::ensure!(
-                    first_mem_block.range.end() < SIZE_4_GB,
-                    "first memory block must be below 4GB for adjust_gpa_range"
-                );
-                // Reserve 1MB off the top.
-                let rom_bios_offset = first_mem_block.range.end() - SIZE_1_MB;
+    if capabilities.with_i440bx_host_pci_bridge {
+        // TODO: improve slot range allocation, when there are more API consumers
+        let base_slot = 0;
+        // The host will only consider the first available RAM block when
+        // creating PCAT mappings, so we need to do the same. This only
+        // works because everybody keeps things sorted.
+        const SIZE_1_MB: u64 = 1024 * 1024;
+        const SIZE_4_GB: u64 = 4 * 1024 * SIZE_1_MB;
+        let first_mem_block = &mem_layout.ram()[0];
+        anyhow::ensure!(
+            first_mem_block.range.end() < SIZE_4_GB,
+            "first memory block must be below 4GB for adjust_gpa_range"
+        );
+        // Reserve 1MB off the top.
+        let rom_bios_offset = first_mem_block.range.end() - SIZE_1_MB;
 
-                let adjust_gpa_range = GetBackedAdjustGpaRange::new(
-                    get_client.clone(),
-                    base_slot,
-                    rom_bios_offset,
-                    servicing_state
-                        .emuplat
-                        .get_backed_adjust_gpa_range
-                        .flatten(),
-                )
-                .context("failed to initialize GetBackedAdjustGpaRange emuplat")?;
+        let adjust_gpa_range = GetBackedAdjustGpaRange::new(
+            get_client.clone(),
+            base_slot,
+            rom_bios_offset,
+            servicing_state
+                .emuplat
+                .get_backed_adjust_gpa_range
+                .flatten(),
+        )
+        .context("failed to initialize GetBackedAdjustGpaRange emuplat")?;
 
-                let adjust_gpa_range = Arc::new(Mutex::new(adjust_gpa_range));
+        let adjust_gpa_range = Arc::new(Mutex::new(adjust_gpa_range));
 
-                emuplat_adjust_gpa_range = Some(adjust_gpa_range.clone());
+        emuplat_adjust_gpa_range = Some(adjust_gpa_range.clone());
 
-                Box::new(ArcMutexGetBackedAdjustGpaRange(adjust_gpa_range))
-            },
-        })
+        resolver.add_resolver(
+            crate::emuplat::i440bx_host_pci_bridge::AdjustGpaRangeResolver(adjust_gpa_range),
+        );
     } else {
         emuplat_adjust_gpa_range = None;
-        None
     };
-
-    let deps_generic_isa_dma = chipset
-        .with_generic_isa_dma
-        .then_some(dev::GenericIsaDmaDeps);
 
     let deps_winbond_super_io_and_floppy_stub = chipset
         .with_winbond_super_io_and_floppy_stub
@@ -2974,14 +3025,12 @@ async fn new_underhill_vm(
     let devices = BaseChipsetDevices {
         deps_generic_cmos_rtc,
         deps_generic_psp,
-        deps_generic_isa_dma,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
         deps_hyperv_firmware_pcat,
         deps_hyperv_framebuffer: None,
         deps_hyperv_ide,
         deps_hyperv_vga: None,
-        deps_i440bx_host_pci_bridge,
         deps_piix4_cmos_rtc,
         deps_piix4_pci_bus,
         deps_underhill_vga_proxy,
@@ -3044,6 +3093,7 @@ async fn new_underhill_vm(
     .with_expected_manifest(chipset)
     .with_device_handles(chipset_devices)
     .with_pci_device_handles(pci_chipset_devices)
+    .with_isa_dma_handle(isa_dma_controller)
     .with_trace_unknown_mmio(!use_mmio_hypercalls)
     .with_fallback_mmio_device(fallback_mmio_device)
     .build(&driver_source, &state_units, &resolver)
@@ -3450,6 +3500,7 @@ async fn new_underhill_vm(
         vmbus_device_handles.push(
             uidevices_resources::SynthVideoHandle {
                 framebuffer: video_core::SharedFramebufferHandle.into_resource(),
+                dirt_send: remote_console_cfg.dirt_send,
             }
             .into_resource(),
         );

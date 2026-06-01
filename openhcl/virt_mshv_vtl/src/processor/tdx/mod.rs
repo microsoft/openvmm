@@ -4254,6 +4254,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
     fn set_synic_timers(&mut self, _value: &vp::SynicTimers) -> Result<(), Self::Error> {
         Err(vp_state::Error::Unimplemented("synic_timers"))
     }
+
+    fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
+        Err(vp_state::Error::Unimplemented("nested_state"))
+    }
+
+    fn set_nested_state(&mut self, _value: &vp::NestedState) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("nested_state"))
+    }
 }
 
 /// Compute the index of the highest vector set in IRR/ISR, or 0

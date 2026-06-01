@@ -146,6 +146,7 @@ async fn do_main(driver: DefaultDriver) -> Result<()> {
                             virt_whp::Whp {
                                 user_mode_apic: state.state.opts.disable_offloads,
                                 offload_enlightenments: !state.state.opts.disable_offloads,
+                                nested_virt: false,
                             },
                             test,
                         )

@@ -129,15 +129,10 @@ impl FuzzRootComplex {
             .collect();
         let msi_conn =
             pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
-        let rc = GenericPcieRootComplex::new(
-            &mut register_mmio,
-            START_BUS,
-            END_BUS,
-            None,
-            ecam_range,
-            port_defs,
-            msi_conn.target(),
-        );
+        let rc =
+            GenericPcieRootComplex::builder(&mut register_mmio, START_BUS..=END_BUS, ecam_range)
+                .root_ports(port_defs, msi_conn.target())
+                .build();
         Self { rc }
     }
 

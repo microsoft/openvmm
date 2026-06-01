@@ -580,4 +580,9 @@ mod tests {
             executor_tests::windows::overlapped_file_tests(TpPool::system()),
         ))
     }
+
+    #[test]
+    fn process_works() {
+        block_on(TpPool::system().spawn("test", executor_tests::process_tests(TpPool::system())))
+    }
 }

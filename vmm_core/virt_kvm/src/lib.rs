@@ -83,6 +83,7 @@ struct KvmMemoryRangeState {
 pub struct KvmPartition {
     #[inspect(flatten)]
     inner: Arc<KvmPartitionInner>,
+    #[cfg(guest_arch = "x86_64")]
     #[inspect(skip)]
     synic_ports: Arc<virt::synic::SynicPorts<KvmPartitionInner>>,
     #[inspect(skip)]
@@ -121,6 +122,7 @@ struct KvmPartitionInner {
     /// Total configured GIC interrupt count (SGIs + PPIs + SPIs).
     #[cfg(guest_arch = "aarch64")]
     gic_nr_irqs: u32,
+    #[cfg(guest_arch = "x86_64")]
     synic_ports: virt::synic::SynicPortMap,
 }
 

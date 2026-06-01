@@ -140,7 +140,6 @@ impl X509CertificateInner {
         Ok(true)
     }
 
-    #[cfg(any(test, feature = "test_helpers"))]
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
         self.0
             .to_der()
@@ -222,6 +221,16 @@ impl X509CertificateInner {
             key.0.0.clone(),
         ))?;
         Ok(Self(cert))
+    }
+
+    pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
+        Ok(self
+            .0
+            .tbs_certificate()
+            .subject()
+            .common_name()
+            .map_err(|e| der_err(e, "getting common_name"))?
+            .map(|s| s.value().into_owned()))
     }
 }
 

@@ -852,11 +852,9 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
             _its_device: its_device,
             gic_msi,
             gic_nr_irqs: self.config.processor_topology.gic_nr_irqs(),
-            synic_ports: Default::default(),
         });
 
         let partition = KvmPartition {
-            synic_ports: Arc::new(virt::synic::SynicPorts::new(partition.clone())),
             irqfd_state: Arc::new(KvmIrqFdState::new(partition.clone())),
             inner: partition,
         };
@@ -942,8 +940,8 @@ impl virt::Hv1 for KvmPartition {
         None
     }
 
-    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
-        self.synic_ports.clone()
+    fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
+        anyhow::bail!("synic not supported on KVM/aarch64");
     }
 }
 
@@ -1112,30 +1110,6 @@ impl virt::PartitionAccessState for KvmPartition {
         debug_assert_eq!(vtl, Vtl::Vtl0);
 
         self
-    }
-}
-
-impl virt::synic::Synic for KvmPartitionInner {
-    fn port_map(&self) -> &virt::synic::SynicPortMap {
-        unimplemented!()
-    }
-
-    fn post_message(&self, _vtl: Vtl, _vp: VpIndex, _sint: u8, _typ: u32, _payload: &[u8]) {
-        unimplemented!()
-    }
-
-    fn new_guest_event_port(
-        self: Arc<Self>,
-        _vtl: Vtl,
-        _vp: u32,
-        _sint: u8,
-        _flag: u16,
-    ) -> Box<dyn vmcore::synic::GuestEventPort> {
-        unimplemented!()
-    }
-
-    fn prefer_os_events(&self) -> bool {
-        unimplemented!()
     }
 }
 

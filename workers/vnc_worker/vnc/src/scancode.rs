@@ -166,15 +166,15 @@ const KEYSYM_TO_US: &[(u16, u32)] = &[
     (KEYSYM_RIGHT, 0xe04d),
     (KEYSYM_DOWN, 0xe050),
     (KEYSYM_F1, 0x3b),
-    (KEYSYM_F2, 0x3d),
-    (KEYSYM_F3, 0x3e),
-    (KEYSYM_F4, 0x3f),
-    (KEYSYM_F5, 0x40),
-    (KEYSYM_F6, 0x41),
-    (KEYSYM_F7, 0x42),
-    (KEYSYM_F8, 0x43),
-    (KEYSYM_F9, 0x44),
-    (KEYSYM_F10, 0x45),
+    (KEYSYM_F2, 0x3c),
+    (KEYSYM_F3, 0x3d),
+    (KEYSYM_F4, 0x3e),
+    (KEYSYM_F5, 0x3f),
+    (KEYSYM_F6, 0x40),
+    (KEYSYM_F7, 0x41),
+    (KEYSYM_F8, 0x42),
+    (KEYSYM_F9, 0x43),
+    (KEYSYM_F10, 0x44),
     (KEYSYM_F11, 0x57),
     (KEYSYM_F12, 0x58),
     (KEYSYM_SHIFT_LEFT, 0x2a),
@@ -212,12 +212,6 @@ impl State {
             lshift: false,
             rshift: false,
         }
-    }
-
-    /// Emits scancodes (by calling `f`) corresponding to the provided ASCII char.
-    /// Panics if `c` is outside of the ASCII printable range (' ' to '~').
-    pub fn emit_ascii_char<F: FnMut(u16, bool)>(&mut self, c: u8, down: bool, f: F) {
-        self.emit_us_scancode(ASCII_TO_US[(c - ASCII_PRINT_START as u8) as usize], down, f)
     }
 
     /// Emits scancodes (by calling `f`) corresponding to the provided US keyboard scancode.

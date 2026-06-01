@@ -177,7 +177,9 @@ pub(super) fn resolve_memory_layout(
     builder.fixed("chipset-low-mmio", chipset_low_mmio);
 
     // Chipset high MMIO (Mmio64): VMOD/PCI0 _CRS high range.
-    let mut chipset_high_mmio = MemoryRange::EMPTY;
+    // When no high MMIO is requested, use a zero-length range at 4GB so that
+    // the range sorts after the low MMIO gap (rather than at address 0).
+    let mut chipset_high_mmio = MemoryRange::new(four_gb..four_gb);
     if input.layout.chipset_high_mmio_size != 0 {
         builder.request(
             "chipset-high-mmio",
@@ -927,8 +929,11 @@ mod tests {
         assert!(low.contains(&ARCH_RESERVED));
         assert!(result.chipset_mmio.high.is_empty());
         // The reported ranges must appear in MemoryLayout::mmio() preserving
-        // the positional contract: [0] = low, [1] = high (EMPTY placeholder).
-        assert_eq!(result.memory_layout.mmio(), &[low, MemoryRange::EMPTY]);
+        // the positional contract: [0] = low, [1] = high (empty placeholder).
+        assert_eq!(
+            result.memory_layout.mmio(),
+            &[low, result.chipset_mmio.high]
+        );
     }
 
     #[test]

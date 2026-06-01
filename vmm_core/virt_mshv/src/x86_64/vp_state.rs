@@ -405,4 +405,12 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     ) -> Result<(), Self::Error> {
         self.set_state(MSHV_VP_STATE_SIEFP, &value.data)
     }
+
+    fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
+        Err(ErrorInner::NotSupported.into())
+    }
+
+    fn set_nested_state(&mut self, _value: &vp::NestedState) -> Result<(), Self::Error> {
+        Err(ErrorInner::NotSupported.into())
+    }
 }

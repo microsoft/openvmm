@@ -23,6 +23,7 @@ base64.workspace = true
 base64-serde.workspace = true
 constant_time_eq.workspace = true
 getrandom.workspace = true
+hex.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 static_assertions.workspace = true

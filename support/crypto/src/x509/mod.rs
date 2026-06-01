@@ -64,7 +64,6 @@ impl X509Certificate {
         self.0.issued(&subject.0)
     }
 
-    #[cfg(any(test, feature = "test_helpers"))]
     /// Encode this certificate as DER bytes.
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
         self.0.to_der()
@@ -89,6 +88,12 @@ impl X509Certificate {
             common_name,
         )
         .map(Self)
+    }
+
+    /// Get the Common Name (CN) from the X.509 certificate's subject name. If
+    /// there are multiple CNs present, return the first.
+    pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
+        self.0.subject_common_name()
     }
 }
 
@@ -152,5 +157,13 @@ mod tests {
         let reparsed = X509Certificate::from_der(&der).unwrap();
         let pubkey = reparsed.public_key().unwrap();
         assert!(reparsed.verify(&pubkey).unwrap());
+    }
+
+    #[test]
+    fn subject_common_name() {
+        let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
+        let cert = build_test_cert(&key);
+        let sn = cert.subject_common_name().unwrap().unwrap();
+        assert_eq!(sn, "test.example.com");
     }
 }

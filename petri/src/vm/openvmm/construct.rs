@@ -118,7 +118,12 @@ impl PetriVmConfigOpenVmm {
             tpm: tpm_config,
             vmbus_storage_controllers,
             pcie_nvme_drives,
+            physical_nvme_devices,
         } = petri_vm_config;
+
+        if !physical_nvme_devices.is_empty() {
+            anyhow::bail!("Physical NVMe devices are only supported with the Hyper-V backend");
+        }
 
         tracing::debug!(?firmware, ?arch, "Petri VM firmware configuration");
 
@@ -138,6 +143,7 @@ impl PetriVmConfigOpenVmm {
             uses_pipette_as_init: properties.uses_pipette_as_init,
             enable_serial: properties.enable_serial,
             use_virtio_vsock: properties.use_virtio_vsock,
+            no_vmbus: properties.no_vmbus,
         };
 
         let mut chipset = VmManifestBuilder::new(
@@ -202,6 +208,10 @@ impl PetriVmConfigOpenVmm {
             }
             None => (None, None, None),
         };
+
+        if properties.no_vmbus {
+            chipset = chipset.without_vmbus();
+        }
 
         let ide_disks = ide_controllers_to_openvmm(firmware.ide_controllers()).await?;
         let (mut vmbus_devices, vpci_devices) =
@@ -311,8 +321,8 @@ impl PetriVmConfigOpenVmm {
             None => None,
         };
 
-        // Add default VMBus devices (skipped in minimal mode).
-        let (shutdown_ic_send, kvp_ic_send) = if !properties.minimal_mode {
+        // Add default VMBus devices (skipped in minimal mode and no-vmbus mode).
+        let (shutdown_ic_send, kvp_ic_send) = if !properties.minimal_mode && !properties.no_vmbus {
             let (shutdown_ic_send, shutdown_ic_recv) = mesh::channel();
             vmbus_devices.push((
                 DeviceVtl::Vtl0,
@@ -511,6 +521,7 @@ impl PetriVmConfigOpenVmm {
             chipset,
             mut chipset_devices,
             pci_chipset_devices,
+            isa_dma_controller,
             capabilities,
         } = chipset;
 
@@ -520,9 +531,15 @@ impl PetriVmConfigOpenVmm {
         }
 
         // Set up virtio-vsock if enabled.
+        // Find the first unused PCIe root port to avoid conflicting with
+        // NVMe devices that were already assigned.
         if properties.use_virtio_vsock {
+            let vsock_port = (0..)
+                .map(|i| format!("s0rc0rp{i}"))
+                .find(|name| !pcie_devices.iter().any(|d| d.port_name == *name))
+                .unwrap();
             pcie_devices.push(PcieDeviceConfig {
-                port_name: "s0rc0rp0".to_string(),
+                port_name: vsock_port,
                 resource: VirtioPciDeviceHandle(
                     VirtioVsockHandle {
                         guest_cid: 0x3,
@@ -548,6 +565,7 @@ impl PetriVmConfigOpenVmm {
             chipset,
             chipset_devices,
             pci_chipset_devices,
+            isa_dma_controller,
             chipset_capabilities: capabilities,
             layout: layout_config,
 
@@ -561,16 +579,21 @@ impl PetriVmConfigOpenVmm {
                     _ => anyhow::bail!("unsupported isolation type"),
                 },
             },
-            vmbus: Some(VmbusConfig {
-                // If virtio vsock is enabled, the vsock_listener will have already been taken and
-                // is now None.
-                vsock_listener,
-                vsock_path: (!properties.use_virtio_vsock).then(|| vsock_path_string.to_string()),
-                vmbus_max_version: None,
-                vtl2_redirect: firmware.openhcl_config().is_some_and(|c| c.vmbus_redirect),
-                #[cfg(windows)]
-                vmbusproxy_handle: None,
-            }),
+            vmbus: if properties.no_vmbus {
+                None
+            } else {
+                Some(VmbusConfig {
+                    // If virtio vsock is enabled, the vsock_listener will have already been taken
+                    // and is now None.
+                    vsock_listener,
+                    vsock_path: (!properties.use_virtio_vsock)
+                        .then(|| vsock_path_string.to_string()),
+                    vmbus_max_version: None,
+                    vtl2_redirect: firmware.openhcl_config().is_some_and(|c| c.vmbus_redirect),
+                    #[cfg(windows)]
+                    vmbusproxy_handle: None,
+                })
+            },
             vtl2_vmbus,
 
             // Devices
@@ -685,6 +708,7 @@ struct PetriVmConfigSetupCore<'a> {
     uses_pipette_as_init: bool,
     enable_serial: bool,
     use_virtio_vsock: bool,
+    no_vmbus: bool,
 }
 
 struct SerialData {
@@ -863,6 +887,7 @@ impl PetriVmConfigSetupCore<'_> {
                     uefi_console_mode: Some(openvmm_defs::config::UefiConsoleMode::Com1),
                     default_boot_always_attempt: *default_boot_always_attempt,
                     bios_guid: Guid::new_random(),
+                    enable_vmbus: !self.no_vmbus,
                 }
             }
             (
@@ -1088,14 +1113,20 @@ impl PetriVmConfigSetupCore<'_> {
                         .context("Failed to load VGA BIOS")?,
                 ))
             }
-            Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => Some(VideoDevice::Synth(
-                DeviceVtl::Vtl0,
-                SynthVideoHandle {
-                    framebuffer: SharedFramebufferHandle.into_resource(),
-                }
-                .into_resource(),
-            )),
-            Firmware::OpenhclLinuxDirect { .. } | Firmware::LinuxDirect { .. } => None,
+            Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } if !self.no_vmbus => {
+                Some(VideoDevice::Synth(
+                    DeviceVtl::Vtl0,
+                    SynthVideoHandle {
+                        framebuffer: SharedFramebufferHandle.into_resource(),
+                        dirt_send: None,
+                    }
+                    .into_resource(),
+                ))
+            }
+            Firmware::OpenhclLinuxDirect { .. }
+            | Firmware::LinuxDirect { .. }
+            | Firmware::Uefi { .. }
+            | Firmware::OpenhclUefi { .. } => None,
         };
 
         Ok(if let Some(vdev) = video_dev {

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 mod dump;
+mod ecam_config_access;
 mod pcie_wiring;
 mod smmu_wiring;
 
@@ -209,6 +210,7 @@ impl Manifest {
             vmbus_devices: config.vmbus_devices,
             chipset_devices: config.chipset_devices,
             pci_chipset_devices: config.pci_chipset_devices,
+            isa_dma_controller: config.isa_dma_controller,
             chipset_capabilities: config.chipset_capabilities,
             layout: config.layout,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
@@ -258,6 +260,7 @@ pub struct Manifest {
     vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     chipset_devices: Vec<ChipsetDeviceHandle>,
     pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
+    isa_dma_controller: Option<Resource<vm_resource::kind::IsaDmaControllerHandleKind>>,
     chipset_capabilities: VmChipsetCapabilities,
     layout: vmm_core_defs::LayoutConfig,
     rtc_delta_milliseconds: i64,
@@ -741,6 +744,7 @@ struct LoadedVmInner {
     client_notify_send: mesh::Sender<HaltReason>,
     /// allow the guest to reset without notifying the client
     automatic_guest_reset: bool,
+    chipset: Arc<vmotherboard::Chipset>,
     pcie_host_bridges: Vec<PcieHostBridge>,
     pcie_root_complexes: Vec<Arc<closeable_mutex::CloseableMutex<GenericPcieRootComplex>>>,
     /// SMMU configurations, one per instance.
@@ -1301,6 +1305,9 @@ impl InitializedVm {
         resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
             partition.clone().ioapic_routing(),
         ));
+        resolver.add_resolver(emuplat::i440bx_host_pci_bridge::AdjustGpaRangeResolver(
+            memory_manager.ram_visibility_control(),
+        ));
 
         let mapper = memory_manager.device_memory_mapper();
 
@@ -1548,9 +1555,6 @@ impl InitializedVm {
             }
         });
 
-        let deps_generic_isa_dma =
-            (cfg.chipset.with_generic_isa_dma).then_some(dev::GenericIsaDmaDeps {});
-
         let mut primary_disk_drive = floppy::DriveRibbon::None;
         let mut secondary_disk_drive = floppy::DriveRibbon::None;
         if cfg.chipset.with_winbond_super_io_and_floppy_full {
@@ -1647,16 +1651,6 @@ impl InitializedVm {
             None
         };
 
-        let deps_i440bx_host_pci_bridge =
-            (cfg.chipset.with_i440bx_host_pci_bridge).then(|| dev::I440BxHostPciBridgeDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-                adjust_gpa_range: Box::new(
-                    emuplat::i440bx_host_pci_bridge::ManageRamGpaRange::new(
-                        memory_manager.ram_visibility_control(),
-                    ),
-                ),
-            });
-
         let deps_piix4_pci_bus = (cfg.chipset.with_piix4_pci_bus).then(|| dev::Piix4PciBusDeps {
             bus_id: pci_bus_id_piix4.clone(),
         });
@@ -1682,7 +1676,6 @@ impl InitializedVm {
         let base_chipset_devices = {
             BaseChipsetDevices {
                 deps_generic_cmos_rtc,
-                deps_generic_isa_dma,
                 deps_generic_isa_floppy,
                 deps_generic_pci_bus,
                 deps_generic_psp,
@@ -1690,7 +1683,6 @@ impl InitializedVm {
                 deps_hyperv_framebuffer,
                 deps_hyperv_ide,
                 deps_hyperv_vga,
-                deps_i440bx_host_pci_bridge,
                 deps_piix4_cmos_rtc,
                 deps_piix4_pci_bus,
                 deps_underhill_vga_proxy: None,
@@ -1723,6 +1715,7 @@ impl InitializedVm {
         .with_expected_manifest(cfg.chipset.clone())
         .with_device_handles(cfg.chipset_devices)
         .with_pci_device_handles(cfg.pci_chipset_devices)
+        .with_isa_dma_handle(cfg.isa_dma_controller)
         .with_trace_unknown_pio(true) // todo: add CLI param?
         .build(&driver_source, &state_units, &resolver)
         .await?;
@@ -1773,7 +1766,7 @@ impl InitializedVm {
         let pci_inta_line = {
             const PCI_LEGACY_INTA_IRQ: u32 = 11;
             const PCI_INTA_IRQ: u32 = 16;
-            if cfg.chipset.with_i440bx_host_pci_bridge {
+            if cfg.chipset_capabilities.with_i440bx_host_pci_bridge {
                 // Hyper-V hard-wires this to 11.
                 Some(PCI_LEGACY_INTA_IRQ)
             } else if cfg.chipset.with_generic_pci_bus {
@@ -1879,15 +1872,14 @@ impl InitializedVm {
                                 .map(build_root_port_definition)
                                 .collect();
 
-                            GenericPcieRootComplex::new(
+                            GenericPcieRootComplex::builder(
                                 &mut services.register_mmio(),
-                                rc.start_bus,
-                                rc.end_bus,
-                                chbcr_range,
+                                rc.start_bus..=rc.end_bus,
                                 ranges.ecam_range,
-                                root_port_definitions,
-                                msi_conn.target(),
                             )
+                            .root_ports(root_port_definitions, msi_conn.target())
+                            .chbcr_range(chbcr_range)
+                            .build()
                         })?;
 
                 if let Some(signal_msi) = partition.as_signal_msi(Vtl::Vtl0) {
@@ -2151,7 +2143,9 @@ impl InitializedVm {
                 anyhow::bail!("vmbus required hypervisor enlightements");
             }
 
-            let synic = partition.synic();
+            let synic = partition
+                .synic()
+                .context("failed to get partition synic access for vmbus")?;
 
             vmbus_redirect = vmbus_cfg.vtl2_redirect;
             let hvsock_channel = HvsockRelayChannel::new();
@@ -2632,6 +2626,7 @@ impl InitializedVm {
                 halt_recv,
                 client_notify_send,
                 automatic_guest_reset: cfg.automatic_guest_reset,
+                chipset: chipset.chipset.clone(),
                 pcie_host_bridges,
                 pcie_root_complexes,
                 pcie_hotplug_devices: Vec::new(),
@@ -2648,6 +2643,7 @@ impl InitializedVm {
                 .context("loadedvm restore failed")?;
         } else {
             this.inner.load_firmware(false).await?;
+            this.assign_pci_resources().await?;
         }
 
         Ok(this)
@@ -2727,7 +2723,9 @@ impl LoadedVmInner {
                                 add_devices_to_dsdt_x64(
                                     dsdt,
                                     &self.chipset_cfg,
+                                    &self.chipset_capabilities,
                                     enable_serial,
+                                    self.vmbus_server.is_some(),
                                     &self.chipset_mmio,
                                     self.virtio_mmio_region,
                                     self.virtio_mmio_irq,
@@ -2768,6 +2766,7 @@ impl LoadedVmInner {
                             add_devices_to_dsdt_arm64(
                                 dsdt,
                                 enable_serial,
+                                self.vmbus_server.is_some(),
                                 &self.chipset_mmio,
                                 self.hypervisor_cfg.with_hv,
                             )
@@ -2802,6 +2801,7 @@ impl LoadedVmInner {
                 uefi_console_mode,
                 default_boot_always_attempt,
                 bios_guid,
+                enable_vmbus,
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
@@ -2819,6 +2819,7 @@ impl LoadedVmInner {
                     uefi_console_mode,
                     default_boot_always_attempt,
                     bios_guid,
+                    vmbus: enable_vmbus,
                 };
                 let regs = super::vm_loaders::uefi::load_uefi(
                     firmware,
@@ -2943,6 +2944,45 @@ impl LoadedVm {
         self.state_units.stop().await;
         self.running = false;
         true
+    }
+
+    /// Assign PCI bus numbers and BAR addresses for Linux direct boot.
+    ///
+    /// UEFI and PCAT firmware perform their own PCI enumeration, so this
+    /// is only needed when booting without firmware. This is called after
+    /// `load_firmware` on both initial boot and reset.
+    ///
+    /// Config space accesses go through device state units (via the ECAM
+    /// MMIO path), so devices must be running. This method temporarily
+    /// starts state units with VPs held stopped, performs the assignment,
+    /// then stops state units again. The caller is responsible for
+    /// resuming normally afterward.
+    async fn assign_pci_resources(&mut self) -> anyhow::Result<()> {
+        if !matches!(self.inner.load_mode, LoadMode::Linux { .. })
+            || self.inner.pcie_host_bridges.is_empty()
+        {
+            return Ok(());
+        }
+
+        // Hold VPs so they don't execute when state units start the
+        // partition unit.
+        let stop_guard = self.inner.partition_unit.temporarily_stop_vps().await;
+
+        // Start state units so device config space is accessible.
+        self.state_units.start().await;
+
+        let result = ecam_config_access::assign_pci_resources_for_root_complexes(
+            &self.inner.chipset,
+            &self.inner.pcie_host_bridges,
+        )
+        .await
+        .context("PCI resource assignment failed");
+
+        // Stop state units again; the caller will resume normally.
+        self.state_units.stop().await;
+        drop(stop_guard);
+
+        result
     }
 
     pub async fn run(
@@ -3444,6 +3484,7 @@ impl LoadedVm {
             vmbus_devices: vec![],       // TODO
             chipset_devices: vec![],     // TODO
             pci_chipset_devices: vec![], // TODO
+            isa_dma_controller: None,    // TODO
             chipset_capabilities: self.inner.chipset_capabilities,
             layout: vmm_core_defs::LayoutConfig {
                 chipset_low_mmio_size: 0,
@@ -3476,6 +3517,7 @@ impl LoadedVm {
         // Load again
         if reload_firmware {
             self.inner.load_firmware(false).await?;
+            self.assign_pci_resources().await?;
         }
 
         if resume {
@@ -3489,7 +3531,9 @@ impl LoadedVm {
 fn add_devices_to_dsdt_x64(
     dsdt: &mut dsdt::Dsdt,
     cfg: &BaseChipsetManifest,
+    capabilities: &VmChipsetCapabilities,
     serial_uarts: bool,
+    with_vmbus: bool,
     chipset_mmio: &ChipsetMmioRanges,
     virtio_mmio_region: MemoryRange,
     virtio_mmio_irq: u32,
@@ -3529,18 +3573,21 @@ fn add_devices_to_dsdt_x64(
     }
 
     // The chipset MMIO module or PCI bus describes the chipset low/high
-    // MMIO regions to the guest.
-    if cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge {
+    // MMIO regions to the guest. Either range may be empty (e.g. when
+    // VMBus is disabled, chipset high MMIO is not allocated).
+    if cfg.with_generic_pci_bus || capabilities.with_i440bx_host_pci_bridge {
         // TODO: actually plumb through legacy PCI interrupts
         dsdt.add_pci(chipset_mmio.low, chipset_mmio.high, pci_legacy_interrupts);
     } else {
         dsdt.add_mmio_module(chipset_mmio.low, chipset_mmio.high);
     }
 
-    dsdt.add_vmbus(
-        cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge,
-        None,
-    );
+    if with_vmbus {
+        dsdt.add_vmbus(
+            cfg.with_generic_pci_bus || capabilities.with_i440bx_host_pci_bridge,
+            None,
+        );
+    }
     dsdt.add_rtc();
 }
 
@@ -3548,6 +3595,7 @@ fn add_devices_to_dsdt_x64(
 fn add_devices_to_dsdt_arm64(
     dsdt: &mut dsdt::Dsdt,
     enable_serial: bool,
+    with_vmbus: bool,
     chipset_mmio: &ChipsetMmioRanges,
     with_hv: bool,
 ) {
@@ -3563,7 +3611,9 @@ fn add_devices_to_dsdt_arm64(
 
     if with_hv {
         dsdt.add_mmio_module(chipset_mmio.low, chipset_mmio.high);
+    }
 
+    if with_vmbus {
         // VMBus on ARM64 ACPI needs a per-CPU interrupt (PPI) in _CRS.
         // Always place under VMOD, not PCI0 — ARM64 doesn't use the x86
         // PCI0 DSDT node.

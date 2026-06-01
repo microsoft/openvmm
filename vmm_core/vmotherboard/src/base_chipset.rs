@@ -11,6 +11,13 @@ use crate::chipset::ChipsetBuilder;
 use crate::chipset::backing::arc_mutex::device::AddDeviceError;
 use crate::chipset::backing::arc_mutex::services::ArcMutexChipsetServices;
 use chipset::*;
+use chipset_device::ChipsetDevice;
+#[cfg(any(
+    feature = "dev_generic_isa_floppy",
+    feature = "dev_winbond_super_io_and_floppy_full",
+    feature = "dev_winbond_super_io_and_floppy_stub"
+))]
+use chipset_device::isa_dma::IsaDmaController;
 use chipset_device_resources::ConfigureChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
@@ -26,7 +33,9 @@ use state_unit::StateUnits;
 use std::fmt::Debug;
 use std::sync::Arc;
 use thiserror::Error;
+use vm_resource::Resource;
 use vm_resource::ResourceResolver;
+use vm_resource::kind::IsaDmaControllerHandleKind;
 use vmcore::vm_task::VmTaskDriverSource;
 
 /// Errors which may occur during base chipset construction
@@ -43,6 +52,8 @@ pub enum BaseChipsetBuilderError {
     FeatureGatedDevice(&'static str),
     #[error("no valid ISA DMA controller for floppy")]
     NoDmaForFloppy,
+    #[error("failed to resolve ISA DMA controller")]
+    ResolveIsaDma(#[source] vm_resource::ResolveError),
     #[error("failed to resolve resource")]
     ResolveResource(#[source] vm_resource::ResolveError),
 }
@@ -76,8 +87,9 @@ pub struct BaseChipsetBuilder<'a> {
     devices: options::BaseChipsetDevices,
     device_handles: Vec<ChipsetDeviceHandle>,
     pci_device_handles: Vec<LegacyPciChipsetDeviceHandle>,
+    isa_dma_handle: Option<Resource<IsaDmaControllerHandleKind>>,
     expected_manifest: Option<options::BaseChipsetManifest>,
-    fallback_mmio_device: Option<Arc<CloseableMutex<dyn chipset_device::ChipsetDevice>>>,
+    fallback_mmio_device: Option<Arc<CloseableMutex<dyn ChipsetDevice>>>,
     flags: BaseChipsetBuilderFlags,
 }
 
@@ -97,6 +109,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             devices,
             device_handles: Vec::new(),
             pci_device_handles: Vec::new(),
+            isa_dma_handle: None,
             expected_manifest: None,
             fallback_mmio_device: None,
             flags: BaseChipsetBuilderFlags {
@@ -145,6 +158,15 @@ impl<'a> BaseChipsetBuilder<'a> {
         self
     }
 
+    /// Sets the ISA DMA controller handle to be resolved and instantiated.
+    pub fn with_isa_dma_handle(
+        mut self,
+        handle: Option<Resource<IsaDmaControllerHandleKind>>,
+    ) -> Self {
+        self.isa_dma_handle = handle;
+        self
+    }
+
     /// Emit "missing device" traces when accessing unknown port IO addresses.
     ///
     /// Disabled by default.
@@ -165,7 +187,7 @@ impl<'a> BaseChipsetBuilder<'a> {
     /// address range.
     pub fn with_fallback_mmio_device(
         mut self,
-        fallback_mmio_device: Option<Arc<CloseableMutex<dyn chipset_device::ChipsetDevice>>>,
+        fallback_mmio_device: Option<Arc<CloseableMutex<dyn ChipsetDevice>>>,
     ) -> Self {
         self.fallback_mmio_device = fallback_mmio_device;
         self
@@ -186,6 +208,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             devices,
             device_handles,
             pci_device_handles,
+            isa_dma_handle,
             expected_manifest,
             fallback_mmio_device,
             flags,
@@ -214,7 +237,6 @@ impl<'a> BaseChipsetBuilder<'a> {
         // oh boy, time to build all the devices!
         let options::BaseChipsetDevices {
             deps_generic_cmos_rtc,
-            deps_generic_isa_dma,
             deps_generic_isa_floppy,
             deps_generic_pci_bus,
             deps_generic_psp: _, // not actually a device... yet
@@ -222,7 +244,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_hyperv_framebuffer,
             deps_hyperv_ide,
             deps_hyperv_vga,
-            deps_i440bx_host_pci_bridge,
             deps_piix4_cmos_rtc,
             deps_piix4_pci_bus,
             deps_underhill_vga_proxy,
@@ -259,32 +280,44 @@ impl<'a> BaseChipsetBuilder<'a> {
             builder.register_weak_mutex_pci_bus(bus_id, Box::new(pci));
         }
 
-        if let Some(options::dev::I440BxHostPciBridgeDeps {
-            attached_to,
-            adjust_gpa_range,
-        }) = deps_i440bx_host_pci_bridge
-        {
-            builder
-                .arc_mutex_device("440bx-host-pci-bridge")
-                .on_pci_bus(attached_to)
-                .add(|_| {
-                    chipset_legacy::i440bx_host_pci_bridge::HostPciBridge::new(
-                        adjust_gpa_range,
-                        foundation.is_restoring,
-                    )
-                })?;
-        }
-
-        let dma = {
-            if let Some(options::dev::GenericIsaDmaDeps {}) = deps_generic_isa_dma {
-                let dma = builder
-                    .arc_mutex_device("dma")
-                    .add(|_| dma::DmaController::new())?;
-                Some(dma)
-            } else {
-                None
-            }
+        let dma = if let Some(dma_handle) = isa_dma_handle {
+            let resolved = resolver
+                .resolve(dma_handle, ())
+                .await
+                .map_err(BaseChipsetBuilderError::ResolveIsaDma)?;
+            let dev = builder
+                .arc_mutex_device::<dma::DmaController>("dma")
+                .add(|_services| resolved.0)?;
+            Some(dev)
+        } else {
+            None
         };
+
+        for device in device_handles {
+            let ChipsetDeviceHandle { name, resource } = device;
+            builder
+                .arc_mutex_device(name.as_ref())
+                .try_add_async(async |services| {
+                    resolver
+                        .resolve(
+                            resource,
+                            ResolveChipsetDeviceHandleParams {
+                                device_name: name.as_ref(),
+                                guest_memory: &foundation.untrusted_dma_memory,
+                                encrypted_guest_memory: &foundation.trusted_vtl0_dma_memory,
+                                vmtime: foundation.vmtime,
+                                is_restoring: foundation.is_restoring,
+                                task_driver_source: driver_source,
+                                register_mmio: &mut services.register_mmio(),
+                                register_pio: &mut services.register_pio(),
+                                configure: services,
+                            },
+                        )
+                        .await
+                        .map(|device| device.0)
+                })
+                .await?;
+        }
 
         let _ = dma;
         #[cfg(feature = "dev_generic_isa_floppy")]
@@ -543,33 +576,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_winbond_super_io_and_floppy_stub
         );
 
-        for device in device_handles {
-            let ChipsetDeviceHandle { name, resource } = device;
-
-            builder
-                .arc_mutex_device(name.as_ref())
-                .try_add_async(async |services| {
-                    resolver
-                        .resolve(
-                            resource,
-                            ResolveChipsetDeviceHandleParams {
-                                device_name: name.as_ref(),
-                                guest_memory: &foundation.untrusted_dma_memory,
-                                encrypted_guest_memory: &foundation.trusted_vtl0_dma_memory,
-                                vmtime: foundation.vmtime,
-                                is_restoring: foundation.is_restoring,
-                                task_driver_source: driver_source,
-                                register_mmio: &mut services.register_mmio(),
-                                register_pio: &mut services.register_pio(),
-                                configure: services,
-                            },
-                        )
-                        .await
-                        .map(|dev| dev.0)
-                })
-                .await?;
-        }
-
         for device in pci_device_handles {
             let LegacyPciChipsetDeviceHandle {
                 name,
@@ -772,12 +778,16 @@ mod weak_mutex_pci {
     impl RegisterWeakMutexPcie for Arc<CloseableMutex<pcie::root::GenericPcieRootComplex>> {
         fn add_pcie_device(
             &mut self,
-            port: u8,
+            port_devfn: u8,
             name: Arc<str>,
             dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
         ) -> Result<(), PcieConflict> {
             self.lock()
-                .add_pcie_device(port, name.clone(), Box::new(WeakMutexPciDeviceWrapper(dev)))
+                .add_pcie_device(
+                    port_devfn,
+                    name.clone(),
+                    Box::new(WeakMutexPciDeviceWrapper(dev)),
+                )
                 .map_err(|existing_dev_name| PcieConflict {
                     reason: PcieConflictReason::ExistingDev(existing_dev_name),
                     conflict_dev: name,
@@ -787,18 +797,36 @@ mod weak_mutex_pci {
         fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo> {
             self.lock().downstream_ports()
         }
+
+        fn add_rciep(
+            &mut self,
+            devfn: u8,
+            name: Arc<str>,
+            dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+        ) -> Result<(), PcieConflict> {
+            self.lock()
+                .add_rciep(
+                    devfn,
+                    name.clone(),
+                    Box::new(WeakMutexPciDeviceWrapper(dev)),
+                )
+                .map_err(|existing_dev_name| PcieConflict {
+                    reason: PcieConflictReason::ExistingDev(existing_dev_name),
+                    conflict_dev: name,
+                })
+        }
     }
 
     // wiring to enable using the PCIe switch alongside the Arc+CloseableMutex device infra
     impl RegisterWeakMutexPcie for Arc<CloseableMutex<pcie::switch::GenericPcieSwitch>> {
         fn add_pcie_device(
             &mut self,
-            port: u8,
+            port_devfn: u8,
             name: Arc<str>,
             dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
         ) -> Result<(), PcieConflict> {
             self.lock()
-                .add_pcie_device(port, &name, Box::new(WeakMutexPciDeviceWrapper(dev)))
+                .add_pcie_device(port_devfn, &name, Box::new(WeakMutexPciDeviceWrapper(dev)))
                 .map_err(|err| PcieConflict {
                     reason: PcieConflictReason::ExistingDev(err.to_string().into()),
                     conflict_dev: name,
@@ -983,7 +1011,6 @@ pub mod options {
 
         devices {
             generic_cmos_rtc:            dev::GenericCmosRtcDeps,
-            generic_isa_dma:             dev::GenericIsaDmaDeps,
             generic_isa_floppy:          dev::GenericIsaFloppyDeps,
             generic_pci_bus:             dev::GenericPciBusDeps,
             generic_psp:                 dev::GenericPspDeps,
@@ -992,8 +1019,6 @@ pub mod options {
             hyperv_framebuffer:          dev::HyperVFramebufferDeps,
             hyperv_ide:                  dev::HyperVIdeDeps,
             hyperv_vga:                  dev::HyperVVgaDeps,
-
-            i440bx_host_pci_bridge:      dev::I440BxHostPciBridgeDeps,
 
             piix4_cmos_rtc:              dev::Piix4CmosRtcDeps,
             piix4_pci_bus:               dev::Piix4PciBusDeps,
@@ -1014,10 +1039,14 @@ pub mod options {
         pub with_pic: bool,
         /// Whether the VM exposes a PIT.
         pub with_pit: bool,
+        /// Whether the VM exposes a generic ISA DMA controller.
+        pub with_generic_isa_dma: bool,
         /// Whether the VM exposes a PSP.
         pub with_psp: bool,
         /// Whether the VM exposes the Hyper-V guest watchdog device.
         pub with_guest_watchdog: bool,
+        /// Whether the VM exposes an i440BX Host-PCI Bridge (Gen1 legacy PCI bus).
+        pub with_i440bx_host_pci_bridge: bool,
     }
 
     /// Device specific dependencies
@@ -1126,14 +1155,6 @@ pub mod options {
             pub bus_id: BusIdPci,
         }
 
-        /// i440BX Host-PCI bridge (fixed pci address: 0:0.0)
-        pub struct I440BxHostPciBridgeDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
-            /// Interface to create GPA alias ranges.
-            pub adjust_gpa_range: Box<dyn chipset_legacy::i440bx_host_pci_bridge::AdjustGpaRange>,
-        }
-
         feature_gated! {
             feature = "dev_hyperv_vga";
 
@@ -1152,7 +1173,7 @@ pub mod options {
             /// IRQ line to signal RTC device events
             pub irq: u32,
             /// A time source resource, resolved at device build time.
-            pub time_source: vm_resource::Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
+            pub time_source: Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
             /// Which CMOS RAM register contains the century register
             pub century_reg_idx: u8,
             /// Initial state of CMOS RAM
@@ -1162,7 +1183,7 @@ pub mod options {
         /// PIIX4 "flavored" MC146818A compatible RTC + CMOS device
         pub struct Piix4CmosRtcDeps {
             /// A time source resource, resolved at device build time.
-            pub time_source: vm_resource::Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
+            pub time_source: Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
             /// Initial state of CMOS RAM
             pub initial_cmos: Option<[u8; 256]>,
             /// Whether enlightened interrupts are enabled. Needed when

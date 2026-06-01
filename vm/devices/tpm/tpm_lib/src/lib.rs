@@ -63,7 +63,7 @@ const TPM_PAGE_SIZE: usize = 4096;
 const MAX_NV_BUFFER_SIZE: usize = MAX_DIGEST_BUFFER_SIZE;
 const MAX_NV_INDEX_SIZE: u16 = 4096;
 // Scale this with maximum attestation payload
-const MAX_ATTESTATION_INDEX_SIZE: u16 = 2600;
+const MAX_ATTESTATION_INDEX_SIZE: u16 = 2900;
 
 const RSA_2K_MODULUS_BITS: u16 = 2048;
 const RSA_2K_MODULUS_SIZE: usize = (RSA_2K_MODULUS_BITS / 8) as usize;

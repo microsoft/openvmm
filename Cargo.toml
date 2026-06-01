@@ -292,6 +292,7 @@ vfio_assigned_device = { path = "vm/devices/pci/vfio_assigned_device" }
 vfio_assigned_device_resources = { path = "vm/devices/pci/vfio_assigned_device_resources" }
 pci_bus = { path = "vm/devices/pci/pci_bus" }
 pci_core = { path = "vm/devices/pci/pci_core" }
+pci_resource_assignment = { path = "vm/devices/pci/pci_resource_assignment" }
 pci_resources = { path = "vm/devices/pci/pci_resources" }
 pcie = { path = "vm/devices/pci/pcie" }
 smmu = { path = "vm/devices/iommu/smmu" }
@@ -517,7 +518,6 @@ crc32fast = { version = "1.3.2", default-features = false }
 flate2 = "1.1"
 
 # --- Cryptography & secure computing ---
-aes-kw = "0.3.0"
 constant_time_eq = "0.5"
 cms = { version = "0.3.0-pre.2", default-features = false }
 der = "0.8"

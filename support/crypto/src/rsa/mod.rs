@@ -3,7 +3,13 @@
 
 //! RSA cryptographic operations.
 
-#![cfg(any(openssl, rust, symcrypt))]
+#![cfg(any(
+    openssl,
+    rust,
+    symcrypt,
+    all(native, windows),
+    all(native, target_os = "macos")
+))]
 
 #[cfg(openssl)]
 pub(crate) mod ossl;
@@ -20,12 +26,26 @@ pub(crate) mod symcrypt;
 #[cfg(symcrypt)]
 pub(crate) use symcrypt as sys;
 
+#[cfg(all(native, windows))]
+mod win;
+#[cfg(all(native, windows))]
+use win as sys;
+
+#[cfg(all(native, target_os = "macos"))]
+mod mac;
+#[cfg(all(native, target_os = "macos"))]
+use mac as sys;
+
 use crate::HashAlgorithm;
 use thiserror::Error;
 
 /// An error for RSA operations.
-// TODO: Make this clone once RustCrypto rsa::errors::Error is cloneable
-#[cfg(not(rust))]
+#[cfg(any(
+    openssl,
+    symcrypt,
+    all(native, windows),
+    all(native, target_os = "macos")
+))]
 #[derive(Debug, Error)]
 #[error("RSA error")]
 pub struct RsaError(#[source] pub(crate) super::BackendError);
@@ -78,6 +98,18 @@ impl RsaKeyPair {
     ) -> Result<Vec<u8>, RsaError> {
         self.0.pkcs1_sign(data, hash_algorithm)
     }
+
+    /// Sign `data` using RSA-PSS (RSASSA-PSS) with the specified hash
+    /// algorithm. Uses MGF1 with the same hash and a salt length equal to
+    /// the hash output size, matching the convention used by COSE/JWS
+    /// (RFC 8230 section 2) and TLS 1.3.
+    pub fn pss_sign(
+        &self,
+        data: &[u8],
+        hash_algorithm: HashAlgorithm,
+    ) -> Result<Vec<u8>, RsaError> {
+        self.0.pss_sign(data, hash_algorithm)
+    }
 }
 
 /// An RSA public key.
@@ -110,6 +142,21 @@ impl RsaPublicKey {
         hash_algorithm: HashAlgorithm,
     ) -> Result<bool, RsaError> {
         self.0.pkcs1_verify(message, signature, hash_algorithm)
+    }
+
+    /// Verify an RSA-PSS (RSASSA-PSS) signature with the specified hash
+    /// algorithm. Uses MGF1 with the same hash and a salt length equal to
+    /// the hash output size, matching the convention used by COSE/JWS
+    /// (RFC 8230 section 2) and TLS 1.3. Returns `Ok(true)` if the
+    /// signature is valid, `Ok(false)` if the signature is invalid, or an
+    /// error for other failures.
+    pub fn pss_verify(
+        &self,
+        message: &[u8],
+        signature: &[u8],
+        hash_algorithm: HashAlgorithm,
+    ) -> Result<bool, RsaError> {
+        self.0.pss_verify(message, signature, hash_algorithm)
     }
 
     /// Returns the size of the RSA modulus in bytes.
@@ -159,7 +206,7 @@ mod tests {
 
     /// A tampered message must fail verification with `Ok(false)` (and
     /// must not panic or surface as `Err`). This guards against a backend
-    /// silently treating verification failures as internal errors —
+    /// silently treating verification failures as internal errors,
     /// which would prevent callers from distinguishing "bad signature"
     /// from "infrastructure failure".
     #[test]
@@ -219,5 +266,68 @@ mod tests {
             let pt = key.oaep_decrypt(&ct, alg).unwrap();
             assert_eq!(pt, payload);
         }
+    }
+
+    /// PSS sign/verify round-trip with SHA-384. Each signature contains
+    /// fresh random salt, so this also implicitly checks that the verifier
+    /// recovers the salt from the signature rather than requiring a fixed
+    /// value across backends.
+    ///
+    /// Uses a 2048-bit key for test speed; SHA-384's matched-strength
+    /// key size is 3072 (NIST SP 800-57) but key generation in the
+    /// pure-Rust backend is too slow at that size for unit tests.
+    #[test]
+    fn pss_sign_verify_roundtrip_sha384() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let message = b"the message that needs to be hashed before signing";
+        let signature = key.pss_sign(message, HashAlgorithm::Sha384).unwrap();
+        let valid = key
+            .pss_verify(message, &signature, HashAlgorithm::Sha384)
+            .unwrap();
+        assert!(valid);
+    }
+
+    /// A tampered message must fail PSS verification with `Ok(false)`.
+    #[test]
+    fn pss_verify_rejects_tampered_message_sha384() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let message = b"original message";
+        let signature = key.pss_sign(message, HashAlgorithm::Sha384).unwrap();
+        let tampered = b"tampered message";
+        let valid = key
+            .pss_verify(tampered, &signature, HashAlgorithm::Sha384)
+            .unwrap();
+        assert!(!valid);
+    }
+
+    /// A truncated PSS signature must be rejected with `Ok(false)`.
+    #[test]
+    fn pss_verify_rejects_truncated_signature_sha384() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let message = b"original message";
+        let mut signature = key.pss_sign(message, HashAlgorithm::Sha384).unwrap();
+        signature.truncate(signature.len() - 1);
+        let valid = key
+            .pss_verify(message, &signature, HashAlgorithm::Sha384)
+            .unwrap();
+        assert!(!valid);
+    }
+
+    /// A PKCS#1 v1.5 signature must not verify as PSS (and vice versa);
+    /// the two padding schemes are not interchangeable on the wire.
+    #[test]
+    fn pss_and_pkcs1_signatures_are_not_interchangeable() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let message = b"scheme-mismatch test";
+        let pkcs1_sig = key.pkcs1_sign(message, HashAlgorithm::Sha256).unwrap();
+        let pss_sig = key.pss_sign(message, HashAlgorithm::Sha256).unwrap();
+        let pkcs1_as_pss = key
+            .pss_verify(message, &pkcs1_sig, HashAlgorithm::Sha256)
+            .unwrap();
+        let pss_as_pkcs1 = key
+            .pkcs1_verify(message, &pss_sig, HashAlgorithm::Sha256)
+            .unwrap();
+        assert!(!pkcs1_as_pss);
+        assert!(!pss_as_pkcs1);
     }
 }

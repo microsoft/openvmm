@@ -380,6 +380,30 @@ mod x86 {
             }
             Ok(())
         }
+
+        fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
+            let mut data = vec![0u8; whp::abi::WHV_X64_NESTED_STATE_SIZE];
+            let n = self
+                .run
+                .vp
+                .whp(self.vtl)
+                .get_state(whp::abi::WHvVirtualProcessorStateTypeNestedState, &mut data)
+                .for_op("get nested state")?;
+            assert_eq!(n, data.len());
+            Ok(vp::NestedState { data })
+        }
+
+        fn set_nested_state(&mut self, value: &vp::NestedState) -> Result<(), Self::Error> {
+            self.run
+                .vp
+                .whp(self.vtl)
+                .set_state(
+                    whp::abi::WHvVirtualProcessorStateTypeNestedState,
+                    &value.data,
+                )
+                .for_op("set nested state")?;
+            Ok(())
+        }
     }
 }
 

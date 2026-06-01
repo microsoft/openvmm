@@ -271,6 +271,7 @@ struct RegionMappingParams {
     mappable: Mappable,
     file_offset: u64,
     writable: bool,
+    numa_node: Option<u32>,
 }
 
 fn range_within(outer: MemoryRange, inner: MemoryRange) -> MemoryRange {
@@ -589,6 +590,7 @@ impl RegionManagerTask {
                     file_offset: params.file_offset,
                     writable: params.writable,
                     dma_target: region.params.dma_target,
+                    numa_node: params.numa_node,
                 })
                 .await;
 
@@ -684,6 +686,7 @@ impl RegionManagerTaskInner {
                     file_offset: mapping.params.file_offset,
                     writable: mapping.params.writable && map_params.writable,
                     dma_target: region.params.dma_target,
+                    numa_node: mapping.params.numa_node,
                 })
                 .await;
         }
@@ -917,6 +920,7 @@ impl RegionHandle {
         mappable: Mappable,
         file_offset: u64,
         writable: bool,
+        numa_node: Option<u32>,
     ) {
         let _ = self
             .req_send
@@ -929,6 +933,7 @@ impl RegionHandle {
                         mappable,
                         file_offset,
                         writable,
+                        numa_node,
                     },
                 ),
             )
@@ -1127,6 +1132,7 @@ mod tests {
                         mappable: self.mappable.clone(),
                         file_offset: 0,
                         writable: true,
+                        numa_node: None,
                     },
                 )
                 .await;

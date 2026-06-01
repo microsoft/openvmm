@@ -279,6 +279,19 @@ impl SparseMapping {
         }
     }
 
+    /// Calls `mbind(MPOL_BIND)` on a range within this mapping, binding
+    /// pages to a specific host NUMA node.
+    ///
+    /// The range at `offset..offset+len` must already be mapped (via
+    /// `alloc`, `map_file`, etc.) before calling this.
+    #[cfg(target_os = "linux")]
+    pub fn mbind_at(&self, offset: usize, len: usize, numa_node: u32) -> Result<(), Error> {
+        let _ = self.validate_offset_len(offset, len)?;
+        // SAFETY: validate_offset_len confirmed offset+len is within the
+        // mapping, so `self.address + offset` is valid for `len` bytes.
+        unsafe { mbind_range(self.address.add(offset), len, numa_node) }
+    }
+
     /// Maps memory into the mapping, passing parameters through to the mmap
     /// syscall.
     ///
@@ -561,4 +574,56 @@ pub fn alloc_shared_memory_hugetlb(
         io::ErrorKind::Unsupported,
         "hugetlb shared memory is only supported on Linux",
     ))
+}
+
+/// Calls `mbind(MPOL_BIND)` on an already-mapped virtual address range,
+/// binding it to a specific host NUMA node.
+///
+/// # Safety
+///
+/// `addr` must point to a valid mapped region of at least `len` bytes.
+#[cfg(target_os = "linux")]
+unsafe fn mbind_range(addr: *mut c_void, len: usize, numa_node: u32) -> io::Result<()> {
+    // Cap the node ID to prevent accidental large allocations for the
+    // nodemask bitmask below.
+    if numa_node > 0xffff {
+        return Err(Error::new(
+            io::ErrorKind::InvalidInput,
+            "NUMA node exceeds maximum supported value",
+        ));
+    }
+
+    // Build nodemask bitmask. The kernel expects an array of unsigned long with
+    // bit `numa_node` set.
+    //
+    // maxnode should be the number of bits in the nodemask, but the kernel's
+    // get_nodes() has an off-by-one: it decrements maxnode before use, so we
+    // must pass numa_node + 2 instead of numa_node + 1. This is a known kernel
+    // bug since 2004 that will not be fixed (ABI). See
+    // <https://lore.kernel.org/linux-mm/20240720173543.897972-1-jglisse@google.com/>
+    let maxnode = numa_node as usize + 2;
+    let word_bits = libc::c_ulong::BITS as usize;
+    let num_words = maxnode.div_ceil(word_bits);
+    let mut nodemask = vec![0 as libc::c_ulong; num_words];
+    nodemask[numa_node as usize / word_bits] = 1 << (numa_node as usize % word_bits);
+
+    // Use flags = 0: just set the NUMA policy for future page faults.
+    // The memory was just mapped, so there are no resident pages to move.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_mbind,
+            addr,
+            len,
+            libc::MPOL_BIND,
+            nodemask.as_ptr(),
+            maxnode,
+            0,
+        )
+    };
+
+    if result == -1 {
+        return Err(Error::last_os_error());
+    }
+
+    Ok(())
 }

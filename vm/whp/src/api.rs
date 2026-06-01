@@ -10,6 +10,7 @@ use windows_sys::core::HRESULT;
 
 pub const WHV_E_UNKNOWN_CAPABILITY: HRESULT = 0x80370300u32 as HRESULT;
 pub const WHV_E_INSUFFICIENT_BUFFER: HRESULT = 0x80370301u32 as HRESULT;
+pub const WHV_E_UNKNOWN_PROPERTY: HRESULT = 0x80370302u32 as HRESULT;
 
 #[link(
     name = "WinHvPlatform.dll",

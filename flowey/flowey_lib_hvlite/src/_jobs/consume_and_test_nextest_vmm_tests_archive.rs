@@ -15,6 +15,7 @@ use crate::build_tmks::TmksOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
 use crate::build_vmgstool::VmgstoolOutput;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
+use crate::install_vmm_tests_deps::VmmTestsDepSelectionsWindows;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -141,11 +142,13 @@ impl SimpleFlowNode for Node {
 
         ctx.config(crate::install_vmm_tests_deps::Config {
             selections: Some(match target.operating_system {
-                target_lexicon::OperatingSystem::Windows => VmmTestsDepSelections::Windows {
-                    hyperv: true,
-                    whp: true,
-                    hardware_isolation: false,
-                },
+                target_lexicon::OperatingSystem::Windows => {
+                    VmmTestsDepSelections::Windows(VmmTestsDepSelectionsWindows {
+                        hyperv: true,
+                        whp: true,
+                        hardware_isolation: false,
+                    })
+                }
                 target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
                 os => anyhow::bail!("unsupported target operating system: {os}"),
             }),

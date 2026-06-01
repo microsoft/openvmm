@@ -258,6 +258,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
                 rx_ready: VecDeque::new(),
                 tx_avail: VecDeque::new(),
                 tx_ready: VecDeque::new(),
+                tx_scratch: Vec::new(),
             },
             stats: Default::default(),
             driver: config.driver,
@@ -424,6 +425,7 @@ fn process_message(
         ConsommeMessage::UpdateState(rpc) => {
             rpc.handle_sync(|f| {
                 f(consomme.get_mut().params_mut());
+                consomme.get_mut().clear_local_addr_map();
                 consomme.update_dns_nameservers()
             });
         }
@@ -451,7 +453,19 @@ impl net_backend::Queue for ConsommeQueue {
                     .then_some(meta.max_segment_size),
             };
 
-            let mut buf = vec![0; meta.len as usize];
+            // Reuse the scratch buffer to avoid per-packet heap allocation.
+            // TSO caps the assembled packet at 64 KiB; assert so a buggy
+            // upstream caller can't permanently inflate the scratch buffer
+            // (and thus the queue's steady-state memory) by feeding an
+            // oversized `meta.len`.
+            debug_assert!(
+                meta.len as usize <= 64 * 1024,
+                "tx packet len {} exceeds 64 KiB TSO bound",
+                meta.len
+            );
+            let mut buf = std::mem::take(&mut self.state.tx_scratch);
+            buf.clear();
+            buf.resize(meta.len as usize, 0);
             let gm = pool.guest_memory();
             let mut offset = 0;
             for segment in self.state.tx_avail.drain(..meta.segment_count as usize) {
@@ -487,6 +501,7 @@ impl net_backend::Queue for ConsommeQueue {
                     | consomme::DropReason::MalformedPacket => self.stats.tx_errors.increment(),
                 }
             }
+            self.state.tx_scratch = buf;
 
             self.state.tx_ready.push_back(tx_id);
         }
@@ -549,6 +564,9 @@ struct QueueState {
     rx_ready: VecDeque<RxId>,
     tx_avail: VecDeque<TxSegment>,
     tx_ready: VecDeque<TxId>,
+    /// Reusable scratch buffer for assembling outbound packets from guest memory.
+    /// The max TSO size is 64KB which limits the maximum size of the scratch buffer.
+    tx_scratch: Vec<u8>,
 }
 
 #[derive(Inspect, Default)]

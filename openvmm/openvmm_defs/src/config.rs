@@ -54,6 +54,7 @@ pub struct Config {
     pub vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
     pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
+    pub isa_dma_controller: Option<Resource<vm_resource::kind::IsaDmaControllerHandleKind>>,
     pub chipset_capabilities: VmChipsetCapabilities,
     /// Memory layout sizing for the layout engine. Determines chipset MMIO
     /// range sizes; addresses are allocated dynamically by the resolver.
@@ -134,6 +135,7 @@ pub enum LoadMode {
         uefi_console_mode: Option<UefiConsoleMode>,
         default_boot_always_attempt: bool,
         bios_guid: Guid,
+        enable_vmbus: bool,
     },
     Pcat {
         firmware: RomFileLocation,
