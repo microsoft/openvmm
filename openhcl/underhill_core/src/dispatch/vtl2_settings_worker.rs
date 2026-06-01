@@ -8,8 +8,6 @@ use crate::nvme_manager::manager::NvmeDiskConfig;
 use crate::worker::NicConfig;
 use anyhow::Context;
 use cvm_tracing::CVM_ALLOWED;
-use disk_backend::Disk;
-use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend_resources::AutoFormattedDiskHandle;
 use disk_backend_resources::BlockDeviceDiskHandle;
 use futures::StreamExt;
@@ -53,13 +51,10 @@ use underhill_config::Vtl2SettingsErrorCode;
 use underhill_config::Vtl2SettingsErrorInfo;
 use underhill_threadpool::AffinitizedThreadpool;
 use vm_resource::IntoResource;
-use vm_resource::ResolveError;
 use vm_resource::Resource;
-use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VmbusDeviceHandleKind;
-use vmcore::vm_task::VmTaskDriverSource;
 
 #[derive(Error, Debug)]
 enum Error<'a> {
@@ -69,8 +64,6 @@ enum Error<'a> {
     StorageCannotAddRemoveControllerAtRuntime,
     #[error("Striping devices don't support runtime change")]
     StripStorageCannotChangeControllerAtRuntime,
-    #[error("failed to open disk")]
-    StorageCannotOpenDisk(#[source] ResolveError),
     #[error("could not disable io scheduling")]
     StorageCannotDisableIoScheduling(#[source] std::io::Error),
     #[error("failed to open {device_type:?} disk {path} at {instance_id}/{sub_device_path}")]
@@ -147,7 +140,6 @@ impl Error<'_> {
             Error::StripStorageCannotChangeControllerAtRuntime => {
                 Vtl2SettingsErrorCode::StripedStorageCannotChangeControllerAtRuntime
             }
-            Error::StorageCannotOpenDisk(_) => Vtl2SettingsErrorCode::StorageCannotOpenVtl2Device,
             Error::StorageCannotDisableIoScheduling(_) => {
                 Vtl2SettingsErrorCode::StorageCannotOpenVtl2Device
             }
@@ -568,25 +560,6 @@ pub(crate) async fn handle_vtl2_config_rpc(
                 .await
         }
     }
-}
-
-pub async fn disk_from_disk_type(
-    disk_type: Resource<DiskHandleKind>,
-    read_only: bool,
-    resolver: &ResourceResolver,
-    driver_source: &VmTaskDriverSource,
-) -> Result<Disk, Vtl2SettingsErrorInfo> {
-    let disk = resolver
-        .resolve(
-            disk_type,
-            ResolveDiskParameters {
-                read_only,
-                driver_source,
-            },
-        )
-        .await
-        .map_err(Error::StorageCannotOpenDisk)?;
-    Ok(disk.0)
 }
 
 fn modify_storage_configuration(

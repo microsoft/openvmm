@@ -341,6 +341,7 @@ impl VmManifestBuilder {
             chipset: BaseChipsetManifest::empty(),
             isa_dma_controller: None,
             capabilities: VmChipsetCapabilities {
+                with_ide: false,
                 with_ioapic: false,
                 with_pic: false,
                 with_pit: false,
@@ -391,6 +392,7 @@ impl VmManifestBuilder {
                 };
                 result.attach_generic_ioapic();
                 result.attach_pic();
+                result.capabilities.with_ide = true;
                 result.attach_pit();
                 result.attach_piix4_power_management(self.platform_pm_timer_assist);
                 result.attach_missing_arch_ports(self.arch, false);
@@ -399,6 +401,42 @@ impl VmManifestBuilder {
                 }
             }
             BaseChipsetType::UnenlightenedLinuxDirect => {
+                let is_x86 = matches!(self.arch, MachineArch::X86_64);
+                result.chipset = BaseChipsetManifest {
+                    with_generic_cmos_rtc: is_x86,
+                    with_generic_isa_floppy: false,
+                    with_generic_pci_bus: false,
+                    with_generic_psp: self.psp,
+                    with_hyperv_firmware_pcat: false,
+                    with_hyperv_framebuffer: self.framebuffer,
+                    with_hyperv_ide: false,
+                    with_hyperv_vga: false,
+                    with_piix4_cmos_rtc: false,
+                    with_piix4_pci_bus: false,
+                    with_underhill_vga_proxy: false,
+                    with_winbond_super_io_and_floppy_stub: false,
+                    with_winbond_super_io_and_floppy_full: false,
+                };
+                if is_x86 {
+                    result.attach_generic_ioapic();
+                }
+                result.capabilities.with_psp = self.psp;
+                result
+                    .maybe_attach_arch_serial(
+                        self.arch,
+                        self.serial_wait_for_rts,
+                        true,
+                        self.serial,
+                    )?
+                    .attach_missing_arch_ports(self.arch, true);
+                if let Some(recv) = self.battery_status_recv {
+                    result.attach_battery(self.arch, recv);
+                }
+                if self.guest_watchdog {
+                    result.attach_guest_watchdog();
+                }
+            }
+            BaseChipsetType::HypervGen2Uefi | BaseChipsetType::HyperVGen2LinuxDirect => {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
@@ -432,44 +470,6 @@ impl VmManifestBuilder {
                         self.serial,
                     )?
                     .attach_missing_arch_ports(self.arch, false);
-                if let Some(recv) = self.battery_status_recv {
-                    result.attach_battery(self.arch, recv);
-                }
-                if self.guest_watchdog {
-                    result.attach_guest_watchdog();
-                }
-            }
-            BaseChipsetType::HypervGen2Uefi | BaseChipsetType::HyperVGen2LinuxDirect => {
-                let is_x86 = matches!(self.arch, MachineArch::X86_64);
-                result.chipset = BaseChipsetManifest {
-                    with_generic_cmos_rtc: is_x86,
-                    with_generic_isa_floppy: false,
-                    with_generic_pci_bus: false,
-                    with_generic_psp: self.psp,
-                    with_hyperv_firmware_pcat: false,
-                    with_hyperv_framebuffer: self.framebuffer,
-                    with_hyperv_ide: false,
-                    with_hyperv_vga: false,
-                    with_piix4_cmos_rtc: false,
-                    with_piix4_pci_bus: false,
-
-                    with_underhill_vga_proxy: false,
-                    with_winbond_super_io_and_floppy_stub: false,
-                    with_winbond_super_io_and_floppy_full: false,
-                };
-                if is_x86 {
-                    result.attach_generic_ioapic();
-                    result.attach_hyperv_power_management(self.platform_pm_timer_assist);
-                }
-                result.capabilities.with_psp = self.psp;
-                result
-                    .maybe_attach_arch_serial(
-                        self.arch,
-                        self.serial_wait_for_rts,
-                        true,
-                        self.serial,
-                    )?
-                    .attach_missing_arch_ports(self.arch, true);
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }

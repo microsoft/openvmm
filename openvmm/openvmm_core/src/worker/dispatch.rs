@@ -37,8 +37,6 @@ use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::Vtl;
 use hypervisor_resources::HypervisorKind;
-use ide_resources::GuestMedia;
-use ide_resources::IdeDeviceConfig;
 use igvm::IgvmFile;
 use input_core::InputData;
 use input_core::MultiplexedInputHandle;
@@ -92,9 +90,6 @@ use pcie::PciePortSettings;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
-use scsi_core::ResolveScsiDeviceHandleParams;
-use scsidisk::SimpleScsiDisk;
-use scsidisk::atapi_scsi::AtapiScsiDisk;
 use serial_16550_resources::ComPort;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
@@ -103,7 +98,6 @@ use std::fs::File;
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
-use storvsp::ScsiControllerDisk;
 use virt::ProtoPartition;
 use virt::VpIndex;
 use virtio::PciInterruptModel;
@@ -148,7 +142,6 @@ use vmm_core::partition_unit::PartitionUnitParams;
 use vmm_core::partition_unit::block_on_vp;
 use vmm_core::vmbus_unit::ChannelUnit;
 use vmm_core::vmbus_unit::VmbusServerHandle;
-use vmm_core::vmbus_unit::offer_channel_unit;
 use vmm_core::vmbus_unit::offer_vmbus_device_handle_unit;
 use vmm_core_defs::HaltReason;
 use vmotherboard::BaseChipsetBuilder;
@@ -182,7 +175,6 @@ impl Manifest {
         Self {
             load_mode: config.load_mode,
             floppy_disks: config.floppy_disks,
-            ide_disks: config.ide_disks,
             pcie_root_complexes: config.pcie_root_complexes,
             pcie_devices: config.pcie_devices,
             pcie_switches: config.pcie_switches,
@@ -232,7 +224,6 @@ impl Manifest {
 pub struct Manifest {
     load_mode: LoadMode,
     floppy_disks: Vec<FloppyDiskConfig>,
-    ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pcie_devices: Vec<PcieDeviceConfig>,
     pcie_switches: Vec<PcieSwitchConfig>,
@@ -1449,64 +1440,9 @@ impl InitializedVm {
 
         let mut pci_legacy_interrupts = Vec::new();
 
-        let mut ide_drives = [[None, None], [None, None]];
-        let mut storvsp_ide_disks = Vec::new();
-        if cfg.chipset.with_hyperv_ide {
+        if cfg.chipset_capabilities.with_ide {
             pci_legacy_interrupts.push(((7, None), 14));
             pci_legacy_interrupts.push(((7, None), 15));
-
-            for disk_cfg in cfg.ide_disks {
-                let path = disk_cfg.path;
-                let media = match disk_cfg.guest_media {
-                    GuestMedia::Dvd(disk_type) => {
-                        let dvd = resolver
-                            .resolve(
-                                disk_type,
-                                ResolveScsiDeviceHandleParams {
-                                    driver_source: &driver_source,
-                                },
-                            )
-                            .await
-                            .context("failed to open IDE DVD")?;
-
-                        let scsi_disk = Arc::new(AtapiScsiDisk::new(dvd.0));
-                        ide::DriveMedia::optical_disk(scsi_disk.clone())
-                    }
-                    GuestMedia::Disk {
-                        disk_type,
-                        read_only,
-                        disk_parameters,
-                    } => {
-                        let disk =
-                            open_simple_disk(&resolver, disk_type, read_only, &driver_source)
-                                .await
-                                .context("failed to open IDE disk")?;
-
-                        // Only disks get accelerator channels. DVDs dont.
-                        let scsi_disk = ScsiControllerDisk::new(Arc::new(SimpleScsiDisk::new(
-                            disk.clone(),
-                            disk_parameters.unwrap_or_default(),
-                        )));
-                        storvsp_ide_disks.push((path, scsi_disk));
-                        ide::DriveMedia::hard_disk(disk.clone())
-                    }
-                };
-
-                let old_media = ide_drives
-                    .get_mut(path.channel as usize)
-                    .context("invalid ide channel")?
-                    .get_mut(path.drive as usize)
-                    .context("invalid ide device")?
-                    .replace(media);
-
-                if old_media.is_some() {
-                    anyhow::bail!(
-                        "ide drive {}:{} is already in use",
-                        path.channel,
-                        path.drive
-                    );
-                }
-            }
         }
 
         if cfg.chipset_capabilities.with_guest_watchdog {
@@ -1666,11 +1602,8 @@ impl InitializedVm {
             }
         });
 
-        let [primary_channel_drives, secondary_channel_drives] = ide_drives;
         let deps_hyperv_ide = (cfg.chipset.with_hyperv_ide).then_some(dev::HyperVIdeDeps {
             attached_to: pci_bus_id_piix4.clone(),
-            primary_channel_drives,
-            secondary_channel_drives,
         });
 
         let base_chipset_devices = {
@@ -1783,7 +1716,7 @@ impl InitializedVm {
             }
         };
 
-        let mut scsi_devices = Vec::new();
+        let scsi_devices = Vec::new();
         let mut vtl0_hvsock_relay = None;
         #[cfg(windows)]
         let mut vmbus_proxy = None;
@@ -2257,28 +2190,6 @@ impl InitializedVm {
 
         // Synthetic devices
         {
-            // Arbitrary default
-            const DEFAULT_IO_QUEUE_DEPTH: u32 = 256;
-            if let Some(vmbus) = &vmbus_server {
-                for (path, scsi_disk) in storvsp_ide_disks {
-                    scsi_devices.push(
-                        offer_channel_unit(
-                            &driver_source.simple(),
-                            &state_units,
-                            vmbus,
-                            storvsp::StorageDevice::build_ide(
-                                &driver_source,
-                                path.channel,
-                                path.drive,
-                                scsi_disk,
-                                DEFAULT_IO_QUEUE_DEPTH,
-                            ),
-                        )
-                        .await?,
-                    );
-                }
-            }
-
             #[cfg(windows)]
             for nic_config in cfg.kernel_vmnics {
                 let mut nic = vmswitch::kernel::KernelVmNic::new(
@@ -3450,7 +3361,6 @@ impl LoadedVm {
         let manifest = Manifest {
             load_mode: self.inner.load_mode,
             floppy_disks: vec![],        // TODO
-            ide_disks: vec![],           // TODO
             pcie_root_complexes: vec![], // TODO
             pcie_devices: vec![],        // TODO
             pcie_switches: vec![],       // TODO
