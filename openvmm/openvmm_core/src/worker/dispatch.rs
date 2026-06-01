@@ -1865,7 +1865,7 @@ impl InitializedVm {
                 let root_complex =
                     chipset_builder
                         .arc_mutex_device(device_name)
-                        .add(|services| {
+                        .try_add(|services| {
                             let root_port_definitions = rc
                                 .ports
                                 .into_iter()

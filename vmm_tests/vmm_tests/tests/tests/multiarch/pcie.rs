@@ -196,7 +196,9 @@ async fn pcie_root_emulation_single_segment(
 }
 
 /// Test PCIe root complex discovery and root port enumeration by
-/// guest software in a topology with multiple segments.
+/// guest software in a topology with multiple segments. Uses 10
+/// ports per root complex to exercise multi-function packing across
+/// multiple PCI device slots.
 #[openvmm_test(
     unstable_linux_direct_x64,
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -209,7 +211,7 @@ async fn pcie_root_emulation_multi_segment(
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
-        .modify_backend(|b| b.with_pcie_root_topology(4, 1, 8))
+        .modify_backend(|b| b.with_pcie_root_topology(4, 1, 10))
         .run()
         .await?;
 
@@ -221,7 +223,7 @@ async fn pcie_root_emulation_multi_segment(
         .filter(|d| d.vendor_id == 0x1414 && d.device_id == 0xc030 && d.class_code == 0x060400)
         .count();
 
-    assert_eq!(root_port_count, 32);
+    assert_eq!(root_port_count, 40);
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;

@@ -132,7 +132,8 @@ impl FuzzRootComplex {
         let rc =
             GenericPcieRootComplex::builder(&mut register_mmio, START_BUS..=END_BUS, ecam_range)
                 .root_ports(port_defs, msi_conn.target())
-                .build();
+                .build()
+                .unwrap();
         Self { rc }
     }
 
