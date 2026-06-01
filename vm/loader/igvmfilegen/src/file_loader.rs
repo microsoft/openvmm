@@ -830,9 +830,12 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                 }
             }
 
-            // Data size must match SNP VMSA size.
-            if data.len() != size_of::<SevVmsa>() {
-                anyhow::bail!("data len {:x} does not match VMSA size", data.len());
+            // Data must not exceed the SNP VMSA size. The VP context builder
+            // produces the architectural VMSA (`x86defs::snp::SevVmsa`, 1648
+            // bytes); the igvm crate's `SevVmsa` is padded out to a full 4K
+            // page, so zero-pad the input to match before reading.
+            if data.len() > size_of::<SevVmsa>() {
+                anyhow::bail!("data len {:x} exceeds VMSA size", data.len());
             }
 
             // Page count must be 1.
@@ -840,11 +843,16 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                 anyhow::bail!("page count {page_count:x} for snp vmsa is not 1");
             }
 
+            let mut padded = vec![0u8; size_of::<SevVmsa>()];
+            padded[..data.len()].copy_from_slice(data);
+
             self.directives.push(IgvmDirectiveHeader::SnpVpContext {
                 gpa: page_base * PAGE_SIZE_4K,
                 compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
                 vp_index: 0,
-                vmsa: Box::new(SevVmsa::read_from_bytes(data).expect("should be correct size")), // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+                vmsa: Box::new(
+                    SevVmsa::read_from_bytes(padded.as_slice()).expect("should be correct size"),
+                ), // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             });
         } else {
             for page in page_base..page_base + page_count {
