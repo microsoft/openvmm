@@ -229,9 +229,7 @@ pub struct RelayUnixSocketRequest {
 /// and relay the connection over a pair of mesh pipes.
 ///
 /// Unlike [`RelayUnixSocketRequest`], the handler connects to an existing
-/// socket rather than binding a new listener. The handler will retry the
-/// connect with a short backoff until it succeeds or the retry limit is
-/// reached.
+/// socket rather than binding a new listener.
 #[derive(MeshPayload)]
 pub struct RelayConnectUnixSocketRequest {
     /// Path of the UNIX socket to connect to inside the guest.
