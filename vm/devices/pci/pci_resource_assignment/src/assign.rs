@@ -16,7 +16,7 @@ const BRIDGE_WINDOW_ALIGN: u64 = 1 << 20;
 
 /// Resource requirement for a subtree (bridge or root).
 #[derive(Debug, Clone)]
-pub(crate) struct SubtreeRequirement {
+pub(crate) struct SubtreeState {
     /// Total aligned size needed in the mem32 (non-prefetchable) pool.
     mem32: u64,
     /// Total aligned size needed in the mem64 (prefetchable) pool.
@@ -30,9 +30,9 @@ pub(crate) struct SubtreeRequirement {
     /// pass to avoid recomputing them.
     demands: Vec<Demand>,
     /// Assigned non-prefetchable bridge window (base, limit). Set by assign_subtree.
-    pub(crate) memory_window: Option<(u64, u64)>,
+    memory_window: Option<(u64, u64)>,
     /// Assigned prefetchable bridge window (base, limit). Set by assign_subtree.
-    pub(crate) prefetchable_window: Option<(u64, u64)>,
+    prefetchable_window: Option<(u64, u64)>,
 }
 
 /// A single resource demand at one level of the PCI tree.
@@ -119,7 +119,7 @@ pub fn assign_addresses(
     // Step 1: Bottom-up — compute total resource requirements.
     // This also stores per-bridge requirements on the DiscoveredDevice
     // nodes so that the assignment pass can read them without recomputing.
-    let root_req = compute_subtree_requirement(devices);
+    let root_req = compute_subtree_state(devices);
 
     // Step 2: Top-down — allocate from apertures and assign addresses.
     // Align the effective base to the root's alignment requirement so that
@@ -228,7 +228,7 @@ fn is_mem64_bar(bar: &crate::enumerate::DiscoveredBar) -> bool {
 ///
 /// Also builds and stores the sorted demand list so that `assign_subtree`
 /// can reuse it without recomputing.
-fn compute_subtree_requirement(devices: &mut [DiscoveredDevice]) -> SubtreeRequirement {
+fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
     let mut demands: Vec<Demand> = Vec::new();
 
     for (i, dev) in devices.iter_mut().enumerate() {
@@ -256,7 +256,7 @@ fn compute_subtree_requirement(devices: &mut [DiscoveredDevice]) -> SubtreeRequi
         }
 
         if dev.is_bridge {
-            let child_req = compute_subtree_requirement(&mut dev.children);
+            let child_req = compute_subtree_state(&mut dev.children);
             if child_req.mem32 > 0 {
                 let size = align_up(child_req.mem32, BRIDGE_WINDOW_ALIGN);
                 demands.push(Demand::BridgeSubtree {
@@ -300,7 +300,7 @@ fn compute_subtree_requirement(devices: &mut [DiscoveredDevice]) -> SubtreeRequi
         }
     }
 
-    SubtreeRequirement {
+    SubtreeState {
         mem32,
         mem64,
         align32,
@@ -334,9 +334,7 @@ fn assign_subtree(
 
         match *demand {
             Demand::Bar {
-                dev_idx,
-                bar_index,
-                ..
+                dev_idx, bar_index, ..
             } => {
                 let bar = devices[dev_idx]
                     .bars
@@ -383,10 +381,7 @@ fn assign_subtree(
 /// the tree. This function assumes MMIO decode (MSE) has already been
 /// cleared by the enumeration phase and does not modify the command
 /// register.
-pub async fn program_assignments(
-    cfg: &mut impl PciConfigAccess,
-    devices: &[DiscoveredDevice],
-) {
+pub async fn program_assignments(cfg: &mut impl PciConfigAccess, devices: &[DiscoveredDevice]) {
     for dev in devices {
         let devfn = crate::devfn(dev.device, dev.function);
 
@@ -438,21 +433,20 @@ pub async fn program_assignments(
 
             // Prefetchable memory window (64-bit capable).
             // Use base > limit to disable when no window is assigned.
-            let (pf_range, pf_base_upper, pf_limit_upper) = if let Some((base, limit)) =
-                prefetchable_window
-            {
-                let pf_base_reg =
-                    ((base >> 16) as u16 & MEMORY_BASE_LIMIT_ADDRESS_MASK) as u32 | 0x1;
-                let pf_limit_reg =
-                    ((limit >> 16) as u16 & MEMORY_BASE_LIMIT_ADDRESS_MASK) as u32 | 0x1;
-                (
-                    pf_base_reg | (pf_limit_reg << 16),
-                    (base >> 32) as u32,
-                    (limit >> 32) as u32,
-                )
-            } else {
-                (0x0000_fff0, 0xFFFF_FFFF, 0)
-            };
+            let (pf_range, pf_base_upper, pf_limit_upper) =
+                if let Some((base, limit)) = prefetchable_window {
+                    let pf_base_reg =
+                        ((base >> 16) as u16 & MEMORY_BASE_LIMIT_ADDRESS_MASK) as u32 | 0x1;
+                    let pf_limit_reg =
+                        ((limit >> 16) as u16 & MEMORY_BASE_LIMIT_ADDRESS_MASK) as u32 | 0x1;
+                    (
+                        pf_base_reg | (pf_limit_reg << 16),
+                        (base >> 32) as u32,
+                        (limit >> 32) as u32,
+                    )
+                } else {
+                    (0x0000_fff0, 0xFFFF_FFFF, 0)
+                };
             cfg.write_u32(
                 dev.bus,
                 devfn,

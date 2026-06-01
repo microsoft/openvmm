@@ -38,7 +38,7 @@ pub struct DiscoveredDevice {
     /// Computed during the sizing pass for bridges: the total resource
     /// requirement of this bridge's children. Avoids recomputation during
     /// address assignment.
-    pub(crate) subtree_req: Option<crate::assign::SubtreeRequirement>,
+    pub(crate) subtree_req: Option<crate::assign::SubtreeState>,
 }
 
 /// A discovered BAR with its size.

@@ -78,20 +78,10 @@ pub async fn assign_pci_resources(
     cfg: &mut impl PciConfigAccess,
     params: &AssignmentParams,
 ) -> Result<(), AssignmentError> {
-    assign_pci_resources_inner(cfg, params).await?;
-    Ok(())
-}
-
-/// Inner implementation that returns the device tree with assignments
-/// populated, for internal use (e.g., tests).
-pub(crate) async fn assign_pci_resources_inner(
-    cfg: &mut impl PciConfigAccess,
-    params: &AssignmentParams,
-) -> Result<Vec<enumerate::DiscoveredDevice>, AssignmentError> {
     let mut devices = enumerate::enumerate_and_probe(cfg, params).await?;
     assign::assign_addresses(&mut devices, params)?;
     assign::program_assignments(cfg, &devices).await;
-    Ok(devices)
+    Ok(())
 }
 
 /// Errors during resource assignment.
