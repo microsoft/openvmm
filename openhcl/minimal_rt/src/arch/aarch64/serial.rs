@@ -37,6 +37,7 @@
 
 use core::hint::spin_loop;
 use core::sync::atomic::AtomicBool;
+use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 
 #[derive(Debug, Clone, Copy)]
@@ -96,19 +97,25 @@ const FR_BUSY: u32 = 0x008;
 /// base addresses. Should come from ACPI or DT of course yet
 /// due to having been hardcoded in some products makes that
 /// virtually constants.
-const PL011_HYPER_V_BASE_1: u64 = 0xeffec000;
+const _PL011_HYPER_V_BASE_1: u64 = 0xeffec000;
 const _PL011_HYPER_V_BASE_2: u64 = 0xeffeb000;
-const PL011_BASE: u64 = PL011_HYPER_V_BASE_1;
+const PL011_HYPER_V_BASE_3: u64 = 0xeffe9000;
+const _PL011_HYPER_V_BASE_3: u64 = 0xeffe8000;
 
 fn read_register(reg: Pl011Register) -> u32 {
     // SAFETY: using the PL011 MMIO address.
-    unsafe { core::ptr::read_volatile((PL011_BASE + reg as u64) as *const u32) }
+    unsafe {
+        core::ptr::read_volatile((PL011_BASE.load(Ordering::Relaxed) + reg as u64) as *const u32)
+    }
 }
 
 fn write_register(reg: Pl011Register, val: u32) {
     // SAFETY: using the PL011 MMIO address.
     unsafe {
-        core::ptr::write_volatile((PL011_BASE + reg as u64) as *mut u32, val);
+        core::ptr::write_volatile(
+            (PL011_BASE.load(Ordering::Relaxed) + reg as u64) as *mut u32,
+            val,
+        );
     }
 }
 
@@ -207,10 +214,11 @@ fn reset_and_init() {
 pub struct Serial;
 
 static SUPPORTED: AtomicBool = AtomicBool::new(false);
+static PL011_BASE: AtomicU64 = AtomicU64::new(PL011_HYPER_V_BASE_3);
 
 impl Serial {
     /// Initializes the serial port.
-    pub fn init() -> Serial {
+    pub fn init(base_address: Option<u64>) -> Serial {
         const SUPPORTED_PL011_CELLS: &[u32] = &[0xB105_F00D];
 
         let cell_id = cell_id();
@@ -219,6 +227,10 @@ impl Serial {
             reset_and_init();
         }
         SUPPORTED.store(supported, Ordering::Relaxed);
+
+        if let Some(base_address) = base_address {
+            PL011_BASE.store(base_address, Ordering::Relaxed);
+        }
 
         Self
     }

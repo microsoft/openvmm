@@ -55,6 +55,40 @@ pub struct GicInfo {
     pub gic_redistributor_stride: u64,
 }
 
+/// Information about a COM port.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(Inspect))]
+pub enum ComInfo {
+    /// No serial port configured
+    None,
+    /// Serial device on x86
+    ///
+    /// Parameters are hard coded based on port number for this device.
+    Ns16550,
+    /// Serial device on ARM64
+    Pl011 {
+        /// Base MMIO address
+        #[cfg_attr(feature = "inspect", inspect(hex))]
+        base: u32,
+
+        /// Interrupt ID
+        intid: u32,
+
+        /// Speed
+        current_speed: u32,
+    },
+}
+
+impl ComInfo {
+    /// Whether the serial port is configured
+    pub fn is_some(&self) -> bool {
+        match self {
+            ComInfo::None => false,
+            _ => true,
+        }
+    }
+}
+
 /// Errors returned by parsing.
 #[derive(Debug)]
 pub struct Error<'a>(ErrorKind<'a>);
@@ -220,7 +254,7 @@ pub struct ParsedDeviceTree<
     #[cfg_attr(feature = "inspect", inspect(display))]
     pub command_line: ArrayString<MAX_COMMAND_LINE_SIZE>,
     /// Is a com3 device present
-    pub com3_serial: bool,
+    pub com3_serial: ComInfo,
     /// The vtl2 memory allocation mode OpenHCL should use for memory.
     pub memory_allocation_mode: MemoryAllocationMode,
     /// Entropy from the host to be used by the OpenHCL kernel
@@ -313,7 +347,7 @@ impl<
             vmbus_vtl0: None,
             vmbus_vtl2: None,
             command_line: ArrayString::new_const(),
-            com3_serial: false,
+            com3_serial: ComInfo::None,
             gic: None,
             pmu_gsiv: None,
             memory_allocation_mode: MemoryAllocationMode::Host,
@@ -755,7 +789,7 @@ fn parse_compatible<'a>(
     vmbus_vtl0: &mut Option<VmbusInfo>,
     vmbus_vtl2: &mut Option<VmbusInfo>,
     pmu_gsiv: &mut Option<u32>,
-    com3_serial: &mut bool,
+    com3_serial: &mut ComInfo,
 ) -> Result<(), ErrorKind<'a>> {
     let compatible = node
         .find_property("compatible")
@@ -764,17 +798,25 @@ fn parse_compatible<'a>(
         .transpose()?
         .unwrap_or("");
 
-    if compatible == "simple-bus" {
-        parse_simple_bus(node, vmbus_vtl0, vmbus_vtl2)?;
-    } else if compatible == "x86-pio-bus" {
-        parse_io_bus(node, com3_serial)?;
-    } else if compatible == "arm,armv8-pmuv3" {
-        parse_pmu_gsiv(node, pmu_gsiv)?;
-    } else {
-        #[cfg(feature = "tracing")]
-        tracing::warn!(?compatible, ?node.name,
-            "Unrecognized compatible field",
-        );
+    match compatible {
+        "simple-bus" => {
+            parse_simple_bus(node, vmbus_vtl0, vmbus_vtl2)?;
+        }
+        "x86-pio-bus" => {
+            parse_io_bus(node, com3_serial)?;
+        }
+        "arm,sbsa-uart" => {
+            parse_pl011(node, com3_serial)?;
+        }
+        "arm,armv8-pmuv3" => {
+            parse_pmu_gsiv(node, pmu_gsiv)?;
+        }
+        _ => {
+            #[cfg(feature = "tracing")]
+            tracing::warn!(?compatible, ?node.name,
+                "Unrecognized compatible field",
+            );
+        }
     }
 
     Ok(())
@@ -973,7 +1015,7 @@ fn parse_simple_bus<'a>(
 
 fn parse_io_bus<'a>(
     node: &fdt::parser::Node<'a>,
-    com3_serial: &mut bool,
+    com3_serial: &mut ComInfo,
 ) -> Result<(), ErrorKind<'a>> {
     for io_bus_child in node.children() {
         let io_bus_child = io_bus_child.map_err(|error| ErrorKind::Node {
@@ -1013,13 +1055,57 @@ fn parse_io_bus<'a>(
         // If work is ever done in the Linux kernel to instead
         // parse from DT, the 2nd condition can be removed.
         if compatible == "ns16550" && reg_base == COM3_REG_BASE {
-            *com3_serial = true
+            *com3_serial = ComInfo::Ns16550;
         } else {
             #[cfg(feature = "tracing")]
             tracing::warn!(?node.name, ?compatible, ?reg_base,
                 "unrecognized io bus child"
             );
         }
+    }
+
+    Ok(())
+}
+
+fn parse_pl011<'a>(
+    node: &fdt::parser::Node<'a>,
+    com3_serial: &mut ComInfo,
+) -> Result<(), ErrorKind<'a>> {
+    let reg =
+        node.find_property("reg")
+            .map_err(ErrorKind::Prop)?
+            .ok_or(ErrorKind::PropMissing {
+                node_name: node.name,
+                prop_name: "reg",
+            })?;
+
+    let interrupts = node
+        .find_property("interrupts")
+        .map_err(ErrorKind::Prop)?
+        .ok_or(ErrorKind::PropMissing {
+            node_name: node.name,
+            prop_name: "reg",
+        })?;
+
+    let current_speed = node
+        .find_property("current-speed")
+        .map_err(ErrorKind::Prop)?
+        .ok_or(ErrorKind::PropMissing {
+            node_name: node.name,
+            prop_name: "current-speed",
+        })?
+        .read_u32(0)
+        .map_err(ErrorKind::Prop)?;
+
+    let base = reg.read_u32(1).map_err(ErrorKind::Prop)?;
+    let intid = interrupts.read_u32(1).map_err(ErrorKind::Prop)?;
+
+    if intid == 3 {
+        *com3_serial = ComInfo::Pl011 {
+            base,
+            intid,
+            current_speed,
+        };
     }
 
     Ok(())
@@ -1409,37 +1495,41 @@ mod tests {
         root = simple_bus.end_node().unwrap();
 
         // Com3 serial node
-        if context.com3_serial {
-            let mut io_port_bus = root
-                .start_node("io-bus")
-                .unwrap()
-                .add_str(p_compatible, "x86-pio-bus")
-                .unwrap()
-                .add_u32(p_address_cells, 1)
-                .unwrap()
-                .add_u32(p_size_cells, 0)
-                .unwrap()
-                .add_prop_array(p_ranges, &[])
-                .unwrap();
+        match context.com3_serial {
+            ComInfo::Ns16550 => {
+                let mut io_port_bus = root
+                    .start_node("io-bus")
+                    .unwrap()
+                    .add_str(p_compatible, "x86-pio-bus")
+                    .unwrap()
+                    .add_u32(p_address_cells, 1)
+                    .unwrap()
+                    .add_u32(p_size_cells, 0)
+                    .unwrap()
+                    .add_prop_array(p_ranges, &[])
+                    .unwrap();
 
-            let serial_name = format!("serial@{:x}", COM3_REG_BASE);
-            io_port_bus = io_port_bus
-                .start_node(&serial_name)
-                .unwrap()
-                .add_str(p_compatible, "ns16550")
-                .unwrap()
-                .add_u32(p_clock_frequency, 0)
-                .unwrap()
-                .add_u32(p_current_speed, 115200)
-                .unwrap()
-                .add_u64_array(p_reg, &[COM3_REG_BASE, 0x8])
-                .unwrap()
-                .add_u64_array(p_interrupts, &[4])
-                .unwrap()
-                .end_node()
-                .unwrap();
+                let serial_name = format!("serial@{:x}", COM3_REG_BASE);
+                io_port_bus = io_port_bus
+                    .start_node(&serial_name)
+                    .unwrap()
+                    .add_str(p_compatible, "ns16550")
+                    .unwrap()
+                    .add_u32(p_clock_frequency, 0)
+                    .unwrap()
+                    .add_u32(p_current_speed, 115200)
+                    .unwrap()
+                    .add_u64_array(p_reg, &[COM3_REG_BASE, 0x8])
+                    .unwrap()
+                    .add_u64_array(p_interrupts, &[4])
+                    .unwrap()
+                    .end_node()
+                    .unwrap();
 
-            root = io_port_bus.end_node().unwrap();
+                root = io_port_bus.end_node().unwrap();
+            }
+            ComInfo::Pl011 { .. } => todo!("pl011 dt test"),
+            ComInfo::None => {}
         }
 
         // Chosen node - contains cmdline.
@@ -1513,7 +1603,7 @@ mod tests {
         vmbus_vtl0: Option<VmbusInfo>,
         vmbus_vtl2: Option<VmbusInfo>,
         command_line: &str,
-        com3_serial: bool,
+        com3_serial: ComInfo,
         gic: Option<GicInfo>,
         pmu_gsiv: Option<u32>,
         memory_allocation_mode: MemoryAllocationMode,
@@ -1580,7 +1670,7 @@ mod tests {
                 connection_id: 4,
             }),
             "THIS_IS_A_BOOT_ARG=1",
-            false,
+            ComInfo::None,
             Some(GicInfo {
                 gic_distributor_base: 0x20000,
                 gic_distributor_size: 0x10000,
@@ -1650,7 +1740,7 @@ mod tests {
             None,
             None,
             "",
-            false,
+            ComInfo::None,
             None,
             None,
             MemoryAllocationMode::Vtl2 {
@@ -1701,7 +1791,7 @@ mod tests {
             None,
             None,
             "THIS_IS_A_BOOT_ARG=1",
-            false,
+            ComInfo::None,
             None,
             None,
             MemoryAllocationMode::Host,
@@ -1740,7 +1830,7 @@ mod tests {
             None,
             None,
             "THIS_IS_A_BOOT_ARG=1",
-            false,
+            ComInfo::None,
             None,
             None,
             MemoryAllocationMode::Host,
@@ -1784,7 +1874,7 @@ mod tests {
                 connection_id: 4,
             }),
             "THIS_IS_A_BOOT_ARG=1",
-            false,
+            ComInfo::None,
             None,
             None,
             MemoryAllocationMode::Host,
@@ -1828,7 +1918,7 @@ mod tests {
                 connection_id: 4,
             }),
             "THIS_IS_A_BOOT_ARG=1",
-            false,
+            ComInfo::None,
             None,
             None,
             MemoryAllocationMode::Host,
@@ -1889,7 +1979,7 @@ mod tests {
                 connection_id: 4,
             }),
             "THIS_IS_A_BOOT_ARG=1",
-            true,
+            ComInfo::Ns16550,
             None,
             None,
             MemoryAllocationMode::Host,
@@ -1901,6 +1991,6 @@ mod tests {
         let parsed = TestParsedDeviceTree::parse(&dt, &mut parsed).unwrap();
 
         assert_eq!(&orig, parsed);
-        assert!(parsed.com3_serial);
+        assert_eq!(parsed.com3_serial, ComInfo::Ns16550);
     }
 }
