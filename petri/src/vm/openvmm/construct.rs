@@ -692,6 +692,8 @@ impl PetriVmConfigOpenVmm {
 
             ged,
             framebuffer_view,
+
+            pending_iommu: Vec::new(),
         })
     }
 }

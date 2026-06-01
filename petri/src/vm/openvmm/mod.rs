@@ -174,6 +174,10 @@ pub struct PetriVmConfigOpenVmm {
     // Resources that are only used during startup.
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
     framebuffer_view: Option<framebuffer::View>,
+
+    // Deferred IOMMU configuration: (rc_name, iommu_config) pairs resolved
+    // against pcie_root_complexes at VM start time.
+    pending_iommu: Vec<(String, openvmm_defs::config::PcieIommuConfig)>,
 }
 /// Various channels and resources used to interact with the VM while it is running.
 struct PetriVmResourcesOpenVmm {

@@ -88,6 +88,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "amd_iommu"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "chipset_device",
+ "guestmem",
+ "inspect",
+ "open_enum",
+ "parking_lot",
+ "pci_core",
+ "tracelimit",
+ "tracing",
+ "vmcore",
+ "zerocopy",
+]
+
+[[package]]
 name = "anes"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5377,6 +5394,7 @@ version = "0.0.0"
 dependencies = [
  "aarch64defs",
  "acpi",
+ "amd_iommu",
  "anyhow",
  "async-trait",
  "build_rs_guest_arch",

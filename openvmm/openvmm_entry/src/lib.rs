@@ -875,7 +875,35 @@ async fn vm_config_from_command_line(
             },
             cxl,
             ports,
+            #[cfg(guest_arch = "aarch64")]
+            iommu: opt
+                .smmu
+                .iter()
+                .any(|s| s == &rc_cli.name)
+                .then_some(openvmm_defs::config::PcieIommuConfig::Smmu),
+            #[cfg(guest_arch = "x86_64")]
+            iommu: opt
+                .amd_iommu
+                .iter()
+                .any(|s| s == &rc_cli.name)
+                .then_some(openvmm_defs::config::PcieIommuConfig::AmdVi),
         });
+    }
+
+    // Validate that all --smmu / --amd-iommu names refer to known root complexes.
+    #[cfg(guest_arch = "aarch64")]
+    for name in &opt.smmu {
+        anyhow::ensure!(
+            pcie_root_complexes.iter().any(|rc| rc.name == *name),
+            "--smmu refers to unknown root complex '{name}'"
+        );
+    }
+    #[cfg(guest_arch = "x86_64")]
+    for name in &opt.amd_iommu {
+        anyhow::ensure!(
+            pcie_root_complexes.iter().any(|rc| rc.name == *name),
+            "--amd-iommu refers to unknown root complex '{name}'"
+        );
     }
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
@@ -1512,13 +1540,6 @@ async fn vm_config_from_command_line(
     }
 
     #[cfg(guest_arch = "aarch64")]
-    let smmu_instances: Vec<openvmm_defs::config::SmmuInstanceConfig> = opt
-        .smmu
-        .iter()
-        .map(|s| openvmm_defs::config::SmmuInstanceConfig { rc_name: s.clone() })
-        .collect();
-
-    #[cfg(guest_arch = "aarch64")]
     let topology_arch = openvmm_defs::config::ArchTopologyConfig::Aarch64(
         openvmm_defs::config::Aarch64TopologyConfig {
             // TODO: allow this to be configured from the command line
@@ -1531,7 +1552,6 @@ async fn vm_config_from_command_line(
                     openvmm_defs::config::GicMsiConfig::V2m { spi_count: None }
                 }
             },
-            smmu: smmu_instances,
         },
     );
     #[cfg(guest_arch = "x86_64")]

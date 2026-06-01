@@ -17,6 +17,7 @@ use pipette_client::PipetteClient;
 use std::fmt;
 use std::time::Duration;
 use vmm_test_macros::openvmm_test;
+use vmm_test_macros::vmm_test_with;
 
 /// List of MAC addresses for tests to use.
 const PCIE_NIC_MAC_ADDRESSES: [MacAddress; 2] = [
@@ -553,71 +554,93 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
     );
 
     // 3. Verify IOMMU groups exist (devices behind the SMMU RC)
-    let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/")
-        .read()
-        .await
-        .unwrap_or_default();
+    let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/").read().await?;
     tracing::info!(%iommu_groups, "IOMMU groups");
     assert!(
         !iommu_groups.trim().is_empty(),
         "IOMMU groups should exist for devices behind the SMMU"
     );
 
-    // 4. Verify all NVMe devices enumerate and have block devices
-    let block_devs = cmd!(sh, "ls /sys/block/").read().await?;
-    let nvme_count = block_devs
-        .split_whitespace()
-        .filter(|d| d.starts_with("nvme"))
-        .count();
-    assert_eq!(
-        nvme_count, 2,
-        "both NVMe controllers should create block devices: {block_devs}"
-    );
+    // 4. Verify all NVMe devices enumerate, have block devices, and DMA
+    //    works through the SMMU (segment 0 / PCI domain 0000).
+    verify_nvme_dma_on_segment(&sh, 2, "0000").await?;
 
-    // 5. Verify NVMe behind SMMU works: write and read back data.
-    //    Resolve each NVMe block device's PCI domain from sysfs to find the
-    //    one on segment 0 (the SMMU-covered root complex). This ensures we
-    //    exercise DMA through the SMMU, not the non-SMMU path.
-    let nvme_devs: Vec<&str> = block_devs
-        .split_whitespace()
-        .filter(|d| d.starts_with("nvme"))
-        .collect();
-    let mut smmu_nvme = None;
-    for dev in &nvme_devs {
-        let pci_path = cmd!(sh, "readlink -f /sys/block/{dev}/device")
-            .read()
-            .await?;
-        // PCI path looks like .../pci0000:00/0000:00:00.0/0000:01:00.0/nvme/nvme0
-        // Search all path segments for a BDF in PCI domain 0000.
-        if pci_path.split('/').any(|seg| seg.starts_with("0000:")) {
-            smmu_nvme = Some(*dev);
-            break;
-        }
-    }
-    let smmu_nvme =
-        smmu_nvme.expect("should find an NVMe on PCI domain 0000 (SMMU-covered segment)");
-    tracing::info!(smmu_nvme, "exercising DMA through SMMU");
-    cmd!(
-        sh,
-        "dd if=/dev/urandom of=/dev/{smmu_nvme} bs=4096 count=16 oflag=direct"
-    )
-    .read()
-    .await?;
-    cmd!(
-        sh,
-        "dd if=/dev/{smmu_nvme} of=/dev/null bs=4096 count=16 iflag=direct"
-    )
-    .read()
-    .await?;
+    // 5. Verify virtio-net interfaces exist on both RCs
+    verify_net_interface_count(&sh, 2).await?;
 
-    // 6. Verify virtio-net interfaces exist on both RCs
-    let net_devs = cmd!(sh, "ls /sys/class/net/").read().await?;
-    let net_count = net_devs.split_whitespace().filter(|d| *d != "lo").count();
-    tracing::info!(%net_devs, net_count, "network devices");
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Test AMD IOMMU emulation with a mixed topology:
+///
+/// - Root complex s0rc0 (segment 0): IOMMU enabled, virtio-net + NVMe behind it
+/// - Root complex s1rc0 (segment 1): no IOMMU, virtio-net behind it
+///
+/// Verifies:
+/// 1. Linux discovers the AMD IOMMU (dmesg shows AMD-Vi init)
+/// 2. IVRS ACPI table is present
+/// 3. Devices behind the IOMMU RC are in IOMMU groups
+/// 4. Devices on both RCs enumerate and function (block I/O, network interface)
+/// 5. DMA through the IOMMU works (NVMe I/O behind the IOMMU)
+///
+/// Restricted to AMD-vendor hosts: the AMD IOMMU emulator's IVHD entries
+/// surface a host-cpuid-derived AMD-Vi family/model that Linux's IOMMU
+/// driver only accepts when the boot CPU also reports as AMD.
+#[vmm_test_with(openvmm_amd(linux_direct_x64))]
+async fn amd_iommu_mixed_topology(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(2, 1, 4) // 2 segments, 1 RC each, 4 ports each
+                .with_amd_iommu(&["s0rc0"]) // IOMMU only on segment 0's RC
+                .with_pcie_nvme("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
+                .with_virtio_nic("s0rc0rp1")
+                .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
+                .with_virtio_nic("s1rc0rp1")
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // 1. Verify IOMMU is discovered by Linux
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    tracing::info!(dmesg_len = dmesg.len(), "dmesg captured");
+
     assert!(
-        net_count >= 2,
-        "at least 2 network interfaces should exist (got {net_count}): {net_devs}"
+        dmesg.contains("AMD-Vi") || dmesg.contains("AMD IOMMUv2") || dmesg.contains("AMD IOMMU"),
+        "Linux should discover the AMD IOMMU in dmesg. dmesg excerpt:\n{}",
+        dmesg
+            .lines()
+            .filter(|l| l.contains("IOMMU") || l.contains("iommu") || l.contains("AMD-Vi"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
+
+    // 2. Verify IVRS ACPI table is present
+    let acpi_tables = cmd!(sh, "ls /sys/firmware/acpi/tables/").read().await?;
+    assert!(
+        acpi_tables.contains("IVRS"),
+        "IVRS ACPI table should be present. Tables: {acpi_tables}"
+    );
+
+    // 3. Verify IOMMU groups exist (devices behind the IOMMU RC)
+    let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/").read().await?;
+    tracing::info!(%iommu_groups, "IOMMU groups");
+    assert!(
+        !iommu_groups.trim().is_empty(),
+        "IOMMU groups should exist for devices behind the IOMMU"
+    );
+
+    // 4. Verify all NVMe devices enumerate, have block devices, and DMA
+    //    works through the IOMMU (segment 0 / PCI domain 0000).
+    verify_nvme_dma_on_segment(&sh, 2, "0000").await?;
+
+    // 5. Verify virtio-net interfaces exist
+    verify_net_interface_count(&sh, 2).await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -644,5 +667,75 @@ async fn _boot_no_vmbus_pcie_nvme(
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Verify that NVMe block devices are visible in the guest and exercise DMA
+/// on the device whose PCI path falls in the given domain (segment).
+async fn verify_nvme_dma_on_segment(
+    sh: &pipette_client::shell::UnixShell<'_>,
+    expected_count: usize,
+    pci_domain: &str,
+) -> anyhow::Result<()> {
+    let block_devs = cmd!(sh, "ls /sys/block/").read().await?;
+    let nvme_devs: Vec<&str> = block_devs
+        .split_whitespace()
+        .filter(|d| d.starts_with("nvme"))
+        .collect();
+    assert_eq!(
+        nvme_devs.len(),
+        expected_count,
+        "expected {expected_count} NVMe block devices, found {}: {block_devs}",
+        nvme_devs.len(),
+    );
+
+    // Find the NVMe device on the target PCI domain and exercise DMA.
+    let domain_prefix = format!("{pci_domain}:");
+    let mut target = None;
+    for dev in &nvme_devs {
+        let pci_path = cmd!(sh, "readlink -f /sys/block/{dev}/device")
+            .read()
+            .await?;
+        if pci_path
+            .split('/')
+            .any(|seg| seg.starts_with(&domain_prefix))
+        {
+            target = Some(*dev);
+            break;
+        }
+    }
+    let target =
+        target.unwrap_or_else(|| panic!("no NVMe device found on PCI domain {pci_domain}"));
+
+    tracing::info!(target, pci_domain, "exercising DMA on NVMe device");
+    cmd!(
+        sh,
+        "dd if=/dev/urandom of=/dev/{target} bs=4096 count=16 oflag=direct"
+    )
+    .read()
+    .await?;
+    cmd!(
+        sh,
+        "dd if=/dev/{target} of=/dev/null bs=4096 count=16 iflag=direct"
+    )
+    .read()
+    .await?;
+
+    Ok(())
+}
+
+/// Assert that the guest has at least `min_count` non-loopback network
+/// interfaces.
+async fn verify_net_interface_count(
+    sh: &pipette_client::shell::UnixShell<'_>,
+    min_count: usize,
+) -> anyhow::Result<()> {
+    let net_devs = cmd!(sh, "ls /sys/class/net/").read().await?;
+    let net_count = net_devs.split_whitespace().filter(|d| *d != "lo").count();
+    tracing::info!(%net_devs, net_count, "network devices");
+    assert!(
+        net_count >= min_count,
+        "expected at least {min_count} network interfaces, got {net_count}: {net_devs}"
+    );
     Ok(())
 }

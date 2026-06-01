@@ -25,11 +25,11 @@ use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieIommuConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
-use openvmm_defs::config::SmmuInstanceConfig;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use vm_resource::IntoResource;
@@ -279,6 +279,7 @@ impl PetriVmConfigOpenVmm {
                     },
                     cxl: None,
                     ports,
+                    iommu: None,
                 });
             }
         }
@@ -311,23 +312,25 @@ impl PetriVmConfigOpenVmm {
     /// provides stage 1 IOVA translation for devices behind those root
     /// complexes.
     pub fn with_smmu(mut self, rc_names: &[&str]) -> Self {
-        let arch = self
-            .config
-            .processor_topology
-            .arch
-            .as_mut()
-            .expect("arch topology not set");
+        for name in rc_names {
+            self.pending_iommu
+                .push((name.to_string(), PcieIommuConfig::Smmu));
+        }
+        self
+    }
 
-        match arch {
-            openvmm_defs::config::ArchTopologyConfig::Aarch64(aarch64) => {
-                aarch64.smmu = rc_names
-                    .iter()
-                    .map(|name| SmmuInstanceConfig {
-                        rc_name: name.to_string(),
-                    })
-                    .collect();
-            }
-            _ => panic!("SMMU is only supported on aarch64"),
+    /// Enable AMD IOMMU (AMD-Vi) on the specified root complexes.
+    ///
+    /// Each name must match a root complex added via
+    /// [`with_pcie_root_topology`](Self::with_pcie_root_topology). The IOMMU
+    /// appears at device 0 function 0 on each listed root complex; PCIe
+    /// devices behind those root complexes have DMA translated through
+    /// guest-programmed page tables and MSIs remapped through the interrupt
+    /// remapping table.
+    pub fn with_amd_iommu(mut self, rc_names: &[&str]) -> Self {
+        for name in rc_names {
+            self.pending_iommu
+                .push((name.to_string(), PcieIommuConfig::AmdVi));
         }
         self
     }

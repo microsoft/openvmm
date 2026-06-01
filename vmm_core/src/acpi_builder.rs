@@ -72,6 +72,38 @@ pub struct AcpiTablesBuilder<'a, T: AcpiTopology> {
     pub arch: AcpiArchConfig,
 }
 
+/// Configuration for AMD IOMMU ACPI table (IVRS) generation.
+#[derive(Clone, Debug)]
+pub struct AmdIommuAcpiConfig {
+    /// PCI DeviceID (BDF) of the IOMMU, encoded as `(bus << 8) | (dev << 3) | fn`.
+    pub device_id: u16,
+    /// Offset of the AMD IOMMU capability block in PCI config space.
+    pub capability_offset: u16,
+    /// MMIO base address of the IOMMU register region.
+    pub mmio_base: u64,
+    /// PCI segment group number (typically 0).
+    pub pci_segment: u16,
+    /// IOMMU feature reporting for the IVHD (should match MMIO ExtFeat register).
+    pub ivhd_features: u64,
+    /// Lowest bus number covered by this IOMMU.
+    pub start_bus: u8,
+    /// Highest bus number covered by this IOMMU.
+    pub end_bus: u8,
+}
+
+/// IVRS-level configuration for AMD IOMMU ACPI table generation.
+///
+/// Groups the IVRS header fields (PA/VA sizes) with the per-IOMMU configs.
+#[derive(Clone, Debug)]
+pub struct AmdIommuIvrsConfig {
+    /// Physical address size in bits (e.g. 48). Written to the IVRS IVinfo header.
+    pub pa_size: u8,
+    /// Virtual address size in bits (e.g. 48). Written to the IVRS IVinfo header.
+    pub va_size: u8,
+    /// Per-IOMMU configurations, one per root complex with an AMD IOMMU.
+    pub iommus: Vec<AmdIommuAcpiConfig>,
+}
+
 /// Architecture-specific ACPI configuration carried by [`AcpiTablesBuilder`].
 pub enum AcpiArchConfig {
     /// x86-specific settings (IOAPIC, PIC, PIT, PSP, PM base, SCI IRQ).
@@ -88,6 +120,9 @@ pub enum AcpiArchConfig {
         pm_base: u16,
         /// ACPI IRQ number.
         acpi_irq: u32,
+        /// AMD IOMMU IVRS table configuration. If `Some`, an IVRS table is
+        /// generated with one IVHD block per IOMMU instance.
+        amd_iommu: Option<AmdIommuIvrsConfig>,
     },
     /// ARM64-specific settings (HW_REDUCED_ACPI FADT).
     Aarch64 {
@@ -608,6 +643,57 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         T::needs_iort(self.processor_topology) && !self.pcie_host_bridges.is_empty()
     }
 
+    fn with_ivrs<F, R>(&self, ivrs_config: &AmdIommuIvrsConfig, f: F) -> R
+    where
+        F: FnOnce(&acpi::builder::Table<'_>) -> R,
+    {
+        use acpi_spec::ivrs;
+
+        let mut ivrs_extra: Vec<u8> = Vec::new();
+
+        for config in &ivrs_config.iommus {
+            // Use a device range entry to cover the bus range owned by this
+            // root complex's IOMMU (IVHD_DEV_RANGE_START + IVHD_DEV_RANGE_END).
+            // This correctly supports multiple IOMMUs within a single PCI
+            // segment, each covering its own bus range.
+            let dev_entries_size = 2 * size_of::<ivrs::IvhdDeviceEntry4>();
+            let ivhd_total = size_of::<ivrs::IvhdType40>() + dev_entries_size;
+
+            // Type 40h is the "mixed format" IVHD (§5.2.2.3) — same layout
+            // as type 11h but supports both BDF and ACPI HID device entries.
+            // We use it as the superset format; our entries are all BDF-based.
+            let ivhd = ivrs::IvhdType40::new(
+                config.device_id,
+                config.capability_offset,
+                config.mmio_base,
+                config.pci_segment,
+                config.ivhd_features,
+            )
+            .with_length(ivhd_total as u16)
+            .with_flags(0); // no HT tunnel, coherent, etc.
+
+            ivrs_extra.extend_from_slice(ivhd.as_bytes());
+
+            let start_bdf = (config.start_bus as u16) << 8;
+            let end_bdf = ((config.end_bus as u16) << 8) | 0xFF;
+            ivrs_extra
+                .extend_from_slice(ivrs::IvhdDeviceEntry4::range_start(start_bdf, 0).as_bytes());
+            ivrs_extra.extend_from_slice(ivrs::IvhdDeviceEntry4::range_end(end_bdf).as_bytes());
+        }
+
+        let iv_info = ivrs::IvInfo::new()
+            .with_efr_sup(true)
+            .with_pa_size(ivrs_config.pa_size)
+            .with_va_size(ivrs_config.va_size);
+
+        (f)(&acpi::builder::Table::new_dyn(
+            ivrs::IVRS_REVISION,
+            None,
+            &ivrs::Ivrs::new(u32::from(iv_info)),
+            &[ivrs_extra.as_slice()],
+        ))
+    }
+
     fn with_pptt<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&acpi::builder::Table<'_>) -> R,
@@ -958,6 +1044,14 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             self.with_pptt(|t| b.append(t));
         }
 
+        if let AcpiArchConfig::X86 {
+            amd_iommu: Some(ivrs_config),
+            ..
+        } = &self.arch
+        {
+            self.with_ivrs(ivrs_config, |t| b.append(t));
+        }
+
         if matches!(self.arch, AcpiArchConfig::Aarch64 { .. }) {
             self.with_gtdt(|t| b.append(t));
         }
@@ -990,6 +1084,19 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
     pub fn build_iort(&self) -> Option<Vec<u8>> {
         self.should_build_iort()
             .then(|| self.with_iort(|t| t.to_vec(&OEM_INFO)))
+    }
+
+    /// Helper method to construct an IVRS without constructing the rest of the
+    /// ACPI tables. Returns `None` if AMD IOMMU is not configured.
+    pub fn build_ivrs(&self) -> Option<Vec<u8>> {
+        if let AcpiArchConfig::X86 {
+            amd_iommu: Some(ivrs_config),
+            ..
+        } = &self.arch
+        {
+            return Some(self.with_ivrs(ivrs_config, |t| t.to_vec(&OEM_INFO)));
+        }
+        None
     }
 
     /// Helper method to construct a PPTT without constructing the rest of the
@@ -1067,6 +1174,7 @@ mod test {
                 with_psp: false,
                 pm_base: 1234,
                 acpi_irq: 2,
+                amd_iommu: None,
             },
         }
     }
@@ -1613,5 +1721,232 @@ mod test {
         assert_eq!(u32_at(&data, smmu_node + 48), 0); // pri_gsiv
         assert_eq!(u32_at(&data, smmu_node + 52), 36); // gerr_gsiv
         assert_eq!(u32_at(&data, smmu_node + 56), 0); // sync_gsiv
+    }
+
+    fn set_amd_iommu(
+        builder: &mut AcpiTablesBuilder<'_, X86Topology>,
+        configs: Vec<AmdIommuAcpiConfig>,
+    ) {
+        if let AcpiArchConfig::X86 { amd_iommu, .. } = &mut builder.arch {
+            *amd_iommu = Some(AmdIommuIvrsConfig {
+                pa_size: 48,
+                va_size: 48,
+                iommus: configs,
+            });
+        } else {
+            panic!("expected X86 arch config");
+        }
+    }
+
+    #[test]
+    fn test_ivrs_basic() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_amd_iommu(
+            &mut builder,
+            vec![AmdIommuAcpiConfig {
+                device_id: 0x0000, // bus 0, dev 0, fn 0
+                capability_offset: 0x40,
+                mmio_base: 0xFD00_0000,
+                pci_segment: 0,
+                ivhd_features: 0xC0,
+                start_bus: 0,
+                end_bus: 255,
+            }],
+        );
+
+        let ivrs = builder.build_ivrs().unwrap();
+
+        // Verify IVRS signature in the first 4 bytes of the table
+        assert_eq!(&ivrs[0..4], b"IVRS");
+        // Verify checksum
+        assert_eq!(checksum(&ivrs), 0);
+
+        // After the 36-byte ACPI header and 12-byte IVRS header (offset 48),
+        // the IVHD type 40h block starts.
+        let ivhd_offset = 48;
+        assert_eq!(ivrs[ivhd_offset], 0x40); // IVHD type 40h
+
+        // IOMMU DeviceID at offset +4 (u16)
+        let dev_id = u16::from_ne_bytes(ivrs[ivhd_offset + 4..ivhd_offset + 6].try_into().unwrap());
+        assert_eq!(dev_id, 0x0000);
+
+        // Capability offset at offset +6 (u16)
+        let cap_offset =
+            u16::from_ne_bytes(ivrs[ivhd_offset + 6..ivhd_offset + 8].try_into().unwrap());
+        assert_eq!(cap_offset, 0x40);
+
+        // MMIO base at offset +8 (u64)
+        let mmio_base =
+            u64::from_ne_bytes(ivrs[ivhd_offset + 8..ivhd_offset + 16].try_into().unwrap());
+        assert_eq!(mmio_base, 0xFD00_0000);
+
+        // EFR at offset +24 (u64) in the type 40h extended fields
+        let efr = u64::from_ne_bytes(ivrs[ivhd_offset + 24..ivhd_offset + 32].try_into().unwrap());
+        assert_eq!(efr, 0xC0); // IASup + GASup
+
+        // Device entries follow the IVHD type 40h header (40 bytes).
+        // We emit a range_start + range_end pair.
+        let dev_entry_offset = ivhd_offset + 40;
+        assert_eq!(ivrs[dev_entry_offset], 0x03); // range_start entry
+        assert_eq!(ivrs[dev_entry_offset + 4], 0x04); // range_end entry
+    }
+
+    #[test]
+    fn test_ivrs_not_generated_when_disabled() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let builder = new_builder(&mem, &topology, &pcie);
+
+        // amd_iommu is empty by default
+        assert!(builder.build_ivrs().is_none());
+
+        let tables = builder.build_acpi_tables(0x100000, |_| {});
+        assert!(!contains_signature(&tables.tables, b"IVRS"));
+    }
+
+    #[test]
+    fn test_ivrs_in_acpi_tables() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_amd_iommu(
+            &mut builder,
+            vec![AmdIommuAcpiConfig {
+                device_id: 0x0000,
+                capability_offset: 0x40,
+                mmio_base: 0xFD00_0000,
+                pci_segment: 0,
+                ivhd_features: 0xC0,
+                start_bus: 0,
+                end_bus: 255,
+            }],
+        );
+
+        let tables = builder.build_acpi_tables(0x100000, |_| {});
+        assert!(contains_signature(&tables.tables, b"IVRS"));
+    }
+
+    #[test]
+    fn test_ivrs_iommu_fields() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_amd_iommu(
+            &mut builder,
+            vec![AmdIommuAcpiConfig {
+                device_id: 0x1234,
+                capability_offset: 0x80,
+                mmio_base: 0xFE00_0000,
+                pci_segment: 1,
+                ivhd_features: 0xC0,
+                start_bus: 0,
+                end_bus: 255,
+            }],
+        );
+
+        let ivrs = builder.build_ivrs().unwrap();
+
+        let ivhd_offset = 48;
+        // DeviceID
+        let dev_id = u16::from_ne_bytes(ivrs[ivhd_offset + 4..ivhd_offset + 6].try_into().unwrap());
+        assert_eq!(dev_id, 0x1234);
+
+        // Capability offset
+        let cap_offset =
+            u16::from_ne_bytes(ivrs[ivhd_offset + 6..ivhd_offset + 8].try_into().unwrap());
+        assert_eq!(cap_offset, 0x80);
+
+        // MMIO base
+        let mmio_base =
+            u64::from_ne_bytes(ivrs[ivhd_offset + 8..ivhd_offset + 16].try_into().unwrap());
+        assert_eq!(mmio_base, 0xFE00_0000);
+
+        // PCI segment at offset +16 (u16)
+        let pci_seg =
+            u16::from_ne_bytes(ivrs[ivhd_offset + 16..ivhd_offset + 18].try_into().unwrap());
+        assert_eq!(pci_seg, 1);
+    }
+
+    #[test]
+    fn test_ivrs_multiple_iommus() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_amd_iommu(
+            &mut builder,
+            vec![
+                AmdIommuAcpiConfig {
+                    device_id: 0x0000,
+                    capability_offset: 0x40,
+                    mmio_base: 0xFD00_0000,
+                    pci_segment: 0,
+                    ivhd_features: 0xC0,
+                    start_bus: 0,
+                    end_bus: 127,
+                },
+                AmdIommuAcpiConfig {
+                    device_id: 0x0000,
+                    capability_offset: 0x40,
+                    mmio_base: 0xFD00_4000,
+                    pci_segment: 1,
+                    ivhd_features: 0xC0,
+                    start_bus: 0,
+                    end_bus: 255,
+                },
+            ],
+        );
+
+        let ivrs = builder.build_ivrs().unwrap();
+
+        // Verify IVRS signature
+        assert_eq!(&ivrs[0..4], b"IVRS");
+        assert_eq!(checksum(&ivrs), 0);
+
+        // First IVHD block at offset 48 (after 36-byte ACPI header + 12-byte IVRS header)
+        let ivhd0_offset = 48;
+        assert_eq!(ivrs[ivhd0_offset], 0x40); // IVHD type 40h
+
+        // Read first IVHD length to find second IVHD
+        let ivhd0_len =
+            u16::from_ne_bytes(ivrs[ivhd0_offset + 2..ivhd0_offset + 4].try_into().unwrap());
+
+        // First IOMMU: segment 0, MMIO 0xFD00_0000
+        let mmio0 = u64::from_ne_bytes(
+            ivrs[ivhd0_offset + 8..ivhd0_offset + 16]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(mmio0, 0xFD00_0000);
+        let seg0 = u16::from_ne_bytes(
+            ivrs[ivhd0_offset + 16..ivhd0_offset + 18]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(seg0, 0);
+
+        // Second IVHD block follows the first
+        let ivhd1_offset = ivhd0_offset + ivhd0_len as usize;
+        assert_eq!(ivrs[ivhd1_offset], 0x40); // IVHD type 40h
+
+        // Second IOMMU: segment 1, MMIO 0xFD00_4000
+        let mmio1 = u64::from_ne_bytes(
+            ivrs[ivhd1_offset + 8..ivhd1_offset + 16]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(mmio1, 0xFD00_4000);
+        let seg1 = u16::from_ne_bytes(
+            ivrs[ivhd1_offset + 16..ivhd1_offset + 18]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(seg1, 1);
     }
 }

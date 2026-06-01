@@ -43,7 +43,19 @@ impl PetriVmConfigOpenVmm {
 
             ged,
             framebuffer_view,
+
+            pending_iommu,
         } = self;
+
+        // Resolve deferred IOMMU assignments.
+        for (name, iommu_config) in &pending_iommu {
+            let rc = config
+                .pcie_root_complexes
+                .iter_mut()
+                .find(|rc| rc.name == *name)
+                .with_context(|| format!("IOMMU configured for unknown root complex '{name}'"))?;
+            rc.iommu = Some(iommu_config.clone());
+        }
 
         // TODO: OpenHCL needs virt_whp support
         // TODO: PCAT needs vga device support
