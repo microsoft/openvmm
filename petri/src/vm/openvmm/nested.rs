@@ -13,15 +13,17 @@
 //!   that captures the runtime knobs needed to actually start the L2.
 //! * [`NestedL2Builder::launch`] (runtime, after L1 has booted and the L1
 //!   pipette is online) mounts the share inside L1, spawns the in-L1
-//!   `openvmm` process, bridges its hybrid-vsock listener back to the host
-//!   via [`PipetteClient::relay_unix_socket`], and brings up a second
+//!   `openvmm` process in ttrpc server mode, issues `CreateVm` and
+//!   `ResumeVm` RPCs to configure and start the L2, and brings up a second
 //!   [`PipetteClient`] connected to the L2 pipette.
 
 use crate::PetriLogSource;
 use crate::PetriVmBuilder;
 use crate::vm::openvmm::OpenVmmPetriBackend;
 use anyhow::Context as _;
+use mesh_rpc::client::ExistingConnection;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_ttrpc_vmservice as vmservice;
 use pal_async::DefaultDriver;
 use pal_async::task::Spawn as _;
 use pal_async::task::Task;
@@ -53,6 +55,12 @@ const STAGED_INITRD_NAME: &str = "initrd";
 /// `<L1_BIND_PREFIX>_PIPETTE_VSOCK_PORT` to catch the L2 pipette's outbound
 /// connection.
 const L1_BIND_PREFIX: &str = "/tmp/petri-l2-vsock";
+
+/// L1-side path for the in-L1 openvmm's ttrpc control socket.
+const L1_TTRPC_SOCKET: &str = "/tmp/petri-l2-ttrpc";
+
+/// L1-side path where openvmm connects for L2 COM1 serial output.
+const L1_SERIAL_SOCKET: &str = "/tmp/petri-l2-com1";
 
 /// Build-time configuration for an L2 nested guest.
 ///
@@ -205,8 +213,9 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
 }
 
 impl NestedL2Builder {
-    /// Mount the staging share inside L1, spawn the in-L1 openvmm, and
-    /// bring up an L2 pipette client.
+    /// Mount the staging share inside L1, spawn the in-L1 openvmm in ttrpc
+    /// server mode, issue `CreateVm`/`ResumeVm` RPCs, and bring up an L2
+    /// pipette client.
     ///
     /// `l1_agent` must be the [`PetriVmBuilder`] run's pipette client for
     /// the L1 VM.
@@ -217,10 +226,7 @@ impl NestedL2Builder {
             .await
             .context("failed to mount nested virtio-fs share inside L1")?;
 
-        // 2. Make the staged openvmm binary executable (fs::copy preserves
-        //    mode, but virtio-fs default mounts may strip the +x bit, and
-        //    we can't easily set host-side perms with fs_err::copy on all
-        //    platforms — so be explicit).
+        // 2. Make the staged openvmm binary executable.
         let staged_openvmm = format!("{L1_MOUNT_POINT}/{STAGED_OPENVMM_NAME}");
         let staged_kernel = format!("{L1_MOUNT_POINT}/{STAGED_KERNEL_NAME}");
         let staged_initrd = format!("{L1_MOUNT_POINT}/{STAGED_INITRD_NAME}");
@@ -238,57 +244,26 @@ impl NestedL2Builder {
             );
         }
 
-        // 3. Bind the L1-side hybrid-vsock listener path that the L2's
-        //    in-guest pipette will connect to. The in-L1 openvmm's
-        //    --vmbus-vsock-path argument tells it to compute outbound
-        //    paths as <prefix>_<port>, so we bind the prefix + port
-        //    string ourselves.
-        let bind_path = format!("{L1_BIND_PREFIX}_{}", PIPETTE_VSOCK_PORT);
-        let duplex = l1_agent
-            .relay_unix_socket(&bind_path)
+        // 3. Set up relays for the L2 pipette vsock and L2 serial console.
+        //    Both are bound by pipette inside L1 *before* openvmm starts,
+        //    so the paths exist when openvmm attempts to connect.
+        let vsock_bind_path = format!("{L1_BIND_PREFIX}_{}", PIPETTE_VSOCK_PORT);
+        let pipette_duplex = l1_agent
+            .relay_unix_socket(&vsock_bind_path)
             .await
-            .context("failed to start RelayUnixSocket on L1 pipette")?;
+            .context("failed to start vsock RelayUnixSocket on L1 pipette")?;
 
-        // 4. Spawn the in-L1 openvmm. Note: `--com1 console` routes the L2
-        //    serial console to the openvmm process's stdout, which we then
-        //    capture below.
-        let cmdline = {
-            let mut s = String::from("console=ttyS0");
-            for token in &self.extra_cmdline {
-                s.push(' ');
-                s.push_str(token);
-            }
-            s
-        };
+        let serial_duplex = l1_agent
+            .relay_unix_socket(L1_SERIAL_SOCKET)
+            .await
+            .context("failed to start serial RelayUnixSocket on L1 pipette")?;
 
-        let vp_count_str = self.vp_count.to_string();
-        // Use private, THP-eligible RAM rather than the default shared
-        // file-backed RAM: the shared backing creates a tmpfs file per
-        // VM and faults pages in one at a time, which is dramatically
-        // slower than anonymous-private + THP for a short-lived L2
-        // boot. Documented under `--memory` in openvmm.
-        let memory_arg = format!("size={},shared=off,thp=on", self.memory_bytes);
+        // 4. Spawn the in-L1 openvmm in ttrpc server mode. In this mode,
+        //    openvmm binds a ttrpc socket and waits for RPCs; it closes
+        //    stdout to signal readiness.
         let mut child = l1_agent
             .command(&staged_openvmm)
-            .args([
-                "--hypervisor",
-                "kvm",
-                "--hv",
-                "--processors",
-                &vp_count_str,
-                "--memory",
-                &memory_arg,
-                "--kernel",
-                &staged_kernel,
-                "--initrd",
-                &staged_initrd,
-                "--cmdline",
-                &cmdline,
-                "--vmbus-vsock-path",
-                L1_BIND_PREFIX,
-                "--com1",
-                "console",
-            ])
+            .args(["--ttrpc", L1_TTRPC_SOCKET])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -296,28 +271,11 @@ impl NestedL2Builder {
             .await
             .context("failed to spawn in-L1 openvmm")?;
 
-        // 5. Mirror the L2 serial console (the in-L1 openvmm's stdout,
-        //    which is routed to com1 by `--com1 console`) and the in-L1
-        //    openvmm's diagnostic output (its stderr) into petri log
-        //    files so that failures - especially early L2 launch
-        //    failures, where the L2 pipette never comes up - leave a
-        //    diagnosable trace.
-        let stdout = child
-            .stdout
-            .take()
-            .context("in-L1 openvmm child had no stdout pipe")?;
+        // 5. Capture stderr for diagnostics.
         let stderr = child
             .stderr
             .take()
             .context("in-L1 openvmm child had no stderr pipe")?;
-        let serial_task = self.driver.spawn(
-            "nested-l2-serial",
-            crate::log_task(
-                self.log_source.log_file("nested-l2-console")?,
-                stdout,
-                "nested-l2-console",
-            ),
-        );
         let stderr_task = self.driver.spawn(
             "nested-l2-openvmm-stderr",
             crate::log_task(
@@ -327,16 +285,133 @@ impl NestedL2Builder {
             ),
         );
 
-        // 6. Bring up the L2 pipette client over the relayed unix socket.
-        //    Race the pipette handshake against the in-L1 openvmm exiting
-        //    so that if the L2 fails to launch (or crashes early before
-        //    its pipette can connect) we fail fast with the child's exit
-        //    status instead of hanging.
+        // 6. Wait for openvmm to signal readiness by closing stdout.
+        //    Race against the child exiting so we fail fast on startup
+        //    errors.
+        {
+            let mut stdout = child
+                .stdout
+                .take()
+                .context("in-L1 openvmm child had no stdout pipe")?;
+            let read_fut = async {
+                use futures::AsyncReadExt;
+                let mut buf = [0u8; 1];
+                stdout
+                    .read(&mut buf)
+                    .await
+                    .context("reading from in-L1 openvmm stdout")
+            };
+            let wait_fut = child.wait();
+            let read_fut = std::pin::pin!(read_fut);
+            let wait_fut = std::pin::pin!(wait_fut);
+            match futures::future::select(read_fut, wait_fut).await {
+                futures::future::Either::Left((Ok(0), _)) => {
+                    // stdout closed — openvmm is ready.
+                }
+                futures::future::Either::Left((Ok(_), _)) => {
+                    anyhow::bail!(
+                        "in-L1 openvmm wrote unexpected data to stdout \
+                         (expected stdout close as readiness signal)"
+                    );
+                }
+                futures::future::Either::Left((Err(e), _)) => {
+                    return Err(e);
+                }
+                futures::future::Either::Right((status, _)) => {
+                    let status =
+                        status.context("waiting for in-L1 openvmm to report exit status")?;
+                    anyhow::bail!(
+                        "in-L1 openvmm exited before becoming ready: {status:?} \
+                         (see nested-l2-openvmm.log)"
+                    );
+                }
+            }
+        }
+
+        // 7. Relay the ttrpc socket from L1 to the host, then issue RPCs.
+        let ttrpc_duplex = l1_agent
+            .relay_connect_unix_socket(L1_TTRPC_SOCKET)
+            .await
+            .context("failed to relay ttrpc socket from L1")?;
+
+        let client = mesh_rpc::Client::new(&self.driver, ExistingConnection::new(ttrpc_duplex));
+
+        // 8. Build and send CreateVm request.
+        let cmdline = {
+            let mut s = String::from("console=ttyS0");
+            for token in &self.extra_cmdline {
+                s.push(' ');
+                s.push_str(token);
+            }
+            s
+        };
+
+        client
+            .call()
+            .start(
+                vmservice::Vm::CreateVm,
+                vmservice::CreateVmRequest {
+                    config: Some(vmservice::VmConfig {
+                        memory_config: Some(vmservice::MemoryConfig {
+                            memory_mb: self.memory_bytes / (1024 * 1024),
+                            ..Default::default()
+                        }),
+                        processor_config: Some(vmservice::ProcessorConfig {
+                            processor_count: self.vp_count,
+                            ..Default::default()
+                        }),
+                        boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
+                            vmservice::DirectBoot {
+                                kernel_path: staged_kernel,
+                                initrd_path: staged_initrd,
+                                kernel_cmdline: cmdline,
+                            },
+                        )),
+                        serial_config: Some(vmservice::SerialConfig {
+                            ports: vec![vmservice::serial_config::Config {
+                                port: 0,
+                                socket_path: L1_SERIAL_SOCKET.to_string(),
+                                connect: true,
+                            }],
+                        }),
+                        hvsocket_config: Some(vmservice::HvSocketConfig {
+                            path: L1_BIND_PREFIX.to_string(),
+                        }),
+                        ..Default::default()
+                    }),
+                    log_id: "nested-l2".to_string(),
+                },
+            )
+            .await
+            .map_err(|s| anyhow::anyhow!("CreateVm RPC failed: {} (code {})", s.message, s.code))?;
+
+        // 9. Log the L2 serial console output (relayed from the L1 serial
+        //    socket).
+        let serial_task = self.driver.spawn(
+            "nested-l2-serial",
+            crate::log_task(
+                self.log_source.log_file("nested-l2-console")?,
+                serial_duplex,
+                "nested-l2-console",
+            ),
+        );
+
+        // 10. Resume the VM (ttrpc creates VMs in paused state).
+        client
+            .call()
+            .start(vmservice::Vm::ResumeVm, ())
+            .await
+            .map_err(|s| anyhow::anyhow!("ResumeVm RPC failed: {} (code {})", s.message, s.code))?;
+
+        // 11. Bring up the L2 pipette client over the relayed vsock.
+        //     Race the pipette handshake against the in-L1 openvmm exiting
+        //     so that if the L2 fails to launch we fail fast.
         let l2_agent = {
             let pipette_fut =
-                PipetteClient::new(&self.driver, duplex, self.log_source.output_dir());
+                PipetteClient::new(&self.driver, pipette_duplex, self.log_source.output_dir());
             let wait_fut = child.wait();
-            futures::pin_mut!(pipette_fut, wait_fut);
+            let pipette_fut = std::pin::pin!(pipette_fut);
+            let wait_fut = std::pin::pin!(wait_fut);
             match futures::future::select(pipette_fut, wait_fut).await {
                 futures::future::Either::Left((res, _)) => {
                     res.context("failed to set up L2 PipetteClient")?
@@ -352,7 +427,7 @@ impl NestedL2Builder {
             }
         };
 
-        // 7. Confirm the L2 pipette is responsive.
+        // 12. Confirm the L2 pipette is responsive.
         l2_agent.ping().await.context("L2 pipette ping failed")?;
 
         Ok(NestedL2 {

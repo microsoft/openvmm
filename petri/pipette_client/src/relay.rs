@@ -22,6 +22,7 @@ use futures::AsyncWrite;
 use mesh::pipe::ReadPipe;
 use mesh::pipe::WritePipe;
 use pipette_protocol::PipetteRequest;
+use pipette_protocol::RelayConnectUnixSocketRequest;
 use pipette_protocol::RelayUnixSocketRequest;
 use std::pin::Pin;
 use std::task::Context as TaskContext;
@@ -94,6 +95,39 @@ impl PipetteClient {
             )
             .await
             .context("failed to start relay-unix-socket")?;
+
+        Ok(PipeDuplex {
+            read: host_read,
+            write: host_write,
+        })
+    }
+
+    /// Asks the agent to connect to an existing UNIX-domain socket at
+    /// `connect_path` and pump bytes between that connection and the
+    /// returned duplex stream.
+    ///
+    /// This is the complement of [`relay_unix_socket`](Self::relay_unix_socket):
+    /// instead of binding a new listener, pipette connects to a socket
+    /// that some other guest process has already created (e.g. an in-L1
+    /// openvmm's ttrpc control socket).
+    pub async fn relay_connect_unix_socket(
+        &self,
+        connect_path: &str,
+    ) -> anyhow::Result<PipeDuplex> {
+        let (peer_read, host_write) = mesh::pipe::pipe();
+        let (host_read, peer_write) = mesh::pipe::pipe();
+
+        self.send
+            .call_failable(
+                PipetteRequest::RelayConnectUnixSocket,
+                RelayConnectUnixSocketRequest {
+                    connect_path: connect_path.to_owned(),
+                    to_socket: peer_read,
+                    from_socket: peer_write,
+                },
+            )
+            .await
+            .context("failed to start relay-connect-unix-socket")?;
 
         Ok(PipeDuplex {
             read: host_read,

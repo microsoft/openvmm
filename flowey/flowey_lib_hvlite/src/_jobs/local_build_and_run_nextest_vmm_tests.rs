@@ -171,7 +171,6 @@ impl SimpleFlowNode for Node {
             needs_release_igvm,
         } = selections;
 
-<<<<<<< HEAD
         let build_openhcl = build.openhcl_standard
             || build.openhcl_standard_dev
             || build.openhcl_cvm
@@ -346,6 +345,7 @@ impl SimpleFlowNode for Node {
                     // VMM use case; nothing extra is wired up here.
                     features: BTreeSet::new(),
                 },
+                version: None,
                 openvmm: v,
             });
             if copy_extras {

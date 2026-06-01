@@ -63,6 +63,14 @@ pub enum PipetteRequest {
     /// listener, and pipette pumps the resulting byte stream back to the
     /// host over the existing mesh transport.
     RelayUnixSocket(FailableRpc<RelayUnixSocketRequest, ()>),
+    /// Connects to an existing UNIX-domain socket inside the guest and
+    /// relays bytes over a pair of mesh pipes (Linux only).
+    ///
+    /// This is the complement of `RelayUnixSocket`: instead of binding a
+    /// new listener, pipette connects to a socket that some other process
+    /// in the guest has already created. Used by nested-virt tests to
+    /// reach an in-L1 openvmm's ttrpc control socket.
+    RelayConnectUnixSocket(FailableRpc<RelayConnectUnixSocketRequest, ()>),
 }
 
 /// A request to execute a command inside the guest.
@@ -214,6 +222,23 @@ pub struct RelayUnixSocketRequest {
     /// Bytes the host wants written to the accepted connection.
     pub to_socket: ReadPipe,
     /// Bytes read from the accepted connection, sent back to the host.
+    pub from_socket: WritePipe,
+}
+
+/// A request to connect to an existing UNIX-domain socket inside the guest
+/// and relay the connection over a pair of mesh pipes.
+///
+/// Unlike [`RelayUnixSocketRequest`], the handler connects to an existing
+/// socket rather than binding a new listener. The handler will retry the
+/// connect with a short backoff until it succeeds or the retry limit is
+/// reached.
+#[derive(MeshPayload)]
+pub struct RelayConnectUnixSocketRequest {
+    /// Path of the UNIX socket to connect to inside the guest.
+    pub connect_path: String,
+    /// Bytes the host wants written to the connection.
+    pub to_socket: ReadPipe,
+    /// Bytes read from the connection, sent back to the host.
     pub from_socket: WritePipe,
 }
 
