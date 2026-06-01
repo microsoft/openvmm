@@ -514,13 +514,13 @@ jobs:
       $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 2
       $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env ado floweyvar3
       $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'unit-tests crypto (none)' nextest tests
+    displayName: run 'unit-tests crypto (native)' nextest tests
   - task: PublishTestResults@2
     inputs:
       testResultsFormat: JUnit
       testResultsFiles: $(floweyvar3)
-      testRunTitle: x64-linux-musl-unit-tests-unit-tests crypto (none)
-    displayName: 'publish test results: x64-linux-musl-unit-tests-unit-tests crypto (none) (JUnit XML)'
+      testRunTitle: x64-linux-musl-unit-tests-unit-tests crypto (native)
+    displayName: 'publish test results: x64-linux-musl-unit-tests-unit-tests crypto (native) (JUnit XML)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
@@ -796,13 +796,13 @@ jobs:
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 2
       $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env ado floweyvar3
       $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'unit-tests crypto (none)' nextest tests
+    displayName: run 'unit-tests crypto (native)' nextest tests
   - task: PublishTestResults@2
     inputs:
       testResultsFormat: JUnit
       testResultsFiles: $(floweyvar3)
-      testRunTitle: x64-linux-unit-tests-unit-tests crypto (none)
-    displayName: 'publish test results: x64-linux-unit-tests-unit-tests crypto (none) (JUnit XML)'
+      testRunTitle: x64-linux-unit-tests-unit-tests crypto (native)
+    displayName: 'publish test results: x64-linux-unit-tests-unit-tests crypto (native) (JUnit XML)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
@@ -1052,13 +1052,13 @@ jobs:
       $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 0
       $FLOWEY_BIN v 13 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs:57:45' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env ado floweyvar2
       $FLOWEY_BIN v 13 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'unit-tests crypto (none)' nextest tests
+    displayName: run 'unit-tests crypto (native)' nextest tests
   - task: PublishTestResults@2
     inputs:
       testResultsFormat: JUnit
       testResultsFiles: $(floweyvar2)
-      testRunTitle: x64-windows-unit-tests-unit-tests crypto (none)
-    displayName: 'publish test results: x64-windows-unit-tests-unit-tests crypto (none) (JUnit XML)'
+      testRunTitle: x64-windows-unit-tests-unit-tests crypto (native)
+    displayName: 'publish test results: x64-windows-unit-tests-unit-tests crypto (native) (JUnit XML)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::gen_cargo_nextest_run_cmd 1
     displayName: generate nextest command

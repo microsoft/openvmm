@@ -13,6 +13,23 @@
 // UNSAFETY: calling BCrypt APIs on Windows, Security.framework APIs on macOS.
 #![allow(unsafe_code)]
 
+// When multiple crypto backends are enabled at once (typically via Cargo
+// feature unification across the workspace), `cargo check` is allowed to
+// succeed so that workspace-wide checks aren't blocked, but linking must
+// fail with a clear message. We achieve this by referencing an undefined
+// extern symbol from a `#[used]` static, which `cargo check` ignores
+// (it doesn't link) but `cargo build` resolves and fails on with an
+// unresolved-symbol error naming the symbol below.
+#[cfg(multi_backend)]
+const _: () = {
+    unsafe extern "C" {
+        fn __openvmm_crypto_multiple_backends_enabled__enable_exactly_one__see_support_crypto();
+    }
+    #[used]
+    static _FORCE_LINK_ERROR: unsafe extern "C" fn() =
+        __openvmm_crypto_multiple_backends_enabled__enable_exactly_one__see_support_crypto;
+};
+
 pub mod aes_256_cbc;
 pub mod aes_256_gcm;
 pub mod aes_kwp;

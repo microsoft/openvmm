@@ -15,12 +15,17 @@ test_helpers = ["x509-cert?/builder"]
 # If the chosen backend is not natively available and can't be vendored, this will trigger a compile error.
 vendored = ["openssl?/vendored"]
 
-# Use OpenSSL instead of any native backend.
+# Use the native crypto backend (OpenSSL on Linux).
+# TODO: It'd be nice if the dependencies needed for the native backends didn't get built unconditionally,
+# but Cargo doesn't provide a way to conditionally include dependencies for specific targets based on features.
+native = []
+
+# Use OpenSSL.
 openssl = ["dep:openssl", "dep:openssl_kdf"]
 
-# Use Symcrypt instead of any native backend.
+# Use Symcrypt.
 # Note that the symcrypt backend does not support vendoring, enabling both
-# `symcrypt` and `vendored` will trigger a compile error
+# `symcrypt` and `vendored` will trigger a compile error.
 symcrypt = [
     "dep:symcrypt",
     "symcrypt/sha1",
@@ -33,7 +38,7 @@ symcrypt = [
     "dep:x509-cert",
 ]
 
-# Use RustCrypto crates instead of any native backend.
+# Use RustCrypto crates.
 # Note that some of these crates have known security issues.
 # This backend should not be used in production scenarios.
 rust = [
