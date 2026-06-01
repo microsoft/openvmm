@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! AES-256-GCM implementation using Windows Bcrypt APIs.
+
 use super::*;
 use crate::win::*;
 use std::sync::LazyLock;
@@ -89,7 +91,7 @@ impl Aes256GcmInner {
 impl Aes256GcmEncCtxInner<'_> {
     pub fn cipher(
         &mut self,
-        iv: &[u8],
+        iv: &[u8; IV_LEN],
         data: &[u8],
         tag: &mut [u8],
     ) -> Result<Vec<u8>, Aes256GcmError> {
@@ -130,7 +132,7 @@ impl Aes256GcmEncCtxInner<'_> {
 impl Aes256GcmDecCtxInner<'_> {
     pub fn cipher(
         &mut self,
-        iv: &[u8],
+        iv: &[u8; IV_LEN],
         data: &[u8],
         tag: &[u8],
     ) -> Result<Vec<u8>, Aes256GcmError> {

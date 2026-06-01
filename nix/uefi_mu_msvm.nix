@@ -8,17 +8,17 @@ let
          else if system == "aarch64-linux" then "AARCH64-CLANGPDB"
          else "X64-VS2022";
   hash = {
-    "AARCH64-CLANGPDB" = "sha256-ujHL96/irxRaITtIAxhocbrX+iBQuqNNWDDx8MYQ8i8=";
-    "X64-VS2022" = "sha256-3NJ4wNA7HXLiMIAVbQXS0cralheCok4rJ8CaedduN9I=";
+    "AARCH64-CLANGPDB" = "sha256-9LkUNHeK3KLoxKIe5kl3uX2BwNlmvM0qJF2aIgwef08=";
+    "X64-VS2022" = "sha256-51f/LWRfx5pg0ZjwI1FUxvqaXPO0F1A9dalFvtWDIv4=";
   }.${archToolchain};
 
 in stdenv.mkDerivation {
   pname = "uefi-mu-msvm-${archToolchain}";
-  version = "26.0.0";
+  version = "26.0.6";
 
   src = fetchzip {
     url =
-      "https://github.com/microsoft/mu_msvm/releases/download/v26.0.0/RELEASE-${archToolchain}-artifacts.tar.gz";
+      "https://github.com/microsoft/mu_msvm/releases/download/v26.0.6/RELEASE-${archToolchain}-artifacts.tar.gz";
     stripRoot = false;
     inherit hash;
   };

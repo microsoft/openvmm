@@ -7,7 +7,8 @@ cfg_if::cfg_if! {
     if #[cfg(guest_arch = "x86_64")] {
         pub use hvdef::HvX64RegisterName as HvArchRegisterName;
         use chipset_device_resources::BSP_LINT_LINE_SET;
-        use virt::irqcon::MsiRequest;
+        use chipset_resources::pm::DEFAULT_ACPI_IRQ;
+        use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
         use vmm_core::acpi_builder::AcpiTablesBuilder;
     } else if #[cfg(guest_arch = "aarch64")] {
         pub use hvdef::HvArm64RegisterName as HvArchRegisterName;
@@ -22,8 +23,7 @@ use crate::dispatch::vtl2_settings_worker::InitialControllers;
 use crate::dispatch::vtl2_settings_worker::disk_from_disk_type;
 use crate::dispatch::vtl2_settings_worker::wait_for_mana;
 use crate::emuplat::EmuplatServicing;
-use crate::emuplat::firmware::UnderhillLogger;
-use crate::emuplat::firmware::UnderhillVsmConfig;
+use crate::emuplat::cmos_rtc_time_source::UnderhillCmosRtcTimeSourceResolver;
 use crate::emuplat::framebuffer::FramebufferRemoteControl;
 use crate::emuplat::i440bx_host_pci_bridge::ArcMutexGetBackedAdjustGpaRange;
 use crate::emuplat::i440bx_host_pci_bridge::GetBackedAdjustGpaRange;
@@ -46,6 +46,7 @@ use crate::nvme_manager::device::VfioNvmeDriverSpawner;
 use crate::nvme_manager::manager::NvmeDiskConfig;
 use crate::nvme_manager::manager::NvmeDiskResolver;
 use crate::nvme_manager::manager::NvmeManager;
+use crate::options::EfiDiagnosticsLogLevelCli;
 use crate::options::GuestStateEncryptionPolicyCli;
 use crate::options::GuestStateLifetimeCli;
 use crate::options::KeepAliveConfig;
@@ -68,8 +69,9 @@ use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend_resources::BlockDeviceDiskHandle;
 use disk_blockdevice::resolver::BlockDeviceResolver;
-use firmware_uefi::LogLevel;
-use firmware_uefi::UefiCommandSet;
+use firmware_uefi_resources::HclCompatNvramQuirks;
+use firmware_uefi_resources::LogLevel;
+use firmware_uefi_resources::UefiCommandSet;
 use futures::executor::block_on;
 use futures::future::join_all;
 use futures_concurrency::future::Race;
@@ -83,7 +85,6 @@ use guest_emulation_transport::api::platform_settings::DevicePlatformSettings;
 use guest_emulation_transport::api::platform_settings::General;
 use guestmem::GuestMemory;
 use guid::Guid;
-use hcl_compat_uefi_nvram_storage::HclCompatNvramQuirks;
 use hvdef::HvRegisterValue;
 use hvdef::Vtl;
 use hvdef::hypercall::HvGuestOsId;
@@ -141,6 +142,7 @@ use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::vfio::VfioDmaClients;
 use virt::Partition;
 use virt::VpIndex;
+#[cfg(guest_arch = "x86_64")]
 use virt::X86Partition;
 use virt::state::HvRegisterState;
 use virt_mshv_vtl::UhPartition;
@@ -148,6 +150,7 @@ use virt_mshv_vtl::UhPartitionNewParams;
 use virt_mshv_vtl::UhProtoPartition;
 use vm_loader::initial_regs::initial_regs;
 use vm_resource::IntoResource;
+use vm_resource::PlatformResource;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
@@ -188,11 +191,8 @@ use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
+use watchdog_core::resources::StaticWatchdogPlatformResolver;
 use zerocopy::FromZeros;
-
-pub(crate) const PM_BASE: u16 = 0x400;
-pub(crate) const SYSTEM_IRQ_ACPI: u32 = 9;
-pub(crate) const WDAT_PORT: u16 = 0x30;
 
 pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new("UnderhillWorker");
 
@@ -308,6 +308,8 @@ pub struct UnderhillEnvCfg {
     pub guest_state_lifetime: Option<GuestStateLifetimeCli>,
     /// Guest state encryption policy
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+    /// EFI diagnostics log level filter (overrides DPS value when set)
+    pub efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
     /// Strict guest state encryption policy
     pub strict_encryption_policy: Option<bool>,
     /// Attempt to renew the AK cert
@@ -1153,13 +1155,28 @@ struct BuiltVtl0MemoryLayout {
     complete_memory_layout: MemoryLayout,
 }
 
+/// Chipset MMIO ranges.
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct ChipsetMmioRanges {
+    /// Chipset low MMIO range (below 4 GB) for VMOD/PCI0 _CRS. Always at
+    /// least the architectural reserved zone (LAPIC, IOAPIC, TPM, ...).
+    pub low: MemoryRange,
+    /// Chipset high MMIO range (above RAM) for VMOD/PCI0 _CRS. `EMPTY` when
+    /// no chipset high MMIO is configured.
+    pub high: MemoryRange,
+}
+
 /// Build the VTL0 memory map after carving out any memory requested for shared
 /// visibility memory to be used by VTL2.
 fn build_vtl0_memory_layout(
     vtl0_memory_map: Vec<(MemoryRangeWithNode, MemoryMapEntryType)>,
-    mmio: &[MemoryRange],
+    chipset_mmio: &ChipsetMmioRanges,
     mut shared_pool_size: u64,
 ) -> anyhow::Result<BuiltVtl0MemoryLayout> {
+    let mmio: Vec<MemoryRange> = [chipset_mmio.low, chipset_mmio.high]
+        .into_iter()
+        .filter(|r| !r.is_empty())
+        .collect();
     // Allocate shared_pool memory starting from the last (top of memory)
     // continuing downward until the size is covered.
     //
@@ -1215,13 +1232,13 @@ fn build_vtl0_memory_layout(
         .collect::<Vec<_>>();
 
     let vtl0_memory_layout =
-        MemoryLayout::new_from_ranges(&memory, mmio).context("invalid memory layout")?;
+        MemoryLayout::new_from_ranges(&memory, &mmio).context("invalid memory layout")?;
 
     let complete_memory = vtl0_memory_map
         .iter()
         .map(|(entry, _typ)| entry.clone())
         .collect::<Vec<_>>();
-    let complete_memory_layout = MemoryLayout::new_from_ranges(&complete_memory, mmio)
+    let complete_memory_layout = MemoryLayout::new_from_ranges(&complete_memory, &mmio)
         .context("invalid complete memory layout")?;
 
     tracing::info!(
@@ -1548,6 +1565,16 @@ async fn new_underhill_vm(
             };
         }
 
+        if let Some(level) = env_cfg.efi_diagnostics_log_level {
+            tracing::info!("using HCL_EFI_DIAGNOSTICS_LOG_LEVEL={level:?} from cmdline");
+            use get_protocol::dps_json::EfiDiagnosticsLogLevelType;
+            dps.general.efi_diagnostics_log_level = match level {
+                EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::DEFAULT,
+                EfiDiagnosticsLogLevelCli::Info => EfiDiagnosticsLogLevelType::INFO,
+                EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::FULL,
+            };
+        }
+
         if let Some(value) = env_cfg.strict_encryption_policy {
             tracing::info!("using HCL_STRICT_ENCRYPTION_POLICY={value} from cmdline");
             dps.general
@@ -1679,20 +1706,34 @@ async fn new_underhill_vm(
         anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
     }
 
-    let mut vtl0_mmio;
-    let (vtl0_mmio, vpci_relay_mmio) = if enable_vpci_relay {
-        // Carve out enough VTL0 MMIO space for 64 devices.
+    // Construct chipset MMIO ranges from the positional convention in the
+    // device tree: [0] = low (below 4 GiB), [1] = high (above RAM).
+    let mut chipset_mmio = ChipsetMmioRanges {
+        low: boot_info
+            .vtl0_mmio
+            .first()
+            .copied()
+            .unwrap_or(MemoryRange::EMPTY),
+        high: boot_info
+            .vtl0_mmio
+            .get(1)
+            .copied()
+            .unwrap_or(MemoryRange::EMPTY),
+    };
+
+    let vpci_relay_mmio = if enable_vpci_relay {
+        // Carve out enough VTL0 MMIO space from the high range for 64 devices.
         let required_len = 64 * vpci_relay::VPCI_RELAY_MMIO_PER_DEVICE;
-        vtl0_mmio = boot_info.vtl0_mmio.clone();
-        if vtl0_mmio.last().is_none_or(|r| r.len() < required_len) {
+        if chipset_mmio.high.is_empty() || chipset_mmio.high.len() < required_len {
             anyhow::bail!("too little VTL0 MMIO space to take for the VPCI relay");
         }
-        let r = vtl0_mmio.last().unwrap();
-        let (rest, vpci) = r.split_at_offset(r.len() - required_len);
-        *vtl0_mmio.last_mut().unwrap() = rest;
-        (&vtl0_mmio, vpci)
+        let (rest, vpci) = chipset_mmio
+            .high
+            .split_at_offset(chipset_mmio.high.len() - required_len);
+        chipset_mmio.high = rest;
+        vpci
     } else {
-        (&boot_info.vtl0_mmio, MemoryRange::EMPTY)
+        MemoryRange::EMPTY
     };
 
     let BuiltVtl0MemoryLayout {
@@ -1700,7 +1741,7 @@ async fn new_underhill_vm(
         vtl0_memory_layout: mem_layout,
         shared_pool,
         complete_memory_layout,
-    } = build_vtl0_memory_layout(vtl0_memory_map, vtl0_mmio, shared_pool_size)?;
+    } = build_vtl0_memory_layout(vtl0_memory_map, &chipset_mmio, shared_pool_size)?;
 
     // Determine if x2apic is supported so that the topology matches
     // reality.
@@ -1873,7 +1914,7 @@ async fn new_underhill_vm(
         disable_lower_vtl_timer_virt: env_cfg.disable_lower_vtl_timer_virt,
     };
 
-    let proto_partition = UhProtoPartition::new(params, |cpu| tp.driver(cpu).clone())
+    let proto_partition = UhProtoPartition::new(&params, |cpu| tp.driver(cpu).clone())
         .context("failed to create prototype partition")?;
 
     let gm = underhill_mem::init(&underhill_mem::Init {
@@ -2001,6 +2042,10 @@ async fn new_underhill_vm(
         virt::IsolationType::Snp => Some(Box::new(tee_call::SnpCall)),
         virt::IsolationType::Tdx => Some(Box::new(tee_call::TdxCall)),
         virt::IsolationType::Vbs => Some(Box::new(tee_call::VbsCall)),
+        virt::IsolationType::Cca => {
+            tracing::warn!("CCA: new_underhill_vm: tee_call is not implemented yet");
+            None
+        }
         virt::IsolationType::None => None,
     };
 
@@ -2066,7 +2111,7 @@ async fn new_underhill_vm(
         let (vmgs_client, vmgs_handle) = spawn_vmgs_broker(get_spawner, vmgs);
         resolver.add_resolver(vmgs_client.clone());
         (
-            Some(Box::new(vmgs_client.clone()) as Box<dyn VmgsBrokerNonVolatileStore>),
+            Some(vmgs_client.clone()),
             Some((vmgs_client, meta, vmgs_handle)),
         )
     } else {
@@ -2078,7 +2123,7 @@ async fn new_underhill_vm(
         chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
             OpenHclRemoteDynamicResolvers {
                 get: get_client.clone(),
-                vmgs: vmgs.as_ref().map(|(client, _, _)| client.clone()),
+                vmgs: vmgs_client.clone(),
             },
         ),
     );
@@ -2207,6 +2252,15 @@ async fn new_underhill_vm(
     let halt_vps = Arc::new(halt_vps);
 
     resolver.add_resolver(vmm_core::platform_resolvers::HaltResolver(halt_vps.clone()));
+    #[cfg(guest_arch = "x86_64")]
+    resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
+        partition.ioapic_routing(),
+    ));
+    resolver.add_resolver(
+        crate::emuplat::pm_timer_assist::UnderhillPmTimerAssistResolver {
+            partition: Arc::downgrade(&partition),
+        },
+    );
 
     let bounce_buffer_tracker = {
         let size = {
@@ -2286,7 +2340,6 @@ async fn new_underhill_vm(
         Some(n) => n.to_ne_bytes(),
     };
 
-    // TODO: move to instantiate via a resource.
     let rtc_time_source = ArcMutexUnderhillLocalClock(Arc::new(Mutex::new(
         UnderhillLocalClock::new(
             get_client.clone(),
@@ -2302,6 +2355,10 @@ async fn new_underhill_vm(
         .await
         .context("failed to initialize UnderhillLocalClock emuplat")?,
     )));
+
+    resolver.add_resolver(UnderhillCmosRtcTimeSourceResolver {
+        time_source: rtc_time_source.new_linked_clock(),
+    });
 
     let mut serial_inputs = [None, None, None, None];
 
@@ -2340,7 +2397,8 @@ async fn new_underhill_vm(
         } else {
             anyhow::bail!("unsupported guest architecture")
         },
-    );
+    )
+    .with_platform_pm_timer_assist();
 
     if with_serial {
         chipset = chipset.with_serial(serial_inputs);
@@ -2374,6 +2432,125 @@ async fn new_underhill_vm(
         );
     }
 
+    if matches!(firmware_type, FirmwareType::Uefi) {
+        use crate::emuplat::uefi::*;
+        use firmware_uefi_custom_vars::CustomVars;
+        use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
+
+        // map the GET's template enum onto the hardcoded secureboot template type
+        let base_vars = match dps.general.secure_boot_template {
+            SecureBootTemplateType::None => CustomVars::default(),
+            SecureBootTemplateType::MicrosoftWindows => {
+                if cfg!(guest_arch = "x86_64") {
+                    hyperv_secure_boot_templates::x64::microsoft_windows()
+                } else if cfg!(guest_arch = "aarch64") {
+                    hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                } else {
+                    anyhow::bail!("no secure boot template for current guest_arch")
+                }
+            }
+            SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
+                if cfg!(guest_arch = "x86_64") {
+                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
+                } else if cfg!(guest_arch = "aarch64") {
+                    hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
+                } else {
+                    anyhow::bail!("no secure boot template for current guest_arch")
+                }
+            }
+        };
+
+        // check if vmgs includes custom UEFI JSON
+        let custom_uefi_json_data = if let Some(vmgs_client) = vmgs_client.as_ref() {
+            vmgs_client
+                .as_non_volatile_store(vmgs::FileId::CUSTOM_UEFI, false)
+                .context("failed to instantiate custom UEFI JSON store")?
+                .restore()
+                .await
+                .context("failed to get custom UEFI JSON data")?
+        } else {
+            None
+        };
+
+        // obtain the final custom uefi vars by applying the delta onto
+        // the base vars
+        let custom_uefi_vars = match custom_uefi_json_data {
+            Some(data) => {
+                let res = (|| -> Result<CustomVars, anyhow::Error> {
+                    let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
+                    Ok(base_vars.apply_delta(delta)?)
+                })();
+
+                match res {
+                    Ok(vars) => vars,
+                    Err(e) => {
+                        tracing::error!(CVM_ALLOWED, "Failed to load custom UEFI vars");
+                        get_client
+                            .event_log_fatal(EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED)
+                            .await;
+                        return Err(e).context("failed to load custom UEFI variables");
+                    }
+                }
+            }
+            None => base_vars,
+        };
+
+        let config = firmware_uefi_resources::UefiConfig {
+            custom_uefi_vars,
+            secure_boot: dps.general.secure_boot_enabled,
+            initial_generation_id,
+            use_mmio: cfg!(not(guest_arch = "x86_64")),
+            command_set: if cfg!(guest_arch = "x86_64") {
+                UefiCommandSet::X64
+            } else {
+                UefiCommandSet::Aarch64
+            },
+            diagnostics_log_level: {
+                use get_protocol::dps_json::EfiDiagnosticsLogLevelType as LogLevelType;
+                let level = dps.general.efi_diagnostics_log_level.0;
+                match level {
+                    x if x == LogLevelType::DEFAULT.0 => LogLevel::make_default(),
+                    x if x == LogLevelType::INFO.0 => LogLevel::make_info(),
+                    x if x == LogLevelType::FULL.0 => LogLevel::make_full(),
+                    _ => LogLevel::make_default(),
+                }
+            },
+        };
+
+        // Register the platform resolvers used by the resource-model UEFI
+        // device.
+        resolver.add_resolver(UnderhillUefiLoggerResolver::new(get_client.clone()));
+        let nvram_storage = if vmgs_client.is_some() {
+            VmgsFileHandle::new(vmgs::FileId::BIOS_NVRAM, true).into_resource()
+        } else {
+            EphemeralNonVolatileStoreHandle.into_resource()
+        };
+        resolver.add_async_resolver(UnderhillUefiWatchdogPlatformResolver::new(
+            get_client.clone(),
+            partition.clone(),
+            halt_vps.clone(),
+        ));
+        resolver.add_resolver(UnderhillUefiVsmConfigResolver::new(Arc::downgrade(
+            &partition,
+        )));
+
+        let generation_id_recv = get_client
+            .take_generation_id_recv()
+            .await
+            .expect("first time taking chan");
+
+        chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest {
+            config,
+            storage_quirks: Some(HclCompatNvramQuirks {
+                skip_corrupt_vars_with_missing_null_term: true,
+            }),
+            generation_id_recv,
+            nvram_storage,
+            vsm_config: true,
+            time_source: PlatformResource.into_resource(),
+        });
+    }
+
     let vm_manifest_builder::VmChipsetResult {
         chipset,
         mut chipset_devices,
@@ -2388,7 +2565,6 @@ async fn new_underhill_vm(
     #[cfg(not(guest_arch = "x86_64"))]
     let deps_hyperv_firmware_pcat = None;
 
-    let mut deps_hyperv_firmware_uefi = None;
     match firmware_type {
         #[cfg(not(guest_arch = "x86_64"))]
         FirmwareType::Pcat => {
@@ -2402,18 +2578,20 @@ async fn new_underhill_vm(
                 cache_topology: None,
                 pcie_host_bridges: &vec![],
                 arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
-                    with_ioapic: true, // openhcl always runs with ioapic
+                    with_ioapic: capabilities.with_ioapic,
                     with_pic: capabilities.with_pic,
                     with_pit: capabilities.with_pit,
                     with_psp: dps.general.psp_enabled,
-                    pm_base: PM_BASE,
-                    acpi_irq: SYSTEM_IRQ_ACPI,
+                    pm_base: DEFAULT_PM_PIO_BASE,
+                    acpi_irq: DEFAULT_ACPI_IRQ,
                 },
             };
 
             let config = firmware_pcat::config::PcatBiosConfig {
                 processor_topology: processor_topology.clone(),
                 mem_layout: mem_layout.clone(),
+                chipset_low_mmio: chipset_mmio.low,
+                chipset_high_mmio: chipset_mmio.high,
                 srat: acpi_builder.build_srat(),
                 hibernation_enabled: dps.general.hibernation_enabled,
                 initial_generation_id,
@@ -2459,7 +2637,7 @@ async fn new_underhill_vm(
 
             deps_hyperv_firmware_pcat = Some(dev::HyperVFirmwarePcat {
                 config,
-                logger: Box::new(UnderhillLogger {
+                logger: Box::new(crate::emuplat::firmware::UnderhillLogger {
                     get: get_client.clone(),
                 }),
                 generation_id_recv: get_client
@@ -2470,151 +2648,9 @@ async fn new_underhill_vm(
                 replay_mtrrs: Box::new(move || halt_vps.replay_mtrrs()),
             })
         }
-        FirmwareType::Uefi => {
-            use firmware_uefi_custom_vars::CustomVars;
-            use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
-            use hcl_compat_uefi_nvram_storage::HclCompatNvram;
-            use vmm_core::emuplat::hcl_compat_uefi_nvram_storage::VmgsStorageBackendAdapter;
-
-            // map the GET's template enum onto the hardcoded secureboot template type
-            let base_vars = match dps.general.secure_boot_template {
-                SecureBootTemplateType::None => CustomVars::default(),
-                SecureBootTemplateType::MicrosoftWindows => {
-                    if cfg!(guest_arch = "x86_64") {
-                        hyperv_secure_boot_templates::x64::microsoft_windows()
-                    } else if cfg!(guest_arch = "aarch64") {
-                        hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                    } else {
-                        anyhow::bail!("no secure boot template for current guest_arch")
-                    }
-                }
-                SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
-                    if cfg!(guest_arch = "x86_64") {
-                        hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
-                    } else if cfg!(guest_arch = "aarch64") {
-                        hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
-                    } else {
-                        anyhow::bail!("no secure boot template for current guest_arch")
-                    }
-                }
-            };
-
-            // check if vmgs includes custom UEFI JSON
-            let custom_uefi_json_data = if let Some(vmgs_client) = vmgs_client.as_ref() {
-                vmgs_client
-                    .as_non_volatile_store(vmgs::FileId::CUSTOM_UEFI, false)
-                    .context("failed to instantiate custom UEFI JSON store")?
-                    .restore()
-                    .await
-                    .context("failed to get custom UEFI JSON data")?
-            } else {
-                None
-            };
-
-            // obtain the final custom uefi vars by applying the delta onto
-            // the base vars
-            let custom_uefi_vars = match custom_uefi_json_data {
-                Some(data) => {
-                    let res = (|| -> Result<CustomVars, anyhow::Error> {
-                        let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
-                        Ok(base_vars.apply_delta(delta)?)
-                    })();
-
-                    match res {
-                        Ok(vars) => vars,
-                        Err(e) => {
-                            tracing::error!(CVM_ALLOWED, "Failed to load custom UEFI vars");
-                            get_client
-                                .event_log_fatal(EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED)
-                                .await;
-                            return Err(e).context("failed to load custom UEFI variables");
-                        }
-                    }
-                }
-                None => base_vars,
-            };
-
-            let config = firmware_uefi::UefiConfig {
-                custom_uefi_vars,
-                secure_boot: dps.general.secure_boot_enabled,
-                initial_generation_id,
-                use_mmio: cfg!(not(guest_arch = "x86_64")),
-                command_set: if cfg!(guest_arch = "x86_64") {
-                    UefiCommandSet::X64
-                } else {
-                    UefiCommandSet::Aarch64
-                },
-                diagnostics_log_level: {
-                    use get_protocol::dps_json::EfiDiagnosticsLogLevelType as LogLevelType;
-                    let level = dps.general.efi_diagnostics_log_level.0;
-                    match level {
-                        x if x == LogLevelType::DEFAULT.0 => LogLevel::make_default(),
-                        x if x == LogLevelType::INFO.0 => LogLevel::make_info(),
-                        x if x == LogLevelType::FULL.0 => LogLevel::make_full(),
-                        _ => LogLevel::make_default(),
-                    }
-                },
-            };
-
-            let (watchdog_send, watchdog_recv) = mesh::channel();
-            deps_hyperv_firmware_uefi = Some(dev::HyperVFirmwareUefi {
-                config,
-                logger: Box::new(UnderhillLogger {
-                    get: get_client.clone(),
-                }),
-                nvram_storage: if let Some(vmgs_client) = vmgs_client.as_ref() {
-                    Box::new(HclCompatNvram::new(
-                        VmgsStorageBackendAdapter(
-                            vmgs_client
-                                .as_non_volatile_store(vmgs::FileId::BIOS_NVRAM, true)
-                                .context("failed to instantiate UEFI NVRAM store")?,
-                        ),
-                        Some(HclCompatNvramQuirks {
-                            skip_corrupt_vars_with_missing_null_term: true,
-                        }),
-                    ))
-                } else {
-                    Box::new(uefi_nvram_storage::in_memory::InMemoryNvram::new())
-                },
-                generation_id_recv: get_client
-                    .take_generation_id_recv()
-                    .await
-                    .expect("first time taking chan"),
-                watchdog_platform: {
-                    // UEFI watchdog doesn't persist to VMGS at this time
-                    let store = EphemeralNonVolatileStore::new_boxed();
-
-                    // Create base watchdog platform
-                    let mut underhill_watchdog_platform =
-                        UnderhillWatchdogPlatform::new(store, get_client.clone()).await?;
-
-                    // Inject NMI on watchdog timeout
-                    #[cfg(guest_arch = "x86_64")]
-                    let watchdog_callback = WatchdogTimeoutNmi {
-                        partition: partition.clone(),
-                        watchdog_send: Some(watchdog_send),
-                    };
-
-                    // ARM64 does not have NMI support yet, so halt instead
-                    #[cfg(guest_arch = "aarch64")]
-                    let watchdog_callback = WatchdogTimeoutReset {
-                        halt_vps: halt_vps.clone(),
-                        watchdog_send: Some(watchdog_send),
-                    };
-
-                    // Add the callback
-                    underhill_watchdog_platform.add_callback(Box::new(watchdog_callback));
-
-                    Box::new(underhill_watchdog_platform)
-                },
-                watchdog_recv,
-                vsm_config: Some(Box::new(UnderhillVsmConfig {
-                    partition: Arc::downgrade(&partition),
-                })),
-                time_source: Box::new(rtc_time_source.new_linked_clock()),
-            })
+        FirmwareType::Uefi | FirmwareType::None => {
+            // UEFI is configured via `chipset.with_uefi(...)` above
         }
-        FirmwareType::None => {}
     };
 
     if dps.general.processor_idle_enabled {
@@ -2627,7 +2663,11 @@ async fn new_underhill_vm(
 
     // Set the callback in GET to trigger the debug interrupt.
     let p = partition.clone();
-    let debug_interrupt_callback = move |vtl: u8| p.assert_debug_interrupt(vtl);
+    let debug_interrupt_callback = move |vtl: u8| {
+        if let Ok(vtl) = Vtl::try_from(vtl) {
+            p.assert_debug_interrupt(vtl)
+        }
+    };
     get_client.set_debug_interrupt_callback(Box::new(debug_interrupt_callback));
 
     // Set do-nothing callback.
@@ -2714,15 +2754,7 @@ async fn new_underhill_vm(
     }
 
     let emuplat_adjust_gpa_range;
-
     let synic = virt::Hv1::synic(partition.as_ref());
-
-    let deps_generic_ioapic = chipset.with_generic_ioapic.then(|| dev::GenericIoApicDeps {
-        num_entries: virt::irqcon::IRQ_LINES as u8,
-        routing: Box::new(vmm_core::emuplat::ioapic::IoApicRouting(
-            partition.ioapic_routing(),
-        )),
-    });
 
     use vmotherboard::options::dev;
 
@@ -2777,15 +2809,6 @@ async fn new_underhill_vm(
     let deps_generic_isa_dma = chipset
         .with_generic_isa_dma
         .then_some(dev::GenericIsaDmaDeps);
-    let deps_piix4_power_management =
-        chipset
-            .with_piix4_power_management
-            .then(|| dev::Piix4PowerManagementDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-                pm_timer_assist: Some(Box::new(UnderhillPmTimerAssist {
-                    partition: Arc::downgrade(&partition),
-                })),
-            });
 
     let deps_winbond_super_io_and_floppy_stub = chipset
         .with_winbond_super_io_and_floppy_stub
@@ -2796,7 +2819,7 @@ async fn new_underhill_vm(
 
     #[cfg(guest_arch = "x86_64")]
     let deps_piix4_cmos_rtc = chipset.with_piix4_cmos_rtc.then(|| dev::Piix4CmosRtcDeps {
-        time_source: Box::new(rtc_time_source.new_linked_clock()),
+        time_source: PlatformResource.into_resource(),
         initial_cmos: Some(firmware_pcat::default_cmos_values(&mem_layout)),
         enlightened_interrupts: true, // As advertised by the PCAT BIOS.
     });
@@ -2825,34 +2848,29 @@ async fn new_underhill_vm(
                 register_host_io_fastpath: Box::new(UhRegisterHostIoFastPath(partition.clone())),
             });
 
-    let deps_hyperv_guest_watchdog = if chipset.with_hyperv_guest_watchdog {
-        Some(dev::HyperVGuestWatchdogDeps {
-            port_base: WDAT_PORT,
-            watchdog_platform: {
-                let store = if let Some(vmgs_client) = vmgs_client.as_ref() {
-                    vmgs_client
-                        .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
-                        .context("failed to instantiate guest watchdog store")?
-                } else {
-                    EphemeralNonVolatileStore::new_boxed()
-                };
+    if capabilities.with_guest_watchdog {
+        let store = if let Some(vmgs_client) = vmgs_client.as_ref() {
+            vmgs_client
+                .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
+                .context("failed to instantiate guest watchdog store")?
+        } else {
+            EphemeralNonVolatileStore::new_boxed()
+        };
 
-                let watchdog_callback = WatchdogTimeoutReset {
-                    halt_vps: halt_vps.clone(),
-                    watchdog_send: None, // This is not the UEFI watchdog, so no need to send
-                                         // watchdog notifications.
-                };
+        let watchdog_callback = WatchdogTimeoutReset {
+            halt_vps: halt_vps.clone(),
+            watchdog_send: None, // This is not the UEFI watchdog, so no need to send
+                                 // watchdog notifications.
+        };
 
-                let mut underhill_watchdog_platform =
-                    UnderhillWatchdogPlatform::new(store, get_client.clone()).await?;
-                underhill_watchdog_platform.add_callback(Box::new(watchdog_callback));
+        let mut underhill_watchdog_platform =
+            UnderhillWatchdogPlatform::new(store, get_client.clone()).await?;
+        underhill_watchdog_platform.add_callback(Box::new(watchdog_callback));
 
-                Box::new(underhill_watchdog_platform)
-            },
-        })
-    } else {
-        None
-    };
+        resolver.add_resolver(StaticWatchdogPlatformResolver::new(Box::new(
+            underhill_watchdog_platform,
+        )));
+    }
 
     let deps_generic_psp = { chipset.with_generic_psp.then_some(dev::GenericPspDeps {}) };
 
@@ -2860,7 +2878,7 @@ async fn new_underhill_vm(
         .with_generic_cmos_rtc
         .then(|| dev::GenericCmosRtcDeps {
             irq: 8,
-            time_source: Box::new(rtc_time_source.new_linked_clock()),
+            time_source: PlatformResource.into_resource(),
             century_reg_idx: 0x32,
             initial_cmos: None,
         });
@@ -2885,6 +2903,7 @@ async fn new_underhill_vm(
             virt::IsolationType::Snp => AttestationType::Snp,
             virt::IsolationType::Tdx => AttestationType::Tdx,
             virt::IsolationType::Vbs => AttestationType::Vbs,
+            virt::IsolationType::Cca => AttestationType::Cca,
             virt::IsolationType::None => AttestationType::Host,
         };
 
@@ -2912,6 +2931,11 @@ async fn new_underhill_vm(
                                 .attempt_ak_cert_callback()
                         }),
                 ),
+                AttestationType::Cca => {
+                    anyhow::bail!(
+                        "CCA attestation is not supported for TPM AK certificate provisioning"
+                    )
+                }
             }
         };
 
@@ -2947,24 +2971,9 @@ async fn new_underhill_vm(
         });
     };
 
-    let deps_hyperv_power_management =
-        chipset
-            .with_hyperv_power_management
-            .then(|| dev::HyperVPowerManagementDeps {
-                acpi_irq: SYSTEM_IRQ_ACPI,
-                pio_base: PM_BASE,
-                pm_timer_assist: Some(Box::new(UnderhillPmTimerAssist {
-                    partition: Arc::downgrade(&partition),
-                })),
-            });
-
     let devices = BaseChipsetDevices {
         deps_generic_cmos_rtc,
-        deps_generic_ioapic,
         deps_generic_psp,
-        deps_hyperv_firmware_uefi,
-        deps_hyperv_guest_watchdog,
-        deps_hyperv_power_management,
         deps_generic_isa_dma,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
@@ -2975,7 +2984,6 @@ async fn new_underhill_vm(
         deps_i440bx_host_pci_bridge,
         deps_piix4_cmos_rtc,
         deps_piix4_pci_bus,
-        deps_piix4_power_management,
         deps_underhill_vga_proxy,
         deps_winbond_super_io_and_floppy_stub,
         deps_winbond_super_io_and_floppy_full: None,
@@ -2997,9 +3005,12 @@ async fn new_underhill_vm(
                 // By default on aarch64 send all MMIO accesses to the host.
                 None
             } else {
-                let mut untrusted_mmio_ranges: Vec<_> = mem_layout.mmio().to_vec();
+                let chipset_mmio_ranges = [chipset_mmio.low, chipset_mmio.high]
+                    .into_iter()
+                    .filter(|r| !r.is_empty());
+                let mut untrusted_mmio_ranges: Vec<_> = chipset_mmio_ranges.clone().collect();
                 if vtom > 0 {
-                    untrusted_mmio_ranges.extend(mem_layout.mmio().iter().map(|range| {
+                    untrusted_mmio_ranges.extend(chipset_mmio_ranges.map(|range| {
                         MemoryRange::new((range.start() + vtom)..(range.end() + vtom))
                     }));
                 }
@@ -3346,15 +3357,18 @@ async fn new_underhill_vm(
                 .context("vpci devices require vmbus redirection to be enabled")?;
 
             vmm_core::device_builder::build_vpci_device(
-                &driver_source,
-                &resolver,
-                device_memory,
+                vmm_core::device_builder::PciDeviceResolveContext {
+                    driver_source: &driver_source,
+                    resolver: &resolver,
+                    guest_memory: device_memory,
+                    resource,
+                    doorbell_registration: None,
+                    shared_mem_mapper: None,
+                    software_iommu: false,
+                },
                 vmbus.control(),
                 instance_id,
-                resource,
                 &chipset_builder,
-                None,
-                None,
                 |device_id| {
                     let device = partition
                         .new_virtual_device()
@@ -3545,7 +3559,8 @@ async fn new_underhill_vm(
         state_units
             .add("partition")
             .depends_on(devices.chipset_unit())
-            .depends_on(vmtime.handle()),
+            .depends_on(vmtime.handle())
+            .inspect_sensitivity(inspect::SensitivityLevel::Safe),
         WrappedPartition(partition.clone()),
         PartitionUnitParams {
             processor_topology: &processor_topology,
@@ -3583,6 +3598,7 @@ async fn new_underhill_vm(
             load_kind,
             &dps,
             isolation.is_isolated(),
+            &chipset_mmio,
         )
         .instrument(tracing::info_span!("load_firmware", CVM_ALLOWED))
         .await?;
@@ -3862,6 +3878,7 @@ async fn load_firmware(
     load_kind: LoadKind,
     dps: &DevicePlatformSettings,
     isolated: bool,
+    chipset_mmio: &ChipsetMmioRanges,
 ) -> Result<(), anyhow::Error> {
     let cmdline_append = match cmdline_append {
         Some(cmdline) => CString::new(cmdline.as_bytes()).context("bad command line")?,
@@ -3882,19 +3899,19 @@ async fn load_firmware(
         loader_config,
         caps,
         isolated,
+        chipset_mmio,
     )
     .context("failed to load firmware")?;
 
     #[cfg(guest_arch = "x86_64")]
     let registers = {
         let crate::loader::VpContext::Vbs(mut registers) = vtl0_vp_context;
-        registers.extend(
-            loader::common::compute_variable_mtrrs(
-                mem_layout,
-                partition.caps().physical_address_width,
-            )
-            .context("Failed to compute variable mtrrs")?,
-        );
+        registers.extend(loader::common::compute_variable_mtrrs(
+            mem_layout,
+            partition.caps().physical_address_width,
+            chipset_mmio.low,
+            chipset_mmio.high,
+        ));
         registers
     };
     #[cfg(guest_arch = "aarch64")]
@@ -3908,25 +3925,6 @@ async fn load_firmware(
         .context("failed to set initial registers")?;
 
     Ok(())
-}
-
-pub struct UnderhillPmTimerAssist {
-    pub partition: std::sync::Weak<UhPartition>,
-}
-
-impl chipset::pm::PmTimerAssist for UnderhillPmTimerAssist {
-    fn set(&self, port: Option<u16>) {
-        if let Some(partition) = self.partition.upgrade() {
-            if let Err(err) = partition.set_pm_timer_assist(port) {
-                tracing::warn!(
-                    CVM_ALLOWED,
-                    error = &err as &dyn std::error::Error,
-                    ?port,
-                    "failed to set PM timer assist"
-                );
-            }
-        }
-    }
 }
 
 // Represents a stub MMIO device that handles unhandled MMIO accesses by
@@ -3981,30 +3979,6 @@ impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
 impl ChipsetDevice for FallbackMmioDevice {
     fn supports_mmio(&mut self) -> Option<&mut dyn chipset_device::mmio::MmioIntercept> {
         Some(self)
-    }
-}
-
-#[cfg(guest_arch = "x86_64")]
-struct WatchdogTimeoutNmi {
-    partition: Arc<UhPartition>,
-    watchdog_send: Option<mesh::Sender<()>>,
-}
-
-#[cfg(guest_arch = "x86_64")]
-#[async_trait::async_trait]
-impl WatchdogCallback for WatchdogTimeoutNmi {
-    async fn on_timeout(&mut self) {
-        crate::livedump::livedump().await;
-
-        // Unlike Hyper-V, we only send the NMI to the BSP.
-        self.partition.request_msi(
-            Vtl::Vtl0,
-            MsiRequest::new_x86(virt::irqcon::DeliveryMode::NMI, 0, false, 0, false),
-        );
-
-        if let Some(watchdog_send) = &self.watchdog_send {
-            watchdog_send.send(());
-        }
     }
 }
 

@@ -15,7 +15,6 @@ use pci_core::msi::MsiTarget;
 use std::sync::Arc;
 use vm_resource::CanResolveTo;
 use vm_resource::kind::PciDeviceHandleKind;
-use vmcore::irqfd::IrqFd;
 use vmcore::vm_task::VmTaskDriverSource;
 
 impl CanResolveTo<ResolvedPciDevice> for PciDeviceHandleKind {
@@ -45,8 +44,9 @@ pub struct ResolvePciDeviceHandleParams<'a> {
     pub doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
     /// An object with which to register shared memory regions.
     pub shared_mem_mapper: Option<&'a dyn MemoryMapper>,
-    /// irqfd interface for kernel-mediated interrupt delivery. Used by
-    /// device passthrough resolvers (VFIO, vhost-user) for irqfd-based
-    /// MSI injection.
-    pub irqfd: Option<Arc<dyn IrqFd>>,
+    /// Whether the device is behind a software IOMMU (e.g., emulated SMMU)
+    /// that cannot program the host IOMMU for passthrough DMA. When `true`,
+    /// device assignment backends (e.g., VFIO) that require host IOMMU
+    /// mappings must reject the assignment.
+    pub software_iommu: bool,
 }

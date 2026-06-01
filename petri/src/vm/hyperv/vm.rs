@@ -9,6 +9,7 @@ use super::powershell;
 use crate::CommandError;
 use crate::OpenHclServicingFlags;
 use crate::PetriHaltReason;
+use crate::PetriHaltReasonDetail;
 use crate::PetriLogFile;
 use crate::PetriLogSource;
 use crate::PetriVmFramebufferAccess;
@@ -372,13 +373,16 @@ impl HyperVVM {
     }
 
     /// Wait for the VM to stop
-    pub async fn wait_for_halt(&mut self, _allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
+    pub async fn wait_for_halt(
+        &mut self,
+        _allow_reset: bool,
+    ) -> anyhow::Result<PetriHaltReasonDetail> {
         // Allow CVMs some time for the VM to be off after reset.
         const CVM_ALLOWED_OFF_TIME: Duration = Duration::from_secs(15);
 
         let (halt_reason, timestamp) = self.wait_for_off_or_internal(Self::halt_event).await?;
 
-        if halt_reason == PetriHaltReason::Reset {
+        if halt_reason.reason == PetriHaltReason::Reset {
             // add 1ms to avoid getting the same event again
             self.last_start_time = Some(timestamp.checked_add(Duration::from_millis(1))?);
 
@@ -409,19 +413,25 @@ impl HyperVVM {
         Ok(halt_reason)
     }
 
-    async fn halt_event(&self) -> anyhow::Result<Option<(PetriHaltReason, Timestamp)>> {
+    async fn halt_event(&self) -> anyhow::Result<Option<(PetriHaltReasonDetail, Timestamp)>> {
         let events = powershell::hyperv_halt_events(
             &self.vmid,
             self.last_start_time.as_ref().unwrap_or(&self.create_time),
         )
         .await?;
 
-        if events.len() > 1 {
-            anyhow::bail!("Got more than one halt event");
-        }
-        let event = events.first();
+        let detail = events
+            .iter()
+            .map(|e| {
+                powershell::winevent_name(e.id)
+                    .map(|n| n.to_string())
+                    .unwrap_or(e.id.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
 
-        event
+        let reasons = events
+            .into_iter()
             .map(|e| {
                 Ok((
                     match e.id {
@@ -439,13 +449,24 @@ impl HyperVVM {
                             PetriHaltReason::TripleFault
                         }
                         powershell::MSVM_STOP_CRITICAL_SUCCESS
-                        | powershell::MSVM_VMMS_VM_TERMINATE_ERROR => PetriHaltReason::Other,
+                        | powershell::MSVM_VMMS_VM_TERMINATE_ERROR
+                        | powershell::MSVM_GUEST_CRASH_REPORT
+                        | powershell::MSVM_START_VTL0_REQUEST_ERROR => PetriHaltReason::Other,
                         id => anyhow::bail!("Unexpected event id: {id}"),
                     },
                     e.time_created,
                 ))
             })
-            .transpose()
+            .collect::<anyhow::Result<Vec<(PetriHaltReason, Timestamp)>>>()?;
+
+        Ok(if reasons.len() > 1 {
+            Some((
+                PetriHaltReason::Other.with_detail(detail),
+                reasons.last().unwrap().1,
+            ))
+        } else {
+            reasons.first().map(|r| (r.0.with_detail(detail), r.1))
+        })
     }
 
     /// Wait for the VM shutdown ic

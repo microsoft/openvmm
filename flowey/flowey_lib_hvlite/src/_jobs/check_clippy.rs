@@ -175,8 +175,12 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        // On windows & mac, we can't build with all features, as many crates
-        // require openSSL for crypto, which isn't supported in CI yet.
+        // On Windows & Mac we can't build with all features since the TPM
+        // requires OpenSSL for crypto, which isn't supported in CI on those
+        // platforms today.
+        //
+        // We don't add the CI feature here, as it's used purely to exclude
+        // tests that can't run in CI. We still want those tests to be linted.
         let features = if matches!(
             target.operating_system,
             target_lexicon::OperatingSystem::Windows | target_lexicon::OperatingSystem::Darwin(_)
@@ -207,6 +211,21 @@ impl SimpleFlowNode for Node {
             package: CargoPackage::Crate("crypto".into()),
             profile: profile.clone(),
             features: CargoFeatureSet::None,
+            target: target.clone(),
+            extra_env: None,
+            exclude: ReadVar::from_static(None),
+            keep_going: true,
+            all_targets: true,
+            pre_build_deps: pre_build_deps.clone(),
+            done: v,
+        }));
+
+        // Always test the pure rust backend.
+        reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
+            in_folder: openvmm_repo_path.clone(),
+            package: CargoPackage::Crate("crypto".into()),
+            profile: profile.clone(),
+            features: CargoFeatureSet::Specific(vec!["rust".into()]),
             target: target.clone(),
             extra_env: None,
             exclude: ReadVar::from_static(None),

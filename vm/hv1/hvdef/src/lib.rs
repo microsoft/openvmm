@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 #![no_std]
 
+pub mod save_restore;
 pub mod vbs;
 
 use bitfield_struct::bitfield;
@@ -352,6 +353,7 @@ open_enum! {
         VBS = 1,
         SNP = 2,
         TDX = 3,
+        CCA = 4,
     }
 }
 

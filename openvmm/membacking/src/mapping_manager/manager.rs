@@ -38,10 +38,15 @@ pub struct MappingManager {
 impl MappingManager {
     /// Returns a new mapping manager that can map addresses up to `max_addr`.
     ///
-    /// If `private_ram` is true, mappers created from this manager will use
-    /// anonymous private memory for guest RAM instead of shared file-backed
+    /// Mappers created from this manager will use anonymous private memory for
+    /// guest RAM within `private_ranges` instead of using shared file-backed
     /// memory.
-    pub fn new(spawn: impl Spawn, max_addr: u64, private_ram: bool) -> Self {
+    pub fn new(
+        spawn: impl Spawn,
+        max_addr: u64,
+        private_ranges: Vec<MemoryRange>,
+        minimum_va_alignment: Option<usize>,
+    ) -> Self {
         let (req_send, mut req_recv) = mesh::mpsc_channel();
         spawn
             .spawn("mapping_manager", {
@@ -56,7 +61,8 @@ impl MappingManager {
                 id: ObjectId::new(),
                 req_send,
                 max_addr,
-                private_ram,
+                private_ranges,
+                minimum_va_alignment,
             },
         }
     }
@@ -74,7 +80,8 @@ pub struct MappingManagerClient {
     req_send: mesh::Sender<MappingRequest>,
     id: ObjectId,
     max_addr: u64,
-    private_ram: bool,
+    private_ranges: Vec<MemoryRange>,
+    minimum_va_alignment: Option<usize>,
 }
 
 static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
@@ -83,15 +90,20 @@ impl MappingManagerClient {
     /// Returns a VA mapper for this guest memory.
     ///
     /// This will single instance the mapper, so this is safe to call multiple
-    /// times. If `private_ram` was set when creating the [`MappingManager`],
-    /// the mapper will use anonymous private memory for guest RAM.
+    /// times.
     pub async fn new_mapper(&self) -> Result<Arc<VaMapper>, VaMapperError> {
         // Get the VA mapper from the mapper cache if possible to avoid keeping
         // multiple VA ranges for this memory per process.
-        let private_ram = self.private_ram;
         MAPPER_CACHE
             .get_or_insert_with(&self.id, async {
-                VaMapper::new(self.req_send.clone(), self.max_addr, None, private_ram).await
+                VaMapper::new(
+                    self.req_send.clone(),
+                    self.max_addr,
+                    None,
+                    self.private_ranges.clone(),
+                    self.minimum_va_alignment,
+                )
+                .await
             })
             .await
     }
@@ -108,11 +120,18 @@ impl MappingManagerClient {
         &self,
         process: RemoteProcess,
     ) -> Result<Arc<VaMapper>, VaMapperError> {
-        if self.private_ram {
+        if !self.private_ranges.is_empty() {
             return Err(VaMapperError::RemoteWithPrivateMemory);
         }
         Ok(Arc::new(
-            VaMapper::new(self.req_send.clone(), self.max_addr, Some(process), false).await?,
+            VaMapper::new(
+                self.req_send.clone(),
+                self.max_addr,
+                Some(process),
+                Vec::new(),
+                self.minimum_va_alignment,
+            )
+            .await?,
         ))
     }
 
@@ -404,7 +423,7 @@ mod tests {
 
     #[pal_async::async_test]
     async fn test_dma_target_regions_returned(spawn: impl Spawn) {
-        let mm = MappingManager::new(&spawn, 0x200000, false);
+        let mm = MappingManager::new(&spawn, 0x200000, Vec::new(), None);
         let client = mm.client().clone();
 
         let ram: Mappable = sparse_mmap::alloc_shared_memory(0x100000, "test-ram")
@@ -448,7 +467,7 @@ mod tests {
 
     #[pal_async::async_test]
     async fn test_no_dma_targets_returns_empty(spawn: impl Spawn) {
-        let mm = MappingManager::new(&spawn, 0x100000, false);
+        let mm = MappingManager::new(&spawn, 0x100000, Vec::new(), None);
         let client = mm.client().clone();
 
         let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x1000, "test")

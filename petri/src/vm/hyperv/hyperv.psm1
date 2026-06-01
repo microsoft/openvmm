@@ -223,6 +223,21 @@ function New-CustomVM
         [hashtable] $ScsiControllers = $null,
 
         # must be a hashtable with format:
+        # NvmeControllers => {
+        #     Vsid => {
+        #         Vtl,
+        #         Drives => [
+        #             DiskPath,
+        #             ...
+        #         ]
+        #     },
+        #     ...
+        # }
+        # Drives are pre-sorted by NSID. The emulator assigns NSIDs 1..N
+        # by argument order.
+        [hashtable] $NvmeControllers = $null,
+
+        # must be a hashtable with format:
         # IdeControllers => {
         #     ControllerNumber => {
         #         Lun => {
@@ -349,6 +364,26 @@ function New-CustomVM
                 "VirtualSystemIdentifiers" = @("{$vsid}");
                 "TargetVtl" = $targetVtl
             } | ConvertTo-CimEmbeddedString
+        }
+    }
+
+    if ($NvmeControllers) {
+        if (-not (Get-Module -ListAvailable HvlDeviceHost)) {
+            throw ("NVMe emulator support requires the HvlDeviceHost " +
+                "PowerShell module. Ensure hvldevicehost.dll is installed " +
+                "and the module is available on this host.")
+        }
+        Import-Module HvlDeviceHost -ErrorAction Stop
+        Register-HvlDeviceHostClsid $CLSID_FIOV_NVME
+        foreach ($controller in $NvmeControllers.GetEnumerator()) {
+            $vsid = $controller.Name
+            $targetVtl = $controller.Value["Vtl"]
+            $vhdPaths = $controller.Value["Drives"]
+            $resourceSettings += New-NvmeEmulatorRasd `
+                -VhdPaths $vhdPaths `
+                -TargetVtl $targetVtl `
+                -Vsid ([Guid]$vsid) `
+                | ConvertTo-CimEmbeddedString
         }
     }
 
@@ -502,7 +537,15 @@ function Convert-ImcData
         [string] $ImcHive
     )
 
-    $imcHiveData = Get-Content -Encoding Byte $ImcHive
+    if ($PSVersionTable.PSVersion.Major -gt 5)
+    {
+        $imcHiveData = Get-Content -AsByteStream -Raw $ImcHive
+    }
+    else
+    {
+        $imcHiveData = Get-Content -Encoding Byte $ImcHive
+    }
+
     $length = [System.BitConverter]::GetBytes([int32]$imcHiveData.Length + 4)
     if ([System.BitConverter]::IsLittleEndian)
     {

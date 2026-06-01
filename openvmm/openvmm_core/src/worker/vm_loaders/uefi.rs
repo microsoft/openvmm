@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::worker::memory_layout::ChipsetMmioRanges;
 use guestmem::GuestMemory;
 use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
@@ -23,8 +24,8 @@ pub enum Error {
     Firmware(#[source] std::io::Error),
     #[error("uefi loader error")]
     Loader(#[source] loader::uefi::Error),
-    #[error("UEFI requires at least two MMIO ranges")]
-    UnsupportedMmio,
+    #[error("failed to build PCIe ACPI tables")]
+    PcieAcpi(#[source] vmm_core::acpi_builder::PcieAcpiBuildError),
     #[cfg(guest_arch = "aarch64")]
     #[error("UEFI boot with GICv2 is not supported")]
     GicV2NotSupported,
@@ -52,17 +53,14 @@ pub fn load_uefi(
     gm: &GuestMemory,
     processor_topology: &ProcessorTopology,
     mem_layout: &MemoryLayout,
-    pcie_host_bridges: &Vec<PcieHostBridge>,
+    pcie_host_bridges: &[PcieHostBridge],
     load_settings: UefiLoadSettings,
+    chipset_mmio: &ChipsetMmioRanges,
     madt: &[u8],
     srat: &[u8],
     mcfg: Option<&[u8]>,
     pptt: Option<&[u8]>,
 ) -> Result<Vec<Register>, Error> {
-    if mem_layout.mmio().len() < 2 {
-        return Err(Error::UnsupportedMmio);
-    }
-
     let mut loaded_image;
     let image = {
         loaded_image = Vec::new();
@@ -86,9 +84,6 @@ pub fn load_uefi(
             reserved: 0,
         })
         .collect();
-
-    let low_mmio = mem_layout.mmio()[0];
-    let high_mmio = mem_layout.mmio()[1];
 
     let flags = config::Flags::new()
         .with_hibernate_enabled(true)
@@ -134,12 +129,12 @@ pub fn load_uefi(
     .add(&config::Entropy(entropy))
     .add(&config::MmioRanges([
         config::Mmio {
-            mmio_page_number_start: low_mmio.start() / HV_PAGE_SIZE,
-            mmio_size_in_pages: (low_mmio.end() - low_mmio.start()) / HV_PAGE_SIZE,
+            mmio_page_number_start: chipset_mmio.low.start() / HV_PAGE_SIZE,
+            mmio_size_in_pages: chipset_mmio.low.len() / HV_PAGE_SIZE,
         },
         config::Mmio {
-            mmio_page_number_start: high_mmio.start() / HV_PAGE_SIZE,
-            mmio_size_in_pages: (high_mmio.end() - high_mmio.start()) / HV_PAGE_SIZE,
+            mmio_page_number_start: chipset_mmio.high.start() / HV_PAGE_SIZE,
+            mmio_size_in_pages: chipset_mmio.high.len() / HV_PAGE_SIZE,
         },
     ]))
     .add(&config::ProcessorInformation {
@@ -179,19 +174,12 @@ pub fn load_uefi(
     }
 
     if !pcie_host_bridges.is_empty() {
-        let mut ssdt = acpi::ssdt::Ssdt::new();
-        for bridge in pcie_host_bridges {
-            ssdt.add_pcie(
-                bridge.index,
-                bridge.segment,
-                bridge.start_bus,
-                bridge.end_bus,
-                bridge.ecam_range,
-                bridge.low_mmio,
-                bridge.high_mmio,
-            );
+        let pcie_tables = vmm_core::acpi_builder::build_pcie_acpi_tables(pcie_host_bridges)
+            .map_err(Error::PcieAcpi)?;
+        cfg.add_raw(config::BlobStructureType::Ssdt, &pcie_tables.ssdt);
+        if let Some(cedt) = pcie_tables.cedt {
+            cfg.add_raw(config::BlobStructureType::AcpiTable, &cedt);
         }
-        cfg.add_raw(config::BlobStructureType::Ssdt, &ssdt.to_bytes());
     }
 
     if !pcie_host_bridges.is_empty() {

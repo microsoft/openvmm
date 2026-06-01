@@ -23,6 +23,8 @@ mod vtl2;
 
 use crate::memory::vtl2_mapper::MappingState;
 use crate::memory::vtl2_mapper::ResetMappingState;
+#[cfg(guest_arch = "aarch64")]
+use aarch64defs::Vendor;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use hv1_emulator::hv::GlobalHv;
@@ -72,6 +74,7 @@ use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
 use vp_state::WhpVpStateAccess;
+#[cfg(guest_arch = "x86_64")]
 use x86defs::cpuid::Vendor;
 
 #[cfg(guest_arch = "aarch64")]
@@ -120,7 +123,7 @@ struct WhpPartitionInner {
     isolation: IsolationType,
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
-    gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
+    gic_msi: vm_topology::processor::aarch64::GicMsiController,
     synic_ports: virt::synic::SynicPortMap,
 }
 
@@ -388,6 +391,26 @@ impl Vplc {
             start_vp_context: Default::default(),
         }
     }
+
+    /// Resets the pending per-VTL VP signals to the initial state from `Vplc::new`.
+    ///
+    /// This is used when resetting the partition or scrubbing a VTL, so that
+    /// the freshly-reinitialized VTL does not observe stale events queued
+    /// before the reset.
+    fn reset(&self) {
+        let Self {
+            message_queues,
+            check_queues,
+            extint_pending,
+            start_vp_context,
+            start_vp,
+        } = self;
+        message_queues.clear();
+        check_queues.store(false, Ordering::Relaxed);
+        extint_pending.store(false, Ordering::Relaxed);
+        *start_vp_context.lock() = None;
+        start_vp.store(false, Ordering::Relaxed);
+    }
 }
 
 impl<'a> WhpVpRef<'a> {
@@ -554,7 +577,10 @@ impl virt::Partition for WhpPartition {
 
     #[cfg(guest_arch = "aarch64")]
     fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
-        let v2m = self.inner.gic_v2m.as_ref()?;
+        let v2m = match &self.inner.gic_msi {
+            vm_topology::processor::aarch64::GicMsiController::V2m(v2m) => v2m,
+            _ => return None,
+        };
         let irqcon = self.with_vtl(minimum_vtl).clone() as Arc<dyn virt::irqcon::ControlGic>;
         Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
             v2m, irqcon,
@@ -660,14 +686,7 @@ impl virt::BindProcessor for WhpProcessorBinder {
                 }
             }
 
-            #[cfg(all(guest_arch = "aarch64", not(feature = "unstable_whp")))]
-            {
-                let _ = vp_info;
-                let _ = vtlp;
-                let _ = vtl;
-            }
-
-            #[cfg(all(guest_arch = "aarch64", feature = "unstable_whp"))]
+            #[cfg(guest_arch = "aarch64")]
             {
                 let _ = vtlp;
                 vp.vp
@@ -774,6 +793,7 @@ impl virt::Hypervisor for Whp {
             virt::PlatformInfo {
                 platform_gsiv: Some(WHP_PMU_GSIV),
                 supports_gic_v3: true,
+                supports_its: false,
             }
         }
     }
@@ -1085,26 +1105,29 @@ impl WhpPartitionInner {
             caps.dr6_tsx_broken = true;
             caps
         };
-        #[cfg(guest_arch = "aarch64")]
-        let caps = {
-            let features =
-                whp::capabilities::processor_features().for_op("get processor features")?;
-            virt::aarch64::Aarch64PartitionCapabilities {
-                supports_aarch32_el0: features
-                    .bank0
-                    .is_set(whp::abi::WHV_PROCESSOR_FEATURES::El0Aarch32),
-            }
-        };
-
         let vendor = match whp::capabilities::processor_vendor().for_op("get processor vendor")? {
+            #[cfg(guest_arch = "x86_64")]
             whp::abi::WHvProcessorVendorIntel => Vendor::INTEL,
             #[cfg(guest_arch = "x86_64")]
             whp::abi::WHvProcessorVendorAmd => Vendor::AMD,
             #[cfg(guest_arch = "x86_64")]
             whp::abi::WHvProcessorVendorHygon => Vendor::HYGON,
             #[cfg(guest_arch = "aarch64")]
-            whp::abi::WHvProcessorVendorArm => Vendor([0; 12]),
+            whp::abi::WHvProcessorVendorArm => Vendor::ARM,
             _ => panic!("unsupported processor vendor"),
+        };
+
+        #[cfg(guest_arch = "aarch64")]
+        let caps = {
+            let features =
+                whp::capabilities::processor_features().for_op("get processor features")?;
+            virt::aarch64::Aarch64PartitionCapabilities {
+                isolation: IsolationType::None,
+                supports_aarch32_el0: features
+                    .bank0
+                    .is_set(whp::abi::WHV_PROCESSOR_FEATURES::El0Aarch32),
+                vendor,
+            }
         };
 
         let hvstate = if proto_config.hv_config.is_some() {
@@ -1144,7 +1167,7 @@ impl WhpPartitionInner {
             hvstate,
             isolation: proto_config.isolation,
             #[cfg(guest_arch = "aarch64")]
-            gic_v2m: proto_config.processor_topology.gic_v2m(),
+            gic_msi: proto_config.processor_topology.gic_msi(),
             synic_ports: Default::default(),
         };
 
@@ -1331,7 +1354,7 @@ impl VtlPartition {
             }
         }
 
-        #[cfg(all(guest_arch = "aarch64", feature = "unstable_whp"))]
+        #[cfg(guest_arch = "aarch64")]
         {
             let gic_params = whp::abi::WHV_ARM64_IC_PARAMETERS {
                 EmulationMode: whp::abi::WHV_ARM64_IC_EMULATION_MODE::GicV3,
@@ -1344,7 +1367,10 @@ impl VtlPartition {
                     // (GICD_TYPER.LPIS=0) so Linux uses the GICv2m MSI frame
                     // instead of ITS for PCIe MSIs. Otherwise keep LPI
                     // enabled (1 ID bit minimum).
-                    GicLpiIntIdBits: if config.processor_topology.gic_v2m().is_some() {
+                    GicLpiIntIdBits: if matches!(
+                        config.processor_topology.gic_msi(),
+                        vm_topology::processor::aarch64::GicMsiController::V2m(_)
+                    ) {
                         0
                     } else {
                         1
@@ -1424,12 +1450,7 @@ impl VtlPartition {
 
                     #[cfg(guest_arch = "aarch64")]
                     {
-                        features.bank0 |= F::AccessVpRegs | F::SyncContext;
-                    }
-
-                    #[cfg(all(guest_arch = "aarch64", feature = "unstable_whp"))]
-                    {
-                        features.bank0 |= F::TbFlushHypercalls;
+                        features.bank0 |= F::AccessVpRegs | F::SyncContext | F::TbFlushHypercalls;
                     }
 
                     if vtl == Vtl::Vtl0 {
@@ -1635,13 +1656,18 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         let is_bsp = self.inner.vp_info.base.is_bsp();
         self.state.reset(false, is_bsp);
 
+        // For each enabled VTL: apply arch fixups that WHP doesn't handle
+        // and clear any pending `start_vp_context` (via `finish_reset`),
+        // then clear stale pending per-VTL VP signal flags (via
+        // `Vplc::reset`).
         // VTL0 is always present.
         self.finish_reset(Vtl::Vtl0);
-        self.vplc(Vtl::Vtl0).message_queues.clear();
+        self.vplc(Vtl::Vtl0).reset();
         if self.state.vtls.vtl2.is_some() {
             self.finish_reset(Vtl::Vtl2);
-            self.vplc(Vtl::Vtl2).message_queues.clear();
+            self.vplc(Vtl::Vtl2).reset();
         }
+        self.inner.vtl2_wake.store(false, Ordering::Relaxed);
 
         if cfg!(debug_assertions) {
             let vp_info = &self.inner.vp_info;
@@ -1656,11 +1682,30 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
     fn scrub(&mut self, vtl: Vtl) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
         assert_eq!(vtl, Vtl::Vtl2);
         let is_bsp = self.inner.vp_info.base.is_bsp();
+
+        // Reset per-VP VTL2-enable state on non-BSP VPs. The new VTL2 will
+        // re-issue `HvCallEnableVpVtl` on each AP to program its startup
+        // context (RIP/RSP/CR3/GDT/IDT)
+        //
+        // Leave `enabled_vtls` alone so that `state.reset` keeps `active_vtl`
+        // at VTL2 on the AP, allowing it to idle in VTL2 (in startup suspend)
+        // during the servicing window.
+        if !is_bsp {
+            self.inner.vtl2_enable.store(false, Ordering::Relaxed);
+        }
+
         self.state.reset(true, is_bsp);
 
-        // Scrub only resets VTL2.
+        // Scrub only resets VTL2. Reset the Vplc to clear any stale pending
+        // signals (message queue notifications, external interrupts, start-VP
+        // requests, etc.) -- the hypervisor zeroes the equivalent per-VTL
+        // activity flags during a VTL scrub.
         self.finish_reset(Vtl::Vtl2);
-        self.vplc(Vtl::Vtl2).message_queues.clear();
+        self.vplc(Vtl::Vtl2).reset();
+
+        // Clear any pending VTL2 wake signal, since VTL2 is now back in
+        // startup suspend and any prior wake request is stale.
+        self.inner.vtl2_wake.store(false, Ordering::Relaxed);
 
         if cfg!(debug_assertions) {
             let vp_info = &self.inner.vp_info;

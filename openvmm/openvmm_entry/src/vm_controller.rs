@@ -55,6 +55,8 @@ pub enum VmControllerRpc {
     ),
     /// Save a VM snapshot to a directory.
     SaveSnapshot(Rpc<String, Result<(), mesh::error::RemoteError>>),
+    /// Dump VM state (VP registers + memory) to a `.vmrs` file.
+    DumpState(Rpc<String, Result<(), mesh::error::RemoteError>>),
     /// Service (update) the VTL2 firmware.
     ServiceVtl2(Rpc<ServiceVtl2Params, Result<u64, mesh::error::RemoteError>>),
     /// Stop the VM and quit.
@@ -306,6 +308,11 @@ impl VmController {
                 let result = self.handle_save_snapshot(Path::new(&dir)).await;
                 req.complete(result.map_err(mesh::error::RemoteError::new));
             }
+            VmControllerRpc::DumpState(req) => {
+                let (path, req) = req.split();
+                let result = self.handle_dump_state(Path::new(&path)).await;
+                req.complete(result.map_err(mesh::error::RemoteError::new));
+            }
             VmControllerRpc::ServiceVtl2(req) => {
                 let (params, req) = req.split();
                 let result = self.handle_service_vtl2(params).await;
@@ -409,6 +416,32 @@ impl VmController {
         )?;
 
         // VM stays paused. Do NOT resume.
+        Ok(())
+    }
+
+    async fn handle_dump_state(&self, path: &Path) -> anyhow::Result<()> {
+        // Write to a temporary file in the same directory, then rename into
+        // place so readers never see a partially-written dump.
+        let parent = path.parent().unwrap_or(Path::new("."));
+        let tmp_file = tempfile::NamedTempFile::new_in(parent)
+            .context("failed to create temp file for dump")?;
+
+        // Dump state to the temp file (worker pauses, collects VP state +
+        // streams memory, then resumes).
+        self.vm_rpc
+            .call_failable(VmRpc::DumpState, tmp_file.as_file().try_clone()?)
+            .await
+            .context("failed to dump state")?;
+
+        // Persist the temp file to the final path.
+        tmp_file.persist(path).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to rename temp file to {}: {}",
+                path.display(),
+                e.error
+            )
+        })?;
+
         Ok(())
     }
 

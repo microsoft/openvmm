@@ -21,6 +21,7 @@
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
+use cxl_spec::spec::CfmwsWindowRestrictions;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::PcatBootDevice;
@@ -32,6 +33,27 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use thiserror::Error;
 
+const DEFAULT_MEMORY_SIZE: u64 = 1024 * 1024 * 1024;
+
+/// Guest memory configuration parsed from `--memory`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryCli {
+    /// Guest RAM size in bytes.
+    pub mem_size: u64,
+    /// Whether shared file-backed memory was explicitly requested.
+    pub shared: Option<bool>,
+    /// Whether to prefetch guest RAM.
+    pub prefetch: bool,
+    /// Whether to use transparent huge pages for private guest RAM.
+    pub transparent_hugepages: bool,
+    /// Whether to use explicit hugetlb memfd backing for guest RAM.
+    pub hugepages: bool,
+    /// Explicit hugetlb page size in bytes.
+    pub hugepage_size: Option<u64>,
+    /// File used to back guest RAM.
+    pub file: Option<PathBuf>,
+}
+
 /// OpenVMM virtual machine monitor.
 ///
 /// This is not yet a stable interface and may change radically between
@@ -42,16 +64,36 @@ pub struct Options {
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
     pub processors: u32,
 
-    /// guest RAM size
+    /// guest RAM configuration (`SIZE` or `key=value[,key=value...]`)
     #[clap(
         short = 'm',
         long,
-        value_name = "SIZE",
+        value_name = "PARAMS",
         default_value = "1GB",
-        value_parser = parse_memory,
-        conflicts_with = "numa_memory"
+        value_parser = parse_memory_config,
+        conflicts_with = "numa_memory",
+        long_help = r#"Configure guest RAM.
+
+Syntax: SIZE | key=value[,key=value...]
+
+Size suffixes accept K, M, G, and T, optionally followed by B.
+
+Options:
+    size=<SIZE>              guest RAM size, default 1GB
+    shared=on|off            use shared file-backed RAM, default on
+    prefetch=on|off          pre-populate shared RAM mappings
+    thp=on|off               mark private RAM as THP-eligible; requires shared=off
+    hugepages=on|off         allocate RAM from Linux hugetlb pages
+    hugepage_size=<SIZE>     hugetlb page size, default 2MB; requires hugepages=on
+    file=<PATH>              use an existing file as guest RAM backing
+
+Examples:
+    --memory 4G
+    --memory size=64GB,hugepages=on,hugepage_size=2MB
+    --memory size=4G,file=path/to/memory.bin
+    --memory size=4G,shared=off,thp=on"#
     )]
-    pub memory: u64,
+    pub memory: MemoryCli,
 
     /// per-NUMA-node guest RAM sizes (comma-separated, e.g. "2G,2G").
     /// Distributes memory across vNUMA nodes reported to the guest. Mutually
@@ -63,31 +105,40 @@ pub struct Options {
     pub numa_memory: Option<Vec<u64>>,
 
     /// use shared memory segment
-    #[clap(short = 'M', long)]
+    #[clap(short = 'M', long, hide = true)]
     pub shared_memory: bool,
 
     /// prefetch guest RAM
-    #[clap(long)]
-    pub prefetch: bool,
+    #[clap(long = "prefetch", hide = true)]
+    pub deprecated_prefetch: bool,
 
     /// back guest RAM with a file instead of anonymous memory.
     /// The file is created/opened and sized to the guest RAM size.
     /// Enables snapshot save (fsync) and restore (open + mmap).
-    #[clap(long, value_name = "FILE", conflicts_with = "private_memory")]
-    pub memory_backing_file: Option<PathBuf>,
+    #[clap(
+        long = "memory-backing-file",
+        value_name = "FILE",
+        hide = true,
+        conflicts_with = "deprecated_private_memory"
+    )]
+    pub deprecated_memory_backing_file: Option<PathBuf>,
 
     /// Restore VM from a snapshot directory (implies file-backed memory from
     /// the snapshot's memory.bin). Cannot be used with --memory-backing-file.
-    #[clap(long, value_name = "DIR", conflicts_with = "memory_backing_file")]
+    #[clap(
+        long,
+        value_name = "DIR",
+        conflicts_with = "deprecated_memory_backing_file"
+    )]
     pub restore_snapshot: Option<PathBuf>,
 
     /// use private anonymous memory for guest RAM
-    #[clap(long, conflicts_with_all = ["memory_backing_file", "restore_snapshot"])]
-    pub private_memory: bool,
+    #[clap(long = "private-memory", hide = true, conflicts_with_all = ["deprecated_memory_backing_file", "restore_snapshot"])]
+    pub deprecated_private_memory: bool,
 
     /// enable transparent huge pages for guest RAM (Linux only, requires --private-memory)
-    #[clap(long, requires("private_memory"))]
-    pub thp: bool,
+    #[clap(long = "thp", hide = true)]
+    pub deprecated_thp: bool,
 
     /// start in paused state
     #[clap(short = 'P', long)]
@@ -222,6 +273,10 @@ options:
     #[clap(long)]
     pub nvme: Vec<DiskCli>,
 
+    /// attach a CXL Type-3 test endpoint on a PCIe root port
+    #[clap(long = "cxl-test", value_name = "mem:<len>,pcie_port=<name>")]
+    pub cxl_test: Vec<CxlTestDeviceCli>,
+
     /// attach a disk via a virtio-blk controller
     #[clap(long_help = r#"
 e.g: --virtio-blk memdiff:file:/path/to/disk.vhd
@@ -335,6 +390,16 @@ options:
     #[cfg(guest_arch = "x86_64")]
     #[clap(long, default_value = "auto", value_parser = parse_x2apic)]
     pub x2apic: X2ApicConfig,
+
+    /// configure PCIe MSI controller for aarch64 (auto | its | v2m)
+    #[cfg(guest_arch = "aarch64")]
+    #[clap(long, default_value = "auto")]
+    pub gic_msi: GicMsiCli,
+
+    /// enable SMMUv3 IOMMU for an aarch64 PCIe root complex (repeatable, e.g. --smmu rc0 --smmu rc1)
+    #[cfg(guest_arch = "aarch64")]
+    #[clap(long, value_name = "RC_NAME")]
+    pub smmu: Vec<String>,
 
     /// COM1 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
@@ -748,6 +813,9 @@ Examples:
     # Attach root complex rc0 on segment 0 with bus and MMIO ranges
     --pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255,low_mmio=4M,high_mmio=1G
 
+    # Configure HDM window size and restrictions (bitmask)
+    --pcie-root-complex rc1,hdm=2G,hdm_window_restrictions=0x21
+
 Syntax: <name>[,opt=arg,...]
 
 Options:
@@ -756,6 +824,9 @@ Options:
     `end_bus=<value>`              highest valid bus number, default 255
     `low_mmio=<size>`              low MMIO window size, default 64M
     `high_mmio=<size>`             high MMIO window size, default 1G
+    `hdm=<size>`                   HDM decoder MMIO window size (CFMWS window), default 1G
+    `hdm_window_restrictions=<m>`  CFMWS window restriction bitmask (u16, decimal or 0x-prefixed hex),
+                                   default DEVICE_COHERENT (bit 0, value 0x1)
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_complex: Vec<PcieRootComplexCli>,
@@ -771,10 +842,12 @@ Examples:
     # Attach root port rc0rp1 to root complex rc0 with hotplug support
     --pcie-root-port rc0:rc0rp1,hotplug
 
-Syntax: <root_complex_name>:<name>[,hotplug]
+Syntax: <root_complex_name>:<name>[,opt,opt=arg,...]
 
 Options:
     `hotplug`                      enable hotplug support for this root port
+    `acs=<mask>`                   ACS capability bitmask (u16, decimal or 0x-prefixed hex)
+    `cxl`                          configure this root port as CXL-capable
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_port: Vec<PcieRootPortCli>,
@@ -807,6 +880,7 @@ Syntax: <port_name>:<name>[,opt,opt=arg,...]
 Options:
     `hotplug`                       enable hotplug support for all downstream switch ports
     `num_downstream_ports=<value>`  number of downstream ports, default 4
+    `acs=<mask>`                    ACS capability bitmask for downstream switch ports
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_switch: Vec<GenericPcieSwitchCli>,
@@ -847,18 +921,99 @@ Assign a host PCI device to the guest via Linux VFIO.
 The device must be bound to vfio-pci on the host before starting the VM.
 
 Examples:
-    # Assign NVMe controller to root port rp0
-    --vfio rp0:0000:01:00.0
+    --vfio host=0000:01:00.0,port=rp0
+    --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
 
-Syntax: <port_name>:<pci_bdf>
-
-    port_name    Root port or downstream switch port name
-    pci_bdf      PCI domain:bus:device.function of the VFIO device on
-                 the host (use lspci -D to find it)
+Keys:
+    host=<pci_bdf>    (required) PCI address on the host
+    port=<name>       (required) Root port or downstream switch port name
+    iommu=<id>        (optional) Reference to an --iommu object. When present,
+                      uses VFIO cdev + iommufd instead of the legacy group path.
 "#)]
     #[cfg(target_os = "linux")]
     #[clap(long, conflicts_with("pcat"))]
     pub vfio: Vec<VfioDeviceCli>,
+
+    /// Create an iommufd context for VFIO cdev device assignment
+    #[clap(long_help = r#"
+Declare an iommufd context. Opens /dev/iommu so it can be referenced by
+--vfio devices via the iommu=<id> key. The associated IOAS is allocated
+the first time a --vfio device referring to this id is opened.
+
+Requires Linux kernel >= 6.6 with iommufd support.
+
+Examples:
+    --iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
+
+Syntax: id=<name>
+"#)]
+    #[cfg(target_os = "linux")]
+    #[clap(long, conflicts_with("pcat"))]
+    pub iommu: Vec<IommuCli>,
+}
+
+impl Options {
+    /// Returns the effective guest RAM size.
+    pub fn memory_size(&self) -> u64 {
+        self.memory.mem_size
+    }
+
+    /// Returns whether guest RAM should be prefetched.
+    pub fn prefetch_memory(&self) -> bool {
+        self.memory.prefetch || self.deprecated_prefetch
+    }
+
+    /// Returns whether guest RAM should use private anonymous backing.
+    pub fn private_memory(&self) -> bool {
+        self.memory.shared == Some(false) || self.deprecated_private_memory
+    }
+
+    /// Returns whether guest RAM should be marked THP-eligible.
+    pub fn transparent_hugepages(&self) -> bool {
+        self.memory.transparent_hugepages || self.deprecated_thp
+    }
+
+    /// Returns the effective file backing path for guest RAM.
+    pub fn memory_backing_file(&self) -> Option<&PathBuf> {
+        self.memory
+            .file
+            .as_ref()
+            .or(self.deprecated_memory_backing_file.as_ref())
+    }
+
+    /// Validates combinations that span the new `--memory` parser and legacy aliases.
+    pub fn validate_memory_options(&self) -> anyhow::Result<()> {
+        if self.memory.file.is_some() && self.deprecated_memory_backing_file.is_some() {
+            anyhow::bail!("--memory file=... conflicts with --memory-backing-file");
+        }
+        if self.memory.file.is_some() && self.restore_snapshot.is_some() {
+            anyhow::bail!("--memory file=... conflicts with --restore-snapshot");
+        }
+        if self.memory.shared == Some(true) && self.deprecated_private_memory {
+            anyhow::bail!("--memory shared=on conflicts with --private-memory");
+        }
+        if self.memory_backing_file().is_some() && self.private_memory() {
+            anyhow::bail!("file-backed memory conflicts with private memory");
+        }
+        if self.transparent_hugepages() && !self.private_memory() {
+            anyhow::bail!("transparent huge pages requires private memory mode");
+        }
+        if self.memory.hugepages {
+            if !cfg!(target_os = "linux") {
+                anyhow::bail!("hugepages are only supported on Linux");
+            }
+            if self.private_memory() {
+                anyhow::bail!("hugepages conflict with private memory");
+            }
+            if self.memory_backing_file().is_some() || self.restore_snapshot.is_some() {
+                anyhow::bail!("hugepages conflict with file-backed memory");
+            }
+            if self.pcat {
+                anyhow::bail!("hugepages conflict with x86 legacy RAM splitting");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -989,10 +1144,133 @@ fn parse_memory(s: &str) -> anyhow::Result<u64> {
                 b = &b[..b.len() - 1]
             }
             let n: u64 = std::str::from_utf8(b).ok()?.parse().ok()?;
-            Some(n * multi.unwrap_or(1))
+            n.checked_mul(multi.unwrap_or(1))
         }()
         .with_context(|| format!("invalid memory size '{0}'", s))
     }
+}
+
+fn parse_acs_capability_mask(value: &str) -> anyhow::Result<u16> {
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u16::from_str_radix(hex, 16).context("invalid ACS capability mask")
+    } else {
+        value.parse::<u16>().context("invalid ACS capability mask")
+    }
+}
+
+fn parse_memory_toggle(key: &str, value: &str) -> anyhow::Result<bool> {
+    match value {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => anyhow::bail!("invalid {key} value '{value}', expected 'on' or 'off'"),
+    }
+}
+
+fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
+    if !s.contains('=') && !s.contains(',') {
+        return Ok(MemoryCli {
+            mem_size: parse_memory(s)?,
+            shared: None,
+            prefetch: false,
+            transparent_hugepages: false,
+            hugepages: false,
+            hugepage_size: None,
+            file: None,
+        });
+    }
+
+    let mut mem_size = DEFAULT_MEMORY_SIZE;
+    let mut saw_size = false;
+    let mut shared = None;
+    let mut prefetch = None;
+    let mut transparent_hugepages = None;
+    let mut hugepages = None;
+    let mut hugepage_size = None;
+    let mut file = None;
+
+    for part in s.split(',') {
+        let (key, value) = part
+            .split_once('=')
+            .with_context(|| format!("invalid memory option '{part}', expected key=value"))?;
+        if key.is_empty() || value.is_empty() {
+            anyhow::bail!("invalid memory option '{part}', expected key=value");
+        }
+
+        match key {
+            "size" => {
+                if saw_size {
+                    anyhow::bail!("duplicate memory option 'size'");
+                }
+                mem_size = parse_memory(value)?;
+                saw_size = true;
+            }
+            "shared" => {
+                if shared.is_some() {
+                    anyhow::bail!("duplicate memory option 'shared'");
+                }
+                shared = Some(parse_memory_toggle(key, value)?);
+            }
+            "prefetch" => {
+                if prefetch.is_some() {
+                    anyhow::bail!("duplicate memory option 'prefetch'");
+                }
+                prefetch = Some(parse_memory_toggle(key, value)?);
+            }
+            "thp" => {
+                if transparent_hugepages.is_some() {
+                    anyhow::bail!("duplicate memory option 'thp'");
+                }
+                transparent_hugepages = Some(parse_memory_toggle(key, value)?);
+            }
+            "hugepages" => {
+                if hugepages.is_some() {
+                    anyhow::bail!("duplicate memory option 'hugepages'");
+                }
+                hugepages = Some(parse_memory_toggle(key, value)?);
+            }
+            "hugepage_size" => {
+                if hugepage_size.is_some() {
+                    anyhow::bail!("duplicate memory option 'hugepage_size'");
+                }
+                hugepage_size = Some(parse_memory(value)?);
+            }
+            "file" => {
+                if file.is_some() {
+                    anyhow::bail!("duplicate memory option 'file'");
+                }
+                file = Some(PathBuf::from(value));
+            }
+            _ => anyhow::bail!("unknown memory option '{key}'"),
+        }
+    }
+
+    if transparent_hugepages == Some(true) && shared != Some(false) {
+        anyhow::bail!("memory thp=on requires shared=off");
+    }
+    if hugepage_size.is_some() && hugepages != Some(true) {
+        anyhow::bail!("memory hugepage_size requires hugepages=on");
+    }
+    if hugepages == Some(true) {
+        if shared == Some(false) {
+            anyhow::bail!("memory hugepages=on conflicts with shared=off");
+        }
+        if file.is_some() {
+            anyhow::bail!("memory hugepages=on conflicts with file=...");
+        }
+    }
+
+    Ok(MemoryCli {
+        mem_size,
+        shared,
+        prefetch: prefetch.unwrap_or(false),
+        transparent_hugepages: transparent_hugepages.unwrap_or(false),
+        hugepages: hugepages.unwrap_or(false),
+        hugepage_size,
+        file,
+    })
 }
 
 /// Parse a number from a string that could be prefixed with 0x to indicate hex.
@@ -1338,6 +1616,58 @@ impl FromStr for DiskCli {
             read_only,
             is_dvd,
             underhill,
+            pcie_port,
+        })
+    }
+}
+
+/// CLI arguments for a CXL Type-3 test endpoint.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CxlTestDeviceCli {
+    /// Size of HDM memory the test device should expose and back.
+    pub hdm_size: u64,
+    /// PCIe root port name where the device is attached.
+    pub pcie_port: String,
+}
+
+impl FromStr for CxlTestDeviceCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let mut opts = s.split(',');
+        let first = opts.next().context("expected CXL test device config")?;
+        let (kind, arg) = first
+            .split_once(':')
+            .context("expected CXL test syntax: mem:<len>")?;
+
+        if kind != "mem" {
+            anyhow::bail!("unsupported CXL test backing kind '{kind}', expected 'mem'");
+        }
+
+        let hdm_size = parse_memory(arg).context("failed to parse CXL test HDM size")?;
+        let mut pcie_port = None;
+
+        for opt in opts {
+            let mut kv = opt.split('=');
+            let key = kv.next().unwrap_or_default();
+            match key {
+                "pcie_port" => {
+                    let val = kv.next();
+                    if val.is_none_or(|v| v.is_empty()) {
+                        anyhow::bail!("`pcie_port` requires a port name");
+                    }
+                    pcie_port = Some(val.unwrap().to_string());
+                }
+                _ => anyhow::bail!("unknown option: '{opt}'"),
+            }
+        }
+
+        let Some(pcie_port) = pcie_port else {
+            anyhow::bail!("`pcie_port=<name>` is required for `--cxl-test`");
+        };
+
+        Ok(Self {
+            hdm_size,
             pcie_port,
         })
     }
@@ -1838,6 +2168,18 @@ pub enum Vtl0LateMapPolicyCli {
     Exception,
 }
 
+/// PCIe MSI controller selection for aarch64.
+#[derive(Debug, Copy, Clone, Default, ValueEnum)]
+pub enum GicMsiCli {
+    /// Use ITS when available, fall back to GICv2m.
+    #[default]
+    Auto,
+    /// Force GICv3 ITS (LPI-based MSIs).
+    Its,
+    /// Force GICv2m (SPI-based MSIs).
+    V2m,
+}
+
 #[derive(Debug, Copy, Clone, ValueEnum)]
 pub enum IsolationCli {
     Vbs,
@@ -1901,6 +2243,8 @@ pub struct PcieRootComplexCli {
     pub end_bus: u8,
     pub low_mmio: u32,
     pub high_mmio: u64,
+    pub hdm: u64,
+    pub hdm_window_restrictions: CfmwsWindowRestrictions,
 }
 
 impl FromStr for PcieRootComplexCli {
@@ -1909,6 +2253,9 @@ impl FromStr for PcieRootComplexCli {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         const DEFAULT_PCIE_CRS_LOW_SIZE: u32 = 64 * 1024 * 1024; // 64M
         const DEFAULT_PCIE_CRS_HIGH_SIZE: u64 = 1024 * 1024 * 1024; // 1G
+        const DEFAULT_PCIE_HDM_SIZE: u64 = 1024 * 1024 * 1024; // 1G
+        const DEFAULT_HDM_WINDOW_RESTRICTIONS: CfmwsWindowRestrictions =
+            CfmwsWindowRestrictions::DEVICE_COHERENT;
 
         let mut opts = s.split(',');
         let name = opts.next().context("expected root complex name")?;
@@ -1921,6 +2268,8 @@ impl FromStr for PcieRootComplexCli {
         let mut end_bus = 255;
         let mut low_mmio = DEFAULT_PCIE_CRS_LOW_SIZE;
         let mut high_mmio = DEFAULT_PCIE_CRS_HIGH_SIZE;
+        let mut hdm = DEFAULT_PCIE_HDM_SIZE;
+        let mut hdm_window_restrictions = DEFAULT_HDM_WINDOW_RESTRICTIONS;
         for opt in opts {
             let mut s = opt.split('=');
             let opt = s.next().context("expected option")?;
@@ -1949,6 +2298,18 @@ impl FromStr for PcieRootComplexCli {
                     high_mmio =
                         parse_memory(high_mmio_str).context("failed to parse high MMIO size")?;
                 }
+                "hdm" => {
+                    let hdm_str = s.next().context("expected HDM decoder size")?;
+                    hdm = parse_memory(hdm_str).context("failed to parse HDM decoder size")?;
+                }
+                "hdm_window_restrictions" => {
+                    let mask_str = s
+                        .next()
+                        .context("expected HDM window restrictions bitmask")?;
+                    hdm_window_restrictions =
+                        parse_cxl_cfmws_window_restriction_u16_bitmask(mask_str)
+                            .context("failed to parse HDM window restrictions bitmask")?;
+                }
                 opt => anyhow::bail!("unknown option: '{opt}'"),
             }
         }
@@ -1964,8 +2325,23 @@ impl FromStr for PcieRootComplexCli {
             end_bus,
             low_mmio,
             high_mmio,
+            hdm,
+            hdm_window_restrictions,
         })
     }
+}
+
+fn parse_cxl_cfmws_window_restriction_u16_bitmask(
+    s: &str,
+) -> anyhow::Result<CfmwsWindowRestrictions> {
+    let bits = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u16::from_str_radix(hex, 16).context("invalid hex bitmask")?
+    } else {
+        u16::from_str(s).context("invalid decimal bitmask")?
+    };
+
+    CfmwsWindowRestrictions::try_from_bits(bits)
+        .context("bitmask includes reserved CFMWS window restriction bits")
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1973,6 +2349,8 @@ pub struct PcieRootPortCli {
     pub root_complex_name: String,
     pub name: String,
     pub hotplug: bool,
+    pub acs_capabilities_supported: Option<u16>,
+    pub cxl: bool,
 }
 
 impl FromStr for PcieRootPortCli {
@@ -1994,11 +2372,35 @@ impl FromStr for PcieRootPortCli {
         }
 
         let mut hotplug = false;
+        let mut acs_capabilities_supported = None;
+        let mut cxl = false;
 
         // Parse optional flags
         for opt in opts {
-            match opt {
-                "hotplug" => hotplug = true,
+            let mut kv = opt.split('=');
+            let key = kv.next().context("expected option name")?;
+            let value = kv.next();
+
+            match key {
+                "hotplug" => {
+                    if value.is_some() {
+                        anyhow::bail!("hotplug option does not take a value")
+                    }
+                    hotplug = true;
+                }
+                "acs" => {
+                    let value = value.context("acs option requires a value")?;
+                    if kv.next().is_some() {
+                        anyhow::bail!("acs option expects a single value")
+                    }
+                    acs_capabilities_supported = Some(parse_acs_capability_mask(value)?);
+                }
+                "cxl" => {
+                    if value.is_some() {
+                        anyhow::bail!("cxl option does not take a value")
+                    }
+                    cxl = true;
+                }
                 _ => anyhow::bail!("unexpected option: '{opt}'"),
             }
         }
@@ -2007,6 +2409,8 @@ impl FromStr for PcieRootPortCli {
             root_complex_name: rc_name.to_string(),
             name: rp_name.to_string(),
             hotplug,
+            acs_capabilities_supported,
+            cxl,
         })
     }
 }
@@ -2017,6 +2421,7 @@ pub struct GenericPcieSwitchCli {
     pub name: String,
     pub num_downstream_ports: u8,
     pub hotplug: bool,
+    pub acs_capabilities_supported: Option<u16>,
 }
 
 impl FromStr for GenericPcieSwitchCli {
@@ -2039,6 +2444,7 @@ impl FromStr for GenericPcieSwitchCli {
 
         let mut num_downstream_ports = 4u8; // Default value
         let mut hotplug = false;
+        let mut acs_capabilities_supported = None;
 
         for opt in opts {
             let mut kv = opt.split('=');
@@ -2058,6 +2464,13 @@ impl FromStr for GenericPcieSwitchCli {
                     }
                     hotplug = true;
                 }
+                "acs" => {
+                    let value = kv.next().context("acs option requires a value")?;
+                    if kv.next().is_some() {
+                        anyhow::bail!("acs option expects a single value")
+                    }
+                    acs_capabilities_supported = Some(parse_acs_capability_mask(value)?);
+                }
                 _ => anyhow::bail!("unknown option: '{key}'"),
             }
         }
@@ -2067,6 +2480,7 @@ impl FromStr for GenericPcieSwitchCli {
             name: switch_name.to_string(),
             num_downstream_ports,
             hotplug,
+            acs_capabilities_supported,
         })
     }
 }
@@ -2142,6 +2556,8 @@ impl FromStr for PcieRemoteCli {
 }
 
 /// CLI configuration for a VFIO-assigned PCI device.
+///
+/// Syntax: `host=<bdf>,port=<name>[,iommu=<id>]`
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug)]
 pub struct VfioDeviceCli {
@@ -2149,6 +2565,9 @@ pub struct VfioDeviceCli {
     pub port_name: String,
     /// PCI BDF address of the device on the host (e.g., "0000:01:00.0").
     pub pci_id: String,
+    /// Optional iommufd context ID. When set, uses VFIO cdev + iommufd
+    /// instead of the legacy group/container path.
+    pub iommu: Option<String>,
 }
 
 #[cfg(target_os = "linux")]
@@ -2156,17 +2575,42 @@ impl FromStr for VfioDeviceCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (port_name, pci_id) = s
-            .split_once(':')
-            .context("expected <port_name>:<pci_bdf> (e.g., rp0:0000:01:00.0)")?;
+        let mut host: Option<String> = None;
+        let mut port: Option<String> = None;
+        let mut iommu: Option<String> = None;
 
-        if port_name.is_empty() {
-            anyhow::bail!("port name cannot be empty");
+        for kv in s.split(',') {
+            let (key, value) = kv
+                .split_once('=')
+                .context("expected key=value pair (e.g., host=0000:01:00.0,port=rp0)")?;
+            if value.is_empty() {
+                anyhow::bail!("--vfio: '{key}=' value cannot be empty");
+            }
+            match key {
+                "host" => {
+                    if host.is_some() {
+                        anyhow::bail!("duplicate --vfio key: 'host'");
+                    }
+                    host = Some(value.to_string());
+                }
+                "port" => {
+                    if port.is_some() {
+                        anyhow::bail!("duplicate --vfio key: 'port'");
+                    }
+                    port = Some(value.to_string());
+                }
+                "iommu" => {
+                    if iommu.is_some() {
+                        anyhow::bail!("duplicate --vfio key: 'iommu'");
+                    }
+                    iommu = Some(value.to_string());
+                }
+                _ => anyhow::bail!("unknown --vfio key: '{key}'"),
+            }
         }
 
-        if pci_id.is_empty() {
-            anyhow::bail!("PCI address cannot be empty");
-        }
+        let pci_id = host.context("--vfio: 'host=' is required")?;
+        let port_name = port.context("--vfio: 'port=' is required")?;
 
         // Reject path separators to prevent sysfs path traversal via Path::join.
         if pci_id.contains('/') || pci_id.contains("..") {
@@ -2174,8 +2618,39 @@ impl FromStr for VfioDeviceCli {
         }
 
         Ok(VfioDeviceCli {
-            port_name: port_name.to_string(),
-            pci_id: pci_id.to_string(),
+            port_name,
+            pci_id,
+            iommu,
+        })
+    }
+}
+
+/// CLI configuration for an iommufd context.
+///
+/// Syntax: `id=<name>`
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug)]
+pub struct IommuCli {
+    /// Unique identifier for this iommufd context.
+    pub id: String,
+}
+
+#[cfg(target_os = "linux")]
+impl FromStr for IommuCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (key, value) = s
+            .split_once('=')
+            .context("expected id=<name> (e.g., id=iommu0)")?;
+        if key != "id" {
+            anyhow::bail!("expected 'id=<name>', got '{key}=...'");
+        }
+        if value.is_empty() {
+            anyhow::bail!("iommu id cannot be empty");
+        }
+        Ok(IommuCli {
+            id: value.to_string(),
         })
     }
 }
@@ -2971,6 +3446,20 @@ mod tests {
     }
 
     #[test]
+    fn test_cxl_test_device_cli_parse_valid() {
+        let cfg = CxlTestDeviceCli::from_str("mem:1G,pcie_port=rp0").unwrap();
+        assert_eq!(cfg.hdm_size, 1024 * 1024 * 1024);
+        assert_eq!(cfg.pcie_port, "rp0");
+    }
+
+    #[test]
+    fn test_cxl_test_device_cli_parse_invalid() {
+        assert!(CxlTestDeviceCli::from_str("file:disk.img,pcie_port=rp0").is_err());
+        assert!(CxlTestDeviceCli::from_str("mem:1G").is_err());
+        assert!(CxlTestDeviceCli::from_str("mem:1G,pcie_port=").is_err());
+    }
+
+    #[test]
     fn test_fs_args_pcie_port() {
         // Without pcie_port
         let args = FsArgs::from_str("myfs,/path").unwrap();
@@ -3089,6 +3578,9 @@ mod tests {
 
         const DEFAULT_LOW_MMIO: u32 = (64 * ONE_MB) as u32;
         const DEFAULT_HIGH_MMIO: u64 = ONE_GB;
+        const DEFAULT_HDM: u64 = ONE_GB;
+        const DEFAULT_HDM_WINDOW_RESTRICTIONS: CfmwsWindowRestrictions =
+            CfmwsWindowRestrictions::DEVICE_COHERENT;
 
         assert_eq!(
             PcieRootComplexCli::from_str("rc0").unwrap(),
@@ -3099,6 +3591,8 @@ mod tests {
                 end_bus: 255,
                 low_mmio: DEFAULT_LOW_MMIO,
                 high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
             }
         );
 
@@ -3111,6 +3605,8 @@ mod tests {
                 end_bus: 255,
                 low_mmio: DEFAULT_LOW_MMIO,
                 high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
             }
         );
 
@@ -3123,6 +3619,8 @@ mod tests {
                 end_bus: 255,
                 low_mmio: DEFAULT_LOW_MMIO,
                 high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
             }
         );
 
@@ -3135,6 +3633,8 @@ mod tests {
                 end_bus: 31,
                 low_mmio: DEFAULT_LOW_MMIO,
                 high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
             }
         );
 
@@ -3147,6 +3647,8 @@ mod tests {
                 end_bus: 127,
                 low_mmio: DEFAULT_LOW_MMIO,
                 high_mmio: 2 * ONE_GB,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
             }
         );
 
@@ -3159,6 +3661,8 @@ mod tests {
                 end_bus: 127,
                 low_mmio: DEFAULT_LOW_MMIO,
                 high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
             }
         );
 
@@ -3171,6 +3675,36 @@ mod tests {
                 end_bus: 255,
                 low_mmio: ONE_MB as u32,
                 high_mmio: 64 * ONE_GB,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc7,hdm=2G").unwrap(),
+            PcieRootComplexCli {
+                name: "rc7".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: 2 * ONE_GB,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc8,hdm_window_restrictions=0x21").unwrap(),
+            PcieRootComplexCli {
+                name: "rc8".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: CfmwsWindowRestrictions::try_from_bits(0x21).unwrap(),
             }
         );
 
@@ -3186,6 +3720,11 @@ mod tests {
         assert!(PcieRootComplexCli::from_str("rc,low_mmio=aG").is_err());
         assert!(PcieRootComplexCli::from_str("rc,high_mmio=bad").is_err());
         assert!(PcieRootComplexCli::from_str("rc,high_mmio").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,hdm=bad").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,hdm").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,hdm_window_restrictions=bad").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,hdm_window_restrictions").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,cxl").is_err());
     }
 
     #[test]
@@ -3196,6 +3735,8 @@ mod tests {
                 root_complex_name: "rc0".to_string(),
                 name: "rc0rp0".to_string(),
                 hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
             }
         );
 
@@ -3205,6 +3746,8 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
                 hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: false,
             }
         );
 
@@ -3215,6 +3758,41 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
                 hotplug: true,
+                acs_capabilities_supported: None,
+                cxl: false,
+            }
+        );
+
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port3,acs=0").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port3".to_string(),
+                hotplug: false,
+                acs_capabilities_supported: Some(0),
+                cxl: false,
+            }
+        );
+
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port3,acs=0x5f").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port3".to_string(),
+                hotplug: false,
+                acs_capabilities_supported: Some(0x005f),
+                cxl: false,
+            }
+        );
+
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port4,cxl").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port4".to_string(),
+                hotplug: false,
+                acs_capabilities_supported: None,
+                cxl: true,
             }
         );
 
@@ -3224,6 +3802,7 @@ mod tests {
         assert!(PcieRootPortCli::from_str("rp0,opt").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,invalid_option").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,cxl=true").is_err());
     }
 
     #[test]
@@ -3235,6 +3814,7 @@ mod tests {
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
                 hotplug: false,
+                acs_capabilities_supported: None,
             }
         );
 
@@ -3245,6 +3825,7 @@ mod tests {
                 name: "my_switch".to_string(),
                 num_downstream_ports: 4,
                 hotplug: false,
+                acs_capabilities_supported: None,
             }
         );
 
@@ -3255,6 +3836,7 @@ mod tests {
                 name: "sw".to_string(),
                 num_downstream_ports: 8,
                 hotplug: false,
+                acs_capabilities_supported: None,
             }
         );
 
@@ -3266,6 +3848,7 @@ mod tests {
                 name: "child_switch".to_string(),
                 num_downstream_ports: 4,
                 hotplug: false,
+                acs_capabilities_supported: None,
             }
         );
 
@@ -3277,6 +3860,7 @@ mod tests {
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
                 hotplug: true,
+                acs_capabilities_supported: None,
             }
         );
 
@@ -3288,6 +3872,29 @@ mod tests {
                 name: "switch0".to_string(),
                 num_downstream_ports: 8,
                 hotplug: true,
+                acs_capabilities_supported: None,
+            }
+        );
+
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("rp0:switch0,acs=0").unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "rp0".to_string(),
+                name: "switch0".to_string(),
+                num_downstream_ports: 4,
+                hotplug: false,
+                acs_capabilities_supported: Some(0),
+            }
+        );
+
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("rp0:switch0,acs=95").unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "rp0".to_string(),
+                name: "switch0".to_string(),
+                num_downstream_ports: 4,
+                hotplug: false,
+                acs_capabilities_supported: Some(95),
             }
         );
 
@@ -3358,8 +3965,205 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_memory_units() {
+        assert_eq!(parse_memory("64G").unwrap(), 64 * 1024 * 1024 * 1024);
+        assert_eq!(parse_memory("64GB").unwrap(), 64 * 1024 * 1024 * 1024);
+        assert_eq!(parse_memory("3MB").unwrap(), 3 * 1024 * 1024);
+        assert_eq!(parse_memory("512KB").unwrap(), 512 * 1024);
+        assert!(parse_memory("3MiB").is_err());
+    }
+
+    #[test]
+    fn test_memory_config_size_only() {
+        assert_eq!(
+            parse_memory_config("64G").unwrap(),
+            MemoryCli {
+                mem_size: 64 * 1024 * 1024 * 1024,
+                shared: None,
+                prefetch: false,
+                transparent_hugepages: false,
+                hugepages: false,
+                hugepage_size: None,
+                file: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_memory_config_key_value() {
+        assert_eq!(
+            parse_memory_config("size=2G,shared=off,prefetch=on,thp=on").unwrap(),
+            MemoryCli {
+                mem_size: 2 * 1024 * 1024 * 1024,
+                shared: Some(false),
+                prefetch: true,
+                transparent_hugepages: true,
+                hugepages: false,
+                hugepage_size: None,
+                file: None,
+            }
+        );
+
+        assert_eq!(
+            parse_memory_config("size=4GB,hugepages=on,hugepage_size=2MB").unwrap(),
+            MemoryCli {
+                mem_size: 4 * 1024 * 1024 * 1024,
+                shared: None,
+                prefetch: false,
+                transparent_hugepages: false,
+                hugepages: true,
+                hugepage_size: Some(2 * 1024 * 1024),
+                file: None,
+            }
+        );
+
+        assert_eq!(
+            parse_memory_config("file=/tmp/memory.bin").unwrap(),
+            MemoryCli {
+                mem_size: DEFAULT_MEMORY_SIZE,
+                shared: None,
+                prefetch: false,
+                transparent_hugepages: false,
+                hugepages: false,
+                hugepage_size: None,
+                file: Some(PathBuf::from("/tmp/memory.bin")),
+            }
+        );
+    }
+
+    #[test]
+    fn test_memory_config_rejects_invalid_combinations() {
+        assert!(parse_memory_config("thp=on").is_err());
+        assert!(parse_memory_config("size=1G,size=2G").is_err());
+        assert!(parse_memory_config("hugepage_size=2M").is_err());
+        assert!(parse_memory_config("hugepages=on,shared=off").is_err());
+        assert!(parse_memory_config("hugepages=on,file=/tmp/memory.bin").is_err());
+
+        // Semantic validation of the hugepage size happens in the memory
+        // builder, not in CLI parsing.
+        assert_eq!(
+            parse_memory_config("hugepages=on,hugepage_size=3MB")
+                .unwrap()
+                .hugepage_size,
+            Some(3 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn test_memory_options_merge_legacy_aliases() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--memory",
+            "2G",
+            "--prefetch",
+            "--private-memory",
+            "--thp",
+        ])
+        .unwrap();
+        opt.validate_memory_options().unwrap();
+        assert_eq!(opt.memory_size(), 2 * 1024 * 1024 * 1024);
+        assert!(opt.prefetch_memory());
+        assert!(opt.private_memory());
+        assert!(opt.transparent_hugepages());
+    }
+
+    #[test]
+    fn test_memory_options_allow_legacy_thp_with_new_private_memory() {
+        let opt = Options::try_parse_from(["openvmm", "--memory", "shared=off", "--thp"]).unwrap();
+        opt.validate_memory_options().unwrap();
+        assert!(opt.private_memory());
+        assert!(opt.transparent_hugepages());
+    }
+
+    #[test]
+    fn test_memory_options_reject_conflicting_legacy_aliases() {
+        let opt = Options::try_parse_from(["openvmm", "--memory", "shared=on", "--private-memory"])
+            .unwrap();
+        assert!(opt.validate_memory_options().is_err());
+    }
+
+    #[test]
+    fn test_memory_options_reject_hugepage_legacy_conflicts() {
+        let opt =
+            Options::try_parse_from(["openvmm", "--memory", "hugepages=on", "--private-memory"])
+                .unwrap();
+        assert!(opt.validate_memory_options().is_err());
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--memory",
+            "hugepages=on",
+            "--memory-backing-file",
+            "/tmp/memory.bin",
+        ])
+        .unwrap();
+        assert!(opt.validate_memory_options().is_err());
+    }
+
+    #[test]
     fn test_pidfile_option_parsed() {
         let opt = Options::try_parse_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
         assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_vfio_device_cli_parse() {
+        // Required keys only.
+        let v = VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0").unwrap();
+        assert_eq!(v.pci_id, "0000:01:00.0");
+        assert_eq!(v.port_name, "rp0");
+        assert_eq!(v.iommu, None);
+
+        // With optional iommu= key. Keys may appear in any order.
+        let v = VfioDeviceCli::from_str("port=rp1,iommu=iommu0,host=0000:02:00.0").unwrap();
+        assert_eq!(v.pci_id, "0000:02:00.0");
+        assert_eq!(v.port_name, "rp1");
+        assert_eq!(v.iommu.as_deref(), Some("iommu0"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_vfio_device_cli_errors() {
+        // Missing required keys.
+        assert!(VfioDeviceCli::from_str("port=rp0").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0").is_err());
+
+        // Unknown key.
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,foo=bar").is_err());
+
+        // Duplicate keys are rejected.
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,host=0000:02:00.0,port=rp0").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,port=rp1").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,iommu=a,iommu=b").is_err());
+
+        // Empty values are rejected.
+        assert!(VfioDeviceCli::from_str("host=,port=rp0").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,iommu=").is_err());
+
+        // Missing '=' separator.
+        assert!(VfioDeviceCli::from_str("host").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,iommu").is_err());
+
+        // Path-traversal characters in the host BDF are rejected.
+        assert!(VfioDeviceCli::from_str("host=../../etc/passwd,port=rp0").is_err());
+        assert!(VfioDeviceCli::from_str("host=foo/bar,port=rp0").is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_iommu_cli_parse() {
+        let c = IommuCli::from_str("id=iommu0").unwrap();
+        assert_eq!(c.id, "iommu0");
+
+        // Wrong key.
+        assert!(IommuCli::from_str("name=iommu0").is_err());
+
+        // Missing '=' separator.
+        assert!(IommuCli::from_str("iommu0").is_err());
+
+        // Empty id.
+        assert!(IommuCli::from_str("id=").is_err());
     }
 }

@@ -1,0 +1,22 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "firmware_uefi_resources"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chipset_resources.workspace = true
+firmware_uefi_custom_vars.workspace = true
+hcl_compat_uefi_nvram_resources.workspace = true
+uefi_specs.workspace = true
+watchdog_core.workspace = true
+
+inspect.workspace = true
+mesh.workspace = true
+mesh_protobuf.workspace = true
+vm_resource.workspace = true
+
+[lints]
+workspace = true

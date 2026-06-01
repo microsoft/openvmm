@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! PKCS#7 signature verification using OpenSSL.
+
 use super::*;
 
 pub struct Pkcs7SignedDataInner(openssl::pkcs7::Pkcs7);
@@ -18,11 +20,9 @@ impl Pkcs7CertStoreInner {
         Ok(Self(builder))
     }
 
-    pub fn add_cert_der(&mut self, data: &[u8]) -> Result<(), Pkcs7Error> {
-        let cert = openssl::x509::X509::from_der(data)
-            .map_err(|e| err(e, "decoding x509 certificate from DER"))?;
+    pub fn add_cert(&mut self, cert: &crate::x509::X509Certificate) -> Result<(), Pkcs7Error> {
         self.0
-            .add_cert(cert)
+            .add_cert(cert.0.0.clone())
             .map_err(|e| err(e, "adding certificate to store"))
     }
 }
@@ -44,19 +44,26 @@ impl Pkcs7SignedDataInner {
         cert: &crate::x509::X509Certificate,
         key_pair: &crate::rsa::RsaKeyPair,
         data: &[u8],
-    ) -> Result<Self, Pkcs7Error> {
-        let pkey = openssl::pkey::PKey::from_rsa(key_pair.0.rsa.clone())
-            .map_err(|e| err(e, "converting RSA key for pkcs7 signing"))?;
-        let certs =
-            openssl::stack::Stack::new().map_err(|e| err(e, "creating empty certificate stack"))?;
+    ) -> Result<Self, crate::rsa::RsaError> {
+        fn rsa_err(err: openssl::error::ErrorStack, op: &'static str) -> crate::rsa::RsaError {
+            crate::rsa::RsaError(crate::BackendError(err, op))
+        }
+        let certs = openssl::stack::Stack::new()
+            .map_err(|e| rsa_err(e, "creating empty certificate stack"))?;
         let pkcs7 = openssl::pkcs7::Pkcs7::sign(
-            &cert.0.cert,
-            &pkey,
+            &cert.0.0,
+            &key_pair.0.0,
             &certs,
             data,
-            openssl::pkcs7::Pkcs7Flags::empty(),
+            // - DETACHED: do not embed the content; the verifier supplies it.
+            // - BINARY: do not perform text/CRLF canonicalization.
+            // - NOATTR: omit signedAttrs; the signature covers the raw
+            //   encapsulated content directly per RFC 5652 §5.4.
+            openssl::pkcs7::Pkcs7Flags::DETACHED
+                | openssl::pkcs7::Pkcs7Flags::BINARY
+                | openssl::pkcs7::Pkcs7Flags::NOATTR,
         )
-        .map_err(|e| err(e, "pkcs7 signing"))?;
+        .map_err(|e| rsa_err(e, "pkcs7 signing"))?;
         Ok(Self(pkcs7))
     }
 

@@ -51,6 +51,10 @@ pub trait ArtifactId: 'static {
     #[doc(hidden)]
     const GLOBAL_UNIQUE_ID: &'static str;
 
+    /// Whether this artifact can be backed by blob disk
+    #[doc(hidden)]
+    const SUPPORTS_BLOB_DISK: bool;
+
     /// ...in case you decide to flaunt the trait-level docs regarding manually
     /// implementing this trait.
     #[doc(hidden)]
@@ -187,16 +191,21 @@ pub struct ArtifactResolver<'a> {
 }
 
 impl<'a> ArtifactResolver<'a> {
-    /// Returns the default remote access policy, checking the
+    /// Returns the remote access policy, checking the
     /// `PETRI_REMOTE_ARTIFACTS` environment variable.
     ///
     /// Set `PETRI_REMOTE_ARTIFACTS=0` to force all artifacts to be resolved
-    /// locally, even if `RemoteAccess::Allow` is specified per-call.
-    fn default_remote_policy() -> RemoteAccess {
-        match std::env::var("PETRI_REMOTE_ARTIFACTS").as_deref() {
-            Ok("0") | Ok("false") => RemoteAccess::LocalOnly,
-            _ => RemoteAccess::Allow,
-        }
+    /// locally, even if `RemoteAccess::Allow` is specified per-call or per-test.
+    pub fn set_remote_policy(&mut self, test_policy: RemoteAccess) {
+        self.remote_policy = if matches!(test_policy, RemoteAccess::LocalOnly)
+            || matches!(
+                std::env::var("PETRI_REMOTE_ARTIFACTS").as_deref(),
+                Ok("0") | Ok("false")
+            ) {
+            RemoteAccess::LocalOnly
+        } else {
+            RemoteAccess::Allow
+        };
     }
 
     /// Returns a resolver to collect requirements; the artifact objects returned by
@@ -204,7 +213,7 @@ impl<'a> ArtifactResolver<'a> {
     pub fn collector(requirements: &'a mut TestArtifactRequirements) -> Self {
         ArtifactResolver {
             inner: ArtifactResolverInner::Collecting(RefCell::new(requirements)),
-            remote_policy: Self::default_remote_policy(),
+            remote_policy: RemoteAccess::LocalOnly,
         }
     }
 
@@ -212,14 +221,14 @@ impl<'a> ArtifactResolver<'a> {
     pub fn resolver(artifacts: &'a TestArtifacts) -> Self {
         ArtifactResolver {
             inner: ArtifactResolverInner::Resolving(artifacts),
-            remote_policy: Self::default_remote_policy(),
+            remote_policy: RemoteAccess::LocalOnly,
         }
     }
 
     /// Returns the effective remote access for a given per-call policy,
     /// respecting the resolver-wide policy.
-    fn effective_remote(&self, per_call: RemoteAccess) -> RemoteAccess {
-        if matches!(self.remote_policy, RemoteAccess::LocalOnly) {
+    fn effective_remote<A: ArtifactId>(&self, per_call: RemoteAccess) -> RemoteAccess {
+        if matches!(self.remote_policy, RemoteAccess::LocalOnly) || !A::SUPPORTS_BLOB_DISK {
             RemoteAccess::LocalOnly
         } else {
             per_call
@@ -248,7 +257,9 @@ impl<'a> ArtifactResolver<'a> {
     ) -> ResolvedOptionalArtifact<A> {
         match &self.inner {
             ArtifactResolverInner::Collecting(requirements) => {
-                requirements.borrow_mut().try_require(handle.erase());
+                requirements
+                    .borrow_mut()
+                    .require(handle.erase(), RemoteAccess::LocalOnly, true);
                 ResolvedOptionalArtifact(OptionalArtifactState::Collecting, PhantomData)
             }
             ArtifactResolverInner::Resolving(artifacts) => ResolvedOptionalArtifact(
@@ -273,12 +284,12 @@ impl<'a> ArtifactResolver<'a> {
         handle: ArtifactHandle<A>,
         remote: RemoteAccess,
     ) -> ResolvedArtifactSource<A> {
-        let effective = self.effective_remote(remote);
+        let effective = self.effective_remote::<A>(remote);
         match &self.inner {
             ArtifactResolverInner::Collecting(requirements) => {
                 requirements
                     .borrow_mut()
-                    .require_source(handle.erase(), effective);
+                    .require(handle.erase(), effective, false);
                 ResolvedArtifactSource(None, PhantomData)
             }
             ArtifactResolverInner::Resolving(artifacts) => {
@@ -298,6 +309,13 @@ enum ArtifactResolverInner<'a> {
 #[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ErasedArtifactHandle {
     artifact_id_str: &'static str,
+}
+
+impl ErasedArtifactHandle {
+    /// used to serialize the artifact handle when querying petri for test requirements
+    pub fn global_unique_id(&self) -> String {
+        self.artifact_id_str.to_string()
+    }
 }
 
 impl std::fmt::Debug for ErasedArtifactHandle {
@@ -357,13 +375,52 @@ impl<A: ArtifactId> AsArtifactHandle for ArtifactHandle<A> {
     }
 }
 
-/// Declare one or more type-safe artifacts.
+/// Declare one or more type-safe artifacts that do not support blob disk.
 #[macro_export]
 macro_rules! declare_artifacts {
     (
         $(
             $(#[$doc:meta])*
             $name:ident
+        ),*
+        $(,)?
+    ) => {
+        $crate::declare_artifacts_inner!(
+            $(
+                $(#[$doc])*
+                $name(false),
+            )*
+        );
+    };
+}
+
+/// Declare one or more type-safe artifacts that support blob disk.
+#[macro_export]
+macro_rules! declare_blob_artifacts {
+    (
+        $(
+            $(#[$doc:meta])*
+            $name:ident
+        ),*
+        $(,)?
+    ) => {
+        $crate::declare_artifacts_inner!(
+            $(
+                $(#[$doc])*
+                $name(true),
+            )*
+        );
+    };
+}
+
+/// Declare one or more type-safe artifacts, specifying whether each supports
+/// blob disk.
+#[macro_export]
+macro_rules! declare_artifacts_inner {
+    (
+        $(
+            $(#[$doc:meta])*
+            $name:ident($supports_blob_disk:literal)
         ),*
         $(,)?
     ) => {
@@ -382,6 +439,7 @@ macro_rules! declare_artifacts {
                 mod [< $name __ty >] {
                     impl $crate::ArtifactId for super::$name {
                         const GLOBAL_UNIQUE_ID: &'static str = module_path!();
+                        const SUPPORTS_BLOB_DISK: bool = $supports_blob_disk;
                         fn i_know_what_im_doing_with_this_manual_impl_instead_of_using_the_declare_artifacts_macro() {}
                     }
                 }
@@ -444,36 +502,15 @@ impl TestArtifactRequirements {
         }
     }
 
-    /// Add a dependency to the set of required artifacts (must be local).
-    pub fn require(&mut self, dependency: impl AsArtifactHandle) -> &mut Self {
-        self.require_source(dependency, RemoteAccess::LocalOnly)
-    }
-
-    /// Add an optional dependency to the set of artifacts.
-    pub fn try_require(&mut self, dependency: impl AsArtifactHandle) -> &mut Self {
-        self.artifacts.push((
-            dependency.erase(),
-            ArtifactRequirement {
-                optional: true,
-                remote: RemoteAccess::LocalOnly,
-            },
-        ));
-        self
-    }
-
-    /// Add a dependency that may resolve to a remote URL.
-    pub fn require_source(
+    /// Add a dependency that may be optional or resolve to a remote URL.
+    pub fn require(
         &mut self,
         dependency: impl AsArtifactHandle,
         remote: RemoteAccess,
+        optional: bool,
     ) -> &mut Self {
-        self.artifacts.push((
-            dependency.erase(),
-            ArtifactRequirement {
-                optional: false,
-                remote,
-            },
-        ));
+        self.artifacts
+            .push((dependency.erase(), ArtifactRequirement { optional, remote }));
         self
     }
 
@@ -593,4 +630,13 @@ impl TestArtifacts {
         self.try_get_source(artifact.erase())
             .unwrap_or_else(|| panic!("Artifact not initially required: {:?}", artifact.erase()))
     }
+}
+
+/// JSON output format for `--list-required-artifacts`.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct ArtifactListOutput {
+    /// List of unique required artifact IDs across all matching tests.
+    pub required: Vec<String>,
+    /// List of unique optional artifact IDs across all matching tests.
+    pub optional: Vec<String>,
 }

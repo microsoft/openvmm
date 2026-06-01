@@ -8,9 +8,11 @@
 #![no_std]
 
 pub mod gic;
+pub mod rsi;
 pub mod smccc;
 
 use bitfield_struct::bitfield;
+use core::fmt::Display;
 use open_enum::open_enum;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -59,8 +61,17 @@ pub struct Cpsr64 {
 #[bitfield(u64)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct EsrEl2 {
-    #[bits(25)]
-    pub iss: u32,
+    #[bits(6)]
+    pub lower_iss: u8,
+    pub wnr: bool,
+    #[bits(9)]
+    pub mid_iss: u16,
+    #[bits(5)]
+    pub b_srt: u8,
+    pub a: bool,
+    pub b: bool,
+    pub c: bool,
+    pub d: bool,
     pub il: bool,
     #[bits(6)]
     pub ec: u8,
@@ -68,6 +79,38 @@ pub struct EsrEl2 {
     pub iss2: u8,
     #[bits(27)]
     _rsvd: u32,
+}
+
+impl EsrEl2 {
+    pub fn is_write(&self) -> bool {
+        // The WNR bit is set for writes, not reads.
+        self.wnr()
+    }
+
+    pub fn is_read(&self) -> bool {
+        // The WNR bit is set for writes, not reads.
+        !self.wnr()
+    }
+
+    pub fn iss(&self) -> u32 {
+        u32::from(self.lower_iss())
+            | ((self.wnr() as u32) << 6)
+            | (u32::from(self.mid_iss()) << 7)
+            | (u32::from(self.b_srt()) << 16)
+            | ((self.a() as u32) << 21)
+            | ((self.b() as u32) << 22)
+            | ((self.c() as u32) << 23)
+            | ((self.d() as u32) << 24)
+    }
+
+    pub fn srt(&self) -> Option<u8> {
+        // The SRT field is only valid for data aborts.
+        if (ExceptionClass::DATA_ABORT_LOWER.0..ExceptionClass::DATA_ABORT.0).contains(&self.ec()) {
+            Some(self.b_srt())
+        } else {
+            None
+        }
+    }
 }
 
 /// aarch64 SCTRL_EL1
@@ -222,9 +265,17 @@ pub struct IssDataAbort {
 impl From<IssDataAbort> for EsrEl2 {
     fn from(abort_code: IssDataAbort) -> Self {
         let val: u32 = abort_code.into();
+        let iss = val & 0x07ff_ffff;
         EsrEl2::new()
             .with_ec(ExceptionClass::DATA_ABORT.0)
-            .with_iss(val & 0x07ffffff)
+            .with_lower_iss((iss & 0x3f) as u8)
+            .with_wnr(((iss >> 6) & 1) != 0)
+            .with_mid_iss(((iss >> 7) & 0x1ff) as u16)
+            .with_b_srt(((iss >> 16) & 0x1F) as u8)
+            .with_a(((iss >> 21) & 0x1) != 0)
+            .with_b(((iss >> 22) & 0x1) != 0)
+            .with_c(((iss >> 23) & 0x1) != 0)
+            .with_d(((iss >> 24) & 0x1) != 0)
             .with_iss2((val >> 27) as u8)
     }
 }
@@ -315,9 +366,18 @@ pub struct IssInstructionAbort {
 impl From<IssInstructionAbort> for EsrEl2 {
     fn from(instruction_code: IssInstructionAbort) -> Self {
         let val: u32 = instruction_code.into();
+        let iss = val & 0x07ff_ffff;
+
         EsrEl2::new()
             .with_ec(ExceptionClass::INSTRUCTION_ABORT.0)
-            .with_iss(val & 0x07ffffff)
+            .with_lower_iss((iss & 0x3f) as u8)
+            .with_wnr(((iss >> 6) & 1) != 0)
+            .with_mid_iss(((iss >> 7) & 0x1ff) as u16)
+            .with_b_srt(((iss >> 16) & 0x1F) as u8)
+            .with_a(((iss >> 21) & 0x1) != 0)
+            .with_b(((iss >> 22) & 0x1) != 0)
+            .with_c(((iss >> 23) & 0x1) != 0)
+            .with_d(((iss >> 24) & 0x1) != 0)
             .with_iss2((val >> 27) as u8)
     }
 }
@@ -854,5 +914,37 @@ open_enum! {
     pub enum SystemOff2Code: u32 {
         DEFAULT = 0,
         HIBERNATE_OFF = 1,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub struct Vendor(pub u32);
+
+impl Vendor {
+    pub const ARM: Self = Self(0x0010);
+
+    pub fn is_arm_compatible(&self) -> bool {
+        *self == Self::ARM
+    }
+
+    // Intel and Amd compatible checkers are still implemented and return false.
+    // By this, some generic code do NOT diverge on AArch64.
+    pub fn is_intel_compatible(&self) -> bool {
+        false
+    }
+
+    // Likewise
+    pub fn is_amd_compatible(&self) -> bool {
+        false
+    }
+}
+
+impl Display for Vendor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.is_arm_compatible() {
+            f.pad("Arm")
+        } else {
+            write!(f, "{:#x}", self.0)
+        }
     }
 }

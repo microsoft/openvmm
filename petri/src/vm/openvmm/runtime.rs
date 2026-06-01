@@ -6,6 +6,7 @@
 use super::PetriVmResourcesOpenVmm;
 use crate::OpenHclServicingFlags;
 use crate::PetriHaltReason;
+use crate::PetriHaltReasonDetail;
 use crate::PetriVmFramebufferAccess;
 use crate::PetriVmInspector;
 use crate::PetriVmRuntime;
@@ -68,7 +69,7 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         Ok(())
     }
 
-    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
+    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReasonDetail> {
         let halt_reason = if let Some(already) = self.halt.already_received.take() {
             already.map_err(anyhow::Error::from)
         } else {
@@ -81,7 +82,7 @@ impl PetriVmRuntime for PetriVmOpenVmm {
 
         tracing::info!(?halt_reason, "Got halt reason");
 
-        let halt_reason = match halt_reason {
+        let reason = match halt_reason {
             HaltReason::PowerOff => PetriHaltReason::PowerOff,
             HaltReason::Reset => PetriHaltReason::Reset,
             HaltReason::Hibernate => PetriHaltReason::Hibernate,
@@ -89,11 +90,14 @@ impl PetriVmRuntime for PetriVmOpenVmm {
             _ => PetriHaltReason::Other,
         };
 
-        if allow_reset && halt_reason == PetriHaltReason::Reset {
+        if allow_reset && reason == PetriHaltReason::Reset {
             self.reset().await?
         }
 
-        Ok(halt_reason)
+        Ok(PetriHaltReasonDetail {
+            reason,
+            detail: format!("{halt_reason:?}"),
+        })
     }
 
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
@@ -559,18 +563,30 @@ impl PetriVmInner {
         };
 
         tracing::info!(set_high_vtl, "listening for pipette connection");
-        let (conn, _) = listener
-            .accept()
-            .await
-            .context("failed to accept pipette connection")?;
-        tracing::info!(set_high_vtl, "handshaking with pipette");
-        let client = PipetteClient::new(
-            &self.resources.driver,
-            PolledSocket::new(&self.resources.driver, conn)?,
-            &self.resources.output_dir,
-        )
-        .await
-        .context("failed to connect to pipette")?;
+        let client = loop {
+            let (conn, _) = listener
+                .accept()
+                .await
+                .context("failed to accept pipette connection")?;
+            tracing::info!(set_high_vtl, "handshaking with pipette");
+            let socket = PolledSocket::new(&self.resources.driver, conn)?;
+            match PipetteClient::new(&self.resources.driver, socket, &self.resources.output_dir)
+                .await
+            {
+                Ok(client) => break client,
+                Err(e) => {
+                    // During save/restore cycles, stale connections from
+                    // previous hvsock relay sessions can accumulate in the
+                    // listener backlog. These are already-closed sockets
+                    // that fail during the mesh handshake. Drain them and
+                    // retry until we get a live connection.
+                    tracing::warn!(
+                        error = &e as &dyn std::error::Error,
+                        "pipette handshake failed, retrying"
+                    );
+                }
+            }
+        };
         tracing::info!(set_high_vtl, "completed pipette handshake");
 
         // When pipette runs as PID 1 init and a CIDATA agent disk is

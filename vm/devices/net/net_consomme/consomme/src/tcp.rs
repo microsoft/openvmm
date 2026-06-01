@@ -293,7 +293,12 @@ impl<T: Client> Access<'_, T> {
                                 ) {
                                     Ok(conn) => conn,
                                     Err(err) => {
-                                        tracing::warn!(err = %err, "Failed to create connection from newly accepted socket");
+                                        tracing::warn!(
+                                            error = &err as &dyn std::error::Error,
+                                            src = %ft.src,
+                                            dst = %ft.dst,
+                                            "Failed to create connection from newly accepted socket",
+                                        );
                                         return true;
                                     }
                                 };
@@ -301,7 +306,8 @@ impl<T: Client> Access<'_, T> {
                             }
                             hash_map::Entry::Occupied(_) => {
                                 tracing::warn!(
-                                    address = ?ft.dst,
+                                    src = %ft.src,
+                                    dst = %ft.dst,
                                     "New client request ignored because it was already connected"
                                 );
                             }
@@ -336,7 +342,7 @@ impl<T: Client> Access<'_, T> {
     }
 
     pub(crate) fn refresh_tcp_driver(&mut self) {
-        self.inner.tcp.connections.retain(|_, conn| {
+        self.inner.tcp.connections.retain(|ft, conn| {
             let TcpBackend::Socket(opt_socket) = &mut conn.backend else {
                 // DNS connections have no real socket to refresh.
                 return true;
@@ -353,6 +359,8 @@ impl<T: Client> Access<'_, T> {
                 Err(err) => {
                     tracing::warn!(
                         error = &err as &dyn std::error::Error,
+                        src = %ft.src,
+                        dst = %ft.dst,
                         "failed to update driver for tcp connection"
                     );
                     false
@@ -385,7 +393,7 @@ impl<T: Client> Access<'_, T> {
                 src: SocketAddr::V6(SocketAddrV6::new(addresses.src_addr, tcp.src_port, 0, 0)),
             },
         };
-        trace_tcp_packet(&tcp, tcp.payload.len(), "recv");
+        trace_tcp_packet(&ft, &tcp, tcp.payload.len(), "recv");
 
         let is_dns_tcp =
             is_gateway_dns_tcp(&ft, &self.inner.state.params, self.inner.dns.is_some());
@@ -548,7 +556,7 @@ impl<T: Client> Sender<'_, T> {
             payload: &[],
         };
 
-        trace_tcp_packet(&tcp, 0, "rst xmit");
+        trace_tcp_packet(self.ft, &tcp, 0, "rst xmit");
 
         self.send_packet(&tcp, None);
     }
@@ -632,7 +640,7 @@ impl TcpConnection {
             Ok(_) => unreachable!(),
             Err(err) if is_connect_incomplete_error(&err) => (),
             Err(err) => {
-                log_connect_error(&err);
+                log_connect_error(sender.ft, &err);
                 sender.rst(TcpSeqNumber(0), Some(tcp.seq_number + tcp.segment_len()));
                 return Err(DropReason::Io(err));
             }
@@ -640,7 +648,11 @@ impl TcpConnection {
         if let Ok(addr) = socket.get().local_addr() {
             match addr.as_socket() {
                 None => {
-                    tracing::warn!("unable to get local socket address");
+                    tracing::warn!(
+                        src = %sender.ft.src,
+                        dst = %sender.ft.dst,
+                        "unable to get local socket address",
+                    );
                 }
                 Some(addr) => {
                     if addr.ip().is_loopback() {
@@ -688,10 +700,8 @@ impl TcpConnection {
         inner.initialize_from_first_client_packet(tcp)?;
 
         let flow = crate::dns_resolver::DnsFlow {
-            src_addr: sender.ft.src.ip().into(),
-            dst_addr: sender.ft.dst.ip().into(),
-            src_port: sender.ft.src.port(),
-            dst_port: sender.ft.dst.port(),
+            src: sender.ft.src,
+            dst: sender.ft.dst,
             gateway_mac: sender.state.params.gateway_mac,
             client_mac: sender.state.params.client_mac,
             transport: crate::dns_resolver::DnsTransport::Tcp,
@@ -748,6 +758,13 @@ impl TcpConnectionInner {
         // Propagate guest FIN before the tx path so that poll_read can
         // detect EOF on the same iteration.
         if self.state.rx_fin() && !dns_handler.guest_fin() {
+            tracing::trace!(
+                src = %sender.ft.src,
+                dst = %sender.ft.dst,
+                tx_buffer_len = self.tx_buffer.len(),
+                tx_buffer_full = self.tx_buffer.is_full(),
+                "tcp: guest FIN received, signaling EOF to DNS handler",
+            );
             dns_handler.set_guest_fin();
         }
 
@@ -766,6 +783,14 @@ impl TcpConnectionInner {
                         break;
                     }
                     self.tx_buffer.extend_by(n);
+                    tracing::trace!(
+                        src = %sender.ft.src,
+                        dst = %sender.ft.dst,
+                        n,
+                        tx_buffer_len = self.tx_buffer.len(),
+                        tx_buffer_full = self.tx_buffer.is_full(),
+                        "tcp: response from DNS handler into tx_buffer",
+                    );
                 }
                 Poll::Ready(Err(_)) => {
                     sender.rst(self.tx_send, Some(self.rx_seq));
@@ -818,7 +843,11 @@ impl TcpConnectionInner {
                         return false;
                     }
 
-                    tracing::debug!("connection established");
+                    tracing::debug!(
+                        src = %sender.ft.src,
+                        dst = %sender.ft.dst,
+                        "connection established",
+                    );
                     self.state = TcpState::SynReceived;
                 }
                 Poll::Pending => return true,
@@ -838,6 +867,8 @@ impl TcpConnectionInner {
                             ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {}
                             _ => tracelimit::warn_ratelimited!(
                                 error = &err as &dyn std::error::Error,
+                                src = %sender.ft.src,
+                                dst = %sender.ft.dst,
                                 "socket failure after fin"
                             ),
                         }
@@ -864,10 +895,14 @@ impl TcpConnectionInner {
                             match err.kind() {
                                 ErrorKind::ConnectionReset => tracing::trace!(
                                     error = &err as &dyn std::error::Error,
+                                    src = %sender.ft.src,
+                                    dst = %sender.ft.dst,
                                     "socket read error"
                                 ),
                                 _ => tracelimit::warn_ratelimited!(
                                     error = &err as &dyn std::error::Error,
+                                    src = %sender.ft.src,
+                                    dst = %sender.ft.dst,
                                     "socket read error"
                                 ),
                             }
@@ -896,6 +931,8 @@ impl TcpConnectionInner {
                             _ => {
                                 tracelimit::warn_ratelimited!(
                                     error = &err as &dyn std::error::Error,
+                                    src = %sender.ft.src,
+                                    dst = %sender.ft.dst,
                                     "socket write error"
                                 );
                             }
@@ -910,6 +947,8 @@ impl TcpConnectionInner {
                 if let Err(err) = socket.get().shutdown(Shutdown::Write) {
                     tracelimit::warn_ratelimited!(
                         error = &err as &dyn std::error::Error,
+                        src = %sender.ft.src,
+                        dst = %sender.ft.dst,
                         "shutdown error"
                     );
                     sender.rst(self.tx_send, Some(self.rx_seq));
@@ -934,9 +973,14 @@ impl TcpConnectionInner {
             // Avoid resetting so that the guest doesn't think there is a
             // responding TCP stack at this address. The guest will time out on
             // its own.
-            tracing::debug!(error = &err as &dyn std::error::Error, "connect timed out");
+            tracing::debug!(
+                src = %sender.ft.src,
+                dst = %sender.ft.dst,
+                error = &err as &dyn std::error::Error,
+                "connect timed out",
+            );
         } else {
-            log_connect_error(&err);
+            log_connect_error(sender.ft, &err);
             sender.rst(self.tx_send, Some(self.rx_seq));
         }
     }
@@ -1061,7 +1105,7 @@ impl TcpConnectionInner {
             assert!(tx_next <= tx_end);
             assert!(self.needs_ack || tx_next > self.tx_send);
 
-            trace_tcp_packet(&tcp, payload_len, "xmit");
+            trace_tcp_packet(sender.ft, &tcp, payload_len, "xmit");
 
             let payload = self
                 .tx_buffer
@@ -1116,7 +1160,7 @@ impl TcpConnectionInner {
             payload: &[],
         };
 
-        trace_tcp_packet(&tcp, 0, "ack");
+        trace_tcp_packet(sender.ft, &tcp, 0, "ack");
 
         sender.send_packet(&tcp, None);
     }
@@ -1408,9 +1452,11 @@ impl TcpListener {
 /// Logs protocol-relevant fields (flags, seq, ack, window, payload length)
 /// as individual tracing fields instead of dumping the full `TcpRepr` Debug
 /// output which includes raw payload bytes.
-fn trace_tcp_packet(tcp: &TcpRepr<'_>, payload_len: usize, label: &str) {
+fn trace_tcp_packet(ft: &FourTuple, tcp: &TcpRepr<'_>, payload_len: usize, label: &str) {
     tracing::trace!(
         label,
+        src = %ft.src,
+        dst = %ft.dst,
         flags = match tcp.control {
             TcpControl::Syn => Some("SYN"),
             TcpControl::Fin => Some("FIN"),
@@ -1439,20 +1485,32 @@ fn take_socket_error(socket: &PolledSocket<Socket>) -> io::Error {
 ///
 /// Connection refused and network/host unreachable are expected failures logged
 /// at debug level. Everything else is logged at warn.
-fn log_connect_error(err: &io::Error) {
+fn log_connect_error(ft: &FourTuple, err: &io::Error) {
     match err.kind() {
         ErrorKind::ConnectionRefused => {
-            tracing::debug!(error = err as &dyn std::error::Error, "connect refused");
+            tracing::debug!(
+                error = err as &dyn std::error::Error,
+                src = %ft.src,
+                dst = %ft.dst,
+                "connect refused",
+            );
         }
         ErrorKind::NetworkUnreachable | ErrorKind::HostUnreachable => {
             // FUTURE: send ICMP unreachable to guest
             tracing::debug!(
                 error = err as &dyn std::error::Error,
-                "connect failed, unreachable"
+                src = %ft.src,
+                dst = %ft.dst,
+                "connect failed, unreachable",
             );
         }
         _ => {
-            tracelimit::warn_ratelimited!(error = err as &dyn std::error::Error, "connect failed");
+            tracelimit::warn_ratelimited!(
+                error = err as &dyn std::error::Error,
+                src = %ft.src,
+                dst = %ft.dst,
+                "connect failed",
+            );
         }
     }
 }

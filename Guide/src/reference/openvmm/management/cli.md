@@ -8,7 +8,39 @@ as well as the generated CLI help (via `cargo run -- --help`).
 ```
 
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
-* `--memory <SIZE>`: The VM's memory size. Defaults to 1GB.
+* `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
+  `SPEC` can be a size-only shorthand, such as `--memory 4G`, or a
+  comma-separated key/value list:
+
+  ```bash
+  --memory size=4G,shared=on,prefetch=off
+  ```
+
+  Supported keys:
+  * `size=<SIZE>` - guest RAM size. Sizes accept `K`, `M`, `G`, and
+    `T` suffixes, optionally followed by `B`.
+  * `shared=on|off` - use shared file-backed guest RAM. The default is
+    `on`; `off` uses private anonymous memory.
+  * `prefetch=on|off` - pre-populate shared guest RAM mappings.
+  * `thp=on|off` - mark private guest RAM as Transparent Huge Page
+    eligible. Requires `shared=off`.
+  * `hugepages=on|off` - allocate guest RAM from Linux hugetlb pages.
+    This is Linux-only, requires shared memory, and cannot be combined
+    with file-backed memory or PCAT/legacy x86 RAM splitting.
+  * `hugepage_size=<SIZE>` - request a specific hugetlb page size, such
+    as `2MB` or `1GB`. Requires `hugepages=on`; if omitted,
+    OpenVMM uses 2 MB pages.
+  * `file=<PATH>` - use an existing file as the guest RAM backing file.
+    This is used by snapshots.
+
+  Examples:
+
+  ```bash
+  --memory 4G
+  --memory size=64GB,hugepages=on,hugepage_size=2MB
+  --memory size=4G,file=path/to/memory.bin
+  --memory size=4G,shared=off,thp=on
+  ```
 * `--hv`: Exposes Hyper-V enlightenments and VMBus support.
 * `--hypervisor <SPEC>`: Select a specific hypervisor backend, optionally with
   backend-specific parameters. The format is `name` or `name:key=val,key,...`.
@@ -40,10 +72,10 @@ as well as the generated CLI help (via `cargo run -- --help`).
   On Linux, raw files and block devices use the `disk_blockdevice` backend
   (io_uring-based async I/O) by default. Append `;direct` to the path to
   bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct`.
-* `--private-memory`: Use private anonymous memory for guest RAM
-  instead of shared file-backed sections.
-* `--thp`: Enable Transparent Huge Pages for guest RAM (Linux only).
-  Requires `--private-memory`.
+* `--private-memory`, `--prefetch`, `--thp`, and
+  `--memory-backing-file <PATH>`: Deprecated aliases for `--memory`
+  parameters. Prefer `shared=off`, `prefetch=on`, `thp=on`, and
+  `file=<PATH>`.
 * `--pidfile <PATH>`: Write the process ID to the specified file on startup,
   and remove it on clean exit. If the process is killed with `SIGKILL` or
   crashes, the pidfile is not removed — consumers should verify the PID is
@@ -112,6 +144,58 @@ attached to a root port to appear as PCIe devices in the guest.
 --pcie-root-complex rc0 --pcie-root-port rc0:rp0
 ```
 
+`--pcie-root-complex` accepts optional comma-separated options after the root
+complex name:
+
+```sh
+--pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255
+```
+
+- `segment=<N>`: PCIe segment number for the root complex.
+- `start_bus=<N>` and `end_bus=<N>`: inclusive bus range assigned to that
+  root complex.
+- `low_mmio=<SIZE>` and `high_mmio=<SIZE>`: low/high MMIO window sizes.
+- `hdm=<SIZE>`: CXL HDM decoder MMIO window size (CFMWS window). Default
+  is `1G`.
+- `hdm_window_restrictions=<MASK>`: CFMWS window restrictions bitmask
+  (`u16`, decimal or `0x`-prefixed hex). Default is `0x1`
+  (`DEVICE_COHERENT`, bit 0 set).
+  Defined bits:
+  0: device coherent
+  1: host-only coherent
+  2: volatile
+  3: persistent
+  4: fixed device configuration
+  5: BI
+  Bits 15:6 are reserved and rejected.
+
+### Root port and switch options
+
+`--pcie-root-port` accepts optional comma-separated options after the port
+name:
+
+```sh
+--pcie-root-port rc0:rp0,hotplug,acs=0x005f,cxl
+```
+
+- `hotplug`: enables hotplug support for that root port.
+- `acs=<mask>`: sets the Access Control Services capability mask for the
+  root port. The value can be decimal or hexadecimal. Default is `0x005f`.
+  Use `acs=0` to disable ACS for a root port.
+- `cxl`: marks the root port as CXL-capable.
+
+`--pcie-switch` accepts optional comma-separated options as well:
+
+```sh
+--pcie-switch rp0:switch0,num_downstream_ports=4,acs=0x005f
+```
+
+- `num_downstream_ports=<N>`: number of downstream ports for the switch.
+- `hotplug`: enables hotplug support on all downstream switch ports.
+- `acs=<mask>`: ACS capability mask requested for downstream switch ports.
+  The upstream switch port does not expose ACS. Default is `0x005f`.
+  Use `acs=0` to disable ACS for switch downstream ports.
+
 ### Attaching devices to PCIe
 
 Several device types support the `pcie_port=<name>` option to attach to a
@@ -124,6 +208,16 @@ PCIe root port. The syntax varies slightly between device types:
 --nvme file:/path/to/disk.raw,pcie_port=rp0
 --disk file:/path/to/disk.raw,pcie_port=rp0
 ```
+
+**CXL test endpoint** (comma-separated option): `--cxl-test`
+
+```sh
+--cxl-test mem:1G,pcie_port=rp0
+```
+
+`--cxl-test` creates a CXL Type-3 test endpoint with one component-register
+BAR.
+The `mem:<len>` value sets the emulated HDM size and allocates backing memory.
 
 **NICs** (colon-prefixed): `--net`, `--virtio-net`, `--mana`
 
@@ -157,8 +251,30 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs,pcie_port=rp0
 ```
 
-**VFIO device assignment** (Linux only): `--vfio`
+**VFIO device assignment** (Linux only): `--vfio` (and optional `--iommu`)
 
 ```sh
---vfio rp0:0000:01:00.0
+# Legacy VFIO group/container path:
+--vfio host=0000:01:00.0,port=rp0
+
+# Modern VFIO cdev + iommufd path (Linux >= 6.6):
+--iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
 ```
+
+### SMMU (aarch64 only)
+
+`--smmu <RC_NAME>` enables an emulated Arm SMMUv3 IOMMU for the named
+root complex. The flag is repeatable — use one `--smmu` per root complex
+that should have an SMMU. Devices behind a covered root complex get
+software IOVA→GPA translation for DMA and MSI addresses.
+
+```sh
+# Enable SMMU on root complex rc0
+--smmu rc0
+
+# Multiple root complexes
+--smmu rc0 --smmu rc1
+```
+
+VFIO devices cannot currently be placed behind an SMMU-covered root
+complex because iommufd nested translation is not yet available.

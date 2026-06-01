@@ -31,12 +31,12 @@ use pci_core::bar_mapping::BarMappings;
 use pci_core::capabilities::PciCapability;
 use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::msi::MsiTarget;
+use pci_core::spec::caps;
 use pci_core::spec::cfg_space;
 use pci_core::spec::cfg_space::HeaderType00;
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
-use std::sync::Arc;
-use virt::irqfd::IrqFd;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -71,6 +71,25 @@ struct BarDirectMap {
     bar_range: MemoryRange,
     /// Whether this sub-region is currently mapped into guest GPA space.
     mapping: Option<MemoryRange>,
+}
+
+/// A patch to apply to a DWORD-aligned PCI config space read.
+///
+/// When reading config space, if the DWORD-aligned offset has an entry in the
+/// patch table, the hardware value is blended with the patch:
+/// `(hw_value & !mask) | (value & mask)`.
+///
+/// This allows hiding capabilities (by zeroing their ID), rewriting chain
+/// pointers, or injecting fully synthetic capability data.
+#[derive(Debug, Clone, Copy, Inspect)]
+struct ConfigPatch {
+    /// Bitmask selecting which bits to replace. Set bits come from `value`;
+    /// clear bits come from hardware.
+    #[inspect(hex)]
+    mask: u32,
+    /// Replacement bits for the masked positions.
+    #[inspect(hex)]
+    value: u32,
 }
 
 /// MSI-X emulation state, discovered from the physical device's capabilities.
@@ -117,10 +136,6 @@ pub(crate) struct VfioAssignedPciDevice {
     /// The VFIO device, used for config space, BAR MMIO, and MSI-X mapping.
     #[inspect(skip)]
     vfio_device: vfio_sys::Device,
-
-    /// irqfd routing interface for registering eventfds with the hypervisor.
-    #[inspect(skip)]
-    irqfd: Arc<dyn IrqFd>,
 
     /// Offset into the VFIO device fd where the PCI config region starts.
     #[inspect(hex)]
@@ -171,9 +186,17 @@ pub(crate) struct VfioAssignedPciDevice {
     #[inspect(iter_by_index)]
     bar_direct_maps: Vec<BarDirectMap>,
 
-    /// VFIO container/group binding. Keeps the container and group fds alive
-    /// and notifies the container manager on drop.
-    binding: manager::VfioDeviceBinding,
+    /// Patch-on-read table for config space filtering. Keyed by
+    /// DWORD-aligned config space offset. Built at init from capability
+    /// parsing; immutable thereafter.
+    #[inspect(
+        with = "|m| inspect::iter_by_key(m.iter().map(|(k, v)| (format!(\"{k:#06x}\"), v)))"
+    )]
+    config_patches: BTreeMap<u16, ConfigPatch>,
+
+    /// VFIO binding. Keeps the container/group (legacy) or iommufd/IOAS
+    /// (cdev) fds alive and cleans up on drop.
+    binding: manager::VfioBinding,
 }
 
 impl VfioAssignedPciDevice {
@@ -188,15 +211,65 @@ impl VfioAssignedPciDevice {
         driver_source: &VmTaskDriverSource,
         register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
         msi_target: &MsiTarget,
-        irqfd: Arc<dyn IrqFd>,
         memory_mapper: &dyn MemoryMapper,
     ) -> anyhow::Result<Self> {
-        let vfio_device = binding
-            .group()
-            .open_device(&pci_id, &driver_source.simple())
+        let driver = driver_source.simple();
+        let retry = vfio_sys::VfioRetry::new(&driver, &pci_id);
+        let is_enodev = |e: &anyhow::Error| {
+            e.chain().any(|cause| {
+                cause
+                    .downcast_ref::<nix::errno::Errno>()
+                    .is_some_and(|e| *e == nix::errno::Errno::ENODEV)
+            })
+        };
+        let vfio_device = retry
+            .retry(
+                || binding.group().open_device(&pci_id),
+                &is_enodev,
+                "open_device",
+            )
             .await
             .with_context(|| format!("failed to open VFIO device {pci_id}"))?;
 
+        Self::from_device(
+            vfio_device,
+            manager::VfioBinding::Group(binding),
+            pci_id,
+            register_mmio,
+            msi_target,
+            memory_mapper,
+        )
+        .await
+    }
+
+    /// Create from a pre-opened VFIO device and a cdev binding.
+    pub async fn from_cdev(
+        cdev_binding: manager::VfioCdevBinding,
+        pci_id: String,
+        register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
+        msi_target: &MsiTarget,
+        memory_mapper: &dyn MemoryMapper,
+    ) -> anyhow::Result<Self> {
+        let (device, binding) = cdev_binding.into_parts();
+        Self::from_device(
+            device,
+            manager::VfioBinding::Cdev(binding),
+            pci_id,
+            register_mmio,
+            msi_target,
+            memory_mapper,
+        )
+        .await
+    }
+
+    async fn from_device(
+        vfio_device: vfio_sys::Device,
+        binding: manager::VfioBinding,
+        pci_id: String,
+        register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
+        msi_target: &MsiTarget,
+        memory_mapper: &dyn MemoryMapper,
+    ) -> anyhow::Result<Self> {
         let config_info = vfio_device
             .region_info(vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX)
             .context("failed to get VFIO config region info")?;
@@ -275,6 +348,10 @@ impl VfioAssignedPciDevice {
         // exclude the MSI-X table/PBA regions.
         let msix = discover_msix(vfio_device.as_ref(), config_offset, config_size, msi_target);
 
+        // Build the config space patch table: hides extended capabilities
+        // (SR-IOV, ARI, Resizable BAR) and clears the multi-function bit.
+        let config_patches = build_config_patches(vfio_device.as_ref(), config_offset, config_size);
+
         // Cache whether the device supports VFIO_DEVICE_RESET so we can skip
         // the ioctl on every VM reset for devices that don't support it.
         let supports_reset = vfio_device
@@ -340,7 +417,6 @@ impl VfioAssignedPciDevice {
         Ok(Self {
             pci_id,
             vfio_device,
-            irqfd,
             config_offset,
             config_size,
             bar_masks,
@@ -353,6 +429,7 @@ impl VfioAssignedPciDevice {
             msix,
             supports_reset,
             bar_direct_maps,
+            config_patches,
             binding,
         })
     }
@@ -415,10 +492,11 @@ impl VfioAssignedPciDevice {
 
     /// Set up irqfd-backed MSI-X interrupt delivery when the guest enables MSI-X.
     ///
-    /// Tells the emulator to create irqfd routes and passes the resulting
+    /// Gets an interrupt for each vector and triggers lazy irqfd route
+    /// creation by requesting the backing event. Passes the resulting
     /// events to VFIO so the physical device signals them on interrupt.
     fn msix_enable(&mut self) -> anyhow::Result<()> {
-        let msix = self.msix.as_mut().expect("msix must be present");
+        let msix = self.msix.as_ref().expect("msix must be present");
         let count = msix.vector_count;
 
         // VFIO map_msix has a hard limit of 256 eventfds per call.
@@ -427,12 +505,21 @@ impl VfioAssignedPciDevice {
             "MSI-X vector count ({count}) exceeds VFIO limit of 256"
         );
 
-        let vfio_device = &self.vfio_device;
-        msix.emulator.enable_irqfd(self.irqfd.as_ref(), |events| {
-            vfio_device
-                .map_msix(0, events)
-                .context("VFIO map_msix failed")
-        })?;
+        // Get an interrupt for each vector and trigger lazy irqfd route
+        // creation by requesting the backing event.
+        let interrupts: Vec<_> = (0..count)
+            .map(|i| msix.emulator.interrupt(i).expect("vector in range"))
+            .collect();
+
+        let events: Vec<_> = interrupts
+            .iter()
+            .map(|int| int.event())
+            .collect::<Option<Vec<_>>>()
+            .context("failed to allocate irqfd routes for MSI-X vectors")?;
+
+        self.vfio_device
+            .map_msix(0, &events)
+            .context("VFIO map_msix failed")?;
 
         tracing::info!(
             count,
@@ -444,8 +531,11 @@ impl VfioAssignedPciDevice {
 
     /// Tear down VFIO MSI-X eventfd mapping when the guest disables MSI-X.
     fn msix_disable(&mut self) {
-        let msix = self.msix.as_mut().expect("msix must be present");
-        let count = msix.vector_count;
+        let count = self
+            .msix
+            .as_ref()
+            .expect("msix must be present")
+            .vector_count;
 
         if let Err(e) = self.vfio_device.unmap_msix(0, count as u32) {
             tracing::warn!(
@@ -455,7 +545,6 @@ impl VfioAssignedPciDevice {
             );
         }
 
-        msix.emulator.disable_irqfd();
         tracing::info!(
             pci_id = self.pci_id.as_str(),
             "MSI-X disabled: unmapped vectors"
@@ -650,7 +739,7 @@ fn discover_msix(
         let cap_id = (header & 0xFF) as u8;
         let next_ptr = ((header >> 8) & 0xFC) as u16;
 
-        if cap_id == pci_core::spec::caps::CapabilityId::MSIX.0 {
+        if cap_id == caps::CapabilityId::MSIX.0 {
             // Message Control is in the upper 16 bits of the first DWORD.
             let msg_ctrl = (header >> 16) as u16;
             let table_count = (msg_ctrl & 0x7FF) + 1;
@@ -700,6 +789,135 @@ fn discover_msix(
     }
 
     None
+}
+
+/// Build the config-space patch table for a VFIO assigned device.
+///
+/// This walks the extended capability chain and inserts patches to:
+/// - Clear the multi-function bit in the Header Type register
+/// - Null out extended capabilities that don't make sense in a virtual topology
+///   (SR-IOV, ARI, Resizable BAR)
+///
+/// The resulting patches are applied on every config read via
+/// `(hw_value & !mask) | (value & mask)`.
+fn build_config_patches(
+    device_file: &std::fs::File,
+    config_offset: u64,
+    config_size: u64,
+) -> BTreeMap<u16, ConfigPatch> {
+    let mut patches = BTreeMap::new();
+
+    // Clear multi-function bit so the device appears as single-function.
+    patches.insert(
+        HeaderType00::BIST_HEADER.0,
+        ConfigPatch {
+            mask: cfg_space::BistHeader::new()
+                .with_multi_function(true)
+                .into(),
+            value: 0,
+        },
+    );
+
+    // Walk the extended capability chain (starting at offset 0x100) and
+    // insert patches to null out capabilities the guest shouldn't see.
+    parse_extended_capabilities(device_file, config_offset, config_size, &mut patches);
+
+    patches
+}
+
+/// Walk the PCIe extended capability chain (offsets 0x100+) and insert patches
+/// to null out capabilities that should be hidden from the guest.
+///
+/// Hidden capabilities have their cap ID zeroed (mask=0x0000_FFFF, value=0),
+/// which makes them appear as a null capability. The next-pointer field is
+/// preserved so the chain remains walkable.
+fn parse_extended_capabilities(
+    device_file: &std::fs::File,
+    config_offset: u64,
+    config_size: u64,
+    patches: &mut BTreeMap<u16, ConfigPatch>,
+) {
+    // Config space must be large enough for extended capabilities.
+    if config_size <= caps::EXT_CAP_START as u64 {
+        return;
+    }
+
+    let mut offset = caps::EXT_CAP_START;
+    let mut iterations = 0usize;
+
+    loop {
+        // Guard against malformed chains.
+        const MAX_EXT_CAPS: usize = 256;
+        if iterations >= MAX_EXT_CAPS {
+            tracing::warn!(
+                "extended capability list exceeded {MAX_EXT_CAPS} entries, aborting walk"
+            );
+            return;
+        }
+        iterations += 1;
+
+        let Ok(header) = read_config_u32(device_file, config_offset, config_size, offset) else {
+            return;
+        };
+
+        // A header of 0 means end of list (no capability at this offset).
+        if header == 0 {
+            return;
+        }
+
+        let cap_id = caps::ExtendedCapabilityId((header & 0xFFFF) as u16);
+        let cap_next = ((header >> 20) & 0xFFF) as u16;
+
+        tracing::debug!(
+            ?cap_id,
+            offset,
+            next = cap_next,
+            "discovered extended PCI capability"
+        );
+
+        match cap_id {
+            caps::ExtendedCapabilityId::SRIOV
+            | caps::ExtendedCapabilityId::ARI
+            | caps::ExtendedCapabilityId::REBAR => {
+                tracing::info!(
+                    ?cap_id,
+                    offset = format_args!("{offset:#x}"),
+                    "filtering extended capability from guest view"
+                );
+                // Zero the cap ID field (low 16 bits) to make this a null
+                // capability. Preserve the version and next-pointer (high
+                // 16 bits) so the chain remains walkable.
+                patches.insert(
+                    offset,
+                    ConfigPatch {
+                        mask: 0x0000_FFFF,
+                        value: 0,
+                    },
+                );
+            }
+            _ => {}
+        }
+
+        if cap_next == 0 {
+            return;
+        }
+
+        // Validate the next pointer: must be within extended config space
+        // (>= 0x100), DWORD-aligned, and within the config region.
+        if cap_next < caps::EXT_CAP_START
+            || cap_next & 0x3 != 0
+            || cap_next as u64 + 4 > config_size
+        {
+            tracing::warn!(
+                cap_next = format_args!("{cap_next:#x}"),
+                offset = format_args!("{offset:#x}"),
+                "malformed extended capability next pointer, aborting walk"
+            );
+            return;
+        }
+
+        offset = cap_next;
+    }
 }
 
 /// Read from the MSI-X emulator at the given offset, handling sub-DWORD
@@ -766,7 +984,6 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
         let Self {
             pci_id,
             vfio_device,
-            irqfd: _,         // handle — no reset needed
             config_offset: _, // immutable device geometry
             config_size: _,   // immutable device geometry
             bar_masks: _,     // immutable device geometry
@@ -779,7 +996,8 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             bar_regions: _,       // immutable device geometry
             msix,
             supports_reset,
-            binding: _, // lifetime handle — no reset needed
+            config_patches: _, // immutable — built at init
+            binding: _,        // lifetime handle — no reset needed
         } = self;
 
         // Reset emulated MSI-X table and capability to power-on defaults
@@ -843,8 +1061,23 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                 // high 16 bits from emulator (message control).
                 (hw & 0xFFFF) | (emu & 0xFFFF0000)
             }
-            // Everything else: read from physical device.
-            _ => self.read_phys_config(offset),
+            // Everything else: read from physical device, applying any
+            // config space patches.
+            _ => {
+                let hw = self.read_phys_config(offset);
+                if let Some(patch) = self.config_patches.get(&offset) {
+                    let patched = (hw & !patch.mask) | (patch.value & patch.mask);
+                    tracing::trace!(
+                        offset = format_args!("{offset:#x}"),
+                        hw = format_args!("{hw:#010x}"),
+                        patched = format_args!("{patched:#010x}"),
+                        "applied config space patch"
+                    );
+                    patched
+                } else {
+                    hw
+                }
+            }
         };
 
         IoResult::Ok
@@ -903,7 +1136,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                             // Install irqfd routes BEFORE writing the
                             // capability, so that when the capability
                             // processes the enable transition it can call
-                            // set_msi() on the already-installed routes.
+                            // enable() on the already-installed routes.
                             match self.msix_enable() {
                                 Ok(()) => {
                                     let msix = self.msix.as_mut().unwrap();

@@ -12,6 +12,12 @@ VFIO device assignment is experimental. PCI config space, BAR MMIO passthrough, 
 
 OpenVMM running on a Linux host can assign physical PCI devices to guest VMs using VFIO. The device is bound to the `vfio-pci` kernel driver, then OpenVMM opens it via VFIO and presents it to the guest as a PCIe endpoint.
 
+The guest sees the device's real config space with some filtering applied:
+each assigned device appears as a single-function device (the multi-function
+bit is cleared), and certain PCIe extended capabilities are hidden because they
+don't make sense in a virtual topology. Currently filtered extended
+capabilities are SR-IOV, ARI, and Resizable BAR.
+
 ```text
 Linux Host
 └── OpenVMM
@@ -98,7 +104,7 @@ Use the `--vfio` flag to assign the device to a PCIe root port. You also need to
 sudo openvmm \
   --pcie-root-complex rc0 \
   --pcie-root-port rc0:rp0 \
-  --vfio rp0:0000:01:00.0 \
+  --vfio host=0000:01:00.0,port=rp0 \
   --kernel /path/to/vmlinux \
   --initrd /path/to/initrd \
   --cmdline "console=ttyS0" \
@@ -107,19 +113,46 @@ sudo openvmm \
   --processors 2
 ```
 
-The `--vfio` syntax is `<port_name>:<pci_bdf>`:
+The `--vfio` value is a comma-separated list of `key=value` pairs:
 
-- `rp0` — the name of the PCIe root port to attach the device to (must match a `--pcie-root-port` name)
-- `0000:01:00.0` — the PCI BDF of the VFIO device on the host
+- `host=<pci_bdf>` (required) — the PCI BDF of the VFIO device on the host (e.g., `0000:01:00.0`)
+- `port=<name>` (required) — the name of the PCIe root port to attach the device to (must match a `--pcie-root-port` name)
+- `iommu=<id>` (optional) — reference to an `--iommu` context; see [Using iommufd (cdev path)](#using-iommufd-cdev-path) below
 
 ```admonish tip
 You can assign multiple devices by adding more root ports and `--vfio` flags:
 
     --pcie-root-port rc0:rp0 \
     --pcie-root-port rc0:rp1 \
-    --vfio rp0:0000:01:00.0 \
-    --vfio rp1:334c:00:00.0
+    --vfio host=0000:01:00.0,port=rp0 \
+    --vfio host=334c:00:00.0,port=rp1
 ```
+
+### Using iommufd (cdev path)
+
+By default, `--vfio` uses the legacy VFIO group/container interface with the
+Type1v2 IOMMU driver. On hosts with Linux kernel 6.6 or newer, OpenVMM can
+instead use the modern VFIO cdev (per-device fd) + iommufd interface. Enable
+it by declaring an `--iommu` context and referencing it from each `--vfio`
+device with the `iommu=` key:
+
+```bash
+sudo openvmm \
+  --pcie-root-complex rc0 \
+  --pcie-root-port rc0:rp0 \
+  --iommu id=iommu0 \
+  --vfio host=0000:01:00.0,port=rp0,iommu=iommu0 \
+  ...
+```
+
+The `--iommu` syntax is `id=<name>`. All `--vfio` devices that reference the
+same `id` share a single iommufd IOAS (one set of IOMMU page tables and one
+DMA mapper registration). The IOAS is allocated on demand the first time a
+device referencing the id is opened.
+
+Devices opened via the cdev path read their device node from
+`/sys/bus/pci/devices/<pci_id>/vfio-dev/vfioN` and open
+`/dev/vfio/devices/vfioN` instead of `/dev/vfio/<group>`.
 
 ## Step 6: Verify in the guest
 
@@ -130,6 +163,51 @@ lspci
 ```
 
 The device will appear with its real vendor and device ID from the physical hardware.
+
+## Optional: use hugetlb-backed guest RAM
+
+For large VMs, VFIO DMA setup can be much faster when guest RAM is backed by
+Linux hugetlb pages. Without hugetlb backing, the kernel may have to pin each
+4 KB page individually during `VFIO_IOMMU_MAP_DMA`. With 2 MB or 1 GB hugetlb
+pages, the same mapping work is performed over far fewer pages.
+
+Hugetlb pages must be reserved on the host before starting OpenVMM. For
+example, reserve enough 2 MB pages for a 64 GB VM:
+
+```bash
+echo 32768 | sudo tee /proc/sys/vm/nr_hugepages
+```
+
+For 1 GB pages, reserve pages through the size-specific sysfs pool:
+
+```bash
+echo 64 | sudo tee \
+  /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages
+```
+
+Then request hugepage-backed RAM with the `--memory` option:
+
+```bash
+sudo openvmm \
+  --pcie-root-complex rc0 \
+  --pcie-root-port rc0:rp0 \
+  --vfio host=0000:01:00.0,port=rp0 \
+  --kernel /path/to/vmlinux \
+  --initrd /path/to/initrd \
+  --cmdline "console=ttyS0" \
+  --com1 console \
+  --memory size=64GB,hugepages=on,hugepage_size=2MB \
+  --processors 16
+```
+
+Use `hugepage_size=1GB` to request 1 GB pages. If `hugepage_size` is omitted,
+OpenVMM uses 2 MB pages.
+
+```admonish note
+Hugepage-backed RAM is Linux-only. It cannot be combined with file-backed
+memory, private memory (`shared=off`), or legacy x86 RAM splitting such as
+PCAT firmware.
+```
 
 ## Troubleshooting
 
@@ -151,6 +229,21 @@ Run OpenVMM with `sudo`, or add your user to the `vfio` group and set appropriat
 - Verify the VFIO group exists in `/dev/vfio/` (Step 4)
 - Verify the `--vfio` port name matches a `--pcie-root-port` name
 - Check OpenVMM log output for errors during VFIO device initialization
+
+### Hugepage allocation fails
+
+If OpenVMM fails while allocating guest RAM with `hugepages=on`, verify that
+the host has enough free pages in the requested hugetlb pool:
+
+```bash
+grep -i Huge /proc/meminfo
+```
+
+For 1 GB pages, also check the size-specific pool:
+
+```bash
+grep . /sys/kernel/mm/hugepages/hugepages-1048576kB/*
+```
 
 ## Current Limitations
 

@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 use cvm_tracing::CVM_ALLOWED;
-use firmware_uefi::platform::logger::UefiEvent;
-use firmware_uefi::platform::logger::UefiLogger;
+use firmware_uefi_resources::platform::UefiEvent;
+use firmware_uefi_resources::platform::UefiLogger;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::EventLogId;
 use std::sync::Weak;
@@ -54,7 +54,7 @@ pub struct UnderhillVsmConfig {
     pub partition: Weak<UhPartition>,
 }
 
-impl firmware_uefi::platform::nvram::VsmConfig for UnderhillVsmConfig {
+impl firmware_uefi_resources::platform::VsmConfig for UnderhillVsmConfig {
     fn revoke_guest_vsm(&self) {
         if let Some(partition) = self.partition.upgrade() {
             if let Err(err) = partition.revoke_guest_vsm() {

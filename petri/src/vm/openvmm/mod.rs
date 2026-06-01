@@ -9,10 +9,16 @@
 //! * The VM is either shut down by the code in `runtime`, or gets dropped and cleaned up automatically.
 
 mod construct;
+#[cfg(target_os = "linux")]
+mod hugetlb;
 mod modify;
 mod runtime;
 mod start;
 
+#[cfg(target_os = "linux")]
+pub use hugetlb::HUGETLB_2MB_PAGE_SIZE;
+#[cfg(target_os = "linux")]
+pub use hugetlb::ensure_2mb_hugetlb_pages;
 pub use runtime::OpenVmmFramebufferAccess;
 pub use runtime::OpenVmmInspector;
 pub use runtime::PetriVmOpenVmm;
@@ -187,7 +193,7 @@ struct PetriVmResourcesOpenVmm {
 
     // TempPaths that cannot be dropped until the end.
     vtl2_vsock_path: Option<TempPath>,
-    _vmbus_vsock_path: TempPath,
+    _vsock_path: TempPath,
 
     // properties needed at runtime
     properties: PetriVmProperties,

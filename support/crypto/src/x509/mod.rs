@@ -3,19 +3,31 @@
 
 //! X.509 certificate operations.
 
-#![cfg(openssl)]
+#![cfg(any(openssl, rust, symcrypt))]
 
 #[cfg(openssl)]
 mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
 
+#[cfg(any(rust, symcrypt))]
+mod symcrypt_rust;
+#[cfg(any(rust, symcrypt))]
+use symcrypt_rust as sys;
+
 use thiserror::Error;
 
 /// An error for X.509 operations.
+#[cfg(not(rust))]
 #[derive(Debug, Error)]
 #[error("X.509 error")]
-pub struct X509Error(#[source] super::BackendError);
+pub struct X509Error(#[source] pub(crate) super::BackendError);
+
+/// An error for X.509 operations.
+#[cfg(rust)]
+#[derive(Debug, Error)]
+#[error("X.509 error during {1}")]
+pub struct X509Error(#[source] pub(crate) der::Error, pub(crate) &'static str);
 
 /// An X.509 certificate.
 pub struct X509Certificate(pub(crate) sys::X509CertificateInner);
@@ -27,67 +39,118 @@ impl X509Certificate {
     }
 
     /// Extract the public key from this certificate.
-    pub fn public_key(&self) -> Result<super::rsa::RsaPublicKey, X509Error> {
+    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
         self.0.public_key()
     }
 
     /// Verify the signature of this certificate against the given issuer's
     /// public key.
-    pub fn verify(&self, issuer_public_key: &super::rsa::RsaPublicKey) -> Result<bool, X509Error> {
+    /// Returns `Ok(true)` if the signature is valid, `Ok(false)` if the
+    /// signature is invalid, or an error for other failures.
+    pub fn verify(
+        &self,
+        issuer_public_key: &crate::rsa::RsaPublicKey,
+    ) -> Result<bool, crate::rsa::RsaError> {
         self.0.verify(issuer_public_key)
     }
 
     /// Check if this certificate (acting as issuer) issued `subject`.
-    pub fn issued(&self, subject: &X509Certificate) -> bool {
+    ///
+    /// This performs only deterministic structural comparisons - it does not
+    /// cryptographically verify the issuer's signature on `subject`. Callers
+    /// that need to establish a trust relationship must additionally call
+    /// [`X509Certificate::verify`] with the issuer's public key.
+    pub fn issued(&self, subject: &X509Certificate) -> Result<bool, X509Error> {
         self.0.issued(&subject.0)
     }
 
+    #[cfg(any(test, feature = "test_helpers"))]
     /// Encode this certificate as DER bytes.
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
         self.0.to_der()
     }
-}
 
-/// Builder for creating self-signed X.509 certificates (for testing).
-pub struct X509Builder(sys::X509BuilderInner);
-
-impl X509Builder {
-    /// Create a new X.509 certificate builder.
-    pub fn new() -> Result<Self, X509Error> {
-        sys::X509BuilderInner::new().map(Self)
-    }
-
-    /// Set the public key from an RSA key pair.
-    pub fn set_pubkey_from_rsa_key_pair(
-        &mut self,
-        key_pair: &super::rsa::RsaKeyPair,
-    ) -> Result<(), X509Error> {
-        self.0.set_pubkey_from_rsa_key_pair(key_pair)
-    }
-
-    /// Set the subject and issuer name with common certificate fields (for self-signed certificates).
-    pub fn set_subject_and_issuer_name(
-        &mut self,
+    #[cfg(any(test, feature = "test_helpers"))]
+    /// Build a self-signed never-expiring X.509 certificate (for testing).
+    pub fn build_self_signed(
+        key: &crate::rsa::RsaKeyPair,
         country: &str,
         state: &str,
         locality: &str,
         organization: &str,
         common_name: &str,
-    ) -> Result<(), X509Error> {
-        self.0
-            .set_subject_and_issuer_name(country, state, locality, organization, common_name)
+    ) -> anyhow::Result<Self> {
+        sys::X509CertificateInner::build_self_signed(
+            key,
+            country,
+            state,
+            locality,
+            organization,
+            common_name,
+        )
+        .map(Self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_test_cert(key: &crate::rsa::RsaKeyPair) -> X509Certificate {
+        X509Certificate::build_self_signed(
+            key,
+            "US",
+            "Washington",
+            "Redmond",
+            "Test",
+            "test.example.com",
+        )
+        .unwrap()
     }
 
-    /// Set the validity period in days from now.
-    pub fn set_validity_days(&mut self, days: u32) -> Result<(), X509Error> {
-        self.0.set_validity_days(days)
+    /// Build a self-signed cert and verify it against its own public key.
+    /// This catches the previously-latent symcrypt bug where the backend
+    /// passed the raw TBS bytes to `pkcs1_verify` instead of the SHA-256
+    /// digest of the TBS bytes — a self-signed cert would have failed to
+    /// verify against its own key.
+    #[test]
+    fn self_signed_cert_verifies() {
+        let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
+        let cert = build_test_cert(&key);
+        let pubkey = cert.public_key().unwrap();
+        assert!(cert.verify(&pubkey).unwrap());
+        assert!(cert.issued(&cert).unwrap());
     }
 
-    /// Sign the certificate with the given RSA private key and build it.
-    pub fn sign_and_build(
-        self,
-        key_pair: &super::rsa::RsaKeyPair,
-    ) -> Result<X509Certificate, X509Error> {
-        self.0.sign_and_build(key_pair).map(X509Certificate)
+    /// A cert signed by one key must NOT verify against an unrelated key.
+    #[test]
+    fn cert_rejects_wrong_issuer_key() {
+        let signing_key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
+        let other_key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
+        let cert = build_test_cert(&signing_key);
+        let other_pubkey = X509Certificate::build_self_signed(
+            &other_key,
+            "US",
+            "Washington",
+            "Redmond",
+            "Other",
+            "other.example.com",
+        )
+        .unwrap()
+        .public_key()
+        .unwrap();
+        // Invalid signatures must be reported as `Ok(false)`, not `Err`.
+        assert!(matches!(cert.verify(&other_pubkey), Ok(false)));
+    }
+
+    /// DER round-trip preserves the cert and its signature.
+    #[test]
+    fn der_roundtrip() {
+        let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
+        let cert = build_test_cert(&key);
+        let der = cert.to_der().unwrap();
+        let reparsed = X509Certificate::from_der(&der).unwrap();
+        let pubkey = reparsed.public_key().unwrap();
+        assert!(reparsed.verify(&pubkey).unwrap());
     }
 }

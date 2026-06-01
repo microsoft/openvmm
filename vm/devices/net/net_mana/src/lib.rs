@@ -24,6 +24,7 @@ use gdma_defs::bnic::MANA_SHORT_PKT_FMT;
 use gdma_defs::bnic::ManaQueryStatisticsResponse;
 use gdma_defs::bnic::ManaRxcompOob;
 use gdma_defs::bnic::ManaTxCompOob;
+use gdma_defs::bnic::ManaTxLongOob;
 use gdma_defs::bnic::ManaTxOob;
 use gdma_defs::bnic::ManaTxShortOob;
 use guestmem::GuestMemory;
@@ -58,6 +59,7 @@ use net_backend::TxId;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
+use net_backend::VlanMetadata;
 use pal_async::task::Spawn;
 use safeatomic::AtomicSliceOps;
 use std::collections::VecDeque;
@@ -648,12 +650,14 @@ struct PostedTx {
 struct QueueStats {
     tx_events: Counter,
     tx_packets: Counter,
+    tx_vlan_packets: Counter,
     tx_errors: Counter,
     tx_dropped: Counter,
     tx_stuck: Counter,
 
     rx_events: Counter,
     rx_packets: Counter,
+    rx_vlan_packets: Counter,
     rx_errors: Counter,
 
     interrupts: Counter,
@@ -752,7 +756,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
         &mut self,
         tracing_level: tracing::Level,
         cqe_params: CqeParams,
-        tx_oob: ManaTxCompOob,
+        tx_oob: &ManaTxCompOob,
         done_length: usize,
     ) {
         tracelimit::event_ratelimited!(
@@ -828,6 +832,27 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     short_vp_offset = tx_s_oob.short_vp_offset(),
                     "tx s_oob"
                 );
+
+                if tx_s_oob.pkt_fmt() == MANA_LONG_PKT_FMT {
+                    let l_oob_offset = wqe_offset + (header_size + s_oob_size) as u32;
+                    let l_oob_bytes = self.tx_wq.read(l_oob_offset, size_of::<ManaTxLongOob>());
+                    match ManaTxLongOob::read_from_prefix(&l_oob_bytes) {
+                        Ok((tx_l_oob, _)) => {
+                            tracelimit::event_ratelimited!(
+                                tracing_level,
+                                inject_vlan_pri_tag = tx_l_oob.inject_vlan_pri_tag(),
+                                vlan_id = tx_l_oob.vlan_id(),
+                                pcp = tx_l_oob.pcp(),
+                                dei = tx_l_oob.dei(),
+                                long_vp_offset = tx_l_oob.long_vp_offset(),
+                                "tx l_oob"
+                            );
+                        }
+                        Err(_) => {
+                            tracelimit::error_ratelimited!("failed to read tx l_oob");
+                        }
+                    }
+                }
             }
             Err(_) => {
                 tracelimit::error_ratelimited!("failed to read tx s_oob");
@@ -965,6 +990,9 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         } else {
                             (L4Protocol::Unknown, RxChecksumState::Unknown)
                         };
+                        let vlantag = rx_oob.flags.rx_vlantag_present().then(|| {
+                            VlanMetadata::new().with_vlan_id(rx_oob.flags.rx_vlan_id() as u16)
+                        });
                         let len = rx_oob.ppi[0].pkt_len.into();
                         pool.write_header(
                             rx.id,
@@ -974,6 +1002,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                                 ip_checksum,
                                 l4_checksum,
                                 l4_protocol,
+                                vlan: vlantag,
                             },
                         );
                         if rx.bounced_len_with_padding > 0 {
@@ -986,6 +1015,9 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                             pool.write_data(rx.id, &data);
                         }
                         self.stats.rx_packets.increment();
+                        if vlantag.is_some() {
+                            self.stats.rx_vlan_packets.increment();
+                        }
                         packets[i] = rx.id;
                         i += 1;
                     }
@@ -995,6 +1027,8 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                             vendor_err = rx_oob.cqe_hdr.vendor_err(),
                             rx_cq_id = self.rx_cq.id(),
                             rx_wq_id = self.rx_wq.id(),
+                            rx_vlantag_present = rx_oob.flags.rx_vlantag_present(),
+                            rx_vlan_id = rx_oob.flags.rx_vlan_id(),
                             "invalid rx cqe type"
                         );
                         self.trace_rx_wqe_from_offset(rx_oob.rx_wqe_offset);
@@ -1068,40 +1102,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         while i < done.len() {
             let id = if let Some(cqe) = self.tx_cq.pop() {
                 let tx_oob = ManaTxCompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-                match tx_oob.cqe_hdr.cqe_type() {
-                    CQE_TX_OKAY => {
-                        self.stats.tx_packets.increment();
-                    }
-                    CQE_TX_GDMA_ERR => {
-                        // Hardware hit an error with the packet coming from the Guest.
-                        // CQE_TX_GDMA_ERR is how the Hardware indicates that it has disabled the queue.
-                        self.stats.tx_errors.increment();
-                        self.stats.tx_stuck.increment();
-                        self.trace_tx(tracing::Level::ERROR, cqe.params, tx_oob, done.len());
-                        // Return a TryRestart error to indicate that the queue needs to be restarted.
-                        return Err(TxError::TryRestart(anyhow::anyhow!("TX GDMA error")));
-                    }
-                    CQE_TX_INVALID_OOB => {
-                        // Invalid OOB means the metadata didn't match how the hardware parsed the packet.
-                        // This is somewhat common, usually due to encapsulation, and only affects the specific packet.
-                        self.stats.tx_errors.increment();
-                        self.trace_tx(tracing::Level::WARN, cqe.params, tx_oob, done.len());
-                    }
-                    ty => {
-                        tracelimit::error_ratelimited!(
-                            ty,
-                            vendor_error = tx_oob.cqe_hdr.vendor_err(),
-                            "tx completion error"
-                        );
-                        self.stats.tx_errors.increment();
-                    }
-                }
-                let packet = self.posted_tx.pop_front().unwrap();
-                self.tx_wq.advance_head(packet.wqe_len);
-                if packet.bounced_len_with_padding > 0 {
-                    self.tx_bounce_buffer.free(packet.bounced_len_with_padding);
-                }
-                packet.id
+                self.handle_tx_cqe(&tx_oob, cqe.params, done.len())?
             } else if let Some(id) = self.dropped_tx.pop_front() {
                 self.stats.tx_dropped.increment();
                 id
@@ -1137,9 +1138,69 @@ impl BackendQueueStats for QueueStats {
     fn tx_packets(&self) -> Counter {
         self.tx_packets.clone()
     }
+    fn tx_vlan_packets(&self) -> Counter {
+        self.tx_vlan_packets.clone()
+    }
+    fn rx_vlan_packets(&self) -> Counter {
+        self.rx_vlan_packets.clone()
+    }
 }
 
 impl<T: DeviceBacking> ManaQueue<T> {
+    /// Handle a single TX completion entry, or CQE. Advance the TX work queue
+    /// and free the bounce buffer slot for the corresponding posted TX.
+    ///
+    /// Returns the `TxId` of the completed packet on success, or
+    /// `TxError::TryRestart` if the queue must be torn down and rebuilt
+    /// due to a hardware-reported queue-disabling error.
+    /// Explicitly panics if a CQE is received with no matching posted TX.
+    fn handle_tx_cqe(
+        &mut self,
+        tx_oob: &ManaTxCompOob,
+        cqe_params: CqeParams,
+        done_len: usize,
+    ) -> Result<TxId, TxError> {
+        match tx_oob.cqe_hdr.cqe_type() {
+            CQE_TX_OKAY => {
+                self.stats.tx_packets.increment();
+            }
+            CQE_TX_GDMA_ERR => {
+                // Hardware hit an error with the packet coming from the Guest.
+                // CQE_TX_GDMA_ERR is how the Hardware indicates that it has disabled the queue.
+                self.stats.tx_errors.increment();
+                self.stats.tx_stuck.increment();
+                self.trace_tx(tracing::Level::ERROR, cqe_params, tx_oob, done_len);
+                // Return a TryRestart error to indicate that the queue needs to be restarted.
+                return Err(TxError::TryRestart(anyhow::anyhow!("TX GDMA error")));
+            }
+            CQE_TX_INVALID_OOB => {
+                // Invalid OOB means the metadata didn't match how the hardware parsed the packet.
+                // This is somewhat common, usually due to encapsulation, and only affects the specific packet.
+                self.stats.tx_errors.increment();
+                self.trace_tx(tracing::Level::WARN, cqe_params, tx_oob, done_len);
+            }
+            ty => {
+                tracelimit::error_ratelimited!(
+                    ty,
+                    vendor_error = tx_oob.cqe_hdr.vendor_err(),
+                    "tx completion error"
+                );
+                self.stats.tx_errors.increment();
+            }
+        }
+        let Some(packet) = self.posted_tx.pop_front() else {
+            // A CQE arrived with no matching posted TX.
+            // We don't know how far to advance the tx_wq.
+            self.trace_tx(tracing::Level::ERROR, cqe_params, tx_oob, done_len);
+            panic!("TX CQE arrived with no matching posted TX");
+        };
+        self.tx_wq.advance_head(packet.wqe_len);
+        if packet.bounced_len_with_padding > 0 {
+            self.tx_bounce_buffer.free(packet.bounced_len_with_padding);
+        }
+        Ok(packet.id)
+    }
+
     fn handle_tx(
         &mut self,
         segments: &[TxSegment],
@@ -1163,10 +1224,17 @@ impl<T: DeviceBacking> ManaQueue<T> {
             .set_comp_tcp_csum(meta.flags.offload_tcp_checksum());
         oob.s_oob
             .set_comp_udp_csum(meta.flags.offload_udp_checksum());
-        if meta.flags.offload_tcp_checksum() {
+        if meta.flags.offload_tcp_checksum() || meta.flags.offload_udp_checksum() {
             oob.s_oob.set_trans_off(meta.l2_len as u16 + meta.l3_len);
         }
-        let short_format = self.vp_offset <= 0xff;
+        if let Some(vlan) = &meta.vlan {
+            oob.l_oob.set_inject_vlan_pri_tag(true);
+            oob.l_oob.set_vlan_id(vlan.vlan_id());
+            oob.l_oob.set_pcp(vlan.priority());
+            oob.l_oob.set_dei(vlan.drop_eligible_indicator());
+            self.stats.tx_vlan_packets.increment();
+        }
+        let short_format = self.vp_offset <= 0xff && meta.vlan.is_none();
         if short_format {
             oob.s_oob.set_pkt_fmt(MANA_SHORT_PKT_FMT);
             oob.s_oob.set_short_vp_offset(self.vp_offset as u8);

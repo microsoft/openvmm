@@ -18,7 +18,6 @@ use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
 use get_resources::ged::IgvmAttestTestConfig;
 use guid::Guid;
-use memory_range::MemoryRange;
 use net_backend_resources::mac_address::MacAddress;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
@@ -26,9 +25,11 @@ use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
+use openvmm_defs::config::SmmuInstanceConfig;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use vm_resource::IntoResource;
@@ -224,6 +225,13 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Use explicit hugetlb-backed guest memory.
+    pub fn with_hugepages(mut self, hugepage_size: Option<u64>) -> Self {
+        self.config.memory.hugepages = true;
+        self.config.memory.hugepage_size = hugepage_size;
+        self
+    }
+
     /// Add a symmetric PCIe topology to the VM based on some basic scale factors
     ///
     /// All root ports are named according to their index within their parent
@@ -235,26 +243,8 @@ impl PetriVmConfigOpenVmm {
         root_complex_per_segment: u64,
         root_ports_per_root_complex: u64,
     ) -> Self {
-        const SINGLE_BUS_NUMBER_ECAM_SIZE: u64 = 1024 * 1024; // 1 MB
-        const FULL_SEGMENT_ECAM_SIZE: u64 = 256 * SINGLE_BUS_NUMBER_ECAM_SIZE; // 256 MB
         const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
         const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB
-
-        // Allocate and configure the address space gaps
-        let ecam_size = segment_count * FULL_SEGMENT_ECAM_SIZE;
-        let low_mmio_size = segment_count * root_complex_per_segment * LOW_MMIO_SIZE;
-        let high_mmio_size = segment_count * root_complex_per_segment * HIGH_MMIO_SIZE;
-
-        let low_mmio_start = self.config.memory.mmio_gaps[0].start();
-        let high_mmio_end = self.config.memory.mmio_gaps[1].end();
-
-        let ecam_gap = MemoryRange::new(low_mmio_start - ecam_size..low_mmio_start);
-        let low_gap = MemoryRange::new(ecam_gap.start() - low_mmio_size..ecam_gap.start());
-        let high_gap = MemoryRange::new(high_mmio_end..high_mmio_end + high_mmio_size);
-
-        self.config.memory.pci_ecam_gaps.push(ecam_gap);
-        self.config.memory.pci_mmio_gaps.push(low_gap);
-        self.config.memory.pci_mmio_gaps.push(high_gap);
 
         // Add the root complexes to the VM
         for segment in 0..segment_count {
@@ -266,21 +256,12 @@ impl PetriVmConfigOpenVmm {
                 let start_bus = rc_index_in_segment * bus_count_per_rc;
                 let end_bus = start_bus + bus_count_per_rc - 1;
 
-                let ecam_range_start = ecam_gap.start()
-                    + segment * FULL_SEGMENT_ECAM_SIZE
-                    + start_bus * SINGLE_BUS_NUMBER_ECAM_SIZE;
-                let ecam_range_end =
-                    ecam_range_start + bus_count_per_rc * SINGLE_BUS_NUMBER_ECAM_SIZE;
-
-                let low_mmio_start = low_gap.start() + index * LOW_MMIO_SIZE;
-                let low_mmio_end = low_gap.start() + (index + 1) * LOW_MMIO_SIZE;
-                let high_mmio_start = high_gap.start() + index * HIGH_MMIO_SIZE;
-                let high_mmio_end = high_gap.start() + (index + 1) * HIGH_MMIO_SIZE;
-
                 let ports = (0..root_ports_per_root_complex)
                     .map(|i| PcieRootPortConfig {
                         name: format!("s{}rc{}rp{}", segment, rc_index_in_segment, i),
                         hotplug: true,
+                        acs_capabilities_supported: Some(0),
+                        cxl: false,
                     })
                     .collect();
 
@@ -290,9 +271,13 @@ impl PetriVmConfigOpenVmm {
                     segment: segment.try_into().unwrap(),
                     start_bus: start_bus.try_into().unwrap(),
                     end_bus: end_bus.try_into().unwrap(),
-                    ecam_range: MemoryRange::new(ecam_range_start..ecam_range_end),
-                    low_mmio: MemoryRange::new(low_mmio_start..low_mmio_end),
-                    high_mmio: MemoryRange::new(high_mmio_start..high_mmio_end),
+                    low_mmio: PcieMmioRangeConfig::Dynamic {
+                        size: LOW_MMIO_SIZE,
+                    },
+                    high_mmio: PcieMmioRangeConfig::Dynamic {
+                        size: HIGH_MMIO_SIZE,
+                    },
+                    cxl: None,
                     ports,
                 });
             }
@@ -314,7 +299,36 @@ impl PetriVmConfigOpenVmm {
             num_downstream_ports: port_count,
             parent_port: port_name.to_string(),
             hotplug,
+            acs_capabilities_supported: Some(0),
         });
+        self
+    }
+
+    /// Enable SMMUv3 IOMMU on the specified root complexes (aarch64 only).
+    ///
+    /// Each name must match a root complex added via
+    /// [`with_pcie_root_topology`](Self::with_pcie_root_topology). The SMMU
+    /// provides stage 1 IOVA translation for devices behind those root
+    /// complexes.
+    pub fn with_smmu(mut self, rc_names: &[&str]) -> Self {
+        let arch = self
+            .config
+            .processor_topology
+            .arch
+            .as_mut()
+            .expect("arch topology not set");
+
+        match arch {
+            openvmm_defs::config::ArchTopologyConfig::Aarch64(aarch64) => {
+                aarch64.smmu = rc_names
+                    .iter()
+                    .map(|name| SmmuInstanceConfig {
+                        rc_name: name.to_string(),
+                    })
+                    .collect();
+            }
+            _ => panic!("SMMU is only supported on aarch64"),
+        }
         self
     }
 

@@ -53,30 +53,7 @@ pub struct BuildSelections {
     pub test_igvm_agent_rpc_server: bool,
 }
 
-// Build everything we can by default
-impl Default for BuildSelections {
-    fn default() -> Self {
-        Self {
-            prep_steps: true,
-            openhcl: true,
-            openvmm: true,
-            openvmm_vhost: true,
-            pipette_windows: true,
-            pipette_linux: true,
-            guest_test_uefi: true,
-            tmks: true,
-            tmk_vmm_windows: true,
-            tmk_vmm_linux: true,
-            vmgstool: true,
-            tpm_guest_tests_windows: true,
-            tpm_guest_tests_linux: true,
-            test_igvm_agent_rpc_server: true,
-        }
-    }
-}
-
 impl BuildSelections {
-    /// No selections (build nothing)
     pub fn none() -> Self {
         Self {
             prep_steps: false,
@@ -105,8 +82,6 @@ flowey_request! {
 
         pub selections: VmmTestSelections,
 
-        /// Use unstable WHP interfaces
-        pub unstable_whp: bool,
         /// Release build instead of debug build
         pub release: bool,
 
@@ -122,6 +97,10 @@ flowey_request! {
 
         /// Skip the interactive VHD download prompt
         pub skip_vhd_prompt: bool,
+
+        pub nextest_profile: crate::run_cargo_nextest_run::NextestProfile,
+
+        pub reuse_prepped_vhds: bool,
 
         pub done: WriteVar<SideEffect>,
     }
@@ -164,13 +143,14 @@ impl SimpleFlowNode for Node {
             target,
             test_content_dir,
             selections,
-            unstable_whp,
             release,
             build_only,
             copy_extras,
             custom_kernel_modules,
             custom_kernel,
             skip_vhd_prompt,
+            nextest_profile,
+            reuse_prepped_vhds,
             done,
         } = request;
 
@@ -269,6 +249,7 @@ impl SimpleFlowNode for Node {
                     recipe: recipe_to_use,
                     custom_target: None,
                     extra_features: BTreeSet::new(),
+                    disable_secure_avic: false,
                     built_openvmm_hcl,
                     built_openhcl_boot,
                     built_openhcl_igvm,
@@ -325,12 +306,9 @@ impl SimpleFlowNode for Node {
                     target: target.clone(),
                     profile: CommonProfile::from_release(release),
                     // FIXME: this relies on openvmm default features
-                    features: if unstable_whp {
-                        [crate::build_openvmm::OpenvmmFeature::UnstableWhp].into()
-                    } else {
-                        [].into()
-                    },
+                    features: [].into(),
                 },
+                version: None,
                 openvmm: v,
             });
             if copy_extras {
@@ -501,7 +479,6 @@ impl SimpleFlowNode for Node {
                     arch,
                     platform: CommonPlatform::WindowsMsvc,
                 },
-                unstable_whp,
                 profile: CommonProfile::from_release(release),
                 tmk_vmm: v,
             });
@@ -525,7 +502,6 @@ impl SimpleFlowNode for Node {
                     arch,
                     platform: CommonPlatform::LinuxMusl,
                 },
-                unstable_whp,
                 profile: CommonProfile::from_release(release),
                 tmk_vmm: v,
             });
@@ -726,6 +702,7 @@ impl SimpleFlowNode for Node {
             release_igvm_files,
             use_relative_paths: build_only,
             disable_remote_artifacts: false,
+            reuse_prepped_vhds,
         });
 
         let mut side_effects = Vec::new();
@@ -781,8 +758,6 @@ impl SimpleFlowNode for Node {
                 Ok(())
             }
         }));
-
-        let nextest_profile = crate::run_cargo_nextest_run::NextestProfile::Default;
 
         let nextest_run_cmd = ctx.reqv(|v| flowey_lib_common::gen_cargo_nextest_run_cmd::Request {
             run_kind_deps: RunKindDeps::RunFromArchive {
@@ -863,6 +838,7 @@ impl SimpleFlowNode for Node {
                 target: Some(ReadVar::from_static(target_triple.clone())),
                 extra_env,
                 pre_run_deps: side_effects,
+                hugetlb_2mb_overcommit_pages: None,
                 results: v,
             });
 

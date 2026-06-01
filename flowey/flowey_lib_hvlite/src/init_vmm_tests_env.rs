@@ -70,6 +70,8 @@ flowey_request! {
         /// Disable lazy remote artifact fetching (set PETRI_REMOTE_ARTIFACTS=0).
         /// Should be true in CI where all images are pre-downloaded.
         pub disable_remote_artifacts: bool,
+        /// Whether to reuse VHDs created with prep_steps
+        pub reuse_prepped_vhds: bool,
     }
 }
 
@@ -80,6 +82,8 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::resolve_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
+        ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
     }
@@ -107,24 +111,34 @@ impl SimpleFlowNode for Node {
             release_igvm_files,
             use_relative_paths,
             disable_remote_artifacts,
+            reuse_prepped_vhds,
         } = request;
 
         let arch = CommonArch::from_architecture(vmm_tests_target.architecture)?;
 
-        let test_linux_initrd = ctx.reqv(|v| {
-            crate::resolve_openvmm_deps::Request::Get(
-                crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestInitrd,
-                arch,
-                v,
-            )
-        });
+        let test_linux_initrd =
+            ctx.reqv(|v| crate::resolve_openvmm_test_initrd::Request::Get(arch, v));
         let test_linux_kernel = ctx.reqv(|v| {
-            crate::resolve_openvmm_deps::Request::Get(
-                crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestKernel,
+            crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
                 arch,
+                crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
                 v,
             )
         });
+        let test_linux_bzimage =
+            crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::BzImage
+                .is_available_for(arch)
+                .then(|| {
+                    ctx.reqv(|v| {
+                        crate::resolve_openvmm_test_linux_kernel::Request::Get(
+                            crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::BzImage,
+                            arch,
+                            crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
+                            v,
+                        )
+                    })
+                });
 
         let uefi =
             ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v });
@@ -149,11 +163,13 @@ impl SimpleFlowNode for Node {
             let openhcl_igvm_files = register_openhcl_igvm_files.claim(ctx);
             let test_linux_initrd = test_linux_initrd.claim(ctx);
             let test_linux_kernel = test_linux_kernel.claim(ctx);
+            let test_linux_bzimage = test_linux_bzimage.claim(ctx);
             let uefi = uefi.claim(ctx);
             let release_igvm_files_dir = release_igvm_files.claim(ctx);
             move |rt| {
                 let test_linux_initrd = rt.read(test_linux_initrd);
                 let test_linux_kernel = rt.read(test_linux_kernel);
+                let test_linux_bzimage = test_linux_bzimage.map(|v| rt.read(v));
                 let uefi = rt.read(uefi);
                 let release_igvm_files_dir = rt.read(release_igvm_files_dir);
                 let test_content_dir = rt.read(test_content_dir);
@@ -252,6 +268,10 @@ impl SimpleFlowNode for Node {
 
                 if disable_remote_artifacts {
                     env.insert("PETRI_REMOTE_ARTIFACTS".into(), "0".into());
+                }
+
+                if reuse_prepped_vhds {
+                    env.insert("PETRI_REUSE_PREPPED_VHDS".into(), "1".into());
                 }
 
                 if let Some(openvmm) = openvmm {
@@ -428,6 +448,12 @@ impl SimpleFlowNode for Node {
                     test_linux_kernel,
                     test_content_dir.join(arch_dir).join(kernel_file_name),
                 )?;
+                if let Some(bzimage_path) = test_linux_bzimage {
+                    fs_err::copy(
+                        bzimage_path,
+                        test_content_dir.join(arch_dir).join("bzImage"),
+                    )?;
+                }
 
                 let uefi_dir = test_content_dir.join(match arch {
                     CommonArch::Aarch64 => {
