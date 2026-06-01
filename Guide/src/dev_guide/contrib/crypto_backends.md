@@ -31,14 +31,14 @@ script does not panic in this situation — it picks a placeholder backend
 so the crate still compiles. To still guarantee that a *shipping binary*
 has linked exactly one backend, each binary opts into a link-time check
 by invoking the `crypto::ensure_single_backend!()` macro (typically gated
-on `#[cfg(test)]`). The macro emits a `#[used]` reference to a symbol
+on `#[cfg(not(test))]`). The macro emits a `#[used]` reference to a symbol
 that is only defined by `crypto` when exactly one backend is selected.
 The result:
 
 - `cargo check --workspace` — succeeds. No linking happens.
 - `cargo test -p <unrelated_crate>` — succeeds, even when that crate
   transitively depends on `crypto` without selecting a backend.
-- `cargo test -p <binary>` for a binary that invokes the macro — fails
+- `cargo build -p <binary>` for a binary that invokes the macro — fails
   at link time if zero or multiple backends end up enabled, with:
 
   ```text
