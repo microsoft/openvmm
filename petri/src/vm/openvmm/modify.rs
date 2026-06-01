@@ -203,6 +203,78 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Enable a synthnic for the VM backed by the Windows vmswitch
+    /// DirectIO (`-net dio`) backend.
+    ///
+    /// `switch_id`, when `None`, defaults to the Hyper-V Default Switch.
+    /// This requires the host to have Hyper-V installed and the chosen
+    /// switch available; tests that call this method must gate themselves
+    /// behind [`super::default_switch_available`] (or an equivalent
+    /// runtime probe) to skip gracefully on hosts that do not meet those
+    /// requirements. The method panics if the switch cannot be opened or
+    /// a port cannot be created.
+    ///
+    /// The created vmswitch port handle is held in the petri (parent)
+    /// process for the lifetime of the VM. The kernel switch port object
+    /// is reference counted, so keeping the handle alive in this process
+    /// keeps the port usable from the child VMM process.
+    #[cfg(windows)]
+    pub fn with_dio_nic(mut self, switch_id: Option<Guid>) -> Self {
+        let switch_port_id = vmswitch::kernel::SwitchPortId {
+            switch: switch_id.unwrap_or(super::DEFAULT_SWITCH_GUID),
+            port: Guid::new_random(),
+        };
+        let _ = vmswitch::hcn::Network::open(&switch_port_id.switch)
+            .unwrap_or_else(|e| panic!("could not find switch {}: {e}", switch_port_id.switch));
+        let switch_port = vmswitch::kernel::SwitchPort::new(&switch_port_id)
+            .expect("failed to create vmswitch DIO port");
+        self.resources._switch_ports.push(switch_port);
+
+        let endpoint = net_backend_resources::dio::WindowsDirectIoHandle {
+            switch_port_id: net_backend_resources::dio::SwitchPortId {
+                switch: switch_port_id.switch,
+                port: switch_port_id.port,
+            },
+        }
+        .into_resource();
+
+        if let Some(vtl2_settings) = self.runtime_config.vtl2_settings.as_mut() {
+            self.config.vpci_devices.push(VpciDeviceConfig {
+                vtl: DeviceVtl::Vtl2,
+                instance_id: MANA_INSTANCE,
+                resource: GdmaDeviceHandle {
+                    vports: vec![VportDefinition {
+                        mac_address: NIC_MAC_ADDRESS,
+                        endpoint,
+                    }],
+                }
+                .into_resource(),
+            });
+
+            vtl2_settings.dynamic.as_mut().unwrap().nic_devices.push(
+                vtl2_settings_proto::NicDeviceLegacy {
+                    instance_id: MANA_INSTANCE.to_string(),
+                    subordinate_instance_id: None,
+                    max_sub_channels: None,
+                },
+            );
+        } else {
+            const NETVSP_DIO_INSTANCE: Guid = guid::guid!("d1ff4c5a-1b3c-4f0d-8e10-1b9d8b1d1cee");
+            self.config.vmbus_devices.push((
+                DeviceVtl::Vtl0,
+                netvsp_resources::NetvspHandle {
+                    instance_id: NETVSP_DIO_INSTANCE,
+                    mac_address: NIC_MAC_ADDRESS,
+                    endpoint,
+                    max_queues: None,
+                }
+                .into_resource(),
+            ));
+        }
+
+        self
+    }
+
     /// Load with the specified VTL2 relocation mode.
     pub fn with_vtl2_relocation_mode(mut self, mode: Vtl2BaseAddressType) -> Self {
         let LoadMode::Igvm {

@@ -6227,6 +6227,7 @@ dependencies = [
  "vmm_core_defs",
  "vmotherboard",
  "vmsocket",
+ "vmswitch",
  "vtl2_settings_proto",
  "windows-version",
  "x86defs",

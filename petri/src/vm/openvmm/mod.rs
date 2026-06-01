@@ -197,6 +197,36 @@ struct PetriVmResourcesOpenVmm {
 
     // properties needed at runtime
     properties: PetriVmProperties,
+
+    // vmswitch DirectIO switch port handles, held in the test (parent)
+    // process for the lifetime of the child VMM so the kernel port object
+    // survives until the VMM detaches.
+    #[cfg(windows)]
+    _switch_ports: Vec<vmswitch::kernel::SwitchPort>,
+}
+
+/// The GUID of the Hyper-V Default Switch, which provides NAT'd networking
+/// when Hyper-V is installed.
+#[cfg(windows)]
+pub const DEFAULT_SWITCH_GUID: Guid = guid::guid!("c08cb7b8-9b3c-408e-8e30-5e16a3aeb444");
+
+/// Returns whether the Hyper-V Default Switch is available on this host.
+///
+/// This is `true` only on Windows hosts where Hyper-V is installed and the
+/// Default Switch network is reachable. Tests that require DirectIO (`-net
+/// dio`) networking should use this to skip gracefully on hosts that do not
+/// meet the requirements.
+#[cfg(windows)]
+pub fn default_switch_available() -> bool {
+    vmswitch::hcn::Network::open(&DEFAULT_SWITCH_GUID).is_ok()
+}
+
+/// Returns whether the Hyper-V Default Switch is available on this host.
+///
+/// Always `false` on non-Windows platforms.
+#[cfg(not(windows))]
+pub fn default_switch_available() -> bool {
+    false
 }
 
 async fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
