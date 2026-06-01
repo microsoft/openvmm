@@ -167,10 +167,10 @@ fn import_public(pkcs1_der: &[u8]) -> Result<CfHandle, RsaError> {
 }
 
 #[repr(transparent)]
-pub struct RsaKeyPairInner(CfHandle);
+pub(crate) struct RsaKeyPairInner(CfHandle);
 
 #[repr(transparent)]
-pub struct RsaPublicKeyInner(CfHandle);
+pub(crate) struct RsaPublicKeyInner(CfHandle);
 
 impl RsaKeyPairInner {
     pub fn generate(bits: u32) -> Result<Self, RsaError> {

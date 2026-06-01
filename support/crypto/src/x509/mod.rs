@@ -3,7 +3,16 @@
 
 //! X.509 certificate operations.
 
-#![cfg(any(openssl, rust, symcrypt))]
+#![cfg(any(
+    openssl,
+    rust,
+    symcrypt,
+    all(native, windows),
+    all(native, target_os = "macos")
+))]
+
+#[cfg(any(rust, symcrypt, all(native, target_os = "macos"),))]
+mod builder;
 
 #[cfg(openssl)]
 mod ossl;
@@ -15,17 +24,27 @@ mod symcrypt_rust;
 #[cfg(any(rust, symcrypt))]
 use symcrypt_rust as sys;
 
+#[cfg(all(native, windows))]
+mod win;
+#[cfg(all(native, windows))]
+use win as sys;
+
+#[cfg(all(native, target_os = "macos"))]
+mod mac;
+#[cfg(all(native, target_os = "macos"))]
+use mac as sys;
+
 use thiserror::Error;
 
 /// An error for X.509 operations.
 #[cfg(not(rust))]
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[error("X.509 error")]
 pub struct X509Error(#[source] pub(crate) super::BackendError);
 
 /// An error for X.509 operations.
 #[cfg(rust)]
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[error("X.509 error during {1}")]
 pub struct X509Error(#[source] pub(crate) der::Error, pub(crate) &'static str);
 
@@ -122,8 +141,7 @@ mod tests {
     fn self_signed_cert_verifies() {
         let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
         let cert = build_test_cert(&key);
-        let pubkey = cert.public_key().unwrap();
-        assert!(cert.verify(&pubkey).unwrap());
+        assert!(cert.verify(&key).unwrap());
         assert!(cert.issued(&cert).unwrap());
     }
 

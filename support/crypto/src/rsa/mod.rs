@@ -19,15 +19,15 @@ use ossl as sys;
 #[cfg(rust)]
 pub(crate) mod rust;
 #[cfg(rust)]
-pub(crate) use rust as sys;
+use rust as sys;
 
 #[cfg(symcrypt)]
 pub(crate) mod symcrypt;
 #[cfg(symcrypt)]
-pub(crate) use symcrypt as sys;
+use symcrypt as sys;
 
 #[cfg(all(native, windows))]
-mod win;
+pub(crate) mod win;
 #[cfg(all(native, windows))]
 use win as sys;
 

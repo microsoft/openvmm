@@ -50,10 +50,10 @@ fn err(err: windows_result::Error, op: &'static str) -> RsaError {
 }
 
 #[repr(transparent)]
-pub struct RsaKeyPairInner(KeyHandle);
+pub(crate) struct RsaKeyPairInner(pub(crate) KeyHandle);
 
 #[repr(transparent)]
-pub struct RsaPublicKeyInner(KeyHandle);
+pub(crate) struct RsaPublicKeyInner(pub(crate) KeyHandle);
 
 /// Parse a BCRYPT_RSAFULLPRIVATE_BLOB or BCRYPT_RSAPUBLIC_BLOB into its
 /// big-endian component byte ranges.

@@ -79,11 +79,14 @@ windows = { workspace = true, features = [
 windows-result.workspace = true
 zerocopy.workspace = true
 
-# Used by the native Security.framework RSA backend to parse/encode PKCS#8 / PKCS#1.
+# Used by the native RSA / X.509 backend to parse/encode PKCS#8 / PKCS#1
+# and X.509 certificates.
 [target.'cfg(target_os = "macos")'.dependencies]
 der.workspace = true
 pkcs1.workspace = true
 pkcs8 = { workspace = true, features = ["alloc"] }
+signature = { workspace = true, features = ["alloc"] }
+x509-cert.workspace = true
 
 # Default to OpenSSL on Linux since there is no native backend available
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -155,7 +155,7 @@ impl HashAlgorithm {
     }
 }
 
-#[cfg(any(symcrypt, rust))]
+#[cfg(any(symcrypt, rust, all(native, target_os = "macos")))]
 impl TryFrom<der::asn1::ObjectIdentifier> for HashAlgorithm {
     type Error = der::Error;
 
