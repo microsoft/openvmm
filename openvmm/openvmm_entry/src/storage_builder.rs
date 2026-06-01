@@ -433,6 +433,11 @@ impl StorageBuilder {
                         anyhow::bail!("dvd not supported with nvme");
                     }
                     let nsid = nsid.unwrap_or(nvme.namespaces.len() as u32 + 1);
+                    if nvme.namespaces.iter().any(|ns| ns.nsid == nsid) {
+                        anyhow::bail!(
+                            "duplicate namespace ID {nsid} on NVMe controller '{controller}'"
+                        );
+                    }
                     nvme.namespaces.push(NamespaceDefinition {
                         nsid,
                         disk,
@@ -459,6 +464,9 @@ impl StorageBuilder {
                         .into_resource()
                     };
                     let lun = lun.unwrap_or(scsi.devices.len() as u8);
+                    if scsi.devices.iter().any(|d| d.path.lun == lun) {
+                        anyhow::bail!("duplicate LUN {lun} on SCSI controller '{controller}'");
+                    }
                     scsi.devices.push(ScsiDeviceAndPath {
                         path: ScsiPath {
                             path: 0,
@@ -532,6 +540,17 @@ impl StorageBuilder {
                 anyhow::bail!("`relay` requires a named source controller");
             }
         };
+
+        // The relay model requires the source controller to be offered into
+        // the OpenHCL VTL so that OpenHCL can intercept and re-expose it.
+        let openhcl_vtl = self.openhcl_vtl.context("OpenHCL not configured")?;
+        if source_vtl != openhcl_vtl {
+            anyhow::bail!(
+                "relay source controller must be assigned to {openhcl_vtl:?}, \
+                 but it is assigned to {source_vtl:?}; add the `vtl2` option \
+                 to the source controller"
+            );
+        }
 
         let sub_device_path = self
             .add_inner(source_vtl, target, kind, is_dvd, read_only)

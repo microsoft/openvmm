@@ -73,7 +73,6 @@ inspect_proto.workspace = true
 mesh.workspace = true
 mesh_rpc.workspace = true
 mesh_process.workspace = true
-sha2.workspace = true
 mesh_worker.workspace = true
 pal.workspace = true
 unix_socket.workspace = true
@@ -92,6 +91,7 @@ futures-concurrency.workspace = true
 getrandom.workspace = true
 prost.workspace = true
 rustyline = { workspace = true, features = ["derive"] }
+sha2.workspace = true
 shell-words.workspace = true
 socket2 = { workspace = true, features = ["all"] }
 tempfile.workspace = true
