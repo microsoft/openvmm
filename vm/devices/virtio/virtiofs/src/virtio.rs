@@ -78,7 +78,7 @@ impl VirtioFsDevice {
     /// Creates a new `VirtioFsDevice` with the specified mount tag.
     ///
     /// The number of FUSE request queues defaults to
-    /// [`DEFAULT_NUM_REQUEST_QUEUES`]. Callers that know the appropriate
+    /// `DEFAULT_NUM_REQUEST_QUEUES`. Callers that know the appropriate
     /// concurrency for their environment (e.g., guest vCPU count for an
     /// in-VMM device, or host parallelism for a host service) should use
     /// [`Self::with_num_request_queues`] instead.
