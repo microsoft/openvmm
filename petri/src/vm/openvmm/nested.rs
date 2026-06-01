@@ -372,8 +372,6 @@ impl NestedL2Builder {
                     config: Some(vmservice::VmConfig {
                         memory_config: Some(vmservice::MemoryConfig {
                             memory_mb: self.memory_bytes / (1024 * 1024),
-                            private_memory: true,
-                            transparent_hugepages: true,
                             ..Default::default()
                         }),
                         processor_config: Some(vmservice::ProcessorConfig {
