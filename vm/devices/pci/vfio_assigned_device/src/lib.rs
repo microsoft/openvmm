@@ -1169,6 +1169,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                 // VFIO_DEVICE_SET_IRQS. Writing it again through config space
                 // causes VFIO to tear down and re-setup MSI-X, losing the
                 // eventfd associations.
+                let msix = self.msix.as_mut().unwrap();
                 let new_enabled = value & 0x8000_0000 != 0;
                 let was_enabled = msix.enabled;
 
