@@ -652,9 +652,9 @@ async fn vm_config_from_command_line(
         };
 
         let switch_id = if switch_id == "default" {
-            DEFAULT_SWITCH
+            None
         } else {
-            switch_id
+            Some(switch_id.as_str())
         };
         let (port_id, port) = new_switch_port(switch_id)?;
         resources.switch_ports.push(port);
@@ -1823,17 +1823,17 @@ fn cleanup_socket(path: &Path) {
 }
 
 #[cfg(windows)]
-const DEFAULT_SWITCH: &str = "C08CB7B8-9B3C-408E-8E30-5E16A3AEB444";
-
-#[cfg(windows)]
 fn new_switch_port(
-    switch_id: &str,
+    switch_id: Option<&str>,
 ) -> anyhow::Result<(
     openvmm_defs::config::SwitchPortId,
     vmswitch::kernel::SwitchPort,
 )> {
     let id = vmswitch::kernel::SwitchPortId {
-        switch: switch_id.parse().context("invalid switch id")?,
+        switch: match switch_id {
+            Some(s) => s.parse().context("invalid switch id")?,
+            None => vmswitch::hcn::DEFAULT_SWITCH,
+        },
         port: Guid::new_random(),
     };
     let _ = vmswitch::hcn::Network::open(&id.switch)
@@ -1883,7 +1883,7 @@ fn parse_endpoint(
         EndpointConfigCli::Dio { id } => {
             #[cfg(windows)]
             {
-                let (port_id, port) = new_switch_port(id.as_deref().unwrap_or(DEFAULT_SWITCH))?;
+                let (port_id, port) = new_switch_port(id.as_deref())?;
                 resources.switch_ports.push(port);
                 net_backend_resources::dio::WindowsDirectIoHandle {
                     switch_port_id: net_backend_resources::dio::SwitchPortId {
