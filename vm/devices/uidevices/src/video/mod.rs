@@ -6,6 +6,7 @@
 mod protocol;
 
 use async_trait::async_trait;
+use futures::FutureExt;
 use guestmem::AccessError;
 use guid::Guid;
 use mesh::payload::Protobuf;
@@ -155,6 +156,12 @@ pub struct Video {
     control: Box<dyn FramebufferControl>,
     /// Channel to forward dirty rectangles from the guest to the VNC worker.
     dirt_send: Option<mesh::Sender<Vec<DirtyRect>>>,
+    /// Receives whether any consumer currently needs the guest's
+    /// screen/pointer updates. When present, the device relays the latest
+    /// value to the guest via a synthvid `FeatureChange`, so the guest stops
+    /// generating dirty rectangles and pointer reports while no client is
+    /// watching. `None` leaves the guest at its default (everything enabled).
+    updates_needed_recv: Option<mesh::Receiver<bool>>,
 }
 
 impl Video {
@@ -162,8 +169,13 @@ impl Video {
     pub fn new(
         control: Box<dyn FramebufferControl>,
         dirt_send: Option<mesh::Sender<Vec<DirtyRect>>>,
+        updates_needed_recv: Option<mesh::Receiver<bool>>,
     ) -> anyhow::Result<Self> {
-        Ok(Self { control, dirt_send })
+        Ok(Self {
+            control,
+            dirt_send,
+            updates_needed_recv,
+        })
     }
 }
 
@@ -343,7 +355,14 @@ impl SimpleVmbusDevice for Video {
         channel: &mut VideoChannel,
     ) -> Result<(), task_control::Cancelled> {
         stop.until_stopped(async {
-            match channel.process(&mut self.control, &self.dirt_send).await {
+            match channel
+                .process(
+                    &mut self.control,
+                    &self.dirt_send,
+                    &mut self.updates_needed_recv,
+                )
+                .await
+            {
                 Ok(()) => {}
                 Err(err) => tracing::error!(error = &err as &dyn std::error::Error, "video error"),
             }
@@ -408,6 +427,7 @@ impl VideoChannel {
         &mut self,
         framebuffer: &mut Box<dyn FramebufferControl>,
         dirt_send: &Option<mesh::Sender<Vec<DirtyRect>>>,
+        updates_needed_recv: &mut Option<mesh::Receiver<bool>>,
     ) -> Result<(), Error> {
         process_channel(
             &mut self.channel,
@@ -415,9 +435,64 @@ impl VideoChannel {
             &mut self.packet_buf,
             framebuffer,
             dirt_send,
+            updates_needed_recv,
         )
         .await
     }
+}
+
+/// Tells the guest whether it should report screen and pointer updates, by
+/// sending a synthvid `FeatureChange`.
+///
+/// The message is a full snapshot of all four feature toggles, not a delta, so
+/// every send must specify all of them. Dirty rectangles and the two
+/// hardware-pointer features follow `updates_needed` (the device forwards dirt
+/// only to a connected VNC client and ignores pointer reports entirely, so all
+/// three are pure waste while nobody is watching).
+/// `is_video_situation_updates_needed` always stays set: situation updates are
+/// rare (resolution changes) and the device relies on them to keep the
+/// framebuffer format current, so a client that connects later renders at the
+/// right size even if the resolution changed while idle.
+/// After this many screen/pointer updates are received while we have told the
+/// guest they are disabled, warn that the guest is not honoring the synthvid
+/// `FeatureChange`. Sized comfortably above the normal in-flight burst that
+/// arrives during the round-trip after we disable updates, so a compliant
+/// guest never trips it but a non-compliant one does.
+const UPDATES_IGNORED_WARN_THRESHOLD: u32 = 64;
+
+/// Records that the guest sent a screen/pointer update while updates were
+/// disabled, and increments `count`. A handful right after disabling are
+/// expected (in flight during the FeatureChange round-trip) and stay at
+/// `trace`; a sustained stream means the guest is ignoring the squelch, which
+/// warrants a rate-limited warning.
+fn note_update_while_disabled(count: &mut u32, kind: &str) {
+    *count = count.saturating_add(1);
+    if *count >= UPDATES_IGNORED_WARN_THRESHOLD {
+        tracelimit::warn_ratelimited!(
+            count = *count,
+            kind,
+            "guest still sending updates after they were disabled; not honoring FeatureChange"
+        );
+    } else {
+        tracing::trace!(kind, "dropping guest update while disabled");
+    }
+}
+
+async fn send_feature_change(
+    channel: &mut (impl AsyncSend + Unpin),
+    updates_needed: bool,
+) -> Result<(), Error> {
+    VideoChannel::send_packet(
+        channel,
+        protocol::MESSAGE_FEATURE_CHANGE,
+        &protocol::FeatureChangeMessage {
+            is_dirt_needed: updates_needed as u8,
+            is_pointer_position_updates_needed: updates_needed as u8,
+            is_pointer_shape_updates_needed: updates_needed as u8,
+            is_video_situation_updates_needed: 1,
+        },
+    )
+    .await
 }
 
 async fn process_channel(
@@ -426,7 +501,26 @@ async fn process_channel(
     packet_buf: &mut PacketBuffer,
     framebuffer: &mut Box<dyn FramebufferControl>,
     dirt_send: &Option<mesh::Sender<Vec<DirtyRect>>>,
+    updates_needed_recv: &mut Option<mesh::Receiver<bool>>,
 ) -> Result<(), Error> {
+    // Whether the guest should currently report screen/pointer updates. The
+    // guest enables everything by default after the handshake, so we start
+    // from `true` and only send a FeatureChange once a consumer's demand
+    // diverges from that. Starting enabled is what makes a guest channel
+    // reopen or a device save/restore safe: if a client is still connected
+    // (and the coordinator therefore never re-signals), we leave the guest
+    // reporting rather than wrongly disabling it and freezing that client.
+    // The coordinator drives `false` only when no client is watching. With no
+    // demand channel wired up this stays `true` and no FeatureChange is ever
+    // sent, matching the original behavior.
+    let mut updates_needed = true;
+    // What the guest currently believes, used to avoid redundant
+    // FeatureChanges. The post-handshake guest default is everything-enabled,
+    // hence `Some(true)`.
+    let mut synced_updates: Option<bool> = Some(true);
+    // Count of updates received from the guest while disabled, to detect a
+    // guest that ignores the FeatureChange. Reset whenever updates are enabled.
+    let mut updates_while_disabled: u32 = 0;
     loop {
         match state {
             ChannelState::ReadVersion => {
@@ -474,7 +568,62 @@ async fn process_channel(
                 substate,
             } => match *substate {
                 ActiveState::ReadRequest => {
-                    let packet = packet_buf.recv_packet(channel).await?;
+                    // Bring the guest's update-reporting state in line with the
+                    // latest consumer demand before waiting for the next event.
+                    if let Some(recv) = updates_needed_recv.as_mut() {
+                        loop {
+                            match recv.try_recv() {
+                                Ok(v) => updates_needed = v,
+                                Err(mesh::TryRecvError::Empty) => break,
+                                // Sender dropped; stop managing the feature and
+                                // leave the guest at its last known state.
+                                Err(_) => {
+                                    *updates_needed_recv = None;
+                                    break;
+                                }
+                            }
+                        }
+                        if updates_needed_recv.is_some() && synced_updates != Some(updates_needed) {
+                            send_feature_change(channel, updates_needed).await?;
+                            synced_updates = Some(updates_needed);
+                            tracing::debug!(updates_needed, "sent synthvid FeatureChange to guest");
+                        }
+                    }
+                    if updates_needed {
+                        updates_while_disabled = 0;
+                    }
+
+                    // Wait for the next guest packet, or for a demand change
+                    // that should re-sync the update features on the next pass.
+                    let mut demand_closed = false;
+                    let packet = if let Some(recv) = updates_needed_recv.as_mut() {
+                        let recv_packet = std::pin::pin!(packet_buf.recv_packet(channel));
+                        let demand = std::pin::pin!(recv.recv());
+                        futures::select! {
+                            p = recv_packet.fuse() => Some(p?),
+                            d = demand.fuse() => {
+                                match d {
+                                    Ok(v) => {
+                                        updates_needed = v;
+                                        None
+                                    }
+                                    Err(_) => {
+                                        demand_closed = true;
+                                        None
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Some(packet_buf.recv_packet(channel).await?)
+                    };
+                    if demand_closed {
+                        *updates_needed_recv = None;
+                    }
+                    // Demand changed (no packet): loop back to re-sync and wait.
+                    let Some(packet) = packet else {
+                        continue;
+                    };
                     match packet {
                         Request::VramLocation {
                             user_context,
@@ -503,20 +652,41 @@ async fn process_channel(
                         }
                         Request::PointerPosition { is_visible, x, y } => {
                             let _ = (is_visible, x, y);
+                            if !updates_needed {
+                                note_update_while_disabled(
+                                    &mut updates_while_disabled,
+                                    "pointer-position",
+                                );
+                            }
                         }
-                        Request::PointerShape => {}
+                        Request::PointerShape => {
+                            if !updates_needed {
+                                note_update_while_disabled(
+                                    &mut updates_while_disabled,
+                                    "pointer-shape",
+                                );
+                            }
+                        }
                         Request::Dirt(rects) => {
-                            if let Some(send) = dirt_send {
-                                let dirty: Vec<DirtyRect> = rects
-                                    .iter()
-                                    .map(|r| DirtyRect {
-                                        left: r.left.into(),
-                                        top: r.top.into(),
-                                        right: r.right.into(),
-                                        bottom: r.bottom.into(),
-                                    })
-                                    .collect();
-                                send.send(dirty);
+                            // Skip forwarding while no consumer is watching.
+                            // Compliant guests stop sending these once told via
+                            // FeatureChange; this also drops any that a
+                            // non-compliant guest keeps sending.
+                            if updates_needed {
+                                if let Some(send) = dirt_send {
+                                    let dirty: Vec<DirtyRect> = rects
+                                        .iter()
+                                        .map(|r| DirtyRect {
+                                            left: r.left.into(),
+                                            top: r.top.into(),
+                                            right: r.right.into(),
+                                            bottom: r.bottom.into(),
+                                        })
+                                        .collect();
+                                    send.send(dirty);
+                                }
+                            } else {
+                                note_update_while_disabled(&mut updates_while_disabled, "dirt");
                             }
                         }
                         Request::BiosInfo => {
@@ -755,21 +925,35 @@ mod tests {
         (*header, rest)
     }
 
+    async fn recv_feature_change(
+        reader: &mut (impl AsyncRecv + Unpin + Send),
+    ) -> protocol::FeatureChangeMessage {
+        let packet = recv_bytes(reader).await;
+        let (header, rest) = parse_header(&packet);
+        assert_eq!(header.typ.to_ne(), protocol::MESSAGE_FEATURE_CHANGE);
+        *protocol::FeatureChangeMessage::ref_from_prefix(rest)
+            .unwrap()
+            .0
+    }
+
     fn start_worker<T: RingMem + 'static + Unpin + Send + Sync>(
         driver: &DefaultDriver,
         mut control: Box<dyn FramebufferControl>,
         dirt_send: Option<mesh::Sender<Vec<DirtyRect>>>,
+        updates_needed_recv: Option<mesh::Receiver<bool>>,
         mut channel: MessagePipe<T>,
     ) -> Task<Result<(), Error>> {
         driver.spawn("video worker", async move {
             let mut state = ChannelState::ReadVersion;
             let mut packet_buf = PacketBuffer::new();
+            let mut updates_needed_recv = updates_needed_recv;
             process_channel(
                 &mut channel,
                 &mut state,
                 &mut packet_buf,
                 &mut control,
                 &dirt_send,
+                &mut updates_needed_recv,
             )
             .await
             .or_else(|e| match e {
@@ -784,7 +968,7 @@ mod tests {
         let (host, mut guest) = connected_message_pipes(16384);
         let (_device, control, mut view) = framebuffer_fixture();
         let (dirt_send, mut dirt_recv) = mesh::channel();
-        let worker = start_worker(&driver, control, Some(dirt_send), host);
+        let worker = start_worker(&driver, control, Some(dirt_send), None, host);
 
         let version = protocol::Version::new(protocol::VERSION_MAJOR, protocol::VERSION_MINOR_BLUE);
         send_packet(
@@ -886,10 +1070,129 @@ mod tests {
     }
 
     #[async_test]
+    async fn test_feature_change_gates_dirt_on_consumer_presence(driver: DefaultDriver) {
+        let (host, mut guest) = connected_message_pipes(16384);
+        let (_device, control, _view) = framebuffer_fixture();
+        let (dirt_send, mut dirt_recv) = mesh::channel();
+        let (updates_needed_send, updates_needed_recv) = mesh::channel();
+        let worker = start_worker(
+            &driver,
+            control,
+            Some(dirt_send),
+            Some(updates_needed_recv),
+            host,
+        );
+
+        // The coordinator signals "no client" at startup, which is what drives
+        // the device to disable reporting (the device itself defaults to the
+        // guest's enabled state).
+        updates_needed_send.send(false);
+
+        // Complete the version handshake.
+        send_packet(
+            &mut guest,
+            protocol::MESSAGE_VERSION_REQUEST,
+            &protocol::VersionRequestMessage {
+                version: protocol::Version::new(
+                    protocol::VERSION_MAJOR,
+                    protocol::VERSION_MINOR_BLUE,
+                ),
+            },
+        )
+        .await;
+        let packet = recv_bytes(&mut guest).await;
+        assert_eq!(
+            parse_header(&packet).0.typ.to_ne(),
+            protocol::MESSAGE_VERSION_RESPONSE
+        );
+
+        // With a demand channel present and no client yet, the device should
+        // immediately tell the guest to stop reporting updates.
+        let fc = recv_feature_change(&mut guest).await;
+        assert_eq!(fc.is_dirt_needed, 0);
+        assert_eq!(fc.is_pointer_position_updates_needed, 0);
+        assert_eq!(fc.is_pointer_shape_updates_needed, 0);
+        // Situation updates always stay on so resolution changes keep working.
+        assert_eq!(fc.is_video_situation_updates_needed, 1);
+
+        // Dirt sent while no consumer is watching must be dropped. Follow it
+        // with a situation update and wait for its ack: vmbus packets are
+        // processed in order, so the ack proves the dirt was already handled
+        // (and dropped) while updates were still disabled.
+        send_dirt_packet(
+            &mut guest,
+            &[protocol::Rectangle {
+                left: 0.into(),
+                top: 0.into(),
+                right: 10.into(),
+                bottom: 10.into(),
+            }],
+        )
+        .await;
+        send_packet(
+            &mut guest,
+            protocol::MESSAGE_SITUATION_UPDATE,
+            &protocol::SituationUpdateMessage {
+                user_context: 0x1u64.into(),
+                video_output_count: 1,
+                video_output: protocol::VideoOutputSituation {
+                    active: 1,
+                    primary_surface_vram_offset: 0.into(),
+                    depth_bits: 32,
+                    width_pixels: 640u32.into(),
+                    height_pixels: 480u32.into(),
+                    pitch_bytes: (640u32 * 4).into(),
+                },
+            },
+        )
+        .await;
+        let packet = recv_bytes(&mut guest).await;
+        assert_eq!(
+            parse_header(&packet).0.typ.to_ne(),
+            protocol::MESSAGE_SITUATION_UPDATE_ACK
+        );
+
+        // A client connects: the device re-enables reporting.
+        updates_needed_send.send(true);
+        let fc = recv_feature_change(&mut guest).await;
+        assert_eq!(fc.is_dirt_needed, 1);
+        assert_eq!(fc.is_pointer_position_updates_needed, 1);
+        assert_eq!(fc.is_pointer_shape_updates_needed, 1);
+        assert_eq!(fc.is_video_situation_updates_needed, 1);
+
+        // Dirt is now forwarded. Since the earlier rect was dropped, this is
+        // the first rect the consumer sees.
+        send_dirt_packet(
+            &mut guest,
+            &[protocol::Rectangle {
+                left: 5.into(),
+                top: 6.into(),
+                right: 7.into(),
+                bottom: 8.into(),
+            }],
+        )
+        .await;
+        let dirt = dirt_recv.recv().await.unwrap();
+        assert_eq!(dirt.len(), 1);
+        assert_eq!(
+            (dirt[0].left, dirt[0].top, dirt[0].right, dirt[0].bottom),
+            (5, 6, 7, 8)
+        );
+
+        // The client disconnects: reporting is disabled again.
+        updates_needed_send.send(false);
+        let fc = recv_feature_change(&mut guest).await;
+        assert_eq!(fc.is_dirt_needed, 0);
+
+        drop(guest);
+        worker.await.unwrap();
+    }
+
+    #[async_test]
     async fn test_channel_reports_bios_resolutions_and_capability(driver: DefaultDriver) {
         let (host, mut guest) = connected_message_pipes(16384);
         let (_device, control, _view) = framebuffer_fixture();
-        let worker = start_worker(&driver, control, None, host);
+        let worker = start_worker(&driver, control, None, None, host);
 
         send_packet(
             &mut guest,
@@ -968,7 +1271,7 @@ mod tests {
     async fn test_channel_rejects_out_of_order_request(driver: DefaultDriver) {
         let (host, mut guest) = connected_message_pipes(16384);
         let (_device, control, _view) = framebuffer_fixture();
-        let worker = start_worker(&driver, control, None, host);
+        let worker = start_worker(&driver, control, None, None, host);
 
         send_packet(
             &mut guest,

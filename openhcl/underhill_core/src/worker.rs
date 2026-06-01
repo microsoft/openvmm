@@ -341,6 +341,11 @@ pub struct UnderhillRemoteConsoleCfg {
     /// device is in play; the VNC worker then relies on whole-framebuffer
     /// tile-diff scanning.
     pub dirt_send: Option<mesh::Sender<Vec<video_core::DirtyRect>>>,
+    /// Receiver side of the reverse channel by which the VNC worker tells the
+    /// synth video device whether any client is connected, so the guest stops
+    /// reporting screen/pointer updates while idle. `None` when no synth video
+    /// device is in play.
+    pub updates_needed_recv: Option<mesh::Receiver<bool>>,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -450,6 +455,7 @@ impl Worker for UnderhillVmWorker {
                     input: mesh::Receiver::new(),
                     framebuffer: None,
                     dirt_send: None,
+                    updates_needed_recv: None,
                 },
                 debugger_rpc: None,
                 vm_rpc: state.vm_rpc,
@@ -3454,6 +3460,7 @@ async fn new_underhill_vm(
             uidevices_resources::SynthVideoHandle {
                 framebuffer: video_core::SharedFramebufferHandle.into_resource(),
                 dirt_send: remote_console_cfg.dirt_send,
+                updates_needed_recv: remote_console_cfg.updates_needed_recv,
             }
             .into_resource(),
         );

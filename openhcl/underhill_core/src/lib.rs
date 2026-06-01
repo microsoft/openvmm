@@ -79,13 +79,21 @@ use vmsocket::VmAddress;
 use vmsocket::VmListener;
 use vnc_worker_defs::VncParameters;
 
+/// Result of [`new_underhill_remote_console_cfg`]: the remote console config
+/// plus the framebuffer access and the two ends of the dirty/updates channels
+/// that the VNC worker needs.
+struct RemoteConsoleSetup {
+    cfg: UnderhillRemoteConsoleCfg,
+    framebuffer_access: Option<FramebufferAccess>,
+    /// Receives dirty rectangles from the video device for the VNC worker.
+    dirty_recv: Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
+    /// Sends "updates needed" from the VNC worker to the video device.
+    updates_needed_send: Option<mesh::Sender<bool>>,
+}
+
 fn new_underhill_remote_console_cfg(
     framebuffer_gpa_base: Option<u64>,
-) -> anyhow::Result<(
-    UnderhillRemoteConsoleCfg,
-    Option<FramebufferAccess>,
-    Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
-)> {
+) -> anyhow::Result<RemoteConsoleSetup> {
     if let Some(framebuffer_gpa_base) = framebuffer_gpa_base {
         // Underhill accesses the framebuffer by using /dev/mshv_vtl_low to read
         // from a second mapping placed after the end of RAM at a static
@@ -108,32 +116,37 @@ fn new_underhill_remote_console_cfg(
         tracing::debug!("framebuffer_gpa_base: {:#x}", framebuffer_gpa_base);
 
         let (dirt_send, dirt_recv) = mesh::channel();
+        let (updates_needed_send, updates_needed_recv) = mesh::channel();
 
-        Ok((
-            UnderhillRemoteConsoleCfg {
+        Ok(RemoteConsoleSetup {
+            cfg: UnderhillRemoteConsoleCfg {
                 synth_keyboard: true,
                 synth_mouse: true,
                 synth_video: true,
                 input: mesh::Receiver::new(),
                 framebuffer: Some(fb),
                 dirt_send: Some(dirt_send),
+                updates_needed_recv: Some(updates_needed_recv),
             },
-            Some(fba),
-            Some(dirt_recv),
-        ))
+            framebuffer_access: Some(fba),
+            dirty_recv: Some(dirt_recv),
+            updates_needed_send: Some(updates_needed_send),
+        })
     } else {
-        Ok((
-            UnderhillRemoteConsoleCfg {
+        Ok(RemoteConsoleSetup {
+            cfg: UnderhillRemoteConsoleCfg {
                 synth_keyboard: false,
                 synth_mouse: false,
                 synth_video: false,
                 input: mesh::Receiver::new(),
                 framebuffer: None,
                 dirt_send: None,
+                updates_needed_recv: None,
             },
-            None,
-            None,
-        ))
+            framebuffer_access: None,
+            dirty_recv: None,
+            updates_needed_send: None,
+        })
     }
 }
 
@@ -358,8 +371,12 @@ async fn launch_workers(
         servicing_timeout_dump_collection_in_ms: opt.servicing_timeout_dump_collection_in_ms,
     };
 
-    let (mut remote_console_cfg, framebuffer_access, dirty_rect_recv) =
-        new_underhill_remote_console_cfg(opt.framebuffer_gpa_base)?;
+    let RemoteConsoleSetup {
+        cfg: mut remote_console_cfg,
+        framebuffer_access,
+        dirty_recv: dirty_rect_recv,
+        updates_needed_send,
+    } = new_underhill_remote_console_cfg(opt.framebuffer_gpa_base)?;
 
     let mut vnc_worker = None;
     if let Some(framebuffer) = framebuffer_access {
@@ -383,6 +400,7 @@ async fn launch_workers(
                         dirty_recv: dirty_rect_recv,
                         max_clients: 16,
                         evict_oldest: false,
+                        updates_needed_send,
                     },
                 )
                 .await?,

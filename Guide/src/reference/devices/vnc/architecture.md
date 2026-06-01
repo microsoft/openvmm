@@ -68,8 +68,9 @@ The multi-client orchestrator. Manages connections and broadcasts dirty rects.
 ### `vnc_worker_defs` crate
 
 `VncParameters<T>` — the mesh-serializable config passed from `openvmm_entry`
-to the worker. Contains listener, framebuffer access, input sender, and dirty
-rect receiver.
+to the worker. Contains listener, framebuffer access, input sender, the dirty
+rect receiver, and the "updates needed" sender that tells the video device
+when a client is connected.
 
 ### `video_core` crate
 
@@ -175,6 +176,33 @@ Key operations:
 Once device dirty rects have been received at least once (`device_dirty_seen`),
 subsequent empty cycles skip the VRAM read entirely. This reduces an idle
 1080p desktop from 8MB/frame/client to 0 bytes.
+
+### Suppressing Guest Reporting When No Client Is Connected
+
+The optimization above still lets the guest generate and send dirty
+rectangles even when nobody is connected. To avoid that, the VNC worker
+tells the synthetic video device whether any client is connected: a `bool`
+sent over a `mesh` channel (paired with the dirty-rect channel), `true` on
+the first connect and `false` when the last client leaves. When updates are
+not needed, the device sends a synthvid `FeatureChange` with `is_dirt_needed`
+and the pointer flags cleared, so a cooperating guest stops reporting
+altogether. It re-enables on the next connect.
+
+Situation (resolution) updates stay enabled the whole time, so a mode change
+while idle is still tracked and the next client renders at the right size.
+The device also drops any dirt that arrives while reporting is disabled, and
+logs a rate-limited warning if a guest keeps sending it, which indicates the
+guest is not honoring the request.
+
+The device side defaults to the guest's enabled state and only disables when
+the coordinator signals "no client". This keeps a connected client working
+across a guest reboot or video-driver reload: those re-open the synthvid
+channel and reset the device's per-connection state, but the coordinator does
+not re-signal (the client never left), so the guest keeps reporting. The flip
+side is that a reopen while no client is connected leaves the guest reporting
+to nobody. The coordinator corrects this on its own: if it receives device
+dirt while it has zero clients, it re-sends "no client", which settles in one
+cycle (the device then drops further dirt at the gate).
 
 ## Multi-Client Architecture
 

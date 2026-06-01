@@ -33,6 +33,14 @@ pub struct VncParameters<T> {
     pub max_clients: usize,
     /// When true, evict the oldest client instead of rejecting new ones.
     pub evict_oldest: bool,
+    /// Channel used to tell the synth video device whether the guest's
+    /// screen/pointer updates are currently needed: `true` is sent when the
+    /// first client connects, `false` when the last one disconnects. The
+    /// device relays this to the guest (via a synthvid `FeatureChange`) so it
+    /// stops generating dirty rectangles and pointer reports while no client
+    /// is watching. `None` when no synth video device is wired up (the paired
+    /// `dirty_recv` is then also `None`).
+    pub updates_needed_send: Option<mesh::Sender<bool>>,
 }
 
 /// Worker ID for the TCP-listening VNC worker. Used by openvmm, where the

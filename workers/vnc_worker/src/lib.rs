@@ -40,6 +40,7 @@ pub struct VncWorker<T: Listener> {
     dirty_recv: Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
     max_clients: usize,
     evict_oldest: bool,
+    updates_needed_send: Option<mesh::Sender<bool>>,
 }
 
 impl Worker for VncWorker<TcpListener> {
@@ -93,6 +94,7 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
             dirty_recv: params.dirty_recv,
             max_clients: params.max_clients,
             evict_oldest: params.evict_oldest,
+            updates_needed_send: params.updates_needed_send,
         })
     }
 
@@ -118,6 +120,7 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
                 next_client_id: 0,
                 max_clients: self.max_clients,
                 evict_oldest: self.evict_oldest,
+                updates_needed_send: self.updates_needed_send,
             };
 
             let rpc = loop {
@@ -147,6 +150,7 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
                     dirty_recv: server.dirty_recv,
                     max_clients: server.max_clients,
                     evict_oldest: server.evict_oldest,
+                    updates_needed_send: server.updates_needed_send,
                 };
                 rpc.complete(Ok(state));
             }
@@ -193,9 +197,23 @@ struct MultiClientServer<T: Listener> {
     max_clients: usize,
     /// When true, evict the oldest client instead of rejecting new ones.
     evict_oldest: bool,
+    /// Tells the synth video device whether any client is connected, so the
+    /// guest can stop generating screen/pointer updates while idle. `true` is
+    /// sent when the client count goes from 0 to 1, `false` when it returns to
+    /// 0. `None` when no synth video device is wired up.
+    updates_needed_send: Option<mesh::Sender<bool>>,
 }
 
 impl<T: Listener> MultiClientServer<T> {
+    /// Tells the synth video device whether the guest's screen/pointer updates
+    /// are needed. No-op when no device is wired up.
+    fn signal_updates_needed(&self, needed: bool) {
+        if let Some(send) = &self.updates_needed_send {
+            send.send(needed);
+            tracing::debug!(needed, "signaled updates-needed to video device");
+        }
+    }
+
     /// Main loop: accept new clients, reap finished ones, and broadcast
     /// device dirty rects to per-client channels.
     async fn process(&mut self, driver: &LocalDriver) -> anyhow::Result<()> {
@@ -206,6 +224,10 @@ impl<T: Listener> MultiClientServer<T> {
         }
 
         let mut device_dirty_seen = false;
+
+        // Force the device to a known state on (re)start: no clients yet, so
+        // the guest should not be reporting updates.
+        self.signal_updates_needed(false);
 
         loop {
             let listener = &mut self.listener;
@@ -289,8 +311,16 @@ impl<T: Listener> MultiClientServer<T> {
                     }
                     let sock: socket2::Socket = socket.into();
                     let _ = sock.set_tcp_nodelay(true);
+                    let was_idle = self.abort_senders.is_empty();
                     match PolledSocket::new(driver, sock) {
-                        Ok(socket) => self.spawn_client(driver, socket, remote_addr),
+                        Ok(socket) => {
+                            self.spawn_client(driver, socket, remote_addr);
+                            // First client connected: ask the guest to start
+                            // reporting screen/pointer updates again.
+                            if was_idle {
+                                self.signal_updates_needed(true);
+                            }
+                        }
                         Err(e) => {
                             tracing::error!(
                                 error = %e,
@@ -303,8 +333,24 @@ impl<T: Listener> MultiClientServer<T> {
                     self.abort_senders.retain(|(cid, _)| *cid != id);
                     self.dirty_senders.retain(|s| s.id != id);
                     tracing::info!(id, count = self.clients.len(), "VNC client disconnected");
+                    // Last client gone: tell the guest it can stop reporting
+                    // screen/pointer updates.
+                    if self.abort_senders.is_empty() {
+                        self.signal_updates_needed(false);
+                    }
                 }
                 Event::DirtyRects(rects) => {
+                    if self.abort_senders.is_empty() {
+                        // Receiving dirt with no clients means the device is
+                        // reporting to nobody, which happens if its synthvid
+                        // channel re-handshaked while idle (guest reboot or
+                        // video-driver reload) and reset to the guest's
+                        // enabled default. Re-assert that updates are not
+                        // needed; the device dedupes, so this settles in one
+                        // cycle and the guest stops reporting again.
+                        self.signal_updates_needed(false);
+                        continue;
+                    }
                     if !device_dirty_seen {
                         device_dirty_seen = true;
                         tracing::info!("device dirty rects active, preferring over tile diff");
@@ -726,6 +772,7 @@ mod tests {
                     next_client_id: 0,
                     max_clients,
                     evict_oldest,
+                    updates_needed_send: None,
                 };
 
                 futures::select! {

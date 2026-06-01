@@ -44,6 +44,12 @@ reads **0 bytes from VRAM per cycle** instead of scanning for changes.
 For guests without device dirty support (older `hyperv_fb` driver), we
 fall back to tile-based diffing automatically.
 
+Because our dirty source is a cooperating guest driver, we can also turn it
+off: when no client is connected, the worker asks the device to tell the
+guest to stop reporting dirty rectangles (via the synthvid FeatureChange).
+A VM with no viewer attached does no console dirty-tracking work until
+someone connects.
+
 ### Non-ASCII Clipboard Paste Without Guest Agent
 
 QEMU supports bidirectional VNC clipboard (since 6.1) but requires a

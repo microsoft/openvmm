@@ -44,6 +44,15 @@ pub struct SynthVideoHandle {
     /// to a consumer (typically the VNC worker). `None` when no consumer is
     /// wired up — the device still runs, it just doesn't publish hints.
     pub dirt_send: Option<mesh::Sender<Vec<video_core::DirtyRect>>>,
+    /// Channel by which a consumer tells the device whether the guest's
+    /// screen/pointer updates are currently needed: `true` when at least one
+    /// consumer (e.g. a connected VNC client) is watching, `false` when none
+    /// are. The device relays this to the guest via a synthvid `FeatureChange`
+    /// (dirty rectangles and hardware-pointer reporting), so the guest stops
+    /// generating them while nobody is watching. `None` when no consumer is
+    /// wired up, in which case the device leaves the guest at its default
+    /// (everything enabled) and never sends a `FeatureChange`.
+    pub updates_needed_recv: Option<mesh::Receiver<bool>>,
 }
 
 impl ResourceId<VmbusDeviceHandleKind> for SynthVideoHandle {
