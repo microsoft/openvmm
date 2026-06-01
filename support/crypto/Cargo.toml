@@ -37,7 +37,6 @@ symcrypt = [
 # Note that some of these crates have known security issues.
 # This backend should not be used in production scenarios.
 rust = [
-    "dep:aes-kw",
     "dep:cms",
     "dep:der",
     "dep:getrandom",
@@ -55,7 +54,6 @@ openssl = { workspace = true, optional = true }
 
 symcrypt = { workspace = true, optional = true }
 
-aes-kw = { workspace = true, optional = true }
 cms = { workspace = true, optional = true }
 der = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true, features = ["sys_rng"] }
