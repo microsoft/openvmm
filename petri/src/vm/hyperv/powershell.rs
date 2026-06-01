@@ -841,11 +841,14 @@ pub async fn request_physical_nvme(
 
     let vsid = Guid::new_random();
 
-    Ok((nsid, crate::PhysicalNvmeDevice {
-        target_vtl,
-        vsid,
-        namespace_size_mib,
-    }))
+    Ok((
+        nsid,
+        crate::PhysicalNvmeDevice {
+            target_vtl,
+            vsid,
+            namespace_size_mib,
+        },
+    ))
 }
 
 /// Arguments for the Set-VMProcessor powershell cmdlet
