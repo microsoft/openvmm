@@ -341,3 +341,40 @@ async fn ipv4_normal_destination_not_blocked(driver: DefaultDriver) {
         "normal destination should not be blocked, got {result:?}"
     );
 }
+
+#[test]
+fn test_is_same_ipv6_subnet_basic() {
+    let a = Ipv6Address::new(0x2001, 0x0db8, 0x0001, 0, 0, 0, 0, 1);
+    let b = Ipv6Address::new(0x2001, 0x0db8, 0x0001, 0, 0, 0, 0, 2);
+    assert!(is_same_ipv6_subnet(a, b, 48));
+    assert!(!is_same_ipv6_subnet(a, b, 128));
+}
+
+#[test]
+fn test_is_same_ipv6_subnet_prefix_zero() {
+    let a = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
+    let b = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+    assert!(is_same_ipv6_subnet(a, b, 0));
+}
+
+#[test]
+fn test_is_same_ipv6_subnet_prefix_128_exact_match() {
+    let a = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
+    assert!(is_same_ipv6_subnet(a, a, 128));
+}
+
+#[test]
+fn test_is_same_ipv6_subnet_prefix_128_no_match() {
+    let a = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
+    let b = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 2);
+    assert!(!is_same_ipv6_subnet(a, b, 128));
+}
+
+#[test]
+fn test_is_same_ipv6_subnet_prefix_above_128_does_not_panic() {
+    let a = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
+    let b = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 2);
+    // prefix_len > 128 should behave like /128 (exact match), not panic.
+    assert!(is_same_ipv6_subnet(a, a, 200));
+    assert!(!is_same_ipv6_subnet(a, b, 255));
+}

@@ -883,7 +883,11 @@ async fn test_tcp_deferred_ack_batching(driver: DefaultDriver) {
 /// fields represent unscaled values.
 #[pal_async::async_test]
 async fn test_tcp_window_scale_activation(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new({
+        let mut params = ConsommeParams::new().unwrap();
+        params.allow_host_local_access = true;
+        params
+    });
     let mut client = TestClient::new(driver.clone());
 
     let guest_mac = consomme.params_mut().client_mac;
@@ -1243,7 +1247,11 @@ async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
 /// source port, not the proxy ephemeral port).
 #[pal_async::async_test]
 async fn test_tcp_loopback_port_remap(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new({
+        let mut params = ConsommeParams::new().unwrap();
+        params.allow_host_local_access = true;
+        params
+    });
     let mut client = TestClient::new(driver.clone());
 
     let guest_mac = consomme.params_mut().client_mac;
