@@ -17,8 +17,8 @@ use zerocopy::IntoBytes;
 /// Owns a buffer allocated by Crypt32 via `CryptDecodeObjectEx` /
 /// `CryptEncodeObjectEx` with the ALLOC flag. Frees with `LocalFree`.
 pub struct CryptAlloc {
-    pub ptr: *mut c_void,
-    pub len: u32,
+    ptr: *mut c_void,
+    len: u32,
 }
 
 impl Drop for CryptAlloc {
@@ -31,16 +31,18 @@ impl Drop for CryptAlloc {
 }
 
 impl CryptAlloc {
-    /// Returns the allocation as a byte slice, validating that the
-    /// pointer is non-null. Required before constructing a slice from a
-    /// Crypt32-allocated buffer because `from_raw_parts` requires a
-    /// non-null pointer even when `len == 0`.
-    pub fn as_bytes(&self) -> Result<&[u8], windows_result::Error> {
-        if self.ptr.is_null() {
+    /// Creates a new `CryptAlloc` from a raw pointer and length.
+    pub fn new(ptr: *mut c_void, len: u32) -> Result<Self, windows_result::Error> {
+        if ptr.is_null() {
             return Err(windows_result::Error::from_hresult(NTE_BAD_TYPE));
         }
+        Ok(Self { ptr, len })
+    }
+
+    /// Returns the allocation as a byte slice.
+    pub fn as_bytes(&self) -> &[u8] {
         // SAFETY: ptr is non-null and points to `len` bytes owned by self.
-        Ok(unsafe { std::slice::from_raw_parts(self.ptr.cast::<u8>(), self.len as usize) })
+        unsafe { std::slice::from_raw_parts(self.ptr.cast::<u8>(), self.len as usize) }
     }
 
     /// Reborrows the allocation as a `&T`, validating that the pointer is
@@ -52,7 +54,7 @@ impl CryptAlloc {
     /// a valid `T` (e.g. by passing the matching struct type to
     /// `CryptDecodeObjectEx`).
     pub unsafe fn as_struct<T>(&self) -> Result<&T, windows_result::Error> {
-        if self.ptr.is_null() || (self.len as usize) < size_of::<T>() {
+        if (self.len as usize) < size_of::<T>() {
             return Err(windows_result::Error::from_hresult(NTE_BAD_TYPE));
         }
         // SAFETY: ptr is non-null, aligned (LocalAlloc returns suitably

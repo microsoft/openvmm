@@ -160,7 +160,7 @@ impl RsaKeyPairInner {
                 )
             }
             .map_err(|e| err(e, "decoding PKCS#8 PrivateKeyInfo"))?;
-            CryptAlloc { ptr, len }
+            CryptAlloc::new(ptr, len).map_err(|e| err(e, "decoding PKCS#8 PrivateKeyInfo"))?
         };
         // SAFETY: Crypt32 was asked to decode a PKCS_PRIVATE_KEY_INFO, so
         // the buffer (when non-null and large enough, as validated by
@@ -215,11 +215,9 @@ impl RsaKeyPairInner {
                 )
             }
             .map_err(|e| err(e, "decoding PKCS#1 RSA private key"))?;
-            CryptAlloc { ptr, len }
+            CryptAlloc::new(ptr, len).map_err(|e| err(e, "decoding PKCS#1 RSA private key"))?
         };
-        let blob = blob_buf
-            .as_bytes()
-            .map_err(|e| err(e, "decoding PKCS#1 RSA private key"))?;
+        let blob = blob_buf.as_bytes();
         if blob.len() < size_of::<BCRYPT_RSAKEY_BLOB>() {
             return Err(err(
                 windows_result::Error::from_hresult(NTE_BAD_TYPE),
@@ -229,12 +227,20 @@ impl RsaKeyPairInner {
         // SAFETY: blob is at least header-sized and the header is POD.
         let magic =
             unsafe { std::ptr::read_unaligned(blob.as_ptr().cast::<BCRYPT_RSAKEY_BLOB>()) }.Magic;
-        let blob_type =
-            if magic == windows::Win32::Security::Cryptography::BCRYPT_RSAFULLPRIVATE_MAGIC {
+        let blob_type = match magic {
+            windows::Win32::Security::Cryptography::BCRYPT_RSAFULLPRIVATE_MAGIC => {
                 BCRYPT_RSAFULLPRIVATE_BLOB
-            } else {
+            }
+            windows::Win32::Security::Cryptography::BCRYPT_RSAPRIVATE_MAGIC => {
                 BCRYPT_RSAPRIVATE_BLOB
-            };
+            }
+            _ => {
+                return Err(err(
+                    windows_result::Error::from_hresult(NTE_BAD_TYPE),
+                    "decoded RSA private blob has unexpected magic",
+                ));
+            }
+        };
         let handle = import_key(blob, blob_type)?;
         Ok(Self(handle))
     }
@@ -268,7 +274,7 @@ impl RsaKeyPairInner {
                 )
             }
             .map_err(|e| err(e, "encoding PKCS#1 RSA private key"))?;
-            CryptAlloc { ptr, len }
+            CryptAlloc::new(ptr, len).map_err(|e| err(e, "encoding PKCS#1 RSA private key"))?
         };
 
         // Step 3: wrap the PKCS#1 DER in a PKCS#8 PrivateKeyInfo with the
@@ -286,9 +292,12 @@ impl RsaKeyPairInner {
                     pbData: null_params.as_mut_ptr(),
                 },
             },
-            PrivateKey: CRYPT_INTEGER_BLOB {
-                cbData: pkcs1_buf.len,
-                pbData: pkcs1_buf.ptr.cast::<u8>(),
+            PrivateKey: {
+                let pkcs1 = pkcs1_buf.as_bytes();
+                CRYPT_INTEGER_BLOB {
+                    cbData: pkcs1.len() as u32,
+                    pbData: pkcs1.as_ptr().cast_mut(),
+                }
             },
             pAttributes: std::ptr::null_mut(),
         };
@@ -310,12 +319,9 @@ impl RsaKeyPairInner {
                 )
             }
             .map_err(|e| err(e, "encoding PKCS#8 PrivateKeyInfo"))?;
-            CryptAlloc { ptr, len }
+            CryptAlloc::new(ptr, len).map_err(|e| err(e, "encoding PKCS#8 PrivateKeyInfo"))?
         };
-        Ok(pkcs8_buf
-            .as_bytes()
-            .map_err(|e| err(e, "encoding PKCS#8 PrivateKeyInfo"))?
-            .to_vec())
+        Ok(pkcs8_buf.as_bytes().to_vec())
     }
 
     pub fn oaep_decrypt(
