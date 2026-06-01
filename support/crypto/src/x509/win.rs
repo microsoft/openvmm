@@ -37,11 +37,11 @@ use windows::Win32::Security::Cryptography::szOID_SUBJECT_KEY_IDENTIFIER;
 use windows::core::PCSTR;
 
 fn err(err: windows_result::Error, op: &'static str) -> X509Error {
-    X509Error(crate::BackendError::Bcrypt(err, op))
+    X509Error(crate::BackendError(err, op))
 }
 
 fn rsa_err(err: windows_result::Error, op: &'static str) -> crate::rsa::RsaError {
-    crate::rsa::RsaError(crate::BackendError::Bcrypt(err, op))
+    crate::rsa::RsaError(crate::BackendError(err, op))
 }
 
 fn last_err(op: &'static str) -> X509Error {
