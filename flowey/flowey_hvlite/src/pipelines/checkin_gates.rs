@@ -803,14 +803,20 @@ impl IntoPipeline for CheckinGatesCli {
             match arch {
                 CommonArch::X86_64 => {
                     vmm_tests_artifacts_linux_x86.use_openvmm = Some(use_openvmm.clone());
+                    vmm_tests_artifacts_linux_x86.use_openvmm_guest_linux =
+                        Some(use_openvmm_musl.clone());
                     vmm_tests_artifacts_linux_x86.use_openvmm_vhost =
                         Some(use_openvmm_vhost.clone());
                     vmm_tests_artifacts_linux_x86.use_prep_steps = Some(use_prep_steps.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_openvmm = Some(use_openvmm_musl.clone());
+                    vmm_tests_artifacts_linux_musl_x86.use_openvmm_guest_linux =
+                        Some(use_openvmm_musl.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_openvmm_vhost =
                         Some(use_openvmm_vhost_musl.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_prep_steps =
                         Some(use_prep_steps.clone());
+                    vmm_tests_artifacts_windows_x86.use_openvmm_guest_linux =
+                        Some(use_openvmm_musl.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_linux_aarch64_tcg.use_openvmm =
@@ -1883,6 +1889,7 @@ pub mod vmm_tests_artifact_builders {
             tmk_vmm => TmkVmmOutput,
             // linux build machine
             openvmm => OpenvmmOutput,
+            openvmm_guest_linux => OpenvmmOutput,
             openvmm_vhost => OpenvmmVhostOutput,
             pipette_linux_musl => PipetteOutput,
             prep_steps => PrepStepsOutput,
@@ -1906,6 +1913,7 @@ pub mod vmm_tests_artifact_builders {
             tpm_guest_tests_linux => TpmGuestTestsOutput,
             test_igvm_agent_rpc_server => TestIgvmAgentRpcServerOutput,
             // linux build machine
+            openvmm_guest_linux => OpenvmmOutput,
             openhcl_standard => OpenhclIgvmOutput,
             openhcl_cvm => OpenhclIgvmOutput,
             openhcl_linux_direct => OpenhclIgvmOutput,

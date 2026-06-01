@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Handler for the `RelayUnixSocket` and `RelayConnectUnixSocket` requests
-//! (Linux only).
+//! Handler for the `RelayUnixSocket` and `RelayConnectUnixSocket` requests.
 //!
 //! `RelayUnixSocket` binds a UNIX-domain listener at the requested path,
 //! waits for a single connection, and pumps bytes between that connection
