@@ -7,6 +7,7 @@ use crate::AssignmentParams;
 use crate::MmioAperture;
 use crate::PciConfigAccess;
 use crate::assign_pci_resources_inner;
+use crate::enumerate::DiscoveredDevice;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -225,6 +226,16 @@ use pal_async::async_test;
 
 // ---- Tests ----
 
+/// Flatten a device tree into a list for test assertions.
+fn flatten_devices(devices: &[DiscoveredDevice]) -> Vec<&DiscoveredDevice> {
+    let mut out = Vec::new();
+    for dev in devices {
+        out.push(dev);
+        out.extend(flatten_devices(&dev.children));
+    }
+    out
+}
+
 #[async_test]
 async fn single_endpoint_32bit_bar() {
     let mock = MockConfigSpace::new();
@@ -244,13 +255,14 @@ async fn single_endpoint_32bit_bar() {
     let mut cfg = mock.clone();
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
-    assert_eq!(result.entries.len(), 1);
-    let entry = &result.entries[0];
+    let flat = flatten_devices(&result);
+    assert_eq!(flat.len(), 1);
+    let entry = flat[0];
     assert_eq!(entry.bus, 0);
     assert_eq!(entry.device, 0);
     assert_eq!(entry.function, 0);
     assert_eq!(entry.bars.len(), 1);
-    assert_eq!(entry.bars[0].address, 0x1000_0000);
+    assert_eq!(entry.bars[0].address.unwrap(), 0x1000_0000);
     assert_eq!(entry.bars[0].size, 0x10000);
     assert!(!entry.bars[0].is_64bit);
 
@@ -278,9 +290,10 @@ async fn single_endpoint_64bit_bar() {
     let mut cfg = mock.clone();
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
-    assert_eq!(result.entries.len(), 1);
-    let bar = &result.entries[0].bars[0];
-    assert_eq!(bar.address, 0x1_0000_0000);
+    let flat = flatten_devices(&result);
+    assert_eq!(flat.len(), 1);
+    let bar = &flat[0].bars[0];
+    assert_eq!(bar.address.unwrap(), 0x1_0000_0000);
     assert_eq!(bar.size, 0x100000);
     assert!(bar.is_64bit);
 
@@ -315,11 +328,11 @@ async fn bridge_with_endpoint() {
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
     // Should have 2 entries: bridge + endpoint.
-    assert_eq!(result.entries.len(), 2);
+    let flat = flatten_devices(&result);
+    assert_eq!(flat.len(), 2);
 
     // Find the bridge entry.
-    let bridge = result
-        .entries
+    let bridge = flat
         .iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
@@ -329,8 +342,7 @@ async fn bridge_with_endpoint() {
     assert!(bridge.memory_limit.is_some());
 
     // Find the endpoint entry.
-    let endpoint = result
-        .entries
+    let endpoint = flat
         .iter()
         .find(|e| e.bus == 1 && e.device == 0)
         .unwrap();
@@ -367,17 +379,18 @@ async fn multiple_endpoints_sorted_by_size() {
     let mut cfg = mock.clone();
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
-    assert_eq!(result.entries.len(), 2);
+    let flat = flatten_devices(&result);
+    assert_eq!(flat.len(), 2);
 
     // The 1MB BAR should be allocated first (sorted by size desc) and
     // aligned to 1MB.
-    let dev1 = result.entries.iter().find(|e| e.device == 1).unwrap();
-    assert_eq!(dev1.bars[0].address, 0x1000_0000);
+    let dev1 = flat.iter().find(|e| e.device == 1).unwrap();
+    assert_eq!(dev1.bars[0].address.unwrap(), 0x1000_0000);
     assert_eq!(dev1.bars[0].size, 0x100000);
 
     // The 4KB BAR should follow.
-    let dev0 = result.entries.iter().find(|e| e.device == 0).unwrap();
-    assert_eq!(dev0.bars[0].address, 0x1010_0000);
+    let dev0 = flat.iter().find(|e| e.device == 0).unwrap();
+    assert_eq!(dev0.bars[0].address.unwrap(), 0x1010_0000);
     assert_eq!(dev0.bars[0].size, 0x1000);
 }
 
@@ -406,10 +419,11 @@ async fn multi_function_device() {
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
     // Should find both functions.
-    assert_eq!(result.entries.len(), 2);
-    let f0 = result.entries.iter().find(|e| e.function == 0).unwrap();
-    let f1 = result.entries.iter().find(|e| e.function == 1).unwrap();
-    assert_ne!(f0.bars[0].address, f1.bars[0].address);
+    let flat = flatten_devices(&result);
+    assert_eq!(flat.len(), 2);
+    let f0 = flat.iter().find(|e| e.function == 0).unwrap();
+    let f1 = flat.iter().find(|e| e.function == 1).unwrap();
+    assert_ne!(f0.bars[0].address.unwrap(), f1.bars[0].address.unwrap());
 }
 
 #[async_test]
@@ -446,31 +460,30 @@ async fn switch_with_multiple_endpoints() {
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
     // Should have entries for: upstream bridge, 2 downstream bridges, 2 endpoints.
-    assert!(result.entries.len() >= 4);
+    let flat = flatten_devices(&result);
+    assert!(flat.len() >= 4);
 
     // Verify bus numbers were assigned correctly.
-    let upstream = result
-        .entries
+    let upstream = flat
         .iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
     assert_eq!(upstream.secondary_bus, Some(1));
 
     // Both endpoints should have BAR addresses assigned.
-    let ep1 = result.entries.iter().find(|e| e.bus == 2).unwrap();
-    let ep2 = result.entries.iter().find(|e| e.bus == 3).unwrap();
+    let ep1 = flat.iter().find(|e| e.bus == 2).unwrap();
+    let ep2 = flat.iter().find(|e| e.bus == 3).unwrap();
     assert_eq!(ep1.bars.len(), 1);
     assert_eq!(ep2.bars.len(), 1);
     // 32-bit BAR on bus 2 should be in low MMIO.
-    assert!(ep1.bars[0].address >= 0x1000_0000);
-    assert!(ep1.bars[0].address < 0x2000_0000);
+    assert!(ep1.bars[0].address.unwrap() >= 0x1000_0000);
+    assert!(ep1.bars[0].address.unwrap() < 0x2000_0000);
     // 64-bit BAR on bus 3 should be in high MMIO.
-    assert!(ep2.bars[0].address >= 0x1_0000_0000);
+    assert!(ep2.bars[0].address.unwrap() >= 0x1_0000_0000);
 
     // The downstream bridge for the 64-bit endpoint should have a
     // prefetchable window covering high MMIO.
-    let ds_bridge_64 = result
-        .entries
+    let ds_bridge_64 = flat
         .iter()
         .find(|e| e.bus == 1 && e.device == 1)
         .unwrap();
@@ -482,8 +495,7 @@ async fn switch_with_multiple_endpoints() {
 
     // The downstream bridge for the 32-bit endpoint should have a
     // non-prefetchable window in low MMIO, and no prefetchable window.
-    let ds_bridge_32 = result
-        .entries
+    let ds_bridge_32 = flat
         .iter()
         .find(|e| e.bus == 1 && e.device == 0)
         .unwrap();
@@ -531,7 +543,7 @@ async fn no_devices_is_ok() {
 
     let mut cfg = mock;
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
-    assert!(result.entries.is_empty());
+    assert!(result.is_empty());
 }
 
 #[async_test]
@@ -617,9 +629,8 @@ async fn sriov_reserves_bus_numbers() {
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
     // Bridge should have subordinate >= 2 to cover VF buses.
-    let bridge = result
-        .entries
-        .iter()
+    let bridge = flatten_devices(&result)
+        .into_iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
     assert_eq!(bridge.secondary_bus, Some(1));
@@ -660,9 +671,8 @@ async fn sriov_no_vfs_no_reservation() {
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
     // No extra buses reserved — subordinate should be 1.
-    let bridge = result
-        .entries
-        .iter()
+    let bridge = flatten_devices(&result)
+        .into_iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
     assert_eq!(bridge.subordinate_bus, Some(1));
@@ -690,9 +700,8 @@ async fn bridge_prefetchable_window_programmed() {
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
     // The bridge should have a prefetchable window, not a non-prefetchable one.
-    let bridge = result
-        .entries
-        .iter()
+    let bridge = flatten_devices(&result)
+        .into_iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
     assert!(
@@ -763,13 +772,12 @@ async fn sibling_bridge_windows_must_not_overlap() {
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
     // Find bridge windows for the two downstream bridges.
-    let bridge_a = result
-        .entries
+    let flat = flatten_devices(&result);
+    let bridge_a = flat
         .iter()
         .find(|e| e.bus == 1 && e.device == 0)
         .unwrap();
-    let bridge_b = result
-        .entries
+    let bridge_b = flat
         .iter()
         .find(|e| e.bus == 1 && e.device == 1)
         .unwrap();
@@ -818,13 +826,12 @@ async fn large_bar_alignment_fits_in_bridge_window() {
     let mut cfg = mock.clone();
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
-    let bridge = result
-        .entries
+    let flat = flatten_devices(&result);
+    let bridge = flat
         .iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
-    let ep = result
-        .entries
+    let ep = flat
         .iter()
         .find(|e| e.bus == 1 && e.device == 0)
         .unwrap();
@@ -835,7 +842,7 @@ async fn large_bar_alignment_fits_in_bridge_window() {
     let window_limit = bridge
         .memory_limit
         .expect("bridge should have memory window");
-    let bar_addr = ep.bars[0].address;
+    let bar_addr = ep.bars[0].address.unwrap();
     let bar_end = bar_addr + ep.bars[0].size - 1;
 
     // The BAR must be naturally aligned.
@@ -1017,7 +1024,7 @@ async fn mem32_bar_must_not_be_placed_above_4gb() {
     assert!(
         result.is_err(),
         "expected error when only aperture is above 4 GB, but got assignments: {:#?}",
-        result.unwrap().entries
+        result.unwrap()
     );
 }
 
@@ -1057,11 +1064,12 @@ async fn shared_aperture_mem32_mem64_must_not_overlap() {
 
     // Collect all BAR regions and verify no overlaps.
     let mut regions: Vec<(u64, u64, String)> = Vec::new();
-    for entry in &result.entries {
+    let flat = flatten_devices(&result);
+    for entry in &flat {
         for bar in &entry.bars {
             regions.push((
-                bar.address,
-                bar.address + bar.size,
+                bar.address.unwrap(),
+                bar.address.unwrap() + bar.size,
                 format!(
                     "{:02x}:{:02x}.{} BAR{}",
                     entry.bus, entry.device, entry.function, bar.index
@@ -1175,9 +1183,8 @@ async fn sriov_vf_bars_included_in_bridge_window() {
 
     // Find the bridge entry and check that its memory window is large
     // enough for both the PF BAR (4 KB) and VF BARs (4 * 4 KB = 16 KB).
-    let bridge = result
-        .entries
-        .iter()
+    let bridge = flatten_devices(&result)
+        .into_iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
     let window_base = bridge
@@ -1232,9 +1239,8 @@ async fn sriov_non_power_of_two_vf_count() {
     let mut cfg = mock;
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
-    let bridge = result
-        .entries
-        .iter()
+    let bridge = flatten_devices(&result)
+        .into_iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
     let window_base = bridge
@@ -1290,9 +1296,8 @@ async fn sriov_vf_bars_64bit_prefetchable() {
     let mut cfg = mock;
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
-    let bridge = result
-        .entries
-        .iter()
+    let bridge = flatten_devices(&result)
+        .into_iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
 
@@ -1372,9 +1377,8 @@ async fn sriov_mixed_vf_bar_types() {
     let mut cfg = mock;
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
-    let bridge = result
-        .entries
-        .iter()
+    let bridge = flatten_devices(&result)
+        .into_iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
 
@@ -1439,16 +1443,15 @@ async fn sriov_top_level_pf_no_bridge() {
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
     // The PF should have its own BAR assigned.
-    let pf = result
-        .entries
-        .iter()
+    let pf = flatten_devices(&result)
+        .into_iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
     assert_eq!(pf.bars.len(), 1);
     assert_eq!(pf.bars[0].size, 0x1_0000);
 
     // The PF BAR should be within the aperture.
-    let bar_end = pf.bars[0].address + pf.bars[0].size;
+    let bar_end = pf.bars[0].address.unwrap() + pf.bars[0].size;
     assert!(
         bar_end <= 0x2000_0000,
         "PF BAR must fit in low_mmio aperture"
@@ -1486,8 +1489,8 @@ async fn sriov_multiple_pfs_behind_bridge() {
     let mut cfg = mock;
     let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
 
-    let bridge = result
-        .entries
+    let flat = flatten_devices(&result);
+    let bridge = flat
         .iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
@@ -1508,13 +1511,11 @@ async fn sriov_multiple_pfs_behind_bridge() {
     );
 
     // Both PFs should have their device BARs assigned.
-    let pf1 = result
-        .entries
+    let pf1 = flat
         .iter()
         .find(|e| e.bus == 1 && e.device == 0)
         .unwrap();
-    let pf2 = result
-        .entries
+    let pf2 = flat
         .iter()
         .find(|e| e.bus == 1 && e.device == 1)
         .unwrap();
@@ -1522,10 +1523,10 @@ async fn sriov_multiple_pfs_behind_bridge() {
     assert_eq!(pf2.bars.len(), 1);
 
     // PF BARs must not overlap each other.
-    let pf1_end = pf1.bars[0].address + pf1.bars[0].size;
-    let pf2_end = pf2.bars[0].address + pf2.bars[0].size;
+    let pf1_end = pf1.bars[0].address.unwrap() + pf1.bars[0].size;
+    let pf2_end = pf2.bars[0].address.unwrap() + pf2.bars[0].size;
     assert!(
-        pf1_end <= pf2.bars[0].address || pf2_end <= pf1.bars[0].address,
+        pf1_end <= pf2.bars[0].address.unwrap() || pf2_end <= pf1.bars[0].address.unwrap(),
         "PF BARs must not overlap"
     );
 }

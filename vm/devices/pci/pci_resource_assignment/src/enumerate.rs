@@ -39,6 +39,15 @@ pub struct DiscoveredDevice {
     /// requirement of this bridge's children. Avoids recomputation during
     /// address assignment.
     pub(crate) subtree_req: Option<crate::assign::SubtreeRequirement>,
+    /// For bridges: the non-prefetchable memory window base (32-bit only).
+    /// Populated by the assignment pass.
+    pub(crate) memory_base: Option<u64>,
+    /// For bridges: the non-prefetchable memory window limit (32-bit only).
+    pub(crate) memory_limit: Option<u64>,
+    /// For bridges: the prefetchable memory window base (64-bit capable).
+    pub(crate) prefetchable_base: Option<u64>,
+    /// For bridges: the prefetchable memory window limit (64-bit capable).
+    pub(crate) prefetchable_limit: Option<u64>,
 }
 
 /// A discovered BAR with its size.
@@ -48,6 +57,8 @@ pub struct DiscoveredBar {
     pub size: u64,
     pub is_64bit: bool,
     pub is_prefetchable: bool,
+    /// Assigned base address (populated by the assignment pass).
+    pub(crate) address: Option<u64>,
 }
 
 /// SR-IOV information for a PF.
@@ -146,6 +157,10 @@ async fn scan_bus(
                 subordinate_bus: None,
                 sriov: None,
                 subtree_req: None,
+                memory_base: None,
+                memory_limit: None,
+                prefetchable_base: None,
+                prefetchable_limit: None,
             };
 
             if is_bridge {
@@ -442,6 +457,7 @@ async fn probe_bar_range(
                 size,
                 is_64bit,
                 is_prefetchable,
+                address: None,
             });
         }
 

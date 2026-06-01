@@ -3,11 +3,8 @@
 
 //! Phase 2: Bottom-up aperture computation and top-down address assignment.
 
-use crate::AssignmentEntry;
 use crate::AssignmentError;
 use crate::AssignmentParams;
-use crate::AssignmentResult;
-use crate::BarAssignment;
 use crate::PciConfigAccess;
 use crate::enumerate::DiscoveredDevice;
 use pci_core::spec::cfg_space::HeaderType00;
@@ -16,34 +13,6 @@ use pci_core::spec::cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
 
 /// Bridge memory window granularity: 1 MB.
 const BRIDGE_WINDOW_ALIGN: u64 = 1 << 20;
-
-fn find_or_create_entry(
-    entries: &mut Vec<AssignmentEntry>,
-    bus: u8,
-    device: u8,
-    function: u8,
-) -> &mut AssignmentEntry {
-    let pos = entries
-        .iter()
-        .position(|e| e.bus == bus && e.device == device && e.function == function);
-    if let Some(idx) = pos {
-        &mut entries[idx]
-    } else {
-        entries.push(AssignmentEntry {
-            bus,
-            device,
-            function,
-            bars: Vec::new(),
-            secondary_bus: None,
-            subordinate_bus: None,
-            memory_base: None,
-            memory_limit: None,
-            prefetchable_base: None,
-            prefetchable_limit: None,
-        });
-        entries.last_mut().unwrap()
-    }
-}
 
 /// Resource requirement for a subtree (bridge or root).
 #[derive(Debug, Clone)]
@@ -73,7 +42,6 @@ enum Demand {
         dev_idx: usize,
         bar_index: u8,
         size: u64,
-        is_64bit: bool,
         is_mem64: bool,
     },
     /// A bridge's child subtree window.
@@ -143,9 +111,7 @@ impl Demand {
 pub fn assign_addresses(
     devices: &mut [DiscoveredDevice],
     params: &AssignmentParams,
-) -> Result<AssignmentResult, AssignmentError> {
-    let mut entries = Vec::new();
-
+) -> Result<(), AssignmentError> {
     // Step 1: Bottom-up — compute total resource requirements.
     // This also stores per-bridge requirements on the DiscoveredDevice
     // nodes so that the assignment pass can read them without recomputing.
@@ -180,7 +146,7 @@ pub fn assign_addresses(
             });
         }
 
-        assign_subtree(devices, &root_req.demands, false, base, &mut entries);
+        assign_subtree(devices, &root_req.demands, false, base);
 
         mem32_end = Some(base + root_req.mem32);
     }
@@ -214,37 +180,39 @@ pub fn assign_addresses(
             });
         }
 
-        assign_subtree(devices, &root_req.demands, true, base, &mut entries);
+        assign_subtree(devices, &root_req.demands, true, base);
     }
 
-    let result = AssignmentResult { entries };
-    validate_assignments(&result, params);
-    Ok(result)
+    validate_assignments(devices, params);
+    Ok(())
 }
 
 /// Verify that all assigned BAR addresses fall within the provided apertures.
-fn validate_assignments(result: &AssignmentResult, params: &AssignmentParams) {
-    for entry in &result.entries {
-        for bar in &entry.bars {
-            let bar_end = bar.address + bar.size;
-            let in_low = params
-                .low_mmio
-                .is_some_and(|a| bar.address >= a.base && bar_end <= a.base + a.len);
-            let in_high = params
-                .high_mmio
-                .is_some_and(|a| bar.address >= a.base && bar_end <= a.base + a.len);
-            assert!(
-                in_low || in_high,
-                "BAR {bus:02x}:{dev:02x}.{func} index {idx} at {addr:#x}..{end:#x} \
-                 is outside all MMIO apertures",
-                bus = entry.bus,
-                dev = entry.device,
-                func = entry.function,
-                idx = bar.index,
-                addr = bar.address,
-                end = bar_end,
-            );
+fn validate_assignments(devices: &[DiscoveredDevice], params: &AssignmentParams) {
+    for dev in devices {
+        for bar in &dev.bars {
+            if let Some(address) = bar.address {
+                let bar_end = address + bar.size;
+                let in_low = params
+                    .low_mmio
+                    .is_some_and(|a| address >= a.base && bar_end <= a.base + a.len);
+                let in_high = params
+                    .high_mmio
+                    .is_some_and(|a| address >= a.base && bar_end <= a.base + a.len);
+                assert!(
+                    in_low || in_high,
+                    "BAR {bus:02x}:{device:02x}.{func} index {idx} at {addr:#x}..{end:#x} \
+                     is outside all MMIO apertures",
+                    bus = dev.bus,
+                    device = dev.device,
+                    func = dev.function,
+                    idx = bar.index,
+                    addr = address,
+                    end = bar_end,
+                );
+            }
         }
+        validate_assignments(&dev.children, params);
     }
 }
 fn is_mem64_bar(bar: &crate::enumerate::DiscoveredBar) -> bool {
@@ -265,7 +233,6 @@ fn compute_subtree_requirement(devices: &mut [DiscoveredDevice]) -> SubtreeRequi
                 dev_idx: i,
                 bar_index: bar.index,
                 size: bar.size,
-                is_64bit: bar.is_64bit,
                 is_mem64: is_mem64_bar(bar),
             });
         }
@@ -337,7 +304,6 @@ fn compute_subtree_requirement(devices: &mut [DiscoveredDevice]) -> SubtreeRequi
         demands,
     }
 }
-
 /// Top-down: assign addresses to devices within a subtree, carving from
 /// the given base address. `alloc_64bit` selects which pool (mem32 or
 /// mem64) we are assigning.
@@ -348,7 +314,6 @@ fn assign_subtree(
     demands: &[Demand],
     alloc_64bit: bool,
     base: u64,
-    entries: &mut Vec<AssignmentEntry>,
 ) {
     // Bump-allocate from the pre-sorted demands, skipping demands that
     // belong to the other pool.
@@ -365,34 +330,27 @@ fn assign_subtree(
             Demand::Bar {
                 dev_idx,
                 bar_index,
-                size,
-                is_64bit,
                 ..
             } => {
-                let dev = &devices[dev_idx];
-                let entry = find_or_create_entry(entries, dev.bus, dev.device, dev.function);
-                entry.bars.push(BarAssignment {
-                    index: bar_index,
-                    address: offset,
-                    size,
-                    is_64bit,
-                });
+                let bar = devices[dev_idx]
+                    .bars
+                    .iter_mut()
+                    .find(|b| b.index == bar_index)
+                    .expect("demand references a BAR that exists");
+                bar.address = Some(offset);
             }
             Demand::BridgeSubtree { dev_idx, size, .. } => {
                 let dev = &mut devices[dev_idx];
-                let entry = find_or_create_entry(entries, dev.bus, dev.device, dev.function);
-                entry.secondary_bus = dev.secondary_bus;
-                entry.subordinate_bus = dev.subordinate_bus;
 
                 // Set the bridge window to the carved-out range.
                 let window_base = offset;
                 let window_limit = offset + size - 1;
                 if alloc_64bit {
-                    entry.prefetchable_base = Some(window_base);
-                    entry.prefetchable_limit = Some(window_limit);
+                    dev.prefetchable_base = Some(window_base);
+                    dev.prefetchable_limit = Some(window_limit);
                 } else {
-                    entry.memory_base = Some(window_base);
-                    entry.memory_limit = Some(window_limit);
+                    dev.memory_base = Some(window_base);
+                    dev.memory_limit = Some(window_limit);
                 }
 
                 // Recurse into children with this bridge's carved-out range.
@@ -401,13 +359,7 @@ fn assign_subtree(
                     .as_ref()
                     .expect("subtree_req must be populated by compute_subtree_requirement")
                     .demands;
-                assign_subtree(
-                    &mut dev.children,
-                    child_demands,
-                    alloc_64bit,
-                    offset,
-                    entries,
-                );
+                assign_subtree(&mut dev.children, child_demands, alloc_64bit, offset);
             }
             Demand::SriovVfBars { .. } => {
                 // VF BAR space is reserved but not explicitly assigned.
@@ -418,66 +370,65 @@ fn assign_subtree(
 
         offset += size;
     }
-
-    // Ensure bridge entries exist even if they have no BARs in this pool
-    // (needed for bridges that only have resources in the other pool).
-    for dev in devices {
-        if dev.is_bridge {
-            let entry = find_or_create_entry(entries, dev.bus, dev.device, dev.function);
-            entry.secondary_bus = dev.secondary_bus;
-            entry.subordinate_bus = dev.subordinate_bus;
-        }
-    }
 }
 
 /// Program all assignments into config space.
 ///
-/// Writes BAR addresses and bridge memory windows for every entry in
-/// `result`. This function assumes MMIO decode (MSE) has already been
+/// Writes BAR addresses and bridge memory windows for every device in
+/// the tree. This function assumes MMIO decode (MSE) has already been
 /// cleared by the enumeration phase and does not modify the command
 /// register.
-pub async fn program_assignments(cfg: &mut impl PciConfigAccess, result: &AssignmentResult) {
-    for entry in &result.entries {
-        // Program BAR addresses.
-        for bar in &entry.bars {
-            let offset = HeaderType00::BAR0.0 + (bar.index as u16) * 4;
-            entry.write_cfg(cfg, offset, bar.address as u32).await;
+pub async fn program_assignments(
+    cfg: &mut impl PciConfigAccess,
+    devices: &[DiscoveredDevice],
+) {
+    for dev in devices {
+        let devfn = crate::devfn(dev.device, dev.function);
 
-            if bar.is_64bit {
-                let upper_offset = HeaderType00::BAR0.0 + ((bar.index + 1) as u16) * 4;
-                entry
-                    .write_cfg(cfg, upper_offset, (bar.address >> 32) as u32)
-                    .await;
+        // Program BAR addresses.
+        for bar in &dev.bars {
+            if let Some(address) = bar.address {
+                let offset = HeaderType00::BAR0.0 + (bar.index as u16) * 4;
+                cfg.write_u32(dev.bus, devfn, offset, address as u32).await;
+
+                if bar.is_64bit {
+                    let upper_offset = HeaderType00::BAR0.0 + ((bar.index + 1) as u16) * 4;
+                    cfg.write_u32(dev.bus, devfn, upper_offset, (address >> 32) as u32)
+                        .await;
+                }
             }
         }
 
         // Program bridge windows. For bridges, explicitly disable any unused
         // window by writing base > limit so that the guest OS's probe
         // (write-readback) doesn't mistake zeroed registers for a valid window.
-        if entry.secondary_bus.is_some() {
+        if dev.is_bridge {
             // I/O window — we don't assign I/O BARs, so always disable.
             // Write zeros to the upper 16 bits (Secondary Status) since
             // those bits are W1C — writing back a read value would clear them.
-            entry
-                .write_cfg(cfg, HeaderType01::SEC_STATUS_IO_RANGE.0, 0x0000_00F0)
-                .await;
+            cfg.write_u32(
+                dev.bus,
+                devfn,
+                HeaderType01::SEC_STATUS_IO_RANGE.0,
+                0x0000_00F0,
+            )
+            .await;
 
             // Non-prefetchable memory window (32-bit only).
-            let value = if let (Some(base), Some(limit)) = (entry.memory_base, entry.memory_limit) {
+            let value = if let (Some(base), Some(limit)) = (dev.memory_base, dev.memory_limit) {
                 let mem_base_reg = ((base >> 16) as u16 & MEMORY_BASE_LIMIT_ADDRESS_MASK) as u32;
                 let mem_limit_reg = ((limit >> 16) as u16 & MEMORY_BASE_LIMIT_ADDRESS_MASK) as u32;
                 mem_base_reg | (mem_limit_reg << 16)
             } else {
                 0x0000_fff0
             };
-            entry
-                .write_cfg(cfg, HeaderType01::MEMORY_RANGE.0, value)
+            cfg.write_u32(dev.bus, devfn, HeaderType01::MEMORY_RANGE.0, value)
                 .await;
 
             // Prefetchable memory window (64-bit capable).
             // Use base > limit to disable when no window is assigned.
             let (pf_range, pf_base_upper, pf_limit_upper) = if let (Some(base), Some(limit)) =
-                (entry.prefetchable_base, entry.prefetchable_limit)
+                (dev.prefetchable_base, dev.prefetchable_limit)
             {
                 let pf_base_reg =
                     ((base >> 16) as u16 & MEMORY_BASE_LIMIT_ADDRESS_MASK) as u32 | 0x1;
@@ -491,44 +442,57 @@ pub async fn program_assignments(cfg: &mut impl PciConfigAccess, result: &Assign
             } else {
                 (0x0000_fff0, 0xFFFF_FFFF, 0)
             };
-            entry
-                .write_cfg(cfg, HeaderType01::PREFETCH_LIMIT_UPPER.0, pf_limit_upper)
+            cfg.write_u32(
+                dev.bus,
+                devfn,
+                HeaderType01::PREFETCH_LIMIT_UPPER.0,
+                pf_limit_upper,
+            )
+            .await;
+            cfg.write_u32(dev.bus, devfn, HeaderType01::PREFETCH_RANGE.0, pf_range)
                 .await;
-            entry
-                .write_cfg(cfg, HeaderType01::PREFETCH_RANGE.0, pf_range)
-                .await;
-            entry
-                .write_cfg(cfg, HeaderType01::PREFETCH_BASE_UPPER.0, pf_base_upper)
-                .await;
+            cfg.write_u32(
+                dev.bus,
+                devfn,
+                HeaderType01::PREFETCH_BASE_UPPER.0,
+                pf_base_upper,
+            )
+            .await;
         }
 
-        if entry.bars.is_empty() {
+        let has_assigned_bars = dev.bars.iter().any(|b| b.address.is_some());
+        if !has_assigned_bars && dev.is_bridge {
             tracing::debug!(
-                bus = entry.bus,
-                device = entry.device,
-                function = entry.function,
-                ?entry.secondary_bus,
-                ?entry.subordinate_bus,
-                ?entry.memory_base,
-                ?entry.memory_limit,
-                ?entry.prefetchable_base,
-                ?entry.prefetchable_limit,
+                bus = dev.bus,
+                device = dev.device,
+                function = dev.function,
+                ?dev.secondary_bus,
+                ?dev.subordinate_bus,
+                ?dev.memory_base,
+                ?dev.memory_limit,
+                ?dev.prefetchable_base,
+                ?dev.prefetchable_limit,
                 "bridge programmed"
             );
         } else {
-            for bar in &entry.bars {
-                tracing::debug!(
-                    bus = entry.bus,
-                    device = entry.device,
-                    function = entry.function,
-                    bar_index = bar.index,
-                    address = format_args!("{:#x}", bar.address),
-                    size = format_args!("{:#x}", bar.size),
-                    is_64bit = bar.is_64bit,
-                    "BAR programmed"
-                );
+            for bar in &dev.bars {
+                if let Some(address) = bar.address {
+                    tracing::debug!(
+                        bus = dev.bus,
+                        device = dev.device,
+                        function = dev.function,
+                        bar_index = bar.index,
+                        address = format_args!("{:#x}", address),
+                        size = format_args!("{:#x}", bar.size),
+                        is_64bit = bar.is_64bit,
+                        "BAR programmed"
+                    );
+                }
             }
         }
+
+        // Recurse into children.
+        Box::pin(program_assignments(cfg, &dev.children)).await;
     }
 }
 
