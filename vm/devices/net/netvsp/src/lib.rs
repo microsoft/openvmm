@@ -4860,8 +4860,6 @@ impl<T: RingMem + 'static> Worker<T> {
                         .coordinator_send
                         .try_send(CoordinatorMessage::Restart { channel_idx: 0 })
                     {
-                        // Coordinator channel is sized to `max_queues` capacity,
-                        // so `try_send` should not fail.
                         tracelimit::error_ratelimited!(
                             error = &err as &dyn std::error::Error,
                             channel_idx = self.channel_idx,
