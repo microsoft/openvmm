@@ -6,6 +6,7 @@
 #![cfg(all(native, windows))]
 
 use std::ffi::c_void;
+use std::ptr::NonNull;
 use windows::Win32::Foundation::HLOCAL;
 use windows::Win32::Foundation::LocalFree;
 use windows::Win32::Foundation::NTE_BAD_TYPE;
@@ -17,36 +18,35 @@ use zerocopy::IntoBytes;
 /// Owns a buffer allocated by Crypt32 via `CryptDecodeObjectEx` /
 /// `CryptEncodeObjectEx` with the ALLOC flag. Frees with `LocalFree`.
 pub struct CryptAlloc {
-    ptr: *mut c_void,
+    ptr: NonNull<c_void>,
     len: u32,
 }
 
 impl Drop for CryptAlloc {
     fn drop(&mut self) {
-        if !self.ptr.is_null() {
-            // SAFETY: ptr was allocated by Crypt32 with LocalAlloc semantics.
-            let _ = unsafe { LocalFree(Some(HLOCAL(self.ptr))) };
-        }
+        // SAFETY: ptr was allocated by Crypt32 with LocalAlloc semantics.
+        let _ = unsafe { LocalFree(Some(HLOCAL(self.ptr.as_ptr()))) };
     }
 }
 
 impl CryptAlloc {
     /// Creates a new `CryptAlloc` from a raw pointer and length.
     pub fn new(ptr: *mut c_void, len: u32) -> Result<Self, windows_result::Error> {
-        if ptr.is_null() {
-            return Err(windows_result::Error::from_hresult(NTE_BAD_TYPE));
-        }
-        Ok(Self { ptr, len })
+        Ok(Self {
+            ptr: NonNull::new(ptr)
+                .ok_or_else(|| windows_result::Error::from_hresult(NTE_BAD_TYPE))?,
+            len,
+        })
     }
 
     /// Returns the allocation as a byte slice.
     pub fn as_bytes(&self) -> &[u8] {
         // SAFETY: ptr is non-null and points to `len` bytes owned by self.
-        unsafe { std::slice::from_raw_parts(self.ptr.cast::<u8>(), self.len as usize) }
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr().cast::<u8>(), self.len as usize) }
     }
 
-    /// Reborrows the allocation as a `&T`, validating that the pointer is
-    /// non-null and the buffer is large enough to hold a `T`.
+    /// Reborrows the allocation as a `&T`, validating that the buffer is
+    /// large enough and suitably aligned for a `T`.
     ///
     /// # Safety
     ///
@@ -54,13 +54,12 @@ impl CryptAlloc {
     /// a valid `T` (e.g. by passing the matching struct type to
     /// `CryptDecodeObjectEx`).
     pub unsafe fn as_struct<T>(&self) -> Result<&T, windows_result::Error> {
-        if (self.len as usize) < size_of::<T>() {
+        if (self.len as usize) < size_of::<T>() || !self.ptr.as_ptr().cast::<T>().is_aligned() {
             return Err(windows_result::Error::from_hresult(NTE_BAD_TYPE));
         }
-        // SAFETY: ptr is non-null, aligned (LocalAlloc returns suitably
-        // aligned memory), large enough, and the caller asserts that
-        // Crypt32 populated a valid T.
-        Ok(unsafe { &*self.ptr.cast::<T>() })
+        // SAFETY: ptr is non-null, sized and aligned per the checks above,
+        // and the caller asserts that Crypt32 populated a valid T.
+        Ok(unsafe { &*self.ptr.as_ptr().cast::<T>() })
     }
 }
 
