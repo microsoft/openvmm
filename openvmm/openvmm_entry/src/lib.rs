@@ -1872,7 +1872,7 @@ fn parse_endpoint(
                         host_address: fwd
                             .host_address
                             .map(net_backend_resources::consomme::HostIpAddress::from),
-                        host_port: fwd.host_port,
+                        host_port: net_backend_resources::consomme::HostPort::Fixed(fwd.host_port),
                         guest_port: fwd.guest_port,
                     }
                 })
