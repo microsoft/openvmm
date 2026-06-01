@@ -57,6 +57,9 @@ fn main() {
         } else {
             println!("cargo::rustc-cfg=native");
         }
+        println!(
+            "cargo::warning=Multiple crypto backends enabled. This will cause a link-time error."
+        );
         println!("cargo::rustc-cfg=multi_backend");
     }
 }
