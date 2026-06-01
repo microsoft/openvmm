@@ -78,10 +78,6 @@ windows = { workspace = true, features = [
 ] }
 windows-result.workspace = true
 zerocopy.workspace = true
-# Used by the native BCrypt RSA backend to parse/encode PKCS#8 / PKCS#1.
-der.workspace = true
-pkcs1.workspace = true
-pkcs8 = { workspace = true, features = ["alloc"] }
 
 # Used by the native Security.framework RSA backend to parse/encode PKCS#8 / PKCS#1.
 [target.'cfg(target_os = "macos")'.dependencies]

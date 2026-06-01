@@ -42,17 +42,8 @@ pub(crate) struct BackendError(#[source] openssl::error::ErrorStack, &'static st
 /// operation being performed when the error occurred.
 #[cfg(all(native, windows))]
 #[derive(Clone, Debug, thiserror::Error)]
-pub(crate) enum BackendError {
-    /// An error from a BCrypt / CryptoAPI call.
-    #[error("windows crypto error during {1}")]
-    Bcrypt(#[source] windows_result::Error, &'static str),
-    /// An error from encoding or decoding PKCS#8.
-    #[error("PKCS#8 error during {1}")]
-    Pkcs8(#[source] pkcs8::Error, &'static str),
-    /// An error from DER encoding or decoding.
-    #[error("DER error during {1}")]
-    Der(#[source] der::Error, &'static str),
-}
+#[error("windows crypto error during {1}")]
+pub(crate) struct BackendError(#[source] windows_result::Error, &'static str);
 
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.
