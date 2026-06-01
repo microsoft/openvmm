@@ -29,6 +29,10 @@ pub(crate) struct SubtreeRequirement {
     /// Sorted demands for this level's devices, used by the assignment
     /// pass to avoid recomputing them.
     demands: Vec<Demand>,
+    /// Assigned non-prefetchable bridge window (base, limit). Set by assign_subtree.
+    pub(crate) memory_window: Option<(u64, u64)>,
+    /// Assigned prefetchable bridge window (base, limit). Set by assign_subtree.
+    pub(crate) prefetchable_window: Option<(u64, u64)>,
 }
 
 /// A single resource demand at one level of the PCI tree.
@@ -302,6 +306,8 @@ fn compute_subtree_requirement(devices: &mut [DiscoveredDevice]) -> SubtreeRequi
         align32,
         align64,
         demands,
+        memory_window: None,
+        prefetchable_window: None,
     }
 }
 /// Top-down: assign addresses to devices within a subtree, carving from
@@ -345,12 +351,11 @@ fn assign_subtree(
                 // Set the bridge window to the carved-out range.
                 let window_base = offset;
                 let window_limit = offset + size - 1;
+                let req = dev.subtree_req.as_mut().unwrap();
                 if alloc_64bit {
-                    dev.prefetchable_base = Some(window_base);
-                    dev.prefetchable_limit = Some(window_limit);
+                    req.prefetchable_window = Some((window_base, window_limit));
                 } else {
-                    dev.memory_base = Some(window_base);
-                    dev.memory_limit = Some(window_limit);
+                    req.memory_window = Some((window_base, window_limit));
                 }
 
                 // Recurse into children with this bridge's carved-out range.
@@ -403,6 +408,12 @@ pub async fn program_assignments(
         // window by writing base > limit so that the guest OS's probe
         // (write-readback) doesn't mistake zeroed registers for a valid window.
         if dev.is_bridge {
+            let (memory_window, prefetchable_window) = dev
+                .subtree_req
+                .as_ref()
+                .map(|r| (r.memory_window, r.prefetchable_window))
+                .unwrap_or((None, None));
+
             // I/O window — we don't assign I/O BARs, so always disable.
             // Write zeros to the upper 16 bits (Secondary Status) since
             // those bits are W1C — writing back a read value would clear them.
@@ -415,7 +426,7 @@ pub async fn program_assignments(
             .await;
 
             // Non-prefetchable memory window (32-bit only).
-            let value = if let (Some(base), Some(limit)) = (dev.memory_base, dev.memory_limit) {
+            let value = if let Some((base, limit)) = memory_window {
                 let mem_base_reg = ((base >> 16) as u16 & MEMORY_BASE_LIMIT_ADDRESS_MASK) as u32;
                 let mem_limit_reg = ((limit >> 16) as u16 & MEMORY_BASE_LIMIT_ADDRESS_MASK) as u32;
                 mem_base_reg | (mem_limit_reg << 16)
@@ -427,8 +438,8 @@ pub async fn program_assignments(
 
             // Prefetchable memory window (64-bit capable).
             // Use base > limit to disable when no window is assigned.
-            let (pf_range, pf_base_upper, pf_limit_upper) = if let (Some(base), Some(limit)) =
-                (dev.prefetchable_base, dev.prefetchable_limit)
+            let (pf_range, pf_base_upper, pf_limit_upper) = if let Some((base, limit)) =
+                prefetchable_window
             {
                 let pf_base_reg =
                     ((base >> 16) as u16 & MEMORY_BASE_LIMIT_ADDRESS_MASK) as u32 | 0x1;
@@ -462,16 +473,16 @@ pub async fn program_assignments(
 
         let has_assigned_bars = dev.bars.iter().any(|b| b.address.is_some());
         if !has_assigned_bars && dev.is_bridge {
+            let memory_window = dev.subtree_req.as_ref().and_then(|r| r.memory_window);
+            let prefetchable_window = dev.subtree_req.as_ref().and_then(|r| r.prefetchable_window);
             tracing::debug!(
                 bus = dev.bus,
                 device = dev.device,
                 function = dev.function,
                 ?dev.secondary_bus,
                 ?dev.subordinate_bus,
-                ?dev.memory_base,
-                ?dev.memory_limit,
-                ?dev.prefetchable_base,
-                ?dev.prefetchable_limit,
+                ?memory_window,
+                ?prefetchable_window,
                 "bridge programmed"
             );
         } else {

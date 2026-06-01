@@ -236,6 +236,16 @@ fn flatten_devices(devices: &[DiscoveredDevice]) -> Vec<&DiscoveredDevice> {
     out
 }
 
+/// Get the bridge memory window from a device's subtree requirement.
+fn memory_window(dev: &DiscoveredDevice) -> Option<(u64, u64)> {
+    dev.subtree_req.as_ref().and_then(|r| r.memory_window)
+}
+
+/// Get the bridge prefetchable window from a device's subtree requirement.
+fn prefetchable_window(dev: &DiscoveredDevice) -> Option<(u64, u64)> {
+    dev.subtree_req.as_ref().and_then(|r| r.prefetchable_window)
+}
+
 #[async_test]
 async fn single_endpoint_32bit_bar() {
     let mock = MockConfigSpace::new();
@@ -338,8 +348,7 @@ async fn bridge_with_endpoint() {
         .unwrap();
     assert_eq!(bridge.secondary_bus, Some(1));
     assert_eq!(bridge.subordinate_bus, Some(1));
-    assert!(bridge.memory_base.is_some());
-    assert!(bridge.memory_limit.is_some());
+    assert!(memory_window(bridge).is_some());
 
     // Find the endpoint entry.
     let endpoint = flat
@@ -488,10 +497,10 @@ async fn switch_with_multiple_endpoints() {
         .find(|e| e.bus == 1 && e.device == 1)
         .unwrap();
     assert!(
-        ds_bridge_64.prefetchable_base.is_some(),
+        prefetchable_window(ds_bridge_64).is_some(),
         "bridge behind 64-bit endpoint should have prefetchable window"
     );
-    assert!(ds_bridge_64.prefetchable_base.unwrap() >= 0x1_0000_0000);
+    assert!(prefetchable_window(ds_bridge_64).unwrap().0 >= 0x1_0000_0000);
 
     // The downstream bridge for the 32-bit endpoint should have a
     // non-prefetchable window in low MMIO, and no prefetchable window.
@@ -499,8 +508,8 @@ async fn switch_with_multiple_endpoints() {
         .iter()
         .find(|e| e.bus == 1 && e.device == 0)
         .unwrap();
-    assert!(ds_bridge_32.memory_base.is_some());
-    assert!(ds_bridge_32.prefetchable_base.is_none());
+    assert!(memory_window(ds_bridge_32).is_some());
+    assert!(prefetchable_window(ds_bridge_32).is_none());
 }
 
 #[async_test]
@@ -705,14 +714,14 @@ async fn bridge_prefetchable_window_programmed() {
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
     assert!(
-        bridge.memory_base.is_none(),
+        memory_window(bridge).is_none(),
         "no non-prefetchable window expected"
     );
     assert!(
-        bridge.prefetchable_base.is_some(),
+        prefetchable_window(bridge).is_some(),
         "prefetchable window expected"
     );
-    assert!(bridge.prefetchable_base.unwrap() >= 0x1_0000_0000);
+    assert!(prefetchable_window(bridge).unwrap().0 >= 0x1_0000_0000);
 
     // Verify the prefetchable window registers were programmed.
     // Offset 0x24: prefetchable base/limit (lower 16 bits each, with 64-bit flag).
@@ -782,17 +791,9 @@ async fn sibling_bridge_windows_must_not_overlap() {
         .find(|e| e.bus == 1 && e.device == 1)
         .unwrap();
 
-    let a_base = bridge_a
-        .memory_base
+    let (a_base, a_limit) = memory_window(bridge_a)
         .expect("bridge A should have memory window");
-    let a_limit = bridge_a
-        .memory_limit
-        .expect("bridge A should have memory window");
-    let b_base = bridge_b
-        .memory_base
-        .expect("bridge B should have memory window");
-    let b_limit = bridge_b
-        .memory_limit
+    let (b_base, b_limit) = memory_window(bridge_b)
         .expect("bridge B should have memory window");
 
     // Sibling bridge windows must not overlap — if they do, both bridges
@@ -836,14 +837,9 @@ async fn large_bar_alignment_fits_in_bridge_window() {
         .find(|e| e.bus == 1 && e.device == 0)
         .unwrap();
 
-    let window_base = bridge
-        .memory_base
+    let (window_base, window_limit) = memory_window(bridge)
         .expect("bridge should have memory window");
-    let window_limit = bridge
-        .memory_limit
-        .expect("bridge should have memory window");
-    let bar_addr = ep.bars[0].address.unwrap();
-    let bar_end = bar_addr + ep.bars[0].size - 1;
+    let bar_addr = ep.bars[0].address.unwrap();    let bar_end = bar_addr + ep.bars[0].size - 1;
 
     // The BAR must be naturally aligned.
     assert_eq!(
@@ -1187,12 +1183,8 @@ async fn sriov_vf_bars_included_in_bridge_window() {
         .into_iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
-    let window_base = bridge
-        .memory_base
+    let (window_base, window_limit) = memory_window(bridge)
         .expect("bridge should have memory window");
-    let window_limit = bridge
-        .memory_limit
-        .expect("bridge should have memory limit");
     let window_size = window_limit - window_base + 1;
 
     // PF BAR = 0x1000, VF BARs = 4 * 0x1000 = 0x4000, total = 0x5000.
@@ -1243,12 +1235,8 @@ async fn sriov_non_power_of_two_vf_count() {
         .into_iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
-    let window_base = bridge
-        .memory_base
+    let (window_base, window_limit) = memory_window(bridge)
         .expect("bridge should have memory window");
-    let window_limit = bridge
-        .memory_limit
-        .expect("bridge should have memory limit");
     let window_size = window_limit - window_base + 1;
 
     // PF BAR = 0x1000, VF BARs = 3 * 0x1000 = 0x3000, total = 0x4000.
@@ -1302,12 +1290,8 @@ async fn sriov_vf_bars_64bit_prefetchable() {
         .unwrap();
 
     // Non-prefetchable window should exist for the PF's 32-bit BAR.
-    let mem_base = bridge
-        .memory_base
+    let (mem_base, mem_limit) = memory_window(bridge)
         .expect("bridge should have non-pref memory window");
-    let mem_limit = bridge
-        .memory_limit
-        .expect("bridge should have non-pref memory limit");
     let mem_size = mem_limit - mem_base + 1;
     assert!(
         mem_size >= 0x1000,
@@ -1315,12 +1299,8 @@ async fn sriov_vf_bars_64bit_prefetchable() {
     );
 
     // Prefetchable window should exist for VF BARs (4 * 1 MB = 4 MB).
-    let pref_base = bridge
-        .prefetchable_base
+    let (pref_base, pref_limit) = prefetchable_window(bridge)
         .expect("bridge should have prefetchable window");
-    let pref_limit = bridge
-        .prefetchable_limit
-        .expect("bridge should have prefetchable limit");
     let pref_size = pref_limit - pref_base + 1;
     assert!(
         pref_size >= 0x40_0000,
@@ -1383,12 +1363,8 @@ async fn sriov_mixed_vf_bar_types() {
         .unwrap();
 
     // Non-pref window for VF BAR0: 2 * 4 KB = 8 KB.
-    let mem_base = bridge
-        .memory_base
+    let (mem_base, mem_limit) = memory_window(bridge)
         .expect("bridge should have non-pref window for VF BAR0");
-    let mem_limit = bridge
-        .memory_limit
-        .expect("bridge should have non-pref limit");
     let mem_size = mem_limit - mem_base + 1;
     assert!(
         mem_size >= 0x2000,
@@ -1396,12 +1372,8 @@ async fn sriov_mixed_vf_bar_types() {
     );
 
     // Pref window for VF BAR2: 2 * 64 KB = 128 KB.
-    let pref_base = bridge
-        .prefetchable_base
+    let (pref_base, pref_limit) = prefetchable_window(bridge)
         .expect("bridge should have pref window for VF BAR2");
-    let pref_limit = bridge
-        .prefetchable_limit
-        .expect("bridge should have pref limit");
     let pref_size = pref_limit - pref_base + 1;
     assert!(
         pref_size >= 0x2_0000,
@@ -1494,12 +1466,8 @@ async fn sriov_multiple_pfs_behind_bridge() {
         .iter()
         .find(|e| e.bus == 0 && e.device == 0)
         .unwrap();
-    let window_base = bridge
-        .memory_base
+    let (window_base, window_limit) = memory_window(bridge)
         .expect("bridge should have memory window");
-    let window_limit = bridge
-        .memory_limit
-        .expect("bridge should have memory limit");
     let window_size = window_limit - window_base + 1;
 
     // PF1: BAR=0x1000 + VF=2*0x1000=0x2000
