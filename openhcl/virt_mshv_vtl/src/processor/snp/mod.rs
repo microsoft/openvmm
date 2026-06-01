@@ -867,14 +867,15 @@ fn init_vmsa(
 
     // Configure the interrupt injection mode. Secure AVIC and alternate injection
     // are mutually exclusive (AMD PPR 15.36.16, 15.36.21).
-    #[cfg(not(feature = "disable_secure_avic"))]
-    {
-        if vtl == GuestVtl::Vtl0 && sev_status.secure_avic() {
-            vmsa.sev_features_mut().set_secure_avic(true);
-            vmsa.sev_features_mut().set_guest_intercept_control(true);
-        } else {
-            vmsa.sev_features_mut().set_alternate_injection(true);
-        }
+    let use_secure_avic = cfg!(not(feature = "disable_secure_avic"))
+        && vtl == GuestVtl::Vtl0
+        && sev_status.secure_avic();
+
+    if use_secure_avic {
+        vmsa.sev_features_mut().set_secure_avic(true);
+        vmsa.sev_features_mut().set_guest_intercept_control(true);
+    } else {
+        vmsa.sev_features_mut().set_alternate_injection(true);
     }
 
     vmsa.v_intr_cntrl_mut().set_guest_busy(true);
