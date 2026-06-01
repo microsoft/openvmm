@@ -855,6 +855,9 @@ fn load_igvm_x86(
                 IgvmDirectiveHeader::X64NativeVpContext { .. } => {
                     todo!("native igvm type not supported yet")
                 }
+                IgvmDirectiveHeader::AArch64CcaVpContext { .. } => {
+                    todo!("AArch64 CCA VP context not supported yet")
+                }
             }
         } else {
             panic!("no relocation region, cannot filter to VTL2");
@@ -1191,6 +1194,9 @@ fn load_igvm_x86(
             }
             IgvmDirectiveHeader::X64NativeVpContext { .. } => {
                 todo!("native vp context not supported")
+            }
+            IgvmDirectiveHeader::AArch64CcaVpContext { .. } => {
+                todo!("AArch64 CCA VP context not supported")
             }
         }
     }
