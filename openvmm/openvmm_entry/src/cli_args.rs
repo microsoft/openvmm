@@ -253,7 +253,7 @@ flags:
 
 options:
     `pcie_port=<name>`             present the disk using pcie under the specified port, incompatible with `dvd`, `vtl2`, `uh`, and `uh-nvme`
-    `on=<name>`                    attach to a named controller (NVMe or SCSI), incompatible with `pcie_port`
+    `on=<name>`                    attach to a named controller (NVMe or SCSI), incompatible with `pcie_port` and `vtl2`
     `nsid=<N>`                     NVMe namespace ID (1-based), requires `on`; auto-assigned if omitted
     `lun=<N>`                      SCSI LUN (0-based), requires `on`; auto-assigned if omitted
     `relay=<ctrl>[:<loc>]`         relay through OpenHCL to the named OpenHCL controller, with optional location (LUN or NSID)
@@ -1767,6 +1767,16 @@ impl FromStr for DiskCli {
 
         if controller.is_some() && pcie_port.is_some() {
             anyhow::bail!("`on` is incompatible with `pcie_port`");
+        }
+
+        if controller.is_some() && vtl != DeviceVtl::Vtl0 {
+            anyhow::bail!(
+                "`vtl2` is incompatible with `on`; the controller's VTL determines placement"
+            );
+        }
+
+        if controller.is_some() && underhill.is_some() {
+            anyhow::bail!("`on` is incompatible with `uh` and `uh-nvme`; use `relay` instead");
         }
 
         if nsid.is_some() && controller.is_none() {

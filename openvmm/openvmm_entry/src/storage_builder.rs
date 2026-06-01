@@ -200,7 +200,17 @@ impl StorageBuilder {
     }
 
     pub fn has_vtl0_nvme(&self) -> bool {
-        !self.vtl0_nvme_namespaces.is_empty() || !self.underhill_nvme_luns.is_empty()
+        !self.vtl0_nvme_namespaces.is_empty()
+            || !self.underhill_nvme_luns.is_empty()
+            || self.controllers.values().any(|entry| {
+                matches!(
+                    entry,
+                    ControllerEntry::Nvme(nvme)
+                        if nvme.vtl == DeviceVtl::Vtl0
+                            && matches!(nvme.transport, NvmeControllerTransport::Vpci(_))
+                            && !nvme.namespaces.is_empty()
+                )
+            })
     }
 
     /// Register a named NVMe controller.
@@ -719,9 +729,6 @@ impl StorageBuilder {
                     ));
                 }
                 ControllerEntry::Nvme(ctrl) => {
-                    if ctrl.namespaces.is_empty() && ctrl.requests.is_none() {
-                        tracing::warn!(name, "named NVMe controller has no namespaces");
-                    }
                     let subsystem_id = deterministic_guid(&name);
                     match ctrl.transport {
                         NvmeControllerTransport::Pcie(port_name) => {
