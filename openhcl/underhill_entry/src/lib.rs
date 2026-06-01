@@ -22,10 +22,6 @@ static GLOBAL: dhat::Alloc = dhat::Alloc;
 #[cfg(target_arch = "x86_64")]
 use fast_memcpy as _;
 
-// OpenVMM-HCL only needs libcrypto from openssl, not libssl.
-#[cfg(target_os = "linux")]
-openssl_crypto_only::openssl_crypto_only!();
-
 /// Entry point into the underhill multi-binary, dispatching between various
 /// entrypoints based on argv0.
 pub fn underhill_main() -> anyhow::Result<()> {

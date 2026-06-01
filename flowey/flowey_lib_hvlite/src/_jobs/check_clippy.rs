@@ -269,6 +269,19 @@ impl SimpleFlowNode for Node {
                     done: v,
                 }));
             }
+            reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
+                in_folder: openvmm_repo_path.clone(),
+                package: CargoPackage::Crate("crypto".into()),
+                profile: profile.clone(),
+                features: CargoFeatureSet::All,
+                target: target.clone(),
+                extra_env: None,
+                exclude: ReadVar::from_static(None),
+                keep_going: true,
+                all_targets: true,
+                pre_build_deps: pre_build_deps.clone(),
+                done: v,
+            }));
         }
 
         if also_check_misc_nostd_crates {

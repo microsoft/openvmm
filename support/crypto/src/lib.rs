@@ -10,25 +10,50 @@
 //! It is explicitly specialized for the needs of the OpenVMM project and is
 //! not suitable for general-purpose use.
 
-// UNSAFETY: calling BCrypt APIs on Windows, Security.framework APIs on macOS.
+// UNSAFETY: calling BCrypt APIs on Windows, Security.framework APIs on macOS,
+// and defining/referencing an extern symbol for the backend-selection
+// link-time check.
 #![allow(unsafe_code)]
 
-// When multiple crypto backends are enabled at once (typically via Cargo
-// feature unification across the workspace), `cargo check` is allowed to
-// succeed so that workspace-wide checks aren't blocked, but linking must
-// fail with a clear message. We achieve this by referencing an undefined
-// extern symbol from a `#[used]` static, which `cargo check` ignores
-// (it doesn't link) but `cargo build` resolves and fails on with an
-// unresolved-symbol error naming the symbol below.
-#[cfg(multi_backend)]
-const _: () = {
-    unsafe extern "C" {
-        fn __openvmm_crypto_multiple_backends_enabled__enable_exactly_one__see_support_crypto();
-    }
-    #[used]
-    static _FORCE_LINK_ERROR: unsafe extern "C" fn() =
-        __openvmm_crypto_multiple_backends_enabled__enable_exactly_one__see_support_crypto;
-};
+// Backend-selection link-time check.
+//
+// The build script lets compilation of this crate succeed even when the
+// crate's features add up to zero or multiple backends (which will
+// easily happen as a side effect of feature unification across a workspace
+// or when testing a crate that transitively depends on `crypto` without
+// itself picking a backend). To still guarantee that a *shipping binary*
+// has linked exactly one backend, we expose a check that each binary opts
+// into via the [`ensure_single_backend`] macro.
+//
+// The check works by having the binary place a `#[used]` reference to an
+// extern symbol whose definition lives in this crate, and is only emitted
+// when exactly one backend is selected. If zero or multiple backends are
+// selected the symbol is undefined and linking the binary fails with a
+// clear, named symbol.
+
+#[cfg(single_backend)]
+#[unsafe(no_mangle)]
+extern "C" fn __openvmm_crypto_ensure_single_backend__enable_exactly_one__see_support_crypto() {}
+
+/// Emit a `#[used]` reference to a symbol that is only defined when the
+/// `crypto` crate was built with exactly one backend selected. Place a call
+/// to this macro in each binary that depends on `crypto` (typically gated on
+/// `#[cfg(not(test))]`) so that workspace-wide `cargo test` still succeeds,
+/// while a misconfigured binary fails at link time with an unresolved-symbol
+/// error pointing at the missing/conflicting backend.
+#[macro_export]
+macro_rules! ensure_single_backend {
+    () => {
+        const _: () = {
+            unsafe extern "C" {
+                fn __openvmm_crypto_ensure_single_backend__enable_exactly_one__see_support_crypto();
+            }
+            #[used]
+            static _CRYPTO_BACKEND_LINK_CHECK: unsafe extern "C" fn() =
+                __openvmm_crypto_ensure_single_backend__enable_exactly_one__see_support_crypto;
+        };
+    };
+}
 
 pub mod aes_256_cbc;
 pub mod aes_256_gcm;

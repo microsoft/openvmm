@@ -15,29 +15,39 @@ Selection happens in [`support/crypto/build.rs`](https://github.com/microsoft/op
 which emits a `cfg` (`openssl`, `symcrypt`, `rust`, or `native`) based on
 the enabled features.
 
-## The "multiple backends enabled" error
+## The "wrong number of backends" error
 
 Because Cargo unifies features across a workspace, building two binaries
 in the same `cargo` invocation that ask for *different* `crypto` backends
 will result in the `crypto` crate being compiled with *all* of those
-features enabled at once. There is no sensible single backend to pick in
-that case.
+features enabled at once. Conversely, building a library crate that
+transitively depends on `crypto` without itself selecting a backend
+(e.g. running its unit tests) results in `crypto` being compiled with
+*zero* backends enabled. In either case there is no sensible single
+backend to pick.
 
-To keep workspace-wide `cargo check` usable, the build script does not
-panic in this situation. Instead it emits a `multi_backend` cfg, and
-`crypto`'s `lib.rs` references an undefined extern symbol under that cfg.
+To keep workspace-wide `cargo check` and `cargo test` usable, the build
+script does not panic in this situation — it picks a placeholder backend
+so the crate still compiles. To still guarantee that a *shipping binary*
+has linked exactly one backend, each binary opts into a link-time check
+by invoking the `crypto::ensure_single_backend!()` macro (typically gated
+on `#[cfg(test)]`). The macro emits a `#[used]` reference to a symbol
+that is only defined by `crypto` when exactly one backend is selected.
 The result:
 
 - `cargo check --workspace` — succeeds. No linking happens.
-- `cargo build --workspace` (or any actual link step) — fails with:
+- `cargo test -p <unrelated_crate>` — succeeds, even when that crate
+  transitively depends on `crypto` without selecting a backend.
+- `cargo test -p <binary>` for a binary that invokes the macro — fails
+  at link time if zero or multiple backends end up enabled, with:
 
   ```text
   rust-lld: error: undefined symbol:
-    __openvmm_crypto_multiple_backends_enabled__enable_exactly_one__see_support_crypto
+    __openvmm_crypto_ensure_single_backend__enable_exactly_one__see_support_crypto
   ```
 
-The symbol name *is* the diagnostic: the offending binary has multiple
-`crypto` backend features enabled simultaneously and needs to pick one.
+The symbol name *is* the diagnostic: the offending binary has the wrong
+number of `crypto` backend features enabled and needs to pick exactly one.
 
 ### Fixing it
 

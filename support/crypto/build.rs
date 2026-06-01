@@ -15,7 +15,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(openssl)");
     println!("cargo::rustc-check-cfg=cfg(rust)");
     println!("cargo::rustc-check-cfg=cfg(symcrypt)");
-    println!("cargo::rustc-check-cfg=cfg(multi_backend)");
+    println!("cargo::rustc-check-cfg=cfg(single_backend)");
 
     let linux = std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "linux";
 
@@ -27,11 +27,21 @@ fn main() {
 
     let backend_count = openssl as u8 + rust as u8 + symcrypt as u8 + native as u8;
 
-    // If no backends are enabled, abort. Binaries must choose a backend.
-    if backend_count == 0 {
-        panic!("No crypto backend enabled. Enable one in your binary's dependencies.");
+    // If no or multiple backends are enabled, fall back to the native backend
+    // so that operations like `cargo check` and `cargo test` can succeed, but
+    // emit a warning.
+    if backend_count != 1 {
+        if linux {
+            println!("cargo::rustc-cfg=openssl");
+        } else {
+            println!("cargo::rustc-cfg=native");
+        }
+        println!(
+            "cargo::warning=No or multiple crypto backends enabled. This may cause a link-time error."
+        );
     }
-    // If exactly one backend is enabled, use it.
+    // If exactly one backend is enabled, use it and emit the `single_backend`
+    // cfg for link-time checking.
     else if backend_count == 1 {
         if openssl {
             println!("cargo::rustc-cfg=openssl");
@@ -47,19 +57,6 @@ fn main() {
         } else if native && !linux {
             println!("cargo::rustc-cfg=native");
         }
-    }
-    // If multiple backends are enabled, fall back to the native backend so that
-    // operations like `cargo check --workspace` can succeed, but emit a warning
-    // and a cfg that will cause our link-time check to fail.
-    else {
-        if linux {
-            println!("cargo::rustc-cfg=openssl");
-        } else {
-            println!("cargo::rustc-cfg=native");
-        }
-        println!(
-            "cargo::warning=Multiple crypto backends enabled. This will cause a link-time error."
-        );
-        println!("cargo::rustc-cfg=multi_backend");
+        println!("cargo::rustc-cfg=single_backend");
     }
 }

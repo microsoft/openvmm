@@ -9,8 +9,6 @@ rust-version.workspace = true
 [features]
 default = ["ttrpc", "grpc"]
 
-vendored_crypto = ["crypto/vendored"]
-
 grpc = ["mesh_rpc/grpc"]
 ttrpc = []
 
@@ -66,7 +64,6 @@ pcie_remote_resources.workspace = true
 
 clap_dyn_complete.workspace = true
 console_relay.workspace = true
-crypto = { workspace = true, features = ["native"] }
 guid.workspace = true
 inspect.workspace = true
 inspect_proto.workspace = true
@@ -121,7 +118,3 @@ build_rs_guest_arch.workspace = true
 
 [lints]
 workspace = true
-
-[package.metadata.xtask.unused-deps]
-# keep the crypto dep so we can specify the vendored and backend features
-ignored = ["crypto"]

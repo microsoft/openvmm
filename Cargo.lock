@@ -5364,6 +5364,7 @@ dependencies = [
 name = "openvmm"
 version = "0.0.0"
 dependencies = [
+ "crypto",
  "embed-resource",
  "openvmm_entry",
  "openvmm_hypervisors",
@@ -5504,7 +5505,6 @@ dependencies = [
  "clap",
  "clap_dyn_complete",
  "console_relay",
- "crypto",
  "cxl_spec",
  "debug_worker_defs",
  "diag_client",
@@ -5592,6 +5592,8 @@ dependencies = [
 name = "openvmm_hcl"
 version = "0.0.0"
 dependencies = [
+ "crypto",
+ "openssl_crypto_only",
  "openvmm_hcl_resources",
  "tracing",
  "underhill_entry",
@@ -8540,7 +8542,6 @@ dependencies = [
  "chipset_legacy",
  "chipset_resources",
  "closeable_mutex",
- "crypto",
  "cvm_tracing",
  "debug_ptr",
  "debug_worker_defs",
@@ -8719,7 +8720,6 @@ dependencies = [
  "dhat",
  "fast_memcpy",
  "mimalloc",
- "openssl_crypto_only",
  "underhill_core",
  "underhill_crash",
  "underhill_dump",
