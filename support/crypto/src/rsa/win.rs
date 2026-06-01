@@ -5,11 +5,10 @@
 
 use super::RsaError;
 use crate::HashAlgorithm;
+use crate::win::CryptAlloc;
 use crate::win::KeyHandle;
 use std::ffi::CStr;
 use std::ffi::c_void;
-use windows::Win32::Foundation::HLOCAL;
-use windows::Win32::Foundation::LocalFree;
 use windows::Win32::Foundation::NTE_BAD_TYPE;
 use windows::Win32::Foundation::STATUS_INVALID_PARAMETER;
 use windows::Win32::Foundation::STATUS_INVALID_SIGNATURE;
@@ -55,20 +54,6 @@ pub struct RsaKeyPairInner(KeyHandle);
 
 #[repr(transparent)]
 pub struct RsaPublicKeyInner(KeyHandle);
-
-/// Owns a buffer allocated by Crypt32 via `CryptDecodeObjectEx` /
-/// `CryptEncodeObjectEx` with the ALLOC flag. Frees with `LocalFree`.
-struct CryptAlloc {
-    ptr: *mut c_void,
-    len: u32,
-}
-
-impl Drop for CryptAlloc {
-    fn drop(&mut self) {
-        // SAFETY: ptr was allocated by Crypt32 with LocalAlloc semantics.
-        let _ = unsafe { LocalFree(Some(HLOCAL(self.ptr))) };
-    }
-}
 
 /// Parse a BCRYPT_RSAFULLPRIVATE_BLOB or BCRYPT_RSAPUBLIC_BLOB into its
 /// big-endian component byte ranges.
@@ -177,9 +162,11 @@ impl RsaKeyPairInner {
             .map_err(|e| err(e, "decoding PKCS#8 PrivateKeyInfo"))?;
             CryptAlloc { ptr, len }
         };
-        // SAFETY: pki_buf.ptr points to a CRYPT_PRIVATE_KEY_INFO allocated
-        // by Crypt32, valid for the lifetime of pki_buf.
-        let pki = unsafe { &*pki_buf.ptr.cast::<CRYPT_PRIVATE_KEY_INFO>() };
+        // SAFETY: Crypt32 was asked to decode a PKCS_PRIVATE_KEY_INFO, so
+        // the buffer (when non-null and large enough, as validated by
+        // as_struct) holds a CRYPT_PRIVATE_KEY_INFO.
+        let pki = unsafe { pki_buf.as_struct::<CRYPT_PRIVATE_KEY_INFO>() }
+            .map_err(|e| err(e, "decoding PKCS#8 PrivateKeyInfo"))?;
         // SAFETY: pszObjId is a NUL-terminated string owned by the same
         // Crypt32 allocation.
         let oid = unsafe { CStr::from_ptr(pki.Algorithm.pszObjId.0.cast()) };
@@ -191,8 +178,15 @@ impl RsaKeyPairInner {
                 "PKCS#8 algorithm is not rsaEncryption",
             ));
         }
+        if pki.PrivateKey.pbData.is_null() || pki.PrivateKey.cbData == 0 {
+            return Err(err(
+                windows_result::Error::from_hresult(NTE_BAD_TYPE),
+                "PKCS#8 PrivateKey field is empty",
+            ));
+        }
         // SAFETY: PrivateKey describes a buffer of cbData bytes owned by
-        // the same allocation, containing the PKCS#1 RSAPrivateKey DER.
+        // the same allocation, containing the PKCS#1 RSAPrivateKey DER;
+        // validated non-null and non-empty above.
         let pkcs1_der = unsafe {
             std::slice::from_raw_parts(pki.PrivateKey.pbData, pki.PrivateKey.cbData as usize)
         };
@@ -223,9 +217,9 @@ impl RsaKeyPairInner {
             .map_err(|e| err(e, "decoding PKCS#1 RSA private key"))?;
             CryptAlloc { ptr, len }
         };
-        // SAFETY: blob_buf describes a contiguous buffer of `len` bytes.
-        let blob =
-            unsafe { std::slice::from_raw_parts(blob_buf.ptr.cast::<u8>(), blob_buf.len as usize) };
+        let blob = blob_buf
+            .as_bytes()
+            .map_err(|e| err(e, "decoding PKCS#1 RSA private key"))?;
         if blob.len() < size_of::<BCRYPT_RSAKEY_BLOB>() {
             return Err(err(
                 windows_result::Error::from_hresult(NTE_BAD_TYPE),
@@ -318,12 +312,10 @@ impl RsaKeyPairInner {
             .map_err(|e| err(e, "encoding PKCS#8 PrivateKeyInfo"))?;
             CryptAlloc { ptr, len }
         };
-        // SAFETY: pkcs8_buf describes a contiguous buffer of `len` bytes.
-        let out = unsafe {
-            std::slice::from_raw_parts(pkcs8_buf.ptr.cast::<u8>(), pkcs8_buf.len as usize)
-        }
-        .to_vec();
-        Ok(out)
+        Ok(pkcs8_buf
+            .as_bytes()
+            .map_err(|e| err(e, "encoding PKCS#8 PrivateKeyInfo"))?
+            .to_vec())
     }
 
     pub fn oaep_decrypt(

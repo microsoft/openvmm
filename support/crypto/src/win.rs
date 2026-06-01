@@ -5,10 +5,62 @@
 
 #![cfg(all(native, windows))]
 
+use std::ffi::c_void;
+use windows::Win32::Foundation::HLOCAL;
+use windows::Win32::Foundation::LocalFree;
+use windows::Win32::Foundation::NTE_BAD_TYPE;
 use windows::Win32::Security::Cryptography::BCRYPT_ALG_HANDLE;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_HANDLE;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
+
+/// Owns a buffer allocated by Crypt32 via `CryptDecodeObjectEx` /
+/// `CryptEncodeObjectEx` with the ALLOC flag. Frees with `LocalFree`.
+pub struct CryptAlloc {
+    pub ptr: *mut c_void,
+    pub len: u32,
+}
+
+impl Drop for CryptAlloc {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            // SAFETY: ptr was allocated by Crypt32 with LocalAlloc semantics.
+            let _ = unsafe { LocalFree(Some(HLOCAL(self.ptr))) };
+        }
+    }
+}
+
+impl CryptAlloc {
+    /// Returns the allocation as a byte slice, validating that the
+    /// pointer is non-null. Required before constructing a slice from a
+    /// Crypt32-allocated buffer because `from_raw_parts` requires a
+    /// non-null pointer even when `len == 0`.
+    pub fn as_bytes(&self) -> Result<&[u8], windows_result::Error> {
+        if self.ptr.is_null() {
+            return Err(windows_result::Error::from_hresult(NTE_BAD_TYPE));
+        }
+        // SAFETY: ptr is non-null and points to `len` bytes owned by self.
+        Ok(unsafe { std::slice::from_raw_parts(self.ptr.cast::<u8>(), self.len as usize) })
+    }
+
+    /// Reborrows the allocation as a `&T`, validating that the pointer is
+    /// non-null and the buffer is large enough to hold a `T`.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure that Crypt32 actually populates the buffer with
+    /// a valid `T` (e.g. by passing the matching struct type to
+    /// `CryptDecodeObjectEx`).
+    pub unsafe fn as_struct<T>(&self) -> Result<&T, windows_result::Error> {
+        if self.ptr.is_null() || (self.len as usize) < size_of::<T>() {
+            return Err(windows_result::Error::from_hresult(NTE_BAD_TYPE));
+        }
+        // SAFETY: ptr is non-null, aligned (LocalAlloc returns suitably
+        // aligned memory), large enough, and the caller asserts that
+        // Crypt32 populated a valid T.
+        Ok(unsafe { &*self.ptr.cast::<T>() })
+    }
+}
 
 pub struct AlgHandle(pub BCRYPT_ALG_HANDLE);
 // SAFETY: the handle can be sent across threads.
