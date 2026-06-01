@@ -30,32 +30,22 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-/// Lower bound for the auto-tuned request queue count. Two queues let the
-/// guest's FUSE-request hashing send concurrent operations on different
-/// inodes to different host workers, which is the whole point of having
-/// more than one queue.
-const MIN_REQUEST_QUEUES: u32 = 2;
+/// Default request queue count when the caller does not specify one. Two
+/// queues let the guest's FUSE-request hashing send concurrent operations
+/// on different inodes to different host workers, which is the whole
+/// point of having more than one queue, while keeping the per-device
+/// footprint (MSI-X vectors, kernel worker threads, host tasks) modest.
+///
+/// Callers that know the appropriate concurrency for their environment
+/// (e.g., guest vCPU count for an in-VMM device, or host parallelism for
+/// a host service like `wsldevicehost`) should pass an explicit value via
+/// [`VirtioFsDevice::with_num_request_queues`].
+const DEFAULT_NUM_REQUEST_QUEUES: u32 = 2;
 
 /// Upper bound for the request queue count. Past this, virtio-fs's
-/// hash-based queue selection has diminishing returns (the birthday
-/// paradox saturates), and each extra queue costs a guest MSI-X vector
-/// plus a kernel worker thread.
+/// hash-based queue selection has diminishing returns, and each extra queue
+/// costs a guest MSI-X vector plus a kernel worker thread.
 const MAX_REQUEST_QUEUES: u32 = 8;
-
-/// Default request queue count derived from the parallelism available to
-/// this process, clamped into [`MIN_REQUEST_QUEUES`, `MAX_REQUEST_QUEUES`].
-///
-/// Note that `available_parallelism()` reports the *host* CPU count when
-/// the device runs in a host user-mode process (e.g., `wsldevicehost`).
-/// That's usually a reasonable proxy for guest parallelism on typical
-/// deployments, but callers that know the guest vCPU count should pass
-/// an explicit value via [`VirtioFsDevice::with_num_request_queues`].
-fn default_num_request_queues() -> u32 {
-    std::thread::available_parallelism()
-        .map(|n| n.get() as u32)
-        .unwrap_or(MIN_REQUEST_QUEUES)
-        .clamp(MIN_REQUEST_QUEUES, MAX_REQUEST_QUEUES)
-}
 
 /// PCI configuration space values for virtio-fs devices.
 #[repr(C)]
@@ -87,9 +77,11 @@ pub struct VirtioFsDevice {
 impl VirtioFsDevice {
     /// Creates a new `VirtioFsDevice` with the specified mount tag.
     ///
-    /// The number of FUSE request queues defaults to a function of the
-    /// available parallelism. Callers that know the guest vCPU count can
-    /// instead use [`Self::with_num_request_queues`].
+    /// The number of FUSE request queues defaults to
+    /// [`DEFAULT_NUM_REQUEST_QUEUES`]. Callers that know the appropriate
+    /// concurrency for their environment (e.g., guest vCPU count for an
+    /// in-VMM device, or host parallelism for a host service) should use
+    /// [`Self::with_num_request_queues`] instead.
     pub fn new<Fs>(
         driver_source: &VmTaskDriverSource,
         tag: &str,
@@ -106,7 +98,7 @@ impl VirtioFsDevice {
             fs,
             shmem_size,
             notify_corruption,
-            default_num_request_queues(),
+            DEFAULT_NUM_REQUEST_QUEUES,
         )
     }
 
@@ -429,7 +421,6 @@ mod tests {
     use crate::VirtioFs;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
-    use test_with_tracing::test;
     use vmcore::vm_task::SingleDriverBackend;
 
     fn make_device(
@@ -448,25 +439,15 @@ mod tests {
         (device, tmpdir)
     }
 
-    #[test]
-    fn default_num_request_queues_in_range() {
-        let n = default_num_request_queues();
-        assert!(
-            (MIN_REQUEST_QUEUES..=MAX_REQUEST_QUEUES).contains(&n),
-            "default {} outside [{}, {}]",
-            n,
-            MIN_REQUEST_QUEUES,
-            MAX_REQUEST_QUEUES,
-        );
-    }
-
     #[async_test]
     async fn new_uses_default_num_request_queues(driver: DefaultDriver) {
         let (device, _tmp) = make_device(&driver, None);
-        let expected = default_num_request_queues();
-        assert_eq!(device.num_request_queues, expected);
-        assert_eq!(device.config.num_request_queues, expected);
-        assert_eq!(device.traits().max_queues, 1 + expected as u16);
+        assert_eq!(device.num_request_queues, DEFAULT_NUM_REQUEST_QUEUES);
+        assert_eq!(device.config.num_request_queues, DEFAULT_NUM_REQUEST_QUEUES);
+        assert_eq!(
+            device.traits().max_queues,
+            1 + DEFAULT_NUM_REQUEST_QUEUES as u16
+        );
     }
 
     #[async_test]
