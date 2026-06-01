@@ -44,26 +44,6 @@ use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::vm_task::VmTaskDriverSource;
 
-/// Abstraction over PCI config space reads, allowing the capability
-/// discovery logic to be tested without a real VFIO device.
-trait ConfigSpaceRead {
-    /// Read a DWORD from PCI config space at the given DWORD-aligned offset.
-    fn read_u32(&self, offset: u16) -> anyhow::Result<u32>;
-}
-
-/// [`ConfigSpaceRead`] backed by a VFIO device file descriptor.
-struct VfioConfigSpaceReader<'a> {
-    file: &'a std::fs::File,
-    config_offset: u64,
-    config_size: u64,
-}
-
-impl ConfigSpaceRead for VfioConfigSpaceReader<'_> {
-    fn read_u32(&self, offset: u16) -> anyhow::Result<u32> {
-        read_config_u32(self.file, self.config_offset, self.config_size, offset)
-    }
-}
-
 /// VFIO BAR region information (offset and size within the device fd).
 #[derive(Debug, Clone, Copy, Inspect)]
 struct VfioBarInfo {
@@ -153,17 +133,8 @@ pub(crate) struct VfioAssignedPciDevice {
     #[inspect(display)]
     pci_id: String,
 
-    /// The VFIO device, used for config space, BAR MMIO, and MSI-X mapping.
-    #[inspect(skip)]
-    vfio_device: vfio_sys::Device,
-
-    /// Offset into the VFIO device fd where the PCI config region starts.
-    #[inspect(hex)]
-    config_offset: u64,
-
-    /// Size of the config space region.
-    #[inspect(hex)]
-    config_size: u64,
+    #[inspect(flatten)]
+    vfio_device: VfioPciDevice,
 
     /// BAR masks as read from the physical device (write 0xFFFFFFFF, read back).
     #[inspect(iter_by_index, hex)]
@@ -186,8 +157,8 @@ pub(crate) struct VfioAssignedPciDevice {
     #[inspect(hex)]
     pm_csr_offset: Option<u16>,
 
-    /// Whether the device is currently in D0 power state. When false,
-    /// BARs are unmapped from guest address space per PCI spec §3.2.5.
+    /// Whether the device is currently in D0 power state. BARs are only
+    /// mapped into guest address space when the device is in D0.
     in_d0: bool,
 
     /// Decoded BAR mappings when MMIO is enabled.
@@ -227,6 +198,57 @@ pub(crate) struct VfioAssignedPciDevice {
     /// VFIO binding. Keeps the container/group (legacy) or iommufd/IOAS
     /// (cdev) fds alive and cleans up on drop.
     binding: manager::VfioBinding,
+}
+
+#[derive(Inspect)]
+struct VfioPciDevice {
+    /// The VFIO device, used for config space, BAR MMIO, and MSI-X mapping.
+    #[inspect(skip)]
+    device: vfio_sys::Device,
+
+    /// Offset into the VFIO device fd where the PCI config region starts.
+    #[inspect(hex)]
+    config_offset: u64,
+
+    /// Size of the config space region.
+    #[inspect(hex)]
+    config_size: u64,
+}
+
+impl ConfigSpaceRead for VfioPciDevice {
+    fn read_config_u32(&self, offset: u16) -> anyhow::Result<u32> {
+        if (offset as u64) + 4 > self.config_size {
+            anyhow::bail!("config read offset {offset:#x} out of range");
+        }
+        let mut buf = [0u8; 4];
+        let n = self
+            .device
+            .as_ref()
+            .read_at(&mut buf, self.config_offset + offset as u64)
+            .with_context(|| format!("failed to read config at offset {offset:#x}"))?;
+        anyhow::ensure!(
+            n == 4,
+            "short config read at offset {offset:#x}: got {n} bytes"
+        );
+        Ok(u32::from_ne_bytes(buf))
+    }
+}
+
+impl VfioPciDevice {
+    fn write_config_u32(&self, offset: u16, value: u32) -> anyhow::Result<()> {
+        if (offset as u64) + 4 > self.config_size {
+            anyhow::bail!("config write offset {offset:#x} out of range");
+        }
+        let n = self
+            .device
+            .as_ref()
+            .write_at(&value.to_ne_bytes(), self.config_offset + offset as u64)?;
+        anyhow::ensure!(
+            n == 4,
+            "short config write at offset {offset:#x}: wrote {n} bytes"
+        );
+        Ok(())
+    }
 }
 
 impl VfioAssignedPciDevice {
@@ -304,8 +326,11 @@ impl VfioAssignedPciDevice {
             .region_info(vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX)
             .context("failed to get VFIO config region info")?;
 
-        let config_offset = config_info.offset;
-        let config_size = config_info.size;
+        let vfio_device = VfioPciDevice {
+            device: vfio_device,
+            config_offset: config_info.offset,
+            config_size: config_info.size,
+        };
 
         // Read BAR values and derive masks from VFIO region sizes.
         // This avoids the standard write-all-ones probe cycle — VFIO already
@@ -315,12 +340,7 @@ impl VfioAssignedPciDevice {
 
         let mut bars = [0u32; 6];
         for (i, bar) in bars.iter_mut().enumerate() {
-            *bar = read_config_u32(
-                vfio_device.as_ref(),
-                config_offset,
-                config_size,
-                HeaderType00::BAR0.0 + (i as u16) * 4,
-            )?;
+            *bar = vfio_device.read_config_u32(HeaderType00::BAR0.0 + (i as u16) * 4)?;
         }
 
         let mut bar_regions = [None; 6];
@@ -330,7 +350,7 @@ impl VfioAssignedPciDevice {
         while processed < 6 {
             let i = processed;
             processed += 1;
-            let Ok(info) = vfio_device.region_info(i as u32) else {
+            let Ok(info) = vfio_device.device.region_info(i as u32) else {
                 continue;
             };
             if info.size == 0 {
@@ -369,6 +389,7 @@ impl VfioAssignedPciDevice {
 
             bar_mmio_controls[i] = Some(register_mmio.new_io_region(&format!("bar{i}"), info.size));
             bar_mmap_areas[i] = vfio_device
+                .device
                 .region_mmap_areas(i as u32)
                 .with_context(|| format!("failed to query VFIO mmap areas for BAR {i}"))?;
         }
@@ -377,12 +398,7 @@ impl VfioAssignedPciDevice {
         // single pass. This discovers MSI-X (for emulation) and PM (for
         // BAR unmap on D-state transitions), and builds the config patch
         // table that hides capabilities the guest shouldn't see.
-        let config_reader = VfioConfigSpaceReader {
-            file: vfio_device.as_ref(),
-            config_offset,
-            config_size,
-        };
-        let caps = discover_capabilities(&config_reader, msi_target);
+        let caps = discover_capabilities(&vfio_device, msi_target);
         let msix = caps.msix;
         let pm_csr_offset = caps.pm_csr_offset;
         let config_patches = caps.config_patches;
@@ -390,6 +406,7 @@ impl VfioAssignedPciDevice {
         // Cache whether the device supports VFIO_DEVICE_RESET so we can skip
         // the ioctl on every VM reset for devices that don't support it.
         let supports_reset = vfio_device
+            .device
             .info()
             .map(|info| info.flags.reset())
             .unwrap_or(false);
@@ -421,7 +438,7 @@ impl VfioAssignedPciDevice {
                 mapped_region
                     .map(
                         0,
-                        &vfio_device,
+                        &vfio_device.device,
                         region.vfio_offset + area.start(),
                         area.len() as usize,
                         true,
@@ -452,8 +469,6 @@ impl VfioAssignedPciDevice {
         Ok(Self {
             pci_id,
             vfio_device,
-            config_offset,
-            config_size,
             bar_masks,
             bars: bar_flags, // Ignore the current BAR values--we don't care what the device thinks the BARs are.
             bar_flags,
@@ -472,17 +487,12 @@ impl VfioAssignedPciDevice {
     }
 
     fn read_phys_config(&self, offset: u16) -> u32 {
-        match read_config_u32(
-            self.vfio_device.as_ref(),
-            self.config_offset,
-            self.config_size,
-            offset,
-        ) {
+        match self.vfio_device.read_config_u32(offset) {
             Ok(value) => value,
             Err(e) => {
                 tracelimit::warn_ratelimited!(
                     offset,
-                    error = ?e,
+                    error = e.as_ref() as &dyn std::error::Error,
                     "VFIO config space read failed"
                 );
                 !0
@@ -491,16 +501,10 @@ impl VfioAssignedPciDevice {
     }
 
     fn write_phys_config(&self, offset: u16, value: u32) {
-        if let Err(e) = write_config_u32(
-            self.vfio_device.as_ref(),
-            self.config_offset,
-            self.config_size,
-            offset,
-            value,
-        ) {
+        if let Err(e) = self.vfio_device.write_config_u32(offset, value) {
             tracelimit::warn_ratelimited!(
                 offset,
-                error = ?e,
+                error = e.as_ref() as &dyn std::error::Error,
                 "VFIO config space write failed"
             );
         }
@@ -555,6 +559,7 @@ impl VfioAssignedPciDevice {
             .context("failed to allocate irqfd routes for MSI-X vectors")?;
 
         self.vfio_device
+            .device
             .map_msix(0, &events)
             .context("VFIO map_msix failed")?;
 
@@ -574,9 +579,9 @@ impl VfioAssignedPciDevice {
             .expect("msix must be present")
             .vector_count;
 
-        if let Err(e) = self.vfio_device.unmap_msix(0, count as u32) {
+        if let Err(e) = self.vfio_device.device.unmap_msix(0, count as u32) {
             tracing::warn!(
-                error = ?e,
+                error = e.as_ref() as &dyn std::error::Error,
                 pci_id = self.pci_id.as_str(),
                 "VFIO unmap_msix failed"
             );
@@ -642,7 +647,7 @@ impl VfioAssignedPciDevice {
                             tracelimit::error_ratelimited!(
                                 bar = dm.bar_index,
                                 gpa,
-                                error = ?e,
+                                error = &e as &dyn std::error::Error,
                                 pci_id = self.pci_id.as_str(),
                                 "failed to direct-map BAR region to guest"
                             );
@@ -654,46 +659,6 @@ impl VfioAssignedPciDevice {
 
         self.active_bars = new_bars;
     }
-}
-
-fn read_config_u32(
-    file: &std::fs::File,
-    config_offset: u64,
-    config_size: u64,
-    offset: u16,
-) -> anyhow::Result<u32> {
-    if (offset as u64) + 4 > config_size {
-        anyhow::bail!("config read offset {offset:#x} out of range");
-    }
-    let mut buf = [0u8; 4];
-    let n = file
-        .read_at(&mut buf, config_offset + offset as u64)
-        .with_context(|| format!("failed to read config at offset {offset:#x}"))?;
-    anyhow::ensure!(
-        n == 4,
-        "short config read at offset {offset:#x}: got {n} bytes"
-    );
-    // VFIO config space reads return host-endian bytes on x86. Using
-    // native endian is correct on LE platforms (x86, aarch64).
-    Ok(u32::from_ne_bytes(buf))
-}
-
-fn write_config_u32(
-    file: &std::fs::File,
-    config_offset: u64,
-    config_size: u64,
-    offset: u16,
-    value: u32,
-) -> anyhow::Result<()> {
-    if (offset as u64) + 4 > config_size {
-        anyhow::bail!("config write offset {offset:#x} out of range");
-    }
-    let n = file.write_at(&value.to_ne_bytes(), config_offset + offset as u64)?;
-    anyhow::ensure!(
-        n == 4,
-        "short config write at offset {offset:#x}: wrote {n} bytes"
-    );
-    Ok(())
 }
 
 /// Remove MSI-X table and PBA regions from the mmap areas for the
@@ -743,6 +708,13 @@ fn page_size() -> u64 {
     vfio_sys::host_page_size()
 }
 
+/// Abstraction over PCI config space reads, allowing the capability
+/// discovery logic to be tested without a real VFIO device.
+trait ConfigSpaceRead {
+    /// Read a DWORD from PCI config space at the given DWORD-aligned offset.
+    fn read_config_u32(&self, offset: u16) -> anyhow::Result<u32>;
+}
+
 /// Results from walking both the standard and extended PCI capability chains.
 struct DiscoveredCapabilities {
     /// MSI-X emulation state, if the device has an MSI-X capability.
@@ -786,7 +758,7 @@ fn discover_capabilities(
 
     // --- Standard capability chain (offsets < 0x100) ---
 
-    let cap_ptr_dword = match config.read_u32(HeaderType00::RESERVED_CAP_PTR.0) {
+    let cap_ptr_dword = match config.read_config_u32(HeaderType00::RESERVED_CAP_PTR.0) {
         Ok(v) => v,
         Err(_) => return result,
     };
@@ -802,7 +774,7 @@ fn discover_capabilities(
         }
         iterations += 1;
 
-        let header = match config.read_u32(cap_ptr) {
+        let header = match config.read_config_u32(cap_ptr) {
             Ok(v) => v,
             Err(_) => break,
         };
@@ -815,7 +787,7 @@ fn discover_capabilities(
             let table_count = (msg_ctrl & 0x7FF) + 1;
 
             // Table Offset/BIR (second DWORD of the capability).
-            let table_dword = match config.read_u32(cap_ptr + 4) {
+            let table_dword = match config.read_config_u32(cap_ptr + 4) {
                 Ok(v) => v,
                 Err(_) => break,
             };
@@ -823,7 +795,7 @@ fn discover_capabilities(
             let table_offset = table_dword & !0x7;
 
             // PBA Offset/BIR (third DWORD of the capability).
-            let pba_dword = match config.read_u32(cap_ptr + 8) {
+            let pba_dword = match config.read_config_u32(cap_ptr + 8) {
                 Ok(v) => v,
                 Err(_) => break,
             };
@@ -874,7 +846,7 @@ fn discover_capabilities(
     // --- Extended capability chain (offsets 0x100+) ---
 
     // Check if extended caps are reachable by probing the first offset.
-    if config.read_u32(caps::EXT_CAP_START).is_ok() {
+    if config.read_config_u32(caps::EXT_CAP_START).is_ok() {
         let mut offset = caps::EXT_CAP_START;
         let mut iterations = 0usize;
 
@@ -888,7 +860,7 @@ fn discover_capabilities(
             }
             iterations += 1;
 
-            let Ok(header) = config.read_u32(offset) else {
+            let Ok(header) = config.read_config_u32(offset) else {
                 break;
             };
 
@@ -1010,25 +982,23 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
         self.in_d0 = true;
 
         let Self {
-            pci_id,
-            vfio_device,
-            config_offset: _, // immutable device geometry
-            config_size: _,   // immutable device geometry
-            bar_masks: _,     // immutable device geometry
-            bars,
+            ref pci_id,
+            ref vfio_device,
+            bar_masks: _, // immutable device geometry
+            ref mut bars,
             bar_flags,
-            mmio_enabled: _,      // handled above
-            pm_csr_offset: _,     // immutable — discovered at init
+            mmio_enabled: _, // handled above
+            pm_csr_offset,
             in_d0: _,             // handled above
             active_bars: _,       // handled by update_bar_mappings()
             bar_mmio_controls: _, // handled by update_bar_mappings()
             bar_direct_maps: _,   // handled by update_bar_mappings()
             bar_regions: _,       // immutable device geometry
-            msix,
+            ref mut msix,
             supports_reset,
             config_patches: _, // immutable — built at init
             binding: _,        // lifetime handle — no reset needed
-        } = self;
+        } = *self;
 
         // Reset emulated MSI-X table and capability to power-on defaults
         // (all vectors masked, address/data zeroed). The capability and
@@ -1040,16 +1010,33 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
 
         // Reset cached BAR addresses to power-on defaults (flags only, no
         // address bits). The guest will re-probe and re-program BARs.
-        *bars = *bar_flags;
+        *bars = bar_flags;
 
         // Reset the physical device via VFIO so it starts in a clean state.
-        if *supports_reset {
-            if let Err(err) = vfio_device.reset() {
-                tracing::warn!(
-                    pci_id = pci_id.as_str(),
-                    error = err.as_ref() as &dyn std::error::Error,
-                    "failed to reset VFIO device"
-                );
+        let reset_ok = supports_reset
+            && vfio_device
+                .device
+                .reset()
+                .inspect_err(|err| {
+                    tracing::warn!(
+                        pci_id = pci_id.as_str(),
+                        error = err.as_ref() as &dyn std::error::Error,
+                        "failed to reset VFIO device"
+                    )
+                })
+                .is_ok();
+
+        // If we couldn't reset the device, at least ensure it's in D0.
+        // Without a reset, the device may still be in D3hot from the
+        // previous guest session, and VFIO won't allow BAR mappings
+        // until the device is back in D0.
+        if !reset_ok {
+            if let Some(pmcsr_offset) = pm_csr_offset {
+                if let Ok(pmcsr) = vfio_device.read_config_u32(pmcsr_offset) {
+                    if pmcsr & 0x3 != 0 {
+                        let _ = vfio_device.write_config_u32(pmcsr_offset, pmcsr & !0x3);
+                    }
+                }
             }
         }
     }
@@ -1175,7 +1162,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                                 }
                                 Err(e) => {
                                     tracing::error!(
-                                        error = ?e,
+                                        error = e.as_ref() as &dyn std::error::Error,
                                         pci_id = self.pci_id.as_str(),
                                         "failed to enable MSI-X"
                                     );
@@ -1238,6 +1225,7 @@ impl MmioIntercept for VfioAssignedPciDevice {
                 if offset + data.len() as u64 <= region.size {
                     match self
                         .vfio_device
+                        .device
                         .as_ref()
                         .read_at(data, region.vfio_offset + offset)
                     {
@@ -1281,6 +1269,7 @@ impl MmioIntercept for VfioAssignedPciDevice {
                 if offset + data.len() as u64 <= region.size {
                     match self
                         .vfio_device
+                        .device
                         .as_ref()
                         .write_at(data, region.vfio_offset + offset)
                     {
@@ -1299,7 +1288,7 @@ impl MmioIntercept for VfioAssignedPciDevice {
                             tracelimit::warn_ratelimited!(
                                 bar,
                                 offset,
-                                error = ?e,
+                                error = &e as &dyn std::error::Error,
                                 pci_id = self.pci_id.as_str(),
                                 "VFIO BAR write failed"
                             );
@@ -1373,7 +1362,7 @@ mod tests {
     }
 
     impl ConfigSpaceRead for MockConfigSpace {
-        fn read_u32(&self, offset: u16) -> anyhow::Result<u32> {
+        fn read_config_u32(&self, offset: u16) -> anyhow::Result<u32> {
             let off = offset as usize;
             if off + 4 > self.data.len() {
                 anyhow::bail!("config read offset {offset:#x} out of range");
