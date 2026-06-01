@@ -693,7 +693,7 @@ impl VmChipsetResult {
 
     fn attach_i440bx_host_pci_bridge(&mut self) -> &mut Self {
         self.pci_chipset_devices.push(LegacyPciChipsetDeviceHandle {
-            name: "i440bx-host-pci-bridge".to_string(),
+            name: "440bx-host-pci-bridge".to_string(),
             resource: I440BxHostPciBridgeDeviceHandle {
                 adjust_gpa_range: PlatformResource.into_resource(),
             }
