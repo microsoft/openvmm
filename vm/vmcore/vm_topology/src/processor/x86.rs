@@ -209,7 +209,7 @@ impl TopologyBuilder<X86Topology> {
             let vp_index = VpIndex::new(n);
             // Default vnode assignment by socket. The caller can override this
             // with `ProcessorTopology::set_vnodes()` for NUMA configurations.
-            let vnode = n / vps_per_socket;
+            let vnode = n / self.vps_per_socket;
             let socket = socket_offset + n / self.vps_per_socket;
             let proc = n % self.vps_per_socket;
             let apic_id = socket * vps_per_socket + proc;

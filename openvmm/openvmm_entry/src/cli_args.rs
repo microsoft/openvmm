@@ -4776,7 +4776,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_nvme_controller_cli_pcie() {
         let c = NvmeControllerCli::from_str("id=nvme0,pcie_port=p0").unwrap();
         assert_eq!(c.id, "nvme0");
