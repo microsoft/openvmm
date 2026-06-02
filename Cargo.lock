@@ -5325,10 +5325,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "openssl_crypto_only"
-version = "0.0.0"
-
-[[package]]
 name = "openssl_kdf"
 version = "0.0.0"
 dependencies = [
@@ -5593,7 +5589,6 @@ name = "openvmm_hcl"
 version = "0.0.0"
 dependencies = [
  "crypto",
- "openssl_crypto_only",
  "openvmm_hcl_resources",
  "tracing",
  "underhill_entry",

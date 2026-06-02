@@ -34,9 +34,7 @@ dev_snp_ohcl_tio_support = ["underhill_entry/dev_snp_ohcl_tio_support"]
 underhill_entry.workspace = true
 openvmm_hcl_resources.workspace = true
 tracing.workspace = true
-crypto = { workspace = true, features = ["openssl"] }
-# OpenVMM-HCL only needs libcrypto from openssl
-openssl_crypto_only.workspace = true
+crypto = { workspace = true, features = ["symcrypt"] }
 
 [package.metadata.xtask.unused-deps]
 ignored = ["tracing"] # Present to specify features from flowey
