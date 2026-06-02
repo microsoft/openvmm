@@ -85,28 +85,68 @@ pub fn enumerate_networks() -> Result<Vec<Guid>, Error> {
     // SAFETY: per HCN API contract, the returned buffer must be freed
     // with CoTaskMemFree.
     unsafe { CoTaskMemFree(raw.cast()) };
-    Ok(extract_guids(&json))
+    parse_network_ids(&json)
 }
 
-/// Pull every GUID-shaped substring out of `s`.
-///
-/// HcnEnumerateNetworks returns a JSON array of GUID strings (with or
-/// without surrounding braces). Rather than depend on a JSON parser for
-/// this single use, we scan for 36-character GUID patterns directly,
-/// which is robust to either format.
-fn extract_guids(s: &str) -> Vec<Guid> {
-    let bytes = s.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i + 36 <= bytes.len() {
-        if let Ok(slice) = std::str::from_utf8(&bytes[i..i + 36]) {
-            if let Ok(g) = slice.parse::<Guid>() {
-                out.push(g);
-                i += 36;
-                continue;
-            }
+/// Parse the JSON array of GUID strings returned by `HcnEnumerateNetworks`,
+/// e.g. `["e2af8db9-d4e4-42ff-a695-85a71b928dd0", ...]`.
+fn parse_network_ids(json: &str) -> Result<Vec<Guid>, Error> {
+    fn parse_err(err: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Error {
+        Error {
+            operation: "parse",
+            err: std::io::Error::new(std::io::ErrorKind::InvalidData, err),
         }
-        i += 1;
     }
-    out
+    let ids: Vec<String> = serde_json::from_str(json).map_err(parse_err)?;
+    ids.iter()
+        .map(|id| id.parse::<Guid>().map_err(parse_err))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_network_ids;
+    use guid::Guid;
+
+    #[test]
+    fn parse_plain_array() {
+        let json =
+            r#"["e2af8db9-d4e4-42ff-a695-85a71b928dd0","b807c2d2-0db8-401a-994a-840d4c0769b1"]"#;
+        let guids = parse_network_ids(json).unwrap();
+        assert_eq!(
+            guids,
+            vec![
+                "e2af8db9-d4e4-42ff-a695-85a71b928dd0"
+                    .parse::<Guid>()
+                    .unwrap(),
+                "b807c2d2-0db8-401a-994a-840d4c0769b1"
+                    .parse::<Guid>()
+                    .unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_braced_guids() {
+        let json = r#"["{e2af8db9-d4e4-42ff-a695-85a71b928dd0}"]"#;
+        let guids = parse_network_ids(json).unwrap();
+        assert_eq!(
+            guids,
+            vec![
+                "e2af8db9-d4e4-42ff-a695-85a71b928dd0"
+                    .parse::<Guid>()
+                    .unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_empty_array() {
+        assert!(parse_network_ids("[]").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_invalid_json_fails() {
+        assert!(parse_network_ids("not json").is_err());
+    }
 }

@@ -14,6 +14,7 @@ pal_async.workspace = true
 
 futures.workspace = true
 getrandom.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
 tracing.workspace = true
 widestring.workspace = true
