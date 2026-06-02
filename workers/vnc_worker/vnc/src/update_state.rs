@@ -147,11 +147,14 @@ impl UpdateState {
             std::mem::swap(&mut self.cur_fb, &mut self.prev_fb);
             for r in &self.merged_rects {
                 for y in r.y..r.y + r.h {
-                    let offset = y as usize * width as usize;
-                    fb.read_line(
-                        y,
-                        self.cur_fb[offset..offset + width as usize].as_mut_bytes(),
-                    );
+                    // Read only the dirty columns of this row. The non-dirty
+                    // columns are already correct from the cur_fb/prev_fb swap
+                    // (they did not change), so reading the full width would be
+                    // wasted VRAM traffic.
+                    let row = y as usize * width as usize;
+                    let start = row + r.x as usize;
+                    let end = start + r.w as usize;
+                    fb.read_line(y, r.x, self.cur_fb[start..end].as_mut_bytes());
                 }
             }
             DirtySource::Device
@@ -184,6 +187,7 @@ impl UpdateState {
             let offset = y as usize * self.width as usize;
             fb.read_line(
                 y,
+                0,
                 self.cur_fb[offset..offset + self.width as usize].as_mut_bytes(),
             );
         }
@@ -264,10 +268,10 @@ mod tests {
             (self.width, self.height)
         }
 
-        fn read_line(&mut self, line: u16, data: &mut [u8]) {
-            let start = line as usize * self.width as usize;
-            let end = start + self.width as usize;
-            data.copy_from_slice(self.pixels[start..end].as_bytes());
+        fn read_line(&mut self, line: u16, x: u16, data: &mut [u8]) {
+            let start = line as usize * self.width as usize + x as usize;
+            let pixels = data.len() / 4;
+            data.copy_from_slice(self.pixels[start..start + pixels].as_bytes());
         }
     }
 
@@ -354,6 +358,41 @@ mod tests {
         assert_eq!(result.source, DirtySource::Device);
         assert!(!result.rects.is_empty());
         state.commit();
+    }
+
+    #[test]
+    fn update_state_device_dirty_reads_only_dirty_columns() {
+        let mut fb = MockFramebuffer::new(64, 32, 0);
+        let mut state = UpdateState::new();
+        state.set_resolution(64, 32);
+
+        // First frame establishes prev_fb (all zero).
+        let _ = state.collect_dirty(&mut fb, &mut None, true, &None);
+        state.commit();
+
+        // Device reports only the tile at columns [32, 48) of rows [0, 16).
+        let (tx, rx) = async_channel::bounded(4);
+        let _ = tx.try_send(Arc::new(vec![video_core::DirtyRect {
+            left: 32,
+            top: 0,
+            right: 48,
+            bottom: 16,
+        }]));
+        let mut dirty_recv: Option<DirtyRectReceiver> = Some(rx);
+
+        // Change one pixel inside the dirty region and one outside it on the
+        // same row. Only the inside one should be read.
+        fb.set(40, 5, 0x00aabbcc); // inside [32, 48)
+        fb.set(5, 5, 0x00112233); // outside the dirty rect
+
+        let result = state.collect_dirty(&mut fb, &mut dirty_recv, false, &None);
+        assert_eq!(result.source, DirtySource::Device);
+
+        // The inside pixel was read from VRAM.
+        assert_eq!(state.cur_fb[5 * 64 + 40], 0x00aabbcc);
+        // The outside pixel was not read (we only read the dirty columns), so
+        // it keeps the previous frame's value from the cur_fb/prev_fb swap.
+        assert_eq!(state.cur_fb[5 * 64 + 5], 0);
     }
 
     #[test]

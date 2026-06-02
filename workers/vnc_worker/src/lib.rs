@@ -456,8 +456,8 @@ impl vnc::Input for SharedInput {
 struct SharedView(Arc<Mutex<ViewWrapper>>);
 
 impl vnc::Framebuffer for SharedView {
-    fn read_line(&mut self, line: u16, data: &mut [u8]) {
-        self.0.lock().0.read_line(line, data)
+    fn read_line(&mut self, line: u16, x: u16, data: &mut [u8]) {
+        self.0.lock().0.read_line_at(line, x, data)
     }
 
     fn resolution(&mut self) -> (u16, u16) {

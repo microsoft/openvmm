@@ -23,9 +23,9 @@ impl vnc::Framebuffer for Framebuffer {
         (WIDTH as u16, HEIGHT as u16)
     }
 
-    fn read_line(&mut self, line: u16, data: &mut [u8]) {
-        let start = (line as usize) * WIDTH;
-        data.copy_from_slice(&self.0.as_bytes()[start..start + WIDTH * 4]);
+    fn read_line(&mut self, line: u16, x: u16, data: &mut [u8]) {
+        let start = (line as usize) * WIDTH + x as usize;
+        data.copy_from_slice(&self.0.as_bytes()[start * 4..start * 4 + data.len()]);
     }
 }
 

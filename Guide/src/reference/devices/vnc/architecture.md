@@ -94,7 +94,7 @@ collect_dirty()
     |
     +-- Choose update mode:
     |   (a) force_full: read entire VRAM, mark all tiles dirty
-    |   (b) got_device_dirty: O(1) swap prev_fb/cur_fb, read only dirty scanlines
+    |   (b) got_device_dirty: O(1) swap prev_fb/cur_fb, read only dirty-rect pixels
     |   (c) device_dirty_seen but empty channel: nothing changed, skip entirely
     |   (d) no device support: read entire VRAM, tile-diff against prev_fb
     |
@@ -140,8 +140,9 @@ Supported drivers:
 - Linux `hyperv_drm`: full support (sends `SYNTHVID_DIRT` messages)
 - Linux `hyperv_fb` (older): does NOT send dirty rects
 
-When device dirty rects arrive, the server reads only the affected scanlines
-from VRAM — an idle 1080p desktop reads 0 bytes instead of 8MB per cycle.
+When device dirty rects arrive, the server reads only those rectangles from
+VRAM (the dirty columns of the dirty rows), not whole scanlines. An idle 1080p
+desktop reads 0 bytes per cycle instead of 8MB.
 
 **2. Tile diff fallback (old guests)**
 
@@ -306,7 +307,7 @@ non-ASCII characters, and client compatibility notes.
 |----------------------------|---------------|--------------------------------|
 | Idle desktop, device dirty | 0 bytes/cycle | Channel drain only             |
 | Idle desktop, tile diff    | 8MB/cycle     | memcmp 8160 tiles              |
-| Small update, device dirty | ~1KB/cycle    | Partial scanline read + encode |
+| Small update, device dirty | ~1KB/cycle    | Read dirty columns + encode    |
 | Full screen, zlib          | 8MB/cycle     | Full read + zlib compress      |
 | Full screen, raw           | 8MB/cycle     | Full read + memcpy             |
 

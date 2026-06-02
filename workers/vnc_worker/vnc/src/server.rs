@@ -871,10 +871,10 @@ mod tests {
             (self.width, self.height)
         }
 
-        fn read_line(&mut self, line: u16, data: &mut [u8]) {
-            let start = line as usize * self.width as usize;
-            let end = start + self.width as usize;
-            data.copy_from_slice(self.pixels[start..end].as_bytes());
+        fn read_line(&mut self, line: u16, x: u16, data: &mut [u8]) {
+            let start = line as usize * self.width as usize + x as usize;
+            let pixels = data.len() / 4;
+            data.copy_from_slice(self.pixels[start..start + pixels].as_bytes());
         }
     }
 
@@ -931,8 +931,8 @@ mod tests {
             self.0.lock().resolution()
         }
 
-        fn read_line(&mut self, line: u16, data: &mut [u8]) {
-            self.0.lock().read_line(line, data)
+        fn read_line(&mut self, line: u16, x: u16, data: &mut [u8]) {
+            self.0.lock().read_line(line, x, data)
         }
     }
 
