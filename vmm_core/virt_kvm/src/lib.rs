@@ -107,6 +107,9 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     cpuid: virt::CpuidLeafSet,
 
+    #[cfg(guest_arch = "x86_64")]
+    reserved_vps_per_socket: u32,
+
     /// The GIC device fd, kept alive for the VM lifetime.
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]

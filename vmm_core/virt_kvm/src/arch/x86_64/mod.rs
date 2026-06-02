@@ -222,11 +222,24 @@ impl virt::Hypervisor for Kvm {
                 .with_access_vp_runtime_msr(true)
                 .with_access_apic_msrs(true);
 
+            // Query KVM's supported Hyper-V CPUID leaves to find the
+            // nested virtualization features leaf (0x4000000A).
+            let kvm_hv_cpuid = self.kvm.supported_hv_cpuid()?;
+            let nested_leaf = kvm_hv_cpuid
+                .iter()
+                .find(|e| e.function == HV_CPUID_FUNCTION_MS_HV_NESTED_FEATURES);
+
+            let max_function = if nested_leaf.is_some() {
+                HV_CPUID_FUNCTION_MS_HV_NESTED_FEATURES
+            } else {
+                HV_CPUID_FUNCTION_MS_HV_IMPLEMENTATION_LIMITS
+            };
+
             let hv_cpuid = &[
                 CpuidLeaf::new(
                     HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION,
                     [
-                        HV_CPUID_FUNCTION_MS_HV_IMPLEMENTATION_LIMITS,
+                        max_function,
                         u32::from_le_bytes(*b"Micr"),
                         u32::from_le_bytes(*b"osof"),
                         u32::from_le_bytes(*b"t Hv"),
@@ -257,6 +270,15 @@ impl virt::Hypervisor for Kvm {
             ];
 
             cpuid_entries.extend(hv_cpuid);
+
+            // Pass through KVM's nested virtualization features so that
+            // a guest hypervisor (e.g., Hyper-V) can launch.
+            if let Some(leaf) = nested_leaf {
+                cpuid_entries.push(CpuidLeaf::new(
+                    HV_CPUID_FUNCTION_MS_HV_NESTED_FEATURES,
+                    [leaf.eax, leaf.ebx, leaf.ecx, leaf.edx],
+                ));
+            }
         }
 
         let cpuid_entries = CpuidLeafSet::new(cpuid_entries);
@@ -328,96 +350,16 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         caps.can_freeze_time = false;
 
+        // Create all VCPUs now so that they are assigned dense, sequential
+        // vcpu_idx values (KVM assigns vcpu_idx in creation order).  KVM's
+        // Hyper-V enlightenment code has a fast O(1) VP-index-to-vcpu lookup
+        // that only works when vp_index == vcpu_idx; if the indices diverge
+        // (e.g. because VCPUs were created in arbitrary order from bind()),
+        // every synic interrupt delivery and VP-set operation falls back to
+        // an O(n) linear scan.  Per-VP initialization (CPUID, MSRs, synic)
+        // is deferred to bind().
         for vp_info in self.config.processor_topology.vps_arch() {
             self.vm.add_vp(vp_info.apic_id)?;
-            let vp = self.vm.vp(vp_info.apic_id);
-            if self.config.hv_config.is_some() {
-                vp.enable_synic()?;
-
-                // Set the VP index. Also, KVM incorrectly initializes SCONTROL
-                // to 0. Set it to 1 on each processor.
-                vp.set_msrs(&[
-                    (
-                        hvdef::HV_X64_MSR_VP_INDEX,
-                        vp_info.base.vp_index.index().into(),
-                    ),
-                    (hvdef::HV_X64_MSR_SCONTROL, 1),
-                ])?;
-            }
-
-            // Unlike the Microsoft hypervisor, KVM allows this MSR to be set and
-            // defaults it to zero. Hard code the value here to the same as the
-            // Microsoft hypervisor.
-            vp.set_msrs(&[(
-                x86defs::X86X_IA32_MSR_MISC_ENABLE,
-                hv1_emulator::x86::MISC_ENABLE.into(),
-            )])?;
-
-            // Convert the CPUID entries and update the APIC ID in CPUID for
-            // this VCPU.
-            //
-            // TODO: centralize this code, probably in the topology crate, for
-            // use by other hypervisors.
-            let cpuid_entries = cpuid
-                .leaves()
-                .iter()
-                .map(|leaf| {
-                    let mut entry = kvm::kvm_cpuid_entry2 {
-                        function: leaf.function,
-                        index: leaf.index.unwrap_or(0),
-                        flags: if leaf.index.is_some() {
-                            KVM_CPUID_FLAG_SIGNIFCANT_INDEX
-                        } else {
-                            0
-                        },
-                        eax: leaf.result[0],
-                        ebx: leaf.result[1],
-                        ecx: leaf.result[2],
-                        edx: leaf.result[3],
-                        padding: [0; 3],
-                    };
-                    match CpuidFunction(leaf.function) {
-                        CpuidFunction::VersionAndFeatures => {
-                            entry.ebx &= 0x00ffffff;
-                            entry.ebx |= vp_info.apic_id << 24;
-                        }
-                        CpuidFunction::ExtendedTopologyEnumeration => {
-                            entry.edx = vp_info.apic_id;
-                        }
-                        CpuidFunction::V2ExtendedTopologyEnumeration => {
-                            entry.edx = vp_info.apic_id;
-                        }
-                        CpuidFunction::ProcessorTopologyDefinition => {
-                            let eax =
-                                x86defs::cpuid::ProcessorTopologyDefinitionEax::from(entry.eax);
-                            entry.eax = eax.with_extended_apic_id(vp_info.apic_id).into();
-                            let ebx =
-                                x86defs::cpuid::ProcessorTopologyDefinitionEbx::from(entry.ebx);
-                            entry.ebx = ebx
-                                .with_compute_unit_id(
-                                    (vp_info.apic_id
-                                        % self.config.processor_topology.reserved_vps_per_socket()
-                                        / (ebx.threads_per_compute_unit() as u32 + 1))
-                                        as u8,
-                                )
-                                .into();
-                            let ecx =
-                                x86defs::cpuid::ProcessorTopologyDefinitionEcx::from(entry.ecx);
-                            entry.ecx = ecx
-                                .with_node_id(
-                                    (vp_info.apic_id
-                                        / self.config.processor_topology.reserved_vps_per_socket())
-                                        as u8,
-                                )
-                                .into();
-                        }
-                        _ => (),
-                    }
-                    entry
-                })
-                .collect::<Vec<_>>();
-
-            vp.set_cpuid(&cpuid_entries)?;
         }
 
         let mut gsi_routing = GsiRouting::new();
@@ -463,6 +405,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             gsi_routing: Mutex::new(gsi_routing),
             caps,
             cpuid,
+            reserved_vps_per_socket: self.config.processor_topology.reserved_vps_per_socket(),
             synic_ports: Default::default(),
         });
 
@@ -485,10 +428,6 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                     .access(format!("vp-{}", vp.vp_index.index())),
             })
             .collect::<Vec<_>>();
-
-        if cfg!(debug_assertions) {
-            (&partition).check_reset_all(&partition.inner.bsp().vp_info);
-        }
 
         Ok((partition, vps))
     }
@@ -677,10 +616,116 @@ impl virt::BindProcessor for KvmProcessorBinder {
     type Error = KvmError;
 
     fn bind(&mut self) -> Result<Self::Processor<'_>, Self::Error> {
-        // FUTURE: create the vcpu here to get better NUMA affinity.
-
         let inner = &self.partition.vps[self.vpindex.index() as usize];
-        let kvm = self.partition.kvm.vp(inner.vp_info.apic_id);
+        let vp_info = inner.vp_info;
+        let kvm = self.partition.kvm.vp(vp_info.apic_id);
+
+        // Enable synic and set initial MSRs.
+        if self.partition.hv1_enabled {
+            kvm.enable_synic()?;
+
+            // Set the VP index. Also, KVM incorrectly initializes
+            // SCONTROL to 0. Set it to 1 on each processor.
+            kvm.set_msrs(&[
+                (
+                    hvdef::HV_X64_MSR_VP_INDEX,
+                    vp_info.base.vp_index.index().into(),
+                ),
+                (hvdef::HV_X64_MSR_SCONTROL, 1),
+            ])?;
+        }
+
+        // Unlike the Microsoft hypervisor, KVM allows this MSR to be
+        // set and defaults it to zero. Hard code the value here to the
+        // same as the Microsoft hypervisor.
+        kvm.set_msrs(&[(
+            x86defs::X86X_IA32_MSR_MISC_ENABLE,
+            hv1_emulator::x86::MISC_ENABLE.into(),
+        )])?;
+
+        // Set IA32_FEATURE_CONTROL on Intel processors. KVM initializes
+        // this MSR to 0; set the lock bit (as Hyper-V does) so that the
+        // MSR reads as locked, and enable VMX outside SMX if the guest
+        // has VMX in CPUID.
+        {
+            let cpuid = &self.partition.cpuid;
+            let leaf0 = cpuid.result(CpuidFunction::VendorAndMaxFunction.0, 0, &[0; 4]);
+            let vendor = x86defs::cpuid::Vendor::from_ebx_ecx_edx(leaf0[1], leaf0[2], leaf0[3]);
+            if vendor.is_intel_compatible() {
+                let ecx = x86defs::cpuid::VersionAndFeaturesEcx::from(
+                    cpuid.result(CpuidFunction::VersionAndFeatures.0, 0, &[0; 4])[2],
+                );
+                kvm.set_msrs(&[(
+                    x86defs::X86X_IA32_MSR_FEATURE_CONTROL,
+                    u64::from(
+                        x86defs::vmx::Ia32FeatureControl::new()
+                            .with_locked(true)
+                            .with_vmx_enabled_outside_smx(ecx.vmx()),
+                    ),
+                )])?;
+            }
+        }
+
+        // Set per-VP CPUID entries, fixing up APIC ID fields.
+        //
+        // TODO: centralize this code, probably in the topology crate,
+        // for use by other hypervisors.
+        let reserved_vps_per_socket = self.partition.reserved_vps_per_socket;
+        let cpuid_entries = self
+            .partition
+            .cpuid
+            .leaves()
+            .iter()
+            .map(|leaf| {
+                let mut entry = kvm::kvm_cpuid_entry2 {
+                    function: leaf.function,
+                    index: leaf.index.unwrap_or(0),
+                    flags: if leaf.index.is_some() {
+                        KVM_CPUID_FLAG_SIGNIFCANT_INDEX
+                    } else {
+                        0
+                    },
+                    eax: leaf.result[0],
+                    ebx: leaf.result[1],
+                    ecx: leaf.result[2],
+                    edx: leaf.result[3],
+                    padding: [0; 3],
+                };
+                match CpuidFunction(leaf.function) {
+                    CpuidFunction::VersionAndFeatures => {
+                        entry.ebx &= 0x00ffffff;
+                        entry.ebx |= vp_info.apic_id << 24;
+                    }
+                    CpuidFunction::ExtendedTopologyEnumeration => {
+                        entry.edx = vp_info.apic_id;
+                    }
+                    CpuidFunction::V2ExtendedTopologyEnumeration => {
+                        entry.edx = vp_info.apic_id;
+                    }
+                    CpuidFunction::ProcessorTopologyDefinition => {
+                        let eax = x86defs::cpuid::ProcessorTopologyDefinitionEax::from(entry.eax);
+                        entry.eax = eax.with_extended_apic_id(vp_info.apic_id).into();
+                        let ebx = x86defs::cpuid::ProcessorTopologyDefinitionEbx::from(entry.ebx);
+                        entry.ebx = ebx
+                            .with_compute_unit_id(
+                                (vp_info.apic_id % reserved_vps_per_socket
+                                    / (ebx.threads_per_compute_unit() as u32 + 1))
+                                    as u8,
+                            )
+                            .into();
+                        let ecx = x86defs::cpuid::ProcessorTopologyDefinitionEcx::from(entry.ecx);
+                        entry.ecx = ecx
+                            .with_node_id((vp_info.apic_id / reserved_vps_per_socket) as u8)
+                            .into();
+                    }
+                    _ => (),
+                }
+                entry
+            })
+            .collect::<Vec<_>>();
+
+        kvm.set_cpuid(&cpuid_entries)?;
+
         let mut vp = KvmProcessor {
             partition: &self.partition,
             inner,
@@ -699,7 +744,6 @@ impl virt::BindProcessor for KvmProcessorBinder {
         // 2. Enable x2apic if the partition needs it.
         // 3. Reset register state since KVM does not have the right
         //    architectural values.
-        let vp_info = inner.vp_info;
         let mut state = vp.access_state(Vtl::Vtl0);
         state.set_registers(&virt::x86::vp::Registers::at_reset(
             &self.partition.caps,
