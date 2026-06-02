@@ -66,6 +66,7 @@
   - [Code Review Process](./dev_guide/contrib/code_review.md)
   - [Guide Updates](./dev_guide/contrib/guide.md)
   - [Style Guide](./dev_guide/contrib/style_guide.md)
+  - [Crypto Backends](./dev_guide/contrib/crypto_backends.md)
 
 # Reference
 

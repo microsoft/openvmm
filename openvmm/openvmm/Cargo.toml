@@ -21,7 +21,7 @@ default = [
 
 # see the `openvmm_entry` crate for more info on these features
 gdb = ["openvmm_resources/gdb"]
-vendored_crypto = ["openvmm_entry/vendored_crypto"]
+vendored_crypto = ["crypto/vendored"]
 tpm = ["openvmm_resources/tpm"]
 virt_hvf = ["openvmm_resources/virt_hvf", "openvmm_hypervisors/virt_hvf"]
 virt_kvm = ["openvmm_resources/virt_kvm", "openvmm_hypervisors/virt_kvm"]
@@ -39,6 +39,7 @@ disklayer_sqlite = ["openvmm_resources/disklayer_sqlite"]
 openvmm_entry.workspace = true
 openvmm_hypervisors.workspace = true
 openvmm_resources.workspace = true
+crypto = { workspace = true, features = ["native"] }
 
 [build-dependencies]
 embed-resource.workspace = true

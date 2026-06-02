@@ -41,7 +41,13 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --memory size=4G,file=path/to/memory.bin
   --memory size=4G,shared=off,thp=on
   ```
-* `--hv`: Exposes Hyper-V enlightenments and VMBus support.
+* `--hv`: Exposes Hyper-V enlightenments. VMBus is enabled by default
+  when `--hv` is active; pass `--no-vmbus` to suppress VMBus while keeping
+  enlightenments.
+* `--no-vmbus`: Disables the VMBus server and all VMBus devices, even when
+  `--hv` or `--uefi` is active. The guest boots using only standard PCIe
+  devices and virtio transports. Incompatible with `--disk`, `--pcat`,
+  `--vtl2`, and VMBus serial options.
 * `--hypervisor <SPEC>`: Select a specific hypervisor backend, optionally with
   backend-specific parameters. The format is `name` or `name:key=val,key,...`.
   Available backends: `whp` (Windows), `kvm` (Linux), `mshv` (Linux,
@@ -52,26 +58,35 @@ as well as the generated CLI help (via `cargo run -- --help`).
   * `user_mode_apic` — use the user-mode APIC emulator instead of WHP's
     in-hypervisor APIC
   * `no_enlightenments` — disable in-hypervisor Hyper-V enlightenment support
+  * `nested_virt` — expose VMX/SVM to the guest so it can run its own
+    hypervisor (Hyper-V, KVM, etc.). Cannot be combined with
+    `user_mode_apic` or `--hv` (vmbus is not yet supported with nested
+    virt). The host must expose virtualization extensions to the VM
+    running OpenVMM.
 
   Examples:
   ```bash
   --hypervisor whp
   --hypervisor whp:user_mode_apic
   --hypervisor whp:user_mode_apic,no_enlightenments
+  --hypervisor whp:nested_virt
   --hypervisor kvm
   ```
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
-* `--disk file:<DISK>`: Exposes a single disk over VMBus. You must also
-  pass `--hv`. The `DISK` argument can be:
+* `--vmbus-scsi id=<name>[,sub_channels=<N>][,vtl2]`: Creates a
+  named VMBus SCSI controller. Use with `--disk ...,on=<name>` to
+  attach disks.
+* `--disk file:<DISK>,on=<name>`: Attaches a disk to the named
+  controller. The `DISK` argument can be:
   * A flat binary disk image
   * A VHD file with an extension of .vhd (Windows host only)
   * A VHDX file with an extension of .vhdx (Windows host only)
 
   On Linux, raw files and block devices use the `disk_blockdevice` backend
   (io_uring-based async I/O) by default. Append `;direct` to the path to
-  bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct`.
+  bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct,on=scsi0`.
 * `--private-memory`, `--prefetch`, `--thp`, and
   `--memory-backing-file <PATH>`: Deprecated aliases for `--memory`
   parameters. Prefer `shared=off`, `prefetch=on`, `thp=on`, and
@@ -84,6 +99,13 @@ as well as the generated CLI help (via `cargo run -- --help`).
   modes such as `--write-saved-state-proto`.
 * `--nic`: Exposes a NIC using the Consomme user-mode NAT.
 * `--gfx`: Enable a graphical console over VNC (see below)
+* `--vnc-port <PORT>`: VNC server port (default: 5900)
+* `--vnc-listen <ADDRESS>`: VNC server bind address (default: `127.0.0.1`).
+  Use `0.0.0.0` for all IPv4 interfaces, or `::` for dual-stack IPv4+IPv6.
+* `--vnc-max-clients <COUNT>`: Maximum concurrent VNC clients (default: 16).
+  Each client uses ~8MB for framebuffer buffers.
+* `--vnc-evict-oldest`: When the client limit is reached, disconnect the oldest
+  client instead of rejecting the new connection. Useful for admin takeover.
 * `--virtio-9p`: Expose a virtio 9p file system. Uses the format `tag,root_path`, e.g. `myfs,C:\\`.
   The file system can be mounted in a Linux guest using `mount -t 9p  -o trans=virtio tag /mnt/point`.
   You can specify this argument multiple times to create multiple file systems.
@@ -201,12 +223,11 @@ name:
 Several device types support the `pcie_port=<name>` option to attach to a
 PCIe root port. The syntax varies slightly between device types:
 
-**Disks** (comma-separated option): `--disk`, `--nvme`, `--virtio-blk`
+**Disks** (comma-separated option): `--nvme-pci` + `--disk`, `--virtio-blk`
 
 ```sh
 --virtio-blk file:/path/to/disk.raw,pcie_port=rp0
---nvme file:/path/to/disk.raw,pcie_port=rp0
---disk file:/path/to/disk.raw,pcie_port=rp0
+--nvme-pci id=nvme0,pcie_port=rp0 --disk file:/path/to/disk.raw,on=nvme0
 ```
 
 **CXL test endpoint** (comma-separated option): `--cxl-test`

@@ -52,7 +52,6 @@ impl X509CertificateInner {
         Ok(self.0.issued(&subject.0) == openssl::x509::X509VerifyResult::OK)
     }
 
-    #[cfg(any(test, feature = "test_helpers"))]
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
         self.0
             .to_der()
@@ -88,5 +87,21 @@ impl X509CertificateInner {
         builder.set_not_after(&not_after)?;
         builder.sign(&key.0.0, openssl::hash::MessageDigest::sha256())?;
         Ok(X509CertificateInner(builder.build()))
+    }
+
+    pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
+        let sn = self
+            .0
+            .subject_name()
+            .entries_by_nid(openssl::nid::Nid::COMMONNAME)
+            .next();
+        match sn {
+            None => Ok(None),
+            Some(sn) => sn
+                .data()
+                .as_utf8()
+                .map(|u| Some(u.to_string()))
+                .map_err(|e| err(e, "decoding subject name")),
+        }
     }
 }

@@ -10,7 +10,7 @@ rust-version.workspace = true
 [features]
 default = []
 
-encryption = ["vmgs/encryption", "crypto/vendored"]
+encryption = ["vmgs/encryption", "crypto/native", "crypto/vendored"]
 
 test_helpers = ["vmgs/test_helpers", "getrandom", "dep:resource_dll_parser"]
 
@@ -49,7 +49,3 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
-
-[package.metadata.xtask.unused-deps]
-# keep the crypto dep so we can specify the vendored feature
-ignored = ["crypto"]

@@ -65,6 +65,13 @@ pub struct WhpHandle {
     /// Only supported on x86_64. Setting this to `false` on aarch64 will cause
     /// partition creation to fail.
     pub offload_enlightenments: bool,
+    /// Configure the partition for nested virtualization, so that the
+    /// guest can run its own hypervisor (Hyper-V, KVM, etc.).
+    ///
+    /// Only supported on x86_64. Requires `user_mode_apic = false` and a
+    /// host WHP implementation that exposes nested-virt support; partition
+    /// creation will fail otherwise.
+    pub nested_virt: bool,
 }
 
 impl Default for WhpHandle {
@@ -72,6 +79,7 @@ impl Default for WhpHandle {
         Self {
             user_mode_apic: false,
             offload_enlightenments: true,
+            nested_virt: false,
         }
     }
 }

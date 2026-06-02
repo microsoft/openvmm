@@ -200,6 +200,216 @@ pub async fn socket_tests(driver: impl Driver) {
     }
 }
 
+/// Runs process wait tests.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub async fn process_tests(driver: impl Driver) {
+    use crate::process::PolledChild;
+    type StdPolledChild = PolledChild<std::process::Child>;
+
+    #[cfg(windows)]
+    fn cmd() -> std::process::Command {
+        let mut cmd = std::process::Command::new("cmd.exe");
+        // Avoid complaints about running in a UNC path for WSL.
+        cmd.current_dir(std::env::var_os("WINDIR").unwrap());
+        cmd
+    }
+
+    fn success_command() -> std::process::Command {
+        #[cfg(unix)]
+        {
+            std::process::Command::new("true")
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = cmd();
+            cmd.args(["/c", "exit", "0"]);
+            cmd
+        }
+    }
+
+    fn failure_command() -> std::process::Command {
+        #[cfg(unix)]
+        {
+            std::process::Command::new("false")
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = cmd();
+            cmd.args(["/c", "exit", "1"]);
+            cmd
+        }
+    }
+
+    fn long_running_command() -> std::process::Command {
+        #[cfg(unix)]
+        {
+            let mut cmd = std::process::Command::new("sleep");
+            cmd.arg("60");
+            cmd
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = cmd();
+            cmd.args(["/c", "pause"])
+                .stdout(std::process::Stdio::null());
+            cmd
+        }
+    }
+
+    // std child exits successfully
+    {
+        let child = success_command().spawn().unwrap();
+        let mut polled = StdPolledChild::new(&driver, child).unwrap();
+        let status = polled.wait().await.unwrap();
+        assert!(status.success());
+    }
+
+    // std child exits with nonzero status
+    {
+        let child = failure_command().spawn().unwrap();
+        let mut polled = StdPolledChild::new(&driver, child).unwrap();
+        let status = polled.wait().await.unwrap();
+        assert!(!status.success());
+    }
+
+    // wait remains pending while child is still running
+    {
+        let child = long_running_command().spawn().unwrap();
+        let mut polled = StdPolledChild::new(&driver, child).unwrap();
+        let pending = poll_fn(|cx| Poll::Ready(polled.poll_wait(cx))).await;
+        assert!(pending.is_pending());
+        polled.get_mut().kill().unwrap();
+        let status = polled.wait().await.unwrap();
+        assert!(!status.success());
+    }
+
+    // into_inner returns a usable child
+    {
+        let child = long_running_command().spawn().unwrap();
+        let polled = StdPolledChild::new(&driver, child).unwrap();
+        let mut child = polled.into_inner();
+        child.kill().unwrap();
+        let status = child.wait().unwrap();
+        assert!(!status.success());
+    }
+
+    // after async wait, try_wait observes the cached status
+    {
+        let child = success_command().spawn().unwrap();
+        let mut polled = StdPolledChild::new(&driver, child).unwrap();
+        let status = polled.wait().await.unwrap();
+        assert!(status.success());
+        let status2 = polled.get_mut().try_wait().unwrap();
+        assert!(status2.is_some());
+        assert!(status2.unwrap().success());
+    }
+
+    // already-exited child completes immediately
+    {
+        let mut child = success_command().spawn().unwrap();
+        child.wait().unwrap(); // reap synchronously first
+        let mut polled = StdPolledChild::new(&driver, child).unwrap();
+        let status = polled.wait().await.unwrap();
+        assert!(status.success());
+    }
+
+    // dropping a pending PolledChild does not reap or kill the child
+    {
+        let child = long_running_command().spawn().unwrap();
+        let polled = StdPolledChild::new(&driver, child).unwrap();
+        // Drop the PolledChild while the child is still running.
+        let mut child = polled.into_inner();
+        // The child should still be alive — try_wait should return None.
+        let status = child.try_wait().unwrap();
+        assert!(status.is_none(), "child was reaped or killed by drop");
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    // --- pal::unix::process::Child tests ---
+    #[cfg(unix)]
+    {
+        type PalChild = PolledChild<pal::unix::process::Child>;
+
+        fn pal_success_child() -> pal::unix::process::Child {
+            pal::unix::process::Builder::new("/usr/bin/true")
+                .spawn()
+                .unwrap()
+        }
+
+        fn pal_failure_child() -> pal::unix::process::Child {
+            pal::unix::process::Builder::new("/usr/bin/false")
+                .spawn()
+                .unwrap()
+        }
+
+        // pal child exits successfully
+        {
+            let child = pal_success_child();
+            let mut polled = PalChild::new(&driver, child).unwrap();
+            let status = polled.wait().await.unwrap();
+            assert!(status.success());
+        }
+
+        // pal child exits with failure
+        {
+            let child = pal_failure_child();
+            let mut polled = PalChild::new(&driver, child).unwrap();
+            let status = polled.wait().await.unwrap();
+            assert!(!status.success());
+        }
+
+        // after async wait, try_wait observes the cached status
+        {
+            let child = pal_success_child();
+            let mut polled = PalChild::new(&driver, child).unwrap();
+            let status = polled.wait().await.unwrap();
+            assert!(status.success());
+            let status2 = polled.get_mut().try_wait().unwrap();
+            assert!(status2.is_some());
+            assert!(status2.unwrap().success());
+        }
+    }
+
+    // --- pal::windows::Process tests (via PolledProcess) ---
+    #[cfg(windows)]
+    {
+        use crate::windows::PolledProcess;
+        use std::os::windows::io::OwnedHandle;
+
+        // PolledProcess exits successfully
+        {
+            let std_child = success_command().spawn().unwrap();
+            let handle = OwnedHandle::from(std_child);
+            let process = pal::windows::Process::from(handle);
+            let mut polled = PolledProcess::new(&driver, process).unwrap();
+            let exit_code = polled.wait().await.unwrap();
+            assert_eq!(exit_code, 0);
+        }
+
+        // PolledProcess exits with nonzero code
+        {
+            let std_child = failure_command().spawn().unwrap();
+            let handle = OwnedHandle::from(std_child);
+            let process = pal::windows::Process::from(handle);
+            let mut polled = PolledProcess::new(&driver, process).unwrap();
+            let exit_code = polled.wait().await.unwrap();
+            assert_ne!(exit_code, 0);
+        }
+
+        // PolledProcess kill + wait
+        {
+            let std_child = long_running_command().spawn().unwrap();
+            let handle = OwnedHandle::from(std_child);
+            let process = pal::windows::Process::from(handle);
+            let mut polled = PolledProcess::new(&driver, process).unwrap();
+            polled.get().kill(42).unwrap();
+            let exit_code = polled.wait().await.unwrap();
+            assert_eq!(exit_code, 42);
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub mod io_uring_tests {
     //! io-uring submission tests.

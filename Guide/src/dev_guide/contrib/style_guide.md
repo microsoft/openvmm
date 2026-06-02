@@ -82,7 +82,7 @@ in context:
 - **`path/to/...` style** — for file paths where the structure is obvious.
   This is the predominant style in the existing guide.
   ```bash
-  cargo run -- --uefi --disk memdiff:file:path/to/disk.vhdx
+  cargo run -- --uefi --vmbus-scsi id=scsi0 --disk memdiff:file:path/to/disk.vhdx,on=scsi0
   ```
 
 - **`<SCREAMING_SNAKE_CASE>` style** — for values that need extra emphasis or
@@ -94,7 +94,7 @@ in context:
 Bad (hardcoded path that won't work for the reader):
 
 ~~~bash
-cargo run -- --uefi --disk memdiff:file:/home/alice/disks/myvm.vhdx
+cargo run -- --uefi --vmbus-scsi id=scsi0 --disk memdiff:file:/home/alice/disks/myvm.vhdx,on=scsi0
 ~~~
 
 ### File paths in code examples
@@ -104,17 +104,17 @@ even when the path refers to a Windows filesystem location accessed via WSL:
 
 ```bash
 # Good — forward slashes in bash
-cargo run -- --disk memdiff:file:path/to/disk.vhdx
+cargo run -- --vmbus-scsi id=scsi0 --disk memdiff:file:path/to/disk.vhdx,on=scsi0
 
 # Good — wslpath output uses backslashes, but that's a Windows path
-cargo run -- --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/disk.vhdx)"
+cargo run -- --vmbus-scsi id=scsi0 --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/disk.vhdx),on=scsi0"
 ```
 
 Use **backslashes** for paths in `powershell` code blocks:
 
 ```powershell
 # Good — backslashes in PowerShell
-cargo run -- --disk memdiff:file:C:\vhds\disk.vhdx
+cargo run -- --vmbus-scsi id=scsi0 --disk memdiff:file:C:\vhds\disk.vhdx,on=scsi0
 ```
 
 ### Length

@@ -339,11 +339,6 @@ mod tests {
         ]
     }
 
-    struct NoopWaker;
-    impl std::task::Wake for NoopWaker {
-        fn wake(self: Arc<Self>) {}
-    }
-
     #[test]
     fn single_query_response() {
         let mut dns = DnsResolver::new_for_test(Arc::new(EchoBackend));
@@ -355,8 +350,7 @@ mod tests {
         let consumed = handler.ingest(&[&msg], &mut dns).unwrap();
         assert_eq!(consumed, msg.len());
 
-        let waker = std::task::Waker::from(Arc::new(NoopWaker));
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
 
         let mut buf = vec![0u8; 256];
         match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)], &mut dns) {
@@ -385,8 +379,7 @@ mod tests {
         let consumed = handler.ingest(&[&msg[..2]], &mut dns).unwrap();
         assert_eq!(consumed, 2);
 
-        let waker = std::task::Waker::from(Arc::new(NoopWaker));
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
         let mut buf = vec![0u8; 256];
         assert!(matches!(
             handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)], &mut dns),
@@ -421,8 +414,7 @@ mod tests {
         let consumed = handler.ingest(&[&combined], &mut dns).unwrap();
         assert_eq!(consumed, make_tcp_dns_message(&q1).len());
 
-        let waker = std::task::Waker::from(Arc::new(NoopWaker));
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
 
         // Drain the first response.
         let mut buf = vec![0u8; 256];
@@ -454,8 +446,7 @@ mod tests {
             .ingest(&[&make_tcp_dns_message(&query)], &mut dns)
             .unwrap();
 
-        let waker = std::task::Waker::from(Arc::new(NoopWaker));
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
 
         // Drain the response.
         let mut buf = vec![0u8; 256];

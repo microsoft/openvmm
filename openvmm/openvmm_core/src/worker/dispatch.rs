@@ -1305,6 +1305,9 @@ impl InitializedVm {
         resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
             partition.clone().ioapic_routing(),
         ));
+        resolver.add_resolver(emuplat::i440bx_host_pci_bridge::AdjustGpaRangeResolver(
+            memory_manager.ram_visibility_control(),
+        ));
 
         let mapper = memory_manager.device_memory_mapper();
 
@@ -1648,16 +1651,6 @@ impl InitializedVm {
             None
         };
 
-        let deps_i440bx_host_pci_bridge =
-            (cfg.chipset.with_i440bx_host_pci_bridge).then(|| dev::I440BxHostPciBridgeDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-                adjust_gpa_range: Box::new(
-                    emuplat::i440bx_host_pci_bridge::ManageRamGpaRange::new(
-                        memory_manager.ram_visibility_control(),
-                    ),
-                ),
-            });
-
         let deps_piix4_pci_bus = (cfg.chipset.with_piix4_pci_bus).then(|| dev::Piix4PciBusDeps {
             bus_id: pci_bus_id_piix4.clone(),
         });
@@ -1690,7 +1683,6 @@ impl InitializedVm {
                 deps_hyperv_framebuffer,
                 deps_hyperv_ide,
                 deps_hyperv_vga,
-                deps_i440bx_host_pci_bridge,
                 deps_piix4_cmos_rtc,
                 deps_piix4_pci_bus,
                 deps_underhill_vga_proxy: None,
@@ -1774,7 +1766,7 @@ impl InitializedVm {
         let pci_inta_line = {
             const PCI_LEGACY_INTA_IRQ: u32 = 11;
             const PCI_INTA_IRQ: u32 = 16;
-            if cfg.chipset.with_i440bx_host_pci_bridge {
+            if cfg.chipset_capabilities.with_i440bx_host_pci_bridge {
                 // Hyper-V hard-wires this to 11.
                 Some(PCI_LEGACY_INTA_IRQ)
             } else if cfg.chipset.with_generic_pci_bus {
@@ -1873,22 +1865,21 @@ impl InitializedVm {
                 let root_complex =
                     chipset_builder
                         .arc_mutex_device(device_name)
-                        .add(|services| {
+                        .try_add(|services| {
                             let root_port_definitions = rc
                                 .ports
                                 .into_iter()
                                 .map(build_root_port_definition)
                                 .collect();
 
-                            GenericPcieRootComplex::new(
+                            GenericPcieRootComplex::builder(
                                 &mut services.register_mmio(),
-                                rc.start_bus,
-                                rc.end_bus,
-                                chbcr_range,
+                                rc.start_bus..=rc.end_bus,
                                 ranges.ecam_range,
-                                root_port_definitions,
-                                msi_conn.target(),
                             )
+                            .root_ports(root_port_definitions, msi_conn.target())
+                            .chbcr_range(chbcr_range)
+                            .build()
                         })?;
 
                 if let Some(signal_msi) = partition.as_signal_msi(Vtl::Vtl0) {
@@ -2152,7 +2143,9 @@ impl InitializedVm {
                 anyhow::bail!("vmbus required hypervisor enlightements");
             }
 
-            let synic = partition.synic();
+            let synic = partition
+                .synic()
+                .context("failed to get partition synic access for vmbus")?;
 
             vmbus_redirect = vmbus_cfg.vtl2_redirect;
             let hvsock_channel = HvsockRelayChannel::new();
@@ -2730,7 +2723,9 @@ impl LoadedVmInner {
                                 add_devices_to_dsdt_x64(
                                     dsdt,
                                     &self.chipset_cfg,
+                                    &self.chipset_capabilities,
                                     enable_serial,
+                                    self.vmbus_server.is_some(),
                                     &self.chipset_mmio,
                                     self.virtio_mmio_region,
                                     self.virtio_mmio_irq,
@@ -2771,6 +2766,7 @@ impl LoadedVmInner {
                             add_devices_to_dsdt_arm64(
                                 dsdt,
                                 enable_serial,
+                                self.vmbus_server.is_some(),
                                 &self.chipset_mmio,
                                 self.hypervisor_cfg.with_hv,
                             )
@@ -2805,6 +2801,7 @@ impl LoadedVmInner {
                 uefi_console_mode,
                 default_boot_always_attempt,
                 bios_guid,
+                enable_vmbus,
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
@@ -2822,6 +2819,7 @@ impl LoadedVmInner {
                     uefi_console_mode,
                     default_boot_always_attempt,
                     bios_guid,
+                    vmbus: enable_vmbus,
                 };
                 let regs = super::vm_loaders::uefi::load_uefi(
                     firmware,
@@ -3533,7 +3531,9 @@ impl LoadedVm {
 fn add_devices_to_dsdt_x64(
     dsdt: &mut dsdt::Dsdt,
     cfg: &BaseChipsetManifest,
+    capabilities: &VmChipsetCapabilities,
     serial_uarts: bool,
+    with_vmbus: bool,
     chipset_mmio: &ChipsetMmioRanges,
     virtio_mmio_region: MemoryRange,
     virtio_mmio_irq: u32,
@@ -3573,18 +3573,21 @@ fn add_devices_to_dsdt_x64(
     }
 
     // The chipset MMIO module or PCI bus describes the chipset low/high
-    // MMIO regions to the guest.
-    if cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge {
+    // MMIO regions to the guest. Either range may be empty (e.g. when
+    // VMBus is disabled, chipset high MMIO is not allocated).
+    if cfg.with_generic_pci_bus || capabilities.with_i440bx_host_pci_bridge {
         // TODO: actually plumb through legacy PCI interrupts
         dsdt.add_pci(chipset_mmio.low, chipset_mmio.high, pci_legacy_interrupts);
     } else {
         dsdt.add_mmio_module(chipset_mmio.low, chipset_mmio.high);
     }
 
-    dsdt.add_vmbus(
-        cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge,
-        None,
-    );
+    if with_vmbus {
+        dsdt.add_vmbus(
+            cfg.with_generic_pci_bus || capabilities.with_i440bx_host_pci_bridge,
+            None,
+        );
+    }
     dsdt.add_rtc();
 }
 
@@ -3592,6 +3595,7 @@ fn add_devices_to_dsdt_x64(
 fn add_devices_to_dsdt_arm64(
     dsdt: &mut dsdt::Dsdt,
     enable_serial: bool,
+    with_vmbus: bool,
     chipset_mmio: &ChipsetMmioRanges,
     with_hv: bool,
 ) {
@@ -3607,7 +3611,9 @@ fn add_devices_to_dsdt_arm64(
 
     if with_hv {
         dsdt.add_mmio_module(chipset_mmio.low, chipset_mmio.high);
+    }
 
+    if with_vmbus {
         // VMBus on ARM64 ACPI needs a per-CPU interrupt (PPI) in _CRS.
         // Always place under VMOD, not PCI0 — ARM64 doesn't use the x86
         // PCI0 DSDT node.

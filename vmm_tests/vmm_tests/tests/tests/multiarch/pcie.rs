@@ -196,7 +196,9 @@ async fn pcie_root_emulation_single_segment(
 }
 
 /// Test PCIe root complex discovery and root port enumeration by
-/// guest software in a topology with multiple segments.
+/// guest software in a topology with multiple segments. Uses 10
+/// ports per root complex to exercise multi-function packing across
+/// multiple PCI device slots.
 #[openvmm_test(
     unstable_linux_direct_x64,
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -209,7 +211,7 @@ async fn pcie_root_emulation_multi_segment(
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
-        .modify_backend(|b| b.with_pcie_root_topology(4, 1, 8))
+        .modify_backend(|b| b.with_pcie_root_topology(4, 1, 10))
         .run()
         .await?;
 
@@ -221,7 +223,7 @@ async fn pcie_root_emulation_multi_segment(
         .filter(|d| d.vendor_id == 0x1414 && d.device_id == 0xc030 && d.class_code == 0x060400)
         .count();
 
-    assert_eq!(root_port_count, 32);
+    assert_eq!(root_port_count, 40);
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -616,6 +618,29 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
         net_count >= 2,
         "at least 2 network interfaces should exist (got {net_count}): {net_devs}"
     );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot a guest with VMBus entirely disabled.
+///
+/// Uses PCIe NVMe for the boot disk, virtio-vsock for pipette communication,
+/// and a second PCIe NVMe controller for the cidata agent disk. Validates
+/// that the guest boots and pipette is reachable without any VMBus devices.
+// Disabled until the in-tree UEFI is updated to support this.
+//#[openvmm_test(uefi_x64(vhd(alpine_3_23_x64)))]
+async fn _boot_no_vmbus_pcie_nvme(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .with_boot_device_type(petri::BootDeviceType::PcieNvme)
+        .with_default_boot_always_attempt(true)
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
+        .run()
+        .await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;

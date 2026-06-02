@@ -13,12 +13,6 @@ pub fn kbkdf_hmac_sha256(
     label: &[u8],
     output_len: usize,
 ) -> Result<Vec<u8>, KbkdfError> {
-    sp800_108_counter_mode(
-        HmacAlgorithm::HmacSha256,
-        key,
-        label,
-        context,
-        output_len as u64,
-    )
-    .map_err(|e| KbkdfError(crate::BackendError::SymCrypt(e, "deriving SP800-108 KBKDF")))
+    sp800_108_counter_mode(HmacAlgorithm::HmacSha256, key, label, context, output_len)
+        .map_err(|e| KbkdfError(crate::BackendError::SymCrypt(e, "deriving SP800-108 KBKDF")))
 }

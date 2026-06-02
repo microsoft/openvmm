@@ -200,6 +200,7 @@ mod tests {
             tpm_persisted: false,
             filtered_vpci_devices_allowed: true,
             vm_unique_id: "".to_string(),
+            vmgs_provisioner: None,
         };
         let mock_call = Box::new(MockTeeCall::new(0x1234)) as Box<dyn tee_call::TeeCall>;
         let mock_get_derived_key_call = mock_call.supports_get_derived_key().unwrap();

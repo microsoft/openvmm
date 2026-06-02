@@ -308,6 +308,7 @@ pub struct IgvmAttestAkCertResponseHeader {
 /// `IgvmAttestRequestBase` in raw bytes.
 pub mod runtime_claims {
     use base64_serde::base64_serde_type;
+    use guid::Guid;
     use mesh::MeshPayload;
     use serde::Deserialize;
     use serde::Serialize;
@@ -424,6 +425,18 @@ pub mod runtime_claims {
         }
     }
 
+    /// Claims for VMGS provenance.
+    #[derive(Clone, Debug, Deserialize, Serialize, MeshPayload)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct VmgsProvisioner {
+        /// VMGS ID
+        #[serde(with = "serde_helpers::as_string")]
+        pub id: Guid,
+        /// Signer (root cert thumbprint + leaf subject name as a decentralized
+        /// identifier)
+        pub signer: String,
+    }
+
     /// VM configuration to be included in the `RuntimeClaims`.
     #[derive(Clone, Debug, Deserialize, Serialize, MeshPayload)]
     #[serde(rename_all = "kebab-case")]
@@ -448,5 +461,25 @@ pub mod runtime_claims {
         /// VM id
         #[serde(rename = "vmUniqueId")]
         pub vm_unique_id: String,
+        /// VMGS provenance data
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub vmgs_provisioner: Option<VmgsProvisioner>,
+    }
+
+    impl Default for AttestationVmConfig {
+        fn default() -> Self {
+            Self {
+                current_time: None,
+                root_cert_thumbprint: String::new(),
+                console_enabled: false,
+                interactive_console_enabled: false,
+                secure_boot: false,
+                tpm_enabled: true,
+                tpm_persisted: true,
+                filtered_vpci_devices_allowed: false,
+                vm_unique_id: String::new(),
+                vmgs_provisioner: None,
+            }
+        }
     }
 }

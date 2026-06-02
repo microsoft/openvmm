@@ -34,8 +34,6 @@ underhill_init.workspace = true
 underhill_crash.workspace = true
 underhill_dump.workspace = true
 
-openssl_crypto_only.workspace = true
-
 anyhow.workspace = true
 fast_memcpy = { workspace = true, features = ["replace_system_memcpy"] }
 mimalloc.workspace = true

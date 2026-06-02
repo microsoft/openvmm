@@ -548,6 +548,11 @@ mod tests {
     }
 
     #[test]
+    fn process_works() {
+        EpollPool::run_with(executor_tests::process_tests)
+    }
+
+    #[test]
     fn uring_works() {
         EpollPool::run_with(executor_tests::io_uring_tests::uring_tests)
     }

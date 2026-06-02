@@ -147,17 +147,19 @@ pub fn compute_variable_mtrrs(
         ));
         if chipset_high_mmio.is_empty() {
             // No high MMIO gap — RAM above the low gap is contiguous.
-            // Cover to the 8TB boundary (or GPA space limit) using the
-            // same split as the >64GB path below.
+            // Only cover up to the end of RAM so that regions above RAM
+            // (e.g. PCIe MMIO64 windows) remain UC by default.
+            // Use the same 8TB split as the high-MMIO path to work around
+            // a bug in older Linux kernels (e.g. RHEL 6.x).
             result.push(X86Register::MtrrPhysMask2(mtrr_mask(
                 gpa_space_size,
-                (1 << std::cmp::min(gpa_space_size, 43)) - 1,
+                (1 << std::cmp::min(gpa_space_size, 43)).min(memory.end_of_ram()) - 1,
             )));
-            if gpa_space_size > 43 {
+            if memory.end_of_ram() > (1 << 43) {
                 result.push(X86Register::MtrrPhysBase3((1 << 43) | WRITEBACK));
                 result.push(X86Register::MtrrPhysMask3(mtrr_mask(
                     gpa_space_size,
-                    (1 << gpa_space_size) - 1,
+                    memory.end_of_ram() - 1,
                 )));
             }
         } else {
@@ -500,18 +502,17 @@ mod tests {
 
     #[test]
     fn mtrr_8gb_no_high_mmio() {
-        // New behavior: no high MMIO gap. RAM above 4 GiB is contiguous.
-        // Uses the is_empty() branch.
+        // No high MMIO gap. RAM above 4 GiB is contiguous.
+        // WB MTRRs should cover only up to end of RAM, leaving
+        // everything above (ECAM, MMIO64 windows) as default UC.
         let low = standard_low_mmio();
         let layout = MemoryLayout::new(8 * GB, &[low], &[], &[], None).unwrap();
         let regs = compute_variable_mtrrs(&layout, 46, low, MemoryRange::EMPTY);
         // Pair 0: 0..128 MB
         // Pair 1: 128 MB..low gap start
-        // Pair 2: low gap end..8 TB boundary (is_empty branch)
-        // Pair 3: 8 TB..GPA limit (gpa_space_size > 43)
-        assert_eq!(pair_count(&regs), 4);
+        // Pair 2: low gap end..end of RAM (8 GB)
+        assert_eq!(pair_count(&regs), 3);
         assert_eq!(regs[4], X86Register::MtrrPhysBase2(low.end() | 0x6));
-        assert_eq!(regs[6], X86Register::MtrrPhysBase3((1u64 << 43) | 0x6));
     }
 
     #[test]

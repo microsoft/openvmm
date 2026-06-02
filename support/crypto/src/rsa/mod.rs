@@ -3,7 +3,13 @@
 
 //! RSA cryptographic operations.
 
-#![cfg(any(openssl, rust, symcrypt))]
+#![cfg(any(
+    openssl,
+    rust,
+    symcrypt,
+    all(native, windows),
+    all(native, target_os = "macos")
+))]
 
 #[cfg(openssl)]
 pub(crate) mod ossl;
@@ -13,19 +19,33 @@ use ossl as sys;
 #[cfg(rust)]
 pub(crate) mod rust;
 #[cfg(rust)]
-pub(crate) use rust as sys;
+use rust as sys;
 
 #[cfg(symcrypt)]
 pub(crate) mod symcrypt;
 #[cfg(symcrypt)]
-pub(crate) use symcrypt as sys;
+use symcrypt as sys;
+
+#[cfg(all(native, windows))]
+pub(crate) mod win;
+#[cfg(all(native, windows))]
+use win as sys;
+
+#[cfg(all(native, target_os = "macos"))]
+mod mac;
+#[cfg(all(native, target_os = "macos"))]
+use mac as sys;
 
 use crate::HashAlgorithm;
 use thiserror::Error;
 
 /// An error for RSA operations.
-// TODO: Make this clone once RustCrypto rsa::errors::Error is cloneable
-#[cfg(not(rust))]
+#[cfg(any(
+    openssl,
+    symcrypt,
+    all(native, windows),
+    all(native, target_os = "macos")
+))]
 #[derive(Debug, Error)]
 #[error("RSA error")]
 pub struct RsaError(#[source] pub(crate) super::BackendError);

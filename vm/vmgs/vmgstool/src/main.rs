@@ -4,6 +4,9 @@
 #![forbid(unsafe_code)]
 #![expect(missing_docs)]
 
+#[cfg(all(not(test), feature = "encryption"))]
+crypto::ensure_single_backend!();
+
 // The version in this crate's Cargo.toml file should be updated using the
 // semver standard when changes are made, which triggers CI to automatically
 // publish a new version.

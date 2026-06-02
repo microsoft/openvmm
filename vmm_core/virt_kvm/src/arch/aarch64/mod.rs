@@ -13,6 +13,7 @@
 use crate::KvmError;
 use crate::KvmPartition;
 use crate::KvmPartitionInner;
+use crate::KvmProcessorBinder;
 use crate::KvmRunVpError;
 use crate::gsi::GsiRouting;
 use crate::gsi::KvmIrqFdState;
@@ -542,19 +543,11 @@ impl virt::Processor for KvmProcessor<'_> {
     }
 }
 
-pub struct KvmProcessorBinder {
-    partition: Arc<KvmPartitionInner>,
-    vpindex: VpIndex,
-    vmtime: VmTimeAccess,
-}
-
 impl virt::BindProcessor for KvmProcessorBinder {
     type Processor<'a> = KvmProcessor<'a>;
     type Error = KvmError;
 
     fn bind(&mut self) -> Result<Self::Processor<'_>, Self::Error> {
-        // FUTURE: create the vcpu here to get better NUMA affinity.
-
         let inner = &self.partition.vps[self.vpindex.index() as usize];
         let kvm = self.partition.kvm.vp(inner.vp_info.base.vp_index.index());
         let vp = KvmProcessor {
@@ -786,6 +779,9 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
         mut self,
         config: virt::PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        // Create all VCPUs now so that they are assigned dense, sequential
+        // vcpu_idx values in KVM.  See the x86_64 build() for details on why
+        // this matters for the Hyper-V enlightenment fast paths.
         for (vp_idx, _vp_info) in self.config.processor_topology.vps_arch().enumerate() {
             self.vm.add_vp(vp_idx as u32)?;
         }
@@ -852,11 +848,9 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
             _its_device: its_device,
             gic_msi,
             gic_nr_irqs: self.config.processor_topology.gic_nr_irqs(),
-            synic_ports: Default::default(),
         });
 
         let partition = KvmPartition {
-            synic_ports: Arc::new(virt::synic::SynicPorts::new(partition.clone())),
             irqfd_state: Arc::new(KvmIrqFdState::new(partition.clone())),
             inner: partition,
         };
@@ -942,8 +936,8 @@ impl virt::Hv1 for KvmPartition {
         None
     }
 
-    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
-        self.synic_ports.clone()
+    fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
+        anyhow::bail!("synic not supported on KVM/aarch64");
     }
 }
 
@@ -1112,30 +1106,6 @@ impl virt::PartitionAccessState for KvmPartition {
         debug_assert_eq!(vtl, Vtl::Vtl0);
 
         self
-    }
-}
-
-impl virt::synic::Synic for KvmPartitionInner {
-    fn port_map(&self) -> &virt::synic::SynicPortMap {
-        unimplemented!()
-    }
-
-    fn post_message(&self, _vtl: Vtl, _vp: VpIndex, _sint: u8, _typ: u32, _payload: &[u8]) {
-        unimplemented!()
-    }
-
-    fn new_guest_event_port(
-        self: Arc<Self>,
-        _vtl: Vtl,
-        _vp: u32,
-        _sint: u8,
-        _flag: u16,
-    ) -> Box<dyn vmcore::synic::GuestEventPort> {
-        unimplemented!()
-    }
-
-    fn prefer_os_events(&self) -> bool {
-        unimplemented!()
     }
 }
 

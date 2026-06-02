@@ -660,11 +660,9 @@ pub trait Hv1 {
         &self,
     ) -> Option<&dyn DeviceBuilder<Device = Self::Device, Error = Self::Error>>;
 
-    /// Returns the partition's synic port access implementation.
-    ///
-    /// This is used by VMBus and other synic consumers to register message
-    /// and event ports for communication with the guest.
-    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess>;
+    /// Returns the partition's synic port access, or an error if the
+    /// backend cannot support synic in its current configuration.
+    fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>>;
 }
 
 pub trait DeviceBuilder: Hv1 {

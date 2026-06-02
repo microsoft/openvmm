@@ -140,7 +140,6 @@ impl X509CertificateInner {
         Ok(true)
     }
 
-    #[cfg(any(test, feature = "test_helpers"))]
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
         self.0
             .to_der()
@@ -156,138 +155,36 @@ impl X509CertificateInner {
         organization: &str,
         common_name: &str,
     ) -> anyhow::Result<Self> {
-        use core::str::FromStr;
         use x509_cert::builder::Builder;
-        use x509_cert::name::Name;
 
-        // Profile that produces a basic self-signed certificate with no
-        // extensions and the same `Name` for both the subject and issuer.
-        struct SelfSignedProfile {
-            subject: Name,
-        }
-
-        impl x509_cert::builder::profile::BuilderProfile for SelfSignedProfile {
-            fn get_issuer(&self, _subject: &Name) -> Name {
-                self.subject.clone()
-            }
-
-            fn get_subject(&self) -> Name {
-                self.subject.clone()
-            }
-
-            fn build_extensions(
-                &self,
-                _spk: x509_cert::spki::SubjectPublicKeyInfoRef<'_>,
-                _issuer_spk: x509_cert::spki::SubjectPublicKeyInfoRef<'_>,
-                _tbs: &x509_cert::TbsCertificate,
-            ) -> x509_cert::builder::Result<Vec<x509_cert::ext::Extension>> {
-                Ok(Vec::new())
-            }
-        }
-
-        let name = Name::from_str(&format!(
-            "CN={common_name},O={organization},L={locality},ST={state},C={country}"
-        ))?;
-
-        let modulus = key.modulus();
-        let exponent = key.public_exponent();
-        let pkcs1_pub = pkcs1::RsaPublicKey {
-            modulus: der::asn1::UintRef::new(&modulus)?,
-            public_exponent: der::asn1::UintRef::new(&exponent)?,
-        };
-        let pkcs1_der = pkcs1_pub.to_der()?;
-        let spki = x509_cert::spki::SubjectPublicKeyInfoOwned {
-            algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
-                oid: pkcs1::ALGORITHM_OID,
-                parameters: Some(der::Any::null()),
-            },
-            subject_public_key: der::asn1::BitString::from_bytes(&pkcs1_der)?,
-        };
-
-        let serial_number = x509_cert::serial_number::SerialNumber::from(1u32);
-        let validity = x509_cert::time::Validity::new(
-            der::asn1::GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(0))?
-                .into(),
-            x509_cert::time::Time::INFINITY,
-        );
-
-        let profile = SelfSignedProfile { subject: name };
-        let builder =
-            x509_cert::builder::CertificateBuilder::new(profile, serial_number, validity, spki)?;
+        let (builder, _pkcs1_der) = super::builder::self_signed_builder(
+            key,
+            country,
+            state,
+            locality,
+            organization,
+            common_name,
+        )?;
 
         #[cfg(symcrypt)]
-        let cert = builder.build(&symcrypt_signer::SymCryptRsaSigner { key, pkcs1_der })?;
+        let cert = builder.build(&super::builder::rsa_keypair_signer::RsaKeyPairSigner {
+            key,
+            pkcs1_der: _pkcs1_der,
+        })?;
         #[cfg(rust)]
         let cert = builder.build(&rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(
             key.0.0.clone(),
         ))?;
         Ok(Self(cert))
     }
-}
 
-/// Adapters that implement the `signature` and `spki` traits required by
-/// `x509_cert::builder::CertificateBuilder::build` on top of SymCrypt's
-/// PKCS#1 v1.5 signing primitive.
-#[cfg(all(symcrypt, any(test, feature = "test_helpers")))]
-mod symcrypt_signer {
-    use der::Encode;
-
-    pub struct SymCryptRsaSigner<'a> {
-        pub key: &'a crate::rsa::RsaKeyPair,
-        pub pkcs1_der: Vec<u8>,
-    }
-
-    #[derive(Clone)]
-    pub struct SymCryptRsaVerifyingKey(Vec<u8>);
-
-    pub struct SymCryptRsaSignature(Vec<u8>);
-
-    impl signature::Keypair for SymCryptRsaSigner<'_> {
-        type VerifyingKey = SymCryptRsaVerifyingKey;
-
-        fn verifying_key(&self) -> Self::VerifyingKey {
-            SymCryptRsaVerifyingKey(self.pkcs1_der.clone())
-        }
-    }
-
-    impl x509_cert::spki::DynSignatureAlgorithmIdentifier for SymCryptRsaSigner<'_> {
-        fn signature_algorithm_identifier(
-            &self,
-        ) -> x509_cert::spki::Result<x509_cert::spki::AlgorithmIdentifierOwned> {
-            Ok(x509_cert::spki::AlgorithmIdentifierOwned {
-                oid: der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION,
-                parameters: Some(der::Any::null()),
-            })
-        }
-    }
-
-    impl signature::Signer<SymCryptRsaSignature> for SymCryptRsaSigner<'_> {
-        fn try_sign(&self, msg: &[u8]) -> Result<SymCryptRsaSignature, signature::Error> {
-            self.key
-                .pkcs1_sign(msg, crate::HashAlgorithm::Sha256)
-                .map(SymCryptRsaSignature)
-                .map_err(signature::Error::from_source)
-        }
-    }
-
-    impl x509_cert::spki::EncodePublicKey for SymCryptRsaVerifyingKey {
-        fn to_public_key_der(&self) -> x509_cert::spki::Result<der::Document> {
-            // Wrap the PKCS#1 RSAPublicKey DER in a SubjectPublicKeyInfo and
-            // encode the result as a DER document.
-            let spki = x509_cert::spki::SubjectPublicKeyInfoOwned {
-                algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
-                    oid: pkcs1::ALGORITHM_OID,
-                    parameters: Some(der::Any::null()),
-                },
-                subject_public_key: der::asn1::BitString::from_bytes(&self.0)?,
-            };
-            Ok(der::Document::try_from(spki.to_der()?)?)
-        }
-    }
-
-    impl x509_cert::spki::SignatureBitStringEncoding for SymCryptRsaSignature {
-        fn to_bitstring(&self) -> der::Result<der::asn1::BitString> {
-            der::asn1::BitString::from_bytes(&self.0)
-        }
+    pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
+        Ok(self
+            .0
+            .tbs_certificate()
+            .subject()
+            .common_name()
+            .map_err(|e| der_err(e, "getting common_name"))?
+            .map(|s| s.value().into_owned()))
     }
 }

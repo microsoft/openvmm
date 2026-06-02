@@ -9,6 +9,7 @@ use consomme::ConsommeParams;
 use net_backend::resolve::ResolveEndpointParams;
 use net_backend::resolve::ResolvedEndpoint;
 use net_backend_resources::consomme::ConsommeHandle;
+use net_backend_resources::consomme::HostPort;
 use net_backend_resources::consomme::HostPortProtocol;
 use thiserror::Error;
 use vm_resource::ResolveResource;
@@ -61,7 +62,11 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
                     HostPortProtocol::Udp => IpProtocol::Udp,
                 };
                 let ip_addr = p.host_address.map(std::net::IpAddr::from);
-                let socket = create_bound_socket(&protocol, ip_addr, p.host_port).map_err(|e| {
+                let (bind_port, dynamic_sender) = match p.host_port {
+                    HostPort::Fixed(port) => (port, None),
+                    HostPort::Dynamic(sender) => (0, Some(sender)),
+                };
+                let socket = create_bound_socket(&protocol, ip_addr, bind_port).map_err(|e| {
                     ResolveConsommeError::SocketCreation {
                         source: e,
                         details: format!(
@@ -70,7 +75,7 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
                             ip_addr
                                 .map(|a| a.to_string())
                                 .unwrap_or_else(|| "*".to_string()),
-                            p.host_port,
+                            bind_port,
                         ),
                     }
                 })?;
@@ -81,6 +86,9 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
                     guest_port = %p.guest_port,
                     "port forward socket created"
                 );
+                if let Some(sender) = dynamic_sender {
+                    sender.send(host_addr.expect("just bound an IP socket").port());
+                }
                 Ok(PortForwardConfig {
                     protocol,
                     socket,

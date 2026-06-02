@@ -73,27 +73,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "aes"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66bd29a732b644c0431c6140f370d097879203d79b80c94a6747ba0872adaef8"
-dependencies = [
- "cipher",
- "cpubits",
- "cpufeatures",
-]
-
-[[package]]
-name = "aes-kw"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40e4645e6ea320665abf87e13821f9a37ab204b34bcb18e34e7d1dcf2366516e"
-dependencies = [
- "aes",
- "const-oid",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -707,6 +686,7 @@ dependencies = [
  "arbitrary",
  "inspect",
  "local_clock",
+ "memory_range",
  "mesh",
  "vm_resource",
 ]
@@ -753,16 +733,6 @@ checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
 dependencies = [
  "ciborium-io",
  "half",
-]
-
-[[package]]
-name = "cipher"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e34d8227fe1ba289043aeb13792056ff80fd6de1a9f49137a5f499de8e8c78ea"
-dependencies = [
- "crypto-common",
- "inout",
 ]
 
 [[package]]
@@ -1086,7 +1056,6 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 name = "crypto"
 version = "0.0.0"
 dependencies = [
- "aes-kw",
  "anyhow",
  "cms",
  "der",
@@ -3780,15 +3749,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "inout"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4250ce6452e92010fdf7268ccc5d14faa80bb12fc741938534c58f16804e03c7"
-dependencies = [
- "hybrid-array",
-]
-
-[[package]]
 name = "input_core"
 version = "0.0.0"
 dependencies = [
@@ -5244,6 +5204,7 @@ dependencies = [
  "mesh",
  "open_enum",
  "serde",
+ "serde_helpers",
  "serde_json",
  "x86defs",
  "zerocopy",
@@ -5312,9 +5273,9 @@ dependencies = [
 
 [[package]]
 name = "openssl"
-version = "0.10.79"
+version = "0.10.80"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf0b434746ee2832f4f0baf10137e1cabb18cbe6912c69e2e33263c45250f542"
+checksum = "a45fa2aa886c42762255da344f0a0d313e254066c46aad76f300c3d3da62d967"
 dependencies = [
  "bitflags 2.9.3",
  "cfg-if",
@@ -5352,9 +5313,9 @@ dependencies = [
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.115"
+version = "0.9.116"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "158fe5b292746440aa6e7a7e690e55aeb72d41505e2804c23c6973ad0e9c9781"
+checksum = "f28a22dc7140cda5f096e5e7724a6962ca81a7f8bfd2979f9b18c11af56318c4"
 dependencies = [
  "cc",
  "libc",
@@ -5403,6 +5364,7 @@ dependencies = [
 name = "openvmm"
 version = "0.0.0"
 dependencies = [
+ "crypto",
  "embed-resource",
  "openvmm_entry",
  "openvmm_hypervisors",
@@ -5476,6 +5438,7 @@ dependencies = [
  "state_unit",
  "storvsp",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "uefi_specs",
  "vfio_assigned_device",
@@ -5542,7 +5505,6 @@ dependencies = [
  "clap",
  "clap_dyn_complete",
  "console_relay",
- "crypto",
  "cxl_spec",
  "debug_worker_defs",
  "diag_client",
@@ -5588,7 +5550,9 @@ dependencies = [
  "serial_16550_resources",
  "serial_core",
  "serial_socket",
+ "sha2",
  "shell-words",
+ "socket2",
  "sparse_mmap",
  "storvsp_resources",
  "tempfile",
@@ -5629,6 +5593,8 @@ dependencies = [
 name = "openvmm_hcl"
 version = "0.0.0"
 dependencies = [
+ "crypto",
+ "openssl_crypto_only",
  "openvmm_hcl_resources",
  "tracing",
  "underhill_entry",
@@ -6094,6 +6060,7 @@ dependencies = [
  "parking_lot",
  "pci_bus",
  "pci_core",
+ "thiserror 2.0.16",
  "tracelimit",
  "tracing",
  "vmcore",
@@ -7718,7 +7685,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 [[package]]
 name = "symcrypt"
 version = "0.6.0"
-source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#b76fde36469a0571a7253b8875597c1973f0bddc"
+source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#2d83888206139cb8cc522ea3617a1870674ac8a0"
 dependencies = [
  "libc",
  "symcrypt-sys",
@@ -7727,7 +7694,7 @@ dependencies = [
 [[package]]
 name = "symcrypt-sys"
 version = "0.4.0"
-source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#b76fde36469a0571a7253b8875597c1973f0bddc"
+source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#2d83888206139cb8cc522ea3617a1870674ac8a0"
 dependencies = [
  "libc",
 ]
@@ -8471,6 +8438,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "framebuffer",
  "futures",
  "guestmem",
  "guid",
@@ -8478,6 +8446,7 @@ dependencies = [
  "inspect",
  "mesh",
  "pal_async",
+ "sparse_mmap",
  "static_assertions",
  "task_control",
  "test_with_tracing",
@@ -8500,6 +8469,7 @@ name = "uidevices_resources"
 version = "0.0.0"
 dependencies = [
  "mesh",
+ "video_core",
  "vm_resource",
 ]
 
@@ -8519,6 +8489,7 @@ dependencies = [
  "guest_emulation_device",
  "guest_emulation_transport",
  "guid",
+ "hex",
  "mesh",
  "openhcl_attestation_protocol",
  "pal_async",
@@ -8573,7 +8544,6 @@ dependencies = [
  "chipset_legacy",
  "chipset_resources",
  "closeable_mutex",
- "crypto",
  "cvm_tracing",
  "debug_ptr",
  "debug_worker_defs",
@@ -8752,7 +8722,6 @@ dependencies = [
  "dhat",
  "fast_memcpy",
  "mimalloc",
- "openssl_crypto_only",
  "underhill_core",
  "underhill_crash",
  "underhill_dump",
@@ -10417,11 +10386,17 @@ dependencies = [
 name = "vnc"
 version = "0.0.0"
 dependencies = [
+ "async-channel",
+ "bitvec",
  "flate2",
  "futures",
  "pal_async",
+ "parking_lot",
  "socket2",
  "thiserror 2.0.16",
+ "tracelimit",
+ "tracing",
+ "video_core",
  "zerocopy",
 ]
 
@@ -10430,6 +10405,7 @@ name = "vnc_worker"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "framebuffer",
  "futures",
  "input_core",
@@ -10437,9 +10413,13 @@ dependencies = [
  "mesh",
  "mesh_worker",
  "pal_async",
+ "parking_lot",
  "socket2",
+ "sparse_mmap",
  "tracing",
  "tracing_helpers",
+ "unicycle",
+ "video_core",
  "vmsocket",
  "vnc",
  "vnc_worker_defs",
@@ -10453,6 +10433,7 @@ dependencies = [
  "input_core",
  "mesh",
  "mesh_worker",
+ "video_core",
  "vmsocket",
 ]
 

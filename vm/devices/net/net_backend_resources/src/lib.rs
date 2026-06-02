@@ -67,15 +67,25 @@ pub mod consomme {
         }
     }
 
+    /// The host port to listen on for a port forward.
+    #[derive(Debug, MeshPayload)]
+    pub enum HostPort {
+        /// A fixed host port.
+        Fixed(u16),
+        /// Let the OS assign a port. The assigned port is sent back via the
+        /// oneshot sender.
+        Dynamic(mesh::OneshotSender<u16>),
+    }
+
     /// Configuration for forwarding a host port into the guest.
-    #[derive(Clone, Debug, MeshPayload)]
+    #[derive(Debug, MeshPayload)]
     pub struct HostPortConfig {
         /// The protocol to forward.
         pub protocol: HostPortProtocol,
         /// The host IP address to bind to, or `None` to bind to all interfaces.
         pub host_address: Option<HostIpAddress>,
         /// The host port to listen on.
-        pub host_port: u16,
+        pub host_port: HostPort,
         /// The guest port to forward to.
         pub guest_port: u16,
     }

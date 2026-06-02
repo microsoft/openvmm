@@ -244,7 +244,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_hyperv_framebuffer,
             deps_hyperv_ide,
             deps_hyperv_vga,
-            deps_i440bx_host_pci_bridge,
             deps_piix4_cmos_rtc,
             deps_piix4_pci_bus,
             deps_underhill_vga_proxy,
@@ -279,22 +278,6 @@ impl<'a> BaseChipsetBuilder<'a> {
                 )
             })?;
             builder.register_weak_mutex_pci_bus(bus_id, Box::new(pci));
-        }
-
-        if let Some(options::dev::I440BxHostPciBridgeDeps {
-            attached_to,
-            adjust_gpa_range,
-        }) = deps_i440bx_host_pci_bridge
-        {
-            builder
-                .arc_mutex_device("440bx-host-pci-bridge")
-                .on_pci_bus(attached_to)
-                .add(|_| {
-                    chipset_legacy::i440bx_host_pci_bridge::HostPciBridge::new(
-                        adjust_gpa_range,
-                        foundation.is_restoring,
-                    )
-                })?;
         }
 
         let dma = if let Some(dma_handle) = isa_dma_handle {
@@ -795,12 +778,16 @@ mod weak_mutex_pci {
     impl RegisterWeakMutexPcie for Arc<CloseableMutex<pcie::root::GenericPcieRootComplex>> {
         fn add_pcie_device(
             &mut self,
-            port: u8,
+            port_devfn: u8,
             name: Arc<str>,
             dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
         ) -> Result<(), PcieConflict> {
             self.lock()
-                .add_pcie_device(port, name.clone(), Box::new(WeakMutexPciDeviceWrapper(dev)))
+                .add_pcie_device(
+                    port_devfn,
+                    name.clone(),
+                    Box::new(WeakMutexPciDeviceWrapper(dev)),
+                )
                 .map_err(|existing_dev_name| PcieConflict {
                     reason: PcieConflictReason::ExistingDev(existing_dev_name),
                     conflict_dev: name,
@@ -810,18 +797,36 @@ mod weak_mutex_pci {
         fn downstream_ports(&self) -> Vec<pcie::root::DownstreamPortInfo> {
             self.lock().downstream_ports()
         }
+
+        fn add_rciep(
+            &mut self,
+            devfn: u8,
+            name: Arc<str>,
+            dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+        ) -> Result<(), PcieConflict> {
+            self.lock()
+                .add_rciep(
+                    devfn,
+                    name.clone(),
+                    Box::new(WeakMutexPciDeviceWrapper(dev)),
+                )
+                .map_err(|existing_dev_name| PcieConflict {
+                    reason: PcieConflictReason::ExistingDev(existing_dev_name),
+                    conflict_dev: name,
+                })
+        }
     }
 
     // wiring to enable using the PCIe switch alongside the Arc+CloseableMutex device infra
     impl RegisterWeakMutexPcie for Arc<CloseableMutex<pcie::switch::GenericPcieSwitch>> {
         fn add_pcie_device(
             &mut self,
-            port: u8,
+            port_devfn: u8,
             name: Arc<str>,
             dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
         ) -> Result<(), PcieConflict> {
             self.lock()
-                .add_pcie_device(port, &name, Box::new(WeakMutexPciDeviceWrapper(dev)))
+                .add_pcie_device(port_devfn, &name, Box::new(WeakMutexPciDeviceWrapper(dev)))
                 .map_err(|err| PcieConflict {
                     reason: PcieConflictReason::ExistingDev(err.to_string().into()),
                     conflict_dev: name,
@@ -1015,8 +1020,6 @@ pub mod options {
             hyperv_ide:                  dev::HyperVIdeDeps,
             hyperv_vga:                  dev::HyperVVgaDeps,
 
-            i440bx_host_pci_bridge:      dev::I440BxHostPciBridgeDeps,
-
             piix4_cmos_rtc:              dev::Piix4CmosRtcDeps,
             piix4_pci_bus:               dev::Piix4PciBusDeps,
 
@@ -1042,6 +1045,8 @@ pub mod options {
         pub with_psp: bool,
         /// Whether the VM exposes the Hyper-V guest watchdog device.
         pub with_guest_watchdog: bool,
+        /// Whether the VM exposes an i440BX Host-PCI Bridge (Gen1 legacy PCI bus).
+        pub with_i440bx_host_pci_bridge: bool,
     }
 
     /// Device specific dependencies
@@ -1148,14 +1153,6 @@ pub mod options {
         pub struct Piix4PciBusDeps {
             /// `vmotherboard` bus identifier
             pub bus_id: BusIdPci,
-        }
-
-        /// i440BX Host-PCI bridge (fixed pci address: 0:0.0)
-        pub struct I440BxHostPciBridgeDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
-            /// Interface to create GPA alias ranges.
-            pub adjust_gpa_range: Box<dyn chipset_legacy::i440bx_host_pci_bridge::AdjustGpaRange>,
         }
 
         feature_gated! {

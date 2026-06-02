@@ -197,7 +197,7 @@ impl SimpleFlowNode for Node {
                     if windows_via_wsl2 {
                         Ok(flowey_lib_common::_util::wslpath::linux_to_win(rt, path))
                     } else {
-                        path.absolute()
+                        std::path::absolute(path)
                             .with_context(|| format!("invalid path {}", path.display()))
                     }
                 };

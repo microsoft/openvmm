@@ -608,4 +608,12 @@ impl AccessVpState for KvmVpStateAccess<'_> {
         ])?;
         Ok(())
     }
+
+    fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
+        Err(KvmError::NotSupported)
+    }
+
+    fn set_nested_state(&mut self, _value: &vp::NestedState) -> Result<(), Self::Error> {
+        Err(KvmError::NotSupported)
+    }
 }

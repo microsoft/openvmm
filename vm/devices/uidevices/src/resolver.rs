@@ -58,7 +58,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, SynthVideoHandle> for VmbusUiRe
             .map_err(VideoError::Framebuffer)?;
         let device = SimpleDeviceWrapper::new(
             input.driver_source.simple(),
-            Video::new(framebuffer.0).map_err(VideoError::Video)?,
+            Video::new(framebuffer.0, resource.dirt_send).map_err(VideoError::Video)?,
         );
         Ok(device.into())
     }

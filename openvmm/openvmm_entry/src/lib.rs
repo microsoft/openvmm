@@ -27,7 +27,6 @@ use crate::cli_args::SecureBootTemplateCli;
 use anyhow::Context;
 use anyhow::bail;
 use chipset_resources::battery::HostBatteryUpdate;
-use clap::Parser;
 use cli_args::DiskCliKind;
 use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
@@ -198,6 +197,8 @@ struct VmResources {
     nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
     ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
     vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
+    /// Receives dirty rectangles from the synthetic video device for the VNC worker.
+    dirty_rect_recv: Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
     #[cfg(windows)]
     switch_ports: Vec<vmswitch::kernel::SwitchPort>,
 }
@@ -451,6 +452,38 @@ async fn vm_config_from_command_line(
     let with_get = opt.get || (opt.vtl2 && !opt.no_get);
 
     let mut storage = storage_builder::StorageBuilder::new(with_get.then_some(openhcl_vtl));
+
+    // Register named controllers first, so that --disk on=<name>
+    // references can be resolved.
+    for ctrl in &opt.nvme_pci {
+        let transport = match &ctrl.transport {
+            cli_args::NvmeControllerTransport::Pcie(port) => {
+                storage_builder::NvmeControllerTransport::Pcie(port.clone())
+            }
+            cli_args::NvmeControllerTransport::Vpci(guid) => {
+                let guid = guid.unwrap_or_else(|| storage_builder::deterministic_guid(&ctrl.id));
+                storage_builder::NvmeControllerTransport::Vpci(guid)
+            }
+        };
+        storage.add_nvme_controller(ctrl.id.clone(), ctrl.vtl, transport, None)?;
+    }
+
+    for ctrl in &opt.vmbus_scsi {
+        let instance_id = storage_builder::deterministic_guid(&ctrl.id);
+        storage.add_scsi_controller(ctrl.id.clone(), ctrl.vtl, instance_id, ctrl.sub_channels)?;
+    }
+
+    for ctrl in &opt.openhcl_controller {
+        let controller_type = match ctrl.controller_type {
+            cli_args::OpenhclControllerType::Scsi => storage_builder::OpenhclControllerType::Scsi,
+            cli_args::OpenhclControllerType::Nvme => storage_builder::OpenhclControllerType::Nvme,
+        };
+        let instance_id = ctrl
+            .guid
+            .unwrap_or_else(|| storage_builder::deterministic_guid(&ctrl.id));
+        storage.add_openhcl_controller(ctrl.id.clone(), controller_type, instance_id)?;
+    }
+
     for &cli_args::DiskCli {
         vtl,
         ref kind,
@@ -458,17 +491,47 @@ async fn vm_config_from_command_line(
         is_dvd,
         underhill,
         ref pcie_port,
+        ref controller,
+        nsid,
+        lun,
+        ref relay,
     } in &opt.disk
     {
-        if pcie_port.is_some() {
-            anyhow::bail!("`--disk` is incompatible with PCIe");
+        if controller.is_none() && underhill.is_none() && relay.is_none() {
+            tracing::warn!(
+                "--disk without `on` is deprecated; \
+                 use --vmbus-scsi and --disk on=<name> instead"
+            );
         }
+
+        let relay_target = relay
+            .as_ref()
+            .map(|(name, loc)| storage_builder::RelayTarget {
+                controller: name.clone(),
+                location: *loc,
+            });
+
+        let target = if let Some(name) = controller {
+            if pcie_port.is_some() {
+                anyhow::bail!("`on` is incompatible with `pcie_port` on `--disk`");
+            }
+            storage_builder::DiskLocation::Named {
+                controller: name.clone(),
+                nsid,
+                lun,
+            }
+        } else if pcie_port.is_some() {
+            anyhow::bail!("`--disk` is incompatible with `pcie_port` without `controller`");
+        } else {
+            storage_builder::DiskLocation::Scsi(None)
+        };
 
         storage
             .add(
                 vtl,
                 underhill,
-                storage_builder::DiskLocation::Scsi(None),
+                relay_target,
+                target,
                 kind,
                 is_dvd,
                 read_only,
@@ -488,12 +551,35 @@ async fn vm_config_from_command_line(
             .add(
                 DeviceVtl::Vtl0,
                 None,
+                None,
                 storage_builder::DiskLocation::Ide(channel, device),
                 kind,
                 is_dvd,
                 read_only,
             )
             .await?;
+    }
+
+    if !opt.nvme.is_empty() {
+        tracing::warn!("--nvme is deprecated; use --nvme-pci and --disk on=<name> instead");
+
+        // Pre-register implicit PCIe controllers for unique port names.
+        let mut registered_ports = std::collections::BTreeSet::new();
+        for disk in &opt.nvme {
+            if let Some(port) = &disk.pcie_port {
+                if registered_ports.insert(port.clone()) {
+                    storage.add_nvme_controller(
+                        port.clone(),
+                        DeviceVtl::Vtl0,
+                        storage_builder::NvmeControllerTransport::Pcie(port.clone()),
+                        None,
+                    ).with_context(|| format!(
+                        "legacy --nvme flag conflicts with an explicit controller named '{port}'; \
+                         use --nvme-pci and --disk on=<name> instead"
+                    ))?;
+                }
+            }
+        }
     }
 
     for &cli_args::DiskCli {
@@ -503,17 +589,23 @@ async fn vm_config_from_command_line(
         is_dvd,
         underhill,
         ref pcie_port,
+        controller: _,
+        nsid: _,
+        lun: _,
+        relay: _,
     } in &opt.nvme
     {
+        let target = if let Some(port) = pcie_port {
+            storage_builder::DiskLocation::Named {
+                controller: port.clone(),
+                nsid: None,
+                lun: None,
+            }
+        } else {
+            storage_builder::DiskLocation::Nvme(None)
+        };
         storage
-            .add(
-                vtl,
-                underhill,
-                storage_builder::DiskLocation::Nvme(None, pcie_port.clone()),
-                kind,
-                is_dvd,
-                read_only,
-            )
+            .add(vtl, underhill, None, target, kind, is_dvd, read_only)
             .await?;
     }
 
@@ -524,6 +616,10 @@ async fn vm_config_from_command_line(
         is_dvd,
         ref underhill,
         ref pcie_port,
+        controller: _,
+        nsid: _,
+        lun: _,
+        relay: _,
     } in &opt.virtio_blk
     {
         if underhill.is_some() {
@@ -532,6 +628,7 @@ async fn vm_config_from_command_line(
         storage
             .add(
                 vtl,
+                None,
                 None,
                 storage_builder::DiskLocation::VirtioBlk(pcie_port.clone()),
                 kind,
@@ -911,7 +1008,7 @@ async fn vm_config_from_command_line(
         None
     };
 
-    let framebuffer = if opt.gfx || opt.vtl2_gfx || opt.vnc || opt.pcat {
+    let framebuffer = if opt.gfx || opt.vtl2_gfx || opt.vnc.vnc || opt.pcat {
         let vram = alloc_shared_memory(FRAMEBUFFER_SIZE, "vram")?;
         let (fb, fba) =
             framebuffer::framebuffer(vram, FRAMEBUFFER_SIZE, 0).context("creating framebuffer")?;
@@ -959,6 +1056,9 @@ async fn vm_config_from_command_line(
         let (tx, rx) = mesh::channel();
         tx.send(HostBatteryUpdate::default_present());
         chipset = chipset.with_battery(rx);
+    }
+    if opt.no_vmbus {
+        chipset = chipset.without_vmbus();
     }
     if let Some(cfg) = &opt.debugcon {
         chipset = chipset.with_debugcon(
@@ -1117,6 +1217,7 @@ async fn vm_config_from_command_line(
             }),
             default_boot_always_attempt: opt.default_boot_always_attempt,
             bios_guid,
+            enable_vmbus: !opt.no_vmbus,
         };
     } else {
         // Linux Direct
@@ -1197,11 +1298,12 @@ async fn vm_config_from_command_line(
     });
 
     if with_get && with_hv {
+        let has_vtl0_nvme = storage.has_vtl0_nvme();
         let vtl2_settings = vtl2_settings_proto::Vtl2Settings {
             version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
             fixed: Some(Default::default()),
             dynamic: Some(vtl2_settings_proto::Vtl2SettingsDynamic {
-                storage_controllers: storage.build_underhill(opt.vmbus_redirect),
+                storage_controllers: storage.build_openhcl_settings(opt.vmbus_redirect),
                 nic_devices: underhill_nics,
             }),
             namespace_settings: Vec::default(),
@@ -1247,7 +1349,7 @@ async fn vm_config_from_command_line(
                         use get_resources::ged::UefiConsoleMode;
 
                         get_resources::ged::GuestFirmwareConfig::Uefi {
-                            enable_vpci_boot: storage.has_vtl0_nvme(),
+                            enable_vpci_boot: has_vtl0_nvme,
                             firmware_debug: opt.uefi_debug,
                             disable_frontpage: opt.disable_frontpage,
                             console_mode: match opt.uefi_console_mode.unwrap_or(UefiConsoleModeCli::Default) {
@@ -1351,11 +1453,16 @@ async fn vm_config_from_command_line(
     };
 
     if opt.gfx {
+        // Channel for the video device to report dirty rectangles to the VNC worker.
+        let (dirt_send, dirt_recv) = mesh::channel();
+        resources.dirty_rect_recv = Some(dirt_recv);
+
         vmbus_devices.extend([
             (
                 DeviceVtl::Vtl0,
                 SynthVideoHandle {
                     framebuffer: SharedFramebufferHandle.into_resource(),
+                    dirt_send: Some(dirt_send),
                 }
                 .into_resource(),
             ),
@@ -1452,7 +1559,7 @@ async fn vm_config_from_command_line(
         None
     };
 
-    if with_hv {
+    if with_hv && !opt.no_vmbus {
         let (shutdown_send, shutdown_recv) = mesh::channel();
         resources.shutdown_ic = Some(shutdown_send);
         let (kvp_send, kvp_recv) = mesh::channel();
@@ -1753,7 +1860,7 @@ async fn vm_config_from_command_line(
         vga_firmware,
         vtl2_gfx: opt.vtl2_gfx,
         virtio_devices,
-        vmbus: with_hv.then_some(VmbusConfig {
+        vmbus: (with_hv && !opt.no_vmbus).then_some(VmbusConfig {
             vsock_listener: vtl0_vsock_listener,
             vsock_path: opt.vmbus_vsock_path.clone(),
             vtl2_redirect: opt.vmbus_redirect,
@@ -1861,7 +1968,7 @@ fn parse_endpoint(
                         host_address: fwd
                             .host_address
                             .map(net_backend_resources::consomme::HostIpAddress::from),
-                        host_port: fwd.host_port,
+                        host_port: net_backend_resources::consomme::HostPort::Fixed(fwd.host_port),
                         guest_port: fwd.guest_port,
                     }
                 })
@@ -2223,7 +2330,7 @@ fn do_main(pidfile_path: &mut Option<PathBuf>) -> anyhow::Result<()> {
     // not return). Any worker host setup errors are return and bubbled up.
     meshworker::run_vmm_mesh_host()?;
 
-    let opt = Options::parse();
+    let opt = cli_args::parse_options();
     if let Some(path) = &opt.write_saved_state_proto {
         mesh::payload::protofile::DescriptorWriter::new(vmcore::save_restore::saved_state_roots())
             .write_to_path(path)
@@ -2306,9 +2413,57 @@ async fn run_control_inner(
     let (mut vm_config, mut resources) = vm_config_from_command_line(driver, mesh, &opt).await?;
 
     let mut vnc_worker = None;
-    if opt.gfx || opt.vnc {
-        let listener = TcpListener::bind(format!("127.0.0.1:{}", opt.vnc_port))
-            .with_context(|| format!("binding to VNC port {}", opt.vnc_port))?;
+    if opt.gfx || opt.vnc.vnc {
+        // Parse the listen address. Try as a full SocketAddr (host:port) first;
+        // fall back to a bare IP, using the configured port.
+        let addr: std::net::SocketAddr = if let Ok(sa) =
+            opt.vnc.vnc_listen.parse::<std::net::SocketAddr>()
+        {
+            sa
+        } else {
+            let ip: std::net::IpAddr = opt.vnc.vnc_listen.parse().with_context(|| {
+                format!(
+                    "invalid VNC listen address: {} (expected IP address or socket address like [::1]:5900)",
+                    opt.vnc.vnc_listen
+                )
+            })?;
+            std::net::SocketAddr::new(ip, opt.vnc.vnc_port)
+        };
+
+        let socket = socket2::Socket::new(
+            if addr.is_ipv6() {
+                socket2::Domain::IPV6
+            } else {
+                socket2::Domain::IPV4
+            },
+            socket2::Type::STREAM,
+            None,
+        )
+        .with_context(|| format!("creating VNC socket for {}", addr))?;
+
+        if addr.is_ipv6() {
+            if let Err(e) = socket.set_only_v6(false) {
+                tracing::warn!(
+                    error = %e,
+                    "failed to enable dual-stack on IPv6 VNC socket, IPv4 clients may not be able to connect"
+                );
+            }
+        }
+        socket.set_reuse_address(true)?;
+        socket
+            .bind(&addr.into())
+            .with_context(|| format!("binding VNC socket to {}", addr))?;
+        socket
+            .listen(128)
+            .with_context(|| format!("listening on VNC socket {}", addr))?;
+        let listener: TcpListener = socket.into();
+
+        if !addr.ip().is_loopback() {
+            tracing::warn!(
+                address = %addr,
+                "VNC server listening on non-localhost address without authentication"
+            );
+        }
 
         let input_send = vm_config.input.sender();
         let framebuffer = resources
@@ -2329,6 +2484,9 @@ async fn run_control_inner(
                         listener,
                         framebuffer,
                         input_send,
+                        dirty_recv: resources.dirty_rect_recv.take(),
+                        max_clients: opt.vnc.vnc_max_clients,
+                        evict_oldest: opt.vnc.vnc_evict_oldest,
                     },
                 )
                 .await?,
