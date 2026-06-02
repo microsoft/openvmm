@@ -14,6 +14,7 @@ mod vp;
 mod vsm;
 
 use crate::host_params::shim_params::IsolationType;
+#[cfg(feature = "cvm_boot_log")]
 use crate::host_params::shim_params::ShimParams;
 pub use address_space::TdxHypercallPage;
 pub use memory::setup_vtl2_memory;
@@ -44,16 +45,18 @@ pub fn physical_address_bits(isolation: IsolationType) -> u8 {
 /// Perform any architecture and isolation-specific initialization required
 /// before the boot shim can use serial logging. For SNP, this sets up the
 /// GHCB page so that IOIO exits can be used for port I/O.
-pub fn initialize(p: &ShimParams) {
+#[cfg(feature = "cvm_boot_log")]
+pub fn initialize_serial_io(p: &ShimParams) {
     if p.isolation_type == IsolationType::Snp {
         snp::Ghcb::initialize();
     }
 }
 
 /// Tear down architecture and isolation-specific state set up by
-/// [`initialize`]. For SNP, this restores the GHCB page to its original
-/// private/accepted state.
-pub fn uninitialize(p: &ShimParams) {
+/// [`initialize_serial_io`]. For SNP, this restores the GHCB page to its
+/// original private/accepted state.
+#[cfg(feature = "cvm_boot_log")]
+pub fn uninitialize_serial_io(p: &ShimParams) {
     if p.isolation_type == IsolationType::Snp {
         snp::Ghcb::uninitialize();
     }

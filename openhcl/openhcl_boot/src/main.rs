@@ -556,7 +556,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         enable_enlightened_panic();
     }
 
-    arch::initialize(&p);
+    #[cfg(feature = "cvm_boot_log")]
+    arch::initialize_serial_io(&p);
 
     // Enable the in-memory log.
     boot_logger_memory_init(p.log_buffer);
@@ -778,7 +779,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     log::info!("uninitializing hypercalls, about to jump to kernel");
     hvcall().uninitialize();
     log::info!("uninitializing arch, about to jump to the kernel");
-    arch::uninitialize(&p);
+    #[cfg(feature = "cvm_boot_log")]
+    arch::uninitialize_serial_io(&p);
 
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "x86_64")] {

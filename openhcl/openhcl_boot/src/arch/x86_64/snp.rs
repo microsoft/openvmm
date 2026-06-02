@@ -4,24 +4,7 @@
 //! SNP support for the bootshim.
 
 use super::address_space::LocalMap;
-use super::address_space::PAGE_TABLE_ENTRY_COUNT;
-use super::address_space::X64_PAGE_SHIFT;
-use super::address_space::X64_PTE_ACCESSED;
-use super::address_space::X64_PTE_PRESENT;
-use super::address_space::X64_PTE_READ_WRITE;
-use crate::arch::x86_64::address_space::X64_PTE_CONFIDENTIAL;
-use crate::single_threaded::SingleThreaded;
-use bitfield_struct::bitfield;
 use core::arch::asm;
-use core::cell::Cell;
-use core::cell::UnsafeCell;
-use core::sync::atomic::Ordering;
-use core::sync::atomic::compiler_fence;
-use core::sync::atomic::fence;
-use hvdef::HvRegisterValue;
-use hvdef::HvX64RegisterName;
-use hvdef::hypercall::HvInputVtl;
-use hvdef::hypercall::HypercallOutput;
 use memory_range::MemoryRange;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
@@ -29,12 +12,22 @@ use x86defs::X64_PAGE_SIZE;
 use x86defs::X86X_AMD_MSR_GHCB;
 use x86defs::snp::GhcbInfo;
 use x86defs::snp::GhcbMsr;
-use x86defs::snp::GhcbProtocolVersion;
-use x86defs::snp::GhcbUsage;
-use x86defs::snp::SevExitCode;
-use x86defs::snp::SevIoAccessInfo;
-use zerocopy::IntoBytes;
 
+#[cfg(feature = "cvm_boot_log")]
+use {
+    super::address_space::PAGE_TABLE_ENTRY_COUNT, super::address_space::X64_PAGE_SHIFT,
+    super::address_space::X64_PTE_ACCESSED, super::address_space::X64_PTE_PRESENT,
+    super::address_space::X64_PTE_READ_WRITE,
+    crate::arch::x86_64::address_space::X64_PTE_CONFIDENTIAL,
+    crate::single_threaded::SingleThreaded, bitfield_struct::bitfield, core::cell::Cell,
+    core::cell::UnsafeCell, core::sync::atomic::Ordering, core::sync::atomic::compiler_fence,
+    core::sync::atomic::fence, hvdef::HvRegisterValue, hvdef::HvX64RegisterName,
+    hvdef::hypercall::HvInputVtl, hvdef::hypercall::HypercallOutput,
+    x86defs::snp::GhcbProtocolVersion, x86defs::snp::GhcbUsage, x86defs::snp::SevExitCode,
+    x86defs::snp::SevIoAccessInfo, zerocopy::IntoBytes,
+};
+
+#[cfg(feature = "cvm_boot_log")]
 static GHCB_PREVIOUS: SingleThreaded<Cell<u64>> = SingleThreaded(Cell::new(0));
 
 pub struct Ghcb;
@@ -67,133 +60,146 @@ struct GhcbCall {
 // The memory mapping bits likely don't belong to this module, but
 // no centralized facility seems to exist for them yet.
 
-/// 4-level virtual address. The number of bits used in the VA
-/// ought to be requested through CPUID. Here it is "hardcoded"
-/// to 48 bits, which is the most common case.
-#[bitfield(u64)]
-struct VirtAddr4Level {
-    /// Offset inside the page.
-    #[bits(12)]
-    offset: usize,
-    /// PT index.
-    #[bits(9)]
-    pt_index: usize,
-    /// PD index.
-    #[bits(9)]
-    pd_index: usize,
-    /// PDP index.
-    #[bits(9)]
-    pdp_index: usize,
-    /// PML4 index.
-    #[bits(9)]
-    pml4_index: usize,
-    /// Reserved bits.
-    #[bits(16)]
-    reserved: usize,
-}
+#[cfg(feature = "cvm_boot_log")]
+mod ghcb_page_mapping {
+    use super::*;
 
-impl VirtAddr4Level {
-    const fn canonicalize(&self) -> VirtAddr4Level {
-        // If PML4 is greater than 255, make it upper-half canonical
-        // by sign extending the PML4 index.
-        Self::from_bits((self.into_bits().wrapping_shl(16) as i64).wrapping_shr(16) as u64)
+    /// 4-level virtual address. The number of bits used in the VA
+    /// ought to be requested through CPUID. Here it is "hardcoded"
+    /// to 48 bits, which is the most common case.
+    #[bitfield(u64)]
+    pub struct VirtAddr4Level {
+        /// Offset inside the page.
+        #[bits(12)]
+        offset: usize,
+        /// PT index.
+        #[bits(9)]
+        pt_index: usize,
+        /// PD index.
+        #[bits(9)]
+        pd_index: usize,
+        /// PDP index.
+        #[bits(9)]
+        pdp_index: usize,
+        /// PML4 index.
+        #[bits(9)]
+        pml4_index: usize,
+        /// Reserved bits.
+        #[bits(16)]
+        reserved: usize,
     }
-}
 
-/// Page table.
-#[repr(C, align(4096))]
-struct PageTable {
-    entries: [u64; PAGE_TABLE_ENTRY_COUNT],
-}
-
-// Would be great to allocate these pages dynamically as otherwise they go
-// into the IGVM file and require measurement through the PSP.
-
-/// PDP table to map the GHCB
-static PDP_TABLE: SingleThreaded<UnsafeCell<PageTable>> =
-    SingleThreaded(UnsafeCell::new(PageTable {
-        entries: [0; PAGE_TABLE_ENTRY_COUNT],
-    }));
-
-/// PD table to map the GHCB
-static PD_TABLE: SingleThreaded<UnsafeCell<PageTable>> =
-    SingleThreaded(UnsafeCell::new(PageTable {
-        entries: [0; PAGE_TABLE_ENTRY_COUNT],
-    }));
-
-/// Page table to map the GHCB
-static PAGE_TABLE: SingleThreaded<UnsafeCell<PageTable>> =
-    SingleThreaded(UnsafeCell::new(PageTable {
-        entries: [0; PAGE_TABLE_ENTRY_COUNT],
-    }));
-
-const PML4_INDEX: usize = 0x1d0; // upper half mapping
-const PDP_INDEX: usize = 0;
-const PD_INDEX: usize = 0;
-const PT_INDEX: usize = 0;
-const GHCB_GVA: VirtAddr4Level = VirtAddr4Level::new()
-    .with_pt_index(PT_INDEX)
-    .with_pd_index(PD_INDEX)
-    .with_pdp_index(PDP_INDEX)
-    .with_pml4_index(PML4_INDEX)
-    .canonicalize();
-
-fn get_cr3() -> u64 {
-    let mut cr3: u64;
-
-    // SAFETY: No access to the memory.
-    unsafe {
-        asm!("mov {0}, cr3", out(reg) cr3, options(nostack));
-    }
-    cr3
-}
-
-fn cache_lines_flush_page(addr: u64) {
-    const FLUSH_SIZE: u64 = 64; // NOTE: hardcoded cache line size.
-    let start = addr & !(X64_PAGE_SIZE - 1);
-    let end = start + X64_PAGE_SIZE;
-
-    // Make sure there are no pending writes on the cache lines.
-    fence(Ordering::SeqCst);
-
-    for addr in (start..end).step_by(FLUSH_SIZE as usize) {
-        // SAFETY: No concurrency issues.
-        unsafe {
-            asm!("clflush [{0}]", in(reg) addr, options(nostack));
+    impl VirtAddr4Level {
+        pub const fn canonicalize(&self) -> VirtAddr4Level {
+            // If PML4 is greater than 255, make it upper-half canonical
+            // by sign extending the PML4 index.
+            Self::from_bits((self.into_bits().wrapping_shl(16) as i64).wrapping_shr(16) as u64)
         }
     }
-}
 
-fn flush_tlb() {
-    fence(Ordering::SeqCst);
-    // NOTE: no flush for the global pages.
-    // SAFETY: No concurrency issues.
-    unsafe {
-        asm!("mov cr3, {0}", in(reg) get_cr3(), options(nostack));
+    /// Page table.
+    #[repr(C, align(4096))]
+    pub struct PageTable {
+        pub entries: [u64; PAGE_TABLE_ENTRY_COUNT],
     }
-    compiler_fence(Ordering::SeqCst);
-}
 
-fn page_table(pfn: u64) -> &'static mut [u64] {
-    // SAFETY: The next page address must be set, identical mapping.
-    unsafe {
-        core::slice::from_raw_parts_mut((pfn << X64_PAGE_SHIFT) as *mut u64, PAGE_TABLE_ENTRY_COUNT)
-    }
-}
+    // Would be great to allocate these pages dynamically as otherwise they go
+    // into the IGVM file and require measurement through the PSP.
 
-fn pte_for_pfn(pfn: u64, confidential: bool) -> u64 {
-    let common = X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE | (pfn << X64_PAGE_SHIFT);
-    if confidential {
-        common | X64_PTE_CONFIDENTIAL
-    } else {
-        common
+    /// PDP table to map the GHCB
+    pub static PDP_TABLE: SingleThreaded<UnsafeCell<PageTable>> =
+        SingleThreaded(UnsafeCell::new(PageTable {
+            entries: [0; PAGE_TABLE_ENTRY_COUNT],
+        }));
+
+    /// PD table to map the GHCB
+    pub static PD_TABLE: SingleThreaded<UnsafeCell<PageTable>> =
+        SingleThreaded(UnsafeCell::new(PageTable {
+            entries: [0; PAGE_TABLE_ENTRY_COUNT],
+        }));
+
+    /// Page table to map the GHCB
+    pub static PAGE_TABLE: SingleThreaded<UnsafeCell<PageTable>> =
+        SingleThreaded(UnsafeCell::new(PageTable {
+            entries: [0; PAGE_TABLE_ENTRY_COUNT],
+        }));
+
+    pub const PML4_INDEX: usize = 0x1d0; // upper half mapping
+    pub const PDP_INDEX: usize = 0;
+    pub const PD_INDEX: usize = 0;
+    pub const PT_INDEX: usize = 0;
+    pub const GHCB_GVA: VirtAddr4Level = VirtAddr4Level::new()
+        .with_pt_index(PT_INDEX)
+        .with_pd_index(PD_INDEX)
+        .with_pdp_index(PDP_INDEX)
+        .with_pml4_index(PML4_INDEX)
+        .canonicalize();
+
+    pub fn get_cr3() -> u64 {
+        let mut cr3: u64;
+
+        // SAFETY: No access to the memory.
+        unsafe {
+            asm!("mov {0}, cr3", out(reg) cr3, options(nostack));
+        }
+        cr3
     }
-}
+
+    pub fn cache_lines_flush_page(addr: u64) {
+        const FLUSH_SIZE: u64 = 64; // NOTE: hardcoded cache line size.
+        let start = addr & !(X64_PAGE_SIZE - 1);
+        let end = start + X64_PAGE_SIZE;
+
+        // Make sure there are no pending writes on the cache lines.
+        fence(Ordering::SeqCst);
+
+        for addr in (start..end).step_by(FLUSH_SIZE as usize) {
+            // SAFETY: No concurrency issues.
+            unsafe {
+                asm!("clflush [{0}]", in(reg) addr, options(nostack));
+            }
+        }
+    }
+
+    pub fn flush_tlb() {
+        fence(Ordering::SeqCst);
+        // NOTE: no flush for the global pages.
+        // SAFETY: No concurrency issues.
+        unsafe {
+            asm!("mov cr3, {0}", in(reg) get_cr3(), options(nostack));
+        }
+        compiler_fence(Ordering::SeqCst);
+    }
+
+    pub fn page_table(pfn: u64) -> &'static mut [u64] {
+        // SAFETY: The next page address must be set, identical mapping.
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                (pfn << X64_PAGE_SHIFT) as *mut u64,
+                PAGE_TABLE_ENTRY_COUNT,
+            )
+        }
+    }
+
+    pub fn pte_for_pfn(pfn: u64, confidential: bool) -> u64 {
+        let common =
+            X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE | (pfn << X64_PAGE_SHIFT);
+        if confidential {
+            common | X64_PTE_CONFIDENTIAL
+        } else {
+            common
+        }
+    }
+} // mod ghcb_page_mapping
+
+#[cfg(feature = "cvm_boot_log")]
+use ghcb_page_mapping::*;
 
 /// GHCB page access. The GHCB page is statically allocated and
 /// initialized. The GHCB page might be accessed and modified
 /// concurrently by the (malicious) host, and the atomic accesses
 /// mitigate the possibility of torn reads/writes.
+#[cfg(feature = "cvm_boot_log")]
 mod ghcb_access {
     use super::GHCB_GVA;
     use crate::PageAlign;
@@ -434,6 +440,7 @@ mod ghcb_access {
     }
 }
 
+#[cfg(feature = "cvm_boot_log")]
 #[expect(dead_code)]
 enum IoAccessSize {
     Byte = 1,
@@ -441,6 +448,66 @@ enum IoAccessSize {
     Dword = 4,
 }
 
+impl Ghcb {
+    #[inline(always)]
+    fn vmg_exit() {
+        // SAFETY: Using the `vmgexit` instruction forces an exit to the hypervisor but doesn't
+        // directly change program state.
+        unsafe {
+            asm!("rep vmmcall", options(nostack));
+        }
+    }
+
+    /// Perform the GHCB call
+    fn ghcb_call(call_data: GhcbCall) -> GhcbMsr {
+        let GhcbCall {
+            info,
+            extra_data,
+            page_number,
+        } = call_data;
+        let ghcb_control = GhcbMsr::new()
+            .with_pfn(page_number)
+            .with_info(info.0)
+            .with_extra_data(extra_data);
+
+        GhcbMsr::from_bits(
+            // SAFETY: Writing and reding known good value to/from the GHCB MSR, following the GHCB protocol.
+            unsafe {
+                write_msr(X86X_AMD_MSR_GHCB, ghcb_control.into_bits());
+                Self::vmg_exit();
+                read_msr(X86X_AMD_MSR_GHCB)
+            },
+        )
+    }
+
+    pub fn change_page_visibility(range: MemoryRange, host_visible: bool) {
+        for page_number in range.start_4k_gpn()..range.end_4k_gpn() {
+            let extra_data = if host_visible {
+                x86defs::snp::GHCB_DATA_PAGE_STATE_SHARED
+            } else {
+                x86defs::snp::GHCB_DATA_PAGE_STATE_PRIVATE
+            };
+
+            let resp = Self::ghcb_call(GhcbCall {
+                info: GhcbInfo::PAGE_STATE_CHANGE,
+                extra_data,
+                page_number,
+            });
+
+            // High 32 bits are status and should be 0 (HV_STATUS_SUCCESS), Low 32 bits should be
+            // GHCB_INFO_PAGE_STATE_UPDATED. Assert if otherwise.
+
+            assert!(
+                resp.into_bits() == GhcbInfo::PAGE_STATE_UPDATED.0,
+                "GhcbInfo::PAGE_STATE_UPDATED returned msr value {resp:x?}"
+            );
+        }
+    }
+}
+
+/// GHCB page-based protocol methods for serial logging support.
+/// These are only needed in dev builds for CVM boot logging.
+#[cfg(feature = "cvm_boot_log")]
 impl Ghcb {
     pub fn initialize() {
         // Make sure page alignment.
@@ -597,61 +664,6 @@ impl Ghcb {
 
         // SAFETY: Always safe to write the GHCB MSR, no concurrency issues.
         unsafe { write_msr(X86X_AMD_MSR_GHCB, GHCB_PREVIOUS.get()) };
-    }
-
-    #[inline(always)]
-    fn vmg_exit() {
-        // SAFETY: Using the `vmgexit` instruction forces an exit to the hypervisor but doesn't
-        // directly change program state.
-        unsafe {
-            asm!("rep vmmcall", options(nostack));
-        }
-    }
-
-    /// Perform the GHCB call
-    fn ghcb_call(call_data: GhcbCall) -> GhcbMsr {
-        let GhcbCall {
-            info,
-            extra_data,
-            page_number,
-        } = call_data;
-        let ghcb_control = GhcbMsr::new()
-            .with_pfn(page_number)
-            .with_info(info.0)
-            .with_extra_data(extra_data);
-
-        GhcbMsr::from_bits(
-            // SAFETY: Writing and reding known good value to/from the GHCB MSR, following the GHCB protocol.
-            unsafe {
-                write_msr(X86X_AMD_MSR_GHCB, ghcb_control.into_bits());
-                Self::vmg_exit();
-                read_msr(X86X_AMD_MSR_GHCB)
-            },
-        )
-    }
-
-    pub fn change_page_visibility(range: MemoryRange, host_visible: bool) {
-        for page_number in range.start_4k_gpn()..range.end_4k_gpn() {
-            let extra_data = if host_visible {
-                x86defs::snp::GHCB_DATA_PAGE_STATE_SHARED
-            } else {
-                x86defs::snp::GHCB_DATA_PAGE_STATE_PRIVATE
-            };
-
-            let resp = Self::ghcb_call(GhcbCall {
-                info: GhcbInfo::PAGE_STATE_CHANGE,
-                extra_data,
-                page_number,
-            });
-
-            // High 32 bits are status and should be 0 (HV_STATUS_SUCCESS), Low 32 bits should be
-            // GHCB_INFO_PAGE_STATE_UPDATED. Assert if otherwise.
-
-            assert!(
-                resp.into_bits() == GhcbInfo::PAGE_STATE_UPDATED.0,
-                "GhcbInfo::PAGE_STATE_UPDATED returned msr value {resp:x?}"
-            );
-        }
     }
 
     #[must_use]
@@ -902,8 +914,10 @@ pub fn set_page_acceptance(
 }
 
 /// GHCB based io port access.
+#[cfg(feature = "cvm_boot_log")]
 pub struct SnpIoAccess;
 
+#[cfg(feature = "cvm_boot_log")]
 impl minimal_rt::arch::IoAccess for SnpIoAccess {
     unsafe fn inb(&self, port: u16) -> u8 {
         // Best effort
