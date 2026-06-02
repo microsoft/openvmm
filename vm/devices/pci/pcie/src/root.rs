@@ -40,15 +40,10 @@ use zerocopy::IntoBytes;
 
 /// Error returned when a root complex configuration is invalid.
 #[derive(Debug, Error)]
-#[error(
-    "requested {port_count} root ports, but only {max} are available \
-     (first_port_device_number = {first_device})"
-)]
+#[error("requested {port_count} root ports, but only {max} are supported")]
 pub struct InvalidRootComplexError {
     port_count: usize,
-    first_device: u8,
     max: usize,
-    needed_device: usize,
 }
 
 /// A generic PCI Express root complex emulator.
@@ -248,19 +243,17 @@ impl<'a> GenericPcieRootComplexBuilder<'a> {
         if let Some((ports, msi_target)) = root_ports {
             // Pack root ports into consecutive devfn values, 8 functions
             // per device slot, mirroring the switch downstream-port pattern.
-            let multi_function = ports.len() > 1;
+            let port_count = ports.len();
+            let max = 32usize.saturating_sub(first_port_device_number as usize) * 8;
+            if port_count > max {
+                return Err(InvalidRootComplexError { port_count, max });
+            }
+
+            let multi_function = port_count > 1;
 
             for (i, definition) in ports.into_iter().enumerate() {
                 let device = (i / 8) + first_port_device_number as usize;
                 let function = i % 8;
-                if device >= 32 {
-                    return Err(InvalidRootComplexError {
-                        port_count: i + 1,
-                        first_device: first_port_device_number,
-                        max: (32 - first_port_device_number as usize) * 8,
-                        needed_device: device,
-                    });
-                }
                 let devfn = ((device as u8) << BDF_DEVICE_SHIFT) | function as u8;
                 let hotplug_slot_number = if definition.hotplug {
                     Some(i as u32 + 1)
