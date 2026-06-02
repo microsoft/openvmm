@@ -20,6 +20,8 @@ use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
+use chipset_resources::cmos_rtc::GenericCmosRtcDeviceHandle;
+use chipset_resources::cmos_rtc::Piix4CmosRtcDeviceHandle;
 use chipset_resources::hyperv_guest_watchdog::DEFAULT_WDAT_PORT_BASE;
 use chipset_resources::hyperv_guest_watchdog::HyperVGuestWatchdogDeviceHandle;
 use chipset_resources::i440bx_host_pci_bridge::I440BX_HOST_PCI_BRIDGE_BDF;
@@ -559,6 +561,18 @@ impl VmChipsetResult {
         self
     }
 
+    /// Attach a PIIX4 CMOS RTC device (used for PCAT firmware).
+    pub fn attach_piix4_cmos_rtc(&mut self, handle: Piix4CmosRtcDeviceHandle) -> &mut Self {
+        push_piix4_cmos_rtc(&mut self.chipset_devices, handle);
+        self
+    }
+
+    /// Attach a generic CMOS RTC device (used for non-PCAT firmware).
+    pub fn attach_generic_cmos_rtc(&mut self, handle: GenericCmosRtcDeviceHandle) -> &mut Self {
+        push_generic_cmos_rtc(&mut self.chipset_devices, handle);
+        self
+    }
+
     fn attach_pic(&mut self) -> &mut Self {
         self.chipset_devices.push(ChipsetDeviceHandle {
             name: PicDeviceHandle::ID.to_owned(),
@@ -882,4 +896,34 @@ impl VmChipsetResult {
         }
         self
     }
+}
+
+/// Push a [`Piix4CmosRtcDeviceHandle`] onto a chipset device list.
+///
+/// This is the free-function counterpart of
+/// [`VmChipsetResult::attach_piix4_cmos_rtc`] for callers that only have a
+/// `Vec<ChipsetDeviceHandle>` (e.g. `dispatch.rs`).
+pub fn push_piix4_cmos_rtc(
+    devices: &mut Vec<ChipsetDeviceHandle>,
+    handle: Piix4CmosRtcDeviceHandle,
+) {
+    devices.push(ChipsetDeviceHandle {
+        name: "piix4-rtc".to_owned(),
+        resource: handle.into_resource(),
+    });
+}
+
+/// Push a [`GenericCmosRtcDeviceHandle`] onto a chipset device list.
+///
+/// This is the free-function counterpart of
+/// [`VmChipsetResult::attach_generic_cmos_rtc`] for callers that only have a
+/// `Vec<ChipsetDeviceHandle>` (e.g. `dispatch.rs`).
+pub fn push_generic_cmos_rtc(
+    devices: &mut Vec<ChipsetDeviceHandle>,
+    handle: GenericCmosRtcDeviceHandle,
+) {
+    devices.push(ChipsetDeviceHandle {
+        name: "rtc".to_owned(),
+        resource: handle.into_resource(),
+    });
 }

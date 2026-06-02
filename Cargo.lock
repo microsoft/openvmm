@@ -5480,6 +5480,7 @@ dependencies = [
  "virt_whp",
  "virtio",
  "vm_loader",
+ "vm_manifest_builder",
  "vm_resource",
  "vm_topology",
  "vmbus_channel",

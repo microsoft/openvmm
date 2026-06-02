@@ -2611,15 +2611,35 @@ async fn new_underhill_vm(
         });
     }
 
+    let mut chipset_result = chipset
+        .build()
+        .context("failed to build chipset configuration")?;
+
+    // Emit CMOS RTC device handles (x86-only, port I/O based).
+    // PCAT gets the PIIX4 variant; UEFI gets the generic RTC.
+    #[cfg(guest_arch = "x86_64")]
+    if firmware_type == FirmwareType::Pcat {
+        chipset_result.attach_piix4_cmos_rtc(Piix4CmosRtcDeviceHandle {
+            initial_cmos: Some(firmware_pcat::default_cmos_values(&mem_layout)),
+            enlightened_interrupts: true,
+            time_source: PlatformResource.into_resource(),
+        });
+    } else {
+        chipset_result.attach_generic_cmos_rtc(GenericCmosRtcDeviceHandle {
+            irq: 8,
+            century_reg_idx: 0x32,
+            initial_cmos: None,
+            time_source: PlatformResource.into_resource(),
+        });
+    }
+
     let vm_manifest_builder::VmChipsetResult {
         chipset,
         mut chipset_devices,
         pci_chipset_devices,
         isa_dma_controller,
         capabilities,
-    } = chipset
-        .build()
-        .context("failed to build chipset configuration")?;
+    } = chipset_result;
 
     #[cfg(guest_arch = "x86_64")]
     let mut deps_hyperv_firmware_pcat = None;
@@ -2919,32 +2939,6 @@ async fn new_underhill_vm(
     }
 
     let deps_generic_psp = { chipset.with_generic_psp.then_some(dev::GenericPspDeps {}) };
-
-    // Emit CMOS RTC device handles (x86-only, port I/O based).
-    // PCAT gets the PIIX4 variant; UEFI gets the generic RTC.
-    #[cfg(guest_arch = "x86_64")]
-    if firmware_type == FirmwareType::Pcat {
-        chipset_devices.push(ChipsetDeviceHandle {
-            name: "piix4-rtc".to_owned(),
-            resource: Piix4CmosRtcDeviceHandle {
-                initial_cmos: Some(firmware_pcat::default_cmos_values(&mem_layout)),
-                enlightened_interrupts: true,
-                time_source: PlatformResource.into_resource(),
-            }
-            .into_resource(),
-        });
-    } else {
-        chipset_devices.push(ChipsetDeviceHandle {
-            name: "rtc".to_owned(),
-            resource: GenericCmosRtcDeviceHandle {
-                irq: 8,
-                century_reg_idx: 0x32,
-                initial_cmos: None,
-                time_source: PlatformResource.into_resource(),
-            }
-            .into_resource(),
-        });
-    }
 
     if dps.general.tpm_enabled {
         let no_persistent_secrets =

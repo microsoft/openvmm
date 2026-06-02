@@ -1635,22 +1635,21 @@ impl InitializedVm {
         #[cfg(guest_arch = "x86_64")]
         if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {
             let initial_rtc_cmos = Some(firmware_pcat::default_cmos_values(&mem_layout));
-            chipset_device_handles.push(ChipsetDeviceHandle {
-                name: "piix4-rtc".to_owned(),
-                resource: Piix4CmosRtcDeviceHandle {
+            vm_manifest_builder::push_piix4_cmos_rtc(
+                &mut chipset_device_handles,
+                Piix4CmosRtcDeviceHandle {
                     initial_cmos: initial_rtc_cmos,
                     enlightened_interrupts: true,
                     time_source: SystemTimeClockHandle {
                         delta_milliseconds: cfg.rtc_delta_milliseconds,
                     }
                     .into_resource(),
-                }
-                .into_resource(),
-            });
+                },
+            );
         } else {
-            chipset_device_handles.push(ChipsetDeviceHandle {
-                name: "rtc".to_owned(),
-                resource: GenericCmosRtcDeviceHandle {
+            vm_manifest_builder::push_generic_cmos_rtc(
+                &mut chipset_device_handles,
+                GenericCmosRtcDeviceHandle {
                     irq: 8,
                     century_reg_idx: 0x32,
                     initial_cmos: None,
@@ -1658,9 +1657,8 @@ impl InitializedVm {
                         delta_milliseconds: cfg.rtc_delta_milliseconds,
                     }
                     .into_resource(),
-                }
-                .into_resource(),
-            });
+                },
+            );
         }
 
         let mut primary_disk_drive = floppy::DriveRibbon::None;
