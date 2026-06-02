@@ -22,6 +22,7 @@ disk_vhd1.workspace = true
 openvmm_defs.workspace = true
 openvmm_helpers.workspace = true
 openvmm_pcat_locator.workspace = true
+openvmm_ttrpc_vmservice.workspace = true
 hyperv_ic_resources.workspace = true
 hyperv_secure_boot_templates.workspace = true
 gdma_resources.workspace = true
@@ -56,6 +57,7 @@ guid.workspace = true
 inspect = { workspace = true, features = ["initiate"] }
 kmsg.workspace = true
 mesh_process.workspace = true
+mesh_rpc.workspace = true
 mesh_worker.workspace = true
 mesh.workspace = true
 pal_async.workspace = true

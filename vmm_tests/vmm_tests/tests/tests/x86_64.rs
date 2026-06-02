@@ -565,3 +565,58 @@ async fn snapshot_save_to_disk(
 
     Ok(())
 }
+
+/// Boot an L2 OpenVMM guest inside an L1 OpenVMM guest (nested
+/// virtualization end-to-end smoke test).
+///
+/// The L1 is a standard linux-direct VM. The L2 is spawned inside L1 by
+/// the helper [`PetriVmBuilder::with_nested_l2`], which stages a
+/// statically-linked `openvmm` binary, kernel, and initrd into a
+/// virtio-fs share. After L1 boots and pipette
+/// connects, the helper spawns the in-L1 openvmm with its own pipette;
+/// the test then asks the L2 to run `uname -a` and checks that Linux
+/// reported itself.
+///
+/// Gated on `TestRequirement::NestedVirtCapable` (the `_nested` suffix
+/// on the firmware tag), so it is skipped on hosts where the host
+/// hypervisor does not expose nested-virt extensions to the guest.
+#[cfg(target_os = "linux")]
+#[openvmm_test(linux_direct_x64_nested[
+    petri_artifacts_vmm_test::artifacts::OPENVMM_GUEST_LINUX_X64,
+    petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64,
+    petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64,
+])]
+async fn nested_l2_boot<O, K, I>(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    extra_deps: (
+        petri::ResolvedArtifact<O>,
+        petri::ResolvedArtifact<K>,
+        petri::ResolvedArtifact<I>,
+    ),
+) -> anyhow::Result<()> {
+    use petri::openvmm::NestedL2Config;
+
+    let (openvmm_musl, kernel, initrd) = extra_deps;
+    let cfg = NestedL2Config::new(
+        openvmm_musl.get().to_path_buf(),
+        kernel.get().to_path_buf(),
+        initrd.get().to_path_buf(),
+    );
+
+    let (builder, l2_builder) = config.with_nested_l2(cfg)?;
+    let (vm, l1_agent) = builder.run().await?;
+
+    let l2 = l2_builder.launch(&l1_agent).await?;
+
+    let sh = l2.l2_agent().unix_shell();
+    let output = cmd!(sh, "uname -a").read().await?;
+    assert!(
+        output.contains("Linux"),
+        "expected `Linux` in L2 `uname -a` output, got: {output}"
+    );
+
+    l2.l2_agent().power_off().await?;
+    l1_agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}

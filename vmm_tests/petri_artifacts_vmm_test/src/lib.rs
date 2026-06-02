@@ -57,6 +57,17 @@ pub mod artifacts {
         OPENVMM_VHOST_LINUX_X64,
         /// openvmm_vhost linux aarch64 executable
         OPENVMM_VHOST_LINUX_AARCH64,
+        /// Statically-linked Linux x86_64 openvmm binary intended for
+        /// use as an in-guest VMM (e.g. as L1's VMM in nested-virt tests).
+        ///
+        /// Built for `x86_64-unknown-linux-musl` so it can run inside a
+        /// minimal Linux guest without dynamic-library dependencies.
+        OPENVMM_GUEST_LINUX_X64,
+        /// Statically-linked Linux aarch64 openvmm binary intended for
+        /// use as an in-guest VMM in nested-virt tests.
+        ///
+        /// Built for `aarch64-unknown-linux-musl`.
+        OPENVMM_GUEST_LINUX_AARCH64,
     }
 
     /// Guest-side tools used by the VMM tests.

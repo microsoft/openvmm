@@ -4,11 +4,15 @@
 //! Test requirements framework for runtime test filtering.
 
 /// Execution environments where tests can run.
+///
+/// This describes whether the *test runner itself* is running inside a VM. It
+/// is distinct from [`TestRequirement::NestedVirtCapable`], which describes
+/// whether the runner can *host* nested VMs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionEnvironment {
-    /// Bare metal execution (not nested virtualization).
+    /// The test runner is running on bare metal (not nested virtualization).
     Baremetal,
-    /// Nested virtualization environment.
+    /// The test runner is itself running inside a virtual machine.
     Nested,
 }
 
@@ -65,6 +69,9 @@ pub struct HostContext {
     pub execution_environment: ExecutionEnvironment,
     /// Whether the host hypervisor supports software VPCI device emulation
     pub vpci_supported: bool,
+    /// Whether the host hypervisor can run a guest with nested virtualization
+    /// enabled (i.e. the guest itself can host a second-level VM).
+    pub nested_virt_capable: bool,
 }
 
 impl HostContext {
@@ -145,6 +152,8 @@ impl HostContext {
         // VPCI support: only Windows (virt_whp and Hyper-V) supports it for now.
         let vpci_supported = cfg!(windows);
 
+        let nested_virt_capable = nested_virt_capable_probe();
+
         Self {
             vm_host_info,
             vendor,
@@ -154,7 +163,34 @@ impl HostContext {
                 ExecutionEnvironment::Baremetal
             },
             vpci_supported,
+            nested_virt_capable,
         }
+    }
+}
+
+/// Probe whether the host can run a guest with nested virtualization.
+fn nested_virt_capable_probe() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if !std::path::Path::new("/dev/kvm").exists() {
+            return false;
+        }
+        let nested_enabled = |path: &str| -> bool {
+            match std::fs::read_to_string(path) {
+                Ok(s) => {
+                    let v = s.trim();
+                    v.eq_ignore_ascii_case("Y") || v == "1"
+                }
+                Err(_) => false,
+            }
+        };
+        nested_enabled("/sys/module/kvm_intel/parameters/nested")
+            || nested_enabled("/sys/module/kvm_amd/parameters/nested")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // TODO: probe WHP for nested-virt support.
+        false
     }
 }
 
@@ -169,6 +205,15 @@ pub enum TestRequirement {
     /// Requires a hypervisor backend that supports VPCI (virtual PCI)
     /// device emulation. On Linux this means /dev/mshv (not KVM).
     VpciSupport,
+    /// Requires that the host hypervisor can run guests with nested
+    /// virtualization enabled (so the guest itself can host a second
+    /// level VM).
+    ///
+    /// This is distinct from
+    /// [`ExecutionEnvironment::Nested`] — that variant describes whether
+    /// the *test runner* is already inside a VM, whereas this requirement
+    /// describes whether the host can *host* a nested guest.
+    NestedVirtCapable,
     /// Logical AND of two requirements.
     And(Box<TestRequirement>, Box<TestRequirement>),
     /// Logical OR of two requirements.
@@ -213,6 +258,7 @@ impl TestRequirement {
                 }
             }
             TestRequirement::VpciSupport => context.vpci_supported,
+            TestRequirement::NestedVirtCapable => context.nested_virt_capable,
             TestRequirement::And(req1, req2) => {
                 req1.is_satisfied(context) && req2.is_satisfied(context)
             }

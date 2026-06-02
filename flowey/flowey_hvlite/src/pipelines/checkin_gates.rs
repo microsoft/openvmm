@@ -755,11 +755,17 @@ impl IntoPipeline for CheckinGatesCli {
             match arch {
                 CommonArch::X86_64 => {
                     vmm_tests_artifacts_linux_x86.use_openvmm = Some(use_openvmm.clone());
+                    vmm_tests_artifacts_linux_x86.use_openvmm_guest_linux =
+                        Some(use_openvmm_musl.clone());
                     vmm_tests_artifacts_linux_x86.use_openvmm_vhost =
                         Some(use_openvmm_vhost.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_openvmm = Some(use_openvmm_musl.clone());
+                    vmm_tests_artifacts_linux_musl_x86.use_openvmm_guest_linux =
+                        Some(use_openvmm_musl.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_openvmm_vhost =
                         Some(use_openvmm_vhost_musl.clone());
+                    vmm_tests_artifacts_windows_x86.use_openvmm_guest_linux =
+                        Some(use_openvmm_musl.clone());
                 }
                 CommonArch::Aarch64 => {}
             }
@@ -1714,6 +1720,7 @@ mod vmm_tests_artifact_builders {
         pub use_tmk_vmm: Option<UseTypedArtifact<TmkVmmOutput>>,
         // linux build machine
         pub use_openvmm: Option<UseTypedArtifact<OpenvmmOutput>>,
+        pub use_openvmm_guest_linux: Option<UseTypedArtifact<OpenvmmOutput>>,
         pub use_openvmm_vhost: Option<UseTypedArtifact<OpenvmmVhostOutput>>,
         pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
         // any machine
@@ -1725,6 +1732,7 @@ mod vmm_tests_artifact_builders {
         pub fn finish(self) -> Result<ResolveVmmTestsDepArtifacts, &'static str> {
             let VmmTestsArtifactsBuilderLinuxX86 {
                 use_openvmm,
+                use_openvmm_guest_linux,
                 use_openvmm_vhost,
                 use_guest_test_uefi,
                 use_pipette_windows,
@@ -1742,6 +1750,9 @@ mod vmm_tests_artifact_builders {
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
+                openvmm_guest_linux: use_openvmm_guest_linux
+                    .as_ref()
+                    .map(|a| ctx.use_typed_artifact(a)),
                 openvmm_vhost: use_openvmm_vhost
                     .as_ref()
                     .map(|a| ctx.use_typed_artifact(a)),
@@ -1774,6 +1785,7 @@ mod vmm_tests_artifact_builders {
         pub use_tpm_guest_tests_linux: Option<UseTypedArtifact<TpmGuestTestsOutput>>,
         pub use_test_igvm_agent_rpc_server: Option<UseTypedArtifact<TestIgvmAgentRpcServerOutput>>,
         // linux build machine
+        pub use_openvmm_guest_linux: Option<UseTypedArtifact<OpenvmmOutput>>,
         pub use_openhcl_igvm_files: Option<UseArtifact>,
         pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
         pub use_tmk_vmm_linux_musl: Option<UseTypedArtifact<TmkVmmOutput>>,
@@ -1786,6 +1798,7 @@ mod vmm_tests_artifact_builders {
         pub fn finish(self) -> Result<ResolveVmmTestsDepArtifacts, &'static str> {
             let VmmTestsArtifactsBuilderWindowsX86 {
                 use_openvmm,
+                use_openvmm_guest_linux,
                 use_pipette_windows,
                 use_pipette_linux_musl,
                 use_guest_test_uefi,
@@ -1819,6 +1832,9 @@ mod vmm_tests_artifact_builders {
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
+                openvmm_guest_linux: use_openvmm_guest_linux
+                    .as_ref()
+                    .map(|a| ctx.use_typed_artifact(a)),
                 openvmm_vhost: None,
                 pipette_windows: Some(ctx.use_typed_artifact(&use_pipette_windows)),
                 pipette_linux_musl: Some(ctx.use_typed_artifact(&use_pipette_linux_musl)),
@@ -1880,6 +1896,7 @@ mod vmm_tests_artifact_builders {
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
+                openvmm_guest_linux: None,
                 openvmm_vhost: None,
                 pipette_windows: Some(ctx.use_typed_artifact(&use_pipette_windows)),
                 pipette_linux_musl: Some(ctx.use_typed_artifact(&use_pipette_linux_musl)),

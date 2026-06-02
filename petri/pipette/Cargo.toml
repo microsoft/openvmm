@@ -23,6 +23,7 @@ socket2.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 unicycle.workspace = true
+unix_socket.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true

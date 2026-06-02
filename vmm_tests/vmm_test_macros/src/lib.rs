@@ -28,6 +28,7 @@ struct Config {
     span: Span,
     extra_deps: Vec<Path>,
     unstable: bool,
+    requires_nested_virt: bool,
 }
 
 struct ResolvedConfig {
@@ -37,6 +38,7 @@ struct ResolvedConfig {
     extra_deps: Vec<Path>,
     unstable: bool,
     requires_vpci: bool,
+    requires_nested_virt: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -159,6 +161,9 @@ impl ResolvedConfig {
         if let Some(options_prefix) = options_prefix {
             name_prefix.push('_');
             name_prefix.push_str(&options_prefix);
+        }
+        if self.requires_nested_virt {
+            name_prefix.push_str("_nested");
         }
 
         name_prefix
@@ -345,6 +350,7 @@ impl ArgsWithOverrides {
                 extra_deps: config.extra_deps,
                 unstable: config.unstable || unstable,
                 requires_vpci,
+                requires_nested_virt: config.requires_nested_virt,
             });
         }
 
@@ -404,6 +410,17 @@ impl Parse for Config {
             (None, remainder)
         };
 
+        // `_nested` is a suffix modifier indicating the test requires a host
+        // that can run guests with nested virtualization enabled. We strip it
+        // before matching on the firmware-arch ident so the existing match
+        // arms are unaffected.
+        let (requires_nested_virt, remainder) =
+            if let Some(remainder) = remainder.strip_suffix("_nested") {
+                (true, remainder)
+            } else {
+                (false, remainder)
+            };
+
         let (arch, firmware) = match remainder {
             "linux_direct_x64" => (MachineArch::X86_64, Firmware::LinuxDirect),
             "linux_direct_bzimage_x64" => (MachineArch::X86_64, Firmware::LinuxDirectBzImage),
@@ -451,6 +468,7 @@ impl Parse for Config {
             span: input.span(),
             extra_deps,
             unstable,
+            requires_nested_virt,
         })
     }
 }
@@ -689,6 +707,11 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// All options can be prefixed with "unstable_" to denote that this should
 /// not block PRs if it fails.
 ///
+/// All options can be suffixed with "_nested" to indicate that the test
+/// requires the host hypervisor to support running guests with nested
+/// virtualization enabled. Tests with this suffix will be skipped at
+/// runtime on hosts where nested virt is not available.
+///
 /// Valid configuration options are:
 /// - `{vmm}_linux_direct_{arch}`: Our provided Linux direct image
 /// - `{vmm}_linux_direct_bzimage_x64`: Our provided Linux direct bzImage (compressed kernel, x86_64 only)
@@ -843,7 +866,12 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
         let name = format!("{}_{original_name}", config.name_prefix());
 
         // Build requirements based on the configuration and resolved VMM
-        let requirements = build_requirements(&config.firmware, config.vmm, config.requires_vpci);
+        let requirements = build_requirements(
+            &config.firmware,
+            config.vmm,
+            config.requires_vpci,
+            config.requires_nested_virt,
+        );
 
         // Now move the values for the FirmwareAndArch and extra_deps
         let extra_deps = config.extra_deps;
@@ -908,7 +936,12 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
 }
 
 // Helper to build requirements TokenStream for firmware and resolved VMM
-fn build_requirements(firmware: &Firmware, resolved_vmm: Vmm, requires_vpci: bool) -> TokenStream {
+fn build_requirements(
+    firmware: &Firmware,
+    resolved_vmm: Vmm,
+    requires_vpci: bool,
+    requires_nested_virt: bool,
+) -> TokenStream {
     let mut requirement_expr: TokenStream = quote!(::petri::requirements::TestRequirement::Any);
     let mut is_vbs = false;
     // Add isolation requirement if specified
@@ -950,6 +983,12 @@ fn build_requirements(firmware: &Firmware, resolved_vmm: Vmm, requires_vpci: boo
     if requires_vpci {
         requirement_expr =
             quote!(#requirement_expr.and(::petri::requirements::TestRequirement::VpciSupport));
+    }
+
+    if requires_nested_virt {
+        requirement_expr = quote!(
+            #requirement_expr.and(::petri::requirements::TestRequirement::NestedVirtCapable)
+        );
     }
 
     quote!(

@@ -24,6 +24,7 @@ use vmm_test_images::KnownTestArtifacts;
 #[derive(Serialize, Deserialize)]
 pub struct VmmTestsDepArtifacts {
     pub openvmm: Option<ReadVar<OpenvmmOutput>>,
+    pub openvmm_guest_linux: Option<ReadVar<OpenvmmOutput>>,
     pub openvmm_vhost: Option<ReadVar<OpenvmmVhostOutput>>,
     pub pipette_windows: Option<ReadVar<PipetteOutput>>,
     pub pipette_linux_musl: Option<ReadVar<PipetteOutput>>,
@@ -111,6 +112,7 @@ impl SimpleFlowNode for Node {
 
         let VmmTestsDepArtifacts {
             openvmm: register_openvmm,
+            openvmm_guest_linux: register_openvmm_guest_linux,
             openvmm_vhost: register_openvmm_vhost,
             pipette_windows: register_pipette_windows,
             pipette_linux_musl: register_pipette_linux_musl,
@@ -177,6 +179,7 @@ impl SimpleFlowNode for Node {
             test_content_dir,
             vmm_tests_target: target.clone(),
             register_openvmm,
+            register_openvmm_guest_linux,
             register_openvmm_vhost,
             register_pipette_windows,
             register_pipette_linux_musl,

@@ -3890,6 +3890,11 @@ jobs:
       artifact: x64-guest_test_uefi
       path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-guest_test_uefi
   - task: DownloadPipelineArtifact@2
+    displayName: 🌼📦 Download x64-linux-musl-openvmm
+    inputs:
+      artifact: x64-linux-musl-openvmm
+      path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-openvmm
+  - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-linux-musl-pipette
     inputs:
       artifact: x64-linux-musl-pipette
@@ -3943,6 +3948,7 @@ jobs:
       ${{ parameters.verbose }}
       EOF
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-guest_test_uefi" | $FLOWEY_BIN v 19 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
+      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-openvmm" | $FLOWEY_BIN v 19 'artifact_use_from_x64-linux-musl-openvmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-pipette" | $FLOWEY_BIN v 19 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-tmk_vmm" | $FLOWEY_BIN v 19 'artifact_use_from_x64-linux-musl-tmk_vmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-openvmm" | $FLOWEY_BIN v 19 'artifact_use_from_x64-linux-openvmm' --is-raw-string update
@@ -4002,13 +4008,14 @@ jobs:
       $(FLOWEY_BIN) e 19 flowey_lib_common::git_checkout 2
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::run_cargo_nextest_run 0
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 3
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 4
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 7
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 1
       $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 0
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 3
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 7
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 4
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 1
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 5
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 8
       $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 2
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 6
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
     displayName: creating new test content dir
@@ -4059,7 +4066,7 @@ jobs:
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::init_vmm_tests_env 0
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 5
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 6
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::test_nextest_vmm_tests_archive 3
     displayName: setting up vmm_tests env
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -4107,6 +4114,7 @@ jobs:
   - job2
   - job3
   - job7
+  - job9
   condition: and(succeeded(), not(canceled()))
   variables:
   - name: FLOWEY_TEMP_DIR
@@ -4122,6 +4130,11 @@ jobs:
     inputs:
       artifact: x64-guest_test_uefi
       path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-guest_test_uefi
+  - task: DownloadPipelineArtifact@2
+    displayName: 🌼📦 Download x64-linux-musl-openvmm
+    inputs:
+      artifact: x64-linux-musl-openvmm
+      path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-openvmm
   - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-linux-musl-pipette
     inputs:
@@ -4206,6 +4219,7 @@ jobs:
       ${{ parameters.verbose }}
       EOF
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-guest_test_uefi" | $FLOWEY_BIN v 18 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
+      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-openvmm" | $FLOWEY_BIN v 18 'artifact_use_from_x64-linux-musl-openvmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-pipette" | $FLOWEY_BIN v 18 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-tmk_vmm" | $FLOWEY_BIN v 18 'artifact_use_from_x64-linux-musl-tmk_vmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-tpm_guest_tests" | $FLOWEY_BIN v 18 'artifact_use_from_x64-linux-tpm_guest_tests' --is-raw-string update
@@ -4267,17 +4281,18 @@ jobs:
       $(FLOWEY_BIN) e 18 flowey_lib_common::git_checkout 2
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::run_cargo_nextest_run 0
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 5
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 6
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 1
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 0
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 9
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 7
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 2
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 4
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 11
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 0
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 10
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 3
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 8
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 5
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 12
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 11
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 4
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 9
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
     displayName: creating new test content dir
@@ -4325,7 +4340,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::init_vmm_tests_env 0
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 12
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 13
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
     displayName: setting up vmm_tests env
   - bash: $(FLOWEY_BIN) e 18 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -4380,6 +4395,7 @@ jobs:
   - job2
   - job3
   - job7
+  - job9
   condition: and(succeeded(), not(canceled()))
   variables:
   - name: FLOWEY_TEMP_DIR
@@ -4395,6 +4411,11 @@ jobs:
     inputs:
       artifact: x64-guest_test_uefi
       path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-guest_test_uefi
+  - task: DownloadPipelineArtifact@2
+    displayName: 🌼📦 Download x64-linux-musl-openvmm
+    inputs:
+      artifact: x64-linux-musl-openvmm
+      path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-openvmm
   - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-linux-musl-pipette
     inputs:
@@ -4479,6 +4500,7 @@ jobs:
       ${{ parameters.verbose }}
       EOF
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-guest_test_uefi" | $FLOWEY_BIN v 17 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
+      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-openvmm" | $FLOWEY_BIN v 17 'artifact_use_from_x64-linux-musl-openvmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-pipette" | $FLOWEY_BIN v 17 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-tmk_vmm" | $FLOWEY_BIN v 17 'artifact_use_from_x64-linux-musl-tmk_vmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-tpm_guest_tests" | $FLOWEY_BIN v 17 'artifact_use_from_x64-linux-tpm_guest_tests' --is-raw-string update
@@ -4540,17 +4562,18 @@ jobs:
       $(FLOWEY_BIN) e 17 flowey_lib_common::git_checkout 2
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::run_cargo_nextest_run 0
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 5
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 6
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 1
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 0
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 9
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 7
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 2
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 4
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 11
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 0
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 10
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 3
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 8
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 5
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 12
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 11
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 4
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 9
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
     displayName: creating new test content dir
@@ -4598,7 +4621,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::init_vmm_tests_env 0
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 12
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 13
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
     displayName: setting up vmm_tests env
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -4653,6 +4676,7 @@ jobs:
   - job2
   - job3
   - job7
+  - job9
   condition: and(succeeded(), not(canceled()))
   variables:
   - name: FLOWEY_TEMP_DIR
@@ -4668,6 +4692,11 @@ jobs:
     inputs:
       artifact: x64-guest_test_uefi
       path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-guest_test_uefi
+  - task: DownloadPipelineArtifact@2
+    displayName: 🌼📦 Download x64-linux-musl-openvmm
+    inputs:
+      artifact: x64-linux-musl-openvmm
+      path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-openvmm
   - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-linux-musl-pipette
     inputs:
@@ -4752,6 +4781,7 @@ jobs:
       ${{ parameters.verbose }}
       EOF
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-guest_test_uefi" | $FLOWEY_BIN v 16 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
+      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-openvmm" | $FLOWEY_BIN v 16 'artifact_use_from_x64-linux-musl-openvmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-pipette" | $FLOWEY_BIN v 16 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-tmk_vmm" | $FLOWEY_BIN v 16 'artifact_use_from_x64-linux-musl-tmk_vmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-tpm_guest_tests" | $FLOWEY_BIN v 16 'artifact_use_from_x64-linux-tpm_guest_tests' --is-raw-string update
@@ -4813,17 +4843,18 @@ jobs:
       $(FLOWEY_BIN) e 16 flowey_lib_common::git_checkout 2
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_cargo_nextest_run 0
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 5
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 6
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 1
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 0
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 9
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 7
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 2
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 4
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 11
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 0
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 10
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 3
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 8
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 5
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 12
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 11
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 4
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 9
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
     displayName: creating new test content dir
@@ -4871,7 +4902,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::init_vmm_tests_env 0
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 12
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 13
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
     displayName: setting up vmm_tests env
   - bash: $(FLOWEY_BIN) e 16 flowey_lib_common::gen_cargo_nextest_run_cmd 0

@@ -27,6 +27,11 @@ flowey_request! {
 
         /// Register an openvmm binary
         pub register_openvmm: Option<ReadVar<crate::build_openvmm::OpenvmmOutput>>,
+        /// Register an openvmm binary built for a Linux musl target,
+        /// intended for use as an in-guest VMM (e.g. as L1's VMM in
+        /// nested-virt tests).
+        pub register_openvmm_guest_linux:
+            Option<ReadVar<crate::build_openvmm::OpenvmmOutput>>,
         /// Register an openvmm_vhost binary (Linux only)
         pub register_openvmm_vhost: Option<ReadVar<crate::build_openvmm_vhost::OpenvmmVhostOutput>>,
         /// Register a windows pipette binary
@@ -93,6 +98,7 @@ impl SimpleFlowNode for Node {
             test_content_dir,
             vmm_tests_target,
             register_openvmm,
+            register_openvmm_guest_linux,
             register_openvmm_vhost,
             register_pipette_windows,
             register_pipette_linux_musl,
@@ -148,6 +154,7 @@ impl SimpleFlowNode for Node {
             let get_env = get_env.claim(ctx);
             let get_test_log_path = get_test_log_path.claim(ctx);
             let openvmm = register_openvmm.claim(ctx);
+            let openvmm_guest_linux = register_openvmm_guest_linux.claim(ctx);
             let openvmm_vhost = register_openvmm_vhost.claim(ctx);
             let pipette_win = register_pipette_windows.claim(ctx);
             let pipette_linux = register_pipette_linux_musl.claim(ctx);
@@ -286,6 +293,29 @@ impl SimpleFlowNode for Node {
                             dst.make_executable()?;
                         }
                     }
+                }
+
+                if let Some(openvmm_guest_linux) = openvmm_guest_linux {
+                    let crate::build_openvmm::OpenvmmOutput::LinuxBin { bin, dbg: _ } =
+                        rt.read(openvmm_guest_linux)
+                    else {
+                        anyhow::bail!(
+                            "did not find a linux openvmm binary in RegisterOpenvmmGuestLinux"
+                        )
+                    };
+                    // Disambiguated filename so it doesn't collide with
+                    // the native `openvmm` binary copied above.
+                    let dst_name = match vmm_tests_target.architecture {
+                        target_lexicon::Architecture::X86_64 => "openvmm-musl-x64",
+                        target_lexicon::Architecture::Aarch64(_) => "openvmm-musl-aarch64",
+                        _ => anyhow::bail!(
+                            "openvmm-guest-linux not supported for arch {:?}",
+                            vmm_tests_target.architecture
+                        ),
+                    };
+                    let dst = test_content_dir.join(dst_name);
+                    fs_err::copy(bin, &dst)?;
+                    dst.make_executable()?;
                 }
 
                 if let Some(openvmm_vhost) = openvmm_vhost {

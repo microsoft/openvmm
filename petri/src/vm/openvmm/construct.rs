@@ -692,6 +692,8 @@ impl PetriVmConfigOpenVmm {
 
             ged,
             framebuffer_view,
+
+            skip_save_restore_check: false,
         })
     }
 }

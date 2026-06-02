@@ -62,6 +62,8 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == common::TEST_LOG_DIRECTORY => test_log_directory_path(self.0),
 
             _ if id == OPENVMM_NATIVE => openvmm_native_executable_path(),
+            _ if id == OPENVMM_GUEST_LINUX_X64 => openvmm_guest_linux_path(MachineArch::X86_64),
+            _ if id == OPENVMM_GUEST_LINUX_AARCH64 => openvmm_guest_linux_path(MachineArch::Aarch64),
             #[cfg(target_os = "linux")]
             _ if id == OPENVMM_VHOST_NATIVE => openvmm_vhost_native_executable_path(),
 
@@ -330,6 +332,44 @@ fn pipette_path(arch: MachineArch, os_flavor: PipetteFlavor) -> anyhow::Result<P
 /// Path to the output location of the openvmm executable.
 fn openvmm_native_executable_path() -> anyhow::Result<PathBuf> {
     get_output_executable_path("openvmm")
+}
+
+/// Path to the output location of an openvmm executable cross-compiled
+/// for a Linux musl target, suitable for running as an in-guest VMM
+/// (e.g. as the L1 VMM in nested-virt tests).
+///
+/// Unlike the native `openvmm` artifact this binary is statically
+/// linked against musl and intended to run *inside a VM*, so the
+/// file name in `VMM_TESTS_CONTENT_DIR` is disambiguated from the
+/// native binary to avoid collisions.
+fn openvmm_guest_linux_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    let (target, content_name) = match arch {
+        MachineArch::X86_64 => ("x86_64-unknown-linux-musl", "openvmm-musl-x64"),
+        MachineArch::Aarch64 => ("aarch64-unknown-linux-musl", "openvmm-musl-aarch64"),
+    };
+
+    // First check the test content directory (flowey-driven layout).
+    if let Ok(env_dir) = std::env::var(VMM_TESTS_DIR_ENV_VAR) {
+        let full_path = Path::new(&env_dir).join(content_name);
+        if full_path.try_exists()? {
+            return Ok(full_path);
+        }
+    }
+
+    // Fall back to the local cargo target directory.
+    let profile = cargo_build_profile();
+    let full_path = get_repo_root()?
+        .join(format!("target/{target}/{profile}"))
+        .join("openvmm");
+    if !full_path.exists() {
+        eprintln!("Failed to find {:?}.", full_path);
+        MissingCommand::Build {
+            package: "openvmm",
+            target: Some(target),
+        }
+        .to_error()?;
+    }
+    Ok(full_path)
 }
 
 /// Path to the output location of the openvmm_vhost executable.
