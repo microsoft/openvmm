@@ -22,6 +22,7 @@ anyhow.workspace = true
 base64.workspace = true
 bitfield-struct.workspace = true
 clap = { workspace = true, features = ["derive"] }
+corim.workspace = true
 crypto = { workspace = true, features = ["native", "vendored"] }
 der = { workspace = true, features = ["derive", "pem", "alloc"] }
 fs-err.workspace = true

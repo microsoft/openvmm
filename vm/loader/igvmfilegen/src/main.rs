@@ -8,6 +8,7 @@
 #[cfg(not(test))]
 crypto::ensure_single_backend!();
 
+mod corim_signature;
 mod file_loader;
 mod identity_mapping;
 mod measurement_diag;
@@ -15,6 +16,7 @@ mod platform_mask;
 mod snp_id_block;
 mod vp_context_builder;
 
+use crate::corim_signature::detach_payload;
 use crate::file_loader::IgvmLoader;
 use crate::file_loader::LoaderIsolationType;
 use crate::identity_mapping::Measurement;
@@ -25,10 +27,15 @@ use crate::measurement_diag::log_measurement_diagnostic;
 use anyhow::Context;
 use anyhow::bail;
 use clap::Parser;
+use clap::ValueEnum;
 use file_loader::IgvmLoaderRegister;
 use file_loader::IgvmVtlLoader;
 use igvm::IgvmFile;
+use igvm::IgvmInitializationHeader;
+use igvm::IgvmPlatformHeader;
 use igvm::IgvmSerializer;
+use igvm::corim::launch_measurement::LaunchMeasurement;
+use igvm::corim::launch_measurement::MeasurementKind;
 use igvm_defs::IGVM_FIXED_HEADER;
 use igvm_defs::IgvmPlatformType;
 use igvm_defs::SnpPolicy;
@@ -71,10 +78,41 @@ enum Options {
         #[clap(short, long = "filepath")]
         file_path: PathBuf,
     },
+    /// Dump CoRIM (Concise Reference Integrity Manifest) headers and payloads from an IGVM file.
+    ///
+    /// This command scans the IGVM variable headers for CoRIM-related entries and prints or
+    /// extracts their contents. By default, all supported CoRIM headers for all platforms found
+    /// in the file are dumped. Use `--header-type` and `--platform` to narrow the selection.
+    ///
+    /// A human-readable summary of the selected CoRIM headers is written to stdout. When
+    /// `--output <dir>` is provided, the CoRIM payloads are also extracted to files in
+    /// that directory and the file paths are reported.
+    DumpCorim {
+        /// Input IGVM file path to read CoRIM headers and payloads from.
+        #[clap(short, long = "filepath")]
+        file_path: PathBuf,
+        /// Filter by CoRIM header type (e.g. document or signature). If not specified,
+        /// all supported CoRIM header types in the IGVM file are included.
+        #[clap(long, value_enum)]
+        header_type: Option<CorimHeaderType>,
+        /// Filter by platform type for which the CoRIM applies (see `Platform` enum).
+        /// If not specified, CoRIM entries for all platforms present in the IGVM file
+        /// are considered.
+        #[clap(long, value_enum)]
+        platform: Option<Platform>,
+        /// Output directory to extract CoRIM payload data. For each matching CoRIM header,
+        /// the payload is written to a file named `corim_{document,signature}_<platform>.<ext>`,
+        /// e.g. `corim_document_vbs.cbor` or `corim_signature_snp.cose`.
+        /// If omitted, payload contents are not written as files and are instead described
+        /// in the textual output on stdout.
+        #[clap(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Build an IGVM file according to a manifest.
     ///
     /// Also emits per-platform sibling files next to `--output`:
-    /// `<base>-{snp,tdx,vbs}.json` (legacy identity documents) for every
+    /// `<base>-{snp,tdx,vbs}.json` (legacy identity documents) and
+    /// `<base>-{snp,tdx,vbs}.cbor` (CoRIM launch endorsements) for every
     /// measurable platform in the manifest, and `<base>-snp.idblock` (the
     /// SEV-SNP ID block signing payload) for SNP.
     Manifest {
@@ -155,6 +193,95 @@ enum Options {
         #[clap(long, requires = "id_block")]
         id_public_key: Option<PathBuf>,
     },
+    /// Patch a CoRIM signature into an existing IGVM file for a given platform.
+    ///
+    /// The CoRIM document is generated automatically by `manifest` for every
+    /// measurable platform, so this command only attaches the detached
+    /// signature. Provide either a single bundled/signed CoRIM via
+    /// `--corim-bundle` (the tool splits it and uses the detached signature;
+    /// the IGVM file must already contain a matching CoRIM document) or an
+    /// already-detached signature via `--corim-signature` (the document slot
+    /// must already be populated in the IGVM file).
+    ///
+    /// What is verified: this command checks that the supplied signature
+    /// is a well-formed COSE_Sign1 envelope using PS384 (COSE alg -38,
+    /// RSA-PSS with SHA-384) and that the signature math validates against
+    /// the IGVM-embedded CoRIM document, using the public key carried in
+    /// the envelope's `x5chain` / `x5bag` header (RFC 9360).
+    ///
+    /// What is NOT verified: certificate-chain trust. The signing
+    /// certificate is taken from the envelope at face value -- no
+    /// validation against a trust root, no revocation check, no policy /
+    /// EKU enforcement. The caller is responsible for ensuring the input
+    /// signature originated from a trusted signer (e.g. by sourcing it
+    /// only from a controlled signing pipeline). Verification here exists
+    /// to catch accidental corruption and algorithm mismatches, not to
+    /// establish trust.
+    PatchCorimSignature {
+        /// Input IGVM file path
+        #[clap(short, long)]
+        input: PathBuf,
+        /// Output IGVM file path (can be the same as input to modify in place)
+        #[clap(short, long)]
+        output: PathBuf,
+        /// Path to a bundled/signed CoRIM file (COSE_Sign1 with embedded payload).
+        /// The tool will internally split it and use the detached signature;
+        /// the IGVM file must already contain a matching CoRIM document.
+        /// Mutually exclusive with `--corim-signature`.
+        ///
+        /// Only PS384 (COSE alg -38, RSA-PSS with SHA-384) signatures are
+        /// accepted; other algorithms are rejected at verify time.
+        #[clap(
+            long,
+            conflicts_with = "corim_signature",
+            required_unless_present = "corim_signature"
+        )]
+        corim_bundle: Option<PathBuf>,
+        /// Path to the CoRIM signature (COSE_Sign1 with nil payload) file.
+        /// Requires that a corresponding document already exists in the
+        /// file for the same compatibility mask.
+        ///
+        /// Only PS384 (COSE alg -38, RSA-PSS with SHA-384) signatures are
+        /// accepted; other algorithms are rejected at verify time.
+        #[clap(long)]
+        corim_signature: Option<PathBuf>,
+        /// Platform type for the CoRIM headers
+        #[clap(long, value_enum)]
+        platform: Platform,
+    },
+}
+
+/// IGVM platform types for CLI selection.
+///
+/// This is a CLI-friendly adapter for [`IgvmPlatformType`], which is an
+/// `open_enum` and cannot derive clap's `ValueEnum` directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum Platform {
+    /// AMD SEV-SNP
+    Snp,
+    /// Intel TDX
+    Tdx,
+    /// VBS (Virtualization Based Security)
+    Vbs,
+}
+
+impl From<Platform> for IgvmPlatformType {
+    fn from(platform: Platform) -> Self {
+        match platform {
+            Platform::Snp => IgvmPlatformType::SEV_SNP,
+            Platform::Tdx => IgvmPlatformType::TDX,
+            Platform::Vbs => IgvmPlatformType::VSM_ISOLATION,
+        }
+    }
+}
+
+/// CoRIM header types for filtering
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum CorimHeaderType {
+    /// CoRIM document header
+    Document,
+    /// CoRIM signature header
+    Signature,
 }
 
 // TODO: Potential CLI flags:
@@ -186,6 +313,12 @@ fn main() -> anyhow::Result<()> {
             println!("{}", igvm_data);
             Ok(())
         }
+        Options::DumpCorim {
+            file_path,
+            header_type,
+            platform,
+            output,
+        } => dump_corim_headers(&file_path, header_type, platform, output),
         Options::Manifest {
             manifest,
             resources,
@@ -273,11 +406,19 @@ fn main() -> anyhow::Result<()> {
             id_signature,
             id_public_key,
         ),
+        Options::PatchCorimSignature {
+            input,
+            output,
+            corim_bundle,
+            corim_signature,
+            platform,
+        } => patch_corim_signature(input, output, corim_bundle, corim_signature, platform),
     }
 }
 
 /// Per-config measurement metadata captured during the build loop and
-/// consumed after merging to emit JSON identity documents.
+/// consumed after merging to emit JSON identity documents and CoRIM
+/// launch endorsements.
 struct PlatformMeta {
     platform: IgvmPlatformType,
     svn: u32,
@@ -287,7 +428,7 @@ struct PlatformMeta {
 /// Build a sibling path of `output` named `<base>-<isolation><ext>`,
 /// where `base` is `output`'s stem, `<isolation>` is derived from
 /// `meta.platform`, and `ext` includes the leading dot
-/// (e.g. `".json"`).
+/// (e.g. `".json"` or `".cbor"`).
 fn sibling_path(
     base: &std::ffi::OsStr,
     output: &std::path::Path,
@@ -300,6 +441,21 @@ fn sibling_path(
     name.push(isolation);
     name.push(ext);
     output.with_file_name(name)
+}
+
+/// Build a `LaunchMeasurement` template for the given platform's
+/// launch measurement at the configured guest SVN.
+fn build_endorsement_corim(meta: &PlatformMeta) -> anyhow::Result<LaunchMeasurement> {
+    let mut le = LaunchMeasurement::for_platform(meta.platform)
+        .context("starting CoRIM launch endorsement")?;
+    le.set_measurement(MeasurementKind::Launch)
+        .context("setting CoRIM launch measurement kind")?;
+    le.endorse(meta.svn as u64)
+        .with(MeasurementKind::Launch)
+        .context("selecting CoRIM measurement in CES triple")?
+        .finish()
+        .context("finalizing CoRIM CES triple")?;
+    Ok(le)
 }
 
 /// Build a JSON identity document for a platform measurement.
@@ -335,9 +491,9 @@ fn build_endorsement_json(
     }
 }
 
-/// Write a per-platform sibling file (a JSON identity document or an SNP ID
-/// block signing payload) next to `output`, named `<base>-<isolation><ext>`.
-/// `ext` must include the leading dot.
+/// Write a per-platform sibling file (a JSON identity document, an SNP ID
+/// block signing payload, or a CoRIM launch endorsement) next to `output`,
+/// named `<base>-<isolation><ext>`. `ext` must include the leading dot.
 fn write_platform_sibling(
     base: &std::ffi::OsStr,
     output: &std::path::Path,
@@ -409,12 +565,12 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
 
         // Track measurement metadata for measurable platforms so the
         // post-merge step can look up the digest from `IgvmSerializer`
-        // and emit a JSON identity document.
+        // and emit a JSON identity document + CoRIM launch endorsement.
         //
         // Each measurable platform type may appear at most once across
         // all guest configs: the post-merge step keys both the
         // `IgvmSerializer::measurement_for(platform)` lookup and the
-        // `<base>-<isolation>.json` sibling filenames purely by
+        // `<base>-<isolation>.{cbor,json}` sibling filenames purely by
         // platform type, so a duplicate would silently overwrite the
         // earlier artifacts and could pair the wrong svn/debug bit with
         // the merged measurement. Fail fast here with a clear error.
@@ -485,12 +641,18 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
     // Construct the serializer once on the merged IGVM file. This eagerly
     // computes the launch measurement for every measurable platform and
     // serves as the single source of truth for the digest used in the JSON
-    // identity documents and the SNP ID block signing payload.
-    let serializer = IgvmSerializer::new(&igvm_file).context("constructing IGVM serializer")?;
+    // identity documents, the CoRIM launch endorsements, and the SNP ID
+    // block signing payload.
+    let mut serializer = IgvmSerializer::new(&igvm_file).context("constructing IGVM serializer")?;
 
-    // For each measurable platform: log the diagnostic and write the JSON
-    // identity document (plus, for SNP, the ID block signing payload).
+    // For each measurable platform: log the diagnostic, attach a CoRIM
+    // launch endorsement, then write the sibling files (CoRIM document,
+    // JSON identity document, and for SNP the ID block signing payload).
+    // The CoRIM is attached before any sibling file is written so a failure
+    // in `add_corim` leaves no half-written artifact set on disk.
     for meta in &platform_metas {
+        // Snapshot the digest so the immutable borrow on `serializer`
+        // ends before the `&mut serializer` call to `add_corim` below.
         let (digest, compatibility_mask) = {
             let m = serializer.measurement_for(meta.platform).with_context(|| {
                 format!("no measurement computed for platform {:?}", meta.platform)
@@ -509,6 +671,17 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
             serializer.file(),
             compatibility_mask,
         );
+
+        let corim = build_endorsement_corim(meta)?;
+        let corim_bytes = serializer
+            .add_corim(meta.platform, corim.build())
+            .context("adding CoRIM document to IGVM serializer")?
+            .to_vec();
+
+        // Write the CoRIM document first since it is the new artifact
+        // downstream signing tooling keys on; the JSON identity document
+        // is the legacy companion.
+        write_platform_sibling(base_path, &output, meta, ".cbor", &corim_bytes)?;
 
         let json = build_endorsement_json(meta.platform, &digest, meta.svn, meta.debug_enabled);
         let mut json_bytes =
@@ -565,6 +738,43 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
     for map in map_files {
         writeln!(map_file, "{}", map).context("writing map file")?;
     }
+
+    Ok(())
+}
+
+/// Atomically write `data` to `output`: write to a sibling temp file, then
+/// rename it into place. This prevents a crash or interruption during the
+/// write from corrupting the output (which may be the same file as the input
+/// for in-place edits). Same-volume renames are atomic on both POSIX and
+/// Windows (`std::fs::rename` uses `MoveFileExW` with
+/// `MOVEFILE_REPLACE_EXISTING`). `log_message` is emitted before the write.
+fn write_igvm_file_atomic(
+    output: &std::path::Path,
+    data: &[u8],
+    log_message: &str,
+) -> anyhow::Result<()> {
+    // Sibling temp file; not `with_extension`, which would replace any existing ext.
+    let temp_path = {
+        let mut s = output.as_os_str().to_owned();
+        s.push(".tmp");
+        PathBuf::from(s)
+    };
+
+    tracing::info!(
+        path = %output.display(),
+        size = data.len(),
+        "{log_message}",
+    );
+    fs_err::write(&temp_path, data)
+        .with_context(|| format!("writing temporary IGVM file at {}", temp_path.display()))?;
+
+    fs_err::rename(&temp_path, output).with_context(|| {
+        format!(
+            "renaming temporary file {} to {}",
+            temp_path.display(),
+            output.display()
+        )
+    })?;
 
     Ok(())
 }
@@ -644,34 +854,7 @@ fn add_snp_id_block_command(
         snp_id_block::add_snp_id_block_temp_key(&igvm_data, svn)?
     };
 
-    // Write output file atomically: write to a temporary file in the same
-    // directory, then rename into place. This prevents a crash during the
-    // write from corrupting the output (which may be the same file as the
-    // input for in-place edits). Same-volume renames are atomic on both POSIX
-    // and Windows.
-    let temp_path = {
-        let mut s = output.as_os_str().to_owned();
-        s.push(".tmp");
-        PathBuf::from(s)
-    };
-
-    tracing::info!(
-        path = %output.display(),
-        size = new_igvm.len(),
-        "Writing IGVM file with SNP ID block"
-    );
-    fs_err::write(&temp_path, &new_igvm)
-        .with_context(|| format!("writing temporary IGVM file at {}", temp_path.display()))?;
-
-    fs_err::rename(&temp_path, &output).with_context(|| {
-        format!(
-            "renaming temporary file {} to {}",
-            temp_path.display(),
-            output.display()
-        )
-    })?;
-
-    Ok(())
+    write_igvm_file_atomic(&output, &new_igvm, "Writing IGVM file with SNP ID block")
 }
 
 /// Extract the guest SVN from the (single) SEV-SNP guest config in a manifest.
@@ -690,6 +873,196 @@ fn snp_guest_svn_from_config(config: &Config) -> anyhow::Result<u32> {
          source --guest-svn (pass --guest-svn explicitly instead)"
     );
     Ok(svn)
+}
+
+/// Dump CoRIM headers from an IGVM file.
+fn dump_corim_headers(
+    file_path: &std::path::Path,
+    header_type_filter: Option<CorimHeaderType>,
+    platform_filter: Option<Platform>,
+    output_dir: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let image = fs_err::read(file_path).context("reading input file")?;
+
+    // Parse the IGVM file using the igvm crate's structured API.
+    let igvm_file = IgvmFile::new_from_binary(&image, None).context("parsing IGVM file")?;
+
+    let fixed_header = IGVM_FIXED_HEADER::read_from_prefix(image.as_slice())
+        .map_err(|_| anyhow::anyhow!("Invalid IGVM file: cannot read fixed header"))?
+        .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+
+    println!("IGVM File: {}", file_path.display());
+    println!("Total file size: {} bytes", fixed_header.total_file_size);
+    println!();
+
+    // The output directory is created lazily on the first matching header
+    // so a filter that matches nothing doesn't leave an empty directory
+    // behind.
+    let mut output_dir_created = false;
+
+    let platforms = igvm_file.platforms();
+
+    // Print the supported platform table
+    if !platforms.is_empty() {
+        println!("Supported Platforms:");
+        for header in platforms {
+            match header {
+                IgvmPlatformHeader::SupportedPlatform(info) => {
+                    println!(
+                        "  {:?} -> compatibility_mask 0x{:X}",
+                        info.platform_type, info.compatibility_mask
+                    );
+                }
+            }
+        }
+        println!();
+    }
+
+    // Convert platform filter to compatibility mask using the file's actual mapping
+    let platform_mask_filter = platform_filter
+        .map(|p| platform_mask::lookup_compatibility_mask(platforms, IgvmPlatformType::from(p)))
+        .transpose()?;
+
+    // Iterate through initialization headers looking for CoRIM entries
+    let mut document_count: usize = 0;
+    let mut signature_count: usize = 0;
+
+    for header in igvm_file.initializations() {
+        let (kind, label, extension, compatibility_mask, payload) = match header {
+            IgvmInitializationHeader::CorimDocument {
+                compatibility_mask,
+                document,
+            } => (
+                CorimHeaderType::Document,
+                "Document",
+                "cbor",
+                *compatibility_mask,
+                document.as_slice(),
+            ),
+            IgvmInitializationHeader::CorimSignature {
+                compatibility_mask,
+                signature,
+            } => (
+                CorimHeaderType::Signature,
+                "Signature",
+                "cose",
+                *compatibility_mask,
+                signature.as_slice(),
+            ),
+            _ => continue,
+        };
+
+        let show_type = header_type_filter.is_none_or(|t| t == kind);
+        let show_platform = platform_mask_filter.is_none_or(|mask| compatibility_mask & mask != 0);
+
+        if !show_type || !show_platform {
+            continue;
+        }
+
+        match kind {
+            CorimHeaderType::Document => document_count += 1,
+            CorimHeaderType::Signature => signature_count += 1,
+        }
+
+        let platform_name = platform_mask::platform_name_for_mask(platforms, compatibility_mask);
+
+        println!("CoRIM {label} ({platform_name}):");
+        println!(
+            "  Compatibility Mask: 0x{compatibility_mask:X} ({})",
+            platform_mask::format_platform_mask(platforms, compatibility_mask)
+        );
+        println!("  Size: {} bytes", payload.len());
+
+        if let Some(ref dir) = output_dir {
+            if !output_dir_created {
+                fs_err::create_dir_all(dir).context("creating output directory")?;
+                output_dir_created = true;
+            }
+            let file_prefix = label.to_lowercase();
+            let output_file = dir.join(format!("corim_{file_prefix}_{platform_name}.{extension}"));
+            fs_err::write(&output_file, payload)
+                .with_context(|| format!("writing {label} payload to {}", output_file.display()))?;
+            println!("  Output: {}", output_file.display());
+        }
+        println!();
+    }
+
+    if document_count == 0 && signature_count == 0 {
+        println!("No CoRIM headers found matching the specified filters.");
+    } else {
+        println!(
+            "Summary: {} document header(s), {} signature header(s)",
+            document_count, signature_count
+        );
+    }
+
+    Ok(())
+}
+
+/// Patch a CoRIM signature into an existing IGVM file.
+fn patch_corim_signature(
+    input: PathBuf,
+    output: PathBuf,
+    corim_bundle: Option<PathBuf>,
+    corim_signature: Option<PathBuf>,
+    platform: Platform,
+) -> anyhow::Result<()> {
+    let igvm_data = fs_err::read(&input)
+        .with_context(|| format!("reading input IGVM file at {}", input.display()))?;
+
+    let platform_type = IgvmPlatformType::from(platform);
+
+    // The CoRIM document is expected to already be embedded in the IGVM file
+    // for the target platform (auto-generated at build time). `corim_signature::patch`
+    // looks it up internally and verifies `signature_data` against it before
+    // mutating the file. The issuer certificate is carried in the
+    // signature's COSE protected header (x5chain / x5bag, RFC 9360); no
+    // separate cert input needed.
+    //
+    // When the user supplies a `--corim-bundle`, that bundle's embedded
+    // payload is the document the signature was actually produced over;
+    // we forward it so `patch` can sanity-check it against the
+    // IGVM-embedded document and surface a targeted mismatch error
+    // instead of an opaque cryptographic verify failure.
+    let (signature_data, bundle_document) = if let Some(bundle_path) = &corim_bundle {
+        let bundle_data = fs_err::read(bundle_path)
+            .with_context(|| format!("reading bundled CoRIM file at {}", bundle_path.display()))?;
+
+        let detached = detach_payload(&bundle_data).context("splitting bundled CoRIM")?;
+        tracing::info!(
+            path = %bundle_path.display(),
+            bundle_size = bundle_data.len(),
+            document_size = detached.document.len(),
+            signature_size = detached.signature.len(),
+            "Split bundled signed CoRIM into document and detached signature"
+        );
+        (detached.signature, Some(detached.document))
+    } else {
+        let path = corim_signature
+            .as_ref()
+            .context("one of --corim-bundle or --corim-signature must be provided")?;
+        let sig = fs_err::read(path)
+            .with_context(|| format!("reading CoRIM signature file at {}", path.display()))?;
+        (sig, None)
+    };
+
+    tracing::info!(
+        input = %input.display(),
+        output = %output.display(),
+        bundle = ?corim_bundle,
+        signature = ?corim_signature,
+        platform = ?platform,
+        "Patching CoRIM signature into IGVM file"
+    );
+
+    let patched_igvm = corim_signature::patch(
+        &igvm_data,
+        &signature_data,
+        platform_type,
+        bundle_document.as_deref(),
+    )?;
+
+    write_igvm_file_atomic(&output, &patched_igvm, "Writing patched IGVM file")
 }
 
 /// Validate that the serialized IGVM file round-trips through the parser
