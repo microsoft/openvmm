@@ -106,7 +106,7 @@ struct PageTable {
     entries: [u64; PAGE_TABLE_ENTRY_COUNT],
 }
 
-// Would be great to allocate this pages dynamically as otherwise they go
+// Would be great to allocate these pages dynamically as otherwise they go
 // into the IGVM file and require measurement through the PSP.
 
 /// PDP table to map the GHCB
@@ -228,8 +228,8 @@ mod ghcb_access {
 
     /// # Safety
     ///
-    /// The caller must ensure that the GHCB page is properly mapped
-    /// and can be accessed in a memory-safe manner.
+    /// The caller must ensure that the GHCB page is properly mapped.
+    /// The host may concurrently modify the shared GHCB page.
     unsafe fn ghcb_data<T>() -> &'static mut [T] {
         // SAFETY: The GHCB page is statically allocated and initialized.
         // It is either mapped by the time of access, or the code won't
@@ -241,6 +241,12 @@ mod ghcb_access {
             )
         }
     }
+
+    // These macros provide atomic field access to the GHCB page.
+    //
+    // The GHCB page is shared memory between the guest and host. Because
+    // the host can modify it concurrently, all accesses use atomic
+    // operations.
 
     macro_rules! ghcb_field_set {
         ($field:ident, $type:ty, $val:expr) => {{
@@ -261,6 +267,7 @@ mod ghcb_access {
         }};
     }
 
+    /// Atomically load a value from a `GhcbSaveArea` field.
     macro_rules! ghcb_save_field_get {
         ($field:ident, $type:ty) => {{
             // SAFETY: Atomic access to the GHCB page.
@@ -271,7 +278,7 @@ mod ghcb_access {
         }};
     }
 
-    pub fn clear_page() {
+    pub fn zero_page() {
         // SAFETY: Atomic access to the GHCB page.
         unsafe { ghcb_data::<AtomicU64>() }
             .iter()
@@ -297,6 +304,7 @@ mod ghcb_access {
         }};
     }
 
+    /// Assert the valid bit in bitmap0 is set for the given save area field.
     macro_rules! ghcb_save_assert_valid_bitmap0 {
         ($save_field:ident) => {{
             let mask = 1u64 << (offset_of!(GhcbSaveArea, $save_field) / 8);
@@ -304,6 +312,7 @@ mod ghcb_access {
         }};
     }
 
+    /// Assert the valid bit in bitmap1 is set for the given save area field.
     macro_rules! ghcb_save_assert_valid_bitmap1 {
         ($save_field:ident) => {{
             let mask = 1u64 << (offset_of!(GhcbSaveArea, $save_field) / 8 - 64);
@@ -367,7 +376,9 @@ mod ghcb_access {
     /// # Safety
     ///
     /// The caller must ensure that the GHCB page is properly mapped
-    /// and can be accessed in a memory-safe manner.
+    /// (via `Ghcb::initialize`) and there are no concurrent accesses
+    /// from this VP. The host may concurrently modify the shared page,
+    /// which is why all field accesses use atomic operations.
     unsafe fn ghcb_hv_hypercall<T>() -> &'static mut [T] {
         // SAFETY: The GHCB page is statically allocated and initialized.
         // It is either mapped by the time of access, or the code won't
@@ -401,7 +412,8 @@ mod ghcb_access {
     pub fn set_hypercall_data(data: &[u8], start: usize) {
         // SAFETY: Atomic access to the GHCB page.
         let ghcb_data = unsafe { ghcb_hv_hypercall::<AtomicU8>() };
-        assert!(data.len() <= GHCB_PAGE_HV_HYPERCALL_DATA_SIZE);
+        assert!(start <= GHCB_PAGE_HV_HYPERCALL_DATA_SIZE);
+        assert!(data.len() <= GHCB_PAGE_HV_HYPERCALL_DATA_SIZE - start);
 
         ghcb_data[start..start + data.len()]
             .iter()
@@ -422,7 +434,7 @@ mod ghcb_access {
     }
 }
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 enum IoAccessSize {
     Byte = 1,
     Word = 2,
@@ -432,9 +444,9 @@ enum IoAccessSize {
 impl Ghcb {
     pub fn initialize() {
         // Make sure page alignment.
-        assert!((PAGE_TABLE.get() as u64) & (X64_PAGE_SIZE - 1) == 0);
-        assert!((PD_TABLE.get() as u64) & (X64_PAGE_SIZE - 1) == 0);
-        assert!((PDP_TABLE.get() as u64) & (X64_PAGE_SIZE - 1) == 0);
+        assert_eq!((PAGE_TABLE.get() as u64) & (X64_PAGE_SIZE - 1), 0);
+        assert_eq!((PD_TABLE.get() as u64) & (X64_PAGE_SIZE - 1), 0);
+        assert_eq!((PDP_TABLE.get() as u64) & (X64_PAGE_SIZE - 1), 0);
 
         // Map the GHCB page in the guest as non-confidential.
 
@@ -479,7 +491,7 @@ impl Ghcb {
 
         // Flipping the C-bit makes the contents of the GHCB page scrambled,
         // zero it out.
-        ghcb_access::clear_page();
+        ghcb_access::zero_page();
         ghcb_access::set_protocol_version(GhcbProtocolVersion::V2);
 
         // Register the GHCB page with the hypervisor.
@@ -534,11 +546,11 @@ impl Ghcb {
         // below to succeed.
         //
         // Soon after this, the GHCB page will be mapped by the kernel at the
-        // GPA of its chhosing. The temporarily mapping at GPA 0 poses no
+        // GPA of its choosing. The temporarily mapping at GPA 0 poses no
         // security risk as that page does not contain any sensitive data
         // in the IGVM file.
         //
-        // Once support for unpamming the GHCB page from the latest SEV-ES
+        // Once support for unmapping the GHCB page from the latest SEV-ES
         // specification is added, this will be removed in favor of the standard
         // unmap operation.
         let resp = Self::ghcb_call(GhcbCall {
@@ -581,7 +593,7 @@ impl Ghcb {
         // Needed here, not before.
         flush_tlb();
 
-        ghcb_access::clear_page();
+        ghcb_access::zero_page();
 
         // SAFETY: Always safe to write the GHCB MSR, no concurrency issues.
         unsafe { write_msr(X86X_AMD_MSR_GHCB, GHCB_PREVIOUS.get()) };
@@ -592,7 +604,7 @@ impl Ghcb {
         // SAFETY: Using the `vmgexit` instruction forces an exit to the hypervisor but doesn't
         // directly change program state.
         unsafe {
-            asm!("rep vmmcall", options(nomem, nostack));
+            asm!("rep vmmcall", options(nostack));
         }
     }
 
