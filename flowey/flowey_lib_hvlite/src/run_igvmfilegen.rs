@@ -15,6 +15,9 @@ pub struct IgvmOutput {
     pub igvm_tdx_json: Option<PathBuf>,
     pub igvm_snp_json: Option<PathBuf>,
     pub igvm_vbs_json: Option<PathBuf>,
+    pub igvm_tdx_corim: Option<PathBuf>,
+    pub igvm_snp_corim: Option<PathBuf>,
+    pub igvm_vbs_corim: Option<PathBuf>,
 }
 
 flowey_request! {
@@ -97,6 +100,18 @@ impl SimpleFlowNode for Node {
                     let path = igvm_path.with_file_name(format!("{igvm_file_stem}-vbs.json"));
                     path.exists().then_some(path)
                 };
+                let igvm_tdx_corim = {
+                    let path = igvm_path.with_file_name(format!("{igvm_file_stem}-tdx.cbor"));
+                    path.exists().then_some(path)
+                };
+                let igvm_snp_corim = {
+                    let path = igvm_path.with_file_name(format!("{igvm_file_stem}-snp.cbor"));
+                    path.exists().then_some(path)
+                };
+                let igvm_vbs_corim = {
+                    let path = igvm_path.with_file_name(format!("{igvm_file_stem}-vbs.cbor"));
+                    path.exists().then_some(path)
+                };
 
                 rt.write(
                     igvm,
@@ -106,6 +121,9 @@ impl SimpleFlowNode for Node {
                         igvm_tdx_json,
                         igvm_snp_json,
                         igvm_vbs_json,
+                        igvm_tdx_corim,
+                        igvm_snp_corim,
+                        igvm_vbs_corim,
                     },
                 );
 

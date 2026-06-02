@@ -88,6 +88,15 @@ pub enum OpenhclIgvmEndorsements {
         #[serde(rename = "openhcl-vbs.json")]
         #[serde(skip_serializing_if = "Option::is_none")]
         igvm_vbs_json: Option<PathBuf>,
+        #[serde(rename = "openhcl-tdx.cbor")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        igvm_tdx_corim: Option<PathBuf>,
+        #[serde(rename = "openhcl-snp.cbor")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        igvm_snp_corim: Option<PathBuf>,
+        #[serde(rename = "openhcl-vbs.cbor")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        igvm_vbs_corim: Option<PathBuf>,
     },
 }
 
@@ -98,6 +107,7 @@ impl OpenhclIgvmEndorsements {
                 igvm_tdx_json,
                 igvm_snp_json,
                 igvm_vbs_json,
+                ..
             } => igvm_tdx_json.is_some() && igvm_snp_json.is_some() && igvm_vbs_json.is_some(),
         }
     }
@@ -154,6 +164,9 @@ impl OpenhclIgvmOutput {
             igvm_tdx_json,
             igvm_snp_json,
             igvm_vbs_json,
+            igvm_tdx_corim,
+            igvm_snp_corim,
+            igvm_vbs_corim,
         } = igvm;
         let mut endorsements =
             if igvm_tdx_json.is_some() || igvm_snp_json.is_some() || igvm_vbs_json.is_some() {
@@ -161,6 +174,9 @@ impl OpenhclIgvmOutput {
                     igvm_tdx_json,
                     igvm_snp_json,
                     igvm_vbs_json,
+                    igvm_tdx_corim,
+                    igvm_snp_corim,
+                    igvm_vbs_corim,
                 })
             } else {
                 None

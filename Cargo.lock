@@ -3809,7 +3809,10 @@ name = "igvmfilegen"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bitfield-struct 0.11.0",
  "clap",
+ "corim",
+ "crypto",
  "fs-err",
  "hex",
  "hvdef",
@@ -3823,10 +3826,9 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "thiserror 2.0.16",
+ "test_with_tracing",
  "tracing",
  "tracing-subscriber",
- "vbs_defs",
  "x86defs",
  "zerocopy",
 ]
@@ -9201,17 +9203,6 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
-
-[[package]]
-name = "vbs_defs"
-version = "0.0.0"
-dependencies = [
- "bitfield-struct 0.11.0",
- "igvm_defs",
- "open_enum",
- "static_assertions",
- "zerocopy",
-]
 
 [[package]]
 name = "vcpkg"
