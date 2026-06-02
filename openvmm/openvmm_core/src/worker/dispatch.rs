@@ -21,9 +21,11 @@ use anyhow::Context;
 use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
+#[cfg(guest_arch = "x86_64")]
 use chipset_resources::cmos_rtc::GenericCmosRtcDeviceHandle;
 #[cfg(guest_arch = "x86_64")]
 use chipset_resources::cmos_rtc::Piix4CmosRtcDeviceHandle;
+#[cfg(guest_arch = "x86_64")]
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
 use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
 use cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
@@ -115,6 +117,7 @@ use virtio::VirtioMmioDevice;
 use virtio::VirtioPciDevice;
 use virtio::resolve::VirtioResolveInput;
 use vm_loader::initial_regs::initial_regs;
+#[cfg(guest_arch = "x86_64")]
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
@@ -1624,11 +1627,11 @@ impl InitializedVm {
             )));
         }
 
+        #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut chipset_device_handles = cfg.chipset_devices;
 
-        // Emit CMOS RTC device handles based on load mode.
-        // PCAT (x86-only) uses the PIIX4 variant; other x86 configurations
-        // use the generic variant.
+        // Emit CMOS RTC device handles (x86-only, port I/O based).
+        // PCAT gets the PIIX4 variant; UEFI gets the generic RTC.
         #[cfg(guest_arch = "x86_64")]
         if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {
             let initial_rtc_cmos = Some(firmware_pcat::default_cmos_values(&mem_layout));
