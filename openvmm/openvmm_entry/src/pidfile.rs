@@ -93,7 +93,7 @@ impl Pidfile {
         (|| {
             file.set_len(0)?;
             (&file).seek(io::SeekFrom::Start(0))?;
-            write!(&file, "{pid}\n")?;
+            writeln!(&file, "{pid}")?;
             Ok(())
         })()
         .map_err(|e| PidfileError::Io {
@@ -145,11 +145,11 @@ impl Pidfile {
         };
 
         use std::io::Write;
-        write!(&file, "{pid}\n").map_err(|e| PidfileError::Io {
+        writeln!(&file, "{pid}").map_err(|e| PidfileError::Io {
             file: path.to_owned(),
             error: e,
         })?;
-        Ok(Self { _file: file.into() })
+        Ok(Self { _file: file })
     }
 }
 
