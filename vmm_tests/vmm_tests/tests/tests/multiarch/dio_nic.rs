@@ -10,9 +10,14 @@
 //!
 //! **Scope:** Boot a Linux UEFI guest with a synthetic NIC bridged to a
 //! Hyper-V vmswitch via DirectIO. DHCP an IPv4 lease from the switch's
-//! NAT and verify a default route exists. Ping the gateway to drive
-//! packets through `netvsp` → `DioEndpoint::tx_avail` → `vmswitch` and
-//! back, which is the meaningful regression signal for `-net dio`.
+//! NAT and verify a default route exists. Resolve the gateway's MAC via
+//! ARP to drive packets through `netvsp` → `DioEndpoint::tx_avail` →
+//! `vmswitch` and back, which is the meaningful regression signal for
+//! `-net dio`. ICMP echo is intentionally *not* used as the assertion:
+//! the Hyper-V Default Switch gateway (the host vNIC) does not reliably
+//! answer pings — the host firewall blocks inbound echo by default — so a
+//! successful ARP resolution is the reliable, environment-independent
+//! signal that bidirectional traffic traversed the DIO datapath.
 //!
 //! **Host requirements:** Windows host with Hyper-V installed and at
 //! least one vmswitch (the Default Switch by preference). The test
@@ -83,6 +88,27 @@ fn parse_default_gw(route: &str, iface: &str) -> anyhow::Result<String> {
         }
     }
     anyhow::bail!("no default route via {iface} found in: {route}")
+}
+
+/// Parse the link-layer (MAC) address of a resolved neighbor from a
+/// single `ip neigh` entry, returning `Some(lladdr)` only when the entry
+/// proves an ARP reply was received: it must carry an `lladdr` token and
+/// must not be in a negative state (`FAILED`/`INCOMPLETE`). Entries that
+/// are still unresolved — or empty output when no entry exists yet —
+/// yield `None` so the caller can keep polling.
+fn parse_neigh_lladdr(neigh: &str) -> Option<String> {
+    // Reject negative states even if a stale lladdr happens to be present.
+    if neigh.contains("INCOMPLETE") || neigh.contains("FAILED") {
+        return None;
+    }
+    let mut tokens = neigh.split_whitespace();
+    let mut lladdr = None;
+    while let Some(tok) = tokens.next() {
+        if tok == "lladdr" {
+            lladdr = tokens.next().map(|s| s.to_string());
+        }
+    }
+    lladdr
 }
 
 /// End-to-end test for `-net dio`.
@@ -158,17 +184,94 @@ async fn dio_nic(
     let route = cmd!(sh, "ip route show default").read().await?;
     tracing::info!(route, "default route");
     let gw = parse_default_gw(&route, &iface)?;
-    tracing::info!(gw, "pinging gateway");
+    tracing::info!(gw, "resolving gateway via DIO");
 
-    // The ping is the meaningful regression signal: it pushes packets
-    // through the guest netvsc → host netvsp → DioEndpoint → vmswitch
-    // path and validates a response comes back.
-    cmd!(sh, "ping -c 3 -W 5 -I {iface} {gw}")
-        .run()
-        .await
-        .context("ping to gateway via DIO failed")?;
+    // Drive ARP resolution of the gateway across the DIO datapath. This is
+    // the meaningful regression signal: resolving the gateway's MAC pushes
+    // an ARP request through the guest netvsc → host netvsp → DioEndpoint →
+    // vmswitch path and requires a reply to come back along the same path.
+    //
+    // We deliberately do not assert on ICMP echo replies: the Hyper-V
+    // Default Switch gateway (the host vNIC) does not reliably answer pings
+    // and the host firewall blocks inbound echo by default. The ping below
+    // is only used to provoke neighbor resolution, so its exit status is
+    // ignored — the assertion is on the resulting neighbor entry.
+    let mut neigh = String::new();
+    let mut gw_mac = None;
+    for _ in 0..15 {
+        cmd!(sh, "ping -c 1 -W 1 -I {iface} {gw}")
+            .ignore_status()
+            .ignore_stdout()
+            .run()
+            .await?;
+        neigh = cmd!(sh, "ip neigh show {gw} dev {iface}").read().await?;
+        if let Some(mac) = parse_neigh_lladdr(&neigh) {
+            gw_mac = Some(mac);
+            break;
+        }
+        timer.sleep(Duration::from_secs(1)).await;
+    }
+    let gw_mac = gw_mac.with_context(|| {
+        format!(
+            "gateway {gw} not ARP-reachable via {iface} through DIO; last neigh entry: {neigh:?}"
+        )
+    })?;
+    tracing::info!(gw, gw_mac, "gateway resolved via DIO (ARP reply received)");
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn neigh_reachable_yields_lladdr() {
+        let line = "172.22.160.1 dev eth0 lladdr 00:15:5d:01:02:03 REACHABLE";
+        assert_eq!(
+            super::parse_neigh_lladdr(line).as_deref(),
+            Some("00:15:5d:01:02:03")
+        );
+    }
+
+    #[test]
+    fn neigh_stale_still_yields_lladdr() {
+        // STALE entries still prove a reply was once received.
+        let line = "172.22.160.1 dev eth0 lladdr 00:15:5d:0a:0b:0c STALE";
+        assert_eq!(
+            super::parse_neigh_lladdr(line).as_deref(),
+            Some("00:15:5d:0a:0b:0c")
+        );
+    }
+
+    #[test]
+    fn neigh_incomplete_is_unresolved() {
+        assert_eq!(
+            super::parse_neigh_lladdr("172.22.160.1 dev eth0 INCOMPLETE"),
+            None
+        );
+    }
+
+    #[test]
+    fn neigh_failed_is_unresolved() {
+        // A stale lladdr paired with FAILED must not count as resolved.
+        let line = "172.22.160.1 dev eth0 lladdr 00:15:5d:01:02:03 FAILED";
+        assert_eq!(super::parse_neigh_lladdr(line), None);
+    }
+
+    #[test]
+    fn neigh_empty_is_unresolved() {
+        assert_eq!(super::parse_neigh_lladdr(""), None);
+    }
+
+    #[test]
+    fn default_gw_requires_exact_dev_match() {
+        let route = "default via 172.22.160.1 dev eth0 proto dhcp src 172.22.160.34 metric 100";
+        assert_eq!(
+            super::parse_default_gw(route, "eth0").unwrap(),
+            "172.22.160.1"
+        );
+        // A sibling interface whose name is a substring must not match.
+        assert!(super::parse_default_gw(route, "eth0.100").is_err());
+    }
 }
