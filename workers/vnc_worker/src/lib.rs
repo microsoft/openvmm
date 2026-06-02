@@ -202,10 +202,17 @@ impl<T: Listener> MultiClientServer<T> {
         enum Event<A> {
             Accepted(A),
             ClientDone(u64),
-            DirtyRects(Vec<video_core::DirtyRect>),
+            // A drained batch of device messages: one Vec per message that was
+            // queued on the (unbounded) mesh channel when we serviced it. The
+            // batch length is the channel backlog at that instant.
+            DirtyRects(Vec<Vec<video_core::DirtyRect>>),
         }
 
         let mut device_dirty_seen = false;
+        // High-water mark of the dirty-rect channel backlog, to confirm the
+        // unbounded mesh queue is not growing (stays at 1 when the consumer
+        // keeps up) and to surface it if it ever does.
+        let mut dirty_backlog_max = 0usize;
 
         loop {
             let listener = &mut self.listener;
@@ -213,9 +220,18 @@ impl<T: Listener> MultiClientServer<T> {
             let dirty_recv = &mut self.dirty_recv;
 
             // Optional future for dirty rect reception (pending if no video device).
+            // Block for the first message, then drain everything else already
+            // queued via try_recv. The drained count is the channel backlog,
+            // our measure of the unbounded mesh queue depth.
             let dirty_fut = async {
                 match dirty_recv {
-                    Some(recv) => recv.recv().await,
+                    Some(recv) => recv.recv().await.map(|first| {
+                        let mut batch = vec![first];
+                        while let Ok(rects) = recv.try_recv() {
+                            batch.push(rects);
+                        }
+                        batch
+                    }),
                     None => std::future::pending().await,
                 }
             };
@@ -237,12 +253,15 @@ impl<T: Listener> MultiClientServer<T> {
                 }
                 id = client_done.fuse() => Event::ClientDone(id),
                 msg = dirty_fut.fuse() => match msg {
-                    Ok(rects) => Event::DirtyRects(rects),
+                    Ok(batch) => Event::DirtyRects(batch),
                     Err(_) => {
                         // Upstream dirty channel closed (video device reset
                         // or teardown). Drop it so clients fall back to tile
                         // diff instead of freezing with device_dirty_seen.
-                        tracing::warn!("device dirty channel closed, falling back to tile diff");
+                        tracing::warn!(
+                            backlog_max = dirty_backlog_max,
+                            "device dirty channel closed, falling back to tile diff"
+                        );
                         self.dirty_recv = None;
                         // Close all per-client dirty senders so clients
                         // detect the closure and reset device_dirty_seen.
@@ -304,28 +323,49 @@ impl<T: Listener> MultiClientServer<T> {
                     self.dirty_senders.retain(|s| s.id != id);
                     tracing::info!(id, count = self.clients.len(), "VNC client disconnected");
                 }
-                Event::DirtyRects(rects) => {
+                Event::DirtyRects(batch) => {
                     if !device_dirty_seen {
                         device_dirty_seen = true;
                         tracing::info!("device dirty rects active, preferring over tile diff");
                     }
-                    // Broadcast to all connected clients. Arc avoids cloning
-                    // the rect Vec for each client (only ref-count bump).
-                    let rects = Arc::new(rects);
-                    for s in &mut self.dirty_senders {
-                        if s.sender.try_send(Arc::clone(&rects)).is_err() {
-                            s.missed_dirty.store(true, Ordering::Relaxed);
-                            tracing::debug!(
-                                id = s.id,
-                                "client dirty channel full, flagged for full refresh"
-                            );
-                        }
+                    // Backlog = how many messages were queued when we got to
+                    // service the channel. 1 means the consumer is keeping up
+                    // and the unbounded mesh queue is not growing; >1 means the
+                    // device is briefly outpacing us.
+                    let backlog = batch.len();
+                    if backlog > dirty_backlog_max {
+                        dirty_backlog_max = backlog;
                     }
-                    tracing::trace!(
-                        rect_count = rects.len(),
-                        clients = self.dirty_senders.len(),
-                        "broadcast device dirty rects"
-                    );
+                    if backlog > 1 {
+                        tracing::debug!(
+                            backlog,
+                            rects_total = batch.iter().map(|r| r.len()).sum::<usize>(),
+                            backlog_max = dirty_backlog_max,
+                            "device dirty channel backlog above 1 (producer outpacing consumer)"
+                        );
+                    } else {
+                        tracing::trace!(backlog, "device dirty channel drained");
+                    }
+                    // Broadcast each drained message individually so behavior is
+                    // identical to receiving them one at a time. Arc avoids
+                    // cloning the rect Vec per client (only a ref-count bump).
+                    for rects in batch {
+                        let rects = Arc::new(rects);
+                        for s in &mut self.dirty_senders {
+                            if s.sender.try_send(Arc::clone(&rects)).is_err() {
+                                s.missed_dirty.store(true, Ordering::Relaxed);
+                                tracing::debug!(
+                                    id = s.id,
+                                    "client dirty channel full, flagged for full refresh"
+                                );
+                            }
+                        }
+                        tracing::trace!(
+                            rect_count = rects.len(),
+                            clients = self.dirty_senders.len(),
+                            "broadcast device dirty rects"
+                        );
+                    }
                 }
             }
         }
