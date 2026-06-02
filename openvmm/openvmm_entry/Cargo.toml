@@ -114,6 +114,7 @@ win_etw_tracing.workspace = true
 workspace = true
 features = [
   "Win32_Foundation",
+  "Win32_Storage_FileSystem",
 ]
 
 [build-dependencies]
