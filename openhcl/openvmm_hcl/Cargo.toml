@@ -35,6 +35,8 @@ underhill_entry.workspace = true
 openvmm_hcl_resources.workspace = true
 tracing.workspace = true
 crypto = { workspace = true, features = ["symcrypt"] }
+# OpenVMM-HCL only needs libcrypto from openssl
+openssl_crypto_only.workspace = true
 
 [package.metadata.xtask.unused-deps]
 ignored = ["tracing"] # Present to specify features from flowey
