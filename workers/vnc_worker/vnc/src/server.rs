@@ -184,6 +184,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
 
                 let mut chosen_type = 0u8;
                 socket.read_exact(chosen_type.as_mut_bytes()).await?;
+                tracing::debug!(security_type = chosen_type, "client selected security type");
 
                 if chosen_type != rfb::SECURITY_TYPE_NONE {
                     if version.0 == rfb::PROTOCOL_VERSION_38 {
@@ -387,6 +388,24 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     blue_shift = cs.fmt.blue_shift,
                     "client pixel format changed"
                 );
+                // Full requested format plus what the server actually does with
+                // it: no_convert = the client's layout matches our internal
+                // 0x00RRGGBB so pixels go out as-is (the memcpy fast path);
+                // otherwise every pixel is converted on the way out.
+                tracing::debug!(
+                    bpp = cs.fmt.bits_per_pixel,
+                    depth = cs.fmt.depth,
+                    true_color = cs.fmt.true_color_flag != 0,
+                    big_endian = cs.fmt.big_endian_flag != 0,
+                    red_max = cs.fmt.red_max.get(),
+                    green_max = cs.fmt.green_max.get(),
+                    blue_max = cs.fmt.blue_max.get(),
+                    red_shift = cs.fmt.red_shift,
+                    green_shift = cs.fmt.green_shift,
+                    blue_shift = cs.fmt.blue_shift,
+                    no_convert = cs.pixel_conv.no_convert,
+                    "pixel format negotiated"
+                );
                 cs.force_full_update = true;
             }
             rfb::CS_MESSAGE_SET_ENCODINGS => {
@@ -418,6 +437,8 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                 cs.supports_zlib = encodings.contains(&rfb::ENCODING_TYPE_ZLIB.into());
                 let had_cursor = cs.supports_cursor;
                 cs.supports_cursor = encodings.contains(&rfb::ENCODING_TYPE_CURSOR.into());
+                let supports_qemu_ext_key =
+                    encodings.contains(&rfb::ENCODING_TYPE_QEMU_EXTENDED_KEY_EVENT.into());
                 tracing::info!(
                     zlib = cs.supports_zlib,
                     desktop_resize = cs.supports_desktop_resize,
@@ -425,11 +446,32 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     encoding_count = encodings.len(),
                     "client encodings"
                 );
+                // Full offered set, every entry decoded to a name. The
+                // collect runs only when debug is enabled (tracing does not
+                // evaluate field expressions for a disabled level), and this
+                // is the once-per-connection negotiation path, not per frame.
+                tracing::debug!(
+                    offered = ?encodings
+                        .iter()
+                        .map(|e| rfb::encoding_name(e.get() as i32))
+                        .collect::<Vec<_>>(),
+                    "client offered encodings"
+                );
+                // What the server will actually use given that offer: zlib if
+                // the client advertised it, else raw; plus the capabilities we
+                // honor. This is the "finally agreed" half of the report.
+                tracing::debug!(
+                    wire_encoding = if cs.supports_zlib { "zlib" } else { "raw" },
+                    cursor = cs.supports_cursor,
+                    desktop_resize = cs.supports_desktop_resize,
+                    qemu_extended_key = supports_qemu_ext_key,
+                    "encodings negotiated"
+                );
                 if cs.supports_cursor && !had_cursor {
                     cs.send_cursor = true;
                 }
 
-                if encodings.contains(&rfb::ENCODING_TYPE_QEMU_EXTENDED_KEY_EVENT.into()) {
+                if supports_qemu_ext_key {
                     let mut msg = rfb::FramebufferUpdate {
                         message_type: rfb::SC_MESSAGE_TYPE_FRAMEBUFFER_UPDATE,
                         padding: 0,
