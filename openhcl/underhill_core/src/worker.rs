@@ -2611,7 +2611,7 @@ async fn new_underhill_vm(
         });
     }
 
-    #[cfg_attr(not(guest_arch = "x86_64"), allow(unused_mut))]
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
     let mut chipset_result = chipset
         .build()
         .context("failed to build chipset configuration")?;
