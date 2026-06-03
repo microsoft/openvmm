@@ -462,12 +462,16 @@ pub struct Vtl2Config {
 #[derive(Eq, PartialEq, Debug, Copy, Clone, MeshPayload)]
 pub enum IsolationType {
     Vbs,
+    Snp,
+    Cca,
 }
 
 impl From<IsolationType> for virt::IsolationType {
     fn from(value: IsolationType) -> Self {
         match value {
             IsolationType::Vbs => Self::Vbs,
+            IsolationType::Snp => Self::Snp,
+            IsolationType::Cca => Self::Cca,
         }
     }
 }
