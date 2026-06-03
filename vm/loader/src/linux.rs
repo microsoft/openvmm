@@ -7,12 +7,13 @@ use crate::common::ChunkBuf;
 use crate::common::ImportFileRegion;
 use crate::common::ImportFileRegionError;
 use crate::common::ReadSeek;
-use crate::common::import_default_gdt;
 use crate::elf::load_static_elf;
 use crate::importer::Aarch64Register;
 use crate::importer::BootPageAcceptance;
 use crate::importer::GuestArch;
 use crate::importer::ImageLoad;
+use crate::importer::SegmentRegister;
+use crate::importer::TableRegister;
 use crate::importer::X86Register;
 use aarch64defs::Cpsr64;
 use aarch64defs::IntermPhysAddrSize;
@@ -34,8 +35,13 @@ use page_table::x64::align_up_to_page_size;
 use std::ffi::CString;
 use std::io::Read;
 use std::io::Seek;
+use std::io::SeekFrom;
+use std::mem::size_of;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
+use x86defs::GdtEntry;
+use x86defs::X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES;
+use x86defs::X64_DEFAULT_DATA_SEGMENT_ATTRIBUTES;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -178,6 +184,14 @@ pub struct ZeroPageConfig<'a> {
     pub acpi_len: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SnpBootConfig {
+    pub secrets_address: u64,
+    pub cpuid_address: u64,
+    pub cc_blob_address: u64,
+    pub cc_setup_data_address: u64,
+}
+
 pub struct CommandLineConfig<'a> {
     pub address: u64,
     pub cmdline: &'a CString,
@@ -200,6 +214,69 @@ pub struct InitrdConfig<'a> {
     pub initrd_address: InitrdAddressType,
     pub initrd: &'a mut dyn ReadSeek,
     pub size: u64,
+}
+
+fn import_linux_boot_gdt(
+    importer: &mut impl ImageLoad<X86Register>,
+    gdt_page_base: u64,
+) -> anyhow::Result<()> {
+    const LINUX_BOOT_CS: u16 = 0x10;
+    const LINUX_BOOT_DS: u16 = 0x18;
+    const LINUX_BOOT_GDT_COUNT: usize = 4;
+
+    let data_attributes: u16 = X64_DEFAULT_DATA_SEGMENT_ATTRIBUTES.into();
+    let code_attributes: u16 = X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES.into();
+    let gdt = [
+        GdtEntry::new_zeroed(),
+        GdtEntry::new_zeroed(),
+        GdtEntry {
+            limit_low: 0xffff,
+            attr_low: code_attributes as u8,
+            attr_high: (code_attributes >> 8) as u8,
+            ..GdtEntry::new_zeroed()
+        },
+        GdtEntry {
+            limit_low: 0xffff,
+            attr_low: data_attributes as u8,
+            attr_high: (data_attributes >> 8) as u8,
+            ..GdtEntry::new_zeroed()
+        },
+    ];
+
+    importer.import_pages(
+        gdt_page_base,
+        1,
+        "linux-boot-gdt",
+        BootPageAcceptance::Exclusive,
+        gdt.as_bytes(),
+    )?;
+
+    let mut import_reg = |register| importer.import_vp_register(register);
+    import_reg(X86Register::Gdtr(TableRegister {
+        base: gdt_page_base * HV_PAGE_SIZE,
+        limit: (size_of::<GdtEntry>() * LINUX_BOOT_GDT_COUNT - 1) as u16,
+    }))?;
+
+    let ds = SegmentRegister {
+        selector: LINUX_BOOT_DS,
+        base: 0,
+        limit: 0xffffffff,
+        attributes: data_attributes,
+    };
+    import_reg(X86Register::Ds(ds))?;
+    import_reg(X86Register::Es(ds))?;
+    import_reg(X86Register::Fs(ds))?;
+    import_reg(X86Register::Gs(ds))?;
+    import_reg(X86Register::Ss(ds))?;
+
+    import_reg(X86Register::Cs(SegmentRegister {
+        selector: LINUX_BOOT_CS,
+        base: 0,
+        limit: 0xffffffff,
+        attributes: code_attributes,
+    }))?;
+
+    Ok(())
 }
 
 /// Information returned about the kernel loaded.
@@ -235,6 +312,75 @@ pub struct LoadInfo {
     /// This must be placed into the zero page so the kernel's startup code
     /// can read its own configuration.
     pub bzimage_setup_header: Option<defs::setup_header>,
+}
+
+fn import_snp_boot_pages(
+    importer: &mut impl ImageLoad<X86Register>,
+    snp_boot: SnpBootConfig,
+) -> Result<(), Error> {
+    check_address_alignment(snp_boot.secrets_address)?;
+    check_address_alignment(snp_boot.cpuid_address)?;
+    check_address_alignment(snp_boot.cc_blob_address)?;
+    check_address_alignment(snp_boot.cc_setup_data_address)?;
+
+    importer
+        .import_pages(
+            snp_boot.secrets_address / HV_PAGE_SIZE,
+            1,
+            "linux-snp-secrets",
+            BootPageAcceptance::SecretsPage,
+            &[],
+        )
+        .map_err(Error::Importer)?;
+    importer
+        .import_pages(
+            snp_boot.cpuid_address / HV_PAGE_SIZE,
+            1,
+            "linux-snp-cpuid",
+            BootPageAcceptance::CpuidPage,
+            &[],
+        )
+        .map_err(Error::Importer)?;
+
+    let cc_blob = defs::cc_blob_sev_info {
+        magic: defs::CC_BLOB_SEV_INFO_MAGIC,
+        version: 0,
+        _reserved: 0,
+        secrets_phys: snp_boot.secrets_address,
+        secrets_len: HV_PAGE_SIZE as u32,
+        _rsvd1: 0,
+        cpuid_phys: snp_boot.cpuid_address,
+        cpuid_len: HV_PAGE_SIZE as u32,
+        _rsvd2: 0,
+    };
+    importer
+        .import_pages(
+            snp_boot.cc_blob_address / HV_PAGE_SIZE,
+            1,
+            "linux-snp-cc-blob",
+            BootPageAcceptance::Exclusive,
+            cc_blob.as_bytes(),
+        )
+        .map_err(Error::Importer)?;
+
+    let cc_setup_data = defs::cc_setup_data {
+        header: defs::setup_data {
+            next: 0,
+            ty: defs::SETUP_CC_BLOB,
+            len: size_of::<defs::cc_setup_data>() as u32,
+        },
+        cc_blob_address: snp_boot.cc_blob_address as u32,
+        _padding: [0; 3],
+    };
+    importer
+        .import_pages(
+            snp_boot.cc_setup_data_address / HV_PAGE_SIZE,
+            1,
+            "linux-snp-cc-setup-data",
+            BootPageAcceptance::Exclusive,
+            cc_setup_data.as_bytes(),
+        )
+        .map_err(Error::Importer)
 }
 
 /// Check if an address is aligned to a page.
@@ -428,6 +574,7 @@ pub fn load_config(
     zero_page: ZeroPageConfig<'_>,
     acpi: AcpiConfig<'_>,
     registers: RegisterConfig,
+    snp_boot: Option<SnpBootConfig>,
 ) -> Result<(), Error> {
     tracing::trace!(command_line.address);
     // Only import the cmdline if it actually contains something.
@@ -448,7 +595,8 @@ pub fn load_config(
     }
 
     check_address_alignment(registers.gdt_address)?;
-    import_default_gdt(importer, registers.gdt_address / HV_PAGE_SIZE).map_err(Error::Importer)?;
+    import_linux_boot_gdt(importer, registers.gdt_address / HV_PAGE_SIZE)
+        .map_err(Error::Importer)?;
     check_address_alignment(registers.page_table_address)?;
     let mut page_table_work_buffer: Vec<PageTable> =
         vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
@@ -494,8 +642,12 @@ pub fn load_config(
         )
         .map_err(Error::Importer)?;
 
+    if let Some(snp_boot) = snp_boot {
+        import_snp_boot_pages(importer, snp_boot)?;
+    }
+
     check_address_alignment(zero_page.address)?;
-    let boot_params = build_zero_page(
+    let mut boot_params = build_zero_page(
         zero_page.mem_layout,
         zero_page.acpi_base_address,
         zero_page.acpi_len,
@@ -504,6 +656,9 @@ pub fn load_config(
         load_info.initrd.as_ref().map(|info| info.size).unwrap_or(0) as u32,
         load_info.bzimage_setup_header.as_ref(),
     );
+    if let Some(snp_boot) = snp_boot {
+        boot_params.hdr.setup_data = snp_boot.cc_setup_data_address.into();
+    }
     importer
         .import_pages(
             zero_page.address / HV_PAGE_SIZE,
@@ -563,6 +718,7 @@ pub fn load_config(
 /// * `zero_page` - The kernel zero page.
 /// * `acpi` - The acpi config.
 /// * `registers` - X86Register config.
+/// * `snp_boot` - Optional SEV-SNP Linux boot protocol page config.
 pub fn load_x86<F>(
     importer: &mut impl ImageLoad<X86Register>,
     kernel_image: &mut F,
@@ -572,6 +728,7 @@ pub fn load_x86<F>(
     zero_page: ZeroPageConfig<'_>,
     acpi: AcpiConfig<'_>,
     registers: RegisterConfig,
+    snp_boot: Option<SnpBootConfig>,
 ) -> Result<LoadInfo, Error>
 where
     F: Read + Seek,
@@ -586,6 +743,7 @@ where
         zero_page,
         acpi,
         registers,
+        snp_boot,
     )?;
 
     Ok(load_info)
@@ -697,7 +855,7 @@ where
     );
 
     kernel_image
-        .seek(std::io::SeekFrom::Start(0))
+        .seek(SeekFrom::Start(0))
         .map_err(|_| Error::FlatLoader(FlatLoaderError::SeekKernelStart))?;
 
     let mut header = Aarch64ImageHeader::new_zeroed();
@@ -728,7 +886,7 @@ where
     // address anywhere in usable system RAM and called there.
 
     kernel_image
-        .seek(std::io::SeekFrom::Start(0))
+        .seek(SeekFrom::Start(0))
         .map_err(|_| Error::FlatLoader(FlatLoaderError::SeekKernelStart))?;
 
     let mut image = Vec::new();
@@ -865,4 +1023,288 @@ pub fn set_direct_boot_registers_arm64(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::importer::IgvmParameterType;
+    use crate::importer::IsolationConfig;
+    use crate::importer::ParameterAreaIndex;
+    use crate::importer::StartupMemoryType;
+    use std::io::Cursor;
+    use test_with_tracing::test;
+    use zerocopy::FromBytes;
+
+    #[derive(Debug)]
+    struct ImportRecord {
+        page_base: u64,
+        page_count: u64,
+        tag: String,
+        acceptance: BootPageAcceptance,
+        data: Vec<u8>,
+    }
+
+    #[derive(Default)]
+    struct TestImporter {
+        imports: Vec<ImportRecord>,
+        regs: Vec<X86Register>,
+    }
+
+    impl ImageLoad<X86Register> for TestImporter {
+        fn isolation_config(&self) -> IsolationConfig {
+            IsolationConfig {
+                paravisor_present: false,
+                isolation_type: crate::importer::IsolationType::None,
+                shared_gpa_boundary_bits: None,
+            }
+        }
+
+        fn create_parameter_area(
+            &mut self,
+            _page_base: u64,
+            _page_count: u32,
+            _debug_tag: &str,
+        ) -> anyhow::Result<ParameterAreaIndex> {
+            unimplemented!()
+        }
+
+        fn create_parameter_area_with_data(
+            &mut self,
+            _page_base: u64,
+            _page_count: u32,
+            _debug_tag: &str,
+            _initial_data: &[u8],
+        ) -> anyhow::Result<ParameterAreaIndex> {
+            unimplemented!()
+        }
+
+        fn import_parameter(
+            &mut self,
+            _parameter_area: ParameterAreaIndex,
+            _byte_offset: u32,
+            _parameter_type: IgvmParameterType,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+
+        fn import_pages(
+            &mut self,
+            page_base: u64,
+            page_count: u64,
+            debug_tag: &str,
+            acceptance: BootPageAcceptance,
+            data: &[u8],
+        ) -> anyhow::Result<()> {
+            self.imports.push(ImportRecord {
+                page_base,
+                page_count,
+                tag: debug_tag.to_string(),
+                acceptance,
+                data: data.to_vec(),
+            });
+            Ok(())
+        }
+
+        fn import_vp_register(&mut self, register: X86Register) -> anyhow::Result<()> {
+            self.regs.push(register);
+            Ok(())
+        }
+
+        fn verify_startup_memory_available(
+            &mut self,
+            _page_base: u64,
+            _page_count: u64,
+            _memory_type: StartupMemoryType,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn set_vp_context_page(&mut self, _page_base: u64) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+
+        fn relocation_region(
+            &mut self,
+            _gpa: u64,
+            _size_bytes: u64,
+            _relocation_alignment: u64,
+            _minimum_relocation_gpa: u64,
+            _maximum_relocation_gpa: u64,
+            _apply_rip_offset: bool,
+            _apply_gdtr_offset: bool,
+            _vp_index: u16,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+
+        fn page_table_relocation(
+            &mut self,
+            _page_table_gpa: u64,
+            _size_pages: u64,
+            _used_pages: u64,
+            _vp_index: u16,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+
+        fn set_imported_regions_config_page(&mut self, _page_base: u64) {
+            unimplemented!()
+        }
+    }
+
+    fn test_bzimage() -> Vec<u8> {
+        let mut image = vec![0; 5 * 512 + 0x1000];
+        let mut setup_header = defs::setup_header::new_zeroed();
+        setup_header.setup_sects = 4;
+        setup_header.boot_flag = 0xaa55.into();
+        setup_header.header = 0x53726448.into();
+        setup_header.version = 0x020c.into();
+        setup_header.loadflags = 1;
+        setup_header.xloadflags = 1.into();
+        setup_header.syssize = 0x100.into();
+        setup_header.init_size = 0x200000.into();
+        image[0x1f1..0x1f1 + size_of::<defs::setup_header>()]
+            .copy_from_slice(setup_header.as_bytes());
+        image[5 * 512 + 0x200] = 0xcc;
+        image
+    }
+
+    #[test]
+    fn loads_bzimage_payload_and_entrypoint() {
+        let mut importer = TestImporter::default();
+        let mut image = Cursor::new(test_bzimage());
+
+        let load_info = load_bzimage(&mut importer, &mut image, 0x1000000, None).unwrap();
+
+        assert_eq!(load_info.kernel.gpa, 0x1000000);
+        assert_eq!(load_info.kernel.entrypoint, 0x1000200);
+        assert_eq!(load_info.bzimage_setup_header.unwrap().setup_sects, 4);
+        assert_eq!(importer.imports.len(), 1);
+        assert_eq!(importer.imports[0].tag, "linux-kernel");
+        assert_eq!(importer.imports[0].page_base, 0x1000);
+        assert_eq!(importer.imports[0].data[0x200], 0xcc);
+    }
+
+    #[test]
+    fn rejects_bzimage_without_64_bit_entry() {
+        let mut image = test_bzimage();
+        image[0x236] = 0;
+        image[0x237] = 0;
+
+        let err = load_bzimage(
+            &mut TestImporter::default(),
+            &mut Cursor::new(image),
+            0x1000000,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::BzImage(crate::bzimage::Error::No64BitEntry)
+        ));
+    }
+
+    #[test]
+    fn imports_linux_boot_protocol_gdt_selectors() {
+        let mut importer = TestImporter::default();
+
+        import_linux_boot_gdt(&mut importer, 1).unwrap();
+
+        assert_eq!(importer.imports.len(), 1);
+        assert_eq!(importer.imports[0].tag, "linux-boot-gdt");
+        assert_eq!(importer.imports[0].page_base, 1);
+        assert_eq!(importer.imports[0].page_count, 1);
+        assert_eq!(
+            importer.imports[0].acceptance,
+            BootPageAcceptance::Exclusive
+        );
+
+        let cs = importer
+            .regs
+            .iter()
+            .find_map(|reg| match reg {
+                X86Register::Cs(reg) => Some(*reg),
+                _ => None,
+            })
+            .unwrap();
+        let ds = importer
+            .regs
+            .iter()
+            .find_map(|reg| match reg {
+                X86Register::Ds(reg) => Some(*reg),
+                _ => None,
+            })
+            .unwrap();
+        let es = importer
+            .regs
+            .iter()
+            .find_map(|reg| match reg {
+                X86Register::Es(reg) => Some(*reg),
+                _ => None,
+            })
+            .unwrap();
+        let ss = importer
+            .regs
+            .iter()
+            .find_map(|reg| match reg {
+                X86Register::Ss(reg) => Some(*reg),
+                _ => None,
+            })
+            .unwrap();
+
+        assert_eq!(cs.selector, 0x10);
+        assert_eq!(ds.selector, 0x18);
+        assert_eq!(es.selector, 0x18);
+        assert_eq!(ss.selector, 0x18);
+    }
+
+    #[test]
+    fn imports_snp_boot_pages_with_linux_cc_blob() {
+        let snp_boot = SnpBootConfig {
+            secrets_address: 0x10000,
+            cpuid_address: 0x11000,
+            cc_blob_address: 0x12000,
+            cc_setup_data_address: 0x13000,
+        };
+        let mut importer = TestImporter::default();
+
+        import_snp_boot_pages(&mut importer, snp_boot).unwrap();
+
+        assert_eq!(importer.imports.len(), 4);
+        assert_eq!(importer.imports[0].page_base, 0x10);
+        assert_eq!(importer.imports[0].page_count, 1);
+        assert_eq!(importer.imports[0].tag, "linux-snp-secrets");
+        assert_eq!(
+            importer.imports[0].acceptance,
+            BootPageAcceptance::SecretsPage
+        );
+        assert_eq!(importer.imports[1].page_base, 0x11);
+        assert_eq!(
+            importer.imports[1].acceptance,
+            BootPageAcceptance::CpuidPage
+        );
+
+        let cc_blob = defs::cc_blob_sev_info::read_from_bytes(&importer.imports[2].data).unwrap();
+        assert_eq!(cc_blob.magic, defs::CC_BLOB_SEV_INFO_MAGIC);
+        assert_eq!(cc_blob.version, 0);
+        assert_eq!(cc_blob.secrets_phys, snp_boot.secrets_address);
+        assert_eq!(cc_blob.secrets_len, HV_PAGE_SIZE as u32);
+        assert_eq!(cc_blob.cpuid_phys, snp_boot.cpuid_address);
+        assert_eq!(cc_blob.cpuid_len, HV_PAGE_SIZE as u32);
+
+        let cc_setup_data =
+            defs::cc_setup_data::read_from_bytes(&importer.imports[3].data).unwrap();
+        assert_eq!(cc_setup_data.header.next, 0);
+        assert_eq!(cc_setup_data.header.ty, defs::SETUP_CC_BLOB);
+        assert_eq!(
+            cc_setup_data.header.len,
+            size_of::<defs::cc_setup_data>() as u32
+        );
+        assert_eq!(
+            cc_setup_data.cc_blob_address,
+            snp_boot.cc_blob_address as u32
+        );
+    }
 }
