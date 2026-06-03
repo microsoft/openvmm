@@ -278,6 +278,21 @@ fn read_prefetchable_window(
     }
 }
 
+/// Read a 32-bit VF BAR address from the SR-IOV capability in mock config space.
+/// SR-IOV cap is at 0x100, VF BAR0 starts at cap + 0x24.
+/// Masks off the low 4 encoding bits.
+fn read_vf_bar32(mock: &MockConfigSpace, bus: u8, dev: u8, func: u8, bar_idx: u8) -> u32 {
+    mock.read_reg(bus, dev, func, 0x100 + 0x24 + bar_idx as u16 * 4) & !0xF
+}
+
+/// Read a 64-bit VF BAR address from the SR-IOV capability in mock config space.
+/// Masks off the low 4 encoding bits from the lower DWORD.
+fn read_vf_bar64(mock: &MockConfigSpace, bus: u8, dev: u8, func: u8, bar_idx: u8) -> u64 {
+    let lo = (mock.read_reg(bus, dev, func, 0x100 + 0x24 + bar_idx as u16 * 4) & !0xF) as u64;
+    let hi = mock.read_reg(bus, dev, func, 0x100 + 0x24 + (bar_idx + 1) as u16 * 4) as u64;
+    lo | (hi << 32)
+}
+
 // ---- Tests ----
 
 #[async_test]
@@ -1106,6 +1121,23 @@ async fn sriov_vf_bars_included_in_bridge_window() {
         window_size >= 0x5000,
         "bridge window {window_size:#x} must be >= 0x5000"
     );
+
+    // VF BAR0 should be programmed into the SR-IOV capability registers.
+    let vf_bar = read_vf_bar32(&mock, 1, 0, 0, 0) as u64;
+    assert!(vf_bar > 0, "VF BAR should be assigned, got {vf_bar:#x}");
+    assert!(
+        vf_bar >= window.0 && vf_bar + 0x4000 <= window.1 + 1,
+        "VF BAR region {vf_bar:#x}..{:#x} must be within bridge window {:#x}..{:#x}",
+        vf_bar + 0x4000,
+        window.0,
+        window.1 + 1,
+    );
+    // VF BAR region must not overlap PF BAR.
+    let pf_bar = read_bar32(&mock, 1, 0, 0, 0) as u64;
+    assert!(
+        vf_bar + 0x4000 <= pf_bar || pf_bar + 0x1000 <= vf_bar,
+        "VF BAR region must not overlap PF BAR"
+    );
 }
 
 /// Non-power-of-two VF counts must not panic.
@@ -1204,6 +1236,20 @@ async fn sriov_vf_bars_64bit_prefetchable() {
         "pref window base {:#x} should be in high MMIO",
         pref.0
     );
+
+    // VF BAR0 should be programmed as a 64-bit address in the high MMIO aperture.
+    let vf_bar = read_vf_bar64(&mock, 1, 0, 0, 0);
+    assert!(
+        (0x1_0000_0000..0x2_0000_0000).contains(&vf_bar),
+        "VF BAR {vf_bar:#x} should be in high MMIO"
+    );
+    assert!(
+        vf_bar >= pref.0 && vf_bar + 0x40_0000 <= pref.1 + 1,
+        "VF BAR region {vf_bar:#x}..{:#x} must be within pref window {:#x}..{:#x}",
+        vf_bar + 0x40_0000,
+        pref.0,
+        pref.1 + 1,
+    );
 }
 
 /// A PF with both 32-bit non-pref and 64-bit prefetchable VF BARs should
@@ -1258,6 +1304,20 @@ async fn sriov_mixed_vf_bar_types() {
         pref_size >= 0x2_0000,
         "pref window {pref_size:#x} must be >= 0x20000"
     );
+
+    // VF BAR0 (non-pref) should be in the non-pref window.
+    let vf_bar0 = read_vf_bar32(&mock, 1, 0, 0, 0) as u64;
+    assert!(vf_bar0 > 0, "VF BAR0 should be assigned");
+    assert!(
+        vf_bar0 >= mem.0 && vf_bar0 + 0x2000 <= mem.1 + 1,
+        "VF BAR0 region must be within non-pref window"
+    );
+    // VF BAR2 (64-bit pref) should be in the pref window.
+    let vf_bar2 = read_vf_bar64(&mock, 1, 0, 0, 2);
+    assert!(
+        vf_bar2 >= pref.0 && vf_bar2 + 0x2_0000 <= pref.1 + 1,
+        "VF BAR2 region must be within pref window"
+    );
 }
 
 /// Top-level PF (no bridge) with VF BARs.
@@ -1297,6 +1357,18 @@ async fn sriov_top_level_pf_no_bridge() {
     assert!(
         bar_end <= 0x2000_0000,
         "PF BAR must fit in low_mmio aperture"
+    );
+
+    // VF BAR0 should be programmed and not overlap the PF BAR.
+    let vf_bar = read_vf_bar32(&mock, 0, 0, 0, 0) as u64;
+    assert!(vf_bar > 0, "VF BAR should be assigned, got {vf_bar:#x}");
+    assert!(
+        vf_bar + 0x4_0000 <= 0x2000_0000,
+        "VF BARs must fit in low_mmio aperture"
+    );
+    assert!(
+        vf_bar + 0x4_0000 <= bar as u64 || bar_end <= vf_bar,
+        "VF BAR region must not overlap PF BAR"
     );
 }
 
@@ -1349,6 +1421,28 @@ async fn sriov_multiple_pfs_behind_bridge() {
     assert!(
         pf1_bar + pf1_size <= pf2_bar || pf2_bar + pf2_size <= pf1_bar,
         "PF BARs must not overlap"
+    );
+
+    // VF BARs should be programmed for both PFs.
+    let vf1_bar = read_vf_bar32(&mock, 1, 0, 0, 0) as u64;
+    let vf2_bar = read_vf_bar32(&mock, 1, 1, 0, 0) as u64;
+    let vf1_size: u64 = 2 * 0x1000;
+    let vf2_size: u64 = 3 * 0x2000;
+    assert!(vf1_bar > 0, "PF1 VF BAR should be assigned");
+    assert!(vf2_bar > 0, "PF2 VF BAR should be assigned");
+    // VF BAR regions must not overlap each other.
+    assert!(
+        vf1_bar + vf1_size <= vf2_bar || vf2_bar + vf2_size <= vf1_bar,
+        "VF BAR regions must not overlap each other"
+    );
+    // VF BAR regions must not overlap PF BARs.
+    assert!(
+        vf1_bar + vf1_size <= pf1_bar || pf1_bar + pf1_size <= vf1_bar,
+        "PF1 VF BARs must not overlap PF1 BAR"
+    );
+    assert!(
+        vf2_bar + vf2_size <= pf2_bar || pf2_bar + pf2_size <= vf2_bar,
+        "PF2 VF BARs must not overlap PF2 BAR"
     );
 }
 

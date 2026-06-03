@@ -56,6 +56,8 @@ pub struct DiscoveredBar {
 /// SR-IOV information for a PF.
 #[derive(Debug, Clone)]
 pub(crate) struct DiscoveredSriov {
+    /// Config space offset of the SR-IOV extended capability.
+    pub cap_offset: u16,
     /// Total number of VFs.
     pub total_vfs: u16,
     /// Per-VF BAR sizes.
@@ -221,6 +223,7 @@ async fn scan_bus(
                     }
 
                     dev.sriov = Some(DiscoveredSriov {
+                        cap_offset: sriov_result.cap_offset,
                         total_vfs: sriov_result.total_vfs,
                         vf_bars: sriov_result.vf_bars,
                     });
@@ -300,6 +303,8 @@ async fn probe_vf_bars(
 
 /// Result of probing an SR-IOV capability.
 pub(crate) struct SriovProbeResult {
+    /// Config space offset of the SR-IOV extended capability.
+    pub cap_offset: u16,
     /// Highest bus number a VF could land on.
     pub max_vf_bus: u16,
     /// Total number of VFs.
@@ -371,6 +376,7 @@ async fn probe_sriov(
             let vf_bars = probe_vf_bars(cfg, bus, devfn, offset).await;
 
             return Some(SriovProbeResult {
+                cap_offset: offset,
                 max_vf_bus,
                 total_vfs,
                 vf_bars,

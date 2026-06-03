@@ -7,6 +7,7 @@ use crate::AssignmentError;
 use crate::AssignmentParams;
 use crate::PciConfigAccess;
 use crate::enumerate::DiscoveredDevice;
+use pci_core::spec::caps::sriov::SriovExtendedCapabilityHeader;
 use pci_core::spec::cfg_space::HeaderType00;
 use pci_core::spec::cfg_space::HeaderType01;
 use pci_core::spec::cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
@@ -58,6 +59,10 @@ enum Demand {
     },
     /// VF BAR space — reserved for SR-IOV VFs.
     SriovVfBars {
+        /// Index of the device in the parent's device list.
+        dev_idx: usize,
+        /// VF BAR register index within the SR-IOV capability.
+        bar_index: u8,
         /// Total size (per-VF BAR size * total_vfs).
         size: u64,
         /// Per-VF BAR size (alignment requirement).
@@ -195,29 +200,45 @@ pub fn assign_addresses(
 fn validate_assignments(devices: &[DiscoveredDevice], params: &AssignmentParams) {
     for dev in devices {
         for bar in &dev.bars {
-            if let Some(address) = bar.address {
-                let bar_end = address + bar.size;
-                let in_low = params
-                    .low_mmio
-                    .is_some_and(|a| address >= a.base && bar_end <= a.base + a.len);
-                let in_high = params
-                    .high_mmio
-                    .is_some_and(|a| address >= a.base && bar_end <= a.base + a.len);
-                assert!(
-                    in_low || in_high,
-                    "BAR {bus:02x}:{device:02x}.{func} index {idx} at {addr:#x}..{end:#x} \
-                     is outside all MMIO apertures",
-                    bus = dev.bus,
-                    device = dev.device,
-                    func = dev.function,
-                    idx = bar.index,
-                    addr = address,
-                    end = bar_end,
-                );
+            let address = bar.address.unwrap();
+            assert_bar_in_aperture(address, bar.size, dev, bar.index, params);
+        }
+        if let Some(sriov) = &dev.sriov {
+            for bar in &sriov.vf_bars {
+                let address = bar.address.unwrap();
+                let total_size = bar.size * sriov.total_vfs as u64;
+                assert_bar_in_aperture(address, total_size, dev, bar.index, params);
             }
         }
         validate_assignments(&dev.children, params);
     }
+}
+
+fn assert_bar_in_aperture(
+    address: u64,
+    size: u64,
+    dev: &DiscoveredDevice,
+    index: u8,
+    params: &AssignmentParams,
+) {
+    let bar_end = address + size;
+    let in_low = params
+        .low_mmio
+        .is_some_and(|a| address >= a.base && bar_end <= a.base + a.len);
+    let in_high = params
+        .high_mmio
+        .is_some_and(|a| address >= a.base && bar_end <= a.base + a.len);
+    assert!(
+        in_low || in_high,
+        "BAR {bus:02x}:{device:02x}.{func} index {idx} at {addr:#x}..{end:#x} \
+         is outside all MMIO apertures",
+        bus = dev.bus,
+        device = dev.device,
+        func = dev.function,
+        idx = index,
+        addr = address,
+        end = bar_end,
+    );
 }
 fn is_mem64_bar(bar: &crate::enumerate::DiscoveredBar) -> bool {
     bar.is_64bit && bar.is_prefetchable
@@ -246,6 +267,8 @@ fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
             for bar in &sriov.vf_bars {
                 let total_size = bar.size.saturating_mul(sriov.total_vfs as u64);
                 demands.push(Demand::SriovVfBars {
+                    dev_idx: i,
+                    bar_index: bar.index,
                     size: total_size,
                     // VF BAR region base must be aligned to per-VF BAR size
                     // (each VF's BAR is at base + n * bar_size).
@@ -364,10 +387,20 @@ fn assign_subtree(
                     .demands;
                 assign_subtree(&mut dev.children, child_demands, alloc_64bit, offset);
             }
-            Demand::SriovVfBars { .. } => {
-                // VF BAR space is reserved but not explicitly assigned.
-                // The guest programs VF BAR addresses through the SR-IOV
-                // capability registers.
+            Demand::SriovVfBars {
+                dev_idx, bar_index, ..
+            } => {
+                // Record the assigned base address on the VF BAR.
+                let sriov = devices[dev_idx]
+                    .sriov
+                    .as_mut()
+                    .expect("SriovVfBars demand implies sriov is present");
+                let vf_bar = sriov
+                    .vf_bars
+                    .iter_mut()
+                    .find(|b| b.index == bar_index)
+                    .expect("demand references a VF BAR that exists");
+                vf_bar.address = Some(offset);
             }
         }
 
@@ -387,12 +420,28 @@ pub async fn program_assignments(cfg: &mut impl PciConfigAccess, devices: &[Disc
 
         // Program BAR addresses.
         for bar in &dev.bars {
-            if let Some(address) = bar.address {
-                let offset = HeaderType00::BAR0.0 + (bar.index as u16) * 4;
+            let address = bar.address.unwrap();
+            let offset = HeaderType00::BAR0.0 + (bar.index as u16) * 4;
+            cfg.write_u32(dev.bus, devfn, offset, address as u32).await;
+
+            if bar.is_64bit {
+                let upper_offset = HeaderType00::BAR0.0 + ((bar.index + 1) as u16) * 4;
+                cfg.write_u32(dev.bus, devfn, upper_offset, (address >> 32) as u32)
+                    .await;
+            }
+        }
+
+        // Program VF BAR addresses into the SR-IOV capability registers.
+        if let Some(sriov) = &dev.sriov {
+            for bar in &sriov.vf_bars {
+                let address = bar.address.unwrap();
+                let offset = sriov.cap_offset
+                    + SriovExtendedCapabilityHeader::VF_BAR0.0
+                    + (bar.index as u16) * 4;
                 cfg.write_u32(dev.bus, devfn, offset, address as u32).await;
 
                 if bar.is_64bit {
-                    let upper_offset = HeaderType00::BAR0.0 + ((bar.index + 1) as u16) * 4;
+                    let upper_offset = offset + 4;
                     cfg.write_u32(dev.bus, devfn, upper_offset, (address >> 32) as u32)
                         .await;
                 }
@@ -465,8 +514,7 @@ pub async fn program_assignments(cfg: &mut impl PciConfigAccess, devices: &[Disc
             .await;
         }
 
-        let has_assigned_bars = dev.bars.iter().any(|b| b.address.is_some());
-        if !has_assigned_bars && dev.is_bridge {
+        if dev.bars.is_empty() && dev.is_bridge {
             let memory_window = dev.subtree_req.as_ref().and_then(|r| r.memory_window);
             let prefetchable_window = dev.subtree_req.as_ref().and_then(|r| r.prefetchable_window);
             tracing::debug!(
@@ -481,18 +529,32 @@ pub async fn program_assignments(cfg: &mut impl PciConfigAccess, devices: &[Disc
             );
         } else {
             for bar in &dev.bars {
-                if let Some(address) = bar.address {
-                    tracing::debug!(
-                        bus = dev.bus,
-                        device = dev.device,
-                        function = dev.function,
-                        bar_index = bar.index,
-                        address = format_args!("{:#x}", address),
-                        size = format_args!("{:#x}", bar.size),
-                        is_64bit = bar.is_64bit,
-                        "BAR programmed"
-                    );
-                }
+                tracing::debug!(
+                    bus = dev.bus,
+                    device = dev.device,
+                    function = dev.function,
+                    bar_index = bar.index,
+                    address = format_args!("{:#x}", bar.address.unwrap()),
+                    size = format_args!("{:#x}", bar.size),
+                    is_64bit = bar.is_64bit,
+                    "BAR programmed"
+                );
+            }
+        }
+
+        if let Some(sriov) = &dev.sriov {
+            for bar in &sriov.vf_bars {
+                tracing::debug!(
+                    bus = dev.bus,
+                    device = dev.device,
+                    function = dev.function,
+                    vf_bar_index = bar.index,
+                    address = format_args!("{:#x}", bar.address.unwrap()),
+                    size = format_args!("{:#x}", bar.size),
+                    total_vfs = sriov.total_vfs,
+                    is_64bit = bar.is_64bit,
+                    "VF BAR programmed"
+                );
             }
         }
 
