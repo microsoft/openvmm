@@ -925,7 +925,7 @@ const _: () = assert!(size_of::<ControllerList>() == 4096);
 pub struct Cmic {
     pub multi_port: bool,
     pub multi_controller: bool,
-    pub sriov: bool,
+    pub vf: bool,
     pub asymmetric_namespace_access: bool,
     #[bits(4)]
     pub rsvd: u8,

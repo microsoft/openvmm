@@ -52,6 +52,26 @@ enum EnableState {
     Resetting(PendingRpc<()>),
 }
 
+/// The current high-level state of the NVMe workers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnableStateKind {
+    Disabled,
+    Enabling,
+    Enabled,
+    Resetting,
+}
+
+impl EnableState {
+    fn kind(&self) -> EnableStateKind {
+        match self {
+            EnableState::Disabled => EnableStateKind::Disabled,
+            EnableState::Enabling(_) => EnableStateKind::Enabling,
+            EnableState::Enabled => EnableStateKind::Enabled,
+            EnableState::Resetting(_) => EnableStateKind::Resetting,
+        }
+    }
+}
+
 impl NvmeWorkers {
     pub fn new(
         driver_source: &VmTaskDriverSource,
@@ -62,6 +82,8 @@ impl NvmeWorkers {
         qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
         subsystem_id: Guid,
         sriov: Option<super::admin::SriovAdminConfig>,
+        controller_id: u16,
+        initial_namespaces: std::collections::BTreeMap<u32, Disk>,
     ) -> Self {
         let num_qids = 2 + max_sqs.max(max_cqs) * 2;
         let doorbells = Arc::new(RwLock::new(DoorbellMemory::new(num_qids)));
@@ -78,7 +100,9 @@ impl NvmeWorkers {
                 max_cqs,
                 qe_sizes,
                 sriov,
+                controller_id,
             },
+            initial_namespaces,
         );
         let coordinator = Coordinator {
             driver: driver.clone(),
@@ -99,6 +123,11 @@ impl NvmeWorkers {
         NvmeControllerClient {
             send: self.send.clone(),
         }
+    }
+
+    /// Returns the current enable state of the workers.
+    pub fn enable_state(&self) -> EnableStateKind {
+        self.state.kind()
     }
 
     pub fn doorbell(&self, db_id: u16, value: u32) {

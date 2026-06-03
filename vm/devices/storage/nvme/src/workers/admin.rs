@@ -60,7 +60,7 @@ const IOCQES: u8 = 4;
 const MAX_ASYNC_EVENT_REQUESTS: u8 = 4; // minimum recommended by spec
 const ERROR_LOG_PAGE_ENTRIES: u8 = 1;
 /// PF controller ID used in identify and virtualization management.
-const PF_CONTROLLER_ID: u16 = 1;
+pub(crate) const PF_CONTROLLER_ID: u16 = 1;
 
 #[derive(Inspect)]
 pub struct AdminConfig {
@@ -80,13 +80,19 @@ pub struct AdminConfig {
     /// SR-IOV configuration. When set, the PF advertises virtualization
     /// management in Identify and processes VM/NS Attachment commands.
     pub sriov: Option<SriovAdminConfig>,
+    /// Controller ID reported in Identify Controller. 0 for standalone,
+    /// PF_CONTROLLER_ID for PF, secondary IDs for VFs.
+    pub controller_id: u16,
 }
 
 /// SR-IOV configuration passed from the PCI layer to the admin handler.
-#[derive(Debug, Clone, Inspect)]
+#[derive(Debug, Inspect)]
 pub struct SriovAdminConfig {
     /// Total number of VFs (secondary controllers).
     pub total_vfs: u16,
+    /// Shared VF configs — updated by admin handler, read by VFs.
+    #[inspect(skip)]
+    pub vf_configs: crate::SharedVfConfigs,
 }
 
 /// Per-secondary-controller resource state tracked by the admin handler.
@@ -101,22 +107,43 @@ struct SecondaryControllerState {
 
 /// SR-IOV admin state tracking secondary controller state.
 /// Owned by `AdminHandler`.
-#[derive(Debug, Clone, Inspect)]
+#[derive(Debug, Inspect)]
 struct SriovAdminState {
     /// Per-secondary-controller state, indexed by VF index (0-based).
     #[inspect(iter_by_index)]
     controllers: Vec<SecondaryControllerState>,
+    /// Shared VF configs updated on every mutation.
+    #[inspect(skip)]
+    vf_configs: crate::SharedVfConfigs,
 }
 
 impl SriovAdminState {
-    fn new(total_vfs: u16) -> Self {
+    fn new(total_vfs: u16, vf_configs: crate::SharedVfConfigs) -> Self {
+        assert_eq!(vf_configs.len(), total_vfs as usize);
         let controllers = (0..total_vfs)
             .map(|_| SecondaryControllerState {
                 online: false,
                 attached_namespaces: Vec::new(),
             })
             .collect();
-        Self { controllers }
+        Self {
+            controllers,
+            vf_configs,
+        }
+    }
+
+    /// Sync the shared VfControllerConfig for the given VF index from
+    /// the canonical SecondaryControllerState.
+    fn sync_shared_config(&self, idx: usize, namespaces: &BTreeMap<u32, Arc<Namespace>>) {
+        let sc = &self.controllers[idx];
+        let mut config = self.vf_configs[idx].lock();
+        config.online = sc.online;
+        // Rebuild attached namespace disks from current namespace map.
+        config.attached_namespaces = sc
+            .attached_namespaces
+            .iter()
+            .filter_map(|nsid| namespaces.get(nsid).map(|ns| (*nsid, ns.disk())))
+            .collect();
     }
 
     /// Looks up a secondary controller by its controller ID (1-based VF
@@ -420,15 +447,28 @@ pub enum AddNamespaceError {
 }
 
 impl AdminHandler {
-    pub fn new(driver: VmTaskDriver, config: AdminConfig) -> Self {
+    pub fn new(
+        driver: VmTaskDriver,
+        config: AdminConfig,
+        initial_namespaces: BTreeMap<u32, Disk>,
+    ) -> Self {
+        let namespaces = initial_namespaces
+            .into_iter()
+            .map(|(nsid, disk)| {
+                (
+                    nsid,
+                    Arc::new(Namespace::new(config.mem.clone(), nsid, disk)),
+                )
+            })
+            .collect();
         let sriov_state = config
             .sriov
             .as_ref()
-            .map(|s| SriovAdminState::new(s.total_vfs));
+            .map(|s| SriovAdminState::new(s.total_vfs, s.vf_configs.clone()));
         Self {
             driver,
             config,
-            namespaces: Default::default(),
+            namespaces,
             sriov_state,
         }
     }
@@ -715,7 +755,8 @@ impl AdminHandler {
     }
 
     fn identify_controller(&self, state: &AdminState) -> spec::IdentifyController {
-        let is_sriov = self.sriov_state.is_some();
+        let is_pf = self.sriov_state.is_some();
+        let is_vf = !is_pf && self.config.controller_id > PF_CONTROLLER_ID;
         spec::IdentifyController {
             vid: VENDOR_ID,
             ssvid: VENDOR_ID,
@@ -746,12 +787,13 @@ impl AdminHandler {
                 .with_present(true)
                 .with_broadcast_flush_behavior(spec::BroadcastFlushBehavior::NOT_SUPPORTED.0),
             cntrltype: spec::ControllerType::IO_CONTROLLER,
-            cntlid: if is_sriov { PF_CONTROLLER_ID } else { 0 },
-            cmic: spec::Cmic::new().with_sriov(is_sriov),
+            cntlid: self.config.controller_id,
+            // CMIC bit 2: set only for VFs (associated with an SR-IOV VF).
+            cmic: spec::Cmic::new().with_vf(is_vf),
             oacs: spec::OptionalAdminCommandSupport::new()
                 .with_doorbell_buffer_config(self.supports_shadow_doorbells(state))
-                .with_virtualization_management(is_sriov)
-                .with_ns_management(is_sriov),
+                .with_virtualization_management(is_pf)
+                .with_ns_management(is_pf),
             ..FromZeros::new_zeroed()
         }
     }
@@ -1241,12 +1283,14 @@ impl AdminHandler {
                     .secondary_index(cntlid)
                     .ok_or(spec::Status::INVALID_CONTROLLER_IDENTIFIER)?;
                 sriov.controllers[idx].online = false;
+                sriov.sync_shared_config(idx, &self.namespaces);
             }
             spec::VirtualizationManagementAction::SECONDARY_ONLINE => {
                 let idx = sriov
                     .secondary_index(cntlid)
                     .ok_or(spec::Status::INVALID_CONTROLLER_IDENTIFIER)?;
                 sriov.controllers[idx].online = true;
+                sriov.sync_shared_config(idx, &self.namespaces);
             }
             spec::VirtualizationManagementAction::SECONDARY_ASSIGN => {
                 // CRT=0: flexible resources not supported.
@@ -1303,6 +1347,7 @@ impl AdminHandler {
                     }
                     ns_list.push(nsid);
                     ns_list.sort();
+                    sriov.sync_shared_config(idx, &self.namespaces);
                 }
                 spec::NamespaceAttachmentSelection::DETACH => {
                     let ns_list = &mut sriov.controllers[idx].attached_namespaces;
@@ -1311,6 +1356,7 @@ impl AdminHandler {
                     } else {
                         return Err(spec::Status::NAMESPACE_NOT_ATTACHED.into());
                     }
+                    sriov.sync_shared_config(idx, &self.namespaces);
                 }
                 _ => return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into()),
             }
