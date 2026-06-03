@@ -8,6 +8,7 @@ use crate::AssignmentParams;
 use crate::PciConfigAccess;
 use pci_core::spec::caps::EXT_CAP_START;
 use pci_core::spec::caps::ExtendedCapabilityId;
+use pci_core::spec::caps::sriov::SriovExtendedCapabilityHeader;
 use pci_core::spec::cfg_space::BarEncodingBits;
 use pci_core::spec::cfg_space::BistHeader;
 use pci_core::spec::cfg_space::Command;
@@ -287,17 +288,14 @@ async fn probe_vf_bars(
     devfn: u8,
     sriov_offset: u16,
 ) -> Vec<DiscoveredBar> {
-    probe_bar_range(cfg, bus, devfn, sriov_offset + sriov::VF_BAR0, 6).await
-}
-
-/// SR-IOV capability register offsets (relative to capability start).
-mod sriov {
-    /// Offset of the DWORD containing InitialVFs (low u16) and TotalVFs (high u16).
-    pub const INITIAL_TOTAL_VFS: u16 = 0x0C;
-    /// Offset of the DWORD containing VF Offset (low u16) and VF Stride (high u16).
-    pub const VF_OFFSET_STRIDE: u16 = 0x14;
-    /// Offset of VF BAR0 (6 consecutive DWORDs for VF BAR0–5).
-    pub const VF_BAR0: u16 = 0x24;
+    probe_bar_range(
+        cfg,
+        bus,
+        devfn,
+        sriov_offset + SriovExtendedCapabilityHeader::VF_BAR0.0,
+        6,
+    )
+    .await
 }
 
 /// Result of probing an SR-IOV capability.
@@ -333,7 +331,11 @@ async fn probe_sriov(
         if cap_id == ExtendedCapabilityId::SRIOV.0 {
             // Read TotalVFs.
             let vfs_dword = cfg
-                .read_u32(bus, devfn, offset + sriov::INITIAL_TOTAL_VFS)
+                .read_u32(
+                    bus,
+                    devfn,
+                    offset + SriovExtendedCapabilityHeader::INITIAL_TOTAL_VFS.0,
+                )
                 .await;
             let total_vfs = (vfs_dword >> 16) as u16;
             if total_vfs == 0 {
@@ -342,7 +344,11 @@ async fn probe_sriov(
 
             // Read VF Offset and VF Stride.
             let offset_stride = cfg
-                .read_u32(bus, devfn, offset + sriov::VF_OFFSET_STRIDE)
+                .read_u32(
+                    bus,
+                    devfn,
+                    offset + SriovExtendedCapabilityHeader::VF_OFFSET_STRIDE.0,
+                )
                 .await;
             let vf_offset = offset_stride as u16;
             let vf_stride = (offset_stride >> 16) as u16;
