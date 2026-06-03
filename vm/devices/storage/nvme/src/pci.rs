@@ -128,8 +128,6 @@ pub struct NvmeControllerCaps {
 pub struct NvmeSriovCaps {
     /// Total number of VFs the PF can support (1..=7 without ARI).
     pub total_vfs: u16,
-    /// PCI Device ID to report for all VFs.
-    pub vf_device_id: u16,
     /// Number of MSI-X vectors per VF.
     pub vf_msix_count: u16,
     /// Maximum number of IO queues per VF.
@@ -185,10 +183,11 @@ impl NvmeController {
             vf_bars[4] = bar4_intercepts;
 
             // VFs start at function 1 with stride 1 (no ARI).
+            // VF device ID matches the PF — same driver binds to both.
             let (sriov_cap, bar_decode) = SriovExtendedCapability::new(
                 SriovConfig {
                     total_vfs: sriov_caps.total_vfs,
-                    vf_device_id: sriov_caps.vf_device_id,
+                    vf_device_id: VF_DEVICE_ID,
                     first_vf_offset: 1,
                     vf_stride: 1,
                     vf_bars: Self::vf_bar_config(sriov_caps.vf_msix_count),
@@ -353,7 +352,6 @@ impl NvmeController {
             let cntlid = crate::workers::PF_CONTROLLER_ID + 1 + vf_index;
 
             let vf = NvmeVirtualFunction::new(
-                config.vf_device_id,
                 config.vf_msix_count,
                 config.vf_max_io_queues,
                 &vf_msi_target,
@@ -375,8 +373,6 @@ impl NvmeController {
     /// Unmaps MMIO intercepts so VFs stop receiving new work, initiates
     /// controller resets, and returns the VFs for async draining.
     fn disable_vfs(&mut self) -> Vec<NvmeVirtualFunction> {
-        let count = self.vfs.len();
-        // Initiate reset on each VF and collect for draining.
         let mut draining = Vec::new();
         for vf_opt in self.vfs.drain(..) {
             if let Some(mut vf) = vf_opt {
@@ -384,11 +380,11 @@ impl NvmeController {
                 draining.push(vf);
             }
         }
-        tracing::info!(count, draining = draining.len(), "SR-IOV: disabled VFs");
+        tracing::info!(draining = draining.len(), "SR-IOV: disabled VFs");
         draining
     }
 
-    /// Drain any pending SR-IOV changes and handle VF lifecycle.
+    /// Drain any pending SR-IOV callbacks and handle VF lifecycle / BAR changes.
     ///
     /// Returns `Some(IoResult::Defer(...))` if VF_Enable was cleared and the
     /// config write must stall until VF IOs drain.
@@ -494,7 +490,7 @@ impl ChangeDeviceState for NvmeController {
             registers,
             qe_sizes,
             workers,
-            sriov: _,
+            sriov,
             vfs,
             vf_drain,
         } = self;
@@ -522,6 +518,7 @@ impl ChangeDeviceState for NvmeController {
         *qe_sizes.lock() = Default::default();
         // cfg_space.reset() resets the SR-IOV capability, which unmaps
         // all VF MMIO intercepts. VFs were already drained above.
+        let _ = sriov;
         vfs.clear();
     }
 }

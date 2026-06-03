@@ -245,6 +245,7 @@ impl PetriVmConfigOpenVmm {
                         disk,
                     }],
                     requests: None,
+                    sriov: None,
                 }
                 .into_resource(),
             });
@@ -1396,6 +1397,7 @@ async fn vmbus_storage_controllers_to_openvmm(
                         msix_count: 64,
                         namespaces,
                         requests: None,
+                        sriov: None,
                     }
                     .into_resource(),
                     vnode: None,

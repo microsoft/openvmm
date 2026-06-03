@@ -13,6 +13,7 @@
 //! Namespace Attachment commands. The VF reads its configuration from a
 //! shared [`VfControllerConfig`](crate::VfControllerConfig) at CC.EN time.
 
+use crate::VF_DEVICE_ID;
 use crate::VENDOR_ID;
 use crate::VfControllerConfig;
 use crate::registers::RegState;
@@ -85,7 +86,6 @@ impl NvmeVirtualFunction {
     /// writing to the CC register via BAR0. At that point, the VF reads
     /// its resource limits and namespaces from `shared_config`.
     pub fn new(
-        vf_device_id: u16,
         msix_count: u16,
         max_io_queues: u16,
         msi_target: &MsiTarget,
@@ -105,7 +105,7 @@ impl NvmeVirtualFunction {
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
                 vendor_id: VENDOR_ID,
-                device_id: vf_device_id,
+                device_id: VF_DEVICE_ID,
                 revision_id: 0,
                 prog_if: ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
                 sub_class: Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY,

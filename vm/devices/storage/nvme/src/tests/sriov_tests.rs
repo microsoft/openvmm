@@ -63,7 +63,6 @@ fn instantiate_sriov_controller(
             subsystem_id: Guid::new_random(),
             sriov: Some(NvmeSriovCaps {
                 total_vfs,
-                vf_device_id: 0x00b0,
                 vf_msix_count: 4,
                 vf_max_io_queues: 64,
             }),
@@ -162,8 +161,8 @@ async fn test_sriov_enable_creates_vfs(driver: DefaultDriver) {
     assert_eq!(vf1_id & 0xFFFF, 0x1414, "VF vendor ID should be Microsoft");
     assert_eq!(
         (vf1_id >> 16) & 0xFFFF,
-        0x00b0,
-        "VF device ID should match config"
+        0x00a9,
+        "VF device ID should match PF"
     );
 
     // VF at function 2 should also be present.
@@ -266,7 +265,6 @@ async fn test_sriov_vf_identify_reports_cmic_sriov(driver: DefaultDriver) {
             subsystem_id: Guid::new_random(),
             sriov: Some(NvmeSriovCaps {
                 total_vfs: 1,
-                vf_device_id: 0x00b0,
                 vf_msix_count: 4,
                 vf_max_io_queues: 64,
             }),
@@ -507,7 +505,6 @@ async fn test_sriov_vf_end_to_end_io(driver: DefaultDriver) {
             subsystem_id: Guid::new_random(),
             sriov: Some(NvmeSriovCaps {
                 total_vfs: 1,
-                vf_device_id: 0x00b0,
                 vf_msix_count: 4,
                 vf_max_io_queues: 64,
             }),

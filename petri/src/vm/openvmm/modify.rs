@@ -172,6 +172,46 @@ impl PetriVmConfigOpenVmm {
                     read_only: false,
                 }],
                 requests: None,
+                sriov: None,
+            }
+            .into_resource(),
+        });
+
+        self
+    }
+
+    /// Add a PCIe NVMe device with SR-IOV support.
+    ///
+    /// Creates an NVMe controller with one 1 MB namespace and SR-IOV
+    /// enabled with the specified number of VFs. The PF is attached to
+    /// the named PCIe port.
+    pub fn with_pcie_nvme_sriov(
+        mut self,
+        port_name: &str,
+        subsystem_id: Guid,
+        total_vfs: u16,
+    ) -> Self {
+        self.config.pcie_devices.push(PcieDeviceConfig {
+            port_name: port_name.to_string(),
+            resource: NvmeControllerHandle {
+                subsystem_id,
+                max_io_queues: 64,
+                msix_count: 64,
+                namespaces: vec![NamespaceDefinition {
+                    nsid: 1,
+                    disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                        len: Some(1024 * 1024),
+                        sector_size: None,
+                    })
+                    .into_resource(),
+                    read_only: false,
+                }],
+                requests: None,
+                sriov: Some(nvme_resources::NvmeSriovConfig {
+                    total_vfs,
+                    vf_msix_count: 64,
+                    vf_max_io_queues: 64,
+                }),
             }
             .into_resource(),
         });

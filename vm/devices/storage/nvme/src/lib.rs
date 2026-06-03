@@ -85,6 +85,8 @@ const DOORBELL_STRIDE_BITS: u8 = 2;
 const VENDOR_ID: u16 = 0x1414;
 /// Device ID allocated to the OpenVMM NVMe emulator.
 const DEVICE_ID: u16 = 0xc03e;
+/// Device ID allocated to the OpenVMM NVMe VF emulator.
+const VF_DEVICE_ID: u16 = 0xc03f;
 const NVME_VERSION: u32 = 0x00020000;
 const MAX_QES: u16 = 256;
 /// Maximum valid namespace ID for the NVM subsystem, reported in the `NN`

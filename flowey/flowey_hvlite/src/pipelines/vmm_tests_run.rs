@@ -733,6 +733,12 @@ impl ResolvedArtifactSelections {
                 // These are resolved from OpenVMM deps, always available
             }
 
+            // Petritools erofs images (from openvmm-deps, always available)
+            petri_artifacts_vmm_test::artifacts::petritools::PETRITOOLS_EROFS_X64::GLOBAL_UNIQUE_ID
+            | petri_artifacts_vmm_test::artifacts::petritools::PETRITOOLS_EROFS_AARCH64::GLOBAL_UNIQUE_ID => {
+                // These are resolved from OpenVMM deps, always available
+            }
+
             // Test VHDs
             petri_artifacts_vmm_test::artifacts::test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64::GLOBAL_UNIQUE_ID =>
             {
