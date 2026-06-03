@@ -188,7 +188,6 @@ impl SimpleFlowNode for Node {
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,
-            register_virtio_win: false,
             disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),

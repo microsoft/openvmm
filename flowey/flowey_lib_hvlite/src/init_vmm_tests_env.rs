@@ -60,8 +60,6 @@ flowey_request! {
         pub register_tpm_guest_tests_linux: Option<ReadVar<TpmGuestTestsOutput>>,
         /// Register a Windows test_igvm_agent_rpc_server binary
         pub register_test_igvm_agent_rpc_server: Option<ReadVar<TestIgvmAgentRpcServerOutput>>,
-        /// Whether to resolve virtio-win drivers into the test content dir
-        pub register_virtio_win: bool,
 
         /// Get the path to the folder containing various logs emitted VMM tests.
         pub get_test_log_path: Option<WriteVar<PathBuf>>,
@@ -108,7 +106,6 @@ impl SimpleFlowNode for Node {
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,
-            register_virtio_win,
             disk_images_dir,
             register_openhcl_igvm_files,
             get_test_log_path,
@@ -148,8 +145,7 @@ impl SimpleFlowNode for Node {
         let uefi =
             ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v });
 
-        let virtio_win_dir = register_virtio_win
-            .then(|| ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get));
+        let virtio_win_dir = ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get);
 
         ctx.emit_rust_step("setting up vmm_tests env", |ctx| {
             let test_content_dir = test_content_dir.claim(ctx);
@@ -475,7 +471,7 @@ impl SimpleFlowNode for Node {
                 fs_err::create_dir_all(&uefi_dir)?;
                 fs_err::copy(uefi, uefi_dir.join("MSVM.fd"))?;
 
-                if let Some(virtio_win_dir) = virtio_win_dir {
+                {
                     let src = rt.read(virtio_win_dir);
                     let dst = test_content_dir.join("virtio-win");
                     flowey_lib_common::_util::copy_dir_all(&src, &dst)?;

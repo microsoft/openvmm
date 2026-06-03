@@ -3446,6 +3446,9 @@ jobs:
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 19 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey.exe e 19 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+      shell: bash
     - name: setting up vmm_tests env
       run: |-
         flowey.exe e 19 flowey_lib_hvlite::init_vmm_tests_env 0
@@ -3898,6 +3901,9 @@ jobs:
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 20 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey.exe e 20 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+      shell: bash
     - name: setting up vmm_tests env
       run: |-
         flowey.exe e 20 flowey_lib_hvlite::init_vmm_tests_env 0
@@ -4166,6 +4172,9 @@ jobs:
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 21 flowey_lib_hvlite::download_uefi_mu_msvm 0
+      shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey.exe e 21 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
       shell: bash
     - name: setting up vmm_tests env
       run: |-
@@ -4440,6 +4449,9 @@ jobs:
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 22 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey.exe e 22 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+      shell: bash
     - name: setting up vmm_tests env
       run: |-
         flowey.exe e 22 flowey_lib_hvlite::init_vmm_tests_env 0
@@ -4709,6 +4721,9 @@ jobs:
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 23 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey.exe e 23 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+      shell: bash
     - name: setting up vmm_tests env
       run: |-
         flowey.exe e 23 flowey_lib_hvlite::init_vmm_tests_env 0
@@ -4924,6 +4939,9 @@ jobs:
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey e 24 flowey_lib_hvlite::download_uefi_mu_msvm 0
+      shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey e 24 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
       shell: bash
     - name: setting up vmm_tests env
       run: flowey e 24 flowey_lib_hvlite::init_vmm_tests_env 0
@@ -5231,6 +5249,9 @@ jobs:
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey e 25 flowey_lib_hvlite::download_uefi_mu_msvm 0
+      shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey e 25 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
       shell: bash
     - name: setting up vmm_tests env
       run: flowey e 25 flowey_lib_hvlite::init_vmm_tests_env 0
@@ -5585,6 +5606,9 @@ jobs:
       shell: bash
     - name: unpack mu_msvm package (aarch64)
       run: flowey.exe e 26 flowey_lib_hvlite::download_uefi_mu_msvm 0
+      shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey.exe e 26 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
       shell: bash
     - name: setting up vmm_tests env
       run: |-

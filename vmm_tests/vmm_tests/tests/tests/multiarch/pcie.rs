@@ -750,6 +750,7 @@ async fn verify_net_interface_count(
 async fn virtio_net_windows(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (virtio_win,): (petri::ResolvedArtifact<VIRTIO_WIN_DRIVERS>,),
+    driver: DefaultDriver,
 ) -> anyhow::Result<()> {
     let driver_dir = virtio_win.get().join("NetKVM/2k22/amd64");
 
@@ -792,6 +793,7 @@ async fn virtio_net_windows(
 
     // Wait for the NIC to get a DHCP address from consomme.
     // Consomme assigns 10.0.0.2 to the client.
+    let mut timer = PolledTimer::new(&driver);
     let mut found = false;
     for attempt in 0..30 {
         let ipconfig = cmd!(sh, "ipconfig").read().await?;
@@ -801,7 +803,7 @@ async fn virtio_net_windows(
             break;
         }
         tracing::debug!(attempt, "waiting for DHCP address...");
-        std::thread::sleep(Duration::from_secs(2));
+        timer.sleep(Duration::from_secs(2)).await;
     }
     assert!(
         found,
