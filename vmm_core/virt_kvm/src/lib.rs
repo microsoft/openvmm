@@ -17,7 +17,9 @@ pub use arch::Kvm;
 
 use guestmem::GuestMemory;
 use inspect::Inspect;
+use memory::KvmMemoryBackingMode;
 use memory::KvmMemoryRangeState;
+use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use thiserror::Error;
@@ -53,6 +55,16 @@ pub enum KvmError {
     State(#[from] Box<StateError<KvmError>>),
     #[error("invalid state while restoring: {0}")]
     InvalidState(&'static str),
+    #[error("unsupported isolation configuration: {0}")]
+    UnsupportedIsolationConfiguration(&'static str),
+    #[error("misaligned memory range for KVM guest_memfd")]
+    MisalignedMemoryRange,
+    #[error("cannot resize KVM guest_memfd memory slot")]
+    CannotResizeGuestMemfdSlot,
+    #[error("private memory range is not page aligned")]
+    UnalignedPrivateMemoryRange,
+    #[error("private memory range is not contained in guest_memfd private memory")]
+    InvalidPrivateMemoryRange,
     #[error("misaligned gic base address")]
     Misaligned,
     #[error("host does not support GICv2 or GICv3")]
@@ -79,6 +91,9 @@ struct KvmPartitionInner {
     #[inspect(skip)]
     kvm: kvm::Partition,
     memory: Mutex<KvmMemoryRangeState>,
+    memory_backing_mode: KvmMemoryBackingMode,
+    #[inspect(iter_by_index)]
+    ram_ranges: Vec<MemoryRange>,
     hv1_enabled: bool,
     gm: GuestMemory,
     #[inspect(skip)]

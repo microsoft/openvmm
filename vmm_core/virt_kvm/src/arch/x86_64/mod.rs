@@ -17,6 +17,7 @@ use crate::KvmRunVpError;
 use crate::gsi::GsiRouting;
 use crate::gsi::KvmIrqFdState;
 use crate::gsi::MsiRouteBuilder;
+use crate::memory::KvmMemoryBackingMode;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
@@ -445,6 +446,14 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
             memory: Default::default(),
+            memory_backing_mode: KvmMemoryBackingMode::Userspace,
+            ram_ranges: config
+                .mem_layout
+                .ram()
+                .iter()
+                .map(|range| range.range)
+                .chain(config.mem_layout.vtl2_range())
+                .collect(),
             hv1_enabled: self.config.hv_config.is_some(),
             gm: config.guest_memory.clone(),
             vps: self
