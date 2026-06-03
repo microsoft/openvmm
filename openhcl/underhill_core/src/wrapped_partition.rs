@@ -4,9 +4,7 @@
 use async_trait::async_trait;
 use hvdef::Vtl;
 use inspect::InspectMut;
-use memory_range::MemoryRange;
 use std::sync::Arc;
-use virt::PageVisibility;
 use virt_mshv_vtl::UhPartition;
 use vmcore::save_restore::NoSavedState;
 use vmcore::save_restore::RestoreError;
@@ -29,10 +27,7 @@ impl VmPartition for WrappedPartition {
         unreachable!()
     }
 
-    fn accept_initial_pages(
-        &mut self,
-        _pages: Vec<(MemoryRange, PageVisibility)>,
-    ) -> anyhow::Result<()> {
+    fn accept_initial_pages(&mut self, _pages: Vec<virt::InitialPageImport>) -> anyhow::Result<()> {
         unreachable!()
     }
 }
