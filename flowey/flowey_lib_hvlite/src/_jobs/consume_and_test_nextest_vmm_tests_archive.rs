@@ -213,6 +213,7 @@ impl SimpleFlowNode for Node {
         if needs_prep_run {
             pre_run_deps.push(ctx.reqv(|done| crate::run_prep_steps::Request {
                 prep_steps: register_prep_steps.expect("Test run indicated prep_steps was needed but built prep_steps binary was not given"),
+                args: Vec::new(),
                 env: extra_env.clone(),
                 done,
             }));

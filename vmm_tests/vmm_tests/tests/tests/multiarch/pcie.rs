@@ -741,6 +741,26 @@ async fn verify_net_interface_count(
     Ok(())
 }
 
+/// Boot Windows with VMBus entirely disabled.
+///
+/// Uses a prepped Windows image with NetKVM pre-installed and pipette
+/// configured for TCP transport. Boots from PCIe NVMe, uses virtio-net +
+/// consomme for TCP pipette communication.
+#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64_no_vmbus_prepped)))]
+async fn boot_no_vmbus_windows(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .with_boot_device_type(petri::BootDeviceType::PcieNvme)
+        .with_default_boot_always_attempt(true)
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
+        .run()
+        .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Boot Windows with a virtio-net NIC on PCIe, install the NetKVM driver
 /// online via pipette, and verify the NIC gets a DHCP address from consomme.
 ///

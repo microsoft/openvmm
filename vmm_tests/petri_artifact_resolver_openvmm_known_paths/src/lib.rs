@@ -111,6 +111,21 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
                 )
             }
 
+            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED => {
+                let base_filename = test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::FILENAME;
+                let prepped_filename = base_filename.replace(".vhd", "-no-vmbus-prepped.vhd");
+                let images_dir = std::env::var("VMM_TEST_IMAGES");
+                let full_path = Path::new(images_dir.as_deref().unwrap_or("images"));
+                get_path(
+                    full_path,
+                    prepped_filename,
+                    MissingCommand::Run {
+                        description: "no-vmbus prepped test image",
+                        package: "prep_steps",
+                    },
+                )
+            }
+
             _ if id == tmks::TMK_VMM_NATIVE => tmk_vmm_native_executable_path(),
             _ if id == tmks::TMK_VMM_LINUX_X64_MUSL => tmk_vmm_paravisor_path(MachineArch::X86_64),
             _ if id == tmks::TMK_VMM_LINUX_AARCH64_MUSL => tmk_vmm_paravisor_path(MachineArch::Aarch64),
@@ -126,12 +141,12 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
                 tpm_guest_tests_linux_path(MachineArch::X86_64)
             }
 
-            _ if id == host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64 => {
-                test_igvm_agent_rpc_server_windows_path(MachineArch::X86_64)
-            }
-
             _ if id == virtio_win::VIRTIO_WIN_DRIVERS => {
                 virtio_win_path()
+            }
+
+            _ if id == host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64 => {
+                test_igvm_agent_rpc_server_windows_path(MachineArch::X86_64)
             }
 
             // Blob-hosted artifacts: resolved via blob_artifact_info.

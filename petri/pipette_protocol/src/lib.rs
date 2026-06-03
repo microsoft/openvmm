@@ -13,8 +13,8 @@ use mesh::pipe::WritePipe;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 
-/// The port used for the pipette connection over AF_VSOCK.
-pub const PIPETTE_VSOCK_PORT: u32 = 0x1337;
+/// The port used for the pipette connection (AF_VSOCK or TCP).
+pub const PIPETTE_PORT: u32 = 0x1337;
 
 /// The bootstrap message sent from the agent to the host.
 #[derive(MeshPayload)]

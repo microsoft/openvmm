@@ -6451,6 +6451,7 @@ name = "prep_steps"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "gptman",
  "guid",
  "openvmm_defs",
  "openvmm_helpers",
@@ -6459,6 +6460,7 @@ dependencies = [
  "petri_artifact_resolver_openvmm_known_paths",
  "petri_artifacts_common",
  "petri_artifacts_vmm_test",
+ "pipette_protocol",
  "scsidisk_resources",
  "storvsp_resources",
  "tracing",

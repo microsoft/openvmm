@@ -561,6 +561,15 @@ impl PetriVmInner {
     }
 
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
+        // Use TCP transport if configured (Windows no-vmbus guests).
+        if let Some(port_recv) = self.resources.tcp_pipette_port.take() {
+            assert!(!set_high_vtl, "TCP pipette transport does not support VTL2");
+            let port = port_recv
+                .await
+                .context("failed to receive TCP pipette port from consomme")?;
+            return self.wait_for_agent_tcp(port).await;
+        }
+
         let listener = if set_high_vtl {
             self.resources
                 .vtl2_pipette_listener
@@ -626,6 +635,69 @@ impl PetriVmInner {
             self.cidata_mounted = true;
         }
 
+        Ok(client)
+    }
+
+    /// Connect to pipette via TCP through consomme port forwarding.
+    ///
+    /// The guest pipette agent listens on `0.0.0.0:{port}` and consomme
+    /// forwards connections from `localhost:{port}` on the host into the
+    /// guest. We retry until the guest's network stack and pipette are up.
+    async fn wait_for_agent_tcp(&mut self, port: u16) -> anyhow::Result<PipetteClient> {
+        tracing::info!(port, "connecting to pipette via TCP");
+        let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+        let client = loop {
+            match std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
+                Ok(stream) => {
+                    stream
+                        .set_nonblocking(true)
+                        .context("failed to set TCP stream nonblocking")?;
+                    stream
+                        .set_nodelay(true)
+                        .context("failed to set TCP_NODELAY")?;
+                    tracing::info!("TCP connected, handshaking with pipette");
+                    let socket = PolledSocket::new(&self.resources.driver, stream)?;
+                    // Time out the handshake — consomme's port forwarding may
+                    // drop the initial SYN to the guest if no RX buffers are
+                    // available yet, leaving the connection open but dead.
+                    // Reconnecting forces a new SYN attempt.
+                    let mut timer = pal_async::timer::PolledTimer::new(&self.resources.driver);
+                    let handshake = PipetteClient::new(
+                        &self.resources.driver,
+                        socket,
+                        &self.resources.output_dir,
+                    );
+                    match futures::future::select(
+                        std::pin::pin!(handshake),
+                        std::pin::pin!(timer.sleep(Duration::from_secs(5))),
+                    )
+                    .await
+                    {
+                        futures::future::Either::Left((Ok(client), _)) => break client,
+                        futures::future::Either::Left((Err(e), _)) => {
+                            tracing::warn!(
+                                error = &e as &dyn std::error::Error,
+                                "pipette TCP handshake failed, retrying"
+                            );
+                        }
+                        futures::future::Either::Right(_) => {
+                            tracing::warn!("pipette TCP handshake timed out, reconnecting");
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        error = &e as &dyn std::error::Error,
+                        "TCP connect failed, guest not ready yet"
+                    );
+                }
+            }
+            // Wait before retrying — guest network stack may not be up yet.
+            pal_async::timer::PolledTimer::new(&self.resources.driver)
+                .sleep(Duration::from_secs(1))
+                .await;
+        };
+        tracing::info!("completed pipette TCP handshake");
         Ok(client)
     }
 

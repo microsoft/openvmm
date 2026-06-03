@@ -154,9 +154,12 @@ impl PetriVmConfigOpenVmm {
     /// included in the config
     pub async fn run(mut self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
         // Set up the IMC hive for Windows guests that use pipette in VTL0.
+        // Skip when VMBus is disabled — the no-vmbus prepped image has
+        // pipette pre-configured via offline registry injection.
         if self.resources.properties.using_vtl0_pipette
             && matches!(self.resources.properties.os_flavor, OsFlavor::Windows)
             && !self.resources.properties.is_isolated
+            && !self.resources.properties.no_vmbus
         {
             let mut imc_hive_file = tempfile::tempfile().context("failed to create temp file")?;
             imc_hive_file

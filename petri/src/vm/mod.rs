@@ -184,6 +184,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     use_virtio_vsock: bool,
     // Disable VMBus entirely (no vmbus server, no vmbus storage controllers).
     no_vmbus: bool,
+    // Use TCP over virtio-net + consomme as the pipette transport (for Windows no-vmbus).
+    use_tcp_pipette: bool,
 }
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
@@ -293,6 +295,8 @@ pub struct PetriVmProperties {
     pub use_virtio_vsock: bool,
     /// VMBus is entirely disabled
     pub no_vmbus: bool,
+    /// Use TCP pipette transport (for Windows no-vmbus)
+    pub use_tcp_pipette: bool,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -465,6 +469,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             prebuilt_initrd: None,
             use_virtio_vsock: false,
             no_vmbus: false,
+            use_tcp_pipette: false,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
@@ -541,6 +546,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             prebuilt_initrd: None,
             use_virtio_vsock: false,
             no_vmbus: false,
+            use_tcp_pipette: false,
         })
     }
 
@@ -653,12 +659,18 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Disable VMBus entirely.
     ///
-    /// This removes all VMBus storage controllers and forces virtio-vsock
-    /// for pipette communication. The guest must boot from a non-VMBus
-    /// device (e.g. PCIe NVMe).
+    /// This removes all VMBus storage controllers. For Linux guests,
+    /// virtio-vsock is used for pipette communication. For Windows guests,
+    /// TCP over virtio-net + consomme is used instead (since Windows has no
+    /// virtio-vsock driver). The guest must boot from a non-VMBus device
+    /// (e.g. PCIe NVMe).
     pub fn with_no_vmbus(mut self) -> Self {
         self.no_vmbus = true;
-        self.use_virtio_vsock = true;
+        if self.config.firmware.os_flavor() == OsFlavor::Windows {
+            self.use_tcp_pipette = true;
+        } else {
+            self.use_virtio_vsock = true;
+        }
         self.config.vmbus_storage_controllers.clear();
         self
     }
@@ -962,6 +974,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             has_agent_disk: self.has_agent_disk(),
             use_virtio_vsock: self.use_virtio_vsock,
             no_vmbus: self.no_vmbus,
+            use_tcp_pipette: self.use_tcp_pipette,
         }
     }
 

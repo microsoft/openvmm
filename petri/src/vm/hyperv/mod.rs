@@ -506,9 +506,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                 .context("failed to create polled client socket")?
                 .convert();
             socket
-                .connect(
-                    &VmAddress::hyperv_vsock(*vm.vmid(), pipette_client::PIPETTE_VSOCK_PORT).into(),
-                )
+                .connect(&VmAddress::hyperv_vsock(*vm.vmid(), pipette_client::PIPETTE_PORT).into())
                 .await
                 .context("failed to connect")
                 .map(|()| socket)

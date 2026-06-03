@@ -26,14 +26,24 @@ pub fn start_service() -> anyhow::Result<()> {
 }
 
 fn service_main(_args: Vec<OsString>) {
+    let transport = match super::parse_args() {
+        Ok(args) => args.transport,
+        Err(e) => {
+            eprintln!("failed to parse args: {e:#}");
+            return;
+        }
+    };
     DefaultPool::run_with(async |driver| {
-        if let Err(e) = service_main_inner(driver).await {
+        if let Err(e) = service_main_inner(driver, transport).await {
             eprintln!("service_main failed: {:#}", e);
         }
     })
 }
 
-async fn service_main_inner(driver: DefaultDriver) -> anyhow::Result<()> {
+async fn service_main_inner(
+    driver: DefaultDriver,
+    transport: crate::agent::Transport,
+) -> anyhow::Result<()> {
     let (send, recv) = mesh::oneshot::<()>();
     let mut send = Some(send);
     let event_handler = move |control_event| match control_event {
@@ -63,7 +73,7 @@ async fn service_main_inner(driver: DefaultDriver) -> anyhow::Result<()> {
     set_status(service::ServiceState::StartPending)?;
 
     let run = async {
-        let agent = Agent::new(driver).await?;
+        let agent = Agent::new(driver, transport).await?;
         set_status(service::ServiceState::Running)?;
         agent.run().await
     };

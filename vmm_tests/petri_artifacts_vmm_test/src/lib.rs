@@ -567,6 +567,17 @@ pub mod artifacts {
                 GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::quirks()
             }
         }
+
+        declare_artifacts! {
+            /// Generation 2 Windows test image, prepped for no-vmbus testing
+            /// with NetKVM driver and TCP pipette transport pre-configured.
+            GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED
+        }
+
+        impl IsTestVhd for GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED {
+            const OS_FLAVOR: OsFlavor = GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::OS_FLAVOR;
+            const ARCH: MachineArch = GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::ARCH;
+        }
     }
 
     /// Test ISO artifacts

@@ -68,7 +68,7 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ResolvedArtifact;
-use pipette_client::PIPETTE_VSOCK_PORT;
+use pipette_client::PIPETTE_PORT;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use serial_16550_resources::ComPort;
@@ -561,6 +561,43 @@ impl PetriVmConfigOpenVmm {
             });
         }
 
+        // Add a virtio-net NIC with consomme + TCP port forwarding for
+        // pipette when using TCP transport (Windows no-vmbus guests).
+        let tcp_pipette_port = if properties.use_tcp_pipette {
+            let nic_port = (0..)
+                .map(|i| format!("s0rc0rp{i}"))
+                .find(|name| !pcie_devices.iter().any(|d| d.port_name == *name))
+                .unwrap();
+            let (port_send, port_recv) = mesh::oneshot();
+            let endpoint = net_backend_resources::consomme::ConsommeHandle {
+                cidr: None,
+                ports: vec![net_backend_resources::consomme::HostPortConfig {
+                    protocol: net_backend_resources::consomme::HostPortProtocol::Tcp,
+                    host_address: Some(net_backend_resources::consomme::HostIpAddress::Ipv4(
+                        std::net::Ipv4Addr::LOCALHOST,
+                    )),
+                    host_port: net_backend_resources::consomme::HostPort::Dynamic(port_send),
+                    guest_port: PIPETTE_PORT as u16,
+                }],
+            }
+            .into_resource();
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: nic_port,
+                resource: VirtioPciDeviceHandle(
+                    virtio_resources::net::VirtioNetHandle {
+                        max_queues: None,
+                        mac_address: super::NIC_MAC_ADDRESS,
+                        endpoint,
+                    }
+                    .into_resource(),
+                )
+                .into_resource(),
+            });
+            Some(port_recv)
+        } else {
+            None
+        };
+
         let config = Config {
             // Firmware
             load_mode,
@@ -653,7 +690,7 @@ impl PetriVmConfigOpenVmm {
         };
 
         // Make the pipette connection listener.
-        let path = format!("{vsock_path_string}_{PIPETTE_VSOCK_PORT}");
+        let path = format!("{vsock_path_string}_{PIPETTE_PORT}");
         let pipette_listener = PolledSocket::new(
             driver,
             UnixListener::bind(path).context("failed to bind to pipette listener")?,
@@ -662,7 +699,7 @@ impl PetriVmConfigOpenVmm {
         // Make the vtl2 pipette connection listener.
         let vtl2_pipette_listener = if let Some(vtl2_vmbus) = &config.vtl2_vmbus {
             let path = vtl2_vmbus.vsock_path.as_ref().unwrap();
-            let path = format!("{path}_{PIPETTE_VSOCK_PORT}");
+            let path = format!("{path}_{PIPETTE_PORT}");
             Some(PolledSocket::new(
                 driver,
                 UnixListener::bind(path).context("failed to bind to vtl2 pipette listener")?,
@@ -687,6 +724,7 @@ impl PetriVmConfigOpenVmm {
                 pipette_listener,
                 vtl2_pipette_listener,
                 linux_direct_serial_agent,
+                tcp_pipette_port,
                 driver: driver.clone(),
                 output_dir: log_source.output_dir().to_owned(),
                 openvmm_path: openvmm_path.clone(),
