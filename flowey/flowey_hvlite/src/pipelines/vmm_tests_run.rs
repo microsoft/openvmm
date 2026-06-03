@@ -788,6 +788,11 @@ impl ResolvedArtifactSelections {
             // Common artifacts (always available, no build needed)
             petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY::GLOBAL_UNIQUE_ID => {}
 
+            // Virtio-win drivers (downloaded from openvmm-deps)
+            petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WIN_DRIVERS::GLOBAL_UNIQUE_ID => {
+                self.build.virtio_win = true;
+            }
+
             // Pipette binaries (from petri_artifacts_common)
             petri_artifacts_common::artifacts::PIPETTE_LINUX_X64::GLOBAL_UNIQUE_ID
             | petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64::GLOBAL_UNIQUE_ID => {

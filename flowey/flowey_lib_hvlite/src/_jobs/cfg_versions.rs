@@ -32,7 +32,7 @@ pub const NODEJS: &str = "24.x";
 //      increases with each release from the respective branch.
 pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.18.0.4";
 pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.0.4";
-pub const OPENVMM_DEPS: &str = "0.3.0-40";
+pub const OPENVMM_DEPS: &str = "0.3.0-43";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {
@@ -64,6 +64,7 @@ impl FlowNode for Node {
         ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
+        ctx.import::<crate::resolve_openvmm_test_virtio_win::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::cfg_rustup_version::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
@@ -207,6 +208,10 @@ impl FlowNode for Node {
             ..Default::default()
         });
         ctx.config(crate::resolve_openvmm_test_initrd::Config {
+            version: Some(OPENVMM_DEPS.into()),
+            ..Default::default()
+        });
+        ctx.config(crate::resolve_openvmm_test_virtio_win::Config {
             version: Some(OPENVMM_DEPS.into()),
             ..Default::default()
         });

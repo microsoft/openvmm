@@ -54,6 +54,7 @@ pub struct BuildSelections {
     pub tpm_guest_tests_windows: bool,
     pub tpm_guest_tests_linux: bool,
     pub test_igvm_agent_rpc_server: bool,
+    pub virtio_win: bool,
 }
 
 flowey_request! {
@@ -166,6 +167,8 @@ impl SimpleFlowNode for Node {
             deps,
             needs_release_igvm,
         } = selections;
+
+        let register_virtio_win = build.virtio_win;
 
         let build_openhcl = build.openhcl_standard
             || build.openhcl_standard_dev
@@ -697,6 +700,7 @@ impl SimpleFlowNode for Node {
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,
+            register_virtio_win,
             disk_images_dir: Some(test_artifacts_dir),
             register_openhcl_igvm_files,
             get_test_log_path: None,
