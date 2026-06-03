@@ -9,7 +9,6 @@ use cms::cert::CertificateChoices;
 use cms::content_info::ContentInfo;
 use cms::signed_data::SignedData;
 use cms::signed_data::SignerIdentifier;
-use cms::signed_data::SignerInfo;
 use der::Decode;
 use der::oid::db::rfc5911::ID_SIGNED_DATA;
 
@@ -88,7 +87,7 @@ impl Pkcs7SignedDataInner {
             serial_number: cert.0.0.tbs_certificate().serial_number().clone(),
         });
 
-        let signer = SignerInfo {
+        let signer = cms::signed_data::SignerInfo {
             version: cms::content_info::CmsVersion::V1,
             sid,
             digest_alg: digest_alg.clone(),

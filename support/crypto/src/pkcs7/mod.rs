@@ -154,13 +154,16 @@ fn verify_inner(
         return Ok(false);
     }
 
-    #[derive(Clone, PartialEq, Eq, Hash)]
+    #[derive(PartialEq, Eq)]
     struct CertId {
         issuer_dn: String,
         serial_number: Vec<u8>,
     }
-    fn make_id(cert: &X509Certificate) -> Result<CertId, Pkcs7Error> {
-        todo!();
+    fn make_id(cert: &X509Certificate) -> Result<CertId, crate::x509::X509Error> {
+        Ok(CertId {
+            issuer_dn: cert.issuer_dn()?,
+            serial_number: cert.serial_number()?,
+        })
     }
 
     let embedded = p7.embedded_certificates()?;

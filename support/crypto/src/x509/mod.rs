@@ -114,6 +114,17 @@ impl X509Certificate {
     pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
         self.0.subject_common_name()
     }
+
+    /// String representation of the certificate's issuer Distinguished Name.
+    pub fn issuer_dn(&self) -> Result<String, X509Error> {
+        self.0.issuer_dn()
+    }
+
+    /// Raw bytes of the certificate's serial number, as encoded in the
+    /// underlying certificate.
+    pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
+        self.0.serial_number()
+    }
 }
 
 #[cfg(test)]

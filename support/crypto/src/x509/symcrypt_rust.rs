@@ -178,6 +178,14 @@ impl X509CertificateInner {
         Ok(Self(cert))
     }
 
+    pub fn issuer_dn(&self) -> Result<String, X509Error> {
+        Ok(self.0.tbs_certificate().issuer().to_string())
+    }
+
+    pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
+        Ok(self.0.tbs_certificate().serial_number().as_bytes().to_vec())
+    }
+
     pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
         Ok(self
             .0

@@ -343,6 +343,52 @@ impl X509CertificateInner {
         Ok(s.to_vec())
     }
 
+    pub fn issuer_dn(&self) -> Result<String, X509Error> {
+        use windows::Win32::Security::Cryptography::CERT_X500_NAME_STR;
+        let info = self.0.cert_info();
+        let blob = &info.Issuer;
+        // SAFETY: blob is a valid CRYPT_INTEGER_BLOB owned by the cert info;
+        // passing None for psz queries the required length in WCHARs.
+        let needed = unsafe {
+            windows::Win32::Security::Cryptography::CertNameToStrW(
+                X509_ASN_ENCODING,
+                blob,
+                CERT_X500_NAME_STR,
+                None,
+            )
+        };
+        if needed <= 1 {
+            return Ok(String::new());
+        }
+        let mut buf = vec![0u16; needed as usize];
+        // SAFETY: buf is sized per the previous query.
+        let written = unsafe {
+            windows::Win32::Security::Cryptography::CertNameToStrW(
+                X509_ASN_ENCODING,
+                blob,
+                CERT_X500_NAME_STR,
+                Some(&mut buf),
+            )
+        };
+        if written == 0 {
+            return Err(last_err("CertNameToStrW"));
+        }
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Ok(String::from_utf16_lossy(&buf[..len]))
+    }
+
+    pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
+        let info = self.0.cert_info();
+        blob_as_slice(&info.SerialNumber)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| {
+                err(
+                    windows_result::Error::from_hresult(windows::core::HRESULT(-1)),
+                    "malformed serial number blob",
+                )
+            })
+    }
+
     pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
         let oid = szOID_COMMON_NAME.0.cast::<c_void>();
         // SAFETY: ctx is valid; passing None for psznamestring queries the
