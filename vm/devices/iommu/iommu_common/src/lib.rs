@@ -12,6 +12,9 @@
 //! duplicating the per-page-boundary splitting, lock-across-translate-and-access
 //! pattern, and `GuestMemoryAccess` boilerplate.
 
+// UNSAFETY: needed to implement `GuestMemoryAccess`.
+#![expect(unsafe_code)]
+
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryBackingError;
 use pci_core::bus_range::AssignedBusRange;
@@ -35,6 +38,14 @@ use std::ptr::NonNull;
 pub trait IommuTranslator: Send + Sync + 'static {
     /// The IOMMU-specific error type for translation faults.
     type Error: std::error::Error + Send + Sync + 'static;
+
+    /// The maximum IOVA that can be translated (inclusive).
+    ///
+    /// This is typically `(1 << va_bits) - 1` for the IOMMU's virtual
+    /// address width. Used as the `max_address` for the `GuestMemoryAccess`
+    /// implementation, which rejects out-of-range accesses before they
+    /// reach the translator.
+    fn max_iova(&self) -> u64;
 
     /// Translate an IOVA and execute `op` with the resulting GPA while the
     /// IOMMU's translation lock is held.
@@ -141,7 +152,7 @@ impl<T: IommuTranslator> TranslatingMemory<T> {
     ) -> Result<(), GuestMemoryBackingError> {
         let mut offset = 0usize;
         while offset < len {
-            let current_iova = iova.wrapping_add(offset as u64);
+            let current_iova = iova + offset as u64;
             let chunk_len = chunk_size(current_iova, len - offset);
 
             let rid = self.rid();
@@ -163,17 +174,16 @@ impl<T: IommuTranslator> TranslatingMemory<T> {
     }
 }
 
-// UNSAFETY: TranslatingMemory returns `None` from `mapping()`, so the caller
+// SAFETY: TranslatingMemory returns `None` from `mapping()`, so the caller
 // never gets a raw pointer. All accesses go through the fallback methods which
 // translate IOVAs to GPAs and delegate to the inner GuestMemory.
-#[expect(unsafe_code)]
 unsafe impl<T: IommuTranslator> guestmem::GuestMemoryAccess for TranslatingMemory<T> {
     fn mapping(&self) -> Option<NonNull<u8>> {
         None
     }
 
     fn max_address(&self) -> u64 {
-        u64::MAX
+        self.translator.max_iova()
     }
 
     unsafe fn read_fallback(

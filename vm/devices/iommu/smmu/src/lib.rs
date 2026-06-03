@@ -6,6 +6,8 @@
 //! This crate implements an Arm SMMUv3 (System Memory Management Unit)
 //! emulator, providing IOVA→GPA translation for devices behind the SMMU.
 
+#![forbid(unsafe_code)]
+
 mod emulator;
 mod shared;
 mod spec;

@@ -543,6 +543,14 @@ impl SmmuDmaFault {
 impl iommu_common::IommuTranslator for SmmuTranslator {
     type Error = SmmuDmaFault;
 
+    fn max_iova(&self) -> u64 {
+        // The SMMUv3 architecture supports up to 48-bit input addresses.
+        // This is the maximum across all configurations: stage-1 only,
+        // stage-2 only, and nested (stage-1 IAS and stage-2 IPA width
+        // are both bounded by 48 bits).
+        (1u64 << 48) - 1
+    }
+
     fn translate<R>(
         &self,
         rid: u16,

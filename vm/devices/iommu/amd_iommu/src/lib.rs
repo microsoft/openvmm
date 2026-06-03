@@ -10,6 +10,8 @@
 //! (CapID 0x0F) pointing to a fixed MMIO register region. The guest discovers
 //! the IOMMU via PCI enumeration and reads the capability to find the MMIO base.
 
+#![forbid(unsafe_code)]
+
 pub mod spec;
 
 use chipset_device::ChipsetDevice;
@@ -893,6 +895,13 @@ pub struct AmdTranslator {
 
 impl iommu_common::IommuTranslator for AmdTranslator {
     type Error = IommuFault;
+
+    fn max_iova(&self) -> u64 {
+        // The AMD IOMMU architecture supports up to 48-bit virtual
+        // addresses (VA_SIZE), the architectural maximum for all
+        // paging modes and translation configurations.
+        (1u64 << VA_SIZE) - 1
+    }
 
     fn translate<R>(
         &self,
