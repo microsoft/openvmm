@@ -3129,34 +3129,32 @@ impl LoadedVmInner {
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
+                    isolation: self.hypervisor_cfg.with_isolation,
                 };
-                let regs =
-                    super::vm_loaders::linux::load_linux_x86(&kernel_config, &self.gm, |gpa| {
-                        let tables = if let Some(dsdt) = custom_dsdt {
-                            acpi_builder.build_acpi_tables_custom_dsdt(gpa, dsdt)
-                        } else {
-                            acpi_builder.build_acpi_tables(gpa, |dsdt| {
-                                add_devices_to_dsdt_x64(
-                                    dsdt,
-                                    &self.chipset_cfg,
-                                    &self.chipset_capabilities,
-                                    enable_serial,
-                                    self.vmbus_server.is_some(),
-                                    &self.chipset_mmio,
-                                    self.virtio_mmio_region,
-                                    self.virtio_mmio_irq,
-                                    &self.pci_legacy_interrupts,
-                                )
-                            })
-                        };
+                super::vm_loaders::linux::load_linux_x86(&kernel_config, &self.gm, |gpa| {
+                    let tables = if let Some(dsdt) = custom_dsdt {
+                        acpi_builder.build_acpi_tables_custom_dsdt(gpa, dsdt)
+                    } else {
+                        acpi_builder.build_acpi_tables(gpa, |dsdt| {
+                            add_devices_to_dsdt_x64(
+                                dsdt,
+                                &self.chipset_cfg,
+                                &self.chipset_capabilities,
+                                enable_serial,
+                                self.vmbus_server.is_some(),
+                                &self.chipset_mmio,
+                                self.virtio_mmio_region,
+                                self.virtio_mmio_irq,
+                                &self.pci_legacy_interrupts,
+                            )
+                        })
+                    };
 
-                        loader::linux::AcpiTables {
-                            rsdp: tables.rsdp,
-                            tables: tables.tables,
-                        }
-                    })?;
-
-                (regs, Vec::new())
+                    loader::linux::AcpiTables {
+                        rsdp: tables.rsdp,
+                        tables: tables.tables,
+                    }
+                })?
             }
             #[cfg(guest_arch = "aarch64")]
             &LoadMode::Linux {
@@ -3174,6 +3172,7 @@ impl LoadedVmInner {
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
+                    isolation: self.hypervisor_cfg.with_isolation,
                 };
 
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
@@ -3197,7 +3196,7 @@ impl LoadedVmInner {
                         IommuDevices::Smmu(devices) => &devices.configs,
                         IommuDevices::None => &[],
                     };
-                let regs = super::vm_loaders::linux::load_linux_arm64(
+                super::vm_loaders::linux::load_linux_arm64(
                     &kernel_config,
                     &self.gm,
                     enable_serial,
@@ -3206,9 +3205,7 @@ impl LoadedVmInner {
                     smmu_configs,
                     &self.chipset_mmio,
                     build_acpi,
-                )?;
-
-                (regs, Vec::new())
+                )?
             }
             &LoadMode::Uefi {
                 ref firmware,

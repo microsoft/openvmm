@@ -4213,6 +4213,7 @@ dependencies = [
  "open_enum",
  "page_table",
  "static_assertions",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "vm_topology",

@@ -67,14 +67,14 @@ impl<R> Loader<'_, R> {
             .merge_adjacent(range_map_vec::u64_is_adjacent);
 
         let page_imports = self
-             .page_imports
-             .into_vec()
-             .into_iter()
-             .map(|(start, end, info)| InitialPageImport {
-                 range: MemoryRange::from_4k_gpn_range(start..(end + 1)),
-                 import_type: boot_page_acceptance_to_import_type(info.acceptance),
-                 tag: info.tag,
-             })
+            .page_imports
+            .into_vec()
+            .into_iter()
+            .map(|(start, end, info)| InitialPageImport {
+                range: MemoryRange::from_4k_gpn_range(start..(end + 1)),
+                import_type: boot_page_acceptance_to_import_type(info.acceptance),
+                tag: info.tag,
+            })
             .collect();
 
         (self.regs.into_values().collect(), page_imports)
