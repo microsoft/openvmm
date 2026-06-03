@@ -2617,10 +2617,10 @@ impl<T: RingMem> NetChannel<T> {
             } as u8;
 
             if metadata.flags.offload_tcp_checksum() || metadata.flags.offload_udp_checksum() {
-                // The offset must be set if we're handling checksums; we already know from the above logic
-                // that the L4 checksum-type will match the L4 protocol.
+                // We can determine header length from other means, and presume there's
+                // no additional data. If there is, the packet will fail checksums but that's
+                // on the guest for not providing a specific length. This matches extant behavior.
                 metadata.l3_len = if metadata.transport_header_offset == 0 {
-                    tracelimit::warn_ratelimited!("metadata.transport_header_offset was unset");
                     if metadata.flags.is_ipv4() {
                         net_backend::IPV4_MIN_HEADER_LEN
                     } else if metadata.flags.is_ipv6() {
