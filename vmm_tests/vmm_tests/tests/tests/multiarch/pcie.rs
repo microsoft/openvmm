@@ -652,9 +652,8 @@ async fn amd_iommu_mixed_topology(
 /// Uses PCIe NVMe for the boot disk, virtio-vsock for pipette communication,
 /// and a second PCIe NVMe controller for the cidata agent disk. Validates
 /// that the guest boots and pipette is reachable without any VMBus devices.
-// Disabled until the in-tree UEFI is updated to support this.
-//#[openvmm_test(uefi_x64(vhd(alpine_3_23_x64)))]
-async fn _boot_no_vmbus_pcie_nvme(
+#[openvmm_test(uefi_x64(vhd(alpine_3_23_x64)))]
+async fn boot_no_vmbus_pcie_nvme(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     let (vm, agent) = config
