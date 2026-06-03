@@ -1091,6 +1091,17 @@ async fn vm_config_from_command_line(
         );
     }
 
+    // Set up the CMOS RTC time source. The builder attaches the appropriate
+    // RTC variant internally based on chipset type (x86-only).
+    if opt.igvm.is_none() {
+        chipset = chipset.with_time_source(
+            chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle {
+                delta_milliseconds: 0,
+            }
+            .into_resource(),
+        );
+    }
+
     let custom_uefi_vars = {
         use firmware_uefi_custom_vars::CustomVars;
 

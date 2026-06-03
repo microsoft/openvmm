@@ -7,7 +7,6 @@ cfg_if::cfg_if! {
     if #[cfg(guest_arch = "x86_64")] {
         pub use hvdef::HvX64RegisterName as HvArchRegisterName;
         use chipset_device_resources::BSP_LINT_LINE_SET;
-        use chipset_resources::cmos_rtc::Piix4CmosRtcDeviceHandle;
         use chipset_resources::pm::DEFAULT_ACPI_IRQ;
         use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
         use vmm_core::acpi_builder::AcpiTablesBuilder;
@@ -63,8 +62,6 @@ use anyhow::Context;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
-#[cfg(guest_arch = "x86_64")]
-use chipset_resources::cmos_rtc::GenericCmosRtcDeviceHandle;
 use closeable_mutex::CloseableMutex;
 use cvm_tracing::CVM_ALLOWED;
 use debug_ptr::DebugPtr;
@@ -2492,6 +2489,13 @@ async fn new_underhill_vm(
         );
     }
 
+    // Set up the CMOS RTC time source (x86-only, handled internally by the
+    // builder based on chipset type).
+    chipset = chipset.with_time_source(PlatformResource.into_resource());
+    if matches!(firmware_type, FirmwareType::Pcat) {
+        chipset = chipset.with_initial_cmos(firmware_pcat::default_cmos_values(&mem_layout));
+    }
+
     if matches!(firmware_type, FirmwareType::Uefi) {
         use crate::emuplat::uefi::*;
         use firmware_uefi_custom_vars::CustomVars;
@@ -2611,28 +2615,9 @@ async fn new_underhill_vm(
         });
     }
 
-    #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
-    let mut chipset_result = chipset
+    let chipset_result = chipset
         .build()
         .context("failed to build chipset configuration")?;
-
-    // Emit CMOS RTC device handles (x86-only, port I/O based).
-    // PCAT gets the PIIX4 variant; UEFI gets the generic RTC.
-    #[cfg(guest_arch = "x86_64")]
-    if firmware_type == FirmwareType::Pcat {
-        chipset_result.attach_piix4_cmos_rtc(Piix4CmosRtcDeviceHandle {
-            initial_cmos: Some(firmware_pcat::default_cmos_values(&mem_layout)),
-            enlightened_interrupts: true,
-            time_source: PlatformResource.into_resource(),
-        });
-    } else {
-        chipset_result.attach_generic_cmos_rtc(GenericCmosRtcDeviceHandle {
-            irq: 8,
-            century_reg_idx: 0x32,
-            initial_cmos: None,
-            time_source: PlatformResource.into_resource(),
-        });
-    }
 
     let vm_manifest_builder::VmChipsetResult {
         chipset,

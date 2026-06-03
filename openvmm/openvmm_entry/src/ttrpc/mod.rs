@@ -547,7 +547,13 @@ impl VmService {
             vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
             vm_manifest_builder::MachineArch::X86_64,
         )
-        .with_serial(ports);
+        .with_serial(ports)
+        .with_time_source(
+            chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle {
+                delta_milliseconds: 0,
+            }
+            .into_resource(),
+        );
         let layout_config = chipset_builder.layout_config();
         let chipset = chipset_builder
             .build()

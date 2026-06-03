@@ -83,6 +83,8 @@ pub struct VmManifestBuilder {
     uefi: Option<UefiManifest>,
     debugcon: Option<(Resource<SerialBackendHandle>, u16)>,
     vmbus: bool,
+    time_source: Option<Resource<chipset_resources::CmosRtcTimeSourceHandleKind>>,
+    initial_cmos: Option<[u8; 256]>,
 }
 
 /// Configuration for the Hyper-V UEFI helper device.
@@ -226,6 +228,8 @@ impl VmManifestBuilder {
             uefi: None,
             debugcon: None,
             vmbus,
+            time_source: None,
+            initial_cmos: None,
         }
     }
 
@@ -348,6 +352,30 @@ impl VmManifestBuilder {
         self
     }
 
+    /// Set the time source for the CMOS RTC device.
+    ///
+    /// On x86_64 guests, the builder automatically attaches the appropriate
+    /// RTC variant (PIIX4 for PCAT, generic for UEFI/Linux Direct). This
+    /// method provides the time-source resource that the RTC device will use.
+    ///
+    /// If not called, the RTC device will not be attached.
+    pub fn with_time_source(
+        mut self,
+        time_source: Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
+    ) -> Self {
+        self.time_source = Some(time_source);
+        self
+    }
+
+    /// Set the initial CMOS RAM values for the PIIX4 RTC (PCAT firmware).
+    ///
+    /// Only meaningful for [`BaseChipsetType::HypervGen1`]. The values are
+    /// typically produced by `firmware_pcat::default_cmos_values`.
+    pub fn with_initial_cmos(mut self, initial_cmos: [u8; 256]) -> Self {
+        self.initial_cmos = Some(initial_cmos);
+        self
+    }
+
     /// Build the VM manifest.
     pub fn build(self) -> Result<VmChipsetResult, Error> {
         let mut result = VmChipsetResult {
@@ -410,6 +438,9 @@ impl VmManifestBuilder {
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }
+                if let Some(time_source) = self.time_source {
+                    result.attach_piix4_cmos_rtc(time_source, self.initial_cmos);
+                }
             }
             BaseChipsetType::UnenlightenedLinuxDirect => {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
@@ -448,6 +479,11 @@ impl VmManifestBuilder {
                 }
                 if self.guest_watchdog {
                     result.attach_guest_watchdog();
+                }
+                if is_x86 {
+                    if let Some(time_source) = self.time_source {
+                        result.attach_generic_cmos_rtc(time_source);
+                    }
                 }
             }
             BaseChipsetType::HypervGen2Uefi | BaseChipsetType::HyperVGen2LinuxDirect => {
@@ -490,6 +526,11 @@ impl VmManifestBuilder {
                         self.uefi
                             .expect("must have called .with_uefi to enable uefi"),
                     );
+                }
+                if is_x86 {
+                    if let Some(time_source) = self.time_source {
+                        result.attach_generic_cmos_rtc(time_source);
+                    }
                 }
             }
             BaseChipsetType::HclHost => {
@@ -561,15 +602,37 @@ impl VmChipsetResult {
         self
     }
 
-    /// Attach a PIIX4 CMOS RTC device (used for PCAT firmware).
-    pub fn attach_piix4_cmos_rtc(&mut self, handle: Piix4CmosRtcDeviceHandle) -> &mut Self {
-        push_piix4_cmos_rtc(&mut self.chipset_devices, handle);
+    fn attach_piix4_cmos_rtc(
+        &mut self,
+        time_source: Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
+        initial_cmos: Option<[u8; 256]>,
+    ) -> &mut Self {
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "piix4-rtc".to_owned(),
+            resource: Piix4CmosRtcDeviceHandle {
+                initial_cmos,
+                enlightened_interrupts: true,
+                time_source,
+            }
+            .into_resource(),
+        });
         self
     }
 
-    /// Attach a generic CMOS RTC device (used for non-PCAT firmware).
-    pub fn attach_generic_cmos_rtc(&mut self, handle: GenericCmosRtcDeviceHandle) -> &mut Self {
-        push_generic_cmos_rtc(&mut self.chipset_devices, handle);
+    fn attach_generic_cmos_rtc(
+        &mut self,
+        time_source: Resource<chipset_resources::CmosRtcTimeSourceHandleKind>,
+    ) -> &mut Self {
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "rtc".to_owned(),
+            resource: GenericCmosRtcDeviceHandle {
+                irq: 8,
+                century_reg_idx: 0x32,
+                initial_cmos: None,
+                time_source,
+            }
+            .into_resource(),
+        });
         self
     }
 
@@ -896,34 +959,4 @@ impl VmChipsetResult {
         }
         self
     }
-}
-
-/// Push a [`Piix4CmosRtcDeviceHandle`] onto a chipset device list.
-///
-/// This is the free-function counterpart of
-/// [`VmChipsetResult::attach_piix4_cmos_rtc`] for callers that only have a
-/// `Vec<ChipsetDeviceHandle>` (e.g. `dispatch.rs`).
-pub fn push_piix4_cmos_rtc(
-    devices: &mut Vec<ChipsetDeviceHandle>,
-    handle: Piix4CmosRtcDeviceHandle,
-) {
-    devices.push(ChipsetDeviceHandle {
-        name: "piix4-rtc".to_owned(),
-        resource: handle.into_resource(),
-    });
-}
-
-/// Push a [`GenericCmosRtcDeviceHandle`] onto a chipset device list.
-///
-/// This is the free-function counterpart of
-/// [`VmChipsetResult::attach_generic_cmos_rtc`] for callers that only have a
-/// `Vec<ChipsetDeviceHandle>` (e.g. `dispatch.rs`).
-pub fn push_generic_cmos_rtc(
-    devices: &mut Vec<ChipsetDeviceHandle>,
-    handle: GenericCmosRtcDeviceHandle,
-) {
-    devices.push(ChipsetDeviceHandle {
-        name: "rtc".to_owned(),
-        resource: handle.into_resource(),
-    });
 }
