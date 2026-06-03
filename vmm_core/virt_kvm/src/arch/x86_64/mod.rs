@@ -17,6 +17,7 @@ use crate::KvmRunVpError;
 use crate::gsi::GsiRouting;
 use crate::gsi::KvmIrqFdState;
 use crate::gsi::MsiRouteBuilder;
+use crate::memory::KvmMemoryBackingMode;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
@@ -349,7 +350,7 @@ impl virt::Hypervisor for Kvm {
             }
         }
 
-        let vm = self.kvm.new_vm()?;
+        let vm = self.kvm.new_vm(kvm::VmType::Default)?;
         vm.enable_split_irqchip(virt::irqcon::IRQ_LINES as u32)?;
         vm.enable_x2apic_api()?;
         vm.enable_unknown_msr_exits()?;
@@ -456,6 +457,14 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
             memory: Default::default(),
+            memory_backing_mode: KvmMemoryBackingMode::Userspace,
+            ram_ranges: config
+                .mem_layout
+                .ram()
+                .iter()
+                .map(|range| range.range)
+                .chain(config.mem_layout.vtl2_range())
+                .collect(),
             hv1_enabled: self.config.hv_config.is_some(),
             gm: config.guest_memory.clone(),
             vps: self
@@ -1492,20 +1501,17 @@ impl<'p> Processor for KvmProcessor<'p> {
                     }
                     kvm::Exit::Hypercall {
                         nr,
-                        args,
+                        args: _,
                         result,
                         flags,
                     } => {
                         // This is only reachable for hypercall exits explicitly
                         // enabled on the VM. Later SNP support enables
                         // KVM_HC_MAP_GPA_RANGE and handles it here.
-                        tracelimit::error_ratelimited!(
-                            nr,
-                            ?args,
-                            flags,
-                            "unhandled KVM hypercall"
-                        );
                         *result = 1;
+                        return Err(
+                            dev.fatal_error(KvmRunVpError::UnhandledHypercall { nr, flags }.into())
+                        );
                     }
                     kvm::Exit::Debug {
                         exception: _,

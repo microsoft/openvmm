@@ -36,7 +36,9 @@ mod ioctl {
     use nix::request_code_none;
     use nix::request_code_readwrite;
     use std::mem::size_of;
+
     const KVMIO: u8 = 0xae;
+
     ioctl_write_int_bad!(kvm_create_vm, request_code_none!(KVMIO, 0x1));
     ioctl_write_int_bad!(kvm_check_extension, request_code_none!(KVMIO, 0x03));
     ioctl_write_int_bad!(kvm_get_vcpu_mmap_size, request_code_none!(KVMIO, 0x04));
@@ -188,6 +190,17 @@ pub const KVM_SEV_SNP_PAGE_TYPE_SECRETS_UAPI: u8 = KVM_SEV_SNP_PAGE_TYPE_SECRETS
 #[cfg(target_arch = "x86_64")]
 pub const KVM_SEV_SNP_PAGE_TYPE_CPUID_UAPI: u8 = KVM_SEV_SNP_PAGE_TYPE_CPUID as u8;
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum VmType {
+    Default,
+    #[cfg(target_arch = "x86_64")]
+    Snp,
+    #[cfg(target_arch = "aarch64")]
+    Realm {
+        ipa_bits: u8,
+    },
+}
+
 #[cfg(target_arch = "x86_64")]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum SevSnpPageType {
@@ -207,40 +220,6 @@ impl SevSnpPageType {
             SevSnpPageType::Unmeasured => KVM_SEV_SNP_PAGE_TYPE_UNMEASURED_UAPI,
             SevSnpPageType::Secrets => KVM_SEV_SNP_PAGE_TYPE_SECRETS_UAPI,
             SevSnpPageType::Cpuid => KVM_SEV_SNP_PAGE_TYPE_CPUID_UAPI,
-        }
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum X86VmType {
-    Snp,
-}
-
-#[cfg(target_arch = "x86_64")]
-impl X86VmType {
-    const fn as_raw(self) -> libc::c_int {
-        match self {
-            X86VmType::Snp => KVM_X86_SNP_VM_UAPI,
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum Aarch64VmType {
-    Realm { ipa_bits: u8 },
-}
-
-#[cfg(target_arch = "aarch64")]
-impl Aarch64VmType {
-    const fn as_raw(self) -> libc::c_int {
-        match self {
-            Aarch64VmType::Realm { ipa_bits } => {
-                (KVM_VM_TYPE_ARM_REALM_UAPI
-                    | ((ipa_bits as u64) & KVM_VM_TYPE_ARM_IPA_SIZE_MASK_UAPI))
-                    as libc::c_int
-            }
         }
     }
 }
@@ -275,9 +254,8 @@ pub enum Error {
     ArmRmiPopulate(#[source] nix::Error),
     #[error("missing KVM capability: {0}")]
     MissingCapability(&'static str),
-    #[cfg(target_arch = "x86_64")]
-    #[error("unsupported x86 VM type: {0:?}")]
-    UnsupportedX86VmType(X86VmType),
+    #[error("unsupported KVM VM type: {0:?}")]
+    UnsupportedVmType(VmType),
     #[cfg(target_arch = "x86_64")]
     #[error("MemoryEncryptOp({command}, firmware_error={firmware_error:#x})")]
     MemoryEncryptOp {
@@ -464,62 +442,48 @@ impl Kvm {
         unsafe { ioctl::kvm_check_extension(self.as_fd().as_raw_fd(), extension as i32) }
     }
 
-    pub fn check_private_memory_extensions(&self) -> Result<()> {
-        if self
-            .check_extension(KVM_CAP_USER_MEMORY2)
-            .map_err(Error::CheckExtension)?
-            == 0
-        {
-            return Err(Error::MissingCapability("KVM_CAP_USER_MEMORY2"));
-        }
-        if self
-            .check_extension(KVM_CAP_GUEST_MEMFD)
-            .map_err(Error::CheckExtension)?
-            == 0
-        {
-            return Err(Error::MissingCapability("KVM_CAP_GUEST_MEMFD"));
-        }
-        if self
-            .check_extension(KVM_CAP_MEMORY_ATTRIBUTES)
-            .map_err(Error::CheckExtension)?
-            & KVM_MEMORY_ATTRIBUTE_PRIVATE as libc::c_int
-            == 0
-        {
-            return Err(Error::MissingCapability(
-                "KVM_CAP_MEMORY_ATTRIBUTES(KVM_MEMORY_ATTRIBUTE_PRIVATE)",
-            ));
-        }
-        Ok(())
+    pub fn new_vm(&self, vm_type: VmType) -> Result<Partition> {
+        let raw_vm_type = self.raw_vm_type(vm_type)?;
+        self.new_vm_with_type(raw_vm_type)
     }
 
-    pub fn new_vm(&self) -> Result<Partition> {
+    fn raw_vm_type(&self, vm_type: VmType) -> Result<libc::c_int> {
+        match vm_type {
+            VmType::Default => Ok(self.default_vm_type()),
+            #[cfg(target_arch = "x86_64")]
+            VmType::Snp => {
+                let supported_vm_types =
+                    self.check_extension(KVM_CAP_VM_TYPES_UAPI)
+                        .map_err(Error::CheckExtension)? as u64;
+                let raw_vm_type = KVM_X86_SNP_VM_UAPI;
+                let vm_type_bit = 1_u64
+                    .checked_shl(raw_vm_type as u32)
+                    .ok_or(Error::UnsupportedVmType(vm_type))?;
+                if supported_vm_types & vm_type_bit == 0 {
+                    return Err(Error::UnsupportedVmType(vm_type));
+                }
+                Ok(raw_vm_type)
+            }
+            #[cfg(target_arch = "aarch64")]
+            VmType::Realm { ipa_bits } => Ok((KVM_VM_TYPE_ARM_REALM_UAPI
+                | ((ipa_bits as u64) & KVM_VM_TYPE_ARM_IPA_SIZE_MASK_UAPI))
+                as libc::c_int),
+        }
+    }
+
+    fn default_vm_type(&self) -> libc::c_int {
         // On ARM, can request memory isolation which we don't use.
         // For that, include the `KVM_VM_TYPE_ARM_PROTECTED` flag.
         // Use 0 as the fallback machine type, which implies 40bit
         // IPA on ARM64, and on x86_64 is the only option.
-        let vm_type = self.check_extension(KVM_CAP_ARM_VM_IPA_SIZE).unwrap_or(0);
-
-        self.new_vm_with_type(vm_type)
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    pub fn new_x86_vm(&self, vm_type: X86VmType) -> Result<Partition> {
-        let supported_vm_types = self
-            .check_extension(KVM_CAP_VM_TYPES_UAPI)
-            .map_err(Error::CheckExtension)? as u64;
-        let raw_vm_type = vm_type.as_raw();
-        let vm_type_bit = 1_u64
-            .checked_shl(raw_vm_type as u32)
-            .ok_or(Error::UnsupportedX86VmType(vm_type))?;
-        if supported_vm_types & vm_type_bit == 0 {
-            return Err(Error::UnsupportedX86VmType(vm_type));
+        #[cfg(target_arch = "aarch64")]
+        {
+            self.check_extension(KVM_CAP_ARM_VM_IPA_SIZE).unwrap_or(0)
         }
-        self.new_vm_with_type(raw_vm_type)
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    pub fn new_aarch64_vm(&self, vm_type: Aarch64VmType) -> Result<Partition> {
-        self.new_vm_with_type(vm_type.as_raw())
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            0
+        }
     }
 
     fn new_vm_with_type(&self, vm_type: libc::c_int) -> Result<Partition> {
@@ -595,37 +559,8 @@ pub struct Partition {
 }
 
 impl Partition {
-    pub fn check_private_memory_extensions(&self) -> Result<()> {
-        if self
-            .check_extension(KVM_CAP_USER_MEMORY2)
-            .map_err(Error::CheckExtension)?
-            == 0
-        {
-            return Err(Error::MissingCapability("KVM_CAP_USER_MEMORY2"));
-        }
-        if self
-            .check_extension(KVM_CAP_GUEST_MEMFD)
-            .map_err(Error::CheckExtension)?
-            == 0
-        {
-            return Err(Error::MissingCapability("KVM_CAP_GUEST_MEMFD"));
-        }
-        if self
-            .check_extension(KVM_CAP_MEMORY_ATTRIBUTES)
-            .map_err(Error::CheckExtension)?
-            & KVM_MEMORY_ATTRIBUTE_PRIVATE as libc::c_int
-            == 0
-        {
-            return Err(Error::MissingCapability(
-                "KVM_CAP_MEMORY_ATTRIBUTES(KVM_MEMORY_ATTRIBUTE_PRIVATE)",
-            ));
-        }
-        Ok(())
-    }
-
     #[cfg(target_arch = "x86_64")]
     pub fn check_sev_snp_launch_extensions(&self) -> Result<()> {
-        self.check_private_memory_extensions()?;
         // SAFETY: This is the documented KVM_MEMORY_ENCRYPT_OP availability
         // probe, and does not pass any userspace data pointer to KVM.
         unsafe { ioctl::kvm_memory_encrypt_op_supported(self.vm.as_raw_fd()) }.map_err(|err| {
@@ -634,8 +569,7 @@ impl Partition {
                 firmware_error: 0,
                 source: err,
             }
-        })?;
-        Ok(())
+        })
     }
 
     #[cfg(target_arch = "x86_64")]
