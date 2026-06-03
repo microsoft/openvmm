@@ -149,7 +149,7 @@ impl SimpleFlowNode for Node {
             ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v });
 
         let virtio_win_dir = register_virtio_win
-            .then(|| ctx.reqv(|v| crate::resolve_openvmm_test_virtio_win::Request::Get(v)));
+            .then(|| ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get));
 
         ctx.emit_rust_step("setting up vmm_tests env", |ctx| {
             let test_content_dir = test_content_dir.claim(ctx);

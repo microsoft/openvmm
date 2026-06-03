@@ -24,7 +24,7 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request(done) = request;
         let magicpath = ctx.reqv(crate::cfg_openvmm_magicpath::Request);
-        let virtio_win_dir = ctx.reqv(|v| crate::resolve_openvmm_test_virtio_win::Request::Get(v));
+        let virtio_win_dir = ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get);
 
         ctx.emit_rust_step("copy virtio-win drivers to magicpath", |ctx| {
             let magicpath = magicpath.claim(ctx);
