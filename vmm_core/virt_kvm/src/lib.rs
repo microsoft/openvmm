@@ -133,7 +133,6 @@ enum KvmRunVpError {
     InvalidVpState,
     #[error("failed to run VP")]
     Run(#[source] kvm::Error),
-    #[cfg_attr(guest_arch = "x86_64", expect(dead_code))]
     #[error("unhandled system event type: {0:#x}")]
     UnhandledSystemEvent(u32),
     #[cfg(guest_arch = "x86_64")]
