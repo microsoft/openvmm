@@ -161,6 +161,7 @@ use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
 use vmotherboard::options::BaseChipsetManifest;
 use vmotherboard::options::VmChipsetCapabilities;
+use vmotherboard::options::VmChipsetResult;
 #[cfg(all(windows, feature = "virt_whp"))]
 use vpci::bus::VpciBus;
 use watchdog_core::platform::BaseWatchdogPlatform;
@@ -1734,10 +1735,13 @@ impl InitializedVm {
             },
             base_chipset_devices,
         )
-        .with_expected_manifest(cfg.chipset.clone())
-        .with_device_handles(cfg.chipset_devices)
-        .with_pci_device_handles(cfg.pci_chipset_devices)
-        .with_isa_dma_handle(cfg.isa_dma_controller)
+        .with_vm_chipset_result(VmChipsetResult {
+            chipset: cfg.chipset.clone(),
+            chipset_devices: cfg.chipset_devices,
+            pci_chipset_devices: cfg.pci_chipset_devices,
+            isa_dma_controller: cfg.isa_dma_controller,
+            capabilities: cfg.chipset_capabilities,
+        })
         .with_trace_unknown_pio(true) // todo: add CLI param?
         .build(&driver_source, &state_units, &resolver)
         .await?;

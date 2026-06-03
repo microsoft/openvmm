@@ -158,6 +158,28 @@ impl<'a> BaseChipsetBuilder<'a> {
         self
     }
 
+    /// Configures the builder from a complete [`options::VmChipsetResult`].
+    ///
+    /// This is a convenience method equivalent to calling
+    /// [`Self::with_expected_manifest`], [`Self::with_device_handles`],
+    /// [`Self::with_pci_device_handles`], and [`Self::with_isa_dma_handle`]
+    /// with the corresponding fields of `result`. The `capabilities` field is
+    /// not consumed by the builder itself; callers that need it should copy it
+    /// out before calling this method (it is [`Copy`]).
+    pub fn with_vm_chipset_result(self, result: options::VmChipsetResult) -> Self {
+        let options::VmChipsetResult {
+            chipset,
+            chipset_devices,
+            pci_chipset_devices,
+            isa_dma_controller,
+            capabilities: _,
+        } = result;
+        self.with_expected_manifest(chipset)
+            .with_device_handles(chipset_devices)
+            .with_pci_device_handles(pci_chipset_devices)
+            .with_isa_dma_handle(isa_dma_controller)
+    }
+
     /// Sets the ISA DMA controller handle to be resolved and instantiated.
     pub fn with_isa_dma_handle(
         mut self,
@@ -1028,6 +1050,28 @@ pub mod options {
             winbond_super_io_and_floppy_stub: dev::WinbondSuperIoAndFloppyStubDeps,
             winbond_super_io_and_floppy_full: dev::WinbondSuperIoAndFloppyFullDeps,
         }
+    }
+
+    /// The aggregated output of building a VM chipset manifest, as returned by
+    /// `vm_manifest_builder::VmManifestBuilder::build`.
+    ///
+    /// This struct groups together all chipset-related fields that flow from
+    /// the manifest builder into [`super::BaseChipsetBuilder`]. Callers can
+    /// pass the entire struct to
+    /// [`super::BaseChipsetBuilder::with_vm_chipset_result`] instead of
+    /// providing each field via separate builder calls.
+    #[derive(Debug)]
+    pub struct VmChipsetResult {
+        /// The base chipset manifest for the VM.
+        pub chipset: BaseChipsetManifest,
+        /// The list of chipset devices present in the VM.
+        pub chipset_devices: Vec<super::ChipsetDeviceHandle>,
+        /// The list of legacy PCI chipset devices with explicit placement metadata.
+        pub pci_chipset_devices: Vec<super::LegacyPciChipsetDeviceHandle>,
+        /// Optional ISA DMA controller resource handle.
+        pub isa_dma_controller: Option<Resource<IsaDmaControllerHandleKind>>,
+        /// Derived chipset capabilities needed by firmware and table generation.
+        pub capabilities: VmChipsetCapabilities,
     }
 
     /// Derived capabilities for the configured chipset devices.

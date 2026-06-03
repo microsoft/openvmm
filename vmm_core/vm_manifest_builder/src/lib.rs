@@ -64,6 +64,7 @@ use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::LegacyPciChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
 use vmotherboard::options::VmChipsetCapabilities;
+pub use vmotherboard::options::VmChipsetResult;
 
 /// Builder for a VM manifest.
 pub struct VmManifestBuilder {
@@ -171,20 +172,6 @@ pub enum MachineArch {
     X86_64,
     /// AArch64 (ARM64) architecture.
     Aarch64,
-}
-
-/// The result of building a VM manifest.
-pub struct VmChipsetResult {
-    /// The base chipset manifest for the VM.
-    pub chipset: BaseChipsetManifest,
-    /// The list of chipset devices present in the VM.
-    pub chipset_devices: Vec<ChipsetDeviceHandle>,
-    /// The list of legacy PCI chipset devices with explicit placement metadata.
-    pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
-    /// Optional ISA DMA controller resource handle.
-    pub isa_dma_controller: Option<Resource<IsaDmaControllerHandleKind>>,
-    /// Derived chipset capabilities needed by firmware and table generation.
-    pub capabilities: VmChipsetCapabilities,
 }
 
 /// Error type for building a VM manifest.
@@ -547,7 +534,46 @@ impl VmManifestBuilder {
     }
 }
 
-impl VmChipsetResult {
+trait VmChipsetResultExt {
+    fn attach_i8042(&mut self) -> &mut Self;
+    fn attach_generic_isa_dma(&mut self) -> &mut Self;
+    fn attach_pic(&mut self) -> &mut Self;
+    fn attach_pit(&mut self) -> &mut Self;
+    fn attach_generic_ioapic(&mut self) -> &mut Self;
+    fn attach_battery(
+        &mut self,
+        arch: MachineArch,
+        battery_status_recv: mesh::Receiver<HostBatteryUpdate>,
+    ) -> &mut Self;
+    fn attach_piix4_pci_usb_uhci_stub(&mut self) -> &mut Self;
+    fn attach_piix4_pci_isa_bridge(&mut self) -> &mut Self;
+    fn attach_guest_watchdog(&mut self) -> &mut Self;
+    fn attach_hyperv_power_management(&mut self, platform_pm_timer_assist: bool) -> &mut Self;
+    fn attach_piix4_power_management(&mut self, platform_pm_timer_assist: bool) -> &mut Self;
+    fn attach_uefi(&mut self, uefi: UefiManifest) -> &mut Self;
+    fn attach_i440bx_host_pci_bridge(&mut self) -> &mut Self;
+    fn maybe_attach_arch_serial(
+        &mut self,
+        arch: MachineArch,
+        wait_for_rts: bool,
+        register_missing: bool,
+        serial: Option<[Option<Resource<SerialBackendHandle>>; 4]>,
+    ) -> Result<&mut Self, ErrorInner>;
+    fn attach_debugcon(&mut self, port: u16, backend: Resource<SerialBackendHandle>)
+        -> &mut Self;
+    fn attach_serial_16550(
+        &mut self,
+        wait_for_rts: bool,
+        backends: [Option<Resource<SerialBackendHandle>>; 4],
+    ) -> &mut Self;
+    fn attach_serial_pl011(
+        &mut self,
+        backends: [Option<Resource<SerialBackendHandle>>; 4],
+    ) -> Result<&mut Self, ErrorInner>;
+    fn attach_missing_arch_ports(&mut self, arch: MachineArch, pcat_missing: bool) -> &mut Self;
+}
+
+impl VmChipsetResultExt for VmChipsetResult {
     fn attach_i8042(&mut self) -> &mut Self {
         self.chipset_devices.push(ChipsetDeviceHandle {
             name: "i8042".to_owned(),
