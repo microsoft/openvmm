@@ -7278,6 +7278,94 @@ async fn read_netvsp_counter(channel: &ChannelHandle<Nic>, path: &str) -> u64 {
 }
 
 #[async_test]
+async fn oid_query_mac_options_reports_vlan_support(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    // Send OID query for MAC_OPTIONS.
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_QUERY_MSG,
+            rndisprot::QueryRequest {
+                request_id: 10,
+                oid: rndisprot::Oid::OID_GEN_MAC_OPTIONS,
+                information_buffer_length: 0,
+                information_buffer_offset: size_of::<rndisprot::QueryRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &[],
+        )
+        .await;
+
+    // Read the QUERY_CMPLT response which contains QueryComplete + u32 payload.
+    #[repr(C)]
+    #[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+    struct QueryCompleteWithU32 {
+        header: rndisprot::QueryComplete,
+        value: u32,
+    }
+
+    let response: QueryCompleteWithU32 = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_QUERY_CMPLT)
+        .await
+        .unwrap();
+
+    assert_eq!(response.header.request_id, 10);
+    assert_eq!(response.header.status, rndisprot::STATUS_SUCCESS);
+    assert_eq!(
+        response.header.information_buffer_length,
+        size_of::<u32>() as u32,
+    );
+
+    let options = response.value;
+    assert_ne!(
+        options & rndisprot::MAC_OPTION_8021P_PRIORITY,
+        0,
+        "MAC_OPTIONS must advertise 802.1p priority support"
+    );
+    assert_ne!(
+        options & rndisprot::MAC_OPTION_8021Q_VLAN,
+        0,
+        "MAC_OPTIONS must advertise 802.1Q VLAN support"
+    );
+    // Verify the baseline flags are still present.
+    assert_ne!(options & rndisprot::MAC_OPTION_NO_LOOPBACK, 0);
+    assert_ne!(options & rndisprot::MAC_OPTION_COPY_LOOKAHEAD_DATA, 0);
+    assert_ne!(options & rndisprot::MAC_OPTION_TRANSFERS_NOT_PEND, 0);
+}
+
+#[async_test]
 async fn vlan_tx_counter_increments(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));

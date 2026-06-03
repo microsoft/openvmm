@@ -2612,7 +2612,9 @@ impl<T: RingMem> NetChannel<T> {
 
             // The frame data always has a 14-byte Ethernet header; when
             // VLAN is present it arrives out-of-band in the PPI (not inline
-            // in the frame), so l2_len is unconditionally 14.
+            // in the frame), so l2_len is unconditionally 14. If the guest
+            // does present a different ethernet header length, then the checksum
+            // will fail and the send won't work, but that's really on the guest.
             metadata.l2_len = net_backend::ETHERNET_HEADER_LEN as u8;
 
             if metadata.flags.offload_tcp_checksum() || metadata.flags.offload_udp_checksum() {
