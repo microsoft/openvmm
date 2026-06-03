@@ -416,10 +416,12 @@ impl virt::vp::AccessVpState for &'_ mut KvmProcessor<'_> {
         set_reg(KvmRegisterId::X28, value.x28)?;
         set_reg(KvmRegisterId::X29, value.fp)?;
         set_reg(KvmRegisterId::X30, value.lr)?;
-        set_reg(KvmRegisterId::SP, value.sp_el0)?;
         set_reg(KvmRegisterId::PC, value.pc)?;
-        set_reg(KvmRegisterId::SP_EL1, value.sp_el1)?;
-        set_reg(KvmRegisterId::PSTATE, value.cpsr)?;
+        if self.partition.caps.isolation != virt::IsolationType::Cca {
+            set_reg(KvmRegisterId::SP, value.sp_el0)?;
+            set_reg(KvmRegisterId::SP_EL1, value.sp_el1)?;
+            set_reg(KvmRegisterId::PSTATE, value.cpsr)?;
+        }
 
         Ok(())
     }
@@ -445,6 +447,10 @@ impl virt::vp::AccessVpState for &'_ mut KvmProcessor<'_> {
     }
 
     fn set_system_registers(&mut self, value: &SystemRegisters) -> Result<(), Self::Error> {
+        if self.partition.caps.isolation == virt::IsolationType::Cca {
+            return Ok(());
+        }
+
         let set_reg = |id: KvmRegisterId, value: u64| -> Result<(), KvmError> {
             // tracing::warn!("set_sreg: {:?}({:#x}) = {:x}", id, id.0, value);
             self.kvm.set_reg64(id.into(), value).map_err(KvmError::Kvm)
@@ -558,16 +564,24 @@ impl virt::Processor for KvmProcessor<'_> {
                         pending_exit = false;
                     }
                     kvm::Exit::MmioWrite { address, data } => {
-                        dev.write_mmio(self.vpindex, address, data).await
+                        dev.write_mmio(self.vpindex, self.partition.mmio_address(address), data)
+                            .await
                     }
                     kvm::Exit::MmioRead { address, data } => {
-                        dev.read_mmio(self.vpindex, address, data).await
+                        dev.read_mmio(self.vpindex, self.partition.mmio_address(address), data)
+                            .await
                     }
                     kvm::Exit::Shutdown => {
                         return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
                     }
                     kvm::Exit::InternalError { error, .. } => {
                         return Err(dev.fatal_error(KvmRunVpError::InternalError(error).into()));
+                    }
+                    kvm::Exit::EmulationFailure { instruction_bytes } => {
+                        tracing::error!(?instruction_bytes, "KVM reported an emulation failure");
+                        return Err(dev.fatal_error(
+                            KvmRunVpError::UnhandledExit(format!("{exit:?}")).into(),
+                        ));
                     }
                     kvm::Exit::FailEntry {
                         hardware_entry_failure_reason,
@@ -597,7 +611,6 @@ impl virt::Processor for KvmProcessor<'_> {
                             }
                         }
                     }
-                    _ => panic!("unhandled exit: {:?}", exit),
                 }
             }
         }
@@ -919,8 +932,10 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
 
         let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
-            cca_launch_state: Mutex::new(crate::CcaLaunchState::NotStarted),
             memory: Default::default(),
+            cca_launch_state: Mutex::new(crate::CcaLaunchState::NotStarted),
+            shared_gpa_bit: (self.config.isolation == virt::IsolationType::Cca)
+                .then_some(1_u64 << (self.ipa_size - 1)),
             memory_backing_mode,
             ram_ranges,
             hv1_enabled: self.config.hv_config.is_some(),
@@ -1077,6 +1092,20 @@ impl virt::irqcon::ControlGic for KvmPartitionInner {
     }
 }
 
+impl KvmPartitionInner {
+    /// Removes the CCA shared-address bit before routing an MMIO access.
+    ///
+    /// Realm guests use the shared bit to select the host-visible alias of a
+    /// device address, while KVM routing entries contain the underlying IPA.
+    fn mmio_address(&self, address: u64) -> u64 {
+        if let Some(shared_bit) = self.shared_gpa_bit {
+            address & (shared_bit - 1)
+        } else {
+            address
+        }
+    }
+}
+
 impl virt::Aarch64Partition for KvmPartition {
     fn control_gic(&self, vtl: Vtl) -> Arc<dyn virt::irqcon::ControlGic> {
         assert!(vtl == Vtl::Vtl0);
@@ -1212,15 +1241,6 @@ impl virt::PartitionAccessState for KvmPartition {
     }
 }
 
-fn map_cca_capability_error(err: crate::memory::MemoryError) -> KvmError {
-    match err {
-        crate::memory::MemoryError::Kvm(kvm::Error::MissingCapability(capability)) => {
-            KvmError::MissingCcaCapability(capability)
-        }
-        err => err.into(),
-    }
-}
-
 impl virt::Hypervisor for Kvm {
     type ProtoPartition<'a> = KvmProtoPartition<'a>;
     type Partition = KvmPartition;
@@ -1234,6 +1254,9 @@ impl virt::Hypervisor for Kvm {
             device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Fixed(
                 memory_range::MemoryRange::new(0x0800_0000..0x0810_0000),
             ),
+            // TODO: Revisit whether CCA should share an abstraction with SNP's
+            // vtom/shared-GPA-boundary model instead of using a separate field.
+            shared_gpa_bit: self.cca_ipa_size.map(|ipa_size| 1_u64 << (ipa_size - 1)),
         }
     }
 
@@ -1300,5 +1323,14 @@ impl virt::Hypervisor for Kvm {
             config,
             ipa_size,
         })
+    }
+}
+
+fn map_cca_capability_error(err: crate::memory::MemoryError) -> KvmError {
+    match err {
+        crate::memory::MemoryError::Kvm(kvm::Error::MissingCapability(capability)) => {
+            KvmError::MissingCcaCapability(capability)
+        }
+        err => err.into(),
     }
 }

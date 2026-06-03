@@ -66,6 +66,8 @@ pub struct PlatformInfo {
     /// How the physical SMMU implementation selects the IOVA range reserved
     /// for device-assignment MSI writes.
     pub device_assignment_msi_iova: DeviceAssignmentMsiIova,
+    /// The CCA shared IPA bit, if available.
+    pub shared_gpa_bit: Option<u64>,
 }
 
 /// Selection policy for the device-assignment MSI IOVA reservation.

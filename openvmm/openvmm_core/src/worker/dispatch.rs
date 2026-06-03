@@ -445,6 +445,9 @@ pub(crate) struct InitializedVm {
     vmtime_source: VmTimeSource,
     memory_manager: GuestMemoryManager,
     gm: GuestMemory,
+    device_gm: GuestMemory,
+    #[cfg(guest_arch = "aarch64")]
+    shared_gpa_bit: Option<u64>,
     cfg: Manifest,
     mem_layout: MemoryLayout,
     resolved_pcie_root_complex_ranges: Vec<ResolvedPcieRootComplexRanges>,
@@ -771,6 +774,9 @@ struct LoadedVmInner {
     _vmtime: SpawnedUnit<VmTimeKeeper>,
     memory_manager: GuestMemoryManager,
     gm: GuestMemory,
+    _device_gm: GuestMemory,
+    #[cfg(guest_arch = "aarch64")]
+    shared_gpa_bit: Option<u64>,
     vtl0_hvsock_relay: Option<HvsockRelay>,
     vtl2_hvsock_relay: Option<HvsockRelay>,
     vmbus_server: Option<VmbusServerHandle>,
@@ -1371,6 +1377,45 @@ impl InitializedVm {
             .guest_memory()
             .await
             .context("failed to get guest memory")?;
+        #[cfg(guest_arch = "aarch64")]
+        let shared_gpa_bit =
+            if cfg.hypervisor.with_isolation == Some(openvmm_defs::config::IsolationType::Cca) {
+                let shared_bit = platform_info
+                    .shared_gpa_bit
+                    .context("missing CCA shared GPA bit")?;
+                anyhow::ensure!(
+                    shared_bit.is_power_of_two(),
+                    "CCA shared GPA bit must be a power of two"
+                );
+                anyhow::ensure!(
+                    max_addr <= shared_bit,
+                    "guest memory layout overlaps CCA shared GPA alias region"
+                );
+                Some(shared_bit)
+            } else {
+                None
+            };
+        let device_gm = {
+            #[cfg(guest_arch = "aarch64")]
+            {
+                if let Some(shared_bit) = shared_gpa_bit {
+                    // TODO: Confirm Arm CCA pSMMU semantics for whether devices
+                    // should accept low IPAs, high/shared IPAs, or both, then
+                    // update this aliasing behavior to match.
+                    memory_manager
+                        .client()
+                        .aliased_guest_memory("shared-ram", shared_bit)
+                        .await
+                        .context("failed to get CCA device guest memory")?
+                } else {
+                    gm.clone()
+                }
+            }
+            #[cfg(not(guest_arch = "aarch64"))]
+            {
+                gm.clone()
+            }
+        };
         let mut cpuid = Vec::new();
 
         // Add in Hyper-V VMM CPUID leaves.
@@ -1422,6 +1467,9 @@ impl InitializedVm {
             vmtime_source,
             memory_manager,
             gm,
+            device_gm,
+            #[cfg(guest_arch = "aarch64")]
+            shared_gpa_bit,
             cfg,
             mem_layout,
             resolved_pcie_root_complex_ranges,
@@ -1453,6 +1501,9 @@ impl InitializedVm {
             vmtime_source,
             memory_manager,
             gm,
+            device_gm,
+            #[cfg(guest_arch = "aarch64")]
+            shared_gpa_bit,
             cfg,
             mem_layout,
             resolved_pcie_root_complex_ranges,
@@ -2553,7 +2604,7 @@ impl InitializedVm {
             let chipset_builder = &chipset_builder;
             let driver_source = &driver_source;
             let resolver = &resolver;
-            let gm = &gm;
+            let gm = &device_gm;
             let partition = &partition;
             let mapper = &mapper;
             let port_info = &port_info;
@@ -2667,16 +2718,17 @@ impl InitializedVm {
                 .vmbus_max_version
                 .map(vmbus_core::MaxVersionInfo::new);
             let vmbus_driver = driver_source.simple();
-            let vmbus = VmbusServer::builder(vmbus_driver.clone(), synic.clone(), gm.clone())
-                .hvsock_notify(Some(hvsock_channel.server_half))
-                .external_server(vtl2_request_send)
-                .use_message_redirect(vmbus_cfg.vtl2_redirect)
-                .max_version(vmbus_max_version)
-                .max_restore_version(vmbus_max_version)
-                .delay_max_version(matches!(cfg.load_mode, LoadMode::Uefi { .. }))
-                .enable_mnf(true)
-                .build()
-                .context("failed to create vmbus server")?;
+            let vmbus =
+                VmbusServer::builder(vmbus_driver.clone(), synic.clone(), device_gm.clone())
+                    .hvsock_notify(Some(hvsock_channel.server_half))
+                    .external_server(vtl2_request_send)
+                    .use_message_redirect(vmbus_cfg.vtl2_redirect)
+                    .max_version(vmbus_max_version)
+                    .max_restore_version(vmbus_max_version)
+                    .delay_max_version(matches!(cfg.load_mode, LoadMode::Uefi { .. }))
+                    .enable_mnf(true)
+                    .build()
+                    .context("failed to create vmbus server")?;
 
             // Start the vmbus kernel proxy if it's in use.
             #[cfg(windows)]
@@ -2691,7 +2743,7 @@ impl InitializedVm {
                         .vtl2_server(vtl2_vmbus.as_ref().map(|server| {
                             vmbus_server::ProxyServerInfo::new(server.control().clone())
                         }))
-                        .memory(Some(&gm))
+                        .memory(Some(&device_gm))
                         .build()
                         .await
                         .context("failed to start the vmbus proxy")?,
@@ -2792,7 +2844,7 @@ impl InitializedVm {
                                 .transpose()
                                 .context("vpci device vnode exceeds 65535")?,
                         },
-                        gm.clone(),
+                        device_gm.clone(),
                         |device_id| {
                             let hv_device = partition.new_virtual_device(
                                 match dev_cfg.vtl {
@@ -2923,7 +2975,7 @@ impl InitializedVm {
                     let mmio_start = virtio_mmio_region.start() + virtio_mmio_index as u64 * 0x1000;
                     virtio_mmio_index += 1;
                     let id = format!("{id}-{mmio_start}");
-                    let gm = gm.clone();
+                    let gm = device_gm.clone();
                     chipset_builder.arc_mutex_device(id).try_add(|services| {
                         VirtioMmioDevice::new(
                             device.0,
@@ -2957,7 +3009,7 @@ impl InitializedVm {
                             VirtioPciDevice::new(
                                 device.0,
                                 &driver_source.simple(),
-                                gm.clone(),
+                                device_gm.clone(),
                                 PciInterruptModel::IntX(
                                     PciInterruptPin::IntA,
                                     services.new_line(IRQ_LINE_SET, "interrupt", pci_inta_line),
@@ -3048,6 +3100,9 @@ impl InitializedVm {
                 _vmtime: vmtime,
                 memory_manager,
                 gm,
+                _device_gm: device_gm,
+                #[cfg(guest_arch = "aarch64")]
+                shared_gpa_bit,
                 vtl0_hvsock_relay,
                 vtl2_hvsock_relay,
                 vmbus_server,
@@ -3238,6 +3293,7 @@ impl LoadedVmInner {
                     cmdline,
                     mem_layout: &self.mem_layout,
                     isolation: self.hypervisor_cfg.with_isolation,
+                    shared_gpa_bit: None,
                     snp_c_bit: self.partition.caps().snp_c_bit,
                 };
                 super::vm_loaders::linux::load_linux_x86(
@@ -3277,14 +3333,31 @@ impl LoadedVmInner {
             } => {
                 use openvmm_defs::config::LinuxDirectBootMode;
 
+                let shared_gpa_bit = if self.hypervisor_cfg.with_isolation
+                    == Some(openvmm_defs::config::IsolationType::Cca)
+                {
+                    Some(self.shared_gpa_bit.context("missing CCA shared GPA bit")?)
+                } else {
+                    None
+                };
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
                     isolation: self.hypervisor_cfg.with_isolation,
+                    shared_gpa_bit,
                     snp_c_bit: None,
                 };
+
+                if self.hypervisor_cfg.with_isolation
+                    == Some(openvmm_defs::config::IsolationType::Cca)
+                    && boot_mode == LinuxDirectBootMode::Acpi
+                {
+                    anyhow::bail!(
+                        "CCA isolation currently only supports device tree Linux direct boot"
+                    );
+                }
 
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
                     Some(|rsdp_gpa: u64| {

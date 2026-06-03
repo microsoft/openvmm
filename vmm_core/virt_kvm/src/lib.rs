@@ -136,6 +136,8 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
     cca_launch_state: Mutex<CcaLaunchState>,
+    #[cfg(guest_arch = "aarch64")]
+    shared_gpa_bit: Option<u64>,
     memory: Mutex<KvmMemoryRangeState>,
     memory_backing_mode: KvmMemoryBackingMode,
     #[inspect(iter_by_index)]
@@ -197,7 +199,6 @@ enum KvmRunVpError {
     )]
     UnsupportedMemoryFault { flags: u64, gpa: u64, size: u64 },
     #[cfg(guest_arch = "aarch64")]
-    #[expect(dead_code)]
     #[error("unhandled KVM exit: {0}")]
     UnhandledExit(String),
     #[cfg(guest_arch = "aarch64")]
