@@ -34,6 +34,7 @@ impl SimpleFlowNode for Node {
                 let magicpath = rt.read(magicpath);
                 let src = rt.read(virtio_win_dir);
                 let dst = magicpath.join("virtio-win");
+                let _ = fs_err::remove_dir_all(&dst);
                 flowey_lib_common::_util::copy_dir_all(&src, &dst)?;
                 Ok(())
             }
