@@ -1490,6 +1490,23 @@ impl<'p> Processor for KvmProcessor<'p> {
                         KvmHypercallExit::DISPATCHER.dispatch(&self.partition.gm, &mut handler);
                         *result = handler.registers.result;
                     }
+                    kvm::Exit::Hypercall {
+                        nr,
+                        args,
+                        result,
+                        flags,
+                    } => {
+                        // This is only reachable for hypercall exits explicitly
+                        // enabled on the VM. Later SNP support enables
+                        // KVM_HC_MAP_GPA_RANGE and handles it here.
+                        tracelimit::error_ratelimited!(
+                            nr,
+                            ?args,
+                            flags,
+                            "unhandled KVM hypercall"
+                        );
+                        *result = 1;
+                    }
                     kvm::Exit::Debug {
                         exception: _,
                         pc: _,
@@ -1525,6 +1542,30 @@ impl<'p> Processor for KvmProcessor<'p> {
                     } => {
                         tracing::error!(hardware_entry_failure_reason, "VP entry failed");
                         return Err(dev.fatal_error(KvmRunVpError::InvalidVpState.into()));
+                    }
+                    kvm::Exit::SystemEvent {
+                        event_type,
+                        event_flags,
+                    } => {
+                        // KVM reports architectural shutdown/reset/crash
+                        // notifications here; SNP adds SEV termination handling.
+                        tracing::info!(event_type, event_flags, "system event");
+                        match event_type {
+                            kvm::KVM_SYSTEM_EVENT_SHUTDOWN => {
+                                return Err(VpHaltReason::PowerOff);
+                            }
+                            kvm::KVM_SYSTEM_EVENT_RESET => {
+                                return Err(VpHaltReason::Reset);
+                            }
+                            kvm::KVM_SYSTEM_EVENT_CRASH => {
+                                return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+                            }
+                            _ => {
+                                return Err(dev.fatal_error(
+                                    KvmRunVpError::UnhandledSystemEvent(event_type).into(),
+                                ));
+                            }
+                        }
                     }
                 }
             }
