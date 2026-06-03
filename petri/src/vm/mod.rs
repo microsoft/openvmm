@@ -398,7 +398,6 @@ pub struct PetriVm<T: PetriVmmBackend> {
     guest_quirks: GuestQuirksInner,
     vmm_quirks: VmmQuirks,
     expected_boot_event: Option<FirmwareEvent>,
-    uses_pipette_as_init: bool,
 
     config: PetriVmRuntimeConfig,
 }
@@ -1024,7 +1023,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
         let arch = self.config.arch;
         let expect_reset = self.expect_reset();
-        let uses_pipette_as_init = self.uses_pipette_as_init();
         let properties = self.properties();
 
         let (mut runtime, config) = self
@@ -1050,7 +1048,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             guest_quirks: self.guest_quirks,
             vmm_quirks: self.vmm_quirks,
             expected_boot_event: self.expected_boot_event,
-            uses_pipette_as_init,
 
             config,
         };
@@ -1785,11 +1782,9 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         // TODO: remove this once the bug is fixed, since it shouldn't be
         // necessary and a guest could in theory support pipette and not the IC
         //
-        // Skip when pipette runs as PID 1 init — the shutdown IC may not
-        // be present (e.g., minimal mode).
-        if !self.uses_pipette_as_init {
-            self.runtime.wait_for_enlightened_shutdown_ready().await?;
-        }
+        // This is a no-op when the shutdown IC is not configured (e.g.,
+        // no VMBus or minimal mode).
+        self.runtime.wait_for_enlightened_shutdown_ready().await?;
         self.runtime.wait_for_agent(false).await
     }
 

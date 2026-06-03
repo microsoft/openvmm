@@ -22,6 +22,7 @@ use anyhow::bail;
 use cxl_spec::spec::CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES;
 use cxl_spec::spec::CXL_HPA_ALIGNMENT;
 use memory_range::MemoryRange;
+use openvmm_defs::config::PcieIommuConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use std::sync::Arc;
@@ -80,6 +81,10 @@ pub(super) struct ResolvedMemoryLayout {
     /// Each range is `SMMU_SIZE` bytes. Empty when no SMMUs are configured.
     #[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
     pub smmu_ranges: Vec<MemoryRange>,
+    /// Resolved MMIO ranges for AMD IOMMU instances, one per configured IOMMU.
+    /// Each range is 16 KiB. Empty when no AMD IOMMUs are configured.
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
+    pub amd_iommu_ranges: Vec<MemoryRange>,
 }
 
 #[derive(Debug)]
@@ -105,10 +110,6 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// Number of virtio-mmio device slots to allocate in 32-bit MMIO space.
     /// A single contiguous region of `count * 4 KiB` is allocated.
     pub virtio_mmio_count: usize,
-    /// Number of SMMUv3 instances to allocate MMIO for (aarch64 only;
-    /// always 0 on other architectures). Each instance requires
-    /// `SMMU_SIZE` bytes (128 KiB), 128 KiB aligned, in 32-bit MMIO space.
-    pub smmu_count: usize,
     /// Optional IGVM VTL2 private-memory request. This is allocated after all
     /// VTL0-visible RAM and MMIO and is carried separately from ordinary RAM.
     pub vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
@@ -302,13 +303,36 @@ pub(super) fn resolve_memory_layout(
 
     // SMMUv3: allocate one 128 KiB region per instance. Placed below 4 GiB
     // alongside other aarch64 system devices (GIC, ITS, PL011).
-    let mut smmu_ranges: Vec<MemoryRange> = vec![MemoryRange::EMPTY; input.smmu_count];
+    let smmu_count = input
+        .pcie_root_complexes
+        .iter()
+        .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::Smmu)))
+        .count();
+    let mut smmu_ranges: Vec<MemoryRange> = vec![MemoryRange::EMPTY; smmu_count];
     for (idx, range) in smmu_ranges.iter_mut().enumerate() {
         builder.request(
             format!("smmu-{idx}"),
             range,
             SMMU_SIZE,
             SMMU_SIZE,
+            Placement::Mmio32,
+        );
+    }
+
+    // AMD IOMMU: allocate one 16 KiB region per instance, placed below 4 GiB.
+    const AMD_IOMMU_MMIO_SIZE: u64 = 0x4000; // 16 KiB per AMD IOMMU spec §3.4
+    let amd_iommu_count = input
+        .pcie_root_complexes
+        .iter()
+        .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::AmdVi)))
+        .count();
+    let mut amd_iommu_ranges: Vec<MemoryRange> = vec![MemoryRange::EMPTY; amd_iommu_count];
+    for (idx, range) in amd_iommu_ranges.iter_mut().enumerate() {
+        builder.request(
+            format!("amd-iommu-{idx}"),
+            range,
+            AMD_IOMMU_MMIO_SIZE,
+            AMD_IOMMU_MMIO_SIZE,
             Placement::Mmio32,
         );
     }
@@ -488,6 +512,7 @@ pub(super) fn resolve_memory_layout(
             Some(vtl2_framebuffer_range.start())
         },
         smmu_ranges,
+        amd_iommu_ranges,
     })
 }
 
@@ -588,7 +613,6 @@ mod tests {
             layout: DEFAULT_LAYOUT,
             pcie_root_complexes: &[],
             virtio_mmio_count: 0,
-            smmu_count: 0,
             vtl2_layout,
             ram_start_address: 0,
             vtl2_framebuffer_size: 0,
@@ -621,6 +645,7 @@ mod tests {
             high_mmio,
             ports: Vec::new(),
             cxl: None,
+            iommu: None,
         }
     }
 
@@ -733,6 +758,7 @@ mod tests {
                 high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
                 ports: Vec::new(),
                 cxl: None,
+                iommu: None,
             },
             PcieRootComplexConfig {
                 index: 1,
@@ -744,6 +770,7 @@ mod tests {
                 high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
                 ports: Vec::new(),
                 cxl: None,
+                iommu: None,
             },
         ];
         let mut config = input(2 * GB, None, None);
@@ -779,6 +806,7 @@ mod tests {
             high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
             ports: Vec::new(),
             cxl: None,
+            iommu: None,
         }];
         let mut config = input(2 * GB, None, None);
         config.pcie_root_complexes = &root_complexes;

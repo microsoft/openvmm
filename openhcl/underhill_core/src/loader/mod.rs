@@ -287,6 +287,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
             with_psp: platform_config.general.psp_enabled,
             pm_base: chipset_resources::pm::DEFAULT_PM_PIO_BASE,
             acpi_irq: chipset_resources::pm::DEFAULT_ACPI_IRQ,
+            amd_iommu: None,
         },
     };
 
@@ -486,6 +487,7 @@ pub fn write_uefi_config(
                 with_psp: platform_config.general.psp_enabled,
                 pm_base: chipset_resources::pm::DEFAULT_PM_PIO_BASE,
                 acpi_irq: chipset_resources::pm::DEFAULT_ACPI_IRQ,
+                amd_iommu: None,
             },
             #[cfg(guest_arch = "aarch64")]
             arch: vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {

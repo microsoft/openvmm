@@ -14,6 +14,7 @@ hypervisor_resources.workspace = true
 openvmm_defs.workspace = true
 openvmm_pcat_locator.workspace = true
 membacking.workspace = true
+amd_iommu.workspace = true
 
 # vmcore
 memory_range = { workspace = true, features = ["mesh"] }

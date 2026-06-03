@@ -1,0 +1,25 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "amd_iommu"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bitfield-struct.workspace = true
+chipset_device.workspace = true
+guestmem.workspace = true
+inspect.workspace = true
+open_enum.workspace = true
+parking_lot.workspace = true
+pci_core.workspace = true
+tracelimit.workspace = true
+tracing.workspace = true
+vmcore.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+
+[lints]
+workspace = true

@@ -218,6 +218,8 @@ pub struct PcieRootComplexConfig {
     pub ports: Vec<PcieRootPortConfig>,
     /// Optional CXL configuration for root-complex CXL mode.
     pub cxl: Option<RootComplexCxlConfig>,
+    /// Optional IOMMU for this root complex.
+    pub iommu: Option<PcieIommuConfig>,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -316,15 +318,13 @@ pub enum GicMsiConfig {
     },
 }
 
-/// Per-instance SMMUv3 configuration for an aarch64 VM.
-///
-/// Each instance covers one PCIe root complex, identified by name.
-/// The SMMU's MMIO address is allocated dynamically by the memory layout
-/// engine.
-#[derive(Debug, Protobuf, Clone)]
-pub struct SmmuInstanceConfig {
-    /// Name of the PCIe root complex this SMMU covers.
-    pub rc_name: String,
+/// IOMMU configuration for a single PCIe root complex.
+#[derive(Debug, MeshPayload, Clone)]
+pub enum PcieIommuConfig {
+    /// AMD IOMMU (AMD-Vi) for x86_64 guests.
+    AmdVi,
+    /// Arm SMMUv3 for aarch64 guests.
+    Smmu,
 }
 
 #[derive(Debug, Protobuf, Default, Clone)]
@@ -332,9 +332,6 @@ pub struct Aarch64TopologyConfig {
     pub gic_config: Option<GicConfig>,
     pub pmu_gsiv: PmuGsivConfig,
     pub gic_msi: GicMsiConfig,
-    /// SMMUv3 IOMMU instances. Each entry creates an SMMU for one PCIe root
-    /// complex (identified by name). Empty means no SMMU.
-    pub smmu: Vec<SmmuInstanceConfig>,
 }
 
 /// GIC configuration for the virtual machine.

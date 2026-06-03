@@ -439,7 +439,11 @@ async fn servicing_shutdown_ic(
     // Make sure the disk showed up.
     cmd!(sh, "ls /dev/sda").run().await?;
 
-    let shutdown_ic = vm.backend().wait_for_enlightened_shutdown_ready().await?;
+    let shutdown_ic = vm
+        .backend()
+        .wait_for_enlightened_shutdown_ready()
+        .await?
+        .expect("shutdown IC should be configured");
     vm.restart_openhcl(igvm_file, flags).await?;
     // VTL2 will disconnect and then reconnect the shutdown IC across a servicing event.
     tracing::info!("waiting for shutdown IC to close");

@@ -1504,21 +1504,28 @@ pub fn derive_vmgsid(seed_file: &[u8]) -> Result<Guid, Error> {
     let seed_file_str = str::from_utf8(seed_file)
         .map_err(ProvenanceError::InvalidVmgsidData)
         .map_err(AttestationErrorInner::Provenance)?;
-    let [seed_hex, label_hex, context_hex, _seed_len_str] = seed_file_str
+
+    // The seed file has four fields separated by commas, but the fourth field
+    // is just the length of the first field. Ignore any fields beyond the first
+    // three (so the provisioning service can change the format later without
+    // breaking anything).
+    let parts = seed_file_str
         .split(',')
         .map(|s| s.trim())
-        .collect::<Vec<&str>>()
-        .try_into()
-        .map_err(|_| ProvenanceError::ParseVmgsidSeedData)
-        .map_err(AttestationErrorInner::Provenance)?;
+        .collect::<Vec<&str>>();
+    if parts.len() < 3 {
+        Err(AttestationErrorInner::Provenance(
+            ProvenanceError::ParseVmgsidSeedData,
+        ))?;
+    }
 
-    let seed = hex::decode(seed_hex)
+    let seed = hex::decode(parts[0])
         .map_err(ProvenanceError::DecodeVmgsidData)
         .map_err(AttestationErrorInner::Provenance)?;
-    let label = hex::decode(label_hex)
+    let label = hex::decode(parts[1])
         .map_err(ProvenanceError::DecodeVmgsidData)
         .map_err(AttestationErrorInner::Provenance)?;
-    let context = hex::decode(context_hex)
+    let context = hex::decode(parts[2])
         .map_err(ProvenanceError::DecodeVmgsidData)
         .map_err(AttestationErrorInner::Provenance)?;
 
@@ -2915,8 +2922,18 @@ mod tests {
 
     #[test]
     fn test_derive_vmgsid() {
-        const SEED_DOC: &str = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F,4C6162656C5F435053,436F6E746578745F564D4753,32";
-        let vmgsid = derive_vmgsid(SEED_DOC.as_bytes()).unwrap();
-        assert_eq!(vmgsid, guid::guid!("b0587f2d-11e6-9f66-1af4-8b4a619147c8"));
+        const SEED_DOC_1: &str = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F,4C6162656C5F435053,436F6E746578745F564D4753,32";
+        const SEED_DOC_2: &str = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F,4C6162656C5F435053,436F6E746578745F564D4753";
+        const SEED_DOC_3: &str = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F,4C6162656C5F435053,436F6E746578745F564D4753,32,ABCDEF";
+        const GUID: Guid = guid::guid!("b0587f2d-11e6-9f66-1af4-8b4a619147c8");
+
+        let vmgsid1 = derive_vmgsid(SEED_DOC_1.as_bytes()).unwrap();
+        assert_eq!(vmgsid1, GUID);
+
+        let vmgsid2 = derive_vmgsid(SEED_DOC_2.as_bytes()).unwrap();
+        assert_eq!(vmgsid2, GUID);
+
+        let vmgsid3 = derive_vmgsid(SEED_DOC_3.as_bytes()).unwrap();
+        assert_eq!(vmgsid3, GUID);
     }
 }

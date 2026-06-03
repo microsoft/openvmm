@@ -233,7 +233,7 @@ impl PetriVmConfigOpenVmm {
             pcie_devices.push(PcieDeviceConfig {
                 port_name,
                 resource: NvmeControllerHandle {
-                    subsystem_id: guid::guid!("a1b2c3d4-e5f6-7890-abcd-ef0123456789"),
+                    subsystem_id: Guid::new_random(),
                     max_io_queues: 64,
                     msix_count: 64,
                     namespaces: vec![NamespaceDefinition {
@@ -343,15 +343,9 @@ impl PetriVmConfigOpenVmm {
                 hyperv_ic_resources::timesync::TimesyncIcHandle.into_resource(),
             ));
 
-            (shutdown_ic_send, kvp_ic_send)
+            (Some(shutdown_ic_send), Some(kvp_ic_send))
         } else {
-            // Minimal mode: no ICs. Create dummy senders so the fields
-            // are populated (calls to send_enlightened_shutdown will fail
-            // with a channel error, which is fine — minimal VMs shut down
-            // via reboot(2) directly).
-            let (shutdown_ic_send, _) = mesh::channel();
-            let (kvp_ic_send, _) = mesh::channel();
-            (shutdown_ic_send, kvp_ic_send)
+            (None, None)
         };
 
         // Make a vmbus or virtio vsock path for pipette connections
@@ -684,6 +678,8 @@ impl PetriVmConfigOpenVmm {
                 vtl2_vsock_path,
                 _vsock_path: vsock_path,
                 properties,
+                #[cfg(windows)]
+                _switch_ports: Vec::new(),
             },
 
             openvmm_log_file: log_source.log_file("openvmm")?,
@@ -692,6 +688,8 @@ impl PetriVmConfigOpenVmm {
 
             ged,
             framebuffer_view,
+
+            pending_iommu: Vec::new(),
         })
     }
 }

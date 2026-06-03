@@ -11,6 +11,7 @@ mod cli_args;
 mod crash_dump;
 mod kvp;
 mod meshworker;
+mod pidfile;
 mod repl;
 mod serial_io;
 mod storage_builder;
@@ -141,26 +142,14 @@ use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vnc_worker_defs::VncParameters;
 
-/// RAII guard that removes the pidfile when dropped. Ensures the pidfile is
-/// cleaned up even if [`do_main`] panics.
-struct PidfileGuard(Option<PathBuf>);
-
-impl Drop for PidfileGuard {
-    fn drop(&mut self) {
-        if let Some(path) = &self.0 {
-            let _ = fs_err::remove_file(path);
-        }
-    }
-}
-
 pub fn openvmm_main() {
     // Save the current state of the terminal so we can restore it back to
     // normal before exiting.
     #[cfg(unix)]
     let orig_termios = io::stderr().is_terminal().then(term::get_termios);
 
-    let mut pidfile_guard = PidfileGuard(None);
-    let exit_code = match do_main(&mut pidfile_guard.0) {
+    let mut pidfile_guard: Option<pidfile::Pidfile> = None;
+    let exit_code = match do_main(&mut pidfile_guard) {
         Ok(_) => 0,
         Err(err) => {
             eprintln!("fatal error: {:?}", err);
@@ -174,8 +163,8 @@ pub fn openvmm_main() {
         term::set_termios(orig_termios);
     }
 
-    // Clean up the pidfile before terminating, since pal::process::terminate
-    // skips destructors.
+    // Clean up the pidfile before terminating, since
+    // pal::process::terminate skips destructors.
     drop(pidfile_guard);
 
     // Terminate the process immediately without graceful shutdown of DLLs or
@@ -747,9 +736,9 @@ async fn vm_config_from_command_line(
         };
 
         let switch_id = if switch_id == "default" {
-            DEFAULT_SWITCH
+            None
         } else {
-            switch_id
+            Some(switch_id.as_str())
         };
         let (port_id, port) = new_switch_port(switch_id)?;
         resources.switch_ports.push(port);
@@ -875,7 +864,35 @@ async fn vm_config_from_command_line(
             },
             cxl,
             ports,
+            #[cfg(guest_arch = "aarch64")]
+            iommu: opt
+                .smmu
+                .iter()
+                .any(|s| s == &rc_cli.name)
+                .then_some(openvmm_defs::config::PcieIommuConfig::Smmu),
+            #[cfg(guest_arch = "x86_64")]
+            iommu: opt
+                .amd_iommu
+                .iter()
+                .any(|s| s == &rc_cli.name)
+                .then_some(openvmm_defs::config::PcieIommuConfig::AmdVi),
         });
+    }
+
+    // Validate that all --smmu / --amd-iommu names refer to known root complexes.
+    #[cfg(guest_arch = "aarch64")]
+    for name in &opt.smmu {
+        anyhow::ensure!(
+            pcie_root_complexes.iter().any(|rc| rc.name == *name),
+            "--smmu refers to unknown root complex '{name}'"
+        );
+    }
+    #[cfg(guest_arch = "x86_64")]
+    for name in &opt.amd_iommu {
+        anyhow::ensure!(
+            pcie_root_complexes.iter().any(|rc| rc.name == *name),
+            "--amd-iommu refers to unknown root complex '{name}'"
+        );
     }
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
@@ -1512,13 +1529,6 @@ async fn vm_config_from_command_line(
     }
 
     #[cfg(guest_arch = "aarch64")]
-    let smmu_instances: Vec<openvmm_defs::config::SmmuInstanceConfig> = opt
-        .smmu
-        .iter()
-        .map(|s| openvmm_defs::config::SmmuInstanceConfig { rc_name: s.clone() })
-        .collect();
-
-    #[cfg(guest_arch = "aarch64")]
     let topology_arch = openvmm_defs::config::ArchTopologyConfig::Aarch64(
         openvmm_defs::config::Aarch64TopologyConfig {
             // TODO: allow this to be configured from the command line
@@ -1531,7 +1541,6 @@ async fn vm_config_from_command_line(
                     openvmm_defs::config::GicMsiConfig::V2m { spi_count: None }
                 }
             },
-            smmu: smmu_instances,
         },
     );
     #[cfg(guest_arch = "x86_64")]
@@ -1923,17 +1932,17 @@ fn cleanup_socket(path: &Path) {
 }
 
 #[cfg(windows)]
-const DEFAULT_SWITCH: &str = "C08CB7B8-9B3C-408E-8E30-5E16A3AEB444";
-
-#[cfg(windows)]
 fn new_switch_port(
-    switch_id: &str,
+    switch_id: Option<&str>,
 ) -> anyhow::Result<(
     openvmm_defs::config::SwitchPortId,
     vmswitch::kernel::SwitchPort,
 )> {
     let id = vmswitch::kernel::SwitchPortId {
-        switch: switch_id.parse().context("invalid switch id")?,
+        switch: match switch_id {
+            Some(s) => s.parse().context("invalid switch id")?,
+            None => vmswitch::hcn::DEFAULT_SWITCH,
+        },
         port: Guid::new_random(),
     };
     let _ = vmswitch::hcn::Network::open(&id.switch)
@@ -1983,7 +1992,7 @@ fn parse_endpoint(
         EndpointConfigCli::Dio { id } => {
             #[cfg(windows)]
             {
-                let (port_id, port) = new_switch_port(id.as_deref().unwrap_or(DEFAULT_SWITCH))?;
+                let (port_id, port) = new_switch_port(id.as_deref())?;
                 resources.switch_ports.push(port);
                 net_backend_resources::dio::WindowsDirectIoHandle {
                     switch_port_id: net_backend_resources::dio::SwitchPortId {
@@ -2319,7 +2328,7 @@ fn prepare_snapshot_restore(
     Ok((shared_memory_fd, state_msg))
 }
 
-fn do_main(pidfile_path: &mut Option<PathBuf>) -> anyhow::Result<()> {
+fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<()> {
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
 
@@ -2339,9 +2348,7 @@ fn do_main(pidfile_path: &mut Option<PathBuf>) -> anyhow::Result<()> {
     }
 
     if let Some(ref path) = opt.pidfile {
-        std::fs::write(path, format!("{}\n", std::process::id()))
-            .context("failed to write pidfile")?;
-        *pidfile_path = Some(path.clone());
+        *pidfile_guard = Some(pidfile::Pidfile::new(path).context("failed to create pidfile")?);
     }
 
     if let Some(path) = opt.relay_console_path {

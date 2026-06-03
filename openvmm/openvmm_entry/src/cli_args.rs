@@ -927,6 +927,15 @@ options:
     #[clap(long)]
     pub default_boot_always_attempt: bool,
 
+    /// Enable AMD IOMMU (AMD-Vi) emulation on specified root complexes.
+    /// Repeat for each root complex that should have an IOMMU, e.g.:
+    ///   --amd-iommu rc0 --amd-iommu rc1
+    /// The IOMMU appears at device 0 function 0 on each specified root
+    /// complex. Requires --pcie-root-complex.
+    #[cfg(guest_arch = "x86_64")]
+    #[clap(long)]
+    pub amd_iommu: Vec<String>,
+
     /// Attach a PCI Express root complex to the VM
     #[clap(long_help = r#"
 Attach root complexes to the VM.
