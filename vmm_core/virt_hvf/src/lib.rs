@@ -108,6 +108,7 @@ impl virt::Hypervisor for HvfHypervisor {
             supports_gic_v3: true,
             supports_its: false,
             device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Unsupported,
+            shared_gpa_bit: None,
         }
     }
 
