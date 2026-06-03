@@ -28,7 +28,7 @@ fn rsa_der_err(err: der::Error, op: &'static str) -> crate::rsa::RsaError {
     crate::rsa::RsaError(rsa::Error::Pkcs1(pkcs1::Error::Asn1(err)), op)
 }
 
-pub struct X509CertificateInner(pub(crate) Certificate);
+pub(crate) struct X509CertificateInner(pub(crate) Certificate);
 
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {

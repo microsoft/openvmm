@@ -15,12 +15,12 @@
 mod builder;
 
 #[cfg(openssl)]
-mod ossl;
+pub(crate) mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
 
 #[cfg(any(rust, symcrypt))]
-mod symcrypt_rust;
+pub(crate) mod symcrypt_rust;
 #[cfg(any(rust, symcrypt))]
 use symcrypt_rust as sys;
 

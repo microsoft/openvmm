@@ -82,9 +82,9 @@ windows = { workspace = true, features = [
 windows-result.workspace = true
 zerocopy.workspace = true
 
-# Used by the native RSA / X.509 backend to parse/encode PKCS#8 / PKCS#1
-# and X.509 certificates.
+# Used by the native backend to parse/encode data when no native support is available.
 [target.'cfg(target_os = "macos")'.dependencies]
+cms.workspace = true
 der.workspace = true
 pkcs1.workspace = true
 pkcs8 = { workspace = true, features = ["alloc"] }
