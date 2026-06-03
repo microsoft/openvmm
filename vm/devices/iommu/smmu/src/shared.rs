@@ -473,10 +473,6 @@ impl SmmuSharedState {
 
     /// Creates a translator for PCI devices behind this SMMU.
     ///
-    /// The returned translator can be passed to
-    /// [`iommu_common::TranslatingMemory::new_guest_memory`] to create a
-    /// `GuestMemory` with IOVA→GPA translation.
-    ///
     /// `stream_id_base` is the offset into this SMMU's stream table for the
     /// root complex this device belongs to. The translator computes the
     /// stream ID as `stream_id_base + rid` at each access.

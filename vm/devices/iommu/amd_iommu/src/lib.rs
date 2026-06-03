@@ -365,10 +365,6 @@ impl IommuSharedState {
 
     /// Create a translator for PCI devices behind this IOMMU.
     ///
-    /// The returned translator can be passed to
-    /// [`iommu_common::TranslatingMemory::new_guest_memory`] to create a
-    /// `GuestMemory` with IOVA-to-GPA translation.
-    ///
     /// The translator uses the requester ID (RID / BDF) passed at each
     /// translation call directly as the AMD IOMMU DeviceID.
     pub fn translator(self: &Arc<Self>) -> AmdTranslator {
