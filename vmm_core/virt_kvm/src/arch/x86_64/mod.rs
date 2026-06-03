@@ -517,9 +517,11 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             .collect();
         let memory_backing_mode = match self.config.isolation {
             virt::IsolationType::None => KvmMemoryBackingMode::Userspace,
-            virt::IsolationType::Snp => {
-                KvmMemoryBackingMode::guest_memfd(&self.vm, ram_ranges.iter().copied(), true)?
-            }
+            virt::IsolationType::Snp => KvmMemoryBackingMode::guest_memfd(
+                &self.vm,
+                ram_ranges.iter().copied(),
+                crate::memory::KvmGuestMemfdPrivateState::VmAttributes,
+            )?,
             virt::IsolationType::Vbs | virt::IsolationType::Tdx | virt::IsolationType::Cca => {
                 unreachable!()
             }

@@ -8,13 +8,15 @@
 //! selects the appropriate backing when a range is mapped, validates private
 //! launch ranges, and discards stale contents when ownership changes.
 
+#[cfg(guest_arch = "aarch64")]
+use crate::KvmError;
 use crate::KvmPartition;
 use crate::KvmPartitionInner;
+#[cfg(guest_arch = "aarch64")]
+use crate::cca::map_cca_conversion_error;
 use inspect::Inspect;
 use memory_range::MemoryRange;
-#[cfg(guest_arch = "x86_64")]
 use std::fs::File;
-#[cfg(guest_arch = "x86_64")]
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use thiserror::Error;
@@ -45,7 +47,7 @@ pub(crate) struct KvmMemoryRange {
     host_addr: *mut u8,
     range: MemoryRange,
     guest_memfd_offset: Option<u64>,
-    private_attributes_set: bool,
+    private_state: Option<KvmGuestMemfdPrivateState>,
 }
 
 unsafe impl Sync for KvmMemoryRange {}
@@ -67,9 +69,8 @@ pub(crate) struct KvmPrivateMemoryRange {
     pub(crate) hva: *mut u8,
 }
 
-#[cfg(guest_arch = "x86_64")]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-struct KvmMemoryRangeSegment {
+pub(crate) struct KvmMemoryRangeSegment {
     range: MemoryRange,
     host_addr: *mut u8,
     guest_memfd_offset: u64,
@@ -81,12 +82,10 @@ struct KvmMemoryRangeSegment {
 pub(crate) enum KvmMemoryBackingMode {
     /// Register only the caller-provided userspace mapping.
     Userspace,
-    #[cfg(guest_arch = "x86_64")]
     /// Register shared userspace and private guestmemfd backing for RAM.
     GuestMemfd(KvmGuestMemfdBacking),
 }
 
-#[cfg(guest_arch = "x86_64")]
 #[derive(Debug, Inspect)]
 /// Partition-owned guestmemfd and its packed mapping of guest RAM ranges.
 pub(crate) struct KvmGuestMemfdBacking {
@@ -94,46 +93,57 @@ pub(crate) struct KvmGuestMemfdBacking {
     file: File,
     #[inspect(iter_by_index)]
     ranges: Vec<KvmGuestMemfdRange>,
-    initial_private: bool,
+    private_state: KvmGuestMemfdPrivateState,
 }
 
-#[cfg(guest_arch = "x86_64")]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Inspect)]
+pub(crate) enum KvmGuestMemfdPrivateState {
+    #[cfg(guest_arch = "x86_64")]
+    VmAttributes,
+    #[cfg(guest_arch = "aarch64")]
+    GuestMemfdDefault,
+}
+
+impl KvmGuestMemfdPrivateState {
+    fn uses_vm_attributes(self) -> bool {
+        #[cfg(guest_arch = "x86_64")]
+        {
+            matches!(self, Self::VmAttributes)
+        }
+        #[cfg(guest_arch = "aarch64")]
+        {
+            false
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Inspect)]
 struct KvmGuestMemfdRange {
     range: MemoryRange,
     file_offset: u64,
 }
 
-#[cfg(guest_arch = "x86_64")]
 #[derive(Debug)]
 enum KvmMemoryBacking<'a> {
     Userspace,
     GuestMemfd {
         file: &'a File,
         file_offset: u64,
-        initial_private: bool,
+        private_state: KvmGuestMemfdPrivateState,
     },
 }
 
-#[cfg(guest_arch = "aarch64")]
-#[derive(Debug)]
-enum KvmMemoryBacking {
-    Userspace,
-}
-
 impl KvmMemoryBackingMode {
-    #[cfg(guest_arch = "x86_64")]
     /// Creates one guestmemfd spanning the supplied RAM ranges.
     ///
     /// Guest ranges are packed contiguously into the file in iteration order.
-    /// `initial_private` controls both the initial memory attributes and which
-    /// backing KVM selects when each slot is first registered.
+    /// `private_state` describes how private state is established.
     pub(crate) fn guest_memfd(
         kvm: &kvm::Partition,
         ram_ranges: impl IntoIterator<Item = MemoryRange>,
-        initial_private: bool,
+        private_state: KvmGuestMemfdPrivateState,
     ) -> Result<Self, MemoryError> {
-        check_private_memory_extensions(kvm)?;
+        check_private_memory_extensions(kvm, private_state)?;
 
         let mut file_size = 0u64;
         let mut ranges = Vec::new();
@@ -148,7 +158,7 @@ impl KvmMemoryBackingMode {
         Ok(Self::GuestMemfd(KvmGuestMemfdBacking {
             file: kvm.create_guest_memfd(file_size)?,
             ranges,
-            initial_private,
+            private_state,
         }))
     }
 }
@@ -193,7 +203,10 @@ impl KvmPartitionInner {
             {
                 return Err(MemoryError::CannotResizeGuestMemfdSlot.into());
             }
-            if existing_range.private_attributes_set {
+            if existing_range
+                .private_state
+                .is_some_and(KvmGuestMemfdPrivateState::uses_vm_attributes)
+            {
                 self.kvm.set_memory_attributes(
                     existing_range.range.start(),
                     existing_range.range.len(),
@@ -206,7 +219,7 @@ impl KvmPartitionInner {
                 state.ranges[slot_to_use] = None;
             }
         }
-        let (guest_memfd_offset, private_attributes_set) = match backing {
+        let (guest_memfd_offset, private_state) = match backing {
             KvmMemoryBacking::Userspace => {
                 // SAFETY: `map_region` requires its caller to keep
                 // `data..data+size` valid until this guest-physical range is
@@ -220,13 +233,12 @@ impl KvmPartitionInner {
                         readonly,
                     )?
                 };
-                (None, false)
+                (None, None)
             }
-            #[cfg(guest_arch = "x86_64")]
             KvmMemoryBacking::GuestMemfd {
                 file,
                 file_offset,
-                initial_private,
+                private_state,
             } => {
                 // SAFETY: `map_region` requires its caller to keep
                 // `data..data+size` valid until this guest-physical range is
@@ -242,7 +254,7 @@ impl KvmPartitionInner {
                         Some((file, file_offset)),
                     )?;
                 };
-                if initial_private {
+                if private_state.uses_vm_attributes() {
                     if let Err(err) = self.kvm.set_memory_attributes(
                         addr,
                         size as u64,
@@ -254,19 +266,18 @@ impl KvmPartitionInner {
                         return Err(err.into());
                     }
                 }
-                (Some(file_offset), initial_private)
+                (Some(file_offset), Some(private_state))
             }
         };
         state.ranges[slot_to_use] = Some(KvmMemoryRange {
             host_addr: data,
             range,
             guest_memfd_offset,
-            private_attributes_set,
+            private_state,
         });
         Ok(())
     }
 
-    #[cfg(guest_arch = "x86_64")]
     fn memory_backing(&self, range: MemoryRange) -> Result<KvmMemoryBacking<'_>, MemoryError> {
         match &self.memory_backing_mode {
             KvmMemoryBackingMode::Userspace => Ok(KvmMemoryBacking::Userspace),
@@ -275,17 +286,12 @@ impl KvmPartitionInner {
                     Some(file_offset) => Ok(KvmMemoryBacking::GuestMemfd {
                         file: &backing.file,
                         file_offset,
-                        initial_private: backing.initial_private,
+                        private_state: backing.private_state,
                     }),
                     None => Ok(KvmMemoryBacking::Userspace),
                 }
             }
         }
-    }
-
-    #[cfg(guest_arch = "aarch64")]
-    fn memory_backing(&self, _range: MemoryRange) -> Result<KvmMemoryBacking, MemoryError> {
-        Ok(KvmMemoryBacking::Userspace)
     }
 
     /// # Safety
@@ -383,7 +389,6 @@ impl KvmPartitionInner {
         Ok(())
     }
 
-    #[cfg(guest_arch = "x86_64")]
     /// Discards data from the backing that is no longer selected by KVM.
     ///
     /// Guestmemfd memory slots have separate shared userspace and private
@@ -391,7 +396,7 @@ impl KvmPartitionInner {
     /// shared mapping with `MADV_DONTNEED`. For a private-to-shared conversion,
     /// punch a hole in guestmemfd so private data cannot become visible after a
     /// later conversion back to private.
-    fn discard_stale_private_memory_backing(
+    pub(crate) fn discard_stale_private_memory_backing(
         &self,
         segments: &[KvmMemoryRangeSegment],
         private: bool,
@@ -448,10 +453,43 @@ impl KvmPartitionInner {
         }
         Ok(())
     }
+
+    #[cfg(guest_arch = "aarch64")]
+    pub(crate) fn handle_cca_ripas_change(
+        &self,
+        gpa: u64,
+        size: u64,
+        flags: u64,
+    ) -> Result<(), KvmError> {
+        let end = gpa
+            .checked_add(size)
+            .ok_or(KvmError::InvalidCcaMemoryFault)?;
+        if !gpa.is_multiple_of(hvdef::HV_PAGE_SIZE)
+            || !size.is_multiple_of(hvdef::HV_PAGE_SIZE)
+            || size == 0
+        {
+            return Err(KvmError::InvalidCcaMemoryFault);
+        }
+
+        let unsupported_flags = flags & !kvm::KVM_MEMORY_EXIT_FLAG_PRIVATE_UAPI;
+        if unsupported_flags != 0 {
+            return Err(KvmError::UnsupportedCcaMemoryFaultFlags(flags));
+        }
+
+        let private = flags & kvm::KVM_MEMORY_EXIT_FLAG_PRIVATE_UAPI != 0;
+        let range = MemoryRange::new(gpa..end);
+        let state = self.memory.lock();
+        let segments =
+            guest_memfd_range_segments(range, &state.ranges).map_err(map_cca_conversion_error)?;
+
+        tracing::debug!(gpa, size, flags, private, "KVM CCA RIPAS change");
+        self.discard_stale_private_memory_backing(&segments, private, "CCA")
+            .map_err(map_cca_conversion_error)?;
+        Ok(())
+    }
 }
 
-#[cfg(guest_arch = "x86_64")]
-fn guest_memfd_range_segments(
+pub(crate) fn guest_memfd_range_segments(
     range: MemoryRange,
     slots: &[Option<KvmMemoryRange>],
 ) -> Result<Vec<KvmMemoryRangeSegment>, MemoryError> {
@@ -488,7 +526,6 @@ fn guest_memfd_range_segments(
     Ok(segments)
 }
 
-#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 /// Resolves an imported range to a private guestmemfd slot and source HVA.
 ///
 /// The entire range must be contained in one slot whose private attribute is
@@ -503,7 +540,7 @@ pub(crate) fn private_memory_range_from_slots(
         .find(|slot| slot.range.contains(&range))
         .ok_or(MemoryError::InvalidPrivateMemoryRange)?;
 
-    if slot.guest_memfd_offset.is_none() || !slot.private_attributes_set {
+    if slot.guest_memfd_offset.is_none() || slot.private_state.is_none() {
         return Err(MemoryError::InvalidPrivateMemoryRange);
     }
 
@@ -514,26 +551,31 @@ pub(crate) fn private_memory_range_from_slots(
     })
 }
 
-#[cfg(guest_arch = "x86_64")]
 /// Verifies the KVM capabilities required for guestmemfd private memory.
-fn check_private_memory_extensions(kvm: &kvm::Partition) -> Result<(), MemoryError> {
+pub(crate) fn check_private_memory_extensions(
+    kvm: &kvm::Partition,
+    private_state: KvmGuestMemfdPrivateState,
+) -> Result<(), MemoryError> {
     require_kvm_extension(kvm, kvm::KVM_CAP_USER_MEMORY2, "KVM_CAP_USER_MEMORY2")?;
     require_kvm_extension(kvm, kvm::KVM_CAP_GUEST_MEMFD, "KVM_CAP_GUEST_MEMFD")?;
-    let memory_attributes = require_kvm_extension(
-        kvm,
-        kvm::KVM_CAP_MEMORY_ATTRIBUTES,
-        "KVM_CAP_MEMORY_ATTRIBUTES",
-    )?;
+    let (capability, capability_name) = match private_state {
+        #[cfg(guest_arch = "x86_64")]
+        KvmGuestMemfdPrivateState::VmAttributes => {
+            (kvm::KVM_CAP_MEMORY_ATTRIBUTES, "KVM_CAP_MEMORY_ATTRIBUTES")
+        }
+        #[cfg(guest_arch = "aarch64")]
+        KvmGuestMemfdPrivateState::GuestMemfdDefault => (
+            kvm::KVM_CAP_GUEST_MEMFD_MEMORY_ATTRIBUTES_UAPI,
+            "KVM_CAP_GUEST_MEMFD_MEMORY_ATTRIBUTES",
+        ),
+    };
+    let memory_attributes = require_kvm_extension(kvm, capability, capability_name)?;
     if memory_attributes as u64 & kvm::KVM_MEMORY_ATTRIBUTE_PRIVATE as u64 == 0 {
-        return Err(kvm::Error::MissingCapability(
-            "KVM_CAP_MEMORY_ATTRIBUTES(KVM_MEMORY_ATTRIBUTE_PRIVATE)",
-        )
-        .into());
+        return Err(kvm::Error::MissingCapability(capability_name).into());
     }
     Ok(())
 }
 
-#[cfg(guest_arch = "x86_64")]
 fn require_kvm_extension(
     kvm: &kvm::Partition,
     extension: u32,
@@ -548,7 +590,6 @@ fn require_kvm_extension(
     Ok(value)
 }
 
-#[cfg(guest_arch = "x86_64")]
 fn classify_guest_memfd_backing(
     range: MemoryRange,
     ram_ranges: &[KvmGuestMemfdRange],
@@ -610,7 +651,10 @@ impl virt::PartitionMemoryMap for KvmPartitionInner {
             let Some(kvm_range) = entry else { continue };
             if range.contains(&kvm_range.range) {
                 let guest_memfd_backed = kvm_range.guest_memfd_offset.is_some();
-                if kvm_range.private_attributes_set {
+                if kvm_range
+                    .private_state
+                    .is_some_and(KvmGuestMemfdPrivateState::uses_vm_attributes)
+                {
                     self.kvm.set_memory_attributes(
                         kvm_range.range.start(),
                         kvm_range.range.len(),
@@ -640,7 +684,6 @@ mod tests {
         MemoryRange::new(start..end)
     }
 
-    #[cfg(guest_arch = "x86_64")]
     fn guest_memfd_ranges(ranges: &[MemoryRange]) -> Vec<KvmGuestMemfdRange> {
         let mut file_offset = 0;
         ranges
@@ -653,34 +696,17 @@ mod tests {
             .collect()
     }
 
-    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-    struct KvmPrivateMemoryRange {
-        gpa: MemoryRange,
-        hva: *mut u8,
-    }
-
-    fn private_memory_range_from_slots(
-        range: MemoryRange,
-        slots: &[Option<KvmMemoryRange>],
-    ) -> Result<KvmPrivateMemoryRange, MemoryError> {
-        let slot = slots
-            .iter()
-            .flatten()
-            .find(|slot| slot.range.contains(&range))
-            .ok_or(MemoryError::InvalidPrivateMemoryRange)?;
-
-        if slot.guest_memfd_offset.is_none() || !slot.private_attributes_set {
-            return Err(MemoryError::InvalidPrivateMemoryRange);
+    fn test_private_state() -> KvmGuestMemfdPrivateState {
+        #[cfg(guest_arch = "x86_64")]
+        {
+            KvmGuestMemfdPrivateState::VmAttributes
         }
-
-        let offset = range.start() - slot.range.start();
-        Ok(KvmPrivateMemoryRange {
-            gpa: range,
-            hva: slot.host_addr.wrapping_add(offset as usize),
-        })
+        #[cfg(guest_arch = "aarch64")]
+        {
+            KvmGuestMemfdPrivateState::GuestMemfdDefault
+        }
     }
 
-    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn guest_memfd_classifier_selects_contained_ram() {
         let ram_ranges = guest_memfd_ranges(&[range(0x1000, 0x9000), range(0x1_0000, 0x2_0000)]);
@@ -695,7 +721,6 @@ mod tests {
         );
     }
 
-    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn guest_memfd_classifier_keeps_non_ram_userspace() {
         let ram_ranges = guest_memfd_ranges(&[range(0x1000, 0x9000), range(0x1_0000, 0x2_0000)]);
@@ -706,7 +731,6 @@ mod tests {
         );
     }
 
-    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn guest_memfd_classifier_rejects_partial_ram_overlap() {
         let ram_ranges = guest_memfd_ranges(&[range(0x1000, 0x9000), range(0x1_0000, 0x2_0000)]);
@@ -717,7 +741,6 @@ mod tests {
         ));
     }
 
-    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn guest_memfd_classifier_does_not_merge_adjacent_ram_ranges() {
         let ram_ranges = guest_memfd_ranges(&[range(0x1000, 0x3000), range(0x3000, 0x5000)]);
@@ -728,7 +751,6 @@ mod tests {
         ));
     }
 
-    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn guest_memfd_classifier_rejects_ambiguous_ram_containment() {
         let ram_ranges = guest_memfd_ranges(&[range(0x1000, 0x5000), range(0x2000, 0x4000)]);
@@ -747,7 +769,7 @@ mod tests {
             host_addr,
             range: range(0x1000, 0x5000),
             guest_memfd_offset: Some(0),
-            private_attributes_set: true,
+            private_state: Some(test_private_state()),
         })];
 
         let resolved = private_memory_range_from_slots(range(0x3000, 0x5000), &slots).unwrap();
@@ -764,7 +786,7 @@ mod tests {
             host_addr,
             range: range(0x1000, 0x5000),
             guest_memfd_offset: None,
-            private_attributes_set: true,
+            private_state: Some(test_private_state()),
         })];
         assert!(matches!(
             private_memory_range_from_slots(range(0x1000, 0x2000), &userspace_slots),
@@ -775,7 +797,7 @@ mod tests {
             host_addr,
             range: range(0x1000, 0x5000),
             guest_memfd_offset: Some(0),
-            private_attributes_set: false,
+            private_state: None,
         })];
         assert!(matches!(
             private_memory_range_from_slots(range(0x1000, 0x2000), &shared_slots),
@@ -784,7 +806,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(guest_arch = "x86_64")]
     fn guest_memfd_segments_cover_adjacent_unordered_slots() {
         let mut first_backing = vec![0u8; 0x2000];
         let mut second_backing = vec![0u8; 0x2000];
@@ -795,13 +816,13 @@ mod tests {
                 host_addr: second_host_addr,
                 range: range(0x3000, 0x5000),
                 guest_memfd_offset: Some(0x8000),
-                private_attributes_set: false,
+                private_state: None,
             }),
             Some(KvmMemoryRange {
                 host_addr: first_host_addr,
                 range: range(0x1000, 0x3000),
                 guest_memfd_offset: Some(0x4000),
-                private_attributes_set: true,
+                private_state: Some(test_private_state()),
             }),
         ];
 
@@ -825,7 +846,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(guest_arch = "x86_64")]
     fn guest_memfd_segments_reject_incomplete_coverage() {
         let mut backing = vec![0u8; 0x4000];
         let host_addr = backing.as_mut_ptr();
@@ -834,13 +854,13 @@ mod tests {
                 host_addr,
                 range: range(0x1000, 0x2000),
                 guest_memfd_offset: Some(0),
-                private_attributes_set: true,
+                private_state: Some(test_private_state()),
             }),
             Some(KvmMemoryRange {
                 host_addr: host_addr.wrapping_add(0x2000),
                 range: range(0x3000, 0x4000),
                 guest_memfd_offset: Some(0x2000),
-                private_attributes_set: true,
+                private_state: Some(test_private_state()),
             }),
         ];
         assert!(matches!(
@@ -852,7 +872,7 @@ mod tests {
             host_addr,
             range: range(0x1000, 0x4000),
             guest_memfd_offset: None,
-            private_attributes_set: false,
+            private_state: None,
         })];
         assert!(matches!(
             guest_memfd_range_segments(range(0x1000, 0x4000), &userspace_slot),
@@ -861,7 +881,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(guest_arch = "x86_64")]
     fn guest_memfd_segments_reject_overlapping_slots() {
         let mut backing = vec![0u8; 0x4000];
         let host_addr = backing.as_mut_ptr();
@@ -870,13 +889,13 @@ mod tests {
                 host_addr,
                 range: range(0x1000, 0x3000),
                 guest_memfd_offset: Some(0),
-                private_attributes_set: true,
+                private_state: Some(test_private_state()),
             }),
             Some(KvmMemoryRange {
                 host_addr: host_addr.wrapping_add(0x1000),
                 range: range(0x2000, 0x4000),
                 guest_memfd_offset: Some(0x1000),
-                private_attributes_set: true,
+                private_state: Some(test_private_state()),
             }),
         ];
 

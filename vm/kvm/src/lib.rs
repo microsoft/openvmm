@@ -176,7 +176,10 @@ const KVM_X86_SNP_VM_UAPI: libc::c_int = 4;
 pub const KVM_MEMORY_EXIT_FLAG_PRIVATE_UAPI: u64 = 1 << 3;
 
 #[cfg(target_arch = "aarch64")]
-pub const KVM_CAP_ARM_RMI_UAPI: u32 = 249;
+pub const KVM_CAP_ARM_RMI_V14_UAPI: u32 = 249;
+pub const KVM_CAP_GUEST_MEMFD_MEMORY_ATTRIBUTES_UAPI: u32 = 250;
+#[cfg(target_arch = "aarch64")]
+pub const KVM_CAP_ARM_RMI_UAPI: u32 = 251;
 #[cfg(target_arch = "aarch64")]
 pub const KVM_ARM_RMI_POPULATE_FLAGS_MEASURE_UAPI: u32 = 1 << 0;
 #[cfg(target_arch = "aarch64")]
@@ -481,6 +484,20 @@ impl Kvm {
     pub fn new_vm(&self, vm_type: VmType) -> Result<Partition> {
         let raw_vm_type = self.raw_vm_type(vm_type)?;
         self.new_vm_with_type(raw_vm_type)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn new_realm_vm_with_max_ipa_size(&self, max_ipa_bits: u8) -> Result<(Partition, u8)> {
+        for ipa_bits in (32..=max_ipa_bits).rev() {
+            match self.new_vm(VmType::Realm { ipa_bits }) {
+                Ok(vm) => return Ok((vm, ipa_bits)),
+                Err(Error::CreateVm(nix::errno::Errno::EINVAL)) => {}
+                Err(err) => return Err(err),
+            }
+        }
+        Err(Error::UnsupportedVmType(VmType::Realm {
+            ipa_bits: max_ipa_bits,
+        }))
     }
 
     fn raw_vm_type(&self, vm_type: VmType) -> Result<libc::c_int> {
