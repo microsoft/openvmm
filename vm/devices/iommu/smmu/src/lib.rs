@@ -15,4 +15,4 @@ pub use emulator::SmmuConfig;
 pub use emulator::SmmuDevice;
 pub use shared::SmmuSharedState;
 pub use shared::SmmuSignalMsi;
-pub use shared::SmmuTranslatingMemory;
+pub use shared::SmmuTranslator;

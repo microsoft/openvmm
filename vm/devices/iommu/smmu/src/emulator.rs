@@ -2275,7 +2275,13 @@ mod tests {
         let mock_msi = MockSignalMsi::new();
 
         let (translating_gm, smmu_msi) = {
-            let gm_wrapper = shared_state.create_translating_memory(bus_range, STREAM_ID_BASE, &gm);
+            let translator = shared_state.translator(STREAM_ID_BASE);
+            let gm_wrapper = iommu_common::TranslatingMemory::new_guest_memory(
+                "smmu-translating",
+                translator,
+                bus_range,
+                gm.clone(),
+            );
             let msi = Arc::new(SmmuSignalMsi::new(
                 shared_state.clone(),
                 STREAM_ID_BASE,
