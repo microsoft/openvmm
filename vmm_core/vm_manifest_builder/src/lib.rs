@@ -438,9 +438,8 @@ impl VmManifestBuilder {
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }
-                if let Some(time_source) = self.time_source {
-                    result.attach_piix4_cmos_rtc(time_source, self.initial_cmos);
-                }
+                let time_source = self.time_source.expect("time source is required for CMOS RTC");
+                result.attach_piix4_cmos_rtc(time_source, self.initial_cmos);
             }
             BaseChipsetType::UnenlightenedLinuxDirect => {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
@@ -481,9 +480,8 @@ impl VmManifestBuilder {
                     result.attach_guest_watchdog();
                 }
                 if is_x86 {
-                    if let Some(time_source) = self.time_source {
-                        result.attach_generic_cmos_rtc(time_source);
-                    }
+                    let time_source = self.time_source.expect("time source is required for CMOS RTC");
+                    result.attach_generic_cmos_rtc(time_source);
                 }
             }
             BaseChipsetType::HypervGen2Uefi | BaseChipsetType::HyperVGen2LinuxDirect => {
@@ -528,9 +526,8 @@ impl VmManifestBuilder {
                     );
                 }
                 if is_x86 {
-                    if let Some(time_source) = self.time_source {
-                        result.attach_generic_cmos_rtc(time_source);
-                    }
+                    let time_source = self.time_source.expect("time source is required for CMOS RTC");
+                    result.attach_generic_cmos_rtc(time_source);
                 }
             }
             BaseChipsetType::HclHost => {
