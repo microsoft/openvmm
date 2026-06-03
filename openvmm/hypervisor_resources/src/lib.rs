@@ -35,6 +35,12 @@ pub struct KvmHandle {
     /// An open `/dev/kvm` file descriptor, open with read and write
     /// permissions.
     pub kvm: std::fs::File,
+    /// Configure the partition for nested virtualization, so that the
+    /// guest can run its own hypervisor (Hyper-V, KVM, etc.).
+    ///
+    /// When false (the default), VMX/SVM CPUID bits and the MS hypervisor
+    /// nested-features leaf are stripped from the guest's view.
+    pub nested_virt: bool,
 }
 
 impl ResourceId<HypervisorKind> for KvmHandle {

@@ -30,3 +30,13 @@ hypervisor_resources::register_hypervisor_probes! {
     #[cfg(all(target_os = "macos", guest_arch = "aarch64", guest_is_native, feature = "virt_hvf"))]
     hvf::HvfProbe,
 }
+
+#[expect(clippy::allow_attributes, reason = "lots of conditions")]
+#[allow(dead_code)]
+pub(crate) fn parse_bool_param(key: &str, val: &str) -> anyhow::Result<bool> {
+    match val {
+        "true" | "1" | "yes" => Ok(true),
+        "false" | "0" | "no" => Ok(false),
+        _ => anyhow::bail!("invalid boolean value for {key}: {val}"),
+    }
+}
