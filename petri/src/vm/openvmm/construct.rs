@@ -233,7 +233,7 @@ impl PetriVmConfigOpenVmm {
             pcie_devices.push(PcieDeviceConfig {
                 port_name,
                 resource: NvmeControllerHandle {
-                    subsystem_id: guid::guid!("a1b2c3d4-e5f6-7890-abcd-ef0123456789"),
+                    subsystem_id: Guid::new_random(),
                     max_io_queues: 64,
                     msix_count: 64,
                     namespaces: vec![NamespaceDefinition {
