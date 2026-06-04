@@ -51,6 +51,9 @@ pub struct DiscoveredBar {
     pub is_prefetchable: bool,
     /// Assigned base address (populated by the assignment pass).
     pub(crate) address: Option<u64>,
+    /// Pre-programmed BAR address to preserve (set when `preserve_bars` is
+    /// enabled and the BAR contained a non-zero address before probing).
+    pub pinned_address: Option<u64>,
 }
 
 /// SR-IOV information for a PF.
@@ -77,7 +80,14 @@ pub async fn enumerate_and_probe(
     params: &AssignmentParams,
 ) -> Result<Vec<DiscoveredDevice>, AssignmentError> {
     let mut next_bus = params.start_bus as u16 + 1;
-    scan_bus(cfg, params.start_bus, params.end_bus, &mut next_bus).await
+    scan_bus(
+        cfg,
+        params.start_bus,
+        params.end_bus,
+        &mut next_bus,
+        params.preserve_bars,
+    )
+    .await
 }
 
 /// Scan a single bus (non-recursive helper that does DFS via inner calls).
@@ -88,6 +98,7 @@ async fn scan_bus(
     bus: u8,
     end_bus: u8,
     next_bus: &mut u16,
+    preserve_bars: bool,
 ) -> Result<Vec<DiscoveredDevice>, AssignmentError> {
     let mut devices = Vec::new();
 
@@ -136,7 +147,7 @@ async fn scan_bus(
             };
 
             let is_bridge = func_header == 1;
-            let bars = probe_bars(cfg, bus, devfn, is_bridge).await;
+            let bars = probe_bars(cfg, bus, devfn, is_bridge, preserve_bars).await;
 
             let mut dev = DiscoveredDevice {
                 bus,
@@ -173,7 +184,8 @@ async fn scan_bus(
                 // handles it because each call is a separate monomorphized
                 // async block that goes through the same function, and we
                 // box it to avoid infinite-size futures.
-                let children = Box::pin(scan_bus(cfg, secondary, end_bus, next_bus)).await?;
+                let children =
+                    Box::pin(scan_bus(cfg, secondary, end_bus, next_bus, preserve_bars)).await?;
 
                 let subordinate = (*next_bus - 1).max(secondary as u16) as u8;
                 let bus_reg =
@@ -195,7 +207,7 @@ async fn scan_bus(
                 );
             } else {
                 // Probe SR-IOV capability for bus reservation and VF BAR sizes.
-                if let Some(sriov_result) = probe_sriov(cfg, bus, devfn).await {
+                if let Some(sriov_result) = probe_sriov(cfg, bus, devfn, preserve_bars).await {
                     let max_vf_bus = sriov_result.max_vf_bus;
                     if max_vf_bus > end_bus as u16 {
                         return Err(AssignmentError::BusExhaustion {
@@ -256,6 +268,7 @@ async fn probe_bars(
     bus: u8,
     devfn: u8,
     is_bridge: bool,
+    preserve_bars: bool,
 ) -> Vec<DiscoveredBar> {
     let max_bars: u8 = if is_bridge { 2 } else { 6 };
 
@@ -278,7 +291,15 @@ async fn probe_bars(
         .await;
     }
 
-    probe_bar_range(cfg, bus, devfn, HeaderType00::BAR0.0, max_bars).await
+    probe_bar_range(
+        cfg,
+        bus,
+        devfn,
+        HeaderType00::BAR0.0,
+        max_bars,
+        preserve_bars,
+    )
+    .await
 }
 
 /// Probe VF BAR sizes from the SR-IOV capability's VF BAR registers.
@@ -290,6 +311,7 @@ async fn probe_vf_bars(
     bus: u8,
     devfn: u8,
     sriov_offset: u16,
+    preserve_bars: bool,
 ) -> Vec<DiscoveredBar> {
     probe_bar_range(
         cfg,
@@ -297,6 +319,7 @@ async fn probe_vf_bars(
         devfn,
         sriov_offset + SriovExtendedCapabilityHeader::VF_BAR0.0,
         6,
+        preserve_bars,
     )
     .await
 }
@@ -319,6 +342,7 @@ async fn probe_sriov(
     cfg: &mut impl PciConfigAccess,
     bus: u8,
     devfn: u8,
+    preserve_bars: bool,
 ) -> Option<SriovProbeResult> {
     // Walk extended capabilities starting at 0x100.
     let mut offset = EXT_CAP_START;
@@ -373,7 +397,7 @@ async fn probe_sriov(
             let max_vf_bus = (last_vf_rid >> 8) as u16;
 
             // Probe VF BAR sizes (same write-all-ones/readback technique).
-            let vf_bars = probe_vf_bars(cfg, bus, devfn, offset).await;
+            let vf_bars = probe_vf_bars(cfg, bus, devfn, offset, preserve_bars).await;
 
             return Some(SriovProbeResult {
                 cap_offset: offset,
@@ -395,18 +419,30 @@ async fn probe_sriov(
 ///
 /// Writes all-ones to each BAR and reads back to determine size. BAR
 /// registers are left in an undefined state after probing.
+///
+/// When `preserve_bars` is true, reads each BAR's current value before
+/// probing. If non-zero, records it as `pinned_address` on the
+/// resulting [`DiscoveredBar`].
 async fn probe_bar_range(
     cfg: &mut impl PciConfigAccess,
     bus: u8,
     devfn: u8,
     base_offset: u16,
     max_bars: u8,
+    preserve_bars: bool,
 ) -> Vec<DiscoveredBar> {
     let mut bars = Vec::new();
 
     let mut i = 0u8;
     while i < max_bars {
         let offset = base_offset + (i as u16) * 4;
+
+        // Read the current BAR value before probing (for preserve_bars).
+        let original_lower = if preserve_bars {
+            cfg.read_u32(bus, devfn, offset).await
+        } else {
+            0
+        };
 
         // Write all-ones to probe size.
         cfg.write_u32(bus, devfn, offset, !0u32).await;
@@ -429,9 +465,16 @@ async fn probe_bar_range(
         let is_64bit = encoding.type_64_bit();
         let is_prefetchable = encoding.prefetchable();
 
-        let size = if is_64bit && (i + 1) < max_bars {
+        let (size, pinned_address) = if is_64bit && (i + 1) < max_bars {
             // Probe upper 32 bits.
             let upper_offset = base_offset + ((i + 1) as u16) * 4;
+
+            let original_upper = if preserve_bars {
+                cfg.read_u32(bus, devfn, upper_offset).await
+            } else {
+                0
+            };
+
             cfg.write_u32(bus, devfn, upper_offset, !0u32).await;
             let upper_readback = cfg.read_u32(bus, devfn, upper_offset).await;
 
@@ -440,14 +483,32 @@ async fn probe_bar_range(
                 i += 2;
                 continue;
             }
-            (!mask).wrapping_add(1)
+            let size = (!mask).wrapping_add(1);
+
+            let pinned = if preserve_bars {
+                let addr = ((original_upper as u64) << 32) | ((original_lower & !0xF) as u64);
+                (addr != 0).then_some(addr)
+            } else {
+                None
+            };
+
+            (size, pinned)
         } else {
             let mask = readback & !0xF;
             if mask == 0 {
                 i += 1;
                 continue;
             }
-            (!(mask as u64 | (!0u64 << 32))).wrapping_add(1)
+            let size = (!(mask as u64 | (!0u64 << 32))).wrapping_add(1);
+
+            let pinned = if preserve_bars {
+                let addr = (original_lower & !0xF) as u64;
+                (addr != 0).then_some(addr)
+            } else {
+                None
+            };
+
+            (size, pinned)
         };
 
         if size > 0 {
@@ -457,6 +518,7 @@ async fn probe_bar_range(
                 is_64bit,
                 is_prefetchable,
                 address: None,
+                pinned_address,
             });
         }
 

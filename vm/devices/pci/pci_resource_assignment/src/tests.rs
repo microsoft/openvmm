@@ -90,6 +90,22 @@ impl MockConfigSpace {
         inner.regs.insert(key, val | 0x0080_0000); // multi-function bit
     }
 
+    /// Pre-program a BAR with an address (for testing preserve_bars).
+    /// The address is written into the BAR register along with the existing
+    /// encoding bits.
+    fn set_bar_address(&self, bus: u8, device: u8, function: u8, bar_idx: u8, address: u64) {
+        let mut inner = self.inner.lock();
+        let offset = 0x10 + (bar_idx as u16) * 4;
+        let key = (bus, device, function, offset);
+        let encoding = inner.regs.get(&key).copied().unwrap_or(0) & 0xf;
+        inner.regs.insert(key, (address as u32 & !0xf) | encoding);
+        // If 64-bit, also set the upper DWORD.
+        if encoding & 0x04 != 0 {
+            let upper_key = (bus, device, function, offset + 4);
+            inner.regs.insert(upper_key, (address >> 32) as u32);
+        }
+    }
+
     /// Add a Type 1 bridge at (bus, device, function).
     fn add_bridge(&self, bus: u8, device: u8, function: u8) {
         let mut inner = self.inner.lock();
@@ -309,6 +325,7 @@ async fn single_endpoint_32bit_bar() {
             len: 0x1000_0000,
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -332,6 +349,7 @@ async fn single_endpoint_64bit_bar() {
             base: 0x1_0000_0000,
             len: 0x1_0000_0000,
         }),
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -359,6 +377,7 @@ async fn bridge_with_endpoint() {
             len: 0x1000_0000,
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -395,6 +414,7 @@ async fn multiple_endpoints_sorted_by_size() {
             len: 0x1000_0000,
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -426,6 +446,7 @@ async fn multi_function_device() {
             len: 0x1000_0000,
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -465,6 +486,7 @@ async fn switch_with_multiple_endpoints() {
             base: 0x1_0000_0000,
             len: 0x1_0000_0000,
         }),
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -509,6 +531,7 @@ async fn bus_exhaustion_error() {
         end_bus: 0, // No room for secondary bus.
         low_mmio: None,
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock;
@@ -535,6 +558,7 @@ async fn no_devices_is_ok() {
             len: 0x1000_0000,
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock;
@@ -558,6 +582,7 @@ async fn mmio_exhaustion_error() {
             len: 0x20000, // 128KB — not enough for both
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock;
@@ -584,6 +609,7 @@ async fn no_aperture_error() {
         end_bus: 255,
         low_mmio: None,
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock;
@@ -619,6 +645,7 @@ async fn sriov_reserves_bus_numbers() {
             len: 0x1000_0000,
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -660,6 +687,7 @@ async fn sriov_no_vfs_no_reservation() {
             len: 0x1000_0000,
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -686,6 +714,7 @@ async fn bridge_prefetchable_window_programmed() {
             base: 0x1_0000_0000,
             len: 0x1_0000_0000,
         }),
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -754,6 +783,7 @@ async fn sibling_bridge_windows_must_not_overlap() {
             len: 0x1000_0000,
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -793,6 +823,7 @@ async fn large_bar_alignment_fits_in_bridge_window() {
             len: 0x2_0000_0000, // 8 GB
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -840,6 +871,7 @@ async fn alignment_first_sort_avoids_wasted_padding() {
             len: 0x500000, // 5 MB
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -877,6 +909,7 @@ async fn misaligned_aperture_does_not_overflow() {
             len: 0x400000,     // 4 MB — exactly the BAR size, but not enough after alignment
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -907,6 +940,7 @@ async fn alignment_exceeds_aperture_returns_error() {
             len: 0x200000,     // 2 MB total
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -940,6 +974,7 @@ async fn sriov_bus_reservation_exceeding_end_bus_returns_error() {
             len: 0x1000_0000,
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock;
@@ -973,6 +1008,7 @@ async fn mem32_bar_must_not_be_placed_above_4gb() {
             base: 0x1_0000_0000, // Above 4 GB
             len: 0x1_0000_0000,
         }),
+        preserve_bars: false,
     };
 
     let mut cfg = mock;
@@ -1015,6 +1051,7 @@ async fn shared_aperture_mem32_mem64_must_not_overlap() {
             len: 0x0100_0000, // 16 MB — plenty of room
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -1068,6 +1105,7 @@ async fn bus_wrap_to_zero_must_return_exhaustion() {
             len: 0x1000_0000,
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock;
@@ -1108,6 +1146,7 @@ async fn sriov_vf_bars_included_in_bridge_window() {
             len: 0x1000_0000,
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -1167,6 +1206,7 @@ async fn sriov_non_power_of_two_vf_count() {
             len: 0x1000_0000,
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -1211,6 +1251,7 @@ async fn sriov_vf_bars_64bit_prefetchable() {
             base: 0x1_0000_0000,
             len: 0x1_0000_0000,
         }),
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -1286,6 +1327,7 @@ async fn sriov_mixed_vf_bar_types() {
             base: 0x1_0000_0000,
             len: 0x1_0000_0000,
         }),
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -1345,6 +1387,7 @@ async fn sriov_top_level_pf_no_bridge() {
             len: 0x1000_0000,
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -1397,6 +1440,7 @@ async fn sriov_multiple_pfs_behind_bridge() {
             len: 0x1000_0000,
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock.clone();
@@ -1473,6 +1517,7 @@ async fn sriov_vf_bars_cause_mmio_exhaustion() {
             len: 0x20_0000, // Only 2 MB — not enough for 16 MB of VF BARs
         }),
         high_mmio: None,
+        preserve_bars: false,
     };
 
     let mut cfg = mock;
@@ -1480,5 +1525,585 @@ async fn sriov_vf_bars_cause_mmio_exhaustion() {
     assert!(
         result.is_err(),
         "should fail with MMIO exhaustion, got {result:?}"
+    );
+}
+
+// ---- Pinned BAR tests ----
+
+/// Single device with one pinned BAR: the BAR should be assigned at the
+/// pre-programmed address, not at the aperture base.
+#[async_test]
+async fn single_pinned_bar() {
+    let mock = MockConfigSpace::new();
+    // 64 KB 32-bit non-pref BAR at index 0.
+    mock.add_endpoint(0, 0, 0, &[(0, 0x10000, false, false)]);
+    // Pre-program BAR0 with a specific address.
+    mock.set_bar_address(0, 0, 0, 0, 0x1050_0000);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    // BAR0 should be at the pinned address, not at the aperture base.
+    assert_eq!(read_bar32(&mock, 0, 0, 0, 0), 0x1050_0000);
+}
+
+/// Two devices with pinned BARs behind a switch.
+#[async_test]
+async fn two_pinned_bars_behind_switch() {
+    let mock = MockConfigSpace::new();
+
+    // Upstream bridge.
+    mock.add_bridge(0, 0, 0);
+    // Downstream bridge A.
+    mock.add_bridge(1, 0, 0);
+    // Downstream bridge B.
+    mock.add_bridge(1, 1, 0);
+
+    // Endpoint A behind bridge A: 64 KB non-pref BAR, pinned.
+    mock.add_endpoint(2, 0, 0, &[(0, 0x10000, false, false)]);
+    mock.set_bar_address(2, 0, 0, 0, 0x1080_0000);
+
+    // Endpoint B behind bridge B: 64 KB non-pref BAR, pinned.
+    mock.add_endpoint(3, 0, 0, &[(0, 0x10000, false, false)]);
+    mock.set_bar_address(3, 0, 0, 0, 0x1090_0000);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    // Both BARs should be at their pinned addresses.
+    assert_eq!(read_bar32(&mock, 2, 0, 0, 0), 0x1080_0000);
+    assert_eq!(read_bar32(&mock, 3, 0, 0, 0), 0x1090_0000);
+
+    // Bridge windows should encompass the pinned addresses.
+    let win_a = read_memory_window(&mock, 1, 0, 0).expect("bridge A should have memory window");
+    assert!(
+        win_a.0 <= 0x1080_0000 && 0x1080_0000 + 0x10000 - 1 <= win_a.1,
+        "bridge A window {:#x}..={:#x} must contain pinned BAR at 0x1080_0000",
+        win_a.0,
+        win_a.1
+    );
+    let win_b = read_memory_window(&mock, 1, 1, 0).expect("bridge B should have memory window");
+    assert!(
+        win_b.0 <= 0x1090_0000 && 0x1090_0000 + 0x10000 - 1 <= win_b.1,
+        "bridge B window {:#x}..={:#x} must contain pinned BAR at 0x1090_0000",
+        win_b.0,
+        win_b.1
+    );
+}
+
+/// Mixed pinned + dynamic BARs behind the same bridge.
+#[async_test]
+async fn mixed_pinned_and_dynamic_bars() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // Device A: 64 KB non-pref BAR, pinned at 0x1020_0000.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x10000, false, false)]);
+    mock.set_bar_address(1, 0, 0, 0, 0x1020_0000);
+
+    // Device B: 64 KB non-pref BAR, dynamic (not pinned).
+    mock.add_endpoint(1, 1, 0, &[(0, 0x10000, false, false)]);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    // Pinned BAR at its fixed address.
+    let bar_a = read_bar32(&mock, 1, 0, 0, 0) as u64;
+    assert_eq!(bar_a, 0x1020_0000);
+
+    // Dynamic BAR should be placed after the pinned BAR's end (0x1020_0000 + 0x10000).
+    let bar_b = read_bar32(&mock, 1, 1, 0, 0) as u64;
+    assert!(
+        bar_b >= 0x1020_0000 + 0x10000,
+        "dynamic BAR {bar_b:#x} should be after pinned BAR end at {:#x}",
+        0x1020_0000u64 + 0x10000
+    );
+
+    // They must not overlap.
+    assert!(
+        bar_a + 0x10000 <= bar_b || bar_b + 0x10000 <= bar_a,
+        "BARs overlap: A={bar_a:#x}, B={bar_b:#x}"
+    );
+}
+
+/// Pinned BAR misaligned to its size should produce an error.
+#[async_test]
+async fn pinned_bar_misaligned_error() {
+    let mock = MockConfigSpace::new();
+    // 64 KB BAR at index 0.
+    mock.add_endpoint(0, 0, 0, &[(0, 0x10000, false, false)]);
+    // Pre-program at a non-64KB-aligned address.
+    mock.set_bar_address(0, 0, 0, 0, 0x1000_8000);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources(&mut cfg, &params).await;
+    assert!(
+        matches!(
+            result,
+            Err(crate::AssignmentError::PinnedBarMisaligned { .. })
+        ),
+        "expected PinnedBarMisaligned, got {result:?}"
+    );
+}
+
+/// Overlapping pinned BARs should produce an error.
+#[async_test]
+async fn pinned_bar_overlap_error() {
+    let mock = MockConfigSpace::new();
+    // Two devices with overlapping pinned BARs.
+    mock.add_endpoint(0, 0, 0, &[(0, 0x20000, false, false)]); // 128 KB
+    mock.set_bar_address(0, 0, 0, 0, 0x1010_0000);
+
+    mock.add_endpoint(0, 1, 0, &[(0, 0x10000, false, false)]); // 64 KB
+    mock.set_bar_address(0, 1, 0, 0, 0x1011_0000); // overlaps with first
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources(&mut cfg, &params).await;
+    assert!(
+        matches!(result, Err(crate::AssignmentError::PinnedBarOverlap { .. })),
+        "expected PinnedBarOverlap, got {result:?}"
+    );
+}
+
+/// Pinned BAR outside aperture should produce an error.
+#[async_test]
+async fn pinned_bar_out_of_aperture_error() {
+    let mock = MockConfigSpace::new();
+    mock.add_endpoint(0, 0, 0, &[(0, 0x10000, false, false)]);
+    // Pinned at an address outside the low MMIO aperture.
+    mock.set_bar_address(0, 0, 0, 0, 0x3000_0000);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000, // ends at 0x2000_0000
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources(&mut cfg, &params).await;
+    assert!(
+        matches!(
+            result,
+            Err(crate::AssignmentError::PinnedBarOutOfAperture { .. })
+        ),
+        "expected PinnedBarOutOfAperture, got {result:?}"
+    );
+}
+
+/// Bridge window should be computed from pinned + dynamic children.
+#[async_test]
+async fn bridge_window_from_pinned_and_dynamic() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // Device A: 1 MB non-pref BAR, pinned at 0x1020_0000.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x100000, false, false)]);
+    mock.set_bar_address(1, 0, 0, 0, 0x1020_0000);
+
+    // Device B: 1 MB non-pref BAR, dynamic.
+    mock.add_endpoint(1, 1, 0, &[(0, 0x100000, false, false)]);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    let window = read_memory_window(&mock, 0, 0, 0).expect("bridge should have memory window");
+
+    // Pinned BAR at 0x1020_0000 with size 1 MB → ends at 0x1030_0000.
+    // Bridge window base should be align_down(0x1020_0000, 1 MB) = 0x1020_0000.
+    assert!(
+        window.0 <= 0x1020_0000,
+        "window base {:#x} should be <= pinned BAR at 0x1020_0000",
+        window.0
+    );
+
+    // Dynamic 1 MB BAR should be after pinned end.
+    let bar_b = read_bar32(&mock, 1, 1, 0, 0) as u64;
+    assert!(
+        bar_b >= 0x1030_0000,
+        "dynamic BAR {bar_b:#x} should be >= pinned end 0x1030_0000"
+    );
+
+    // Window should cover both BARs.
+    assert!(
+        window.1 >= bar_b + 0x100000 - 1,
+        "window limit {:#x} should cover dynamic BAR end {:#x}",
+        window.1,
+        bar_b + 0x100000 - 1
+    );
+}
+
+/// No-pin case with preserve_bars=true should produce identical results
+/// to preserve_bars=false when no BARs are pre-programmed.
+#[async_test]
+async fn preserve_bars_no_pins_identical_to_dynamic() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+    mock.add_endpoint(1, 0, 0, &[(0, 0x10000, false, false)]);
+    mock.add_endpoint(1, 1, 0, &[(0, 0x20000, false, false)]);
+
+    // Run with preserve_bars=false.
+    let params_no_preserve = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: false,
+    };
+
+    let mut cfg_a = mock.clone();
+    assign_pci_resources(&mut cfg_a, &params_no_preserve)
+        .await
+        .unwrap();
+
+    let bar_a0 = read_bar32(&mock, 1, 0, 0, 0);
+    let bar_a1 = read_bar32(&mock, 1, 1, 0, 0);
+    let window_a = read_memory_window(&mock, 0, 0, 0);
+
+    // Re-create mock (reset BAR values).
+    let mock2 = MockConfigSpace::new();
+    mock2.add_bridge(0, 0, 0);
+    mock2.add_endpoint(1, 0, 0, &[(0, 0x10000, false, false)]);
+    mock2.add_endpoint(1, 1, 0, &[(0, 0x20000, false, false)]);
+
+    // Run with preserve_bars=true but no pre-programmed addresses.
+    let params_preserve = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg_b = mock2.clone();
+    assign_pci_resources(&mut cfg_b, &params_preserve)
+        .await
+        .unwrap();
+
+    let bar_b0 = read_bar32(&mock2, 1, 0, 0, 0);
+    let bar_b1 = read_bar32(&mock2, 1, 1, 0, 0);
+    let window_b = read_memory_window(&mock2, 0, 0, 0);
+
+    // Results should be identical.
+    assert_eq!(bar_a0, bar_b0, "BAR0 mismatch");
+    assert_eq!(bar_a1, bar_b1, "BAR1 mismatch");
+    assert_eq!(window_a, window_b, "bridge window mismatch");
+}
+
+/// 64-bit prefetchable pinned BAR should be placed in high MMIO at its
+/// pre-programmed address.
+#[async_test]
+async fn pinned_bar_64bit_prefetchable() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+    // 1 MB 64-bit prefetchable BAR at index 0.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x100000, true, true)]);
+    mock.set_bar_address(1, 0, 0, 0, 0x3_8380_0000);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: Some(MmioAperture {
+            base: 0x3_8380_0000,
+            len: 0x0100_0000,
+        }),
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    // BAR should be at the pinned address.
+    assert_eq!(read_bar64(&mock, 1, 0, 0, 0), 0x3_8380_0000);
+
+    // Bridge should have a prefetchable window, not a non-prefetchable one.
+    assert!(
+        read_memory_window(&mock, 0, 0, 0).is_none(),
+        "no non-prefetchable window expected"
+    );
+    let pref = read_prefetchable_window(&mock, 0, 0, 0).expect("prefetchable window expected");
+    assert!(
+        pref.0 <= 0x3_8380_0000 && 0x3_8380_0000 + 0x100000 - 1 <= pref.1,
+        "pref window {:#x}..={:#x} must contain pinned BAR",
+        pref.0,
+        pref.1
+    );
+}
+
+/// Two pinned BARs as siblings behind the same bridge. Both must be at
+/// their pinned addresses and dynamic demands must follow.
+#[async_test]
+async fn two_pinned_bars_same_bridge() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // Device A: 64 KB non-pref BAR, pinned.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x10000, false, false)]);
+    mock.set_bar_address(1, 0, 0, 0, 0x1020_0000);
+
+    // Device B: 64 KB non-pref BAR, pinned.
+    mock.add_endpoint(1, 1, 0, &[(0, 0x10000, false, false)]);
+    mock.set_bar_address(1, 1, 0, 0, 0x1030_0000);
+
+    // Device C: 64 KB non-pref BAR, dynamic.
+    mock.add_endpoint(1, 2, 0, &[(0, 0x10000, false, false)]);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    let bar_a = read_bar32(&mock, 1, 0, 0, 0) as u64;
+    let bar_b = read_bar32(&mock, 1, 1, 0, 0) as u64;
+    let bar_c = read_bar32(&mock, 1, 2, 0, 0) as u64;
+
+    assert_eq!(bar_a, 0x1020_0000, "pinned BAR A");
+    assert_eq!(bar_b, 0x1030_0000, "pinned BAR B");
+
+    // Dynamic BAR must be after both pinned BARs' ends.
+    let max_pinned_end = 0x1030_0000u64 + 0x10000;
+    assert!(
+        bar_c >= max_pinned_end,
+        "dynamic BAR {bar_c:#x} should be >= max pinned end {max_pinned_end:#x}"
+    );
+
+    // No overlaps.
+    assert!(bar_a + 0x10000 <= bar_b, "A and B overlap");
+    assert!(bar_b + 0x10000 <= bar_c, "B and C overlap");
+}
+
+/// Dynamic BAR with large alignment coexisting with a small pinned BAR.
+/// The dynamic BAR's alignment must be honored even though the pinned
+/// BAR occupies a lower address.
+#[async_test]
+async fn pinned_bar_with_large_alignment_dynamic() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // Device A: 64 KB non-pref BAR, pinned at 0x1010_0000.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x10000, false, false)]);
+    mock.set_bar_address(1, 0, 0, 0, 0x1010_0000);
+
+    // Device B: 1 MB non-pref BAR, dynamic (needs 1 MB alignment).
+    mock.add_endpoint(1, 1, 0, &[(0, 0x100000, false, false)]);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    let bar_a = read_bar32(&mock, 1, 0, 0, 0) as u64;
+    let bar_b = read_bar32(&mock, 1, 1, 0, 0) as u64;
+
+    assert_eq!(bar_a, 0x1010_0000, "pinned BAR should be at its address");
+
+    // Dynamic 1 MB BAR must be 1 MB aligned.
+    assert_eq!(
+        bar_b % 0x100000,
+        0,
+        "dynamic 1 MB BAR at {bar_b:#x} is not 1 MB aligned"
+    );
+
+    // Must be after pinned end (0x1020_0000) and not overlap.
+    assert!(
+        bar_b >= 0x1010_0000 + 0x10000,
+        "dynamic BAR {bar_b:#x} should be after pinned end"
+    );
+    assert!(
+        bar_b + 0x100000 <= bar_a || bar_a + 0x10000 <= bar_b,
+        "BARs overlap"
+    );
+}
+
+/// Sibling bridge windows for pinned devices behind different downstream
+/// bridges must not overlap.
+#[async_test]
+async fn pinned_sibling_bridge_windows_do_not_overlap() {
+    let mock = MockConfigSpace::new();
+
+    // Upstream bridge.
+    mock.add_bridge(0, 0, 0);
+    // Two downstream bridges.
+    mock.add_bridge(1, 0, 0);
+    mock.add_bridge(1, 1, 0);
+
+    // Endpoint behind bridge A: 1 MB BAR pinned at 0x1010_0000.
+    mock.add_endpoint(2, 0, 0, &[(0, 0x100000, false, false)]);
+    mock.set_bar_address(2, 0, 0, 0, 0x1010_0000);
+
+    // Endpoint behind bridge B: 1 MB BAR pinned at 0x1020_0000.
+    mock.add_endpoint(3, 0, 0, &[(0, 0x100000, false, false)]);
+    mock.set_bar_address(3, 0, 0, 0, 0x1020_0000);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    let win_a = read_memory_window(&mock, 1, 0, 0).expect("bridge A memory window");
+    let win_b = read_memory_window(&mock, 1, 1, 0).expect("bridge B memory window");
+
+    // Sibling windows must not overlap.
+    assert!(
+        win_a.1 < win_b.0 || win_b.1 < win_a.0,
+        "sibling bridge windows overlap: A=[{:#x}..={:#x}], B=[{:#x}..={:#x}]",
+        win_a.0,
+        win_a.1,
+        win_b.0,
+        win_b.1
+    );
+
+    // Each window must contain its pinned BAR.
+    assert!(
+        win_a.0 <= 0x1010_0000 && 0x1010_0000 + 0x100000 - 1 <= win_a.1,
+        "bridge A window must contain pinned BAR at 0x1010_0000"
+    );
+    assert!(
+        win_b.0 <= 0x1020_0000 && 0x1020_0000 + 0x100000 - 1 <= win_b.1,
+        "bridge B window must contain pinned BAR at 0x1020_0000"
+    );
+}
+
+/// When preserve_bars=false, pre-programmed BAR values are ignored and
+/// the BAR is dynamically allocated.
+#[async_test]
+async fn preserve_bars_false_ignores_preprogrammed() {
+    let mock = MockConfigSpace::new();
+    mock.add_endpoint(0, 0, 0, &[(0, 0x10000, false, false)]);
+    // Pre-program BAR0 with a specific address.
+    mock.set_bar_address(0, 0, 0, 0, 0x1050_0000);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: false,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    // BAR should be at the aperture base, not at the pre-programmed address.
+    assert_eq!(
+        read_bar32(&mock, 0, 0, 0, 0),
+        0x1000_0000,
+        "with preserve_bars=false, pre-programmed address should be ignored"
     );
 }

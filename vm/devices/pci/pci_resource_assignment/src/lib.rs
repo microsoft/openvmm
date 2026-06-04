@@ -67,6 +67,9 @@ pub struct AssignmentParams {
     pub low_mmio: Option<MmioAperture>,
     /// High MMIO aperture (above 4 GB) available for 64-bit BAR allocation.
     pub high_mmio: Option<MmioAperture>,
+    /// When true, treat non-zero BAR values found during probing as pinned
+    /// addresses rather than clearing them. Used for P2P DMA where GPA = HPA.
+    pub preserve_bars: bool,
 }
 
 /// Assign PCI resources (bus numbers and BAR addresses) for a host bridge.
@@ -113,6 +116,61 @@ pub enum AssignmentError {
         max_vf_bus: u16,
         /// Next bus number already allocated (VF buses below this are taken).
         next_bus: u16,
+    },
+    /// A pinned BAR address is not naturally aligned to the BAR size.
+    #[error(
+        "pinned BAR {bus:02x}:{device:02x}.{function} index {bar_index} at {address:#x} \
+         is not aligned to {required_alignment:#x}"
+    )]
+    PinnedBarMisaligned {
+        /// Bus number.
+        bus: u8,
+        /// Device number.
+        device: u8,
+        /// Function number.
+        function: u8,
+        /// BAR register index.
+        bar_index: u8,
+        /// The pinned address.
+        address: u64,
+        /// Required alignment (BAR size).
+        required_alignment: u64,
+    },
+    /// Two pinned BAR regions overlap.
+    #[error(
+        "pinned BAR regions overlap: {first_address:#x}..{first_end:#x} and \
+         {second_address:#x}..{second_end:#x}"
+    )]
+    PinnedBarOverlap {
+        /// Start of the first pinned region.
+        first_address: u64,
+        /// End of the first pinned region.
+        first_end: u64,
+        /// Start of the second pinned region.
+        second_address: u64,
+        /// End of the second pinned region.
+        second_end: u64,
+    },
+    /// A pinned BAR address falls outside the MMIO aperture.
+    #[error(
+        "pinned BAR {bus:02x}:{device:02x}.{function} index {bar_index} at \
+         {address:#x}+{size:#x} outside {aperture} aperture"
+    )]
+    PinnedBarOutOfAperture {
+        /// Bus number.
+        bus: u8,
+        /// Device number.
+        device: u8,
+        /// Function number.
+        function: u8,
+        /// BAR register index.
+        bar_index: u8,
+        /// The pinned address.
+        address: u64,
+        /// BAR size.
+        size: u64,
+        /// Which aperture was checked.
+        aperture: &'static str,
     },
     /// Not enough MMIO space for all BAR allocations.
     #[error("{aperture} MMIO exhaustion: need {required:#x} bytes, have {available:#x}")]

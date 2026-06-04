@@ -66,6 +66,7 @@ pub async fn assign_pci_resources_for_root_complexes(
                 base: hb.high_mmio.start(),
                 len: hb.high_mmio.len(),
             }),
+            preserve_bars: hb.preserve_bars,
         };
         let mut ecam =
             EcamConfigAccess::new(chipset, hb.ecam_range.start(), hb.start_bus, hb.end_bus);

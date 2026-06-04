@@ -180,6 +180,13 @@ pub struct BuiltPcieAcpiTables {
 }
 
 /// Build PCIe SSDT/CEDT payloads from host-bridge topology.
+///
+/// TODO: When any bridge has `preserve_bars`, emit `_DSM` UUID
+/// `{E5C937D0-3553-4D7A-9117-EA4D19C3434D}` Function 5 returning 0
+/// on that host bridge so the guest OS preserves firmware BAR assignments.
+/// See QEMU `gpex-acpi.c` `build_pci_host_bridge_dsm_method` for reference.
+/// For device tree guests, set `linux,pci-probe-only = <1>` on the host
+/// bridge or `/chosen` node (Linux checks this via `of_pci_preserve_config()`).
 pub fn build_pcie_acpi_tables(
     pcie_host_bridges: &[PcieHostBridge],
 ) -> Result<BuiltPcieAcpiTables, PcieAcpiBuildError> {
@@ -1291,6 +1298,7 @@ mod test {
                 high_mmio: MemoryRange::new(0..0),
                 cxl: None,
                 vnode: None,
+                preserve_bars: false,
             },
             PcieHostBridge {
                 index: 1,
@@ -1302,6 +1310,7 @@ mod test {
                 high_mmio: MemoryRange::new(0..0),
                 cxl: None,
                 vnode: None,
+                preserve_bars: false,
             },
         ];
 
@@ -1400,6 +1409,7 @@ mod test {
                 high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
                 cxl: None,
                 vnode: None,
+                preserve_bars: false,
             },
             PcieHostBridge {
                 index: 7,
@@ -1411,6 +1421,7 @@ mod test {
                 high_mmio: MemoryRange::new(0x1040000000..0x1080000000),
                 cxl: None,
                 vnode: None,
+                preserve_bars: false,
             },
         ];
         let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
@@ -1471,6 +1482,7 @@ mod test {
             high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
             cxl: None,
             vnode: None,
+            preserve_bars: false,
         }];
         let builder = new_builder(&mem, &topology, &pcie_host_bridges);
         assert!(builder.build_iort().is_none());
@@ -1502,6 +1514,7 @@ mod test {
             high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
             cxl: None,
             vnode: None,
+            preserve_bars: false,
         }];
         let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
 
@@ -1562,6 +1575,7 @@ mod test {
                 hdm_window_restrictions: Default::default(),
             }),
             vnode: None,
+            preserve_bars: false,
         }];
         let builder = new_builder(&mem, &topology, &pcie_host_bridges);
 
@@ -1586,6 +1600,7 @@ mod test {
             high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
             cxl: None,
             vnode: None,
+            preserve_bars: false,
         }];
         let builder = new_aarch64_builder_with_smmu(&mem, &topology, &pcie_host_bridges, smmu_base);
 
@@ -1663,6 +1678,7 @@ mod test {
                 high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
                 cxl: None,
                 vnode: None,
+                preserve_bars: false,
             },
             PcieHostBridge {
                 index: 1,
@@ -1674,6 +1690,7 @@ mod test {
                 high_mmio: MemoryRange::new(0x1040000000..0x1080000000),
                 cxl: None,
                 vnode: None,
+                preserve_bars: false,
             },
         ];
         let builder = new_aarch64_builder_with_smmu(&mem, &topology, &pcie_host_bridges, smmu_base);
@@ -1726,6 +1743,7 @@ mod test {
             high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
             cxl: None,
             vnode: None,
+            preserve_bars: false,
         }];
         let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
 
@@ -1759,6 +1777,7 @@ mod test {
             high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
             cxl: None,
             vnode: None,
+            preserve_bars: false,
         }];
         let builder = new_aarch64_builder_with_smmu(&mem, &topology, &pcie_host_bridges, smmu_base);
 

@@ -34,6 +34,12 @@ pub(crate) struct SubtreeState {
     memory_window: Option<(u64, u64)>,
     /// Assigned prefetchable bridge window (base, limit). Set by assign_subtree.
     prefetchable_window: Option<(u64, u64)>,
+    /// If pinned demands exist in the mem32 pool, the required base address
+    /// for this subtree's window (align_down of the lowest pinned address).
+    constrained_base32: Option<u64>,
+    /// If pinned demands exist in the mem64 pool, the required base address
+    /// for this subtree's window.
+    constrained_base64: Option<u64>,
 }
 
 /// A single resource demand at one level of the PCI tree.
@@ -48,6 +54,9 @@ enum Demand {
         bar_index: u8,
         size: u64,
         is_mem64: bool,
+        /// If set, this BAR is pinned to a specific address (pre-programmed
+        /// in config space, discovered via `preserve_bars`).
+        pinned_address: Option<u64>,
     },
     /// A bridge's child subtree window.
     BridgeSubtree {
@@ -56,6 +65,9 @@ enum Demand {
         size: u64,
         alignment: u64,
         is_mem64: bool,
+        /// If set, this bridge has pinned descendants and must be placed
+        /// at this specific base address.
+        constrained_base: Option<u64>,
     },
     /// VF BAR space — reserved for SR-IOV VFs.
     SriovVfBars {
@@ -96,6 +108,24 @@ impl Demand {
             | Demand::SriovVfBars { is_mem64, .. } => *is_mem64,
         }
     }
+
+    /// Returns `Some((address, size))` if this demand has a fixed position
+    /// (pinned BAR or constrained bridge).
+    fn fixed_position(&self) -> Option<(u64, u64)> {
+        match self {
+            Demand::Bar {
+                pinned_address: Some(addr),
+                size,
+                ..
+            } => Some((*addr, *size)),
+            Demand::BridgeSubtree {
+                constrained_base: Some(base),
+                size,
+                ..
+            } => Some((*base, *size)),
+            _ => None,
+        }
+    }
 }
 
 /// Assign addresses to all discovered devices.
@@ -126,6 +156,9 @@ pub fn assign_addresses(
     // nodes so that the assignment pass can read them without recomputing.
     let root_req = compute_subtree_state(devices);
 
+    // Validate pinned BAR constraints before assigning addresses.
+    validate_pinned_bars(devices, params)?;
+
     // Step 2: Top-down — allocate from apertures and assign addresses.
     // Align the effective base to the root's alignment requirement so that
     // internal bump allocation matches the sizing (which starts from zero).
@@ -144,7 +177,13 @@ pub fn assign_addresses(
             aperture: "low_mmio",
         })?;
 
-        let base = align_up(aperture.base, root_req.align32);
+        // If there are constrained (pinned) demands, use their base.
+        // Otherwise, align to the aperture base as before.
+        let base = if let Some(cbase) = root_req.constrained_base32 {
+            cbase
+        } else {
+            align_up(aperture.base, root_req.align32)
+        };
         let aperture_end = aperture.base + aperture.len;
         let available = aperture_end.saturating_sub(base);
         if root_req.mem32 > available {
@@ -171,9 +210,12 @@ pub fn assign_addresses(
                     aperture: "high_mmio",
                 })?;
 
-        // If sharing the same aperture as mem32, allocate after the
-        // actual aligned mem32 end to avoid overlapping assignments.
-        let base = if let Some(end) = mem32_end.filter(|_| params.high_mmio.is_none()) {
+        // If there are constrained (pinned) demands, use their base.
+        let base = if let Some(cbase) = root_req.constrained_base64 {
+            cbase
+        } else if let Some(end) = mem32_end.filter(|_| params.high_mmio.is_none()) {
+            // If sharing the same aperture as mem32, allocate after the
+            // actual aligned mem32 end to avoid overlapping assignments.
             align_up(end, root_req.align64)
         } else {
             align_up(aperture.base, root_req.align64)
@@ -259,6 +301,7 @@ fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
                 bar_index: bar.index,
                 size: bar.size,
                 is_mem64: is_mem64_bar(bar),
+                pinned_address: bar.pinned_address,
             });
         }
 
@@ -287,6 +330,7 @@ fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
                     size,
                     alignment: child_req.align32,
                     is_mem64: false,
+                    constrained_base: child_req.constrained_base32,
                 });
             }
             if child_req.mem64 > 0 {
@@ -296,22 +340,59 @@ fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
                     size,
                     alignment: child_req.align64,
                     is_mem64: true,
+                    constrained_base: child_req.constrained_base64,
                 });
             }
             dev.subtree_req = Some(child_req);
         }
     }
 
-    // Sum with proper alignment, largest-alignment-first. Placing the most
+    // Sort dynamic demands by alignment descending. Placing the most
     // alignment-demanding items first minimizes padding waste.
     demands.sort_by_key(|d| std::cmp::Reverse(d.alignment()));
 
-    let mut mem32: u64 = 0;
-    let mut mem64: u64 = 0;
+    // Collect fixed-position demands (pinned BARs and constrained bridges)
+    // per pool to compute the base offset for dynamic allocations.
+    let mut pin32: Vec<(u64, u64)> = Vec::new();
+    let mut pin64: Vec<(u64, u64)> = Vec::new();
+
+    for d in &demands {
+        if let Some((addr, size)) = d.fixed_position() {
+            if d.is_mem64() {
+                pin64.push((addr, size));
+            } else {
+                pin32.push((addr, size));
+            }
+        }
+    }
+
+    let (mut mem32, constrained_base32) = if !pin32.is_empty() {
+        let min_addr = pin32.iter().map(|(a, _)| *a).min().unwrap();
+        let max_end = pin32.iter().map(|(a, s)| a + s).max().unwrap();
+        let base = align_down(min_addr, BRIDGE_WINDOW_ALIGN);
+        (max_end - base, Some(base))
+    } else {
+        (0, None)
+    };
+
+    let (mut mem64, constrained_base64) = if !pin64.is_empty() {
+        let min_addr = pin64.iter().map(|(a, _)| *a).min().unwrap();
+        let max_end = pin64.iter().map(|(a, s)| a + s).max().unwrap();
+        let base = align_down(min_addr, BRIDGE_WINDOW_ALIGN);
+        (max_end - base, Some(base))
+    } else {
+        (0, None)
+    };
+
     let mut align32 = BRIDGE_WINDOW_ALIGN;
     let mut align64 = BRIDGE_WINDOW_ALIGN;
 
     for d in &demands {
+        // Skip fixed-position demands; they are already accounted for
+        // in the pinned region above.
+        if d.fixed_position().is_some() {
+            continue;
+        }
         if d.is_mem64() {
             mem64 = align_up(mem64, d.alignment());
             mem64 += d.size();
@@ -331,29 +412,57 @@ fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
         demands,
         memory_window: None,
         prefetchable_window: None,
+        constrained_base32,
+        constrained_base64,
     }
 }
 /// Top-down: assign addresses to devices within a subtree, carving from
 /// the given base address. `alloc_64bit` selects which pool (mem32 or
 /// mem64) we are assigning.
 ///
-/// `demands` is the pre-sorted demand list built by `compute_subtree_requirement`.
+/// Fixed-position demands (pinned BARs and constrained bridges) are placed
+/// at their predetermined addresses. Dynamic demands bump-allocate after
+/// the highest fixed-position end.
+///
+/// TODO: Replace bump-from-max-end with a gap allocator that can place
+/// dynamic demands in free space before and between pinned regions. The
+/// current approach wastes space below the first pin. This is acceptable
+/// when the admin controls aperture placement, but a gap allocator would
+/// handle awkward pin positions without requiring oversized apertures.
+///
+/// `demands` is the pre-sorted demand list built by `compute_subtree_state`.
 fn assign_subtree(
     devices: &mut [DiscoveredDevice],
     demands: &[Demand],
     alloc_64bit: bool,
     base: u64,
 ) {
-    // Bump-allocate from the pre-sorted demands, skipping demands that
-    // belong to the other pool.
-    let mut offset = base;
+    // Compute the starting offset for bump allocation: after all
+    // fixed-position demands.
+    let max_fixed_end = demands
+        .iter()
+        .filter(|d| d.is_mem64() == alloc_64bit)
+        .filter_map(|d| d.fixed_position())
+        .map(|(addr, size)| addr + size)
+        .max()
+        .unwrap_or(base);
+    let mut offset = max_fixed_end.max(base);
+
     for demand in demands {
         if demand.is_mem64() != alloc_64bit {
             continue;
         }
 
-        let size = demand.size();
-        offset = align_up(offset, demand.alignment());
+        // For fixed-position demands, use the fixed address.
+        // For dynamic demands, bump-allocate.
+        let assign_addr = if let Some((addr, _)) = demand.fixed_position() {
+            addr
+        } else {
+            offset = align_up(offset, demand.alignment());
+            let addr = offset;
+            offset += demand.size();
+            addr
+        };
 
         match *demand {
             Demand::Bar {
@@ -364,14 +473,14 @@ fn assign_subtree(
                     .iter_mut()
                     .find(|b| b.index == bar_index)
                     .expect("demand references a BAR that exists");
-                bar.address = Some(offset);
+                bar.address = Some(assign_addr);
             }
             Demand::BridgeSubtree { dev_idx, size, .. } => {
                 let dev = &mut devices[dev_idx];
 
                 // Set the bridge window to the carved-out range.
-                let window_base = offset;
-                let window_limit = offset + size - 1;
+                let window_base = assign_addr;
+                let window_limit = assign_addr + size - 1;
                 let req = dev.subtree_req.as_mut().unwrap();
                 if alloc_64bit {
                     req.prefetchable_window = Some((window_base, window_limit));
@@ -383,9 +492,9 @@ fn assign_subtree(
                 let child_demands = &dev
                     .subtree_req
                     .as_ref()
-                    .expect("subtree_req must be populated by compute_subtree_requirement")
+                    .expect("subtree_req must be populated by compute_subtree_state")
                     .demands;
-                assign_subtree(&mut dev.children, child_demands, alloc_64bit, offset);
+                assign_subtree(&mut dev.children, child_demands, alloc_64bit, window_base);
             }
             Demand::SriovVfBars {
                 dev_idx, bar_index, ..
@@ -400,11 +509,9 @@ fn assign_subtree(
                     .iter_mut()
                     .find(|b| b.index == bar_index)
                     .expect("demand references a VF BAR that exists");
-                vf_bar.address = Some(offset);
+                vf_bar.address = Some(assign_addr);
             }
         }
-
-        offset += size;
     }
 }
 
@@ -566,4 +673,99 @@ pub async fn program_assignments(cfg: &mut impl PciConfigAccess, devices: &[Disc
 fn align_up(value: u64, alignment: u64) -> u64 {
     assert!(alignment.is_power_of_two());
     (value + alignment - 1) & !(alignment - 1)
+}
+
+fn align_down(value: u64, alignment: u64) -> u64 {
+    assert!(alignment.is_power_of_two());
+    value & !(alignment - 1)
+}
+
+/// Validate pinned BAR constraints: alignment, overlap, and aperture fit.
+fn validate_pinned_bars(
+    devices: &[DiscoveredDevice],
+    params: &AssignmentParams,
+) -> Result<(), AssignmentError> {
+    let mut all_pinned: Vec<(u64, u64, u8, u8, u8, u8, bool)> = Vec::new();
+    collect_pinned_bars(devices, &mut all_pinned);
+
+    // Check natural alignment.
+    for &(addr, size, bus, device, function, bar_index, _) in &all_pinned {
+        if addr % size != 0 {
+            return Err(AssignmentError::PinnedBarMisaligned {
+                bus,
+                device,
+                function,
+                bar_index,
+                address: addr,
+                required_alignment: size,
+            });
+        }
+    }
+
+    // Check for overlap within each pool.
+    for is_mem64 in [false, true] {
+        let mut pool: Vec<_> = all_pinned
+            .iter()
+            .filter(|p| p.6 == is_mem64)
+            .copied()
+            .collect();
+        pool.sort_by_key(|p| p.0);
+        for w in pool.windows(2) {
+            if w[0].0 + w[0].1 > w[1].0 {
+                return Err(AssignmentError::PinnedBarOverlap {
+                    first_address: w[0].0,
+                    first_end: w[0].0 + w[0].1,
+                    second_address: w[1].0,
+                    second_end: w[1].0 + w[1].1,
+                });
+            }
+        }
+    }
+
+    // Check aperture containment.
+    for &(addr, size, bus, device, function, bar_index, is_mem64) in &all_pinned {
+        let (aperture, aperture_name) = if is_mem64 {
+            (params.high_mmio.or(params.low_mmio), "high_mmio")
+        } else {
+            (params.low_mmio, "low_mmio")
+        };
+        let fits = aperture.is_some_and(|a| addr >= a.base && addr + size <= a.base + a.len);
+        if !fits {
+            return Err(AssignmentError::PinnedBarOutOfAperture {
+                bus,
+                device,
+                function,
+                bar_index,
+                address: addr,
+                size,
+                aperture: aperture_name,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Recursively collect all pinned BARs from the device tree.
+/// Each entry: (address, size, bus, device, function, bar_index, is_mem64).
+fn collect_pinned_bars(
+    devices: &[DiscoveredDevice],
+    out: &mut Vec<(u64, u64, u8, u8, u8, u8, bool)>,
+) {
+    for dev in devices {
+        for bar in &dev.bars {
+            if let Some(addr) = bar.pinned_address {
+                out.push((
+                    addr,
+                    bar.size,
+                    dev.bus,
+                    dev.device,
+                    dev.function,
+                    bar.index,
+                    is_mem64_bar(bar),
+                ));
+            }
+        }
+        collect_pinned_bars(&dev.children, out);
+    }
 }
