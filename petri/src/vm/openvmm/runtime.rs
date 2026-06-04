@@ -257,8 +257,9 @@ impl PetriVmOpenVmm {
     );
     petri_vm_fn!(
         /// Waits for the Hyper-V shutdown IC to be ready, returning a receiver
-        /// that will be closed when it is no longer ready.
-        pub async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<mesh::OneshotReceiver<()>>
+        /// that will be closed when it is no longer ready. Returns `None` if
+        /// the shutdown IC is not configured.
+        pub async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<Option<mesh::OneshotReceiver<()>>>
     );
     petri_vm_fn!(
         /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
@@ -422,20 +423,24 @@ impl PetriVmInner {
 
     async fn wait_for_enlightened_shutdown_ready(
         &mut self,
-    ) -> anyhow::Result<mesh::OneshotReceiver<()>> {
-        let recv = self
-            .resources
-            .shutdown_ic_send
+    ) -> anyhow::Result<Option<mesh::OneshotReceiver<()>>> {
+        let Some(send) = self.resources.shutdown_ic_send.as_ref() else {
+            return Ok(None);
+        };
+        let recv = send
             .call(ShutdownRpc::WaitReady, ())
-            .await?;
-
-        Ok(recv)
+            .await
+            .context("waiting for shutdown IC to be ready")?;
+        Ok(Some(recv))
     }
 
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
-        let shutdown_result = self
+        let send = self
             .resources
             .shutdown_ic_send
+            .as_ref()
+            .context("shutdown IC not configured")?;
+        let shutdown_result = send
             .call(
                 ShutdownRpc::Shutdown,
                 hyperv_ic_resources::shutdown::ShutdownParams {
@@ -463,9 +468,12 @@ impl PetriVmInner {
         &mut self,
     ) -> anyhow::Result<mesh::Sender<hyperv_ic_resources::kvp::KvpRpc>> {
         tracing::info!("Waiting for KVP IC");
-        let (send, _) = self
+        let send = self
             .resources
             .kvp_ic_send
+            .as_ref()
+            .context("KVP IC not configured")?;
+        let (send, _) = send
             .call_failable(hyperv_ic_resources::kvp::KvpConnectRpc::WaitForGuest, ())
             .await
             .context("failed to connect to KVP IC")?;

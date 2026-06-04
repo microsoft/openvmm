@@ -60,6 +60,12 @@ pub enum KvmError {
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
     #[cfg(guest_arch = "x86_64")]
+    #[error("nested virtualization was requested but the host does not support it")]
+    NestedVirtUnsupported,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("unsupported CPU vendor")]
+    UnsupportedCpuVendor,
+    #[cfg(guest_arch = "x86_64")]
     #[error("failed to compute topology cpuid")]
     TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }

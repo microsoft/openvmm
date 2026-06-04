@@ -2,10 +2,16 @@
 // Licensed under the MIT License.
 
 //! Download various pre-built `openvmm-deps` dependencies, or use a local path if specified.
+//!
+//! The openvmm-deps release publishes separate archives:
+//! - `openvmm-deps.{arch}.{ver}.tar.gz` — SDK tools (dbgrd, shell, sysroot, petritools)
+//! - `openvmm-test-initrd.{arch}.{ver}.tar.gz` — shared test initrd
+//! - `openvmm-test-linux-{kernel_ver}.{arch}.{ver}.tar.gz` — test kernel
 
 use crate::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 /// Which file to extract from the openvmm-deps archive.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -87,9 +93,6 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
-        // Which architectures have at least one dep requested?
-        let needs_arch = |arch: CommonArch| deps.keys().any(|(_, a)| *a == arch);
-
         if !local_paths.is_empty() {
             ctx.emit_rust_step("use local openvmm-deps", |ctx| {
                 let deps = deps.claim(ctx);
@@ -118,67 +121,65 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
-        let extract_tar_gz_persistent_dir = ctx.persistent_dir();
+        let version = version.expect("local requests handled above");
 
-        let download_archive = |arch: CommonArch, ctx: &mut NodeCtx<'_>| {
-            let version = version.clone().expect("local requests handled above");
-            let arch_str = match arch {
-                CommonArch::X86_64 => "x86_64",
-                CommonArch::Aarch64 => "aarch64",
-            };
-            ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
-                repo_owner: "microsoft".into(),
-                repo_name: "openvmm-deps".into(),
-                needs_auth: false,
-                tag: version.clone(),
-                file_name: format!("openvmm-deps.{arch_str}.{version}.tar.gz"),
-                path: v,
+        // Determine which architectures we need to download.
+        let needed_archs: BTreeSet<CommonArch> = deps.keys().map(|(_, arch)| *arch).collect();
+
+        let persistent_dir = ctx.persistent_dir();
+
+        // Download each unique architecture.
+        let downloads: BTreeMap<CommonArch, ReadVar<PathBuf>> = needed_archs
+            .into_iter()
+            .map(|arch| {
+                let arch_str = match arch {
+                    CommonArch::X86_64 => "x86_64",
+                    CommonArch::Aarch64 => "aarch64",
+                };
+                let file_name = format!("openvmm-deps.{arch_str}.{version}.tar.gz");
+                let path = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
+                    repo_owner: "microsoft".into(),
+                    repo_name: "openvmm-deps".into(),
+                    needs_auth: false,
+                    tag: version.clone(),
+                    file_name,
+                    path: v,
+                });
+                (arch, path)
             })
-        };
-
-        let openvmm_deps_tar_gz_x64 =
-            needs_arch(CommonArch::X86_64).then(|| download_archive(CommonArch::X86_64, ctx));
-        let openvmm_deps_tar_gz_aarch64 =
-            needs_arch(CommonArch::Aarch64).then(|| download_archive(CommonArch::Aarch64, ctx));
+            .collect();
 
         ctx.emit_rust_step("unpack openvmm-deps archive", |ctx| {
-            let extract_tar_gz_persistent_dir = extract_tar_gz_persistent_dir.claim(ctx);
-            let openvmm_deps_tar_gz_x64 = openvmm_deps_tar_gz_x64.claim(ctx);
-            let openvmm_deps_tar_gz_aarch64 = openvmm_deps_tar_gz_aarch64.claim(ctx);
+            let persistent_dir = persistent_dir.claim(ctx);
+            let downloads: BTreeMap<_, _> = downloads
+                .into_iter()
+                .map(|(key, var)| (key, var.claim(ctx)))
+                .collect();
             let deps = deps.claim(ctx);
-            let version = version.clone().expect("local requests handled above");
+            let version = version.clone();
             move |rt| {
-                let persistent_dir = extract_tar_gz_persistent_dir.map(|d| rt.read(d));
-                let extract_dir_x64 = openvmm_deps_tar_gz_x64
-                    .map(|file| {
-                        let file = rt.read(file);
-                        flowey_lib_common::_util::extract::extract_tar_gz_if_new(
-                            rt,
-                            persistent_dir.as_deref(),
-                            &file,
-                            &version,
-                        )
-                    })
-                    .transpose()?;
-                let extract_dir_aarch64 = openvmm_deps_tar_gz_aarch64
-                    .map(|file| {
-                        let file = rt.read(file);
-                        flowey_lib_common::_util::extract::extract_tar_gz_if_new(
-                            rt,
-                            persistent_dir.as_deref(),
-                            &file,
-                            &version,
-                        )
-                    })
-                    .transpose()?;
+                let persistent_dir = persistent_dir.map(|d| rt.read(d));
 
-                let base_dir = |arch| match arch {
-                    CommonArch::X86_64 => extract_dir_x64.clone().unwrap(),
-                    CommonArch::Aarch64 => extract_dir_aarch64.clone().unwrap(),
-                };
+                // Extract each downloaded archive, keyed by architecture.
+                let extract_dirs: BTreeMap<CommonArch, PathBuf> = downloads
+                    .into_iter()
+                    .map(|(arch, var)| {
+                        let file = rt.read(var);
+                        let dir = flowey_lib_common::_util::extract::extract_tar_gz_if_new(
+                            rt,
+                            persistent_dir.as_deref(),
+                            &file,
+                            &version,
+                        )?;
+                        Ok((arch, dir))
+                    })
+                    .collect::<anyhow::Result<_>>()?;
 
                 for ((dep, arch), vars) in deps {
-                    let path = base_dir(arch).join(dep.filename());
+                    let extract_dir = extract_dirs
+                        .get(&arch)
+                        .expect("archive was downloaded for this arch");
+                    let path = extract_dir.join(dep.filename());
                     rt.write_all(vars, &path)
                 }
 

@@ -43,7 +43,19 @@ impl PetriVmConfigOpenVmm {
 
             ged,
             framebuffer_view,
+
+            pending_iommu,
         } = self;
+
+        // Resolve deferred IOMMU assignments.
+        for (name, iommu_config) in &pending_iommu {
+            let rc = config
+                .pcie_root_complexes
+                .iter_mut()
+                .find(|rc| rc.name == *name)
+                .with_context(|| format!("IOMMU configured for unknown root complex '{name}'"))?;
+            rc.iommu = Some(iommu_config.clone());
+        }
 
         // TODO: OpenHCL needs virt_whp support
         // TODO: PCAT needs vga device support
@@ -94,10 +106,14 @@ impl PetriVmConfigOpenVmm {
         let shared_memory = memory_backing_file
             .as_ref()
             .map(|mem_path| {
-                openvmm_helpers::shared_memory::open_memory_backing_file(
-                    mem_path,
-                    config.memory.mem_size,
-                )
+                let total_mem_size: u64 = config
+                    .numa
+                    .nodes
+                    .iter()
+                    .filter_map(|n| n.mem.as_ref())
+                    .map(|m| m.mem_size)
+                    .sum();
+                openvmm_helpers::shared_memory::open_memory_backing_file(mem_path, total_mem_size)
             })
             .transpose()?;
 

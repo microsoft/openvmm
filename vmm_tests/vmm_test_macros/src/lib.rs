@@ -37,12 +37,23 @@ struct ResolvedConfig {
     extra_deps: Vec<Path>,
     unstable: bool,
     requires_vpci: bool,
+    requires_host_vendor: Option<HostVendor>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Vmm {
     OpenVmm,
     HyperV,
+}
+
+/// Host CPU vendor that a test can be restricted to via macro overrides.
+///
+/// When set, the test is marked ignored at runtime on hosts whose vendor
+/// does not match (e.g. an `amd`-gated test is skipped on Intel hosts).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HostVendor {
+    Amd,
+    Intel,
 }
 
 enum Firmware {
@@ -93,6 +104,7 @@ struct ArgsWithOverrides {
     unstable: bool,
     with_vtl0_pipette: bool,
     requires_vpci: bool,
+    requires_host_vendor: Option<HostVendor>,
 }
 
 struct ResolvedArgs {
@@ -259,6 +271,7 @@ impl Parse for ArgsWithOverrides {
         let mut with_vtl0_pipette = None;
         let mut vmm = None;
         let mut requires_vpci = None;
+        let mut requires_host_vendor = None;
 
         let word = input.parse::<Ident>()?;
         let conflict_err = || Err::<Self, Error>(Error::new(word.span(), "conflicting override"));
@@ -281,6 +294,18 @@ impl Parse for ArgsWithOverrides {
                         return conflict_err();
                     }
                     requires_vpci = Some(true);
+                }
+                "amd" => {
+                    if requires_host_vendor.is_some() {
+                        return conflict_err();
+                    }
+                    requires_host_vendor = Some(HostVendor::Amd);
+                }
+                "intel" => {
+                    if requires_host_vendor.is_some() {
+                        return conflict_err();
+                    }
+                    requires_host_vendor = Some(HostVendor::Intel);
                 }
                 "hyperv" => {
                     if vmm.is_some() {
@@ -312,6 +337,7 @@ impl Parse for ArgsWithOverrides {
             with_vtl0_pipette,
             unstable,
             requires_vpci,
+            requires_host_vendor,
         })
     }
 }
@@ -324,6 +350,7 @@ impl ArgsWithOverrides {
             unstable,
             with_vtl0_pipette,
             requires_vpci,
+            requires_host_vendor,
         } = self;
 
         let mut resolved_configs = Vec::new();
@@ -345,6 +372,7 @@ impl ArgsWithOverrides {
                 extra_deps: config.extra_deps,
                 unstable: config.unstable || unstable,
                 requires_vpci,
+                requires_host_vendor,
             });
         }
 
@@ -752,6 +780,7 @@ pub fn vmm_test(
         unstable: false,
         with_vtl0_pipette: true,
         requires_vpci: false,
+        requires_host_vendor: None,
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -763,6 +792,10 @@ pub fn vmm_test(
 /// to all tests, separated by underscores:
 /// - unstable: all variants of this test are unstable
 /// - noagent: don't use pipette in vtl0 for this test
+/// - vpci: this test requires a hypervisor backend that supports VPCI
+///   (virtual PCI) device emulation
+/// - amd: this test only runs on AMD-vendor hosts (skipped otherwise)
+/// - intel: this test only runs on Intel-vendor hosts (skipped otherwise)
 /// - hyperv: use hyperv as the vmm
 /// - openvmm: use openvmm as the vmm
 ///
@@ -792,6 +825,7 @@ pub fn openvmm_test(
         unstable: false,
         with_vtl0_pipette: true,
         requires_vpci: false,
+        requires_host_vendor: None,
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -812,6 +846,7 @@ pub fn openvmm_test_no_agent(
         unstable: false,
         with_vtl0_pipette: false,
         requires_vpci: false,
+        requires_host_vendor: None,
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -843,7 +878,12 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
         let name = format!("{}_{original_name}", config.name_prefix());
 
         // Build requirements based on the configuration and resolved VMM
-        let requirements = build_requirements(&config.firmware, config.vmm, config.requires_vpci);
+        let requirements = build_requirements(
+            &config.firmware,
+            config.vmm,
+            config.requires_vpci,
+            config.requires_host_vendor,
+        );
 
         // Now move the values for the FirmwareAndArch and extra_deps
         let extra_deps = config.extra_deps;
@@ -908,7 +948,12 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
 }
 
 // Helper to build requirements TokenStream for firmware and resolved VMM
-fn build_requirements(firmware: &Firmware, resolved_vmm: Vmm, requires_vpci: bool) -> TokenStream {
+fn build_requirements(
+    firmware: &Firmware,
+    resolved_vmm: Vmm,
+    requires_vpci: bool,
+    requires_host_vendor: Option<HostVendor>,
+) -> TokenStream {
     let mut requirement_expr: TokenStream = quote!(::petri::requirements::TestRequirement::Any);
     let mut is_vbs = false;
     // Add isolation requirement if specified
@@ -950,6 +995,16 @@ fn build_requirements(firmware: &Firmware, resolved_vmm: Vmm, requires_vpci: boo
     if requires_vpci {
         requirement_expr =
             quote!(#requirement_expr.and(::petri::requirements::TestRequirement::VpciSupport));
+    }
+
+    if let Some(vendor) = requires_host_vendor {
+        let vendor_tokens = match vendor {
+            HostVendor::Amd => quote!(::petri::requirements::Vendor::Amd),
+            HostVendor::Intel => quote!(::petri::requirements::Vendor::Intel),
+        };
+        requirement_expr = quote!(#requirement_expr.and(
+            ::petri::requirements::TestRequirement::Vendor(#vendor_tokens)
+        ));
     }
 
     quote!(

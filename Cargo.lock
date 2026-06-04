@@ -88,6 +88,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "amd_iommu"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "chipset_device",
+ "guestmem",
+ "inspect",
+ "open_enum",
+ "parking_lot",
+ "pci_core",
+ "tracelimit",
+ "tracing",
+ "vmcore",
+ "zerocopy",
+]
+
+[[package]]
 name = "anes"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5378,6 +5395,7 @@ version = "0.0.0"
 dependencies = [
  "aarch64defs",
  "acpi",
+ "amd_iommu",
  "anyhow",
  "async-trait",
  "build_rs_guest_arch",
@@ -6194,6 +6212,7 @@ dependencies = [
  "vmm_core_defs",
  "vmotherboard",
  "vmsocket",
+ "vmswitch",
  "vtl2_settings_proto",
  "windows-version",
  "x86defs",
@@ -7428,7 +7447,9 @@ dependencies = [
  "chipset_device",
  "guestmem",
  "inspect",
+ "mesh",
  "open_enum",
+ "pal_async",
  "pal_event",
  "parking_lot",
  "pci_core",
@@ -8954,6 +8975,7 @@ dependencies = [
  "pal_async",
  "pci_core",
  "pci_resources",
+ "test_with_tracing",
  "tracelimit",
  "tracing",
  "vfio-bindings",
@@ -10269,6 +10291,7 @@ dependencies = [
  "anyhow",
  "disk_backend_resources",
  "disk_vhd1",
+ "fs-err",
  "futures",
  "get_resources",
  "guid",
@@ -10376,6 +10399,7 @@ dependencies = [
  "pal",
  "pal_async",
  "pal_event",
+ "serde_json",
  "thiserror 2.0.16",
  "tracing",
  "widestring",

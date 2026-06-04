@@ -30,7 +30,7 @@ pub struct Config {
     pub pcie_devices: Vec<PcieDeviceConfig>,
     pub pcie_switches: Vec<PcieSwitchConfig>,
     pub vpci_devices: Vec<VpciDeviceConfig>,
-    pub memory: MemoryConfig,
+    pub numa: NumaTopology,
     pub processor_topology: ProcessorTopologyConfig,
     pub hypervisor: HypervisorConfig,
     pub chipset: BaseChipsetManifest,
@@ -218,6 +218,8 @@ pub struct PcieRootComplexConfig {
     pub ports: Vec<PcieRootPortConfig>,
     /// Optional CXL configuration for root-complex CXL mode.
     pub cxl: Option<RootComplexCxlConfig>,
+    /// Optional IOMMU for this root complex.
+    pub iommu: Option<PcieIommuConfig>,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -316,15 +318,13 @@ pub enum GicMsiConfig {
     },
 }
 
-/// Per-instance SMMUv3 configuration for an aarch64 VM.
-///
-/// Each instance covers one PCIe root complex, identified by name.
-/// The SMMU's MMIO address is allocated dynamically by the memory layout
-/// engine.
-#[derive(Debug, Protobuf, Clone)]
-pub struct SmmuInstanceConfig {
-    /// Name of the PCIe root complex this SMMU covers.
-    pub rc_name: String,
+/// IOMMU configuration for a single PCIe root complex.
+#[derive(Debug, MeshPayload, Clone)]
+pub enum PcieIommuConfig {
+    /// AMD IOMMU (AMD-Vi) for x86_64 guests.
+    AmdVi,
+    /// Arm SMMUv3 for aarch64 guests.
+    Smmu,
 }
 
 #[derive(Debug, Protobuf, Default, Clone)]
@@ -332,9 +332,6 @@ pub struct Aarch64TopologyConfig {
     pub gic_config: Option<GicConfig>,
     pub pmu_gsiv: PmuGsivConfig,
     pub gic_msi: GicMsiConfig,
-    /// SMMUv3 IOMMU instances. Each entry creates an SMMU for one PCIe root
-    /// complex (identified by name). Empty means no SMMU.
-    pub smmu: Vec<SmmuInstanceConfig>,
 }
 
 /// GIC configuration for the virtual machine.
@@ -369,7 +366,8 @@ pub enum ArchTopologyConfig {
     Aarch64(Aarch64TopologyConfig),
 }
 
-#[derive(Debug, MeshPayload)]
+/// Per-node memory allocation configuration.
+#[derive(Debug, Clone, Copy, MeshPayload)]
 pub struct MemoryConfig {
     pub mem_size: u64,
     pub prefetch_memory: bool,
@@ -377,10 +375,53 @@ pub struct MemoryConfig {
     pub transparent_hugepages: bool,
     pub hugepages: bool,
     pub hugepage_size: Option<u64>,
-    /// Test only: per-NUMA-node memory sizes. When set, RAM is distributed
-    /// across vNUMA nodes according to these sizes instead of assigning all RAM
-    /// to node 0. The sum must equal `mem_size`.
-    pub numa_mem_sizes: Option<Vec<u64>>,
+    /// Host physical NUMA node to bind this allocation to (Linux:
+    /// `mbind(MPOL_BIND)`). `None` means OS default placement.
+    pub host_numa_node: Option<u32>,
+}
+
+/// Virtual NUMA topology for the VM.
+#[derive(Debug, MeshPayload)]
+pub struct NumaTopology {
+    /// NUMA nodes. The vnode ID is the index into this vector.
+    pub nodes: Vec<NumaNode>,
+    /// Inter-node distances for the SLIT. If empty, defaults are used
+    /// (10 for self, 20 for cross-node).
+    pub distances: Vec<NumaDistance>,
+}
+
+/// A single virtual NUMA node.
+#[derive(Debug, MeshPayload)]
+pub struct NumaNode {
+    /// Memory allocation for this node. `None` means a CPU-only or
+    /// device-only node.
+    pub mem: Option<MemoryConfig>,
+    /// VP assignment for this node.
+    pub vps: VpAssignment,
+}
+
+/// How VPs are assigned to a NUMA node.
+#[derive(Debug, MeshPayload)]
+pub enum VpAssignment {
+    /// Assign VPs to nodes by round-robining sockets: a VP with socket ID
+    /// `vp_index / vps_per_socket` belongs to node
+    /// `(vp_index / vps_per_socket) % num_nodes`. `vps_per_socket` comes
+    /// from `ProcessorTopologyConfig`; `num_nodes` is the length of
+    /// `NumaTopology.nodes`.
+    FromTopology,
+    /// Explicit VP indices assigned to this node.
+    Explicit(Vec<u32>),
+}
+
+/// An inter-node distance entry for the ACPI SLIT.
+#[derive(Debug, MeshPayload)]
+pub struct NumaDistance {
+    /// Source node index.
+    pub src: u32,
+    /// Destination node index.
+    pub dst: u32,
+    /// Distance value (10 = local, 20 = default cross-node, 255 = unreachable).
+    pub distance: u8,
 }
 
 #[derive(Debug, MeshPayload, Default)]

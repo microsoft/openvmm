@@ -22,6 +22,7 @@ use anyhow::bail;
 use cxl_spec::spec::CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES;
 use cxl_spec::spec::CXL_HPA_ALIGNMENT;
 use memory_range::MemoryRange;
+use openvmm_defs::config::PcieIommuConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use std::sync::Arc;
@@ -80,6 +81,10 @@ pub(super) struct ResolvedMemoryLayout {
     /// Each range is `SMMU_SIZE` bytes. Empty when no SMMUs are configured.
     #[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
     pub smmu_ranges: Vec<MemoryRange>,
+    /// Resolved MMIO ranges for AMD IOMMU instances, one per configured IOMMU.
+    /// Each range is 16 KiB. Empty when no AMD IOMMUs are configured.
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
+    pub amd_iommu_ranges: Vec<MemoryRange>,
 }
 
 #[derive(Debug)]
@@ -92,11 +97,11 @@ pub(super) struct ResolvedPcieRootComplexRanges {
 }
 
 pub(super) struct MemoryLayoutInput<'a> {
-    /// Total VTL0 RAM size requested by the VM configuration.
-    pub mem_size: u64,
-    /// Optional per-vNUMA RAM budgets. When present, these must sum to
-    /// `mem_size`, and request order is the vnode assignment order.
-    pub numa_mem_sizes: Option<&'a [u64]>,
+    /// Per-NUMA-node RAM sizes. Every VM has at least one node (a
+    /// single-node VM is `&[total_size]`). Entries may be zero for
+    /// memory-less nodes (e.g. device-only NUMA nodes). The request
+    /// order is the vnode assignment order.
+    pub node_mem_sizes: &'a [u64],
     /// Chipset MMIO sizing from the manifest builder.
     pub layout: vmm_core_defs::LayoutConfig,
     /// PCIe root complex address-space intents. These are resolved by this
@@ -105,10 +110,6 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// Number of virtio-mmio device slots to allocate in 32-bit MMIO space.
     /// A single contiguous region of `count * 4 KiB` is allocated.
     pub virtio_mmio_count: usize,
-    /// Number of SMMUv3 instances to allocate MMIO for (aarch64 only;
-    /// always 0 on other architectures). Each instance requires
-    /// `SMMU_SIZE` bytes (128 KiB), 128 KiB aligned, in 32-bit MMIO space.
-    pub smmu_count: usize,
     /// Optional IGVM VTL2 private-memory request. This is allocated after all
     /// VTL0-visible RAM and MMIO and is carried separately from ordinary RAM.
     pub vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
@@ -135,9 +136,9 @@ const ARCH_RESERVED_AARCH64: MemoryRange = MemoryRange::new(0xEF00_0000..0x1_000
 pub(super) fn resolve_memory_layout(
     input: MemoryLayoutInput<'_>,
 ) -> anyhow::Result<ResolvedMemoryLayout> {
-    let ram_sizes = validate_ram_sizes(input.mem_size, input.numa_mem_sizes)?;
+    validate_node_mem_sizes(input.node_mem_sizes)?;
 
-    let mut ram_ranges_by_node = vec![Vec::new(); ram_sizes.len()];
+    let mut ram_ranges_by_node = vec![Vec::new(); input.node_mem_sizes.len()];
     let mut pcie_root_complex_ranges = input
         .pcie_root_complexes
         .iter()
@@ -302,7 +303,12 @@ pub(super) fn resolve_memory_layout(
 
     // SMMUv3: allocate one 128 KiB region per instance. Placed below 4 GiB
     // alongside other aarch64 system devices (GIC, ITS, PL011).
-    let mut smmu_ranges: Vec<MemoryRange> = vec![MemoryRange::EMPTY; input.smmu_count];
+    let smmu_count = input
+        .pcie_root_complexes
+        .iter()
+        .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::Smmu)))
+        .count();
+    let mut smmu_ranges: Vec<MemoryRange> = vec![MemoryRange::EMPTY; smmu_count];
     for (idx, range) in smmu_ranges.iter_mut().enumerate() {
         builder.request(
             format!("smmu-{idx}"),
@@ -313,17 +319,38 @@ pub(super) fn resolve_memory_layout(
         );
     }
 
-    // RAM request order is part of the NUMA compatibility contract: the first
-    // request maps to vnode 0, the second to vnode 1, and so on. For GB-sized
-    // nodes, use GB alignment so holes do not create sub-GB RAM chunks. For
-    // sub-GB nodes, use 2 MB alignment to avoid wasting a full GB of address
-    // space per small node.
-    for (vnode, (ram_size, ram_ranges)) in ram_sizes
+    // AMD IOMMU: allocate one 16 KiB region per instance, placed below 4 GiB.
+    const AMD_IOMMU_MMIO_SIZE: u64 = 0x4000; // 16 KiB per AMD IOMMU spec §3.4
+    let amd_iommu_count = input
+        .pcie_root_complexes
         .iter()
-        .copied()
-        .zip(&mut ram_ranges_by_node)
+        .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::AmdVi)))
+        .count();
+    let mut amd_iommu_ranges: Vec<MemoryRange> = vec![MemoryRange::EMPTY; amd_iommu_count];
+    for (idx, range) in amd_iommu_ranges.iter_mut().enumerate() {
+        builder.request(
+            format!("amd-iommu-{idx}"),
+            range,
+            AMD_IOMMU_MMIO_SIZE,
+            AMD_IOMMU_MMIO_SIZE,
+            Placement::Mmio32,
+        );
+    }
+
+    // RAM request order is part of the NUMA compatibility contract: the first
+    // request maps to vnode 0, the second to vnode 1, and so on. Memory-less
+    // nodes (size 0) are skipped so the layout allocator never sees a
+    // zero-size request. For GB-sized nodes, use GB alignment so holes do not
+    // create sub-GB RAM chunks. For sub-GB nodes, use 2 MB alignment to avoid
+    // wasting a full GB of address space per small node.
+    for (vnode, (ram_ranges, &ram_size)) in ram_ranges_by_node
+        .iter_mut()
+        .zip(input.node_mem_sizes)
         .enumerate()
     {
+        if ram_size == 0 {
+            continue;
+        }
         let ram_alignment = if ram_size < GB { TWO_MB } else { GB };
         builder.ram(format!("ram{vnode}"), ram_ranges, ram_size, ram_alignment);
     }
@@ -488,6 +515,7 @@ pub(super) fn resolve_memory_layout(
             Some(vtl2_framebuffer_range.start())
         },
         smmu_ranges,
+        amd_iommu_ranges,
     })
 }
 
@@ -519,38 +547,30 @@ fn add_mmio_range<'a>(
     Ok(())
 }
 
-fn validate_ram_sizes(mem_size: u64, numa_mem_sizes: Option<&[u64]>) -> anyhow::Result<Vec<u64>> {
-    // Keep validation compatible with `MemoryLayout::new()` / `new_with_numa()`:
-    // RAM sizes are page-granular, nonzero, and NUMA budgets must exactly cover
-    // the configured total.
-    if mem_size == 0 || !mem_size.is_multiple_of(PAGE_SIZE) {
-        bail!("invalid memory size {mem_size:#x}");
+/// Validate per-node memory sizes. Zero-size entries (memory-less nodes) are
+/// allowed. The total must be nonzero and all non-zero sizes must be
+/// page-aligned.
+fn validate_node_mem_sizes(sizes: &[u64]) -> anyhow::Result<()> {
+    if sizes.is_empty() {
+        bail!("empty node memory sizes (every VM needs at least one NUMA node)");
     }
 
-    let Some(numa_mem_sizes) = numa_mem_sizes else {
-        return Ok(vec![mem_size]);
-    };
-
-    if numa_mem_sizes.is_empty() {
-        bail!("empty NUMA memory sizes");
+    let total: u64 = sizes
+        .iter()
+        .copied()
+        .try_fold(0u64, |acc, s| acc.checked_add(s))
+        .context("node memory sizes overflow")?;
+    if total == 0 {
+        bail!("total RAM size is zero");
     }
 
-    for &size in numa_mem_sizes {
-        if size == 0 || !size.is_multiple_of(PAGE_SIZE) {
-            bail!("invalid NUMA node memory size {size:#x}");
+    for (i, &size) in sizes.iter().enumerate() {
+        if size != 0 && !size.is_multiple_of(PAGE_SIZE) {
+            bail!("NUMA node {i} memory size {size:#x} is not page-aligned");
         }
     }
 
-    let total = numa_mem_sizes
-        .iter()
-        .copied()
-        .try_fold(0u64, |acc, size| acc.checked_add(size))
-        .context("numa memory sizes overflow")?;
-    if total != mem_size {
-        bail!("numa_mem_sizes total ({total:#x}) does not match mem_size ({mem_size:#x})");
-    }
-
-    Ok(numa_mem_sizes.to_vec())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -578,17 +598,14 @@ mod tests {
     };
 
     fn input(
-        mem_size: u64,
-        numa_mem_sizes: Option<&[u64]>,
+        node_mem_sizes: &[u64],
         vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
     ) -> MemoryLayoutInput<'_> {
         MemoryLayoutInput {
-            mem_size,
-            numa_mem_sizes,
+            node_mem_sizes,
             layout: DEFAULT_LAYOUT,
             pcie_root_complexes: &[],
             virtio_mmio_count: 0,
-            smmu_count: 0,
             vtl2_layout,
             ram_start_address: 0,
             vtl2_framebuffer_size: 0,
@@ -621,12 +638,13 @@ mod tests {
             high_mmio,
             ports: Vec::new(),
             cxl: None,
+            iommu: None,
         }
     }
 
     #[test]
     fn basic_ram_placement() {
-        let actual = resolve(input(2 * GB, None, None));
+        let actual = resolve(input(&[2 * GB], None));
 
         assert_eq!(actual.ram_size(), 2 * GB);
         // RAM starts at GPA 0 and fills upward.
@@ -637,7 +655,7 @@ mod tests {
     fn ram_splits_around_arch_reserved_zone() {
         // 4 GB of RAM must split around the architectural reserved zone
         // and the chipset MMIO allocations below 4 GB.
-        let actual = resolve(input(4 * GB, None, None));
+        let actual = resolve(input(&[4 * GB], None));
 
         assert_eq!(actual.ram_size(), 4 * GB);
         // RAM must not overlap the architectural reserved zone.
@@ -656,7 +674,7 @@ mod tests {
     fn numa_preserves_node_ordering() {
         let sizes = [2 * GB, 2 * GB];
 
-        let actual = resolve(input(4 * GB, Some(&sizes), None));
+        let actual = resolve(input(&sizes, None));
 
         // First vnode's RAM starts at 0.
         assert_eq!(actual.ram()[0].vnode, 0);
@@ -667,7 +685,7 @@ mod tests {
 
     #[test]
     fn chipset_mmio_is_resolved() {
-        let result = resolve_memory_layout(input(2 * GB, None, None)).unwrap();
+        let result = resolve_memory_layout(input(&[2 * GB], None)).unwrap();
 
         let low = result.chipset_mmio.low;
         let high = result.chipset_mmio.high;
@@ -689,7 +707,7 @@ mod tests {
             PcieMmioRangeConfig::Dynamic { size: 64 * MB },
             PcieMmioRangeConfig::Dynamic { size: GB },
         )];
-        let mut config = input(2 * GB, None, None);
+        let mut config = input(&[2 * GB], None);
         config.pcie_root_complexes = &root_complexes;
 
         let actual = resolve_memory_layout(config).unwrap();
@@ -733,6 +751,7 @@ mod tests {
                 high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
                 ports: Vec::new(),
                 cxl: None,
+                iommu: None,
             },
             PcieRootComplexConfig {
                 index: 1,
@@ -744,9 +763,10 @@ mod tests {
                 high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
                 ports: Vec::new(),
                 cxl: None,
+                iommu: None,
             },
         ];
-        let mut config = input(2 * GB, None, None);
+        let mut config = input(&[2 * GB], None);
         config.pcie_root_complexes = &root_complexes;
 
         let actual = resolve_memory_layout(config).unwrap();
@@ -779,8 +799,9 @@ mod tests {
             high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
             ports: Vec::new(),
             cxl: None,
+            iommu: None,
         }];
-        let mut config = input(2 * GB, None, None);
+        let mut config = input(&[2 * GB], None);
         config.pcie_root_complexes = &root_complexes;
 
         let actual = resolve_memory_layout(config).unwrap();
@@ -792,7 +813,7 @@ mod tests {
     fn sub_gb_numa_nodes_use_two_mb_alignment() {
         let sizes = [512 * MB, 512 * MB];
 
-        let actual = resolve(input(GB, Some(&sizes), None));
+        let actual = resolve(input(&sizes, None));
 
         assert_eq!(
             actual.ram(),
@@ -811,7 +832,7 @@ mod tests {
 
     #[test]
     fn vtl2_is_allocated_after_all_mmio() {
-        let actual = resolve(input(4 * GB, None, Some(vtl2_layout(2 * MB))));
+        let actual = resolve(input(&[4 * GB], Some(vtl2_layout(2 * MB))));
 
         assert!(actual.vtl2_range().is_some());
         let vtl2 = actual.vtl2_range().unwrap();
@@ -824,8 +845,8 @@ mod tests {
 
     #[test]
     fn vtl2_does_not_change_ram_placement() {
-        let without_vtl2 = resolve(input(2 * GB, None, None));
-        let with_vtl2 = resolve(input(2 * GB, None, Some(vtl2_layout(2 * MB))));
+        let without_vtl2 = resolve(input(&[2 * GB], None));
+        let with_vtl2 = resolve(input(&[2 * GB], Some(vtl2_layout(2 * MB))));
 
         assert_eq!(with_vtl2.ram(), without_vtl2.ram());
     }
@@ -834,8 +855,8 @@ mod tests {
     fn deterministic_for_same_inputs() {
         let sizes = [2 * GB, 3 * GB];
 
-        let first = resolve(input(5 * GB, Some(&sizes), None));
-        let second = resolve(input(5 * GB, Some(&sizes), None));
+        let first = resolve(input(&sizes, None));
+        let second = resolve(input(&sizes, None));
 
         assert_eq!(first.ram(), second.ram());
         assert_eq!(first.end_of_layout(), second.end_of_layout());
@@ -845,7 +866,7 @@ mod tests {
     fn host_width_validation_happens_after_allocation() {
         // Use enough RAM that the layout (RAM + chipset high MMIO + arch
         // reserved zone) exceeds 32 bits.
-        let mut config = input(4 * GB, None, None);
+        let mut config = input(&[4 * GB], None);
         config.physical_address_size = 32;
 
         let err = resolve_memory_layout(config).unwrap_err();
@@ -855,7 +876,7 @@ mod tests {
 
     #[test]
     fn virtio_mmio_slots_are_allocated_in_mmio32() {
-        let mut config = input(2 * GB, None, None);
+        let mut config = input(&[2 * GB], None);
         config.virtio_mmio_count = 3;
 
         let result = resolve_memory_layout(config).unwrap();
@@ -867,8 +888,8 @@ mod tests {
 
     #[test]
     fn virtio_mmio_does_not_move_ram() {
-        let without = resolve(input(2 * GB, None, None));
-        let mut config = input(2 * GB, None, None);
+        let without = resolve(input(&[2 * GB], None));
+        let mut config = input(&[2 * GB], None);
         config.virtio_mmio_count = 2;
         let with = resolve_memory_layout(config).unwrap();
 
@@ -877,7 +898,7 @@ mod tests {
 
     #[test]
     fn zero_virtio_mmio_produces_no_region() {
-        let config = input(2 * GB, None, None);
+        let config = input(&[2 * GB], None);
 
         let result = resolve_memory_layout(config).unwrap();
 
@@ -886,7 +907,7 @@ mod tests {
 
     #[test]
     fn vtl2_chipset_mmio_is_post_mmio() {
-        let mut config = input(2 * GB, None, None);
+        let mut config = input(&[2 * GB], None);
         config.layout.vtl2_chipset_mmio_size = DEFAULT_VTL2_CHIPSET_MMIO_SIZE;
 
         let result = resolve_memory_layout(config).unwrap();
@@ -903,8 +924,8 @@ mod tests {
 
     #[test]
     fn vtl2_chipset_mmio_does_not_move_vtl0_layout() {
-        let without = resolve(input(2 * GB, None, None));
-        let mut config = input(2 * GB, None, None);
+        let without = resolve(input(&[2 * GB], None));
+        let mut config = input(&[2 * GB], None);
         config.layout.vtl2_chipset_mmio_size = DEFAULT_VTL2_CHIPSET_MMIO_SIZE;
         let with = resolve_memory_layout(config).unwrap();
 
@@ -918,7 +939,7 @@ mod tests {
         // carved out of RAM at the top of 4 GiB. That range must be
         // reported so consumers see the same layout the allocator
         // produced.
-        let mut config = input(2 * GB, None, None);
+        let mut config = input(&[2 * GB], None);
         config.layout.chipset_low_mmio_size = 0;
         config.layout.chipset_high_mmio_size = 0;
 
@@ -940,13 +961,13 @@ mod tests {
     fn asymmetric_chipset_mmio_is_accepted() {
         // Asymmetric chipset MMIO (only low or only high) is allowed.
         // The missing range is EMPTY.
-        let mut config = input(2 * GB, None, None);
+        let mut config = input(&[2 * GB], None);
         config.layout.chipset_high_mmio_size = 0;
         let result = resolve_memory_layout(config).unwrap();
         assert!(!result.chipset_mmio.low.is_empty());
         assert!(result.chipset_mmio.high.is_empty());
 
-        let mut config = input(2 * GB, None, None);
+        let mut config = input(&[2 * GB], None);
         config.layout.chipset_low_mmio_size = 0;
         let result = resolve_memory_layout(config).unwrap();
         // Low is always at least the arch reserved zone.
@@ -963,7 +984,7 @@ mod tests {
             PcieMmioRangeConfig::Fixed(MemoryRange::new(5 * GB..6 * GB)),
             PcieMmioRangeConfig::Dynamic { size: GB },
         )];
-        let mut config = input(2 * GB, None, None);
+        let mut config = input(&[2 * GB], None);
         config.pcie_root_complexes = &root_complexes;
         let err = resolve_memory_layout(config).unwrap_err();
         assert!(
@@ -991,7 +1012,7 @@ mod tests {
             },
             PcieMmioRangeConfig::Dynamic { size: GB },
         )];
-        let mut config = input(2 * GB, None, None);
+        let mut config = input(&[2 * GB], None);
         config.pcie_root_complexes = &root_complexes;
 
         let err = resolve_memory_layout(config).unwrap_err();
@@ -1002,7 +1023,7 @@ mod tests {
     #[test]
     fn vtl2_framebuffer_allocation() {
         let framebuffer_size = 8 * MB;
-        let mut config = input(2 * GB, None, None);
+        let mut config = input(&[2 * GB], None);
         config.vtl2_framebuffer_size = framebuffer_size;
         let result = resolve_memory_layout(config).unwrap();
 
@@ -1031,7 +1052,7 @@ mod tests {
 
     #[test]
     fn vtl2_framebuffer_zero_size_returns_none() {
-        let mut config = input(2 * GB, None, None);
+        let mut config = input(&[2 * GB], None);
         config.vtl2_framebuffer_size = 0;
         let result = resolve_memory_layout(config).unwrap();
         assert!(result.vtl2_framebuffer_gpa_base.is_none());

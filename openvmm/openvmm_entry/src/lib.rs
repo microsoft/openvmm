@@ -11,6 +11,7 @@ mod cli_args;
 mod crash_dump;
 mod kvp;
 mod meshworker;
+mod pidfile;
 mod repl;
 mod serial_io;
 mod storage_builder;
@@ -72,6 +73,9 @@ use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::NumaDistance;
+use openvmm_defs::config::NumaNode;
+use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
@@ -82,6 +86,7 @@ use openvmm_defs::config::RootComplexCxlConfig;
 use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
+use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
@@ -141,26 +146,14 @@ use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vnc_worker_defs::VncParameters;
 
-/// RAII guard that removes the pidfile when dropped. Ensures the pidfile is
-/// cleaned up even if [`do_main`] panics.
-struct PidfileGuard(Option<PathBuf>);
-
-impl Drop for PidfileGuard {
-    fn drop(&mut self) {
-        if let Some(path) = &self.0 {
-            let _ = fs_err::remove_file(path);
-        }
-    }
-}
-
 pub fn openvmm_main() {
     // Save the current state of the terminal so we can restore it back to
     // normal before exiting.
     #[cfg(unix)]
     let orig_termios = io::stderr().is_terminal().then(term::get_termios);
 
-    let mut pidfile_guard = PidfileGuard(None);
-    let exit_code = match do_main(&mut pidfile_guard.0) {
+    let mut pidfile_guard: Option<pidfile::Pidfile> = None;
+    let exit_code = match do_main(&mut pidfile_guard) {
         Ok(_) => 0,
         Err(err) => {
             eprintln!("fatal error: {:?}", err);
@@ -174,8 +167,8 @@ pub fn openvmm_main() {
         term::set_termios(orig_termios);
     }
 
-    // Clean up the pidfile before terminating, since pal::process::terminate
-    // skips destructors.
+    // Clean up the pidfile before terminating, since
+    // pal::process::terminate skips destructors.
     drop(pidfile_guard);
 
     // Terminate the process immediately without graceful shutdown of DLLs or
@@ -747,9 +740,9 @@ async fn vm_config_from_command_line(
         };
 
         let switch_id = if switch_id == "default" {
-            DEFAULT_SWITCH
+            None
         } else {
-            switch_id
+            Some(switch_id.as_str())
         };
         let (port_id, port) = new_switch_port(switch_id)?;
         resources.switch_ports.push(port);
@@ -875,7 +868,35 @@ async fn vm_config_from_command_line(
             },
             cxl,
             ports,
+            #[cfg(guest_arch = "aarch64")]
+            iommu: opt
+                .smmu
+                .iter()
+                .any(|s| s == &rc_cli.name)
+                .then_some(openvmm_defs::config::PcieIommuConfig::Smmu),
+            #[cfg(guest_arch = "x86_64")]
+            iommu: opt
+                .amd_iommu
+                .iter()
+                .any(|s| s == &rc_cli.name)
+                .then_some(openvmm_defs::config::PcieIommuConfig::AmdVi),
         });
+    }
+
+    // Validate that all --smmu / --amd-iommu names refer to known root complexes.
+    #[cfg(guest_arch = "aarch64")]
+    for name in &opt.smmu {
+        anyhow::ensure!(
+            pcie_root_complexes.iter().any(|rc| rc.name == *name),
+            "--smmu refers to unknown root complex '{name}'"
+        );
+    }
+    #[cfg(guest_arch = "x86_64")]
+    for name in &opt.amd_iommu {
+        anyhow::ensure!(
+            pcie_root_complexes.iter().any(|rc| rc.name == *name),
+            "--amd-iommu refers to unknown root complex '{name}'"
+        );
     }
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
@@ -1512,13 +1533,6 @@ async fn vm_config_from_command_line(
     }
 
     #[cfg(guest_arch = "aarch64")]
-    let smmu_instances: Vec<openvmm_defs::config::SmmuInstanceConfig> = opt
-        .smmu
-        .iter()
-        .map(|s| openvmm_defs::config::SmmuInstanceConfig { rc_name: s.clone() })
-        .collect();
-
-    #[cfg(guest_arch = "aarch64")]
     let topology_arch = openvmm_defs::config::ArchTopologyConfig::Aarch64(
         openvmm_defs::config::Aarch64TopologyConfig {
             // TODO: allow this to be configured from the command line
@@ -1531,7 +1545,6 @@ async fn vm_config_from_command_line(
                     openvmm_defs::config::GicMsiConfig::V2m { spi_count: None }
                 }
             },
-            smmu: smmu_instances,
         },
     );
     #[cfg(guest_arch = "x86_64")]
@@ -1812,21 +1825,58 @@ async fn vm_config_from_command_line(
         pcie_switches,
         vpci_devices,
         ide_disks: Vec::new(),
-        memory: MemoryConfig {
-            mem_size: if let Some(ref sizes) = opt.numa_memory {
-                sizes
-                    .iter()
-                    .try_fold(0u64, |acc, &s| acc.checked_add(s))
-                    .context("numa memory sizes overflow")?
+        numa: {
+            if let Some(ref nodes) = opt.numa {
+                // --numa mode: each --numa flag defines a node.
+                NumaTopology {
+                    nodes: nodes
+                        .iter()
+                        .map(|n| NumaNode {
+                            mem: Some(MemoryConfig {
+                                mem_size: n.memory.mem_size,
+                                prefetch_memory: n.memory.prefetch,
+                                private_memory: n.memory.shared == Some(false),
+                                transparent_hugepages: n.memory.transparent_hugepages,
+                                hugepages: n.memory.hugepages,
+                                hugepage_size: n.memory.hugepage_size,
+                                host_numa_node: n.host_numa_node,
+                            }),
+                            vps: match &n.vps {
+                                Some(vps) => VpAssignment::Explicit(vps.clone()),
+                                None => VpAssignment::FromTopology,
+                            },
+                        })
+                        .collect(),
+                    distances: opt
+                        .numa_distance
+                        .as_deref()
+                        .unwrap_or(&[])
+                        .iter()
+                        .map(|d| NumaDistance {
+                            src: d.src,
+                            dst: d.dst,
+                            distance: d.distance,
+                        })
+                        .collect(),
+                }
             } else {
-                opt.memory_size()
-            },
-            prefetch_memory: opt.prefetch_memory(),
-            private_memory: opt.private_memory(),
-            transparent_hugepages: opt.transparent_hugepages(),
-            hugepages: opt.memory.hugepages,
-            hugepage_size: opt.memory.hugepage_size,
-            numa_mem_sizes: opt.numa_memory.clone(),
+                // Single-node default from --memory.
+                NumaTopology {
+                    nodes: vec![NumaNode {
+                        mem: Some(MemoryConfig {
+                            mem_size: opt.memory_size(),
+                            prefetch_memory: opt.prefetch_memory(),
+                            private_memory: opt.private_memory(),
+                            transparent_hugepages: opt.transparent_hugepages(),
+                            hugepages: opt.memory.hugepages,
+                            hugepage_size: opt.memory.hugepage_size,
+                            host_numa_node: None,
+                        }),
+                        vps: VpAssignment::FromTopology,
+                    }],
+                    distances: vec![],
+                }
+            }
         },
         processor_topology: ProcessorTopologyConfig {
             proc_count: opt.processors,
@@ -1923,17 +1973,17 @@ fn cleanup_socket(path: &Path) {
 }
 
 #[cfg(windows)]
-const DEFAULT_SWITCH: &str = "C08CB7B8-9B3C-408E-8E30-5E16A3AEB444";
-
-#[cfg(windows)]
 fn new_switch_port(
-    switch_id: &str,
+    switch_id: Option<&str>,
 ) -> anyhow::Result<(
     openvmm_defs::config::SwitchPortId,
     vmswitch::kernel::SwitchPort,
 )> {
     let id = vmswitch::kernel::SwitchPortId {
-        switch: switch_id.parse().context("invalid switch id")?,
+        switch: match switch_id {
+            Some(s) => s.parse().context("invalid switch id")?,
+            None => vmswitch::hcn::DEFAULT_SWITCH,
+        },
         port: Guid::new_random(),
     };
     let _ = vmswitch::hcn::Network::open(&id.switch)
@@ -1983,7 +2033,7 @@ fn parse_endpoint(
         EndpointConfigCli::Dio { id } => {
             #[cfg(windows)]
             {
-                let (port_id, port) = new_switch_port(id.as_deref().unwrap_or(DEFAULT_SWITCH))?;
+                let (port_id, port) = new_switch_port(id.as_deref())?;
                 resources.switch_ports.push(port);
                 net_backend_resources::dio::WindowsDirectIoHandle {
                     switch_port_id: net_backend_resources::dio::SwitchPortId {
@@ -2319,7 +2369,7 @@ fn prepare_snapshot_restore(
     Ok((shared_memory_fd, state_msg))
 }
 
-fn do_main(pidfile_path: &mut Option<PathBuf>) -> anyhow::Result<()> {
+fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<()> {
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
 
@@ -2339,9 +2389,7 @@ fn do_main(pidfile_path: &mut Option<PathBuf>) -> anyhow::Result<()> {
     }
 
     if let Some(ref path) = opt.pidfile {
-        std::fs::write(path, format!("{}\n", std::process::id()))
-            .context("failed to write pidfile")?;
-        *pidfile_path = Some(path.clone());
+        *pidfile_guard = Some(pidfile::Pidfile::new(path).context("failed to create pidfile")?);
     }
 
     if let Some(path) = opt.relay_console_path {
