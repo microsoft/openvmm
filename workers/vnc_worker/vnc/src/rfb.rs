@@ -144,19 +144,15 @@ pub const ENCODING_TYPE_QEMU_EXTENDED_KEY_EVENT: u32 = -258i32 as u32;
 /// <https://www.iana.org/assignments/rfb/rfb.xhtml>.
 pub fn encoding_name(enc: i32) -> Cow<'static, str> {
     let raw = enc as u32;
-    // Vendor blocks reserved as hex ranges, outside the contiguous
-    // signed-number space handled by the match below.
-    if (0x574d5600..=0x574d56ff).contains(&raw) {
-        return Cow::Owned(format!("VMware({raw:#010x})"));
-    }
-    if (0xc0a1e5ce..=0xc0a1e5cf).contains(&raw) {
-        return Cow::Borrowed("ExtendedClipboard");
-    }
-    if (0xfffe0000..=0xfffe00ff).contains(&raw) {
-        return Cow::Owned(format!("LibVNCServer({raw:#010x})"));
-    }
-    if (0xffff0000..=0xffff8003).contains(&raw) {
-        return Cow::Owned(format!("UltraVNC({raw:#010x})"));
+    // Vendor blocks live in high u32 hex ranges, outside the contiguous
+    // signed-number space the `enc` match below covers, so match them on the
+    // raw value where the hex reads naturally.
+    match raw {
+        0x574d5600..=0x574d56ff => return Cow::Owned(format!("VMware({raw:#010x})")),
+        0xc0a1e5ce..=0xc0a1e5cf => return Cow::Borrowed("ExtendedClipboard"),
+        0xfffe0000..=0xfffe00ff => return Cow::Owned(format!("LibVNCServer({raw:#010x})")),
+        0xffff0000..=0xffff8003 => return Cow::Owned(format!("UltraVNC({raw:#010x})")),
+        _ => {}
     }
     let name = match enc {
         // Standard framebuffer encodings.
