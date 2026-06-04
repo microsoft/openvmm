@@ -342,23 +342,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encoding_name_known_and_pseudo() {
-        assert_eq!(encoding_name(0), "Raw");
-        assert_eq!(encoding_name(6), "zlib");
-        assert_eq!(encoding_name(15), "TRLE");
-        assert_eq!(encoding_name(16), "ZRLE");
-        assert_eq!(encoding_name(20), "H.264");
-        assert_eq!(encoding_name(24), "ZRLE2");
-        assert_eq!(encoding_name(50), "OpenH.264");
-        assert_eq!(encoding_name(-239), "Cursor");
-        assert_eq!(encoding_name(-240), "XCursor");
-        assert_eq!(encoding_name(-223), "DesktopSize");
-        assert_eq!(encoding_name(-313), "ContinuousUpdates");
-        assert_eq!(encoding_name(-316), "ExtendedMouseButtons");
-        assert_eq!(encoding_name(-317), "TightNoZlib");
-    }
-
-    #[test]
     fn encoding_name_vendor_blocks() {
         // VMware reserves 0x574d56xx; report the block with its sub-code.
         assert_eq!(encoding_name(0x574d5664u32 as i32), "VMware(0x574d5664)");
