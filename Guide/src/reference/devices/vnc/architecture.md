@@ -68,9 +68,12 @@ The multi-client orchestrator. Manages connections and broadcasts dirty rects.
 ### `vnc_worker_defs` crate
 
 `VncParameters<T>` — the mesh-serializable config passed from `openvmm_entry`
-to the worker. Contains listener, framebuffer access, input sender, the dirty
-rect receiver, and the "updates needed" sender that tells the video device
-when a client is connected.
+to the worker. Contains listener, framebuffer access, input sender, and
+`synth_video: Option<SynthVideoChannels>`, which bundles the dirty-rect
+receiver and the "updates needed" sender (the latter tells the video device
+when a client is connected). The two are present together or not at all, so the
+mismatched state cannot be constructed. The device end mirrors this with
+`SynthVideoHandle.channels: Option<SynthVideoDeviceChannels>`.
 
 ### `video_core` crate
 
@@ -133,8 +136,9 @@ every 30ms.
 
 The synthetic video device (Hyper-V SYNTHVID protocol) receives `DirtMessage`
 from the guest video driver with pixel-coordinate rectangles of changed
-regions. These are forwarded via a `mesh::channel` from the video device
-through `SynthVideoHandle.dirt_send` to the VNC worker's `dirty_recv`.
+regions. These are forwarded via a `mesh::channel` from the video device's
+dirt sender (`SynthVideoHandle.channels`) to the VNC worker's dirty-rect
+receiver (`VncParameters.synth_video`).
 
 Supported drivers:
 - Windows: full support (DWM reports dirty regions)
