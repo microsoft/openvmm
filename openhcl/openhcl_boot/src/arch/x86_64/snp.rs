@@ -471,7 +471,7 @@ impl Ghcb {
             .with_extra_data(extra_data);
 
         GhcbMsr::from_bits(
-            // SAFETY: Writing and reding known good value to/from the GHCB MSR, following the GHCB protocol.
+            // SAFETY: Writing and reading known good value to/from the GHCB MSR, following the GHCB protocol.
             unsafe {
                 write_msr(X86X_AMD_MSR_GHCB, ghcb_control.into_bits());
                 Self::vmg_exit();
@@ -609,15 +609,15 @@ impl Ghcb {
         );
 
         // Tell the hypervisor that the GHCB page is at GPA 0 now.
-        // That'll make it to unmap the overlay page and let the `pvalidate`
-        // below to succeed.
+        // This causes it to unmap the overlay page and let the `pvalidate`
+        // below succeed.
         //
         // Soon after this, the GHCB page will be mapped by the kernel at the
-        // GPA of its choosing. The temporarily mapping at GPA 0 poses no
+        // GPA of its choosing. The temporary mapping at GPA 0 poses no
         // security risk as that page does not contain any sensitive data
         // in the IGVM file.
         //
-        // Once support for unmapping the GHCB page from the latest SEV-ES
+        // TODO: Once support for unmapping the GHCB page from the latest SEV-ES
         // specification is added, this will be removed in favor of the standard
         // unmap operation.
         let resp = Self::ghcb_call(GhcbCall {
@@ -645,6 +645,7 @@ impl Ghcb {
         let page_number = ghcb_access::page_number();
 
         page_table[PT_INDEX] |= X64_PTE_CONFIDENTIAL;
+        flush_tlb();
 
         // Issue VMG exit to request the hypervisor to update the page state to private in RMP.
         let resp = Ghcb::ghcb_call(GhcbCall {
@@ -657,7 +658,6 @@ impl Ghcb {
         // Accept the page, invalidates page state.
         pvalidate(page_number, GHCB_GVA.into_bits(), false, true).expect("memory accept");
 
-        // Needed here, not before.
         flush_tlb();
 
         ghcb_access::zero_page();
@@ -666,15 +666,14 @@ impl Ghcb {
         unsafe { write_msr(X86X_AMD_MSR_GHCB, GHCB_PREVIOUS.get()) };
     }
 
-    #[must_use]
-    fn read_io_port(port: u16, access_size: IoAccessSize) -> Option<u32> {
+    fn io_port_exit(port: u16, access_size: IoAccessSize, is_read: bool, data: Option<u32>) {
         ghcb_access::set_usage(GhcbUsage::BASE);
         ghcb_access::set_protocol_version(GhcbProtocolVersion::V2);
         ghcb_access::clear_bitmaps();
 
         let io_exit_info = SevIoAccessInfo::new()
             .with_port(port)
-            .with_read_access(true);
+            .with_read_access(is_read);
         let io_exit_info = match access_size {
             IoAccessSize::Byte => io_exit_info.with_access_size8(true),
             IoAccessSize::Word => io_exit_info.with_access_size16(true),
@@ -685,12 +684,21 @@ impl Ghcb {
         ghcb_access::set_sw_exit_info1(io_exit_info.into_bits().into());
         ghcb_access::set_sw_exit_info2(0);
 
+        if let Some(data) = data {
+            ghcb_access::set_rax(data as u64);
+        }
+
         Self::ghcb_call(GhcbCall {
             info: GhcbInfo::NORMAL,
             extra_data: 0,
             page_number: ghcb_access::page_number(),
         });
         ghcb_access::set_usage(GhcbUsage::INVALID);
+    }
+
+    #[must_use]
+    fn read_io_port(port: u16, access_size: IoAccessSize) -> Option<u32> {
+        Self::io_port_exit(port, access_size, true, None);
 
         if ghcb_access::sw_exit_info1() != 0 {
             None
@@ -701,31 +709,7 @@ impl Ghcb {
 
     #[must_use]
     fn write_io_port(port: u16, access_size: IoAccessSize, data: u32) -> bool {
-        ghcb_access::set_usage(GhcbUsage::BASE);
-        ghcb_access::set_protocol_version(GhcbProtocolVersion::V2);
-        ghcb_access::clear_bitmaps();
-
-        let io_exit_info = SevIoAccessInfo::new()
-            .with_port(port)
-            .with_read_access(false);
-        let io_exit_info = match access_size {
-            IoAccessSize::Byte => io_exit_info.with_access_size8(true),
-            IoAccessSize::Word => io_exit_info.with_access_size16(true),
-            IoAccessSize::Dword => io_exit_info.with_access_size32(true),
-        };
-
-        ghcb_access::set_sw_exit_code(SevExitCode::IOIO.0);
-        ghcb_access::set_sw_exit_info1(io_exit_info.into_bits().into());
-        ghcb_access::set_sw_exit_info2(0);
-
-        ghcb_access::set_rax(data as u64);
-
-        Self::ghcb_call(GhcbCall {
-            info: GhcbInfo::NORMAL,
-            extra_data: 0,
-            page_number: ghcb_access::page_number(),
-        });
-        ghcb_access::set_usage(GhcbUsage::INVALID);
+        Self::io_port_exit(port, access_size, false, Some(data));
 
         ghcb_access::sw_exit_info1() == 0
     }
