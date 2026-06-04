@@ -401,9 +401,9 @@ impl X509CertificateInner {
             .context("encoding X.500 name")?;
 
         // 2. Build the SubjectPublicKeyInfo DER.
-        let n = key.modulus();
-        let e = key.public_exponent();
-        let pkcs1_pub = encode_pkcs1_rsa_pubkey(&n, &e).context("encoding RSA public key")?;
+        let components = key.to_components();
+        let pkcs1_pub = encode_pkcs1_rsa_pubkey(&components.modulus, &components.public_exponent)
+            .context("encoding RSA public key")?;
 
         // 3. Build CERT_INFO and encode TBS.
         let mut serial_bytes: [u8; 1] = [1];

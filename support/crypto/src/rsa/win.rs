@@ -4,6 +4,7 @@
 //! RSA implementation using Windows BCrypt APIs.
 
 use super::RsaError;
+use super::RsaPublicKeyComponents;
 use crate::HashAlgorithm;
 use crate::win::CryptAlloc;
 use crate::win::KeyHandle;
@@ -613,16 +614,15 @@ impl RsaPublicKeyInner {
     }
 
     pub fn modulus_size(&self) -> usize {
-        self.modulus().len()
+        self.to_components().modulus.len()
     }
 
-    pub fn modulus(&self) -> Vec<u8> {
+    pub fn to_components(&self) -> RsaPublicKeyComponents {
         let blob = export_key(&self.0, BCRYPT_RSAPUBLIC_BLOB).unwrap();
-        parse_public_components(&blob).modulus.to_vec()
-    }
-
-    pub fn public_exponent(&self) -> Vec<u8> {
-        let blob = export_key(&self.0, BCRYPT_RSAPUBLIC_BLOB).unwrap();
-        parse_public_components(&blob).public_exponent.to_vec()
+        let components = parse_public_components(&blob);
+        RsaPublicKeyComponents {
+            modulus: components.modulus.to_vec(),
+            public_exponent: components.public_exponent.to_vec(),
+        }
     }
 }
