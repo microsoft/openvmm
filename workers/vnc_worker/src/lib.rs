@@ -30,6 +30,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tracing_helpers::AnyhowValueExt;
+use vnc_worker_defs::SynthVideoChannels;
 use vnc_worker_defs::VncParameters;
 
 /// A worker for running a VNC server.
@@ -37,10 +38,9 @@ pub struct VncWorker<T: Listener> {
     listener: T,
     view: ViewWrapper,
     input_send: mesh::Sender<InputData>,
-    dirty_recv: Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
+    synth_video: Option<SynthVideoChannels>,
     max_clients: usize,
     evict_oldest: bool,
-    updates_needed_send: Option<mesh::Sender<bool>>,
 }
 
 impl Worker for VncWorker<TcpListener> {
@@ -91,10 +91,9 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
                     .context("failed to map framebuffer")?,
             ),
             input_send: params.input_send,
-            dirty_recv: params.dirty_recv,
+            synth_video: params.synth_video,
             max_clients: params.max_clients,
             evict_oldest: params.evict_oldest,
-            updates_needed_send: params.updates_needed_send,
         })
     }
 
@@ -113,14 +112,13 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
                 listener,
                 view: Arc::new(Mutex::new(self.view)),
                 input_send: self.input_send,
-                dirty_recv: self.dirty_recv,
+                synth_video: self.synth_video,
                 dirty_senders: Vec::new(),
                 clients: unicycle::FuturesUnordered::new(),
                 abort_senders: Vec::new(),
                 next_client_id: 0,
                 max_clients: self.max_clients,
                 evict_oldest: self.evict_oldest,
-                updates_needed_send: self.updates_needed_send,
             };
 
             let rpc = loop {
@@ -147,10 +145,9 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
                     listener: server.listener.into_inner(),
                     framebuffer: view.0.access(),
                     input_send: server.input_send,
-                    dirty_recv: server.dirty_recv,
+                    synth_video: server.synth_video,
                     max_clients: server.max_clients,
                     evict_oldest: server.evict_oldest,
-                    updates_needed_send: server.updates_needed_send,
                 };
                 rpc.complete(Ok(state));
             }
@@ -177,9 +174,9 @@ struct MultiClientServer<T: Listener> {
     view: Arc<Mutex<ViewWrapper>>,
     /// Cloneable input sender -- each client gets its own clone.
     input_send: mesh::Sender<InputData>,
-    /// Dirty rectangles from the synthetic video device. None if no video
+    /// Channels to the synthetic video device, or `None` if no synth video
     /// device is configured.
-    dirty_recv: Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
+    synth_video: Option<SynthVideoChannels>,
     /// Per-client dirty rect senders. The coordinator broadcasts device rects
     /// to all clients via these channels. Each client accumulates rects in
     /// its own pending bitmap -- no shared state, no clearing issues.
@@ -197,19 +194,14 @@ struct MultiClientServer<T: Listener> {
     max_clients: usize,
     /// When true, evict the oldest client instead of rejecting new ones.
     evict_oldest: bool,
-    /// Tells the synth video device whether any client is connected, so the
-    /// guest can stop generating screen/pointer updates while idle. `true` is
-    /// sent when the client count goes from 0 to 1, `false` when it returns to
-    /// 0. `None` when no synth video device is wired up.
-    updates_needed_send: Option<mesh::Sender<bool>>,
 }
 
 impl<T: Listener> MultiClientServer<T> {
     /// Tells the synth video device whether the guest's screen/pointer updates
     /// are needed. No-op when no device is wired up.
     fn signal_updates_needed(&self, needed: bool) {
-        if let Some(send) = &self.updates_needed_send {
-            send.send(needed);
+        if let Some(v) = &self.synth_video {
+            v.updates_needed_send.send(needed);
             tracing::debug!(needed, "signaled updates-needed to video device");
         }
     }
@@ -232,12 +224,12 @@ impl<T: Listener> MultiClientServer<T> {
         loop {
             let listener = &mut self.listener;
             let clients = &mut self.clients;
-            let dirty_recv = &mut self.dirty_recv;
+            let synth_video = &mut self.synth_video;
 
             // Optional future for dirty rect reception (pending if no video device).
             let dirty_fut = async {
-                match dirty_recv {
-                    Some(recv) => recv.recv().await,
+                match synth_video {
+                    Some(v) => v.dirty_recv.recv().await,
                     None => std::future::pending().await,
                 }
             };
@@ -262,10 +254,12 @@ impl<T: Listener> MultiClientServer<T> {
                     Ok(rects) => Event::DirtyRects(rects),
                     Err(_) => {
                         // Upstream dirty channel closed (video device reset
-                        // or teardown). Drop it so clients fall back to tile
-                        // diff instead of freezing with device_dirty_seen.
+                        // or teardown). Drop the whole video connection (its
+                        // paired updates-needed sender is dead too) so clients
+                        // fall back to tile diff instead of freezing with
+                        // device_dirty_seen.
                         tracing::warn!("device dirty channel closed, falling back to tile diff");
-                        self.dirty_recv = None;
+                        self.synth_video = None;
                         // Close all per-client dirty senders so clients
                         // detect the closure and reset device_dirty_seen.
                         self.dirty_senders.clear();
@@ -472,7 +466,7 @@ impl<T: Listener> inspect::Inspect for MultiClientServer<T> {
         let mut resp = req.respond();
         resp.display_debug("local_addr", &self.listener.get().local_addr().unwrap());
         resp.field("client_count", self.clients.len());
-        resp.field("has_dirty_recv", self.dirty_recv.is_some());
+        resp.field("has_synth_video", self.synth_video.is_some());
     }
 }
 
@@ -752,14 +746,20 @@ mod tests {
             .unwrap();
 
         let (input_send, input_recv) = mesh::channel();
-        let (dirty_send, dirty_recv) = if with_dirty {
-            let (send, recv) = mesh::channel();
-            (Some(send), Some(recv))
+        let (updates_needed_send, updates_needed_recv) = mesh::channel();
+        let (synth_video, dirty_send) = if with_dirty {
+            let (dirty_send, dirty_recv) = mesh::channel();
+            (
+                Some(SynthVideoChannels {
+                    dirty_recv,
+                    updates_needed_send,
+                }),
+                Some(dirty_send),
+            )
         } else {
             (None, None)
         };
         let (stop_send, stop_recv) = mesh::oneshot();
-        let (updates_needed_send, updates_needed_recv) = mesh::channel();
 
         let join = thread::spawn(move || {
             block_with_io(async |driver| -> anyhow::Result<()> {
@@ -767,14 +767,13 @@ mod tests {
                     listener: PolledSocket::new(&driver, listener)?,
                     view: Arc::new(Mutex::new(ViewWrapper(access.view().unwrap()))),
                     input_send,
-                    dirty_recv,
+                    synth_video,
                     dirty_senders: Vec::new(),
                     clients: unicycle::FuturesUnordered::new(),
                     abort_senders: Vec::new(),
                     next_client_id: 0,
                     max_clients,
                     evict_oldest,
-                    updates_needed_send: Some(updates_needed_send),
                 };
 
                 futures::select! {
@@ -836,16 +835,12 @@ mod tests {
         // Dirt arriving while idle re-asserts "not needed": this is the
         // self-heal for a device that re-handshaked and returned to its
         // enabled default while a client is not connected.
-        server
-            .dirty_send
-            .as_ref()
-            .unwrap()
-            .send(vec![DirtyRect {
-                left: 0,
-                top: 0,
-                right: 16,
-                bottom: 16,
-            }]);
+        server.dirty_send.as_ref().unwrap().send(vec![DirtyRect {
+            left: 0,
+            top: 0,
+            right: 16,
+            bottom: 16,
+        }]);
         assert!(!wait_for_signal(&mut server.updates_needed_recv));
 
         server.stop();

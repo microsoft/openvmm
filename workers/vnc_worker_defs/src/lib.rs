@@ -14,6 +14,22 @@ use mesh::MeshPayload;
 use mesh_worker::WorkerId;
 use std::net::TcpListener;
 
+/// The two channels linking the VNC worker to a synth video device. They are
+/// wired together or not at all: present when a synth video device exists and
+/// absent otherwise, so bundling them in one `Option` makes the mismatched
+/// state unrepresentable.
+#[derive(MeshPayload)]
+pub struct SynthVideoChannels {
+    /// Receives dirty-rectangle hints from the synthetic video device.
+    pub dirty_recv: mesh::Receiver<Vec<video_core::DirtyRect>>,
+    /// Tells the device whether the guest's screen/pointer updates are
+    /// currently needed: `true` when the first client connects, `false` when
+    /// the last one disconnects. The device relays this to the guest (via a
+    /// synthvid `FeatureChange`) so it stops generating dirty rectangles and
+    /// pointer reports while no client is watching.
+    pub updates_needed_send: mesh::Sender<bool>,
+}
+
 /// The VNC server's input parameters.
 #[derive(MeshPayload)]
 pub struct VncParameters<T> {
@@ -23,24 +39,16 @@ pub struct VncParameters<T> {
     pub framebuffer: framebuffer::FramebufferAccess,
     /// A channel to send input to.
     pub input_send: mesh::Sender<input_core::InputData>,
-    /// Receives dirty-rectangle hints from the synthetic video device.
-    /// `None` when no synth video device is present (e.g. `--pcat` or any
-    /// guest using a non-synth framebuffer path like VGA BIOS / UEFI GOP);
-    /// the server still has a framebuffer to display and falls back to
-    /// whole-framebuffer tile-diff scanning to detect changes.
-    pub dirty_recv: Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
+    /// Channels to the synthetic video device, or `None` when no synth video
+    /// device is present (e.g. `--pcat` or any guest using a non-synth
+    /// framebuffer path like VGA BIOS / UEFI GOP); the server still has a
+    /// framebuffer to display and falls back to whole-framebuffer tile-diff
+    /// scanning to detect changes.
+    pub synth_video: Option<SynthVideoChannels>,
     /// Maximum concurrent VNC clients.
     pub max_clients: usize,
     /// When true, evict the oldest client instead of rejecting new ones.
     pub evict_oldest: bool,
-    /// Channel used to tell the synth video device whether the guest's
-    /// screen/pointer updates are currently needed: `true` is sent when the
-    /// first client connects, `false` when the last one disconnects. The
-    /// device relays this to the guest (via a synthvid `FeatureChange`) so it
-    /// stops generating dirty rectangles and pointer reports while no client
-    /// is watching. `None` when no synth video device is wired up (the paired
-    /// `dirty_recv` is then also `None`).
-    pub updates_needed_send: Option<mesh::Sender<bool>>,
 }
 
 /// Worker ID for the TCP-listening VNC worker. Used by openvmm, where the

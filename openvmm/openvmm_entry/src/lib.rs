@@ -198,11 +198,9 @@ struct VmResources {
     nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
     ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
     vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
-    /// Receives dirty rectangles from the synthetic video device for the VNC worker.
-    dirty_rect_recv: Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
-    /// Sends "are updates needed" from the VNC worker to the synthetic video
-    /// device, so the guest stops reporting while no client is connected.
-    updates_needed_send: Option<mesh::Sender<bool>>,
+    /// Channels linking the VNC worker to the synthetic video device, present
+    /// only when a graphics console is configured (`--gfx`).
+    synth_video: Option<vnc_worker_defs::SynthVideoChannels>,
     #[cfg(windows)]
     switch_ports: Vec<vmswitch::kernel::SwitchPort>,
 }
@@ -1358,12 +1356,13 @@ async fn vm_config_from_command_line(
     if opt.gfx {
         // Channel for the video device to report dirty rectangles to the VNC worker.
         let (dirt_send, dirt_recv) = mesh::channel();
-        resources.dirty_rect_recv = Some(dirt_recv);
-
         // Reverse channel: the VNC worker tells the video device whether any
         // client is connected, so the guest can stop reporting updates while idle.
         let (updates_needed_send, updates_needed_recv) = mesh::channel();
-        resources.updates_needed_send = Some(updates_needed_send);
+        resources.synth_video = Some(vnc_worker_defs::SynthVideoChannels {
+            dirty_recv: dirt_recv,
+            updates_needed_send,
+        });
 
         vmbus_devices.extend([
             (
@@ -2393,10 +2392,9 @@ async fn run_control_inner(
                         listener,
                         framebuffer,
                         input_send,
-                        dirty_recv: resources.dirty_rect_recv.take(),
+                        synth_video: resources.synth_video.take(),
                         max_clients: opt.vnc.vnc_max_clients,
                         evict_oldest: opt.vnc.vnc_evict_oldest,
-                        updates_needed_send: resources.updates_needed_send.take(),
                     },
                 )
                 .await?,
