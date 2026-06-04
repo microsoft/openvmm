@@ -143,12 +143,8 @@ mod pkcs7_details {
     ///     [0] EXPLICIT ANY DEFINED BY contentType OPTIONAL }
     /// ```
     pub fn encapsulate_in_content_info(content: &[u8]) -> der::Result<Vec<u8>> {
-        // constant pulled from https://datatracker.ietf.org/doc/html/rfc2315#section-14
-        const PKCS_7_SIGNED_DATA_OID: ObjectIdentifier =
-            ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.2");
-
         let content_info = ContentInfo {
-            content_type: PKCS_7_SIGNED_DATA_OID,
+            content_type: der::oid::db::rfc5911::ID_SIGNED_DATA,
             content: ContextSpecific {
                 tag_number: TagNumber(0),
                 value: AnyRef::try_from(content)?,
