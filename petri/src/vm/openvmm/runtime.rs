@@ -647,16 +647,13 @@ impl PetriVmInner {
         tracing::info!(port, "connecting to pipette via TCP");
         let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
         let client = loop {
-            match std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
-                Ok(stream) => {
-                    stream
-                        .set_nonblocking(true)
-                        .context("failed to set TCP stream nonblocking")?;
-                    stream
+            match PolledSocket::connect_tcp(&self.resources.driver, addr).await {
+                Ok(socket) => {
+                    socket
+                        .get()
                         .set_nodelay(true)
                         .context("failed to set TCP_NODELAY")?;
                     tracing::info!("TCP connected, handshaking with pipette");
-                    let socket = PolledSocket::new(&self.resources.driver, stream)?;
                     // Time out the handshake — consomme's port forwarding may
                     // drop the initial SYN to the guest if no RX buffers are
                     // available yet, leaving the connection open but dead.
