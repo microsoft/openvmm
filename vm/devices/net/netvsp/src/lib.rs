@@ -4148,7 +4148,9 @@ impl Coordinator {
             };
             match message {
                 Message::Internal(msg) => {
-                    self.stop_workers().await;
+                    // `handle_coordinator_message` will stop the primary worker
+                    // only for primary messages; sub-channel `Restart` messages
+                    // do not require stopping any workers.
                     self.handle_coordinator_message(msg, state).await;
                     // If a restart message has been queued, handle it now
                     // to ensure worker queues are restarted prior to
@@ -4156,14 +4158,14 @@ impl Coordinator {
                     self.handle_queued_coordinator_messages(state).await;
                 }
                 Message::UpdateFromVf(rpc) => {
-                    self.stop_workers().await;
+                    self.stop_primary_worker().await;
                     rpc.handle(async |_| {
                         self.update_guest_vf_state(state).await;
                     })
                     .await;
                 }
                 Message::OfferVfDevice => {
-                    self.stop_workers().await;
+                    self.stop_primary_worker().await;
                     if let Some(primary) = self.primary_mut() {
                         if matches!(
                             primary.guest_vf_state,
@@ -4176,12 +4178,12 @@ impl Coordinator {
                     state.pending_vf_state = CoordinatorStatePendingVfState::Pending;
                 }
                 Message::PendingVfStateComplete => {
-                    // Worker state unchanged, calling `stop_workers()` is not necessary.
+                    // Worker state unchanged, no worker needs to be stopped.
                     state.pending_vf_state = CoordinatorStatePendingVfState::Ready;
                 }
                 Message::TimerExpired => {
                     // Kick the worker as requested.
-                    self.stop_workers().await;
+                    self.stop_primary_worker().await;
                     if let Some(primary) = self.primary_mut() {
                         if let PendingLinkAction::Delay(up) = primary.pending_link_action {
                             primary.pending_link_action = PendingLinkAction::Active(up);
@@ -4190,6 +4192,8 @@ impl Coordinator {
                     self.sleep_deadline = None;
                 }
                 Message::UpdateFromEndpoint(endpoint_action) => {
+                    // `handle_endpoint_action` will stop the primary worker for
+                    // `LinkStatusNotify` actions, but not for `RestartRequired`.
                     self.handle_endpoint_action(endpoint_action).await;
                 }
                 Message::ChannelDisconnected => {
@@ -4204,7 +4208,7 @@ impl Coordinator {
         match action {
             EndpointAction::RestartRequired => self.restart = true,
             EndpointAction::LinkStatusNotify(connect) => {
-                self.stop_workers().await;
+                self.stop_primary_worker().await;
                 // These are the only link state transitions that are tracked.
                 // 1. up -> down or down -> up
                 // 2. up -> down -> up or down -> up -> down.
@@ -4290,7 +4294,7 @@ impl Coordinator {
         msg: CoordinatorMessage,
         state: &mut CoordinatorState,
     ) {
-        self.workers[0].stop().await;
+        self.stop_primary_worker().await;
         if let Some(worker) = self.workers[0].state_mut() {
             if matches!(worker.state, WorkerState::WaitingForCoordinator(_)) {
                 let WorkerState::WaitingForCoordinator(Some(ready)) =
@@ -4337,6 +4341,10 @@ impl Coordinator {
         for worker in &mut self.workers {
             worker.stop().await;
         }
+    }
+
+    async fn stop_primary_worker(&mut self) {
+        self.workers[0].stop().await;
     }
 
     async fn restore_guest_vf_state(&mut self, c_state: &mut CoordinatorState) {
