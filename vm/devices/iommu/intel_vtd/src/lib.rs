@@ -1606,7 +1606,7 @@ impl IntelVtdDevice {
 
         if sw {
             // Write status_data (bits 63:32 of qw0) to status_address
-            // (bits 127:66 of qw1, shifted left by 2).
+            // (bits 127:66 of qw1 = address bits 63:2, DWORD-aligned).
             let status_data =
                 u32::from_le_bytes([descriptor[4], descriptor[5], descriptor[6], descriptor[7]]);
 
@@ -1620,7 +1620,8 @@ impl IntelVtdDevice {
                 descriptor[14],
                 descriptor[15],
             ]);
-            let status_address = (qw1 >> 2) & !0x3; // Align to 4 bytes
+            // qw1 bits 63:2 = Status Address bits 63:2. Mask off reserved bits 1:0.
+            let status_address = qw1 & !0x3;
 
             if let Err(e) = self
                 .shared
@@ -3058,5 +3059,506 @@ mod tests {
         // devid=None should be silently dropped.
         wrapper.signal_msi(None, 0xFEE0_1234, 0x42);
         assert_eq!(inner_msi.count.load(Ordering::SeqCst), 0);
+    }
+
+    // =========================================================================
+    // End-to-end integration test (1J.1)
+    // =========================================================================
+    //
+    // This test constructs the full VT-d stack and programs it via MMIO,
+    // mimicking a Linux `intel-iommu` driver init sequence.
+
+    use spec::invalidation::DescriptorType;
+    use spec::invalidation::InvalidationWaitDw0Dw1;
+    use spec::invalidation::InvalidationWaitDw2Dw3;
+
+    /// Guest memory layout for the end-to-end test.
+    ///
+    /// 8 MiB of guest memory. Addresses chosen to be well-separated.
+    const E2E_MEM_SIZE: usize = 0x80_0000;
+    const E2E_ROOT_TABLE: u64 = 0x10_0000; // 1 MiB
+    const E2E_CONTEXT_TABLE: u64 = 0x11_0000; // 1 MiB + 64 KiB
+    const E2E_PT_L4: u64 = 0x12_0000;
+    const E2E_PT_L3: u64 = 0x13_0000;
+    const E2E_PT_L2: u64 = 0x14_0000;
+    const E2E_PT_L1: u64 = 0x15_0000;
+    const E2E_TARGET_GPA: u64 = 0x20_0000; // 2 MiB — where IOVA 0 maps to
+    const E2E_IQ_BASE: u64 = 0x30_0000; // Invalidation queue
+    const E2E_IQ_STATUS: u64 = 0x31_0000; // Status write address for INVALIDATION_WAIT
+    const E2E_IRT_BASE: u64 = 0x40_0000; // Interrupt remapping table
+    /// Test device BDF: bus=1, dev=0, fn=0 → devfn=0x00, RID=0x0100.
+    const E2E_TEST_BUS: u8 = 1;
+    const E2E_TEST_DEVFN: u8 = 0x00;
+    const E2E_TEST_RID: u16 = 0x0100;
+
+    /// End-to-end test mimicking a Linux intel-iommu driver init sequence.
+    ///
+    /// Steps:
+    ///  1. Read CAP/ECAP, verify capabilities.
+    ///  2. Allocate root table, context tables, page tables in guest memory.
+    ///  3. Write RTADDR with root table GPA.
+    ///  4. Write GCMD with SRTP=1, verify RTPS in GSTS.
+    ///  5. Register-based invalidation (CCMD, IOTLB) before QI.
+    ///  6. Allocate invalidation queue, write IQA.
+    ///  7. Write GCMD with QIE=1, verify QIES.
+    ///  8. Program context entries for test devices.
+    ///  9. Build 4-level page table mapping IOVA 0x0 → E2E_TARGET_GPA.
+    /// 10. Write GCMD with TE=1, verify TES.
+    /// 11. Submit invalidation queue descriptors (context + IOTLB + wait).
+    /// 12. DMA read/write via VtdTranslator, verify translation.
+    /// 13. Allocate IRT, program IRTE entries.
+    /// 14. Write IRTA with IRT base, GCMD with SIRTP=1 then IRE=1.
+    /// 15. MSI via VtdSignalMsi, verify remapping.
+    /// 16. Access unmapped IOVA, verify fault recording.
+    #[test]
+    fn test_end_to_end_linux_init_sequence() {
+        use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+        // -- Recording MSI sink to verify interrupt delivery --
+        struct RecordingMsi {
+            last_addr: AtomicU64,
+            last_data: AtomicU32,
+            count: AtomicU32,
+        }
+        impl RecordingMsi {
+            fn new() -> Self {
+                Self {
+                    last_addr: AtomicU64::new(0),
+                    last_data: AtomicU32::new(0),
+                    count: AtomicU32::new(0),
+                }
+            }
+        }
+        impl SignalMsi for RecordingMsi {
+            fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
+                self.last_addr.store(address, Ordering::SeqCst);
+                self.last_data.store(data, Ordering::SeqCst);
+                self.count.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let gm = GuestMemory::allocate(E2E_MEM_SIZE);
+        let iommu_msi = Arc::new(RecordingMsi::new());
+        let (mut dev, shared) = IntelVtdDevice::new(
+            gm.clone(),
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            iommu_msi.clone(),
+        );
+
+        // =====================================================================
+        // Step 1: Read and verify capabilities
+        // =====================================================================
+        let ver = read32(&mut dev, 0x000);
+        assert_eq!(VersionReg::from(ver).max(), 1);
+        assert_eq!(VersionReg::from(ver).min(), 0);
+
+        let cap = read64(&mut dev, 0x008);
+        let cap_reg = CapReg::from(cap);
+        assert_eq!(cap_reg.mgaw(), 47); // 48-bit
+        assert!(cap_reg.sagaw() & 0x4 != 0); // 48-bit/4-level supported
+        assert!(cap_reg.sagaw() & 0x2 != 0); // 39-bit/3-level supported
+        assert_eq!(cap_reg.nfr(), 0); // 1 fault record
+
+        let ecap = read64(&mut dev, 0x010);
+        let ecap_reg = EcapReg::from(ecap);
+        assert!(ecap_reg.qi()); // Queued invalidation
+        assert!(ecap_reg.ir()); // Interrupt remapping
+        assert!(ecap_reg.eim()); // x2APIC
+        assert!(ecap_reg.c()); // Page-walk coherency
+
+        // Initial GSTS should be all zeros.
+        assert_eq!(read32(&mut dev, 0x01C), 0);
+
+        // =====================================================================
+        // Step 2–4: Set root table pointer
+        // =====================================================================
+
+        // Write root table, context table entries, and page tables into guest
+        // memory for bus 1, devfn 0.
+
+        // Root table entry for bus 1 → context table.
+        let root_entry = RootEntry {
+            lo: RootEntryLo::new()
+                .with_p(true)
+                .with_ctp(E2E_CONTEXT_TABLE >> 12),
+            hi: 0,
+        };
+        gm.write_at(
+            E2E_ROOT_TABLE + (E2E_TEST_BUS as u64) * 16,
+            root_entry.as_bytes(),
+        )
+        .unwrap();
+
+        // Context entry for devfn 0 → 4-level page table.
+        let context_entry = ContextEntry {
+            lo: ContextEntryLo::new()
+                .with_p(true)
+                .with_tt(0b00) // UNTRANSLATED_ONLY
+                .with_ssptptr(E2E_PT_L4 >> 12),
+            hi: ContextEntryHi::new().with_aw(0b010).with_did(1), // 48-bit/4-level
+        };
+        gm.write_at(
+            E2E_CONTEXT_TABLE + (E2E_TEST_DEVFN as u64) * 16,
+            context_entry.as_bytes(),
+        )
+        .unwrap();
+
+        // Build 4-level page tables: L4 → L3 → L2 → L1 → TARGET_GPA.
+        let pte_l4 = SlPte::new()
+            .with_r(true)
+            .with_w(true)
+            .with_address(E2E_PT_L3 >> 12);
+        gm.write_at(E2E_PT_L4, pte_l4.into_bits().as_bytes())
+            .unwrap();
+
+        let pte_l3 = SlPte::new()
+            .with_r(true)
+            .with_w(true)
+            .with_address(E2E_PT_L2 >> 12);
+        gm.write_at(E2E_PT_L3, pte_l3.into_bits().as_bytes())
+            .unwrap();
+
+        let pte_l2 = SlPte::new()
+            .with_r(true)
+            .with_w(true)
+            .with_address(E2E_PT_L1 >> 12);
+        gm.write_at(E2E_PT_L2, pte_l2.into_bits().as_bytes())
+            .unwrap();
+
+        let pte_l1 = SlPte::new()
+            .with_r(true)
+            .with_w(true)
+            .with_address(E2E_TARGET_GPA >> 12);
+        gm.write_at(E2E_PT_L1, pte_l1.into_bits().as_bytes())
+            .unwrap();
+
+        // Write RTADDR register.
+        write64(&mut dev, 0x020, E2E_ROOT_TABLE);
+        assert_eq!(read64(&mut dev, 0x020), E2E_ROOT_TABLE);
+
+        // GCMD: SRTP (set root table pointer).
+        write32(&mut dev, 0x018, GcmdReg::new().with_srtp(true).into_bits());
+        let gsts = GstsReg::from(read32(&mut dev, 0x01C));
+        assert!(gsts.rtps(), "RTPS must be set after SRTP");
+
+        // =====================================================================
+        // Step 5: Register-based invalidation (pre-QI, like Linux early init)
+        // =====================================================================
+
+        // Context-cache invalidation: global.
+        let ccmd = CcmdReg::new().with_icc(true).with_cirg(1); // global
+        write64(&mut dev, 0x028, ccmd.into_bits());
+        let ccmd_result = CcmdReg::from(read64(&mut dev, 0x028));
+        assert!(!ccmd_result.icc(), "ICC must be cleared after invalidation");
+        assert_eq!(ccmd_result.caig(), 1, "CAIG must echo CIRG");
+
+        // IOTLB invalidation: global.
+        let iotlb_val = (1u64 << 63) | (1u64 << 60); // IVT=1, IIRG=01 (global)
+        write64(&mut dev, spec::registers::IOTLB_REG_OFFSET, iotlb_val);
+        let iotlb_result = read64(&mut dev, spec::registers::IOTLB_REG_OFFSET);
+        assert_eq!((iotlb_result >> 63) & 1, 0, "IVT must be cleared");
+        assert_eq!((iotlb_result >> 57) & 0x3, 1, "IAIG must echo IIRG");
+
+        // =====================================================================
+        // Step 6–7: Enable queued invalidation
+        // =====================================================================
+
+        // Write IQA: base address, QS=0 (256 entries, 4096 bytes).
+        let iqa = IqaReg::new().with_qs(0).with_iqa(E2E_IQ_BASE >> 12);
+        write64(&mut dev, 0x090, iqa.into_bits());
+        assert_eq!(read64(&mut dev, 0x090), iqa.into_bits());
+
+        // Enable QI.
+        write32(&mut dev, 0x018, GcmdReg::new().with_qie(true).into_bits());
+        let gsts = GstsReg::from(read32(&mut dev, 0x01C));
+        assert!(gsts.qies(), "QIES must be set after QIE");
+
+        // Verify IQH starts at 0.
+        assert_eq!(read64(&mut dev, 0x080), 0, "IQH must start at 0");
+
+        // =====================================================================
+        // Step 10: Enable translation
+        // =====================================================================
+
+        // GCMD is a write-only register where toggle bits are compared against
+        // GSTS. Must include the current state of all toggle bits (QIE=1) plus
+        // the new bit (TE=1) to avoid inadvertently disabling QI.
+        write32(
+            &mut dev,
+            0x018,
+            GcmdReg::new().with_te(true).with_qie(true).into_bits(),
+        );
+        let gsts = GstsReg::from(read32(&mut dev, 0x01C));
+        assert!(gsts.tes(), "TES must be set after TE");
+        assert!(gsts.qies(), "QIES must remain set");
+
+        // =====================================================================
+        // Step 11: Submit invalidation queue descriptors
+        // =====================================================================
+
+        // Write 3 descriptors: context-cache invalidate, IOTLB invalidate,
+        // invalidation-wait with status write.
+
+        // Descriptor 0: context-cache invalidation (global, type=0x01).
+        let desc0 = spec::invalidation::InvalidationDescriptor {
+            dw0: DescriptorType::CONTEXT_CACHE_INVALIDATE.0 as u32 | (1u32 << 4), // global granularity
+            dw1: 0,
+            dw2: 0,
+            dw3: 0,
+        };
+        gm.write_at(E2E_IQ_BASE, desc0.as_bytes()).unwrap();
+
+        // Descriptor 1: IOTLB invalidation (global, type=0x02).
+        let desc1 = spec::invalidation::InvalidationDescriptor {
+            dw0: DescriptorType::IOTLB_INVALIDATE.0 as u32 | (1u32 << 4), // global
+            dw1: 0,
+            dw2: 0,
+            dw3: 0,
+        };
+        gm.write_at(E2E_IQ_BASE + 16, desc1.as_bytes()).unwrap();
+
+        // Descriptor 2: invalidation-wait with status write (type=0x05).
+        let iw_lo = InvalidationWaitDw0Dw1::new()
+            .with_desc_type(DescriptorType::INVALIDATION_WAIT.0)
+            .with_sw(true)
+            .with_status_data(0xDEAD_BEEF);
+        let iw_hi = InvalidationWaitDw2Dw3::new().with_sal(E2E_IQ_STATUS >> 2);
+        let desc2 = spec::invalidation::InvalidationDescriptor {
+            dw0: iw_lo.into_bits() as u32,
+            dw1: (iw_lo.into_bits() >> 32) as u32,
+            dw2: iw_hi.into_bits() as u32,
+            dw3: (iw_hi.into_bits() >> 32) as u32,
+        };
+        gm.write_at(E2E_IQ_BASE + 32, desc2.as_bytes()).unwrap();
+
+        // Clear status location.
+        gm.write_at(E2E_IQ_STATUS, &0u32.to_le_bytes()).unwrap();
+
+        // Write IQT: 3 descriptors × 16 bytes = 48 bytes → tail offset 48.
+        let iqt = IqtReg::new().with_qt(3); // 3 * 16 = 48 byte offset
+        write64(&mut dev, 0x088, iqt.into_bits());
+
+        // Verify head advanced to tail.
+        let iqh = IqhReg::from(read64(&mut dev, 0x080));
+        assert_eq!(
+            iqh.head_offset(),
+            48,
+            "IQH must advance to tail after processing"
+        );
+
+        // Verify status data was written by INVALIDATION_WAIT.
+        let status: u32 = gm.read_plain(E2E_IQ_STATUS).unwrap();
+        assert_eq!(
+            status, 0xDEAD_BEEF,
+            "INVALIDATION_WAIT must write status data"
+        );
+
+        // =====================================================================
+        // Step 12: DMA translation via VtdTranslator
+        // =====================================================================
+        let translator = shared.translator();
+
+        // Translate IOVA 0x0 → should map to E2E_TARGET_GPA.
+        let gpa = iommu_common::IommuTranslator::translate(
+            &translator,
+            E2E_TEST_RID,
+            0x0000,
+            false, // read
+            |gpa| gpa,
+        )
+        .unwrap();
+        assert_eq!(gpa, E2E_TARGET_GPA, "IOVA 0x0 must map to target GPA");
+
+        // Translate IOVA 0x0 with write.
+        let gpa = iommu_common::IommuTranslator::translate(
+            &translator,
+            E2E_TEST_RID,
+            0x0000,
+            true, // write
+            |gpa| gpa,
+        )
+        .unwrap();
+        assert_eq!(gpa, E2E_TARGET_GPA, "IOVA 0x0 write must map to target GPA");
+
+        // Translate with page offset.
+        let gpa = iommu_common::IommuTranslator::translate(
+            &translator,
+            E2E_TEST_RID,
+            0x0ABC,
+            false,
+            |gpa| gpa,
+        )
+        .unwrap();
+        assert_eq!(
+            gpa,
+            E2E_TARGET_GPA + 0xABC,
+            "IOVA page offset must be preserved"
+        );
+
+        // =====================================================================
+        // Step 13–14: Set up interrupt remapping
+        // =====================================================================
+
+        // Program IRTE at index 0: vector=0x42, DST=5 (xAPIC), fixed delivery.
+        let irte = Irte {
+            lo: IrteLo::new()
+                .with_p(true)
+                .with_vector(0x42)
+                .with_dst(0x0500) // xAPIC: APIC ID in bits 15:8
+                .with_dlm(0) // Fixed delivery
+                .with_dm(false), // Physical
+            hi: IrteHi::new()
+                .with_svt(0b01) // Verify SID
+                .with_sq(0b00) // Exact match
+                .with_sid(E2E_TEST_RID),
+        };
+        gm.write_at(E2E_IRT_BASE, irte.as_bytes()).unwrap();
+
+        // Write IRTA: base at E2E_IRT_BASE, S=0 (2 entries), EIME=0.
+        let irta = IrtaReg::new()
+            .with_irta(E2E_IRT_BASE >> 12)
+            .with_s(0) // 2 entries
+            .with_eime(false);
+        write64(&mut dev, 0x0B8, irta.into_bits());
+
+        // GCMD: SIRTP (set IRT pointer). Must preserve toggle bits.
+        write32(
+            &mut dev,
+            0x018,
+            GcmdReg::new()
+                .with_sirtp(true)
+                .with_te(true)
+                .with_qie(true)
+                .into_bits(),
+        );
+        let gsts = GstsReg::from(read32(&mut dev, 0x01C));
+        assert!(gsts.irtps(), "IRTPS must be set after SIRTP");
+
+        // GCMD: IRE (enable interrupt remapping). Must preserve toggle bits.
+        write32(
+            &mut dev,
+            0x018,
+            GcmdReg::new()
+                .with_ire(true)
+                .with_te(true)
+                .with_qie(true)
+                .into_bits(),
+        );
+        let gsts = GstsReg::from(read32(&mut dev, 0x01C));
+        assert!(gsts.ires(), "IRES must be set after IRE");
+
+        // =====================================================================
+        // Step 15: MSI remapping via VtdSignalMsi
+        // =====================================================================
+        let inner_msi = Arc::new(RecordingMsi::new());
+        let wrapper = shared.wrap_signal_msi(inner_msi.clone());
+
+        // Send remappable-format MSI: addr bit4=1, handle=0, SHV=0 → IRTE index 0.
+        let msi_addr = 0xFEE0_0010u64;
+        let msi_data = 0u32;
+        wrapper.signal_msi(Some(E2E_TEST_RID as u32), msi_addr, msi_data);
+
+        // Verify remapped MSI was delivered.
+        assert_eq!(
+            inner_msi.count.load(Ordering::SeqCst),
+            1,
+            "Remapped MSI must be delivered"
+        );
+        let delivered_addr = inner_msi.last_addr.load(Ordering::SeqCst);
+        let delivered_data = inner_msi.last_data.load(Ordering::SeqCst);
+        // Destination should be APIC ID 5 in bits 19:12.
+        assert_eq!(
+            (delivered_addr >> 12) & 0xFF,
+            5,
+            "Remapped MSI dest must be APIC ID 5"
+        );
+        // Vector should be 0x42.
+        assert_eq!(
+            delivered_data & 0xFF,
+            0x42,
+            "Remapped MSI vector must be 0x42"
+        );
+
+        // =====================================================================
+        // Step 16: Fault recording — unmapped IOVA
+        // =====================================================================
+
+        // IOVA 0x1000 maps to L1 entry index 1, which is not populated (zeros).
+        let fault_result = iommu_common::IommuTranslator::translate(
+            &translator,
+            E2E_TEST_RID,
+            0x1000,
+            false,
+            |gpa| gpa,
+        );
+        assert!(
+            fault_result.is_err(),
+            "Unmapped IOVA must produce a translation fault"
+        );
+
+        // Verify fault was recorded in FRCD.
+        let frcd_hi = read64(&mut dev, spec::registers::FRCD_HI_OFFSET);
+        let frcd = FrcdHi::from(frcd_hi);
+        assert!(frcd.f(), "Fault must be recorded (F=1)");
+        assert_eq!(
+            frcd.sid(),
+            E2E_TEST_RID,
+            "Fault source ID must match test device"
+        );
+
+        // Verify FSTS.PPF is set.
+        let fsts = FstsReg::from(read32(&mut dev, 0x034));
+        assert!(fsts.ppf(), "PPF must be set when fault is pending");
+
+        // Clear fault by writing 1 to F bit (RW1C).
+        write64(&mut dev, spec::registers::FRCD_HI_OFFSET, 1u64 << 63);
+        let fsts = FstsReg::from(read32(&mut dev, 0x034));
+        assert!(!fsts.ppf(), "PPF must clear when F is cleared");
+
+        // =====================================================================
+        // Verify source validation: wrong BDF should be rejected
+        // =====================================================================
+        let wrong_rid_wrapper = shared.wrap_signal_msi(inner_msi.clone());
+        let pre_count = inner_msi.count.load(Ordering::SeqCst);
+        wrong_rid_wrapper.signal_msi(Some(0x0200), msi_addr, msi_data); // Wrong BDF
+        assert_eq!(
+            inner_msi.count.load(Ordering::SeqCst),
+            pre_count,
+            "MSI with wrong source ID must be dropped"
+        );
+
+        // =====================================================================
+        // Verify disable: turn off translation, check identity mapping
+        // =====================================================================
+        // Write GCMD with TE=0, preserving QIE and IRE.
+        write32(
+            &mut dev,
+            0x018,
+            GcmdReg::new()
+                .with_te(false)
+                .with_qie(true)
+                .with_ire(true)
+                .into_bits(),
+        );
+        let gsts = GstsReg::from(read32(&mut dev, 0x01C));
+        assert!(!gsts.tes(), "TES must clear when TE=0");
+        assert!(gsts.qies(), "QIES must remain set");
+        assert!(gsts.ires(), "IRES must remain set");
+
+        // With translation disabled, IOVA = GPA (identity mapping).
+        let gpa = iommu_common::IommuTranslator::translate(
+            &translator,
+            E2E_TEST_RID,
+            0xDEAD_0000,
+            false,
+            |gpa| gpa,
+        )
+        .unwrap();
+        assert_eq!(
+            gpa, 0xDEAD_0000,
+            "Disabled translation must return identity mapping"
+        );
     }
 }
