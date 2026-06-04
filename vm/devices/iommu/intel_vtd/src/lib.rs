@@ -471,10 +471,13 @@ impl VtdSharedState {
             })?;
 
             if !pte.is_present() {
-                return Err(VtdFault::PteNotPresent {
+                // R=W=0: fault reason depends on access type (§7.1.3).
+                // Write → 0x05 (write denied), Read → 0x06 (read denied).
+                return Err(VtdFault::AccessDenied {
                     source_id,
                     iova,
                     fpd,
+                    write,
                 });
             }
 
@@ -484,19 +487,12 @@ impl VtdSharedState {
 
             // Large page check at level 2 (2MB) and level 3 (1GB).
             if pte.ps() && (level == 2 || level == 3) {
-                // Check permissions at leaf.
-                if write && !can_write {
-                    return Err(VtdFault::WriteAccessDenied {
+                if (write && !can_write) || (!write && !can_read) {
+                    return Err(VtdFault::AccessDenied {
                         source_id,
                         iova,
                         fpd,
-                    });
-                }
-                if !write && !can_read {
-                    return Err(VtdFault::ReadAccessDenied {
-                        source_id,
-                        iova,
-                        fpd,
+                        write,
                     });
                 }
                 return Ok(pte.large_page_gpa(iova, level));
@@ -504,18 +500,12 @@ impl VtdSharedState {
 
             if level == 1 {
                 // Leaf entry (4KB page).
-                if write && !can_write {
-                    return Err(VtdFault::WriteAccessDenied {
+                if (write && !can_write) || (!write && !can_read) {
+                    return Err(VtdFault::AccessDenied {
                         source_id,
                         iova,
                         fpd,
-                    });
-                }
-                if !write && !can_read {
-                    return Err(VtdFault::ReadAccessDenied {
-                        source_id,
-                        iova,
-                        fpd,
+                        write,
                     });
                 }
                 return Ok(pte.phys_address() | (iova & 0xFFF));
@@ -526,10 +516,11 @@ impl VtdSharedState {
         }
 
         // Should not reach here if levels >= 1.
-        Err(VtdFault::PteNotPresent {
+        Err(VtdFault::AccessDenied {
             source_id,
             iova,
             fpd,
+            write,
         })
     }
 
@@ -577,7 +568,7 @@ impl VtdSharedState {
         let irte = self.lookup_irte(irt_base, irte_index, source_id)?;
 
         // Validate source ID.
-        self.validate_irte_source(source_id, &irte)?;
+        self.validate_irte_source(source_id, &irte, irte_index)?;
 
         // Check IRTE mode (IM=0 for remapped, IM=1 for posted — not supported).
         let irte_lo = irte.lo;
@@ -668,7 +659,12 @@ impl VtdSharedState {
     }
 
     /// Validate the interrupt source against the IRTE's SVT/SID/SQ fields.
-    fn validate_irte_source(&self, source_id: u16, irte: &Irte) -> Result<(), VtdFault> {
+    fn validate_irte_source(
+        &self,
+        source_id: u16,
+        irte: &Irte,
+        irte_index: u16,
+    ) -> Result<(), VtdFault> {
         let svt = SourceValidationType(irte.hi.svt());
         let irte_sid = irte.hi.sid();
         let sq = irte.hi.sq();
@@ -689,7 +685,7 @@ impl VtdSharedState {
                 if (source_id & mask) != (irte_sid & mask) {
                     Err(VtdFault::SourceValidationFailed {
                         source_id,
-                        irte_index: 0, // caller doesn't pass index here
+                        irte_index,
                         fpd,
                     })
                 } else {
@@ -704,7 +700,7 @@ impl VtdSharedState {
                 if source_bus < start_bus || source_bus > end_bus {
                     Err(VtdFault::SourceValidationFailed {
                         source_id,
-                        irte_index: 0,
+                        irte_index,
                         fpd,
                     })
                 } else {
@@ -767,25 +763,12 @@ pub enum VtdFault {
     #[error("IOVA beyond MGAW (source_id={source_id:#06x}, iova={iova:#x})")]
     AddressBeyondMgaw { source_id: u16, iova: u64 },
 
-    #[error("write access denied (source_id={source_id:#06x}, iova={iova:#x})")]
-    WriteAccessDenied {
+    #[error("{} access denied (source_id={source_id:#06x}, iova={iova:#x})", if *write { "write" } else { "read" })]
+    AccessDenied {
         source_id: u16,
         iova: u64,
         fpd: bool,
-    },
-
-    #[error("read access denied (source_id={source_id:#06x}, iova={iova:#x})")]
-    ReadAccessDenied {
-        source_id: u16,
-        iova: u64,
-        fpd: bool,
-    },
-
-    #[error("PTE not present (source_id={source_id:#06x}, iova={iova:#x})")]
-    PteNotPresent {
-        source_id: u16,
-        iova: u64,
-        fpd: bool,
+        write: bool,
     },
 
     #[error("root entry access error (source_id={source_id:#06x})")]
@@ -840,9 +823,8 @@ impl VtdFault {
             Self::ContextNotPresent { .. } => FaultReason::CONTEXT_NOT_PRESENT,
             Self::InvalidContextEntry { .. } => FaultReason::INVALID_CONTEXT_ENTRY,
             Self::AddressBeyondMgaw { .. } => FaultReason::ADDRESS_BEYOND_MGAW,
-            Self::WriteAccessDenied { .. } => FaultReason::WRITE_ACCESS_DENIED,
-            Self::ReadAccessDenied { .. } => FaultReason::READ_ACCESS_DENIED,
-            Self::PteNotPresent { .. } => FaultReason::READ_ACCESS_DENIED,
+            Self::AccessDenied { write: true, .. } => FaultReason::WRITE_ACCESS_DENIED,
+            Self::AccessDenied { write: false, .. } => FaultReason::READ_ACCESS_DENIED,
             Self::RootEntryAccessError { .. } => FaultReason::ROOT_ENTRY_ACCESS_ERROR,
             Self::ContextEntryAccessError { .. } => FaultReason::CONTEXT_ENTRY_ACCESS_ERROR,
             Self::PageTableAccessError { .. } => FaultReason::SL_PTE_ACCESS_ERROR,
@@ -862,9 +844,7 @@ impl VtdFault {
             | Self::ContextNotPresent { source_id, .. }
             | Self::InvalidContextEntry { source_id, .. }
             | Self::AddressBeyondMgaw { source_id, .. }
-            | Self::WriteAccessDenied { source_id, .. }
-            | Self::ReadAccessDenied { source_id, .. }
-            | Self::PteNotPresent { source_id, .. }
+            | Self::AccessDenied { source_id, .. }
             | Self::RootEntryAccessError { source_id, .. }
             | Self::ContextEntryAccessError { source_id, .. }
             | Self::PageTableAccessError { source_id, .. }
@@ -884,9 +864,7 @@ impl VtdFault {
             | Self::ContextNotPresent { iova, .. }
             | Self::InvalidContextEntry { iova, .. }
             | Self::AddressBeyondMgaw { iova, .. }
-            | Self::WriteAccessDenied { iova, .. }
-            | Self::ReadAccessDenied { iova, .. }
-            | Self::PteNotPresent { iova, .. }
+            | Self::AccessDenied { iova, .. }
             | Self::RootEntryAccessError { iova, .. }
             | Self::ContextEntryAccessError { iova, .. }
             | Self::PageTableAccessError { iova, .. } => *iova,
@@ -900,18 +878,11 @@ impl VtdFault {
         }
     }
 
-    /// Whether this is a read fault (true) or write fault (false).
-    fn is_read(&self) -> bool {
-        matches!(self, Self::ReadAccessDenied { .. })
-    }
-
     /// Whether fault processing is disabled for this fault.
     fn fpd(&self) -> bool {
         match self {
             Self::InvalidContextEntry { fpd, .. }
-            | Self::WriteAccessDenied { fpd, .. }
-            | Self::ReadAccessDenied { fpd, .. }
-            | Self::PteNotPresent { fpd, .. }
+            | Self::AccessDenied { fpd, .. }
             | Self::PageTableAccessError { fpd, .. }
             | Self::IrteNotPresent { fpd, .. }
             | Self::IrteReservedField { fpd, .. }
@@ -930,15 +901,19 @@ impl VtdFault {
 
     /// Record this fault in the IOMMU's fault recording registers.
     ///
+    /// `is_write` is the access type of the faulting request. This sets
+    /// FRCD.T (0=write, 1=read/non-write) per §7.1. The access type is a
+    /// property of the DMA/interrupt request, not of the fault itself.
+    ///
     /// Takes a write lock on the shared state.
-    fn record(&self, shared: &VtdSharedState) {
+    fn record(&self, shared: &VtdSharedState, is_write: bool) {
         let mut state = shared.state.write();
         shared.record_fault_locked(
             &mut state,
             self.source_id(),
             self.fault_reason(),
             self.fault_address(),
-            self.is_read(),
+            !is_write, // FRCD.T: 1=read, 0=write
             self.fpd(),
         );
     }
@@ -989,7 +964,7 @@ impl iommu_common::IommuTranslator for VtdTranslator {
             Err(fault) => {
                 // Drop the read lock before acquiring write lock for fault recording.
                 drop(state);
-                fault.record(&self.shared);
+                fault.record(&self.shared, write);
                 return Err(iommu_common::TranslationFault { iova, error: fault });
             }
         };
@@ -1033,7 +1008,8 @@ impl SignalMsi for VtdSignalMsi {
             }
             Err(fault) => {
                 drop(state);
-                fault.record(&self.shared);
+                // MSI is a posted write transaction, so is_write=true.
+                fault.record(&self.shared, true);
                 tracelimit::warn_ratelimited!(
                     source_id,
                     "vtd: MSI remapping fault, interrupt dropped"
@@ -2609,7 +2585,8 @@ mod tests {
         let err = shared
             .translate_locked(&state, 0, 0, 0x1000, false)
             .unwrap_err();
-        assert!(matches!(err, VtdFault::PteNotPresent { .. }));
+        // Non-present PTE (R=W=0) on a read → AccessDenied with write=false (fault 0x06).
+        assert!(matches!(err, VtdFault::AccessDenied { write: false, .. }));
     }
 
     #[test]
@@ -2633,7 +2610,7 @@ mod tests {
         let err = shared
             .translate_locked(&state, 0, 0, 0x0000, true)
             .unwrap_err();
-        assert!(matches!(err, VtdFault::WriteAccessDenied { .. }));
+        assert!(matches!(err, VtdFault::AccessDenied { write: true, .. }));
     }
 
     #[test]
@@ -2655,7 +2632,7 @@ mod tests {
         let err = shared
             .translate_locked(&state, 0, 0, 0x0000, true)
             .unwrap_err();
-        assert!(matches!(err, VtdFault::WriteAccessDenied { .. }));
+        assert!(matches!(err, VtdFault::AccessDenied { write: true, .. }));
     }
 
     #[test]
@@ -2706,7 +2683,7 @@ mod tests {
 
         // Record the fault — it should be suppressed by FPD.
         drop(state);
-        err.record(&shared);
+        err.record(&shared, false); // read access
 
         // FRCD.F should NOT be set (fault suppressed).
         let state = shared.state.read();
@@ -2951,13 +2928,14 @@ mod tests {
             source_id: 0x0100,
             iova: 0x1000,
         };
-        fault.record(&shared);
+        fault.record(&shared, false); // simulate a read fault
 
         let state = shared.state.read();
         let frcd_hi = FrcdHi::from(state.frcd_hi);
         assert!(frcd_hi.f());
         assert_eq!(frcd_hi.sid(), 0x0100);
         assert_eq!(frcd_hi.fr(), FaultReason::ROOT_NOT_PRESENT.0);
+        assert!(frcd_hi.t()); // T=1 for read
 
         let frcd_lo = FrcdLo::from(state.frcd_lo);
         assert_eq!(frcd_lo.fault_address(), 0x1000);
@@ -2980,14 +2958,14 @@ mod tests {
             source_id: 0x0100,
             iova: 0x1000,
         };
-        fault1.record(&shared);
+        fault1.record(&shared, true); // write fault
 
         // Record second fault — should overflow.
         let fault2 = VtdFault::ContextNotPresent {
             source_id: 0x0200,
             iova: 0x2000,
         };
-        fault2.record(&shared);
+        fault2.record(&shared, false);
 
         let state = shared.state.read();
         // PFO should be set.
