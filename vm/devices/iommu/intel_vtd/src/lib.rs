@@ -22,10 +22,17 @@ use guestmem::GuestMemory;
 use inspect::InspectMut;
 use parking_lot::RwLock;
 use pci_core::msi::SignalMsi;
+use spec::irte::Irte;
+use spec::irte::IrteLo;
+use spec::irte::SourceValidationType;
+use spec::pte::SlPte;
 use spec::registers::CapReg;
 use spec::registers::CcmdReg;
 use spec::registers::EcapReg;
+use spec::registers::FaultReason;
 use spec::registers::FectlReg;
+use spec::registers::FrcdHi;
+use spec::registers::FrcdLo;
 use spec::registers::FstsReg;
 use spec::registers::GcmdReg;
 use spec::registers::GstsReg;
@@ -37,6 +44,10 @@ use spec::registers::IqtReg;
 use spec::registers::IrtaReg;
 use spec::registers::RtaddrReg;
 use spec::registers::VersionReg;
+use spec::root_context::AddressWidth;
+use spec::root_context::ContextEntry;
+use spec::root_context::RootEntry;
+use spec::root_context::TranslationType;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
@@ -235,6 +246,21 @@ impl VtdSharedState {
         GstsReg::from(state.gsts).ires()
     }
 
+    /// Create a per-device IOVA→GPA translator.
+    pub fn translator(self: &Arc<Self>) -> VtdTranslator {
+        VtdTranslator {
+            shared: self.clone(),
+        }
+    }
+
+    /// Create a per-device MSI remapping wrapper.
+    pub fn wrap_signal_msi(self: &Arc<Self>, inner: Arc<dyn SignalMsi>) -> Arc<VtdSignalMsi> {
+        Arc::new(VtdSignalMsi {
+            shared: self.clone(),
+            inner,
+        })
+    }
+
     /// Deliver the IOMMU's own fault event MSI.
     ///
     /// VT-d delivers its own MSIs directly (not through its own interrupt
@@ -261,6 +287,759 @@ impl VtdSharedState {
         let addr = (state.ieuaddr as u64) << 32 | (state.ieaddr as u64);
         let data = state.iedata;
         self.signal_msi.signal_msi(None, addr, data);
+    }
+
+    // =========================================================================
+    // Fault Recording (1D)
+    // =========================================================================
+
+    /// Record a translation fault in the Fault Recording Register.
+    ///
+    /// Must be called under a **write lock** on `self.state`.
+    /// If FPD is set, the fault is silently suppressed.
+    fn record_fault_locked(
+        &self,
+        state: &mut VtdState,
+        source_id: u16,
+        fault_reason: FaultReason,
+        fault_addr: u64,
+        is_read: bool,
+        fpd: bool,
+    ) {
+        if fpd {
+            return;
+        }
+
+        // Check if FRCD[0].F is already set (fault record occupied).
+        let frcd_f = (state.frcd_hi >> 63) & 1 != 0;
+        if frcd_f {
+            // Overflow — set PFO, discard new fault.
+            let mut fsts = FstsReg::from(state.fsts);
+            fsts.set_pfo(true);
+            state.fsts = fsts.into_bits();
+            return;
+        }
+
+        // Write fault recording register.
+        let frcd_lo = FrcdLo::new().with_fi(fault_addr >> 12);
+        let frcd_hi = FrcdHi::new()
+            .with_sid(source_id)
+            .with_fr(fault_reason.0)
+            .with_t(is_read)
+            .with_f(true);
+
+        state.frcd_lo = frcd_lo.into_bits();
+        state.frcd_hi = frcd_hi.into_bits();
+
+        // Signal fault event MSI if unmasked.
+        // PPF transitions 0→1 since we just set F=1 and it was 0 before.
+        let fectl = FectlReg::from(state.fectl);
+        if !fectl.im() {
+            self.deliver_fault_interrupt(state);
+        } else {
+            // Masked — set IP (interrupt pending).
+            state.fectl = FectlReg::from(state.fectl).with_ip(true).into_bits();
+        }
+    }
+
+    // =========================================================================
+    // DMA Translation (1E)
+    // =========================================================================
+
+    /// Translate an IOVA to a GPA while holding the read lock.
+    ///
+    /// Returns `Ok(gpa)` on success or `Err(VtdFault)` on failure.
+    fn translate_locked(
+        &self,
+        state: &VtdState,
+        bus: u8,
+        devfn: u8,
+        iova: u64,
+        write: bool,
+    ) -> Result<u64, VtdFault> {
+        let gsts = GstsReg::from(state.gsts);
+        if !gsts.tes() {
+            // Translation disabled — identity mapping.
+            return Ok(iova);
+        }
+
+        // Check IOVA against MGAW (48-bit).
+        let mgaw = CapReg::from(CAP_VALUE).mgaw() as u64 + 1;
+        if iova >= (1u64 << mgaw) {
+            return Err(VtdFault::AddressBeyondMgaw {
+                source_id: bdf(bus, devfn),
+                iova,
+            });
+        }
+
+        // Root entry lookup.
+        let root_table_addr = RtaddrReg::from(state.latched_rtaddr).root_table_address();
+        let root_entry = self.lookup_root_entry(root_table_addr, bus)?;
+        let source_id = bdf(bus, devfn);
+
+        // Context entry lookup.
+        let context_table_ptr = root_entry.lo.context_table_address();
+        let context_entry = self.lookup_context_entry(context_table_ptr, devfn, source_id)?;
+
+        let fpd = context_entry.lo.fpd();
+        let tt = TranslationType(context_entry.lo.tt());
+        let aw = AddressWidth(context_entry.hi.aw());
+
+        match tt {
+            TranslationType::UNTRANSLATED_ONLY | TranslationType::ALL => {
+                let levels = aw.levels().ok_or(VtdFault::InvalidContextEntry {
+                    source_id,
+                    iova,
+                    fpd,
+                })?;
+                let pt_root = context_entry.lo.page_table_address();
+                self.walk_sl_page_table(pt_root, iova, levels, write, source_id, fpd)
+            }
+            TranslationType::PASS_THROUGH => Ok(iova),
+            _ => Err(VtdFault::InvalidContextEntry {
+                source_id,
+                iova,
+                fpd,
+            }),
+        }
+    }
+
+    /// Look up a root entry by bus number.
+    fn lookup_root_entry(&self, root_table_addr: u64, bus: u8) -> Result<RootEntry, VtdFault> {
+        let entry_addr = root_table_addr + (bus as u64) * 16;
+        let entry: RootEntry = self.guest_memory.read_plain(entry_addr).map_err(|_| {
+            VtdFault::RootEntryAccessError {
+                source_id: (bus as u16) << 8,
+                iova: 0,
+            }
+        })?;
+
+        if !entry.lo.p() {
+            return Err(VtdFault::RootNotPresent {
+                source_id: (bus as u16) << 8,
+                iova: 0,
+            });
+        }
+
+        Ok(entry)
+    }
+
+    /// Look up a context entry by devfn.
+    fn lookup_context_entry(
+        &self,
+        context_table_ptr: u64,
+        devfn: u8,
+        source_id: u16,
+    ) -> Result<ContextEntry, VtdFault> {
+        let entry_addr = context_table_ptr + (devfn as u64) * 16;
+        let entry: ContextEntry = self
+            .guest_memory
+            .read_plain(entry_addr)
+            .map_err(|_| VtdFault::ContextEntryAccessError { source_id, iova: 0 })?;
+
+        if !entry.lo.p() {
+            return Err(VtdFault::ContextNotPresent { source_id, iova: 0 });
+        }
+
+        Ok(entry)
+    }
+
+    /// Walk second-level page tables to translate an IOVA to a GPA.
+    fn walk_sl_page_table(
+        &self,
+        pt_root: u64,
+        iova: u64,
+        levels: u8,
+        write: bool,
+        source_id: u16,
+        fpd: bool,
+    ) -> Result<u64, VtdFault> {
+        let mut table_addr = pt_root;
+        let mut can_read = true;
+        let mut can_write = true;
+
+        for level in (1..=levels).rev() {
+            let index = SlPte::iova_index(iova, level);
+            let pte_addr = table_addr + (index as u64) * 8;
+
+            let pte: SlPte = self.guest_memory.read_plain(pte_addr).map_err(|_| {
+                VtdFault::PageTableAccessError {
+                    source_id,
+                    iova,
+                    fpd,
+                }
+            })?;
+
+            if !pte.is_present() {
+                return Err(VtdFault::PteNotPresent {
+                    source_id,
+                    iova,
+                    fpd,
+                });
+            }
+
+            // AND-accumulate permissions across levels (§3.7.1).
+            can_read &= pte.r();
+            can_write &= pte.w();
+
+            // Large page check at level 2 (2MB) and level 3 (1GB).
+            if pte.ps() && (level == 2 || level == 3) {
+                // Check permissions at leaf.
+                if write && !can_write {
+                    return Err(VtdFault::WriteAccessDenied {
+                        source_id,
+                        iova,
+                        fpd,
+                    });
+                }
+                if !write && !can_read {
+                    return Err(VtdFault::ReadAccessDenied {
+                        source_id,
+                        iova,
+                        fpd,
+                    });
+                }
+                return Ok(pte.large_page_gpa(iova, level));
+            }
+
+            if level == 1 {
+                // Leaf entry (4KB page).
+                if write && !can_write {
+                    return Err(VtdFault::WriteAccessDenied {
+                        source_id,
+                        iova,
+                        fpd,
+                    });
+                }
+                if !write && !can_read {
+                    return Err(VtdFault::ReadAccessDenied {
+                        source_id,
+                        iova,
+                        fpd,
+                    });
+                }
+                return Ok(pte.phys_address() | (iova & 0xFFF));
+            }
+
+            // Non-leaf: follow to next level.
+            table_addr = pte.phys_address();
+        }
+
+        // Should not reach here if levels >= 1.
+        Err(VtdFault::PteNotPresent {
+            source_id,
+            iova,
+            fpd,
+        })
+    }
+
+    // =========================================================================
+    // Interrupt Remapping (1F)
+    // =========================================================================
+
+    /// Remap an MSI using the Interrupt Remapping Table.
+    ///
+    /// Called under the read lock. On fault, returns `Err(VtdFault)`.
+    fn remap_msi_locked(
+        &self,
+        state: &VtdState,
+        source_id: u16,
+        address: u64,
+        data: u32,
+    ) -> Result<(u64, u32), VtdFault> {
+        let gsts = GstsReg::from(state.gsts);
+        if !gsts.ires() {
+            // IR disabled — pass through.
+            return Ok((address, data));
+        }
+
+        // Check for compatibility-format MSI (bit 4 of address = 0).
+        let is_remappable = (address >> 4) & 1 != 0;
+        if !is_remappable {
+            return self.handle_compat_format(state, source_id, address, data);
+        }
+
+        // Extract IRTE index from remappable-format MSI.
+        let irte_index = Self::extract_irte_index(address, data);
+
+        // Validate index against IRT size.
+        let irta = IrtaReg::from(state.latched_irta);
+        let max_entries = irta.entry_count();
+        if irte_index as u32 >= max_entries {
+            return Err(VtdFault::IrteIndexExceedsSize {
+                source_id,
+                irte_index,
+            });
+        }
+
+        // Look up IRTE.
+        let irt_base = irta.irt_base_address();
+        let irte = self.lookup_irte(irt_base, irte_index, source_id)?;
+
+        // Validate source ID.
+        self.validate_irte_source(source_id, &irte)?;
+
+        // Check IRTE mode (IM=0 for remapped, IM=1 for posted — not supported).
+        let irte_lo = irte.lo;
+        if irte_lo.im() {
+            return Err(VtdFault::IrteReservedField {
+                source_id,
+                irte_index,
+                fpd: irte_lo.fpd(),
+            });
+        }
+
+        // Construct remapped MSI address and data.
+        let eime = irta.eime();
+        let (new_address, new_data) = Self::construct_remapped_msi(irte_lo, eime);
+
+        Ok((new_address, new_data))
+    }
+
+    /// Handle compatibility-format MSI when IR is enabled.
+    fn handle_compat_format(
+        &self,
+        state: &VtdState,
+        source_id: u16,
+        address: u64,
+        data: u32,
+    ) -> Result<(u64, u32), VtdFault> {
+        let irta = IrtaReg::from(state.latched_irta);
+        let gsts = GstsReg::from(state.gsts);
+
+        // EIME=1 → always block compatibility-format interrupts.
+        if irta.eime() {
+            return Err(VtdFault::CompatibilityFormatBlocked { source_id });
+        }
+
+        // CFIS=1 → pass through.
+        if gsts.cfis() {
+            return Ok((address, data));
+        }
+
+        // CFIS=0 → block.
+        Err(VtdFault::CompatibilityFormatBlocked { source_id })
+    }
+
+    /// Extract the IRTE index from remappable-format MSI address/data.
+    ///
+    /// Handle = {address[2], address[19:5]} (16-bit).
+    /// SHV = address[3].
+    /// If SHV=0: index = handle.
+    /// If SHV=1: index = handle + data[15:0].
+    fn extract_irte_index(address: u64, data: u32) -> u16 {
+        let handle_lo = ((address >> 5) & 0x7FFF) as u16; // address[19:5] = 15 bits
+        let handle_hi = ((address >> 2) & 1) as u16; // address[2] = 1 bit
+        let handle = (handle_hi << 15) | handle_lo;
+
+        let shv = (address >> 3) & 1 != 0;
+        if shv {
+            handle.wrapping_add(data as u16)
+        } else {
+            handle
+        }
+    }
+
+    /// Look up an IRTE by index.
+    fn lookup_irte(
+        &self,
+        irt_base: u64,
+        irte_index: u16,
+        source_id: u16,
+    ) -> Result<Irte, VtdFault> {
+        let entry_addr = irt_base + (irte_index as u64) * 16;
+        let irte: Irte =
+            self.guest_memory
+                .read_plain(entry_addr)
+                .map_err(|_| VtdFault::IrteAccessError {
+                    source_id,
+                    irte_index,
+                })?;
+
+        if !irte.lo.p() {
+            return Err(VtdFault::IrteNotPresent {
+                source_id,
+                irte_index,
+                fpd: irte.lo.fpd(),
+            });
+        }
+
+        Ok(irte)
+    }
+
+    /// Validate the interrupt source against the IRTE's SVT/SID/SQ fields.
+    fn validate_irte_source(&self, source_id: u16, irte: &Irte) -> Result<(), VtdFault> {
+        let svt = SourceValidationType(irte.hi.svt());
+        let irte_sid = irte.hi.sid();
+        let sq = irte.hi.sq();
+        let fpd = irte.lo.fpd();
+
+        match svt {
+            SourceValidationType::NONE => Ok(()),
+            SourceValidationType::VERIFY_SID => {
+                // Mask based on SQ: SQ=00 all 16 bits, SQ=01 ignore bit 2,
+                // SQ=10 ignore bits 2:1, SQ=11 ignore bits 2:0.
+                let mask: u16 = match sq {
+                    0b00 => 0xFFFF,
+                    0b01 => !0x04,
+                    0b10 => !0x06,
+                    0b11 => !0x07,
+                    _ => 0xFFFF,
+                };
+                if (source_id & mask) != (irte_sid & mask) {
+                    Err(VtdFault::SourceValidationFailed {
+                        source_id,
+                        irte_index: 0, // caller doesn't pass index here
+                        fpd,
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+            SourceValidationType::VERIFY_BUS_RANGE => {
+                // SID[7:0] = start bus, SID[15:8] = end bus.
+                let start_bus = (irte_sid & 0xFF) as u8;
+                let end_bus = ((irte_sid >> 8) & 0xFF) as u8;
+                let source_bus = ((source_id >> 8) & 0xFF) as u8;
+                if source_bus < start_bus || source_bus > end_bus {
+                    Err(VtdFault::SourceValidationFailed {
+                        source_id,
+                        irte_index: 0,
+                        fpd,
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+            _ => {
+                // Unknown SVT — treat as no validation.
+                Ok(())
+            }
+        }
+    }
+
+    /// Construct remapped MSI address and data from an IRTE.
+    fn construct_remapped_msi(irte_lo: IrteLo, eime: bool) -> (u64, u32) {
+        let dst = if eime {
+            // x2APIC: full 32-bit destination.
+            irte_lo.dst()
+        } else {
+            // xAPIC: 8-bit destination from bits 15:8 of DST field.
+            irte_lo.xapic_destination() as u32
+        };
+
+        let dm = irte_lo.dm() as u64;
+        let rh = irte_lo.rh() as u64;
+
+        let new_address = 0xFEE0_0000u64 | ((dst as u64) << 12) | (rh << 3) | (dm << 2);
+        let new_data = (irte_lo.vector() as u32)
+            | ((irte_lo.dlm() as u32) << 8)
+            | ((irte_lo.tm() as u32) << 15);
+
+        (new_address, new_data)
+    }
+}
+
+// =============================================================================
+// VtdFault — IOMMU-specific translation/remapping error
+// =============================================================================
+
+/// VT-d translation or interrupt remapping fault.
+///
+/// Each variant carries the source ID and faulting address/index,
+/// and maps to a specific VT-d fault reason code.
+#[derive(Debug, thiserror::Error)]
+#[expect(missing_docs)]
+pub enum VtdFault {
+    #[error("root entry not present (source_id={source_id:#06x})")]
+    RootNotPresent { source_id: u16, iova: u64 },
+
+    #[error("context entry not present (source_id={source_id:#06x})")]
+    ContextNotPresent { source_id: u16, iova: u64 },
+
+    #[error("invalid context entry (source_id={source_id:#06x}, iova={iova:#x})")]
+    InvalidContextEntry {
+        source_id: u16,
+        iova: u64,
+        fpd: bool,
+    },
+
+    #[error("IOVA beyond MGAW (source_id={source_id:#06x}, iova={iova:#x})")]
+    AddressBeyondMgaw { source_id: u16, iova: u64 },
+
+    #[error("write access denied (source_id={source_id:#06x}, iova={iova:#x})")]
+    WriteAccessDenied {
+        source_id: u16,
+        iova: u64,
+        fpd: bool,
+    },
+
+    #[error("read access denied (source_id={source_id:#06x}, iova={iova:#x})")]
+    ReadAccessDenied {
+        source_id: u16,
+        iova: u64,
+        fpd: bool,
+    },
+
+    #[error("PTE not present (source_id={source_id:#06x}, iova={iova:#x})")]
+    PteNotPresent {
+        source_id: u16,
+        iova: u64,
+        fpd: bool,
+    },
+
+    #[error("root entry access error (source_id={source_id:#06x})")]
+    RootEntryAccessError { source_id: u16, iova: u64 },
+
+    #[error("context entry access error (source_id={source_id:#06x})")]
+    ContextEntryAccessError { source_id: u16, iova: u64 },
+
+    #[error("page table access error (source_id={source_id:#06x}, iova={iova:#x})")]
+    PageTableAccessError {
+        source_id: u16,
+        iova: u64,
+        fpd: bool,
+    },
+
+    #[error("IRTE not present (source_id={source_id:#06x}, index={irte_index})")]
+    IrteNotPresent {
+        source_id: u16,
+        irte_index: u16,
+        fpd: bool,
+    },
+
+    #[error("IRTE access error (source_id={source_id:#06x}, index={irte_index})")]
+    IrteAccessError { source_id: u16, irte_index: u16 },
+
+    #[error("IRTE index exceeds IRT size (source_id={source_id:#06x}, index={irte_index})")]
+    IrteIndexExceedsSize { source_id: u16, irte_index: u16 },
+
+    #[error("IRTE reserved field set (source_id={source_id:#06x}, index={irte_index})")]
+    IrteReservedField {
+        source_id: u16,
+        irte_index: u16,
+        fpd: bool,
+    },
+
+    #[error("source validation failed (source_id={source_id:#06x})")]
+    SourceValidationFailed {
+        source_id: u16,
+        irte_index: u16,
+        fpd: bool,
+    },
+
+    #[error("compatibility-format interrupt blocked (source_id={source_id:#06x})")]
+    CompatibilityFormatBlocked { source_id: u16 },
+}
+
+impl VtdFault {
+    /// Get the fault reason code for this fault.
+    fn fault_reason(&self) -> FaultReason {
+        match self {
+            Self::RootNotPresent { .. } => FaultReason::ROOT_NOT_PRESENT,
+            Self::ContextNotPresent { .. } => FaultReason::CONTEXT_NOT_PRESENT,
+            Self::InvalidContextEntry { .. } => FaultReason::INVALID_CONTEXT_ENTRY,
+            Self::AddressBeyondMgaw { .. } => FaultReason::ADDRESS_BEYOND_MGAW,
+            Self::WriteAccessDenied { .. } => FaultReason::WRITE_ACCESS_DENIED,
+            Self::ReadAccessDenied { .. } => FaultReason::READ_ACCESS_DENIED,
+            Self::PteNotPresent { .. } => FaultReason::READ_ACCESS_DENIED,
+            Self::RootEntryAccessError { .. } => FaultReason::ROOT_ENTRY_ACCESS_ERROR,
+            Self::ContextEntryAccessError { .. } => FaultReason::CONTEXT_ENTRY_ACCESS_ERROR,
+            Self::PageTableAccessError { .. } => FaultReason::SL_PTE_ACCESS_ERROR,
+            Self::IrteNotPresent { .. } => FaultReason::IRTE_NOT_PRESENT,
+            Self::IrteAccessError { .. } => FaultReason::IRTE_ACCESS_ERROR,
+            Self::IrteIndexExceedsSize { .. } => FaultReason::IR_INDEX_EXCEEDS_SIZE,
+            Self::IrteReservedField { .. } => FaultReason::IRTE_RESERVED_FIELD,
+            Self::SourceValidationFailed { .. } => FaultReason::SOURCE_ID_VERIFICATION_FAIL,
+            Self::CompatibilityFormatBlocked { .. } => FaultReason::COMPAT_FORMAT_BLOCKED,
+        }
+    }
+
+    /// Get the source ID from this fault.
+    fn source_id(&self) -> u16 {
+        match self {
+            Self::RootNotPresent { source_id, .. }
+            | Self::ContextNotPresent { source_id, .. }
+            | Self::InvalidContextEntry { source_id, .. }
+            | Self::AddressBeyondMgaw { source_id, .. }
+            | Self::WriteAccessDenied { source_id, .. }
+            | Self::ReadAccessDenied { source_id, .. }
+            | Self::PteNotPresent { source_id, .. }
+            | Self::RootEntryAccessError { source_id, .. }
+            | Self::ContextEntryAccessError { source_id, .. }
+            | Self::PageTableAccessError { source_id, .. }
+            | Self::IrteNotPresent { source_id, .. }
+            | Self::IrteAccessError { source_id, .. }
+            | Self::IrteIndexExceedsSize { source_id, .. }
+            | Self::IrteReservedField { source_id, .. }
+            | Self::SourceValidationFailed { source_id, .. }
+            | Self::CompatibilityFormatBlocked { source_id, .. } => *source_id,
+        }
+    }
+
+    /// Get the faulting address (IOVA for DMA, 0 for IR faults).
+    fn fault_address(&self) -> u64 {
+        match self {
+            Self::RootNotPresent { iova, .. }
+            | Self::ContextNotPresent { iova, .. }
+            | Self::InvalidContextEntry { iova, .. }
+            | Self::AddressBeyondMgaw { iova, .. }
+            | Self::WriteAccessDenied { iova, .. }
+            | Self::ReadAccessDenied { iova, .. }
+            | Self::PteNotPresent { iova, .. }
+            | Self::RootEntryAccessError { iova, .. }
+            | Self::ContextEntryAccessError { iova, .. }
+            | Self::PageTableAccessError { iova, .. } => *iova,
+            // Interrupt remapping faults don't have an IOVA.
+            Self::IrteNotPresent { .. }
+            | Self::IrteAccessError { .. }
+            | Self::IrteIndexExceedsSize { .. }
+            | Self::IrteReservedField { .. }
+            | Self::SourceValidationFailed { .. }
+            | Self::CompatibilityFormatBlocked { .. } => 0,
+        }
+    }
+
+    /// Whether this is a read fault (true) or write fault (false).
+    fn is_read(&self) -> bool {
+        matches!(self, Self::ReadAccessDenied { .. })
+    }
+
+    /// Whether fault processing is disabled for this fault.
+    fn fpd(&self) -> bool {
+        match self {
+            Self::InvalidContextEntry { fpd, .. }
+            | Self::WriteAccessDenied { fpd, .. }
+            | Self::ReadAccessDenied { fpd, .. }
+            | Self::PteNotPresent { fpd, .. }
+            | Self::PageTableAccessError { fpd, .. }
+            | Self::IrteNotPresent { fpd, .. }
+            | Self::IrteReservedField { fpd, .. }
+            | Self::SourceValidationFailed { fpd, .. } => *fpd,
+            // Faults without FPD context are always recorded.
+            Self::RootNotPresent { .. }
+            | Self::ContextNotPresent { .. }
+            | Self::AddressBeyondMgaw { .. }
+            | Self::RootEntryAccessError { .. }
+            | Self::ContextEntryAccessError { .. }
+            | Self::IrteAccessError { .. }
+            | Self::IrteIndexExceedsSize { .. }
+            | Self::CompatibilityFormatBlocked { .. } => false,
+        }
+    }
+
+    /// Record this fault in the IOMMU's fault recording registers.
+    ///
+    /// Takes a write lock on the shared state.
+    fn record(&self, shared: &VtdSharedState) {
+        let mut state = shared.state.write();
+        shared.record_fault_locked(
+            &mut state,
+            self.source_id(),
+            self.fault_reason(),
+            self.fault_address(),
+            self.is_read(),
+            self.fpd(),
+        );
+    }
+}
+
+/// Combine bus and devfn into a 16-bit BDF source ID.
+fn bdf(bus: u8, devfn: u8) -> u16 {
+    ((bus as u16) << 8) | devfn as u16
+}
+
+// =============================================================================
+// VtdTranslator — IommuTranslator implementation (1G.2)
+// =============================================================================
+
+/// Per-device IOVA→GPA translator for Intel VT-d.
+///
+/// Implements [`iommu_common::IommuTranslator`] using the closure-based API
+/// that holds the read lock across translation and the memory access operation.
+pub struct VtdTranslator {
+    shared: Arc<VtdSharedState>,
+}
+
+impl iommu_common::IommuTranslator for VtdTranslator {
+    type Error = VtdFault;
+
+    fn max_iova(&self) -> u64 {
+        // 48-bit address space.
+        (1u64 << 48) - 1
+    }
+
+    fn translate<R>(
+        &self,
+        rid: u16,
+        iova: u64,
+        write: bool,
+        op: impl FnOnce(u64) -> R,
+    ) -> Result<R, iommu_common::TranslationFault<VtdFault>> {
+        let bus = (rid >> 8) as u8;
+        let devfn = rid as u8;
+
+        // Hold the read lock across translate + op for TOCTOU safety.
+        let state = self.shared.state.read();
+        let gpa = match self
+            .shared
+            .translate_locked(&state, bus, devfn, iova, write)
+        {
+            Ok(gpa) => gpa,
+            Err(fault) => {
+                // Drop the read lock before acquiring write lock for fault recording.
+                drop(state);
+                fault.record(&self.shared);
+                return Err(iommu_common::TranslationFault { iova, error: fault });
+            }
+        };
+
+        let result = op(gpa);
+        drop(state);
+        Ok(result)
+    }
+}
+
+// =============================================================================
+// VtdSignalMsi — MSI remapping wrapper (1G.3)
+// =============================================================================
+
+/// MSI remapping wrapper for Intel VT-d interrupt remapping.
+///
+/// Wraps an inner `SignalMsi` and intercepts MSI writes to remap them
+/// through the Interrupt Remapping Table.
+pub struct VtdSignalMsi {
+    shared: Arc<VtdSharedState>,
+    inner: Arc<dyn SignalMsi>,
+}
+
+impl SignalMsi for VtdSignalMsi {
+    fn signal_msi(&self, devid: Option<u32>, address: u64, data: u32) {
+        let Some(device_id) = devid else {
+            // No source ID — drop the MSI. Without a BDF, source validation
+            // and IRTE lookup are impossible.
+            return;
+        };
+        let source_id = device_id as u16;
+
+        let state = self.shared.state.read();
+        match self
+            .shared
+            .remap_msi_locked(&state, source_id, address, data)
+        {
+            Ok((new_address, new_data)) => {
+                drop(state);
+                self.inner.signal_msi(devid, new_address, new_data);
+            }
+            Err(fault) => {
+                drop(state);
+                fault.record(&self.shared);
+                tracelimit::warn_ratelimited!(
+                    source_id,
+                    "vtd: MSI remapping fault, interrupt dropped"
+                );
+            }
+        }
     }
 }
 
@@ -1422,5 +2201,884 @@ mod tests {
         write64(&mut dev, spec::registers::FRCD_HI_OFFSET, 1u64 << 63);
         let frcd_hi = read64(&mut dev, spec::registers::FRCD_HI_OFFSET);
         assert_eq!((frcd_hi >> 63) & 1, 0);
+    }
+
+    // =========================================================================
+    // Translation tests (1E)
+    // =========================================================================
+
+    use spec::pte::SlPte;
+    use spec::root_context::ContextEntry;
+    use spec::root_context::ContextEntryHi;
+    use spec::root_context::ContextEntryLo;
+    use spec::root_context::RootEntry;
+    use spec::root_context::RootEntryLo;
+    use zerocopy::IntoBytes;
+
+    const ROOT_TABLE_ADDR: u64 = 0x10_0000; // 1 MiB
+    const CONTEXT_TABLE_ADDR: u64 = 0x11_0000;
+    const PAGE_TABLE_L4_ADDR: u64 = 0x12_0000;
+    const PAGE_TABLE_L3_ADDR: u64 = 0x13_0000;
+    const PAGE_TABLE_L2_ADDR: u64 = 0x14_0000;
+    const PAGE_TABLE_L1_ADDR: u64 = 0x15_0000;
+    const TARGET_GPA: u64 = 0x20_0000; // Where IOVA 0 maps to
+
+    /// Create a device with guest memory and pre-populate page tables
+    /// for a 4-level walk mapping IOVA 0 → TARGET_GPA.
+    fn create_test_device_with_translation() -> (IntelVtdDevice, Arc<VtdSharedState>) {
+        // 4 MiB of guest memory.
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+
+        // Set up root entry: bus 0 → CONTEXT_TABLE_ADDR.
+        let root_entry = RootEntry {
+            lo: RootEntryLo::new()
+                .with_p(true)
+                .with_ctp(CONTEXT_TABLE_ADDR >> 12),
+            hi: 0,
+        };
+        gm.write_at(ROOT_TABLE_ADDR, root_entry.as_bytes()).unwrap();
+
+        // Set up context entry: devfn 0 → page table at L4, AW=2 (48-bit/4-level).
+        let context_entry = ContextEntry {
+            lo: ContextEntryLo::new()
+                .with_p(true)
+                .with_tt(0b00) // UNTRANSLATED_ONLY
+                .with_ssptptr(PAGE_TABLE_L4_ADDR >> 12),
+            hi: ContextEntryHi::new().with_aw(0b010).with_did(1), // 48-bit / 4-level
+        };
+        gm.write_at(CONTEXT_TABLE_ADDR, context_entry.as_bytes())
+            .unwrap();
+
+        // Build 4-level page tables: L4 → L3 → L2 → L1 → TARGET_GPA.
+        // Level 4 entry 0 → L3
+        let pte_l4 = SlPte::new()
+            .with_r(true)
+            .with_w(true)
+            .with_address(PAGE_TABLE_L3_ADDR >> 12);
+        gm.write_at(PAGE_TABLE_L4_ADDR, pte_l4.into_bits().as_bytes())
+            .unwrap();
+
+        // Level 3 entry 0 → L2
+        let pte_l3 = SlPte::new()
+            .with_r(true)
+            .with_w(true)
+            .with_address(PAGE_TABLE_L2_ADDR >> 12);
+        gm.write_at(PAGE_TABLE_L3_ADDR, pte_l3.into_bits().as_bytes())
+            .unwrap();
+
+        // Level 2 entry 0 → L1
+        let pte_l2 = SlPte::new()
+            .with_r(true)
+            .with_w(true)
+            .with_address(PAGE_TABLE_L1_ADDR >> 12);
+        gm.write_at(PAGE_TABLE_L2_ADDR, pte_l2.into_bits().as_bytes())
+            .unwrap();
+
+        // Level 1 entry 0 → TARGET_GPA (4KB page)
+        let pte_l1 = SlPte::new()
+            .with_r(true)
+            .with_w(true)
+            .with_address(TARGET_GPA >> 12);
+        gm.write_at(PAGE_TABLE_L1_ADDR, pte_l1.into_bits().as_bytes())
+            .unwrap();
+
+        let (dev, shared) = IntelVtdDevice::new(
+            gm,
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+
+        // Enable translation: set root table, SRTP, TE.
+        {
+            let mut state = shared.state.write();
+            state.rtaddr = ROOT_TABLE_ADDR;
+            state.latched_rtaddr = ROOT_TABLE_ADDR;
+            state.gsts = GstsReg::new().with_rtps(true).with_tes(true).into_bits();
+        }
+
+        (dev, shared)
+    }
+
+    #[test]
+    fn test_translate_4level_4kb() {
+        let (_dev, shared) = create_test_device_with_translation();
+        let state = shared.state.read();
+        let gpa = shared
+            .translate_locked(&state, 0, 0, 0x0000, false)
+            .unwrap();
+        assert_eq!(gpa, TARGET_GPA);
+    }
+
+    #[test]
+    fn test_translate_4level_4kb_with_offset() {
+        let (_dev, shared) = create_test_device_with_translation();
+        let state = shared.state.read();
+        // IOVA 0x123 → TARGET_GPA + 0x123
+        let gpa = shared
+            .translate_locked(&state, 0, 0, 0x0123, false)
+            .unwrap();
+        assert_eq!(gpa, TARGET_GPA + 0x123);
+    }
+
+    #[test]
+    fn test_translate_disabled_is_identity() {
+        let (_dev, shared) = create_test_device_with_translation();
+        // Disable translation.
+        {
+            let mut state = shared.state.write();
+            state.gsts = GstsReg::new().with_rtps(true).into_bits();
+        }
+        let state = shared.state.read();
+        let gpa = shared
+            .translate_locked(&state, 0, 0, 0xDEAD_BEEF, false)
+            .unwrap();
+        assert_eq!(gpa, 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn test_translate_3level() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+
+        // Set up root entry and context entry with AW=001 (39-bit/3-level).
+        let root_entry = RootEntry {
+            lo: RootEntryLo::new()
+                .with_p(true)
+                .with_ctp(CONTEXT_TABLE_ADDR >> 12),
+            hi: 0,
+        };
+        gm.write_at(ROOT_TABLE_ADDR, root_entry.as_bytes()).unwrap();
+
+        let context_entry = ContextEntry {
+            lo: ContextEntryLo::new()
+                .with_p(true)
+                .with_tt(0b00)
+                .with_ssptptr(PAGE_TABLE_L3_ADDR >> 12),
+            hi: ContextEntryHi::new().with_aw(0b001).with_did(1), // 39-bit / 3-level
+        };
+        gm.write_at(CONTEXT_TABLE_ADDR, context_entry.as_bytes())
+            .unwrap();
+
+        // 3-level walk: L3 → L2 → L1 → TARGET_GPA.
+        let pte_l3 = SlPte::new()
+            .with_r(true)
+            .with_w(true)
+            .with_address(PAGE_TABLE_L2_ADDR >> 12);
+        gm.write_at(PAGE_TABLE_L3_ADDR, pte_l3.into_bits().as_bytes())
+            .unwrap();
+
+        let pte_l2 = SlPte::new()
+            .with_r(true)
+            .with_w(true)
+            .with_address(PAGE_TABLE_L1_ADDR >> 12);
+        gm.write_at(PAGE_TABLE_L2_ADDR, pte_l2.into_bits().as_bytes())
+            .unwrap();
+
+        let pte_l1 = SlPte::new()
+            .with_r(true)
+            .with_w(true)
+            .with_address(TARGET_GPA >> 12);
+        gm.write_at(PAGE_TABLE_L1_ADDR, pte_l1.into_bits().as_bytes())
+            .unwrap();
+
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm,
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+        {
+            let mut state = shared.state.write();
+            state.rtaddr = ROOT_TABLE_ADDR;
+            state.latched_rtaddr = ROOT_TABLE_ADDR;
+            state.gsts = GstsReg::new().with_rtps(true).with_tes(true).into_bits();
+        }
+
+        let state = shared.state.read();
+        let gpa = shared
+            .translate_locked(&state, 0, 0, 0x0000, false)
+            .unwrap();
+        assert_eq!(gpa, TARGET_GPA);
+    }
+
+    #[test]
+    fn test_translate_2mb_large_page() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+
+        let root_entry = RootEntry {
+            lo: RootEntryLo::new()
+                .with_p(true)
+                .with_ctp(CONTEXT_TABLE_ADDR >> 12),
+            hi: 0,
+        };
+        gm.write_at(ROOT_TABLE_ADDR, root_entry.as_bytes()).unwrap();
+
+        let context_entry = ContextEntry {
+            lo: ContextEntryLo::new()
+                .with_p(true)
+                .with_tt(0b00)
+                .with_ssptptr(PAGE_TABLE_L4_ADDR >> 12),
+            hi: ContextEntryHi::new().with_aw(0b010).with_did(1),
+        };
+        gm.write_at(CONTEXT_TABLE_ADDR, context_entry.as_bytes())
+            .unwrap();
+
+        // L4 → L3 → L2 (PS=1, 2MB page)
+        let pte_l4 = SlPte::new()
+            .with_r(true)
+            .with_w(true)
+            .with_address(PAGE_TABLE_L3_ADDR >> 12);
+        gm.write_at(PAGE_TABLE_L4_ADDR, pte_l4.into_bits().as_bytes())
+            .unwrap();
+
+        let pte_l3 = SlPte::new()
+            .with_r(true)
+            .with_w(true)
+            .with_address(PAGE_TABLE_L2_ADDR >> 12);
+        gm.write_at(PAGE_TABLE_L3_ADDR, pte_l3.into_bits().as_bytes())
+            .unwrap();
+
+        // 2MB page at 0x200000
+        let pte_l2 = SlPte::new()
+            .with_r(true)
+            .with_w(true)
+            .with_ps(true)
+            .with_address(0x20_0000 >> 12); // Base GPA = 0x200000
+        gm.write_at(PAGE_TABLE_L2_ADDR, pte_l2.into_bits().as_bytes())
+            .unwrap();
+
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm,
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+        {
+            let mut state = shared.state.write();
+            state.rtaddr = ROOT_TABLE_ADDR;
+            state.latched_rtaddr = ROOT_TABLE_ADDR;
+            state.gsts = GstsReg::new().with_rtps(true).with_tes(true).into_bits();
+        }
+
+        let state = shared.state.read();
+        // IOVA 0x1234 within the 2MB page → GPA 0x201234.
+        let gpa = shared
+            .translate_locked(&state, 0, 0, 0x1234, false)
+            .unwrap();
+        assert_eq!(gpa, 0x20_1234);
+    }
+
+    #[test]
+    fn test_translate_passthrough() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+
+        let root_entry = RootEntry {
+            lo: RootEntryLo::new()
+                .with_p(true)
+                .with_ctp(CONTEXT_TABLE_ADDR >> 12),
+            hi: 0,
+        };
+        gm.write_at(ROOT_TABLE_ADDR, root_entry.as_bytes()).unwrap();
+
+        // Context entry with TT=10 (pass-through).
+        let context_entry = ContextEntry {
+            lo: ContextEntryLo::new()
+                .with_p(true)
+                .with_tt(0b10) // PASS_THROUGH
+                .with_ssptptr(0),
+            hi: ContextEntryHi::new().with_aw(0b010).with_did(1),
+        };
+        gm.write_at(CONTEXT_TABLE_ADDR, context_entry.as_bytes())
+            .unwrap();
+
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm,
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+        {
+            let mut state = shared.state.write();
+            state.rtaddr = ROOT_TABLE_ADDR;
+            state.latched_rtaddr = ROOT_TABLE_ADDR;
+            state.gsts = GstsReg::new().with_rtps(true).with_tes(true).into_bits();
+        }
+
+        let state = shared.state.read();
+        let gpa = shared
+            .translate_locked(&state, 0, 0, 0xABCD_0000, false)
+            .unwrap();
+        assert_eq!(gpa, 0xABCD_0000);
+    }
+
+    #[test]
+    fn test_translate_root_not_present() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+
+        // Root entry with P=0.
+        let root_entry = RootEntry {
+            lo: RootEntryLo::new().with_p(false),
+            hi: 0,
+        };
+        gm.write_at(ROOT_TABLE_ADDR, root_entry.as_bytes()).unwrap();
+
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm,
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+        {
+            let mut state = shared.state.write();
+            state.rtaddr = ROOT_TABLE_ADDR;
+            state.latched_rtaddr = ROOT_TABLE_ADDR;
+            state.gsts = GstsReg::new().with_rtps(true).with_tes(true).into_bits();
+        }
+
+        let state = shared.state.read();
+        let err = shared
+            .translate_locked(&state, 0, 0, 0x1000, false)
+            .unwrap_err();
+        assert!(matches!(err, VtdFault::RootNotPresent { .. }));
+    }
+
+    #[test]
+    fn test_translate_context_not_present() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+
+        let root_entry = RootEntry {
+            lo: RootEntryLo::new()
+                .with_p(true)
+                .with_ctp(CONTEXT_TABLE_ADDR >> 12),
+            hi: 0,
+        };
+        gm.write_at(ROOT_TABLE_ADDR, root_entry.as_bytes()).unwrap();
+
+        // Context entry with P=0.
+        let context_entry = ContextEntry {
+            lo: ContextEntryLo::new().with_p(false),
+            hi: ContextEntryHi::new(),
+        };
+        gm.write_at(CONTEXT_TABLE_ADDR, context_entry.as_bytes())
+            .unwrap();
+
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm,
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+        {
+            let mut state = shared.state.write();
+            state.rtaddr = ROOT_TABLE_ADDR;
+            state.latched_rtaddr = ROOT_TABLE_ADDR;
+            state.gsts = GstsReg::new().with_rtps(true).with_tes(true).into_bits();
+        }
+
+        let state = shared.state.read();
+        let err = shared
+            .translate_locked(&state, 0, 0, 0x1000, false)
+            .unwrap_err();
+        assert!(matches!(err, VtdFault::ContextNotPresent { .. }));
+    }
+
+    #[test]
+    fn test_translate_pte_not_present() {
+        let (_dev, shared) = create_test_device_with_translation();
+
+        // Write a non-present PTE at L1 entry 1 (IOVA 0x1000).
+        let pte = SlPte::new(); // R=W=0
+        shared
+            .guest_memory
+            .write_at(PAGE_TABLE_L1_ADDR + 8, pte.into_bits().as_bytes())
+            .unwrap();
+
+        let state = shared.state.read();
+        let err = shared
+            .translate_locked(&state, 0, 0, 0x1000, false)
+            .unwrap_err();
+        assert!(matches!(err, VtdFault::PteNotPresent { .. }));
+    }
+
+    #[test]
+    fn test_translate_write_to_readonly() {
+        let (_dev, shared) = create_test_device_with_translation();
+
+        // Write a read-only PTE at L1 entry 0 (R=1, W=0).
+        let pte = SlPte::new().with_r(true).with_w(false);
+        shared
+            .guest_memory
+            .write_at(PAGE_TABLE_L1_ADDR, pte.into_bits().as_bytes())
+            .unwrap();
+
+        let state = shared.state.read();
+        // Read should succeed.
+        let gpa = shared
+            .translate_locked(&state, 0, 0, 0x0000, false)
+            .unwrap();
+        assert_eq!(gpa, 0); // PTE address field is 0
+        // Write should fail.
+        let err = shared
+            .translate_locked(&state, 0, 0, 0x0000, true)
+            .unwrap_err();
+        assert!(matches!(err, VtdFault::WriteAccessDenied { .. }));
+    }
+
+    #[test]
+    fn test_translate_pde_permission_restricts() {
+        let (_dev, shared) = create_test_device_with_translation();
+
+        // Make L2 entry 0 read-only (R=1, W=0), L1 entry 0 has W=1.
+        // AND-accumulation means write should fail.
+        let pte_l2 = SlPte::new()
+            .with_r(true)
+            .with_w(false) // No write at L2
+            .with_address(PAGE_TABLE_L1_ADDR >> 12);
+        shared
+            .guest_memory
+            .write_at(PAGE_TABLE_L2_ADDR, pte_l2.into_bits().as_bytes())
+            .unwrap();
+
+        let state = shared.state.read();
+        let err = shared
+            .translate_locked(&state, 0, 0, 0x0000, true)
+            .unwrap_err();
+        assert!(matches!(err, VtdFault::WriteAccessDenied { .. }));
+    }
+
+    #[test]
+    fn test_translate_fpd_suppresses_fault() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+
+        let root_entry = RootEntry {
+            lo: RootEntryLo::new()
+                .with_p(true)
+                .with_ctp(CONTEXT_TABLE_ADDR >> 12),
+            hi: 0,
+        };
+        gm.write_at(ROOT_TABLE_ADDR, root_entry.as_bytes()).unwrap();
+
+        // Context entry with FPD=1, pointing to a non-existent page table.
+        let context_entry = ContextEntry {
+            lo: ContextEntryLo::new()
+                .with_p(true)
+                .with_fpd(true)
+                .with_tt(0b00)
+                .with_ssptptr(0x30_0000 >> 12), // Points to zeroed memory
+            hi: ContextEntryHi::new().with_aw(0b010).with_did(1),
+        };
+        gm.write_at(CONTEXT_TABLE_ADDR, context_entry.as_bytes())
+            .unwrap();
+
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm,
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+        {
+            let mut state = shared.state.write();
+            state.rtaddr = ROOT_TABLE_ADDR;
+            state.latched_rtaddr = ROOT_TABLE_ADDR;
+            state.gsts = GstsReg::new().with_rtps(true).with_tes(true).into_bits();
+        }
+
+        // Translation should fail (PTE not present in zeroed memory).
+        let state = shared.state.read();
+        let err = shared
+            .translate_locked(&state, 0, 0, 0x0000, false)
+            .unwrap_err();
+        assert!(err.fpd()); // FPD should be true
+
+        // Record the fault — it should be suppressed by FPD.
+        drop(state);
+        err.record(&shared);
+
+        // FRCD.F should NOT be set (fault suppressed).
+        let state = shared.state.read();
+        assert_eq!((state.frcd_hi >> 63) & 1, 0);
+    }
+
+    // =========================================================================
+    // Interrupt remapping tests (1F)
+    // =========================================================================
+
+    use spec::irte::Irte;
+    use spec::irte::IrteHi;
+    use spec::irte::IrteLo;
+
+    const IRT_BASE_ADDR: u64 = 0x18_0000;
+
+    #[test]
+    fn test_extract_irte_index_no_shv() {
+        // Handle = {addr[2], addr[19:5]}. SHV = addr[3] = 0.
+        // addr = 0xFEE0_0010 (bit 4=1, remappable format, handle=0x0000).
+        let index = VtdSharedState::extract_irte_index(0xFEE0_0010, 0);
+        assert_eq!(index, 0);
+
+        // addr[19:5] = 0x7 (handle[14:0] = 7), addr[2] = 0 (handle[15]=0).
+        // addr = 0xFEE0_00F0 (bits 7:5 = 111).
+        let addr = 0xFEE0_0010 | (0x7 << 5);
+        let index = VtdSharedState::extract_irte_index(addr, 0);
+        assert_eq!(index, 7);
+    }
+
+    #[test]
+    fn test_extract_irte_index_with_shv() {
+        // SHV = addr[3] = 1. handle = {addr[2], addr[19:5]}.
+        // index = handle + data[15:0].
+        let addr = 0xFEE0_0018 | (0x5 << 5); // handle=5, SHV=1
+        let index = VtdSharedState::extract_irte_index(addr, 3);
+        assert_eq!(index, 8); // 5 + 3
+    }
+
+    fn setup_ir_state(shared: &Arc<VtdSharedState>, eime: bool) {
+        let mut state = shared.state.write();
+        // Set up IRT: base at IRT_BASE_ADDR, size=0xF (65536 entries).
+        state.irta = IrtaReg::new()
+            .with_irta(IRT_BASE_ADDR >> 12)
+            .with_s(0xF)
+            .with_eime(eime)
+            .into_bits();
+        state.latched_irta = state.irta;
+        // Enable IR.
+        let mut gsts = GstsReg::from(state.gsts);
+        gsts.set_ires(true);
+        gsts.set_irtps(true);
+        state.gsts = gsts.into_bits();
+    }
+
+    #[test]
+    fn test_remap_msi_basic() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm.clone(),
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+
+        setup_ir_state(&shared, false);
+
+        // Write IRTE at index 0: vector=0x42, DST xAPIC ID=3, fixed delivery.
+        let irte = Irte {
+            lo: IrteLo::new()
+                .with_p(true)
+                .with_vector(0x42)
+                .with_dst(0x0300) // xAPIC: APIC ID in bits 15:8
+                .with_dlm(0) // Fixed
+                .with_dm(false), // Physical
+            hi: IrteHi::new().with_svt(0), // No source validation
+        };
+        gm.write_at(IRT_BASE_ADDR, irte.as_bytes()).unwrap();
+
+        // Remappable MSI: addr bit4=1, handle=0, SHV=0 → IRTE index 0.
+        let addr = 0xFEE0_0010u64;
+        let data = 0u32;
+        let state = shared.state.read();
+        let (new_addr, new_data) = shared.remap_msi_locked(&state, 0x0000, addr, data).unwrap();
+
+        // Expected: addr = 0xFEE03000 (DST=3 in bits 19:12).
+        assert_eq!(new_addr & 0xFFF0_0000, 0xFEE0_0000);
+        assert_eq!((new_addr >> 12) & 0xFF, 3); // APIC ID = 3
+        assert_eq!(new_data & 0xFF, 0x42); // Vector = 0x42
+    }
+
+    #[test]
+    fn test_remap_msi_ir_disabled_passthrough() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm,
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+        // IR not enabled — pass through.
+        let state = shared.state.read();
+        let (a, d) = shared
+            .remap_msi_locked(&state, 0, 0xFEE0_1234, 0x42)
+            .unwrap();
+        assert_eq!(a, 0xFEE0_1234);
+        assert_eq!(d, 0x42);
+    }
+
+    #[test]
+    fn test_remap_msi_irte_not_present() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm.clone(),
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+
+        setup_ir_state(&shared, false);
+
+        // IRTE at index 0 is all zeros (P=0).
+        let addr = 0xFEE0_0010u64;
+        let state = shared.state.read();
+        let err = shared
+            .remap_msi_locked(&state, 0x0000, addr, 0)
+            .unwrap_err();
+        assert!(matches!(err, VtdFault::IrteNotPresent { .. }));
+    }
+
+    #[test]
+    fn test_remap_msi_compat_format_blocked() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm,
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+
+        setup_ir_state(&shared, false);
+        // CFIS=0 (default) → compat-format blocked.
+
+        // Compatibility format: bit 4 = 0.
+        let addr = 0xFEE0_0000u64; // bit 4 = 0
+        let state = shared.state.read();
+        let err = shared
+            .remap_msi_locked(&state, 0x0000, addr, 0)
+            .unwrap_err();
+        assert!(matches!(err, VtdFault::CompatibilityFormatBlocked { .. }));
+    }
+
+    #[test]
+    fn test_remap_msi_compat_format_passthrough_cfis() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm,
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+
+        setup_ir_state(&shared, false);
+
+        // Set CFIS=1 → pass-through for compat-format.
+        {
+            let mut state = shared.state.write();
+            let mut gsts = GstsReg::from(state.gsts);
+            gsts.set_cfis(true);
+            state.gsts = gsts.into_bits();
+        }
+
+        let addr = 0xFEE0_0000u64; // bit 4 = 0
+        let state = shared.state.read();
+        let (a, d) = shared.remap_msi_locked(&state, 0x0000, addr, 0x42).unwrap();
+        assert_eq!(a, addr);
+        assert_eq!(d, 0x42);
+    }
+
+    #[test]
+    fn test_remap_msi_source_validation_verify_sid() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm.clone(),
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+
+        setup_ir_state(&shared, false);
+
+        // IRTE with SVT=01 (verify SID), SQ=00 (exact match), SID=0x0100.
+        let irte = Irte {
+            lo: IrteLo::new()
+                .with_p(true)
+                .with_vector(0x30)
+                .with_dst(0x0100)
+                .with_dlm(0)
+                .with_dm(false),
+            hi: IrteHi::new().with_svt(0b01).with_sq(0b00).with_sid(0x0100),
+        };
+        gm.write_at(IRT_BASE_ADDR, irte.as_bytes()).unwrap();
+
+        let addr = 0xFEE0_0010u64;
+        let state = shared.state.read();
+
+        // Matching SID should succeed.
+        assert!(shared.remap_msi_locked(&state, 0x0100, addr, 0).is_ok());
+
+        // Non-matching SID should fail.
+        let err = shared
+            .remap_msi_locked(&state, 0x0200, addr, 0)
+            .unwrap_err();
+        assert!(matches!(err, VtdFault::SourceValidationFailed { .. }));
+    }
+
+    #[test]
+    fn test_record_fault() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm,
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+
+        let fault = VtdFault::RootNotPresent {
+            source_id: 0x0100,
+            iova: 0x1000,
+        };
+        fault.record(&shared);
+
+        let state = shared.state.read();
+        let frcd_hi = FrcdHi::from(state.frcd_hi);
+        assert!(frcd_hi.f());
+        assert_eq!(frcd_hi.sid(), 0x0100);
+        assert_eq!(frcd_hi.fr(), FaultReason::ROOT_NOT_PRESENT.0);
+
+        let frcd_lo = FrcdLo::from(state.frcd_lo);
+        assert_eq!(frcd_lo.fault_address(), 0x1000);
+    }
+
+    #[test]
+    fn test_record_fault_overflow() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm,
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+
+        // Record first fault.
+        let fault1 = VtdFault::RootNotPresent {
+            source_id: 0x0100,
+            iova: 0x1000,
+        };
+        fault1.record(&shared);
+
+        // Record second fault — should overflow.
+        let fault2 = VtdFault::ContextNotPresent {
+            source_id: 0x0200,
+            iova: 0x2000,
+        };
+        fault2.record(&shared);
+
+        let state = shared.state.read();
+        // PFO should be set.
+        let fsts = FstsReg::from(state.fsts);
+        assert!(fsts.pfo());
+        // FRCD should still have first fault.
+        let frcd_hi = FrcdHi::from(state.frcd_hi);
+        assert_eq!(frcd_hi.sid(), 0x0100);
+    }
+
+    #[test]
+    fn test_vtd_translator() {
+        let (_dev, shared) = create_test_device_with_translation();
+        let translator = shared.translator();
+
+        // Test via IommuTranslator trait.
+        let result = iommu_common::IommuTranslator::translate(
+            &translator,
+            0x0000, // RID: bus=0, devfn=0
+            0x0000, // IOVA
+            false,
+            |gpa| gpa,
+        )
+        .unwrap();
+        assert_eq!(result, TARGET_GPA);
+    }
+
+    #[test]
+    fn test_vtd_signal_msi() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        struct RecordingMsi {
+            last_addr: AtomicU64,
+        }
+        impl SignalMsi for RecordingMsi {
+            fn signal_msi(&self, _devid: Option<u32>, address: u64, _data: u32) {
+                self.last_addr.store(address, Ordering::SeqCst);
+            }
+        }
+
+        let gm = GuestMemory::allocate(0x40_0000);
+        let inner_msi = Arc::new(RecordingMsi {
+            last_addr: AtomicU64::new(0),
+        });
+        let signal_msi = Arc::new(TestSignalMsi);
+
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm.clone(),
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+
+        // No IR enabled → pass-through.
+        let wrapper = shared.wrap_signal_msi(inner_msi.clone());
+        wrapper.signal_msi(Some(0x0100), 0xFEE0_1234, 0x42);
+        assert_eq!(inner_msi.last_addr.load(Ordering::SeqCst), 0xFEE0_1234);
+    }
+
+    #[test]
+    fn test_vtd_signal_msi_no_devid_dropped() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        struct CountingMsi {
+            count: AtomicU32,
+        }
+        impl SignalMsi for CountingMsi {
+            fn signal_msi(&self, _devid: Option<u32>, _address: u64, _data: u32) {
+                self.count.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let gm = GuestMemory::allocate(0x40_0000);
+        let inner_msi = Arc::new(CountingMsi {
+            count: AtomicU32::new(0),
+        });
+        let signal_msi = Arc::new(TestSignalMsi);
+
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm,
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+
+        let wrapper = shared.wrap_signal_msi(inner_msi.clone());
+
+        // devid=None should be silently dropped.
+        wrapper.signal_msi(None, 0xFEE0_1234, 0x42);
+        assert_eq!(inner_msi.count.load(Ordering::SeqCst), 0);
     }
 }
