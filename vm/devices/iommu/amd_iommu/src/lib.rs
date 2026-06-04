@@ -507,6 +507,20 @@ impl IommuSharedState {
         }
 
         let levels = mode;
+
+        // §2.2.3: VA width = levels * 9 + 12. If any upper bits of the
+        // IOVA are non-zero, the address exceeds the configured VA width
+        // and must be rejected.
+        let va_width = (levels as u32) * 9 + 12;
+        if va_width < 64 && (iova >> va_width) != 0 {
+            return Err(IommuFault::IoPageFault {
+                device_id,
+                domain_id: dte.dw1.domain_id(),
+                address: iova,
+                is_write: write,
+            });
+        }
+
         let root_addr = dte.dw0.page_table_root_address();
         let dte_ir = dte.dw0.ir();
         let dte_iw = dte.dw0.iw();
@@ -664,6 +678,10 @@ impl IommuSharedState {
 
         let irt_base = dw2.int_tab_address();
         let max_entries = dw2.int_tab_entries();
+
+        // §2.2.5 / Figure 14: The IRTE index is always MSI data[10:0]
+        // (11 bits). NumIntRemapMode controls which interrupt *types* are
+        // remapped, not the index width.
         let irte_index = msi_data & 0x7FF;
 
         if irte_index >= max_entries {
@@ -821,6 +839,14 @@ impl IommuSharedState {
             return;
         }
 
+        // §2.5: "When an event log overflow condition exists, the IOMMU
+        // ceases recording events until software resets the event logging
+        // function." Drop events while EventOverflow is set.
+        let status = IommuStatus::from_bits(state.iommu_status);
+        if status.evt_overflow() {
+            return;
+        }
+
         let buf_size_bytes = match evt_log_size_bytes(state) {
             Some(size) => size,
             None => {
@@ -849,6 +875,12 @@ impl IommuSharedState {
             let mut status = IommuStatus::from_bits(state.iommu_status);
             status.set_evt_overflow(true);
             state.iommu_status = status.into_bits();
+            // §2.5.1: deliver MSI on overflow when EventIntEn is set.
+            if ctrl.evt_int_en() {
+                if let Some(interrupt) = msi_interrupt {
+                    interrupt.deliver();
+                }
+            }
             return;
         }
 
@@ -1541,6 +1573,14 @@ impl AmdIommuDevice {
                         gpa = entry_gpa,
                         "failed to read command buffer entry"
                     );
+                    // §2.5.7: log COMMAND_HARDWARE_ERROR event.
+                    let event = EventEntry::command_hardware_error(entry_gpa);
+                    IommuSharedState::write_event_inner(
+                        &shared.guest_memory,
+                        state,
+                        event,
+                        shared.msi_interrupt.as_ref(),
+                    );
                     let mut status = IommuStatus::from_bits(state.iommu_status);
                     status.set_cmd_buf_run(false);
                     state.iommu_status = status.into_bits();
@@ -1612,11 +1652,15 @@ impl AmdIommuDevice {
         }
 
         if fields.i() {
+            // §2.4.1: "If the i bit is set, the IOMMU sets MMIO Offset
+            // 2020h[ComWaitInt]." The status bit is set unconditionally;
+            // ComWaitIntEn only gates MSI delivery.
+            let mut status = IommuStatus::from_bits(state.iommu_status);
+            status.set_com_wait_int(true);
+            state.iommu_status = status.into_bits();
+
             let ctrl = IommuCtrl::from_bits(state.iommu_ctrl);
             if ctrl.com_wait_int_en() {
-                let mut status = IommuStatus::from_bits(state.iommu_status);
-                status.set_com_wait_int(true);
-                state.iommu_status = status.into_bits();
                 shared.deliver_interrupt();
             }
         }
@@ -6250,5 +6294,342 @@ mod tests {
         let mut buf = [0u8; 2];
         let result = iommu_gm.read_at(u64::MAX, &mut buf);
         assert!(result.is_err(), "should fail on IOVA overflow, not wrap");
+    }
+
+    // =========================================================================
+    // Spec Deviation Regression Tests
+    // =========================================================================
+
+    /// §2.4.1: COMPLETION_WAIT with i=1 must set ComWaitInt in IOMMU_STATUS
+    /// regardless of whether ComWaitIntEn is set. ComWaitIntEn only gates
+    /// MSI delivery, not the status bit.
+    ///
+    /// Deviation #4: the emulator only sets ComWaitInt when ComWaitIntEn=1.
+    #[test]
+    fn test_completion_wait_sets_comwaitint_without_comwaitinten() {
+        let mut dev = create_test_device_with_memory();
+
+        // Enable IOMMU with command buffer and event log, but
+        // ComWaitIntEn = false (interrupt delivery disabled).
+        let cmd_base = CmdBufBase::new()
+            .with_base_addr(0x0000 >> 12)
+            .with_length(8);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::CMD_BUF_BASE.0 as u64,
+            cmd_base.into_bits(),
+        );
+        let evt_base = EvtLogBase::new()
+            .with_base_addr(0x1000 >> 12)
+            .with_length(8);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::EVT_LOG_BASE.0 as u64,
+            evt_base.into_bits(),
+        );
+        let ctrl = IommuCtrl::new()
+            .with_iommu_en(true)
+            .with_cmd_buf_en(true)
+            .with_evt_log_en(true)
+            .with_com_wait_int_en(false); // <-- interrupt delivery disabled
+        mmio_write64(
+            &mut dev,
+            MmioRegister::IOMMU_CTRL.0 as u64,
+            ctrl.into_bits(),
+        );
+
+        // Issue COMPLETION_WAIT with i=1.
+        write_cmd(&dev, 0, &completion_wait_interrupt());
+        poke_tail(&mut dev, 1);
+
+        // Per spec §2.4.1: "If the i bit is set, the IOMMU sets
+        // MMIO Offset 2020h[ComWaitInt]."
+        // This must happen regardless of ComWaitIntEn.
+        let status =
+            IommuStatus::from_bits(mmio_read64(&mut dev, MmioRegister::IOMMU_STATUS.0 as u64));
+        assert!(
+            status.com_wait_int(),
+            "ComWaitInt must be set when COMPLETION_WAIT has i=1, \
+             even when ComWaitIntEn is disabled (spec §2.4.1)"
+        );
+    }
+
+    /// §2.5.1: When EventOverflow is set and EventIntEn=1, the IOMMU must
+    /// deliver an MSI so the guest discovers the overflow promptly.
+    ///
+    /// Deviation #5: the emulator sets EventOverflow but does not deliver
+    /// the MSI.
+    #[test]
+    fn test_evtlog_overflow_delivers_msi() {
+        let guest_memory = GuestMemory::allocate(0x10000);
+        let msi_conn =
+            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
+        let msi_controller = pci_core::test_helpers::TestPciInterruptController::new();
+        msi_conn.connect(msi_controller.signal_msi());
+        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+
+        // Enable MSI on PCI config space.
+        let iommu_cap_header = pci_read(&mut dev, 0x40);
+        let msi_cap_offset = ((iommu_cap_header >> 8) & 0xFF) as u16;
+        let _ = dev.pci_cfg_write(msi_cap_offset + 4, 0xFEE0_0000);
+        let _ = dev.pci_cfg_write(msi_cap_offset + 8, 0);
+        let _ = dev.pci_cfg_write(msi_cap_offset + 12, 0x41);
+        let control = pci_read(&mut dev, msi_cap_offset);
+        let _ = dev.pci_cfg_write(msi_cap_offset, control | (1 << 16));
+
+        setup_iommu_enabled(&mut dev);
+
+        // Drain any MSIs from setup.
+        while msi_controller.get_next_interrupt().is_some() {}
+
+        // Fill the event log (255 entries to leave ring "full").
+        for i in 0..255 {
+            let event = EventEntry::io_page_fault(i as u16, 0x0001, false, false, 0x0);
+            dev.write_event(event);
+        }
+
+        // Drain MSIs from the 255 normal events.
+        while msi_controller.get_next_interrupt().is_some() {}
+
+        // Clear EventLogInt so we observe only the overflow path.
+        mmio_write64(
+            &mut dev,
+            MmioRegister::IOMMU_STATUS.0 as u64,
+            IommuStatus::new().with_evt_log_int(true).into_bits(),
+        );
+
+        // This event should trigger overflow.
+        let event = EventEntry::io_page_fault(0xFFFF, 0x0001, false, false, 0x0);
+        dev.write_event(event);
+
+        // Verify overflow is set.
+        let status =
+            IommuStatus::from_bits(mmio_read64(&mut dev, MmioRegister::IOMMU_STATUS.0 as u64));
+        assert!(status.evt_overflow(), "EventOverflow should be set");
+
+        // Per spec §2.5.1: overflow with EventIntEn=1 must deliver MSI.
+        let msi = msi_controller.get_next_interrupt();
+        assert!(
+            msi.is_some(),
+            "MSI must be delivered on event log overflow when EventIntEn=1 (spec §2.5.1)"
+        );
+    }
+
+    /// §2.5: "When an event log overflow condition exists, the IOMMU
+    /// ceases recording events until software resets the event logging
+    /// function." Events must be dropped while EventOverflow is set.
+    ///
+    /// Deviation #6: the emulator continues writing events as long as
+    /// the ring buffer has physical space (e.g., after head advances).
+    #[test]
+    fn test_evtlog_drops_events_while_overflow_set() {
+        let mut dev = create_test_device_with_memory();
+        setup_iommu_enabled(&mut dev);
+
+        // Fill the event log to trigger overflow.
+        for i in 0..255 {
+            let event = EventEntry::io_page_fault(i as u16, 0x0001, false, false, 0x0);
+            dev.write_event(event);
+        }
+        // Trigger overflow.
+        dev.write_event(EventEntry::io_page_fault(0xFFFF, 0x0001, false, false, 0x0));
+
+        let status =
+            IommuStatus::from_bits(mmio_read64(&mut dev, MmioRegister::IOMMU_STATUS.0 as u64));
+        assert!(status.evt_overflow(), "precondition: overflow is set");
+
+        // Advance head to free physical space, but do NOT clear EventOverflow.
+        let head = EvtLogHead::new().with_head_ptr(10);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::EVT_LOG_HEAD.0 as u64,
+            head.into_bits(),
+        );
+
+        // Record the tail before attempting another event.
+        let tail_before =
+            EvtLogTail::from_bits(mmio_read64(&mut dev, MmioRegister::EVT_LOG_TAIL.0 as u64));
+
+        // Write another event while EventOverflow is still set.
+        dev.write_event(EventEntry::io_page_fault(0xBEEF, 0x0001, false, false, 0x0));
+
+        // Per spec: events must be dropped while overflow is set.
+        let tail_after =
+            EvtLogTail::from_bits(mmio_read64(&mut dev, MmioRegister::EVT_LOG_TAIL.0 as u64));
+        assert_eq!(
+            tail_before.tail_ptr(),
+            tail_after.tail_ptr(),
+            "event log tail must not advance while EventOverflow is set — \
+             events must be dropped until software clears overflow (spec §2.5)"
+        );
+    }
+
+    /// §2.5.7: A hardware error reading from the command buffer must
+    /// generate a COMMAND_HARDWARE_ERROR event (code 0x06) and halt the
+    /// command buffer.
+    ///
+    /// Deviation #7: the emulator halts the command buffer but does not
+    /// log the event.
+    #[test]
+    fn test_cmdbuf_read_failure_logs_hardware_error_event() {
+        // Allocate only 0x10000 bytes of guest memory.
+        // Place the event log within valid memory and the command buffer
+        // beyond it so that reading a command entry fails.
+        let guest_memory = GuestMemory::allocate(0x10000);
+        let msi_conn =
+            pci_core::msi::MsiConnection::new(pci_core::bus_range::AssignedBusRange::new(), 0);
+        let mut dev = AmdIommuDevice::new(guest_memory, test_config(), msi_conn.target());
+
+        // Event log at valid GPA 0x1000.
+        let evt_base = EvtLogBase::new()
+            .with_base_addr(0x1000 >> 12)
+            .with_length(8);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::EVT_LOG_BASE.0 as u64,
+            evt_base.into_bits(),
+        );
+
+        // Command buffer at GPA 0x2_0000 — beyond the 0x10000 allocation,
+        // so reading a command entry will fail.
+        let cmd_base = CmdBufBase::new()
+            .with_base_addr(0x2_0000 >> 12)
+            .with_length(8);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::CMD_BUF_BASE.0 as u64,
+            cmd_base.into_bits(),
+        );
+
+        let ctrl = IommuCtrl::new()
+            .with_iommu_en(true)
+            .with_cmd_buf_en(true)
+            .with_evt_log_en(true)
+            .with_evt_int_en(true);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::IOMMU_CTRL.0 as u64,
+            ctrl.into_bits(),
+        );
+
+        // Poke tail to trigger a read from the unmapped command buffer.
+        poke_tail(&mut dev, 1);
+
+        // CmdBufRun should be cleared (halted).
+        let status =
+            IommuStatus::from_bits(mmio_read64(&mut dev, MmioRegister::IOMMU_STATUS.0 as u64));
+        assert!(
+            !status.cmd_buf_run(),
+            "CmdBufRun should be clear after command read failure"
+        );
+
+        // Per spec §2.5.7: a COMMAND_HARDWARE_ERROR event must be logged.
+        let tail =
+            EvtLogTail::from_bits(mmio_read64(&mut dev, MmioRegister::EVT_LOG_TAIL.0 as u64));
+        assert_eq!(
+            tail.tail_ptr(),
+            1,
+            "event log should contain one COMMAND_HARDWARE_ERROR entry (spec §2.5.7)"
+        );
+
+        let event: EventEntry = dev
+            .shared
+            .guest_memory
+            .read_plain(0x1000)
+            .expect("should read event");
+        assert_eq!(
+            event.event_code(),
+            EventCode::COMMAND_HARDWARE_ERROR,
+            "event must be COMMAND_HARDWARE_ERROR (code 0x06) per spec §2.5.7"
+        );
+    }
+
+    /// §2.2.3: "Virtual addresses are [Mode×9+12]-bit." If any upper bits
+    /// of the IOVA are non-zero, the IOMMU must generate an IO_PAGE_FAULT.
+    ///
+    /// Deviation #9: the emulator does not validate the IOVA width. With
+    /// Mode=4 (48-bit VA), an IOVA with bits above 47 set is silently
+    /// accepted and translated (the upper bits are ignored by va_index).
+    #[test]
+    fn test_translate_rejects_iova_exceeding_va_width() {
+        let mut dev = create_test_device_for_translation();
+        let devtab_gpa = 0x1_0000;
+        setup_iommu_with_devtab(&mut dev, devtab_gpa, 256);
+
+        // Set up a 4-level page table mapping IOVA 0x0 → GPA 0xA_0000.
+        let l4_gpa = 0x2_0000u64;
+        let l3_gpa = 0x3_0000u64;
+        let l2_gpa = 0x4_0000u64;
+        let l1_gpa = 0x5_0000u64;
+        let target_gpa = 0xA_0000u64;
+
+        write_pte(
+            &dev,
+            l4_gpa,
+            0,
+            &IommuPte::new()
+                .with_pr(true)
+                .with_next_level(3)
+                .with_address(l3_gpa >> 12)
+                .with_ir(true)
+                .with_iw(true),
+        );
+        write_pte(
+            &dev,
+            l3_gpa,
+            0,
+            &IommuPte::new()
+                .with_pr(true)
+                .with_next_level(2)
+                .with_address(l2_gpa >> 12)
+                .with_ir(true)
+                .with_iw(true),
+        );
+        write_pte(
+            &dev,
+            l2_gpa,
+            0,
+            &IommuPte::new()
+                .with_pr(true)
+                .with_next_level(1)
+                .with_address(l1_gpa >> 12)
+                .with_ir(true)
+                .with_iw(true),
+        );
+        write_pte(
+            &dev,
+            l1_gpa,
+            0,
+            &IommuPte::new()
+                .with_pr(true)
+                .with_next_level(0)
+                .with_address(target_gpa >> 12)
+                .with_ir(true)
+                .with_iw(true),
+        );
+
+        let dte = make_dte_with_translation(l4_gpa, 4, true, true, 1);
+        write_dte(&dev, devtab_gpa, 0x10, &dte);
+
+        // Sanity: IOVA 0x0 should translate successfully.
+        assert!(dev.translate(0x10, 0x0, false).is_ok());
+
+        // Mode=4 → VA width = 4*9+12 = 48 bits. Bits 63:48 must be zero.
+        // An IOVA with bit 48 set exceeds the configured VA width and must
+        // produce an IO_PAGE_FAULT, not silently alias to IOVA 0x0.
+        let bad_iova = 1u64 << 48; // bit 48 set, all lower bits zero
+        let result = dev.translate(0x10, bad_iova, false);
+        assert!(
+            result.is_err(),
+            "IOVA {:#x} has bits above the 48-bit VA width (Mode=4) and must \
+             be rejected with IO_PAGE_FAULT (spec §2.2.3)",
+            bad_iova
+        );
+        match result.unwrap_err() {
+            IommuFault::IoPageFault { device_id, .. } => {
+                assert_eq!(device_id, 0x10);
+            }
+            other => panic!("expected IoPageFault, got {:?}", other),
+        }
     }
 }
