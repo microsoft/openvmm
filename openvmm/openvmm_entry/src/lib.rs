@@ -1355,12 +1355,12 @@ async fn vm_config_from_command_line(
 
     if opt.gfx {
         // Channel for the video device to report dirty rectangles to the VNC worker.
-        let (dirt_send, dirt_recv) = mesh::channel();
+        let (dirty_send, dirty_recv) = mesh::channel();
         // Reverse channel: the VNC worker tells the video device whether any
         // client is connected, so the guest can stop reporting updates while idle.
         let (updates_needed_send, updates_needed_recv) = mesh::channel();
         resources.synth_video = Some(vnc_worker_defs::SynthVideoChannels {
-            dirty_recv: dirt_recv,
+            dirty_recv,
             updates_needed_send,
         });
 
@@ -1370,7 +1370,7 @@ async fn vm_config_from_command_line(
                 SynthVideoHandle {
                     framebuffer: SharedFramebufferHandle.into_resource(),
                     channels: Some(uidevices_resources::SynthVideoDeviceChannels {
-                        dirt_send,
+                        dirty_send,
                         updates_needed_recv,
                     }),
                 }

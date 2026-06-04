@@ -155,7 +155,7 @@ fn parse_packet(buf: &[u8]) -> Result<Request, Error> {
 pub struct Video {
     control: Box<dyn FramebufferControl>,
     /// Channel to forward dirty rectangles from the guest to the VNC worker.
-    dirt_send: Option<mesh::Sender<Vec<DirtyRect>>>,
+    dirty_send: Option<mesh::Sender<Vec<DirtyRect>>>,
     /// Receives whether any consumer currently needs the guest's
     /// screen/pointer updates. When present, the device relays the latest
     /// value to the guest via a synthvid `FeatureChange`, so the guest stops
@@ -168,12 +168,12 @@ impl Video {
     /// Creates a new video device.
     pub fn new(
         control: Box<dyn FramebufferControl>,
-        dirt_send: Option<mesh::Sender<Vec<DirtyRect>>>,
+        dirty_send: Option<mesh::Sender<Vec<DirtyRect>>>,
         updates_needed_recv: Option<mesh::Receiver<bool>>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             control,
-            dirt_send,
+            dirty_send,
             updates_needed_recv,
         })
     }
@@ -358,7 +358,7 @@ impl SimpleVmbusDevice for Video {
             match channel
                 .process(
                     &mut self.control,
-                    &self.dirt_send,
+                    &self.dirty_send,
                     &mut self.updates_needed_recv,
                 )
                 .await
@@ -426,7 +426,7 @@ impl VideoChannel {
     async fn process(
         &mut self,
         framebuffer: &mut Box<dyn FramebufferControl>,
-        dirt_send: &Option<mesh::Sender<Vec<DirtyRect>>>,
+        dirty_send: &Option<mesh::Sender<Vec<DirtyRect>>>,
         updates_needed_recv: &mut Option<mesh::Receiver<bool>>,
     ) -> Result<(), Error> {
         process_channel(
@@ -434,7 +434,7 @@ impl VideoChannel {
             &mut self.state,
             &mut self.packet_buf,
             framebuffer,
-            dirt_send,
+            dirty_send,
             updates_needed_recv,
         )
         .await
@@ -500,7 +500,7 @@ async fn process_channel(
     state: &mut ChannelState,
     packet_buf: &mut PacketBuffer,
     framebuffer: &mut Box<dyn FramebufferControl>,
-    dirt_send: &Option<mesh::Sender<Vec<DirtyRect>>>,
+    dirty_send: &Option<mesh::Sender<Vec<DirtyRect>>>,
     updates_needed_recv: &mut Option<mesh::Receiver<bool>>,
 ) -> Result<(), Error> {
     // Whether the guest should currently report screen/pointer updates. The
@@ -681,7 +681,7 @@ async fn process_channel(
                             // FeatureChange; this also drops any that a
                             // non-compliant guest keeps sending.
                             if updates_needed {
-                                if let Some(send) = dirt_send {
+                                if let Some(send) = dirty_send {
                                     let dirty: Vec<DirtyRect> = rects
                                         .iter()
                                         .map(|r| DirtyRect {
@@ -947,7 +947,7 @@ mod tests {
     fn start_worker<T: RingMem + 'static + Unpin + Send + Sync>(
         driver: &DefaultDriver,
         mut control: Box<dyn FramebufferControl>,
-        dirt_send: Option<mesh::Sender<Vec<DirtyRect>>>,
+        dirty_send: Option<mesh::Sender<Vec<DirtyRect>>>,
         updates_needed_recv: Option<mesh::Receiver<bool>>,
         mut channel: MessagePipe<T>,
     ) -> Task<Result<(), Error>> {
@@ -960,7 +960,7 @@ mod tests {
                 &mut state,
                 &mut packet_buf,
                 &mut control,
-                &dirt_send,
+                &dirty_send,
                 &mut updates_needed_recv,
             )
             .await
@@ -975,8 +975,8 @@ mod tests {
     async fn test_channel_updates_framebuffer_and_forwards_dirt(driver: DefaultDriver) {
         let (host, mut guest) = connected_message_pipes(16384);
         let (_device, control, mut view) = framebuffer_fixture();
-        let (dirt_send, mut dirt_recv) = mesh::channel();
-        let worker = start_worker(&driver, control, Some(dirt_send), None, host);
+        let (dirty_send, mut dirty_recv) = mesh::channel();
+        let worker = start_worker(&driver, control, Some(dirty_send), None, host);
 
         let version = protocol::Version::new(protocol::VERSION_MAJOR, protocol::VERSION_MINOR_BLUE);
         send_packet(
@@ -1062,7 +1062,7 @@ mod tests {
         ];
         send_dirt_packet(&mut guest, &rects).await;
 
-        let dirt = dirt_recv.recv().await.unwrap();
+        let dirt = dirty_recv.recv().await.unwrap();
         assert_eq!(dirt.len(), 2);
         assert_eq!(dirt[0].left, 1);
         assert_eq!(dirt[0].top, 2);
@@ -1081,12 +1081,12 @@ mod tests {
     async fn test_feature_change_gates_dirt_on_consumer_presence(driver: DefaultDriver) {
         let (host, mut guest) = connected_message_pipes(16384);
         let (_device, control, _view) = framebuffer_fixture();
-        let (dirt_send, mut dirt_recv) = mesh::channel();
+        let (dirty_send, mut dirty_recv) = mesh::channel();
         let (updates_needed_send, updates_needed_recv) = mesh::channel();
         let worker = start_worker(
             &driver,
             control,
-            Some(dirt_send),
+            Some(dirty_send),
             Some(updates_needed_recv),
             host,
         );
@@ -1180,7 +1180,7 @@ mod tests {
             }],
         )
         .await;
-        let dirt = dirt_recv.recv().await.unwrap();
+        let dirt = dirty_recv.recv().await.unwrap();
         assert_eq!(dirt.len(), 1);
         assert_eq!(
             (dirt[0].left, dirt[0].top, dirt[0].right, dirt[0].bottom),

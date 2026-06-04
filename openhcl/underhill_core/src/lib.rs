@@ -115,7 +115,7 @@ fn new_underhill_remote_console_cfg(
             .context("allocating framebuffer")?;
         tracing::debug!("framebuffer_gpa_base: {:#x}", framebuffer_gpa_base);
 
-        let (dirt_send, dirt_recv) = mesh::channel();
+        let (dirty_send, dirty_recv) = mesh::channel();
         let (updates_needed_send, updates_needed_recv) = mesh::channel();
 
         Ok(RemoteConsoleSetup {
@@ -125,11 +125,11 @@ fn new_underhill_remote_console_cfg(
                 synth_video: true,
                 input: mesh::Receiver::new(),
                 framebuffer: Some(fb),
-                dirt_send: Some(dirt_send),
+                dirty_send: Some(dirty_send),
                 updates_needed_recv: Some(updates_needed_recv),
             },
             framebuffer_access: Some(fba),
-            dirty_recv: Some(dirt_recv),
+            dirty_recv: Some(dirty_recv),
             updates_needed_send: Some(updates_needed_send),
         })
     } else {
@@ -140,7 +140,7 @@ fn new_underhill_remote_console_cfg(
                 synth_video: false,
                 input: mesh::Receiver::new(),
                 framebuffer: None,
-                dirt_send: None,
+                dirty_send: None,
                 updates_needed_recv: None,
             },
             framebuffer_access: None,

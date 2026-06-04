@@ -41,7 +41,7 @@ impl ResourceId<VmbusDeviceHandleKind> for SynthMouseHandle {
 #[derive(MeshPayload)]
 pub struct SynthVideoDeviceChannels {
     /// Channel for the device to forward dirty-rectangle hints to the consumer.
-    pub dirt_send: mesh::Sender<Vec<video_core::DirtyRect>>,
+    pub dirty_send: mesh::Sender<Vec<video_core::DirtyRect>>,
     /// Channel by which the consumer tells the device whether the guest's
     /// screen/pointer updates are currently needed: `true` when at least one
     /// consumer (e.g. a connected VNC client) is watching, `false` when none
