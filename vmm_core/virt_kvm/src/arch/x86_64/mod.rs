@@ -157,6 +157,10 @@ impl virt::Hypervisor for Kvm {
             .map(|e| x86defs::cpuid::Vendor::from_ebx_ecx_edx(e.ebx, e.ecx, e.edx))
             .unwrap_or(x86defs::cpuid::Vendor([0; 12]));
 
+        if !vendor.is_intel_compatible() && !vendor.is_amd_compatible() {
+            return Err(KvmError::UnsupportedCpuVendor);
+        }
+
         let mut cpuid_entries = supported_cpuid
             .into_iter()
             .filter_map(|entry| {
@@ -184,15 +188,13 @@ impl virt::Hypervisor for Kvm {
                         .with_vmx(true)
                         .into(),
                 )
-            } else if vendor.is_amd_compatible() {
+            } else {
                 (
                     CpuidFunction::ExtendedVersionAndFeatures.0,
                     x86defs::cpuid::ExtendedVersionAndFeaturesEcx::new()
                         .with_svm(true)
                         .into(),
                 )
-            } else {
-                (CpuidFunction::VersionAndFeatures.0, 0)
             };
             cpuid_entries.push(CpuidLeaf::new(function, [0, 0, 0, 0]).masked([0, 0, ecx_mask, 0]));
         }
@@ -334,14 +336,12 @@ impl virt::Hypervisor for Kvm {
                     cpuid_entries.result(CpuidFunction::VersionAndFeatures.0, 0, &[0; 4])[2],
                 )
                 .vmx()
-            } else if vendor.is_amd_compatible() {
+            } else {
                 x86defs::cpuid::ExtendedVersionAndFeaturesEcx::from(
                     cpuid_entries.result(CpuidFunction::ExtendedVersionAndFeatures.0, 0, &[0; 4])
                         [2],
                 )
                 .svm()
-            } else {
-                false
             };
             if !supported {
                 return Err(KvmError::NestedVirtUnsupported);
@@ -715,23 +715,20 @@ impl virt::BindProcessor for KvmProcessorBinder {
         // this MSR to 0; set the lock bit (as Hyper-V does) so that the
         // MSR reads as locked, and enable VMX outside SMX if the guest
         // has VMX in CPUID.
-        {
-            let cpuid = &self.partition.cpuid;
-            let leaf0 = cpuid.result(CpuidFunction::VendorAndMaxFunction.0, 0, &[0; 4]);
-            let vendor = x86defs::cpuid::Vendor::from_ebx_ecx_edx(leaf0[1], leaf0[2], leaf0[3]);
-            if vendor.is_intel_compatible() {
-                let ecx = x86defs::cpuid::VersionAndFeaturesEcx::from(
-                    cpuid.result(CpuidFunction::VersionAndFeatures.0, 0, &[0; 4])[2],
-                );
-                kvm.set_msrs(&[(
-                    x86defs::X86X_IA32_MSR_FEATURE_CONTROL,
-                    u64::from(
-                        x86defs::vmx::Ia32FeatureControl::new()
-                            .with_locked(true)
-                            .with_vmx_enabled_outside_smx(ecx.vmx()),
-                    ),
-                )])?;
-            }
+        if self.partition.caps.vendor.is_intel_compatible() {
+            let ecx = x86defs::cpuid::VersionAndFeaturesEcx::from(
+                self.partition
+                    .cpuid
+                    .result(CpuidFunction::VersionAndFeatures.0, 0, &[0; 4])[2],
+            );
+            kvm.set_msrs(&[(
+                x86defs::X86X_IA32_MSR_FEATURE_CONTROL,
+                u64::from(
+                    x86defs::vmx::Ia32FeatureControl::new()
+                        .with_locked(true)
+                        .with_vmx_enabled_outside_smx(ecx.vmx()),
+                ),
+            )])?;
         }
 
         // Set per-VP CPUID entries, fixing up APIC ID fields.
