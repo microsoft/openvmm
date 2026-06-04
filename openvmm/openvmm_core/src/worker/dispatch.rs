@@ -69,6 +69,7 @@ use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::GicConfig;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
+use openvmm_defs::config::MemoryConfig;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieIommuConfig;
@@ -975,6 +976,72 @@ struct GenericInitiatorSource {
     vnode: u32,
 }
 
+fn validate_cca_memory_config(vnode: usize, memory: &MemoryConfig) -> anyhow::Result<()> {
+    if memory.hugepages {
+        anyhow::bail!("node {vnode}: KVM CCA guest_memfd does not support hugetlb memory");
+    }
+    if memory.private_memory {
+        anyhow::bail!("node {vnode}: KVM CCA guest_memfd requires shared userspace memory backing");
+    }
+    Ok(())
+}
+
+fn validate_cca_pcie_resource(resource_id: &str) -> anyhow::Result<()> {
+    if resource_id != "virtio" {
+        anyhow::bail!(
+            "KVM CCA guest_memfd only supports in-process virtio devices on PCIe root ports"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod cca_validation_tests {
+    use super::validate_cca_memory_config;
+    use super::validate_cca_pcie_resource;
+    use openvmm_defs::config::MemoryConfig;
+    use test_with_tracing::test;
+
+    fn memory_config() -> MemoryConfig {
+        MemoryConfig {
+            mem_size: 1024 * 1024,
+            prefetch_memory: false,
+            private_memory: false,
+            transparent_hugepages: false,
+            hugepages: false,
+            hugepage_size: None,
+            host_numa_node: None,
+        }
+    }
+
+    #[test]
+    fn cca_memory_rejects_hugetlb_and_private_backing() {
+        let mut memory = memory_config();
+        memory.hugepages = true;
+        assert!(
+            validate_cca_memory_config(0, &memory)
+                .unwrap_err()
+                .to_string()
+                .contains("hugetlb")
+        );
+
+        memory.hugepages = false;
+        memory.private_memory = true;
+        assert!(
+            validate_cca_memory_config(0, &memory)
+                .unwrap_err()
+                .to_string()
+                .contains("shared userspace memory")
+        );
+    }
+
+    #[test]
+    fn cca_pcie_rejects_non_virtio_resources() {
+        validate_cca_pcie_resource("virtio").unwrap();
+        assert!(validate_cca_pcie_resource("vfio").is_err());
+    }
+}
+
 impl InitializedVm {
     /// Creates and initializes a VM using the given backend.
     async fn new(
@@ -1265,6 +1332,104 @@ impl InitializedVm {
                 )
             ) {
                 anyhow::bail!("KVM SNP guest_memfd does not support VMGS disks");
+            }
+        }
+
+        if cfg.hypervisor.with_isolation == Some(openvmm_defs::config::IsolationType::Cca) {
+            if shared_memory.is_some() {
+                anyhow::bail!("KVM CCA guest_memfd does not support restart memory backing");
+            }
+            if !matches!(
+                cfg.load_mode,
+                LoadMode::Linux {
+                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::DeviceTree,
+                    ..
+                }
+            ) {
+                anyhow::bail!(
+                    "KVM CCA guest_memfd currently only supports device tree Linux direct boot"
+                );
+            }
+            if cfg.hypervisor.with_hv {
+                anyhow::bail!("KVM CCA guest_memfd does not support Hyper-V enlightenments");
+            }
+            if cfg.hypervisor.with_vtl2.is_some() {
+                anyhow::bail!("KVM CCA guest_memfd does not support VTL2");
+            }
+            if cfg.chipset.with_hyperv_vga {
+                anyhow::bail!("KVM CCA guest_memfd does not support Hyper-V VGA");
+            }
+            if cfg.chipset_capabilities.with_i440bx_host_pci_bridge {
+                anyhow::bail!("KVM CCA guest_memfd does not support the i440BX host PCI bridge");
+            }
+            let only_supported_chipset_devices = cfg
+                .chipset_devices
+                .iter()
+                .all(|device| matches!(device.resource.id(), "serial_pl011" | "missing-dev"));
+            if !only_supported_chipset_devices {
+                anyhow::bail!("KVM CCA guest_memfd only supports PL011 serial chipset devices");
+            }
+            if cfg.vmbus.is_some() || cfg.vtl2_vmbus.is_some() || !cfg.vmbus_devices.is_empty() {
+                anyhow::bail!("KVM CCA guest_memfd does not support VMBus");
+            }
+            if !cfg.virtio_devices.is_empty() {
+                anyhow::bail!(
+                    "KVM CCA guest_memfd only supports virtio devices on PCIe root ports"
+                );
+            }
+            if !cfg.pcie_switches.is_empty() {
+                anyhow::bail!("KVM CCA guest_memfd does not support PCIe switches");
+            }
+            if !cfg.pcie_generic_initiators.is_empty() {
+                anyhow::bail!("KVM CCA guest_memfd does not support PCIe generic initiators");
+            }
+            if !cfg.vpci_devices.is_empty() {
+                anyhow::bail!("KVM CCA guest_memfd does not support VPCI devices");
+            }
+            if !cfg.pci_chipset_devices.is_empty() || cfg.isa_dma_controller.is_some() {
+                anyhow::bail!("KVM CCA guest_memfd does not support legacy PCI or ISA DMA devices");
+            }
+            if cfg.framebuffer.is_some() || cfg.vga_firmware.is_some() || cfg.debugger_rpc.is_some()
+            {
+                anyhow::bail!("KVM CCA guest_memfd does not support this VM configuration");
+            }
+            let unsupported_pcie_root_complex =
+                cfg.pcie_root_complexes.iter().any(|root_complex| {
+                    root_complex.cxl.is_some()
+                        || root_complex.iommu.is_some()
+                        || root_complex
+                            .ports
+                            .iter()
+                            .any(|port| port.hotplug || port.cxl)
+                });
+            if unsupported_pcie_root_complex {
+                anyhow::bail!(
+                    "KVM CCA guest_memfd does not support PCIe hotplug, CXL, or IOMMU root ports"
+                );
+            }
+            for device in &cfg.pcie_devices {
+                validate_cca_pcie_resource(device.resource.id())?;
+            }
+            for (vnode, node) in cfg.numa.nodes.iter().enumerate() {
+                if let Some(memory) = &node.mem {
+                    validate_cca_memory_config(vnode, memory)?;
+                }
+            }
+            if !cfg.floppy_disks.is_empty()
+                || !cfg.ide_disks.is_empty()
+                || !cfg.virtio_devices.is_empty()
+            {
+                anyhow::bail!("KVM CCA guest_memfd does not support disks");
+            }
+            if matches!(
+                cfg.vmgs,
+                Some(
+                    VmgsResource::Disk(_)
+                        | VmgsResource::ReprovisionOnFailure(_)
+                        | VmgsResource::Reprovision(_)
+                )
+            ) {
+                anyhow::bail!("KVM CCA guest_memfd does not support VMGS disks");
             }
         }
 
@@ -3836,6 +4001,13 @@ impl LoadedVm {
                     }
                     VmRpc::AddPcieDevice(rpc) => {
                         rpc.handle_failable(async |(port_name, resource)| {
+                            if self.inner.hypervisor_cfg.with_isolation
+                                == Some(openvmm_defs::config::IsolationType::Cca)
+                            {
+                                anyhow::bail!(
+                                    "KVM CCA guest_memfd does not support runtime PCI device addition"
+                                );
+                            }
                             // Find the root complex and its index for the named port.
                             let (rc_idx, rc) = self.inner.pcie_root_complexes.iter()
                                 .enumerate()
