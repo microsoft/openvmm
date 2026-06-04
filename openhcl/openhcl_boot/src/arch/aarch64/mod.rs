@@ -17,10 +17,6 @@ pub use memory::verify_imported_regions_hash;
 pub use vp::setup_vtl2_vp;
 pub use vsm::get_isolation_type;
 
-pub fn initialize(_: &ShimParams) {}
-
-pub fn uninitialize(_: &ShimParams) {}
-
 #[cfg(feature = "cvm_boot_log")]
 pub fn initialize_serial_io(_: &ShimParams) {}
 
