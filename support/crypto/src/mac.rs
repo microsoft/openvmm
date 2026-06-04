@@ -70,6 +70,14 @@ unsafe extern "C" {
 /// constructed directly from the return value of CF/Security APIs.
 pub(crate) struct CfHandle(pub(crate) CFTypeRef);
 
+// SAFETY: CoreFoundation immutable objects and Security.framework `SecKey`
+// objects are documented as thread-safe; CFRetain/CFRelease are also
+// thread-safe. The CF types wrapped by `CfHandle` in this crate are all in
+// that category.
+unsafe impl Send for CfHandle {}
+// SAFETY: see above.
+unsafe impl Sync for CfHandle {}
+
 impl Drop for CfHandle {
     fn drop(&mut self) {
         if !self.0.is_null() {
