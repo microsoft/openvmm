@@ -364,6 +364,8 @@ pub enum PcieIommuConfig {
     AmdVi,
     /// Arm SMMUv3 for aarch64 guests.
     Smmu,
+    /// Intel VT-d for x86_64 guests.
+    IntelVtd,
 }
 
 #[derive(Debug, Protobuf, Default, Clone)]

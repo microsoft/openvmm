@@ -5572,6 +5572,7 @@ dependencies = [
  "igvm_defs",
  "input_core",
  "inspect",
+ "intel_vtd",
  "iommu_common",
  "loader",
  "membacking",

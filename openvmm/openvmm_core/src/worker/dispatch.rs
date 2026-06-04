@@ -4,6 +4,7 @@
 mod amd_iommu_wiring;
 mod dump;
 mod ecam_config_access;
+mod intel_vtd_wiring;
 mod pcie_wiring;
 mod smmu_wiring;
 
@@ -427,6 +428,8 @@ pub(crate) struct InitializedVm {
     resolved_smmu_resources: Vec<smmu_wiring::ResolvedSmmuResources>,
     #[cfg(guest_arch = "x86_64")]
     resolved_iommu_resources: Vec<amd_iommu_wiring::ResolvedIommuResources>,
+    #[cfg(guest_arch = "x86_64")]
+    resolved_vtd_resources: Vec<intel_vtd_wiring::ResolvedVtdResources>,
     processor_topology: ProcessorTopology,
     igvm_file: Option<IgvmFile>,
     driver_source: VmTaskDriverSource,
@@ -757,6 +760,9 @@ struct LoadedVmInner {
     /// Pre-built AMD IOMMU ACPI configs (one per root complex).
     #[cfg(guest_arch = "x86_64")]
     amd_iommu_acpi_configs: Vec<vmm_core::acpi_builder::AmdIommuAcpiConfig>,
+    /// Pre-built Intel VT-d ACPI configs (one per root complex).
+    #[cfg(guest_arch = "x86_64")]
+    intel_vtd_acpi_configs: Vec<vmm_core::acpi_builder::IntelVtdAcpiConfig>,
     pcie_host_bridges: Vec<PcieHostBridge>,
     pcie_root_complexes: Vec<Arc<closeable_mutex::CloseableMutex<GenericPcieRootComplex>>>,
     /// Sources for SRAT generic-initiator entries, one per
@@ -775,11 +781,35 @@ struct LoadedVmInner {
     /// `None` for root complexes without an AMD IOMMU.
     #[cfg(guest_arch = "x86_64")]
     amd_iommu_shared_states: Vec<Option<Arc<amd_iommu::IommuSharedState>>>,
+    /// Per-RC Intel VT-d shared state, indexed parallel to `pcie_host_bridges`.
+    /// `None` for root complexes without an Intel VT-d unit.
+    #[cfg(guest_arch = "x86_64")]
+    intel_vtd_shared_states: Vec<Option<Arc<intel_vtd::VtdSharedState>>>,
     pcie_hotplug_devices: Vec<(
         String,
         vmotherboard::DynamicDeviceUnit,
         Arc<closeable_mutex::CloseableMutex<chipset_device_resources::ErasedChipsetDevice>>,
     )>,
+}
+
+/// Helper to determine the x86 IOMMU shared state for a given root complex.
+///
+/// At most one of AMD IOMMU and Intel VT-d will be active per RC (they are
+/// mutually exclusive). Returns `None` when neither is configured.
+#[cfg(guest_arch = "x86_64")]
+fn x86_iommu_for_rc<'a>(
+    amd_iommu_shared_states: &'a [Option<Arc<amd_iommu::IommuSharedState>>],
+    intel_vtd_shared_states: &'a [Option<Arc<intel_vtd::VtdSharedState>>],
+    rc_idx: usize,
+) -> Option<pcie_wiring::X86IommuSharedState<'a>> {
+    amd_iommu_shared_states[rc_idx]
+        .as_ref()
+        .map(pcie_wiring::X86IommuSharedState::AmdVi)
+        .or_else(|| {
+            intel_vtd_shared_states[rc_idx]
+                .as_ref()
+                .map(pcie_wiring::X86IommuSharedState::IntelVtd)
+        })
 }
 
 fn convert_vtl2_config(
@@ -1113,6 +1143,13 @@ impl InitializedVm {
             &resolved_layout.amd_iommu_ranges,
         );
 
+        // Combine Intel VT-d RC configs with MMIO ranges from the layout engine.
+        #[cfg(guest_arch = "x86_64")]
+        let resolved_vtd_resources = intel_vtd_wiring::resolve_vtd_resources(
+            &cfg.pcie_root_complexes,
+            &resolved_layout.intel_vtd_ranges,
+        );
+
         // Combine SMMU MMIO ranges with SPI layout.
         #[cfg(guest_arch = "aarch64")]
         let resolved_smmu_resources =
@@ -1294,6 +1331,8 @@ impl InitializedVm {
             resolved_smmu_resources,
             #[cfg(guest_arch = "x86_64")]
             resolved_iommu_resources,
+            #[cfg(guest_arch = "x86_64")]
+            resolved_vtd_resources,
             processor_topology,
             igvm_file,
             driver_source,
@@ -1328,6 +1367,8 @@ impl InitializedVm {
             resolved_smmu_resources,
             #[cfg(guest_arch = "x86_64")]
             resolved_iommu_resources,
+            #[cfg(guest_arch = "x86_64")]
+            resolved_vtd_resources,
             processor_topology,
             igvm_file,
             driver_source,
@@ -1487,7 +1528,7 @@ impl InitializedVm {
                                 with_psp: cfg.chipset.with_generic_psp,
                                 pm_base: PM_BASE,
                                 acpi_irq: SYSTEM_IRQ_ACPI,
-                                amd_iommu: None,
+                                iommu: None,
                             },
                         };
                         let srat = acpi_tables_builder.build_srat();
@@ -2292,12 +2333,32 @@ impl InitializedVm {
             &gm,
         )?;
 
+        // Instantiate an Intel VT-d unit on each root complex listed in
+        // --intel-vtd. Each unit is a pure MMIO platform device (no PCI
+        // config space), discovered by the guest via the DMAR ACPI table.
+        #[cfg(guest_arch = "x86_64")]
+        let intel_vtd_wiring::VtdDevicesResult {
+            acpi_configs: intel_vtd_acpi_configs,
+            shared_states: intel_vtd_shared_states,
+        } = intel_vtd_wiring::setup_intel_vtd(
+            &resolved_vtd_resources,
+            &pcie_host_bridges,
+            &pcie_rc_name_to_idx,
+            &chipset_builder,
+            partition.as_ref(),
+            &gm,
+        )?;
+
         // Wire deferred root complex and switch MSI connections now that
-        // IOMMU setup is complete. On x86_64, this applies AMD IOMMU
+        // IOMMU setup is complete. On x86_64, this applies IOMMU
         // interrupt remapping when the segment is covered.
         for deferred in deferred_msi_conns {
             #[cfg(guest_arch = "x86_64")]
-            let iommu = amd_iommu_shared_states[deferred.rc_idx].as_ref();
+            let iommu = x86_iommu_for_rc(
+                &amd_iommu_shared_states,
+                &intel_vtd_shared_states,
+                deferred.rc_idx,
+            );
             pcie_wiring::PcieMsiPlatform {
                 partition: partition.as_ref(),
                 segment: deferred.segment,
@@ -2331,7 +2392,9 @@ impl InitializedVm {
             let port_info = &port_info;
             let processor_topology = &processor_topology;
             #[cfg(guest_arch = "x86_64")]
-            let iommu_shared_states = &amd_iommu_shared_states;
+            let amd_states = &amd_iommu_shared_states;
+            #[cfg(guest_arch = "x86_64")]
+            let vtd_states = &intel_vtd_shared_states;
             #[cfg(guest_arch = "aarch64")]
             let smmu_states = &smmu_shared_states;
             async move {
@@ -2352,7 +2415,7 @@ impl InitializedVm {
                             segment: pi.segment,
                             processor_topology,
                             #[cfg(guest_arch = "x86_64")]
-                            iommu: iommu_shared_states[pi.rc_idx].as_ref(),
+                            iommu: x86_iommu_for_rc(amd_states, vtd_states, pi.rc_idx),
                         },
                         guest_memory: gm,
                         bus_range: &pi.bus_range,
@@ -2884,6 +2947,8 @@ impl InitializedVm {
                 chipset: chipset.chipset.clone(),
                 #[cfg(guest_arch = "x86_64")]
                 amd_iommu_acpi_configs,
+                #[cfg(guest_arch = "x86_64")]
+                intel_vtd_acpi_configs,
                 pcie_host_bridges,
                 pcie_root_complexes,
                 generic_initiator_sources,
@@ -2894,6 +2959,8 @@ impl InitializedVm {
                 smmu_shared_states,
                 #[cfg(guest_arch = "x86_64")]
                 amd_iommu_shared_states,
+                #[cfg(guest_arch = "x86_64")]
+                intel_vtd_shared_states,
             },
         };
 
@@ -2974,14 +3041,23 @@ impl LoadedVmInner {
                 with_pit: self.chipset_capabilities.with_pit,
                 pm_base: PM_BASE,
                 acpi_irq: SYSTEM_IRQ_ACPI,
-                amd_iommu: if self.amd_iommu_acpi_configs.is_empty() {
-                    None
+                iommu: if !self.amd_iommu_acpi_configs.is_empty() {
+                    Some(vmm_core::acpi_builder::X86IommuAcpiConfig::AmdVi(
+                        vmm_core::acpi_builder::AmdIommuIvrsConfig {
+                            pa_size: amd_iommu::PA_SIZE,
+                            va_size: amd_iommu::VA_SIZE,
+                            iommus: self.amd_iommu_acpi_configs.clone(),
+                        },
+                    ))
+                } else if !self.intel_vtd_acpi_configs.is_empty() {
+                    Some(vmm_core::acpi_builder::X86IommuAcpiConfig::IntelVtd(
+                        vmm_core::acpi_builder::IntelVtdDmarConfig {
+                            host_address_width: 48,
+                            units: self.intel_vtd_acpi_configs.clone(),
+                        },
+                    ))
                 } else {
-                    Some(vmm_core::acpi_builder::AmdIommuIvrsConfig {
-                        pa_size: amd_iommu::PA_SIZE,
-                        va_size: amd_iommu::VA_SIZE,
-                        iommus: self.amd_iommu_acpi_configs.clone(),
-                    })
+                    None
                 },
             },
             #[cfg(guest_arch = "aarch64")]
@@ -3551,7 +3627,11 @@ impl LoadedVm {
                                         segment,
                                         processor_topology: &self.inner.processor_topology,
                                         #[cfg(guest_arch = "x86_64")]
-                                        iommu: self.inner.amd_iommu_shared_states[rc_idx].as_ref(),
+                                        iommu: x86_iommu_for_rc(
+                                            &self.inner.amd_iommu_shared_states,
+                                            &self.inner.intel_vtd_shared_states,
+                                            rc_idx,
+                                        ),
                                     },
                                     guest_memory: &self.inner.gm,
                                     bus_range: &bus_range,

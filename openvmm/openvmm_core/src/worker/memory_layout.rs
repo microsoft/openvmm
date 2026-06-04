@@ -85,6 +85,10 @@ pub(super) struct ResolvedMemoryLayout {
     /// Each range is 16 KiB. Empty when no AMD IOMMUs are configured.
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     pub amd_iommu_ranges: Vec<MemoryRange>,
+    /// Resolved MMIO ranges for Intel VT-d instances, one per configured unit.
+    /// Each range is 4 KiB. Empty when no Intel VT-d units are configured.
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
+    pub intel_vtd_ranges: Vec<MemoryRange>,
 }
 
 #[derive(Debug)]
@@ -337,6 +341,24 @@ pub(super) fn resolve_memory_layout(
         );
     }
 
+    // Intel VT-d: allocate one 4 KiB region per instance, placed below 4 GiB.
+    const INTEL_VTD_MMIO_SIZE: u64 = 0x1000; // 4 KiB per VT-d spec
+    let intel_vtd_count = input
+        .pcie_root_complexes
+        .iter()
+        .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::IntelVtd)))
+        .count();
+    let mut intel_vtd_ranges: Vec<MemoryRange> = vec![MemoryRange::EMPTY; intel_vtd_count];
+    for (idx, range) in intel_vtd_ranges.iter_mut().enumerate() {
+        builder.request(
+            format!("intel-vtd-{idx}"),
+            range,
+            INTEL_VTD_MMIO_SIZE,
+            INTEL_VTD_MMIO_SIZE,
+            Placement::Mmio32,
+        );
+    }
+
     // RAM request order is part of the NUMA compatibility contract: the first
     // request maps to vnode 0, the second to vnode 1, and so on. Memory-less
     // nodes (size 0) are skipped so the layout allocator never sees a
@@ -516,6 +538,7 @@ pub(super) fn resolve_memory_layout(
         },
         smmu_ranges,
         amd_iommu_ranges,
+        intel_vtd_ranges,
     })
 }
 

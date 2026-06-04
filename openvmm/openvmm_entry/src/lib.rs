@@ -905,17 +905,19 @@ async fn vm_config_from_command_line(
                 .any(|s| s == &rc_cli.name)
                 .then_some(openvmm_defs::config::PcieIommuConfig::Smmu),
             #[cfg(guest_arch = "x86_64")]
-            iommu: opt
-                .amd_iommu
-                .iter()
-                .any(|s| s == &rc_cli.name)
-                .then_some(openvmm_defs::config::PcieIommuConfig::AmdVi),
+            iommu: if opt.amd_iommu.iter().any(|s| s == &rc_cli.name) {
+                Some(openvmm_defs::config::PcieIommuConfig::AmdVi)
+            } else if opt.intel_vtd.iter().any(|s| s == &rc_cli.name) {
+                Some(openvmm_defs::config::PcieIommuConfig::IntelVtd)
+            } else {
+                None
+            },
             vnode: rc_cli.vnode,
             preserve_bars: rc_cli.preserve_bars,
         });
     }
 
-    // Validate that all --smmu / --amd-iommu names refer to known root complexes.
+    // Validate that all --smmu / --amd-iommu / --intel-vtd names refer to known root complexes.
     #[cfg(guest_arch = "aarch64")]
     for name in &opt.smmu {
         anyhow::ensure!(
@@ -928,6 +930,17 @@ async fn vm_config_from_command_line(
         anyhow::ensure!(
             pcie_root_complexes.iter().any(|rc| rc.name == *name),
             "--amd-iommu refers to unknown root complex '{name}'"
+        );
+    }
+    #[cfg(guest_arch = "x86_64")]
+    for name in &opt.intel_vtd {
+        anyhow::ensure!(
+            pcie_root_complexes.iter().any(|rc| rc.name == *name),
+            "--intel-vtd refers to unknown root complex '{name}'"
+        );
+        anyhow::ensure!(
+            !opt.amd_iommu.iter().any(|s| s == name),
+            "--intel-vtd and --amd-iommu are mutually exclusive on root complex '{name}'"
         );
     }
 
