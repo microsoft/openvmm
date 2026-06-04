@@ -202,7 +202,14 @@ impl<T: Listener> MultiClientServer<T> {
     fn signal_updates_needed(&self, needed: bool) {
         if let Some(channels) = &self.synth_video {
             channels.updates_needed_send.send(needed);
-            tracing::debug!(needed, "signaled updates-needed to video device");
+            // Rate-limited: the idle self-heal re-asserts `false` on every dirty
+            // event a re-handshaked (or non-compliant) guest sends while no
+            // client is connected, which would otherwise spam this log.
+            tracelimit::event_ratelimited!(
+                tracing::Level::DEBUG,
+                needed,
+                "signaled updates-needed to video device"
+            );
         }
     }
 
