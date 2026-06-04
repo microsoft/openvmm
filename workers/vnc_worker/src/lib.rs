@@ -200,8 +200,8 @@ impl<T: Listener> MultiClientServer<T> {
     /// Tells the synth video device whether the guest's screen/pointer updates
     /// are needed. No-op when no device is wired up.
     fn signal_updates_needed(&self, needed: bool) {
-        if let Some(v) = &self.synth_video {
-            v.updates_needed_send.send(needed);
+        if let Some(channels) = &self.synth_video {
+            channels.updates_needed_send.send(needed);
             tracing::debug!(needed, "signaled updates-needed to video device");
         }
     }
@@ -229,7 +229,7 @@ impl<T: Listener> MultiClientServer<T> {
             // Optional future for dirty rect reception (pending if no video device).
             let dirty_fut = async {
                 match synth_video {
-                    Some(v) => v.dirty_recv.recv().await,
+                    Some(channels) => channels.dirty_recv.recv().await,
                     None => std::future::pending().await,
                 }
             };
