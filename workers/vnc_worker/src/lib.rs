@@ -795,24 +795,16 @@ mod tests {
         }
     }
 
+    // Block until the message arrives instead of rolling our own deadline: a
+    // hand-rolled timeout only adds flakiness, and nextest fails a wedged test
+    // on its own slow-test timeout. A closed channel is a real failure, so let
+    // the unwrap surface it.
     fn wait_for_input(recv: &mut mesh::Receiver<InputData>) -> InputData {
-        for _ in 0..100 {
-            if let Ok(data) = recv.try_recv() {
-                return data;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        panic!("timed out waiting for input");
+        pal_async::local::block_on(recv.recv()).expect("input channel closed")
     }
 
     fn wait_for_signal(recv: &mut mesh::Receiver<bool>) -> bool {
-        for _ in 0..200 {
-            if let Ok(v) = recv.try_recv() {
-                return v;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        panic!("timed out waiting for updates-needed signal");
+        pal_async::local::block_on(recv.recv()).expect("updates-needed channel closed")
     }
 
     #[test]
