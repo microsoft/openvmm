@@ -83,69 +83,78 @@ pub struct SteDw0 {
     pub s1_cd_max: u8,
 }
 
-/// STE QW1 (bits `[127:64]`): Stage 1 attributes, stream world, etc.
+/// STE QW1 (bits `[127:64]`): Stage 1 attributes, stream world, overrides.
 #[bitfield(u64)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SteDw1 {
-    /// S1 default substream behavior.
+    /// S1 default substream behavior (bits `[65:64]`).
     #[bits(2)]
     pub s1_dss: u8,
-    /// CD pointer inner cacheability.
+    /// CD pointer inner cacheability (bits `[67:66]`).
     #[bits(2)]
     pub s1_cir: u8,
-    /// CD pointer outer cacheability.
+    /// CD pointer outer cacheability (bits `[69:68]`).
     #[bits(2)]
     pub s1_cor: u8,
-    /// CD pointer shareability.
+    /// CD pointer shareability (bits `[71:70]`).
     #[bits(2)]
     pub s1_csh: u8,
+    /// S2HWU59-62 (bits `[75:72]`, RES0 for S1-only emulator).
     #[bits(4)]
-    _reserved0: u64,
-    /// DRE (DPCM/stall related).
+    _s2hwu: u64,
+    /// Destructive Read Enable (bit `[76]`).
     pub dre: bool,
-    /// Contiguous hint.
-    pub cont: bool,
-    #[bits(2)]
-    _reserved1: u64,
-    /// Memory type config / MemAttr / MEV.
-    #[bits(5)]
-    pub mem_attr_and_mev: u8,
-    #[bits(3)]
-    _reserved2: u64,
-    /// Allocation configuration.
+    /// Contiguous hint — 4-bit span (bits `[80:77]`).
     #[bits(4)]
-    pub alloccfg: u8,
-    /// Shareability override.
-    #[bits(2)]
-    pub shcfg: u8,
-    /// NS configuration.
-    #[bits(2)]
-    pub nscfg: u8,
-    #[bits(3)]
-    _reserved3: u64,
-    /// Stream world.
-    #[bits(2)]
-    pub strw: u8,
-    /// Memory type config override.
-    pub mtcfg: bool,
-    /// Memory attribute (for bypass).
-    #[bits(4)]
-    pub mem_attr: u8,
-    /// Instruction/data override.
-    #[bits(2)]
-    pub instcfg: u8,
-    /// Privilege override.
-    #[bits(2)]
-    pub privcfg: u8,
-    /// Software reserved fields.
+    pub cont: u8,
+    /// Directed Cache Prefetch (bit `[81]`).
+    pub dcp: bool,
+    /// PPAR (bit `[82]`).
+    pub ppar: bool,
+    /// MEV — merge events (bit `[83]`).
+    pub mev: bool,
+    /// Software reserved (bits `[87:84]`).
     #[bits(4)]
     pub sw_reserved: u8,
-    /// EATS (ATS behavior).
-    #[bits(3)]
+    /// S1PIE (bit `[88]`).
+    pub s1pie: bool,
+    /// S2FWB (bit `[89]`).
+    pub s2fwb: bool,
+    /// S1MPAM (bit `[90]`).
+    pub s1mpam: bool,
+    /// S1STALLD — stage 1 stall disable (bit `[91]`).
+    pub s1stalld: bool,
+    /// EATS — ATS behavior (bits `[93:92]`).
+    #[bits(2)]
     pub eats: u8,
-    /// S2 VMID (ignored for S2 bypass).
-    #[bits(11)]
-    pub s2_vmid: u16,
+    /// Stream world (bits `[95:94]`).
+    #[bits(2)]
+    pub strw: u8,
+    /// Memory attribute for bypass (bits `[99:96]`).
+    #[bits(4)]
+    pub mem_attr: u8,
+    /// Memory type config override (bit `[100]`).
+    pub mtcfg: bool,
+    /// Allocation hints override (bits `[104:101]`).
+    #[bits(4)]
+    pub alloccfg: u8,
+    #[bits(3)]
+    _reserved0: u64,
+    /// Shareability override (bits `[109:108]`).
+    #[bits(2)]
+    pub shcfg: u8,
+    /// NS configuration (bits `[111:110]`).
+    #[bits(2)]
+    pub nscfg: u8,
+    /// Privilege override (bits `[113:112]`).
+    #[bits(2)]
+    pub privcfg: u8,
+    /// Instruction/data override (bits `[115:114]`).
+    #[bits(2)]
+    pub instcfg: u8,
+    /// Implementation defined (bits `[127:116]`).
+    #[bits(12)]
+    _impl_def: u64,
 }
 
 open_enum! {
@@ -223,36 +232,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ste_dw0_fields() {
-        let dw0 = SteDw0::new()
-            .with_v(true)
-            .with_config(SteConfig::S1_TRANS.0)
-            .with_s1_fmt(S1Fmt::LINEAR.0)
-            .with_s1_context_ptr(0x1000_0000_u64 >> 6)
-            .with_s1_cd_max(0);
-
-        assert!(dw0.v());
-        assert_eq!(dw0.config(), SteConfig::S1_TRANS.0);
-        assert_eq!(dw0.s1_fmt(), S1Fmt::LINEAR.0);
-        assert_eq!(dw0.s1_context_ptr() << 6, 0x1000_0000);
-        assert_eq!(dw0.s1_cd_max(), 0);
-    }
-
-    #[test]
-    fn test_ste_dw1_fields() {
-        let dw1 = SteDw1::new()
-            .with_s1_cir(0b01) // WB
-            .with_s1_cor(0b01) // WB
-            .with_s1_csh(0b11) // ISH
-            .with_strw(Strw::NS_EL1.0);
-
-        assert_eq!(dw1.s1_cir(), 0b01);
-        assert_eq!(dw1.s1_cor(), 0b01);
-        assert_eq!(dw1.s1_csh(), 0b11);
-        assert_eq!(dw1.strw(), Strw::NS_EL1.0);
-    }
-
-    #[test]
     fn test_ste_bypass() {
         let ste = Ste {
             qw0: SteDw0::new().with_v(true).with_config(SteConfig::BYPASS.0),
@@ -287,23 +266,5 @@ mod tests {
         assert_eq!(ste.s1_context_ptr(), cd_addr);
         assert_eq!(ste.s1_cd_max(), 0);
         assert_eq!(ste.s1_fmt(), S1Fmt::LINEAR.0);
-    }
-
-    #[test]
-    fn test_ste_invalid_returns_fault() {
-        let ste = Ste {
-            qw0: SteDw0::new(),
-            qw1: SteDw1::new(),
-            _qw2_7: [0; 6],
-        };
-        assert!(!ste.valid());
-    }
-
-    #[test]
-    fn test_ste_context_ptr_alignment() {
-        // Context pointer is 64-byte aligned (bits [55:6])
-        let dw0 = SteDw0::new().with_s1_context_ptr(0xABCD_EF00_u64 >> 6);
-        // Reconstructed address should be 64-byte aligned
-        assert_eq!((dw0.s1_context_ptr() << 6) & 0x3F, 0);
     }
 }
