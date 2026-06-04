@@ -34,6 +34,12 @@ dev_snp_ohcl_tio_support = ["underhill_entry/dev_snp_ohcl_tio_support"]
 underhill_entry.workspace = true
 openvmm_hcl_resources.workspace = true
 tracing.workspace = true
+
+# Only use Symcrypt when building for musl, since that's the only configuration
+# with a prebuilt lib in deps.
+[target.'cfg(target_env = "musl")'.dependencies]
+crypto = { workspace = true, features = ["symcrypt"] }
+[target.'cfg(not(target_env = "musl"))'.dependencies]
 crypto = { workspace = true, features = ["openssl"] }
 # OpenVMM-HCL only needs libcrypto from openssl
 openssl_crypto_only.workspace = true
