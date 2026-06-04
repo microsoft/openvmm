@@ -717,6 +717,47 @@ pub struct Cdw11FeatureReservationPersistence {
     _rsvd: u32,
 }
 
+/// CDW11 layout for Set/Get Features - Asynchronous Event Configuration
+/// (Feature Identifier 0Bh).
+///
+/// Defined in the NVMe Base Specification, "Asynchronous Event Configuration"
+/// Feature section (Base 2.0c section 5.21.1.11 / Base 2.3 section
+/// 5.2.26.1.5). Each bit, when set to 1, enables the corresponding
+/// Asynchronous Event Notification class; when cleared to 0, the
+/// controller shall not report that notification.
+///
+/// Bits 0..13 inclusive (SMART/Health critical warnings byte plus the
+/// six notice classes defined through NVMe 1.4) are named here. Bits
+/// 14..31 cover newer-revision and transport-specific events; this type
+/// preserves them as opaque pass-through state so the controller can
+/// store and echo an arbitrary CDW11 value via Set/Get Features even
+/// without acting on every individual bit.
+#[bitfield(u32)]
+pub struct Cdw11FeatureAsyncEventConfig {
+    /// SMART / Health Critical Warnings (SHCW) - one bit per critical
+    /// warning class defined in the SMART/Health Information log page.
+    pub smart_health_critical_warnings: u8,
+    /// Attached Namespace Attribute Notices (NAN) - notify on attached
+    /// namespace attribute changes (e.g. namespace added or removed).
+    pub namespace_attribute_notices: bool,
+    /// Firmware Activation Notices (FAN).
+    pub firmware_activation_notices: bool,
+    /// Telemetry Log Notices (TLN).
+    pub telemetry_log_notices: bool,
+    /// Asymmetric Namespace Access Change Notices (ANACN).
+    pub ana_change_notices: bool,
+    /// Predictable Latency Event Aggregate Log Change Notices (PLEALCN).
+    pub predictable_latency_event_aggregate_log_change_notices: bool,
+    /// LBA Status Information Alert Notices (LSIAN) - I/O Command Set
+    /// specific (NVM).
+    pub lba_status_info_alert_notices: bool,
+    /// Opaque higher bits (Endurance Group, Reachability,
+    /// Cross-Controller, Discovery, etc.) - stored verbatim so that
+    /// Get Features round-trips whatever the host wrote.
+    #[bits(18)]
+    _rsvd: u32,
+}
+
 #[bitfield(u32)]
 pub struct Cdw10CreateIoQueue {
     pub qid: u16,
