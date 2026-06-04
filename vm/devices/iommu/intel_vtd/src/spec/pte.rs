@@ -49,8 +49,8 @@ pub struct SlPte {
     pub address: u64,
     #[bits(10)]
     _ignored3: u64,
-    /// Transient mapping hint (ignored by emulator).
-    pub tm: bool,
+    #[bits(1)]
+    _reserved: u64,
     #[bits(1)]
     _ignored4: u64,
 }

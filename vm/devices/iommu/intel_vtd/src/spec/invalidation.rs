@@ -73,13 +73,15 @@ pub struct InvalidationWaitDw0Dw1 {
     /// Descriptor type (must be 0x05).
     #[bits(4)]
     pub desc_type: u8,
-    /// Interrupt Flag — 1 = generate invalidation completion event.
-    pub iflag: bool,
+    #[bits(1)]
+    _reserved_bit4: u64,
     /// Status Write — 1 = write status_data to status_address.
     pub sw: bool,
     /// Fence — 1 = ensure all prior invalidation descriptors complete first.
     pub fn_flag: bool,
-    #[bits(25)]
+    /// Interrupt Flag — 1 = generate invalidation completion event.
+    pub iflag: bool,
+    #[bits(24)]
     _reserved1: u64,
     /// Status Data (32-bit value to write when SW=1).
     #[bits(32)]
@@ -124,11 +126,12 @@ pub fn parse_invalidation_wait(
 /// ```text
 /// Bits [3:0]   = Type (0x01)
 /// Bits [5:4]   = Granularity (01=global, 10=domain, 11=device)
-/// Bits [31:6]  = reserved
-/// Bits [47:32] = Domain ID (for domain/device granularity)
-/// Bits [63:48] = Source ID (for device granularity)
-/// Bits [65:64] = Function Mask (for device granularity)
-/// Bits [127:66]= reserved
+/// Bits [15:6]  = reserved
+/// Bits [31:16] = Domain ID (for domain/device granularity)
+/// Bits [47:32] = Source ID (for device granularity)
+/// Bits [49:48] = Function Mask (for device granularity)
+/// Bits [63:50] = reserved
+/// Bits [127:64]= reserved
 /// ```
 #[bitfield(u64)]
 #[derive(Inspect)]
@@ -140,7 +143,7 @@ pub struct ContextCacheInvalidateDw0Dw1 {
     /// Invalidation granularity: 01=global, 10=domain, 11=device.
     #[bits(2)]
     pub granularity: u8,
-    #[bits(26)]
+    #[bits(10)]
     _reserved1: u64,
     /// Domain ID (for domain-selective and device-selective invalidation).
     #[bits(16)]
@@ -148,21 +151,24 @@ pub struct ContextCacheInvalidateDw0Dw1 {
     /// Source ID (for device-selective invalidation).
     #[bits(16)]
     pub sid: u16,
+    /// Function Mask for device-selective invalidation.
+    #[bits(2)]
+    pub fm: u8,
+    #[bits(14)]
+    _reserved2: u64,
 }
 
-/// IOTLB Invalidation Descriptor (type 0x02, §6.5.2.2).
+/// IOTLB Invalidation Descriptor (type 0x02, §6.5.2.3).
 ///
 /// ```text
 /// Bits [3:0]   = Type (0x02)
-/// Bits [5:4]   = Granularity (01=global, 10=domain, 11=page)
-/// Bit  [6]     = DW (Drain Writes)
-/// Bit  [7]     = DR (Drain Reads)
-/// Bits [31:8]  = reserved
-/// Bits [47:32] = Domain ID (for domain/page granularity)
-/// Bits [63:48] = reserved
-/// Bits [75:64] = AM (Address Mask, for page granularity)
-/// Bit  [76]    = IH (Invalidation Hint)
-/// Bits [127:77]= Address [63:12] (for page-selective, bits shifted)
+/// Bit  [4]     = reserved
+/// Bits [6:5]   = Granularity (01=global, 10=domain, 11=page)
+/// Bit  [7]     = DW (Drain Writes)
+/// Bit  [8]     = DR (Drain Reads)
+/// Bits [15:9]  = reserved
+/// Bits [31:16] = Domain ID (for domain/page granularity)
+/// Bits [63:32] = reserved
 /// ```
 #[bitfield(u64)]
 #[derive(Inspect)]
@@ -171,6 +177,8 @@ pub struct IotlbInvalidateDw0Dw1 {
     /// Descriptor type (must be 0x02).
     #[bits(4)]
     pub desc_type: u8,
+    #[bits(1)]
+    _reserved_bit4: u64,
     /// Invalidation granularity: 01=global, 10=domain, 11=page.
     #[bits(2)]
     pub granularity: u8,
@@ -178,22 +186,23 @@ pub struct IotlbInvalidateDw0Dw1 {
     pub dw: bool,
     /// Drain Reads.
     pub dr: bool,
-    #[bits(24)]
+    #[bits(7)]
     _reserved1: u64,
     /// Domain ID (for domain-selective and page-selective invalidation).
     #[bits(16)]
     pub did: u16,
-    #[bits(16)]
+    #[bits(32)]
     _reserved2: u64,
 }
 
-/// Interrupt Entry Cache Invalidation Descriptor (type 0x04, §6.5.2.6).
+/// Interrupt Entry Cache Invalidation Descriptor (type 0x04, §6.5.2.7).
 ///
 /// ```text
 /// Bits [3:0]   = Type (0x04)
-/// Bits [5:4]   = Granularity (00=global, 01=index)
-/// Bits [26:6]  = reserved
-/// Bits [31:27] = IM (Index Mask, for index-selective)
+/// Bit  [4]     = Granularity (0=global, 1=index-selective)
+/// Bits [22:5]  = reserved
+/// Bits [27:23] = IM (Index Mask, for index-selective)
+/// Bits [31:28] = reserved
 /// Bits [47:32] = IIDX (Interrupt Index, for index-selective)
 /// Bits [63:48] = reserved
 /// Bits [127:64]= reserved
@@ -205,19 +214,20 @@ pub struct InterruptCacheInvalidateDw0Dw1 {
     /// Descriptor type (must be 0x04).
     #[bits(4)]
     pub desc_type: u8,
-    /// Invalidation granularity: 00=global, 01=index.
-    #[bits(2)]
-    pub granularity: u8,
-    #[bits(21)]
+    /// Invalidation granularity: 0=global, 1=index-selective.
+    pub granularity: bool,
+    #[bits(18)]
     _reserved1: u64,
     /// Index Mask (5 bits, for index-selective invalidation).
     #[bits(5)]
     pub im: u8,
+    #[bits(4)]
+    _reserved2: u64,
     /// Interrupt Index (16 bits, for index-selective invalidation).
     #[bits(16)]
     pub iidx: u16,
     #[bits(16)]
-    _reserved2: u64,
+    _reserved3: u64,
 }
 
 #[cfg(test)]

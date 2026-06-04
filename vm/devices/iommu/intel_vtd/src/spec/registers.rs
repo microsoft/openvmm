@@ -629,24 +629,15 @@ pub struct IotlbReg {
 #[derive(Inspect)]
 #[rustfmt::skip]
 pub struct FrcdHi {
-    /// Faulting address bits [63:12] (from the low 64 bits, but stored here
-    /// for bitfield convenience — actual layout: low 64-bit has FI, high has
-    /// the rest). See note below.
-    #[bits(16)]
-    _reserved1: u64,
     /// Source ID (BDF) of the faulting device.
     #[bits(16)]
     pub sid: u16,
+    #[bits(32)]
+    _reserved1: u64,
     /// Fault Reason code. See `FaultReason` enum.
     #[bits(8)]
     pub fr: u8,
-    /// PASID Present (not used in legacy mode).
-    pub pp: bool,
-    /// Execute Permission Requested (not used).
-    pub exe: bool,
-    /// Privilege Mode Requested (not used).
-    pub priv_mode: bool,
-    #[bits(17)]
+    #[bits(4)]
     _reserved2: u64,
     /// Address Type (2 bits).
     #[bits(2)]
