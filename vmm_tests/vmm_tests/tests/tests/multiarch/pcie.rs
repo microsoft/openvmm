@@ -642,6 +642,81 @@ async fn amd_iommu_mixed_topology(
     Ok(())
 }
 
+/// Test Intel VT-d IOMMU emulation with a mixed topology:
+///
+/// - Root complex s0rc0 (segment 0): VT-d IOMMU enabled, NVMe + virtio-net
+/// - Root complex s1rc0 (segment 1): no IOMMU, NVMe + virtio-net
+///
+/// Verifies:
+/// 1. Linux discovers the Intel IOMMU (dmesg shows DMAR/Intel IOMMU init)
+/// 2. DMAR ACPI table is present
+/// 3. Devices behind the IOMMU RC are in IOMMU groups
+/// 4. Devices on both RCs enumerate and function (block I/O, network interface)
+/// 5. DMA through the IOMMU works (NVMe I/O behind the IOMMU)
+#[vmm_test_with(openvmm_intel(linux_direct_x64))]
+async fn intel_vtd_mixed_topology(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(2, 1, 4) // 2 segments, 1 RC each, 4 ports each
+                .with_intel_vtd(&["s0rc0"]) // VT-d only on segment 0's RC
+                .with_pcie_nvme("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
+                .with_virtio_nic("s0rc0rp1")
+                .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
+                .with_virtio_nic("s1rc0rp1")
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // 1. Verify Intel IOMMU is discovered by Linux
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    tracing::info!(dmesg_len = dmesg.len(), "dmesg captured");
+
+    assert!(
+        dmesg.contains("DMAR") || dmesg.contains("Intel IOMMU") || dmesg.contains("intel-iommu"),
+        "Linux should discover the Intel IOMMU in dmesg. dmesg excerpt:\n{}",
+        dmesg
+            .lines()
+            .filter(|l| {
+                l.contains("IOMMU")
+                    || l.contains("iommu")
+                    || l.contains("DMAR")
+                    || l.contains("dmar")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // 2. Verify DMAR ACPI table is present
+    let acpi_tables = cmd!(sh, "ls /sys/firmware/acpi/tables/").read().await?;
+    assert!(
+        acpi_tables.contains("DMAR"),
+        "DMAR ACPI table should be present. Tables: {acpi_tables}"
+    );
+
+    // 3. Verify IOMMU groups exist (devices behind the IOMMU RC)
+    let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/").read().await?;
+    tracing::info!(%iommu_groups, "IOMMU groups");
+    assert!(
+        !iommu_groups.trim().is_empty(),
+        "IOMMU groups should exist for devices behind the IOMMU"
+    );
+
+    // 4. Verify all NVMe devices enumerate, have block devices, and DMA
+    //    works through the IOMMU (segment 0 / PCI domain 0000).
+    verify_nvme_dma_on_segment(&sh, 2, "0000").await?;
+
+    // 5. Verify virtio-net interfaces exist
+    verify_net_interface_count(&sh, 2).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Boot a guest with VMBus entirely disabled.
 ///
 /// Uses PCIe NVMe for the boot disk, virtio-vsock for pipette communication,

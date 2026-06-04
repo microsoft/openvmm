@@ -463,6 +463,22 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Enable Intel VT-d IOMMU on the specified root complexes.
+    ///
+    /// Each name must match a root complex added via
+    /// [`with_pcie_root_topology`](Self::with_pcie_root_topology). The IOMMU
+    /// is a platform device discovered via the ACPI DMAR table; PCIe devices
+    /// behind those root complexes have DMA translated through
+    /// guest-programmed page tables and MSIs remapped through the interrupt
+    /// remapping table.
+    pub fn with_intel_vtd(mut self, rc_names: &[&str]) -> Self {
+        for name in rc_names {
+            self.pending_iommu
+                .push((name.to_string(), PcieIommuConfig::IntelVtd));
+        }
+        self
+    }
+
     /// This is intended for special one-off use cases. As soon as something
     /// is needed in multiple tests we should consider making it a supported
     /// pattern.
