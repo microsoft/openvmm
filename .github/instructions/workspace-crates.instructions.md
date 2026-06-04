@@ -32,7 +32,7 @@ entries**. This has important implications when creating new crates.
 ## Step-by-step: adding a new crate
 
 1. Create the crate directory with `Cargo.toml` and `src/` as usual.
-2. In the crate's `Cargo.toml`, use `dep.workspace = true` for any
+2. In the crate's `Cargo.toml`, use `dep_name.workspace = true` for any
    dependencies that already exist in `[workspace.dependencies]`.
 3. **If the crate is a binary, tool, fuzz target, or a library with no
    consumer yet**, add its path to `[workspace] members` in the root
@@ -51,5 +51,6 @@ entries**. This has important implications when creating new crates.
   will be silently removed by `cargo xtask fmt --fix`.
 - **Adding a crate dependency without using it in code.** Same result —
   silently removed.
-- **Forgetting to add to `members`.** The crate will not be compiled, tested,
-  or checked by CI.
+- **Forgetting to add a standalone crate to `members`.** Without a `members`
+  entry or a dependency from another member, the crate will not be compiled,
+  tested, or checked by CI.
