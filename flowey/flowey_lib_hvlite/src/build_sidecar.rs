@@ -81,7 +81,7 @@ impl FlowNode for Node {
                 target,
                 no_split_dbg_info: false,
                 extra_env: Some(ReadVar::from_static(
-                    [("RUSTC_BOOTSTRAP".to_string(), "1".to_string())]
+                    [("RUSTC_BOOTSTRAP".to_string(), "minimal_rt".to_string())]
                         .into_iter()
                         .collect(),
                 )),

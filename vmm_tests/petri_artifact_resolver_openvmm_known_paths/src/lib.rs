@@ -436,7 +436,7 @@ fn simple_tmk_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
         MissingCommand::Custom {
             description: "simple_tmk",
             cmd: &format!(
-                "RUSTC_BOOTSTRAP=1 cargo build -p simple_tmk --config openhcl/minimal_rt/{arch_str}-config.toml"
+                "RUSTC_BOOTSTRAP=\"minimal_rt\" cargo build -p simple_tmk --config openhcl/minimal_rt/{arch_str}-config.toml"
             ),
         },
     )
