@@ -49,7 +49,7 @@ fn last_err(op: &'static str) -> X509Error {
 }
 
 /// RAII wrapper around `PCCERT_CONTEXT`.
-struct CertContext(*const CERT_CONTEXT);
+pub(crate) struct CertContext(pub(crate) *const CERT_CONTEXT);
 
 // SAFETY: cert context can be sent across threads.
 unsafe impl Send for CertContext {}
@@ -67,13 +67,13 @@ impl Drop for CertContext {
 }
 
 impl CertContext {
-    fn cert_context(&self) -> &CERT_CONTEXT {
+    pub(crate) fn cert_context(&self) -> &CERT_CONTEXT {
         // SAFETY: self.0 is a valid PCCERT_CONTEXT owned by `self`, and the
         // pointed-to CERT_CONTEXT is immutable for the lifetime of `self`.
         unsafe { &*self.0 }
     }
 
-    fn cert_info(&self) -> &CERT_INFO {
+    pub(crate) fn cert_info(&self) -> &CERT_INFO {
         // SAFETY: pCertInfo is a valid pointer owned by the cert context
         // and the pointed-to CERT_INFO is immutable for the lifetime of
         // `self`.
@@ -81,7 +81,7 @@ impl CertContext {
     }
 }
 
-pub struct X509CertificateInner(CertContext);
+pub(crate) struct X509CertificateInner(pub(crate) CertContext);
 
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {

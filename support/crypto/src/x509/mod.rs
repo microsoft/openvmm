@@ -25,7 +25,7 @@ pub(crate) mod symcrypt_rust;
 use symcrypt_rust as sys;
 
 #[cfg(all(native, windows))]
-mod win;
+pub(crate) mod win;
 #[cfg(all(native, windows))]
 use win as sys;
 

@@ -63,7 +63,10 @@ struct PublicComponents<'a> {
 }
 
 /// Export a BCrypt key as the given blob type.
-fn export_key(key: &KeyHandle, blob_type: windows::core::PCWSTR) -> Result<Vec<u8>, RsaError> {
+pub(crate) fn export_key(
+    key: &KeyHandle,
+    blob_type: windows::core::PCWSTR,
+) -> Result<Vec<u8>, RsaError> {
     let mut needed: u32 = 0;
     // SAFETY: handle is valid; first call queries needed size.
     unsafe {

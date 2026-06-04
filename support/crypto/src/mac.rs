@@ -34,6 +34,8 @@ unsafe extern "C" {
     ) -> CFDataRef;
     pub(crate) fn CFDataGetBytePtr(data: CFDataRef) -> *const u8;
     pub(crate) fn CFDataGetLength(data: CFDataRef) -> CFIndex;
+    pub(crate) fn CFArrayGetCount(arr: CFArrayRef) -> CFIndex;
+    pub(crate) fn CFArrayGetValueAtIndex(arr: CFArrayRef, idx: CFIndex) -> CFTypeRef;
     fn CFStringGetLength(the_string: CFStringRef) -> CFIndex;
     fn CFStringGetCString(
         the_string: CFStringRef,
