@@ -211,7 +211,7 @@ pub struct EcapReg {
     pub mts: bool,
     /// Nested Translation support (not implemented).
     pub nest: bool,
-    #[bits(1)]
+    #[bits(2)]
     _reserved4: u64,
     /// Page Request support (not implemented).
     pub prs: bool,
@@ -238,20 +238,30 @@ pub struct EcapReg {
     pub smts: bool,
     /// Virtual Command support (not used).
     pub vcs: bool,
-    /// Scalable-Mode Page-walk Coherency (not used).
-    pub slads: bool,
-    /// Scalable-Mode Translation support 2 (not used).
-    pub slts: bool,
-    /// Flush-Queue for DMA read (not used).
+    /// Second-stage Accessed/Dirty Support (not used).
+    pub ssads: bool,
+    /// Second-stage Translation Support (scalable mode, not used).
+    pub ssts: bool,
+    /// First-stage Translation Support (scalable mode, not used).
     pub flts: bool,
-    /// Supervisor PASID support (not used).
+    /// Scalable-Mode Page-walk Coherency Support (not used).
     pub smpwcs: bool,
+    /// RID-PASID Support (not used).
+    pub rps: bool,
+    #[bits(1)]
+    _reserved6: u64,
+    /// Performance Monitoring Support (not used).
+    pub pms: bool,
     /// Abort DMA Mode Support (not used).
     pub adms: bool,
-    /// RID-PASID support (not used).
-    pub rid_pasid: bool,
-    #[bits(14)]
-    _reserved6: u64,
+    /// RID_PRIV Support (not used).
+    pub rprivs: bool,
+    #[bits(4)]
+    _reserved7: u64,
+    /// Stop Marker Support (not used).
+    pub sms: bool,
+    #[bits(5)]
+    _reserved8: u64,
 }
 
 /// Global Command Register (MMIO offset 0x018, 32-bit, WO). §10.4.4.
