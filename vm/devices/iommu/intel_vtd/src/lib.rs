@@ -921,8 +921,11 @@ impl MmioIntercept for IntelVtdDevice {
         // VT-d supports 4-byte and 8-byte naturally aligned accesses.
         match data.len() {
             8 => {
-                let lo = self.read_register_dword(offset as u16);
-                let hi = self.read_register_dword((offset + 4) as u16);
+                // Acquire the read lock once for both DWORD reads to avoid
+                // a torn read if a writer intervenes between the two halves.
+                let state = self.shared.state.read();
+                let lo = self.read_register_dword_locked(&state, offset as u16);
+                let hi = self.read_register_dword_locked(&state, (offset + 4) as u16);
                 let val = lo as u64 | ((hi as u64) << 32);
                 data.copy_from_slice(&val.to_le_bytes());
             }
