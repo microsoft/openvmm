@@ -751,11 +751,13 @@ pub struct Cdw11FeatureAsyncEventConfig {
     /// LBA Status Information Alert Notices (LSIAN) - I/O Command Set
     /// specific (NVM).
     pub lba_status_info_alert_notices: bool,
-    /// Opaque higher bits (Endurance Group, Reachability,
-    /// Cross-Controller, Discovery, etc.) - stored verbatim so that
-    /// Get Features round-trips whatever the host wrote.
+    /// Higher bits (Endurance Group Event Aggregate Log Change,
+    /// Reachability, Cross-Controller, Discovery, etc.) - this
+    /// implementation does not act on individual bits in this range
+    /// but stores them verbatim so that Set Features followed by Get
+    /// Features round-trips an arbitrary CDW11 value byte-for-byte.
     #[bits(18)]
-    _rsvd: u32,
+    _higher_bits: u32,
 }
 
 #[bitfield(u32)]

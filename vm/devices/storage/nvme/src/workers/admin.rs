@@ -184,7 +184,7 @@ impl AdminState {
             asynchronous_event_requests: Vec::new(),
             changed_namespaces: Vec::new(),
             notified_changed_namespaces: false,
-            async_event_config: !0u32,
+            async_event_config: u32::MAX,
             recv_changed_namespace,
             send_changed_namespace,
             poll_namespace_change,
@@ -730,8 +730,12 @@ impl AdminHandler {
                     .into();
             }
             spec::Feature::ASYNC_EVENT_CONFIG => {
-                // Echo back the most recently configured mask. Default is
-                // zero until the host issues a corresponding Set Features.
+                // Echo back the most recently configured mask. The cache
+                // is initialized to all bits set (refer to
+                // [`AdminState::new`]) so that a host which never issues
+                // Set Features 0Bh still sees every notification class
+                // reported as enabled, preserving the pre-existing
+                // behavior of unconditional AEN delivery.
                 dw[0] = state.async_event_config;
             }
             spec::Feature::NVM_RESERVATION_PERSISTENCE => {
