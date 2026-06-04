@@ -154,7 +154,7 @@ fn verify_inner(
         return Ok(false);
     }
 
-    #[derive(PartialEq, Eq)]
+    #[derive(PartialEq, Eq, Hash, Clone)]
     struct CertId {
         issuer_dn: String,
         serial_number: Vec<u8>,
@@ -173,9 +173,13 @@ fn verify_inner(
     //     issuer's signature on `current` verifies,
     //   - else step up to an embedded cert that issued `current` (and
     //     whose signature verifies).
+    let mut visited = std::collections::HashSet::new();
     let mut current = &signer;
     'outer: loop {
         let current_id = make_id(current)?;
+        if !visited.insert(current_id.clone()) {
+            return Ok(false);
+        }
 
         for trusted in trusted_certs {
             let trusted_id = make_id(trusted)?;
@@ -187,11 +191,7 @@ fn verify_inner(
         }
 
         for candidate in &embedded {
-            if candidate.issued(current)?
-                && current.verify(&candidate.public_key()?)?
-                // Reject self signed intermediate loops
-                && current_id != make_id(candidate)?
-            {
+            if candidate.issued(current)? && current.verify(&candidate.public_key()?)? {
                 current = candidate;
                 continue 'outer;
             }
