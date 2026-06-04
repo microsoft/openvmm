@@ -226,8 +226,6 @@ pub(crate) fn cf_dict(
 pub struct OsStatusCode(pub i32);
 
 impl OsStatusCode {
-    pub const SUCCESS: Self = Self(0);
-
     pub fn success(self) -> bool {
         self.0 == 0
     }
