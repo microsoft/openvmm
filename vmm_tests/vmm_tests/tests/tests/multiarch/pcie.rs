@@ -548,20 +548,14 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
         "IORT ACPI table should be present. Tables: {acpi_tables}"
     );
 
-    // 3. Verify IOMMU groups exist (devices behind the SMMU RC)
-    let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/").read().await?;
-    tracing::info!(%iommu_groups, "IOMMU groups");
-    assert!(
-        !iommu_groups.trim().is_empty(),
-        "IOMMU groups should exist for devices behind the SMMU"
-    );
-
-    // 4. Verify all NVMe devices enumerate, have block devices, and DMA
-    //    works through the SMMU (segment 0 / PCI domain 0000).
-    verify_nvme_dma_on_segment(&sh, 2, "0000").await?;
-
-    // 5. Verify virtio-net interfaces exist on both RCs
-    verify_net_interface_count(&sh, 2).await?;
+    // 3–5. Common IOMMU validation: no faults, IOMMU groups, NVMe DMA, net.
+    verify_iommu_mixed_topology(
+        &sh,
+        &dmesg,
+        |l| l.contains("arm-smmu-v3") && l.contains("event"),
+        2,
+    )
+    .await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -622,20 +616,14 @@ async fn amd_iommu_mixed_topology(
         "IVRS ACPI table should be present. Tables: {acpi_tables}"
     );
 
-    // 3. Verify IOMMU groups exist (devices behind the IOMMU RC)
-    let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/").read().await?;
-    tracing::info!(%iommu_groups, "IOMMU groups");
-    assert!(
-        !iommu_groups.trim().is_empty(),
-        "IOMMU groups should exist for devices behind the IOMMU"
-    );
-
-    // 4. Verify all NVMe devices enumerate, have block devices, and DMA
-    //    works through the IOMMU (segment 0 / PCI domain 0000).
-    verify_nvme_dma_on_segment(&sh, 2, "0000").await?;
-
-    // 5. Verify virtio-net interfaces exist
-    verify_net_interface_count(&sh, 2).await?;
+    // 3–5. Common IOMMU validation: no faults, IOMMU groups, NVMe DMA, net.
+    verify_iommu_mixed_topology(
+        &sh,
+        &dmesg,
+        |l| l.contains("AMD-Vi: Event") || l.contains("IO_PAGE_FAULT"),
+        2,
+    )
+    .await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -665,6 +653,14 @@ async fn intel_vtd_mixed_topology(
                 .with_virtio_nic("s0rc0rp1")
                 .with_pcie_nvme("s1rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[1])
                 .with_virtio_nic("s1rc0rp1")
+                // Linux's Intel IOMMU driver is off by default unless the
+                // kernel was built with CONFIG_INTEL_IOMMU_DEFAULT_ON.
+                .with_custom_config(|c| {
+                    if let openvmm_defs::config::LoadMode::Linux { cmdline, .. } = &mut c.load_mode
+                    {
+                        cmdline.push_str(" intel_iommu=on");
+                    }
+                })
         })
         .run()
         .await?;
@@ -697,20 +693,14 @@ async fn intel_vtd_mixed_topology(
         "DMAR ACPI table should be present. Tables: {acpi_tables}"
     );
 
-    // 3. Verify IOMMU groups exist (devices behind the IOMMU RC)
-    let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/").read().await?;
-    tracing::info!(%iommu_groups, "IOMMU groups");
-    assert!(
-        !iommu_groups.trim().is_empty(),
-        "IOMMU groups should exist for devices behind the IOMMU"
-    );
-
-    // 4. Verify all NVMe devices enumerate, have block devices, and DMA
-    //    works through the IOMMU (segment 0 / PCI domain 0000).
-    verify_nvme_dma_on_segment(&sh, 2, "0000").await?;
-
-    // 5. Verify virtio-net interfaces exist
-    verify_net_interface_count(&sh, 2).await?;
+    // 3–6. Common IOMMU validation: no faults, IOMMU groups, NVMe DMA, net.
+    verify_iommu_mixed_topology(
+        &sh,
+        &dmesg,
+        |l| l.contains("DMAR: [DMA") || l.contains("DMAR: DRHD: handling fault"),
+        2,
+    )
+    .await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -736,6 +726,49 @@ async fn boot_no_vmbus_pcie_nvme(
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Common IOMMU validation for the mixed-topology tests.
+///
+/// After the platform-specific IOMMU discovery and ACPI table checks, this
+/// function verifies that DMA remapping is actually working:
+///
+/// 1. No IOMMU faults in dmesg (using the caller-provided `fault_filter`).
+/// 2. At least `min_iommu_groups` IOMMU groups exist (ensures all devices
+///    behind the IOMMU are scoped correctly, not just one).
+/// 3. NVMe DMA works on the IOMMU-backed segment.
+/// 4. Network interfaces are present on both segments.
+async fn verify_iommu_mixed_topology(
+    sh: &pipette_client::shell::UnixShell<'_>,
+    dmesg: &str,
+    fault_filter: impl Fn(&str) -> bool,
+    min_iommu_groups: usize,
+) -> anyhow::Result<()> {
+    // Verify no IOMMU faults — faults indicate broken device scope,
+    // missing page table mappings, or devices not covered by the IOMMU.
+    let faults: Vec<&str> = dmesg.lines().filter(|l| fault_filter(l)).collect();
+    assert!(
+        faults.is_empty(),
+        "IOMMU faults detected — DMA remapping is not working correctly:\n{}",
+        faults.join("\n")
+    );
+
+    // Verify IOMMU groups cover all devices behind the IOMMU RC.
+    let iommu_groups = cmd!(sh, "ls /sys/kernel/iommu_groups/").read().await?;
+    let group_count = iommu_groups.split_whitespace().count();
+    tracing::info!(%iommu_groups, group_count, "IOMMU groups");
+    assert!(
+        group_count >= min_iommu_groups,
+        "expected at least {min_iommu_groups} IOMMU groups, got {group_count}"
+    );
+
+    // Verify NVMe DMA works through the IOMMU (segment 0 / PCI domain 0000).
+    verify_nvme_dma_on_segment(sh, 2, "0000").await?;
+
+    // Verify network interfaces exist on both RCs.
+    verify_net_interface_count(sh, 2).await?;
+
     Ok(())
 }
 
