@@ -11,6 +11,7 @@ use crate::common::CommonArch;
 use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 flowey_request! {
     pub struct Request {
@@ -84,6 +85,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
+        ctx.import::<crate::resolve_openvmm_test_virtio_win::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
     }
@@ -143,6 +145,8 @@ impl SimpleFlowNode for Node {
         let uefi =
             ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v });
 
+        let virtio_win_dir = ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get);
+
         ctx.emit_rust_step("setting up vmm_tests env", |ctx| {
             let test_content_dir = test_content_dir.claim(ctx);
             let get_env = get_env.claim(ctx);
@@ -165,6 +169,7 @@ impl SimpleFlowNode for Node {
             let test_linux_kernel = test_linux_kernel.claim(ctx);
             let test_linux_bzimage = test_linux_bzimage.claim(ctx);
             let uefi = uefi.claim(ctx);
+            let virtio_win_dir = virtio_win_dir.claim(ctx);
             let release_igvm_files_dir = release_igvm_files.claim(ctx);
             move |rt| {
                 let test_linux_initrd = rt.read(test_linux_initrd);
@@ -465,6 +470,13 @@ impl SimpleFlowNode for Node {
                 });
                 fs_err::create_dir_all(&uefi_dir)?;
                 fs_err::copy(uefi, uefi_dir.join("MSVM.fd"))?;
+
+                {
+                    let src = rt.read(virtio_win_dir);
+                    let dst = test_content_dir.join("virtio-win");
+                    let _ = fs_err::remove_dir_all(&dst);
+                    flowey_lib_common::_util::copy_dir_all(&src, &dst)?;
+                }
 
                 // debug log the current contents of the dir
                 log::debug!("final folder content: {}", test_content_dir.display());

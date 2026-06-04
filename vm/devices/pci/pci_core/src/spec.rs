@@ -1229,4 +1229,39 @@ pub mod caps {
             pub dvsec_id: u16,
         }
     }
+
+    /// SR-IOV Extended Capability
+    ///
+    /// Source: PCI Express Base Specification, "Single Root I/O Virtualization"
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod sriov {
+        open_enum::open_enum! {
+            /// Offsets into the SR-IOV Extended Capability structure.
+            ///
+            /// | Offset    | Bits 31-16              | Bits 15-0               |
+            /// |-----------|-------------------------|-------------------------|
+            /// | Ext + 0x0 | Next Cap Ptr + Version  | Extended Capability ID  |
+            /// | Ext + 0x4 | SR-IOV Control          | SR-IOV Capabilities     |
+            /// | Ext + 0x8 | Total VFs               | Initial VFs             |
+            /// | Ext + 0xC | Num VFs                 | Function Dep Link       |
+            /// | Ext + 0x10| First VF Offset         | VF Stride               |
+            /// | Ext + 0x14| VF Device ID            | Reserved                |
+            /// | Ext + 0x18| Supported Page Sizes                              |
+            /// | Ext + 0x1C| System Page Size                                  |
+            /// | Ext + 0x20| VF BAR0                                           |
+            /// | Ext + 0x24| VF BAR1                                           |
+            /// | Ext + 0x28| VF BAR2                                           |
+            /// | Ext + 0x2C| VF BAR3                                           |
+            /// | Ext + 0x30| VF BAR4                                           |
+            /// | Ext + 0x34| VF BAR5                                           |
+            /// | Ext + 0x38| VF Migration State Array Offset                   |
+            pub enum SriovExtendedCapabilityHeader: u16 {
+                HEADER = 0x00,
+                CAPS_CONTROL = 0x04,
+                INITIAL_TOTAL_VFS = 0x0C,
+                VF_OFFSET_STRIDE = 0x14,
+                VF_BAR0 = 0x24,
+            }
+        }
+    }
 }

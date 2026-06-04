@@ -8,6 +8,7 @@ use crate::AssignmentParams;
 use crate::PciConfigAccess;
 use pci_core::spec::caps::EXT_CAP_START;
 use pci_core::spec::caps::ExtendedCapabilityId;
+use pci_core::spec::caps::sriov::SriovExtendedCapabilityHeader;
 use pci_core::spec::cfg_space::BarEncodingBits;
 use pci_core::spec::cfg_space::BistHeader;
 use pci_core::spec::cfg_space::Command;
@@ -33,6 +34,12 @@ pub struct DiscoveredDevice {
     pub secondary_bus: Option<u8>,
     /// For bridges: the subordinate bus number assigned during enumeration.
     pub subordinate_bus: Option<u8>,
+    /// For SR-IOV PFs: total VFs and per-VF BAR sizes.
+    pub(crate) sriov: Option<DiscoveredSriov>,
+    /// Computed during the sizing pass for bridges: the total resource
+    /// requirement of this bridge's children. Avoids recomputation during
+    /// address assignment.
+    pub(crate) subtree_req: Option<crate::assign::SubtreeState>,
 }
 
 /// A discovered BAR with its size.
@@ -42,6 +49,19 @@ pub struct DiscoveredBar {
     pub size: u64,
     pub is_64bit: bool,
     pub is_prefetchable: bool,
+    /// Assigned base address (populated by the assignment pass).
+    pub(crate) address: Option<u64>,
+}
+
+/// SR-IOV information for a PF.
+#[derive(Debug, Clone)]
+pub(crate) struct DiscoveredSriov {
+    /// Config space offset of the SR-IOV extended capability.
+    pub cap_offset: u16,
+    /// Total number of VFs.
+    pub total_vfs: u16,
+    /// Per-VF BAR sizes.
+    pub vf_bars: Vec<DiscoveredBar>,
 }
 
 /// Enumerate all devices starting from the host bridge's start bus,
@@ -129,6 +149,8 @@ async fn scan_bus(
                 children: Vec::new(),
                 secondary_bus: None,
                 subordinate_bus: None,
+                sriov: None,
+                subtree_req: None,
             };
 
             if is_bridge {
@@ -172,8 +194,9 @@ async fn scan_bus(
                     "bridge enumerated"
                 );
             } else {
-                // Reserve bus numbers for SR-IOV VFs on this endpoint.
-                if let Some(max_vf_bus) = probe_sriov_bus_requirement(cfg, bus, devfn).await {
+                // Probe SR-IOV capability for bus reservation and VF BAR sizes.
+                if let Some(sriov_result) = probe_sriov(cfg, bus, devfn).await {
+                    let max_vf_bus = sriov_result.max_vf_bus;
                     if max_vf_bus > end_bus as u16 {
                         return Err(AssignmentError::BusExhaustion {
                             bus,
@@ -198,6 +221,12 @@ async fn scan_bus(
                         }
                         *next_bus = max_vf_bus + 1;
                     }
+
+                    dev.sriov = Some(DiscoveredSriov {
+                        cap_offset: sriov_result.cap_offset,
+                        total_vfs: sriov_result.total_vfs,
+                        vf_bars: sriov_result.vf_bars,
+                    });
                 }
 
                 tracing::debug!(
@@ -229,7 +258,6 @@ async fn probe_bars(
     is_bridge: bool,
 ) -> Vec<DiscoveredBar> {
     let max_bars: u8 = if is_bridge { 2 } else { 6 };
-    let mut bars = Vec::new();
 
     // Disable MMIO decode so that writing all-ones to BARs during
     // probing does not cause the device to decode a bogus address range.
@@ -250,9 +278,135 @@ async fn probe_bars(
         .await;
     }
 
+    probe_bar_range(cfg, bus, devfn, HeaderType00::BAR0.0, max_bars).await
+}
+
+/// Probe VF BAR sizes from the SR-IOV capability's VF BAR registers.
+///
+/// VF BARs are at offsets 0x24–0x38 within the SR-IOV capability, and
+/// use the same write-all-ones/readback protocol as regular BARs.
+async fn probe_vf_bars(
+    cfg: &mut impl PciConfigAccess,
+    bus: u8,
+    devfn: u8,
+    sriov_offset: u16,
+) -> Vec<DiscoveredBar> {
+    probe_bar_range(
+        cfg,
+        bus,
+        devfn,
+        sriov_offset + SriovExtendedCapabilityHeader::VF_BAR0.0,
+        6,
+    )
+    .await
+}
+
+/// Result of probing an SR-IOV capability.
+pub(crate) struct SriovProbeResult {
+    /// Config space offset of the SR-IOV extended capability.
+    pub cap_offset: u16,
+    /// Highest bus number a VF could land on.
+    pub max_vf_bus: u16,
+    /// Total number of VFs.
+    pub total_vfs: u16,
+    /// VF BAR sizes discovered by probing (same format as device BARs).
+    pub vf_bars: Vec<DiscoveredBar>,
+}
+
+/// Probe SR-IOV capability to determine bus requirements and VF BAR sizes.
+/// Returns `None` if the device has no SR-IOV capability or has no VFs.
+async fn probe_sriov(
+    cfg: &mut impl PciConfigAccess,
+    bus: u8,
+    devfn: u8,
+) -> Option<SriovProbeResult> {
+    // Walk extended capabilities starting at 0x100.
+    let mut offset = EXT_CAP_START;
+    loop {
+        if offset < EXT_CAP_START || offset & 0x3 != 0 {
+            break;
+        }
+        let header = cfg.read_u32(bus, devfn, offset).await;
+        if header == 0 || header == !0u32 {
+            break;
+        }
+        let cap_id = (header & 0xFFFF) as u16;
+        let next = ((header >> 20) & 0xFFC) as u16;
+
+        if cap_id == ExtendedCapabilityId::SRIOV.0 {
+            // Read TotalVFs.
+            let vfs_dword = cfg
+                .read_u32(
+                    bus,
+                    devfn,
+                    offset + SriovExtendedCapabilityHeader::INITIAL_TOTAL_VFS.0,
+                )
+                .await;
+            let total_vfs = (vfs_dword >> 16) as u16;
+            if total_vfs == 0 {
+                return None;
+            }
+
+            // Read VF Offset and VF Stride.
+            let offset_stride = cfg
+                .read_u32(
+                    bus,
+                    devfn,
+                    offset + SriovExtendedCapabilityHeader::VF_OFFSET_STRIDE.0,
+                )
+                .await;
+            let vf_offset = offset_stride as u16;
+            let vf_stride = (offset_stride >> 16) as u16;
+
+            if vf_stride == 0 {
+                return None;
+            }
+
+            // Compute the BDF of the last VF. Use checked arithmetic
+            // since these values come from hardware and could overflow.
+            // A routing ID is 16 bits (bus:8 | devfn:8).
+            let pf_rid = (bus as u16) << 8 | devfn as u16;
+            let last_vf_rid = (total_vfs - 1)
+                .checked_mul(vf_stride)?
+                .checked_add(vf_offset)?
+                .checked_add(pf_rid)?;
+            let max_vf_bus = (last_vf_rid >> 8) as u16;
+
+            // Probe VF BAR sizes (same write-all-ones/readback technique).
+            let vf_bars = probe_vf_bars(cfg, bus, devfn, offset).await;
+
+            return Some(SriovProbeResult {
+                cap_offset: offset,
+                max_vf_bus,
+                total_vfs,
+                vf_bars,
+            });
+        }
+
+        if next == 0 || next <= offset {
+            break;
+        }
+        offset = next;
+    }
+    None
+}
+
+/// Probe BAR sizes for a range of BAR registers starting at `base_offset`.
+///
+/// Writes all-ones to each BAR and reads back to determine size. BAR
+/// registers are left in an undefined state after probing.
+async fn probe_bar_range(
+    cfg: &mut impl PciConfigAccess,
+    bus: u8,
+    devfn: u8,
+    base_offset: u16,
+    max_bars: u8,
+) -> Vec<DiscoveredBar> {
+    let mut bars = Vec::new();
+
     let mut i = 0u8;
     while i < max_bars {
-        let offset = HeaderType00::BAR0.0 + (i as u16) * 4;
+        let offset = base_offset + (i as u16) * 4;
 
         // Write all-ones to probe size.
         cfg.write_u32(bus, devfn, offset, !0u32).await;
@@ -266,7 +420,7 @@ async fn probe_bars(
 
         let is_io = BarEncodingBits::from(readback).use_pio();
         if is_io {
-            // Skip I/O BARs for now.
+            // Skip I/O BARs.
             i += 1;
             continue;
         }
@@ -277,7 +431,7 @@ async fn probe_bars(
 
         let size = if is_64bit && (i + 1) < max_bars {
             // Probe upper 32 bits.
-            let upper_offset = HeaderType00::BAR0.0 + ((i + 1) as u16) * 4;
+            let upper_offset = base_offset + ((i + 1) as u16) * 4;
             cfg.write_u32(bus, devfn, upper_offset, !0u32).await;
             let upper_readback = cfg.read_u32(bus, devfn, upper_offset).await;
 
@@ -302,6 +456,7 @@ async fn probe_bars(
                 size,
                 is_64bit,
                 is_prefetchable,
+                address: None,
             });
         }
 
@@ -313,71 +468,4 @@ async fn probe_bars(
     }
 
     bars
-}
-
-/// SR-IOV capability register offsets (relative to capability start).
-mod sriov {
-    /// Offset of the DWORD containing InitialVFs (low u16) and TotalVFs (high u16).
-    pub const INITIAL_TOTAL_VFS: u16 = 0x0C;
-    /// Offset of the DWORD containing VF Offset (low u16) and VF Stride (high u16).
-    pub const VF_OFFSET_STRIDE: u16 = 0x14;
-}
-
-/// Probe SR-IOV capability to determine how many extra bus numbers
-/// this device's VFs will need. Returns the highest bus number a VF
-/// could land on, or `None` if the device has no SR-IOV capability.
-async fn probe_sriov_bus_requirement(
-    cfg: &mut impl PciConfigAccess,
-    bus: u8,
-    devfn: u8,
-) -> Option<u16> {
-    // Walk extended capabilities starting at 0x100.
-    let mut offset = EXT_CAP_START;
-    loop {
-        if offset < EXT_CAP_START || offset & 0x3 != 0 {
-            break;
-        }
-        let header = cfg.read_u32(bus, devfn, offset).await;
-        if header == 0 || header == !0u32 {
-            break;
-        }
-        let cap_id = (header & 0xFFFF) as u16;
-        let next = ((header >> 20) & 0xFFC) as u16;
-
-        if cap_id == ExtendedCapabilityId::SRIOV.0 {
-            // Read TotalVFs.
-            let vfs_dword = cfg
-                .read_u32(bus, devfn, offset + sriov::INITIAL_TOTAL_VFS)
-                .await;
-            let total_vfs = (vfs_dword >> 16) as u16;
-            if total_vfs == 0 {
-                return None;
-            }
-
-            // Read VF Offset and VF Stride.
-            let offset_stride = cfg
-                .read_u32(bus, devfn, offset + sriov::VF_OFFSET_STRIDE)
-                .await;
-            let vf_offset = offset_stride as u16;
-            let vf_stride = (offset_stride >> 16) as u16;
-
-            if vf_stride == 0 {
-                return None;
-            }
-
-            // Compute the BDF of the last VF in u32 to detect overflow.
-            // First VF routing ID = (bus << 8 | devfn) + vf_offset
-            // Last VF routing ID = first + (total_vfs - 1) * vf_stride
-            let pf_rid = (bus as u32) << 8 | devfn as u32;
-            let last_vf_rid = pf_rid + vf_offset as u32 + (total_vfs - 1) as u32 * vf_stride as u32;
-            let max_bus = (last_vf_rid >> 8) as u16;
-            return Some(max_bus);
-        }
-
-        if next == 0 || next <= offset {
-            break;
-        }
-        offset = next;
-    }
-    None
 }

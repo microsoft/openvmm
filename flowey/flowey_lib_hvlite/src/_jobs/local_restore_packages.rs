@@ -24,6 +24,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_openvmm_magicpath_release_openhcl_igvm::resolve::Node>();
         ctx.import::<crate::init_openvmm_magicpath_protoc::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
+        ctx.import::<crate::init_openvmm_magicpath_virtio_win::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -33,7 +34,10 @@ impl SimpleFlowNode for Node {
             release_artifact,
         } = request;
 
-        let mut deps = vec![ctx.reqv(crate::init_openvmm_magicpath_protoc::Request)];
+        let mut deps = vec![
+            ctx.reqv(crate::init_openvmm_magicpath_protoc::Request),
+            ctx.reqv(crate::init_openvmm_magicpath_virtio_win::Request),
+        ];
 
         for arch in arches {
             match arch {

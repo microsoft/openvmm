@@ -71,6 +71,16 @@ pub mod artifacts {
         }
     }
 
+    /// Virtio-win driver artifacts from openvmm-deps.
+    pub mod virtio_win {
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// Extracted virtio-win driver package (all OS versions and architectures).
+            VIRTIO_WIN_DRIVERS,
+        }
+    }
+
     /// Host-side tools used by the VMM tests.
     pub mod host_tools {
         use petri_artifacts_core::declare_artifacts;

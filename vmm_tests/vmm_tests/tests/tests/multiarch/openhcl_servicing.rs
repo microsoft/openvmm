@@ -252,13 +252,13 @@ async fn servicing_keepalive_sidecar_with_outstanding_io_very_heavy(
         VTL0_NVME_LUN,
         scsi_controller_guid,
         disk_size,
-        vp_count,
-        Some(ProcessorTopology {
+        ProcessorTopology {
             vp_count,
             vps_per_socket: Some(12),
             enable_smt: Some(false),
             apic_mode: Some(ApicMode::X2apicSupported),
-        }),
+        },
+        Default::default(),
         &["OPENHCL_SIDECAR=log"],
         3, // msix_count: 1 admin + 2 IO
         2, // max_io_queues
@@ -1601,8 +1601,9 @@ async fn create_keepalive_test_config_default(
 }
 
 /// Creates a keepalive test config with a custom number of VPs with 1 VP per
-/// socket. It also creates an appropriate number of scsi sub-channels to ensure
-/// IO can be issued on all VPs.
+/// socket, each on its own NUMA node. All memory is assigned to node 0;
+/// remaining nodes are memoryless. It also creates an appropriate number of
+/// scsi sub-channels to ensure IO can be issued on all VPs.
 async fn create_keepalive_test_config_custom_vps(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
@@ -1611,14 +1612,28 @@ async fn create_keepalive_test_config_custom_vps(
     disk_size: u64,
     vp_count: u32,
 ) -> Result<(PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
+    // Configure one NUMA node per VP (1 VP per socket) so VTL2 Linux
+    // distributes storvsc sub-channel interrupts across CPUs, which IO-pinning
+    // tests rely on. All memory goes to node 0 to ensure there is enough
+    // contiguous memory for VTL2. The remaining nodes are memoryless CPU-only
+    // nodes.
+    let mut numa_sizes = vec![0u64; vp_count as usize];
+    numa_sizes[0] = MemoryConfig::default().startup_bytes;
     create_keepalive_test_config_custom(
         config,
         fault_configuration,
         vtl0_nvme_lun,
         scsi_instance,
         disk_size,
-        vp_count,
-        None,
+        ProcessorTopology {
+            vp_count,
+            vps_per_socket: Some(1),
+            ..Default::default()
+        },
+        MemoryConfig {
+            numa_mem_sizes: Some(numa_sizes),
+            ..Default::default()
+        },
         &[],
         10,
         10,
@@ -1634,14 +1649,15 @@ async fn create_keepalive_test_config_custom(
     vtl0_nvme_lun: u32,
     scsi_instance: Guid,
     disk_size: u64,
-    vp_count: u32,
-    topology: Option<ProcessorTopology>,
+    topology: ProcessorTopology,
+    memory: MemoryConfig,
     extra_cmdlines: &[&str],
     msix_count: u16,
     max_io_queues: u16,
 ) -> Result<(PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
 
+    let vp_count = topology.vp_count;
     let mut builder = config.with_vmbus_redirect(true).with_openhcl_command_line(
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
     );
@@ -1651,11 +1667,8 @@ async fn create_keepalive_test_config_custom(
     }
 
     builder
-        .with_processor_topology(topology.unwrap_or(ProcessorTopology {
-            vp_count,
-            vps_per_socket: Some(1),
-            ..Default::default()
-        }))
+        .with_processor_topology(topology)
+        .with_memory(memory)
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
                 c.vpci_devices.push(VpciDeviceConfig {

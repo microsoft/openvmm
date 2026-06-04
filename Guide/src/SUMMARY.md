@@ -130,6 +130,7 @@
 - [Architecture](./reference/architecture.md)
   - [OpenVMM Architecture](./reference/architecture/openvmm.md)
     - [Memory Layout](./reference/architecture/openvmm/memory-layout.md)
+    - [NUMA Topology](./reference/architecture/openvmm/numa.md)
     - [mesh](./reference/architecture/openvmm/mesh.md)
       - [Using mesh](./reference/architecture/openvmm/mesh/usage.md)
       - [How mesh works](./reference/architecture/openvmm/mesh/internals.md)

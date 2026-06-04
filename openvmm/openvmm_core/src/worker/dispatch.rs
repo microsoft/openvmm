@@ -63,7 +63,7 @@ use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::GicConfig;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
-use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
@@ -142,6 +142,7 @@ use vmcore::vmtime::VmTimeSource;
 use vmgs_resources::GuestStateEncryptionPolicy;
 use vmgs_resources::VmgsResource;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
+use vmm_core::acpi_builder::SlitInfo;
 use vmm_core::input_distributor::InputDistributor;
 use vmm_core::partition_unit::Halt;
 use vmm_core::partition_unit::PartitionUnit;
@@ -189,7 +190,7 @@ impl Manifest {
             pcie_switches: config.pcie_switches,
             vpci_devices: config.vpci_devices,
             hypervisor: config.hypervisor,
-            memory: config.memory,
+            numa: config.numa,
             processor_topology: config.processor_topology,
             chipset: config.chipset,
             #[cfg(windows)]
@@ -238,7 +239,7 @@ pub struct Manifest {
     pcie_devices: Vec<PcieDeviceConfig>,
     pcie_switches: Vec<PcieSwitchConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
-    memory: MemoryConfig,
+    numa: NumaTopology,
     processor_topology: ProcessorTopologyConfig,
     hypervisor: HypervisorConfig,
     chipset: BaseChipsetManifest,
@@ -707,7 +708,7 @@ struct LoadedVmInner {
     _vmbus_proxy: Option<vmbus_server::ProxyIntegration>,
     #[cfg(windows)]
     _kernel_vmnics: Vec<vmswitch::kernel::KernelVmNic>,
-    memory_cfg: MemoryConfig,
+    numa_cfg: NumaTopology,
     mem_layout: MemoryLayout,
     processor_topology: ProcessorTopology,
     hypervisor_cfg: HypervisorConfig,
@@ -899,7 +900,12 @@ impl InitializedVm {
         H: virt::Hypervisor<Partition = P>,
         P: 'static + HvlitePartition,
     {
-        tracing::info!(mem_size = cfg.memory.mem_size, "guest RAM config");
+        let node_mem_sizes: Vec<u64> = cfg
+            .numa
+            .nodes
+            .iter()
+            .map(|n| n.mem.as_ref().map_or(0, |m| m.mem_size))
+            .collect();
 
         let vmtime_keeper = VmTimeKeeper::new(&driver_source.simple(), VmTime::from_100ns(0));
         let vmtime_source = vmtime_keeper
@@ -939,7 +945,7 @@ impl InitializedVm {
         };
 
         #[cfg(guest_arch = "aarch64")]
-        let (processor_topology, spi_layout) = {
+        let (mut processor_topology, spi_layout) = {
             let smmu_count = cfg
                 .pcie_root_complexes
                 .iter()
@@ -950,10 +956,19 @@ impl InitializedVm {
             (result.processor_topology, result.spi_layout)
         };
         #[cfg(not(guest_arch = "aarch64"))]
-        let processor_topology = {
+        let mut processor_topology = {
             let result = build_x86_topology(&cfg.processor_topology)?;
             result.processor_topology
         };
+
+        // Validate NUMA topology and resolve VP-to-vnode assignments.
+        let vp_to_vnode = super::numa::resolve_numa_vp_assignment(
+            &cfg.numa,
+            cfg.processor_topology.proc_count,
+            processor_topology.vps_per_socket(),
+        )
+        .context("invalid NUMA topology")?;
+        processor_topology.set_vnodes(&vp_to_vnode);
 
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
@@ -996,14 +1011,6 @@ impl InitializedVm {
             None
         };
 
-        // Choose the memory layout of the VM.
-        //
-        // When numa_mem_sizes is set, distribute guest RAM across vNUMA nodes
-        // for ACPI SRAT / FDT reporting.
-        //
-        // TODO: The vNUMA nodes reported are meant for test usage only, as they
-        // are not aligned to any physical NUMA node. There is more work to do
-        // to support useful vNUMA reporting.
         let virtio_mmio_count = cfg
             .virtio_devices
             .iter()
@@ -1038,8 +1045,7 @@ impl InitializedVm {
             0
         };
         let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
-            mem_size: cfg.memory.mem_size,
-            numa_mem_sizes: cfg.memory.numa_mem_sizes.as_deref(),
+            node_mem_sizes: &node_mem_sizes,
             layout: cfg.layout.clone(),
             pcie_root_complexes: &cfg.pcie_root_complexes,
             virtio_mmio_count,
@@ -1075,39 +1081,79 @@ impl InitializedVm {
                 .then_some(1 << (physical_address_size - 1))
         });
 
-        if let Some(size) = cfg.memory.hugepage_size
-            && !cfg.memory.hugepages
-        {
-            anyhow::bail!("hugepage_size={size} requires hugepages=on");
+        // Build per-node RAM backing requests. Each NUMA node with memory
+        // gets its own backing (memfd), enabling per-node hugepage settings
+        // and host NUMA binding.
+        let num_nodes = cfg.numa.nodes.len();
+
+        // Group RAM ranges by vnode.
+        let mut ranges_by_node: Vec<Vec<MemoryRange>> = vec![Vec::new(); num_nodes];
+        for r in mem_layout.ram() {
+            ranges_by_node[r.vnode as usize].push(r.range);
         }
 
-        // Collect RAM ranges for the backing request. All ranges go into a
-        // single backing for now; NUMA will split them across multiple.
-        let ram_ranges: Vec<MemoryRange> = mem_layout
-            .ram()
-            .iter()
-            .map(|r| r.range)
-            .chain(mem_layout.vtl2_range())
-            .collect();
+        // VTL2 memory goes on the first node with memory.
+        if let Some(vtl2_range) = mem_layout.vtl2_range() {
+            let first_mem_node = cfg
+                .numa
+                .nodes
+                .iter()
+                .position(|n| n.mem.is_some())
+                .unwrap_or(0);
+            ranges_by_node[first_mem_node].push(vtl2_range);
+        }
 
-        let mut backing = membacking::RamBackingRequest::new(ram_ranges)
-            .prefetch(cfg.memory.prefetch_memory)
-            .private_memory(cfg.memory.private_memory)
-            .transparent_hugepages(cfg.memory.transparent_hugepages);
-        if cfg.memory.hugepages {
-            backing = backing.hugepages(cfg.memory.hugepage_size);
-        }
-        if let Some(smb) = shared_memory {
-            backing = backing.existing_mappable(smb.into_mappable());
-        }
+        // For restore, an existing mappable can only be applied to
+        // single-node configurations.
+        let nodes_with_ranges = ranges_by_node.iter().filter(|r| !r.is_empty()).count();
+        let mut existing_mappable = if let Some(smb) = shared_memory {
+            if nodes_with_ranges > 1 {
+                anyhow::bail!(
+                    "shared memory restore not supported with {nodes_with_ranges} memory nodes"
+                );
+            }
+            Some(smb.into_mappable())
+        } else {
+            None
+        };
 
         let mut memory_builder = GuestMemoryBuilder::new();
         memory_builder = memory_builder
             .vtl0_alias_map(vtl0_alias_map)
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
-            )
-            .add_backing(backing);
+            );
+
+        for (vnode, ranges) in ranges_by_node.into_iter().enumerate() {
+            if ranges.is_empty() {
+                continue;
+            }
+
+            let mem = cfg.numa.nodes[vnode]
+                .mem
+                .as_ref()
+                .with_context(|| format!("node {vnode} has RAM ranges but no memory config"))?;
+
+            if let Some(size) = mem.hugepage_size
+                && !mem.hugepages
+            {
+                anyhow::bail!("node {vnode}: hugepage_size={size} requires hugepages=on");
+            }
+
+            let mut backing = membacking::RamBackingRequest::new(ranges)
+                .prefetch(mem.prefetch_memory)
+                .private_memory(mem.private_memory)
+                .transparent_hugepages(mem.transparent_hugepages)
+                .host_numa_node(mem.host_numa_node);
+            if mem.hugepages {
+                backing = backing.hugepages(mem.hugepage_size);
+            }
+            if let Some(mappable) = existing_mappable.take() {
+                backing = backing.existing_mappable(mappable);
+            }
+
+            memory_builder = memory_builder.add_backing(backing);
+        }
 
         #[cfg(all(windows, feature = "virt_whp"))]
         if !cfg.vpci_resources.is_empty() {
@@ -1365,11 +1411,26 @@ impl InitializedVm {
                     rom: Some(Box::new(rom)),
                     replay_mtrrs: Box::new(move || halt_vps.replay_mtrrs()),
                     config: {
+                        let pcat_slit_info =
+                            if cfg.numa.nodes.len() > 1 || !cfg.numa.distances.is_empty() {
+                                Some(SlitInfo {
+                                    num_nodes: cfg.numa.nodes.len(),
+                                    distances: cfg
+                                        .numa
+                                        .distances
+                                        .iter()
+                                        .map(|d| (d.src, d.dst, d.distance))
+                                        .collect(),
+                                })
+                            } else {
+                                None
+                            };
                         let acpi_tables_builder = AcpiTablesBuilder {
                             processor_topology: &processor_topology,
                             mem_layout: &mem_layout,
                             cache_topology: None,
                             pcie_host_bridges: &Vec::new(),
+                            slit_info: pcat_slit_info.as_ref(),
                             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                                 with_ioapic: cfg.chipset_capabilities.with_ioapic,
                                 with_pic: cfg.chipset_capabilities.with_pic,
@@ -2684,7 +2745,7 @@ impl InitializedVm {
                 vmbus_server,
                 vtl2_vmbus_server,
                 hypervisor_cfg: cfg.hypervisor,
-                memory_cfg: cfg.memory,
+                numa_cfg: cfg.numa,
                 mem_layout,
                 processor_topology,
                 vmbus_redirect,
@@ -2743,6 +2804,22 @@ impl InitializedVm {
 }
 
 impl LoadedVmInner {
+    fn slit_info(&self) -> Option<SlitInfo> {
+        let num_nodes = self.numa_cfg.nodes.len();
+        if num_nodes <= 1 && self.numa_cfg.distances.is_empty() {
+            return None;
+        }
+        Some(SlitInfo {
+            num_nodes,
+            distances: self
+                .numa_cfg
+                .distances
+                .iter()
+                .map(|d| (d.src, d.dst, d.distance))
+                .collect(),
+        })
+    }
+
     async fn load_firmware(&mut self, vtl2_only: bool) -> anyhow::Result<()> {
         let cache_topology = if cfg!(guest_arch = "aarch64") {
             Some(
@@ -2752,11 +2829,13 @@ impl LoadedVmInner {
         } else {
             None
         };
+        let slit_info = self.slit_info();
         let acpi_builder = AcpiTablesBuilder {
             processor_topology: &self.processor_topology,
             mem_layout: &self.mem_layout,
             cache_topology: cache_topology.as_ref(),
             pcie_host_bridges: &self.pcie_host_bridges,
+            slit_info: slit_info.as_ref(),
             #[cfg(guest_arch = "x86_64")]
             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                 with_ioapic: self.chipset_capabilities.with_ioapic,
@@ -2906,6 +2985,7 @@ impl LoadedVmInner {
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
+                let slit = acpi_builder.build_slit();
                 let mcfg = (!self.pcie_host_bridges.is_empty()).then(|| acpi_builder.build_mcfg());
                 let pptt = cache_topology.is_some().then(|| acpi_builder.build_pptt());
                 let load_settings = super::vm_loaders::uefi::UefiLoadSettings {
@@ -2922,19 +3002,21 @@ impl LoadedVmInner {
                     bios_guid,
                     vmbus: enable_vmbus,
                 };
-                let regs = super::vm_loaders::uefi::load_uefi(
-                    firmware,
-                    &self.gm,
-                    &self.processor_topology,
-                    &self.mem_layout,
-                    &self.pcie_host_bridges,
-                    load_settings,
-                    &self.chipset_mmio,
-                    &madt,
-                    &srat,
-                    mcfg.as_deref(),
-                    pptt.as_deref(),
-                )?;
+                let regs =
+                    super::vm_loaders::uefi::load_uefi(&super::vm_loaders::uefi::LoadUefiParams {
+                        firmware,
+                        gm: &self.gm,
+                        processor_topology: &self.processor_topology,
+                        mem_layout: &self.mem_layout,
+                        pcie_host_bridges: &self.pcie_host_bridges,
+                        settings: load_settings,
+                        chipset_mmio: &self.chipset_mmio,
+                        madt: &madt,
+                        srat: &srat,
+                        slit: slit.as_deref(),
+                        mcfg: mcfg.as_deref(),
+                        pptt: pptt.as_deref(),
+                    })?;
 
                 (regs, Vec::new())
             }
@@ -2952,6 +3034,7 @@ impl LoadedVmInner {
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
+                let slit = acpi_builder.build_slit();
                 const ENTROPY_SIZE: usize = 64;
                 let mut entropy = [0u8; ENTROPY_SIZE];
                 getrandom::fill(&mut entropy).unwrap();
@@ -2965,7 +3048,7 @@ impl LoadedVmInner {
                     acpi_tables: super::vm_loaders::igvm::AcpiTables {
                         madt: &madt,
                         srat: &srat,
-                        slit: None,
+                        slit: slit.as_deref(),
                         pptt: None,
                     },
                     vtl2_base_address,
@@ -3565,7 +3648,7 @@ impl LoadedVm {
             pcie_devices: vec![],        // TODO
             pcie_switches: vec![],       // TODO
             vpci_devices: vec![],        // TODO
-            memory: self.inner.memory_cfg,
+            numa: self.inner.numa_cfg,
             processor_topology: self.inner.processor_topology.to_config(),
             chipset: self.inner.chipset_cfg,
             vmbus: None,      // TODO
