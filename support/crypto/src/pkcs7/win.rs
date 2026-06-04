@@ -263,6 +263,15 @@ impl Pkcs7SignedDataInner {
         let si =
             unsafe { std::ptr::read_unaligned(signer_buf.as_ptr().cast::<CMSG_SIGNER_INFO>()) };
 
+        // CMSG_SIGNER_INFO only represents IssuerAndSerialNumber signer
+        // identifiers (PKCS#7 v1). CMS SubjectKeyIdentifier signers leave
+        // both blobs empty here; reject them explicitly rather than
+        // silently matching an empty issuer.
+        if si.Issuer.cbData == 0 || si.SerialNumber.cbData == 0 {
+            return Err(bogus_err(
+                "signer identifier is not IssuerAndSerialNumber (SubjectKeyIdentifier not supported)",
+            ));
+        }
         let want_issuer =
             blob_to_vec(&si.Issuer).ok_or_else(|| bogus_err("malformed signer issuer blob"))?;
         let want_serial = blob_to_vec(&si.SerialNumber)
