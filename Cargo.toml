@@ -301,7 +301,6 @@ pci_core = { path = "vm/devices/pci/pci_core" }
 pci_resource_assignment = { path = "vm/devices/pci/pci_resource_assignment" }
 pci_resources = { path = "vm/devices/pci/pci_resources" }
 pcie = { path = "vm/devices/pci/pcie" }
-intel_vtd = { path = "vm/devices/iommu/intel_vtd" }
 iommu_common = { path = "vm/devices/iommu/iommu_common" }
 smmu = { path = "vm/devices/iommu/smmu" }
 vpci = { path = "vm/devices/pci/vpci" }
