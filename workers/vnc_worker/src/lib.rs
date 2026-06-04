@@ -213,6 +213,11 @@ impl<T: Listener> MultiClientServer<T> {
         // unbounded mesh queue is not growing (stays at 1 when the consumer
         // keeps up) and to surface it if it ever does.
         let mut dirty_backlog_max = 0usize;
+        // Ceiling for the rate-limited alarm in the dirty-rect handler below.
+        // The drain empties the whole channel each wakeup, so the live depth
+        // stays in single digits; crossing this means the consumer is
+        // catastrophically starved, not under normal load.
+        const MAX_DIRTY_BACKLOG: usize = 1000;
 
         loop {
             let listener = &mut self.listener;
@@ -336,7 +341,19 @@ impl<T: Listener> MultiClientServer<T> {
                     if backlog > dirty_backlog_max {
                         dirty_backlog_max = backlog;
                     }
-                    if backlog > 1 {
+                    if backlog > MAX_DIRTY_BACKLOG {
+                        // Should be unreachable: the drain reads the whole queue
+                        // each wakeup, so the depth only grows if the consumer is
+                        // wedged and the unbounded mesh queue is climbing without
+                        // bound. Surface it loudly, rate-limited so a sustained
+                        // stall cannot flood the log.
+                        tracelimit::error_ratelimited!(
+                            backlog,
+                            backlog_max = dirty_backlog_max,
+                            limit = MAX_DIRTY_BACKLOG,
+                            "device dirty channel backlog exceeded limit (consumer wedged, mesh queue growing unbounded)"
+                        );
+                    } else if backlog > 1 {
                         tracing::debug!(
                             backlog,
                             rects_total = batch.iter().map(|r| r.len()).sum::<usize>(),

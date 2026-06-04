@@ -10415,6 +10415,7 @@ dependencies = [
  "parking_lot",
  "socket2",
  "sparse_mmap",
+ "tracelimit",
  "tracing",
  "tracing_helpers",
  "unicycle",
