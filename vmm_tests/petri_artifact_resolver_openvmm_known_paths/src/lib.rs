@@ -119,9 +119,9 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
                 get_path(
                     full_path,
                     prepped_filename,
-                    MissingCommand::Run {
+                    MissingCommand::Custom {
                         description: "no-vmbus prepped test image",
-                        package: "prep_steps",
+                        cmd: "cargo run -p prep_steps -- no-vmbus",
                     },
                 )
             }
