@@ -14,7 +14,7 @@ let
 
 in stdenv.mkDerivation {
   pname = "uefi-mu-msvm-${archToolchain}";
-  version = "26.0.6";
+  version = "26.0.12";
 
   src = fetchzip {
     url =
