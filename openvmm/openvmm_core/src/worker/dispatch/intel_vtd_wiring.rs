@@ -25,6 +25,9 @@ pub(super) struct ResolvedVtdResources {
     pub rc_name: String,
     /// MMIO base address (from the memory layout allocator).
     pub mmio_base: u64,
+    /// Device scopes for the DMAR DRHD: one entry per root-bus device
+    /// (root ports as bridges, RCiEPs as endpoints).
+    pub device_scopes: Vec<vmm_core::acpi_builder::IntelVtdDeviceScope>,
 }
 
 /// Combines Intel VT-d RC configs with MMIO ranges from the memory layout
@@ -42,9 +45,25 @@ pub(super) fn resolve_vtd_resources(
             )
         })
         .zip(mmio_ranges)
-        .map(|(rc, range)| ResolvedVtdResources {
-            rc_name: rc.name.clone(),
-            mmio_base: range.start(),
+        .map(|(rc, range)| {
+            // VT-d is a pure MMIO device — no RCiEP on bus 0. Root ports
+            // start at device 0, packed 8 functions per device slot,
+            // matching the GenericPcieRootComplex packing logic.
+            let device_scopes = rc
+                .ports
+                .iter()
+                .enumerate()
+                .map(|(i, _)| vmm_core::acpi_builder::IntelVtdDeviceScope {
+                    devfn: i as u8,
+                    is_bridge: true,
+                })
+                .collect();
+
+            ResolvedVtdResources {
+                rc_name: rc.name.clone(),
+                mmio_base: range.start(),
+                device_scopes,
+            }
         })
         .collect()
 }
@@ -121,6 +140,7 @@ pub(super) fn setup_intel_vtd(
             mmio_base,
             pci_segment: hb.segment,
             start_bus: hb.start_bus,
+            device_scopes: res.device_scopes.clone(),
         });
     }
 

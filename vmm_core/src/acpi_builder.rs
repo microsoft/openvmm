@@ -150,6 +150,23 @@ pub struct IntelVtdAcpiConfig {
     pub pci_segment: u16,
     /// Start bus number of the root complex covered by this VT-d unit.
     pub start_bus: u8,
+    /// Device scope entries for this DRHD. Each entry identifies a device
+    /// on the root bus (bridges for root ports, endpoints for RCiEPs).
+    /// The DMAR builder emits one DMAR device scope entry per element.
+    pub device_scopes: Vec<IntelVtdDeviceScope>,
+}
+
+/// A single device scope entry for the DMAR table's DRHD structure.
+///
+/// Identifies a device on the root complex's start bus by its PCI
+/// devfn and scope type.
+#[derive(Clone, Debug)]
+pub struct IntelVtdDeviceScope {
+    /// PCI device/function on the root bus, encoded as `(device << 3) | function`.
+    pub devfn: u8,
+    /// Whether this is a PCI bridge (root port, type 0x02) or an
+    /// endpoint (RCiEP, type 0x01).
+    pub is_bridge: bool,
 }
 
 /// DMAR-level configuration for Intel VT-d ACPI table generation.
@@ -815,15 +832,16 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         F: FnOnce(&acpi::builder::Table<'_>) -> R,
     {
         use acpi_spec::dmar;
+        use acpi_spec::dmar::DmarDevicePath;
 
         let mut dmar_extra: Vec<u8> = Vec::new();
 
         for config in &dmar_config.units {
-            // Each DRHD gets a PCI sub-hierarchy device scope entry with
-            // StartBusNumber from the host bridge. This scopes all devices
-            // reachable below that bus range to this VT-d unit.
-            let scope_size = size_of::<dmar::DmarDeviceScope>() + size_of::<dmar::DmarDevicePath>();
-            let drhd_total = size_of::<dmar::DmarDrhd>() + scope_size;
+            // Each device scope entry is a DmarDeviceScope header (6 bytes)
+            // plus one DmarDevicePath (2 bytes).
+            let per_scope_size = size_of::<dmar::DmarDeviceScope>() + size_of::<DmarDevicePath>();
+            let total_scope_size = per_scope_size * config.device_scopes.len();
+            let drhd_total = size_of::<dmar::DmarDrhd>() + total_scope_size;
 
             let drhd = dmar::DmarDrhd::new(
                 0, // no INCLUDE_PCI_ALL
@@ -833,10 +851,24 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             .with_length(drhd_total as u16);
 
             dmar_extra.extend_from_slice(drhd.as_bytes());
-            dmar_extra.extend_from_slice(
-                dmar::DmarDeviceScope::pci_sub_hierarchy(config.start_bus).as_bytes(),
-            );
-            dmar_extra.extend_from_slice(dmar::DmarDevicePath::root().as_bytes());
+
+            for scope in &config.device_scopes {
+                let scope_type = if scope.is_bridge {
+                    dmar::DEVICE_SCOPE_PCI_SUB_HIERARCHY
+                } else {
+                    dmar::DEVICE_SCOPE_PCI_ENDPOINT
+                };
+                dmar_extra.extend_from_slice(
+                    dmar::DmarDeviceScope::new(scope_type, config.start_bus).as_bytes(),
+                );
+                dmar_extra.extend_from_slice(
+                    DmarDevicePath {
+                        device: scope.devfn >> 3,
+                        function: scope.devfn & 0x7,
+                    }
+                    .as_bytes(),
+                );
+            }
         }
 
         // HAW field is width - 1 (e.g. 48-bit → 0x2F).
@@ -2205,6 +2237,16 @@ mod test {
                 mmio_base: 0xFED9_0000,
                 pci_segment: 0,
                 start_bus: 0,
+                device_scopes: vec![
+                    IntelVtdDeviceScope {
+                        devfn: 0x00,
+                        is_bridge: true,
+                    },
+                    IntelVtdDeviceScope {
+                        devfn: 0x01,
+                        is_bridge: true,
+                    },
+                ],
             }],
         );
 
@@ -2237,15 +2279,25 @@ mod test {
             u64::from_ne_bytes(dmar[drhd_offset + 8..drhd_offset + 16].try_into().unwrap());
         assert_eq!(reg_base, 0xFED9_0000);
 
-        // Device scope at offset +16
-        let scope_offset = drhd_offset + 16;
+        // Device scope 0 at offset +16
+        let scope0_offset = drhd_offset + 16;
         // Type = 2 (PCI sub-hierarchy)
-        assert_eq!(dmar[scope_offset], 2);
+        assert_eq!(dmar[scope0_offset], 2);
         // Start bus number = 0
-        assert_eq!(dmar[scope_offset + 5], 0);
+        assert_eq!(dmar[scope0_offset + 5], 0);
         // Path: device 0, function 0
-        assert_eq!(dmar[scope_offset + 6], 0);
-        assert_eq!(dmar[scope_offset + 7], 0);
+        assert_eq!(dmar[scope0_offset + 6], 0);
+        assert_eq!(dmar[scope0_offset + 7], 0);
+
+        // Device scope 1 at offset +24 (6 header + 2 path = 8 per scope)
+        let scope1_offset = scope0_offset + 8;
+        // Type = 2 (PCI sub-hierarchy)
+        assert_eq!(dmar[scope1_offset], 2);
+        // Start bus number = 0
+        assert_eq!(dmar[scope1_offset + 5], 0);
+        // Path: device 0, function 1
+        assert_eq!(dmar[scope1_offset + 6], 0);
+        assert_eq!(dmar[scope1_offset + 7], 1);
     }
 
     #[test]
@@ -2273,6 +2325,10 @@ mod test {
                 mmio_base: 0xFED9_0000,
                 pci_segment: 0,
                 start_bus: 0,
+                device_scopes: vec![IntelVtdDeviceScope {
+                    devfn: 0x00,
+                    is_bridge: true,
+                }],
             }],
         );
 
@@ -2293,11 +2349,19 @@ mod test {
                     mmio_base: 0xFED9_0000,
                     pci_segment: 0,
                     start_bus: 0,
+                    device_scopes: vec![IntelVtdDeviceScope {
+                        devfn: 0x00,
+                        is_bridge: true,
+                    }],
                 },
                 IntelVtdAcpiConfig {
                     mmio_base: 0xFED9_1000,
                     pci_segment: 1,
                     start_bus: 128,
+                    device_scopes: vec![IntelVtdDeviceScope {
+                        devfn: 0x00,
+                        is_bridge: true,
+                    }],
                 },
             ],
         );

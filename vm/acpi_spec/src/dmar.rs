@@ -146,19 +146,26 @@ pub struct DmarDeviceScope {
 }
 
 impl DmarDeviceScope {
-    /// Create a PCI sub-hierarchy device scope entry.
+    /// Create a device scope entry with the given type and start bus number.
     ///
-    /// The entry covers all devices reachable from `start_bus_number`
-    /// through the bridge at device/function 0 on that bus.
-    pub fn pci_sub_hierarchy(start_bus_number: u8) -> Self {
+    /// The entry is sized for a single path entry (one `DmarDevicePath`).
+    pub fn new(device_scope_type: u8, start_bus_number: u8) -> Self {
         Self {
-            device_scope_type: DEVICE_SCOPE_PCI_SUB_HIERARCHY,
+            device_scope_type,
             // Length = 6 (header) + 2 (one path entry)
             length: (size_of::<Self>() + size_of::<DmarDevicePath>()) as u8,
             reserved: 0.into(),
             enumeration_id: 0,
             start_bus_number,
         }
+    }
+
+    /// Create a PCI sub-hierarchy device scope entry.
+    ///
+    /// The entry covers all devices reachable from `start_bus_number`
+    /// through the bridge at device/function 0 on that bus.
+    pub fn pci_sub_hierarchy(start_bus_number: u8) -> Self {
+        Self::new(DEVICE_SCOPE_PCI_SUB_HIERARCHY, start_bus_number)
     }
 }
 

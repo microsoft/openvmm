@@ -655,10 +655,17 @@ async fn intel_vtd_mixed_topology(
                 .with_virtio_nic("s1rc0rp1")
                 // Linux's Intel IOMMU driver is off by default unless the
                 // kernel was built with CONFIG_INTEL_IOMMU_DEFAULT_ON.
+                // Also set real ACS capability bits on root ports so Linux
+                // creates per-device IOMMU groups (SV + RR + CR + UF).
                 .with_custom_config(|c| {
                     if let openvmm_defs::config::LoadMode::Linux { cmdline, .. } = &mut c.load_mode
                     {
                         cmdline.push_str(" intel_iommu=on");
+                    }
+                    for rc in &mut c.pcie_root_complexes {
+                        for port in &mut rc.ports {
+                            port.acs_capabilities_supported = Some(0x5D);
+                        }
                     }
                 })
         })
