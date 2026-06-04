@@ -64,6 +64,14 @@ as well as the generated CLI help (via `cargo run -- --help`).
     virt). The host must expose virtualization extensions to the VM
     running OpenVMM.
 
+  KVM accepts the following parameters (x86_64 guests only):
+  * `nested_virt` — expose VMX/SVM to the guest so it can run its own
+    hypervisor. Off by default: when enabled, a Windows guest detects
+    nested virtualization support and turns on Virtual Secure Mode (VSM),
+    which hurts performance and breaks boot while VMBus devices are in use.
+    The host must support KVM nested virtualization; the backend validates
+    this and fails early if it does not.
+
   Examples:
   ```bash
   --hypervisor whp
@@ -71,6 +79,7 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --hypervisor whp:user_mode_apic,no_enlightenments
   --hypervisor whp:nested_virt
   --hypervisor kvm
+  --hypervisor kvm:nested_virt
   ```
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
