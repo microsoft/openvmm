@@ -4050,9 +4050,10 @@ impl Coordinator {
         state: &mut CoordinatorState,
     ) -> Result<(), task_control::Cancelled> {
         loop {
-            // `self.restart` is set in a prior iteration when either:
+            // `self.restart` is set in a prior iteration when:
             // `CoordinatorMessage::Restart` from Primary or sub-channel worker.
             // `EndpointAction::RestartRequired`.
+            // Or in `insert_coordinator` when Restoring from saved state.
             if self.restart {
                 self.restart_worker_queues(stop, state).await?;
             }
@@ -4158,7 +4159,6 @@ impl Coordinator {
                     self.handle_queued_coordinator_messages(state).await;
                 }
                 Message::UpdateFromVf(rpc) => {
-                    self.stop_primary_worker().await;
                     rpc.handle(async |_| {
                         self.update_guest_vf_state(state).await;
                     })
@@ -4821,6 +4821,7 @@ impl Coordinator {
     }
 
     async fn update_guest_vf_state(&mut self, c_state: &mut CoordinatorState) {
+        self.stop_primary_worker().await;
         self.restore_guest_vf_state(c_state).await;
     }
 }
