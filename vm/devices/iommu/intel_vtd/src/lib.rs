@@ -235,43 +235,32 @@ impl VtdSharedState {
         GstsReg::from(state.gsts).ires()
     }
 
-    /// Prepare the IOMMU's own fault event MSI for deferred delivery.
-    ///
-    /// Returns the MSI address/data if the interrupt is unmasked, or `None`
-    /// if masked (caller should set IP in that case).
+    /// Deliver the IOMMU's own fault event MSI.
     ///
     /// VT-d delivers its own MSIs directly (not through its own interrupt
     /// remapping). Uses `signal_msi(None, ...)` — the `None` devid means
     /// if this MSI were to pass through a VtdSignalMsi wrapper it would be
     /// dropped, which is correct (IOMMU MSIs must not loop through IR).
-    fn prepare_fault_interrupt(state: &VtdState) -> Option<(u64, u32)> {
+    fn deliver_fault_interrupt(&self, state: &VtdState) {
         let fectl = FectlReg::from(state.fectl);
         if fectl.im() {
-            return None;
+            // Masked — don't deliver, IP will be set by caller.
+            return;
         }
         let addr = (state.feuaddr as u64) << 32 | (state.feaddr as u64);
-        Some((addr, state.fedata))
+        let data = state.fedata;
+        self.signal_msi.signal_msi(None, addr, data);
     }
 
-    /// Prepare the IOMMU's own invalidation completion event MSI for
-    /// deferred delivery.
-    fn prepare_invalidation_interrupt(state: &VtdState) -> Option<(u64, u32)> {
+    /// Deliver the IOMMU's own invalidation completion event MSI.
+    fn deliver_invalidation_interrupt(&self, state: &VtdState) {
         let iectl = IectlReg::from(state.iectl);
         if iectl.im() {
-            return None;
+            return;
         }
         let addr = (state.ieuaddr as u64) << 32 | (state.ieaddr as u64);
-        Some((addr, state.iedata))
-    }
-
-    /// Deliver MSIs that were deferred while holding the state lock.
-    ///
-    /// Must be called **after** dropping the state lock to avoid holding
-    /// the lock across external `signal_msi` calls.
-    fn deliver_deferred_msis(&self, msis: &[(u64, u32)]) {
-        for &(addr, data) in msis {
-            self.signal_msi.signal_msi(None, addr, data);
-        }
+        let data = state.iedata;
+        self.signal_msi.signal_msi(None, addr, data);
     }
 }
 
@@ -424,29 +413,13 @@ impl IntelVtdDevice {
 
     /// Write a 32-bit value at a DWORD-aligned MMIO offset.
     ///
-    /// All register writes go through this function. 64-bit writes are split
-    /// into two DWORD writes.
-    fn write_register_dword(&mut self, offset: u16, value: u32) {
-        let mut deferred = Vec::new();
-        {
-            let mut state = self.shared.state.write();
-            self.write_register_dword_locked(&mut state, offset, value, &mut deferred);
-        }
-        self.shared.deliver_deferred_msis(&deferred);
-    }
-
-    /// Write a DWORD register while already holding the state write lock.
-    ///
-    /// MSI deliveries are collected into `deferred_msis` rather than
-    /// delivered immediately, so the caller can deliver them after
-    /// releasing the lock.
-    fn write_register_dword_locked(
-        &self,
-        state: &mut VtdState,
-        offset: u16,
-        value: u32,
-        deferred_msis: &mut Vec<(u64, u32)>,
-    ) {
+    /// Acquires the write lock, performs the register write, and releases it.
+    /// 64-bit MMIO writes call this twice (once per DWORD) — this is safe
+    /// because every 64-bit VT-d register either has its trigger bit in one
+    /// specific DWORD, or is a config register latched by a separate GCMD
+    /// write. No register requires atomic writes across both DWORDs.
+    fn write_register_dword(&self, offset: u16, value: u32) {
+        let mut state = self.shared.state.write();
         tracing::trace!(offset, value, "vtd mmio_write_dword");
 
         match offset {
@@ -455,7 +428,7 @@ impl IntelVtdDevice {
 
             // GCMD (32-bit WO at 0x018)
             0x018 => {
-                self.process_gcmd(state, value);
+                self.process_gcmd(&mut state, value);
             }
 
             // RTADDR (64-bit at 0x020) — freely writable
@@ -473,7 +446,7 @@ impl IntelVtdDevice {
             }
             0x02C => {
                 let full = (state.ccmd & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
-                self.process_ccmd(state, full);
+                self.process_ccmd(&mut state, full);
             }
 
             // FSTS (32-bit RW1C at 0x034)
@@ -505,9 +478,7 @@ impl IntelVtdDevice {
                     .into_bits();
                 if old.im() && !new.im() && old.ip() {
                     state.fectl = FectlReg::from(state.fectl).with_ip(false).into_bits();
-                    if let Some(msi) = VtdSharedState::prepare_fault_interrupt(state) {
-                        deferred_msis.push(msi);
-                    }
+                    self.shared.deliver_fault_interrupt(&state);
                 }
             }
 
@@ -522,7 +493,7 @@ impl IntelVtdDevice {
                 let full = (state.iqt & 0xFFFF_FFFF_0000_0000) | value as u64;
                 let iqt = IqtReg::from(full);
                 state.iqt = IqtReg::new().with_qt(iqt.qt()).into_bits();
-                self.process_invalidation_queue(state, deferred_msis);
+                self.process_invalidation_queue(&mut state);
             }
             0x08C => {
                 state.iqt = (state.iqt & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
@@ -564,9 +535,7 @@ impl IntelVtdDevice {
                     .into_bits();
                 if old.im() && !new.im() && old.ip() {
                     state.iectl = IectlReg::from(state.iectl).with_ip(false).into_bits();
-                    if let Some(msi) = VtdSharedState::prepare_invalidation_interrupt(state) {
-                        deferred_msis.push(msi);
-                    }
+                    self.shared.deliver_invalidation_interrupt(&state);
                 }
             }
 
@@ -616,7 +585,7 @@ impl IntelVtdDevice {
                     o if o == iotlb_hi => {
                         // IVT (bit 63) is in this DWORD. Merge and process.
                         let full = (state.iotlb & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
-                        self.process_iotlb_reg(state, full);
+                        self.process_iotlb_reg(&mut state, full);
                     }
                     o if o == frcd_lo_lo || o == frcd_lo_hi => {
                         // FRCD low is RO.
@@ -781,11 +750,7 @@ impl IntelVtdDevice {
     ///
     /// Consumes descriptors from head to tail. Called when the guest writes
     /// IQT.
-    fn process_invalidation_queue(
-        &self,
-        state: &mut VtdState,
-        deferred_msis: &mut Vec<(u64, u32)>,
-    ) {
+    fn process_invalidation_queue(&self, state: &mut VtdState) {
         let gsts = GstsReg::from(state.gsts);
         if !gsts.qies() {
             return;
@@ -851,7 +816,7 @@ impl IntelVtdDevice {
                 0x04 => {}
                 // INVALIDATION_WAIT (0x05)
                 0x05 => {
-                    self.process_invalidation_wait(state, &descriptor, deferred_msis);
+                    self.process_invalidation_wait(state, &descriptor);
                 }
                 // Unknown type — set IQE, halt.
                 _ => {
@@ -877,12 +842,7 @@ impl IntelVtdDevice {
     }
 
     /// Process an INVALIDATION_WAIT descriptor (type 0x05).
-    fn process_invalidation_wait(
-        &self,
-        state: &mut VtdState,
-        descriptor: &[u8; 16],
-        deferred_msis: &mut Vec<(u64, u32)>,
-    ) {
+    fn process_invalidation_wait(&self, state: &mut VtdState, descriptor: &[u8; 16]) {
         let dw0 = u32::from_le_bytes([descriptor[0], descriptor[1], descriptor[2], descriptor[3]]);
 
         let sw = (dw0 >> 5) & 1 != 0; // Status Write
@@ -927,8 +887,9 @@ impl IntelVtdDevice {
             state.ics = ics.into_bits();
 
             // Signal invalidation completion interrupt.
-            if let Some(msi) = VtdSharedState::prepare_invalidation_interrupt(state) {
-                deferred_msis.push(msi);
+            let iectl = IectlReg::from(state.iectl);
+            if !iectl.im() {
+                self.shared.deliver_invalidation_interrupt(state);
             } else {
                 // Masked — set IP.
                 state.iectl = IectlReg::from(state.iectl).with_ip(true).into_bits();
@@ -990,25 +951,8 @@ impl MmioIntercept for IntelVtdDevice {
         match data.len() {
             8 => {
                 let val = u64::from_le_bytes(data.try_into().unwrap());
-                // Acquire lock once for both DWORD writes, then deliver
-                // any deferred MSIs after releasing the lock.
-                let mut deferred = Vec::new();
-                {
-                    let mut state = self.shared.state.write();
-                    self.write_register_dword_locked(
-                        &mut state,
-                        offset as u16,
-                        val as u32,
-                        &mut deferred,
-                    );
-                    self.write_register_dword_locked(
-                        &mut state,
-                        (offset + 4) as u16,
-                        (val >> 32) as u32,
-                        &mut deferred,
-                    );
-                }
-                self.shared.deliver_deferred_msis(&deferred);
+                self.write_register_dword(offset as u16, val as u32);
+                self.write_register_dword((offset + 4) as u16, (val >> 32) as u32);
             }
             4 => {
                 let val = u32::from_le_bytes(data.try_into().unwrap());
