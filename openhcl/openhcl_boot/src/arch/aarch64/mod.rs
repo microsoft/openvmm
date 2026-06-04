@@ -21,6 +21,12 @@ pub fn initialize(_: &ShimParams) {}
 
 pub fn uninitialize(_: &ShimParams) {}
 
+#[cfg(feature = "cvm_boot_log")]
+pub fn initialize_serial_io(_: &ShimParams) {}
+
+#[cfg(feature = "cvm_boot_log")]
+pub fn uninitialize_serial_io(_: &ShimParams) {}
+
 // Entry point.
 #[cfg(minimal_rt)]
 core::arch::global_asm! {
