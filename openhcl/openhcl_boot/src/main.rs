@@ -265,19 +265,12 @@ fn build_kernel_command_line(
     // com1. This is overridden by any user customizations in the static or
     // dynamic command line, as this console argument provided by the bootloader
     // comes first.
-    write!(cmdline, "console=")?;
-    match (&partition_info.com3_serial, can_trust_host) {
-        (ComInfo::Ns16550, true) => write!(cmdline, "ttyS2,115200 ")?,
-        (
-            ComInfo::Pl011 {
-                base: _,
-                intid,
-                current_speed,
-            },
-            true,
-        ) => write!(cmdline, "ttyS{},{} ", intid - 1, current_speed)?,
-        _ => write!(cmdline, "ttynull ")?,
+    let console = match (&partition_info.com3_serial, can_trust_host) {
+        (ComInfo::Ns16550, true) => "ttyS2,115200",
+        (ComInfo::Pl011 { .. }, true) => "ttyAMA0,115200",
+        _ => "ttynull",
     };
+    write!(cmdline, "console={console} ")?;
 
     if params.isolation_type != IsolationType::None {
         write!(
