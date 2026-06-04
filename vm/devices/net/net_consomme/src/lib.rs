@@ -234,7 +234,7 @@ impl ConsommeControl {
             .map_err(ConsommeMessageError::Bind)
     }
 
-    /// Unbinds a port previously reserved with bind_port()
+    /// Unbinds a port and IP family previously reserved with bind_port().
     pub async fn unbind_port(
         &self,
         protocol: IpProtocol,

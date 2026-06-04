@@ -572,7 +572,7 @@ impl<T: Client> Access<'_, T> {
         Ok(())
     }
 
-    /// Unbinds from the specified guest port.
+    /// Unbinds from the specified guest port and IP family.
     pub fn unbind_udp_port(&mut self, family: IpVersion, port: u16) -> Result<(), BindError> {
         if self
             .inner

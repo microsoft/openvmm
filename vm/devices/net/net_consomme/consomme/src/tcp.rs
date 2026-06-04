@@ -335,8 +335,14 @@ impl<T: Client> Access<'_, T> {
                         // the original guest port. This allows loopback to work as expected.
                         if self.inner.state.params.is_local_address(&other_addr) {
                             for (other_ft, connection) in self.inner.tcp.connections.iter() {
-                                if matches!(connection.inner.state, TcpState::Connecting | TcpState::SynReceived) && other_ft.dst.port() == key.guest_port {
-                                    if let LoopbackPortInfo::ProxyForGuestPort{sending_port, guest_port} = connection.inner.loopback_port {
+                                if matches!(connection.inner.state, TcpState::Connecting | TcpState::SynReceived)
+                                    && PortForwardKey::from_socket_addr(other_ft.dst, other_ft.dst.port()) == *key
+                                {
+                                    if let LoopbackPortInfo::ProxyForGuestPort {
+                                        sending_port,
+                                        guest_port,
+                                    } = connection.inner.loopback_port
+                                    {
                                         if sending_port == other_addr.port() {
                                             other_addr.set_port(guest_port);
                                             break;
