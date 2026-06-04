@@ -397,10 +397,17 @@ async fn launch_workers(
                         listener,
                         framebuffer,
                         input_send,
-                        dirty_recv: dirty_rect_recv,
+                        synth_video: match (dirty_rect_recv, updates_needed_send) {
+                            (Some(dirty_recv), Some(updates_needed_send)) => {
+                                Some(vnc_worker_defs::SynthVideoChannels {
+                                    dirty_recv,
+                                    updates_needed_send,
+                                })
+                            }
+                            _ => None,
+                        },
                         max_clients: 16,
                         evict_oldest: false,
-                        updates_needed_send,
                     },
                 )
                 .await?,

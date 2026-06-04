@@ -3459,8 +3459,18 @@ async fn new_underhill_vm(
         vmbus_device_handles.push(
             uidevices_resources::SynthVideoHandle {
                 framebuffer: video_core::SharedFramebufferHandle.into_resource(),
-                dirt_send: remote_console_cfg.dirt_send,
-                updates_needed_recv: remote_console_cfg.updates_needed_recv,
+                channels: match (
+                    remote_console_cfg.dirt_send,
+                    remote_console_cfg.updates_needed_recv,
+                ) {
+                    (Some(dirt_send), Some(updates_needed_recv)) => {
+                        Some(uidevices_resources::SynthVideoDeviceChannels {
+                            dirt_send,
+                            updates_needed_recv,
+                        })
+                    }
+                    _ => None,
+                },
             }
             .into_resource(),
         );

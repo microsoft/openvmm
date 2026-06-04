@@ -1369,7 +1369,7 @@ async fn vm_config_from_command_line(
                 DeviceVtl::Vtl0,
                 SynthVideoHandle {
                     framebuffer: SharedFramebufferHandle.into_resource(),
-                    channels: Some(uidevices_resources::SynthVideoChannels {
+                    channels: Some(uidevices_resources::SynthVideoDeviceChannels {
                         dirt_send,
                         updates_needed_recv,
                     }),

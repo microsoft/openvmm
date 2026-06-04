@@ -39,7 +39,7 @@ impl ResourceId<VmbusDeviceHandleKind> for SynthMouseHandle {
 /// VNC worker). They are wired together or not at all, so bundling them in one
 /// `Option` makes the mismatched state unrepresentable.
 #[derive(MeshPayload)]
-pub struct SynthVideoChannels {
+pub struct SynthVideoDeviceChannels {
     /// Channel for the device to forward dirty-rectangle hints to the consumer.
     pub dirt_send: mesh::Sender<Vec<video_core::DirtyRect>>,
     /// Channel by which the consumer tells the device whether the guest's
@@ -60,7 +60,7 @@ pub struct SynthVideoHandle {
     /// wired up; the device still runs, it just doesn't publish hints and leaves
     /// the guest at its default (everything enabled), never sending a
     /// `FeatureChange`.
-    pub channels: Option<SynthVideoChannels>,
+    pub channels: Option<SynthVideoDeviceChannels>,
 }
 
 impl ResourceId<VmbusDeviceHandleKind> for SynthVideoHandle {
