@@ -2610,17 +2610,18 @@ impl<T: RingMem> NetChannel<T> {
                 ppi = rest;
             }
 
-            metadata.l2_len = if metadata.vlan.is_some() {
-                net_backend::ETHERNET_VLAN_HEADER_LEN
-            } else {
-                net_backend::ETHERNET_HEADER_LEN
-            } as u8;
+            // The frame data always has a 14-byte Ethernet header; when
+            // VLAN is present it arrives out-of-band in the PPI (not inline
+            // in the frame), so l2_len is unconditionally 14. If the guest
+            // does present a different ethernet header length, then the checksum
+            // will fail and the send won't work, but that's really on the guest.
+            metadata.l2_len = net_backend::ETHERNET_HEADER_LEN as u8;
 
             if metadata.flags.offload_tcp_checksum() || metadata.flags.offload_udp_checksum() {
-                // The offset must be set if we're handling checksums; we already know from the above logic
-                // that the L4 checksum-type will match the L4 protocol.
+                // We can determine header length from other means, and presume there's
+                // no additional data. If there is, the packet will fail checksums but that's
+                // on the guest for not providing a specific length. This matches extant behavior.
                 metadata.l3_len = if metadata.transport_header_offset == 0 {
-                    tracelimit::warn_ratelimited!("metadata.transport_header_offset was unset");
                     if metadata.flags.is_ipv4() {
                         net_backend::IPV4_MIN_HEADER_LEN
                     } else if metadata.flags.is_ipv6() {
@@ -3486,7 +3487,9 @@ impl Adapter {
             rndisprot::Oid::OID_GEN_MAC_OPTIONS => {
                 let options: u32 = rndisprot::MAC_OPTION_COPY_LOOKAHEAD_DATA
                     | rndisprot::MAC_OPTION_TRANSFERS_NOT_PEND
-                    | rndisprot::MAC_OPTION_NO_LOOPBACK;
+                    | rndisprot::MAC_OPTION_NO_LOOPBACK
+                    | rndisprot::MAC_OPTION_8021P_PRIORITY
+                    | rndisprot::MAC_OPTION_8021Q_VLAN;
                 writer.write(options.as_bytes())?;
             }
             rndisprot::Oid::OID_GEN_MEDIA_CONNECT_STATUS => {

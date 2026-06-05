@@ -6,7 +6,7 @@
 use crate::AssignmentParams;
 use crate::MmioAperture;
 use crate::PciConfigAccess;
-use crate::assign_pci_resources_inner;
+use crate::assign_pci_resources;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -116,6 +116,7 @@ impl MockConfigSpace {
     /// Add an SR-IOV extended capability to a device.
     /// `total_vfs`: max VFs supported, `vf_offset`: routing ID offset to first VF,
     /// `vf_stride`: routing ID increment per VF.
+    /// `vf_bars`: VF BAR definitions as (bar_index, size, is_64bit, prefetchable).
     fn add_sriov(
         &self,
         bus: u8,
@@ -124,6 +125,19 @@ impl MockConfigSpace {
         total_vfs: u16,
         vf_offset: u16,
         vf_stride: u16,
+    ) {
+        self.add_sriov_with_bars(bus, device, function, total_vfs, vf_offset, vf_stride, &[]);
+    }
+
+    fn add_sriov_with_bars(
+        &self,
+        bus: u8,
+        device: u8,
+        function: u8,
+        total_vfs: u16,
+        vf_offset: u16,
+        vf_stride: u16,
+        vf_bars: &[(u8, u64, bool, bool)],
     ) {
         let mut inner = self.inner.lock();
         let key = |off: u16| (bus, device, function, off);
@@ -143,6 +157,28 @@ impl MockConfigSpace {
             key(0x100 + 0x14),
             (vf_stride as u32) << 16 | vf_offset as u32,
         );
+
+        // VF BARs at cap + 0x24..0x38.
+        for &(bar_idx, size, is_64bit, prefetchable) in vf_bars {
+            let offset = 0x100 + 0x24 + (bar_idx as u16) * 4;
+            let mut encoding: u32 = 0;
+            if is_64bit {
+                encoding |= 0x04;
+            }
+            if prefetchable {
+                encoding |= 0x08;
+            }
+            inner.regs.insert(key(offset), encoding);
+            let mask = (!(size - 1)) as u32;
+            inner.bar_masks.insert(key(offset), mask | encoding);
+
+            if is_64bit {
+                let upper_offset = offset + 4;
+                let upper_mask = ((!(size - 1)) >> 32) as u32;
+                inner.regs.insert(key(upper_offset), 0);
+                inner.bar_masks.insert(key(upper_offset), upper_mask);
+            }
+        }
     }
 
     fn read_reg(&self, bus: u8, device: u8, function: u8, offset: u16) -> u32 {
@@ -161,9 +197,8 @@ impl MockConfigSpace {
         let mut inner = self.inner.lock();
         let key = (bus, device, function, offset);
 
-        // Check if this is a BAR offset being probed.
-        let is_bar_offset = (0x10..=0x24).contains(&offset) && (offset & 0x3) == 0;
-        if is_bar_offset && inner.bar_masks.contains_key(&key) {
+        // Check if this offset has a BAR mask (device BAR or VF BAR).
+        if inner.bar_masks.contains_key(&key) {
             if value == !0u32 {
                 inner.bar_probing.insert(key, true);
                 return;
@@ -188,6 +223,76 @@ impl PciConfigAccess for MockConfigSpace {
 
 use pal_async::async_test;
 
+// ---- Config space reading helpers ----
+
+/// Read a 32-bit BAR address from mock config space.
+fn read_bar32(mock: &MockConfigSpace, bus: u8, dev: u8, func: u8, bar_idx: u8) -> u32 {
+    mock.read_reg(bus, dev, func, 0x10 + bar_idx as u16 * 4)
+}
+
+/// Read a 64-bit BAR address from mock config space (two consecutive DWORDs).
+fn read_bar64(mock: &MockConfigSpace, bus: u8, dev: u8, func: u8, bar_idx: u8) -> u64 {
+    let lo = mock.read_reg(bus, dev, func, 0x10 + bar_idx as u16 * 4) as u64;
+    let hi = mock.read_reg(bus, dev, func, 0x10 + (bar_idx + 1) as u16 * 4) as u64;
+    lo | (hi << 32)
+}
+
+/// Read bus numbers (primary, secondary, subordinate) from a bridge.
+fn read_bus_numbers(mock: &MockConfigSpace, bus: u8, dev: u8, func: u8) -> (u8, u8, u8) {
+    let reg = mock.read_reg(bus, dev, func, 0x18);
+    (reg as u8, (reg >> 8) as u8, (reg >> 16) as u8)
+}
+
+/// Read the non-prefetchable memory window from a bridge.
+/// Returns None if disabled (base > limit).
+fn read_memory_window(mock: &MockConfigSpace, bus: u8, dev: u8, func: u8) -> Option<(u64, u64)> {
+    let reg = mock.read_reg(bus, dev, func, 0x20);
+    let base = ((reg as u64) & 0xFFF0) << 16;
+    let limit = (((reg >> 16) as u64) & 0xFFF0) << 16 | 0xF_FFFF;
+    if base <= limit {
+        Some((base, limit))
+    } else {
+        None
+    }
+}
+
+/// Read the prefetchable memory window from a bridge.
+/// Returns None if disabled (base > limit).
+fn read_prefetchable_window(
+    mock: &MockConfigSpace,
+    bus: u8,
+    dev: u8,
+    func: u8,
+) -> Option<(u64, u64)> {
+    let reg = mock.read_reg(bus, dev, func, 0x24);
+    let base_lo = ((reg as u64) & 0xFFF0) << 16;
+    let limit_lo = (((reg >> 16) as u64) & 0xFFF0) << 16 | 0xF_FFFF;
+    let base_hi = mock.read_reg(bus, dev, func, 0x28) as u64;
+    let limit_hi = mock.read_reg(bus, dev, func, 0x2C) as u64;
+    let base = base_lo | (base_hi << 32);
+    let limit = limit_lo | (limit_hi << 32);
+    if base <= limit {
+        Some((base, limit))
+    } else {
+        None
+    }
+}
+
+/// Read a 32-bit VF BAR address from the SR-IOV capability in mock config space.
+/// SR-IOV cap is at 0x100, VF BAR0 starts at cap + 0x24.
+/// Masks off the low 4 encoding bits.
+fn read_vf_bar32(mock: &MockConfigSpace, bus: u8, dev: u8, func: u8, bar_idx: u8) -> u32 {
+    mock.read_reg(bus, dev, func, 0x100 + 0x24 + bar_idx as u16 * 4) & !0xF
+}
+
+/// Read a 64-bit VF BAR address from the SR-IOV capability in mock config space.
+/// Masks off the low 4 encoding bits from the lower DWORD.
+fn read_vf_bar64(mock: &MockConfigSpace, bus: u8, dev: u8, func: u8, bar_idx: u8) -> u64 {
+    let lo = (mock.read_reg(bus, dev, func, 0x100 + 0x24 + bar_idx as u16 * 4) & !0xF) as u64;
+    let hi = mock.read_reg(bus, dev, func, 0x100 + 0x24 + (bar_idx + 1) as u16 * 4) as u64;
+    lo | (hi << 32)
+}
+
 // ---- Tests ----
 
 #[async_test]
@@ -207,21 +312,10 @@ async fn single_endpoint_32bit_bar() {
     };
 
     let mut cfg = mock.clone();
-    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
 
-    assert_eq!(result.entries.len(), 1);
-    let entry = &result.entries[0];
-    assert_eq!(entry.bus, 0);
-    assert_eq!(entry.device, 0);
-    assert_eq!(entry.function, 0);
-    assert_eq!(entry.bars.len(), 1);
-    assert_eq!(entry.bars[0].address, 0x1000_0000);
-    assert_eq!(entry.bars[0].size, 0x10000);
-    assert!(!entry.bars[0].is_64bit);
-
-    // Verify BAR was programmed in config space.
-    let bar_val = mock.read_reg(0, 0, 0, 0x10);
-    assert_eq!(bar_val, 0x1000_0000);
+    // BAR0 should be assigned at the aperture base.
+    assert_eq!(read_bar32(&mock, 0, 0, 0, 0), 0x1000_0000);
 }
 
 #[async_test]
@@ -241,19 +335,10 @@ async fn single_endpoint_64bit_bar() {
     };
 
     let mut cfg = mock.clone();
-    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
-
-    assert_eq!(result.entries.len(), 1);
-    let bar = &result.entries[0].bars[0];
-    assert_eq!(bar.address, 0x1_0000_0000);
-    assert_eq!(bar.size, 0x100000);
-    assert!(bar.is_64bit);
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
 
     // Verify both BAR registers were programmed.
-    let bar_lo = mock.read_reg(0, 1, 0, 0x10);
-    let bar_hi = mock.read_reg(0, 1, 0, 0x14);
-    assert_eq!(bar_lo, 0x0000_0000);
-    assert_eq!(bar_hi, 0x0000_0001);
+    assert_eq!(read_bar64(&mock, 0, 1, 0, 0), 0x1_0000_0000);
 }
 
 #[async_test]
@@ -277,36 +362,19 @@ async fn bridge_with_endpoint() {
     };
 
     let mut cfg = mock.clone();
-    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
 
-    // Should have 2 entries: bridge + endpoint.
-    assert_eq!(result.entries.len(), 2);
+    // Bridge bus numbers.
+    let (_, secondary, subordinate) = read_bus_numbers(&mock, 0, 0, 0);
+    assert_eq!(secondary, 1);
+    assert_eq!(subordinate, 1);
 
-    // Find the bridge entry.
-    let bridge = result
-        .entries
-        .iter()
-        .find(|e| e.bus == 0 && e.device == 0)
-        .unwrap();
-    assert_eq!(bridge.secondary_bus, Some(1));
-    assert_eq!(bridge.subordinate_bus, Some(1));
-    assert!(bridge.memory_base.is_some());
-    assert!(bridge.memory_limit.is_some());
+    // Bridge should have a non-prefetchable memory window.
+    assert!(read_memory_window(&mock, 0, 0, 0).is_some());
 
-    // Find the endpoint entry.
-    let endpoint = result
-        .entries
-        .iter()
-        .find(|e| e.bus == 1 && e.device == 0)
-        .unwrap();
-    assert_eq!(endpoint.bars.len(), 1);
-    assert_eq!(endpoint.bars[0].size, 0x10000);
-
-    // Verify bus numbers were programmed on the bridge.
-    let bus_reg = mock.read_reg(0, 0, 0, 0x18);
-    assert_eq!(bus_reg & 0xFF, 0, "primary bus");
-    assert_eq!((bus_reg >> 8) & 0xFF, 1, "secondary bus");
-    assert_eq!((bus_reg >> 16) & 0xFF, 1, "subordinate bus");
+    // Endpoint BAR should be programmed.
+    let bar = read_bar32(&mock, 1, 0, 0, 0);
+    assert!(bar >= 0x1000_0000);
 }
 
 #[async_test]
@@ -330,20 +398,13 @@ async fn multiple_endpoints_sorted_by_size() {
     };
 
     let mut cfg = mock.clone();
-    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
-
-    assert_eq!(result.entries.len(), 2);
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
 
     // The 1MB BAR should be allocated first (sorted by size desc) and
     // aligned to 1MB.
-    let dev1 = result.entries.iter().find(|e| e.device == 1).unwrap();
-    assert_eq!(dev1.bars[0].address, 0x1000_0000);
-    assert_eq!(dev1.bars[0].size, 0x100000);
-
+    assert_eq!(read_bar32(&mock, 0, 1, 0, 0), 0x1000_0000);
     // The 4KB BAR should follow.
-    let dev0 = result.entries.iter().find(|e| e.device == 0).unwrap();
-    assert_eq!(dev0.bars[0].address, 0x1010_0000);
-    assert_eq!(dev0.bars[0].size, 0x1000);
+    assert_eq!(read_bar32(&mock, 0, 0, 0, 0), 0x1010_0000);
 }
 
 #[async_test]
@@ -368,13 +429,12 @@ async fn multi_function_device() {
     };
 
     let mut cfg = mock.clone();
-    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
 
     // Should find both functions.
-    assert_eq!(result.entries.len(), 2);
-    let f0 = result.entries.iter().find(|e| e.function == 0).unwrap();
-    let f1 = result.entries.iter().find(|e| e.function == 1).unwrap();
-    assert_ne!(f0.bars[0].address, f1.bars[0].address);
+    let f0_bar = read_bar32(&mock, 0, 0, 0, 0);
+    let f1_bar = read_bar32(&mock, 0, 0, 1, 0);
+    assert_ne!(f0_bar, f1_bar);
 }
 
 #[async_test]
@@ -408,52 +468,35 @@ async fn switch_with_multiple_endpoints() {
     };
 
     let mut cfg = mock.clone();
-    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
-
-    // Should have entries for: upstream bridge, 2 downstream bridges, 2 endpoints.
-    assert!(result.entries.len() >= 4);
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
 
     // Verify bus numbers were assigned correctly.
-    let upstream = result
-        .entries
-        .iter()
-        .find(|e| e.bus == 0 && e.device == 0)
-        .unwrap();
-    assert_eq!(upstream.secondary_bus, Some(1));
+    let (_, secondary, _) = read_bus_numbers(&mock, 0, 0, 0);
+    assert_eq!(secondary, 1);
 
     // Both endpoints should have BAR addresses assigned.
-    let ep1 = result.entries.iter().find(|e| e.bus == 2).unwrap();
-    let ep2 = result.entries.iter().find(|e| e.bus == 3).unwrap();
-    assert_eq!(ep1.bars.len(), 1);
-    assert_eq!(ep2.bars.len(), 1);
     // 32-bit BAR on bus 2 should be in low MMIO.
-    assert!(ep1.bars[0].address >= 0x1000_0000);
-    assert!(ep1.bars[0].address < 0x2000_0000);
+    let ep1_bar = read_bar32(&mock, 2, 0, 0, 0) as u64;
+    assert!(ep1_bar >= 0x1000_0000);
+    assert!(ep1_bar < 0x2000_0000);
+
     // 64-bit BAR on bus 3 should be in high MMIO.
-    assert!(ep2.bars[0].address >= 0x1_0000_0000);
+    let ep2_bar = read_bar64(&mock, 3, 0, 0, 0);
+    assert!(ep2_bar >= 0x1_0000_0000);
 
     // The downstream bridge for the 64-bit endpoint should have a
     // prefetchable window covering high MMIO.
-    let ds_bridge_64 = result
-        .entries
-        .iter()
-        .find(|e| e.bus == 1 && e.device == 1)
-        .unwrap();
+    let pref = read_prefetchable_window(&mock, 1, 1, 0);
     assert!(
-        ds_bridge_64.prefetchable_base.is_some(),
+        pref.is_some(),
         "bridge behind 64-bit endpoint should have prefetchable window"
     );
-    assert!(ds_bridge_64.prefetchable_base.unwrap() >= 0x1_0000_0000);
+    assert!(pref.unwrap().0 >= 0x1_0000_0000);
 
     // The downstream bridge for the 32-bit endpoint should have a
     // non-prefetchable window in low MMIO, and no prefetchable window.
-    let ds_bridge_32 = result
-        .entries
-        .iter()
-        .find(|e| e.bus == 1 && e.device == 0)
-        .unwrap();
-    assert!(ds_bridge_32.memory_base.is_some());
-    assert!(ds_bridge_32.prefetchable_base.is_none());
+    assert!(read_memory_window(&mock, 1, 0, 0).is_some());
+    assert!(read_prefetchable_window(&mock, 1, 0, 0).is_none());
 }
 
 #[async_test]
@@ -469,7 +512,7 @@ async fn bus_exhaustion_error() {
     };
 
     let mut cfg = mock;
-    let result = assign_pci_resources_inner(&mut cfg, &params).await;
+    let result = assign_pci_resources(&mut cfg, &params).await;
     assert!(result.is_err());
     assert!(
         matches!(
@@ -495,8 +538,8 @@ async fn no_devices_is_ok() {
     };
 
     let mut cfg = mock;
-    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
-    assert!(result.entries.is_empty());
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+    // Success is the assertion — no devices means nothing to program.
 }
 
 #[async_test]
@@ -518,7 +561,7 @@ async fn mmio_exhaustion_error() {
     };
 
     let mut cfg = mock;
-    let result = assign_pci_resources_inner(&mut cfg, &params).await;
+    let result = assign_pci_resources(&mut cfg, &params).await;
     assert!(result.is_err());
     assert!(
         matches!(
@@ -544,7 +587,7 @@ async fn no_aperture_error() {
     };
 
     let mut cfg = mock;
-    let result = assign_pci_resources_inner(&mut cfg, &params).await;
+    let result = assign_pci_resources(&mut cfg, &params).await;
     assert!(result.is_err());
     assert!(
         matches!(
@@ -579,25 +622,23 @@ async fn sriov_reserves_bus_numbers() {
     };
 
     let mut cfg = mock.clone();
-    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
 
     // Bridge should have subordinate >= 2 to cover VF buses.
-    let bridge = result
-        .entries
-        .iter()
-        .find(|e| e.bus == 0 && e.device == 0)
-        .unwrap();
-    assert_eq!(bridge.secondary_bus, Some(1));
+    let (_, secondary, subordinate) = read_bus_numbers(&mock, 0, 0, 0);
+    assert_eq!(secondary, 1);
     assert!(
-        bridge.subordinate_bus.unwrap() >= 2,
-        "subordinate bus {} should be >= 2 to cover SR-IOV VFs",
-        bridge.subordinate_bus.unwrap()
+        subordinate >= 2,
+        "subordinate bus {subordinate} should be >= 2 to cover SR-IOV VFs"
     );
 
-    // Verify bus numbers programmed on the bridge.
+    // Also verify from config space.
     let bus_reg = mock.read_reg(0, 0, 0, 0x18);
-    let subordinate = (bus_reg >> 16) & 0xFF;
-    assert!(subordinate >= 2, "subordinate {subordinate} should be >= 2");
+    let sub_from_reg = (bus_reg >> 16) & 0xFF;
+    assert!(
+        sub_from_reg >= 2,
+        "subordinate {sub_from_reg} should be >= 2"
+    );
 }
 
 #[async_test]
@@ -622,15 +663,11 @@ async fn sriov_no_vfs_no_reservation() {
     };
 
     let mut cfg = mock.clone();
-    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
 
     // No extra buses reserved — subordinate should be 1.
-    let bridge = result
-        .entries
-        .iter()
-        .find(|e| e.bus == 0 && e.device == 0)
-        .unwrap();
-    assert_eq!(bridge.subordinate_bus, Some(1));
+    let (_, _, subordinate) = read_bus_numbers(&mock, 0, 0, 0);
+    assert_eq!(subordinate, 1);
 }
 
 #[async_test]
@@ -652,23 +689,18 @@ async fn bridge_prefetchable_window_programmed() {
     };
 
     let mut cfg = mock.clone();
-    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
 
     // The bridge should have a prefetchable window, not a non-prefetchable one.
-    let bridge = result
-        .entries
-        .iter()
-        .find(|e| e.bus == 0 && e.device == 0)
-        .unwrap();
     assert!(
-        bridge.memory_base.is_none(),
+        read_memory_window(&mock, 0, 0, 0).is_none(),
         "no non-prefetchable window expected"
     );
-    assert!(
-        bridge.prefetchable_base.is_some(),
-        "prefetchable window expected"
-    );
-    assert!(bridge.prefetchable_base.unwrap() >= 0x1_0000_0000);
+
+    // Prefetchable window should exist.
+    let pref = read_prefetchable_window(&mock, 0, 0, 0);
+    assert!(pref.is_some(), "prefetchable window expected");
+    assert!(pref.unwrap().0 >= 0x1_0000_0000);
 
     // Verify the prefetchable window registers were programmed.
     // Offset 0x24: prefetchable base/limit (lower 16 bits each, with 64-bit flag).
@@ -725,38 +757,21 @@ async fn sibling_bridge_windows_must_not_overlap() {
     };
 
     let mut cfg = mock.clone();
-    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
 
     // Find bridge windows for the two downstream bridges.
-    let bridge_a = result
-        .entries
-        .iter()
-        .find(|e| e.bus == 1 && e.device == 0)
-        .unwrap();
-    let bridge_b = result
-        .entries
-        .iter()
-        .find(|e| e.bus == 1 && e.device == 1)
-        .unwrap();
-
-    let a_base = bridge_a
-        .memory_base
-        .expect("bridge A should have memory window");
-    let a_limit = bridge_a
-        .memory_limit
-        .expect("bridge A should have memory window");
-    let b_base = bridge_b
-        .memory_base
-        .expect("bridge B should have memory window");
-    let b_limit = bridge_b
-        .memory_limit
-        .expect("bridge B should have memory window");
+    let a_window = read_memory_window(&mock, 1, 0, 0).expect("bridge A should have memory window");
+    let b_window = read_memory_window(&mock, 1, 1, 0).expect("bridge B should have memory window");
 
     // Sibling bridge windows must not overlap — if they do, both bridges
     // will claim the same addresses on the upstream bus.
     assert!(
-        a_limit < b_base || b_limit < a_base,
-        "bridge windows overlap: A=[{a_base:#x}..={a_limit:#x}], B=[{b_base:#x}..={b_limit:#x}]"
+        a_window.1 < b_window.0 || b_window.1 < a_window.0,
+        "bridge windows overlap: A=[{:#x}..={:#x}], B=[{:#x}..={:#x}]",
+        a_window.0,
+        a_window.1,
+        b_window.0,
+        b_window.1
     );
 }
 
@@ -781,27 +796,10 @@ async fn large_bar_alignment_fits_in_bridge_window() {
     };
 
     let mut cfg = mock.clone();
-    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
 
-    let bridge = result
-        .entries
-        .iter()
-        .find(|e| e.bus == 0 && e.device == 0)
-        .unwrap();
-    let ep = result
-        .entries
-        .iter()
-        .find(|e| e.bus == 1 && e.device == 0)
-        .unwrap();
-
-    let window_base = bridge
-        .memory_base
-        .expect("bridge should have memory window");
-    let window_limit = bridge
-        .memory_limit
-        .expect("bridge should have memory window");
-    let bar_addr = ep.bars[0].address;
-    let bar_end = bar_addr + ep.bars[0].size - 1;
+    let window = read_memory_window(&mock, 0, 0, 0).expect("bridge should have memory window");
+    let bar_addr = read_bar32(&mock, 1, 0, 0, 0) as u64;
 
     // The BAR must be naturally aligned.
     assert_eq!(
@@ -811,9 +809,12 @@ async fn large_bar_alignment_fits_in_bridge_window() {
     );
 
     // The BAR must fit within the bridge window.
+    let bar_end = bar_addr + 0x4000_0000 - 1;
     assert!(
-        bar_addr >= window_base && bar_end <= window_limit,
-        "BAR [{bar_addr:#x}..={bar_end:#x}] overflows bridge window [{window_base:#x}..={window_limit:#x}]"
+        bar_addr >= window.0 && bar_end <= window.1,
+        "BAR [{bar_addr:#x}..={bar_end:#x}] overflows bridge window [{:#x}..={:#x}]",
+        window.0,
+        window.1
     );
 }
 
@@ -831,11 +832,6 @@ async fn alignment_first_sort_avoids_wasted_padding() {
     mock.add_bridge(0, 1, 0);
     mock.add_endpoint(2, 0, 0, &[(0, 0x200000, false, false)]);
 
-    // 5 MB aperture. With alignment-first ordering (B then A), total is
-    // exactly 5 MB: B at 0 (2 MB aligned, uses 2 MB), A at 2 MB (1 MB
-    // aligned, uses 3 MB). With size-first ordering (A then B), A uses
-    // 3 MB, then B needs 2 MB alignment → next 2 MB boundary is 4 MB,
-    // total = 6 MB, which overflows.
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
@@ -847,11 +843,16 @@ async fn alignment_first_sort_avoids_wasted_padding() {
     };
 
     let mut cfg = mock.clone();
-    let result = assign_pci_resources_inner(&mut cfg, &params).await;
+    let result = assign_pci_resources(&mut cfg, &params).await;
 
+    // 5 MB aperture. With alignment-first ordering (B then A), total is
+    // exactly 5 MB: B at 0 (2 MB aligned, uses 2 MB), A at 2 MB (1 MB
+    // aligned, uses 3 MB). With size-first ordering (A then B), A uses
+    // 3 MB, then B needs 2 MB alignment → next 2 MB boundary is 4 MB,
+    // total = 6 MB, which overflows.
     assert!(
         result.is_ok(),
-        "5 MB aperture should be sufficient for 3 MB + 2 MB: {}",
+        "5 MB aperture should be sufficient: {}",
         result.unwrap_err()
     );
 }
@@ -879,7 +880,7 @@ async fn misaligned_aperture_does_not_overflow() {
     };
 
     let mut cfg = mock.clone();
-    let result = assign_pci_resources_inner(&mut cfg, &params).await;
+    let result = assign_pci_resources(&mut cfg, &params).await;
 
     // The aperture is too small after alignment padding — this must fail.
     assert!(
@@ -909,7 +910,7 @@ async fn alignment_exceeds_aperture_returns_error() {
     };
 
     let mut cfg = mock.clone();
-    let result = assign_pci_resources_inner(&mut cfg, &params).await;
+    let result = assign_pci_resources(&mut cfg, &params).await;
 
     assert!(
         matches!(result, Err(crate::AssignmentError::MmioExhaustion { .. })),
@@ -942,7 +943,7 @@ async fn sriov_bus_reservation_exceeding_end_bus_returns_error() {
     };
 
     let mut cfg = mock;
-    let result = assign_pci_resources_inner(&mut cfg, &params).await;
+    let result = assign_pci_resources(&mut cfg, &params).await;
 
     // SR-IOV VFs need bus 2, but end_bus is 1. The code returns
     // BusExhaustion because the VF bus range exceeds the allowed range.
@@ -952,7 +953,7 @@ async fn sriov_bus_reservation_exceeding_end_bus_returns_error() {
     );
 }
 
-/// Bug B: When low_mmio is None, 32-bit (non-prefetchable) BARs fall back
+/// When low_mmio is None, 32-bit (non-prefetchable) BARs fall back
 /// to high_mmio via `.or(params.high_mmio)`. If high_mmio is above 4 GB,
 /// the BAR address is truncated by `bar.address as u32` and bridge memory
 /// base/limit registers (inherently 32-bit) silently lose upper bits.
@@ -975,23 +976,22 @@ async fn mem32_bar_must_not_be_placed_above_4gb() {
     };
 
     let mut cfg = mock;
-    let result = assign_pci_resources_inner(&mut cfg, &params).await;
+    let result = assign_pci_resources(&mut cfg, &params).await;
 
     // No sub-4GB aperture exists, so 32-bit BARs cannot be placed.
     // Must fail rather than silently placing them above 4 GB.
     assert!(
         result.is_err(),
-        "expected error when only aperture is above 4 GB, but got assignments: {:#?}",
-        result.unwrap().entries
+        "expected error when only aperture is above 4 GB"
     );
 }
 
-/// Bug C: When both mem32 and mem64 pools share the same aperture (only
+/// When both mem32 and mem64 pools share the same aperture (only
 /// one of low_mmio/high_mmio is provided), the mem64 base is computed
 /// from `aperture.base + root_req.mem32` instead of from the actual
 /// aligned mem32 end address. If aperture.base needs alignment for mem32,
 /// mem64 can start inside the mem32 region, causing overlapping
-/// assignments.
+/// assignments. BAR regions must not overlap.
 #[async_test]
 async fn shared_aperture_mem32_mem64_must_not_overlap() {
     let mock = MockConfigSpace::new();
@@ -1017,38 +1017,25 @@ async fn shared_aperture_mem32_mem64_must_not_overlap() {
         high_mmio: None,
     };
 
-    let mut cfg = mock;
-    let result = assign_pci_resources_inner(&mut cfg, &params).await.unwrap();
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
 
     // Collect all BAR regions and verify no overlaps.
-    let mut regions: Vec<(u64, u64, String)> = Vec::new();
-    for entry in &result.entries {
-        for bar in &entry.bars {
-            regions.push((
-                bar.address,
-                bar.address + bar.size,
-                format!(
-                    "{:02x}:{:02x}.{} BAR{}",
-                    entry.bus, entry.device, entry.function, bar.index
-                ),
-            ));
-        }
-    }
+    // Device 0: 4 MB 32-bit BAR.
+    let bar0_addr = read_bar32(&mock, 0, 0, 0, 0) as u64;
+    let bar0_end = bar0_addr + 0x40_0000;
 
-    for i in 0..regions.len() {
-        for j in (i + 1)..regions.len() {
-            let (a_start, a_end, a_name) = &regions[i];
-            let (b_start, b_end, b_name) = &regions[j];
-            assert!(
-                a_end <= b_start || b_end <= a_start,
-                "BAR regions overlap: {a_name} [{a_start:#x}..{a_end:#x}) vs \
-                 {b_name} [{b_start:#x}..{b_end:#x})"
-            );
-        }
-    }
+    // Device 1: 1 MB 64-bit BAR (in low MMIO, so hi is 0).
+    let bar1_addr = read_bar64(&mock, 0, 1, 0, 0);
+    let bar1_end = bar1_addr + 0x10_0000;
+
+    assert!(
+        bar0_end <= bar1_addr || bar1_end <= bar0_addr,
+        "BAR regions overlap: [{bar0_addr:#x}..{bar0_end:#x}) vs [{bar1_addr:#x}..{bar1_end:#x})"
+    );
 }
 
-/// Bug A: When bus 255 is consumed (by a bridge secondary or SR-IOV VF
+/// When bus 255 is consumed (by a bridge secondary or SR-IOV VF
 /// range), `wrapping_add(1)` wraps `*next_bus` to 0. The subsequent
 /// `*next_bus > end_bus` guard (0 > 255) is false, so the next bridge
 /// gets secondary bus 0, colliding with the host bridge. Should return
@@ -1061,13 +1048,8 @@ async fn bus_wrap_to_zero_must_return_exhaustion() {
     mock.add_bridge(0, 0, 0);
 
     // Endpoint on bus 1 with SR-IOV: 256 VFs, offset = 0x100, stride = 1.
-    // PF routing ID = (1 << 8) | 0 = 0x100
-    // Last VF routing ID = 0x100 + 0x100 + 255*1 = 0x2FF → bus 2
-    // But we'll craft it so max_vf_bus = 255:
-    // PF on bus 1, devfn 0. vf_offset = 0x700, stride = 1, total_vfs = 1.
-    // First VF RID = 0x100 + 0x700 = 0x800 → bus 8? No...
+    // PF routing ID = (1 << 8) | 0 = 0x100.
     // We want last VF on bus 255. RID of last VF = 0xFF00..0xFFFF → bus 255.
-    // PF RID = (1 << 8) | 0 = 0x100.
     // last_vf_rid = 0x100 + vf_offset + (total_vfs - 1) * vf_stride = 0xFF00
     // With total_vfs=1, stride=1: last_vf_rid = 0x100 + vf_offset = 0xFF00
     // → vf_offset = 0xFE00
@@ -1075,9 +1057,8 @@ async fn bus_wrap_to_zero_must_return_exhaustion() {
     mock.add_sriov(1, 0, 0, 1, 0xFE00, 1);
 
     // Second bridge on bus 0 → needs secondary bus, but next_bus wrapped to 0.
-    mock.add_bridge(0, 1, 0);
-    // Empty device behind it (bus 256 which doesn't exist).
     // The bridge just needs to exist to trigger the next bus allocation.
+    mock.add_bridge(0, 1, 0);
 
     let params = AssignmentParams {
         start_bus: 0,
@@ -1090,12 +1071,414 @@ async fn bus_wrap_to_zero_must_return_exhaustion() {
     };
 
     let mut cfg = mock;
-    let result = assign_pci_resources_inner(&mut cfg, &params).await;
+    let result = assign_pci_resources(&mut cfg, &params).await;
 
     // The SR-IOV reservation consumes up through bus 255. The next bridge
     // should fail with BusExhaustion, not silently wrap to bus 0.
     assert!(
         matches!(result, Err(crate::AssignmentError::BusExhaustion { .. })),
         "expected BusExhaustion when next_bus wraps past 255, got {result:?}"
+    );
+}
+
+/// VF BARs from SR-IOV capability must be included in bridge window sizing.
+#[async_test]
+async fn sriov_vf_bars_included_in_bridge_window() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.set_multi_function(1, 0);
+    mock.add_sriov_with_bars(
+        1,
+        0,
+        0,
+        4,
+        1,
+        1,
+        &[(0, 0x1000, false, false)], // VF BAR0: 4 KB non-pref
+    );
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    let window = read_memory_window(&mock, 0, 0, 0).expect("bridge should have memory window");
+    let window_size = window.1 - window.0 + 1;
+
+    // PF BAR = 0x1000, VF BARs = 4 * 0x1000 = 0x4000, total = 0x5000.
+    assert!(
+        window_size >= 0x5000,
+        "bridge window {window_size:#x} must be >= 0x5000"
+    );
+
+    // VF BAR0 should be programmed into the SR-IOV capability registers.
+    let vf_bar = read_vf_bar32(&mock, 1, 0, 0, 0) as u64;
+    assert!(vf_bar > 0, "VF BAR should be assigned, got {vf_bar:#x}");
+    assert!(
+        vf_bar >= window.0 && vf_bar + 0x4000 <= window.1 + 1,
+        "VF BAR region {vf_bar:#x}..{:#x} must be within bridge window {:#x}..{:#x}",
+        vf_bar + 0x4000,
+        window.0,
+        window.1 + 1,
+    );
+    // VF BAR region must not overlap PF BAR.
+    let pf_bar = read_bar32(&mock, 1, 0, 0, 0) as u64;
+    assert!(
+        vf_bar + 0x4000 <= pf_bar || pf_bar + 0x1000 <= vf_bar,
+        "VF BAR region must not overlap PF BAR"
+    );
+}
+
+/// Non-power-of-two VF counts must not panic.
+#[async_test]
+async fn sriov_non_power_of_two_vf_count() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.set_multi_function(1, 0);
+    mock.add_sriov_with_bars(
+        1,
+        0,
+        0,
+        3, // 3 VFs
+        1,
+        1,
+        &[(0, 0x1000, false, false)],
+    );
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    let window = read_memory_window(&mock, 0, 0, 0).expect("bridge should have memory window");
+    let window_size = window.1 - window.0 + 1;
+
+    assert!(
+        window_size >= 0x4000,
+        "bridge window {window_size:#x} must be >= 0x4000"
+    );
+}
+
+/// 64-bit prefetchable VF BARs should be placed in the high MMIO aperture.
+#[async_test]
+async fn sriov_vf_bars_64bit_prefetchable() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.set_multi_function(1, 0);
+    mock.add_sriov_with_bars(
+        1,
+        0,
+        0,
+        4,
+        1,
+        1,
+        &[(0, 0x10_0000, true, true)], // VF BAR0: 1 MB, 64-bit prefetchable
+    );
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: Some(MmioAperture {
+            base: 0x1_0000_0000,
+            len: 0x1_0000_0000,
+        }),
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    // Non-pref window for PF's 32-bit BAR.
+    let mem = read_memory_window(&mock, 0, 0, 0).expect("bridge should have non-pref window");
+    let mem_size = mem.1 - mem.0 + 1;
+    assert!(
+        mem_size >= 0x1000,
+        "non-pref window {mem_size:#x} must fit PF BAR (0x1000)"
+    );
+
+    // Pref window for VF BARs (4 * 1 MB).
+    let pref = read_prefetchable_window(&mock, 0, 0, 0).expect("bridge should have pref window");
+    let pref_size = pref.1 - pref.0 + 1;
+    assert!(
+        pref_size >= 0x40_0000,
+        "pref window {pref_size:#x} must be >= 0x400000"
+    );
+    assert!(
+        pref.0 >= 0x1_0000_0000,
+        "pref window base {:#x} should be in high MMIO",
+        pref.0
+    );
+
+    // VF BAR0 should be programmed as a 64-bit address in the high MMIO aperture.
+    let vf_bar = read_vf_bar64(&mock, 1, 0, 0, 0);
+    assert!(
+        (0x1_0000_0000..0x2_0000_0000).contains(&vf_bar),
+        "VF BAR {vf_bar:#x} should be in high MMIO"
+    );
+    assert!(
+        vf_bar >= pref.0 && vf_bar + 0x40_0000 <= pref.1 + 1,
+        "VF BAR region {vf_bar:#x}..{:#x} must be within pref window {:#x}..{:#x}",
+        vf_bar + 0x40_0000,
+        pref.0,
+        pref.1 + 1,
+    );
+}
+
+/// A PF with both 32-bit non-pref and 64-bit prefetchable VF BARs should
+/// have space reserved in both bridge windows.
+#[async_test]
+async fn sriov_mixed_vf_bar_types() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    mock.add_endpoint(1, 0, 0, &[]);
+    mock.set_multi_function(1, 0);
+    mock.add_sriov_with_bars(
+        1,
+        0,
+        0,
+        2,
+        1,
+        1,
+        &[
+            (0, 0x1000, false, false), // VF BAR0: 4 KB non-pref
+            (2, 0x1_0000, true, true), // VF BAR2: 64 KB 64-bit pref
+        ],
+    );
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: Some(MmioAperture {
+            base: 0x1_0000_0000,
+            len: 0x1_0000_0000,
+        }),
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    let mem = read_memory_window(&mock, 0, 0, 0).expect("bridge should have non-pref window");
+    let mem_size = mem.1 - mem.0 + 1;
+    assert!(
+        mem_size >= 0x2000,
+        "non-pref window {mem_size:#x} must be >= 0x2000"
+    );
+
+    let pref = read_prefetchable_window(&mock, 0, 0, 0).expect("bridge should have pref window");
+    let pref_size = pref.1 - pref.0 + 1;
+    assert!(
+        pref_size >= 0x2_0000,
+        "pref window {pref_size:#x} must be >= 0x20000"
+    );
+
+    // VF BAR0 (non-pref) should be in the non-pref window.
+    let vf_bar0 = read_vf_bar32(&mock, 1, 0, 0, 0) as u64;
+    assert!(vf_bar0 > 0, "VF BAR0 should be assigned");
+    assert!(
+        vf_bar0 >= mem.0 && vf_bar0 + 0x2000 <= mem.1 + 1,
+        "VF BAR0 region must be within non-pref window"
+    );
+    // VF BAR2 (64-bit pref) should be in the pref window.
+    let vf_bar2 = read_vf_bar64(&mock, 1, 0, 0, 2);
+    assert!(
+        vf_bar2 >= pref.0 && vf_bar2 + 0x2_0000 <= pref.1 + 1,
+        "VF BAR2 region must be within pref window"
+    );
+}
+
+/// Top-level PF (no bridge) with VF BARs.
+#[async_test]
+async fn sriov_top_level_pf_no_bridge() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_endpoint(0, 0, 0, &[(0, 0x1_0000, false, false)]);
+    mock.set_multi_function(0, 0);
+    mock.add_sriov_with_bars(
+        0,
+        0,
+        0,
+        4,
+        1,
+        1,
+        &[(0, 0x1_0000, false, false)], // VF BAR0: 64 KB non-pref
+    );
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    // PF BAR should be programmed.
+    let bar = read_bar32(&mock, 0, 0, 0, 0);
+    assert!(bar > 0, "PF BAR should be assigned");
+    let bar_end = bar as u64 + 0x1_0000;
+    assert!(
+        bar_end <= 0x2000_0000,
+        "PF BAR must fit in low_mmio aperture"
+    );
+
+    // VF BAR0 should be programmed and not overlap the PF BAR.
+    let vf_bar = read_vf_bar32(&mock, 0, 0, 0, 0) as u64;
+    assert!(vf_bar > 0, "VF BAR should be assigned, got {vf_bar:#x}");
+    assert!(
+        vf_bar + 0x4_0000 <= 0x2000_0000,
+        "VF BARs must fit in low_mmio aperture"
+    );
+    assert!(
+        vf_bar + 0x4_0000 <= bar as u64 || bar_end <= vf_bar,
+        "VF BAR region must not overlap PF BAR"
+    );
+}
+
+/// Two PFs behind the same bridge, each with VF BARs.
+#[async_test]
+async fn sriov_multiple_pfs_behind_bridge() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // PF1 on bus 1, device 0: 4 KB device BAR, 2 VFs with 4 KB VF BAR.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.set_multi_function(1, 0);
+    mock.add_sriov_with_bars(1, 0, 0, 2, 1, 1, &[(0, 0x1000, false, false)]);
+
+    // PF2 on bus 1, device 1: 8 KB device BAR, 3 VFs with 8 KB VF BAR.
+    mock.add_endpoint(1, 1, 0, &[(0, 0x2000, false, false)]);
+    mock.set_multi_function(1, 1);
+    mock.add_sriov_with_bars(1, 1, 0, 3, 1, 1, &[(0, 0x2000, false, false)]);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    let window = read_memory_window(&mock, 0, 0, 0).expect("bridge should have memory window");
+    let window_size = window.1 - window.0 + 1;
+
+    // PF1: BAR=0x1000 + VF=2*0x1000=0x2000
+    // PF2: BAR=0x2000 + VF=3*0x2000=0x6000
+    // Total = 0x1000 + 0x2000 + 0x2000 + 0x6000 = 0xB000
+    assert!(
+        window_size >= 0xB000,
+        "bridge window {window_size:#x} must be >= 0xB000"
+    );
+
+    // Both PF BARs should be programmed and not overlap.
+    let pf1_bar = read_bar32(&mock, 1, 0, 0, 0) as u64;
+    let pf2_bar = read_bar32(&mock, 1, 1, 0, 0) as u64;
+    let pf1_size: u64 = 0x1000;
+    let pf2_size: u64 = 0x2000;
+    assert!(
+        pf1_bar + pf1_size <= pf2_bar || pf2_bar + pf2_size <= pf1_bar,
+        "PF BARs must not overlap"
+    );
+
+    // VF BARs should be programmed for both PFs.
+    let vf1_bar = read_vf_bar32(&mock, 1, 0, 0, 0) as u64;
+    let vf2_bar = read_vf_bar32(&mock, 1, 1, 0, 0) as u64;
+    let vf1_size: u64 = 2 * 0x1000;
+    let vf2_size: u64 = 3 * 0x2000;
+    assert!(vf1_bar > 0, "PF1 VF BAR should be assigned");
+    assert!(vf2_bar > 0, "PF2 VF BAR should be assigned");
+    // VF BAR regions must not overlap each other.
+    assert!(
+        vf1_bar + vf1_size <= vf2_bar || vf2_bar + vf2_size <= vf1_bar,
+        "VF BAR regions must not overlap each other"
+    );
+    // VF BAR regions must not overlap PF BARs.
+    assert!(
+        vf1_bar + vf1_size <= pf1_bar || pf1_bar + pf1_size <= vf1_bar,
+        "PF1 VF BARs must not overlap PF1 BAR"
+    );
+    assert!(
+        vf2_bar + vf2_size <= pf2_bar || pf2_bar + pf2_size <= vf2_bar,
+        "PF2 VF BARs must not overlap PF2 BAR"
+    );
+}
+
+/// VF BAR space contributing to MMIO exhaustion should produce an error.
+#[async_test]
+async fn sriov_vf_bars_cause_mmio_exhaustion() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.set_multi_function(1, 0);
+    mock.add_sriov_with_bars(
+        1,
+        0,
+        0,
+        16,
+        1,
+        1,
+        &[(0, 0x10_0000, false, false)], // VF BAR0: 1 MB each
+    );
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x20_0000, // Only 2 MB — not enough for 16 MB of VF BARs
+        }),
+        high_mmio: None,
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources(&mut cfg, &params).await;
+    assert!(
+        result.is_err(),
+        "should fail with MMIO exhaustion, got {result:?}"
     );
 }

@@ -11,7 +11,9 @@ build:
   buildroot:
     prebuild:
       - mkdir -p ${param:builddir}/overlay/usr/local/bin
+      - mkdir -p ${param:builddir}/overlay/root
       - mkdir -p ${param:builddir}/overlay/etc/init.d
+      - cp ${param:configdir}/cca_start_tmk.sh ${param:builddir}/overlay/root/start-tmk.sh
 
       # =========================
       # run_realm_test.sh
@@ -28,6 +30,7 @@ build:
         LKVM="$${CCA_DIR}/lkvm"
         KERNEL="$${KERNEL:-/cca/Image}"
         GUESTROOT="/.lkvm/default"
+        START_TMK="/root/start-tmk.sh"
 
         # Wait for artifacts
         for i in $$(seq 1 30); do
@@ -76,22 +79,12 @@ build:
 
             echo "[realm-launch] installing start-tmk.sh..."
 
-            cat > "$$GUESTROOT/root/start-tmk.sh" <<'EOF'
-        #!/root/busybox sh
-        set -e
+            if [ ! -f "$$START_TMK" ]; then
+                echo "[realm-launch][ERROR] Missing $$START_TMK"
+                return 1
+            fi
 
-        echo "[plane0] start-tmk.sh reached"
-
-        mkdir -p /root/mount
-        mount -t 9p -o trans=virtio cca_mount /root/mount
-
-        cd /root/mount
-        export RUST_BACKTRACE=1
-
-        echo "[plane0] Launching tmk_vmm..."
-        exec ./tmk_vmm --hv cca --tmk ./simple_tmk
-        EOF
-
+            cp "$$START_TMK" "$$GUESTROOT/root/start-tmk.sh"
             chmod 755 "$$GUESTROOT/root/start-tmk.sh"
 
             # Debug to verify correct shebang + interpreter

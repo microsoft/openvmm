@@ -130,6 +130,10 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
                 test_igvm_agent_rpc_server_windows_path(MachineArch::X86_64)
             }
 
+            _ if id == virtio_win::VIRTIO_WIN_DRIVERS => {
+                virtio_win_path()
+            }
+
             // Blob-hosted artifacts: resolved via blob_artifact_info.
             _ if let Some(artifact) = KnownTestArtifacts::from_handle(id) => {
                 get_test_artifact_path(artifact)
@@ -386,6 +390,17 @@ fn test_igvm_agent_rpc_server_windows_path(arch: MachineArch) -> anyhow::Result<
         MissingCommand::Build {
             package: "test_igvm_agent_rpc_server",
             target: Some(target),
+        },
+    )
+}
+
+/// Path to the extracted virtio-win driver package from openvmm-deps.
+fn virtio_win_path() -> anyhow::Result<PathBuf> {
+    get_path(
+        ".packages",
+        "virtio-win",
+        MissingCommand::Restore {
+            description: "virtio-win drivers",
         },
     )
 }

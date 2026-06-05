@@ -141,6 +141,7 @@ impl IntoPipeline for CcaTestsCli {
                     .dep_on(
                         |ctx| flowey_lib_hvlite::_jobs::local_update_cca_emu::Params {
                             test_root: test_root.clone(),
+                            openvmm_root: crate::repo_root(),
                             sub_cmds: flowey_lib_hvlite::_jobs::local_update_cca_emu::SubCmds {
                                 rebuild_plane0_linux,
                                 rebuild_rootfs,
