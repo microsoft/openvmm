@@ -372,6 +372,7 @@ fn run_no_vmbus(
             .await?;
 
         // Reuse the IMC hive from petri/guest-bootstrap to configure pipette.
+        // No need to unload IMCTemp later—the VM is powered off after prep.
         agent
             .write_file(
                 "C:\\imc.hiv",
