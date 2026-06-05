@@ -409,13 +409,9 @@ impl Default for TxMetadata {
             l2_len: 0,
             l3_len: 0,
             l4_len: 0,
-<<<<<<< HEAD
-            max_tcp_segment_size: 0,
-=======
             transport_header_offset: 0,
-            max_segment_size: 0,
+            max_tcp_segment_size: 0,
             vlan: None,
->>>>>>> f9521b06 (netvsp: Add VLAN support (#3417))
         }
     }
 }
