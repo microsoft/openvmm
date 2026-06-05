@@ -188,7 +188,8 @@ allocator keeps pinned BARs at their physical addresses:
 
 ```bash
 sudo openvmm \
-  --pcie-root-complex rc0,preserve_bars,low_mmio_base=0xc0000000,high_mmio_base=0x100000000 \
+  --pcie-root-complex \
+    rc0,preserve_bars,low_mmio_base=0xc0000000,high_mmio_base=0x100000000 \
   --pcie-root-port rc0:rp0 \
   --pcie-root-port rc0:rp1 \
   --vfio host=0000:01:00.0,port=rp0,bar0=pt \
