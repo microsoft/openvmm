@@ -62,8 +62,6 @@ pub enum ComInfo {
     /// No serial port configured
     None,
     /// Serial device on x86
-    ///
-    /// Parameters are hard coded based on port number for this device.
     Ns16550 {
         /// Base IO port
         #[cfg_attr(feature = "inspect", inspect(hex))]
@@ -81,16 +79,6 @@ pub enum ComInfo {
         /// Speed
         current_speed: u32,
     },
-}
-
-impl ComInfo {
-    /// Whether the serial port is configured
-    pub fn is_some(&self) -> bool {
-        match self {
-            ComInfo::None => false,
-            _ => true,
-        }
-    }
 }
 
 /// Errors returned by parsing.
@@ -1092,7 +1080,7 @@ fn parse_pl011<'a>(
         .map_err(ErrorKind::Prop)?
         .ok_or(ErrorKind::PropMissing {
             node_name: node.name,
-            prop_name: "reg",
+            prop_name: "interrupts",
         })?;
 
     let current_speed = node
@@ -1353,6 +1341,7 @@ mod tests {
         let p_clock_frequency = builder.add_string("clock-frequency").unwrap();
         let p_current_speed = builder.add_string("current-speed").unwrap();
         let p_interrupts = builder.add_string("interrupts").unwrap();
+        let p_interrupt_parent = builder.add_string("interrupt-parent").unwrap();
 
         let mut cpus = builder
             .start_node("")
@@ -1544,7 +1533,29 @@ mod tests {
 
                 root = io_port_bus.end_node().unwrap();
             }
-            ComInfo::Pl011 { .. } => todo!("pl011 dt test"),
+            ComInfo::Pl011 {
+                base,
+                intid,
+                current_speed,
+            } => {
+                let name = format!("serial@{:x}", base);
+                let serial = root
+                    .start_node(&name)
+                    .unwrap()
+                    .add_str(p_compatible, "arm,sbsa-uart")
+                    .unwrap()
+                    .add_u32_array(p_reg, &[0, base, 0, 0x1000])
+                    .unwrap()
+                    .add_u32(p_interrupt_parent, 1)
+                    .unwrap()
+                    .add_u32_array(p_interrupts, &[0, intid, 4])
+                    .unwrap()
+                    .add_u32(p_current_speed, current_speed)
+                    .unwrap()
+                    .add_str(p_status, "okay")
+                    .unwrap();
+                root = serial.end_node().unwrap();
+            }
             ComInfo::None => {}
         }
 
@@ -1951,14 +1962,34 @@ mod tests {
 
     /// tests serial output
     #[test]
-    fn test_com3_serial_output() {
+    fn test_com3_serial_output_x86() {
         let com3_serial = ComInfo::Ns16550 {
             base: COM3_REG_BASE,
             current_speed: 115200,
         };
 
+        test_com3_serial_output(com3_serial);
+    }
+
+    /// tests serial output
+    #[test]
+    fn test_com3_serial_output_aarch64() {
+        let com3_serial = ComInfo::Pl011 {
+            base: 0xEFFE_7000,
+            intid: 3,
+            current_speed: 115200,
+        };
+
+        test_com3_serial_output(com3_serial);
+    }
+
+    fn test_com3_serial_output(com3_serial: ComInfo) {
         let orig = create_parsed(
-            2560,
+            match com3_serial {
+                ComInfo::None => unreachable!(),
+                ComInfo::Ns16550 { .. } => 2560,
+                ComInfo::Pl011 { .. } => 2512,
+            },
             &[
                 MemoryEntry {
                     range: MemoryRange::try_new(0..(1024 * HV_PAGE_SIZE)).unwrap(),
