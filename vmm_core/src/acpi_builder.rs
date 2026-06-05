@@ -180,13 +180,6 @@ pub struct BuiltPcieAcpiTables {
 }
 
 /// Build PCIe SSDT/CEDT payloads from host-bridge topology.
-///
-/// TODO: When any bridge has `preserve_bars`, emit `_DSM` UUID
-/// `{E5C937D0-3553-4D7A-9117-EA4D19C3434D}` Function 5 returning 0
-/// on that host bridge so the guest OS preserves firmware BAR assignments.
-/// See QEMU `gpex-acpi.c` `build_pci_host_bridge_dsm_method` for reference.
-/// For device tree guests, set `linux,pci-probe-only = <1>` on the host
-/// bridge or `/chosen` node (Linux checks this via `of_pci_preserve_config()`).
 pub fn build_pcie_acpi_tables(
     pcie_host_bridges: &[PcieHostBridge],
 ) -> Result<BuiltPcieAcpiTables, PcieAcpiBuildError> {
@@ -205,6 +198,7 @@ pub fn build_pcie_acpi_tables(
             high_mmio: bridge.high_mmio,
             cxl: bridge.cxl.is_some(),
             vnode: bridge.vnode,
+            preserve_bars: bridge.preserve_bars,
         });
 
         if let Some(cxl) = &bridge.cxl {
