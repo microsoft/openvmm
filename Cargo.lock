@@ -5233,6 +5233,7 @@ version = "0.0.0"
 dependencies = [
  "aarch64defs",
  "arrayvec",
+ "bitfield-struct 0.11.0",
  "cfg-if",
  "crc32fast",
  "fdt",
