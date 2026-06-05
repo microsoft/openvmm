@@ -57,7 +57,7 @@ pub struct GicInfo {
 
 /// Information about a COM port.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "inspect", derive(Inspect))]
+#[cfg_attr(feature = "inspect", derive(Inspect), inspect(tag = "com_info"))]
 pub enum ComInfo {
     /// No serial port configured
     None,
