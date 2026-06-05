@@ -146,4 +146,19 @@ pub mod tags {
 
     /// Artifact is a VmgsTool binary
     pub trait IsVmgsTool: ArtifactId {}
+
+    /// Artifact is a `vmfirmwareigvm`-style resource DLL that wraps an OpenHCL
+    /// IGVM file (e.g. for testing the `vmgstool copy-igvmfile` flow).
+    pub trait IsVmfwDll: ArtifactId {
+        /// The resource code (passed to `vmgstool copy-igvmfile --resource-code`)
+        /// under which the IGVM payload is stored in the DLL.
+        ///
+        /// See the `ResourceCode` enum in the `vmgstool` crate for the
+        /// canonical mapping. Common values are `13510` (`NONCONFIDENTIAL`),
+        /// `13515` (`SNP`), `13520` (`TDX`).
+        const RESOURCE_CODE: u32;
+
+        /// What [`MachineArch`] the wrapped IGVM targets.
+        const ARCH: MachineArch;
+    }
 }

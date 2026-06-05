@@ -964,16 +964,57 @@ impl IntoPipeline for CheckinGatesCli {
             // skim off interesting artifacts required by the VMM tests job
             match (arch, mi_secure) {
                 (CommonArch::X86_64, false) => {
-                    vmm_tests_artifacts_windows_x86.use_openhcl_igvm_files = Some(use_openhcl_igvm);
+                    vmm_tests_artifacts_windows_x86.use_openhcl_igvm_files =
+                        Some(use_openhcl_igvm.clone());
                 }
                 (CommonArch::X86_64, true) => {
-                    use_openhcl_igvm_files_mi_secure_x86 = Some(use_openhcl_igvm)
+                    use_openhcl_igvm_files_mi_secure_x86 = Some(use_openhcl_igvm.clone())
                 }
                 (CommonArch::Aarch64, false) => {
                     vmm_tests_artifacts_windows_aarch64.use_openhcl_igvm_files =
-                        Some(use_openhcl_igvm);
+                        Some(use_openhcl_igvm.clone());
                 }
                 _ => unreachable!(),
+            }
+
+            // Build a `vmfirmwareigvm` resource DLL wrapping the standard
+            // OpenHCL IGVM for use by VMM tests that exercise the
+            // `vmgstool copy-igvmfile` flow. Only emit this for the
+            // non-mi-secure builds (one per arch).
+            if !mi_secure {
+                let standard_recipe = match arch {
+                    CommonArch::X86_64 => OpenhclIgvmRecipe::X64,
+                    CommonArch::Aarch64 => OpenhclIgvmRecipe::Aarch64,
+                };
+                let (pub_vmfw_dll, use_vmfw_dll) = pipeline
+                    .new_typed_artifact(format!("{arch_tag}-windows-vmfirmwareigvm_test_dll"));
+                match arch {
+                    CommonArch::X86_64 => {
+                        vmm_tests_artifacts_windows_x86.use_vmfirmwareigvm_test_dll =
+                            Some(use_vmfw_dll);
+                    }
+                    CommonArch::Aarch64 => {
+                        vmm_tests_artifacts_windows_aarch64.use_vmfirmwareigvm_test_dll =
+                            Some(use_vmfw_dll);
+                    }
+                }
+                let dll_job = pipeline
+                    .new_job(
+                        FlowPlatform::Windows,
+                        FlowArch::X86_64,
+                        format!("build vmfirmwareigvm test DLL [{arch_tag}-windows]"),
+                    )
+                    .gh_set_pool(gh_pools::default_windows())
+                    .ado_set_pool(ado_pools::default_windows())
+                    .dep_on(|ctx| {
+                        flowey_lib_hvlite::_jobs::build_and_publish_vmfirmwareigvm_test_dll::Params {
+                            arch,
+                            recipe: standard_recipe,
+                            openhcl_igvm_artifact_dir: ctx.use_artifact(&use_openhcl_igvm),
+                            vmfirmwareigvm_test_dll_artifact: ctx.publish_typed_artifact(pub_vmfw_dll),
+                        }
+                    });
+                all_jobs.push(dll_job.finish());
             }
             let igvm_recipes = match (arch, mi_secure) {
                 (CommonArch::X86_64, false) => vec![
@@ -1707,6 +1748,7 @@ mod vmm_tests_artifact_builders {
     use flowey_lib_hvlite::build_tmk_vmm::TmkVmmOutput;
     use flowey_lib_hvlite::build_tmks::TmksOutput;
     use flowey_lib_hvlite::build_tpm_guest_tests::TpmGuestTestsOutput;
+    use flowey_lib_hvlite::build_vmfirmwareigvm_test_dll::VmfirmwareigvmTestDllOutput;
     use flowey_lib_hvlite::build_vmgstool::VmgstoolOutput;
 
     pub type ResolveVmmTestsDepArtifacts =
@@ -1760,6 +1802,7 @@ mod vmm_tests_artifact_builders {
                 tmk_vmm_linux_musl: None,
                 prep_steps: None,
                 vmgstool: None,
+                vmfirmwareigvm_test_dll: None,
                 tpm_guest_tests_windows: None,
                 tpm_guest_tests_linux: None,
                 test_igvm_agent_rpc_server: None,
@@ -1775,6 +1818,7 @@ mod vmm_tests_artifact_builders {
         pub use_tmk_vmm: Option<UseTypedArtifact<TmkVmmOutput>>,
         pub use_prep_steps: Option<UseTypedArtifact<PrepStepsOutput>>,
         pub use_vmgstool: Option<UseTypedArtifact<VmgstoolOutput>>,
+        pub use_vmfirmwareigvm_test_dll: Option<UseTypedArtifact<VmfirmwareigvmTestDllOutput>>,
         pub use_tpm_guest_tests_windows: Option<UseTypedArtifact<TpmGuestTestsOutput>>,
         pub use_tpm_guest_tests_linux: Option<UseTypedArtifact<TpmGuestTestsOutput>>,
         pub use_test_igvm_agent_rpc_server: Option<UseTypedArtifact<TestIgvmAgentRpcServerOutput>>,
@@ -1800,6 +1844,7 @@ mod vmm_tests_artifact_builders {
                 use_tmks,
                 use_prep_steps,
                 use_vmgstool,
+                use_vmfirmwareigvm_test_dll,
                 use_tpm_guest_tests_windows,
                 use_tpm_guest_tests_linux,
                 use_test_igvm_agent_rpc_server,
@@ -1815,6 +1860,8 @@ mod vmm_tests_artifact_builders {
             let use_tmks = use_tmks.ok_or("tmks")?;
             let use_prep_steps = use_prep_steps.ok_or("prep_steps")?;
             let use_vmgstool = use_vmgstool.ok_or("vmgstool")?;
+            let use_vmfirmwareigvm_test_dll =
+                use_vmfirmwareigvm_test_dll.ok_or("vmfirmwareigvm_test_dll")?;
             let use_tpm_guest_tests_windows =
                 use_tpm_guest_tests_windows.ok_or("tpm_guest_tests_windows")?;
             let use_tpm_guest_tests_linux =
@@ -1834,6 +1881,7 @@ mod vmm_tests_artifact_builders {
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
                 prep_steps: Some(ctx.use_typed_artifact(&use_prep_steps)),
                 vmgstool: Some(ctx.use_typed_artifact(&use_vmgstool)),
+                vmfirmwareigvm_test_dll: Some(ctx.use_typed_artifact(&use_vmfirmwareigvm_test_dll)),
                 tpm_guest_tests_windows: Some(ctx.use_typed_artifact(&use_tpm_guest_tests_windows)),
                 tpm_guest_tests_linux: Some(ctx.use_typed_artifact(&use_tpm_guest_tests_linux)),
                 test_igvm_agent_rpc_server: Some(
@@ -1850,6 +1898,7 @@ mod vmm_tests_artifact_builders {
         pub use_pipette_windows: Option<UseTypedArtifact<PipetteOutput>>,
         pub use_tmk_vmm: Option<UseTypedArtifact<TmkVmmOutput>>,
         pub use_vmgstool: Option<UseTypedArtifact<VmgstoolOutput>>,
+        pub use_vmfirmwareigvm_test_dll: Option<UseTypedArtifact<VmfirmwareigvmTestDllOutput>>,
         // linux build machine
         pub use_openhcl_igvm_files: Option<UseArtifact>,
         pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
@@ -1871,6 +1920,7 @@ mod vmm_tests_artifact_builders {
                 use_tmk_vmm_linux_musl,
                 use_tmks,
                 use_vmgstool,
+                use_vmfirmwareigvm_test_dll,
             } = self;
 
             let use_openvmm = use_openvmm.ok_or("openvmm")?;
@@ -1882,6 +1932,8 @@ mod vmm_tests_artifact_builders {
             let use_tmk_vmm_linux_musl = use_tmk_vmm_linux_musl.ok_or("tmk_vmm_linux_musl")?;
             let use_tmks = use_tmks.ok_or("tmks")?;
             let use_vmgstool = use_vmgstool.ok_or("vmgstool")?;
+            let use_vmfirmwareigvm_test_dll =
+                use_vmfirmwareigvm_test_dll.ok_or("vmfirmwareigvm_test_dll")?;
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
@@ -1895,6 +1947,7 @@ mod vmm_tests_artifact_builders {
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
                 prep_steps: None,
                 vmgstool: Some(ctx.use_typed_artifact(&use_vmgstool)),
+                vmfirmwareigvm_test_dll: Some(ctx.use_typed_artifact(&use_vmfirmwareigvm_test_dll)),
                 tpm_guest_tests_windows: None,
                 tpm_guest_tests_linux: None,
                 test_igvm_agent_rpc_server: None,

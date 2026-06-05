@@ -135,6 +135,11 @@ pub(crate) enum ResourceCode {
     Tdx = 13520,
     #[value(name = "TDX_NO_HCL")]
     TdxNoHcl = 13521,
+    /// Resource ID used by the in-tree `vmfirmwareigvm_dll` crate (and by
+    /// `cargo xflowey custom-vmfirmwareigvm-dll`). Production DLLs use the
+    /// other (higher-numbered) IDs in this enum.
+    #[value(name = "CUSTOM")]
+    Custom = 1,
 }
 
 #[derive(Args)]

@@ -13,6 +13,7 @@ use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
 use crate::build_tmk_vmm::TmkVmmOutput;
 use crate::build_tmks::TmksOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
+use crate::build_vmfirmwareigvm_test_dll::VmfirmwareigvmTestDllOutput;
 use crate::build_vmgstool::VmgstoolOutput;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_nextest_run::NextestProfile;
@@ -33,6 +34,7 @@ pub struct VmmTestsDepArtifacts {
     pub tmk_vmm: Option<ReadVar<TmkVmmOutput>>,
     pub tmk_vmm_linux_musl: Option<ReadVar<TmkVmmOutput>>,
     pub vmgstool: Option<ReadVar<VmgstoolOutput>>,
+    pub vmfirmwareigvm_test_dll: Option<ReadVar<VmfirmwareigvmTestDllOutput>>,
     pub tpm_guest_tests_windows: Option<ReadVar<TpmGuestTestsOutput>>,
     pub tpm_guest_tests_linux: Option<ReadVar<TpmGuestTestsOutput>>,
     pub test_igvm_agent_rpc_server: Option<ReadVar<TestIgvmAgentRpcServerOutput>>,
@@ -120,6 +122,7 @@ impl SimpleFlowNode for Node {
             tmk_vmm: register_tmk_vmm,
             tmk_vmm_linux_musl: register_tmk_vmm_linux_musl,
             vmgstool: register_vmgstool,
+            vmfirmwareigvm_test_dll: register_vmfirmwareigvm_test_dll,
             tpm_guest_tests_windows: register_tpm_guest_tests_windows,
             tpm_guest_tests_linux: register_tpm_guest_tests_linux,
             test_igvm_agent_rpc_server: register_test_igvm_agent_rpc_server,
@@ -182,6 +185,7 @@ impl SimpleFlowNode for Node {
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
             register_vmgstool,
+            register_vmfirmwareigvm_test_dll,
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,

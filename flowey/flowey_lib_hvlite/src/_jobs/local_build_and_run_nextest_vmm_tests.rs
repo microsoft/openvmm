@@ -48,6 +48,9 @@ pub struct BuildSelections {
     pub tmk_vmm_windows: bool,
     pub tmk_vmm_linux: bool,
     pub vmgstool: bool,
+    /// Build a `vmfirmwareigvm` test resource DLL for use with tests that
+    /// exercise the `vmgstool copy-igvmfile` flow.
+    pub vmfirmwareigvm_test_dll: bool,
     pub tpm_guest_tests_windows: bool,
     pub tpm_guest_tests_linux: bool,
     pub test_igvm_agent_rpc_server: bool,
@@ -67,6 +70,7 @@ impl BuildSelections {
             tmk_vmm_windows: false,
             tmk_vmm_linux: false,
             vmgstool: false,
+            vmfirmwareigvm_test_dll: false,
             tpm_guest_tests_windows: false,
             tpm_guest_tests_linux: false,
             test_igvm_agent_rpc_server: false,
@@ -138,6 +142,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<crate::run_prep_steps::Node>();
         ctx.import::<crate::build_vmgstool::Node>();
+        ctx.import::<crate::build_vmfirmwareigvm_test_dll::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -220,6 +225,10 @@ impl SimpleFlowNode for Node {
             let openhcl_extras_dir = extras_dir.join("openhcl");
 
             let mut register_openhcl_igvm_files = Vec::new();
+            // Capture the standard IGVM so we can also build the
+            // `vmfirmwareigvm` test DLL from it below.
+            let mut standard_igvm_for_dll: Option<ReadVar<crate::run_igvmfilegen::IgvmOutput>> =
+                None;
             for recipe in openhcl_recipies {
                 let (read_built_openvmm_hcl, built_openvmm_hcl) = ctx.new_var();
                 let (read_built_openhcl_igvm, built_openhcl_igvm) = ctx.new_var();
@@ -258,10 +267,18 @@ impl SimpleFlowNode for Node {
                     built_sidecar,
                 });
 
-                register_openhcl_igvm_files.push(read_built_openhcl_igvm.map(ctx, {
+                register_openhcl_igvm_files.push(read_built_openhcl_igvm.clone().map(ctx, {
                     let recipe = recipe.clone();
                     |x| (recipe, x)
                 }));
+
+                // Save the per-arch standard IGVM payload for use in the
+                // `vmfirmwareigvm` test DLL below.
+                if matches!(recipe, OpenhclIgvmRecipe::X64 | OpenhclIgvmRecipe::Aarch64)
+                    && standard_igvm_for_dll.is_none()
+                {
+                    standard_igvm_for_dll = Some(read_built_openhcl_igvm);
+                }
 
                 if copy_extras {
                     let dir =
@@ -299,8 +316,28 @@ impl SimpleFlowNode for Node {
                 Vec<(OpenhclIgvmRecipe, crate::run_igvmfilegen::IgvmOutput)>,
             > = ReadVar::transpose_vec(ctx, register_openhcl_igvm_files);
 
-            register_openhcl_igvm_files
+            (register_openhcl_igvm_files, standard_igvm_for_dll)
         });
+
+        let (register_openhcl_igvm_files, standard_igvm_for_dll) = register_openhcl_igvm_files
+            .map(|(files, dll)| (Some(files), dll))
+            .unwrap_or((None, None));
+
+        let register_vmfirmwareigvm_test_dll = if build.vmfirmwareigvm_test_dll {
+            let igvm = standard_igvm_for_dll.context(
+                "build.vmfirmwareigvm_test_dll requires build.openhcl, and the standard IGVM recipe",
+            )?;
+            Some(ctx.reqv(|v| crate::build_vmfirmwareigvm_test_dll::Request {
+                arch,
+                igvm,
+                vmfirmwareigvm_test_dll: v,
+            }))
+        } else {
+            if let Some(igvm) = standard_igvm_for_dll {
+                igvm.claim_unused(ctx);
+            }
+            None
+        };
 
         let register_openvmm = build.openvmm.then(|| {
             let output = ctx.reqv(|v| crate::build_openvmm::Request {
@@ -699,6 +736,7 @@ impl SimpleFlowNode for Node {
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
             register_vmgstool,
+            register_vmfirmwareigvm_test_dll,
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,

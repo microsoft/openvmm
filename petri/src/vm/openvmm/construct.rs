@@ -896,6 +896,10 @@ impl PetriVmConfigSetupCore<'_> {
                     }
                 });
 
+                let igvm_path = igvm_path.as_ref().context(
+                    "OpenVMM backend requires an explicit OpenHCL IGVM path; \
+                     with_openhcl_from_vmgs() is only supported on the Hyper-V backend",
+                )?;
                 let file = File::open(igvm_path.clone())
                     .context("failed to open openhcl firmware file")?
                     .into();

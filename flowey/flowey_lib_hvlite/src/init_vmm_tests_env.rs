@@ -53,6 +53,11 @@ flowey_request! {
         pub register_tmk_vmm_linux_musl: Option<ReadVar<crate::build_tmk_vmm::TmkVmmOutput>>,
         /// Register a vmgstool binary
         pub register_vmgstool: Option<ReadVar<crate::build_vmgstool::VmgstoolOutput>>,
+        /// Register a `vmfirmwareigvm` test resource DLL (used by tests that
+        /// exercise the `vmgstool copy-igvmfile` flow).
+        pub register_vmfirmwareigvm_test_dll: Option<
+            ReadVar<crate::build_vmfirmwareigvm_test_dll::VmfirmwareigvmTestDllOutput>,
+        >,
         /// Register a Windows tpm_guest_tests binary
         pub register_tpm_guest_tests_windows: Option<ReadVar<TpmGuestTestsOutput>>,
         /// Register a Linux tpm_guest_tests binary
@@ -101,6 +106,7 @@ impl SimpleFlowNode for Node {
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
             register_vmgstool,
+            register_vmfirmwareigvm_test_dll,
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,
@@ -156,6 +162,7 @@ impl SimpleFlowNode for Node {
             let tmk_vmm = register_tmk_vmm.claim(ctx);
             let tmk_vmm_linux_musl = register_tmk_vmm_linux_musl.claim(ctx);
             let vmgstool = register_vmgstool.claim(ctx);
+            let vmfirmwareigvm_test_dll = register_vmfirmwareigvm_test_dll.claim(ctx);
             let test_igvm_agent_rpc_server = register_test_igvm_agent_rpc_server.claim(ctx);
             let tpm_guest_tests_windows = register_tpm_guest_tests_windows.claim(ctx);
             let tpm_guest_tests_linux = register_tpm_guest_tests_linux.claim(ctx);
@@ -366,6 +373,19 @@ impl SimpleFlowNode for Node {
                             dst.make_executable()?;
                         }
                     }
+                }
+
+                if let Some(vmfirmwareigvm_test_dll) = vmfirmwareigvm_test_dll {
+                    let crate::build_vmfirmwareigvm_test_dll::VmfirmwareigvmTestDllOutput::Dll {
+                        dll,
+                    } = rt.read(vmfirmwareigvm_test_dll);
+                    // Copy to per-arch filename matching the
+                    // `vmfw_dll::*` artifacts in `petri_artifacts_vmm_test`.
+                    let dst = match arch {
+                        CommonArch::X86_64 => "vmfirmwareigvm-x64.dll",
+                        CommonArch::Aarch64 => "vmfirmwareigvm-aarch64.dll",
+                    };
+                    fs_err::copy(dll, test_content_dir.join(dst))?;
                 }
 
                 if let Some(tpm_guest_tests_windows) = tpm_guest_tests_windows {

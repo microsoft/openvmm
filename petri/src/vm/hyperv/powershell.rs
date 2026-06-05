@@ -263,6 +263,12 @@ pub struct HyperVNewCustomVMArgs {
     pub guest_state_path: Option<PathBuf>,
     /// VMBUS message redirection
     pub vmbus_message_redirection: Option<bool>,
+    /// Whether to enable the OpenHCL paravisor (GuestFeatureSet bit).
+    ///
+    /// When `firmware_file` is `Some`, that is the IGVM file Hyper-V will use
+    /// to load the paravisor. When `firmware_file` is `None`, Hyper-V will
+    /// look for the IGVM in the VMGS file (file ID 8, `GUEST_FIRMWARE`).
+    pub enable_openhcl: bool,
     /// Path to the OpenHCL firmware IGVM file
     pub firmware_file: Option<PathBuf>,
     /// OpenHCL command line parameters
@@ -337,7 +343,7 @@ impl HyperVNewCustomVMArgs {
     pub async fn make_compatible(&mut self) -> anyhow::Result<()> {
         let available_properties = run_get_vssd_properties().await?;
         let property_exists = |name: &str| available_properties.iter().any(|x| x == name);
-        let is_openhcl = self.firmware_file.is_some();
+        let is_openhcl = self.enable_openhcl;
 
         if let Some(guest_state_lifetime) = self.guest_state_lifetime.as_ref()
             && !property_exists("GuestStateLifetime")
@@ -571,6 +577,7 @@ impl HyperVNewCustomVMArgs {
             com_1: true,
 
             // specified after creation
+            enable_openhcl: false,
             firmware_file: None,
             firmware_parameters: None,
             guest_state_path: None,
@@ -734,6 +741,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             .arg_opt("GuestStateLifetime", args.guest_state_lifetime)
             .arg_opt("GuestStateFilePath", args.guest_state_path)
             .arg_opt("VMBusMessageRedirection", args.vmbus_message_redirection)
+            .arg("EnableOpenHCL", args.enable_openhcl)
             .arg_opt("FirmwareFile", args.firmware_file)
             .arg_opt("FirmwareParameters", args.firmware_parameters)
             .flag_opt(
