@@ -33,6 +33,17 @@ fn instantiate_controller(
     gm: &GuestMemory,
     int_controller: Option<&TestPciInterruptController>,
 ) -> NvmeController {
+    instantiate_controller_with_subsystem_id(driver, gm, int_controller, Guid::new_random())
+}
+
+/// Variant that pins the controller's subsystem_id so tests can predict
+/// fields derived from it (e.g. the Identify Controller Serial Number).
+fn instantiate_controller_with_subsystem_id(
+    driver: DefaultDriver,
+    gm: &GuestMemory,
+    int_controller: Option<&TestPciInterruptController>,
+    subsystem_id: Guid,
+) -> NvmeController {
     let mut mmio_reg = TestNvmeMmioRegistration {};
     let vm_task_driver = &VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
@@ -44,7 +55,7 @@ fn instantiate_controller(
         NvmeControllerCaps {
             msix_count: 64,
             max_io_queues: 64,
-            subsystem_id: Guid::new_random(),
+            subsystem_id,
         },
     );
 
@@ -111,7 +122,31 @@ pub async fn instantiate_and_build_admin_queue(
     driver: DefaultDriver,
     gm: &GuestMemory,
 ) -> NvmeController {
-    let mut nvmec = instantiate_controller(driver.clone(), gm, int_controller);
+    let nvmec = instantiate_controller(driver.clone(), gm, int_controller);
+    build_admin_queue_for_controller(
+        nvmec,
+        acq_buffer,
+        acq_entries,
+        asq_buffer,
+        asq_entries,
+        trigger_interrupt,
+        driver,
+    )
+    .await
+}
+
+/// Same as [`instantiate_and_build_admin_queue`] but takes an
+/// already-built controller. Useful when the test needs to control
+/// fields of [`NvmeControllerCaps`] (e.g. a fixed `subsystem_id`).
+async fn build_admin_queue_for_controller(
+    mut nvmec: NvmeController,
+    acq_buffer: &PrpRange,
+    acq_entries: u32,
+    asq_buffer: &PrpRange,
+    asq_entries: u32,
+    trigger_interrupt: bool,
+    driver: DefaultDriver,
+) -> NvmeController {
     // Set the BARs.
     nvmec.pci_cfg_write(0x10, 0).unwrap();
     nvmec.pci_cfg_write(0x20, BAR0_LEN as u32).unwrap();
@@ -748,4 +783,79 @@ async fn test_full_cq_does_not_leak_io_count(driver: DefaultDriver) {
         received, expected,
         "missing FLUSH completions — likely io_count leak throttled the SQ"
     );
+}
+
+/// Regression test: Identify Controller must report a Serial Number
+/// derived from the configured NVM subsystem identifier
+/// (`subsystem_id`) rather than the historical hard-coded
+/// `"SN: 000001          "` literal.
+///
+/// NVMe defines SN as a per-NVM-subsystem field (Base section 4.7.1 /
+/// Identify Controller Figure 328); collapsing every emulated
+/// controller's SN to the same literal value defeats host-side
+/// subsystem-identity tracking and unique-id derivation. This test
+/// exercises the actual IDENTIFY_CONTROLLER admin command end-to-end
+/// and verifies the SN bytes in the guest-memory response match the
+/// expected derived value.
+#[async_test]
+async fn test_identify_controller_serial_number_is_derived(driver: DefaultDriver) {
+    let acq_buf = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq_buf = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    // Pick a fixed subsystem_id so we can compute the expected SN.
+    let subsystem_id = Guid {
+        data1: 0x0001_0203,
+        data2: 0x0405,
+        data3: 0x0607,
+        data4: [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f],
+    };
+    let nvmec = instantiate_controller_with_subsystem_id(
+        driver.clone(),
+        &gm,
+        Some(&int_controller),
+        subsystem_id,
+    );
+    let mut nvmec =
+        build_admin_queue_for_controller(nvmec, &acq_buf, 64, &asq_buf, 64, true, driver.clone())
+            .await;
+
+    // Place the Identify Controller response in a dedicated page so we
+    // can read it back as a typed structure. Page 0 = CQ, page 1 = SQ,
+    // page 2 (GPA 0x2000) is free.
+    const IDENTIFY_DATA_GPA: u64 = 0x2000;
+
+    let mut cmd = spec::Command::new_zeroed();
+    cmd.cdw0.set_opcode(spec::AdminOpcode::IDENTIFY.0);
+    cmd.cdw0.set_cid(901);
+    cmd.cdw10 = u32::from(spec::Cdw10Identify::new().with_cns(spec::Cns::CONTROLLER.0));
+    cmd.dptr[0] = IDENTIFY_DATA_GPA;
+    write_command_to_queue(&gm, &asq_buf, 0, &cmd);
+    nvmec.write_bar0(0x1000, 1u32.as_bytes()).unwrap();
+
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+    let cqe = read_completion_from_queue(&gm, &acq_buf, 0);
+    assert_eq!(cqe.cid, 901);
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+
+    // Read the Identify Controller response back out of guest memory and
+    // check the SN bytes (field offset 4..24, length 20).
+    let identify: spec::IdentifyController = gm.read_plain(IDENTIFY_DATA_GPA).unwrap();
+    // Expected SN: first 10 bytes of SHA-256(subsystem_id) rendered as
+    // 20 lowercase ASCII hex chars. For the GUID configured above, the
+    // 16-byte SHA-256 input is [03, 02, 01, 00, 05, 04, 07, 06, 08, 09,
+    // 0a, 0b, 0c, 0d, 0e, 0f] (little-endian for data1/data2/data3, raw
+    // for data4); the first 10 bytes of its digest are 66 68 18 c7 e8 2e
+    // a3 bc 29 2b, hex-encoded to "666818c7e82ea3bc292b".
+    let expected_sn: [u8; 20] = *b"666818c7e82ea3bc292b";
+    let actual_sn: [u8; 20] = identify.sn.into();
+    assert_eq!(
+        actual_sn, expected_sn,
+        "Identify Controller SN must be derived from subsystem_id, not the \
+         legacy hard-coded literal"
+    );
+    // Defense in depth: explicitly verify we are not regressing to the
+    // old hard-coded value.
+    assert_ne!(actual_sn, *b"SN: 000001          ");
 }

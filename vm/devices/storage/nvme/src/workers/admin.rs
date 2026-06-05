@@ -332,6 +332,50 @@ enum Event {
 #[error("namespace id conflict for {0}")]
 pub struct NsidConflict(u32);
 
+/// Derive a 20-byte NVMe Serial Number from the controller's subsystem identifier.
+///
+/// In NVMe the Serial Number is a per-NVM-subsystem field (NVMe Base
+/// section 4.7.1 / Identify Controller, Figure 328): all controllers in
+/// a single subsystem report the same SN, and CNTLID distinguishes
+/// controllers within that subsystem. A hard-coded SN therefore
+/// collapses subsystem identity for host-side unique-id derivation.
+///
+/// This helper renders the first 10 bytes of `SHA-256(subsystem_id)`
+/// as 20 ASCII hex characters (lowercase, exactly the 20-byte fixed
+/// length of the SN field). Hashing before truncating diffuses the
+/// entropy of the full 16-byte `subsystem_id` across every output
+/// byte; this is the same reasoning that lets a Git short-hash
+/// distinguish commits reliably even when only a prefix is shown.
+/// The 20-character output retains ~80 bits of effective entropy
+/// regardless of where the entropy in `subsystem_id` was concentrated
+/// (e.g. trailing bytes of a vendor-prefixed GUID), giving roughly
+/// 2^40 birthday-collision resistance.
+///
+/// Properties:
+///
+///  * **Stable across reboots** for a given `subsystem_id`.
+///  * **Derived from the NVM subsystem's identity.** Two controllers
+///    that share a subsystem (e.g. future multi-controller-per-
+///    subsystem emulation) produce the same SN by construction,
+///    matching the NVMe per-subsystem semantics of this field.
+///  * **Practically distinct across distinct subsystem_ids.** Two
+///    `subsystem_id` values that differ at all -- in any byte
+///    position -- produce SHA-256 outputs that differ throughout,
+///    so the 20-character prefix collides only with negligible
+///    probability.
+fn derive_serial_number(subsystem_id: Guid) -> [u8; 20] {
+    use sha2::Digest;
+    let bytes: [u8; 16] = subsystem_id.into();
+    let digest = sha2::Sha256::digest(bytes);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = [b' '; 20];
+    for (i, b) in digest.iter().take(10).enumerate() {
+        out[i * 2] = HEX[(*b >> 4) as usize];
+        out[i * 2 + 1] = HEX[(*b & 0xf) as usize];
+    }
+    out
+}
+
 impl AdminHandler {
     pub fn new(driver: VmTaskDriver, config: AdminConfig) -> Self {
         Self {
@@ -350,6 +394,7 @@ impl AdminHandler {
         let namespace = &*match self.namespaces.entry(nsid) {
             btree_map::Entry::Vacant(entry) => entry.insert(Arc::new(Namespace::new(
                 self.config.mem.clone(),
+                self.config.subsystem_id,
                 nsid,
                 disk,
             ))),
@@ -600,7 +645,7 @@ impl AdminHandler {
             ieee: [0x74, 0xe2, 0x8c], // Microsoft
             fr: (*b"v1.00000").into(),
             mn: (*b"MSFT NVMe Accelerator v1.0              ").into(),
-            sn: (*b"SN: 000001          ").into(),
+            sn: derive_serial_number(self.config.subsystem_id).into(),
             aerl: MAX_ASYNC_EVENT_REQUESTS - 1,
             elpe: ERROR_LOG_PAGE_ENTRIES - 1,
             oaes: spec::Oaes::new().with_namespace_attribute(true),
@@ -1028,5 +1073,78 @@ impl AsyncRun<AdminState> for AdminHandler {
 impl InspectTask<AdminState> for AdminHandler {
     fn inspect(&self, req: inspect::Request<'_>, state: Option<&AdminState>) {
         req.respond().merge(self).merge(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_serial_number;
+    use guid::Guid;
+
+    /// Pure-function test for the SN derivation. Pins the byte layout
+    /// (lower-case ASCII hex of the first 10 bytes of SHA-256 of the
+    /// GUID, no trailing padding) so a future refactor of the helper
+    /// can't silently change what the SN field looks like to a host.
+    #[test]
+    fn test_derive_serial_number_format() {
+        // GUID whose 16-byte representation under `Guid::into::<[u8; 16]>`
+        // is exactly [03, 02, 01, 00, 05, 04, 07, 06, 08, 09, 0a, 0b,
+        // 0c, 0d, 0e, 0f]. The first 10 bytes of SHA-256 of those bytes
+        // are 66 68 18 c7 e8 2e a3 bc 29 2b, which hex-encode to
+        // "666818c7e82ea3bc292b".
+        let g = Guid {
+            data1: 0x0001_0203,
+            data2: 0x0405,
+            data3: 0x0607,
+            data4: [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f],
+        };
+        let expected: [u8; 20] = *b"666818c7e82ea3bc292b";
+        assert_eq!(derive_serial_number(g), expected);
+    }
+
+    /// Two subsystem_ids that differ produce distinct SNs. The
+    /// helper hashes the full 16-byte subsystem_id with SHA-256
+    /// before truncating, so any difference in the input -- in any
+    /// byte position -- propagates throughout the hash output and
+    /// shows up in the truncated SN with overwhelming probability.
+    #[test]
+    fn test_derive_serial_number_is_distinct_per_subsystem_id() {
+        let g1 = Guid {
+            data1: 0x1111_1111,
+            data2: 0x2222,
+            data3: 0x3333,
+            data4: [0x44; 8],
+        };
+        let g2 = Guid {
+            data1: 0xaaaa_aaaa,
+            data2: 0xbbbb,
+            data3: 0xcccc,
+            data4: [0xdd; 8],
+        };
+        assert_ne!(derive_serial_number(g1), derive_serial_number(g2));
+    }
+
+    /// Subsystem_ids that share their first 10 bytes but differ in
+    /// bytes 10..15 must still produce distinct SNs. This is the
+    /// property that motivates hashing the full GUID before
+    /// truncating: a naive "first 10 bytes of subsystem_id" encoding
+    /// would collide here, but hashing first diffuses the trailing-
+    /// byte difference across the entire output.
+    #[test]
+    fn test_derive_serial_number_uses_full_subsystem_id() {
+        let g1 = Guid {
+            data1: 0xdead_beef,
+            data2: 0xcafe,
+            data3: 0xbabe,
+            data4: [0x01, 0x02, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
+        };
+        let g2 = Guid {
+            data1: 0xdead_beef,
+            data2: 0xcafe,
+            data3: 0xbabe,
+            // Same first 10 bytes as g1; differs only in bytes 10..15.
+            data4: [0x01, 0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+        };
+        assert_ne!(derive_serial_number(g1), derive_serial_number(g2));
     }
 }

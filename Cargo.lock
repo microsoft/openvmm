@@ -5006,6 +5006,7 @@ dependencies = [
  "pci_core",
  "pci_resources",
  "scsi_buffers",
+ "sha2",
  "slab",
  "task_control",
  "thiserror 2.0.16",
