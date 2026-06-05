@@ -53,7 +53,7 @@ impl Agent {
                 Self::from_conn(driver, socket)
             }
             Transport::Tcp => {
-                let socket = connect_server_tcp(&driver).await;
+                let socket = connect_server_tcp(&driver).await?;
                 Self::from_conn(driver, socket)
             }
         }
@@ -168,34 +168,25 @@ async fn connect_client(driver: &DefaultDriver) -> PolledSocket<Socket> {
 }
 
 /// Listen for an incoming TCP connection from the host on the pipette TCP port.
-async fn connect_server_tcp(driver: &DefaultDriver) -> PolledSocket<std::net::TcpStream> {
-    let server_core = async || {
-        let listener =
-            std::net::TcpListener::bind(("0.0.0.0", pipette_protocol::PIPETTE_PORT as u16))
-                .context("failed to bind TCP listener")?;
-        listener
-            .set_nonblocking(true)
-            .context("failed to set nonblocking")?;
-        let mut listener =
-            PolledSocket::new(driver, listener).context("failed to create polled TCP listener")?;
-        let (stream, addr) = listener
-            .accept()
-            .await
-            .context("failed to accept TCP connection")?;
-        stream
-            .set_nodelay(true)
-            .context("failed to set TCP_NODELAY")?;
-        eprintln!("Pipette accepted TCP connection from {addr}");
-        PolledSocket::new(driver, stream).context("failed to create polled TCP stream")
-    };
-
-    match server_core().await {
-        Ok(socket) => socket,
-        Err(err) => {
-            eprintln!("failed to stand up TCP server: {:?}", err);
-            std::future::pending().await
-        }
-    }
+async fn connect_server_tcp(
+    driver: &DefaultDriver,
+) -> anyhow::Result<PolledSocket<std::net::TcpStream>> {
+    let listener = std::net::TcpListener::bind(("0.0.0.0", pipette_protocol::PIPETTE_PORT as u16))
+        .context("failed to bind TCP listener")?;
+    listener
+        .set_nonblocking(true)
+        .context("failed to set nonblocking")?;
+    let mut listener =
+        PolledSocket::new(driver, listener).context("failed to create polled TCP listener")?;
+    let (stream, addr) = listener
+        .accept()
+        .await
+        .context("failed to accept TCP connection")?;
+    stream
+        .set_nodelay(true)
+        .context("failed to set TCP_NODELAY")?;
+    eprintln!("Pipette accepted TCP connection from {addr}");
+    PolledSocket::new(driver, stream).context("failed to create polled TCP stream")
 }
 
 async fn handle_request(
