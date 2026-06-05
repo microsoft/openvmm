@@ -2536,3 +2536,45 @@ async fn constrained_base_before_aperture_returns_error() {
         "should fail when constrained bridge window starts before aperture"
     );
 }
+
+/// A pinned BAR address near u64::MAX must not cause arithmetic overflow
+/// in the overlap or aperture containment checks. Without saturating_add,
+/// `addr + size` wraps to a small value that passes the `<= aperture_end`
+/// check, causing the BAR to be incorrectly accepted.
+#[async_test]
+async fn pinned_bar_near_u64_max_no_overflow() {
+    let mock = MockConfigSpace::new();
+
+    // 64-bit prefetchable 1 MB BAR, pinned at an address where
+    // addr + size wraps: 0xFFFF_FFFF_FFF0_0000 + 0x10_0000 = 0x0.
+    // With wrapping, bar_end=0 < aperture_end, so it looks like it fits.
+    mock.add_endpoint(0, 0, 0, &[(0, 0x10_0000, true, true)]);
+    mock.set_bar_address(0, 0, 0, 0, 0xFFFF_FFFF_FFF0_0000);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: None,
+        high_mmio: Some(MmioAperture {
+            base: 0x1_0000_0000,
+            len: 0xFFFF_FFFE_0000_0000,
+        }),
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    let result = assign_pci_resources(&mut cfg, &params).await;
+
+    // Must return PinnedBarOutOfAperture. Without saturating_add, the
+    // wrapped bar_end (0x0) passes the containment check and the BAR
+    // is incorrectly accepted.
+    assert!(
+        result.is_err(),
+        "near-u64::MAX pinned BAR should be rejected, not overflow"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, crate::AssignmentError::PinnedBarOutOfAperture { .. }),
+        "expected PinnedBarOutOfAperture, got {err}"
+    );
+}

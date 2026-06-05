@@ -932,12 +932,13 @@ fn validate_pinned_bars(
             .collect();
         pool.sort_by_key(|p| p.0);
         for w in pool.windows(2) {
-            if w[0].0 + w[0].1 > w[1].0 {
+            let first_end = w[0].0.saturating_add(w[0].1);
+            if first_end > w[1].0 {
                 return Err(AssignmentError::PinnedBarOverlap {
                     first_address: w[0].0,
-                    first_end: w[0].0 + w[0].1,
+                    first_end,
                     second_address: w[1].0,
-                    second_end: w[1].0 + w[1].1,
+                    second_end: w[1].0.saturating_add(w[1].1),
                 });
             }
         }
@@ -950,7 +951,11 @@ fn validate_pinned_bars(
         } else {
             params.low_mmio
         };
-        let fits = aperture.is_some_and(|a| addr >= a.base && addr + size <= a.base + a.len);
+        let bar_end = addr.saturating_add(size);
+        let fits = aperture.is_some_and(|a| {
+            let aperture_end = a.base.saturating_add(a.len);
+            addr >= a.base && bar_end <= aperture_end
+        });
         if !fits {
             return Err(AssignmentError::PinnedBarOutOfAperture {
                 bus,
