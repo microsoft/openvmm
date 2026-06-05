@@ -367,7 +367,7 @@ pub struct TxMetadata {
     /// Information about 802.1Q VLAN tagging. When a vlan is in use, this structure
     /// is populated. Only applies when traffic is being sent over an L2 connection,
     /// so L3-only or above traffic will not use this option.
-    pub vlan: Option<VlanMetadata>
+    pub vlan: Option<VlanMetadata>,
 }
 
 /// Flags affecting transmit behavior.

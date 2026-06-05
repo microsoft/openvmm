@@ -377,7 +377,7 @@ impl TestNicQueue {
     ) -> Self {
         Self {
             pool: config.pool,
-            rx_ids,
+            rx_ids: config.initial_rx.iter().copied().collect(),
             rx,
             endpoint_state,
             next_rx_packet: None,
@@ -428,7 +428,7 @@ impl NetQueue for TestNicQueue {
             );
             let rx_id = self.rx_ids.pop_front().unwrap();
             assert!(
-                packet.len() <= pool.capacity(rx_id) as usize,
+                packet.len() <= self.pool.capacity(rx_id) as usize,
                 "test RX packet exceeds buffer capacity"
             );
             tracing::info!(
@@ -436,7 +436,7 @@ impl NetQueue for TestNicQueue {
                 len = packet.len(),
                 "returning packet on receive path"
             );
-            pool.write_packet(rx_id, &metadata, &packet);
+            self.pool.write_packet(rx_id, &metadata, &packet);
             packets[0] = rx_id;
             Ok(1)
         } else {
@@ -444,11 +444,7 @@ impl NetQueue for TestNicQueue {
         }
     }
 
-    fn tx_avail(
-        &mut self,
-        _pool: &mut dyn BufferAccess,
-        packets: &[TxSegment],
-    ) -> anyhow::Result<(bool, usize)> {
+    fn tx_avail(&mut self, packets: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
         if let Some(endpoint_state) = &self.endpoint_state {
             let mut endpoint_state = endpoint_state.lock();
             endpoint_state
@@ -6236,7 +6232,7 @@ async fn rndis_send_lso_packet_with_vlan_ppi(driver: DefaultDriver) {
         metadata.l3_len, 20,
         "IPv4 packets must keep a 20-byte L3 header"
     );
-    assert_eq!(metadata.max_segment_size, 1460);
+    assert_eq!(metadata.max_tcp_segment_size, 1460);
     assert_eq!(
         read_netvsp_counter(&nic.channel, "queues/0/tx_vlan_packets").await,
         1,
@@ -7076,41 +7072,10 @@ async fn rss_set_with_zero_indirection_table_size_rejected(driver: DefaultDriver
 }
 
 #[test]
-fn rx_buffer_ranges_zero_queue_count() {
-    let result = RxBufferRanges::new(100, 0);
-    match result {
-        Err(WorkerError::InvalidRxBufferConfig(RxBufferConfigError::ZeroQueueCount)) => {}
-        Err(other) => panic!("expected InvalidRxBufferConfig(ZeroQueueCount), got: {other}"),
-        Ok(_) => panic!("expected error, got Ok"),
-    }
-}
-
-#[test]
-fn rx_buffer_ranges_buffer_count_below_reserved() {
-    let result = RxBufferRanges::new(RX_RESERVED_CONTROL_BUFFERS - 1, 1);
-    match result {
-        Err(WorkerError::InvalidRxBufferConfig(RxBufferConfigError::InsufficientBuffers)) => {}
-        Err(other) => panic!("expected InvalidRxBufferConfig(InsufficientBuffers), got: {other}"),
-        Ok(_) => panic!("expected error, got Ok"),
-    }
-}
-
-#[test]
-fn rx_buffer_ranges_zero_buffers_per_queue() {
-    // buffer_count == RX_RESERVED_CONTROL_BUFFERS means 0 buffers available for queues
-    let result = RxBufferRanges::new(RX_RESERVED_CONTROL_BUFFERS, 1);
-    match result {
-        Err(WorkerError::InvalidRxBufferConfig(RxBufferConfigError::ZeroBuffersPerQueue)) => {}
-        Err(other) => panic!("expected InvalidRxBufferConfig(ZeroBuffersPerQueue), got: {other}"),
-        Ok(_) => panic!("expected error, got Ok"),
-    }
-}
-
-#[test]
 fn rx_buffer_ranges_valid() {
     let buffer_count = RX_RESERVED_CONTROL_BUFFERS + 4;
     let queue_count = 2;
-    let (ranges, recvs) = RxBufferRanges::new(buffer_count, queue_count).unwrap();
+    let (ranges, recvs) = RxBufferRanges::new(buffer_count, queue_count);
     assert_eq!(ranges.buffers_per_queue, 2);
     assert_eq!(recvs.len(), queue_count as usize);
     assert_eq!(ranges.buffer_id_send.len(), queue_count as usize);

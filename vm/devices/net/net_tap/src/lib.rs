@@ -26,10 +26,6 @@ use net_backend::TxId;
 use net_backend::TxMetadata;
 use net_backend::TxSegment;
 use net_backend::linearize;
-use virtio_net::VirtioNetHdr;
-use virtio_net::VirtioNetHeaderFlags as VirtioNetHdrFlags;
-use virtio_net::VirtioNetHeaderGso as VirtioNetHdrGso;
-use virtio_net::VirtioNetHeaderGsoProtocol as VirtioNetHdrGsoProtocol;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -40,6 +36,10 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
+use virtio_net::VirtioNetHdr;
+use virtio_net::VirtioNetHeaderFlags as VirtioNetHdrFlags;
+use virtio_net::VirtioNetHeaderGso as VirtioNetHdrGso;
+use virtio_net::VirtioNetHeaderGsoProtocol as VirtioNetHdrGsoProtocol;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -253,158 +253,158 @@ impl Queue for TapQueue {
     }
 }
 
-/// Compute and write the IPv4 header checksum in place.
-///
-/// The IPv4 header length is derived from the IHL field in the packet itself
-/// rather than trusting guest-provided metadata (`l3_len`), since that value
-/// crosses a trust boundary. The IHL value is clamped to 20..60 bytes (the
-/// valid range per RFC 791) and bounded by the packet length.
-///
-/// The virtio net header has no way to request IPv4 header checksum offload,
-/// and in bridged configurations the kernel does not recompute it. When
-/// netvsp (Windows/NDIS guests) sets `offload_ip_header_checksum`, we must
-/// compute it in software before handing the frame to TAP.
-fn fixup_ipv4_header_checksum(packet: &mut [u8], l2_len: usize) {
-    // Need at least the minimum IPv4 header to read IHL.
-    if packet.len() < l2_len + 20 {
-        return;
-    }
-    // Derive header length from the IHL field in the packet, not from
-    // guest-provided metadata.
-    let ihl_bytes = ((packet[l2_len] & 0x0f) as usize) * 4;
-    if !(20..=60).contains(&ihl_bytes) {
-        return;
-    }
-    if packet.len() < l2_len + ihl_bytes {
-        return;
-    }
-    let ip_hdr = &mut packet[l2_len..l2_len + ihl_bytes];
-    // Zero the checksum field (bytes 10-11) before computing.
-    ip_hdr[10] = 0;
-    ip_hdr[11] = 0;
-    // RFC 1071 ones-complement sum over the header.
-    let mut sum: u32 = 0;
-    for chunk in ip_hdr.chunks(2) {
-        let word = if chunk.len() == 2 {
-            u16::from_be_bytes([chunk[0], chunk[1]])
-        } else {
-            u16::from_be_bytes([chunk[0], 0])
-        };
-        sum += word as u32;
-    }
-    while sum >> 16 != 0 {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    let checksum = !(sum as u16);
-    let [hi, lo] = checksum.to_be_bytes();
-    packet[l2_len + 10] = hi;
-    packet[l2_len + 11] = lo;
-}
-
-/// Build a `VirtioNetHdr` from transmit metadata for the TAP device.
-///
-/// The virtio net header uses fully general `csum_start` / `csum_offset` fields
-/// that can describe any protocol, whereas [`TxMetadata`] uses protocol-specific
-/// flags (`offload_tcp_checksum`, `offload_udp_checksum`). This function bridges
-/// the two by computing `csum_start` from `l2_len + l3_len` and hardcoding
-/// `csum_offset` to the known offset of the checksum field within each protocol
-/// header (16 for TCP, 6 for UDP).
-///
-/// For TSO, `gso_type` is set based on the `is_ipv4`/`is_ipv6` flags, and
-/// `NEEDS_CSUM` is always set since the kernel requires the checksum to be
-/// partially computed when performing segmentation. For USO,
-/// `gso_type` is set to `UDP_L4` and the UDP header length (8) is used.
-///
-/// If no offload flags are set, an all-zero header is returned, which tells the
-/// TAP device that the packet requires no special handling.
-fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
-    if meta.flags.offload_tcp_segmentation() {
-        let protocol = if meta.flags.is_ipv4() {
-            VirtioNetHdrGsoProtocol::TCPV4
-        } else {
-            VirtioNetHdrGsoProtocol::TCPV6
-        };
-        VirtioNetHdr {
-            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
-            gso_type: VirtioNetHdrGso::new().with_protocol(protocol),
-            hdr_len: meta.l2_len as u16 + meta.l3_len + meta.l4_len as u16,
-            gso_size: meta.max_tcp_segment_size,
-            csum_start: meta.l2_len as u16 + meta.l3_len,
-            csum_offset: 16, // TCP checksum field offset
-            num_buffers: 0,
-        }
-    } else if meta.flags.offload_udp_segmentation() {
-        VirtioNetHdr {
-            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
-            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::UDP_L4),
-            hdr_len: meta.l2_len as u16 + meta.l3_len + 8, // 8 = UDP header length
-            gso_size: meta.max_tcp_segment_size,
-            csum_start: meta.l2_len as u16 + meta.l3_len,
-            csum_offset: 6, // UDP checksum field offset
-            num_buffers: 0,
-        }
-    } else if meta.flags.offload_tcp_checksum() {
-        VirtioNetHdr {
-            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
-            gso_type: VirtioNetHdrGso::new(),
-            hdr_len: 0,
-            gso_size: 0,
-            csum_start: meta.l2_len as u16 + meta.l3_len,
-            csum_offset: 16, // TCP checksum field offset
-            num_buffers: 0,
-        }
-    } else if meta.flags.offload_udp_checksum() {
-        VirtioNetHdr {
-            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
-            gso_type: VirtioNetHdrGso::new(),
-            hdr_len: 0,
-            gso_size: 0,
-            csum_start: meta.l2_len as u16 + meta.l3_len,
-            csum_offset: 6, // UDP checksum field offset
-            num_buffers: 0,
-        }
-    } else {
-        VirtioNetHdr::default()
-    }
-}
-
-/// Parse a `VirtioNetHdr` from the TAP device into receive metadata.
-///
-/// Because we do not set any `TUN_F_*` RX offload flags (see
-/// [`TapEndpoint::new`]), the kernel will never send us `NEEDS_CSUM` or GSO
-/// packets. We only need to handle `DATA_VALID` (checksum verified by the
-/// kernel) and the default case (no information).
-///
-/// The `gso_type` field should always be `GSO_NONE` since we didn't enable
-/// receive-side GSO, but we still parse it defensively to extract L4 protocol
-/// information if present.
-fn parse_vnet_hdr(hdr: &VirtioNetHdr) -> RxMetadata {
-    let (ip_checksum, l4_checksum) = if hdr.flags.data_valid() {
-        (RxChecksumState::Good, RxChecksumState::Good)
-    } else {
-        (RxChecksumState::Unknown, RxChecksumState::Unknown)
-    };
-
-    let l4_protocol = match hdr.gso_type.protocol() {
-        VirtioNetHdrGsoProtocol::TCPV4 | VirtioNetHdrGsoProtocol::TCPV6 => L4Protocol::Tcp,
-        VirtioNetHdrGsoProtocol::UDP | VirtioNetHdrGsoProtocol::UDP_L4 => L4Protocol::Udp,
-        _ => L4Protocol::Unknown,
-    };
-
-    RxMetadata {
-        offset: 0,
-        len: 0,
-        ip_checksum,
-        l4_checksum,
-        l4_protocol,
-        vlan: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use net_backend::TxFlags;
+
+    /// Compute and write the IPv4 header checksum in place.
+    ///
+    /// The IPv4 header length is derived from the IHL field in the packet itself
+    /// rather than trusting guest-provided metadata (`l3_len`), since that value
+    /// crosses a trust boundary. The IHL value is clamped to 20..60 bytes (the
+    /// valid range per RFC 791) and bounded by the packet length.
+    ///
+    /// The virtio net header has no way to request IPv4 header checksum offload,
+    /// and in bridged configurations the kernel does not recompute it. When
+    /// netvsp (Windows/NDIS guests) sets `offload_ip_header_checksum`, we must
+    /// compute it in software before handing the frame to TAP.
+    fn fixup_ipv4_header_checksum(packet: &mut [u8], l2_len: usize) {
+        // Need at least the minimum IPv4 header to read IHL.
+        if packet.len() < l2_len + 20 {
+            return;
+        }
+        // Derive header length from the IHL field in the packet, not from
+        // guest-provided metadata.
+        let ihl_bytes = ((packet[l2_len] & 0x0f) as usize) * 4;
+        if !(20..=60).contains(&ihl_bytes) {
+            return;
+        }
+        if packet.len() < l2_len + ihl_bytes {
+            return;
+        }
+        let ip_hdr = &mut packet[l2_len..l2_len + ihl_bytes];
+        // Zero the checksum field (bytes 10-11) before computing.
+        ip_hdr[10] = 0;
+        ip_hdr[11] = 0;
+        // RFC 1071 ones-complement sum over the header.
+        let mut sum: u32 = 0;
+        for chunk in ip_hdr.chunks(2) {
+            let word = if chunk.len() == 2 {
+                u16::from_be_bytes([chunk[0], chunk[1]])
+            } else {
+                u16::from_be_bytes([chunk[0], 0])
+            };
+            sum += word as u32;
+        }
+        while sum >> 16 != 0 {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        let checksum = !(sum as u16);
+        let [hi, lo] = checksum.to_be_bytes();
+        packet[l2_len + 10] = hi;
+        packet[l2_len + 11] = lo;
+    }
+
+    /// Build a `VirtioNetHdr` from transmit metadata for the TAP device.
+    ///
+    /// The virtio net header uses fully general `csum_start` / `csum_offset` fields
+    /// that can describe any protocol, whereas [`TxMetadata`] uses protocol-specific
+    /// flags (`offload_tcp_checksum`, `offload_udp_checksum`). This function bridges
+    /// the two by computing `csum_start` from `l2_len + l3_len` and hardcoding
+    /// `csum_offset` to the known offset of the checksum field within each protocol
+    /// header (16 for TCP, 6 for UDP).
+    ///
+    /// For TSO, `gso_type` is set based on the `is_ipv4`/`is_ipv6` flags, and
+    /// `NEEDS_CSUM` is always set since the kernel requires the checksum to be
+    /// partially computed when performing segmentation. For USO,
+    /// `gso_type` is set to `UDP_L4` and the UDP header length (8) is used.
+    ///
+    /// If no offload flags are set, an all-zero header is returned, which tells the
+    /// TAP device that the packet requires no special handling.
+    fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
+        if meta.flags.offload_tcp_segmentation() {
+            let protocol = if meta.flags.is_ipv4() {
+                VirtioNetHdrGsoProtocol::TCPV4
+            } else {
+                VirtioNetHdrGsoProtocol::TCPV6
+            };
+            VirtioNetHdr {
+                flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+                gso_type: VirtioNetHdrGso::new().with_protocol(protocol),
+                hdr_len: meta.l2_len as u16 + meta.l3_len + meta.l4_len as u16,
+                gso_size: meta.max_tcp_segment_size,
+                csum_start: meta.l2_len as u16 + meta.l3_len,
+                csum_offset: 16, // TCP checksum field offset
+                num_buffers: 0,
+            }
+        } else if meta.flags.offload_udp_segmentation() {
+            VirtioNetHdr {
+                flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+                gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::UDP_L4),
+                hdr_len: meta.l2_len as u16 + meta.l3_len + 8, // 8 = UDP header length
+                gso_size: meta.max_tcp_segment_size,
+                csum_start: meta.l2_len as u16 + meta.l3_len,
+                csum_offset: 6, // UDP checksum field offset
+                num_buffers: 0,
+            }
+        } else if meta.flags.offload_tcp_checksum() {
+            VirtioNetHdr {
+                flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+                gso_type: VirtioNetHdrGso::new(),
+                hdr_len: 0,
+                gso_size: 0,
+                csum_start: meta.l2_len as u16 + meta.l3_len,
+                csum_offset: 16, // TCP checksum field offset
+                num_buffers: 0,
+            }
+        } else if meta.flags.offload_udp_checksum() {
+            VirtioNetHdr {
+                flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+                gso_type: VirtioNetHdrGso::new(),
+                hdr_len: 0,
+                gso_size: 0,
+                csum_start: meta.l2_len as u16 + meta.l3_len,
+                csum_offset: 6, // UDP checksum field offset
+                num_buffers: 0,
+            }
+        } else {
+            VirtioNetHdr::default()
+        }
+    }
+
+    /// Parse a `VirtioNetHdr` from the TAP device into receive metadata.
+    ///
+    /// Because we do not set any `TUN_F_*` RX offload flags (see
+    /// [`TapEndpoint::new`]), the kernel will never send us `NEEDS_CSUM` or GSO
+    /// packets. We only need to handle `DATA_VALID` (checksum verified by the
+    /// kernel) and the default case (no information).
+    ///
+    /// The `gso_type` field should always be `GSO_NONE` since we didn't enable
+    /// receive-side GSO, but we still parse it defensively to extract L4 protocol
+    /// information if present.
+    fn parse_vnet_hdr(hdr: &VirtioNetHdr) -> RxMetadata {
+        let (ip_checksum, l4_checksum) = if hdr.flags.data_valid() {
+            (RxChecksumState::Good, RxChecksumState::Good)
+        } else {
+            (RxChecksumState::Unknown, RxChecksumState::Unknown)
+        };
+
+        let l4_protocol = match hdr.gso_type.protocol() {
+            VirtioNetHdrGsoProtocol::TCPV4 | VirtioNetHdrGsoProtocol::TCPV6 => L4Protocol::Tcp,
+            VirtioNetHdrGsoProtocol::UDP | VirtioNetHdrGsoProtocol::UDP_L4 => L4Protocol::Udp,
+            _ => L4Protocol::Unknown,
+        };
+
+        RxMetadata {
+            offset: 0,
+            len: 0,
+            ip_checksum,
+            l4_checksum,
+            l4_protocol,
+            vlan: None,
+        }
+    }
 
     #[test]
     fn vnet_hdr_from_tx_metadata_csum() {

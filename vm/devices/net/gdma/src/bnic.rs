@@ -567,7 +567,7 @@ impl TxRxTask {
             l4_len: 0,
             transport_header_offset: 0,
             max_tcp_segment_size: 0,
-            vlan
+            vlan,
         };
 
         if sqe.header.params.client_oob_in_sgl() {
