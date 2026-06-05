@@ -82,6 +82,13 @@ pub struct AdminHandler {
     config: AdminConfig,
     #[inspect(iter_by_key)]
     namespaces: BTreeMap<u32, Arc<Namespace>>,
+    /// 20-byte Identify Controller Serial Number, derived once from
+    /// `config.subsystem_id` at construction (see
+    /// [`derive_serial_number`]). Cached so repeated IDENTIFY_CONTROLLER
+    /// responses don't re-run SHA-256 -- the value is a pure function
+    /// of `subsystem_id`, which is fixed for the controller's lifetime.
+    #[inspect(skip)]
+    serial_number: [u8; 20],
 }
 
 #[derive(Inspect)]
@@ -378,10 +385,12 @@ fn derive_serial_number(subsystem_id: Guid) -> [u8; 20] {
 
 impl AdminHandler {
     pub fn new(driver: VmTaskDriver, config: AdminConfig) -> Self {
+        let serial_number = derive_serial_number(config.subsystem_id);
         Self {
             driver,
             config,
             namespaces: Default::default(),
+            serial_number,
         }
     }
 
@@ -645,7 +654,7 @@ impl AdminHandler {
             ieee: [0x74, 0xe2, 0x8c], // Microsoft
             fr: (*b"v1.00000").into(),
             mn: (*b"MSFT NVMe Accelerator v1.0              ").into(),
-            sn: derive_serial_number(self.config.subsystem_id).into(),
+            sn: self.serial_number.into(),
             aerl: MAX_ASYNC_EVENT_REQUESTS - 1,
             elpe: ERROR_LOG_PAGE_ENTRIES - 1,
             oaes: spec::Oaes::new().with_namespace_attribute(true),

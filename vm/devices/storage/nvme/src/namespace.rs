@@ -33,8 +33,9 @@ pub struct Namespace {
     /// containing subsystem and the nsid (see [`synthesize_nguid`]).
     /// This ensures every namespace exposes a non-zero NGUID, which
     /// lets hosts derive stable per-namespace unique identifiers and
-    /// keeps the inline NGUID consistent with the NIDT=2 (NGUID)
-    /// entry in the Identify Namespace Identification Descriptor List.
+    /// keeps the inline NGUID consistent with the NIDT=NSGUID
+    /// (NGUID, in NVMe spec terms) entry in the Identify Namespace
+    /// Identification Descriptor List.
     nguid: [u8; 16],
 }
 
@@ -51,8 +52,9 @@ pub struct Namespace {
 /// stable subsystem identity and the namespace's nsid is a reasonable
 /// drop-in: it satisfies the "stable, unique within the subsystem"
 /// property the spec ascribes to NGUID, and it lets the inline NGUID and
-/// the NIDT=2 (NGUID) descriptor in the Identification Descriptor List
-/// be reported consistently and non-zero in all cases.
+/// the NIDT=NSGUID (NGUID in the NVMe spec) descriptor in the
+/// Identification Descriptor List be reported consistently and
+/// non-zero in all cases.
 ///
 /// Implementation: SHA-256 of `subsystem_id` bytes followed by `nsid` in
 /// little-endian, truncated to the first 16 bytes.
@@ -70,9 +72,16 @@ fn synthesize_nguid(subsystem_id: Guid, nsid: u32) -> [u8; 16] {
 
 impl Namespace {
     pub fn new(mem: GuestMemory, subsystem_id: Guid, nsid: u32, disk: Disk) -> Self {
-        let nguid = disk
-            .disk_id()
-            .unwrap_or_else(|| synthesize_nguid(subsystem_id, nsid));
+        // Treat both "no disk_id at all" and "disk_id is all zeros" as
+        // absent: an all-zero NGUID is indistinguishable from "no
+        // identifier" to a spec-following host, and would violate the
+        // NVMe rule that a NIDT=NSGUID (NGUID) descriptor must not
+        // carry a zero NID. In either case, fall through to the
+        // deterministic-from-(subsystem_id, nsid) synthesis.
+        let nguid = match disk.disk_id() {
+            Some(id) if id != [0u8; 16] => id,
+            _ => synthesize_nguid(subsystem_id, nsid),
+        };
         Self {
             block_shift: disk.sector_size().trailing_zeros(),
             pr: disk.pr().is_some(),
@@ -124,12 +133,13 @@ impl Namespace {
         let id = nvm::NamespaceIdentificationDescriptor::mut_from_prefix(buf)
             .unwrap()
             .0; // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-        // Always emit a single NIDT=2 (NGUID) descriptor carrying the
-        // cached 16-byte identifier. Per NVMe Base specification, a
-        // controller shall not report a NIDT=2 descriptor with a zero
-        // NID; the synthesized fallback in [`Namespace::new`] guarantees
-        // `nguid` is non-zero for every namespace, so this constraint
-        // is met unconditionally.
+        // Always emit a single NIDT=NSGUID (NGUID in the NVMe spec)
+        // descriptor carrying the cached 16-byte identifier. Per NVMe
+        // Base specification, a controller shall not report a
+        // NIDT=NSGUID descriptor with a zero NID; the
+        // synthesized/zero-rejecting logic in [`Namespace::new`]
+        // guarantees `nguid` is non-zero for every namespace, so
+        // this constraint is met unconditionally.
         *id = nvm::NamespaceIdentificationDescriptor {
             nidt: nvm::NamespaceIdentifierType::NSGUID.0,
             nidl: size_of_val(&self.nguid) as u8,
@@ -449,10 +459,30 @@ mod tests {
         );
     }
 
-    /// The NIDT=2 (NGUID) descriptor returned by CNS=03h must match
-    /// the inline NGUID byte-for-byte, regardless of whether the
-    /// underlying NGUID came from the backing disk or from the
-    /// synthesized fallback.
+    /// A pathological backing disk that returns `Some([0; 16])` from
+    /// `disk_id()` is treated the same as "no identifier" -- the
+    /// emulator must fall through to the synthesized NGUID rather
+    /// than caching and reporting an all-zero NGUID (which would
+    /// violate the spec rule against a NIDT=NSGUID descriptor with
+    /// a zero NID).
+    #[test]
+    fn test_identify_namespace_treats_zero_disk_id_as_absent() {
+        let subsystem_id = Guid::new_random();
+        let buf = identify_buf_for(subsystem_id, 5, Some([0u8; 16]));
+        let nguid: &[u8] = &buf[NGUID_OFFSET..NGUID_OFFSET + NGUID_LEN];
+        assert_ne!(
+            nguid, &[0u8; NGUID_LEN],
+            "inline NGUID must not be zero even when disk_id() returns Some([0; 16])"
+        );
+        // Must match what synthesize_nguid would produce for the same
+        // (subsystem_id, nsid) pair.
+        assert_eq!(nguid, &synthesize_nguid(subsystem_id, 5));
+    }
+
+    /// The NIDT=NSGUID (NGUID in the NVMe spec) descriptor returned
+    /// by CNS=03h must match the inline NGUID byte-for-byte,
+    /// regardless of whether the underlying NGUID came from the
+    /// backing disk or from the synthesized fallback.
     #[test]
     fn test_namespace_id_descriptor_matches_inline_nguid_with_disk_id() {
         let want: [u8; 16] = [
@@ -474,9 +504,9 @@ mod tests {
     }
 
     /// Same consistency property when the NGUID had to be synthesized.
-    /// This is the case that previously violated the spec (zero NID in
-    /// a NIDT=2 (NGUID) descriptor): the synthesized non-zero NGUID
-    /// makes the descriptor list well-formed.
+    /// This is the case that previously violated the spec (zero NID
+    /// in a NIDT=NSGUID (NGUID) descriptor): the synthesized non-zero
+    /// NGUID makes the descriptor list well-formed.
     #[test]
     fn test_namespace_id_descriptor_matches_inline_nguid_without_disk_id() {
         let subsystem_id = Guid::new_random();
