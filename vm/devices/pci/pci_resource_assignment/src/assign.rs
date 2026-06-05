@@ -15,9 +15,10 @@ use pci_core::spec::cfg_space::MEMORY_BASE_LIMIT_ADDRESS_MASK;
 /// Bridge memory window granularity: 1 MB.
 const BRIDGE_WINDOW_ALIGN: u64 = 1 << 20;
 
-/// Resource requirement for a subtree (bridge or root).
+/// Sizing requirement for a subtree (bridge or root), computed during
+/// the bottom-up pass.
 #[derive(Debug, Clone)]
-pub(crate) struct SubtreeState {
+struct SubtreeSizing {
     /// Total aligned size needed in the mem32 (non-prefetchable) pool.
     mem32: u64,
     /// Total aligned size needed in the mem64 (prefetchable) pool.
@@ -30,10 +31,6 @@ pub(crate) struct SubtreeState {
     /// Sorted demands for this level's devices, used by the assignment
     /// pass to avoid recomputing them.
     demands: Vec<Demand>,
-    /// Assigned non-prefetchable bridge window (base, limit). Set by assign_subtree.
-    memory_window: Option<(u64, u64)>,
-    /// Assigned prefetchable bridge window (base, limit). Set by assign_subtree.
-    prefetchable_window: Option<(u64, u64)>,
     /// If pinned demands exist in the mem32 pool, the required base address
     /// for this subtree's window (align_down of the lowest pinned address).
     constrained_base32: Option<u64>,
@@ -46,6 +43,21 @@ pub(crate) struct SubtreeState {
     gaps32: Vec<(u64, u64)>,
     /// Pre-computed free gaps in the mem64 pool.
     gaps64: Vec<(u64, u64)>,
+}
+
+/// All bridge-specific state populated by the assignment phase.
+///
+/// Groups the subtree sizing (computed bottom-up) and the assigned
+/// bridge windows (set top-down) so that [`DiscoveredDevice`] only
+/// needs a single `Option` field for assignment state.
+#[derive(Debug, Clone)]
+pub(crate) struct BridgeAssignment {
+    /// Subtree sizing computed during the bottom-up pass.
+    sizing: SubtreeSizing,
+    /// Assigned non-prefetchable bridge window (base, limit).
+    memory_window: Option<(u64, u64)>,
+    /// Assigned prefetchable bridge window (base, limit).
+    prefetchable_window: Option<(u64, u64)>,
 }
 
 /// A single resource demand at one level of the PCI tree.
@@ -160,7 +172,7 @@ pub fn assign_addresses(
     // Step 1: Bottom-up — compute total resource requirements.
     // This also stores per-bridge requirements on the DiscoveredDevice
     // nodes so that the assignment pass can read them without recomputing.
-    let mut root_req = compute_subtree_state(devices);
+    let mut root_sizing = compute_subtree_sizing(devices);
 
     // Validate pinned BAR constraints before assigning addresses.
     validate_pinned_bars(devices, params)?;
@@ -172,78 +184,83 @@ pub fn assign_addresses(
     // sharing the same aperture.
     let mut mem32_end: Option<u64> = None;
 
-    if root_req.mem32 > 0 {
+    if root_sizing.mem32 > 0 {
         // 32-bit BARs and non-prefetchable bridge windows are inherently
         // 32-bit, so the aperture must be below 4 GB. Do not fall back
         // to high_mmio — placing 32-bit BARs above 4 GB would silently
         // truncate addresses.
         let aperture = params.low_mmio.ok_or(AssignmentError::MmioExhaustion {
-            required: root_req.mem32,
+            required: root_sizing.mem32,
             available: 0,
             aperture: "low_mmio",
         })?;
 
         // If there are constrained (pinned) demands, use their base.
         // Otherwise, align to the aperture base as before.
-        let base = if let Some(cbase) = root_req.constrained_base32 {
+        let base = if let Some(cbase) = root_sizing.constrained_base32 {
             cbase
         } else {
-            align_up(aperture.base, root_req.align32)
+            align_up(aperture.base, root_sizing.align32)
         };
         let aperture_end = aperture.base + aperture.len;
         let available = aperture_end.saturating_sub(base);
-        if root_req.mem32 > available {
+        if root_sizing.mem32 > available {
             return Err(AssignmentError::MmioExhaustion {
-                required: root_req.mem32,
+                required: root_sizing.mem32,
                 available,
                 aperture: "low_mmio",
             });
         }
 
-        if root_req.constrained_base32.is_none() {
-            root_req.gaps32.push((base, aperture_end));
+        if root_sizing.constrained_base32.is_none() {
+            root_sizing.gaps32.push((base, aperture_end));
         }
-        assign_subtree(devices, &root_req.demands, &mut root_req.gaps32, false);
+        assign_subtree(
+            devices,
+            &root_sizing.demands,
+            &mut root_sizing.gaps32,
+            false,
+        );
 
-        mem32_end = Some(base + root_req.mem32);
+        mem32_end = Some(base + root_sizing.mem32);
     }
 
-    if root_req.mem64 > 0 {
+    if root_sizing.mem64 > 0 {
         let aperture =
             params
                 .high_mmio
                 .or(params.low_mmio)
                 .ok_or(AssignmentError::MmioExhaustion {
-                    required: root_req.mem64,
+                    required: root_sizing.mem64,
                     available: 0,
                     aperture: "high_mmio",
                 })?;
 
         // If there are constrained (pinned) demands, use their base.
-        let base = if let Some(cbase) = root_req.constrained_base64 {
+        let base = if let Some(cbase) = root_sizing.constrained_base64 {
             cbase
         } else if let Some(end) = mem32_end.filter(|_| params.high_mmio.is_none()) {
             // If sharing the same aperture as mem32, allocate after the
             // actual aligned mem32 end to avoid overlapping assignments.
-            align_up(end, root_req.align64)
+            align_up(end, root_sizing.align64)
         } else {
-            align_up(aperture.base, root_req.align64)
+            align_up(aperture.base, root_sizing.align64)
         };
 
         let aperture_end = aperture.base + aperture.len;
         let available = aperture_end.saturating_sub(base);
-        if root_req.mem64 > available {
+        if root_sizing.mem64 > available {
             return Err(AssignmentError::MmioExhaustion {
-                required: root_req.mem64,
+                required: root_sizing.mem64,
                 available,
                 aperture: "high_mmio",
             });
         }
 
-        if root_req.constrained_base64.is_none() {
-            root_req.gaps64.push((base, aperture_end));
+        if root_sizing.constrained_base64.is_none() {
+            root_sizing.gaps64.push((base, aperture_end));
         }
-        assign_subtree(devices, &root_req.demands, &mut root_req.gaps64, true);
+        assign_subtree(devices, &root_sizing.demands, &mut root_sizing.gaps64, true);
     }
 
     validate_assignments(devices, params);
@@ -266,8 +283,8 @@ fn validate_assignments(devices: &[DiscoveredDevice], params: &AssignmentParams)
         }
         // Validate bridge windows fit within their respective apertures
         // and that child windows fit within parent windows.
-        if let Some(req) = &dev.subtree_req {
-            if let Some((base, limit)) = req.memory_window {
+        if let Some(ba) = &dev.bridge_assignment {
+            if let Some((base, limit)) = ba.memory_window {
                 let size = limit - base + 1;
                 assert!(
                     params
@@ -280,7 +297,7 @@ fn validate_assignments(devices: &[DiscoveredDevice], params: &AssignmentParams)
                     func = dev.function,
                 );
             }
-            if let Some((base, limit)) = req.prefetchable_window {
+            if let Some((base, limit)) = ba.prefetchable_window {
                 let size = limit - base + 1;
                 let in_low = params
                     .low_mmio
@@ -299,31 +316,31 @@ fn validate_assignments(devices: &[DiscoveredDevice], params: &AssignmentParams)
             }
             // Check child bridge windows are contained within this bridge's windows.
             for child in &dev.children {
-                if let Some(child_req) = &child.subtree_req {
-                    if let (Some((cb, cl)), Some((pb, pl))) =
-                        (child_req.memory_window, req.memory_window)
-                    {
-                        assert!(
-                            cb >= pb && cl <= pl,
-                            "child bridge {cbus:02x}:{cdev:02x}.{cfunc} memory window \
-                             {cb:#x}..={cl:#x} exceeds parent {pb:#x}..={pl:#x}",
-                            cbus = child.bus,
-                            cdev = child.device,
-                            cfunc = child.function,
-                        );
-                    }
-                    if let (Some((cb, cl)), Some((pb, pl))) =
-                        (child_req.prefetchable_window, req.prefetchable_window)
-                    {
-                        assert!(
-                            cb >= pb && cl <= pl,
-                            "child bridge {cbus:02x}:{cdev:02x}.{cfunc} prefetchable window \
-                             {cb:#x}..={cl:#x} exceeds parent {pb:#x}..={pl:#x}",
-                            cbus = child.bus,
-                            cdev = child.device,
-                            cfunc = child.function,
-                        );
-                    }
+                let child_ba = child.bridge_assignment.as_ref();
+                if let (Some((cb, cl)), Some((pb, pl))) =
+                    (child_ba.and_then(|b| b.memory_window), ba.memory_window)
+                {
+                    assert!(
+                        cb >= pb && cl <= pl,
+                        "child bridge {cbus:02x}:{cdev:02x}.{cfunc} memory window \
+                         {cb:#x}..={cl:#x} exceeds parent {pb:#x}..={pl:#x}",
+                        cbus = child.bus,
+                        cdev = child.device,
+                        cfunc = child.function,
+                    );
+                }
+                if let (Some((cb, cl)), Some((pb, pl))) = (
+                    child_ba.and_then(|b| b.prefetchable_window),
+                    ba.prefetchable_window,
+                ) {
+                    assert!(
+                        cb >= pb && cl <= pl,
+                        "child bridge {cbus:02x}:{cdev:02x}.{cfunc} prefetchable window \
+                         {cb:#x}..={cl:#x} exceeds parent {pb:#x}..={pl:#x}",
+                        cbus = child.bus,
+                        cdev = child.device,
+                        cfunc = child.function,
+                    );
                 }
             }
         }
@@ -366,7 +383,7 @@ fn is_mem64_bar(bar: &crate::enumerate::DiscoveredBar) -> bool {
 ///
 /// Also builds and stores the sorted demand list so that `assign_subtree`
 /// can reuse it without recomputing.
-fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
+fn compute_subtree_sizing(devices: &mut [DiscoveredDevice]) -> SubtreeSizing {
     let mut demands: Vec<Demand> = Vec::new();
 
     for (i, dev) in devices.iter_mut().enumerate() {
@@ -407,7 +424,7 @@ fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
         }
 
         if dev.is_bridge {
-            let child_req = compute_subtree_state(&mut dev.children);
+            let child_req = compute_subtree_sizing(&mut dev.children);
             if child_req.mem32 > 0 {
                 let size = align_up(child_req.mem32, BRIDGE_WINDOW_ALIGN);
                 demands.push(Demand::BridgeSubtree {
@@ -428,7 +445,11 @@ fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
                     constrained_base: child_req.constrained_base64,
                 });
             }
-            dev.subtree_req = Some(child_req);
+            dev.bridge_assignment = Some(BridgeAssignment {
+                sizing: child_req,
+                memory_window: None,
+                prefetchable_window: None,
+            });
         }
     }
 
@@ -451,8 +472,8 @@ fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
 
     // Size each pool: compute the pinned span, build gaps, trial-allocate
     // dynamic demands, and extend the window for anything that didn't fit.
-    let mut pool32 = size_pool(&mut pin32, &demands, false);
-    let mut pool64 = size_pool(&mut pin64, &demands, true);
+    let mut pool32 = PoolState::new(&mut pin32);
+    let mut pool64 = PoolState::new(&mut pin64);
 
     // Trial-allocate dynamic demands into gap clones to determine which
     // fit in the pinned span and which extend the window.
@@ -465,14 +486,12 @@ fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
         if d.is_mem64() {
             pool64.align = pool64.align.max(d.alignment());
             if allocate_from_gaps(&mut sizing_gaps64, d.size(), d.alignment()).is_none() {
-                pool64.mem = align_up(pool64.mem, d.alignment());
-                pool64.mem += d.size();
+                pool64.extend_for_demand(d.size(), d.alignment());
             }
         } else {
             pool32.align = pool32.align.max(d.alignment());
             if allocate_from_gaps(&mut sizing_gaps32, d.size(), d.alignment()).is_none() {
-                pool32.mem = align_up(pool32.mem, d.alignment());
-                pool32.mem += d.size();
+                pool32.extend_for_demand(d.size(), d.alignment());
             }
         }
     }
@@ -481,14 +500,12 @@ fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
     pool32.extend_tail();
     pool64.extend_tail();
 
-    SubtreeState {
+    SubtreeSizing {
         mem32: pool32.mem,
         mem64: pool64.mem,
         align32: pool32.align,
         align64: pool64.align,
         demands,
-        memory_window: None,
-        prefetchable_window: None,
         constrained_base32: pool32.constrained_base,
         constrained_base64: pool64.constrained_base,
         gaps32: pool32.gaps,
@@ -512,6 +529,37 @@ struct PoolState {
 }
 
 impl PoolState {
+    /// Compute the pinned span, gap list, and initial window size for one
+    /// pool (mem32 or mem64). `pins` is sorted in place.
+    fn new(pins: &mut [(u64, u64)]) -> Self {
+        pins.sort_by_key(|&(a, _)| a);
+
+        let (mem, constrained_base) = if !pins.is_empty() {
+            let min_addr = pins.iter().map(|(a, _)| *a).min().unwrap();
+            let max_end = pins.iter().map(|(a, s)| a + s).max().unwrap();
+            let base = align_down(min_addr, BRIDGE_WINDOW_ALIGN);
+            (max_end - base, Some(base))
+        } else {
+            (0, None)
+        };
+
+        let gaps = if let Some(base) = constrained_base {
+            build_gap_list(base, base + mem, pins)
+        } else {
+            Vec::new()
+        };
+
+        let pinned_span_end = constrained_base.map(|b| b + mem);
+
+        Self {
+            mem,
+            align: BRIDGE_WINDOW_ALIGN,
+            constrained_base,
+            gaps,
+            pinned_span_end,
+        }
+    }
+
     /// Append a tail gap for dynamic demands that didn't fit in the
     /// pinned-span gaps. Called after the sizing trial.
     fn extend_tail(&mut self) {
@@ -522,38 +570,20 @@ impl PoolState {
             }
         }
     }
-}
 
-/// Compute the pinned span, gap list, and initial window size for one
-/// pool (mem32 or mem64). `pins` is sorted in place.
-fn size_pool(pins: &mut [(u64, u64)], demands: &[Demand], is_mem64: bool) -> PoolState {
-    pins.sort_by_key(|&(a, _)| a);
-
-    let (mem, constrained_base) = if !pins.is_empty() {
-        let min_addr = pins.iter().map(|(a, _)| *a).min().unwrap();
-        let max_end = pins.iter().map(|(a, s)| a + s).max().unwrap();
-        let base = align_down(min_addr, BRIDGE_WINDOW_ALIGN);
-        (max_end - base, Some(base))
-    } else {
-        (0, None)
-    };
-
-    let _ = (demands, is_mem64); // used by caller for trial allocation
-
-    let gaps = if let Some(base) = constrained_base {
-        build_gap_list(base, base + mem, pins)
-    } else {
-        Vec::new()
-    };
-
-    let pinned_span_end = constrained_base.map(|b| b + mem);
-
-    PoolState {
-        mem,
-        align: BRIDGE_WINDOW_ALIGN,
-        constrained_base,
-        gaps,
-        pinned_span_end,
+    /// Extend the window to fit a dynamic demand that didn't fit in
+    /// any existing gap. When `constrained_base` is set, alignment
+    /// padding must be computed using absolute addresses (base + mem)
+    /// rather than relative offsets, because the real allocator works
+    /// in absolute address space.
+    fn extend_for_demand(&mut self, size: u64, alignment: u64) {
+        if let Some(base) = self.constrained_base {
+            let abs_end = base + self.mem;
+            let aligned = align_up(abs_end, alignment);
+            self.mem = (aligned - base) + size;
+        } else {
+            self.mem = align_up(self.mem, alignment) + size;
+        }
     }
 }
 
@@ -603,27 +633,27 @@ fn assign_subtree(
                 // Set the bridge window to the carved-out range.
                 let window_base = assign_addr;
                 let window_limit = assign_addr + size - 1;
-                let req = dev.subtree_req.as_mut().unwrap();
+                let ba = dev
+                    .bridge_assignment
+                    .as_mut()
+                    .expect("bridge_assignment must be populated by compute_subtree_sizing");
                 if alloc_64bit {
-                    req.prefetchable_window = Some((window_base, window_limit));
+                    ba.prefetchable_window = Some((window_base, window_limit));
                 } else {
-                    req.memory_window = Some((window_base, window_limit));
+                    ba.memory_window = Some((window_base, window_limit));
                 }
 
                 // Recurse into children with this bridge's carved-out range.
-                let req = dev
-                    .subtree_req
-                    .as_mut()
-                    .expect("subtree_req must be populated by compute_subtree_state");
+                let sizing = &mut ba.sizing;
                 let has_pins = if alloc_64bit {
-                    req.constrained_base64.is_some()
+                    sizing.constrained_base64.is_some()
                 } else {
-                    req.constrained_base32.is_some()
+                    sizing.constrained_base32.is_some()
                 };
                 let (child_demands, child_gaps) = if alloc_64bit {
-                    (&req.demands, &mut req.gaps64)
+                    (&sizing.demands, &mut sizing.gaps64)
                 } else {
-                    (&req.demands, &mut req.gaps32)
+                    (&sizing.demands, &mut sizing.gaps32)
                 };
                 if !has_pins {
                     child_gaps.push((window_base, window_limit + 1));
@@ -693,10 +723,9 @@ pub async fn program_assignments(cfg: &mut impl PciConfigAccess, devices: &[Disc
         // window by writing base > limit so that the guest OS's probe
         // (write-readback) doesn't mistake zeroed registers for a valid window.
         if dev.is_bridge {
-            let (memory_window, prefetchable_window) = dev
-                .subtree_req
-                .as_ref()
-                .map(|r| (r.memory_window, r.prefetchable_window))
+            let ba = dev.bridge_assignment.as_ref();
+            let (memory_window, prefetchable_window) = ba
+                .map(|b| (b.memory_window, b.prefetchable_window))
                 .unwrap_or((None, None));
 
             // I/O window — we don't assign I/O BARs, so always disable.
@@ -756,8 +785,9 @@ pub async fn program_assignments(cfg: &mut impl PciConfigAccess, devices: &[Disc
         }
 
         if dev.bars.is_empty() && dev.is_bridge {
-            let memory_window = dev.subtree_req.as_ref().and_then(|r| r.memory_window);
-            let prefetchable_window = dev.subtree_req.as_ref().and_then(|r| r.prefetchable_window);
+            let ba = dev.bridge_assignment.as_ref();
+            let memory_window = ba.and_then(|b| b.memory_window);
+            let prefetchable_window = ba.and_then(|b| b.prefetchable_window);
             tracing::debug!(
                 bus = dev.bus,
                 device = dev.device,

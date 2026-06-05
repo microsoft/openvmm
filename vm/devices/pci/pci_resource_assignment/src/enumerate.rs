@@ -22,11 +22,7 @@ pub struct DiscoveredDevice {
     pub bus: u8,
     pub device: u8,
     pub function: u8,
-    #[expect(dead_code)] // stored for future use in Phase 2+ diagnostics
-    pub(crate) header_type: u8,
     pub is_bridge: bool,
-    #[expect(dead_code)] // stored for future use in Phase 2+ diagnostics
-    pub(crate) is_multi_function: bool,
     pub bars: Vec<DiscoveredBar>,
     /// For bridges: children behind this bridge.
     pub children: Vec<DiscoveredDevice>,
@@ -36,10 +32,9 @@ pub struct DiscoveredDevice {
     pub subordinate_bus: Option<u8>,
     /// For SR-IOV PFs: total VFs and per-VF BAR sizes.
     pub(crate) sriov: Option<DiscoveredSriov>,
-    /// Computed during the sizing pass for bridges: the total resource
-    /// requirement of this bridge's children. Avoids recomputation during
-    /// address assignment.
-    pub(crate) subtree_req: Option<crate::assign::SubtreeState>,
+    /// Bridge assignment state (sizing + windows), populated by the
+    /// assignment pass. `None` for endpoints and before assignment runs.
+    pub(crate) bridge_assignment: Option<crate::assign::BridgeAssignment>,
 }
 
 /// A discovered BAR with its size.
@@ -153,15 +148,13 @@ async fn scan_bus(
                 bus,
                 device: device_num,
                 function,
-                header_type: func_header,
                 is_bridge,
-                is_multi_function: multi_function,
                 bars,
                 children: Vec::new(),
                 secondary_bus: None,
                 subordinate_bus: None,
                 sriov: None,
-                subtree_req: None,
+                bridge_assignment: None,
             };
 
             if is_bridge {
