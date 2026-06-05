@@ -125,6 +125,18 @@ impl PetriVmConfigOpenVmm {
 
         let is_minimal = resources.properties.minimal_mode;
 
+        // Resolve the TCP pipette port now, while the VM is starting.
+        // Consomme binds the port during launch, so the oneshot should
+        // be ready.  Caching the resolved port here lets wait_for_agent
+        // reconnect after a reset without needing the oneshot again.
+        let tcp_pipette_port = match resources.tcp_pipette_port.take() {
+            Some(recv) => Some(
+                recv.await
+                    .context("failed to receive TCP pipette port from consomme")?,
+            ),
+            None => None,
+        };
+
         let mut vm = PetriVmOpenVmm::new(
             super::runtime::PetriVmInner {
                 resources,
@@ -132,6 +144,7 @@ impl PetriVmConfigOpenVmm {
                 worker,
                 framebuffer_view,
                 cidata_mounted: false,
+                tcp_pipette_port,
                 pid,
             },
             halt_notif,

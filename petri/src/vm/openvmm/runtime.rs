@@ -204,6 +204,9 @@ pub(super) struct PetriVmInner {
     /// Used to skip re-mounting after save/restore (where guest state is
     /// preserved) while still mounting after a full reset/reboot.
     pub(super) cidata_mounted: bool,
+    /// Resolved TCP pipette port for no-vmbus Windows guests. Set once
+    /// during startup and reused across reconnections (e.g. after reset).
+    pub(super) tcp_pipette_port: Option<u16>,
     pub(super) pid: i32,
 }
 
@@ -562,11 +565,8 @@ impl PetriVmInner {
 
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
         // Use TCP transport if configured (Windows no-vmbus guests).
-        if let Some(port_recv) = self.resources.tcp_pipette_port.take() {
+        if let Some(port) = self.tcp_pipette_port {
             assert!(!set_high_vtl, "TCP pipette transport does not support VTL2");
-            let port = port_recv
-                .await
-                .context("failed to receive TCP pipette port from consomme")?;
             return self.wait_for_agent_tcp(port).await;
         }
 
