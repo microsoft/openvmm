@@ -2407,3 +2407,90 @@ async fn sizing_accounts_for_gap_between_pinned_bars() {
         "dynamic BAR {bar_c:#x} should be in the gap between pinned BARs"
     );
 }
+
+/// Sizing underestimate when constrained_base is not aligned to a large
+/// dynamic demand's alignment.
+///
+/// The trial overflow path in compute_subtree_state uses relative offsets
+/// for alignment padding:
+///     pool.mem = align_up(pool.mem, alignment) + size
+///
+/// But the real allocator in assign_subtree uses absolute addresses.
+/// When the pinned span is an exact multiple of the dynamic BAR's
+/// alignment but constrained_base is not, the trial computes zero
+/// alignment padding while the real allocation needs up to
+/// (alignment - 1) bytes of padding, causing the gap to be too small.
+#[async_test]
+async fn sizing_underestimate_constrained_base_misaligned() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // Device A: 64 KB non-pref BAR, pinned at 0x1010_0000.
+    // constrained_base = align_down(0x1010_0000, 1 MB) = 0x1010_0000.
+    // This is NOT 16 MB aligned (0x1010_0000 % 0x100_0000 = 0x10_0000).
+    mock.add_endpoint(1, 0, 0, &[(0, 0x10000, false, false)]);
+    mock.set_bar_address(1, 0, 0, 0, 0x1010_0000);
+
+    // Device B: 1 MB non-pref BAR, pinned at 0x1100_0000.
+    // Pinned span: [0x1010_0000, 0x1110_0000) = 16 MB (0x100_0000).
+    // 16 MB is an exact multiple of the dynamic BAR's alignment (16 MB),
+    // so align_up(16 MB, 16 MB) = 16 MB — the trial adds zero padding.
+    mock.add_endpoint(1, 1, 0, &[(0, 0x100000, false, false)]);
+    mock.set_bar_address(1, 1, 0, 0, 0x1100_0000);
+
+    // Device C: 16 MB non-pref BAR, dynamic (not pinned).
+    //
+    // Trial overflow path:
+    //   pool.mem = 0x100_0000 (pinned span = 16 MB)
+    //   align_up(0x100_0000, 0x100_0000) = 0x100_0000 (no padding!)
+    //   pool.mem = 0x100_0000 + 0x100_0000 = 0x200_0000 (32 MB)
+    //   Window: [0x1010_0000, 0x1210_0000).
+    //
+    // Real allocation: tail gap = [0x1110_0000, 0x1210_0000) = 16 MB.
+    //   align_up(0x1110_0000, 0x100_0000) = 0x1200_0000
+    //   0x1200_0000 + 0x100_0000 = 0x1300_0000 > 0x1210_0000 → panic!
+    mock.add_endpoint(1, 2, 0, &[(0, 0x1000000, false, false)]);
+
+    // Aperture is generous (1 GB). The issue is that the bridge window
+    // is undersized, not that the aperture is too small.
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x4000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    let result = assign_pci_resources(&mut cfg, &params).await;
+
+    // This should succeed — there is more than enough aperture space.
+    // BUG: the sizing pass underestimates the bridge window, causing
+    // assign_subtree to panic ("demand must fit").
+    assert!(
+        result.is_ok(),
+        "should succeed with generous aperture: {result:?}"
+    );
+
+    // Verify pinned BARs are at their expected addresses.
+    let bar_a = read_bar32(&mock, 1, 0, 0, 0) as u64;
+    let bar_b = read_bar32(&mock, 1, 1, 0, 0) as u64;
+    let bar_c = read_bar32(&mock, 1, 2, 0, 0) as u64;
+    assert_eq!(bar_a, 0x1010_0000, "pinned BAR A");
+    assert_eq!(bar_b, 0x1100_0000, "pinned BAR B");
+
+    // Dynamic 16 MB BAR must be 16 MB aligned and not overlap pinned BARs.
+    assert_eq!(
+        bar_c % 0x100_0000,
+        0,
+        "dynamic 16 MB BAR at {bar_c:#x} must be 16 MB aligned"
+    );
+    assert!(
+        bar_c + 0x100_0000 <= bar_a || bar_c >= 0x1110_0000,
+        "dynamic BAR at {bar_c:#x} must not overlap pinned BARs"
+    );
+}
