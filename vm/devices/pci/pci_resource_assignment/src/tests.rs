@@ -1751,6 +1751,43 @@ async fn pinned_bar_out_of_aperture_error() {
     );
 }
 
+/// A 64-bit non-prefetchable BAR pinned above 4 GB should be rejected.
+/// The non-prefetchable bridge window is 32-bit only and cannot represent
+/// addresses above 4 GB.
+#[async_test]
+async fn pinned_bar_64bit_non_prefetchable_above_4gb_rejected() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+    // 1 MB 64-bit non-prefetchable BAR pinned above 4 GB.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x100000, true, false)]);
+    mock.set_bar_address(1, 0, 0, 0, 0x1_0010_0000);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: Some(MmioAperture {
+            base: 0x1_0000_0000,
+            len: 0x1_0000_0000,
+        }),
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock;
+    let result = assign_pci_resources(&mut cfg, &params).await;
+    assert!(
+        matches!(
+            result,
+            Err(crate::AssignmentError::PinnedBarOutOfAperture { .. })
+        ),
+        "expected PinnedBarOutOfAperture, got {result:?}"
+    );
+}
+
 /// Bridge window should be computed from pinned + dynamic children.
 #[async_test]
 async fn bridge_window_from_pinned_and_dynamic() {
@@ -1911,6 +1948,82 @@ async fn pinned_bar_64bit_prefetchable() {
         "pref window {:#x}..={:#x} must contain pinned BAR",
         pref.0,
         pref.1
+    );
+}
+
+/// Two pinned 64-bit prefetchable BARs: one below 4 GB (in the low MMIO
+/// aperture) and one above 4 GB (in the high MMIO aperture). Pinned BARs
+/// below 4 GB are treated as mem32 (prefetchable vs. non-prefetchable is
+/// not a real distinction in virtualization), so the low BAR goes in the
+/// non-prefetchable bridge window and the high BAR goes in the
+/// prefetchable bridge window. Each window must stay within its aperture.
+#[async_test]
+async fn pinned_bar_64bit_prefetchable_in_low_mmio() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+    // Device 0: 1 MB 64-bit prefetchable BAR pinned below 4 GB.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x100000, true, true)]);
+    mock.set_bar_address(1, 0, 0, 0, 0x1020_0000);
+    // Device 1: 1 MB 64-bit prefetchable BAR pinned above 4 GB.
+    mock.add_endpoint(1, 1, 0, &[(0, 0x100000, true, true)]);
+    mock.set_bar_address(1, 1, 0, 0, 0x1_0010_0000);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: Some(MmioAperture {
+            base: 0x1_0000_0000,
+            len: 0x1_0000_0000,
+        }),
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    // Both BARs should be at their pinned addresses.
+    let bar_low = read_bar64(&mock, 1, 0, 0, 0);
+    let bar_high = read_bar64(&mock, 1, 1, 0, 0);
+    assert_eq!(bar_low, 0x1020_0000);
+    assert_eq!(bar_high, 0x1_0010_0000);
+
+    // Low BAR is treated as mem32, so it should be in the non-prefetchable window.
+    let mem_win = read_memory_window(&mock, 0, 0, 0)
+        .expect("bridge should have a non-prefetchable window for the low pinned BAR");
+    assert!(
+        mem_win.0 <= bar_low && bar_low + 0x100000 - 1 <= mem_win.1,
+        "memory window {:#x}..={:#x} must contain low BAR [{:#x}..{:#x})",
+        mem_win.0,
+        mem_win.1,
+        bar_low,
+        bar_low + 0x100000
+    );
+
+    // High BAR stays in the prefetchable window.
+    let pref_win = read_prefetchable_window(&mock, 0, 0, 0)
+        .expect("bridge should have a prefetchable window for the high pinned BAR");
+    assert!(
+        pref_win.0 <= bar_high && bar_high + 0x100000 - 1 <= pref_win.1,
+        "prefetchable window {:#x}..={:#x} must contain high BAR [{:#x}..{:#x})",
+        pref_win.0,
+        pref_win.1,
+        bar_high,
+        bar_high + 0x100000
+    );
+
+    // The two bridge windows must not overlap.
+    assert!(
+        mem_win.1 < pref_win.0 || pref_win.1 < mem_win.0,
+        "bridge windows overlap: mem {:#x}..={:#x} vs pref {:#x}..={:#x}",
+        mem_win.0,
+        mem_win.1,
+        pref_win.0,
+        pref_win.1
     );
 }
 

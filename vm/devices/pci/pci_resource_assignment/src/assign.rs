@@ -194,7 +194,7 @@ pub fn assign_addresses(
             });
         }
 
-        assign_subtree(devices, &root_req.demands, false, base);
+        assign_subtree(devices, &root_req.demands, false, base, aperture_end);
 
         mem32_end = Some(base + root_req.mem32);
     }
@@ -231,7 +231,7 @@ pub fn assign_addresses(
             });
         }
 
-        assign_subtree(devices, &root_req.demands, true, base);
+        assign_subtree(devices, &root_req.demands, true, base, aperture_end);
     }
 
     validate_assignments(devices, params);
@@ -250,6 +250,69 @@ fn validate_assignments(devices: &[DiscoveredDevice], params: &AssignmentParams)
                 let address = bar.address.unwrap();
                 let total_size = bar.size * sriov.total_vfs as u64;
                 assert_bar_in_aperture(address, total_size, dev, bar.index, params);
+            }
+        }
+        // Validate bridge windows fit within their respective apertures
+        // and that child windows fit within parent windows.
+        if let Some(req) = &dev.subtree_req {
+            if let Some((base, limit)) = req.memory_window {
+                let size = limit - base + 1;
+                assert!(
+                    params
+                        .low_mmio
+                        .is_some_and(|a| base >= a.base && base + size <= a.base + a.len),
+                    "bridge {bus:02x}:{device:02x}.{func} memory window \
+                     {base:#x}..={limit:#x} exceeds low_mmio aperture",
+                    bus = dev.bus,
+                    device = dev.device,
+                    func = dev.function,
+                );
+            }
+            if let Some((base, limit)) = req.prefetchable_window {
+                let size = limit - base + 1;
+                let in_low = params
+                    .low_mmio
+                    .is_some_and(|a| base >= a.base && base + size <= a.base + a.len);
+                let in_high = params
+                    .high_mmio
+                    .is_some_and(|a| base >= a.base && base + size <= a.base + a.len);
+                assert!(
+                    in_low || in_high,
+                    "bridge {bus:02x}:{device:02x}.{func} prefetchable window \
+                     {base:#x}..={limit:#x} exceeds MMIO apertures",
+                    bus = dev.bus,
+                    device = dev.device,
+                    func = dev.function,
+                );
+            }
+            // Check child bridge windows are contained within this bridge's windows.
+            for child in &dev.children {
+                if let Some(child_req) = &child.subtree_req {
+                    if let (Some((cb, cl)), Some((pb, pl))) =
+                        (child_req.memory_window, req.memory_window)
+                    {
+                        assert!(
+                            cb >= pb && cl <= pl,
+                            "child bridge {cbus:02x}:{cdev:02x}.{cfunc} memory window \
+                             {cb:#x}..={cl:#x} exceeds parent {pb:#x}..={pl:#x}",
+                            cbus = child.bus,
+                            cdev = child.device,
+                            cfunc = child.function,
+                        );
+                    }
+                    if let (Some((cb, cl)), Some((pb, pl))) =
+                        (child_req.prefetchable_window, req.prefetchable_window)
+                    {
+                        assert!(
+                            cb >= pb && cl <= pl,
+                            "child bridge {cbus:02x}:{cdev:02x}.{cfunc} prefetchable window \
+                             {cb:#x}..={cl:#x} exceeds parent {pb:#x}..={pl:#x}",
+                            cbus = child.bus,
+                            cdev = child.device,
+                            cfunc = child.function,
+                        );
+                    }
+                }
             }
         }
         validate_assignments(&dev.children, params);
@@ -296,11 +359,21 @@ fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
 
     for (i, dev) in devices.iter_mut().enumerate() {
         for bar in &dev.bars {
+            // For pinned BARs below 4 GB, treat them as mem32 regardless
+            // of encoding. Prefetchable vs. non-prefetchable is not a real
+            // distinction in virtualization, and placing a pinned BAR in the
+            // mem64 pool when its address is in the low MMIO range would
+            // create a bridge window spanning across apertures.
+            let is_mem64 = if let Some(addr) = bar.pinned_address {
+                addr >= 0x1_0000_0000 && is_mem64_bar(bar)
+            } else {
+                is_mem64_bar(bar)
+            };
             demands.push(Demand::Bar {
                 dev_idx: i,
                 bar_index: bar.index,
                 size: bar.size,
-                is_mem64: is_mem64_bar(bar),
+                is_mem64,
                 pinned_address: bar.pinned_address,
             });
         }
@@ -436,6 +509,7 @@ fn assign_subtree(
     demands: &[Demand],
     alloc_64bit: bool,
     base: u64,
+    limit: u64,
 ) {
     // Compute the starting offset for bump allocation: after all
     // fixed-position demands.
@@ -463,6 +537,16 @@ fn assign_subtree(
             offset += demand.size();
             addr
         };
+
+        // Every placement must fit within the parent's window.
+        assert!(
+            assign_addr >= base && assign_addr + demand.size() <= limit,
+            "assignment at {:#x}..{:#x} exceeds parent window {:#x}..{:#x}",
+            assign_addr,
+            assign_addr + demand.size(),
+            base,
+            limit,
+        );
 
         match *demand {
             Demand::Bar {
@@ -494,7 +578,13 @@ fn assign_subtree(
                     .as_ref()
                     .expect("subtree_req must be populated by compute_subtree_state")
                     .demands;
-                assign_subtree(&mut dev.children, child_demands, alloc_64bit, window_base);
+                assign_subtree(
+                    &mut dev.children,
+                    child_demands,
+                    alloc_64bit,
+                    window_base,
+                    window_limit + 1,
+                );
             }
             Demand::SriovVfBars {
                 dev_idx, bar_index, ..
@@ -724,10 +814,10 @@ fn validate_pinned_bars(
 
     // Check aperture containment.
     for &(addr, size, bus, device, function, bar_index, is_mem64) in &all_pinned {
-        let (aperture, aperture_name) = if is_mem64 {
-            (params.high_mmio.or(params.low_mmio), "high_mmio")
+        let aperture = if is_mem64 {
+            params.high_mmio.or(params.low_mmio)
         } else {
-            (params.low_mmio, "low_mmio")
+            params.low_mmio
         };
         let fits = aperture.is_some_and(|a| addr >= a.base && addr + size <= a.base + a.len);
         if !fits {
@@ -738,7 +828,7 @@ fn validate_pinned_bars(
                 bar_index,
                 address: addr,
                 size,
-                aperture: aperture_name,
+                aperture: if is_mem64 { "high_mmio" } else { "low_mmio" },
             });
         }
     }
@@ -755,6 +845,8 @@ fn collect_pinned_bars(
     for dev in devices {
         for bar in &dev.bars {
             if let Some(addr) = bar.pinned_address {
+                // Pinned BARs below 4 GB are treated as mem32.
+                let is_mem64 = addr >= 0x1_0000_0000 && is_mem64_bar(bar);
                 out.push((
                     addr,
                     bar.size,
@@ -762,7 +854,7 @@ fn collect_pinned_bars(
                     dev.device,
                     dev.function,
                     bar.index,
-                    is_mem64_bar(bar),
+                    is_mem64,
                 ));
             }
         }
