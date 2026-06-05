@@ -214,7 +214,7 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
 
     // The virtio device should not have made it through, but the NVMe
     // controller should be there.
-    assert_eq!(devices, vec![Ok(("00:00.0", "Class 0108: 1414:00a9"))]);
+    assert_eq!(devices, vec![Ok(("00:00.0", "Class 0108: 1414:c03e"))]);
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -267,7 +267,7 @@ async fn vpci_relay_tdisp_device(
         .collect::<Vec<_>>();
 
     // The NVMe controller should be present after the HCL performs its TDISP test.
-    assert_eq!(devices, vec![Ok(("00:00.0", "Class 0108: 1414:00a9"))]);
+    assert_eq!(devices, vec![Ok(("00:00.0", "Class 0108: 1414:c03e"))]);
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
