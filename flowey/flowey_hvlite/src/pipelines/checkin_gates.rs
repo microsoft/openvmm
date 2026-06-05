@@ -750,6 +750,8 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-openvmm"));
             let (pub_openvmm_vhost_musl, use_openvmm_vhost_musl) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-openvmm_vhost"));
+            let (pub_prep_steps, use_prep_steps) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-prep_steps"));
 
             // skim off interesting artifacts required by the VMM tests job
             match arch {
@@ -757,9 +759,12 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_linux_x86.use_openvmm = Some(use_openvmm.clone());
                     vmm_tests_artifacts_linux_x86.use_openvmm_vhost =
                         Some(use_openvmm_vhost.clone());
+                    vmm_tests_artifacts_linux_x86.use_prep_steps = Some(use_prep_steps.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_openvmm = Some(use_openvmm_musl.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_openvmm_vhost =
                         Some(use_openvmm_vhost_musl.clone());
+                    vmm_tests_artifacts_linux_musl_x86.use_prep_steps =
+                        Some(use_prep_steps.clone());
                 }
                 CommonArch::Aarch64 => {}
             }
@@ -879,6 +884,16 @@ impl IntoPipeline for CheckinGatesCli {
                             profile: CommonProfile::from_release(release),
                         },
                         openvmm_vhost,
+                    }
+                })
+                .publish(pub_prep_steps, |prep_steps| {
+                    flowey_lib_hvlite::build_prep_steps::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::LinuxGnu,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        prep_steps,
                     }
                 });
 
@@ -1720,6 +1735,7 @@ mod vmm_tests_artifact_builders {
         pub use_openvmm: Option<UseTypedArtifact<OpenvmmOutput>>,
         pub use_openvmm_vhost: Option<UseTypedArtifact<OpenvmmVhostOutput>>,
         pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
+        pub use_prep_steps: Option<UseTypedArtifact<PrepStepsOutput>>,
         // any machine
         pub use_guest_test_uefi: Option<UseTypedArtifact<GuestTestUefiOutput>>,
         pub use_tmks: Option<UseTypedArtifact<TmksOutput>>,
@@ -1733,6 +1749,7 @@ mod vmm_tests_artifact_builders {
                 use_guest_test_uefi,
                 use_pipette_windows,
                 use_pipette_linux_musl,
+                use_prep_steps,
                 use_tmk_vmm,
                 use_tmks,
             } = self;
@@ -1757,7 +1774,7 @@ mod vmm_tests_artifact_builders {
                 // not currently required, since OpenHCL tests cannot be run on OpenVMM on linux
                 artifact_dir_openhcl_igvm_files: None,
                 tmk_vmm_linux_musl: None,
-                prep_steps: None,
+                prep_steps: use_prep_steps.as_ref().map(|a| ctx.use_typed_artifact(a)),
                 vmgstool: None,
                 tpm_guest_tests_windows: None,
                 tpm_guest_tests_linux: None,
