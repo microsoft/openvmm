@@ -1645,15 +1645,8 @@ async fn mixed_pinned_and_dynamic_bars() {
     let bar_a = read_bar32(&mock, 1, 0, 0, 0) as u64;
     assert_eq!(bar_a, 0x1020_0000);
 
-    // Dynamic BAR should be placed after the pinned BAR's end (0x1020_0000 + 0x10000).
+    // Dynamic BAR must not overlap the pinned BAR.
     let bar_b = read_bar32(&mock, 1, 1, 0, 0) as u64;
-    assert!(
-        bar_b >= 0x1020_0000 + 0x10000,
-        "dynamic BAR {bar_b:#x} should be after pinned BAR end at {:#x}",
-        0x1020_0000u64 + 0x10000
-    );
-
-    // They must not overlap.
     assert!(
         bar_a + 0x10000 <= bar_b || bar_b + 0x10000 <= bar_a,
         "BARs overlap: A={bar_a:#x}, B={bar_b:#x}"
@@ -1826,17 +1819,18 @@ async fn bridge_window_from_pinned_and_dynamic() {
         window.0
     );
 
-    // Dynamic 1 MB BAR should be after pinned end.
+    // Dynamic 1 MB BAR must not overlap pinned BAR.
     let bar_b = read_bar32(&mock, 1, 1, 0, 0) as u64;
     assert!(
-        bar_b >= 0x1030_0000,
-        "dynamic BAR {bar_b:#x} should be >= pinned end 0x1030_0000"
+        bar_b + 0x100000 <= 0x1020_0000 || bar_b >= 0x1030_0000,
+        "dynamic BAR {bar_b:#x} overlaps pinned BAR [0x1020_0000, 0x1030_0000)"
     );
 
     // Window should cover both BARs.
     assert!(
-        window.1 >= bar_b + 0x100000 - 1,
-        "window limit {:#x} should cover dynamic BAR end {:#x}",
+        window.0 <= bar_b && window.1 >= bar_b + 0x100000 - 1,
+        "window {:#x}..={:#x} should cover dynamic BAR {bar_b:#x}..{:#x}",
+        window.0,
         window.1,
         bar_b + 0x100000 - 1
     );
@@ -2067,16 +2061,18 @@ async fn two_pinned_bars_same_bridge() {
     assert_eq!(bar_a, 0x1020_0000, "pinned BAR A");
     assert_eq!(bar_b, 0x1030_0000, "pinned BAR B");
 
-    // Dynamic BAR must be after both pinned BARs' ends.
-    let max_pinned_end = 0x1030_0000u64 + 0x10000;
+    // Dynamic BAR should be placed in the gap between the two pinned
+    // BARs (gap allocator), not after both of them.
     assert!(
-        bar_c >= max_pinned_end,
-        "dynamic BAR {bar_c:#x} should be >= max pinned end {max_pinned_end:#x}"
+        bar_c >= bar_a + 0x10000 && bar_c + 0x10000 <= bar_b,
+        "dynamic BAR {bar_c:#x} should be between pinned A end {:#x} and B start {bar_b:#x}",
+        bar_a + 0x10000,
     );
 
     // No overlaps.
     assert!(bar_a + 0x10000 <= bar_b, "A and B overlap");
-    assert!(bar_b + 0x10000 <= bar_c, "B and C overlap");
+    assert!(bar_a + 0x10000 <= bar_c, "A and C overlap");
+    assert!(bar_c + 0x10000 <= bar_b, "C and B overlap");
 }
 
 /// Dynamic BAR with large alignment coexisting with a small pinned BAR.
@@ -2121,11 +2117,7 @@ async fn pinned_bar_with_large_alignment_dynamic() {
         "dynamic 1 MB BAR at {bar_b:#x} is not 1 MB aligned"
     );
 
-    // Must be after pinned end (0x1020_0000) and not overlap.
-    assert!(
-        bar_b >= 0x1010_0000 + 0x10000,
-        "dynamic BAR {bar_b:#x} should be after pinned end"
-    );
+    // Must not overlap pinned BAR.
     assert!(
         bar_b + 0x100000 <= bar_a || bar_a + 0x10000 <= bar_b,
         "BARs overlap"
@@ -2218,5 +2210,200 @@ async fn preserve_bars_false_ignores_preprogrammed() {
         read_bar32(&mock, 0, 0, 0, 0),
         0x1000_0000,
         "with preserve_bars=false, pre-programmed address should be ignored"
+    );
+}
+
+/// When a pinned BAR leaves a gap between the bridge window base and the
+/// pinned address, the gap allocator places dynamic demands in that gap
+/// instead of wasting the space and extending the window.
+#[async_test]
+async fn gap_allocator_uses_space_before_pinned_bar() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // Device A: 256 KB non-pref BAR, pinned at 0x1024_0000.
+    // Bridge window base = align_down(0x1024_0000, 1 MB) = 0x1020_0000.
+    // This leaves a 256 KB gap from 0x1020_0000..0x1024_0000.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x40000, false, false)]);
+    mock.set_bar_address(1, 0, 0, 0, 0x1024_0000);
+
+    // Device B: 64 KB non-pref BAR, dynamic. Small enough to fit in the
+    // 256 KB gap before the pinned BAR.
+    mock.add_endpoint(1, 1, 0, &[(0, 0x10000, false, false)]);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    let bar_a = read_bar32(&mock, 1, 0, 0, 0) as u64;
+    let bar_b = read_bar32(&mock, 1, 1, 0, 0) as u64;
+
+    // Pinned BAR stays at its fixed address.
+    assert_eq!(bar_a, 0x1024_0000, "pinned BAR should be at its address");
+
+    // Dynamic BAR should be placed in the gap *before* the pinned BAR.
+    assert!(
+        bar_b >= 0x1020_0000 && bar_b + 0x10000 <= 0x1024_0000,
+        "dynamic BAR {bar_b:#x} should be in the gap [0x1020_0000, 0x1024_0000)"
+    );
+}
+
+/// Dynamic BAR fits in a gap between two pinned BARs instead of being
+/// placed after both of them.
+#[async_test]
+async fn gap_allocator_uses_space_between_pinned_bars() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // Device A: 64 KB non-pref BAR, pinned at 0x1020_0000.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x10000, false, false)]);
+    mock.set_bar_address(1, 0, 0, 0, 0x1020_0000);
+
+    // Device B: 64 KB non-pref BAR, pinned at 0x1040_0000.
+    // Gap between A's end and B's start: [0x1030_0000, 0x1040_0000).
+    mock.add_endpoint(1, 1, 0, &[(0, 0x10000, false, false)]);
+    mock.set_bar_address(1, 1, 0, 0, 0x1040_0000);
+
+    // Device C: 64 KB non-pref BAR, dynamic.
+    mock.add_endpoint(1, 2, 0, &[(0, 0x10000, false, false)]);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1000_0000,
+            len: 0x1000_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    let bar_a = read_bar32(&mock, 1, 0, 0, 0) as u64;
+    let bar_b = read_bar32(&mock, 1, 1, 0, 0) as u64;
+    let bar_c = read_bar32(&mock, 1, 2, 0, 0) as u64;
+
+    assert_eq!(bar_a, 0x1020_0000, "pinned BAR A");
+    assert_eq!(bar_b, 0x1040_0000, "pinned BAR B");
+
+    // Dynamic BAR should be placed in the gap between the two pinned BARs.
+    assert!(
+        bar_c >= bar_a + 0x10000 && bar_c + 0x10000 <= bar_b,
+        "dynamic BAR {bar_c:#x} should be between pinned A end {:#x} and pinned B start {:#x}",
+        bar_a + 0x10000,
+        bar_b,
+    );
+}
+
+/// Sizing must account for gaps within the pinned span. A dynamic BAR
+/// that fits in the gap before a pinned BAR should not inflate the
+/// bridge window beyond the pinned span.
+#[async_test]
+async fn sizing_accounts_for_gap_before_pinned_bar() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // Device A: 512 KB non-pref BAR, pinned at 0x1018_0000.
+    // constrained_base = align_down(0x1018_0000, 1 MB) = 0x1010_0000.
+    // Pinned span = 0x1010_0000..0x1020_0000 = 1 MB.
+    // Gap before pin: [0x1010_0000, 0x1018_0000) = 512 KB.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x80000, false, false)]);
+    mock.set_bar_address(1, 0, 0, 0, 0x1018_0000);
+
+    // Device B: 256 KB non-pref BAR, dynamic. Fits in the 512 KB gap.
+    mock.add_endpoint(1, 1, 0, &[(0, 0x40000, false, false)]);
+
+    // Aperture is exactly 1 MB at the constrained base. With gap-aware
+    // sizing the bridge window is 1 MB and fits. Without gap-aware
+    // sizing the window inflates to 2 MB and overflows.
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1010_0000,
+            len: 0x10_0000, // 1 MB
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    let result = assign_pci_resources(&mut cfg, &params).await;
+    assert!(
+        result.is_ok(),
+        "1 MB aperture should suffice when dynamic BAR fits in gap: {result:?}"
+    );
+
+    // Verify placement.
+    let bar_a = read_bar32(&mock, 1, 0, 0, 0) as u64;
+    let bar_b = read_bar32(&mock, 1, 1, 0, 0) as u64;
+    assert_eq!(bar_a, 0x1018_0000, "pinned BAR");
+    assert!(
+        bar_b >= 0x1010_0000 && bar_b + 0x40000 <= 0x1018_0000,
+        "dynamic BAR {bar_b:#x} should be in the gap [0x1010_0000, 0x1018_0000)"
+    );
+}
+
+/// Sizing must account for gaps between pinned BARs. A dynamic BAR
+/// that fits between two pinned BARs should not extend the window.
+#[async_test]
+async fn sizing_accounts_for_gap_between_pinned_bars() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // Device A: 64 KB non-pref BAR, pinned at 0x1020_0000.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x10000, false, false)]);
+    mock.set_bar_address(1, 0, 0, 0, 0x1020_0000);
+
+    // Device B: 64 KB non-pref BAR, pinned at 0x1110_0000.
+    // Pinned span base = 0x1020_0000, end = 0x1120_0000 = 16 MB.
+    // Gap between: [0x1030_0000, 0x1110_0000) = 14 MB.
+    mock.add_endpoint(1, 1, 0, &[(0, 0x10000, false, false)]);
+    mock.set_bar_address(1, 1, 0, 0, 0x1110_0000);
+
+    // Device C: 1 MB non-pref BAR, dynamic. Fits in the 14 MB gap.
+    mock.add_endpoint(1, 2, 0, &[(0, 0x100000, false, false)]);
+
+    // Aperture = 16 MB starting at constrained base. Gap-aware sizing
+    // keeps the window at 16 MB; naive sizing adds 1 MB → 17 MB → overflow.
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1020_0000,
+            len: 0x100_0000, // 16 MB
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    let result = assign_pci_resources(&mut cfg, &params).await;
+    assert!(
+        result.is_ok(),
+        "16 MB aperture should suffice when dynamic BAR fits in gap: {result:?}"
+    );
+
+    // Dynamic BAR should be between the two pinned BARs.
+    let bar_c = read_bar32(&mock, 1, 2, 0, 0) as u64;
+    assert!(
+        bar_c >= 0x1030_0000 && bar_c + 0x100000 <= 0x1110_0000,
+        "dynamic BAR {bar_c:#x} should be in the gap between pinned BARs"
     );
 }

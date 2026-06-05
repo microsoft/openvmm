@@ -40,6 +40,12 @@ pub(crate) struct SubtreeState {
     /// If pinned demands exist in the mem64 pool, the required base address
     /// for this subtree's window.
     constrained_base64: Option<u64>,
+    /// Pre-computed free gaps in the mem32 pool, covering the window
+    /// [constrained_base, constrained_base + align_up(mem, 1 MB)).
+    /// Empty when there are no pinned demands.
+    gaps32: Vec<(u64, u64)>,
+    /// Pre-computed free gaps in the mem64 pool.
+    gaps64: Vec<(u64, u64)>,
 }
 
 /// A single resource demand at one level of the PCI tree.
@@ -154,7 +160,7 @@ pub fn assign_addresses(
     // Step 1: Bottom-up — compute total resource requirements.
     // This also stores per-bridge requirements on the DiscoveredDevice
     // nodes so that the assignment pass can read them without recomputing.
-    let root_req = compute_subtree_state(devices);
+    let mut root_req = compute_subtree_state(devices);
 
     // Validate pinned BAR constraints before assigning addresses.
     validate_pinned_bars(devices, params)?;
@@ -194,7 +200,10 @@ pub fn assign_addresses(
             });
         }
 
-        assign_subtree(devices, &root_req.demands, false, base, aperture_end);
+        if root_req.constrained_base32.is_none() {
+            root_req.gaps32.push((base, aperture_end));
+        }
+        assign_subtree(devices, &root_req.demands, &mut root_req.gaps32, false);
 
         mem32_end = Some(base + root_req.mem32);
     }
@@ -231,7 +240,10 @@ pub fn assign_addresses(
             });
         }
 
-        assign_subtree(devices, &root_req.demands, true, base, aperture_end);
+        if root_req.constrained_base64.is_none() {
+            root_req.gaps64.push((base, aperture_end));
+        }
+        assign_subtree(devices, &root_req.demands, &mut root_req.gaps64, true);
     }
 
     validate_assignments(devices, params);
@@ -424,11 +436,9 @@ fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
     // alignment-demanding items first minimizes padding waste.
     demands.sort_by_key(|d| std::cmp::Reverse(d.alignment()));
 
-    // Collect fixed-position demands (pinned BARs and constrained bridges)
-    // per pool to compute the base offset for dynamic allocations.
+    // Collect fixed-position demands per pool.
     let mut pin32: Vec<(u64, u64)> = Vec::new();
     let mut pin64: Vec<(u64, u64)> = Vec::new();
-
     for d in &demands {
         if let Some((addr, size)) = d.fixed_position() {
             if d.is_mem64() {
@@ -439,114 +449,142 @@ fn compute_subtree_state(devices: &mut [DiscoveredDevice]) -> SubtreeState {
         }
     }
 
-    let (mut mem32, constrained_base32) = if !pin32.is_empty() {
-        let min_addr = pin32.iter().map(|(a, _)| *a).min().unwrap();
-        let max_end = pin32.iter().map(|(a, s)| a + s).max().unwrap();
-        let base = align_down(min_addr, BRIDGE_WINDOW_ALIGN);
-        (max_end - base, Some(base))
-    } else {
-        (0, None)
-    };
+    // Size each pool: compute the pinned span, build gaps, trial-allocate
+    // dynamic demands, and extend the window for anything that didn't fit.
+    let mut pool32 = size_pool(&mut pin32, &demands, false);
+    let mut pool64 = size_pool(&mut pin64, &demands, true);
 
-    let (mut mem64, constrained_base64) = if !pin64.is_empty() {
-        let min_addr = pin64.iter().map(|(a, _)| *a).min().unwrap();
-        let max_end = pin64.iter().map(|(a, s)| a + s).max().unwrap();
-        let base = align_down(min_addr, BRIDGE_WINDOW_ALIGN);
-        (max_end - base, Some(base))
-    } else {
-        (0, None)
-    };
-
-    let mut align32 = BRIDGE_WINDOW_ALIGN;
-    let mut align64 = BRIDGE_WINDOW_ALIGN;
-
+    // Trial-allocate dynamic demands into gap clones to determine which
+    // fit in the pinned span and which extend the window.
+    let mut sizing_gaps32 = pool32.gaps.clone();
+    let mut sizing_gaps64 = pool64.gaps.clone();
     for d in &demands {
-        // Skip fixed-position demands; they are already accounted for
-        // in the pinned region above.
         if d.fixed_position().is_some() {
             continue;
         }
         if d.is_mem64() {
-            mem64 = align_up(mem64, d.alignment());
-            mem64 += d.size();
-            align64 = align64.max(d.alignment());
+            pool64.align = pool64.align.max(d.alignment());
+            if allocate_from_gaps(&mut sizing_gaps64, d.size(), d.alignment()).is_none() {
+                pool64.mem = align_up(pool64.mem, d.alignment());
+                pool64.mem += d.size();
+            }
         } else {
-            mem32 = align_up(mem32, d.alignment());
-            mem32 += d.size();
-            align32 = align32.max(d.alignment());
+            pool32.align = pool32.align.max(d.alignment());
+            if allocate_from_gaps(&mut sizing_gaps32, d.size(), d.alignment()).is_none() {
+                pool32.mem = align_up(pool32.mem, d.alignment());
+                pool32.mem += d.size();
+            }
         }
     }
 
+    // Extend gap lists with the tail region for demands that didn't fit.
+    pool32.extend_tail();
+    pool64.extend_tail();
+
     SubtreeState {
-        mem32,
-        mem64,
-        align32,
-        align64,
+        mem32: pool32.mem,
+        mem64: pool64.mem,
+        align32: pool32.align,
+        align64: pool64.align,
         demands,
         memory_window: None,
         prefetchable_window: None,
-        constrained_base32,
-        constrained_base64,
+        constrained_base32: pool32.constrained_base,
+        constrained_base64: pool64.constrained_base,
+        gaps32: pool32.gaps,
+        gaps64: pool64.gaps,
     }
 }
+
+/// Per-pool sizing state produced by `size_pool`.
+struct PoolState {
+    /// Total window size needed (pinned span + dynamic overflow).
+    mem: u64,
+    /// Required alignment (max of bridge granularity and largest demand).
+    align: u64,
+    /// If pinned demands exist, the required window base address.
+    constrained_base: Option<u64>,
+    /// Pre-computed gap list covering the pinned span, for reuse by
+    /// `assign_subtree`. Empty when there are no pinned demands.
+    gaps: Vec<(u64, u64)>,
+    /// End of the pinned span, for extending gaps after sizing.
+    pinned_span_end: Option<u64>,
+}
+
+impl PoolState {
+    /// Append a tail gap for dynamic demands that didn't fit in the
+    /// pinned-span gaps. Called after the sizing trial.
+    fn extend_tail(&mut self) {
+        if let Some(pin_end) = self.pinned_span_end {
+            let window_end = self.constrained_base.unwrap() + self.mem;
+            if pin_end < window_end {
+                self.gaps.push((pin_end, window_end));
+            }
+        }
+    }
+}
+
+/// Compute the pinned span, gap list, and initial window size for one
+/// pool (mem32 or mem64). `pins` is sorted in place.
+fn size_pool(pins: &mut [(u64, u64)], demands: &[Demand], is_mem64: bool) -> PoolState {
+    pins.sort_by_key(|&(a, _)| a);
+
+    let (mem, constrained_base) = if !pins.is_empty() {
+        let min_addr = pins.iter().map(|(a, _)| *a).min().unwrap();
+        let max_end = pins.iter().map(|(a, s)| a + s).max().unwrap();
+        let base = align_down(min_addr, BRIDGE_WINDOW_ALIGN);
+        (max_end - base, Some(base))
+    } else {
+        (0, None)
+    };
+
+    let _ = (demands, is_mem64); // used by caller for trial allocation
+
+    let gaps = if let Some(base) = constrained_base {
+        build_gap_list(base, base + mem, pins)
+    } else {
+        Vec::new()
+    };
+
+    let pinned_span_end = constrained_base.map(|b| b + mem);
+
+    PoolState {
+        mem,
+        align: BRIDGE_WINDOW_ALIGN,
+        constrained_base,
+        gaps,
+        pinned_span_end,
+    }
+}
+
 /// Top-down: assign addresses to devices within a subtree, carving from
-/// the given base address. `alloc_64bit` selects which pool (mem32 or
+/// the given gap list. `alloc_64bit` selects which pool (mem32 or
 /// mem64) we are assigning.
 ///
 /// Fixed-position demands (pinned BARs and constrained bridges) are placed
-/// at their predetermined addresses. Dynamic demands bump-allocate after
-/// the highest fixed-position end.
-///
-/// TODO: Replace bump-from-max-end with a gap allocator that can place
-/// dynamic demands in free space before and between pinned regions. The
-/// current approach wastes space below the first pin. This is acceptable
-/// when the admin controls aperture placement, but a gap allocator would
-/// handle awkward pin positions without requiring oversized apertures.
+/// at their predetermined addresses. Dynamic demands are placed into free
+/// gaps using a first-fit strategy.
 ///
 /// `demands` is the pre-sorted demand list built by `compute_subtree_state`.
 fn assign_subtree(
     devices: &mut [DiscoveredDevice],
     demands: &[Demand],
+    gaps: &mut Vec<(u64, u64)>,
     alloc_64bit: bool,
-    base: u64,
-    limit: u64,
 ) {
-    // Compute the starting offset for bump allocation: after all
-    // fixed-position demands.
-    let max_fixed_end = demands
-        .iter()
-        .filter(|d| d.is_mem64() == alloc_64bit)
-        .filter_map(|d| d.fixed_position())
-        .map(|(addr, size)| addr + size)
-        .max()
-        .unwrap_or(base);
-    let mut offset = max_fixed_end.max(base);
-
     for demand in demands {
         if demand.is_mem64() != alloc_64bit {
             continue;
         }
 
-        // For fixed-position demands, use the fixed address.
-        // For dynamic demands, bump-allocate.
+        // Fixed-position demands use their predetermined address.
+        // Dynamic demands are placed via the gap allocator.
         let assign_addr = if let Some((addr, _)) = demand.fixed_position() {
             addr
         } else {
-            offset = align_up(offset, demand.alignment());
-            let addr = offset;
-            offset += demand.size();
-            addr
+            allocate_from_gaps(gaps, demand.size(), demand.alignment())
+                .expect("demand must fit (sizing pass guarantees sufficient space)")
         };
-
-        // Every placement must fit within the parent's window.
-        assert!(
-            assign_addr >= base && assign_addr + demand.size() <= limit,
-            "assignment at {:#x}..{:#x} exceeds parent window {:#x}..{:#x}",
-            assign_addr,
-            assign_addr + demand.size(),
-            base,
-            limit,
-        );
 
         match *demand {
             Demand::Bar {
@@ -573,18 +611,24 @@ fn assign_subtree(
                 }
 
                 // Recurse into children with this bridge's carved-out range.
-                let child_demands = &dev
+                let req = dev
                     .subtree_req
-                    .as_ref()
-                    .expect("subtree_req must be populated by compute_subtree_state")
-                    .demands;
-                assign_subtree(
-                    &mut dev.children,
-                    child_demands,
-                    alloc_64bit,
-                    window_base,
-                    window_limit + 1,
-                );
+                    .as_mut()
+                    .expect("subtree_req must be populated by compute_subtree_state");
+                let has_pins = if alloc_64bit {
+                    req.constrained_base64.is_some()
+                } else {
+                    req.constrained_base32.is_some()
+                };
+                let (child_demands, child_gaps) = if alloc_64bit {
+                    (&req.demands, &mut req.gaps64)
+                } else {
+                    (&req.demands, &mut req.gaps32)
+                };
+                if !has_pins {
+                    child_gaps.push((window_base, window_limit + 1));
+                }
+                assign_subtree(&mut dev.children, child_demands, child_gaps, alloc_64bit);
             }
             Demand::SriovVfBars {
                 dev_idx, bar_index, ..
@@ -768,6 +812,49 @@ fn align_up(value: u64, alignment: u64) -> u64 {
 fn align_down(value: u64, alignment: u64) -> u64 {
     assert!(alignment.is_power_of_two());
     value & !(alignment - 1)
+}
+
+/// Build a list of free gaps within [base, limit) given sorted,
+/// non-overlapping fixed regions. Each gap is a (start, end) pair
+/// where start is inclusive and end is exclusive.
+fn build_gap_list(base: u64, limit: u64, fixed_regions: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    let mut gaps = Vec::new();
+    let mut cursor = base;
+    for &(addr, size) in fixed_regions {
+        if cursor < addr {
+            gaps.push((cursor, addr));
+        }
+        cursor = cursor.max(addr + size);
+    }
+    if cursor < limit {
+        gaps.push((cursor, limit));
+    }
+    gaps
+}
+
+/// Allocate `size` bytes with the given `alignment` from the first gap
+/// that fits (first-fit). Returns the allocated address, or `None` if
+/// no gap is large enough. Updates `gaps` in place.
+fn allocate_from_gaps(gaps: &mut Vec<(u64, u64)>, size: u64, alignment: u64) -> Option<u64> {
+    let gap_idx = gaps
+        .iter()
+        .position(|&(start, end)| align_up(start, alignment) + size <= end)?;
+
+    let (gap_start, gap_end) = gaps[gap_idx];
+    let addr = align_up(gap_start, alignment);
+    let alloc_end = addr + size;
+
+    gaps.remove(gap_idx);
+    let mut insert_at = gap_idx;
+    if gap_start < addr {
+        gaps.insert(insert_at, (gap_start, addr));
+        insert_at += 1;
+    }
+    if alloc_end < gap_end {
+        gaps.insert(insert_at, (alloc_end, gap_end));
+    }
+
+    Some(addr)
 }
 
 /// Validate pinned BAR constraints: alignment, overlap, and aperture fit.
