@@ -512,7 +512,7 @@ impl Session {
         out.congestion_threshold = info.congestion_threshold;
         out.max_write = info.max_write;
         out.time_gran = info.time_gran;
-        out.max_pages = info.max_write.div_ceil(PAGE_SIZE).try_into().unwrap();
+        out.max_pages = info.max_write.div_ceil(PAGE_SIZE).min(u16::MAX as u32) as u16;
         // Only report flags2 when extended init was negotiated.
         if info.want & FUSE_INIT_EXT != 0 {
             out.flags2 = info.want2;
