@@ -28,6 +28,7 @@ enum Logger {
     #[cfg(target_arch = "x86_64")]
     Serial(Serial<InstrIoAccess>),
     #[cfg(target_arch = "aarch64")]
+    #[expect(dead_code)]
     Serial(Serial),
     #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
     TdxSerial(Serial<TdxIoAccess>),
@@ -90,15 +91,21 @@ pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_avail
 
     *logger = match (isolation_type, com3_serial_available) {
         #[cfg(target_arch = "x86_64")]
-        (IsolationType::None, true) => Logger::Serial(Serial::init(InstrIoAccess)),
-        #[cfg(target_arch = "aarch64")]
-        (IsolationType::None, ComInfo::Pl011 { base, .. }) => {
-            Logger::Serial(Serial::init(Some(base as u64)))
+        (IsolationType::None, ComInfo::Ns16550 { .. }) => {
+            Logger::Serial(Serial::init(InstrIoAccess))
+        }
+        // TODO: fix the PL011 minimal_rt driver. Currently hangs even if
+        // the MMIO address is correctly configured.
+        // #[cfg(target_arch = "aarch64")]
+        // (IsolationType::None, ComInfo::Pl011 { .. }) => Logger::Serial(Serial::init()),
+        #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
+        (IsolationType::Tdx, ComInfo::Ns16550 { .. }) => {
+            Logger::TdxSerial(Serial::init(TdxIoAccess))
         }
         #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
-        (IsolationType::Tdx, true) => Logger::TdxSerial(Serial::init(TdxIoAccess)),
-        #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
-        (IsolationType::Snp, true) => Logger::SnpSerial(Serial::init(SnpIoAccess)),
+        (IsolationType::Snp, ComInfo::Ns16550 { .. }) => {
+            Logger::SnpSerial(Serial::init(SnpIoAccess))
+        }
         _ => Logger::None,
     };
 

@@ -64,16 +64,20 @@ pub enum ComInfo {
     /// Serial device on x86
     ///
     /// Parameters are hard coded based on port number for this device.
-    Ns16550,
+    Ns16550 {
+        /// Base IO port
+        #[cfg_attr(feature = "inspect", inspect(hex))]
+        base: u64,
+        /// Speed
+        current_speed: u32,
+    },
     /// Serial device on ARM64
     Pl011 {
         /// Base MMIO address
         #[cfg_attr(feature = "inspect", inspect(hex))]
         base: u32,
-
         /// Interrupt ID
         intid: u32,
-
         /// Speed
         current_speed: u32,
     },
@@ -1030,7 +1034,7 @@ fn parse_io_bus<'a>(
             .transpose()?
             .unwrap_or("");
 
-        let _current_speed = io_bus_child
+        let current_speed = io_bus_child
             .find_property("current-speed")
             .map_err(ErrorKind::Prop)?
             .ok_or(ErrorKind::PropMissing {
@@ -1048,17 +1052,20 @@ fn parse_io_bus<'a>(
                 prop_name: "reg",
             })?;
 
-        let reg_base = reg.read_u64(0).map_err(ErrorKind::Prop)?;
-        let _reg_len = reg.read_u64(1).map_err(ErrorKind::Prop)?;
+        let base = reg.read_u64(0).map_err(ErrorKind::Prop)?;
+        let _base_len = reg.read_u64(1).map_err(ErrorKind::Prop)?;
 
         // Linux kernel hard-codes COM3 to COM3_REG_BASE.
         // If work is ever done in the Linux kernel to instead
         // parse from DT, the 2nd condition can be removed.
-        if compatible == "ns16550" && reg_base == COM3_REG_BASE {
-            *com3_serial = ComInfo::Ns16550;
+        if compatible == "ns16550" && base == COM3_REG_BASE {
+            *com3_serial = ComInfo::Ns16550 {
+                base,
+                current_speed,
+            };
         } else {
             #[cfg(feature = "tracing")]
-            tracing::warn!(?node.name, ?compatible, ?reg_base,
+            tracing::warn!(?node.name, ?compatible, ?base, ?current_speed,
                 "unrecognized io bus child"
             );
         }
@@ -1067,6 +1074,7 @@ fn parse_io_bus<'a>(
     Ok(())
 }
 
+/// parse an arm,sbsa-uart node
 fn parse_pl011<'a>(
     node: &fdt::parser::Node<'a>,
     com3_serial: &mut ComInfo,
@@ -1106,6 +1114,11 @@ fn parse_pl011<'a>(
             intid,
             current_speed,
         };
+    } else {
+        #[cfg(feature = "tracing")]
+        tracing::warn!(?node.name, ?base, ?intid, ?current_speed,
+            "unrecognized arm,sbsa-uart device"
+        );
     }
 
     Ok(())
@@ -1496,7 +1509,10 @@ mod tests {
 
         // Com3 serial node
         match context.com3_serial {
-            ComInfo::Ns16550 => {
+            ComInfo::Ns16550 {
+                base,
+                current_speed,
+            } => {
                 let mut io_port_bus = root
                     .start_node("io-bus")
                     .unwrap()
@@ -1509,7 +1525,7 @@ mod tests {
                     .add_prop_array(p_ranges, &[])
                     .unwrap();
 
-                let serial_name = format!("serial@{:x}", COM3_REG_BASE);
+                let serial_name = format!("serial@{:x}", base);
                 io_port_bus = io_port_bus
                     .start_node(&serial_name)
                     .unwrap()
@@ -1517,9 +1533,9 @@ mod tests {
                     .unwrap()
                     .add_u32(p_clock_frequency, 0)
                     .unwrap()
-                    .add_u32(p_current_speed, 115200)
+                    .add_u32(p_current_speed, current_speed)
                     .unwrap()
-                    .add_u64_array(p_reg, &[COM3_REG_BASE, 0x8])
+                    .add_u64_array(p_reg, &[base, 0x8])
                     .unwrap()
                     .add_u64_array(p_interrupts, &[4])
                     .unwrap()
@@ -1936,6 +1952,11 @@ mod tests {
     /// tests serial output
     #[test]
     fn test_com3_serial_output() {
+        let com3_serial = ComInfo::Ns16550 {
+            base: COM3_REG_BASE,
+            current_speed: 115200,
+        };
+
         let orig = create_parsed(
             2560,
             &[
@@ -1979,7 +2000,7 @@ mod tests {
                 connection_id: 4,
             }),
             "THIS_IS_A_BOOT_ARG=1",
-            ComInfo::Ns16550,
+            com3_serial.clone(),
             None,
             None,
             MemoryAllocationMode::Host,
@@ -1991,6 +2012,6 @@ mod tests {
         let parsed = TestParsedDeviceTree::parse(&dt, &mut parsed).unwrap();
 
         assert_eq!(&orig, parsed);
-        assert_eq!(parsed.com3_serial, ComInfo::Ns16550);
+        assert_eq!(parsed.com3_serial, com3_serial);
     }
 }
