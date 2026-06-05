@@ -658,26 +658,21 @@ impl PetriVmInner {
                     // drop the initial SYN to the guest if no RX buffers are
                     // available yet, leaving the connection open but dead.
                     // Reconnecting forces a new SYN attempt.
-                    let mut timer = pal_async::timer::PolledTimer::new(&self.resources.driver);
                     let handshake = PipetteClient::new(
                         &self.resources.driver,
                         socket,
                         &self.resources.output_dir,
                     );
-                    match futures::future::select(
-                        std::pin::pin!(handshake),
-                        std::pin::pin!(timer.sleep(Duration::from_secs(5))),
-                    )
-                    .await
-                    {
-                        futures::future::Either::Left((Ok(client), _)) => break client,
-                        futures::future::Either::Left((Err(e), _)) => {
+                    let mut c = CancelContext::new().with_timeout(Duration::from_secs(5));
+                    match c.until_cancelled(handshake).await {
+                        Ok(Ok(client)) => break client,
+                        Ok(Err(e)) => {
                             tracing::warn!(
                                 error = &e as &dyn std::error::Error,
                                 "pipette TCP handshake failed, retrying"
                             );
                         }
-                        futures::future::Either::Right(_) => {
+                        Err(_) => {
                             tracing::warn!("pipette TCP handshake timed out, reconnecting");
                         }
                     }
