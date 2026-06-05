@@ -249,6 +249,12 @@ complex name:
 - `start_bus=<N>` and `end_bus=<N>`: inclusive bus range assigned to that
   root complex.
 - `low_mmio=<SIZE>` and `high_mmio=<SIZE>`: low/high MMIO window sizes.
+- `low_mmio_base=<ADDR>` and `high_mmio_base=<ADDR>`: pin the low/high
+  MMIO window to a fixed base address instead of letting the VM topology
+  allocate it dynamically. Used with `preserve_bars` for P2P DMA.
+- `preserve_bars`: treat non-zero BAR values found during PCI probing as
+  pinned addresses (GPA = HPA). Required for peer-to-peer DMA between
+  VFIO passthrough devices without ATS.
 - `hdm=<SIZE>`: CXL HDM decoder MMIO window size (CFMWS window). Default
   is `1G`.
 - `hdm_window_restrictions=<MASK>`: CFMWS window restrictions bitmask
@@ -355,6 +361,9 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 
 # Modern VFIO cdev + iommufd path (Linux >= 6.6):
 --iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
+
+# Pin BAR0 to its physical address for P2P DMA:
+--vfio host=0000:01:00.0,port=rp0,bar0=pt
 ```
 
 ### SMMU (aarch64 only)

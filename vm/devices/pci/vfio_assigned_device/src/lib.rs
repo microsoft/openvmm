@@ -467,30 +467,9 @@ impl VfioAssignedPciDevice {
         );
 
         // Build initial BAR values. Start from bar_flags (encoding bits
-        // only — guaranteed clean). For passthrough BARs, read the physical
-        // address from the kernel's sysfs resource table and overlay it.
-        // VFIO config space returns cleared BARs after device reset, so
-        // sysfs is the only reliable source of physical addresses.
-        let bars = if bar_pt.iter().any(|&pt| pt) {
-            let phys = read_physical_bar_addresses(&pci_id)?;
-            let mut b = bar_flags;
-            for i in 0..6 {
-                if bar_pt[i] {
-                    b[i] = (phys[i] as u32 & !0xf) | bar_flags[i];
-                    if cfg_space::BarEncodingBits::from(bar_flags[i]).type_64_bit() && i + 1 < 6 {
-                        b[i + 1] = (phys[i] >> 32) as u32;
-                    }
-                    tracing::info!(
-                        bar_index = i,
-                        addr = format_args!("{:#x}", phys[i]),
-                        "passthrough BAR"
-                    );
-                }
-            }
-            b
-        } else {
-            bar_flags
-        };
+        // only — guaranteed clean). For passthrough BARs, overlay the
+        // physical addresses from sysfs.
+        let bars = apply_bar_passthrough(&pci_id, &bar_flags, &bar_masks, &bar_pt)?;
 
         Ok(Self {
             pci_id,
@@ -732,6 +711,59 @@ fn subtract_msix_regions(bar_mmap_areas: &mut [Vec<MemoryRange>; 6], msix: &Msix
 
 fn page_size() -> u64 {
     vfio_sys::host_page_size()
+}
+
+/// Apply BAR passthrough: validate the `bar_pt` flags against the discovered
+/// BAR layout and overlay physical addresses from sysfs.
+///
+/// Rejects requests for unimplemented BARs (zero mask) and for the upper half
+/// of a 64-bit BAR pair (the lower BAR implicitly covers both halves).
+fn apply_bar_passthrough(
+    pci_id: &str,
+    bar_flags: &[u32; 6],
+    bar_masks: &[u32; 6],
+    bar_pt: &[bool; 6],
+) -> anyhow::Result<[u32; 6]> {
+    if !bar_pt.iter().any(|&pt| pt) {
+        return Ok(*bar_flags);
+    }
+
+    // Validate before reading sysfs.
+    for i in 0..6 {
+        if !bar_pt[i] {
+            continue;
+        }
+        if bar_masks[i] == 0 {
+            anyhow::bail!("BAR {i} is not implemented by the device");
+        }
+        // If the previous BAR is 64-bit, this index is its upper half.
+        if i > 0
+            && cfg_space::BarEncodingBits::from(bar_flags[i - 1]).type_64_bit()
+            && bar_masks[i - 1] != 0
+        {
+            anyhow::bail!("BAR {i} is the upper half of a 64-bit BAR pair");
+        }
+    }
+
+    // VFIO config space returns cleared BARs after device reset, so sysfs
+    // is the only reliable source of physical addresses.
+    let phys = read_physical_bar_addresses(pci_id)?;
+    let mut bars = *bar_flags;
+    for i in 0..6 {
+        if bar_pt[i] {
+            bars[i] = (phys[i] as u32 & !0xf) | bar_flags[i];
+            if cfg_space::BarEncodingBits::from(bar_flags[i]).type_64_bit() && i + 1 < 6 {
+                bars[i + 1] = (phys[i] >> 32) as u32;
+            }
+            tracing::info!(
+                pci_id,
+                bar_index = i,
+                addr = format_args!("{:#x}", phys[i]),
+                "passthrough BAR"
+            );
+        }
+    }
+    Ok(bars)
 }
 
 /// Read physical BAR base addresses from the host kernel's resource table.
