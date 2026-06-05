@@ -4149,9 +4149,6 @@ impl Coordinator {
             };
             match message {
                 Message::Internal(msg) => {
-                    // `handle_coordinator_message` will stop the primary worker
-                    // only for primary messages; sub-channel `Restart` messages
-                    // do not require stopping any workers.
                     self.handle_coordinator_message(msg, state).await;
                     // If a restart message has been queued, handle it now
                     // to ensure worker queues are restarted prior to
@@ -4192,8 +4189,6 @@ impl Coordinator {
                     self.sleep_deadline = None;
                 }
                 Message::UpdateFromEndpoint(endpoint_action) => {
-                    // `handle_endpoint_action` will stop the primary worker for
-                    // `LinkStatusNotify` actions, but not for `RestartRequired`.
                     self.handle_endpoint_action(endpoint_action).await;
                 }
                 Message::ChannelDisconnected => {
