@@ -10,6 +10,7 @@ rust-version.workspace = true
 net_backend.workspace = true
 net_backend_resources.workspace = true
 linux_net_bindings.workspace = true
+virtio_net.workspace = true
 
 vm_resource.workspace = true
 

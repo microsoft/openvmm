@@ -395,7 +395,13 @@ pub struct TxFlags {
     pub is_ipv4: bool,
     /// If true, the packet is IPv6. Mutually exclusive with `is_ipv4`.
     pub is_ipv6: bool,
-    #[bits(2)]
+    /// Offload the UDP segmentation, allowing packets to be larger than the
+    /// MTU.
+    ///
+    /// `l3_protocol`, `l2_len`, `l3_len`, and `max_tcp_segment_size` must
+    /// be set.
+    pub offload_udp_segmentation: bool,
+    #[bits(1)]
     _reserved: u8,
 }
 

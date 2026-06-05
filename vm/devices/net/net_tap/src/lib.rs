@@ -14,15 +14,22 @@ use futures::io::AsyncRead;
 use inspect::InspectMut;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
+use net_backend::L4Protocol;
 use net_backend::Queue;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
+use net_backend::RxChecksumState;
 use net_backend::RxId;
 use net_backend::RxMetadata;
 use net_backend::TxError;
 use net_backend::TxId;
+use net_backend::TxMetadata;
 use net_backend::TxSegment;
 use net_backend::linearize;
+use virtio_net::VirtioNetHdr;
+use virtio_net::VirtioNetHeaderFlags as VirtioNetHdrFlags;
+use virtio_net::VirtioNetHeaderGso as VirtioNetHdrGso;
+use virtio_net::VirtioNetHeaderGsoProtocol as VirtioNetHdrGsoProtocol;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -321,7 +328,7 @@ fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
             flags: VirtioNetHdrFlags::new().with_needs_csum(true),
             gso_type: VirtioNetHdrGso::new().with_protocol(protocol),
             hdr_len: meta.l2_len as u16 + meta.l3_len + meta.l4_len as u16,
-            gso_size: meta.max_segment_size,
+            gso_size: meta.max_tcp_segment_size,
             csum_start: meta.l2_len as u16 + meta.l3_len,
             csum_offset: 16, // TCP checksum field offset
             num_buffers: 0,
@@ -331,7 +338,7 @@ fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
             flags: VirtioNetHdrFlags::new().with_needs_csum(true),
             gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::UDP_L4),
             hdr_len: meta.l2_len as u16 + meta.l3_len + 8, // 8 = UDP header length
-            gso_size: meta.max_segment_size,
+            gso_size: meta.max_tcp_segment_size,
             csum_start: meta.l2_len as u16 + meta.l3_len,
             csum_offset: 6, // UDP checksum field offset
             num_buffers: 0,
@@ -428,7 +435,7 @@ mod tests {
             l2_len: 14,
             l3_len: 20,
             l4_len: 32,
-            max_segment_size: 1460,
+            max_tcp_segment_size: 1460,
             ..Default::default()
         };
         let hdr = build_vnet_hdr(&meta);
@@ -528,7 +535,7 @@ mod tests {
                 .with_is_ipv4(true),
             l2_len: 14,
             l3_len: 20,
-            max_segment_size: 1472,
+            max_tcp_segment_size: 1472,
             ..Default::default()
         };
         let hdr = build_vnet_hdr(&meta);

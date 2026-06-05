@@ -2588,9 +2588,7 @@ impl<T: RingMem> NetChannel<T> {
                             < (metadata.l2_len as u16 + net_backend::IPV6_MIN_HEADER_LEN))
                     || (metadata.transport_header_offset as u32 >= request.data_length)
                 {
-                    return Err(WorkerError::InvalidTcpHeaderOffset(
-                        metadata.transport_header_offset,
-                    ));
+                    return Err(WorkerError::InvalidTcpHeaderOffset);
                 } else {
                     metadata.transport_header_offset - metadata.l2_len as u16
                 }
@@ -2602,9 +2600,7 @@ impl<T: RingMem> NetChannel<T> {
                     u32::from(metadata.transport_header_offset) + TCP_DOFF_BYTE_OFFSET;
                 // Validate TCP header Data Offset 4 bit nibble within the packet data bounds.
                 if tcp_hdr_doff_offset >= request.data_length {
-                    return Err(WorkerError::InvalidTcpHeaderOffset(
-                        metadata.transport_header_offset,
-                    ));
+                    return Err(WorkerError::InvalidTcpHeaderOffset);
                 }
                 metadata.l4_len = {
                     let mut reader = data.clone().reader(mem);
@@ -5278,7 +5274,6 @@ impl<T: 'static + RingMem> NetChannel<T> {
         }
 
         state.stats.rx_packets_per_wake.add_sample(n as u64);
-        state.stats.rx_vlan_packets.add(pool.take_rx_vlan_count());
 
         if self.packet_filter == rndisprot::NDIS_PACKET_TYPE_NONE {
             tracing::trace!(

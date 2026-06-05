@@ -565,6 +565,7 @@ impl TxRxTask {
             l2_len: l2_len as u8,
             l3_len: oob.s_oob.trans_off().clamp(l2_len as u16, 255) - l2_len as u16,
             l4_len: 0,
+            transport_header_offset: 0,
             max_tcp_segment_size: 0,
             vlan
         };

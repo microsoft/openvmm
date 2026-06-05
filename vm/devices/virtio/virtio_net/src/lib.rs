@@ -123,8 +123,8 @@ struct NetConfig {
 
 // These correspond to VIRTIO_NET_HDR_F_ flags.
 #[bitfield(u8)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-struct VirtioNetHeaderFlags {
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
+pub struct VirtioNetHeaderFlags {
     pub needs_csum: bool,
     pub data_valid: bool,
     pub rsc_info: bool,
@@ -133,8 +133,8 @@ struct VirtioNetHeaderFlags {
 }
 
 #[bitfield(u8)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-struct VirtioNetHeaderGso {
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
+pub struct VirtioNetHeaderGso {
     #[bits(3)]
     pub protocol: VirtioNetHeaderGsoProtocol,
     #[bits(4)]
@@ -145,7 +145,7 @@ struct VirtioNetHeaderGso {
 // These correspond to VIRTIO_NET_HDR_GSO_ values.
 open_enum::open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-    enum VirtioNetHeaderGsoProtocol: u8 {
+    pub enum VirtioNetHeaderGsoProtocol: u8 {
         NONE = 0,
         TCPV4 = 1,
         UDP = 3,
@@ -162,6 +162,20 @@ impl VirtioNetHeaderGsoProtocol {
     const fn into_bits(self) -> u8 {
         self.0
     }
+}
+
+/// Virtio network header with typed bitfield accessors, as used by TUN/TAP
+/// with `IFF_VNET_HDR`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct VirtioNetHdr {
+    pub flags: VirtioNetHeaderFlags,
+    pub gso_type: VirtioNetHeaderGso,
+    pub hdr_len: u16,
+    pub gso_size: u16,
+    pub csum_start: u16,
+    pub csum_offset: u16,
+    pub num_buffers: u16,
 }
 
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]

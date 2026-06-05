@@ -573,7 +573,7 @@ mod tap_tests {
                 l3_len: 20,
                 l4_len: 20,
                 transport_header_offset: 34,
-                max_segment_size: 1460,
+                max_tcp_segment_size: 1460,
                 vlan: None,
             }),
             gpa: 0,
