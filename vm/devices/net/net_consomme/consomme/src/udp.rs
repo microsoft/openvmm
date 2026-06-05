@@ -12,8 +12,10 @@ use crate::ChecksumState;
 use crate::ConsommeState;
 use crate::FourTuple;
 use crate::IpAddresses;
+use crate::IpVersion;
 use crate::Ipv4Addresses;
 use crate::Ipv6Addresses;
+use crate::PortForwardKey;
 use crate::dns_resolver::DnsFlow;
 use crate::dns_resolver::DnsRequest;
 use crate::dns_resolver::DnsResponse;
@@ -65,7 +67,7 @@ use crate::windows as platform;
 
 pub(crate) struct Udp {
     connections: HashMap<SocketAddr, UdpConnection>,
-    listeners: HashMap<u16, UdpListener>,
+    listeners: HashMap<PortForwardKey, UdpListener>,
     timeout: Duration,
 }
 
@@ -86,8 +88,8 @@ impl InspectMut for Udp {
             let key = addr.to_string();
             resp.field_mut(&key, conn);
         }
-        for (port, listener) in &mut self.listeners {
-            resp.field_mut(&format!("listener:{port}"), listener);
+        for (key, listener) in &mut self.listeners {
+            resp.field_mut(&format!("listener:{key}"), listener);
         }
     }
 }
@@ -352,7 +354,7 @@ impl<T: Client> Access<'_, T> {
                 }
             }
         });
-        self.inner.udp.listeners.retain(|port, listener| {
+        self.inner.udp.listeners.retain(|key, listener| {
             let socket = listener.socket.take().unwrap().into_inner();
             match PolledSocket::new(self.client.driver(), socket) {
                 Ok(socket) => {
@@ -361,7 +363,8 @@ impl<T: Client> Access<'_, T> {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        guest_port = port,
+                        guest_port = key.guest_port,
+                        family = %key.family,
                         error = &err as &dyn std::error::Error,
                         "failed to update driver for udp listener"
                     );
@@ -437,7 +440,8 @@ impl<T: Client> Access<'_, T> {
         if self.inner.state.params.is_local_address(&dst_sock_addr) {
             // This packet is destined for a local address. If the port matches a listener,
             // translate it so that the connection loops back to the expected destination.
-            if let Some(listener) = self.inner.udp.listeners.get(&dst_sock_addr.port()) {
+            let key = PortForwardKey::from_socket_addr(dst_sock_addr, dst_sock_addr.port());
+            if let Some(listener) = self.inner.udp.listeners.get(&key) {
                 dst_sock_addr.set_port(listener.host_addr.port());
             }
         }
@@ -549,14 +553,15 @@ impl<T: Client> Access<'_, T> {
     /// Binds to the specified host IP and port for forwarding inbound UDP
     /// packets to the guest.
     pub fn bind_udp_port(&mut self, socket: Socket, guest_port: u16) -> Result<(), BindError> {
-        if self.inner.udp.listeners.contains_key(&guest_port) {
-            return Err(BindError::PortAlreadyBound(guest_port));
-        }
         let socket: UdpSocket = socket.into();
         let socket = PolledSocket::new(self.client.driver(), socket).map_err(BindError::Io)?;
         let host_addr = socket.get().local_addr().map_err(BindError::Io)?;
+        let key = PortForwardKey::from_socket_addr(host_addr, guest_port);
+        if self.inner.udp.listeners.contains_key(&key) {
+            return Err(BindError::PortAlreadyBound(guest_port));
+        }
         self.inner.udp.listeners.insert(
-            guest_port,
+            key,
             UdpListener {
                 socket: Some(socket),
                 host_addr,
@@ -567,9 +572,15 @@ impl<T: Client> Access<'_, T> {
         Ok(())
     }
 
-    /// Unbinds from the specified guest port.
-    pub fn unbind_udp_port(&mut self, port: u16) -> Result<(), BindError> {
-        if self.inner.udp.listeners.remove(&port).is_some() {
+    /// Unbinds from the specified guest port and IP family.
+    pub fn unbind_udp_port(&mut self, family: IpVersion, port: u16) -> Result<(), BindError> {
+        if self
+            .inner
+            .udp
+            .listeners
+            .remove(&PortForwardKey::new(family, port))
+            .is_some()
+        {
             Ok(())
         } else {
             Err(BindError::PortNotBound)
@@ -743,9 +754,14 @@ mod tests {
     use super::*;
     use crate::Consomme;
     use crate::ConsommeParams;
+    use crate::IpVersion;
+    use crate::PortForwardKey;
     use pal_async::DefaultDriver;
     use parking_lot::Mutex;
     use smoltcp::wire::Ipv4Address;
+    use std::io::ErrorKind;
+    use std::net::Ipv6Addr;
+    use std::net::SocketAddrV6;
     use std::sync::Arc;
 
     /// Mock test client that captures received packets
@@ -862,7 +878,11 @@ mod tests {
             .expect("bind should succeed");
 
         assert!(
-            access.inner.udp.listeners.contains_key(&guest_port),
+            access
+                .inner
+                .udp
+                .listeners
+                .contains_key(&PortForwardKey::new(IpVersion::Ipv4, guest_port)),
             "listener should be registered"
         );
 
@@ -934,6 +954,55 @@ mod tests {
         assert!(
             matches!(err, BindError::PortAlreadyBound(_)),
             "error should be PortAlreadyBound"
+        );
+    }
+
+    #[pal_async::async_test]
+    async fn test_udp_bind_same_port_different_families(driver: DefaultDriver) {
+        let driver = Arc::new(driver);
+        let mut consomme = create_consomme_with_timeout(Duration::from_secs(30));
+        let mut client = TestClient::new(driver);
+
+        let guest_port = 6667;
+
+        let socket_v4 = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+        socket_v4
+            .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+            .unwrap();
+
+        let socket_v6 = Socket::new(socket2::Domain::IPV6, socket2::Type::DGRAM, None).unwrap();
+        socket_v6.set_only_v6(true).unwrap();
+        match socket_v6.bind(&SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0).into()) {
+            Ok(()) => {}
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    ErrorKind::AddrNotAvailable | ErrorKind::Unsupported
+                ) =>
+            {
+                return;
+            }
+            Err(err) => panic!("IPv6 bind failed: {err}"),
+        }
+
+        let mut access = consomme.access(&mut client);
+        access
+            .bind_udp_port(socket_v4, guest_port)
+            .expect("IPv4 bind should succeed");
+        access
+            .bind_udp_port(socket_v6, guest_port)
+            .expect("IPv6 bind should succeed");
+
+        access
+            .unbind_udp_port(IpVersion::Ipv4, guest_port)
+            .expect("IPv4 unbind should succeed");
+        assert!(
+            access
+                .inner
+                .udp
+                .listeners
+                .contains_key(&PortForwardKey::new(IpVersion::Ipv6, guest_port)),
+            "IPv6 listener should remain registered"
         );
     }
 

@@ -6,6 +6,7 @@
 #![expect(deprecated)]
 
 use super::RsaError;
+use super::RsaPublicKeyComponents;
 use crate::HashAlgorithm;
 use getrandom::SysRng;
 use pkcs8::DecodePrivateKey;
@@ -218,11 +219,10 @@ impl RsaPublicKeyInner {
         self.0.size()
     }
 
-    pub fn modulus(&self) -> Vec<u8> {
-        self.0.n().to_be_bytes_trimmed_vartime().to_vec()
-    }
-
-    pub fn public_exponent(&self) -> Vec<u8> {
-        self.0.e().to_be_bytes_trimmed_vartime().to_vec()
+    pub fn to_components(&self) -> RsaPublicKeyComponents {
+        RsaPublicKeyComponents {
+            modulus: self.0.n().to_be_bytes_trimmed_vartime().to_vec(),
+            public_exponent: self.0.e().to_be_bytes_trimmed_vartime().to_vec(),
+        }
     }
 }

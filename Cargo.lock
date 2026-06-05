@@ -5234,6 +5234,7 @@ version = "0.0.0"
 dependencies = [
  "aarch64defs",
  "arrayvec",
+ "bitfield-struct 0.11.0",
  "cfg-if",
  "crc32fast",
  "fdt",
@@ -5524,6 +5525,7 @@ dependencies = [
  "clap",
  "clap_dyn_complete",
  "console_relay",
+ "crypto",
  "cxl_spec",
  "debug_worker_defs",
  "diag_client",
@@ -5569,7 +5571,6 @@ dependencies = [
  "serial_16550_resources",
  "serial_core",
  "serial_socket",
- "sha2",
  "shell-words",
  "socket2",
  "sparse_mmap",
@@ -7866,12 +7867,12 @@ name = "test_igvm_agent_lib"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "crypto",
  "get_resources",
+ "getrandom 0.4.2",
  "inspect",
  "openhcl_attestation_protocol",
- "rsa",
  "serde_json",
- "sha2",
  "thiserror 2.0.16",
  "tracing",
  "zerocopy",

@@ -28,7 +28,7 @@ fn rsa_der_err(err: der::Error, op: &'static str) -> crate::rsa::RsaError {
     crate::rsa::RsaError(rsa::Error::Pkcs1(pkcs1::Error::Asn1(err)), op)
 }
 
-pub struct X509CertificateInner(pub(crate) Certificate);
+pub(crate) struct X509CertificateInner(pub(crate) Certificate);
 
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
@@ -176,6 +176,14 @@ impl X509CertificateInner {
             key.0.0.clone(),
         ))?;
         Ok(Self(cert))
+    }
+
+    pub fn issuer_dn(&self) -> Result<String, X509Error> {
+        Ok(self.0.tbs_certificate().issuer().to_string())
+    }
+
+    pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
+        Ok(self.0.tbs_certificate().serial_number().as_bytes().to_vec())
     }
 
     pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
