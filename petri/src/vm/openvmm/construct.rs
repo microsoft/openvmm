@@ -561,8 +561,6 @@ impl PetriVmConfigOpenVmm {
             });
         }
 
-        let tcp_pipette_port = None;
-
         let config = Config {
             // Firmware
             load_mode,
@@ -689,7 +687,7 @@ impl PetriVmConfigOpenVmm {
                 pipette_listener,
                 vtl2_pipette_listener,
                 linux_direct_serial_agent,
-                tcp_pipette_port,
+                tcp_pipette_port: None,
                 driver: driver.clone(),
                 output_dir: log_source.output_dir().to_owned(),
                 openvmm_path: openvmm_path.clone(),
