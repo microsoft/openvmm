@@ -231,7 +231,7 @@ pub struct PetriVmConfig {
     /// PCIe NVMe drives.
     pub pcie_nvme_drives: Vec<PcieNvmeDrive>,
     /// Physical NVMe devices to attach
-    pub physical_nvme_devices: HashMap<u32, PhysicalNvmeDevice>,
+    pub physical_nvme_devices: HashMap<Guid, PhysicalNvmeDevice>,
 }
 
 /// PCIe NVMe drive configuration.
@@ -251,8 +251,8 @@ pub struct PcieNvmeDrive {
 pub struct PhysicalNvmeDevice {
     /// The VTL to assign the physical NVMe device to.
     pub target_vtl: Vtl,
-    /// VSID for the device.
-    pub vsid: Guid,
+    /// NVMe namespace ID.
+    pub nsid: u32,
     /// Namespace size in MiB
     pub namespace_size_mib: u64,
 }
@@ -1545,8 +1545,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     /// Add a physical NVMe device to the VM
-    pub fn add_physical_nvme_device(mut self, nsid: u32, device: PhysicalNvmeDevice) -> Self {
-        self.config.physical_nvme_devices.insert(nsid, device);
+    pub fn add_physical_nvme_device(mut self, vsid: Guid, device: PhysicalNvmeDevice) -> Self {
+        self.config.physical_nvme_devices.insert(vsid, device);
         self
     }
 
