@@ -4277,7 +4277,11 @@ impl Coordinator {
     ) {
         match msg {
             CoordinatorMessage::Restart { channel_idx } if channel_idx != 0 => {
-                tracelimit::info_ratelimited!(channel_idx, "sub-channel triggered restart");
+                tracelimit::event_ratelimited!(
+                    tracing::Level::DEBUG,
+                    channel_idx,
+                    "sub-channel triggered restart"
+                );
                 self.restart = true;
             }
             _ => self.handle_primary_message(msg, state).await,
