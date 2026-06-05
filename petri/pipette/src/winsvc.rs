@@ -26,7 +26,7 @@ const SERVICE_NAME: &str = "pipette";
 /// through it. We use a global `OnceLock` to bridge the gap: `start_service`
 /// stores the config before entering the dispatcher, and `service_main`
 /// retrieves it on the other side.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct ServiceConfig {
     transport: crate::agent::Transport,
 }
