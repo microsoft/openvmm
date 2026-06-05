@@ -3130,11 +3130,17 @@ impl LoadedVm {
         true
     }
 
-    /// Assign PCI bus numbers and BAR addresses for Linux direct boot.
+    /// Assign PCI bus numbers and BAR addresses for all boot modes.
     ///
-    /// UEFI and PCAT firmware perform their own PCI enumeration, so this
-    /// is only needed when booting without firmware. This is called after
-    /// `load_firmware` on both initial boot and reset.
+    /// This pre-programs PCI config space (bus numbers, bridge windows,
+    /// BAR addresses) before the guest starts. For UEFI, the firmware
+    /// is told via a config flag to skip its own PCI enumeration and
+    /// use the pre-assigned resources. For Linux direct boot, this is
+    /// required since there is no firmware to do PCI enumeration.
+    ///
+    /// This must only be called on clean boot or reset, not on
+    /// snapshot restore (where config space is already populated from
+    /// saved state).
     ///
     /// Config space accesses go through device state units (via the ECAM
     /// MMIO path), so devices must be running. This method temporarily
@@ -3142,9 +3148,7 @@ impl LoadedVm {
     /// then stops state units again. The caller is responsible for
     /// resuming normally afterward.
     async fn assign_pci_resources(&mut self) -> anyhow::Result<()> {
-        if !matches!(self.inner.load_mode, LoadMode::Linux { .. })
-            || self.inner.pcie_host_bridges.is_empty()
-        {
+        if self.inner.pcie_host_bridges.is_empty() {
             return Ok(());
         }
 

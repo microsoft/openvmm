@@ -4,6 +4,7 @@
 //! RSA implementation using Windows BCrypt APIs.
 
 use super::RsaError;
+use super::RsaPublicKeyComponents;
 use crate::HashAlgorithm;
 use crate::win::CryptAlloc;
 use crate::win::KeyHandle;
@@ -63,7 +64,10 @@ struct PublicComponents<'a> {
 }
 
 /// Export a BCrypt key as the given blob type.
-fn export_key(key: &KeyHandle, blob_type: windows::core::PCWSTR) -> Result<Vec<u8>, RsaError> {
+pub(crate) fn export_key(
+    key: &KeyHandle,
+    blob_type: windows::core::PCWSTR,
+) -> Result<Vec<u8>, RsaError> {
     let mut needed: u32 = 0;
     // SAFETY: handle is valid; first call queries needed size.
     unsafe {
@@ -613,16 +617,15 @@ impl RsaPublicKeyInner {
     }
 
     pub fn modulus_size(&self) -> usize {
-        self.modulus().len()
+        self.to_components().modulus.len()
     }
 
-    pub fn modulus(&self) -> Vec<u8> {
+    pub fn to_components(&self) -> RsaPublicKeyComponents {
         let blob = export_key(&self.0, BCRYPT_RSAPUBLIC_BLOB).unwrap();
-        parse_public_components(&blob).modulus.to_vec()
-    }
-
-    pub fn public_exponent(&self) -> Vec<u8> {
-        let blob = export_key(&self.0, BCRYPT_RSAPUBLIC_BLOB).unwrap();
-        parse_public_components(&blob).public_exponent.to_vec()
+        let components = parse_public_components(&blob);
+        RsaPublicKeyComponents {
+            modulus: components.modulus.to_vec(),
+            public_exponent: components.public_exponent.to_vec(),
+        }
     }
 }

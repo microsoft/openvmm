@@ -325,8 +325,9 @@ pub struct Flags {
     pub mtrrs_initialized_at_load: bool,
     pub hv_sint_enabled: bool,
     pub vmbus_disabled: bool,
+    pub pci_resources_pre_assigned: bool,
 
-    #[bits(33)]
+    #[bits(32)]
     _reserved: u64,
 }
 
