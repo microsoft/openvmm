@@ -1369,6 +1369,10 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::VmgsWith16kTpm,
         ];
 
+        // Prep variants needed by tests in the standard x64 filter
+        // (e.g. boot_no_vmbus_windows needs the no-vmbus prepped VHD).
+        let standard_x64_prep_variants: Vec<String> = vec!["no-vmbus".into()];
+
         let cvm_filter = |isolation_type| {
             let mut filter = format!(
                 "test({isolation_type}) + (test(vbs) & test(hyperv)) + test(very_heavy) + test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)"
@@ -1427,7 +1431,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_x86,
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
-                prep_steps_variants: Vec::new(),
+                prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: None,
             },
             VmmTestJobParams {
@@ -1467,7 +1471,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
-                prep_steps_variants: Vec::new(),
+                prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: None,
             },
             VmmTestJobParams {
@@ -1494,7 +1498,7 @@ impl IntoPipeline for CheckinGatesCli {
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
                 nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
                 test_artifacts: standard_x64_test_artifacts.clone(),
-                prep_steps_variants: Vec::new(),
+                prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: Some(HUGETLB_2MB_OVERCOMMIT_PAGES),
             },
             VmmTestJobParams {
@@ -1508,7 +1512,7 @@ impl IntoPipeline for CheckinGatesCli {
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
                 nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
                 test_artifacts: standard_x64_test_artifacts.clone(),
-                prep_steps_variants: Vec::new(),
+                prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: None,
             },
             VmmTestJobParams {

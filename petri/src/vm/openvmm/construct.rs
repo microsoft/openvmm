@@ -561,42 +561,7 @@ impl PetriVmConfigOpenVmm {
             });
         }
 
-        // Add a virtio-net NIC with consomme + TCP port forwarding for
-        // pipette when using TCP transport (Windows no-vmbus guests).
-        let tcp_pipette_port = if properties.use_tcp_pipette {
-            let nic_port = (0..)
-                .map(|i| format!("s0rc0rp{i}"))
-                .find(|name| !pcie_devices.iter().any(|d| d.port_name == *name))
-                .unwrap();
-            let (port_send, port_recv) = mesh::oneshot();
-            let endpoint = net_backend_resources::consomme::ConsommeHandle {
-                cidr: None,
-                ports: vec![net_backend_resources::consomme::HostPortConfig {
-                    protocol: net_backend_resources::consomme::HostPortProtocol::Tcp,
-                    host_address: Some(net_backend_resources::consomme::HostIpAddress::Ipv4(
-                        std::net::Ipv4Addr::LOCALHOST,
-                    )),
-                    host_port: net_backend_resources::consomme::HostPort::Dynamic(port_send),
-                    guest_port: PIPETTE_PORT as u16,
-                }],
-            }
-            .into_resource();
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: nic_port,
-                resource: VirtioPciDeviceHandle(
-                    virtio_resources::net::VirtioNetHandle {
-                        max_queues: None,
-                        mac_address: super::NIC_MAC_ADDRESS,
-                        endpoint,
-                    }
-                    .into_resource(),
-                )
-                .into_resource(),
-            });
-            Some(port_recv)
-        } else {
-            None
-        };
+        let tcp_pipette_port = None;
 
         let config = Config {
             // Firmware

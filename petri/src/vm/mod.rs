@@ -184,8 +184,6 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     use_virtio_vsock: bool,
     // Disable VMBus entirely (no vmbus server, no vmbus storage controllers).
     no_vmbus: bool,
-    // Use TCP over virtio-net + consomme as the pipette transport (for Windows no-vmbus).
-    use_tcp_pipette: bool,
 }
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
@@ -208,7 +206,6 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("prebuilt_initrd", &self.prebuilt_initrd)
             .field("use_virtio_vsock", &self.use_virtio_vsock)
             .field("no_vmbus", &self.no_vmbus)
-            .field("use_tcp_pipette", &self.use_tcp_pipette)
             .finish()
     }
 }
@@ -296,8 +293,6 @@ pub struct PetriVmProperties {
     pub use_virtio_vsock: bool,
     /// VMBus is entirely disabled
     pub no_vmbus: bool,
-    /// Use TCP pipette transport (for Windows no-vmbus)
-    pub use_tcp_pipette: bool,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -470,7 +465,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             prebuilt_initrd: None,
             use_virtio_vsock: false,
             no_vmbus: false,
-            use_tcp_pipette: false,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
@@ -547,7 +541,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             prebuilt_initrd: None,
             use_virtio_vsock: false,
             no_vmbus: false,
-            use_tcp_pipette: false,
         })
     }
 
@@ -662,14 +655,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     ///
     /// This removes all VMBus storage controllers. For Linux guests,
     /// virtio-vsock is used for pipette communication. For Windows guests,
-    /// TCP over virtio-net + consomme is used instead (since Windows has no
-    /// virtio-vsock driver). The guest must boot from a non-VMBus device
-    /// (e.g. PCIe NVMe).
+    /// the caller must also configure TCP pipette transport via
+    /// `modify_backend(|b| b.with_tcp_pipette_nic())`. The guest must boot
+    /// from a non-VMBus device (e.g. PCIe NVMe).
     pub fn with_no_vmbus(mut self) -> Self {
         self.no_vmbus = true;
-        if self.config.firmware.os_flavor() == OsFlavor::Windows {
-            self.use_tcp_pipette = true;
-        } else {
+        if self.config.firmware.os_flavor() != OsFlavor::Windows {
             self.use_virtio_vsock = true;
         }
         self.config.vmbus_storage_controllers.clear();
@@ -975,7 +966,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             has_agent_disk: self.has_agent_disk(),
             use_virtio_vsock: self.use_virtio_vsock,
             no_vmbus: self.no_vmbus,
-            use_tcp_pipette: self.use_tcp_pipette,
         }
     }
 

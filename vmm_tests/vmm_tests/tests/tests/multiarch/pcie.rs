@@ -752,7 +752,10 @@ async fn boot_no_vmbus_windows(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
         .with_no_vmbus()
         .with_boot_device_type(petri::BootDeviceType::PcieNvme)
         .with_default_boot_always_attempt(true)
-        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(1, 1, 2)
+                .with_tcp_pipette_nic("s0rc0rp1")
+        })
         .run()
         .await?;
 

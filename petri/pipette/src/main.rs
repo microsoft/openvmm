@@ -85,7 +85,7 @@ fn main() -> anyhow::Result<()> {
 
     #[cfg(windows)]
     if args.service {
-        return winsvc::start_service();
+        return winsvc::start_service(args.transport);
     }
 
     let transport = args.transport;

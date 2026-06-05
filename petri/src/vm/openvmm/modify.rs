@@ -203,6 +203,43 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Add a virtio-net NIC with consomme and TCP port forwarding for
+    /// pipette. Used for Windows no-vmbus guests where virtio-vsock is
+    /// unavailable.
+    ///
+    /// This configures consomme to forward the pipette TCP port from the
+    /// host into the guest, so the petri framework can connect to the
+    /// pipette agent over TCP.
+    pub fn with_tcp_pipette_nic(mut self, port_name: &str) -> Self {
+        let (port_send, port_recv) = mesh::oneshot();
+        let endpoint = net_backend_resources::consomme::ConsommeHandle {
+            cidr: None,
+            ports: vec![net_backend_resources::consomme::HostPortConfig {
+                protocol: net_backend_resources::consomme::HostPortProtocol::Tcp,
+                host_address: Some(net_backend_resources::consomme::HostIpAddress::Ipv4(
+                    std::net::Ipv4Addr::LOCALHOST,
+                )),
+                host_port: net_backend_resources::consomme::HostPort::Dynamic(port_send),
+                guest_port: pipette_client::PIPETTE_PORT as u16,
+            }],
+        }
+        .into_resource();
+        self.config.pcie_devices.push(PcieDeviceConfig {
+            port_name: port_name.to_string(),
+            resource: virtio_resources::VirtioPciDeviceHandle(
+                virtio_resources::net::VirtioNetHandle {
+                    max_queues: None,
+                    mac_address: NIC_MAC_ADDRESS,
+                    endpoint,
+                }
+                .into_resource(),
+            )
+            .into_resource(),
+        });
+        self.resources.tcp_pipette_port = Some(port_recv);
+        self
+    }
+
     /// Enable a synthnic for the VM backed by the Windows vmswitch
     /// DirectIO (`-net dio`) backend.
     ///
