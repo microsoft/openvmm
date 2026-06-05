@@ -1418,6 +1418,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Force UEFI to bounce-buffer all DMA traffic.
+    pub fn with_uefi_force_dma_bounce(mut self, enable: bool) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("force DMA bounce is only supported for UEFI firmware.")
+            .force_dma_bounce = enable;
+        self
+    }
+
     /// Run the VM with Enable VMBus relay enabled
     pub fn with_vmbus_redirect(mut self, enable: bool) -> Self {
         self.config
@@ -2270,6 +2280,8 @@ pub struct UefiConfig {
     pub default_boot_always_attempt: bool,
     /// Enable vPCI boot (for NVMe)
     pub enable_vpci_boot: bool,
+    /// Force UEFI to bounce-buffer all DMA traffic in its IOMMU layer.
+    pub force_dma_bounce: bool,
     /// EFI diagnostics log level filter
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevel,
     /// Per-period rate-limit override for EFI diagnostics emission.
@@ -2285,6 +2297,7 @@ impl Default for UefiConfig {
             disable_frontpage: true,
             default_boot_always_attempt: false,
             enable_vpci_boot: false,
+            force_dma_bounce: false,
             efi_diagnostics_log_level: EfiDiagnosticsLogLevel::Default,
             efi_diagnostics_rate_limit: None,
         }

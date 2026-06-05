@@ -620,6 +620,10 @@ options:
     #[clap(long, requires("uefi"))]
     pub uefi_enable_memory_protections: bool,
 
+    /// force UEFI to bounce-buffer all DMA traffic
+    #[clap(long, requires("uefi"))]
+    pub uefi_force_dma_bounce: bool,
+
     /// set PCAT boot order as comma-separated string of boot device types
     /// (e.g: floppy,hdd,optical,net).
     ///

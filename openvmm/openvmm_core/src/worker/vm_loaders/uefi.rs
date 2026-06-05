@@ -48,6 +48,8 @@ pub struct UefiLoadSettings {
     /// but the high MMIO range will be empty. The firmware must support this
     /// mode.
     pub vmbus: bool,
+    /// Force UEFI to bounce-buffer all DMA traffic.
+    pub force_dma_bounce: bool,
 }
 
 /// All inputs needed by [`load_uefi`].
@@ -140,7 +142,8 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         )
         .with_default_boot_always_attempt(settings.default_boot_always_attempt)
         .with_vmbus_disabled(!settings.vmbus)
-        .with_pci_resources_pre_assigned(true);
+        .with_pci_resources_pre_assigned(true)
+        .with_force_dma_bounce_enabled(settings.force_dma_bounce);
 
     let mut cfg = config::Blob::new();
     cfg.add(&config::BiosInformation {

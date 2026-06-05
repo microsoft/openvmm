@@ -345,6 +345,7 @@ impl GuestEmulationTransportClient {
                 guest_state_encryption_policy: json.v2.r#static.guest_state_encryption_policy,
                 management_vtl_features: json.v2.r#static.management_vtl_features,
                 hv_sint_enabled: json.v2.r#static.hv_sint_enabled,
+                force_dma_bounce_enabled: json.v2.r#static.force_dma_bounce_enabled,
             },
             acpi_tables: json.v2.dynamic.acpi_tables,
         })
