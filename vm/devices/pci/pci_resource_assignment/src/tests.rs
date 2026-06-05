@@ -2494,3 +2494,45 @@ async fn sizing_underestimate_constrained_base_misaligned() {
         "dynamic BAR at {bar_c:#x} must not overlap pinned BARs"
     );
 }
+
+/// Constrained bridge window can start before the aperture when the
+/// aperture base is not 1 MB aligned. The pinned BAR is inside the
+/// aperture, but align_down to bridge granularity pushes the window
+/// base before it. Dynamic BARs placed in that pre-aperture gap would
+/// be outside the aperture, triggering an assertion failure.
+#[async_test]
+async fn constrained_base_before_aperture_returns_error() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+
+    // Pinned BAR at 0x1008_0000 (64 KB) — inside the aperture.
+    // constrained_base = align_down(0x1008_0000, 1 MB) = 0x1000_0000,
+    // which is BEFORE the aperture base of 0x1008_0000.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x10000, false, false)]);
+    mock.set_bar_address(1, 0, 0, 0, 0x1008_0000);
+
+    // Dynamic BAR (64 KB) — would be placed in the gap
+    // [0x1000_0000, 0x1008_0000) which is outside the aperture.
+    mock.add_endpoint(1, 1, 0, &[(0, 0x10000, false, false)]);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: Some(MmioAperture {
+            base: 0x1008_0000,
+            len: 0x100_0000,
+        }),
+        high_mmio: None,
+        preserve_bars: true,
+    };
+
+    let mut cfg = mock.clone();
+    let result = assign_pci_resources(&mut cfg, &params).await;
+
+    // Should return an error, not panic with an assertion failure.
+    assert!(
+        result.is_err(),
+        "should fail when constrained bridge window starts before aperture"
+    );
+}

@@ -169,17 +169,17 @@ pub fn assign_addresses(
     devices: &mut [DiscoveredDevice],
     params: &AssignmentParams,
 ) -> Result<(), AssignmentError> {
+    // Validate pinned BAR constraints before sizing, since the sizing
+    // pass builds gap lists from pinned positions and assumes they are
+    // valid (naturally aligned, non-overlapping, within apertures).
+    validate_pinned_bars(devices, params)?;
+
     // Step 1: Bottom-up — compute total resource requirements.
     // This also stores per-bridge requirements on the DiscoveredDevice
     // nodes so that the assignment pass can read them without recomputing.
     let mut root_sizing = compute_subtree_sizing(devices);
 
-    // Validate pinned BAR constraints before assigning addresses.
-    validate_pinned_bars(devices, params)?;
-
     // Step 2: Top-down — allocate from apertures and assign addresses.
-    // Align the effective base to the root's alignment requirement so that
-    // internal bump allocation matches the sizing (which starts from zero).
     // Track where mem32 ends so that mem64 can start after it when
     // sharing the same aperture.
     let mut mem32_end: Option<u64> = None;
@@ -189,78 +189,36 @@ pub fn assign_addresses(
         // 32-bit, so the aperture must be below 4 GB. Do not fall back
         // to high_mmio — placing 32-bit BARs above 4 GB would silently
         // truncate addresses.
-        let aperture = params.low_mmio.ok_or(AssignmentError::MmioExhaustion {
-            required: root_sizing.mem32,
-            available: 0,
-            aperture: "low_mmio",
-        })?;
-
-        // If there are constrained (pinned) demands, use their base.
-        // Otherwise, align to the aperture base as before.
-        let base = if let Some(cbase) = root_sizing.constrained_base32 {
-            cbase
-        } else {
-            align_up(aperture.base, root_sizing.align32)
-        };
-        let aperture_end = aperture.base + aperture.len;
-        let available = aperture_end.saturating_sub(base);
-        if root_sizing.mem32 > available {
-            return Err(AssignmentError::MmioExhaustion {
-                required: root_sizing.mem32,
-                available,
-                aperture: "low_mmio",
-            });
-        }
-
-        if root_sizing.constrained_base32.is_none() {
-            root_sizing.gaps32.push((base, aperture_end));
-        }
-        assign_subtree(
+        let base = allocate_pool(
             devices,
             &root_sizing.demands,
             &mut root_sizing.gaps32,
+            root_sizing.constrained_base32,
+            root_sizing.align32,
+            root_sizing.mem32,
+            params.low_mmio,
             false,
-        );
+            None,
+        )?;
 
         mem32_end = Some(base + root_sizing.mem32);
     }
 
     if root_sizing.mem64 > 0 {
-        let aperture =
-            params
-                .high_mmio
-                .or(params.low_mmio)
-                .ok_or(AssignmentError::MmioExhaustion {
-                    required: root_sizing.mem64,
-                    available: 0,
-                    aperture: "high_mmio",
-                })?;
+        // If sharing the same aperture as mem32, start after mem32.
+        let after_mem32 = mem32_end.filter(|_| params.high_mmio.is_none());
 
-        // If there are constrained (pinned) demands, use their base.
-        let base = if let Some(cbase) = root_sizing.constrained_base64 {
-            cbase
-        } else if let Some(end) = mem32_end.filter(|_| params.high_mmio.is_none()) {
-            // If sharing the same aperture as mem32, allocate after the
-            // actual aligned mem32 end to avoid overlapping assignments.
-            align_up(end, root_sizing.align64)
-        } else {
-            align_up(aperture.base, root_sizing.align64)
-        };
-
-        let aperture_end = aperture.base + aperture.len;
-        let available = aperture_end.saturating_sub(base);
-        if root_sizing.mem64 > available {
-            return Err(AssignmentError::MmioExhaustion {
-                required: root_sizing.mem64,
-                available,
-                aperture: "high_mmio",
-            });
-        }
-
-        if root_sizing.constrained_base64.is_none() {
-            root_sizing.gaps64.push((base, aperture_end));
-        }
-        assign_subtree(devices, &root_sizing.demands, &mut root_sizing.gaps64, true);
+        allocate_pool(
+            devices,
+            &root_sizing.demands,
+            &mut root_sizing.gaps64,
+            root_sizing.constrained_base64,
+            root_sizing.align64,
+            root_sizing.mem64,
+            params.high_mmio.or(params.low_mmio),
+            true,
+            after_mem32,
+        )?;
     }
 
     validate_assignments(devices, params);
@@ -585,6 +543,62 @@ impl PoolState {
             self.mem = align_up(self.mem, alignment) + size;
         }
     }
+}
+
+/// Compute the base address for a pool, validate it fits in the aperture,
+/// populate gaps, and assign addresses to all demands in the pool.
+///
+/// Returns the effective base address on success.
+fn allocate_pool(
+    devices: &mut [DiscoveredDevice],
+    demands: &[Demand],
+    gaps: &mut Vec<(u64, u64)>,
+    constrained_base: Option<u64>,
+    alignment: u64,
+    required: u64,
+    aperture: Option<crate::MmioAperture>,
+    is_mem64: bool,
+    after: Option<u64>,
+) -> Result<u64, AssignmentError> {
+    let aperture_name = if is_mem64 { "high_mmio" } else { "low_mmio" };
+    let aperture = aperture.ok_or(AssignmentError::MmioExhaustion {
+        required,
+        available: 0,
+        aperture: aperture_name,
+    })?;
+    let base = if let Some(cbase) = constrained_base {
+        cbase
+    } else if let Some(end) = after {
+        align_up(end, alignment)
+    } else {
+        align_up(aperture.base, alignment)
+    };
+
+    // Bridge windows are 1 MB granular, so the constrained base
+    // (align_down of the lowest pinned address) can precede the
+    // aperture. Reject this rather than placing BARs outside it.
+    if base < aperture.base {
+        return Err(AssignmentError::MmioExhaustion {
+            required,
+            available: aperture.len,
+            aperture: aperture_name,
+        });
+    }
+    let aperture_end = aperture.base + aperture.len;
+    let available = aperture_end.saturating_sub(base);
+    if required > available {
+        return Err(AssignmentError::MmioExhaustion {
+            required,
+            available,
+            aperture: aperture_name,
+        });
+    }
+
+    if constrained_base.is_none() {
+        gaps.push((base, aperture_end));
+    }
+    assign_subtree(devices, demands, gaps, is_mem64);
+    Ok(base)
 }
 
 /// Top-down: assign addresses to devices within a subtree, carving from
