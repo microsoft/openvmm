@@ -37,9 +37,9 @@ tracing.workspace = true
 
 # Only use Symcrypt when building for musl, since that's the only configuration
 # with a prebuilt lib in deps.
-[target.'cfg(target_env = "musl")'.dependencies]
+[target.'cfg(all(target_os = "linux", target_env = "musl"))'.dependencies]
 crypto = { workspace = true, features = ["symcrypt"] }
-[target.'cfg(not(target_env = "musl"))'.dependencies]
+[target.'cfg(all(target_os = "linux", not(target_env = "musl")))'.dependencies]
 crypto = { workspace = true, features = ["openssl"] }
 # OpenVMM-HCL only needs libcrypto from openssl
 openssl_crypto_only.workspace = true
