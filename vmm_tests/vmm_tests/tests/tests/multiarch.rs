@@ -29,6 +29,8 @@ mod dio_nic;
 mod ic;
 // Memory Validation tests.
 mod memstat;
+/// NUMA topology tests.
+mod numa;
 /// Servicing tests.
 mod openhcl_servicing;
 /// PCIe emulation tests.
@@ -135,7 +137,11 @@ async fn boot_private_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
     let (vm, agent) = config
         .modify_backend(|b| {
             b.with_custom_config(|c| {
-                c.memory.private_memory = true;
+                for node in &mut c.numa.nodes {
+                    if let Some(mem) = &mut node.mem {
+                        mem.private_memory = true;
+                    }
+                }
             })
         })
         .run()

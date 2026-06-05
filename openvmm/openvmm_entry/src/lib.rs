@@ -11,6 +11,7 @@ mod cli_args;
 mod crash_dump;
 mod kvp;
 mod meshworker;
+mod pidfile;
 mod repl;
 mod serial_io;
 mod storage_builder;
@@ -72,6 +73,9 @@ use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::NumaDistance;
+use openvmm_defs::config::NumaNode;
+use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
@@ -82,6 +86,7 @@ use openvmm_defs::config::RootComplexCxlConfig;
 use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
+use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
@@ -141,26 +146,14 @@ use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vnc_worker_defs::VncParameters;
 
-/// RAII guard that removes the pidfile when dropped. Ensures the pidfile is
-/// cleaned up even if [`do_main`] panics.
-struct PidfileGuard(Option<PathBuf>);
-
-impl Drop for PidfileGuard {
-    fn drop(&mut self) {
-        if let Some(path) = &self.0 {
-            let _ = fs_err::remove_file(path);
-        }
-    }
-}
-
 pub fn openvmm_main() {
     // Save the current state of the terminal so we can restore it back to
     // normal before exiting.
     #[cfg(unix)]
     let orig_termios = io::stderr().is_terminal().then(term::get_termios);
 
-    let mut pidfile_guard = PidfileGuard(None);
-    let exit_code = match do_main(&mut pidfile_guard.0) {
+    let mut pidfile_guard: Option<pidfile::Pidfile> = None;
+    let exit_code = match do_main(&mut pidfile_guard) {
         Ok(_) => 0,
         Err(err) => {
             eprintln!("fatal error: {:?}", err);
@@ -174,8 +167,8 @@ pub fn openvmm_main() {
         term::set_termios(orig_termios);
     }
 
-    // Clean up the pidfile before terminating, since pal::process::terminate
-    // skips destructors.
+    // Clean up the pidfile before terminating, since
+    // pal::process::terminate skips destructors.
     drop(pidfile_guard);
 
     // Terminate the process immediately without graceful shutdown of DLLs or
@@ -1832,21 +1825,58 @@ async fn vm_config_from_command_line(
         pcie_switches,
         vpci_devices,
         ide_disks: Vec::new(),
-        memory: MemoryConfig {
-            mem_size: if let Some(ref sizes) = opt.numa_memory {
-                sizes
-                    .iter()
-                    .try_fold(0u64, |acc, &s| acc.checked_add(s))
-                    .context("numa memory sizes overflow")?
+        numa: {
+            if let Some(ref nodes) = opt.numa {
+                // --numa mode: each --numa flag defines a node.
+                NumaTopology {
+                    nodes: nodes
+                        .iter()
+                        .map(|n| NumaNode {
+                            mem: Some(MemoryConfig {
+                                mem_size: n.memory.mem_size,
+                                prefetch_memory: n.memory.prefetch,
+                                private_memory: n.memory.shared == Some(false),
+                                transparent_hugepages: n.memory.transparent_hugepages,
+                                hugepages: n.memory.hugepages,
+                                hugepage_size: n.memory.hugepage_size,
+                                host_numa_node: n.host_numa_node,
+                            }),
+                            vps: match &n.vps {
+                                Some(vps) => VpAssignment::Explicit(vps.clone()),
+                                None => VpAssignment::FromTopology,
+                            },
+                        })
+                        .collect(),
+                    distances: opt
+                        .numa_distance
+                        .as_deref()
+                        .unwrap_or(&[])
+                        .iter()
+                        .map(|d| NumaDistance {
+                            src: d.src,
+                            dst: d.dst,
+                            distance: d.distance,
+                        })
+                        .collect(),
+                }
             } else {
-                opt.memory_size()
-            },
-            prefetch_memory: opt.prefetch_memory(),
-            private_memory: opt.private_memory(),
-            transparent_hugepages: opt.transparent_hugepages(),
-            hugepages: opt.memory.hugepages,
-            hugepage_size: opt.memory.hugepage_size,
-            numa_mem_sizes: opt.numa_memory.clone(),
+                // Single-node default from --memory.
+                NumaTopology {
+                    nodes: vec![NumaNode {
+                        mem: Some(MemoryConfig {
+                            mem_size: opt.memory_size(),
+                            prefetch_memory: opt.prefetch_memory(),
+                            private_memory: opt.private_memory(),
+                            transparent_hugepages: opt.transparent_hugepages(),
+                            hugepages: opt.memory.hugepages,
+                            hugepage_size: opt.memory.hugepage_size,
+                            host_numa_node: None,
+                        }),
+                        vps: VpAssignment::FromTopology,
+                    }],
+                    distances: vec![],
+                }
+            }
         },
         processor_topology: ProcessorTopologyConfig {
             proc_count: opt.processors,
@@ -2339,7 +2369,7 @@ fn prepare_snapshot_restore(
     Ok((shared_memory_fd, state_msg))
 }
 
-fn do_main(pidfile_path: &mut Option<PathBuf>) -> anyhow::Result<()> {
+fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<()> {
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
 
@@ -2359,9 +2389,7 @@ fn do_main(pidfile_path: &mut Option<PathBuf>) -> anyhow::Result<()> {
     }
 
     if let Some(ref path) = opt.pidfile {
-        std::fs::write(path, format!("{}\n", std::process::id()))
-            .context("failed to write pidfile")?;
-        *pidfile_path = Some(path.clone());
+        *pidfile_guard = Some(pidfile::Pidfile::new(path).context("failed to create pidfile")?);
     }
 
     if let Some(path) = opt.relay_console_path {

@@ -4,6 +4,7 @@
 //! RSA implementation using SymCrypt.
 
 use super::RsaError;
+use super::RsaPublicKeyComponents;
 use der::Decode;
 use symcrypt::rsa::RsaKey;
 use symcrypt::rsa::RsaKeyUsage;
@@ -221,13 +222,11 @@ impl RsaPublicKeyInner {
         self.0.get_size_of_modulus() as usize
     }
 
-    pub fn modulus(&self) -> Vec<u8> {
-        // TODO: Maybe cache the pub blob?
-        self.0.export_public_key_blob().unwrap().modulus
-    }
-
-    pub fn public_exponent(&self) -> Vec<u8> {
-        // TODO: Maybe cache the pub blob?
-        self.0.export_public_key_blob().unwrap().pub_exp
+    pub fn to_components(&self) -> RsaPublicKeyComponents {
+        let blob = self.0.export_public_key_blob().unwrap();
+        RsaPublicKeyComponents {
+            modulus: blob.modulus,
+            public_exponent: blob.pub_exp,
+        }
     }
 }

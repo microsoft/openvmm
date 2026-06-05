@@ -5,6 +5,7 @@
 
 #![cfg(all(target_os = "windows", feature = "virt_whp", guest_is_native))]
 
+use crate::parse_bool_param;
 use hypervisor_resources::HypervisorKind;
 use hypervisor_resources::WhpHandle;
 use vm_resource::Resource;
@@ -51,13 +52,5 @@ impl hypervisor_resources::HypervisorProbe for WhpProbe {
         }
         anyhow::ensure!(virt_whp::is_available()?, "WHP is not available");
         Ok(Resource::new(handle))
-    }
-}
-
-fn parse_bool_param(key: &str, val: &str) -> anyhow::Result<bool> {
-    match val {
-        "true" | "1" | "yes" => Ok(true),
-        "false" | "0" | "no" => Ok(false),
-        _ => anyhow::bail!("invalid boolean value for {key}: {val}"),
     }
 }

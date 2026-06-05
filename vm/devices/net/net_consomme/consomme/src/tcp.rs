@@ -12,6 +12,8 @@ use crate::ChecksumState;
 use crate::ConsommeState;
 use crate::FourTuple;
 use crate::IpAddresses;
+use crate::IpVersion;
+use crate::PortForwardKey;
 use crate::dns_resolver::DnsResolver;
 use crate::dns_resolver::dns_tcp::DnsTcpHandler;
 use futures::AsyncRead;
@@ -65,7 +67,7 @@ pub(crate) struct Tcp {
     #[inspect(iter_by_key)]
     connections: HashMap<FourTuple, TcpConnection>,
     #[inspect(iter_by_key)]
-    listeners: HashMap<u16, TcpListener>,
+    listeners: HashMap<PortForwardKey, TcpListener>,
     #[inspect(mut)]
     connection_params: ConnectionParams,
     aggregate_stats: TcpAggregateStats,
@@ -326,15 +328,21 @@ impl<T: Client> Access<'_, T> {
         self.inner
             .tcp
             .listeners
-            .retain(|port, listener| match listener.poll_listener(cx) {
+            .retain(|key, listener| match listener.poll_listener(cx) {
                 Ok(result) => {
                     if let Some((socket, mut other_addr)) = result {
                         // If this packet was originally from the guest, update the port to match
                         // the original guest port. This allows loopback to work as expected.
                         if self.inner.state.params.is_local_address(&other_addr) {
                             for (other_ft, connection) in self.inner.tcp.connections.iter() {
-                                if matches!(connection.inner.state, TcpState::Connecting | TcpState::SynReceived) && other_ft.dst.port() == *port {
-                                    if let LoopbackPortInfo::ProxyForGuestPort{sending_port, guest_port} = connection.inner.loopback_port {
+                                if matches!(connection.inner.state, TcpState::Connecting | TcpState::SynReceived)
+                                    && PortForwardKey::from_socket_addr(other_ft.dst, other_ft.dst.port()) == *key
+                                {
+                                    if let LoopbackPortInfo::ProxyForGuestPort {
+                                        sending_port,
+                                        guest_port,
+                                    } = connection.inner.loopback_port
+                                    {
                                         if sending_port == other_addr.port() {
                                             other_addr.set_port(guest_port);
                                             break;
@@ -343,7 +351,7 @@ impl<T: Client> Access<'_, T> {
                                 }
                             }
                         }
-                        let Some(ft) = self.inner.state.try_ft_from_remote_address(&other_addr, *port) else {
+                        let Some(ft) = self.inner.state.try_ft_from_remote_address(&other_addr, key.guest_port) else {
                             return true;
                         };
 
@@ -541,9 +549,10 @@ impl<T: Client> Access<'_, T> {
                         // If this is directed to a local port owned by the guest, use the
                         // appropriate host port substitution.
                         let is_local_address = sender.state.params.is_local_address(&resolved_dst);
+                        let key =
+                            PortForwardKey::from_socket_addr(resolved_dst, resolved_dst.port());
                         let ft = if is_local_address
-                            && let Some(listener) =
-                                self.inner.tcp.listeners.get(&resolved_dst.port())
+                            && let Some(listener) = self.inner.tcp.listeners.get(&key)
                         {
                             FourTuple {
                                 src: sender.ft.src,
@@ -586,7 +595,9 @@ impl<T: Client> Access<'_, T> {
     /// Binds to the specified host IP and port for listening for incoming
     /// connections.
     pub fn bind_tcp_port(&mut self, socket: Socket, guest_port: u16) -> Result<(), BindError> {
-        match self.inner.tcp.listeners.entry(guest_port) {
+        let host_addr = Self::socket_local_addr(&socket)?;
+        let key = PortForwardKey::from_socket_addr(host_addr, guest_port);
+        match self.inner.tcp.listeners.entry(key) {
             hash_map::Entry::Occupied(_) => {
                 return Err(BindError::PortAlreadyBound(guest_port));
             }
@@ -598,15 +609,28 @@ impl<T: Client> Access<'_, T> {
         Ok(())
     }
 
-    /// Unbinds from the specified host port.
-    pub fn unbind_tcp_port(&mut self, port: u16) -> Result<(), BindError> {
-        match self.inner.tcp.listeners.entry(port) {
+    /// Unbinds from the specified guest port and IP family.
+    pub fn unbind_tcp_port(&mut self, family: IpVersion, port: u16) -> Result<(), BindError> {
+        match self
+            .inner
+            .tcp
+            .listeners
+            .entry(PortForwardKey::new(family, port))
+        {
             hash_map::Entry::Occupied(e) => {
                 e.remove();
                 Ok(())
             }
             hash_map::Entry::Vacant(_) => Err(BindError::PortNotBound),
         }
+    }
+
+    fn socket_local_addr(socket: &Socket) -> Result<SocketAddr, BindError> {
+        socket
+            .local_addr()
+            .map_err(BindError::Io)?
+            .as_socket()
+            .ok_or_else(|| BindError::Io(io::Error::other("socket local address is invalid")))
     }
 }
 

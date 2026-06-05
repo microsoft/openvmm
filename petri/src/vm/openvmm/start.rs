@@ -106,10 +106,14 @@ impl PetriVmConfigOpenVmm {
         let shared_memory = memory_backing_file
             .as_ref()
             .map(|mem_path| {
-                openvmm_helpers::shared_memory::open_memory_backing_file(
-                    mem_path,
-                    config.memory.mem_size,
-                )
+                let total_mem_size: u64 = config
+                    .numa
+                    .nodes
+                    .iter()
+                    .filter_map(|n| n.mem.as_ref())
+                    .map(|m| m.mem_size)
+                    .sum();
+                openvmm_helpers::shared_memory::open_memory_backing_file(mem_path, total_mem_size)
             })
             .transpose()?;
 

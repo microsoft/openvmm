@@ -47,6 +47,7 @@ use smoltcp::wire::IPV4_HEADER_LEN;
 use smoltcp::wire::Icmpv6Packet;
 use smoltcp::wire::IpAddress;
 use smoltcp::wire::IpProtocol;
+pub use smoltcp::wire::IpVersion;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv6Address;
@@ -68,6 +69,32 @@ struct FourTuple {
 impl core::fmt::Display for FourTuple {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}-{}", self.src, self.dst)
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+struct PortForwardKey {
+    family: IpVersion,
+    guest_port: u16,
+}
+
+impl PortForwardKey {
+    fn new(family: IpVersion, guest_port: u16) -> Self {
+        Self { family, guest_port }
+    }
+
+    fn from_socket_addr(addr: SocketAddr, guest_port: u16) -> Self {
+        let family = match addr {
+            SocketAddr::V4(_) => IpVersion::Ipv4,
+            SocketAddr::V6(_) => IpVersion::Ipv6,
+        };
+        Self::new(family, guest_port)
+    }
+}
+
+impl core::fmt::Display for PortForwardKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}:{}", self.family, self.guest_port)
     }
 }
 

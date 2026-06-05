@@ -57,7 +57,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |
@@ -852,7 +852,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |
@@ -2488,7 +2488,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |
@@ -2767,7 +2767,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |
@@ -2968,7 +2968,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |
@@ -3242,7 +3242,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |
@@ -3730,7 +3730,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |
@@ -4054,6 +4054,8 @@ jobs:
     displayName: unpack openvmm-test-linux archives
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_hvlite::download_uefi_mu_msvm 0
     displayName: unpack mu_msvm package (x64)
+  - bash: $(FLOWEY_BIN) e 19 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    displayName: unpack openvmm-test-virtio-win archive
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::init_vmm_tests_env 0
@@ -4321,6 +4323,8 @@ jobs:
     displayName: unpack openvmm-test-linux archives
   - bash: $(FLOWEY_BIN) e 18 flowey_lib_hvlite::download_uefi_mu_msvm 0
     displayName: unpack mu_msvm package (x64)
+  - bash: $(FLOWEY_BIN) e 18 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    displayName: unpack openvmm-test-virtio-win archive
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::init_vmm_tests_env 0
@@ -4594,6 +4598,8 @@ jobs:
     displayName: unpack openvmm-test-linux archives
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_hvlite::download_uefi_mu_msvm 0
     displayName: unpack mu_msvm package (x64)
+  - bash: $(FLOWEY_BIN) e 17 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    displayName: unpack openvmm-test-virtio-win archive
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::init_vmm_tests_env 0
@@ -4867,6 +4873,8 @@ jobs:
     displayName: unpack openvmm-test-linux archives
   - bash: $(FLOWEY_BIN) e 16 flowey_lib_hvlite::download_uefi_mu_msvm 0
     displayName: unpack mu_msvm package (x64)
+  - bash: $(FLOWEY_BIN) e 16 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    displayName: unpack openvmm-test-virtio-win archive
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::init_vmm_tests_env 0
@@ -4951,7 +4959,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |

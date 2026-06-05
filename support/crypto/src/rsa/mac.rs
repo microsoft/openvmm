@@ -397,12 +397,20 @@ impl RsaPublicKeyInner {
         unsafe { SecKeyGetBlockSize(self.0.0) }
     }
 
-    pub fn modulus(&self) -> Vec<u8> {
-        self.export_components().map(|(n, _)| n).unwrap_or_default()
-    }
-
-    pub fn public_exponent(&self) -> Vec<u8> {
-        self.export_components().map(|(_, e)| e).unwrap_or_default()
+    pub fn to_components(&self) -> super::RsaPublicKeyComponents {
+        let pub_key = self.public_key_handle().unwrap();
+        let mut error: CFErrorRef = ptr::null();
+        // SAFETY: pub_key.0 is valid.
+        let data = unsafe { SecKeyCopyExternalRepresentation(pub_key.0, &mut error) };
+        assert!(!data.is_null(), "SecKeyCopyExternalRepresentation failed");
+        let data = CfHandle(data);
+        // SAFETY: data.0 is valid.
+        let der_bytes = unsafe { cf_data_to_vec(data.0) };
+        let (modulus, public_exponent) = parse_pkcs1_pub(&der_bytes).unwrap();
+        super::RsaPublicKeyComponents {
+            modulus,
+            public_exponent,
+        }
     }
 
     /// Get a SecKeyRef for the public half of this key. For a key already
@@ -414,22 +422,5 @@ impl RsaPublicKeyInner {
             return Err(null_err("SecKeyCopyPublicKey"));
         }
         Ok(CfHandle(pk))
-    }
-
-    /// Export and parse the PKCS#1 RSAPublicKey representation, returning
-    /// `(modulus, public_exponent)`.
-    fn export_components(&self) -> Result<(Vec<u8>, Vec<u8>), RsaError> {
-        let pub_key = self.public_key_handle()?;
-        let mut error: CFErrorRef = ptr::null();
-        // SAFETY: pub_key.0 is valid.
-        let data = unsafe { SecKeyCopyExternalRepresentation(pub_key.0, &mut error) };
-        if data.is_null() {
-            // SAFETY: error is null or valid.
-            return Err(unsafe { rsa_sec_err(error, "export RSA public key") });
-        }
-        let data = CfHandle(data);
-        // SAFETY: data.0 is valid.
-        let der_bytes = unsafe { cf_data_to_vec(data.0) };
-        parse_pkcs1_pub(&der_bytes)
     }
 }
