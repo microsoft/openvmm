@@ -57,7 +57,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |
@@ -852,7 +852,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |
@@ -2488,7 +2488,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |
@@ -2767,7 +2767,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |
@@ -2968,7 +2968,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |
@@ -3242,7 +3242,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |
@@ -3730,7 +3730,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |
@@ -4959,7 +4959,7 @@ jobs:
     fetchTags: false
     fetchDepth: 1
     path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
     workingDirectory: ../flowey_bootstrap
     displayName: Build flowey
   - bash: |

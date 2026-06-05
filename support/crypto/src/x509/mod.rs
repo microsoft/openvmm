@@ -15,17 +15,17 @@
 mod builder;
 
 #[cfg(openssl)]
-mod ossl;
+pub(crate) mod ossl;
 #[cfg(openssl)]
 use ossl as sys;
 
 #[cfg(any(rust, symcrypt))]
-mod symcrypt_rust;
+pub(crate) mod symcrypt_rust;
 #[cfg(any(rust, symcrypt))]
 use symcrypt_rust as sys;
 
 #[cfg(all(native, windows))]
-mod win;
+pub(crate) mod win;
 #[cfg(all(native, windows))]
 use win as sys;
 
@@ -113,6 +113,17 @@ impl X509Certificate {
     /// there are multiple CNs present, return the first.
     pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
         self.0.subject_common_name()
+    }
+
+    /// String representation of the certificate's issuer Distinguished Name.
+    pub fn issuer_dn(&self) -> Result<String, X509Error> {
+        self.0.issuer_dn()
+    }
+
+    /// Raw bytes of the certificate's serial number, as encoded in the
+    /// underlying certificate.
+    pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
+        self.0.serial_number()
     }
 }
 

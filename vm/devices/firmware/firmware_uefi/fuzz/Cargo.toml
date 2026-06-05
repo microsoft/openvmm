@@ -9,7 +9,7 @@ rust-version.workspace = true
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 arbitrary = { workspace = true, features = ["derive"] }
-crypto = { workspace = true, features = ["test_helpers", "rust"] }
+crypto = { workspace = true, features = ["test_helpers", "rust", "vendored"] }
 firmware_uefi = { workspace = true, features = ["fuzzing"] }
 firmware_uefi_resources.workspace = true
 guid.workspace = true

@@ -89,8 +89,11 @@ pub struct HypervisorBackedX86 {
     #[inspect(hex, with = "|&x| u64::from(x)")]
     pub(super) next_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     stats: ProcessorStatsX86,
-    /// Send an INIT to VTL0 before running the VP, to simulate setting startup
-    /// suspend. Newer hypervisors allow setting startup suspend explicitly.
+    /// Fallback for hypervisors that don't support setting the startup suspend
+    /// state explicitly via the internal activity register: send an INIT to
+    /// VTL0 before running the VP to simulate setting startup suspend. Prefer
+    /// the synchronous register write where possible; see `init` and
+    /// `set_vtl0_startup_suspend`.
     deferred_init: bool,
 }
 
@@ -183,10 +186,29 @@ impl BackingPrivate for HypervisorBackedX86 {
     }
 
     fn init(this: &mut UhProcessor<'_, Self>) {
-        // The hypervisor initializes startup suspend to false. Set it to the
-        // architectural default.
+        // The hypervisor initializes startup suspend to false. Application
+        // processors must instead come up in the wait-for-SIPI state, so set
+        // the architectural default of startup suspend for them.
+        //
+        // Prefer setting the startup suspend state synchronously by writing the
+        // internal activity register directly. The alternative--sending a
+        // deferred INIT (see `pre_run_vp`)--is asynchronous and races against
+        // the guest's own INIT-SIPI-SIPI sequence: if the hypervisor delivers
+        // the deferred INIT after the guest has already sent a SIPI, it resets
+        // the AP and discards the applied SIPI vector, stranding the VP in the
+        // wait-for-SIPI state. Fall back to the deferred INIT only on
+        // hypervisors that don't support setting the register directly.
         if !this.vp_index().is_bsp() {
-            this.backing.deferred_init = true;
+            this.backing.deferred_init = match this.set_vtl0_startup_suspend(true) {
+                Ok(()) => false,
+                Err(err) => {
+                    tracing::warn!(
+                        error = &err as &dyn std::error::Error,
+                        "unable to set internal activity register, falling back to deferred init"
+                    );
+                    true
+                }
+            };
         }
     }
 
