@@ -27,6 +27,37 @@ use std::sync::Arc;
 use thiserror::Error;
 use vmcore::local_only::LocalOnly;
 
+/// The type of memory backing a region or mapping.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, MeshPayload)]
+pub enum MappingType {
+    /// Guest RAM or similar shareable memory. IOMMU mapping failures are
+    /// fatal. Exposed via `GuestMemorySharing` (vhost-user).
+    Ram,
+    /// Device memory (e.g., a PCI BAR). IOMMU mapping failures are
+    /// non-fatal — they only affect peer-to-peer DMA to this region.
+    /// Not exposed via `GuestMemorySharing`.
+    Device,
+}
+
+/// Parameters for a DMA mapping request.
+pub struct DmaMapRequest<'a> {
+    /// The guest physical address range to map.
+    pub range: MemoryRange,
+    /// Host virtual address of the mapping, provided when the target was
+    /// registered with `needs_va = true`. When `None`, the implementation
+    /// should use `mappable` and `file_offset` directly (e.g., iommufd).
+    pub host_va: Option<*const u8>,
+    /// The backing object (fd or handle) for the mapping.
+    pub mappable: &'a Mappable,
+    /// Offset within `mappable` where the mapping starts.
+    pub file_offset: u64,
+    /// Whether the mapping should allow writes. When `false`, the IOMMU
+    /// entry should be read-only.
+    pub writable: bool,
+    /// The type of memory being mapped.
+    pub mapping_type: MappingType,
+}
+
 /// A consumer of IOMMU-granularity DMA mapping events.
 ///
 /// Unlike [`PartitionMemoryMap`](virt::PartitionMemoryMap), which maps entire
@@ -35,35 +66,24 @@ use vmcore::local_only::LocalOnly;
 /// explicit IOMMU programming (VFIO type1, iommufd, etc.).
 ///
 /// DMA targets receive notifications for **all** active sub-mappings,
-/// including device BAR memory (regions with `dma_target: false`). The
-/// `dma_target` flag controls only whether a region is exposed via
-/// `GuestMemorySharing` (for vhost-user); IOMMU consumers need the full
-/// GPA→backing map to program identity mappings for all guest-visible memory.
+/// including device BAR memory ([`MappingType::Device`] regions). The
+/// mapping type controls whether a region is exposed via
+/// `GuestMemorySharing` (for vhost-user) and whether IOMMU mapping
+/// failures are fatal; IOMMU consumers receive the full GPA→backing map
+/// regardless.
 ///
 /// Implementations must be `Send + Sync` because they are stored behind `Arc`
 /// in the region manager task.
 pub trait DmaTarget: Send + Sync {
-    /// Program an IOMMU mapping for `range` to the backing described by
-    /// `mappable` at `file_offset`.
-    ///
-    /// `host_va` is the host virtual address of the mapping, provided when
-    /// the target was registered with `needs_va = true`. When `None`, the
-    /// implementation should use `mappable` and `file_offset` directly
-    /// (e.g., iommufd).
+    /// Program an IOMMU mapping.
     ///
     /// # Safety
-    /// When `host_va` is `Some`, the pointed-to memory must be backed and
-    /// must not be unmapped for the duration of the resulting IOMMU mapping.
-    /// The caller (the crate-internal `DmaMapper`) guarantees this by holding an
-    /// [`Arc<VaMapper>`] whose mappings are established eagerly by the
-    /// mapping manager.
-    unsafe fn map_dma(
-        &self,
-        range: MemoryRange,
-        host_va: Option<*const u8>,
-        mappable: &Mappable,
-        file_offset: u64,
-    ) -> anyhow::Result<()>;
+    /// When `request.host_va` is `Some`, the pointed-to memory must be
+    /// backed and must not be unmapped for the duration of the resulting
+    /// IOMMU mapping. The caller (the crate-internal `DmaMapper`) guarantees
+    /// this by holding an [`Arc<VaMapper>`] whose mappings are established
+    /// eagerly by the mapping manager.
+    unsafe fn map_dma(&self, request: DmaMapRequest<'_>) -> anyhow::Result<()>;
 
     /// Remove IOMMU mappings within `range`.
     ///
@@ -92,25 +112,23 @@ struct DmaMapperId(u64);
 
 impl DmaMapper {
     /// Map a sub-mapping into the IOMMU.
-    fn map_dma(
-        &self,
-        range: MemoryRange,
-        mappable: &Mappable,
-        file_offset: u64,
-    ) -> anyhow::Result<()> {
+    fn map_dma(&self, mut request: DmaMapRequest<'_>) -> anyhow::Result<()> {
         // Compute the host VA for type1/iommufd backends. The VaMapper
         // is always eager, so the backing is already established.
         //
         // SAFETY: range.start() is within the VA reservation, and
         // the eager mapper has already established the backing.
-        let host_va = self.va_mapper.as_ref().map(|va_mapper| unsafe {
-            va_mapper.as_ptr().add(range.start() as usize).cast_const()
+        request.host_va = self.va_mapper.as_ref().map(|va_mapper| unsafe {
+            va_mapper
+                .as_ptr()
+                .add(request.range.start() as usize)
+                .cast_const()
         });
         // SAFETY: When host_va is Some, the VaMapper is eager and the mapping
         // has been established. The VaMapper is held alive by this DmaMapper
         // (via Arc). The IOMMU mapping will be torn down (via unmap_dma)
         // before the VaMapper releases the VA range.
-        unsafe { self.target.map_dma(range, host_va, mappable, file_offset) }
+        unsafe { self.target.map_dma(request) }
     }
 
     /// Unmap a range from the IOMMU.
@@ -154,9 +172,8 @@ struct RegionParams {
     name: String,
     range: MemoryRange,
     priority: u8,
-    /// Whether mappings in this region are DMA targets (guest RAM or
-    /// similar shareable memory).
-    dma_target: bool,
+    /// The type of memory in this region.
+    mapping_type: MappingType,
 }
 
 #[derive(Copy, Clone, Debug, MeshPayload, PartialEq, Eq, Inspect)]
@@ -383,7 +400,15 @@ impl RegionManagerTask {
             if region.is_active {
                 for mapping in &region.mappings {
                     let range = range_within(region.params.range, mapping.params.range_in_region);
-                    mapper.map_dma(range, &mapping.params.mappable, mapping.params.file_offset)?;
+                    let writable = mapping.params.writable && region.map_params.unwrap().writable;
+                    mapper.map_dma(DmaMapRequest {
+                        range,
+                        host_va: None,
+                        mappable: &mapping.params.mappable,
+                        file_offset: mapping.params.file_offset,
+                        writable,
+                        mapping_type: region.params.mapping_type,
+                    })?;
                 }
             }
         }
@@ -587,13 +612,20 @@ impl RegionManagerTask {
                     mappable: params.mappable.clone(),
                     file_offset: params.file_offset,
                     writable: params.writable,
-                    dma_target: region.params.dma_target,
+                    mapping_type: region.params.mapping_type,
                     numa_node: params.numa_node,
                 })
                 .await?;
 
             for dma_mapper in &self.inner.dma_mappers {
-                if let Err(e) = dma_mapper.map_dma(range, &params.mappable, params.file_offset) {
+                if let Err(e) = dma_mapper.map_dma(DmaMapRequest {
+                    range,
+                    host_va: None,
+                    mappable: &params.mappable,
+                    file_offset: params.file_offset,
+                    writable: params.writable,
+                    mapping_type: region.params.mapping_type,
+                }) {
                     tracing::warn!(
                         error = &*e as &dyn std::error::Error,
                         %range,
@@ -679,7 +711,7 @@ impl RegionManagerTaskInner {
                     mappable: mapping.params.mappable.clone(),
                     file_offset: mapping.params.file_offset,
                     writable: mapping.params.writable && map_params.writable,
-                    dma_target: region.params.dma_target,
+                    mapping_type: region.params.mapping_type,
                     numa_node: mapping.params.numa_node,
                 })
                 .await
@@ -702,12 +734,23 @@ impl RegionManagerTaskInner {
 
             // Map into DMA mappers.
             let range = range_within(region.params.range, mapping.params.range_in_region);
-            for dma_mapper in &self.dma_mappers {
-                if let Err(e) =
-                    dma_mapper.map_dma(range, &mapping.params.mappable, mapping.params.file_offset)
-                {
-                    // Roll back DMA mappings for this sub-mapping and all
-                    // previous ones, then roll back VA mappings.
+            let writable = mapping.params.writable && map_params.writable;
+            for (dma_idx, dma_mapper) in self.dma_mappers.iter().enumerate() {
+                if let Err(e) = dma_mapper.map_dma(DmaMapRequest {
+                    range,
+                    host_va: None,
+                    mappable: &mapping.params.mappable,
+                    file_offset: mapping.params.file_offset,
+                    writable,
+                    mapping_type: region.params.mapping_type,
+                }) {
+                    // Roll back the current sub-mapping from DMA mappers
+                    // that already succeeded (before the failing one).
+                    for dm in &self.dma_mappers[..dma_idx] {
+                        dm.unmap_dma(range);
+                    }
+                    // Roll back all previous sub-mappings from all DMA
+                    // mappers.
                     for prev in &region.mappings[..mapped_count] {
                         let prev_range =
                             range_within(region.params.range, prev.params.range_in_region);
@@ -808,13 +851,13 @@ impl RegionManagerClient {
         name: String,
         range: MemoryRange,
         priority: u8,
-        dma_target: bool,
+        mapping_type: MappingType,
     ) -> Result<RegionHandle, AddRegionError> {
         let params = RegionParams {
             name,
             range,
             priority,
-            dma_target,
+            mapping_type,
         };
 
         let id = self
@@ -993,7 +1036,9 @@ mod tests {
     use crate::mapping_manager::Mappable;
     use crate::mapping_manager::MappingManager;
     use crate::region_manager::AddRegionError;
+    use crate::region_manager::DmaMapRequest;
     use crate::region_manager::DmaTarget;
+    use crate::region_manager::MappingType;
     use crate::region_manager::RegionId;
     use crate::region_manager::RegionMappingParams;
     use crate::region_manager::RegionParams;
@@ -1017,14 +1062,8 @@ mod tests {
     }
 
     impl DmaTarget for RecordingDmaTarget {
-        unsafe fn map_dma(
-            &self,
-            range: MemoryRange,
-            _host_va: Option<*const u8>,
-            _mappable: &Mappable,
-            _file_offset: u64,
-        ) -> anyhow::Result<()> {
-            self.events.lock().push(DmaEvent::Map(range));
+        unsafe fn map_dma(&self, request: DmaMapRequest<'_>) -> anyhow::Result<()> {
+            self.events.lock().push(DmaEvent::Map(request.range));
             Ok(())
         }
 
@@ -1060,7 +1099,7 @@ mod tests {
                     priority,
                     name: priority.to_string(),
                     range: MemoryRange::new(range),
-                    dma_target: false,
+                    mapping_type: MappingType::Device,
                 })?;
                 self.0
                     .map_region(
@@ -1126,7 +1165,7 @@ mod tests {
                     priority: 0,
                     name: format!("{range:x?}"),
                     range: MemoryRange::new(range),
-                    dma_target: false,
+                    mapping_type: MappingType::Device,
                 })
                 .unwrap();
             self.task
@@ -1294,26 +1333,84 @@ mod tests {
     }
 
     impl DmaTarget for FailAfterDmaTarget {
-        unsafe fn map_dma(
-            &self,
-            range: MemoryRange,
-            host_va: Option<*const u8>,
-            mappable: &Mappable,
-            file_offset: u64,
-        ) -> anyhow::Result<()> {
+        unsafe fn map_dma(&self, request: DmaMapRequest<'_>) -> anyhow::Result<()> {
             let mut count = self.call_count.lock();
             if *count >= self.fail_after {
-                anyhow::bail!("simulated DMA mapping failure at {range}");
+                anyhow::bail!("simulated DMA mapping failure at {}", request.range);
             }
             *count += 1;
             drop(count);
             // SAFETY: delegating to RecordingDmaTarget.
-            unsafe { self.inner.map_dma(range, host_va, mappable, file_offset) }
+            unsafe { self.inner.map_dma(request) }
         }
 
         fn unmap_dma(&self, range: MemoryRange) -> anyhow::Result<()> {
             self.inner.unmap_dma(range)
         }
+    }
+
+    #[async_test]
+    async fn test_enable_region_rollback_unmaps_current_sub_mapping_from_earlier_dma_mappers(
+        spawn: impl Spawn,
+    ) {
+        // Two DMA mappers: the first always succeeds, the second fails
+        // immediately. With one sub-mapping, enable_region should:
+        //   1. Map sub-mapping into mapper A (succeeds)
+        //   2. Map sub-mapping into mapper B (fails)
+        //   3. Roll back: unmap sub-mapping from mapper A
+        //
+        // The bug: rollback only unmaps `mappings[..mapped_count]` (previous
+        // sub-mappings), but `mapped_count` is 0 for the first sub-mapping,
+        // so mapper A's successful map is never rolled back.
+        let mut t = DmaTestTask::new(&spawn);
+
+        let r = t.add_region(0x0..0x10000).await;
+        t.add_mapping(r, 0x0..0x4000).await;
+
+        // Disable so we can re-enable with DMA mappers present.
+        t.task.unmap_region(r, false).await;
+
+        let good_target = Arc::new(RecordingDmaTarget::default());
+        let _good_id = t
+            .task
+            .add_dma_mapper(good_target.clone(), false)
+            .await
+            .unwrap();
+
+        let bad_target = Arc::new(FailAfterDmaTarget::new(0)); // fails immediately
+        let _bad_id = t
+            .task
+            .add_dma_mapper(bad_target.clone(), false)
+            .await
+            .unwrap();
+
+        // Drain replay events (region is inactive, so there should be none).
+        good_target.take_events();
+        bad_target.take_events();
+
+        let result = t
+            .task
+            .map_region(
+                r,
+                MapParams {
+                    writable: true,
+                    executable: true,
+                    prefetch: false,
+                },
+            )
+            .await;
+
+        assert!(result.is_err(), "enable should fail");
+
+        // good_target should see: Map(0..0x4000) then Unmap(0..0x4000).
+        assert_eq!(
+            good_target.take_events(),
+            vec![
+                DmaEvent::Map(MemoryRange::new(0x0..0x4000)),
+                DmaEvent::Unmap(MemoryRange::new(0x0..0x4000)),
+            ],
+            "the successful DMA mapper must have its mapping rolled back"
+        );
     }
 
     #[async_test]

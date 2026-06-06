@@ -11,6 +11,7 @@ use super::object_cache::ObjectId;
 use super::va_mapper::VaMapper;
 use super::va_mapper::VaMapperError;
 use crate::RemoteProcess;
+use crate::region_manager::MappingType;
 use futures::StreamExt;
 use futures::future::join_all;
 use guestmem::ProvideShareableRegions;
@@ -127,6 +128,12 @@ impl MappingManagerClient {
                 .await
                 .map_err(VaMapperError::MemoryManagerGone)?
                 .map_err(VaMapperError::Registration)?;
+
+            // The UpgradeToEager RPC replayed all mappings and queued
+            // SetEager to the mapper task, but that message may not be
+            // processed yet. Set the flag here so callers can rely on
+            // is_eager() immediately.
+            mapper.set_eager();
         }
 
         Ok(mapper)
@@ -188,7 +195,7 @@ impl MappingManagerClient {
                 Some(process),
                 Vec::new(),
                 self.minimum_va_alignment,
-                false, // remote mappers are always lazy
+                true, // eager — remote mappers used for partition mappings
             )
             .await?,
         ))
@@ -237,7 +244,7 @@ pub enum MappingRequest {
     UpgradeToEager(Rpc<MapperId, Result<(), RemoteError>>),
     AddMapping(Rpc<MappingParams, Result<(), RemoteError>>),
     RemoveMappings(Rpc<MemoryRange, ()>),
-    /// Returns all mappings that have `dma_target` set.
+    /// Returns all mappings that have [`MappingType::Ram`] type.
     GetDmaTargetMappings(Rpc<(), Vec<MappingParams>>),
     Inspect(inspect::Deferred),
 }
@@ -259,7 +266,7 @@ fn inspect_mappings(mappings: &Vec<Mapping>) -> impl '_ + Inspect {
                 inspect::adhoc(|req| {
                     req.respond()
                         .field("writable", mapping.params.writable)
-                        .field("dma_target", mapping.params.dma_target)
+                        .field("mapping_type", format!("{:?}", mapping.params.mapping_type))
                         .hex("file_offset", mapping.params.file_offset);
                 }),
             );
@@ -283,12 +290,12 @@ pub struct MappingParams {
     pub file_offset: u64,
     /// Whether to map the memory as writable.
     pub writable: bool,
-    /// Whether this mapping is a DMA target (guest RAM or similar).
+    /// The type of memory being mapped.
     ///
-    /// DMA-target mappings are exposed via [`GuestMemorySharing`](guestmem::GuestMemorySharing) so
-    /// that external consumers (vhost-user backends, etc.) can share the
-    /// backing memory.
-    pub dma_target: bool,
+    /// [`MappingType::Ram`] mappings are exposed via
+    /// [`GuestMemorySharing`](guestmem::GuestMemorySharing) so that external
+    /// consumers (vhost-user backends, etc.) can share the backing memory.
+    pub mapping_type: MappingType,
     /// Host NUMA node for this mapping. `None` means OS default placement.
     pub numa_node: Option<u32>,
 }
@@ -608,7 +615,7 @@ impl MappingManagerTask {
     fn get_dma_target_mappings(&self) -> Vec<MappingParams> {
         self.mappings
             .iter()
-            .filter(|m| m.params.dma_target)
+            .filter(|m| m.params.mapping_type == MappingType::Ram)
             .map(|m| m.params.clone())
             .collect()
     }
@@ -681,6 +688,7 @@ impl ProvideShareableRegions for DmaRegionProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::region_manager::MappingType;
     use guestmem::GuestMemoryAccess;
     use guestmem::ProvideShareableRegions;
     use memory_range::MemoryRange;
@@ -703,7 +711,7 @@ mod tests {
                 mappable: ram,
                 file_offset: 0,
                 writable: true,
-                dma_target: true,
+                mapping_type: MappingType::Ram,
                 numa_node: None,
             })
             .await
@@ -715,7 +723,7 @@ mod tests {
                 mappable: device,
                 file_offset: 0,
                 writable: true,
-                dma_target: false,
+                mapping_type: MappingType::Device,
                 numa_node: None,
             })
             .await
@@ -748,7 +756,7 @@ mod tests {
                 mappable,
                 file_offset: 0,
                 writable: true,
-                dma_target: false,
+                mapping_type: MappingType::Device,
                 numa_node: None,
             })
             .await
@@ -772,7 +780,7 @@ mod tests {
             mappable,
             file_offset: 0,
             writable: true,
-            dma_target: true,
+            mapping_type: MappingType::Ram,
             numa_node: None,
         };
         task.add_mapping(params.clone()).await.unwrap();
@@ -846,7 +854,7 @@ mod tests {
             mappable,
             file_offset: 0,
             writable: true,
-            dma_target: false,
+            mapping_type: MappingType::Device,
             numa_node: None,
         };
 
@@ -948,7 +956,7 @@ mod tests {
             mappable,
             file_offset: 0,
             writable: true,
-            dma_target: false,
+            mapping_type: MappingType::Device,
             numa_node: None,
         };
 
@@ -1066,7 +1074,7 @@ mod tests {
                 mappable,
                 file_offset: 0,
                 writable: true,
-                dma_target: true,
+                mapping_type: MappingType::Ram,
                 numa_node: None,
             })
             .await
@@ -1154,7 +1162,7 @@ mod tests {
             mappable,
             file_offset: 0,
             writable: true,
-            dma_target: false,
+            mapping_type: MappingType::Device,
             numa_node: None,
         };
 
@@ -1257,7 +1265,7 @@ mod tests {
             mappable,
             file_offset: 0,
             writable: true,
-            dma_target: false,
+            mapping_type: MappingType::Device,
             numa_node: None,
         })
         .await
@@ -1364,7 +1372,7 @@ mod tests {
                 mappable,
                 file_offset: 0,
                 writable: true,
-                dma_target: false,
+                mapping_type: MappingType::Device,
                 numa_node: None,
             })
             .await
@@ -1409,7 +1417,7 @@ mod tests {
                 mappable,
                 file_offset: 0,
                 writable: true,
-                dma_target: false,
+                mapping_type: MappingType::Device,
                 numa_node: None,
             })
             .await
@@ -1438,7 +1446,7 @@ mod tests {
                 mappable,
                 file_offset: 0,
                 writable: true,
-                dma_target: false,
+                mapping_type: MappingType::Device,
                 numa_node: None,
             })
             .await

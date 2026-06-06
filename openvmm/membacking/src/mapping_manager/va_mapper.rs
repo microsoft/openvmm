@@ -395,6 +395,15 @@ impl VaMapper {
         self.inner.eager.load(Ordering::Relaxed)
     }
 
+    /// Marks this mapper as eager.
+    ///
+    /// Called after an `UpgradeToEager` RPC completes so that `is_eager()`
+    /// returns `true` immediately, without waiting for the mapper task to
+    /// process the `SetEager` message.
+    pub(crate) fn set_eager(&self) {
+        self.inner.eager.store(true, Ordering::Relaxed);
+    }
+
     /// Returns the mapper's ID, used internally for upgrade requests.
     pub(crate) fn mapper_id(&self) -> MapperId {
         self.inner.id
