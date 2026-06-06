@@ -111,13 +111,15 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
         }
 
         if let Some(handle) = &state.handle {
-            block_on(handle.add_mapping(
+            if let Err(e) = block_on(handle.add_mapping(
                 new_mapping.range,
                 new_mapping.mappable.clone(),
                 new_mapping.file_offset,
                 new_mapping.writable,
                 None,
-            ));
+            )) {
+                return Err(io::Error::other(e));
+            }
         }
         state.mappings.push(new_mapping);
         Ok(())
@@ -176,7 +178,8 @@ impl MappableGuestMemory for DeviceMemoryControl {
                         mapping.writable,
                         None,
                     )
-                    .await;
+                    .await
+                    .map_err(io::Error::other)?;
             }
 
             handle
@@ -185,7 +188,8 @@ impl MappableGuestMemory for DeviceMemoryControl {
                     executable: true,
                     prefetch: false,
                 })
-                .await;
+                .await
+                .map_err(io::Error::other)?;
 
             state.handle = Some(handle);
             Ok(())

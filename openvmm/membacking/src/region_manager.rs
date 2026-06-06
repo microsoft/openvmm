@@ -18,6 +18,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
 use mesh::MeshPayload;
+use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
@@ -54,7 +55,8 @@ pub trait DmaTarget: Send + Sync {
     /// When `host_va` is `Some`, the pointed-to memory must be backed and
     /// must not be unmapped for the duration of the resulting IOMMU mapping.
     /// The caller (the crate-internal `DmaMapper`) guarantees this by holding an
-    /// [`Arc<VaMapper>`] and calling `ensure_mapped` before each invocation.
+    /// [`Arc<VaMapper>`] whose mappings are established eagerly by the
+    /// mapping manager.
     unsafe fn map_dma(
         &self,
         range: MemoryRange,
@@ -76,8 +78,9 @@ pub trait DmaTarget: Send + Sync {
 
 /// Wraps a [`DmaTarget`] for use by the region manager.
 ///
-/// Holds an optional [`VaMapper`] to ensure pages are faulted in before
-/// `map_dma` (needed for VFIO type1's `pin_user_pages`).
+/// Holds an optional [`VaMapper`] to provide host VA pointers for IOMMU
+/// programming. Mappings in the VaMapper are established eagerly by the
+/// mapping manager.
 struct DmaMapper {
     id: DmaMapperId,
     target: Arc<dyn DmaTarget>,
@@ -89,32 +92,24 @@ struct DmaMapperId(u64);
 
 impl DmaMapper {
     /// Map a sub-mapping into the IOMMU.
-    async fn map_dma(
+    fn map_dma(
         &self,
         range: MemoryRange,
         mappable: &Mappable,
         file_offset: u64,
     ) -> anyhow::Result<()> {
-        // Ensure the VaMapper has the backing pages faulted in and compute
-        // the host VA for type1 backends.
-        let host_va = if let Some(va_mapper) = &self.va_mapper {
-            va_mapper
-                .ensure_mapped(range)
-                .await
-                .context("VA range has no backing mapping")?;
-            // SAFETY: range.start() is within the VA reservation (ensured by
-            // ensure_mapped succeeding), so this produces a valid pointer
-            // within the mapping.
-            Some(unsafe { va_mapper.as_ptr().add(range.start() as usize).cast_const() })
-        } else {
-            None
-        };
-        // SAFETY: When host_va is Some, the VaMapper has been ensure_mapped
-        // for this range. The VaMapper is held alive by this DmaMapper (via
-        // Arc), so the VA reservation persists. The pages are backed because
-        // ensure_mapped succeeded. The IOMMU mapping will be torn down
-        // (via unmap_dma in disable_region or remove_dma_mapper) before the
-        // VaMapper releases the VA range.
+        // Compute the host VA for type1/iommufd backends. The VaMapper
+        // is always eager, so the backing is already established.
+        //
+        // SAFETY: range.start() is within the VA reservation, and
+        // the eager mapper has already established the backing.
+        let host_va = self.va_mapper.as_ref().map(|va_mapper| unsafe {
+            va_mapper.as_ptr().add(range.start() as usize).cast_const()
+        });
+        // SAFETY: When host_va is Some, the VaMapper is eager and the mapping
+        // has been established. The VaMapper is held alive by this DmaMapper
+        // (via Arc). The IOMMU mapping will be torn down (via unmap_dma)
+        // before the VaMapper releases the VA range.
         unsafe { self.target.map_dma(range, host_va, mappable, file_offset) }
     }
 
@@ -249,9 +244,9 @@ struct RegionManagerTaskInner {
 enum RegionRequest {
     AddRegion(Rpc<RegionParams, Result<RegionId, AddRegionError>>),
     RemoveRegion(Rpc<RegionId, ()>),
-    MapRegion(Rpc<(RegionId, MapParams), ()>),
+    MapRegion(Rpc<(RegionId, MapParams), Result<(), RemoteError>>),
     UnmapRegion(Rpc<RegionId, ()>),
-    AddMapping(Rpc<(RegionId, RegionMappingParams), ()>),
+    AddMapping(Rpc<(RegionId, RegionMappingParams), Result<(), RemoteError>>),
     RemoveMappings(Rpc<(RegionId, MemoryRange), ()>),
     AddPartition(
         LocalOnly<Rpc<PartitionMapper, Result<(), crate::partition_mapper::PartitionMapperError>>>,
@@ -328,7 +323,7 @@ impl RegionManagerTask {
                         .await
                 }
                 RegionRequest::MapRegion(rpc) => {
-                    rpc.handle(async |(id, params)| self.map_region(id, params).await)
+                    rpc.handle_failable(async |(id, params)| self.map_region(id, params).await)
                         .await
                 }
                 RegionRequest::UnmapRegion(rpc) => {
@@ -366,13 +361,9 @@ impl RegionManagerTask {
     ) -> anyhow::Result<DmaMapperId> {
         // Create a VaMapper if the target needs host VAs for IOMMU programming.
         let va_mapper = if needs_va {
-            Some(
-                self.inner
-                    .mapping_manager
-                    .new_mapper()
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e))?,
-            )
+            let mapper = self.inner.mapping_manager.new_mapper().await?;
+            assert!(mapper.is_eager(), "DMA mapper requires an eager VaMapper");
+            Some(mapper)
         } else {
             None
         };
@@ -392,9 +383,7 @@ impl RegionManagerTask {
             if region.is_active {
                 for mapping in &region.mappings {
                     let range = range_within(region.params.range, mapping.params.range_in_region);
-                    mapper
-                        .map_dma(range, &mapping.params.mappable, mapping.params.file_offset)
-                        .await?;
+                    mapper.map_dma(range, &mapping.params.mappable, mapping.params.file_offset)?;
                 }
             }
         }
@@ -467,7 +456,7 @@ impl RegionManagerTask {
 
     /// Enables the highest priority region in `range`. Panics if any regions in
     /// `range` are already enabled.
-    async fn enable_best_region(&mut self, mut range: MemoryRange) {
+    async fn enable_best_region(&mut self, mut range: MemoryRange) -> anyhow::Result<()> {
         while !range.is_empty() {
             // Pick the highest priority region with the lowest startest address
             // in the range. Since lower priority ranges must be fully contained
@@ -495,21 +484,22 @@ impl RegionManagerTask {
                     )
                 })
             {
-                self.inner.enable_region(region).await;
+                self.inner.enable_region(region).await?;
                 range = MemoryRange::new(region.params.range.end()..range.end());
             } else {
                 range = MemoryRange::EMPTY;
             }
         }
+        Ok(())
     }
 
-    async fn map_region(&mut self, id: RegionId, map_params: MapParams) {
+    async fn map_region(&mut self, id: RegionId, map_params: MapParams) -> anyhow::Result<()> {
         let index = self.region_index(id);
         let region = &mut self.regions[index];
         let range = region.params.range;
         let priority = region.params.priority;
         if region.map_params == Some(map_params) {
-            return;
+            return Ok(());
         }
 
         tracing::debug!(
@@ -538,8 +528,9 @@ impl RegionManagerTask {
 
         self.regions[index].map_params = Some(map_params);
         if enable {
-            self.enable_best_region(range).await;
+            self.enable_best_region(range).await?;
         }
+        Ok(())
     }
 
     async fn unmap_region(&mut self, id: RegionId, remove: bool) {
@@ -563,11 +554,18 @@ impl RegionManagerTask {
             region.map_params = None;
         }
         if let Some(range) = active_range {
-            self.enable_best_region(range).await;
+            self.enable_best_region(range).await.expect(
+                "failed to re-enable region after unmap; \
+                 this should not fail because the region was previously active",
+            );
         }
     }
 
-    async fn add_mapping(&mut self, id: RegionId, params: RegionMappingParams) {
+    async fn add_mapping(
+        &mut self,
+        id: RegionId,
+        params: RegionMappingParams,
+    ) -> Result<(), RemoteError> {
         let index = self.region_index(id);
         let region = &mut self.regions[index];
 
@@ -592,17 +590,10 @@ impl RegionManagerTask {
                     dma_target: region.params.dma_target,
                     numa_node: params.numa_node,
                 })
-                .await;
-
-            for partition in &mut self.inner.partitions {
-                partition.notify_new_mapping(range).await;
-            }
+                .await?;
 
             for dma_mapper in &self.inner.dma_mappers {
-                if let Err(e) = dma_mapper
-                    .map_dma(range, &params.mappable, params.file_offset)
-                    .await
-                {
+                if let Err(e) = dma_mapper.map_dma(range, &params.mappable, params.file_offset) {
                     tracing::warn!(
                         error = &*e as &dyn std::error::Error,
                         %range,
@@ -613,6 +604,7 @@ impl RegionManagerTask {
         }
 
         region.mappings.push(RegionMapping { params });
+        Ok(())
     }
 
     async fn remove_mappings(&mut self, id: RegionId, range_in_region: MemoryRange) {
@@ -666,7 +658,7 @@ impl RegionManagerTask {
 }
 
 impl RegionManagerTaskInner {
-    async fn enable_region(&mut self, region: &mut Region) {
+    async fn enable_region(&mut self, region: &mut Region) -> anyhow::Result<()> {
         assert!(!region.is_active);
         let map_params = region.map_params.unwrap();
 
@@ -677,9 +669,11 @@ impl RegionManagerTaskInner {
             "enabling region"
         );
 
-        // Add the mappings for the region.
-        for mapping in &region.mappings {
-            self.mapping_manager
+        // Add the mappings for the region. On failure, roll back any
+        // sub-mappings that were successfully added.
+        for (mapped_count, mapping) in region.mappings.iter().enumerate() {
+            if let Err(e) = self
+                .mapping_manager
                 .add_mapping(MappingParams {
                     range: range_within(region.params.range, mapping.params.range_in_region),
                     mappable: mapping.params.mappable.clone(),
@@ -688,22 +682,45 @@ impl RegionManagerTaskInner {
                     dma_target: region.params.dma_target,
                     numa_node: mapping.params.numa_node,
                 })
-                .await;
-        }
+                .await
+            {
+                // Roll back: remove sub-mappings that were already added.
+                for prev in &region.mappings[..mapped_count] {
+                    let range = range_within(region.params.range, prev.params.range_in_region);
+                    for dma_mapper in &self.dma_mappers {
+                        dma_mapper.unmap_dma(range);
+                    }
+                }
+                self.mapping_manager
+                    .remove_mappings(region.params.range)
+                    .await;
+                return Err(anyhow::Error::new(e)).context(format!(
+                    "failed to map {} during region enable",
+                    range_within(region.params.range, mapping.params.range_in_region),
+                ));
+            }
 
-        // Map sub-mappings into DMA mappers (per-sub-mapping granularity).
-        for mapping in &region.mappings {
+            // Map into DMA mappers.
             let range = range_within(region.params.range, mapping.params.range_in_region);
             for dma_mapper in &self.dma_mappers {
-                if let Err(e) = dma_mapper
-                    .map_dma(range, &mapping.params.mappable, mapping.params.file_offset)
-                    .await
+                if let Err(e) =
+                    dma_mapper.map_dma(range, &mapping.params.mappable, mapping.params.file_offset)
                 {
-                    tracing::warn!(
-                        error = &*e as &dyn std::error::Error,
-                        %range,
-                        "DMA mapper failed to map sub-mapping during region enable"
-                    );
+                    // Roll back DMA mappings for this sub-mapping and all
+                    // previous ones, then roll back VA mappings.
+                    for prev in &region.mappings[..mapped_count] {
+                        let prev_range =
+                            range_within(region.params.range, prev.params.range_in_region);
+                        for dm in &self.dma_mappers {
+                            dm.unmap_dma(prev_range);
+                        }
+                    }
+                    self.mapping_manager
+                        .remove_mappings(region.params.range)
+                        .await;
+                    return Err(e).context(format!(
+                        "DMA mapper failed to map {range} during region enable"
+                    ));
                 }
             }
         }
@@ -717,6 +734,7 @@ impl RegionManagerTaskInner {
         }
 
         region.is_active = true;
+        Ok(())
     }
 
     async fn disable_region(&mut self, region: &mut Region) {
@@ -896,11 +914,11 @@ pub struct RegionHandle {
 
 impl RegionHandle {
     /// Maps this region to a guest address.
-    pub async fn map(&self, params: MapParams) {
+    pub async fn map(&self, params: MapParams) -> Result<(), RemoteError> {
         self.req_send
             .call(RegionRequest::MapRegion, (self.id.unwrap(), params))
             .await
-            .unwrap()
+            .map_err(RemoteError::new)?
     }
 
     /// Unmaps this region.
@@ -921,9 +939,8 @@ impl RegionHandle {
         file_offset: u64,
         writable: bool,
         numa_node: Option<u32>,
-    ) {
-        let _ = self
-            .req_send
+    ) -> Result<(), RemoteError> {
+        self.req_send
             .call(
                 RegionRequest::AddMapping,
                 (
@@ -937,7 +954,8 @@ impl RegionHandle {
                     },
                 ),
             )
-            .await;
+            .await
+            .map_err(RemoteError::new)?
     }
 
     /// Removes the mappings in `range` within this region.
@@ -1053,7 +1071,8 @@ mod tests {
                             prefetch: false,
                         },
                     )
-                    .await;
+                    .await
+                    .unwrap();
                 Ok(id)
             }
 
@@ -1119,7 +1138,8 @@ mod tests {
                         prefetch: false,
                     },
                 )
-                .await;
+                .await
+                .unwrap();
             id
         }
 
@@ -1135,7 +1155,8 @@ mod tests {
                         numa_node: None,
                     },
                 )
-                .await;
+                .await
+                .unwrap();
         }
     }
 
@@ -1247,5 +1268,106 @@ mod tests {
         // Adding a mapping while inactive should also not notify.
         t.add_mapping(r, 0x8000..0xC000).await;
         assert_eq!(target.take_events(), vec![]);
+    }
+
+    /// A DMA target that fails map_dma after a configurable number of
+    /// successful calls.
+    struct FailAfterDmaTarget {
+        /// Number of map_dma calls to succeed before failing.
+        fail_after: usize,
+        inner: RecordingDmaTarget,
+        call_count: Mutex<usize>,
+    }
+
+    impl FailAfterDmaTarget {
+        fn new(fail_after: usize) -> Self {
+            Self {
+                fail_after,
+                inner: RecordingDmaTarget::default(),
+                call_count: Mutex::new(0),
+            }
+        }
+
+        fn take_events(&self) -> Vec<DmaEvent> {
+            self.inner.take_events()
+        }
+    }
+
+    impl DmaTarget for FailAfterDmaTarget {
+        unsafe fn map_dma(
+            &self,
+            range: MemoryRange,
+            host_va: Option<*const u8>,
+            mappable: &Mappable,
+            file_offset: u64,
+        ) -> anyhow::Result<()> {
+            let mut count = self.call_count.lock();
+            if *count >= self.fail_after {
+                anyhow::bail!("simulated DMA mapping failure at {range}");
+            }
+            *count += 1;
+            drop(count);
+            // SAFETY: delegating to RecordingDmaTarget.
+            unsafe { self.inner.map_dma(range, host_va, mappable, file_offset) }
+        }
+
+        fn unmap_dma(&self, range: MemoryRange) -> anyhow::Result<()> {
+            self.inner.unmap_dma(range)
+        }
+    }
+
+    #[async_test]
+    async fn test_enable_region_rollback_unmaps_dma_sub_mappings(spawn: impl Spawn) {
+        let mut t = DmaTestTask::new(&spawn);
+
+        // Create a region with three sub-mappings.
+        let r = t.add_region(0x0..0x18000).await;
+        t.add_mapping(r, 0x0..0x4000).await;
+        t.add_mapping(r, 0x4000..0x8000).await;
+        t.add_mapping(r, 0x8000..0xC000).await;
+
+        // Disable the region so we can re-enable with a DMA mapper present.
+        t.task.unmap_region(r, false).await;
+
+        // Register a DMA mapper that fails on the third map_dma call
+        // (i.e., the third sub-mapping). The first two succeed.
+        let target = Arc::new(FailAfterDmaTarget::new(2));
+        let _id = t.task.add_dma_mapper(target.clone(), false).await.unwrap();
+
+        // Re-enable the region. Sub-mappings 0 and 1 succeed, sub-mapping 2
+        // fails. Rollback should unmap sub-mappings 0 and 1.
+        let result = t
+            .task
+            .map_region(
+                r,
+                MapParams {
+                    writable: true,
+                    executable: true,
+                    prefetch: false,
+                },
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "enable should fail on third DMA sub-mapping"
+        );
+
+        let region = t.task.regions.iter().find(|reg| reg.id == r).unwrap();
+        assert!(
+            !region.is_active,
+            "region should not be active after failed enable"
+        );
+
+        assert_eq!(
+            target.take_events(),
+            vec![
+                DmaEvent::Map(MemoryRange::new(0x0..0x4000)),
+                DmaEvent::Map(MemoryRange::new(0x4000..0x8000)),
+                DmaEvent::Unmap(MemoryRange::new(0x0..0x4000)),
+                DmaEvent::Unmap(MemoryRange::new(0x4000..0x8000)),
+            ],
+            "successful DMA sub-mappings should be rolled back exactly once"
+        );
     }
 }

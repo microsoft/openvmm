@@ -41,7 +41,7 @@ impl membacking::DmaTarget for VfioType1DmaTarget {
         let vaddr = host_va.expect("VFIO type1 requires host VA (registered with needs_va=true)");
         let _span = tracing::info_span!("vfio map", %range).entered();
         // SAFETY: The caller (DmaMapper in membacking) guarantees that the
-        // host VA is backed and stable via ensure_mapped + VaMapper lifetime.
+        // host VA is backed and stable via eager mapping + VaMapper lifetime.
         unsafe {
             self.container
                 .map_dma(range.start(), vaddr, range.len())
@@ -480,7 +480,7 @@ impl membacking::DmaTarget for IommufdDmaTarget {
         let user_va = vaddr as u64;
         let length = range.len();
         // SAFETY: The caller (DmaMapper in membacking) guarantees that the
-        // host VA is backed and stable via ensure_mapped + VaMapper lifetime.
+        // host VA is backed and stable via eager mapping + VaMapper lifetime.
         unsafe {
             self.ctx
                 .ioas_map(self.ioas_id, iova, user_va, length)

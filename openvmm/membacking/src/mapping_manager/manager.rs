@@ -19,11 +19,13 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
 use mesh::MeshPayload;
+use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use slab::Slab;
 use std::sync::Arc;
+use thiserror::Error;
 
 /// The mapping manager.
 #[derive(Debug, Inspect)]
@@ -87,14 +89,21 @@ pub struct MappingManagerClient {
 static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
 
 impl MappingManagerClient {
-    /// Returns a VA mapper for this guest memory.
+    /// Returns an eager VA mapper for this guest memory.
     ///
-    /// This will single instance the mapper, so this is safe to call multiple
-    /// times.
+    /// Eager mappers receive mappings immediately when they are added and
+    /// get all existing mappings replayed on creation. File-backed page
+    /// faults will fail (since mappings should already be established).
+    ///
+    /// This is the right choice for the VP process, where the hypervisor
+    /// does not forward page faults back to the VMM.
+    ///
+    /// The mapper is single-instanced per process via a cache. If a lazy
+    /// mapper was previously created for this guest memory, calling this
+    /// returns the same mapper (the mapping manager will have already
+    /// replayed and marked it as eager on first call).
     pub async fn new_mapper(&self) -> Result<Arc<VaMapper>, VaMapperError> {
-        // Get the VA mapper from the mapper cache if possible to avoid keeping
-        // multiple VA ranges for this memory per process.
-        MAPPER_CACHE
+        let mapper = MAPPER_CACHE
             .get_or_insert_with(&self.id, async {
                 VaMapper::new(
                     self.req_send.clone(),
@@ -102,6 +111,55 @@ impl MappingManagerClient {
                     None,
                     self.private_ranges.clone(),
                     self.minimum_va_alignment,
+                    true, // eager
+                )
+                .await
+            })
+            .await?;
+
+        // If the cached mapper is lazy (created by an earlier
+        // new_lazy_mapper call), upgrade it to eager. The UpgradeToEager
+        // Rpc replays all mappings and then sends SetEager to the mapper
+        // task, which marks it eager after replay completes.
+        if !mapper.is_eager() {
+            self.req_send
+                .call(MappingRequest::UpgradeToEager, mapper.mapper_id())
+                .await
+                .map_err(VaMapperError::MemoryManagerGone)?
+                .map_err(VaMapperError::Registration)?;
+        }
+
+        Ok(mapper)
+    }
+
+    /// Returns a lazy VA mapper for this guest memory.
+    ///
+    /// Lazy mappers are not notified when mappings are added. Instead,
+    /// they populate on demand via page faults, requesting the current
+    /// mapping from the mapping manager at fault time. This avoids the
+    /// cost of pushing every mapping change to processes that rarely
+    /// access the mapped regions (e.g., device-emulation processes with
+    /// virtio-fs DAX).
+    ///
+    /// If an eager mapper already exists in the cache for this guest
+    /// memory, it is returned instead — eager is strictly better.
+    ///
+    /// Returns an error if private memory mode is enabled, since private
+    /// anonymous pages are committed in-process and cannot be populated
+    /// on demand across a lazy mapping channel.
+    pub async fn new_lazy_mapper(&self) -> Result<Arc<VaMapper>, VaMapperError> {
+        MAPPER_CACHE
+            .get_or_insert_with(&self.id, async {
+                if !self.private_ranges.is_empty() {
+                    return Err(VaMapperError::LazyWithPrivateMemory);
+                }
+                VaMapper::new(
+                    self.req_send.clone(),
+                    self.max_addr,
+                    None,
+                    self.private_ranges.clone(),
+                    self.minimum_va_alignment,
+                    false, // lazy
                 )
                 .await
             })
@@ -130,6 +188,7 @@ impl MappingManagerClient {
                 Some(process),
                 Vec::new(),
                 self.minimum_va_alignment,
+                false, // remote mappers are always lazy
             )
             .await?,
         ))
@@ -137,14 +196,17 @@ impl MappingManagerClient {
 
     /// Adds an active mapping.
     ///
+    /// The mapping is pushed eagerly to all existing VA mappers. Returns an
+    /// error if any mapper fails to establish the mapping.
+    ///
     /// TODO: currently this will panic if the mapping overlaps an existing
     /// mapping. This needs to be fixed to allow this to overlap existing
     /// mappings, in which case the old ones will be split and replaced.
-    pub async fn add_mapping(&self, params: MappingParams) {
+    pub async fn add_mapping(&self, params: MappingParams) -> Result<(), RemoteError> {
         self.req_send
             .call(MappingRequest::AddMapping, params)
             .await
-            .unwrap();
+            .map_err(RemoteError::new)?
     }
 
     /// Removes all mappings in `range`.
@@ -161,10 +223,19 @@ impl MappingManagerClient {
 /// A mapping request message.
 #[derive(MeshPayload)]
 pub enum MappingRequest {
-    AddMapper(Rpc<mesh::Sender<MapperRequest>, MapperId>),
+    /// Register a new VA mapper. The `bool` indicates whether the mapper is
+    /// eager (mappings pushed immediately and replayed on creation) or lazy
+    /// (mappings populated on demand via page faults).
+    AddMapper(Rpc<(mesh::Sender<MapperRequest>, bool), Result<MapperId, RemoteError>>),
     RemoveMapper(MapperId),
+    /// Request that mappings covering the given range be sent to the specified
+    /// mapper via fire-and-forget `MapLazy` messages. Used by lazy mappers
+    /// to populate on demand.
     SendMappings(MapperId, MemoryRange),
-    AddMapping(Rpc<MappingParams, ()>),
+    /// Upgrade a lazy mapper to eager: replay all existing mappings and
+    /// mark it for future pushes.
+    UpgradeToEager(Rpc<MapperId, Result<(), RemoteError>>),
+    AddMapping(Rpc<MappingParams, Result<(), RemoteError>>),
     RemoveMappings(Rpc<MemoryRange, ()>),
     /// Returns all mappings that have `dma_target` set.
     GetDmaTargetMappings(Rpc<(), Vec<MappingParams>>),
@@ -202,7 +273,7 @@ struct Mapping {
 }
 
 /// The mapping parameters.
-#[derive(MeshPayload, Clone)]
+#[derive(Debug, MeshPayload, Clone)]
 pub struct MappingParams {
     /// The memory range for the mapping.
     pub range: MemoryRange,
@@ -222,27 +293,53 @@ pub struct MappingParams {
     pub numa_node: Option<u32>,
 }
 
+/// Error from a failed VA mapping operation.
+#[derive(Debug, Error)]
+#[error("failed to map {range}")]
+pub struct MappingError {
+    /// The GPA range that failed to map.
+    pub range: MemoryRange,
+    /// The underlying OS error.
+    #[source]
+    pub error: std::io::Error,
+}
+
+impl MappingError {
+    pub(crate) fn new(range: MemoryRange, error: std::io::Error) -> Self {
+        Self { range, error }
+    }
+}
+
 struct Mappers {
     mappers: Slab<MapperComm>,
 }
 
 struct MapperComm {
     req_send: mesh::Sender<MapperRequest>,
+    eager: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, MeshPayload)]
 pub struct MapperId(usize);
 
 /// A request to a VA mapper.
-#[derive(MeshPayload)]
+#[derive(Debug, MeshPayload)]
 pub enum MapperRequest {
-    /// Map the specified mapping.
-    Map(MappingParams),
-    /// There is no mapping for the specified range, so release anything waiting
-    /// on such a mapping to arrive.
+    /// Map the specified mapping and respond with success/failure.
+    /// Used by the eager path (`add_mapping`).
+    MapEager(Rpc<MappingParams, Result<(), RemoteError>>),
+    /// Map the specified mapping (fire-and-forget).
+    /// Used by the lazy path (`send_mappings`). The mapper task wakes
+    /// any pending waiters after processing.
+    MapLazy(MappingParams),
+    /// There is no mapping for the specified range. The mapper task
+    /// wakes waiters with a failure.
     NoMapping(MemoryRange),
     /// Unmap the specified range and send a response when it's done.
     Unmap(Rpc<MemoryRange, ()>),
+    /// Mark this mapper as eager. Sent after all replay `MapEager` Rpcs
+    /// have completed, so the mapper task processes it after all replays.
+    SetEager,
 }
 
 impl MappingManagerTask {
@@ -258,15 +355,23 @@ impl MappingManagerTask {
     async fn run(&mut self, req_recv: &mut mesh::Receiver<MappingRequest>) {
         while let Some(req) = req_recv.next().await {
             match req {
-                MappingRequest::AddMapper(rpc) => rpc.handle_sync(|send| self.add_mapper(send)),
+                MappingRequest::AddMapper(rpc) => {
+                    rpc.handle_failable(async |(send, eager)| self.add_mapper(send, eager).await)
+                        .await
+                }
                 MappingRequest::RemoveMapper(id) => {
                     self.remove_mapper(id);
                 }
                 MappingRequest::SendMappings(id, range) => {
                     self.send_mappings(id, range);
                 }
+                MappingRequest::UpgradeToEager(rpc) => {
+                    rpc.handle_failable(async |id| self.upgrade_to_eager(id).await)
+                        .await
+                }
                 MappingRequest::AddMapping(rpc) => {
-                    rpc.handle_sync(|params| self.add_mapping(params))
+                    rpc.handle(async |params| self.add_mapping(params).await)
+                        .await
                 }
                 MappingRequest::RemoveMappings(rpc) => {
                     rpc.handle(async |range| self.remove_mappings(range).await)
@@ -280,10 +385,52 @@ impl MappingManagerTask {
         }
     }
 
-    fn add_mapper(&mut self, req_send: mesh::Sender<MapperRequest>) -> MapperId {
-        let id = self.mappers.mappers.insert(MapperComm { req_send });
-        tracing::debug!(?id, "adding mapper");
-        MapperId(id)
+    async fn add_mapper(
+        &mut self,
+        req_send: mesh::Sender<MapperRequest>,
+        eager: bool,
+    ) -> Result<MapperId, MappingError> {
+        let id = self.mappers.mappers.insert(MapperComm { req_send, eager });
+        let mapper_id = MapperId(id);
+        tracing::debug!(?id, eager, "adding mapper");
+
+        if eager {
+            // Replay all existing mappings to the new eager mapper.
+            let mut failed = None;
+            for mapping in &mut self.mappings {
+                match self.mappers.mappers[id]
+                    .req_send
+                    .call(MapperRequest::MapEager, mapping.params.clone())
+                    .await
+                {
+                    Ok(Ok(())) => {
+                        if !mapping.active_mappers.contains(&mapper_id) {
+                            mapping.active_mappers.push(mapper_id);
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        failed = Some(MappingError::new(
+                            mapping.params.range,
+                            std::io::Error::other(e),
+                        ));
+                        break;
+                    }
+                    Err(_) => {
+                        failed = Some(MappingError::new(
+                            MemoryRange::EMPTY,
+                            std::io::Error::other("mapper gone during replay"),
+                        ));
+                        break;
+                    }
+                }
+            }
+            if let Some(err) = failed {
+                self.remove_mapper(mapper_id);
+                return Err(err);
+            }
+        }
+
+        Ok(mapper_id)
     }
 
     fn remove_mapper(&mut self, id: MapperId) {
@@ -294,6 +441,77 @@ impl MappingManagerTask {
         }
     }
 
+    /// Upgrade a mapper from lazy to eager: mark it eager and replay all
+    /// existing mappings. On failure, the mapper stays lazy.
+    async fn upgrade_to_eager(&mut self, id: MapperId) -> Result<(), MappingError> {
+        let mapper = &mut self.mappers.mappers[id.0];
+        if mapper.eager {
+            return Ok(()); // already eager
+        }
+        // Mark eager on the manager side first so new add_mapping calls
+        // will push to this mapper. The mapper task itself isn't marked
+        // eager until SetEager is processed (after all replays succeed).
+        //
+        // This is safe because the manager task processes requests
+        // sequentially — no concurrent add_mapping can run while this
+        // method is executing. If the upgrade fails, we roll back
+        // `mapper.eager` to `false` before returning.
+        mapper.eager = true;
+        tracing::debug!(?id, "upgrading mapper to eager");
+
+        let mut failed = None;
+        for mapping in &mut self.mappings {
+            match self.mappers.mappers[id.0]
+                .req_send
+                .call(MapperRequest::MapEager, mapping.params.clone())
+                .await
+            {
+                Ok(Ok(())) => {
+                    if !mapping.active_mappers.contains(&id) {
+                        mapping.active_mappers.push(id);
+                    }
+                }
+                Ok(Err(e)) => {
+                    failed = Some(MappingError::new(
+                        mapping.params.range,
+                        std::io::Error::other(e),
+                    ));
+                    break;
+                }
+                Err(_) => {
+                    failed = Some(MappingError::new(
+                        MemoryRange::EMPTY,
+                        std::io::Error::other("mapper gone during eager upgrade"),
+                    ));
+                    break;
+                }
+            }
+        }
+
+        if let Some(err) = failed {
+            // Roll back: unmark eager, remove from active_mappers.
+            self.mappers.mappers[id.0].eager = false;
+            for m in &mut self.mappings {
+                m.active_mappers.retain(|mid| *mid != id);
+            }
+            return Err(err);
+        }
+
+        // Tell the mapper task to mark itself eager. Since the mapper task
+        // processes messages sequentially, this runs after all the MapEager
+        // replays above.
+        self.mappers.mappers[id.0]
+            .req_send
+            .send(MapperRequest::SetEager);
+
+        Ok(())
+    }
+
+    /// Handle a lazy mapper's on-demand request for mappings covering `range`.
+    ///
+    /// Finds all mappings that overlap the requested range and sends them
+    /// to the mapper via fire-and-forget `MapLazy` messages. Gaps send
+    /// `NoMapping` so the mapper task can wake waiters with failure.
     fn send_mappings(&mut self, id: MapperId, mut range: MemoryRange) {
         while !range.is_empty() {
             // Find the next mapping that overlaps range.
@@ -321,27 +539,70 @@ impl MappingManagerTask {
                 (range.end(), None)
             };
             let this_range = MemoryRange::new(range.start()..this_end);
-            let req = if let Some(params) = params {
-                tracing::debug!(range = %this_range, full_range = %params.range, "sending mapping for range");
-                MapperRequest::Map(params)
+            if let Some(params) = params {
+                tracing::debug!(range = %this_range, full_range = %params.range, "sending lazy mapping");
+                self.mappers.mappers[id.0]
+                    .req_send
+                    .send(MapperRequest::MapLazy(params));
             } else {
                 tracing::debug!(range = %this_range, "no mapping for range");
-                MapperRequest::NoMapping(this_range)
-            };
-            self.mappers.mappers[id.0].req_send.send(req);
+                self.mappers.mappers[id.0]
+                    .req_send
+                    .send(MapperRequest::NoMapping(this_range));
+            }
             range = MemoryRange::new(this_end..range.end());
         }
     }
 
-    fn add_mapping(&mut self, params: MappingParams) {
+    async fn add_mapping(&mut self, params: MappingParams) -> Result<(), RemoteError> {
         tracing::debug!(range = %params.range, "adding mapping");
 
         assert!(!self.mappings.iter().any(|m| m.params.range == params.range));
 
+        // Push to eager mappers only. Lazy mappers will request on demand.
+        let mut active_mappers = Vec::new();
+        for (i, mapper) in self.mappers.mappers.iter() {
+            if !mapper.eager {
+                continue;
+            }
+            let id = MapperId(i);
+            match mapper
+                .req_send
+                .call(MapperRequest::MapEager, params.clone())
+                .await
+            {
+                Ok(Ok(())) => {
+                    active_mappers.push(id);
+                }
+                Ok(Err(e)) => {
+                    // Unmap from mappers that already succeeded before returning
+                    // the error.
+                    for &rollback_id in &active_mappers {
+                        if let Err(err) = self.mappers.mappers[rollback_id.0]
+                            .req_send
+                            .call(MapperRequest::Unmap, params.range)
+                            .await
+                        {
+                            tracing::warn!(
+                                error = &err as &dyn std::error::Error,
+                                "mapper dropped unmap during rollback"
+                            );
+                        }
+                    }
+                    return Err(e);
+                }
+                Err(_) => {
+                    // Mapper gone, skip.
+                    tracing::debug!(?id, "mapper gone during add_mapping");
+                }
+            }
+        }
+
         self.mappings.push(Mapping {
             params,
-            active_mappers: Vec::new(),
+            active_mappers,
         });
+        Ok(())
     }
 
     fn get_dma_target_mappings(&self) -> Vec<MappingParams> {
@@ -420,6 +681,7 @@ impl ProvideShareableRegions for DmaRegionProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use guestmem::GuestMemoryAccess;
     use guestmem::ProvideShareableRegions;
     use memory_range::MemoryRange;
 
@@ -444,7 +706,8 @@ mod tests {
                 dma_target: true,
                 numa_node: None,
             })
-            .await;
+            .await
+            .unwrap();
 
         client
             .add_mapping(MappingParams {
@@ -455,7 +718,8 @@ mod tests {
                 dma_target: false,
                 numa_node: None,
             })
-            .await;
+            .await
+            .unwrap();
 
         let provider = DmaRegionProvider {
             req_send: client.req_send.clone(),
@@ -487,12 +751,707 @@ mod tests {
                 dma_target: false,
                 numa_node: None,
             })
-            .await;
+            .await
+            .unwrap();
 
         let provider = DmaRegionProvider {
             req_send: client.req_send.clone(),
         };
         let regions = provider.get_regions().await.unwrap();
         assert!(regions.is_empty());
+    }
+
+    /// Helper: create a MappingManagerTask and add a mapping.
+    async fn task_with_mapping() -> (MappingManagerTask, MappingParams) {
+        let mut task = MappingManagerTask::new();
+        let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x10000, "test")
+            .unwrap()
+            .into();
+        let params = MappingParams {
+            range: MemoryRange::new(0..0x10000),
+            mappable,
+            file_offset: 0,
+            writable: true,
+            dma_target: true,
+            numa_node: None,
+        };
+        task.add_mapping(params.clone()).await.unwrap();
+        (task, params)
+    }
+
+    /// Helper: add a mapper to a task and collect the MapEager/MapLazy messages
+    /// it receives.
+    async fn add_mapper_and_drain(
+        task: &mut MappingManagerTask,
+        eager: bool,
+    ) -> (MapperId, Vec<MapperRequest>) {
+        let (send, mut recv) = mesh::channel();
+        let id = task.add_mapper(send, eager).await.unwrap();
+        // Drain all pending messages.
+        let mut msgs = Vec::new();
+        while let Ok(msg) = recv.try_recv() {
+            msgs.push(msg);
+        }
+        (id, msgs)
+    }
+
+    #[pal_async::async_test]
+    async fn test_eager_mapper_gets_replay(_spawn: impl Spawn) {
+        let (mut task, _params) = task_with_mapping().await;
+
+        let (send, mut recv) = mesh::channel();
+        // add_mapper for eager blocks on the MapEager Rpc, so drive both
+        // concurrently.
+        let (id, _) = futures::join!(task.add_mapper(send, true), async {
+            let msg = recv.recv().await.unwrap();
+            match msg {
+                MapperRequest::MapEager(rpc) => {
+                    let (params, rpc) = rpc.split();
+                    assert_eq!(params.range, MemoryRange::new(0..0x10000));
+                    rpc.complete(Ok(()));
+                }
+                other => panic!("expected MapEager, got {other:?}"),
+            }
+        });
+        let _ = id;
+    }
+
+    #[pal_async::async_test]
+    async fn test_lazy_mapper_no_replay(_spawn: impl Spawn) {
+        let (mut task, _params) = task_with_mapping().await;
+
+        let (_id, msgs) = add_mapper_and_drain(&mut task, false).await;
+
+        // Lazy mapper should receive no messages on creation.
+        assert!(msgs.is_empty(), "lazy mapper should not get replay");
+    }
+
+    #[pal_async::async_test]
+    async fn test_add_mapping_pushes_only_to_eager(_spawn: impl Spawn) {
+        let mut task = MappingManagerTask::new();
+
+        // Add one eager and one lazy mapper.
+        let (eager_send, mut eager_recv) = mesh::channel();
+        let _eager_id = task.add_mapper(eager_send, true).await.unwrap();
+
+        let (lazy_send, mut lazy_recv) = mesh::channel();
+        let _lazy_id = task.add_mapper(lazy_send, false).await.unwrap();
+
+        // Add a mapping.
+        let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x1000, "test")
+            .unwrap()
+            .into();
+        let params = MappingParams {
+            range: MemoryRange::new(0..0x1000),
+            mappable,
+            file_offset: 0,
+            writable: true,
+            dma_target: false,
+            numa_node: None,
+        };
+
+        // The eager mapper needs to respond to the MapEager Rpc.
+        let add_future = task.add_mapping(params);
+        // Drive the add_mapping by responding to the eager mapper's Rpc.
+        let (add_result, _) = futures::join!(add_future, async {
+            let msg = eager_recv.recv().await.unwrap();
+            match msg {
+                MapperRequest::MapEager(rpc) => rpc.complete(Ok(())),
+                other => panic!("expected MapEager, got {other:?}"),
+            }
+        });
+        add_result.unwrap();
+
+        // Lazy mapper should have received nothing.
+        assert!(
+            lazy_recv.try_recv().is_err(),
+            "lazy mapper should not be notified on add_mapping"
+        );
+    }
+
+    #[pal_async::async_test]
+    async fn test_upgrade_to_eager_replays(_spawn: impl Spawn) {
+        let (mut task, _params) = task_with_mapping().await;
+
+        // Add a lazy mapper — no replay.
+        let (send, mut recv) = mesh::channel();
+        let id = task.add_mapper(send, false).await.unwrap();
+        assert!(
+            recv.try_recv().is_err(),
+            "lazy mapper should not get replay"
+        );
+
+        // Upgrade to eager — should replay existing mappings.
+        let upgrade_future = task.upgrade_to_eager(id);
+        let (result, _) = futures::join!(upgrade_future, async {
+            let msg = recv.recv().await.unwrap();
+            match msg {
+                MapperRequest::MapEager(rpc) => {
+                    let (params, rpc) = rpc.split();
+                    assert_eq!(params.range, MemoryRange::new(0..0x10000));
+                    rpc.complete(Ok(()));
+                }
+                other => panic!("expected MapEager during upgrade, got {other:?}"),
+            }
+        });
+        result.unwrap();
+
+        // Verify the mapper is now marked eager.
+        assert!(task.mappers.mappers[id.0].eager);
+    }
+
+    #[pal_async::async_test]
+    async fn test_upgrade_already_eager_is_noop(_spawn: impl Spawn) {
+        let (mut task, _params) = task_with_mapping().await;
+
+        // Add an eager mapper (responds to replay).
+        let (send, mut recv) = mesh::channel();
+        let upgrade_future = task.add_mapper(send, true);
+        let (id, _) = futures::join!(upgrade_future, async {
+            let msg = recv.recv().await.unwrap();
+            match msg {
+                MapperRequest::MapEager(rpc) => rpc.complete(Ok(())),
+                other => panic!("expected MapEager, got {other:?}"),
+            }
+        });
+        let id = id.unwrap();
+
+        // Upgrade again — should be a no-op, no messages sent.
+        task.upgrade_to_eager(id).await.unwrap();
+        assert!(
+            recv.try_recv().is_err(),
+            "upgrade of already-eager mapper should send nothing"
+        );
+    }
+
+    #[pal_async::async_test]
+    async fn test_after_upgrade_new_mappings_are_pushed(_spawn: impl Spawn) {
+        let mut task = MappingManagerTask::new();
+
+        // Add a lazy mapper.
+        let (send, mut recv) = mesh::channel();
+        let id = task.add_mapper(send, false).await.unwrap();
+
+        // Upgrade to eager (no existing mappings, so no replay, but SetEager
+        // is still sent).
+        task.upgrade_to_eager(id).await.unwrap();
+        // Consume the SetEager message.
+        let msg = recv.recv().await.unwrap();
+        assert!(matches!(msg, MapperRequest::SetEager));
+
+        // Now add a mapping — should be pushed to the upgraded mapper.
+        let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x1000, "test")
+            .unwrap()
+            .into();
+        let params = MappingParams {
+            range: MemoryRange::new(0..0x1000),
+            mappable,
+            file_offset: 0,
+            writable: true,
+            dma_target: false,
+            numa_node: None,
+        };
+
+        let add_future = task.add_mapping(params);
+        let (result, _) = futures::join!(add_future, async {
+            let msg = recv.recv().await.unwrap();
+            match msg {
+                MapperRequest::MapEager(rpc) => rpc.complete(Ok(())),
+                other => panic!("expected MapEager after upgrade, got {other:?}"),
+            }
+        });
+        result.unwrap();
+    }
+
+    #[pal_async::async_test]
+    async fn test_send_mappings_for_lazy(_spawn: impl Spawn) {
+        let (mut task, _params) = task_with_mapping().await;
+
+        // Add a lazy mapper.
+        let (send, mut recv) = mesh::channel();
+        let id = task.add_mapper(send, false).await.unwrap();
+
+        // Request mappings for the range (simulates page fault path).
+        task.send_mappings(id, MemoryRange::new(0..0x10000));
+
+        // Should receive a MapLazy.
+        let msg = recv.recv().await.unwrap();
+        match msg {
+            MapperRequest::MapLazy(params) => {
+                assert_eq!(params.range, MemoryRange::new(0..0x10000));
+            }
+            other => panic!("expected MapLazy, got {other:?}"),
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn test_send_mappings_gap_sends_no_mapping(_spawn: impl Spawn) {
+        let (mut task, _params) = task_with_mapping().await;
+
+        let (send, mut recv) = mesh::channel();
+        let id = task.add_mapper(send, false).await.unwrap();
+
+        // Request a range that is partially unmapped (0x10000..0x20000 has no mapping).
+        task.send_mappings(id, MemoryRange::new(0x10000..0x20000));
+
+        let msg = recv.recv().await.unwrap();
+        match msg {
+            MapperRequest::NoMapping(range) => {
+                assert_eq!(range, MemoryRange::new(0x10000..0x20000));
+            }
+            other => panic!("expected NoMapping, got {other:?}"),
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn test_remove_mapping_invalidates_both_eager_and_lazy(_spawn: impl Spawn) {
+        let (mut task, _params) = task_with_mapping().await;
+
+        // Add eager mapper (responds to replay).
+        let (eager_send, mut eager_recv) = mesh::channel();
+        let add_future = task.add_mapper(eager_send, true);
+        let (_eager_id, _) = futures::join!(add_future, async {
+            let msg = eager_recv.recv().await.unwrap();
+            match msg {
+                MapperRequest::MapEager(rpc) => rpc.complete(Ok(())),
+                other => panic!("expected MapEager, got {other:?}"),
+            }
+        });
+
+        // Add lazy mapper and fault in the mapping.
+        let (lazy_send, mut lazy_recv) = mesh::channel();
+        let lazy_id = task.add_mapper(lazy_send, false).await.unwrap();
+        task.send_mappings(lazy_id, MemoryRange::new(0..0x10000));
+        // Consume the MapLazy.
+        let _ = lazy_recv.recv().await.unwrap();
+
+        // Remove the mapping — both should get Unmap.
+        let remove_future = task.remove_mappings(MemoryRange::new(0..0x10000));
+        let ((), _, _) = futures::join!(
+            remove_future,
+            async {
+                let msg = eager_recv.recv().await.unwrap();
+                match msg {
+                    MapperRequest::Unmap(rpc) => {
+                        let (range, rpc) = rpc.split();
+                        assert_eq!(range, MemoryRange::new(0..0x10000));
+                        rpc.complete(());
+                    }
+                    other => panic!("expected Unmap for eager, got {other:?}"),
+                }
+            },
+            async {
+                let msg = lazy_recv.recv().await.unwrap();
+                match msg {
+                    MapperRequest::Unmap(rpc) => {
+                        let (range, rpc) = rpc.split();
+                        assert_eq!(range, MemoryRange::new(0..0x10000));
+                        rpc.complete(());
+                    }
+                    other => panic!("expected Unmap for lazy, got {other:?}"),
+                }
+            }
+        );
+    }
+
+    /// Helper: create a task with two mappings for rollback tests.
+    async fn task_with_two_mappings() -> MappingManagerTask {
+        let mut task = MappingManagerTask::new();
+        for (start, end) in [(0u64, 0x10000u64), (0x10000, 0x20000)] {
+            let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x10000, "test")
+                .unwrap()
+                .into();
+            task.add_mapping(MappingParams {
+                range: MemoryRange::new(start..end),
+                mappable,
+                file_offset: 0,
+                writable: true,
+                dma_target: true,
+                numa_node: None,
+            })
+            .await
+            .unwrap();
+        }
+        task
+    }
+
+    #[pal_async::async_test]
+    async fn test_add_eager_mapper_rollback_on_replay_failure(_spawn: impl Spawn) {
+        let mut task = task_with_two_mappings().await;
+
+        // Create a mapper that succeeds on the first mapping but fails
+        // on the second.
+        let (send, mut recv) = mesh::channel();
+        let add_future = task.add_mapper(send, true);
+        let (result, _) = futures::join!(add_future, async {
+            // First MapEager: succeed.
+            let msg = recv.recv().await.unwrap();
+            match msg {
+                MapperRequest::MapEager(rpc) => rpc.complete(Ok(())),
+                other => panic!("expected MapEager #1, got {other:?}"),
+            }
+            // Second MapEager: fail.
+            let msg = recv.recv().await.unwrap();
+            match msg {
+                MapperRequest::MapEager(rpc) => {
+                    rpc.complete(Err(RemoteError::new(std::io::Error::other(
+                        "simulated failure",
+                    ))));
+                }
+                other => panic!("expected MapEager #2, got {other:?}"),
+            }
+        });
+
+        // add_mapper should return an error.
+        assert!(result.is_err());
+
+        // The mapper should have been removed from the slab.
+        assert_eq!(task.mappers.mappers.len(), 0);
+
+        // The first mapping's active_mappers should have been cleaned up.
+        for mapping in &task.mappings {
+            assert!(
+                mapping.active_mappers.is_empty(),
+                "active_mappers should be empty after rollback, got {:?} for {}",
+                mapping.active_mappers,
+                mapping.params.range
+            );
+        }
+
+        // Behavioral check: adding another eager mapper should succeed and
+        // replay both mappings cleanly (no stale state from failed mapper).
+        let (send2, mut recv2) = mesh::channel();
+        let add_future2 = task.add_mapper(send2, true);
+        let (result2, _) = futures::join!(add_future2, async {
+            for _ in 0..2 {
+                let msg = recv2.recv().await.unwrap();
+                match msg {
+                    MapperRequest::MapEager(rpc) => rpc.complete(Ok(())),
+                    other => panic!("expected MapEager during second add, got {other:?}"),
+                }
+            }
+        });
+        assert!(result2.is_ok());
+    }
+
+    #[pal_async::async_test]
+    async fn test_add_mapping_rollback_on_eager_failure(_spawn: impl Spawn) {
+        let mut task = MappingManagerTask::new();
+
+        // Add two eager mappers.
+        let (send1, mut recv1) = mesh::channel();
+        let _id1 = task.add_mapper(send1, true).await.unwrap();
+
+        let (send2, mut recv2) = mesh::channel();
+        let _id2 = task.add_mapper(send2, true).await.unwrap();
+
+        // Add a mapping. Mapper 1 succeeds, mapper 2 fails.
+        let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x1000, "test")
+            .unwrap()
+            .into();
+        let params = MappingParams {
+            range: MemoryRange::new(0..0x1000),
+            mappable,
+            file_offset: 0,
+            writable: true,
+            dma_target: false,
+            numa_node: None,
+        };
+
+        let add_future = task.add_mapping(params);
+        let (result, _, _) = futures::join!(
+            add_future,
+            async {
+                // Mapper 1: succeed.
+                let msg = recv1.recv().await.unwrap();
+                match msg {
+                    MapperRequest::MapEager(rpc) => rpc.complete(Ok(())),
+                    other => panic!("expected MapEager, got {other:?}"),
+                }
+                // Mapper 1 should then receive an Unmap (rollback).
+                let msg = recv1.recv().await.unwrap();
+                match msg {
+                    MapperRequest::Unmap(rpc) => {
+                        let (range, rpc) = rpc.split();
+                        assert_eq!(range, MemoryRange::new(0..0x1000));
+                        rpc.complete(());
+                    }
+                    other => panic!("expected Unmap rollback, got {other:?}"),
+                }
+            },
+            async {
+                // Mapper 2: fail.
+                let msg = recv2.recv().await.unwrap();
+                match msg {
+                    MapperRequest::MapEager(rpc) => {
+                        rpc.complete(Err(RemoteError::new(std::io::Error::other(
+                            "simulated failure",
+                        ))));
+                    }
+                    other => panic!("expected MapEager, got {other:?}"),
+                }
+            }
+        );
+
+        // add_mapping should return an error.
+        assert!(result.is_err());
+
+        // The mapping should not have been added.
+        assert!(task.mappings.is_empty());
+    }
+
+    #[pal_async::async_test]
+    async fn test_upgrade_to_eager_rollback_on_failure(_spawn: impl Spawn) {
+        let mut task = task_with_two_mappings().await;
+
+        // Add a lazy mapper.
+        let (send, mut recv) = mesh::channel();
+        let id = task.add_mapper(send, false).await.unwrap();
+        assert!(!task.mappers.mappers[id.0].eager);
+
+        // Upgrade: succeed on first mapping, fail on second.
+        let upgrade_future = task.upgrade_to_eager(id);
+        let (result, _) = futures::join!(upgrade_future, async {
+            // First MapEager: succeed.
+            let msg = recv.recv().await.unwrap();
+            match msg {
+                MapperRequest::MapEager(rpc) => rpc.complete(Ok(())),
+                other => panic!("expected MapEager #1, got {other:?}"),
+            }
+            // Second MapEager: fail.
+            let msg = recv.recv().await.unwrap();
+            match msg {
+                MapperRequest::MapEager(rpc) => {
+                    rpc.complete(Err(RemoteError::new(std::io::Error::other(
+                        "simulated failure",
+                    ))));
+                }
+                other => panic!("expected MapEager #2, got {other:?}"),
+            }
+        });
+
+        // upgrade_to_eager should return an error.
+        assert!(result.is_err());
+
+        // The mapper should still be lazy (rolled back).
+        assert!(!task.mappers.mappers[id.0].eager);
+
+        // active_mappers should be cleaned up.
+        for mapping in &task.mappings {
+            assert!(
+                !mapping.active_mappers.contains(&id),
+                "mapper should not be in active_mappers after rollback"
+            );
+        }
+
+        // The mapper should still be in the slab (not removed, just stayed lazy).
+        assert!(task.mappers.mappers.contains(id.0));
+
+        // Behavioral check: a subsequent add_mapping should NOT push to
+        // this mapper (it's still lazy).
+        let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x1000, "test")
+            .unwrap()
+            .into();
+        task.add_mapping(MappingParams {
+            range: MemoryRange::new(0x20000..0x21000),
+            mappable,
+            file_offset: 0,
+            writable: true,
+            dma_target: false,
+            numa_node: None,
+        })
+        .await
+        .unwrap();
+
+        // The lazy mapper should have received nothing.
+        assert!(
+            recv.try_recv().is_err(),
+            "lazy mapper should not receive add_mapping push after failed upgrade"
+        );
+    }
+
+    #[pal_async::async_test]
+    async fn test_eager_page_fault_fails_immediately(_spawn: impl Spawn) {
+        use super::super::va_mapper::VaMapper;
+
+        // Create a VaMapper directly, manually driving the AddMapper RPC.
+        let (req_send, mut req_recv) = mesh::channel::<MappingRequest>();
+        let mapper_future = VaMapper::new(
+            req_send,
+            0x10000,
+            None,
+            Vec::new(),
+            None,
+            true, // eager
+        );
+        let (mapper, _) = futures::join!(mapper_future, async {
+            let msg = req_recv.recv().await.unwrap();
+            match msg {
+                MappingRequest::AddMapper(rpc) => {
+                    rpc.handle_failable_sync(|(_send, eager)| {
+                        assert!(eager);
+                        Ok::<_, MappingError>(MapperId(0))
+                    });
+                }
+                _ => panic!("expected AddMapper"),
+            }
+        });
+        let mapper = mapper.unwrap();
+        assert!(mapper.is_eager());
+
+        // No mappings have been established, so a page fault on a
+        // file-backed address should fail immediately rather than
+        // trying to request the mapping lazily.
+        let action = mapper.page_fault(0x1000, 0x1000, false, false);
+        assert!(
+            matches!(action, guestmem::PageFaultAction::Fail(_)),
+            "eager mapper should fail page faults on unmapped file-backed ranges"
+        );
+    }
+
+    #[pal_async::async_test]
+    async fn test_va_mapper_drop_removes_mapper(_spawn: impl Spawn) {
+        use super::super::va_mapper::VaMapper;
+
+        let (req_send, mut req_recv) = mesh::channel::<MappingRequest>();
+        let mapper_future = VaMapper::new(
+            req_send,
+            0x10000,
+            None,
+            Vec::new(),
+            None,
+            true, // eager
+        );
+        let (mapper, mapper_req_send) = futures::join!(mapper_future, async {
+            let msg = req_recv.recv().await.unwrap();
+            match msg {
+                MappingRequest::AddMapper(rpc) => {
+                    let ((mapper_req_send, eager), rpc) = rpc.split();
+                    assert!(eager);
+                    rpc.complete(Ok(MapperId(7)));
+                    mapper_req_send
+                }
+                _ => panic!("expected AddMapper"),
+            }
+        });
+        drop(mapper.unwrap());
+
+        match req_recv.recv().await.unwrap() {
+            MappingRequest::RemoveMapper(id) => assert_eq!(id, MapperId(7)),
+            _ => panic!("expected RemoveMapper"),
+        }
+
+        // In production, MappingManagerTask::remove_mapper drops this sender.
+        // Do the same here so the mapper thread can exit.
+        drop(mapper_req_send);
+    }
+
+    #[pal_async::async_test]
+    async fn test_lazy_page_fault_requests_mapping(spawn: impl Spawn) {
+        let _ = spawn;
+        let (manager_thread, manager_driver) =
+            pal_async::DefaultPool::spawn_on_thread("mapping-manager-test");
+        let mm = MappingManager::new(&manager_driver, 0x10000, Vec::new(), None);
+        let client = mm.client().clone();
+
+        // Add a mapping so the lazy mapper can find it.
+        let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x10000, "test")
+            .unwrap()
+            .into();
+        client
+            .add_mapping(MappingParams {
+                range: MemoryRange::new(0..0x10000),
+                mappable,
+                file_offset: 0,
+                writable: true,
+                dma_target: false,
+                numa_node: None,
+            })
+            .await
+            .unwrap();
+
+        // Create a lazy mapper.
+        let mapper = client.new_lazy_mapper().await.unwrap();
+        assert!(!mapper.is_eager());
+
+        // page_fault calls block_on(request_mapping(...)), which blocks the
+        // calling thread. The MappingManager task is running on its own pool
+        // thread, so it can still serve SendMappings while this test thread is
+        // blocked here.
+        let action = mapper.page_fault(0x1000, 0x1000, false, false);
+        assert!(
+            matches!(action, guestmem::PageFaultAction::Retry),
+            "lazy mapper should request mapping on page fault and succeed"
+        );
+
+        drop(mapper);
+        drop(client);
+        drop(mm);
+        drop(manager_driver);
+        manager_thread.join().unwrap();
+    }
+
+    #[pal_async::async_test]
+    async fn test_new_mapper_upgrades_cached_lazy_to_eager(spawn: impl Spawn) {
+        let _ = spawn;
+        let (manager_thread, manager_driver) =
+            pal_async::DefaultPool::spawn_on_thread("mapping-manager-test");
+        let mm = MappingManager::new(&manager_driver, 0x20000, Vec::new(), None);
+        let client = mm.client().clone();
+
+        // Add a mapping first so replay has something to push.
+        let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x10000, "test")
+            .unwrap()
+            .into();
+        client
+            .add_mapping(MappingParams {
+                range: MemoryRange::new(0..0x10000),
+                mappable,
+                file_offset: 0,
+                writable: true,
+                dma_target: false,
+                numa_node: None,
+            })
+            .await
+            .unwrap();
+
+        // Create a lazy mapper first — this gets cached.
+        let lazy = client.new_lazy_mapper().await.unwrap();
+        assert!(!lazy.is_eager());
+
+        // Now request an eager mapper — should upgrade the cached lazy one.
+        let eager = client.new_mapper().await.unwrap();
+
+        // They should be the same Arc (same underlying mapper).
+        assert!(Arc::ptr_eq(&lazy, &eager));
+
+        // Queue one more eager mapping. The manager sends SetEager before
+        // returning from the upgrade RPC, and this MapEager is queued after
+        // that, so a successful add_mapping means the mapper thread has
+        // processed SetEager.
+        let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x1000, "test")
+            .unwrap()
+            .into();
+        client
+            .add_mapping(MappingParams {
+                range: MemoryRange::new(0x10000..0x11000),
+                mappable,
+                file_offset: 0,
+                writable: true,
+                dma_target: false,
+                numa_node: None,
+            })
+            .await
+            .unwrap();
+
+        // The mapper is now observably eager.
+        assert!(eager.is_eager());
+
+        drop(eager);
+        drop(lazy);
+        drop(client);
+        drop(mm);
+        drop(manager_driver);
+        manager_thread.join().unwrap();
     }
 }
