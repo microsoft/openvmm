@@ -24,8 +24,5 @@ parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
-[dev-dependencies]
-virtio_net.workspace = true
-
 [lints]
 workspace = true

@@ -19,6 +19,8 @@ use net_backend::RxMetadata;
 use safeatomic::AtomicSliceOps;
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use vmbus_channel::gpadl::GpadlView;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -38,13 +40,26 @@ pub struct GuestBuffers {
     mtu: u32,
 }
 
+/// A shared handle for reading the RX VLAN packet count from outside
+/// the pool. Clone this before passing the pool into the queue.
+#[derive(Clone)]
+pub struct RxVlanCounter(Arc<AtomicU64>);
+
+impl RxVlanCounter {
+    /// Returns and resets the number of RX packets with VLAN metadata
+    /// observed since the last call.
+    pub fn take(&self) -> u64 {
+        self.0.swap(0, Ordering::Relaxed)
+    }
+}
+
 /// A per-queue wrapper around guest buffers. The receive buffer is shared
 /// across all queues, but they are statically partitioned into per-queue
 /// suballocations.
 pub struct BufferPool {
     buffers: Arc<GuestBuffers>,
     buffer_segments: ArrayVec<RxBufferSegment, MAX_RX_SEGMENTS>,
-    rx_vlan_count: u64,
+    rx_vlan_count: Arc<AtomicU64>,
 }
 
 impl BufferPool {
@@ -52,8 +67,14 @@ impl BufferPool {
         Self {
             buffers,
             buffer_segments: ArrayVec::new(),
-            rx_vlan_count: 0,
+            rx_vlan_count: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Returns a shared counter handle that can be used to read the RX VLAN
+    /// count after the pool has been moved into the queue.
+    pub fn rx_vlan_counter(&self) -> RxVlanCounter {
+        RxVlanCounter(self.rx_vlan_count.clone())
     }
 
     fn offset(&self, id: RxId) -> u32 {
@@ -63,7 +84,7 @@ impl BufferPool {
     /// Returns and resets the number of RX packets with VLAN metadata
     /// observed since the last call.
     pub fn take_rx_vlan_count(&mut self) -> u64 {
-        std::mem::take(&mut self.rx_vlan_count)
+        self.rx_vlan_count.swap(0, Ordering::Relaxed)
     }
 }
 
@@ -217,7 +238,7 @@ impl BufferAccess for BufferPool {
         };
 
         let vlan = if let Some(vlan_info) = metadata.vlan {
-            self.rx_vlan_count += 1;
+            self.rx_vlan_count.fetch_add(1, Ordering::Relaxed);
             ppi_count += 1;
 
             Some(PerPacketInfo {

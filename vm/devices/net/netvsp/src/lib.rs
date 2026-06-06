@@ -356,6 +356,7 @@ struct Adapter {
 
 struct QueueState {
     queue: Box<dyn net_backend::Queue>,
+    rx_vlan_counter: buffers::RxVlanCounter,
     rx_buffer_range: RxBufferRange,
     target_vp_set: bool,
 }
@@ -4504,6 +4505,7 @@ impl Coordinator {
 
         let mut queues = Vec::new();
         let mut rx_buffers = Vec::new();
+        let mut rx_vlan_counters = Vec::new();
         {
             let buffers = &state.buffers;
             let guest_buffers = Arc::new(
@@ -4541,8 +4543,10 @@ impl Coordinator {
                     // If the primary queue is excluded from the guest supplied
                     // indirection table, it is assigned just the reserved
                     // buffers.
+                    let pool = BufferPool::new(guest_buffers.clone());
+                    rx_vlan_counters.push(pool.rx_vlan_counter());
                     queue_config.push(QueueConfig {
-                        pool: Box::new(BufferPool::new(guest_buffers.clone())),
+                        pool: Box::new(pool),
                         initial_rx: &[],
                         driver: Box::new(drivers[0].clone()),
                     });
@@ -4577,8 +4581,10 @@ impl Coordinator {
                     };
 
                     let (this, rest) = initial_rx.split_at(end);
+                    let pool = BufferPool::new(guest_buffers.clone());
+                    rx_vlan_counters.push(pool.rx_vlan_counter());
                     queue_config.push(QueueConfig {
-                        pool: Box::new(BufferPool::new(guest_buffers.clone())),
+                        pool: Box::new(pool),
                         initial_rx: this,
                         driver: Box::new(drivers[queue_index as usize].clone()),
                     });
@@ -4624,9 +4630,16 @@ impl Coordinator {
 
         self.active_packet_filter = self.workers[0].state().unwrap().channel.packet_filter;
         // Provide the queue and receive buffer ranges for each worker.
-        for ((worker, queue), rx_buffer) in self.workers.iter_mut().zip(queues).zip(rx_buffers) {
+        for (((worker, queue), rx_buffer), rx_vlan_counter) in self
+            .workers
+            .iter_mut()
+            .zip(queues)
+            .zip(rx_buffers)
+            .zip(rx_vlan_counters)
+        {
             worker.task_mut().queue_state = Some(QueueState {
                 queue,
+                rx_vlan_counter,
                 target_vp_set: false,
                 rx_buffer_range: rx_buffer,
             });
@@ -5158,7 +5171,13 @@ impl<T: 'static + RingMem> NetChannel<T> {
             };
 
             let did_some_work = (!ring_full
-                && self.process_endpoint_rx(buffers, state, data, queue_state.queue.as_mut())?)
+                && self.process_endpoint_rx(
+                    buffers,
+                    state,
+                    data,
+                    queue_state.queue.as_mut(),
+                    &queue_state.rx_vlan_counter,
+                )?)
                 | self.process_ring_buffer(buffers, state, data, queue_state)?
                 | (!ring_full
                     && self.process_endpoint_tx(state, data, queue_state.queue.as_mut())?)
@@ -5264,6 +5283,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         state: &mut ActiveState,
         data: &mut ProcessingData,
         epqueue: &mut dyn net_backend::Queue,
+        rx_vlan_counter: &buffers::RxVlanCounter,
     ) -> Result<bool, WorkerError> {
         let n = epqueue
             .rx_poll(&mut data.rx_ready)
@@ -5274,6 +5294,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         }
 
         state.stats.rx_packets_per_wake.add_sample(n as u64);
+        state.stats.rx_vlan_packets.add(rx_vlan_counter.take());
 
         if self.packet_filter == rndisprot::NDIS_PACKET_TYPE_NONE {
             tracing::trace!(
