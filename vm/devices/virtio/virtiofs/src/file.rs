@@ -307,6 +307,12 @@ impl SyntheticRootDirFile {
 
             if plus {
                 let fuse_entry = if entry_offset < 2 {
+                    // For READDIRPLUS, "." and ".." are emitted with a zero
+                    // nodeid (left from new_zeroed). This is the standard FUSE
+                    // convention telling the kernel not to instantiate/cache an
+                    // inode for these entries (no matching FORGET is owed); the
+                    // attributes are advisory only. The root is never forgotten,
+                    // so its self/parent links don't need real node ids here.
                     let mut e = fuse_entry_out::new_zeroed();
                     e.attr.ino = FUSE_ROOT_ID;
                     e.attr.mode = lx::S_IFDIR | 0o555;

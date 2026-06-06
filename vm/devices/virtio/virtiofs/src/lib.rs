@@ -226,7 +226,9 @@ impl Fuse for VirtioFs {
         // anyway: dropping the root would corrupt all subsequent lookups
         // (every path resolves through FUSE_ROOT_ID).
         if node_id == FUSE_ROOT_ID {
-            tracing::warn!(lookup_count, "ignoring forget on root inode");
+            // A buggy or malicious guest can send this repeatedly, so rate-limit
+            // the warning to avoid unbounded log spam.
+            tracelimit::warn_ratelimited!(lookup_count, "ignoring forget on root inode");
             return;
         }
         // This must be done under lock so an inode can't be resurrected between the lookup count
