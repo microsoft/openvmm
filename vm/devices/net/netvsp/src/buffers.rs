@@ -19,6 +19,8 @@ use net_backend::RxMetadata;
 use safeatomic::AtomicSliceOps;
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use vmbus_channel::gpadl::GpadlView;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -38,12 +40,26 @@ pub struct GuestBuffers {
     mtu: u32,
 }
 
+/// A shared handle for reading the RX VLAN packet count from outside
+/// the pool. Clone this before passing the pool into the queue.
+#[derive(Clone)]
+pub struct RxVlanCounter(Arc<AtomicU64>);
+
+impl RxVlanCounter {
+    /// Returns and resets the number of RX packets with VLAN metadata
+    /// observed since the last call.
+    pub fn take(&self) -> u64 {
+        self.0.swap(0, Ordering::Relaxed)
+    }
+}
+
 /// A per-queue wrapper around guest buffers. The receive buffer is shared
 /// across all queues, but they are statically partitioned into per-queue
 /// suballocations.
 pub struct BufferPool {
     buffers: Arc<GuestBuffers>,
     buffer_segments: ArrayVec<RxBufferSegment, MAX_RX_SEGMENTS>,
+    rx_vlan_count: Arc<AtomicU64>,
 }
 
 impl BufferPool {
@@ -51,11 +67,24 @@ impl BufferPool {
         Self {
             buffers,
             buffer_segments: ArrayVec::new(),
+            rx_vlan_count: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Returns a shared counter handle that can be used to read the RX VLAN
+    /// count after the pool has been moved into the queue.
+    pub fn rx_vlan_counter(&self) -> RxVlanCounter {
+        RxVlanCounter(self.rx_vlan_count.clone())
     }
 
     fn offset(&self, id: RxId) -> u32 {
         id.0 * self.buffers.sub_allocation_size
+    }
+
+    /// Returns and resets the number of RX packets with VLAN metadata
+    /// observed since the last call.
+    pub fn take_rx_vlan_count(&mut self) -> u64 {
+        self.rx_vlan_count.swap(0, Ordering::Relaxed)
     }
 }
 
@@ -165,16 +194,16 @@ impl BufferAccess for BufferPool {
         struct Header {
             header: rndisprot::MessageHeader,
             packet: rndisprot::Packet,
-            per_packet_info: PerPacketInfo,
         }
 
         #[repr(C)]
         #[derive(zerocopy::IntoBytes, Immutable, KnownLayout, Debug)]
         struct PerPacketInfo {
             header: rndisprot::PerPacketInfo,
-            checksum: rndisprot::RxTcpIpChecksumInfo,
+            payload: u32,
         }
 
+        let mut ppi_count = 1;
         let checksum = rndisprot::RxTcpIpChecksumInfo::new_zeroed()
             .set_ip_checksum_failed(metadata.ip_checksum == RxChecksumState::Bad)
             .set_ip_checksum_succeeded(metadata.ip_checksum.is_valid())
@@ -199,6 +228,30 @@ impl BufferAccess for BufferPool {
             .set_udp_checksum_succeeded(
                 metadata.l4_protocol == L4Protocol::Udp && metadata.l4_checksum.is_valid(),
             );
+        let checksum_ppi = PerPacketInfo {
+            header: rndisprot::PerPacketInfo {
+                size: size_of::<PerPacketInfo>() as u32,
+                typ: rndisprot::PPI_TCP_IP_CHECKSUM,
+                per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+            },
+            payload: checksum.0,
+        };
+
+        let vlan = if let Some(vlan_info) = metadata.vlan {
+            self.rx_vlan_count.fetch_add(1, Ordering::Relaxed);
+            ppi_count += 1;
+
+            Some(PerPacketInfo {
+                header: rndisprot::PerPacketInfo {
+                    size: size_of::<PerPacketInfo>() as u32,
+                    typ: rndisprot::PPI_VLAN,
+                    per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+                },
+                payload: Into::<rndisprot::EthVlanInfo>::into(vlan_info).into(),
+            })
+        } else {
+            None
+        };
 
         let header = Header {
             header: rndisprot::MessageHeader {
@@ -217,21 +270,23 @@ impl BufferAccess for BufferPool {
                 oob_data_length: 0,
                 num_oob_data_elements: 0,
                 per_packet_info_offset: size_of::<rndisprot::Packet>() as u32,
-                per_packet_info_length: size_of::<PerPacketInfo>() as u32,
+                per_packet_info_length: ppi_count * size_of::<PerPacketInfo>() as u32,
                 vc_handle: 0,
                 reserved: 0,
             },
-            per_packet_info: PerPacketInfo {
-                header: rndisprot::PerPacketInfo {
-                    size: size_of::<PerPacketInfo>() as u32,
-                    typ: rndisprot::PPI_TCP_IP_CHECKSUM,
-                    per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
-                },
-                checksum,
-            },
         };
 
-        self.buffers.write_at(self.offset(id), header.as_bytes());
+        let mut offset = self.offset(id);
+        self.buffers.write_at(offset, header.as_bytes());
+        offset += size_of::<Header>() as u32;
+        self.buffers.write_at(offset, checksum_ppi.as_bytes());
+        offset += size_of::<PerPacketInfo>() as u32;
+        if let Some(vlan_ppi) = vlan {
+            self.buffers.write_at(offset, vlan_ppi.as_bytes());
+        }
+        static_assertions::const_assert!(
+            (size_of::<Header>() + 2 * size_of::<PerPacketInfo>()) < RX_HEADER_LEN as usize
+        );
     }
 }
 

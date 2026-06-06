@@ -44,6 +44,8 @@ hvdef.workspace = true
 
 [dev-dependencies]
 event-listener.workspace = true
+inspect = { workspace = true, features = ["initiate"] }
+parking_lot.workspace = true
 test_with_tracing.workspace = true
 
 getrandom.workspace = true

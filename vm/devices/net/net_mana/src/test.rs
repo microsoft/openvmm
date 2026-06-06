@@ -19,6 +19,7 @@ use net_backend::QueueConfig;
 use net_backend::RxId;
 use net_backend::TxId;
 use net_backend::TxSegment;
+use net_backend::VlanMetadata;
 use net_backend::loopback::LoopbackEndpoint;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
@@ -622,6 +623,173 @@ fn get_queue_stats(queue_stats: Option<&dyn net_backend::BackendQueueStats>) -> 
         tx_errors: queue_stats.tx_errors(),
         rx_packets: queue_stats.rx_packets(),
         tx_packets: queue_stats.tx_packets(),
+        tx_vlan_packets: queue_stats.tx_vlan_packets(),
+        rx_vlan_packets: queue_stats.rx_vlan_packets(),
         ..Default::default()
     }
+}
+
+/// Build TX segments for a VLAN-tagged packet.
+fn build_tx_segments_vlan(
+    packet_len: usize,
+    num_segments: usize,
+    vlan_id: u16,
+    vlan_priority: u8,
+    vlan_dei: bool,
+) -> (Vec<u8>, Vec<TxSegment>) {
+    assert_eq!(packet_len % num_segments, 0);
+    let data_to_send = (0..packet_len).map(|v| v as u8).collect::<Vec<u8>>();
+    let tx_id = 1;
+    let mut tx_segments = Vec::new();
+    let segment_len = packet_len / num_segments;
+    let tx_metadata = net_backend::TxMetadata {
+        id: TxId(tx_id),
+        segment_count: num_segments as u8,
+        len: packet_len as u32,
+        l2_len: 18, // Ethernet header with 802.1q tag
+        l3_len: 20, // IPv4 header
+        l4_len: 20, // TCP header
+        max_tcp_segment_size: 0,
+        vlan: Some(
+            VlanMetadata::new()
+                .with_priority(vlan_priority)
+                .with_drop_eligible_indicator(vlan_dei)
+                .with_vlan_id(vlan_id),
+        ),
+        ..Default::default()
+    };
+
+    tx_segments.push(TxSegment {
+        ty: net_backend::TxSegmentType::Head(tx_metadata),
+        gpa: 0,
+        len: segment_len as u32,
+    });
+
+    for j in 0..(num_segments - 1) {
+        let gpa = (j + 1) * segment_len;
+        tx_segments.push(TxSegment {
+            ty: net_backend::TxSegmentType::Tail,
+            gpa: gpa as u64,
+            len: segment_len as u32,
+        });
+    }
+
+    assert_eq!(tx_segments.len(), num_segments);
+    (data_to_send, tx_segments)
+}
+
+/// Verify that a VLAN-tagged TX packet is successfully sent and the VLAN
+/// stats counter increments.
+#[async_test]
+async fn test_vlan_tx_rx_roundtrip_direct_dma(driver: DefaultDriver) {
+    let packet_len = 128;
+    let (data_to_send, tx_segments) = build_tx_segments_vlan(packet_len, 1, 100, 3, false);
+
+    let stats = test_endpoint(
+        driver,
+        GuestDmaMode::DirectDma,
+        packet_len,
+        tx_segments,
+        data_to_send,
+        1,
+        ManaTestConfiguration::default(),
+    )
+    .await;
+
+    assert_eq!(stats.tx_packets.get(), 1, "tx_packets mismatch");
+    assert_eq!(stats.rx_packets.get(), 1, "rx_packets mismatch");
+    assert_eq!(stats.tx_vlan_packets.get(), 1, "tx_vlan_packets mismatch");
+}
+
+/// Same as above but using bounce-buffer DMA mode.
+#[async_test]
+async fn test_vlan_tx_rx_roundtrip_bounce_buffer(driver: DefaultDriver) {
+    let packet_len = 128;
+    let (data_to_send, tx_segments) = build_tx_segments_vlan(packet_len, 1, 200, 5, true);
+
+    let stats = test_endpoint(
+        driver,
+        GuestDmaMode::BounceBuffer,
+        packet_len,
+        tx_segments,
+        data_to_send,
+        1,
+        ManaTestConfiguration::default(),
+    )
+    .await;
+
+    assert_eq!(stats.tx_packets.get(), 1, "tx_packets mismatch");
+    assert_eq!(stats.rx_packets.get(), 1, "rx_packets mismatch");
+    assert_eq!(stats.tx_vlan_packets.get(), 1, "tx_vlan_packets mismatch");
+}
+
+/// Verify that an untagged packet does NOT increment the VLAN counter.
+#[async_test]
+async fn test_no_vlan_counter_when_untagged(driver: DefaultDriver) {
+    let packet_len = IPV4_HEADER_LENGTH + 100;
+    let (data_to_send, tx_segments) = build_tx_segments(packet_len, 1, false);
+
+    let stats = test_endpoint(
+        driver,
+        GuestDmaMode::DirectDma,
+        packet_len,
+        tx_segments,
+        data_to_send,
+        1,
+        ManaTestConfiguration::default(),
+    )
+    .await;
+
+    assert_eq!(stats.tx_packets.get(), 1, "tx_packets mismatch");
+    assert_eq!(
+        stats.tx_vlan_packets.get(),
+        0,
+        "untagged should not count as VLAN"
+    );
+}
+
+/// Test a batch where some packets are VLAN-tagged and others are not,
+/// verifying that counters reflect the mix correctly.
+#[async_test]
+async fn test_vlan_mixed_batch(driver: DefaultDriver) {
+    // Send an untagged packet first.
+    let packet_len = IPV4_HEADER_LENGTH + 100;
+    let (data_to_send, tx_segments) = build_tx_segments(packet_len, 1, false);
+
+    let stats = test_endpoint(
+        driver.clone(),
+        GuestDmaMode::DirectDma,
+        packet_len,
+        tx_segments,
+        data_to_send,
+        1,
+        ManaTestConfiguration::default(),
+    )
+    .await;
+
+    assert_eq!(
+        stats.tx_vlan_packets.get(),
+        0,
+        "first packet should not be VLAN-tagged"
+    );
+
+    // Now send a VLAN-tagged packet.
+    let (data_to_send, tx_segments) = build_tx_segments_vlan(packet_len, 1, 42, 7, false);
+
+    let stats = test_endpoint(
+        driver,
+        GuestDmaMode::DirectDma,
+        packet_len,
+        tx_segments,
+        data_to_send,
+        1,
+        ManaTestConfiguration::default(),
+    )
+    .await;
+
+    assert_eq!(
+        stats.tx_vlan_packets.get(),
+        1,
+        "second packet should be VLAN-tagged"
+    );
 }
