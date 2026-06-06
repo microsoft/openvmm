@@ -14,16 +14,13 @@ use futures::io::AsyncRead;
 use inspect::InspectMut;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
-use net_backend::L4Protocol;
 use net_backend::Queue;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
-use net_backend::RxChecksumState;
 use net_backend::RxId;
 use net_backend::RxMetadata;
 use net_backend::TxError;
 use net_backend::TxId;
-use net_backend::TxMetadata;
 use net_backend::TxSegment;
 use net_backend::linearize;
 use pal_async::driver::Driver;
@@ -36,10 +33,6 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
-use virtio_net::VirtioNetHdr;
-use virtio_net::VirtioNetHeaderFlags as VirtioNetHdrFlags;
-use virtio_net::VirtioNetHeaderGso as VirtioNetHdrGso;
-use virtio_net::VirtioNetHeaderGsoProtocol as VirtioNetHdrGsoProtocol;
 
 #[derive(Error, Debug)]
 pub enum Error {
