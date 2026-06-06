@@ -10,7 +10,6 @@ rust-version.workspace = true
 net_backend.workspace = true
 net_backend_resources.workspace = true
 linux_net_bindings.workspace = true
-virtio_net.workspace = true
 
 vm_resource.workspace = true
 
@@ -24,6 +23,9 @@ libc.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+virtio_net.workspace = true
 
 [lints]
 workspace = true

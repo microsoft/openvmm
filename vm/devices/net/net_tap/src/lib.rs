@@ -250,6 +250,13 @@ impl Queue for TapQueue {
 mod tests {
     use super::*;
     use net_backend::TxFlags;
+    use net_backend::TxMetadata;
+    use net_backend::RxChecksumState;
+    use net_backend::L4Protocol;
+    use virtio_net::VirtioNetHdr;
+    use virtio_net::VirtioNetHeaderFlags;
+    use virtio_net::VirtioNetHeaderGso;
+    use virtio_net::VirtioNetHeaderGsoProtocol;
 
     /// Compute and write the IPv4 header checksum in place.
     ///
@@ -318,13 +325,13 @@ mod tests {
     fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
         if meta.flags.offload_tcp_segmentation() {
             let protocol = if meta.flags.is_ipv4() {
-                VirtioNetHdrGsoProtocol::TCPV4
+                VirtioNetHeaderGsoProtocol::TCPV4
             } else {
-                VirtioNetHdrGsoProtocol::TCPV6
+                VirtioNetHeaderGsoProtocol::TCPV6
             };
             VirtioNetHdr {
-                flags: VirtioNetHdrFlags::new().with_needs_csum(true),
-                gso_type: VirtioNetHdrGso::new().with_protocol(protocol),
+                flags: VirtioNetHeaderFlags::new().with_needs_csum(true),
+                gso_type: VirtioNetHeaderGso::new().with_protocol(protocol),
                 hdr_len: meta.l2_len as u16 + meta.l3_len + meta.l4_len as u16,
                 gso_size: meta.max_tcp_segment_size,
                 csum_start: meta.l2_len as u16 + meta.l3_len,
@@ -333,8 +340,8 @@ mod tests {
             }
         } else if meta.flags.offload_udp_segmentation() {
             VirtioNetHdr {
-                flags: VirtioNetHdrFlags::new().with_needs_csum(true),
-                gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::UDP_L4),
+                flags: VirtioNetHeaderFlags::new().with_needs_csum(true),
+                gso_type: VirtioNetHeaderGso::new().with_protocol(VirtioNetHeaderGsoProtocol::UDP_L4),
                 hdr_len: meta.l2_len as u16 + meta.l3_len + 8, // 8 = UDP header length
                 gso_size: meta.max_tcp_segment_size,
                 csum_start: meta.l2_len as u16 + meta.l3_len,
@@ -343,8 +350,8 @@ mod tests {
             }
         } else if meta.flags.offload_tcp_checksum() {
             VirtioNetHdr {
-                flags: VirtioNetHdrFlags::new().with_needs_csum(true),
-                gso_type: VirtioNetHdrGso::new(),
+                flags: VirtioNetHeaderFlags::new().with_needs_csum(true),
+                gso_type: VirtioNetHeaderGso::new(),
                 hdr_len: 0,
                 gso_size: 0,
                 csum_start: meta.l2_len as u16 + meta.l3_len,
@@ -353,8 +360,8 @@ mod tests {
             }
         } else if meta.flags.offload_udp_checksum() {
             VirtioNetHdr {
-                flags: VirtioNetHdrFlags::new().with_needs_csum(true),
-                gso_type: VirtioNetHdrGso::new(),
+                flags: VirtioNetHeaderFlags::new().with_needs_csum(true),
+                gso_type: VirtioNetHeaderGso::new(),
                 hdr_len: 0,
                 gso_size: 0,
                 csum_start: meta.l2_len as u16 + meta.l3_len,
@@ -384,8 +391,8 @@ mod tests {
         };
 
         let l4_protocol = match hdr.gso_type.protocol() {
-            VirtioNetHdrGsoProtocol::TCPV4 | VirtioNetHdrGsoProtocol::TCPV6 => L4Protocol::Tcp,
-            VirtioNetHdrGsoProtocol::UDP | VirtioNetHdrGsoProtocol::UDP_L4 => L4Protocol::Udp,
+            VirtioNetHeaderGsoProtocol::TCPV4 | VirtioNetHeaderGsoProtocol::TCPV6 => L4Protocol::Tcp,
+            VirtioNetHeaderGsoProtocol::UDP | VirtioNetHeaderGsoProtocol::UDP_L4 => L4Protocol::Udp,
             _ => L4Protocol::Unknown,
         };
 
@@ -414,7 +421,7 @@ mod tests {
         assert!(!hdr.flags.data_valid());
         assert_eq!(hdr.csum_start, 14 + 20);
         assert_eq!(hdr.csum_offset, 16);
-        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::NONE);
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHeaderGsoProtocol::NONE);
         assert_eq!(hdr.gso_size, 0);
     }
 
@@ -432,7 +439,7 @@ mod tests {
             ..Default::default()
         };
         let hdr = build_vnet_hdr(&meta);
-        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::TCPV4);
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHeaderGsoProtocol::TCPV4);
         assert_eq!(hdr.gso_size, 1460);
         assert_eq!(hdr.hdr_len, 14 + 20 + 32);
         assert!(hdr.flags.needs_csum());
@@ -447,7 +454,7 @@ mod tests {
         let hdr = build_vnet_hdr(&meta);
         assert!(!hdr.flags.needs_csum());
         assert!(!hdr.flags.data_valid());
-        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::NONE);
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHeaderGsoProtocol::NONE);
         assert_eq!(hdr.hdr_len, 0);
         assert_eq!(hdr.gso_size, 0);
         assert_eq!(hdr.csum_start, 0);
@@ -468,14 +475,14 @@ mod tests {
         assert!(hdr.flags.needs_csum());
         assert_eq!(hdr.csum_start, 14 + 20);
         assert_eq!(hdr.csum_offset, 6);
-        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::NONE);
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHeaderGsoProtocol::NONE);
     }
 
     #[test]
     fn rx_metadata_from_vnet_hdr_valid() {
         let hdr = VirtioNetHdr {
-            flags: VirtioNetHdrFlags::new().with_data_valid(true),
-            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV4),
+            flags: VirtioNetHeaderFlags::new().with_data_valid(true),
+            gso_type: VirtioNetHeaderGso::new().with_protocol(VirtioNetHeaderGsoProtocol::TCPV4),
             ..Default::default()
         };
         let meta = parse_vnet_hdr(&hdr);
@@ -489,8 +496,8 @@ mod tests {
         // We don't set TUN_F_CSUM so the kernel should never send NEEDS_CSUM,
         // but if it did, we conservatively treat it as Unknown (not Good).
         let hdr = VirtioNetHdr {
-            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
-            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV6),
+            flags: VirtioNetHeaderFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHeaderGso::new().with_protocol(VirtioNetHeaderGsoProtocol::TCPV6),
             ..Default::default()
         };
         let meta = parse_vnet_hdr(&hdr);
@@ -511,8 +518,8 @@ mod tests {
     #[test]
     fn rx_metadata_from_vnet_hdr_udp() {
         let hdr = VirtioNetHdr {
-            flags: VirtioNetHdrFlags::new().with_data_valid(true),
-            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::UDP),
+            flags: VirtioNetHeaderFlags::new().with_data_valid(true),
+            gso_type: VirtioNetHeaderGso::new().with_protocol(VirtioNetHeaderGsoProtocol::UDP),
             ..Default::default()
         };
         let meta = parse_vnet_hdr(&hdr);
@@ -532,7 +539,7 @@ mod tests {
             ..Default::default()
         };
         let hdr = build_vnet_hdr(&meta);
-        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::UDP_L4);
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHeaderGsoProtocol::UDP_L4);
         assert_eq!(hdr.gso_size, 1472);
         assert_eq!(hdr.hdr_len, 14 + 20 + 8);
         assert!(hdr.flags.needs_csum());

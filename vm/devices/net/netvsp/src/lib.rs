@@ -2577,7 +2577,7 @@ impl<T: RingMem> NetChannel<T> {
                     } else if metadata.flags.is_ipv6() {
                         net_backend::IPV6_MIN_HEADER_LEN
                     } else {
-                        unreachable!("this packet is neither v4 nor v6?");
+                        return Err(WorkerError::InvalidTcpHeaderOffset);
                     }
                 } else if (metadata.transport_header_offset < metadata.l2_len as u16)
                     || (metadata.flags.is_ipv4()

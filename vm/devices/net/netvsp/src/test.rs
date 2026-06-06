@@ -370,7 +370,7 @@ struct TestNicQueue {
 
 impl TestNicQueue {
     pub fn new(
-        config: QueueConfig,
+        config: QueueConfig<'_>,
         rx: mesh::Receiver<(Vec<u8>, RxMetadata)>,
         sync_tx: bool,
         endpoint_state: Option<Arc<parking_lot::Mutex<TestNicEndpointState>>>,
