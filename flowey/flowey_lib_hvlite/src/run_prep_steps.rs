@@ -78,7 +78,10 @@ impl SimpleFlowNode for Node {
 
                 let binary_path = match &prep_steps {
                     PrepStepsOutput::WindowsBin { exe, .. } => exe,
-                    PrepStepsOutput::LinuxBin { bin, .. } => bin,
+                    PrepStepsOutput::LinuxBin { bin, .. } => {
+                        bin.make_executable()?;
+                        bin
+                    }
                 };
 
                 // When running a Windows exe from WSL2, environment variables don't
