@@ -410,7 +410,10 @@ impl<T: RingMem + Unpin> SerialChannel<T> {
     ) -> Result<(), Error> {
         match notification {
             HostNotifications::RX_CLEAR_BUFFER => {
-                todo!("clear rx buffer unimplemented")
+                // The guest asked to discard buffered host->guest RX data. This
+                // is guest-controlled, so it must not panic (the previous
+                // `todo!()` was a guest-triggerable DoS); just clear the buffer.
+                self.state.rx_bytes.clear();
             }
             HostNotifications::TX_DATA_AVAILABLE => {
                 let message = protocol::TxDataAvailableMessage::read_from_prefix(buf)
