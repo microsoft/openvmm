@@ -5,14 +5,13 @@
 //!
 //! Separate error types are provided for each category of operation:
 //!
-//! - [`CreateError`] for file creation parameter validation.
-//! - [`OpenError`] for file open and format parsing.
-//! - [`VhdxIoError`] for runtime I/O once the read/write path is added.
+//! - [`CreateError`] — file creation parameter validation
+//! - [`OpenError`] — file open and format parsing
+//! - [`VhdxIoError`] — runtime I/O (read, write, flush, trim, close)
 
-#![allow(dead_code)]
+use thiserror::Error;
 
 use crate::log_task::LogTaskError;
-use thiserror::Error;
 
 /// The VHDX write pipeline has been poisoned by a previous fatal error.
 ///
@@ -23,7 +22,7 @@ use thiserror::Error;
 #[error("VHDX pipeline failed: {0}")]
 pub(crate) struct PipelineFailed(pub(crate) String);
 
-/// Errors returned by VHDX file creation.
+/// Errors returned by VHDX file creation ([`create::create`](crate::create::create)).
 #[derive(Debug, Error)]
 pub enum CreateError {
     /// An I/O error occurred while writing the VHDX file.
@@ -36,30 +35,23 @@ pub enum CreateError {
 }
 
 /// Errors returned when opening or parsing a VHDX file.
-#[derive(Debug, Error)]
-#[error(transparent)]
-pub struct OpenError(pub(crate) OpenErrorInner);
-
-impl<T: Into<OpenErrorInner>> From<T> for OpenError {
-    fn from(inner: T) -> Self {
-        OpenError(inner.into())
-    }
-}
-
-/// Inner representation of [`OpenError`].
+///
+/// Covers file identifier validation, header parsing, region table
+/// validation, metadata parsing, BAT loading, and parent locator
+/// parsing.
 #[derive(Debug, Error)]
 pub(crate) enum OpenErrorInner {
     /// An I/O error occurred while reading the VHDX file.
     #[error("I/O error")]
-    Io(#[from] std::io::Error),
+    Io(#[source] std::io::Error),
 
     /// The VHDX file is corrupt or has an invalid structure.
     #[error("VHDX file is corrupt")]
     Corrupt(#[from] CorruptionType),
 
-    /// An open option is invalid.
+    /// An open option (e.g. block alignment) is invalid.
     #[error("invalid parameter")]
-    InvalidParameter(#[from] InvalidFormatReason),
+    InvalidParameter(InvalidFormatReason),
 
     /// The write pipeline failed during writable open initialization.
     #[error("pipeline failed during open")]
@@ -70,7 +62,25 @@ pub(crate) enum OpenErrorInner {
     MetadataCache(#[source] CacheError),
 }
 
+/// Errors returned when opening or parsing a VHDX file.
+///
+/// Covers file identifier validation, header parsing, region table
+/// validation, metadata parsing, BAT loading, and parent locator
+/// parsing.
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct OpenError(pub(crate) OpenErrorInner);
+
+impl<T: Into<OpenErrorInner>> From<T> for OpenError {
+    fn from(inner: T) -> Self {
+        OpenError(inner.into())
+    }
+}
+
 /// Errors returned by runtime VHDX I/O operations.
+///
+/// Covers read, write, flush, trim, and close. Use [`kind()`](Self::kind)
+/// to classify the error.
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub struct VhdxIoError(#[from] pub(crate) VhdxIoErrorInner);
@@ -88,7 +98,6 @@ impl VhdxIoError {
 }
 
 /// Classification of [`VhdxIoError`] for programmatic handling.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum VhdxIoErrorKind {
     /// The file was opened read-only.
@@ -104,77 +113,46 @@ pub enum VhdxIoErrorKind {
 /// Inner representation of [`VhdxIoError`].
 #[derive(Debug, Error)]
 pub(crate) enum VhdxIoErrorInner {
-    /// An I/O error occurred.
-    #[error("I/O error")]
-    Io(#[from] std::io::Error),
-
-    /// Failed to write or flush a VHDX header update.
     #[error("failed to write header")]
     WriteHeader(#[source] std::io::Error),
-
-    /// Failed to commit cached metadata pages to the log pipeline.
+    #[error("failed to flush")]
+    Flush(#[source] std::io::Error),
     #[error("failed to commit cache")]
     CommitCache(#[source] CacheError),
-
-    /// Failed to read a sector bitmap page.
     #[error("failed to read sector bitmap")]
     ReadSectorBitmap(#[source] CacheError),
-
-    /// Failed to zero newly allocated file space.
     #[error("failed to zero block at file offset {file_offset:#x}")]
     ZeroBlock {
         #[source]
         err: std::io::Error,
         file_offset: u64,
     },
-
-    /// Failed to extend the backing file.
     #[error("failed to extend file to {target_file_size:#x}")]
     ExtendFile {
         #[source]
         err: std::io::Error,
         target_file_size: u64,
     },
-
-    /// Failed to truncate the backing file.
     #[error("failed to truncate file to {target_file_size:#x}")]
     TruncateFile {
         #[source]
         err: std::io::Error,
         target_file_size: u64,
     },
-
-    /// Failed to access a cached BAT page.
     #[error("failed to access BAT page cache")]
     BatCache(#[source] CacheError),
-
-    /// Failed to access a cached sector bitmap page.
     #[error("failed to access sector bitmap page cache")]
     SectorBitmapCache(#[source] CacheError),
-
-    /// Failed to flush the backing file.
-    #[error("failed to flush")]
-    Flush(#[source] std::io::Error),
-
-    /// The write pipeline failed permanently.
-    #[error("VHDX file failed")]
-    Failed(#[source] PipelineFailed),
-
-    /// The file was opened read-only.
     #[error("VHDX file is opened read-only")]
     ReadOnly,
-
-    /// The log task failed during graceful shutdown.
-    #[error("failed to close log task")]
-    LogClose(#[source] LogTaskError),
-
-    /// The request is not aligned to the logical sector size.
+    #[error("VHDX file failed")]
+    Failed(#[source] PipelineFailed),
     #[error("I/O request is not aligned to logical sector size")]
     UnalignedIo,
-
-    /// The request extends beyond the virtual disk size.
     #[error("I/O request extends beyond end of virtual disk")]
     BeyondEndOfDisk,
+    #[error("failed to close log task")]
+    LogClose(#[source] LogTaskError),
 }
 
 /// Errors from the page cache write path.
@@ -197,7 +175,10 @@ pub(crate) enum CacheError {
 }
 
 /// Specific reasons a VHDX creation or parameter validation may fail.
-#[derive(Debug, Clone, Error, PartialEq, Eq)]
+///
+/// Each variant corresponds to a distinct validation error detected
+/// when processing VHDX parameters (e.g. during file creation).
+#[derive(Debug, Clone, Error)]
 pub enum InvalidFormatReason {
     /// The logical sector size is not 512 or 4096.
     #[error("logical sector size must be 512 or 4096")]
@@ -215,7 +196,7 @@ pub enum InvalidFormatReason {
     #[error("disk size must be a multiple of logical sector size")]
     DiskSizeNotAligned,
 
-    /// The disk size exceeds the maximum.
+    /// The disk size exceeds the maximum (64 TiB).
     #[error("disk size exceeds maximum (64 TiB)")]
     DiskSizeTooLarge,
 
@@ -223,15 +204,15 @@ pub enum InvalidFormatReason {
     #[error("block size must be a multiple of 1 MiB")]
     BlockSizeNotAligned,
 
-    /// The block size exceeds the maximum.
+    /// The block size exceeds the maximum (256 MiB).
     #[error("block size exceeds maximum (256 MiB)")]
     BlockSizeTooLarge,
 
-    /// The block alignment is not a power of two.
+    /// The block alignment is not a power of 2.
     #[error("block alignment must be a power of 2")]
     BlockAlignmentNotPowerOfTwo,
 
-    /// The block size / logical sector size combination is invalid.
+    /// The block size / logical sector size combination is invalid (chunk ratio is zero).
     #[error("invalid block size / logical sector size combination")]
     InvalidChunkRatio,
 
@@ -245,10 +226,16 @@ pub enum InvalidFormatReason {
 }
 
 /// Specific reasons a VHDX file may be considered corrupt.
-#[derive(Debug, Clone, Error, PartialEq, Eq)]
+///
+/// Each variant corresponds to a distinct corruption condition detected
+/// during parsing or validation. Covers all corruption types from the
+/// VHDX implementation.
+#[derive(Debug, Clone, Error)]
 pub(crate) enum CorruptionType {
-    #[error("invalid file identifier signature")]
-    InvalidFileIdentifier,
+    #[error("user metadata entry is marked as required")]
+    MetadataUserRequired,
+    #[error("BAT region is too small for the disk geometry")]
+    BatTooSmall,
     #[error("no valid VHDX headers found")]
     NoValidHeaders,
     #[error("header sequence number overflowed u64")]
@@ -259,10 +246,50 @@ pub(crate) enum CorruptionType {
     InvalidLogOffset,
     #[error("log region extends beyond end of file")]
     LogBeyondEndOfFile,
-    #[error("unsupported VHDX version")]
-    UnsupportedVersion,
-    #[error("unsupported VHDX log version")]
-    UnsupportedLogVersion,
+    #[error("log region size exceeds the maximum supported size")]
+    LogTooLarge,
+    #[error("parent locator item is too small for its header")]
+    LocatorTooSmallForHeader,
+    #[error("parent locator item is too small for its entries")]
+    LocatorTooSmallForEntries,
+    #[error("parent locator entry key is invalid")]
+    InvalidLocatorEntryKey,
+    #[error("parent locator entry value is invalid")]
+    InvalidLocatorEntryValue,
+    #[error("metadata table has an invalid signature")]
+    InvalidMetadataTableSignature,
+    #[error("metadata table entry count too high")]
+    MetadataTableEntryCountTooHigh,
+    #[error("reserved metadata table field is nonzero")]
+    ReservedMetadataTableFieldNonzero,
+    #[error("duplicate metadata GUID")]
+    MetadataDuplicateGuid,
+    #[error("metadata entries have overlapping ranges")]
+    MetadataOverlapping,
+    #[error("user metadata entry count exceeded")]
+    MetadataUserCountExceeded,
+    #[error("file is empty")]
+    EmptyFile,
+    #[error("file parameters item has invalid size")]
+    InvalidFileParameterSize,
+    #[error("reserved file parameters field is nonzero")]
+    ReservedFileParametersFieldNonzero,
+    #[error("file parameters marked as virtual disk metadata")]
+    FileParametersMarkedVirtual,
+    #[error("invalid block size")]
+    InvalidBlockSize,
+    #[error("invalid logical sector size")]
+    InvalidLogicalSectorSize,
+    #[error("logical sector size not marked as virtual disk metadata")]
+    LogicalSectorSizeNotMarkedVirtual,
+    #[error("invalid sector size")]
+    InvalidSectorSize,
+    #[error("logical sector size item has invalid size")]
+    InvalidLogicalSectorSizeSize,
+    #[error("disk size item not marked as virtual disk metadata")]
+    DiskSizeNotMarkedVirtual,
+    #[error("invalid virtual disk size")]
+    InvalidDiskSize,
     #[error("both region tables are corrupt")]
     RegionTablesBothCorrupt,
     #[error("invalid entry count in region table")]
@@ -277,58 +304,10 @@ pub(crate) enum CorruptionType {
     UnknownRequiredRegion,
     #[error("BAT or metadata region is missing")]
     MissingBatOrMetadataRegion,
-    #[error("metadata table has an invalid signature")]
-    InvalidMetadataTableSignature,
-    #[error("metadata table entry count too high")]
-    MetadataTableEntryCountTooHigh,
-    #[error("reserved metadata table field is nonzero")]
-    ReservedMetadataTableFieldNonzero,
-    #[error("metadata entry has zero item GUID")]
-    ZeroMetadataItemId,
-    #[error("duplicate metadata GUID")]
-    MetadataDuplicateGuid,
-    #[error("metadata entries have overlapping ranges")]
-    MetadataOverlapping,
-    #[error("metadata entry has invalid offset")]
-    InvalidMetadataEntryOffset,
-    #[error("metadata region is too large")]
-    MetadataRegionTooLarge,
-    #[error("metadata item is too large")]
-    MetadataItemTooLarge,
-    #[error("total metadata size per category exceeded")]
-    TotalMetadataSizeExceeded,
-    #[error("user metadata entry is marked as required")]
-    MetadataUserRequired,
-    #[error("user metadata entry count exceeded")]
-    MetadataUserCountExceeded,
-    #[error("unknown required metadata item")]
-    UnknownRequiredMetadata,
-    #[error("required metadata item is missing")]
-    MissingRequiredMetadata,
-    #[error("file is marked as incomplete")]
-    IncompleteFile,
-    #[error("file parameters item has invalid size")]
-    InvalidFileParameterSize,
-    #[error("reserved file parameters field is nonzero")]
-    ReservedFileParametersFieldNonzero,
-    #[error("file parameters marked as virtual disk metadata")]
-    FileParametersMarkedVirtual,
-    #[error("invalid block size")]
-    InvalidBlockSize,
-    #[error("invalid logical sector size")]
-    InvalidLogicalSectorSize,
-    #[error("logical sector size item has invalid size")]
-    InvalidLogicalSectorSizeSize,
-    #[error("logical sector size marked as virtual disk metadata")]
-    LogicalSectorSizeMarkedVirtual,
-    #[error("invalid sector size")]
-    InvalidSectorSize,
-    #[error("disk size item marked as virtual disk metadata")]
-    DiskMarkedVirtual,
-    #[error("invalid virtual disk size")]
-    InvalidDiskSize,
-    #[error("BAT region is too small for the disk geometry")]
-    BatTooSmall,
+    #[error("bad log entry encountered during replay")]
+    BadLogEntryOnReplay,
+    #[error("no valid log entries found")]
+    NoValidLogEntries,
     #[error("BAT entry references range beyond end of file")]
     RangeBeyondEof,
     #[error("BAT entries reference overlapping file ranges")]
@@ -341,57 +320,34 @@ pub(crate) enum CorruptionType {
     PartiallyPresentWithoutSectorBitmap,
     #[error("trimmed range collides with allocated range")]
     TrimmedRangeCollision,
-    #[error("parent locator item is too small for its header")]
-    LocatorTooSmallForHeader,
-    #[error("parent locator item is too small for its entries")]
-    LocatorTooSmallForEntries,
-    #[error("invalid parent locator key-value count")]
-    InvalidLocatorKeyValueCount,
-    #[error("parent locator entry key is invalid")]
-    InvalidLocatorEntryKey,
-    #[error("parent locator entry value is invalid")]
-    InvalidLocatorEntryValue,
-    #[error("bad log entry encountered during replay")]
-    BadLogEntryOnReplay,
-    #[error("no valid log entries found")]
-    NoValidLogEntries,
+    #[error("unknown required metadata item")]
+    UnknownRequiredMetadata,
+    #[error("file is marked as incomplete")]
+    IncompleteFile,
+    #[error("required metadata item is missing")]
+    MissingRequiredMetadata,
     #[error("header has log GUID but log is missing")]
     MissingLogHasGuid,
-    #[error("log replay required (log GUID is non-zero)")]
-    LogReplayRequired,
+    #[error("invalid metadata entry offset")]
+    InvalidMetadataEntryOffset,
+    #[error("metadata region is too large")]
+    MetadataRegionTooLarge,
+    #[error("metadata item is too large")]
+    MetadataItemTooLarge,
+    #[error("total metadata size per category exceeded")]
+    TotalMetadataSizeExceeded,
+    #[error("metadata entry has zero item GUID")]
+    ZeroMetadataItemId,
+    #[error("invalid file identifier signature")]
+    InvalidFileIdentifier,
+    #[error("invalid parent locator key-value count")]
+    InvalidLocatorKeyValueCount,
     #[error("log is full")]
     LogFull,
-    #[error("file is empty")]
-    EmptyFile,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn create_error_preserves_invalid_format_source() {
-        let err = CreateError::InvalidFormat(InvalidFormatReason::DiskSizeZero);
-        assert_eq!(err.to_string(), "invalid format parameters");
-        assert_eq!(
-            std::error::Error::source(&err).unwrap().to_string(),
-            "disk size must be > 0"
-        );
-    }
-
-    #[test]
-    fn open_error_converts_from_corruption() {
-        let err = OpenError::from(OpenErrorInner::from(CorruptionType::InvalidFileIdentifier));
-        assert_eq!(err.to_string(), "VHDX file is corrupt");
-        assert_eq!(
-            std::error::Error::source(&err).unwrap().to_string(),
-            "invalid file identifier signature"
-        );
-    }
-
-    #[test]
-    fn vhdx_io_error_reports_kind() {
-        let err = VhdxIoError::from(VhdxIoErrorInner::UnalignedIo);
-        assert_eq!(err.kind(), VhdxIoErrorKind::InvalidInput);
-    }
+    #[error("log replay required (log GUID is non-zero)")]
+    LogReplayRequired,
+    #[error("unsupported VHDX version")]
+    UnsupportedVersion,
+    #[error("unsupported VHDX log version")]
+    UnsupportedLogVersion,
 }

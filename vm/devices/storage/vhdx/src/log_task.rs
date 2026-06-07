@@ -428,7 +428,6 @@ mod tests {
     use crate::AsyncFileExt;
     use crate::apply_task;
     use crate::log::LogRegion;
-    use crate::open::FailureFlag;
     use crate::tests::support::InMemoryFile;
     use pal_async::async_test;
     use pal_async::task::Spawn;
@@ -484,6 +483,7 @@ mod tests {
         let log_permits = Arc::new(LogPermits::new(permit_count));
         let logged_lsn = Arc::new(LsnWatermark::new());
         let applied_lsn = Arc::new(LsnWatermark::new());
+
         let failure_flag = Arc::new(FailureFlag::new());
 
         let (apply_tx, apply_rx) = mesh::channel::<ApplyBatch<Vec<u8>>>();
