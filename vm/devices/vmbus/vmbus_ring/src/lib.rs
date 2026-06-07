@@ -399,7 +399,9 @@ fn parse_packet<M: RingMem>(
                 tph.range_count,
                 RingRange {
                     off: ring_off + 24,
-                    size: desc.data_offset8 as u32 * 8 - 24,
+                    size: (desc.data_offset8 as u32 * 8)
+                        .checked_sub(24)
+                        .ok_or(ReadError::Corrupt(Error::InvalidDescriptorLengths))?,
                 },
             )
         }
@@ -415,7 +417,9 @@ fn parse_packet<M: RingMem>(
                 gph.range_count,
                 RingRange {
                     off: ring_off + 24,
-                    size: desc.data_offset8 as u32 * 8 - 24,
+                    size: (desc.data_offset8 as u32 * 8)
+                        .checked_sub(24)
+                        .ok_or(ReadError::Corrupt(Error::InvalidDescriptorLengths))?,
                 },
             )
         }
