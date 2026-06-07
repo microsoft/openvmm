@@ -96,6 +96,8 @@ pub enum ChannelError {
     InvalidTargetVp,
     #[error("interrupts are disabled for this channel")]
     InterruptsDisabled,
+    #[error("received a message that is only valid in the server-to-client direction")]
+    InvalidMessageType,
 }
 
 #[derive(Debug, Error)]
@@ -3686,7 +3688,14 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | Message::ModifyChannelResponse(..)
             | Message::ModifyConnectionResponse(..)
             | Message::PauseResponse(..) => {
-                unreachable!("Server received client message {:?}", msg);
+                // These messages are only valid in the server-to-client
+                // direction, but `Message::parse` will happily decode them
+                // from guest-supplied bytes. A misbehaving or malicious guest
+                // can therefore send one to the server; reject it rather than
+                // panicking (this path is reached directly from
+                // guest-controlled input).
+                tracelimit::warn_ratelimited!(?msg, "received client-only message from guest");
+                return Err(ChannelError::InvalidMessageType);
             }
         }
         Ok(())
