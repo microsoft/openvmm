@@ -946,10 +946,10 @@ fn validate_pinned_bars(
 
     // Check aperture containment.
     for &(addr, size, bus, device, function, bar_index, is_mem64) in &all_pinned {
-        let aperture = if is_mem64 {
-            params.high_mmio.or(params.low_mmio)
+        let (aperture, aperture_name) = if is_mem64 && params.high_mmio.is_some() {
+            (params.high_mmio, "high_mmio")
         } else {
-            params.low_mmio
+            (params.low_mmio, "low_mmio")
         };
         let bar_end = addr.saturating_add(size);
         let fits = aperture.is_some_and(|a| {
@@ -964,7 +964,7 @@ fn validate_pinned_bars(
                 bar_index,
                 address: addr,
                 size,
-                aperture: if is_mem64 { "high_mmio" } else { "low_mmio" },
+                aperture: aperture_name,
             });
         }
     }
