@@ -890,7 +890,7 @@ impl IntoPipeline for CheckinGatesCli {
                     flowey_lib_hvlite::build_prep_steps::Request {
                         target: CommonTriple::Common {
                             arch,
-                            platform: CommonPlatform::LinuxGnu,
+                            platform: CommonPlatform::LinuxMusl,
                         },
                         profile: CommonProfile::from_release(release),
                         prep_steps,

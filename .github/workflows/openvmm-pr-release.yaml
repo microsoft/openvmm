@@ -7311,7 +7311,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 9
         flowey e 8 flowey_lib_hvlite::build_openvmm_vhost 0
         flowey e 8 flowey_core::pipeline::artifact::publish 1
-        flowey e 8 flowey_lib_hvlite::init_cross_build 5
+        flowey e 8 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build vmgstool
       run: |-
@@ -7324,7 +7324,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 16
         flowey e 8 flowey_lib_hvlite::build_vmgstool 0
         flowey e 8 flowey_core::pipeline::artifact::publish 2
-        flowey e 8 flowey_lib_hvlite::init_cross_build 4
+        flowey e 8 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build vmgs_lib
       run: |-
@@ -7346,7 +7346,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 1
         flowey e 8 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 8 flowey_core::pipeline::artifact::publish 4
-        flowey e 8 flowey_lib_hvlite::init_cross_build 6
+        flowey e 8 flowey_lib_hvlite::init_cross_build 5
       shell: bash
     - name: cargo build ohcldiag-dev
       run: |-
@@ -7366,7 +7366,7 @@ jobs:
     - name: extract Aarch64 sysroot.tar.gz
       run: |-
         flowey e 8 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
-        flowey e 8 flowey_lib_hvlite::init_cross_build 7
+        flowey e 8 flowey_lib_hvlite::init_cross_build 6
       shell: bash
     - name: cargo build openvmm
       run: |-
@@ -7379,7 +7379,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 7
         flowey e 8 flowey_lib_hvlite::build_openvmm 1
         flowey e 8 flowey_core::pipeline::artifact::publish 6
-        flowey e 8 flowey_lib_hvlite::init_cross_build 8
+        flowey e 8 flowey_lib_hvlite::init_cross_build 7
       shell: bash
     - name: cargo build openvmm_vhost
       run: |-
@@ -7392,7 +7392,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 11
         flowey e 8 flowey_lib_hvlite::build_openvmm_vhost 1
         flowey e 8 flowey_core::pipeline::artifact::publish 7
-        flowey e 8 flowey_lib_hvlite::init_cross_build 3
+        flowey e 8 flowey_lib_hvlite::init_cross_build 8
       shell: bash
     - name: cargo build prep_steps
       run: |-
@@ -7621,7 +7621,7 @@ jobs:
         flowey e 9 flowey_lib_hvlite::run_cargo_build 9
         flowey e 9 flowey_lib_hvlite::build_openvmm_vhost 0
         flowey e 9 flowey_core::pipeline::artifact::publish 1
-        flowey e 9 flowey_lib_hvlite::init_cross_build 6
+        flowey e 9 flowey_lib_hvlite::init_cross_build 5
       shell: bash
     - name: cargo build vmgstool
       run: |-
@@ -7634,7 +7634,7 @@ jobs:
         flowey e 9 flowey_lib_hvlite::run_cargo_build 16
         flowey e 9 flowey_lib_hvlite::build_vmgstool 0
         flowey e 9 flowey_core::pipeline::artifact::publish 2
-        flowey e 9 flowey_lib_hvlite::init_cross_build 5
+        flowey e 9 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build vmgs_lib
       run: |-
@@ -7660,7 +7660,7 @@ jobs:
         flowey e 9 flowey_lib_hvlite::run_cargo_build 1
         flowey e 9 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 9 flowey_core::pipeline::artifact::publish 4
-        flowey e 9 flowey_lib_hvlite::init_cross_build 7
+        flowey e 9 flowey_lib_hvlite::init_cross_build 6
       shell: bash
     - name: cargo build ohcldiag-dev
       run: |-
@@ -7680,7 +7680,7 @@ jobs:
     - name: extract X86_64 sysroot.tar.gz
       run: |-
         flowey e 9 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
-        flowey e 9 flowey_lib_hvlite::init_cross_build 9
+        flowey e 9 flowey_lib_hvlite::init_cross_build 8
       shell: bash
     - name: cargo build openvmm
       run: |-
@@ -7693,7 +7693,7 @@ jobs:
         flowey e 9 flowey_lib_hvlite::run_cargo_build 7
         flowey e 9 flowey_lib_hvlite::build_openvmm 1
         flowey e 9 flowey_core::pipeline::artifact::publish 6
-        flowey e 9 flowey_lib_hvlite::init_cross_build 10
+        flowey e 9 flowey_lib_hvlite::init_cross_build 9
       shell: bash
     - name: cargo build openvmm_vhost
       run: |-
@@ -7706,7 +7706,7 @@ jobs:
         flowey e 9 flowey_lib_hvlite::run_cargo_build 11
         flowey e 9 flowey_lib_hvlite::build_openvmm_vhost 1
         flowey e 9 flowey_core::pipeline::artifact::publish 7
-        flowey e 9 flowey_lib_hvlite::init_cross_build 4
+        flowey e 9 flowey_lib_hvlite::init_cross_build 10
       shell: bash
     - name: cargo build prep_steps
       run: |-
@@ -7760,7 +7760,7 @@ jobs:
         flowey e 9 flowey_lib_common::run_cargo_nextest_archive 0
         flowey e 9 flowey_lib_hvlite::build_nextest_vmm_tests 0
         flowey e 9 flowey_core::pipeline::artifact::publish 9
-        flowey e 9 flowey_lib_hvlite::init_cross_build 8
+        flowey e 9 flowey_lib_hvlite::init_cross_build 7
       shell: bash
     - name: build + archive 'vmm_tests' nextests
       run: |-
