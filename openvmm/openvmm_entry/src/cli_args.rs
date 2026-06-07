@@ -952,9 +952,29 @@ flags:
     #[clap(long)]
     pub openhcl_dump_path: Option<PathBuf>,
 
-    /// halt the VM when the guest requests a reset, instead of resetting it
-    #[clap(long)]
-    pub halt_on_reset: bool,
+    /// what to do when the guest requests a reset: reset it (default), halt the
+    /// VM for inspection, or exit the VMM process (use `exit:<code>` to set the
+    /// exit status)
+    #[clap(long, value_name = "ACTION", default_value = "reset", value_parser = parse_guest_power_action)]
+    pub guest_reset_action: GuestPowerAction,
+
+    /// what to do when the guest powers off or hibernates: halt the VM for
+    /// inspection (default), reset it, or exit the VMM process (use
+    /// `exit:<code>` to set the exit status)
+    #[clap(long, value_name = "ACTION", default_value = "halt", value_parser = parse_guest_power_action)]
+    pub guest_shutdown_action: GuestPowerAction,
+
+    /// what to do when the guest triple-faults: halt the VM for inspection
+    /// (default), reset it, or exit the VMM process (use `exit:<code>` to set
+    /// the exit status)
+    #[clap(long, value_name = "ACTION", default_value = "halt", value_parser = parse_guest_power_action)]
+    pub guest_crash_action: GuestPowerAction,
+
+    /// what to do when the guest watchdog fires (the guest stopped petting it):
+    /// reset the VM (default), halt it for inspection, or exit the VMM process
+    /// (use `exit:<code>` to set the exit status). Requires `--guest-watchdog`.
+    #[clap(long, value_name = "ACTION", default_value = "reset", value_parser = parse_guest_power_action, requires = "guest_watchdog")]
+    pub guest_watchdog_action: GuestPowerAction,
 
     /// write saved state .proto files to the specified path
     #[clap(long)]
@@ -1260,6 +1280,39 @@ impl FromStr for FsArgsWithOptions {
             options,
             pcie_port,
         })
+    }
+}
+
+/// What the VMM does on a guest power event (reset, power-off/hibernate,
+/// triple-fault, or watchdog timeout). Parsed from `reset`, `halt`, `exit`, or
+/// `exit:<code>`; a bare `exit` uses status 0.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GuestPowerAction {
+    /// Restart the guest.
+    Reset,
+    /// Stop the VM but keep the VMM process, so it can be inspected or
+    /// restarted from the REPL.
+    Halt,
+    /// Exit the VMM process with this status code.
+    Exit(u8),
+}
+
+/// Parse a [`GuestPowerAction`] from `reset`, `halt`, `exit`, or `exit:<code>`.
+/// A bare `exit` exits with status 0; `exit:<code>` exits with `<code>` (0-255).
+fn parse_guest_power_action(s: &str) -> Result<GuestPowerAction, String> {
+    match s {
+        "reset" => Ok(GuestPowerAction::Reset),
+        "halt" => Ok(GuestPowerAction::Halt),
+        "exit" => Ok(GuestPowerAction::Exit(0)),
+        _ => match s.strip_prefix("exit:") {
+            Some(code) => code
+                .parse::<u8>()
+                .map(GuestPowerAction::Exit)
+                .map_err(|err| format!("invalid exit code '{code}' (expected 0-255): {err}")),
+            None => Err(format!(
+                "expected reset, halt, exit, or exit:<code>, got '{s}'"
+            )),
+        },
     }
 }
 
@@ -4719,6 +4772,55 @@ mod tests {
     fn test_pidfile_option_parsed() {
         let opt = Options::try_parse_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
         assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
+    }
+
+    #[test]
+    fn test_guest_power_action_flags() {
+        // Defaults preserve the historical behavior: reset and watchdog reboot,
+        // power-off and crash keep the stopped VM.
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert_eq!(opt.guest_reset_action, GuestPowerAction::Reset);
+        assert_eq!(opt.guest_shutdown_action, GuestPowerAction::Halt);
+        assert_eq!(opt.guest_crash_action, GuestPowerAction::Halt);
+        assert_eq!(opt.guest_watchdog_action, GuestPowerAction::Reset);
+        // The CLI defaults must match the shared GuestPowerActions::default() the
+        // ttrpc server uses, so the two launch paths never drift.
+        assert_eq!(
+            crate::vm_controller::GuestPowerActions {
+                shutdown: opt.guest_shutdown_action,
+                reset: opt.guest_reset_action,
+                crash: opt.guest_crash_action,
+                watchdog: opt.guest_watchdog_action,
+            },
+            crate::vm_controller::GuestPowerActions::default(),
+        );
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--guest-watchdog",
+            "--guest-reset-action",
+            "exit",
+            "--guest-shutdown-action",
+            "exit:5",
+            "--guest-crash-action",
+            "reset",
+            "--guest-watchdog-action",
+            "halt",
+        ])
+        .unwrap();
+        // A bare `exit` is status 0; `exit:5` carries the code through.
+        assert_eq!(opt.guest_reset_action, GuestPowerAction::Exit(0));
+        assert_eq!(opt.guest_shutdown_action, GuestPowerAction::Exit(5));
+        assert_eq!(opt.guest_crash_action, GuestPowerAction::Reset);
+        assert_eq!(opt.guest_watchdog_action, GuestPowerAction::Halt);
+
+        // Malformed and out-of-range exit codes are rejected (status is 0-255).
+        assert!(Options::try_parse_from(["openvmm", "--guest-reset-action", "exit:nope"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--guest-reset-action", "exit:300"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--guest-reset-action", "exit:-1"]).is_err());
+
+        // --guest-watchdog-action requires the watchdog device (--guest-watchdog).
+        assert!(Options::try_parse_from(["openvmm", "--guest-watchdog-action", "halt"]).is_err());
     }
 
     #[cfg(target_os = "linux")]

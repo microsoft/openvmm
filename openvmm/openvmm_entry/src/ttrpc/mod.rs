@@ -8,6 +8,7 @@
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
 use crate::serial_io::connect_serial;
+use crate::vm_controller::GuestPowerActions;
 use crate::vm_controller::InspectTarget;
 use crate::vm_controller::VmController;
 use crate::vm_controller::VmControllerEvent;
@@ -757,6 +758,10 @@ impl VmService {
             memory,
             processors,
             log_file: None,
+            // The ttrpc/grpc server never exits on a guest power event; it uses
+            // the historical defaults (none of which is Exit), so the
+            // ExitRequested event handled below is unreachable here.
+            guest_power_actions: GuestPowerActions::default(),
         };
 
         // Spawn the controller task.
@@ -808,6 +813,12 @@ impl VmService {
                 if let Some((_, response)) = self.wait_vm_response.take() {
                     response.send(Ok(()));
                 }
+            }
+            VmControllerEvent::ExitRequested { code } => {
+                // The server leaves the guest power actions at their defaults
+                // (none is `exit`), so this should not occur in ttrpc/grpc mode;
+                // log rather than exiting the server out from under its clients.
+                tracing::warn!(code, "unexpected exit request in server mode");
             }
             VmControllerEvent::WorkerStopped { error } => {
                 if let Some(err) = &error {

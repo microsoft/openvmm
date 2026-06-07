@@ -1605,8 +1605,8 @@ impl InitializedVm {
             // Create the base watchdog platform
             let mut base_watchdog_platform = BaseWatchdogPlatform::new(store).await?;
 
-            // Create callback to reset on watchdog timeout
-            let watchdog_callback = WatchdogTimeoutReset {
+            // Create the callback that raises the watchdog halt reason on timeout
+            let watchdog_callback = WatchdogTimeout {
                 halt_vps: halt_vps.clone(),
                 watchdog_send: None, // This is not the UEFI watchdog, so no need to send
                                      // watchdog notifications
@@ -3829,15 +3829,17 @@ fn add_devices_to_dsdt_arm64(
     }
 }
 
-struct WatchdogTimeoutReset {
+struct WatchdogTimeout {
     halt_vps: Arc<Halt>,
     watchdog_send: Option<mesh::Sender<()>>,
 }
 
 #[async_trait::async_trait]
-impl WatchdogCallback for WatchdogTimeoutReset {
+impl WatchdogCallback for WatchdogTimeout {
     async fn on_timeout(&mut self) {
-        self.halt_vps.halt(HaltReason::Reset);
+        // Report the timeout as its own halt reason; the VMM's guest-watchdog
+        // action decides whether to reset (default), halt, or exit.
+        self.halt_vps.halt(HaltReason::Watchdog);
 
         if let Some(watchdog_send) = &self.watchdog_send {
             watchdog_send.send(());

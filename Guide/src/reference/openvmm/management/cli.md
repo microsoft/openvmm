@@ -193,6 +193,38 @@ The `BACKEND` argument is the same for all serial devices:
       connections on the given IP address and port. Typically IP will be
       127.0.0.1, to restrict connections to the current host.
 
+## Guest power events
+
+By default OpenVMM keeps running when the guest powers itself off, hibernates,
+or triple-faults: the virtual processors stop, but the VMM process stays up so
+you can inspect the VM or restart it from the
+[interactive console](./interactive_console.md). A guest-requested reset reboots
+the VM in place, as does a guest watchdog timeout when `--guest-watchdog` is
+enabled.
+
+Four flags override what happens on each guest power event, so a supervising
+process can treat the OpenVMM process lifetime as the VM lifetime. Each takes a
+`reset` (reboot in place), `halt` (stop the processors but keep the VMM process,
+as above), or `exit` (exit the VMM process) action. The `exit` action may carry a
+status code as `exit:<code>` (0-255); a bare `exit` uses 0:
+
+* `--guest-reset-action <reset|halt|exit[:<code>]>` (default `reset`): the guest requested
+  a reset.
+* `--guest-shutdown-action <reset|halt|exit[:<code>]>` (default `halt`): the guest powered
+  off or hibernated.
+* `--guest-crash-action <reset|halt|exit[:<code>]>` (default `halt`): the guest
+  triple-faulted. The fault registers are written to the trace log.
+* `--guest-watchdog-action <reset|halt|exit[:<code>]>` (default `reset`): the guest
+  watchdog timer expired without being petted (requires `--guest-watchdog`).
+
+A bare `exit` exits with status 0; `exit:<code>` exits with that code instead, so
+a supervisor can tell the exit reasons apart.
+
+`--disable-frontpage`: when booting UEFI, power the VM off instead of showing the
+firmware frontpage (the menu shown when there is no bootable device). Combined
+with `--guest-shutdown-action exit`, a guest with no boot device exits the VMM.
+Requires `--uefi`.
+
 ## PCIe Device Support
 
 OpenVMM can emulate a PCI Express topology using `--pcie-root-complex` and

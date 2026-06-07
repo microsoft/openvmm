@@ -3861,7 +3861,10 @@ async fn halt_task(
     while let Ok(reason) = halt_notify_recv.recv().await {
         let halt_request = match reason {
             HaltReason::PowerOff => HaltRequest::PowerOff,
-            HaltReason::Reset => HaltRequest::Reset,
+            // The paravisor's own watchdog raises Reset, so Watchdog never reaches
+            // this arm today; it is folded into Reset to stay exhaustive. Honoring a
+            // configurable paravisor watchdog action would mean raising Watchdog here.
+            HaltReason::Reset | HaltReason::Watchdog => HaltRequest::Reset,
             HaltReason::Hibernate => HaltRequest::Hibernate,
             HaltReason::TripleFault { vp, registers } => {
                 tracing::info!(CVM_ALLOWED, vp, "triple fault");
