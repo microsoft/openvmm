@@ -99,6 +99,8 @@ impl std::fmt::Debug for ExecuteRequest {
             .field("env", &self.env)
             .field("clear_env", &self.clear_env)
             .field("chroot", &self.chroot)
+            .field("allocate_pty", &self.allocate_pty)
+            .field("combine_stderr", &self.combine_stderr)
             .finish()
     }
 }

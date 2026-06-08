@@ -131,7 +131,7 @@ pub fn handle_execute(
     }
 
     let child = command.spawn()?;
-    let mut polled_child = PolledChild::<std::process::Child>::new(driver, child)?;
+    let mut polled_child = PolledChild::<std::process::Child>::new(driver, child).unwrap();
     let pid = polled_child.get().id();
     let (send, recv) = mesh::oneshot();
 
@@ -232,8 +232,12 @@ fn open_pty(command: &mut std::process::Command) -> anyhow::Result<(std::fs::Fil
     // SAFETY: setsid and ioctl are async-signal-safe.
     unsafe {
         command.pre_exec(move || {
-            libc::setsid();
-            libc::ioctl(0, libc::TIOCSCTTY, 0);
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             Ok(())
         });
     }

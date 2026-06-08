@@ -27,7 +27,6 @@ cfg-if.workspace = true
 fs-err.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
-libc.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
 term.workspace = true

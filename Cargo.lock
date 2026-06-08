@@ -1373,7 +1373,6 @@ dependencies = [
  "hvdef",
  "inspect",
  "inspect_proto",
- "libc",
  "mesh",
  "mesh_rpc",
  "net_packet_capture",

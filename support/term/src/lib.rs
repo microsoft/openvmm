@@ -111,40 +111,62 @@ pub fn set_termios(termios: Termios) {
 
 /// Opens a PTY pair, returning `(primary, secondary)`.
 ///
-/// The primary fd has `O_CLOEXEC` set so it is not inherited by child
-/// processes. The secondary fd does *not* have `O_CLOEXEC` because it
-/// is normally passed to the child as its stdio.
+/// Both fds have `O_CLOEXEC` set atomically at open time so they
+/// cannot leak into child processes even under concurrent `fork`.
+/// Callers that need the secondary in a child should pass it via
+/// `Stdio::from()`, which `dup2`s it onto stdin/stdout/stderr.
 #[cfg(unix)]
 pub fn open_pty() -> std::io::Result<(std::fs::File, std::fs::File)> {
+    use std::ffi::CStr;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
     use std::os::unix::io::FromRawFd;
 
-    let mut primary_fd = 0;
-    let mut secondary_fd = 0;
-    // SAFETY: openpty writes to the provided pointers and returns 0 on success.
-    if unsafe {
-        libc::openpty(
-            &mut primary_fd,
-            &mut secondary_fd,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    } != 0
-    {
+    // Use the POSIX flow (posix_openpt + grantpt + unlockpt + open)
+    // instead of openpty() so we can pass O_CLOEXEC at open time,
+    // avoiding a race between open and fcntl.
+
+    // SAFETY: posix_openpt is called with valid flags.
+    let primary_fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
+    if primary_fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
-    // SAFETY: both fds are valid from the successful openpty call above.
+    // SAFETY: primary_fd is valid from the successful posix_openpt call.
     let primary = unsafe { std::fs::File::from_raw_fd(primary_fd) };
-    // SAFETY: see above.
-    let secondary = unsafe { std::fs::File::from_raw_fd(secondary_fd) };
 
-    // Prevent the primary fd from leaking into child processes.
-    // openpty() does not set CLOEXEC.
-    // SAFETY: primary_fd is valid from the successful openpty call above.
+    // SAFETY: the fd is valid. grantpt/unlockpt have no preconditions
+    // beyond a valid primary fd.
     unsafe {
-        let flags = libc::fcntl(primary_fd, libc::F_GETFD);
-        libc::fcntl(primary_fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+        if libc::grantpt(primary.as_raw_fd()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::unlockpt(primary.as_raw_fd()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
     }
+
+    // Get the secondary device name using ptsname_r (thread-safe).
+    let mut name_buf = [0u8; 128];
+    // SAFETY: ptsname_r writes into the provided buffer and null-terminates.
+    let ret = unsafe {
+        libc::ptsname_r(
+            primary.as_raw_fd(),
+            name_buf.as_mut_ptr().cast(),
+            name_buf.len(),
+        )
+    };
+    if ret != 0 {
+        return Err(std::io::Error::from_raw_os_error(ret));
+    }
+
+    let name = CStr::from_bytes_until_nul(&name_buf).unwrap();
+    let secondary = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOCTTY)
+        .open(OsStr::from_bytes(name.to_bytes()))?;
 
     Ok((primary, secondary))
 }
