@@ -7459,11 +7459,8 @@ dependencies = [
  "chipset_device",
  "guestmem",
  "inspect",
-<<<<<<< HEAD
- "mesh",
-=======
  "iommu_common",
->>>>>>> c7a2b7c10 (iommu: extract shared DMA translation into iommu_common)
+ "mesh",
  "open_enum",
  "pal_async",
  "pal_event",
