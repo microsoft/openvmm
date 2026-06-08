@@ -226,16 +226,10 @@ fn build_kernel_command_line(
         write!(cmdline, "{p} ")?;
     }
 
-    const HARDWARE_ISOLATED_KERNEL_PARAMETERS: &[&str] = &[
-        // Even with iommu=off, the SWIOTLB is still allocated on AARCH64
-        // (iommu=off ignored entirely), and CVMs (memory encryption forces it
-        // on). Set it to a single area in 8MB. The first parameter controls the
-        // area size in slabs (2KB per slab), the second controls the number of
-        // areas (default is # of CPUs).
-        //
-        // This is set to 8MB on hardware isolated VMs since there are some
-        // scenarios, such as provisioning over DVD, which require a larger size
-        // since the buffer is being used.
+    // Set SWIOTLB to 8MB for all isolated VMs. Hardware-isolated VMs
+    // (TDX/SNP) need it for memory encryption, and VBS-isolated VMs need
+    // it because VTL2 private memory is not accessible from VTL0.
+    const ISOLATED_KERNEL_PARAMETERS: &[&str] = &[
         "swiotlb=4096,1",
     ];
 
@@ -247,8 +241,8 @@ fn build_kernel_command_line(
         "swiotlb=1,1",
     ];
 
-    if params.isolation_type.is_hardware_isolated() {
-        for p in HARDWARE_ISOLATED_KERNEL_PARAMETERS {
+    if params.isolation_type != IsolationType::None {
+        for p in ISOLATED_KERNEL_PARAMETERS {
             write!(cmdline, "{p} ")?;
         }
     } else {
