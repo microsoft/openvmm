@@ -548,7 +548,7 @@ impl iommu_common::IommuTranslator for SmmuTranslator {
         // This is the maximum across all configurations: stage-1 only,
         // stage-2 only, and nested (stage-1 IAS and stage-2 IPA width
         // are both bounded by 48 bits).
-        (1u64 << 48) - 1
+        1u64 << 48
     }
 
     fn translate<R>(
@@ -922,7 +922,7 @@ mod tests {
     }
 
     // =========================================================================
-    // SmmuTranslatingMemory tests
+    // TranslatingMemory tests
     // =========================================================================
 
     #[test]

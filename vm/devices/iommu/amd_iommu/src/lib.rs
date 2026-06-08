@@ -900,7 +900,7 @@ impl iommu_common::IommuTranslator for AmdTranslator {
         // The AMD IOMMU architecture supports up to 48-bit virtual
         // addresses (VA_SIZE), the architectural maximum for all
         // paging modes and translation configurations.
-        (1u64 << VA_SIZE) - 1
+        1u64 << VA_SIZE
     }
 
     fn translate<R>(

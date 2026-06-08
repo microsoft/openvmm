@@ -39,10 +39,10 @@ pub trait IommuTranslator: Send + Sync + 'static {
     /// The IOMMU-specific error type for translation faults.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// The maximum IOVA that can be translated (inclusive).
+    /// The exclusive upper bound of translatable IOVAs.
     ///
-    /// This is typically `(1 << va_bits) - 1` for the IOMMU's virtual
-    /// address width. Used as the `max_address` for the `GuestMemoryAccess`
+    /// This is typically `1 << va_bits` for the IOMMU's virtual address
+    /// width. Used as the `max_address` for the `GuestMemoryAccess`
     /// implementation, which rejects out-of-range accesses before they
     /// reach the translator.
     fn max_iova(&self) -> u64;

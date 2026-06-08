@@ -1857,7 +1857,7 @@ mod tests {
     /// 1. Probe: read IDR registers, verify feature bits.
     /// 2. Reset: disable SMMU, program CR1, stream table, queues, enable.
     /// 3. Attach: configure STE and CD for a device.
-    /// 4. DMA: read/write through SmmuTranslatingMemory.
+    /// 4. DMA: read/write through TranslatingMemory.
     /// 5. MSI: fire MSI through SmmuSignalMsi with translated address.
     /// 6. Fault: access unmapped IOVA, verify EVTQ event.
     #[test]
@@ -2265,7 +2265,7 @@ mod tests {
         assert_eq!(sync_val, 0xCCCC, "CFGI+SYNC completion must be signaled");
 
         // =====================================================================
-        // Step 4: DMA — read/write through SmmuTranslatingMemory
+        // Step 4: DMA — read/write through TranslatingMemory
         // =====================================================================
 
         // Create per-device wrappers.
@@ -2375,7 +2375,7 @@ mod tests {
     // Save/Restore tests
     // =========================================================================
 
-    /// Verifies that DMA translation through SmmuTranslatingMemory
+    /// Verifies that DMA translation through TranslatingMemory
     /// continues to work after a save/restore cycle.
     ///
     /// This tests the critical restore path: re-syncing SharedStateInner
