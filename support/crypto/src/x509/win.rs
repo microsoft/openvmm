@@ -36,8 +36,6 @@ use windows::Win32::Security::Cryptography::szOID_RSA_RSA;
 use windows::Win32::Security::Cryptography::szOID_RSA_SHA256RSA;
 use windows::Win32::Security::Cryptography::szOID_SUBJECT_KEY_IDENTIFIER;
 use windows::core::PCSTR;
-#[cfg(any(test, feature = "test_helpers"))]
-use zerocopy::IntoBytes;
 
 fn err(err: windows_result::Error, op: &'static str) -> X509Error {
     X509Error(crate::BackendError(err, op))
@@ -811,5 +809,5 @@ fn encode_pkcs1_rsa_pubkey(n: &[u8], e: &[u8]) -> Result<Vec<u8>, windows_result
     blob.extend_from_slice(e);
     blob.extend_from_slice(n);
 
-    encode_object(CNG_RSA_PUBLIC_KEY_BLOB, blob.as_bytes())
+    encode_object(CNG_RSA_PUBLIC_KEY_BLOB, blob.as_slice())
 }
