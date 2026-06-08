@@ -57,8 +57,9 @@ pub struct Session {
     // a lock, since operations mostly don't need to access the SessionInfo.
     initialized: atomic::AtomicBool,
     info: RwLock<SessionInfo>,
-    // The maximum write size to offer during FUSE_INIT negotiation. The file
-    // system's init callback may still lower (or raise) this value.
+    // The maximum write size to offer during FUSE_INIT negotiation. This is a
+    // hard upper bound: the file system's init callback may lower it, but any
+    // attempt to raise it is clamped back to this value (see `dispatch_init`).
     default_max_write: u32,
 }
 
@@ -77,6 +78,10 @@ impl Session {
 
     /// Create a new `Session` that negotiates the specified maximum write
     /// size (in bytes) with the client.
+    ///
+    /// This value is a hard upper bound: the file system's `init` callback may
+    /// negotiate a smaller `max_write`, but cannot raise it above the value
+    /// passed here.
     ///
     /// This is intended for transports that cannot satisfy the default
     /// [`DEFAULT_MAX_WRITE`] in a single DMA mapping. For example, a guest
@@ -528,6 +533,13 @@ impl Session {
         info.time_gran = 1;
         info.max_write = self.default_max_write;
         self.fs.init(&mut info);
+
+        // The filesystem's `init` callback may lower `max_write`, but it must
+        // never raise it above the session's negotiated maximum: that value is
+        // the transport's per-mapping limit (e.g. a bounce-buffered transport's
+        // swiotlb cap), and exceeding it reintroduces the large-request mapping
+        // failures the limit exists to prevent.
+        info.max_write = info.max_write.min(self.default_max_write);
 
         assert!(info.want & !info.capable == 0);
         // If the filesystem cleared FUSE_INIT_EXT from want, force want2 to
@@ -1259,7 +1271,38 @@ mod tests {
         assert_eq!(init_out.max_pages, 64);
     }
 
-    /// Creates a FUSE_LOOKUP request with a name that's too long (256 bytes, exceeds NAME_MAX of 255)
+    #[test]
+    fn init_filesystem_cannot_raise_max_write_above_session_limit() {
+        // The session imposes a reduced max_write (e.g. a bounce-buffered
+        // transport's per-mapping limit). A filesystem `init` callback that
+        // tries to raise max_write above that limit must be clamped back down,
+        // otherwise the transport-imposed cap would be defeated.
+        const SWIOTLB_MAX_WRITE: u32 = 256 * 1024;
+        let flags = 0x003FFFFB | FUSE_MAX_PAGES;
+        let request_data = make_init_request(7, 39, 131072, flags, 0);
+
+        let fs = InitCapturingFs {
+            max_write_override: Some(1024 * 1024),
+            ..Default::default()
+        };
+        let session = Session::with_max_write(fs, SWIOTLB_MAX_WRITE);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        assert!(session.is_initialized());
+
+        // The reply must still advertise the session's cap, not the larger
+        // value the filesystem requested.
+        let (_hdr, init_out) = sender.parse_init_reply();
+        assert_eq!(init_out.max_write, SWIOTLB_MAX_WRITE);
+        assert_eq!(init_out.max_pages, 64);
+    }
+
     fn make_lookup_name_too_long() -> Vec<u8> {
         let mut data = vec![0u8; 297]; // 40 byte header + 256 byte name + 1 null terminator
 
