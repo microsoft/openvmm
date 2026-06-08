@@ -5,43 +5,49 @@
 
 use flowey::pipeline::prelude::*;
 
-pub fn windows_amd_1es() -> GhRunner {
+/// This overrides the default image with a larger disk image for use with
+/// jobs that require more than the default disk space (e.g. to ensure vmm_tests
+/// have enough space to download test VHDs)
+pub fn windows_amd_self_hosted_largedisk() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
-        "1ES.Pool=openvmm-gh-amd-westus3".to_string(),
-        "1ES.ImageOverride=win-amd64".to_string(),
+        "1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3".to_string(),
+        "1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease".to_string(),
     ])
 }
 
-pub fn windows_intel_1es() -> GhRunner {
+/// This overrides the default image with a larger disk image for use with
+/// jobs that require more than the default disk space (e.g. to ensure vmm_tests
+/// have enough space to download test VHDs)
+pub fn windows_intel_self_hosted_largedisk() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
-        "1ES.Pool=openvmm-gh-intel-westus3".to_string(),
-        "1ES.ImageOverride=win-amd64".to_string(),
+        "1ES.Pool=OpenVMM-GitHub-Win-Pool-Intel-WestUS3".to_string(),
+        "1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease".to_string(),
     ])
 }
 
-pub fn windows_arm_1es() -> GhRunner {
+pub fn windows_arm_self_hosted() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
-        "1ES.Pool=openvmm-gh-arm-westus2".to_string(),
-        "1ES.ImageOverride=win-arm64".to_string(),
+        "1ES.Pool=OpenVMM-GitHub-ARM64-Pool-WestUS2".to_string(),
+        "1ES.ImageOverride=OpenVMM-CI-Windows-ARM64".to_string(),
     ])
 }
 
-pub fn linux_arm_1es() -> GhRunner {
+pub fn linux_arm_self_hosted() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
-        "1ES.Pool=openvmm-gh-arm-westus2".to_string(),
-        "1ES.ImageOverride=ubuntu2404-arm64".to_string(),
+        "1ES.Pool=OpenVMM-GitHub-ARM64-Pool-WestUS2".to_string(),
+        "1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-ARM64".to_string(),
     ])
 }
 
-pub fn linux_1es() -> GhRunner {
+pub fn linux_self_hosted_largedisk() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
-        "1ES.Pool=openvmm-gh-amd-westus3".to_string(),
-        "1ES.ImageOverride=ubuntu2404-amd64-256gb".to_string(),
+        "1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3".to_string(),
+        "1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64".to_string(),
     ])
 }
 
