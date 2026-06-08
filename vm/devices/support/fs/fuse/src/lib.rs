@@ -21,6 +21,7 @@ pub use reply::ReplySender;
 pub use request::FuseOperation;
 pub use request::Request;
 pub use request::RequestReader;
+pub use session::DEFAULT_MAX_WRITE;
 pub use session::Session;
 pub use session::SessionInfo;
 

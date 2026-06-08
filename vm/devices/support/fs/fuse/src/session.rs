@@ -39,6 +39,15 @@ const DEFAULT_MAX_PAGES: u32 = 256;
 // a difference.
 const PAGE_SIZE: u32 = 4096;
 
+/// The default maximum FUSE write size (and read/readdir buffer size)
+/// negotiated with the client: 256 pages of 4 KiB (1 MiB).
+///
+/// Transports that bounce I/O through a limited DMA window (e.g. a guest
+/// forced to use the Linux swiotlb, which has a hard 256 KiB per-mapping
+/// cap) should negotiate a smaller value via [`Session::with_max_write`] so
+/// the guest never builds request buffers the transport cannot map.
+pub const DEFAULT_MAX_WRITE: u32 = DEFAULT_MAX_PAGES * PAGE_SIZE;
+
 /// A FUSE session for a file system.
 ///
 /// Handles negotiation and dispatching requests to the file system.
@@ -48,11 +57,34 @@ pub struct Session {
     // a lock, since operations mostly don't need to access the SessionInfo.
     initialized: atomic::AtomicBool,
     info: RwLock<SessionInfo>,
+    // The maximum write size to offer during FUSE_INIT negotiation. The file
+    // system's init callback may still lower (or raise) this value.
+    default_max_write: u32,
 }
 
 impl Session {
     /// Create a new `Session`.
+    ///
+    /// The maximum write size negotiated with the client defaults to
+    /// [`DEFAULT_MAX_WRITE`]. Use [`Session::with_max_write`] to negotiate a
+    /// smaller value when the transport requires it.
     pub fn new<T>(fs: T) -> Self
+    where
+        T: 'static + Fuse + Send + Sync,
+    {
+        Self::with_max_write(fs, DEFAULT_MAX_WRITE)
+    }
+
+    /// Create a new `Session` that negotiates the specified maximum write
+    /// size (in bytes) with the client.
+    ///
+    /// This is intended for transports that cannot satisfy the default
+    /// [`DEFAULT_MAX_WRITE`] in a single DMA mapping. For example, a guest
+    /// forced to bounce I/O through the Linux swiotlb has a hard 256 KiB
+    /// per-mapping limit, so any request buffer larger than that fails to
+    /// map. Negotiating a matching `max_write` keeps the guest from building
+    /// request buffers the transport cannot handle.
+    pub fn with_max_write<T>(fs: T, max_write: u32) -> Self
     where
         T: 'static + Fuse + Send + Sync,
     {
@@ -60,6 +92,7 @@ impl Session {
             fs: Box::new(fs),
             initialized: atomic::AtomicBool::new(false),
             info: RwLock::new(SessionInfo::default()),
+            default_max_write: max_write,
         }
     }
 
@@ -493,7 +526,7 @@ impl Session {
             info.want2 = DEFAULT_FLAGS2 & init.flags2;
         }
         info.time_gran = 1;
-        info.max_write = DEFAULT_MAX_PAGES * PAGE_SIZE;
+        info.max_write = self.default_max_write;
         self.fs.init(&mut info);
 
         assert!(info.want & !info.capable == 0);
@@ -1196,6 +1229,34 @@ mod tests {
             init_out.max_pages, 2,
             "max_pages must round up to cover max_write"
         );
+    }
+
+    #[test]
+    fn init_with_max_write_negotiates_smaller_max_write() {
+        // A bounce-buffered transport (e.g. swiotlb, with a 256 KiB
+        // per-mapping limit) builds the session with a reduced max_write so
+        // the guest never produces request buffers it cannot map.
+        const SWIOTLB_MAX_WRITE: u32 = 256 * 1024;
+        let flags = 0x003FFFFB | FUSE_MAX_PAGES;
+        let request_data = make_init_request(7, 39, 131072, flags, 0);
+
+        let fs = InitCapturingFs::default();
+        let session = Session::with_max_write(fs, SWIOTLB_MAX_WRITE);
+
+        let mut sender = CapturingSender::default();
+        session.dispatch(
+            Request::new(request_data.as_slice()).unwrap(),
+            &mut sender,
+            None,
+        );
+
+        assert!(session.is_initialized());
+
+        // The reply must advertise the reduced max_write (256 KiB) and the
+        // matching max_pages (64), rather than the 1 MiB / 256 default.
+        let (_hdr, init_out) = sender.parse_init_reply();
+        assert_eq!(init_out.max_write, SWIOTLB_MAX_WRITE);
+        assert_eq!(init_out.max_pages, 64);
     }
 
     /// Creates a FUSE_LOOKUP request with a name that's too long (256 bytes, exceeds NAME_MAX of 255)

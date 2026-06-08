@@ -47,6 +47,38 @@ const DEFAULT_NUM_REQUEST_QUEUES: u32 = 2;
 /// costs a guest MSI-X vector plus a kernel worker thread.
 const MAX_REQUEST_QUEUES: u32 = 8;
 
+/// Options controlling how a [`VirtioFsDevice`] is created.
+///
+/// Use [`VirtioFsDeviceOptions::default`] for the in-VMM defaults, then
+/// override individual fields as needed.
+#[derive(Debug, Clone, Copy)]
+pub struct VirtioFsDeviceOptions {
+    /// Number of FUSE request queues. Clamped to `[1, MAX_REQUEST_QUEUES]`.
+    pub num_request_queues: u32,
+    /// Maximum size, in bytes, of a single DMA mapping the transport can
+    /// perform, or `None` if the transport imposes no additional limit
+    /// (the in-VMM path, where DMA targets guest memory directly).
+    ///
+    /// Bounce-buffered transports have a hard per-mapping cap: a guest forced
+    /// to use the Linux swiotlb can only map 256 KiB at a time
+    /// (`IO_TLB_SEGSIZE * IO_TLB_SIZE`), regardless of the total swiotlb
+    /// window. Without a limit, the guest virtio-fs driver builds single
+    /// physically-contiguous request buffers up to the negotiated FUSE
+    /// `max_write` (1 MiB by default), which the transport then fails to map,
+    /// producing cascading I/O errors. Setting this to the transport's
+    /// per-mapping limit clamps the negotiated `max_write` accordingly.
+    pub max_dma_mapping_size: Option<u32>,
+}
+
+impl Default for VirtioFsDeviceOptions {
+    fn default() -> Self {
+        Self {
+            num_request_queues: DEFAULT_NUM_REQUEST_QUEUES,
+            max_dma_mapping_size: None,
+        }
+    }
+}
+
 /// PCI configuration space values for virtio-fs devices.
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout)]
@@ -71,7 +103,10 @@ pub struct VirtioFsDevice {
     shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
     #[inspect(skip)]
     notify_corruption: Arc<dyn Fn() + Sync + Send>,
-    num_request_queues: u32,
+    /// The maximum write size negotiated with the FUSE client. Clamped below
+    /// the 1 MiB default for bounce-buffered transports (see
+    /// [`VirtioFsDeviceOptions::max_dma_mapping_size`]).
+    max_write: u32,
 }
 
 impl VirtioFsDevice {
@@ -92,13 +127,13 @@ impl VirtioFsDevice {
     where
         Fs: 'static + fuse::Fuse + Send + Sync,
     {
-        Self::with_num_request_queues(
+        Self::with_options(
             driver_source,
             tag,
             fs,
             shmem_size,
             notify_corruption,
-            DEFAULT_NUM_REQUEST_QUEUES,
+            VirtioFsDeviceOptions::default(),
         )
     }
 
@@ -115,7 +150,44 @@ impl VirtioFsDevice {
     where
         Fs: 'static + fuse::Fuse + Send + Sync,
     {
-        let num_request_queues = num_request_queues.clamp(1, MAX_REQUEST_QUEUES);
+        Self::with_options(
+            driver_source,
+            tag,
+            fs,
+            shmem_size,
+            notify_corruption,
+            VirtioFsDeviceOptions {
+                num_request_queues,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Creates a new `VirtioFsDevice` with the given [`VirtioFsDeviceOptions`].
+    ///
+    /// This is the most general constructor; [`Self::new`] and
+    /// [`Self::with_num_request_queues`] are thin wrappers over it.
+    pub fn with_options<Fs>(
+        driver_source: &VmTaskDriverSource,
+        tag: &str,
+        fs: Fs,
+        shmem_size: u64,
+        notify_corruption: Option<Arc<dyn Fn() + Sync + Send>>,
+        options: VirtioFsDeviceOptions,
+    ) -> Self
+    where
+        Fs: 'static + fuse::Fuse + Send + Sync,
+    {
+        let num_request_queues = options.num_request_queues.clamp(1, MAX_REQUEST_QUEUES);
+
+        // On a bounce-buffered transport, clamp the negotiated max_write to the
+        // transport's per-mapping DMA limit so the guest never builds request
+        // buffers it cannot map. The in-VMM path leaves this unset and keeps
+        // the full default.
+        let max_write = match options.max_dma_mapping_size {
+            Some(limit) => fuse::DEFAULT_MAX_WRITE.min(limit),
+            None => fuse::DEFAULT_MAX_WRITE,
+        };
 
         let mut config = VirtioFsDeviceConfig {
             tag: [0; 36],
@@ -136,12 +208,12 @@ impl VirtioFsDevice {
             task_name: format!("virtiofs-{}", tag).into(),
             driver: driver_source.simple(),
             config,
-            fs: Arc::new(fuse::Session::new(fs)),
+            fs: Arc::new(fuse::Session::with_max_write(fs, max_write)),
             workers: Vec::new(),
             shmem_size,
             shared_memory_region: None,
             notify_corruption,
-            num_request_queues,
+            max_write,
         }
     }
 }
@@ -154,7 +226,7 @@ impl VirtioDevice for VirtioFsDevice {
                 .with_ring_event_idx(true)
                 .with_ring_indirect_desc(true)
                 .with_ring_packed(true),
-            max_queues: 1 + self.num_request_queues as u16,
+            max_queues: 1 + self.config.num_request_queues as u16,
             device_register_length: self.config.as_bytes().len() as u32,
             shared_memory: DeviceTraitsSharedMemory {
                 id: 0,
@@ -439,10 +511,20 @@ mod tests {
         (device, tmpdir)
     }
 
+    fn make_device_with_options(
+        driver: &DefaultDriver,
+        options: VirtioFsDeviceOptions,
+    ) -> (VirtioFsDevice, tempfile::TempDir) {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let device = VirtioFsDevice::with_options(&driver_source, "testfs", fs, 0, None, options);
+        (device, tmpdir)
+    }
+
     #[async_test]
     async fn new_uses_default_num_request_queues(driver: DefaultDriver) {
         let (device, _tmp) = make_device(&driver, None);
-        assert_eq!(device.num_request_queues, DEFAULT_NUM_REQUEST_QUEUES);
         assert_eq!(device.config.num_request_queues, DEFAULT_NUM_REQUEST_QUEUES);
         assert_eq!(
             device.traits().max_queues,
@@ -453,7 +535,6 @@ mod tests {
     #[async_test]
     async fn with_num_request_queues_clamps_above_max(driver: DefaultDriver) {
         let (device, _tmp) = make_device(&driver, Some(1000));
-        assert_eq!(device.num_request_queues, MAX_REQUEST_QUEUES);
         assert_eq!(device.config.num_request_queues, MAX_REQUEST_QUEUES);
         assert_eq!(device.traits().max_queues, 1 + MAX_REQUEST_QUEUES as u16);
     }
@@ -463,7 +544,6 @@ mod tests {
         // A request for zero queues must be clamped up to one so the device
         // always exposes at least one request virtqueue.
         let (device, _tmp) = make_device(&driver, Some(0));
-        assert_eq!(device.num_request_queues, 1);
         assert_eq!(device.config.num_request_queues, 1);
         // 1 hiprio queue + 1 request queue.
         assert_eq!(device.traits().max_queues, 2);
@@ -472,8 +552,44 @@ mod tests {
     #[async_test]
     async fn with_num_request_queues_accepts_value_in_range(driver: DefaultDriver) {
         let (device, _tmp) = make_device(&driver, Some(3));
-        assert_eq!(device.num_request_queues, 3);
         assert_eq!(device.config.num_request_queues, 3);
         assert_eq!(device.traits().max_queues, 4);
+    }
+
+    #[async_test]
+    async fn new_uses_default_max_write(driver: DefaultDriver) {
+        // The in-VMM path (no DMA mapping limit) keeps the full default.
+        let (device, _tmp) = make_device(&driver, None);
+        assert_eq!(device.max_write, fuse::DEFAULT_MAX_WRITE);
+    }
+
+    #[async_test]
+    async fn with_options_clamps_max_write_for_bounce_buffered(driver: DefaultDriver) {
+        // A bounce-buffered (swiotlb) transport has a 256 KiB per-mapping
+        // limit, so the negotiated max_write must be clamped down from the
+        // 1 MiB default.
+        const SWIOTLB_MAX_WRITE: u32 = 256 * 1024;
+        let (device, _tmp) = make_device_with_options(
+            &driver,
+            VirtioFsDeviceOptions {
+                max_dma_mapping_size: Some(SWIOTLB_MAX_WRITE),
+                ..Default::default()
+            },
+        );
+        assert_eq!(device.max_write, SWIOTLB_MAX_WRITE);
+    }
+
+    #[async_test]
+    async fn with_options_does_not_raise_max_write_above_default(driver: DefaultDriver) {
+        // A transport limit larger than the default must not increase
+        // max_write beyond the default.
+        let (device, _tmp) = make_device_with_options(
+            &driver,
+            VirtioFsDeviceOptions {
+                max_dma_mapping_size: Some(4 * 1024 * 1024),
+                ..Default::default()
+            },
+        );
+        assert_eq!(device.max_write, fuse::DEFAULT_MAX_WRITE);
     }
 }
