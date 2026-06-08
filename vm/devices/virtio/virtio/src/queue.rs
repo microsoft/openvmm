@@ -63,7 +63,7 @@ pub enum QueueError {
     #[error("Invalid queue size {0}. Must be a power of 2.")]
     InvalidQueueSize(u16),
     #[error(
-        "indirect descriptor table has invalid byte length {0}; must be a non-zero multiple of the descriptor size (16 bytes)"
+        "indirect descriptor table has invalid byte length {0}; must be a non-zero multiple of the descriptor size (16 bytes) and no larger than 65535 entries (1048560 bytes)"
     )]
     InvalidIndirectSize(u32),
 }
