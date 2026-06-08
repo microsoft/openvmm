@@ -10,7 +10,7 @@
 use openvmm_hcl_resources as _;
 
 // OpenVMM-HCL only needs libcrypto from openssl, not libssl.
-#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+#[cfg(target_os = "linux")]
 openssl_crypto_only::openssl_crypto_only!();
 
 #[cfg(all(not(test), target_os = "linux"))]
