@@ -76,6 +76,15 @@ pub struct ExecuteRequest {
     pub clear_env: bool,
     /// If set, chroot into this directory before exec (Linux only).
     pub chroot: Option<String>,
+    /// If true, allocate a PTY for the process. Stdin, stdout, and stderr
+    /// will all be connected to the PTY slave. The master side is piped
+    /// back through the stdout pipe. This enables terminal features like
+    /// signal propagation (Ctrl-C) and line editing.
+    pub allocate_pty: bool,
+    /// If true, redirect stderr to the stdout pipe. The stderr pipe
+    /// (if any) will receive no data. This is useful when callers want
+    /// interleaved stdout+stderr without needing a PTY.
+    pub combine_stderr: bool,
 }
 
 impl std::fmt::Debug for ExecuteRequest {

@@ -6,16 +6,6 @@
 // UNSAFETY: Win32 and libc function calls to manipulate terminal state.
 #![expect(unsafe_code)]
 
-use thiserror::Error;
-
-// Errors for terminal operations.
-#[derive(Error, Debug)]
-#[expect(missing_docs)]
-pub enum Error {
-    #[error("failed to perform a virtual terminal operation: {0}")]
-    VtOperationFailed(std::io::Error),
-}
-
 /// Enables VT and UTF-8 output.
 #[cfg(windows)]
 pub fn enable_vt_and_utf8() {
@@ -42,21 +32,6 @@ pub fn enable_vt_and_utf8() {
 /// Enables VT and UTF-8 output. No-op on non-Windows platforms.
 #[cfg(not(windows))]
 pub fn enable_vt_and_utf8() {}
-
-/// Enables or disables raw console mode.
-pub fn set_raw_console(enable: bool) -> Result<(), Error> {
-    if enable {
-        crossterm::terminal::enable_raw_mode().map_err(Error::VtOperationFailed)
-    } else {
-        crossterm::terminal::disable_raw_mode().map_err(Error::VtOperationFailed)
-    }
-}
-
-/// Sets the name of the console window.
-pub fn set_console_title(title: &str) -> Result<(), Error> {
-    crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(title))
-        .map_err(Error::VtOperationFailed)
-}
 
 /// Clones `file` into a `File`.
 ///
@@ -132,4 +107,44 @@ pub fn set_termios(termios: Termios) {
             std::io::Error::last_os_error()
         );
     }
+}
+
+/// Opens a PTY pair, returning `(primary, secondary)`.
+///
+/// The primary fd has `O_CLOEXEC` set so it is not inherited by child
+/// processes. The secondary fd does *not* have `O_CLOEXEC` because it
+/// is normally passed to the child as its stdio.
+#[cfg(unix)]
+pub fn open_pty() -> std::io::Result<(std::fs::File, std::fs::File)> {
+    use std::os::unix::io::FromRawFd;
+
+    let mut primary_fd = 0;
+    let mut secondary_fd = 0;
+    // SAFETY: openpty writes to the provided pointers and returns 0 on success.
+    if unsafe {
+        libc::openpty(
+            &mut primary_fd,
+            &mut secondary_fd,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: both fds are valid from the successful openpty call above.
+    let primary = unsafe { std::fs::File::from_raw_fd(primary_fd) };
+    // SAFETY: see above.
+    let secondary = unsafe { std::fs::File::from_raw_fd(secondary_fd) };
+
+    // Prevent the primary fd from leaking into child processes.
+    // openpty() does not set CLOEXEC.
+    // SAFETY: primary_fd is valid from the successful openpty call above.
+    unsafe {
+        let flags = libc::fcntl(primary_fd, libc::F_GETFD);
+        libc::fcntl(primary_fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+    }
+
+    Ok((primary, secondary))
 }

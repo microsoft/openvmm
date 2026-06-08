@@ -6,7 +6,6 @@
 #![cfg(target_os = "linux")]
 
 mod diag_service;
-mod new_pty;
 
 pub use diag_service::DiagRequest;
 pub use diag_service::StartParams;

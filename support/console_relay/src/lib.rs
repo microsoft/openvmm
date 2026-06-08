@@ -25,8 +25,6 @@ use std::pin::Pin;
 use std::process::Command;
 use std::task::Context;
 use term::raw_stdout;
-use term::set_console_title;
-use term::set_raw_console;
 
 #[derive(Default)]
 /// Options to configure a new console window during launch.
@@ -44,8 +42,11 @@ async fn relay_stdio(
     mut write: impl AsyncWrite + Unpin + Send + 'static,
     console_title: &str,
 ) -> anyhow::Result<()> {
-    set_raw_console(true).expect("failed to set raw console mode");
-    if let Err(err) = set_console_title(console_title) {
+    crossterm::terminal::enable_raw_mode().expect("failed to set raw console mode");
+    if let Err(err) = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::terminal::SetTitle(console_title)
+    ) {
         tracing::warn!("failed to set console title: {}", err);
     }
 
