@@ -5,6 +5,7 @@
 
 use super::*;
 use std::ffi::c_void;
+use std::ptr::NonNull;
 use windows::Win32::Security::Cryptography::CMSG_CERT_COUNT_PARAM;
 use windows::Win32::Security::Cryptography::CMSG_CERT_PARAM;
 use windows::Win32::Security::Cryptography::CMSG_SIGNED;
@@ -32,7 +33,7 @@ fn bogus_err(op: &'static str) -> Pkcs7Error {
 }
 
 /// RAII wrapper around `HCRYPTMSG`.
-struct Msg(*const c_void);
+struct Msg(NonNull<c_void>);
 // SAFETY: handle can be sent across threads.
 unsafe impl Send for Msg {}
 // SAFETY: handle is read-only after the final CryptMsgUpdate.
@@ -41,7 +42,8 @@ unsafe impl Sync for Msg {}
 impl Drop for Msg {
     fn drop(&mut self) {
         // SAFETY: handle is valid; CryptMsgClose tolerates a single close.
-        let _ = unsafe { windows::Win32::Security::Cryptography::CryptMsgClose(Some(self.0)) };
+        let _ =
+            unsafe { windows::Win32::Security::Cryptography::CryptMsgClose(Some(self.0.as_ptr())) };
     }
 }
 
@@ -60,14 +62,14 @@ impl Pkcs7SignedDataInner {
                 encoding, 0, 0, None, None, None,
             )
         };
-        if h.is_null() {
-            return Err(last_err("CryptMsgOpenToDecode"));
-        }
+        let h = NonNull::new(h).ok_or_else(|| last_err("CryptMsgOpenToDecode"))?;
         let msg = Msg(h);
 
         // SAFETY: `data` is a valid byte slice; msg is a fresh decode handle.
-        unsafe { windows::Win32::Security::Cryptography::CryptMsgUpdate(h, Some(data), true) }
-            .map_err(|e| err(e, "CryptMsgUpdate"))?;
+        unsafe {
+            windows::Win32::Security::Cryptography::CryptMsgUpdate(h.as_ptr(), Some(data), true)
+        }
+        .map_err(|e| err(e, "CryptMsgUpdate"))?;
 
         // Confirm the message is SignedData (type 2)
         let mtype: u32 = get_param_value::<u32>(&msg, CMSG_TYPE_PARAM, 0)?;
@@ -148,12 +150,12 @@ impl Pkcs7SignedDataInner {
         let cert_der = cert.to_der().map_err(|e| crate::rsa::RsaError(e.0))?;
         // SAFETY: cert_der is a valid DER X.509 byte slice.
         let ctx_ptr = unsafe { CertCreateCertificateContext(X509_ASN_ENCODING, &cert_der) };
-        if ctx_ptr.is_null() {
-            return Err(rsa_err(
+        let ctx_ptr = NonNull::new(ctx_ptr).ok_or_else(|| {
+            rsa_err(
                 windows_result::Error::from_thread(),
                 "CertCreateCertificateContext",
-            ));
-        }
+            )
+        })?;
         let signing_ctx = OwnedCertContext(ctx_ptr);
 
         let key_ctx = CERT_KEY_CONTEXT {
@@ -165,7 +167,7 @@ impl Pkcs7SignedDataInner {
         // to match CERT_KEY_CONTEXT.
         unsafe {
             CertSetCertificateContextProperty(
-                signing_ctx.0,
+                signing_ctx.0.as_ptr(),
                 CERT_KEY_CONTEXT_PROP_ID,
                 0,
                 Some(std::ptr::from_ref(&key_ctx).cast::<c_void>()),
@@ -183,11 +185,11 @@ impl Pkcs7SignedDataInner {
         // CryptSignMessage omits the signing cert from the message by
         // default; embed it explicitly so signer_cert_sig() can find it.
         let mut msg_cert: *mut windows::Win32::Security::Cryptography::CERT_CONTEXT =
-            signing_ctx.0.cast_mut();
+            signing_ctx.0.as_ptr();
         let params = CRYPT_SIGN_MESSAGE_PARA {
             cbSize: size_of::<CRYPT_SIGN_MESSAGE_PARA>() as u32,
             dwMsgEncodingType: PKCS_7_ASN_ENCODING.0 | X509_ASN_ENCODING.0,
-            pSigningCert: signing_ctx.0,
+            pSigningCert: signing_ctx.0.as_ptr(),
             HashAlgorithm: hash_alg,
             cMsgCert: 1,
             rgpMsgCert: &mut msg_cert,
@@ -312,7 +314,11 @@ fn get_param_bytes(msg: &Msg, param: u32, index: u32) -> Result<Vec<u8>, Pkcs7Er
     // SAFETY: size query; passing None for the output buffer.
     unsafe {
         windows::Win32::Security::Cryptography::CryptMsgGetParam(
-            msg.0, param, index, None, &mut size,
+            msg.0.as_ptr(),
+            param,
+            index,
+            None,
+            &mut size,
         )
     }
     .map_err(|e| err(e, "CryptMsgGetParam (size query)"))?;
@@ -320,7 +326,7 @@ fn get_param_bytes(msg: &Msg, param: u32, index: u32) -> Result<Vec<u8>, Pkcs7Er
     // SAFETY: buf is sized per the size query.
     unsafe {
         windows::Win32::Security::Cryptography::CryptMsgGetParam(
-            msg.0,
+            msg.0.as_ptr(),
             param,
             index,
             Some(buf.as_mut_ptr().cast::<c_void>()),
@@ -396,7 +402,7 @@ impl Drop for NCryptKey {
 }
 
 #[cfg(any(test, feature = "test_helpers"))]
-struct OwnedCertContext(*const windows::Win32::Security::Cryptography::CERT_CONTEXT);
+struct OwnedCertContext(NonNull<windows::Win32::Security::Cryptography::CERT_CONTEXT>);
 
 #[cfg(any(test, feature = "test_helpers"))]
 impl Drop for OwnedCertContext {
@@ -404,7 +410,9 @@ impl Drop for OwnedCertContext {
         // SAFETY: produced by CertCreateCertificateContext; safe to free
         // exactly once.
         let _ = unsafe {
-            windows::Win32::Security::Cryptography::CertFreeCertificateContext(Some(self.0))
+            windows::Win32::Security::Cryptography::CertFreeCertificateContext(Some(
+                self.0.as_ptr(),
+            ))
         };
     }
 }
