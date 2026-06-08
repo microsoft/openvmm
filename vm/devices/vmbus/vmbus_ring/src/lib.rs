@@ -424,8 +424,10 @@ fn parse_packet<M: RingMem>(
             }
 
             let mut gph = GpaDirectHeader::new_zeroed();
-            ring.read_aligned(ring_off as usize + 16, gph.as_mut_bytes());
-            if gph.range_count == 0 {
+            ring.read_aligned(
+                ring_off as usize + size_of::<PacketDescriptor>(),
+                gph.as_mut_bytes(),
+            );
                 return Err(ReadError::Corrupt(
                     Error::InvalidDescriptorGpaDirectRangeCount,
                 ));
