@@ -402,7 +402,10 @@ fn parse_packet<M: RingMem>(
             }
 
             let mut tph = TransferPageHeader::new_zeroed();
-            ring.read_aligned(ring_off as usize + 16, tph.as_mut_bytes());
+            ring.read_aligned(
+                ring_off as usize + size_of::<PacketDescriptor>(),
+                tph.as_mut_bytes(),
+            );
             IncomingPacketType::TransferPages(
                 tph.transfer_page_set_id,
                 tph.range_count,
