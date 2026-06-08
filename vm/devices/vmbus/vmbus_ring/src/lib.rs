@@ -428,6 +428,7 @@ fn parse_packet<M: RingMem>(
                 ring_off as usize + size_of::<PacketDescriptor>(),
                 gph.as_mut_bytes(),
             );
+            if gph.range_count == 0 {
                 return Err(ReadError::Corrupt(
                     Error::InvalidDescriptorGpaDirectRangeCount,
                 ));
