@@ -44,6 +44,7 @@ use cmdline::BootCommandLineOptions;
 use core::fmt::Write;
 use dt::BootTimes;
 use dt::write_dt;
+use host_fdt_parser::ComInfo;
 use host_params::COMMAND_LINE_SIZE;
 use host_params::PartitionInfo;
 use host_params::shim_params::IsolationType;
@@ -264,12 +265,16 @@ fn build_kernel_command_line(
     // com1. This is overridden by any user customizations in the static or
     // dynamic command line, as this console argument provided by the bootloader
     // comes first.
-    let console = if partition_info.com3_serial_available && can_trust_host {
-        "ttyS2,115200"
-    } else {
-        "ttynull"
-    };
-    write!(cmdline, "console={console} ")?;
+    write!(cmdline, "console=")?;
+    match (&partition_info.com3_serial, can_trust_host) {
+        (ComInfo::Ns16550 { current_speed, .. }, true) => {
+            write!(cmdline, "ttyS2,{current_speed} ")?
+        }
+        (ComInfo::Pl011 { current_speed, .. }, true) => {
+            write!(cmdline, "ttyAMA0,{current_speed} ")?
+        }
+        _ => write!(cmdline, "ttynull ")?,
+    }
 
     if params.isolation_type != IsolationType::None {
         write!(
@@ -605,7 +610,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     // Enable logging ASAP. This is fine even when isolated, as we don't have
     // any access to secrets in the boot shim.
-    boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial_available);
+    boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial.clone());
     log::info!("openhcl_boot: logging enabled");
 
     // Confidential debug will show up in boot_options only if included in the
@@ -894,6 +899,7 @@ mod test {
     use arrayvec::ArrayString;
     use arrayvec::ArrayVec;
     use core::ops::Range;
+    use host_fdt_parser::ComInfo;
     use host_fdt_parser::CpuEntry;
     use host_fdt_parser::MemoryEntry;
     use host_fdt_parser::VmbusInfo;
@@ -944,7 +950,7 @@ mod test {
                 mmio: ArrayVec::new(),
                 connection_id: 0,
             },
-            com3_serial_available: false,
+            com3_serial: ComInfo::None,
             gic: None,
             pmu_gsiv: None,
             memory_allocation_mode: host_fdt_parser::MemoryAllocationMode::Host,

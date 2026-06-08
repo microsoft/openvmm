@@ -1056,7 +1056,7 @@ impl PartitionInfo {
             vmbus_vtl0,
             vmbus_vtl2,
             cmdline: _,
-            com3_serial_available: com3_serial,
+            com3_serial,
             gic,
             pmu_gsiv,
             memory_allocation_mode,
@@ -1144,7 +1144,7 @@ impl PartitionInfo {
 
         *bsp_reg = parsed.boot_cpuid_phys;
         cpus.extend(parsed.cpus.iter().copied());
-        *com3_serial = parsed.com3_serial;
+        *com3_serial = parsed.com3_serial.clone();
         *gic = parsed.gic.clone();
         *pmu_gsiv = parsed.pmu_gsiv;
         *entropy = parsed.entropy.clone();
