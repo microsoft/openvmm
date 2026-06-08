@@ -61,7 +61,10 @@ fn main() {
         } else if rust {
             println!("cargo::rustc-cfg=rust");
             secure = false;
-        } else if native && linux {
+        } else if native && linux && musl {
+            println!("cargo::rustc-cfg=symcrypt");
+            secure = true;
+        } else if native && linux && !musl {
             println!("cargo::rustc-cfg=openssl");
             secure = true;
         } else if native && !linux {
