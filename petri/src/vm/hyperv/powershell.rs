@@ -1380,13 +1380,6 @@ pub async fn run_restart_openhcl(
     ps_mod: &Path,
     flags: OpenHclServicingFlags,
 ) -> anyhow::Result<()> {
-    // No NVMe storage, so no keepalive. Prevent us from silently thinking that we're testing this feature.
-    // Tracked by #1649.
-    if flags.enable_nvme_keepalive {
-        return Err(anyhow::anyhow!(
-            "enable_nvme_keepalive is not yet supported for HyperV VMs"
-        ));
-    }
     run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")

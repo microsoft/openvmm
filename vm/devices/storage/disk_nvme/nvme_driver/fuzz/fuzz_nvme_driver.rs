@@ -65,7 +65,8 @@ impl FuzzNvmeDriver {
             .unwrap();
 
         let device = FuzzEmulatedDevice::new(nvme, msi_conn, mem.dma_client());
-        let mut nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device, false).await?;
+        let mut nvme_driver =
+            NvmeDriver::new(&driver_source, cpu_count, device, false, false).await?;
         let namespace = nvme_driver.namespace(1).await?;
 
         Ok(Self {

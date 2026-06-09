@@ -82,6 +82,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
         pci_id: &str,
         vp_count: u32,
         save_restore_supported: bool,
+        fused_keepalive_device: bool,
         mut saved_state: Option<&NvmeDriverSavedState>,
     ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError> {
         // Gracefully tear down old state & reset device if a saved state is
@@ -175,6 +176,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                 vfio_device,
                 saved_state,
                 self.is_isolated,
+                fused_keepalive_device,
             )
             .instrument(tracing::info_span!("nvme_driver_restore"))
             .await
@@ -186,6 +188,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                 vp_count,
                 self.nvme_always_flr,
                 self.is_isolated,
+                fused_keepalive_device,
                 dma_clients,
             )
             .await?
@@ -224,6 +227,7 @@ impl VfioNvmeDriverSpawner {
         vp_count: u32,
         nvme_always_flr: bool,
         is_isolated: bool,
+        fused_keepalive_device: bool,
         dma_clients: VfioDmaClients,
     ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeSpawnerError> {
         let mut last_err = None;
@@ -243,6 +247,7 @@ impl VfioNvmeDriverSpawner {
                 pci_id,
                 vp_count,
                 is_isolated,
+                fused_keepalive_device,
                 dma_clients.clone(),
             )
             .await
@@ -280,6 +285,7 @@ impl VfioNvmeDriverSpawner {
         pci_id: &str,
         vp_count: u32,
         is_isolated: bool,
+        fused_keepalive_device: bool,
         dma_clients: VfioDmaClients,
     ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeSpawnerError> {
         let device = VfioDevice::new(driver_source, pci_id, dma_clients)
@@ -291,10 +297,16 @@ impl VfioNvmeDriverSpawner {
         // TODO: For now, any isolation means use bounce buffering. This
         // needs to change when we have nvme devices that support DMA to
         // confidential memory.
-        nvme_driver::NvmeDriver::new(driver_source, vp_count, device, is_isolated)
-            .instrument(tracing::info_span!("nvme_driver_new", pci_id))
-            .await
-            .map_err(NvmeSpawnerError::DeviceInitFailed)
+        nvme_driver::NvmeDriver::new(
+            driver_source,
+            vp_count,
+            device,
+            is_isolated,
+            fused_keepalive_device,
+        )
+        .instrument(tracing::info_span!("nvme_driver_new", pci_id))
+        .await
+        .map_err(NvmeSpawnerError::DeviceInitFailed)
     }
 
     fn try_update_reset_method(pci_id: &str, method: PciDeviceResetMethod, label: &str) {
@@ -334,7 +346,6 @@ enum NvmeDriverRequest {
 pub struct NvmeDriverManager {
     task: Task<()>,
     pci_id: String,
-    keepalive_compatible: bool,
     client: NvmeDriverManagerClient,
 }
 
@@ -359,18 +370,13 @@ impl NvmeDriverManager {
         &self.client
     }
 
-    /// Returns whether the underlying device is compatible with NVMe keepalive.
-    pub fn keepalive_compatible(&self) -> bool {
-        self.keepalive_compatible
-    }
-
     /// Creates the [`NvmeDriverManager`].
     pub fn new(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
         vp_count: u32,
         save_restore_supported: bool,
-        keepalive_compatible: bool,
+        fused_keepalive_device: bool,
         device: Option<Box<dyn NvmeDevice>>,
         nvme_driver_spawner: Arc<dyn CreateNvmeDriver>,
     ) -> anyhow::Result<Self> {
@@ -382,6 +388,7 @@ impl NvmeDriverManager {
             pci_id: pci_id.into(),
             vp_count,
             save_restore_supported,
+            fused_keepalive_device,
             driver: device,
             nvme_driver_spawner,
         };
@@ -389,7 +396,6 @@ impl NvmeDriverManager {
         Ok(Self {
             task,
             pci_id: pci_id.into(),
-            keepalive_compatible,
             client: NvmeDriverManagerClient {
                 pci_id: pci_id.into(),
                 sender: send,
@@ -502,6 +508,9 @@ struct NvmeDriverManagerWorker {
     vp_count: u32,
     /// Whether the running environment (specifically the VTL2 memory layout) allows save/restore.
     save_restore_supported: bool,
+    /// WORKAROUND: a subset of devices require "fused keepalive". This flag signals to the NVMe
+    /// driver that this devices' admin queues may be unusable after a servicing event
+    fused_keepalive_device: bool,
     #[inspect(skip)]
     nvme_driver_spawner: Arc<dyn CreateNvmeDriver>,
     driver: Option<Box<dyn NvmeDevice>>,
@@ -536,6 +545,7 @@ impl NvmeDriverManagerWorker {
                                     &self.pci_id,
                                     self.vp_count,
                                     self.save_restore_supported,
+                                    self.fused_keepalive_device,
                                     None,
                                 )
                                 .await?;
