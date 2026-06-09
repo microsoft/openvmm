@@ -434,15 +434,17 @@ impl MappingManagerTask {
 
         let mut failed = None;
         for mapping in &mut self.mappings {
+            // Skip mappings already established by lazy resolution.
+            if mapping.active_mappers.contains(&id) {
+                continue;
+            }
             match self.mappers.mappers[id.0]
                 .req_send
                 .call(MapperRequest::MapEager, mapping.params.clone())
                 .await
             {
                 Ok(Ok(())) => {
-                    if !mapping.active_mappers.contains(&id) {
-                        mapping.active_mappers.push(id);
-                    }
+                    mapping.active_mappers.push(id);
                 }
                 Ok(Err(e)) => {
                     failed = Some(MappingError::new(
