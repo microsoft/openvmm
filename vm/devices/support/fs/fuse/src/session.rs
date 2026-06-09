@@ -40,12 +40,15 @@ const DEFAULT_MAX_PAGES: u32 = 256;
 const PAGE_SIZE: u32 = 4096;
 
 /// The default maximum FUSE write size (and read/readdir buffer size)
-/// negotiated with the client: 256 pages of 4 KiB (1 MiB).
+/// advertised to the client: 256 pages of 4 KiB (1 MiB).
 ///
+/// In the FUSE protocol the server dictates `max_write` in the FUSE_INIT
+/// reply; the guest does not propose it and simply adopts the offered value.
 /// Transports that bounce I/O through a limited DMA window (e.g. a guest
 /// forced to use the Linux swiotlb, which has a hard 256 KiB per-mapping
-/// cap) should negotiate a smaller value via [`Session::with_max_write`] so
-/// the guest never builds request buffers the transport cannot map.
+/// cap) should therefore advertise a smaller value via
+/// [`Session::with_max_write`] so the guest never builds request buffers the
+/// transport cannot map.
 pub const DEFAULT_MAX_WRITE: u32 = DEFAULT_MAX_PAGES * PAGE_SIZE;
 
 /// A FUSE session for a file system.
@@ -66,8 +69,8 @@ pub struct Session {
 impl Session {
     /// Create a new `Session`.
     ///
-    /// The maximum write size negotiated with the client defaults to
-    /// [`DEFAULT_MAX_WRITE`]. Use [`Session::with_max_write`] to negotiate a
+    /// The maximum write size advertised to the client defaults to
+    /// [`DEFAULT_MAX_WRITE`]. Use [`Session::with_max_write`] to advertise a
     /// smaller value when the transport requires it.
     pub fn new<T>(fs: T) -> Self
     where
@@ -76,18 +79,19 @@ impl Session {
         Self::with_max_write(fs, DEFAULT_MAX_WRITE)
     }
 
-    /// Create a new `Session` that negotiates the specified maximum write
-    /// size (in bytes) with the client.
+    /// Create a new `Session` that advertises the specified maximum write
+    /// size (in bytes) to the client.
     ///
-    /// This value is a hard upper bound: the file system's `init` callback may
-    /// negotiate a smaller `max_write`, but cannot raise it above the value
-    /// passed here.
+    /// In the FUSE protocol the server dictates `max_write`; the guest adopts
+    /// whatever the server offers. This value is a hard upper bound: the file
+    /// system's `init` callback may lower the advertised `max_write`, but
+    /// cannot raise it above the value passed here.
     ///
     /// This is intended for transports that cannot satisfy the default
     /// [`DEFAULT_MAX_WRITE`] in a single DMA mapping. For example, a guest
     /// forced to bounce I/O through the Linux swiotlb has a hard 256 KiB
     /// per-mapping limit, so any request buffer larger than that fails to
-    /// map. Negotiating a matching `max_write` keeps the guest from building
+    /// map. Advertising a matching `max_write` keeps the guest from building
     /// request buffers the transport cannot handle.
     pub fn with_max_write<T>(fs: T, max_write: u32) -> Self
     where
