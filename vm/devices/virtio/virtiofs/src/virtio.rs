@@ -106,8 +106,10 @@ pub struct VirtioFsDevice {
     shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
     #[inspect(skip)]
     notify_corruption: Arc<dyn Fn() + Sync + Send>,
-    /// The maximum write size negotiated with the FUSE client. Clamped below
-    /// the 1 MiB default for bounce-buffered transports (see
+    /// The maximum write size offered to the FUSE client during negotiation,
+    /// and a hard upper bound on it: a filesystem `init` callback may lower
+    /// the value actually negotiated, but never raise it above this. Clamped
+    /// below the 1 MiB default for bounce-buffered transports (see
     /// [`VirtioFsDeviceOptions::max_dma_mapping_size`]).
     max_write: u32,
 }
