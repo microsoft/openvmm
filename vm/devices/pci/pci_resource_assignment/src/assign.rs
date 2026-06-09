@@ -455,7 +455,7 @@ fn compute_subtree_layout(devices: &mut [DiscoveredDevice]) -> SubtreeLayout {
             addr
         } else {
             allocate_from_gaps(&mut pool.gaps, d.size(), d.alignment())
-                .expect("pool gap list has sentinel — allocation cannot fail")
+                .expect("gap list has open-ended tail — allocation cannot fail")
         };
         offsets[i] = addr - pool.constrained_base.unwrap_or(0);
     }
@@ -490,11 +490,6 @@ fn compute_subtree_layout(devices: &mut [DiscoveredDevice]) -> SubtreeLayout {
     }
 }
 
-/// Sentinel upper bound for gap lists. Large enough that any realistic
-/// allocation fits, small enough that `align_up(addr, align) + size`
-/// cannot overflow.
-const POOL_SENTINEL: u64 = 1u64 << 60;
-
 /// Per-pool state: gap list and alignment, built from pinned demands.
 struct PoolState {
     /// Required alignment (max of bridge granularity and largest demand).
@@ -507,8 +502,8 @@ struct PoolState {
 
 impl PoolState {
     /// Build the gap list for one pool. For constrained pools (pins
-    /// present), gaps cover spaces between pins plus a sentinel tail.
-    /// For unconstrained pools, a single `[0, SENTINEL)` gap.
+    /// present), gaps cover spaces between pins plus an open-ended tail.
+    /// For unconstrained pools, a single `[0, u64::MAX)` gap.
     fn new(pins: &mut [(u64, u64)]) -> Self {
         pins.sort_by_key(|&(a, _)| a);
 
@@ -516,7 +511,7 @@ impl PoolState {
             return Self {
                 align: BRIDGE_WINDOW_ALIGN,
                 constrained_base: None,
-                gaps: vec![(0, POOL_SENTINEL)],
+                gaps: vec![(0, u64::MAX)],
             };
         }
 
@@ -524,8 +519,8 @@ impl PoolState {
         let max_end = pins.iter().map(|(a, s)| a + s).max().unwrap();
         let base = align_down(min_addr, BRIDGE_WINDOW_ALIGN);
         let mut gaps = build_gap_list(base, max_end, pins);
-        // Sentinel tail for dynamic demands that don't fit between pins.
-        gaps.push((max_end, POOL_SENTINEL));
+        // Tail gap for dynamic demands that don't fit between pins.
+        gaps.push((max_end, u64::MAX));
 
         Self {
             align: BRIDGE_WINDOW_ALIGN,
@@ -835,9 +830,10 @@ fn build_gap_list(base: u64, limit: u64, fixed_regions: &[(u64, u64)]) -> Vec<(u
 /// that fits (first-fit). Returns the allocated address, or `None` if
 /// no gap is large enough. Updates `gaps` in place.
 fn allocate_from_gaps(gaps: &mut Vec<(u64, u64)>, size: u64, alignment: u64) -> Option<u64> {
-    let gap_idx = gaps
-        .iter()
-        .position(|&(start, end)| align_up(start, alignment) + size <= end)?;
+    let gap_idx = gaps.iter().position(|&(start, end)| {
+        let aligned = align_up(start, alignment);
+        aligned <= end && end - aligned >= size
+    })?;
 
     let (gap_start, gap_end) = gaps[gap_idx];
     let addr = align_up(gap_start, alignment);
