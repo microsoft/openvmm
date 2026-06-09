@@ -16,7 +16,7 @@ use std::thread;
 const SHRINKWRAP_REPO: &str = "https://git.gitlab.arm.com/tooling/shrinkwrap.git";
 // The guest Linux kernel (with cca/plane driver) hasn't been upstreamed yet, fetch it from our private repo
 const PLANE0_LINUX_REPO: &str = "https://github.com/jiong-microsoft/OHCL-Linux-Kernel.git";
-const PLANE0_LINUX_BRANCH: &str = "cca-dev";
+const PLANE0_LINUX_BRANCH: &str = "cca-dev-ben";
 // A few config information needed when building Linux kernel
 const CCA_CONFIGS: &[&str] = &["CONFIG_VIRT_DRIVERS", "CONFIG_ARM_CCA_GUEST"];
 const NINEP_CONFIGS: &[&str] = &[

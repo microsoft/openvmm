@@ -376,6 +376,7 @@ pub(crate) mod ioctls {
     const MSHV_VTL_RSI_SYSREG_READ: u16 = 0x42;
     const MSHV_VTL_RSI_SYSREG_WRITE: u16 = 0x43;
     const MSHV_VTL_RSI_SET_MEM_PERM: u16 = 0x44;
+    const MSHV_VTL_RSI_GET_IPA_STATE: u16 = 0x45;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -615,6 +616,14 @@ pub(crate) mod ioctls {
         MSHV_IOCTL,
         MSHV_VTL_RSI_SYSREG_READ,
         cca::mshv_rsi_sysreg_rw
+    );
+
+    // CCA: Get the RIPAS state of an ipa
+    ioctl_read!(
+        hcl_rsi_ipa_state_read,
+        MSHV_IOCTL,
+        MSHV_VTL_RSI_GET_IPA_STATE,
+        cca::mshv_rsi_get_ipa_state
     );
 
     // CCA: Assign the address described by `mshv_rsi_set_mem_perm`

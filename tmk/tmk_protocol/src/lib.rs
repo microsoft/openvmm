@@ -11,6 +11,9 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::TryFromBytes;
 
+/// The test is expected to fail.
+pub const TEST_FLAG_EXPECTED_FAILURE: u64 = 1 << 0;
+
 /// Start input from the VMM to the TMK.
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable)]
@@ -31,6 +34,8 @@ pub struct TestDescriptor64 {
     pub name_len: u64,
     /// The test entry point.
     pub entrypoint: u64,
+    /// Test metadata flags.
+    pub flags: u64,
 }
 
 /// TMK command.

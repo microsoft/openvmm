@@ -11,6 +11,7 @@ mod prelude;
 
 mod common;
 mod x86_64;
+mod aarch64;
 
 #[cfg(not(minimal_rt))]
 fn main() {

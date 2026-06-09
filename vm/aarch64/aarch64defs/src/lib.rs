@@ -181,6 +181,19 @@ pub struct SctlrEl1 {
     pub tidcp: bool,
 }
 
+/// aarch64 HPFAR_EL2
+#[bitfield(u64)]
+#[derive(PartialEq, Eq)]
+pub struct HpfarEl2 {
+    #[bits(4)]
+    pub res0: u8,
+    #[bits(44)]
+    pub fipa: u64,
+    #[bits(15)]
+    pub res1: u32,
+    pub ns: bool,
+}
+
 open_enum! {
     pub enum ExceptionClass: u8 {
         UNKNOWN = 0b000000,
@@ -322,7 +335,7 @@ open_enum! {
         /// Valid only for instruction fault.
         GRANULE_PROTECTION_FAULT_LEVEL2 = 0b100110,
         /// Valid only for instruction fault.
-        GRANULE_PROTECTION_FAULT_LEVE3 = 0b100111,
+        GRANULE_PROTECTION_FAULT_LEVEL3 = 0b100111,
         ADDRESS_SIZE_FAULT_LEVEL_NEG1 = 0b101001,
         TRANSLATION_FAULT_LEVEL_NEG1 = 0b101011,
         TLB_CONFLICT_ABORT = 0b110000,
@@ -339,6 +352,7 @@ impl FaultStatusCode {
     const fn into_bits(self) -> u32 {
         self.0 as u32
     }
+
 }
 
 #[bitfield(u32)]

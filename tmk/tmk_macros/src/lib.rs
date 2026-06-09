@@ -13,12 +13,27 @@ use quote::quote;
 ///
 /// This macro is used to define a test in the TMK.
 #[proc_macro_attribute]
-pub fn tmk_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn tmk_test(attr: TokenStream, item: TokenStream) -> TokenStream {
     let item = syn::parse_macro_input!(item as syn::ItemFn);
     let name = item.sig.ident.to_string();
     let func = &item.sig.ident;
+
+    let flags = match attr.to_string().as_str() {
+        "" => quote! { 0 },
+        "expected_failure" => quote! { ::tmk_core::TEST_FLAG_EXPECTED_FAILURE },
+        attr => {
+            let msg = format!("unsupported tmk_test option: {attr}");
+            return quote! {
+                compile_error!(#msg);
+                #item
+            }
+            .into_token_stream()
+            .into();
+        }
+    };
+
     quote! {
-        ::tmk_core::define_tmk_test!(#name, #func);
+        ::tmk_core::define_tmk_test!(#name, #func, #flags);
         #item
     }
     .into_token_stream()

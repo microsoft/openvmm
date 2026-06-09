@@ -21,6 +21,9 @@ use core::ptr::null_mut;
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering::Relaxed;
 
+/// The test is expected to fail.
+pub const TEST_FLAG_EXPECTED_FAILURE: u64 = tmk_protocol::TEST_FLAG_EXPECTED_FAILURE;
+
 /// A TMK test context, passed to each test function.
 pub struct TestContext<'scope> {
     /// The BSP VP's scope.
@@ -144,6 +147,9 @@ unsafe extern "C" {
 #[macro_export]
 macro_rules! define_tmk_test {
     ($name:expr, $func:ident) => {
+        $crate::define_tmk_test!($name, $func, 0);
+    };
+    ($name:expr, $func:ident, $flags:expr) => {
         const _: () = {
             // Strip the crate name from the module path.
             const NAME: &[u8] = const {
@@ -162,6 +168,7 @@ macro_rules! define_tmk_test {
             static TEST: $crate::TestDescriptor = $crate::TestDescriptor {
                 name: NAME,
                 entrypoint: $func,
+                flags: $flags,
             };
         };
     };
@@ -176,6 +183,8 @@ pub struct TestDescriptor {
     pub name: &'static [u8],
     /// The test entry point.
     pub entrypoint: for<'scope> fn(TestContext<'scope>),
+    /// Test flag - expected failure or not
+    pub flags: u64,
 }
 
 #[cfg_attr(minimal_rt, panic_handler)]
