@@ -1399,6 +1399,70 @@ mod tests {
         manager_thread.join().unwrap();
     }
 
+    /// Demonstrates the deadlock in VaMapper::new() when creating an eager
+    /// mapper while mappings already exist: the manager's add_mapper() replays
+    /// mappings via MapEager RPCs to the mapper channel, but the mapper thread
+    /// that would process those RPCs hasn't been spawned yet (it's spawned
+    /// after AddMapper returns).
+    #[pal_async::async_test]
+    async fn test_eager_mapper_with_existing_mappings_deadlocks(spawn: impl Spawn) {
+        let _ = spawn;
+        let (manager_thread, manager_driver) =
+            pal_async::DefaultPool::spawn_on_thread("mapping-manager-test");
+        let mm = MappingManager::new(&manager_driver, 0x10000, Vec::new(), None);
+        let client = mm.client().clone();
+
+        // Add a mapping while no mappers exist — it is stored for replay.
+        let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x10000, "test")
+            .unwrap()
+            .into();
+        client
+            .add_mapping(MappingParams {
+                range: MemoryRange::new(0..0x10000),
+                mappable,
+                file_offset: 0,
+                writable: true,
+                mapping_type: MappingType::Ram,
+                numa_node: None,
+            })
+            .await
+            .unwrap();
+
+        // Try to create an eager mapper on a separate thread. The call chain:
+        //   VaMapper::new() --AddMapper RPC--> manager task
+        //   manager::add_mapper() --MapEager RPC--> mapper channel (no reader!)
+        // The mapper thread is only spawned after AddMapper returns, so the
+        // MapEager RPC has no one to respond and the whole chain deadlocks.
+        let (done_send, done_recv) = std::sync::mpsc::channel();
+        let _handle = std::thread::spawn(move || {
+            let result =
+                pal_async::DefaultPool::run_with(
+                    |_driver| async move { client.new_mapper().await },
+                );
+            let _ = done_send.send(result);
+        });
+
+        match done_recv.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(result) => {
+                let mapper = result.unwrap();
+                assert!(mapper.is_eager());
+                drop(mapper);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!(
+                    "DEADLOCK: new_mapper() did not complete within 5 s. \
+                     The manager task is blocked awaiting a MapEager response \
+                     from a mapper thread that has not been spawned yet."
+                );
+            }
+            Err(e) => panic!("mapper thread died: {e}"),
+        }
+
+        drop(mm);
+        drop(manager_driver);
+        manager_thread.join().unwrap();
+    }
+
     #[pal_async::async_test]
     async fn test_new_mapper_upgrades_cached_lazy_to_eager(spawn: impl Spawn) {
         let _ = spawn;
