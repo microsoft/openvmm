@@ -194,13 +194,21 @@ impl MappingManagerClient {
     }
 }
 
+/// Parameters for registering a new VA mapper.
+#[derive(MeshPayload)]
+pub struct AddMapperParams {
+    /// Channel for sending mapping requests to the mapper task.
+    pub send: mesh::Sender<MapperRequest>,
+    /// Whether the mapper is eager (mappings pushed immediately and replayed
+    /// on creation) or lazy (mappings populated on demand via page faults).
+    pub eager: bool,
+}
+
 /// A mapping request message.
 #[derive(MeshPayload)]
 pub enum MappingRequest {
-    /// Register a new VA mapper. The `bool` indicates whether the mapper is
-    /// eager (mappings pushed immediately and replayed on creation) or lazy
-    /// (mappings populated on demand via page faults).
-    AddMapper(FailableRpc<(mesh::Sender<MapperRequest>, bool), MapperId>),
+    /// Register a new VA mapper.
+    AddMapper(FailableRpc<AddMapperParams, MapperId>),
     RemoveMapper(MapperId),
     /// Request that mappings covering the given range be sent to the specified
     /// mapper via fire-and-forget `MapLazy` messages. Used by lazy mappers
@@ -331,8 +339,10 @@ impl MappingManagerTask {
         while let Some(req) = req_recv.next().await {
             match req {
                 MappingRequest::AddMapper(rpc) => {
-                    rpc.handle_failable(async |(send, eager)| self.add_mapper(send, eager).await)
-                        .await
+                    rpc.handle_failable(async |params: AddMapperParams| {
+                        self.add_mapper(params.send, params.eager).await
+                    })
+                    .await
                 }
                 MappingRequest::RemoveMapper(id) => {
                     self.remove_mapper(id);
@@ -1279,8 +1289,8 @@ mod tests {
             let msg = req_recv.recv().await.unwrap();
             match msg {
                 MappingRequest::AddMapper(rpc) => {
-                    rpc.handle_failable_sync(|(_send, eager)| {
-                        assert!(eager);
+                    rpc.handle_failable_sync(|params| {
+                        assert!(params.eager);
                         Ok::<_, MappingError>(MapperId(0))
                     });
                 }
@@ -1317,10 +1327,10 @@ mod tests {
             let msg = req_recv.recv().await.unwrap();
             match msg {
                 MappingRequest::AddMapper(rpc) => {
-                    let ((mapper_req_send, eager), rpc) = rpc.split();
-                    assert!(eager);
+                    let (params, rpc) = rpc.split();
+                    assert!(params.eager);
                     rpc.complete(Ok(MapperId(7)));
-                    mapper_req_send
+                    params.send
                 }
                 _ => panic!("expected AddMapper"),
             }

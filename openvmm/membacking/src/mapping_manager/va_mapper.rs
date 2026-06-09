@@ -381,7 +381,10 @@ impl VaMapper {
 
         let id = match inner
             .req_send
-            .call(MappingRequest::AddMapper, (send, eager))
+            .call(
+                MappingRequest::AddMapper,
+                super::manager::AddMapperParams { send, eager },
+            )
             .await
         {
             Ok(Ok(id)) => id,
