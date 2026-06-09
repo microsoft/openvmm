@@ -68,7 +68,7 @@ pub fn handle_execute(
     // child produces/consumes data. This keeps all fallible setup before
     // spawn() so a failure can't leak a running child process.
     //
-    // PTY mode (Linux only): stdin/stdout/stderr go through a PTY slave.
+    // PTY mode (Linux only): stdin/stdout/stderr go through a PTY secondary.
     // Combined stderr: stdout and stderr share an OS pipe.
     // Normal: each stream gets its own pipe.
     if request.allocate_pty {
@@ -122,15 +122,18 @@ pub fn handle_execute(
             command.stdin(Stdio::null());
         }
 
-        if request.combine_stderr && request.stdout.is_some() {
-            let (read_end, write_end) = pal::pipe_pair()?;
-            command.stdout(Stdio::from(write_end.try_clone()?));
-            command.stderr(Stdio::from(write_end));
-            let read_end = PolledPipe::new(driver, read_end)?;
+        if request.combine_stderr {
             if let Some(stdout_pipe) = request.stdout.take() {
+                let (read_end, write_end) = pal::pipe_pair()?;
+                command.stdout(Stdio::from(write_end.try_clone()?));
+                command.stderr(Stdio::from(write_end));
+                let read_end = PolledPipe::new(driver, read_end)?;
                 driver
                     .spawn("combined_stdout_relay", relay(read_end, stdout_pipe))
                     .detach();
+            } else {
+                command.stdout(Stdio::null());
+                command.stderr(Stdio::null());
             }
         } else {
             if let Some(stdout_pipe) = request.stdout.take() {
@@ -157,13 +160,17 @@ pub fn handle_execute(
     }
 
     let child = command.spawn()?;
-    let mut polled_child = PolledChild::<std::process::Child>::new(driver, child).unwrap();
+    let mut polled_child = PolledChild::<std::process::Child>::new(driver, child)
+        .expect("process was just spawned, driver must be able to wait on it");
     let pid = polled_child.get().id();
     let (send, recv) = mesh::oneshot();
 
     driver
         .spawn("child_wait", async move {
-            let exit_status = polled_child.wait().await.unwrap();
+            let exit_status = polled_child
+                .wait()
+                .await
+                .expect("waiting on a spawned child should not fail");
             let status = convert_exit_status(exit_status);
             tracing::debug!(pid, ?status, "process exited");
             send.send(status);

@@ -484,7 +484,7 @@ pub(crate) async fn run_repl(
             let mut stdin = io::stdin();
             loop {
                 // Raw console text until Ctrl-Q.
-                crossterm::terminal::enable_raw_mode().expect("failed to set raw console mode");
+                crossterm::terminal::enable_raw_mode().expect("failed to enable raw console mode");
 
                 if let Some(input) = console_in.as_mut() {
                     let mut buf = [0; 32];
@@ -504,7 +504,8 @@ pub(crate) async fn run_repl(
                     }
                 }
 
-                crossterm::terminal::disable_raw_mode().expect("failed to set raw console mode");
+                crossterm::terminal::disable_raw_mode()
+                    .expect("failed to disable raw console mode");
 
                 loop {
                     let line = rl.readline("openvmm> ");

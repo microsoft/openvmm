@@ -170,7 +170,7 @@ pub fn open_pty() -> std::io::Result<(std::fs::File, std::fs::File)> {
         return Err(std::io::Error::from_raw_os_error(ret));
     }
 
-    let name = CStr::from_bytes_until_nul(&name_buf).unwrap();
+    let name = CStr::from_bytes_until_nul(&name_buf).expect("libc contract violation");
     let secondary = std::fs::OpenOptions::new()
         .read(true)
         .write(true)

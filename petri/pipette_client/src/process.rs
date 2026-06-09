@@ -124,9 +124,9 @@ impl<'a> Command<'a> {
 
     /// Allocate a PTY for the child process (Linux guests only).
     ///
-    /// When set, stdin/stdout/stderr are all connected to a PTY slave,
+    /// When set, stdin/stdout/stderr are all connected to a PTY secondary,
     /// enabling terminal features like Ctrl-C signal propagation and
-    /// line editing. The PTY master is relayed through the stdout pipe.
+    /// line editing. The PTY primary is relayed through the stdout pipe.
     pub fn pty(&mut self, allocate: bool) -> &mut Self {
         self.allocate_pty = allocate;
         self

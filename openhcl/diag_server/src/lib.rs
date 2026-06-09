@@ -4,6 +4,7 @@
 //! Underhill diagnostics server.
 
 #![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
 
 mod diag_service;
 
