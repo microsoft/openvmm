@@ -55,7 +55,7 @@ pub fn handle_execute(
     if request.clear_env {
         command.env_clear();
     }
-    for pipette_protocol::EnvPair { name, value } in std::mem::take(&mut request.env) {
+    for pipette_protocol::EnvPair { name, value } in request.env {
         if let Some(value) = value {
             command.env(name, value);
         } else {
