@@ -44,6 +44,7 @@ use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
 use smoltcp::wire::IPV4_HEADER_LEN;
+use smoltcp::wire::Icmpv6Message;
 use smoltcp::wire::Icmpv6Packet;
 use smoltcp::wire::IpAddress;
 use smoltcp::wire::IpProtocol;
@@ -143,6 +144,10 @@ pub struct ConsommeParams {
     /// Current IPv6 network mask (if any).
     #[inspect(display)]
     pub prefix_len_ipv6: u8,
+    /// If true, advertise an autonomous IPv6 prefix so guests create a
+    /// routable IPv6 address with SLAAC.
+    #[inspect(display)]
+    pub advertise_routable_ipv6: bool,
     /// Current IPv6 gateway MAC address (if any).
     #[inspect(display)]
     pub gateway_mac_ipv6: EthernetAddress,
@@ -197,6 +202,7 @@ impl ConsommeParams {
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
             prefix_len_ipv6: 64,
+            advertise_routable_ipv6: true,
             gateway_mac_ipv6,
             gateway_link_local_ipv6: Self::compute_link_local_address(gateway_mac_ipv6),
             client_ip_ipv6: None,
@@ -254,6 +260,38 @@ impl ConsommeParams {
         addr[15] = mac.0[5];
 
         Ipv6Address::from_octets(addr)
+    }
+
+    /// Infer the guest's link-local IPv6 address from a learned routable SLAAC address.
+    ///
+    /// If the routable address uses a EUI-64 address derived from the guest MAC, can infer a
+    /// similar link-local address.
+    ///
+    /// If the routable address uses a different interface identifier (for example,
+    /// privacy or stable-secret addressing), this leaves the link-local address
+    /// unknown and waits to learn it from traffic or NDP instead.
+    pub(crate) fn infer_client_link_local_from_routable(
+        &mut self,
+        routable: Ipv6Address,
+        source: &'static str,
+    ) {
+        // Link local address is already known.
+        if self.client_ip_ipv6.is_some() {
+            return;
+        }
+
+        let link_local = Self::compute_link_local_address(self.client_mac);
+        if routable.octets()[8..] != link_local.octets()[8..] {
+            return;
+        }
+
+        tracing::debug!(
+            client_ipv6 = %link_local,
+            client_ipv6_routable = %routable,
+            source,
+            "inferred client link-local IPv6 address from routable SLAAC address"
+        );
+        self.client_ip_ipv6 = Some(link_local);
     }
 
     /// Returns the list of IPv6 nameservers suitable for advertisement to
@@ -539,6 +577,9 @@ pub enum DropReason {
     /// The ethertype is unknown.
     #[error("unsupported ip protocol {0}")]
     UnsupportedIpProtocol(IpProtocol),
+    /// The ICMPv6 message type is unsupported.
+    #[error("unsupported icmpv6 message type {0}")]
+    UnsupportedIcmpv6(Icmpv6Message),
     /// The ARP type is unsupported.
     #[error("unsupported dhcp message type {0:?}")]
     UnsupportedDhcp(DhcpMessageType),
@@ -898,6 +939,18 @@ impl<T: Client> Access<'_, T> {
             dst_addr: ipv6.dst_addr(),
         };
 
+        // Learn the client's link-local IPv6 address from outgoing traffic.
+        // This covers clients that do not perform DAD before using the address.
+        if src_addr.is_unicast_link_local()
+            && self.inner.state.params.client_ip_ipv6 != Some(src_addr)
+        {
+            tracing::debug!(
+                client_ipv6 = %src_addr,
+                "learned client link-local IPv6 address from outgoing traffic"
+            );
+            self.inner.state.params.client_ip_ipv6 = Some(src_addr);
+        }
+
         // Learn the client's routable IPv6 address from outgoing traffic.
         // This is more reliable than relying solely on DAD Neighbor
         // Solicitations, which some clients skip on private virtual links.
@@ -911,6 +964,10 @@ impl<T: Client> Access<'_, T> {
                 "learned client routable IPv6 address from outgoing traffic"
             );
             self.inner.state.params.client_ip_ipv6_routable = Some(src_addr);
+            self.inner
+                .state
+                .params
+                .infer_client_link_local_from_routable(src_addr, "outgoing traffic");
         }
 
         match next_header {
@@ -923,14 +980,16 @@ impl<T: Client> Access<'_, T> {
                 let icmpv6_packet = Icmpv6Packet::new_unchecked(inner);
                 let msg_type = icmpv6_packet.msg_type();
 
-                if msg_type == smoltcp::wire::Icmpv6Message::NeighborSolicit
-                    || msg_type == smoltcp::wire::Icmpv6Message::NeighborAdvert
-                    || msg_type == smoltcp::wire::Icmpv6Message::RouterSolicit
-                    || msg_type == smoltcp::wire::Icmpv6Message::RouterAdvert
-                {
+                if msg_type.is_ndisc() {
                     self.handle_ndp(frame, inner, ipv6.src_addr())?;
                 } else {
-                    return Err(DropReason::UnsupportedIpProtocol(next_header));
+                    tracing::trace!(
+                        icmpv6_type = %msg_type,
+                        src_addr = %src_addr,
+                        dst_addr = %addresses.dst_addr,
+                        "unsupported ICMPv6 message"
+                    );
+                    return Err(DropReason::UnsupportedIcmpv6(msg_type));
                 }
             }
 

@@ -526,6 +526,7 @@ impl net_backend::Queue for ConsommeQueue {
                     consomme::DropReason::SendBufferFull => self.stats.tx_dropped.increment(),
                     consomme::DropReason::UnsupportedEthertype(_)
                     | consomme::DropReason::UnsupportedIpProtocol(_)
+                    | consomme::DropReason::UnsupportedIcmpv6(_)
                     | consomme::DropReason::UnsupportedDhcp(_)
                     | consomme::DropReason::UnsupportedArp
                     | consomme::DropReason::UnsupportedDhcpv6(_)
