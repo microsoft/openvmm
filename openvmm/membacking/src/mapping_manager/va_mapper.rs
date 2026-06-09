@@ -178,7 +178,7 @@ impl MapperTask {
                 MapperRequest::NoMapping(range) => {
                     // Wake up waiters. They'll see a failure when they try
                     // to access the VA.
-                    tracing::debug!(%range, "no mapping for range");
+                    tracing::debug!(%range, "no mapping received for range");
                     self.wake_waiters(range, None);
                 }
                 MapperRequest::SetEager(rpc) => rpc.handle_sync(|()| {

@@ -535,7 +535,6 @@ impl MappingManagerTask {
 
         // Push to eager mappers only. Lazy mappers will request on demand.
         let mut active_mappers = Vec::new();
-        let mut dead_mappers = Vec::new();
         for (i, mapper) in self.mappers.mappers.iter() {
             if !mapper.eager {
                 continue;
@@ -567,15 +566,11 @@ impl MappingManagerTask {
                     return Err(e);
                 }
                 Err(_) => {
-                    // Mapper channel closed — remove after iteration.
+                    // Mapper gone, skip. VaMapper::drop sends RemoveMapper
+                    // which cleans up the stale entry.
                     tracing::debug!(?id, "mapper gone during add_mapping");
-                    dead_mappers.push(id);
                 }
             }
-        }
-
-        for id in dead_mappers {
-            self.remove_mapper(id);
         }
 
         self.mappings.push(Mapping {
