@@ -1546,7 +1546,9 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Add a physical NVMe device to the VM
     pub fn add_physical_nvme_device(mut self, vsid: Guid, device: PhysicalNvmeDevice) -> Self {
-        self.config.physical_nvme_devices.insert(vsid, device);
+        if self.config.physical_nvme_devices.insert(vsid, device).is_some() {
+            panic!("physical NVMe device {vsid} already existed");
+        }
         self
     }
 
