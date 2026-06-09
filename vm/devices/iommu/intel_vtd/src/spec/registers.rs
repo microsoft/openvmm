@@ -16,23 +16,34 @@ use open_enum::open_enum;
 
 open_enum! {
     /// MMIO register offsets for the Intel VT-d IOMMU.
+    ///
+    /// 64-bit registers have separate `_HI` variants for the upper DWORD
+    /// (base + 4), enabling flat match dispatch without nested fallbacks.
     #[derive(Inspect)]
     #[inspect(debug)]
     pub enum MmioRegister: u16 {
         /// Version Register (32-bit, RO). §10.4.1.
         VER             = 0x000,
-        /// Capability Register (64-bit, RO). §10.4.2.
+        /// Capability Register — lo DWORD (64-bit, RO). §10.4.2.
         CAP             = 0x008,
-        /// Extended Capability Register (64-bit, RO). §10.4.3.
+        /// Capability Register — hi DWORD.
+        CAP_HI          = 0x00C,
+        /// Extended Capability Register — lo DWORD (64-bit, RO). §10.4.3.
         ECAP            = 0x010,
+        /// Extended Capability Register — hi DWORD.
+        ECAP_HI         = 0x014,
         /// Global Command Register (32-bit, WO). §10.4.4.
         GCMD            = 0x018,
         /// Global Status Register (32-bit, RO). §10.4.5.
         GSTS            = 0x01C,
-        /// Root Table Address Register (64-bit, RW). §10.4.6.
+        /// Root Table Address Register — lo DWORD (64-bit, RW). §10.4.6.
         RTADDR          = 0x020,
-        /// Context Command Register (64-bit, RW). §10.4.7.
+        /// Root Table Address Register — hi DWORD.
+        RTADDR_HI       = 0x024,
+        /// Context Command Register — lo DWORD (64-bit, RW). §10.4.7.
         CCMD            = 0x028,
+        /// Context Command Register — hi DWORD.
+        CCMD_HI         = 0x02C,
         /// Fault Status Register (32-bit, RW1C). §10.4.9.
         FSTS            = 0x034,
         /// Fault Event Control Register (32-bit, RW). §10.4.10.
@@ -43,12 +54,18 @@ open_enum! {
         FEADDR          = 0x040,
         /// Fault Event Upper Address Register (32-bit, RW). §10.4.13.
         FEUADDR         = 0x044,
-        /// Invalidation Queue Head Register (64-bit, RO from SW). §10.4.17.
+        /// Invalidation Queue Head Register — lo DWORD (64-bit, RO). §10.4.17.
         IQH             = 0x080,
-        /// Invalidation Queue Tail Register (64-bit, RW). §10.4.18.
+        /// Invalidation Queue Head Register — hi DWORD.
+        IQH_HI          = 0x084,
+        /// Invalidation Queue Tail Register — lo DWORD (64-bit, RW). §10.4.18.
         IQT             = 0x088,
-        /// Invalidation Queue Address Register (64-bit, RW). §10.4.19.
+        /// Invalidation Queue Tail Register — hi DWORD.
+        IQT_HI          = 0x08C,
+        /// Invalidation Queue Address Register — lo DWORD (64-bit, RW). §10.4.19.
         IQA             = 0x090,
+        /// Invalidation Queue Address Register — hi DWORD.
+        IQA_HI          = 0x094,
         /// Invalidation Completion Status Register (32-bit, RW1C). §10.4.20.
         ICS             = 0x09C,
         /// Invalidation Event Control Register (32-bit, RW). §10.4.21.
@@ -59,22 +76,28 @@ open_enum! {
         IEADDR          = 0x0A8,
         /// Invalidation Event Upper Address Register (32-bit, RW). §10.4.24.
         IEUADDR         = 0x0AC,
-        /// Interrupt Remapping Table Address Register (64-bit, RW). §10.4.29.
+        /// Interrupt Remapping Table Address Register — lo DWORD (64-bit, RW). §10.4.29.
         IRTA            = 0x0B8,
+        /// Interrupt Remapping Table Address Register — hi DWORD.
+        IRTA_HI         = 0x0BC,
+        /// Invalidate Address Register — lo DWORD (64-bit, RW). §10.4.15.
+        IVA             = 0x100,
+        /// Invalidate Address Register — hi DWORD.
+        IVA_HI          = 0x104,
+        /// IOTLB Invalidate Register — lo DWORD (64-bit, RW). §10.4.16.
+        IOTLB           = 0x108,
+        /// IOTLB Invalidate Register — hi DWORD.
+        IOTLB_HI        = 0x10C,
+        /// Fault Recording Register DWORD 0 (FrcdLo lo). §10.4.14.
+        FRCD_DW0        = 0x120,
+        /// Fault Recording Register DWORD 1 (FrcdLo hi).
+        FRCD_DW1        = 0x124,
+        /// Fault Recording Register DWORD 2 (FrcdHi lo).
+        FRCD_DW2        = 0x128,
+        /// Fault Recording Register DWORD 3 (FrcdHi hi, contains F bit).
+        FRCD_DW3        = 0x12C,
     }
 }
-
-/// Invalidate Address Register (ECAP.IRO*16, 64-bit, RW). §10.4.15.
-pub const IVA_REG_OFFSET: u16 = 0x100;
-
-/// IOTLB Invalidate Register (ECAP.IRO*16 + 0x08, 64-bit, RW). §10.4.16.
-pub const IOTLB_REG_OFFSET: u16 = 0x108;
-
-/// Fault Recording Register low 64 bits (CAP.FRO*16, per record). §10.4.14.
-pub const FRCD_LO_OFFSET: u16 = 0x120;
-
-/// Fault Recording Register high 64 bits (CAP.FRO*16 + 8, per record). §10.4.14.
-pub const FRCD_HI_OFFSET: u16 = 0x128;
 
 /// MMIO region size in bytes (4KB, one page).
 pub const MMIO_REGION_SIZE: u64 = 0x1000;
@@ -109,8 +132,7 @@ pub struct VersionReg {
 #[derive(Inspect)]
 #[rustfmt::skip]
 pub struct CapReg {
-    /// Number of domains supported (3 bits).
-    /// 0=16-bit (65536), 1=4, 2=16, 3=64, 4=256, 5=1024, 6=4096, 7=65536.
+    /// Number of domains supported (3 bits). See [`NumDomains`].
     #[bits(3)]
     pub nd: u8,
     /// Advanced Fault Logging (not supported in emulator).
@@ -171,6 +193,33 @@ pub struct CapReg {
     #[bits(4)]
     _reserved3: u64,
 }
+
+open_enum! {
+    /// CAP.ND encoding: number of supported domain IDs. §10.4.2, Table 10-2.
+    #[derive(Inspect)]
+    #[inspect(debug)]
+    pub enum NumDomains: u8 {
+        /// 16 domains (4-bit domain ID).
+        ND_16       = 0,
+        /// 64 domains (6-bit domain ID).
+        ND_64       = 1,
+        /// 256 domains (8-bit domain ID).
+        ND_256      = 2,
+        /// 1024 domains (10-bit domain ID).
+        ND_1K       = 3,
+        /// 4096 domains (12-bit domain ID).
+        ND_4K       = 4,
+        /// 16384 domains (14-bit domain ID).
+        ND_16K      = 5,
+        /// 65536 domains (16-bit domain ID).
+        ND_64K      = 6,
+    }
+}
+
+/// CAP.SLLPS bit: 2MB large page support (21-bit page offset).
+pub const SLLPS_2MB: u8 = 1 << 0;
+/// CAP.SLLPS bit: 1GB large page support (30-bit page offset).
+pub const SLLPS_1GB: u8 = 1 << 1;
 
 /// Extended Capability Register (MMIO offset 0x010, 64-bit, RO). §10.4.3.
 ///

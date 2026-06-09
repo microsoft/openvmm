@@ -159,14 +159,6 @@ impl DmarDeviceScope {
             start_bus_number,
         }
     }
-
-    /// Create a PCI sub-hierarchy device scope entry.
-    ///
-    /// The entry covers all devices reachable from `start_bus_number`
-    /// through the bridge at device/function 0 on that bus.
-    pub fn pci_sub_hierarchy(start_bus_number: u8) -> Self {
-        Self::new(DEVICE_SCOPE_PCI_SUB_HIERARCHY, start_bus_number)
-    }
 }
 
 const_assert_eq!(size_of::<DmarDeviceScope>(), 6);
@@ -182,19 +174,6 @@ pub struct DmarDevicePath {
     pub device: u8,
     /// PCI function number.
     pub function: u8,
-}
-
-impl DmarDevicePath {
-    /// Create a device path entry for device 0, function 0.
-    ///
-    /// This is the standard path for a PCI sub-hierarchy scope that
-    /// covers all devices below a root complex's start bus.
-    pub fn root() -> Self {
-        Self {
-            device: 0,
-            function: 0,
-        }
-    }
 }
 
 const_assert_eq!(size_of::<DmarDevicePath>(), 2);

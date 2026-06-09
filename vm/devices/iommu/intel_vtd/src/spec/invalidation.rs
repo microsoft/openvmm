@@ -61,7 +61,8 @@ open_enum! {
 /// Bit  [4]     = IF (Interrupt Flag — generate invalidation completion event)
 /// Bit  [5]     = SW (Status Write — write status data to status address)
 /// Bit  [6]     = FN (Fence — ensure prior descriptors complete first)
-/// Bits [31:7]  = reserved
+/// Bit  [7]     = PD (Page-request Drain)
+/// Bits [31:8]  = reserved
 /// Bits [63:32] = Status Data (32-bit value to write)
 /// Bits [65:64] = reserved
 /// Bits [127:66]= Status Address [63:2] (DWORD-aligned)
@@ -73,14 +74,14 @@ pub struct InvalidationWaitDw0Dw1 {
     /// Descriptor type (must be 0x05).
     #[bits(4)]
     pub desc_type: u8,
-    #[bits(1)]
-    _reserved_bit4: u64,
+    /// Interrupt Flag — 1 = generate invalidation completion event.
+    pub iflag: bool,
     /// Status Write — 1 = write status_data to status_address.
     pub sw: bool,
     /// Fence — 1 = ensure all prior invalidation descriptors complete first.
     pub fn_flag: bool,
-    /// Interrupt Flag — 1 = generate invalidation completion event.
-    pub iflag: bool,
+    /// Page-request Drain.
+    pub pd: bool,
     #[bits(24)]
     _reserved1: u64,
     /// Status Data (32-bit value to write when SW=1).

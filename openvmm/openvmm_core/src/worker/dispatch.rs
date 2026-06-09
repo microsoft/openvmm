@@ -1969,14 +1969,6 @@ impl InitializedVm {
 
         // PCI Express topology
 
-        // Build the RC name→index map before consuming the RC configs.
-        let pcie_rc_name_to_idx: std::collections::HashMap<String, usize> = cfg
-            .pcie_root_complexes
-            .iter()
-            .enumerate()
-            .map(|(i, rc)| (rc.name.clone(), i))
-            .collect();
-
         // Deferred MSI connections for root complexes and switches.
         // These are wired after IOMMU setup so that interrupt remapping
         // can be applied when an AMD IOMMU covers the root complex.
@@ -1992,10 +1984,11 @@ impl InitializedVm {
             let mut pcie_host_bridges = Vec::new();
             let mut pcie_root_complexes = Vec::new();
 
-            for (rc, ranges) in cfg
+            for (rc_idx, (rc, ranges)) in cfg
                 .pcie_root_complexes
                 .iter()
                 .zip(resolved_pcie_root_complex_ranges)
+                .enumerate()
             {
                 let cxl_port_count = rc.ports.iter().filter(|rp_cfg| rp_cfg.cxl).count() as u64;
                 let cxl_config = rc.cxl.as_ref();
@@ -2048,14 +2041,12 @@ impl InitializedVm {
                 // reserve device 0 for the IOMMU RCiEP and start root
                 // ports at device 1.
                 #[cfg(guest_arch = "x86_64")]
-                let root_port_start_device: u8 = if resolved_iommu_resources
-                    .iter()
-                    .any(|r| r.rc_name == rc.name)
-                {
-                    1
-                } else {
-                    0
-                };
+                let root_port_start_device: u8 =
+                    if resolved_iommu_resources.iter().any(|r| r.rc_idx == rc_idx) {
+                        1
+                    } else {
+                        0
+                    };
                 #[cfg(not(guest_arch = "x86_64"))]
                 let root_port_start_device: u8 = 0;
 
@@ -2081,7 +2072,6 @@ impl InitializedVm {
 
                 // Defer MSI wiring to after IOMMU setup so that
                 // interrupt remapping can be applied if applicable.
-                let rc_idx = pcie_host_bridges.len();
                 deferred_msi_conns.push(DeferredMsiConn {
                     msi_conn,
                     segment: rc.segment,
@@ -2310,7 +2300,6 @@ impl InitializedVm {
         } = smmu_wiring::setup_smmu(
             &cfg.pcie_root_complexes,
             &resolved_smmu_resources,
-            &pcie_rc_name_to_idx,
             &pcie_host_bridges,
             &chipset_builder,
             &gm,
@@ -2327,7 +2316,6 @@ impl InitializedVm {
         } = amd_iommu_wiring::setup_amd_iommu(
             &resolved_iommu_resources,
             &pcie_host_bridges,
-            &pcie_rc_name_to_idx,
             &chipset_builder,
             partition.as_ref(),
             &gm,
@@ -2343,7 +2331,6 @@ impl InitializedVm {
         } = intel_vtd_wiring::setup_intel_vtd(
             &resolved_vtd_resources,
             &pcie_host_bridges,
-            &pcie_rc_name_to_idx,
             &chipset_builder,
             partition.as_ref(),
             &gm,

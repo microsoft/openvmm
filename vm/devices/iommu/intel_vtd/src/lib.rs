@@ -22,6 +22,7 @@ use guestmem::GuestMemory;
 use inspect::InspectMut;
 use parking_lot::RwLock;
 use pci_core::msi::SignalMsi;
+use spec::invalidation::DescriptorType;
 use spec::irte::Irte;
 use spec::irte::IrteLo;
 use spec::irte::SourceValidationType;
@@ -38,10 +39,13 @@ use spec::registers::GcmdReg;
 use spec::registers::GstsReg;
 use spec::registers::IcsReg;
 use spec::registers::IectlReg;
+use spec::registers::IotlbReg;
 use spec::registers::IqaReg;
 use spec::registers::IqhReg;
 use spec::registers::IqtReg;
 use spec::registers::IrtaReg;
+use spec::registers::MmioRegister as Reg;
+use spec::registers::NumDomains;
 use spec::registers::RtaddrReg;
 use spec::registers::VersionReg;
 use spec::root_context::AddressWidth;
@@ -50,6 +54,7 @@ use spec::root_context::RootEntry;
 use spec::root_context::TranslationType;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
+use zerocopy::FromBytes;
 
 /// MMIO region size (4KB).
 pub const MMIO_REGION_SIZE: u64 = spec::registers::MMIO_REGION_SIZE;
@@ -61,47 +66,41 @@ pub const MMIO_REGION_SIZE: u64 = spec::registers::MMIO_REGION_SIZE;
 /// VT-d version 1.0 (major=1, minor=0).
 const VER_VALUE: u32 = VersionReg::new().with_max(1).with_min(0).into_bits();
 
+/// Maximum guest address width in bits.
+const MGAW_BITS: u8 = 48;
+
+/// SAGAW bitmask: supported address widths (39-bit + 48-bit).
+const SAGAW_MASK: u8 = (1 << AddressWidth::AW_39BIT.0) | (1 << AddressWidth::AW_48BIT.0);
+
+/// Number of fault recording registers.
+const NUM_FAULT_RECORDS: u8 = 1;
+
 /// Capability Register value.
-///
-/// - MGAW=47 (48-bit address width)
-/// - SAGAW=0x6 (39-bit + 48-bit)
-/// - NFR=0 (1 fault record)
-/// - SLLPS=0x3 (2MB + 1GB large pages)
-/// - FRO=0x12 (fault recording at MMIO 0x120)
-/// - DWD=1, DRD=1, CM=0, ND=0x6 (65536 domains)
-/// - RWBF=0, PSI=1, ZLR=1, MAMV=0x12
 const CAP_VALUE: u64 = CapReg::new()
-    .with_nd(6) // 65536 domains
+    .with_nd(NumDomains::ND_64K.0)
     .with_afl(false)
     .with_rwbf(false)
     .with_cm(false)
-    .with_sagaw(0x6) // 39-bit + 48-bit
-    .with_mgaw(47) // 48-bit
+    .with_sagaw(SAGAW_MASK)
+    .with_mgaw(MGAW_BITS - 1)
     .with_zlr(true)
-    .with_fro(0x12) // FRO * 16 = 0x120
-    .with_sllps(0x3) // 2MB + 1GB
+    .with_fro(Reg::FRCD_DW0.0 / 16)
+    .with_sllps(spec::registers::SLLPS_2MB | spec::registers::SLLPS_1GB)
     .with_psi(true)
-    .with_nfr(0) // 1 fault record
-    .with_mamv(0x12)
+    .with_nfr(NUM_FAULT_RECORDS - 1)
+    .with_mamv(30 - 12) // max invalidation range = 1GB (2^30) / 4KB page (2^12)
     .with_dwd(true)
     .with_drd(true)
     .into_bits();
 
 /// Extended Capability Register value.
-///
-/// - C=1 (page-walk coherency)
-/// - QI=1 (queued invalidation)
-/// - IR=1 (interrupt remapping)
-/// - EIM=1 (x2APIC)
-/// - IRO=0x10 (IOTLB registers at MMIO 0x100)
-/// - MHMV=0xF
 const ECAP_VALUE: u64 = EcapReg::new()
     .with_c(true)
     .with_qi(true)
     .with_ir(true)
     .with_eim(true)
-    .with_iro(0x10) // IRO * 16 = 0x100
-    .with_mhmv(0xF)
+    .with_iro(Reg::IVA.0 / 16)
+    .with_mhmv(15) // max IM field in interrupt cache invalidation (4-bit max)
     .into_bits();
 
 // =============================================================================
@@ -127,33 +126,28 @@ pub struct IntelVtdConfig {
 struct VtdState {
     // -- Global status (mirrors GCMD operations) --
     /// Global Status Register value.
-    gsts: u32,
+    gsts: GstsReg,
 
     // -- Root table --
     /// Root Table Address Register (raw value, written freely).
-    #[inspect(hex)]
-    rtaddr: u64,
+    rtaddr: RtaddrReg,
     /// Latched root table address (set when SRTP is processed).
-    #[inspect(hex)]
-    latched_rtaddr: u64,
+    latched_rtaddr: RtaddrReg,
 
     // -- Interrupt remapping table --
     /// Interrupt Remapping Table Address Register (raw value).
-    #[inspect(hex)]
-    irta: u64,
+    irta: IrtaReg,
     /// Latched IRTA (set when SIRTP is processed).
-    #[inspect(hex)]
-    latched_irta: u64,
+    latched_irta: IrtaReg,
 
     // -- Context command register (register-based invalidation) --
-    #[inspect(hex)]
-    ccmd: u64,
+    ccmd: CcmdReg,
 
     // -- Fault recording --
     /// Fault Status Register (RW1C bits: PFO, IQE, ICE, ITE).
-    fsts: u32,
+    fsts: FstsReg,
     /// Fault Event Control Register.
-    fectl: u32,
+    fectl: FectlReg,
     /// Fault Event Data Register.
     #[inspect(hex)]
     fedata: u32,
@@ -164,26 +158,21 @@ struct VtdState {
     #[inspect(hex)]
     feuaddr: u32,
     /// Fault Recording Register — low 64 bits.
-    #[inspect(hex)]
-    frcd_lo: u64,
+    frcd_lo: FrcdLo,
     /// Fault Recording Register — high 64 bits.
-    #[inspect(hex)]
-    frcd_hi: u64,
+    frcd_hi: FrcdHi,
 
     // -- Invalidation queue --
-    /// Invalidation Queue Address Register (raw value).
-    #[inspect(hex)]
-    iqa: u64,
-    /// Invalidation Queue Head (byte offset, bits 18:4 shifted).
-    #[inspect(hex)]
-    iqh: u64,
-    /// Invalidation Queue Tail (byte offset).
-    #[inspect(hex)]
-    iqt: u64,
+    /// Invalidation Queue Address Register.
+    iqa: IqaReg,
+    /// Invalidation Queue Head.
+    iqh: IqhReg,
+    /// Invalidation Queue Tail.
+    iqt: IqtReg,
     /// Invalidation Completion Status Register (IWC bit).
-    ics: u32,
+    ics: IcsReg,
     /// Invalidation Event Control Register.
-    iectl: u32,
+    iectl: IectlReg,
     /// Invalidation Event Data Register.
     #[inspect(hex)]
     iedata: u32,
@@ -199,8 +188,7 @@ struct VtdState {
     #[inspect(hex)]
     iva: u64,
     /// IOTLB Invalidate Register (IOTLB_REG at 0x108).
-    #[inspect(hex)]
-    iotlb: u64,
+    iotlb: IotlbReg,
 }
 
 // =============================================================================
@@ -237,13 +225,13 @@ impl VtdSharedState {
     /// Returns whether translation is currently enabled (GSTS.TES).
     pub fn is_enabled(&self) -> bool {
         let state = self.state.read();
-        GstsReg::from(state.gsts).tes()
+        state.gsts.tes()
     }
 
     /// Returns whether interrupt remapping is currently enabled (GSTS.IRES).
     pub fn is_ir_enabled(&self) -> bool {
         let state = self.state.read();
-        GstsReg::from(state.gsts).ires()
+        state.gsts.ires()
     }
 
     /// Create a per-device IOVA→GPA translator.
@@ -268,7 +256,7 @@ impl VtdSharedState {
     /// if this MSI were to pass through a VtdSignalMsi wrapper it would be
     /// dropped, which is correct (IOMMU MSIs must not loop through IR).
     fn deliver_fault_interrupt(&self, state: &VtdState) {
-        let fectl = FectlReg::from(state.fectl);
+        let fectl = state.fectl;
         if fectl.im() {
             // Masked — don't deliver, IP will be set by caller.
             return;
@@ -280,7 +268,7 @@ impl VtdSharedState {
 
     /// Deliver the IOMMU's own invalidation completion event MSI.
     fn deliver_invalidation_interrupt(&self, state: &VtdState) {
-        let iectl = IectlReg::from(state.iectl);
+        let iectl = state.iectl;
         if iectl.im() {
             return;
         }
@@ -311,12 +299,11 @@ impl VtdSharedState {
         }
 
         // Check if FRCD[0].F is already set (fault record occupied).
-        let frcd_f = (state.frcd_hi >> 63) & 1 != 0;
-        if frcd_f {
+        if state.frcd_hi.f() {
             // Overflow — set PFO, discard new fault.
-            let mut fsts = FstsReg::from(state.fsts);
+            let mut fsts = state.fsts;
             fsts.set_pfo(true);
-            state.fsts = fsts.into_bits();
+            state.fsts = fsts;
             return;
         }
 
@@ -328,17 +315,17 @@ impl VtdSharedState {
             .with_t(is_read)
             .with_f(true);
 
-        state.frcd_lo = frcd_lo.into_bits();
-        state.frcd_hi = frcd_hi.into_bits();
+        state.frcd_lo = frcd_lo;
+        state.frcd_hi = frcd_hi;
 
         // Signal fault event MSI if unmasked.
         // PPF transitions 0→1 since we just set F=1 and it was 0 before.
-        let fectl = FectlReg::from(state.fectl);
+        let fectl = state.fectl;
         if !fectl.im() {
             self.deliver_fault_interrupt(state);
         } else {
             // Masked — set IP (interrupt pending).
-            state.fectl = FectlReg::from(state.fectl).with_ip(true).into_bits();
+            state.fectl = state.fectl.with_ip(true);
         }
     }
 
@@ -357,15 +344,14 @@ impl VtdSharedState {
         iova: u64,
         write: bool,
     ) -> Result<u64, VtdFault> {
-        let gsts = GstsReg::from(state.gsts);
+        let gsts = state.gsts;
         if !gsts.tes() {
             // Translation disabled — identity mapping.
             return Ok(iova);
         }
 
-        // Check IOVA against MGAW (48-bit).
-        let mgaw = CapReg::from(CAP_VALUE).mgaw() as u64 + 1;
-        if iova >= (1u64 << mgaw) {
+        // Check IOVA against MGAW.
+        if iova >= (1u64 << MGAW_BITS) {
             return Err(VtdFault::AddressBeyondMgaw {
                 source_id: bdf(bus, devfn),
                 iova,
@@ -373,7 +359,7 @@ impl VtdSharedState {
         }
 
         // Root entry lookup.
-        let root_table_addr = RtaddrReg::from(state.latched_rtaddr).root_table_address();
+        let root_table_addr = state.latched_rtaddr.root_table_address();
         let root_entry = self.lookup_root_entry(root_table_addr, bus)?;
         let source_id = bdf(bus, devfn);
 
@@ -538,7 +524,7 @@ impl VtdSharedState {
         address: u64,
         data: u32,
     ) -> Result<(u64, u32), VtdFault> {
-        let gsts = GstsReg::from(state.gsts);
+        let gsts = state.gsts;
         if !gsts.ires() {
             // IR disabled — pass through.
             return Ok((address, data));
@@ -554,7 +540,7 @@ impl VtdSharedState {
         let irte_index = Self::extract_irte_index(address, data);
 
         // Validate index against IRT size.
-        let irta = IrtaReg::from(state.latched_irta);
+        let irta = state.latched_irta;
         let max_entries = irta.entry_count();
         if irte_index as u32 >= max_entries {
             return Err(VtdFault::IrteIndexExceedsSize {
@@ -595,8 +581,8 @@ impl VtdSharedState {
         address: u64,
         data: u32,
     ) -> Result<(u64, u32), VtdFault> {
-        let irta = IrtaReg::from(state.latched_irta);
-        let gsts = GstsReg::from(state.gsts);
+        let irta = state.latched_irta;
+        let gsts = state.gsts;
 
         // EIME=1 → always block compatibility-format interrupts.
         if irta.eime() {
@@ -724,15 +710,18 @@ impl VtdSharedState {
             irte_lo.xapic_destination() as u32
         };
 
-        let dm = irte_lo.dm() as u64;
-        let rh = irte_lo.rh() as u64;
+        let new_address = x86defs::msi::MsiAddress::new()
+            .with_address(x86defs::msi::MSI_ADDRESS)
+            .with_virt_destination(dst as u16)
+            .with_destination_mode_logical(irte_lo.dm())
+            .with_redirection_hint(irte_lo.rh());
 
-        let new_address = 0xFEE0_0000u64 | ((dst as u64) << 12) | (rh << 3) | (dm << 2);
-        let new_data = (irte_lo.vector() as u32)
-            | ((irte_lo.dlm() as u32) << 8)
-            | ((irte_lo.tm() as u32) << 15);
+        let new_data = x86defs::msi::MsiData::new()
+            .with_vector(irte_lo.vector())
+            .with_delivery_mode(irte_lo.dlm())
+            .with_trigger_mode_level(irte_lo.tm());
 
-        (new_address, new_data)
+        (new_address.into_bits() as u64, new_data.into_bits())
     }
 }
 
@@ -1084,81 +1073,63 @@ impl IntelVtdDevice {
 
     /// Read a DWORD register while already holding the state lock.
     fn read_register_dword_locked(&self, state: &VtdState, offset: u16) -> u32 {
-        match offset {
-            // VER (32-bit at 0x000)
-            0x000 => VER_VALUE,
-            // CAP (64-bit at 0x008)
-            0x008 => CAP_VALUE as u32,
-            0x00C => (CAP_VALUE >> 32) as u32,
-            // ECAP (64-bit at 0x010)
-            0x010 => ECAP_VALUE as u32,
-            0x014 => (ECAP_VALUE >> 32) as u32,
-            // GCMD (write-only, reads return 0)
-            0x018 => 0,
-            // GSTS (32-bit at 0x01C)
-            0x01C => state.gsts,
-            // RTADDR (64-bit at 0x020)
-            0x020 => state.rtaddr as u32,
-            0x024 => (state.rtaddr >> 32) as u32,
-            // CCMD (64-bit at 0x028)
-            0x028 => state.ccmd as u32,
-            0x02C => (state.ccmd >> 32) as u32,
-            // FSTS (32-bit at 0x034)
-            0x034 => self.read_fsts(state),
-            // FECTL (32-bit at 0x038)
-            0x038 => state.fectl,
-            // FEDATA (32-bit at 0x03C)
-            0x03C => state.fedata,
-            // FEADDR (32-bit at 0x040)
-            0x040 => state.feaddr,
-            // FEUADDR (32-bit at 0x044)
-            0x044 => state.feuaddr,
-            // IQH (64-bit at 0x080)
-            0x080 => state.iqh as u32,
-            0x084 => (state.iqh >> 32) as u32,
-            // IQT (64-bit at 0x088)
-            0x088 => state.iqt as u32,
-            0x08C => (state.iqt >> 32) as u32,
-            // IQA (64-bit at 0x090)
-            0x090 => state.iqa as u32,
-            0x094 => (state.iqa >> 32) as u32,
-            // ICS (32-bit at 0x09C)
-            0x09C => state.ics,
-            // IECTL (32-bit at 0x0A0)
-            0x0A0 => state.iectl,
-            // IEDATA (32-bit at 0x0A4)
-            0x0A4 => state.iedata,
-            // IEADDR (32-bit at 0x0A8)
-            0x0A8 => state.ieaddr,
-            // IEUADDR (32-bit at 0x0AC)
-            0x0AC => state.ieuaddr,
-            // IRTA (64-bit at 0x0B8)
-            0x0B8 => state.irta as u32,
-            0x0BC => (state.irta >> 32) as u32,
-            // IVA (64-bit at IRO*16)
-            o if o == spec::registers::IVA_REG_OFFSET => state.iva as u32,
-            o if o == spec::registers::IVA_REG_OFFSET + 4 => (state.iva >> 32) as u32,
-            // IOTLB (64-bit at IRO*16+8)
-            o if o == spec::registers::IOTLB_REG_OFFSET => state.iotlb as u32,
-            o if o == spec::registers::IOTLB_REG_OFFSET + 4 => (state.iotlb >> 32) as u32,
-            // FRCD low (64-bit at FRO*16)
-            o if o == spec::registers::FRCD_LO_OFFSET => state.frcd_lo as u32,
-            o if o == spec::registers::FRCD_LO_OFFSET + 4 => (state.frcd_lo >> 32) as u32,
-            // FRCD high (64-bit at FRO*16+8)
-            o if o == spec::registers::FRCD_HI_OFFSET => state.frcd_hi as u32,
-            o if o == spec::registers::FRCD_HI_OFFSET + 4 => (state.frcd_hi >> 32) as u32,
-            // Unmapped offsets return 0
+        /// Extract the lo DWORD from a 64-bit value.
+        fn lo(val: u64) -> u32 {
+            val as u32
+        }
+        /// Extract the hi DWORD from a 64-bit value.
+        fn hi(val: u64) -> u32 {
+            (val >> 32) as u32
+        }
+
+        match Reg(offset) {
+            Reg::VER => VER_VALUE,
+            Reg::CAP => lo(CAP_VALUE),
+            Reg::CAP_HI => hi(CAP_VALUE),
+            Reg::ECAP => lo(ECAP_VALUE),
+            Reg::ECAP_HI => hi(ECAP_VALUE),
+            Reg::GCMD => 0, // write-only
+            Reg::GSTS => state.gsts.into_bits(),
+            Reg::RTADDR => lo(state.rtaddr.into_bits()),
+            Reg::RTADDR_HI => hi(state.rtaddr.into_bits()),
+            Reg::CCMD => lo(state.ccmd.into_bits()),
+            Reg::CCMD_HI => hi(state.ccmd.into_bits()),
+            Reg::FSTS => self.read_fsts(state),
+            Reg::FECTL => state.fectl.into_bits(),
+            Reg::FEDATA => state.fedata,
+            Reg::FEADDR => state.feaddr,
+            Reg::FEUADDR => state.feuaddr,
+            Reg::IQH => lo(state.iqh.into_bits()),
+            Reg::IQH_HI => hi(state.iqh.into_bits()),
+            Reg::IQT => lo(state.iqt.into_bits()),
+            Reg::IQT_HI => hi(state.iqt.into_bits()),
+            Reg::IQA => lo(state.iqa.into_bits()),
+            Reg::IQA_HI => hi(state.iqa.into_bits()),
+            Reg::ICS => state.ics.into_bits(),
+            Reg::IECTL => state.iectl.into_bits(),
+            Reg::IEDATA => state.iedata,
+            Reg::IEADDR => state.ieaddr,
+            Reg::IEUADDR => state.ieuaddr,
+            Reg::IRTA => lo(state.irta.into_bits()),
+            Reg::IRTA_HI => hi(state.irta.into_bits()),
+            Reg::IVA => lo(state.iva),
+            Reg::IVA_HI => hi(state.iva),
+            Reg::IOTLB => lo(state.iotlb.into_bits()),
+            Reg::IOTLB_HI => hi(state.iotlb.into_bits()),
+            Reg::FRCD_DW0 => lo(state.frcd_lo.into_bits()),
+            Reg::FRCD_DW1 => hi(state.frcd_lo.into_bits()),
+            Reg::FRCD_DW2 => lo(state.frcd_hi.into_bits()),
+            Reg::FRCD_DW3 => hi(state.frcd_hi.into_bits()),
             _ => 0,
         }
     }
 
     /// Read FSTS with PPF dynamically computed as OR of FRCD[n].F bits.
     fn read_fsts(&self, state: &VtdState) -> u32 {
-        let mut fsts = FstsReg::from(state.fsts);
+        let mut fsts = state.fsts;
         // PPF = OR of all FRCD[n].F bits. With NFR=0 (1 record), this
-        // is just bit 127 of FRCD (bit 63 of frcd_hi).
-        let frcd_f = (state.frcd_hi >> 63) & 1 != 0;
-        fsts.set_ppf(frcd_f);
+        // is just FRCD[0].F.
+        fsts.set_ppf(state.frcd_hi.f());
         fsts.into_bits()
     }
 
@@ -1177,37 +1148,49 @@ impl IntelVtdDevice {
         let mut state = self.shared.state.write();
         tracing::trace!(offset, value, "vtd mmio_write_dword");
 
-        match offset {
-            // Read-only registers: ignore writes.
-            0x000 | 0x004 | 0x008 | 0x00C | 0x010 | 0x014 | 0x01C | 0x080 | 0x084 => {}
+        /// Merge a DWORD write into the lo or hi half of a 64-bit value.
+        fn write_lo(old: u64, value: u32) -> u64 {
+            (old & !0xFFFF_FFFF) | value as u64
+        }
+        fn write_hi(old: u64, value: u32) -> u64 {
+            (old & 0xFFFF_FFFF) | ((value as u64) << 32)
+        }
 
-            // GCMD (32-bit WO at 0x018)
-            0x018 => {
-                self.process_gcmd(&mut state, value);
+        match Reg(offset) {
+            // Read-only registers.
+            Reg::VER
+            | Reg::CAP
+            | Reg::CAP_HI
+            | Reg::ECAP
+            | Reg::ECAP_HI
+            | Reg::GSTS
+            | Reg::IQH
+            | Reg::IQH_HI
+            | Reg::FRCD_DW0
+            | Reg::FRCD_DW1
+            | Reg::FRCD_DW2 => {}
+
+            Reg::GCMD => self.process_gcmd(&mut state, value),
+
+            Reg::RTADDR => {
+                state.rtaddr = RtaddrReg::from(write_lo(state.rtaddr.into_bits(), value));
+            }
+            Reg::RTADDR_HI => {
+                state.rtaddr = RtaddrReg::from(write_hi(state.rtaddr.into_bits(), value));
             }
 
-            // RTADDR (64-bit at 0x020) — freely writable
-            0x020 => {
-                state.rtaddr = (state.rtaddr & 0xFFFF_FFFF_0000_0000) | value as u64;
+            Reg::CCMD => {
+                state.ccmd = CcmdReg::from(write_lo(state.ccmd.into_bits(), value));
             }
-            0x024 => {
-                state.rtaddr = (state.rtaddr & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
-            }
-
-            // CCMD (64-bit at 0x028) — only process on upper DWORD write
-            // (ICC is bit 63, in the upper DWORD)
-            0x028 => {
-                state.ccmd = (state.ccmd & 0xFFFF_FFFF_0000_0000) | value as u64;
-            }
-            0x02C => {
-                let full = (state.ccmd & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
+            Reg::CCMD_HI => {
+                // ICC is bit 63 — process on hi DWORD write.
+                let full = write_hi(state.ccmd.into_bits(), value);
                 self.process_ccmd(&mut state, full);
             }
 
-            // FSTS (32-bit RW1C at 0x034)
-            0x034 => {
+            Reg::FSTS => {
                 let write_val = FstsReg::from(value);
-                let mut fsts = FstsReg::from(state.fsts);
+                let mut fsts = state.fsts;
                 if write_val.pfo() {
                     fsts.set_pfo(false);
                 }
@@ -1220,145 +1203,107 @@ impl IntelVtdDevice {
                 if write_val.ite() {
                     fsts.set_ite(false);
                 }
-                state.fsts = fsts.into_bits();
+                state.fsts = fsts;
             }
 
-            // FECTL (32-bit RW at 0x038, IP is RO)
-            0x038 => {
+            Reg::FECTL => {
                 let new = FectlReg::from(value);
-                let old = FectlReg::from(state.fectl);
-                state.fectl = FectlReg::new()
-                    .with_im(new.im())
-                    .with_ip(old.ip())
-                    .into_bits();
+                let old = state.fectl;
+                state.fectl = FectlReg::new().with_im(new.im()).with_ip(old.ip());
                 if old.im() && !new.im() && old.ip() {
-                    state.fectl = FectlReg::from(state.fectl).with_ip(false).into_bits();
+                    state.fectl = state.fectl.with_ip(false);
                     self.shared.deliver_fault_interrupt(&state);
                 }
             }
 
-            // FEDATA, FEADDR, FEUADDR (32-bit RW)
-            0x03C => state.fedata = value,
-            0x040 => state.feaddr = value,
-            0x044 => state.feuaddr = value,
+            Reg::FEDATA => state.fedata = value,
+            Reg::FEADDR => state.feaddr = value,
+            Reg::FEUADDR => state.feuaddr = value,
 
-            // IQT (64-bit at 0x088) — trigger queue processing on low DWORD
-            // (tail bits 18:4 are in the lower 32 bits)
-            0x088 => {
-                let full = (state.iqt & 0xFFFF_FFFF_0000_0000) | value as u64;
+            Reg::IQT => {
+                // Trigger queue processing on lo DWORD write.
+                let full = write_lo(state.iqt.into_bits(), value);
                 let iqt = IqtReg::from(full);
-                state.iqt = IqtReg::new().with_qt(iqt.qt()).into_bits();
+                state.iqt = IqtReg::new().with_qt(iqt.qt());
                 self.process_invalidation_queue(&mut state);
             }
-            0x08C => {
-                state.iqt = (state.iqt & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
+            Reg::IQT_HI => {
+                state.iqt = IqtReg::from(write_hi(state.iqt.into_bits(), value));
             }
 
-            // IQA (64-bit at 0x090) — only writable when QIE=0
-            0x090 => {
-                if !GstsReg::from(state.gsts).qies() {
-                    state.iqa = (state.iqa & 0xFFFF_FFFF_0000_0000) | value as u64;
+            Reg::IQA => {
+                if !state.gsts.qies() {
+                    state.iqa = IqaReg::from(write_lo(state.iqa.into_bits(), value));
                 } else {
                     tracelimit::warn_ratelimited!("vtd: write to IQA while QIE=1, ignored");
                 }
             }
-            0x094 => {
-                if !GstsReg::from(state.gsts).qies() {
-                    state.iqa = (state.iqa & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
+            Reg::IQA_HI => {
+                if !state.gsts.qies() {
+                    state.iqa = IqaReg::from(write_hi(state.iqa.into_bits(), value));
                 } else {
                     tracelimit::warn_ratelimited!("vtd: write to IQA while QIE=1, ignored");
                 }
             }
 
-            // ICS (32-bit RW1C at 0x09C)
-            0x09C => {
+            Reg::ICS => {
                 let write_val = IcsReg::from(value);
-                let mut ics = IcsReg::from(state.ics);
+                let mut ics = state.ics;
                 if write_val.iwc() {
                     ics.set_iwc(false);
                 }
-                state.ics = ics.into_bits();
+                state.ics = ics;
             }
 
-            // IECTL (32-bit RW at 0x0A0, IP is RO)
-            0x0A0 => {
+            Reg::IECTL => {
                 let new = IectlReg::from(value);
-                let old = IectlReg::from(state.iectl);
-                state.iectl = IectlReg::new()
-                    .with_im(new.im())
-                    .with_ip(old.ip())
-                    .into_bits();
+                let old = state.iectl;
+                state.iectl = IectlReg::new().with_im(new.im()).with_ip(old.ip());
                 if old.im() && !new.im() && old.ip() {
-                    state.iectl = IectlReg::from(state.iectl).with_ip(false).into_bits();
+                    state.iectl = state.iectl.with_ip(false);
                     self.shared.deliver_invalidation_interrupt(&state);
                 }
             }
 
-            // IEDATA, IEADDR, IEUADDR (32-bit RW)
-            0x0A4 => state.iedata = value,
-            0x0A8 => state.ieaddr = value,
-            0x0AC => state.ieuaddr = value,
+            Reg::IEDATA => state.iedata = value,
+            Reg::IEADDR => state.ieaddr = value,
+            Reg::IEUADDR => state.ieuaddr = value,
 
-            // IRTA (64-bit at 0x0B8) — only writable when IRE=0
-            0x0B8 => {
-                if !GstsReg::from(state.gsts).ires() {
-                    state.irta = (state.irta & 0xFFFF_FFFF_0000_0000) | value as u64;
+            Reg::IRTA => {
+                if !state.gsts.ires() {
+                    state.irta = IrtaReg::from(write_lo(state.irta.into_bits(), value));
                 } else {
                     tracelimit::warn_ratelimited!("vtd: write to IRTA while IRE=1, ignored");
                 }
             }
-            0x0BC => {
-                if !GstsReg::from(state.gsts).ires() {
-                    state.irta = (state.irta & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
+            Reg::IRTA_HI => {
+                if !state.gsts.ires() {
+                    state.irta = IrtaReg::from(write_hi(state.irta.into_bits(), value));
                 } else {
                     tracelimit::warn_ratelimited!("vtd: write to IRTA while IRE=1, ignored");
                 }
             }
 
-            _ => {
-                // Non-standard offsets (IOTLB, fault recording).
-                let iva_lo = spec::registers::IVA_REG_OFFSET;
-                let iva_hi = spec::registers::IVA_REG_OFFSET + 4;
-                let iotlb_lo = spec::registers::IOTLB_REG_OFFSET;
-                let iotlb_hi = spec::registers::IOTLB_REG_OFFSET + 4;
-                let frcd_lo_lo = spec::registers::FRCD_LO_OFFSET;
-                let frcd_lo_hi = spec::registers::FRCD_LO_OFFSET + 4;
-                let frcd_hi_lo = spec::registers::FRCD_HI_OFFSET;
-                let frcd_hi_hi = spec::registers::FRCD_HI_OFFSET + 4;
+            Reg::IVA => state.iva = write_lo(state.iva, value),
+            Reg::IVA_HI => state.iva = write_hi(state.iva, value),
 
-                match offset {
-                    o if o == iva_lo => {
-                        state.iva = (state.iva & 0xFFFF_FFFF_0000_0000) | value as u64;
-                    }
-                    o if o == iva_hi => {
-                        state.iva = (state.iva & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
-                    }
-                    o if o == iotlb_lo => {
-                        // Store low half; IVT is in the high DWORD.
-                        state.iotlb = (state.iotlb & 0xFFFF_FFFF_0000_0000) | value as u64;
-                    }
-                    o if o == iotlb_hi => {
-                        // IVT (bit 63) is in this DWORD. Merge and process.
-                        let full = (state.iotlb & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
-                        self.process_iotlb_reg(&mut state, full);
-                    }
-                    o if o == frcd_lo_lo || o == frcd_lo_hi => {
-                        // FRCD low is RO.
-                    }
-                    o if o == frcd_hi_lo => {
-                        // Lower DWORD of FRCD_HI — RO fields.
-                    }
-                    o if o == frcd_hi_hi => {
-                        // F bit (bit 31 of this DWORD = bit 63 of FRCD_HI) is RW1C.
-                        if (value >> 31) & 1 != 0 {
-                            state.frcd_hi &= !(1u64 << 63);
-                        }
-                    }
-                    _ => {
-                        // Unmapped offsets: silently ignored.
-                    }
+            Reg::IOTLB => {
+                state.iotlb = IotlbReg::from(write_lo(state.iotlb.into_bits(), value));
+            }
+            Reg::IOTLB_HI => {
+                // IVT is bit 63 — process on hi DWORD write.
+                let full = write_hi(state.iotlb.into_bits(), value);
+                self.process_iotlb_reg(&mut state, full);
+            }
+
+            Reg::FRCD_DW3 => {
+                // F bit (bit 31 of this DWORD = bit 63 of FRCD_HI) is RW1C.
+                if (value >> 31) & 1 != 0 {
+                    state.frcd_hi = state.frcd_hi.with_f(false);
                 }
             }
+
+            _ => {} // Unmapped offsets: silently ignored.
         }
     }
 
@@ -1373,7 +1318,7 @@ impl IntelVtdDevice {
     /// One-shot bits (SRTP, SIRTP, WBF) fire if set.
     fn process_gcmd(&self, state: &mut VtdState, value: u32) {
         let gcmd = GcmdReg::from(value);
-        let mut gsts = GstsReg::from(state.gsts);
+        let mut gsts = state.gsts;
 
         // -- One-shot: Set Root Table Pointer (SRTP) --
         if gcmd.srtp() {
@@ -1408,7 +1353,7 @@ impl IntelVtdDevice {
                 // Enable QI.
                 gsts.set_qies(true);
                 // Reset head on enable.
-                state.iqh = 0;
+                state.iqh = IqhReg::new();
             } else {
                 // Disable QI — reject if TE or IRE is still enabled.
                 if gsts.tes() || gsts.ires() {
@@ -1458,7 +1403,7 @@ impl IntelVtdDevice {
             gsts.set_cfis(gcmd.cfi());
         }
 
-        state.gsts = gsts.into_bits();
+        state.gsts = gsts;
     }
 
     // =========================================================================
@@ -1473,10 +1418,9 @@ impl IntelVtdDevice {
         let ccmd = CcmdReg::from(value);
         if ccmd.icc() {
             // Clear ICC, set CAIG = CIRG (echo back granularity).
-            let result = CcmdReg::from(value).with_icc(false).with_caig(ccmd.cirg());
-            state.ccmd = result.into_bits();
+            state.ccmd = ccmd.with_icc(false).with_caig(ccmd.cirg());
         } else {
-            state.ccmd = value;
+            state.ccmd = CcmdReg::from(value);
         }
     }
 
@@ -1484,16 +1428,12 @@ impl IntelVtdDevice {
     ///
     /// Register-based IOTLB invalidation. No-op since we don't cache.
     fn process_iotlb_reg(&self, state: &mut VtdState, value: u64) {
-        // IVT is bit 63. If set, clear it and echo IAIG = IIRG.
-        if (value >> 63) & 1 != 0 {
-            // IIRG is bits 61:60, IAIG is bits 58:57.
-            let iirg = (value >> 60) & 0x3;
-            let result = (value & !(1u64 << 63)) // Clear IVT
-                & !(0x3u64 << 57)                 // Clear IAIG
-                | (iirg << 57); // Set IAIG = IIRG
-            state.iotlb = result;
+        let reg = IotlbReg::from(value);
+        if reg.ivt() {
+            // Clear IVT and echo IAIG = IIRG.
+            state.iotlb = reg.with_ivt(false).with_iaig(reg.iirg());
         } else {
-            state.iotlb = value;
+            state.iotlb = IotlbReg::from(value);
         }
     }
 
@@ -1506,32 +1446,32 @@ impl IntelVtdDevice {
     /// Consumes descriptors from head to tail. Called when the guest writes
     /// IQT.
     fn process_invalidation_queue(&self, state: &mut VtdState) {
-        let gsts = GstsReg::from(state.gsts);
+        let gsts = state.gsts;
         if !gsts.qies() {
             return;
         }
 
         // Check for IQE — don't process if error is outstanding.
-        let fsts = FstsReg::from(state.fsts);
+        let fsts = state.fsts;
         if fsts.iqe() {
             return;
         }
 
-        let iqa = IqaReg::from(state.iqa);
+        let iqa = state.iqa;
 
         // Validate DW=0 (128-bit descriptors only).
         if iqa.dw() {
             tracelimit::warn_ratelimited!("vtd: IQA.DW=1 (256-bit descriptors) not supported");
-            let mut fsts = FstsReg::from(state.fsts);
+            let mut fsts = state.fsts;
             fsts.set_iqe(true);
-            state.fsts = fsts.into_bits();
+            state.fsts = fsts;
             return;
         }
 
         let queue_base = iqa.queue_base_address();
         let queue_size = iqa.queue_size_bytes();
-        let head = IqhReg::from(state.iqh).head_offset();
-        let tail = IqtReg::from(state.iqt).tail_offset();
+        let head = state.iqh.head_offset();
+        let tail = state.iqt.tail_offset();
 
         let mut current_head = head;
 
@@ -1547,41 +1487,33 @@ impl IntelVtdDevice {
                         addr = entry_addr,
                         "vtd: failed to read invalidation queue descriptor"
                     );
-                    let mut fsts = FstsReg::from(state.fsts);
+                    let mut fsts = state.fsts;
                     fsts.set_iqe(true);
-                    state.fsts = fsts.into_bits();
+                    state.fsts = fsts;
                     break;
                 }
             };
 
-            let desc_type = descriptor[0] & 0x0F;
+            let desc = spec::invalidation::InvalidationDescriptor::read_from_bytes(&descriptor)
+                .expect("descriptor is 16 bytes");
 
-            match desc_type {
-                // CONTEXT_CACHE_INVALIDATE (0x01) — no-op
-                0x01 => {}
-                // IOTLB_INVALIDATE (0x02) — no-op
-                0x02 => {}
-                // DEVICE_TLB_INVALIDATE (0x03) — not supported
-                0x03 => {
+            match desc.descriptor_type() {
+                DescriptorType::CONTEXT_CACHE_INVALIDATE => {} // no-op
+                DescriptorType::IOTLB_INVALIDATE => {}         // no-op
+                DescriptorType::DEVICE_TLB_INVALIDATE => {
                     tracelimit::warn_ratelimited!(
                         "vtd: unsupported DEVICE_TLB_INVALIDATE descriptor"
                     );
                 }
-                // INTERRUPT_ENTRY_CACHE_INVALIDATE (0x04) — no-op
-                0x04 => {}
-                // INVALIDATION_WAIT (0x05)
-                0x05 => {
+                DescriptorType::INTERRUPT_ENTRY_CACHE_INVALIDATE => {} // no-op
+                DescriptorType::INVALIDATION_WAIT => {
                     self.process_invalidation_wait(state, &descriptor);
                 }
-                // Unknown type — set IQE, halt.
-                _ => {
-                    tracelimit::warn_ratelimited!(
-                        desc_type,
-                        "vtd: unknown invalidation descriptor type"
-                    );
-                    let mut fsts = FstsReg::from(state.fsts);
+                dt => {
+                    tracelimit::warn_ratelimited!(?dt, "vtd: unknown invalidation descriptor type");
+                    let mut fsts = state.fsts;
                     fsts.set_iqe(true);
-                    state.fsts = fsts.into_bits();
+                    state.fsts = fsts;
                     break;
                 }
             }
@@ -1591,42 +1523,22 @@ impl IntelVtdDevice {
         }
 
         // Update head register.
-        state.iqh = IqhReg::new()
-            .with_qh((current_head >> 4) as u32)
-            .into_bits();
+        state.iqh = IqhReg::new().with_qh((current_head >> 4) as u32);
     }
 
     /// Process an INVALIDATION_WAIT descriptor (type 0x05).
     fn process_invalidation_wait(&self, state: &mut VtdState, descriptor: &[u8; 16]) {
-        let dw0 = u32::from_le_bytes([descriptor[0], descriptor[1], descriptor[2], descriptor[3]]);
+        let desc = spec::invalidation::InvalidationDescriptor::read_from_bytes(descriptor)
+            .expect("descriptor is 16 bytes");
+        let (lo, hi) = spec::invalidation::parse_invalidation_wait(&desc);
 
-        let sw = (dw0 >> 5) & 1 != 0; // Status Write
-        let _fn_bit = (dw0 >> 6) & 1 != 0; // Fence (no-op for us)
-        let if_bit = (dw0 >> 7) & 1 != 0; // Interrupt Flag
-
-        if sw {
-            // Write status_data (bits 63:32 of qw0) to status_address
-            // (bits 127:66 of qw1 = address bits 63:2, DWORD-aligned).
-            let status_data =
-                u32::from_le_bytes([descriptor[4], descriptor[5], descriptor[6], descriptor[7]]);
-
-            let qw1 = u64::from_le_bytes([
-                descriptor[8],
-                descriptor[9],
-                descriptor[10],
-                descriptor[11],
-                descriptor[12],
-                descriptor[13],
-                descriptor[14],
-                descriptor[15],
-            ]);
-            // qw1 bits 63:2 = Status Address bits 63:2. Mask off reserved bits 1:0.
-            let status_address = qw1 & !0x3;
+        if lo.sw() {
+            let status_address = hi.status_address();
 
             if let Err(e) = self
                 .shared
                 .guest_memory
-                .write_at(status_address, &status_data.to_le_bytes())
+                .write_at(status_address, &lo.status_data().to_le_bytes())
             {
                 tracelimit::warn_ratelimited!(
                     error = &e as &dyn std::error::Error,
@@ -1636,19 +1548,19 @@ impl IntelVtdDevice {
             }
         }
 
-        if if_bit {
+        if lo.iflag() {
             // Set IWC in ICS.
-            let mut ics = IcsReg::from(state.ics);
+            let mut ics = state.ics;
             ics.set_iwc(true);
-            state.ics = ics.into_bits();
+            state.ics = ics;
 
             // Signal invalidation completion interrupt.
-            let iectl = IectlReg::from(state.iectl);
+            let iectl = state.iectl;
             if !iectl.im() {
                 self.shared.deliver_invalidation_interrupt(state);
             } else {
                 // Masked — set IP.
-                state.iectl = IectlReg::from(state.iectl).with_ip(true).into_bits();
+                state.iectl = state.iectl.with_ip(true);
             }
         }
     }
@@ -1773,20 +1685,14 @@ impl vmcore::save_restore::SaveRestore for IntelVtdDevice {
 impl InspectMut for IntelVtdDevice {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         let state = self.shared.state.read();
-        let gsts = GstsReg::from(state.gsts);
+        let gsts = state.gsts;
         req.respond()
             .hex("mmio_base", self.mmio_base)
             .field("translation_enabled", gsts.tes())
             .field("ir_enabled", gsts.ires())
             .field("qi_enabled", gsts.qies())
-            .hex(
-                "root_table_addr",
-                RtaddrReg::from(state.latched_rtaddr).root_table_address(),
-            )
-            .hex(
-                "irt_addr",
-                IrtaReg::from(state.latched_irta).irt_base_address(),
-            )
+            .hex("root_table_addr", state.latched_rtaddr.root_table_address())
+            .hex("irt_addr", state.latched_irta.irt_base_address())
             .field("state", &*state);
     }
 }
@@ -2010,7 +1916,7 @@ mod tests {
         // Manually set fault status bits via shared state.
         {
             let mut state = dev.shared.state.write();
-            state.fsts = FstsReg::new().with_pfo(true).with_iqe(true).into_bits();
+            state.fsts = FstsReg::new().with_pfo(true).with_iqe(true);
         }
 
         let fsts = FstsReg::from(read32(&mut dev, 0x034));
@@ -2035,7 +1941,7 @@ mod tests {
         // Set FRCD[0].F (bit 63 of frcd_hi).
         {
             let mut state = dev.shared.state.write();
-            state.frcd_hi |= 1u64 << 63;
+            state.frcd_hi = FrcdHi::new().with_f(true);
         }
 
         // Now PPF should be 1.
@@ -2043,7 +1949,7 @@ mod tests {
         assert!(fsts.ppf());
 
         // Clear F bit via RW1C on FRCD_HI.
-        write64(&mut dev, spec::registers::FRCD_HI_OFFSET, 1u64 << 63);
+        write64(&mut dev, Reg::FRCD_DW2.0, 1u64 << 63);
 
         // PPF should be 0 again.
         let fsts = FstsReg::from(read32(&mut dev, 0x034));
@@ -2057,7 +1963,7 @@ mod tests {
         // Set IWC.
         {
             let mut state = dev.shared.state.write();
-            state.ics = IcsReg::new().with_iwc(true).into_bits();
+            state.ics = IcsReg::new().with_iwc(true);
         }
 
         let ics = IcsReg::from(read32(&mut dev, 0x09C));
@@ -2135,14 +2041,14 @@ mod tests {
     fn test_iotlb_register_invalidation() {
         let mut dev = create_test_device();
 
-        // Write IOTLB_REG with IVT=1 (bit 63), IIRG=01 (bits 61:60).
-        let iotlb_val = (1u64 << 63) | (1u64 << 60);
-        write64(&mut dev, spec::registers::IOTLB_REG_OFFSET, iotlb_val);
+        // Write IOTLB_REG with IVT=1, IIRG=01 (global).
+        let iotlb_val = IotlbReg::new().with_ivt(true).with_iirg(1).into_bits();
+        write64(&mut dev, Reg::IOTLB.0, iotlb_val);
 
         // Read back — IVT should be cleared, IAIG should match IIRG.
-        let result = read64(&mut dev, spec::registers::IOTLB_REG_OFFSET);
-        assert_eq!((result >> 63) & 1, 0); // IVT cleared
-        assert_eq!((result >> 57) & 0x3, 1); // IAIG = IIRG = 01
+        let result = IotlbReg::from(read64(&mut dev, Reg::IOTLB.0));
+        assert!(!result.ivt()); // IVT cleared
+        assert_eq!(result.iaig(), 1); // IAIG = IIRG = 01
     }
 
     #[test]
@@ -2167,16 +2073,16 @@ mod tests {
         // Set F bit (bit 63) in FRCD_HI.
         {
             let mut state = dev.shared.state.write();
-            state.frcd_hi = 1u64 << 63;
+            state.frcd_hi = FrcdHi::new().with_f(true);
         }
 
         // Verify it reads back.
-        let frcd_hi = read64(&mut dev, spec::registers::FRCD_HI_OFFSET);
+        let frcd_hi = read64(&mut dev, Reg::FRCD_DW2.0);
         assert_eq!((frcd_hi >> 63) & 1, 1);
 
         // Clear F via RW1C.
-        write64(&mut dev, spec::registers::FRCD_HI_OFFSET, 1u64 << 63);
-        let frcd_hi = read64(&mut dev, spec::registers::FRCD_HI_OFFSET);
+        write64(&mut dev, Reg::FRCD_DW2.0, 1u64 << 63);
+        let frcd_hi = read64(&mut dev, Reg::FRCD_DW2.0);
         assert_eq!((frcd_hi >> 63) & 1, 0);
     }
 
@@ -2185,6 +2091,7 @@ mod tests {
     // =========================================================================
 
     use spec::pte::SlPte;
+    use spec::root_context::AddressWidth;
     use spec::root_context::ContextEntry;
     use spec::root_context::ContextEntryHi;
     use spec::root_context::ContextEntryLo;
@@ -2220,9 +2127,11 @@ mod tests {
         let context_entry = ContextEntry {
             lo: ContextEntryLo::new()
                 .with_p(true)
-                .with_tt(0b00) // UNTRANSLATED_ONLY
+                .with_tt(TranslationType::UNTRANSLATED_ONLY.0)
                 .with_ssptptr(PAGE_TABLE_L4_ADDR >> 12),
-            hi: ContextEntryHi::new().with_aw(0b010).with_did(1), // 48-bit / 4-level
+            hi: ContextEntryHi::new()
+                .with_aw(AddressWidth::AW_48BIT.0)
+                .with_did(1), // 48-bit / 4-level
         };
         gm.write_at(CONTEXT_TABLE_ADDR, context_entry.as_bytes())
             .unwrap();
@@ -2271,9 +2180,9 @@ mod tests {
         // Enable translation: set root table, SRTP, TE.
         {
             let mut state = shared.state.write();
-            state.rtaddr = ROOT_TABLE_ADDR;
-            state.latched_rtaddr = ROOT_TABLE_ADDR;
-            state.gsts = GstsReg::new().with_rtps(true).with_tes(true).into_bits();
+            state.rtaddr = RtaddrReg::from(ROOT_TABLE_ADDR);
+            state.latched_rtaddr = RtaddrReg::from(ROOT_TABLE_ADDR);
+            state.gsts = GstsReg::new().with_rtps(true).with_tes(true);
         }
 
         (dev, shared)
@@ -2306,7 +2215,7 @@ mod tests {
         // Disable translation.
         {
             let mut state = shared.state.write();
-            state.gsts = GstsReg::new().with_rtps(true).into_bits();
+            state.gsts = GstsReg::new().with_rtps(true);
         }
         let state = shared.state.read();
         let gpa = shared
@@ -2332,9 +2241,11 @@ mod tests {
         let context_entry = ContextEntry {
             lo: ContextEntryLo::new()
                 .with_p(true)
-                .with_tt(0b00)
+                .with_tt(TranslationType::UNTRANSLATED_ONLY.0)
                 .with_ssptptr(PAGE_TABLE_L3_ADDR >> 12),
-            hi: ContextEntryHi::new().with_aw(0b001).with_did(1), // 39-bit / 3-level
+            hi: ContextEntryHi::new()
+                .with_aw(AddressWidth::AW_39BIT.0)
+                .with_did(1), // 39-bit / 3-level
         };
         gm.write_at(CONTEXT_TABLE_ADDR, context_entry.as_bytes())
             .unwrap();
@@ -2370,9 +2281,9 @@ mod tests {
         );
         {
             let mut state = shared.state.write();
-            state.rtaddr = ROOT_TABLE_ADDR;
-            state.latched_rtaddr = ROOT_TABLE_ADDR;
-            state.gsts = GstsReg::new().with_rtps(true).with_tes(true).into_bits();
+            state.rtaddr = RtaddrReg::from(ROOT_TABLE_ADDR);
+            state.latched_rtaddr = RtaddrReg::from(ROOT_TABLE_ADDR);
+            state.gsts = GstsReg::new().with_rtps(true).with_tes(true);
         }
 
         let state = shared.state.read();
@@ -2398,9 +2309,11 @@ mod tests {
         let context_entry = ContextEntry {
             lo: ContextEntryLo::new()
                 .with_p(true)
-                .with_tt(0b00)
+                .with_tt(TranslationType::UNTRANSLATED_ONLY.0)
                 .with_ssptptr(PAGE_TABLE_L4_ADDR >> 12),
-            hi: ContextEntryHi::new().with_aw(0b010).with_did(1),
+            hi: ContextEntryHi::new()
+                .with_aw(AddressWidth::AW_48BIT.0)
+                .with_did(1),
         };
         gm.write_at(CONTEXT_TABLE_ADDR, context_entry.as_bytes())
             .unwrap();
@@ -2438,9 +2351,9 @@ mod tests {
         );
         {
             let mut state = shared.state.write();
-            state.rtaddr = ROOT_TABLE_ADDR;
-            state.latched_rtaddr = ROOT_TABLE_ADDR;
-            state.gsts = GstsReg::new().with_rtps(true).with_tes(true).into_bits();
+            state.rtaddr = RtaddrReg::from(ROOT_TABLE_ADDR);
+            state.latched_rtaddr = RtaddrReg::from(ROOT_TABLE_ADDR);
+            state.gsts = GstsReg::new().with_rtps(true).with_tes(true);
         }
 
         let state = shared.state.read();
@@ -2468,9 +2381,11 @@ mod tests {
         let context_entry = ContextEntry {
             lo: ContextEntryLo::new()
                 .with_p(true)
-                .with_tt(0b10) // PASS_THROUGH
+                .with_tt(TranslationType::PASS_THROUGH.0)
                 .with_ssptptr(0),
-            hi: ContextEntryHi::new().with_aw(0b010).with_did(1),
+            hi: ContextEntryHi::new()
+                .with_aw(AddressWidth::AW_48BIT.0)
+                .with_did(1),
         };
         gm.write_at(CONTEXT_TABLE_ADDR, context_entry.as_bytes())
             .unwrap();
@@ -2484,9 +2399,9 @@ mod tests {
         );
         {
             let mut state = shared.state.write();
-            state.rtaddr = ROOT_TABLE_ADDR;
-            state.latched_rtaddr = ROOT_TABLE_ADDR;
-            state.gsts = GstsReg::new().with_rtps(true).with_tes(true).into_bits();
+            state.rtaddr = RtaddrReg::from(ROOT_TABLE_ADDR);
+            state.latched_rtaddr = RtaddrReg::from(ROOT_TABLE_ADDR);
+            state.gsts = GstsReg::new().with_rtps(true).with_tes(true);
         }
 
         let state = shared.state.read();
@@ -2517,9 +2432,9 @@ mod tests {
         );
         {
             let mut state = shared.state.write();
-            state.rtaddr = ROOT_TABLE_ADDR;
-            state.latched_rtaddr = ROOT_TABLE_ADDR;
-            state.gsts = GstsReg::new().with_rtps(true).with_tes(true).into_bits();
+            state.rtaddr = RtaddrReg::from(ROOT_TABLE_ADDR);
+            state.latched_rtaddr = RtaddrReg::from(ROOT_TABLE_ADDR);
+            state.gsts = GstsReg::new().with_rtps(true).with_tes(true);
         }
 
         let state = shared.state.read();
@@ -2559,9 +2474,9 @@ mod tests {
         );
         {
             let mut state = shared.state.write();
-            state.rtaddr = ROOT_TABLE_ADDR;
-            state.latched_rtaddr = ROOT_TABLE_ADDR;
-            state.gsts = GstsReg::new().with_rtps(true).with_tes(true).into_bits();
+            state.rtaddr = RtaddrReg::from(ROOT_TABLE_ADDR);
+            state.latched_rtaddr = RtaddrReg::from(ROOT_TABLE_ADDR);
+            state.gsts = GstsReg::new().with_rtps(true).with_tes(true);
         }
 
         let state = shared.state.read();
@@ -2654,9 +2569,11 @@ mod tests {
             lo: ContextEntryLo::new()
                 .with_p(true)
                 .with_fpd(true)
-                .with_tt(0b00)
+                .with_tt(TranslationType::UNTRANSLATED_ONLY.0)
                 .with_ssptptr(0x30_0000 >> 12), // Points to zeroed memory
-            hi: ContextEntryHi::new().with_aw(0b010).with_did(1),
+            hi: ContextEntryHi::new()
+                .with_aw(AddressWidth::AW_48BIT.0)
+                .with_did(1),
         };
         gm.write_at(CONTEXT_TABLE_ADDR, context_entry.as_bytes())
             .unwrap();
@@ -2670,9 +2587,9 @@ mod tests {
         );
         {
             let mut state = shared.state.write();
-            state.rtaddr = ROOT_TABLE_ADDR;
-            state.latched_rtaddr = ROOT_TABLE_ADDR;
-            state.gsts = GstsReg::new().with_rtps(true).with_tes(true).into_bits();
+            state.rtaddr = RtaddrReg::from(ROOT_TABLE_ADDR);
+            state.latched_rtaddr = RtaddrReg::from(ROOT_TABLE_ADDR);
+            state.gsts = GstsReg::new().with_rtps(true).with_tes(true);
         }
 
         // Translation should fail (PTE not present in zeroed memory).
@@ -2688,7 +2605,7 @@ mod tests {
 
         // FRCD.F should NOT be set (fault suppressed).
         let state = shared.state.read();
-        assert_eq!((state.frcd_hi >> 63) & 1, 0);
+        assert!(!state.frcd_hi.f());
     }
 
     // =========================================================================
@@ -2730,14 +2647,13 @@ mod tests {
         state.irta = IrtaReg::new()
             .with_irta(IRT_BASE_ADDR >> 12)
             .with_s(0xF)
-            .with_eime(eime)
-            .into_bits();
+            .with_eime(eime);
         state.latched_irta = state.irta;
         // Enable IR.
-        let mut gsts = GstsReg::from(state.gsts);
+        let mut gsts = state.gsts;
         gsts.set_ires(true);
         gsts.set_irtps(true);
-        state.gsts = gsts.into_bits();
+        state.gsts = gsts;
     }
 
     #[test]
@@ -2776,6 +2692,44 @@ mod tests {
         assert_eq!(new_addr & 0xFFF0_0000, 0xFEE0_0000);
         assert_eq!((new_addr >> 12) & 0xFF, 3); // APIC ID = 3
         assert_eq!(new_data & 0xFF, 0x42); // Vector = 0x42
+    }
+
+    #[test]
+    fn test_remap_msi_x2apic_destination() {
+        let gm = GuestMemory::allocate(0x40_0000);
+        let signal_msi = Arc::new(TestSignalMsi);
+        let (_dev, shared) = IntelVtdDevice::new(
+            gm.clone(),
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            signal_msi,
+        );
+
+        // Enable IR with EIME=1 (x2APIC mode).
+        setup_ir_state(&shared, true);
+
+        // Write IRTE with destination APIC ID = 300 (> 255).
+        let apic_id: u32 = 300;
+        let irte = Irte {
+            lo: IrteLo::new()
+                .with_p(true)
+                .with_vector(0x50)
+                .with_dst(apic_id)
+                .with_dlm(0)
+                .with_dm(false),
+            hi: IrteHi::new().with_svt(0),
+        };
+        gm.write_at(IRT_BASE_ADDR, irte.as_bytes()).unwrap();
+
+        let addr = 0xFEE0_0010u64;
+        let state = shared.state.read();
+        let (new_addr, new_data) = shared.remap_msi_locked(&state, 0x0000, addr, 0).unwrap();
+
+        // Verify the destination is preserved via virt_destination encoding.
+        let msi_addr = x86defs::msi::MsiAddress::from(new_addr as u32);
+        assert_eq!(msi_addr.virt_destination(), apic_id as u16);
+        assert_eq!(new_data & 0xFF, 0x50);
     }
 
     #[test]
@@ -2862,9 +2816,9 @@ mod tests {
         // Set CFIS=1 → pass-through for compat-format.
         {
             let mut state = shared.state.write();
-            let mut gsts = GstsReg::from(state.gsts);
+            let mut gsts = state.gsts;
             gsts.set_cfis(true);
-            state.gsts = gsts.into_bits();
+            state.gsts = gsts;
         }
 
         let addr = 0xFEE0_0000u64; // bit 4 = 0
@@ -2932,13 +2886,13 @@ mod tests {
         fault.record(&shared, false); // simulate a read fault
 
         let state = shared.state.read();
-        let frcd_hi = FrcdHi::from(state.frcd_hi);
+        let frcd_hi = state.frcd_hi;
         assert!(frcd_hi.f());
         assert_eq!(frcd_hi.sid(), 0x0100);
         assert_eq!(frcd_hi.fr(), FaultReason::ROOT_NOT_PRESENT.0);
         assert!(frcd_hi.t()); // T=1 for read
 
-        let frcd_lo = FrcdLo::from(state.frcd_lo);
+        let frcd_lo = state.frcd_lo;
         assert_eq!(frcd_lo.fault_address(), 0x1000);
     }
 
@@ -2970,10 +2924,10 @@ mod tests {
 
         let state = shared.state.read();
         // PFO should be set.
-        let fsts = FstsReg::from(state.fsts);
+        let fsts = state.fsts;
         assert!(fsts.pfo());
         // FRCD should still have first fault.
-        let frcd_hi = FrcdHi::from(state.frcd_hi);
+        let frcd_hi = state.frcd_hi;
         assert_eq!(frcd_hi.sid(), 0x0100);
     }
 
@@ -3068,7 +3022,6 @@ mod tests {
     // This test constructs the full VT-d stack and programs it via MMIO,
     // mimicking a Linux `intel-iommu` driver init sequence.
 
-    use spec::invalidation::DescriptorType;
     use spec::invalidation::InvalidationWaitDw0Dw1;
     use spec::invalidation::InvalidationWaitDw2Dw3;
 
@@ -3195,9 +3148,11 @@ mod tests {
         let context_entry = ContextEntry {
             lo: ContextEntryLo::new()
                 .with_p(true)
-                .with_tt(0b00) // UNTRANSLATED_ONLY
+                .with_tt(TranslationType::UNTRANSLATED_ONLY.0)
                 .with_ssptptr(E2E_PT_L4 >> 12),
-            hi: ContextEntryHi::new().with_aw(0b010).with_did(1), // 48-bit/4-level
+            hi: ContextEntryHi::new()
+                .with_aw(AddressWidth::AW_48BIT.0)
+                .with_did(1), // 48-bit/4-level
         };
         gm.write_at(
             E2E_CONTEXT_TABLE + (E2E_TEST_DEVFN as u64) * 16,
@@ -3255,11 +3210,11 @@ mod tests {
         assert_eq!(ccmd_result.caig(), 1, "CAIG must echo CIRG");
 
         // IOTLB invalidation: global.
-        let iotlb_val = (1u64 << 63) | (1u64 << 60); // IVT=1, IIRG=01 (global)
-        write64(&mut dev, spec::registers::IOTLB_REG_OFFSET, iotlb_val);
-        let iotlb_result = read64(&mut dev, spec::registers::IOTLB_REG_OFFSET);
-        assert_eq!((iotlb_result >> 63) & 1, 0, "IVT must be cleared");
-        assert_eq!((iotlb_result >> 57) & 0x3, 1, "IAIG must echo IIRG");
+        let iotlb_val = IotlbReg::new().with_ivt(true).with_iirg(1).into_bits();
+        write64(&mut dev, Reg::IOTLB.0, iotlb_val);
+        let iotlb_result = IotlbReg::from(read64(&mut dev, Reg::IOTLB.0));
+        assert!(!iotlb_result.ivt(), "IVT must be cleared");
+        assert_eq!(iotlb_result.iaig(), 1, "IAIG must echo IIRG");
 
         // =====================================================================
         // Step 6–7: Enable queued invalidation
@@ -3499,7 +3454,7 @@ mod tests {
         );
 
         // Verify fault was recorded in FRCD.
-        let frcd_hi = read64(&mut dev, spec::registers::FRCD_HI_OFFSET);
+        let frcd_hi = read64(&mut dev, Reg::FRCD_DW2.0);
         let frcd = FrcdHi::from(frcd_hi);
         assert!(frcd.f(), "Fault must be recorded (F=1)");
         assert_eq!(
@@ -3513,7 +3468,7 @@ mod tests {
         assert!(fsts.ppf(), "PPF must be set when fault is pending");
 
         // Clear fault by writing 1 to F bit (RW1C).
-        write64(&mut dev, spec::registers::FRCD_HI_OFFSET, 1u64 << 63);
+        write64(&mut dev, Reg::FRCD_DW2.0, 1u64 << 63);
         let fsts = FstsReg::from(read32(&mut dev, 0x034));
         assert!(!fsts.ppf(), "PPF must clear when F is cleared");
 

@@ -9,9 +9,9 @@
 //! requested root complex. Unlike AMD IOMMU (which is a PCI device), VT-d is a
 //! pure MMIO platform device discovered via the ACPI DMAR table.
 
+use anyhow::Context as _;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
-use std::collections::HashMap;
 use std::sync::Arc;
 use vm_topology::pcie::PcieHostBridge;
 use vmotherboard::ChipsetBuilder;
@@ -21,6 +21,8 @@ use crate::partition::HvlitePartition;
 /// Resolved resources for a single Intel VT-d instance, combining the
 /// topology-specified RC name with the MMIO range from the layout engine.
 pub(super) struct ResolvedVtdResources {
+    /// Index into `pcie_host_bridges` / `cfg.pcie_root_complexes`.
+    pub rc_idx: usize,
     /// Name of the PCIe root complex this VT-d unit covers.
     pub rc_name: String,
     /// MMIO base address (from the memory layout allocator).
@@ -38,14 +40,15 @@ pub(super) fn resolve_vtd_resources(
 ) -> Vec<ResolvedVtdResources> {
     root_complexes
         .iter()
-        .filter(|rc| {
+        .enumerate()
+        .filter(|(_, rc)| {
             matches!(
                 rc.iommu,
                 Some(openvmm_defs::config::PcieIommuConfig::IntelVtd)
             )
         })
         .zip(mmio_ranges)
-        .map(|(rc, range)| {
+        .map(|((idx, rc), range)| {
             // VT-d is a pure MMIO device — no RCiEP on bus 0. Root ports
             // start at device 0, packed 8 functions per device slot,
             // matching the GenericPcieRootComplex packing logic.
@@ -60,6 +63,7 @@ pub(super) fn resolve_vtd_resources(
                 .collect();
 
             ResolvedVtdResources {
+                rc_idx: idx,
                 rc_name: rc.name.clone(),
                 mmio_base: range.start(),
                 device_scopes,
@@ -86,7 +90,6 @@ pub(super) struct VtdDevicesResult {
 pub(super) fn setup_intel_vtd(
     resolved_resources: &[ResolvedVtdResources],
     pcie_host_bridges: &[PcieHostBridge],
-    pcie_rc_name_to_idx: &HashMap<String, usize>,
     chipset_builder: &ChipsetBuilder<'_>,
     partition: &dyn HvlitePartition,
     gm: &GuestMemory,
@@ -96,17 +99,8 @@ pub(super) fn setup_intel_vtd(
     let mut acpi_configs: Vec<vmm_core::acpi_builder::IntelVtdAcpiConfig> = Vec::new();
 
     for res in resolved_resources {
+        let rc_pos = res.rc_idx;
         let rc_name = &res.rc_name;
-        let rc_pos = match pcie_rc_name_to_idx.get(rc_name.as_str()) {
-            Some(&i) => i,
-            None => {
-                let available: Vec<_> = pcie_rc_name_to_idx.keys().collect();
-                anyhow::bail!(
-                    "--intel-vtd references unknown root complex '{rc_name}'. \
-                     Available: {available:?}"
-                );
-            }
-        };
 
         if shared_states[rc_pos].is_some() {
             anyhow::bail!("duplicate Intel VT-d for root complex '{rc_name}'");
@@ -125,7 +119,7 @@ pub(super) fn setup_intel_vtd(
         // VtdSignalMsi wrapper would drop due to missing devid).
         let signal_msi = partition
             .as_signal_msi(Vtl::Vtl0)
-            .expect("partition must provide MSI support for VT-d");
+            .context("partition must provide MSI support for VT-d")?;
 
         let builder = chipset_builder.arc_mutex_device(device_name);
         let vtd_dev = builder.add(|_services| {

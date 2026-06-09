@@ -11,7 +11,6 @@
 use crate::partition::HvlitePartition;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
-use std::collections::HashMap;
 use std::sync::Arc;
 use vm_topology::pcie::PcieHostBridge;
 use vmotherboard::ChipsetBuilder;
@@ -19,6 +18,8 @@ use vmotherboard::ChipsetBuilder;
 /// Resolved resources for a single AMD IOMMU instance, combining the
 /// topology-specified RC name with the MMIO range from the layout engine.
 pub(super) struct ResolvedIommuResources {
+    /// Index into `pcie_host_bridges` / `cfg.pcie_root_complexes`.
+    pub rc_idx: usize,
     /// Name of the PCIe root complex this IOMMU covers.
     pub rc_name: String,
     /// MMIO base address (from the memory layout allocator).
@@ -33,9 +34,11 @@ pub(super) fn resolve_iommu_resources(
 ) -> Vec<ResolvedIommuResources> {
     root_complexes
         .iter()
-        .filter(|rc| matches!(rc.iommu, Some(openvmm_defs::config::PcieIommuConfig::AmdVi)))
+        .enumerate()
+        .filter(|(_, rc)| matches!(rc.iommu, Some(openvmm_defs::config::PcieIommuConfig::AmdVi)))
         .zip(mmio_ranges)
-        .map(|(rc, range)| ResolvedIommuResources {
+        .map(|((idx, rc), range)| ResolvedIommuResources {
+            rc_idx: idx,
             rc_name: rc.name.clone(),
             mmio_base: range.start(),
         })
@@ -60,7 +63,6 @@ pub(super) struct IommuDevicesResult {
 pub(super) fn setup_amd_iommu(
     resolved_resources: &[ResolvedIommuResources],
     pcie_host_bridges: &[PcieHostBridge],
-    pcie_rc_name_to_idx: &HashMap<String, usize>,
     chipset_builder: &ChipsetBuilder<'_>,
     partition: &dyn HvlitePartition,
     gm: &GuestMemory,
@@ -70,17 +72,8 @@ pub(super) fn setup_amd_iommu(
     let mut acpi_configs: Vec<vmm_core::acpi_builder::AmdIommuAcpiConfig> = Vec::new();
 
     for res in resolved_resources {
+        let rc_pos = res.rc_idx;
         let rc_name = &res.rc_name;
-        let rc_pos = match pcie_rc_name_to_idx.get(rc_name.as_str()) {
-            Some(&i) => i,
-            None => {
-                let available: Vec<_> = pcie_rc_name_to_idx.keys().collect();
-                anyhow::bail!(
-                    "--amd-iommu references unknown root complex '{rc_name}'. \
-                     Available: {available:?}"
-                );
-            }
-        };
 
         if shared_states[rc_pos].is_some() {
             anyhow::bail!("duplicate AMD IOMMU for root complex '{rc_name}'");
