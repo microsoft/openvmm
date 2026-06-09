@@ -176,11 +176,11 @@ impl MappingManagerClient {
     /// TODO: currently this will panic if the mapping overlaps an existing
     /// mapping. This needs to be fixed to allow this to overlap existing
     /// mappings, in which case the old ones will be split and replaced.
-    pub async fn add_mapping(&self, params: MappingParams) -> Result<(), RemoteError> {
+    pub async fn add_mapping(&self, params: MappingParams) -> anyhow::Result<()> {
         self.req_send
-            .call(MappingRequest::AddMapping, params)
-            .await
-            .map_err(RemoteError::new)?
+            .call_failable(MappingRequest::AddMapping, params)
+            .await?;
+        Ok(())
     }
 
     /// Removes all mappings in `range`.
@@ -1392,13 +1392,11 @@ mod tests {
         manager_thread.join().unwrap();
     }
 
-    /// Demonstrates the deadlock in VaMapper::new() when creating an eager
-    /// mapper while mappings already exist: the manager's add_mapper() replays
-    /// mappings via MapEager RPCs to the mapper channel, but the mapper thread
-    /// that would process those RPCs hasn't been spawned yet (it's spawned
-    /// after AddMapper returns).
+    /// Tests that creating an eager mapper succeeds even when mappings
+    /// already exist (the mapper thread must be running to service the
+    /// replay RPCs during AddMapper).
     #[pal_async::async_test]
-    async fn test_eager_mapper_with_existing_mappings_deadlocks(spawn: impl Spawn) {
+    async fn test_eager_mapper_with_existing_mappings(spawn: impl Spawn) {
         let _ = spawn;
         let (manager_thread, manager_driver) =
             pal_async::DefaultPool::spawn_on_thread("mapping-manager-test");
@@ -1421,36 +1419,13 @@ mod tests {
             .await
             .unwrap();
 
-        // Try to create an eager mapper on a separate thread. The call chain:
-        //   VaMapper::new() --AddMapper RPC--> manager task
-        //   manager::add_mapper() --MapEager RPC--> mapper channel (no reader!)
-        // The mapper thread is only spawned after AddMapper returns, so the
-        // MapEager RPC has no one to respond and the whole chain deadlocks.
-        let (done_send, done_recv) = std::sync::mpsc::channel();
-        let _handle = std::thread::spawn(move || {
-            let result =
-                pal_async::DefaultPool::run_with(
-                    |_driver| async move { client.new_mapper(true).await },
-                );
-            let _ = done_send.send(result);
-        });
+        // Create an eager mapper. The mapper thread must be spawned before
+        // the AddMapper RPC so it can respond to replay MapEager RPCs.
+        let mapper = client.new_mapper(true).await.unwrap();
+        assert!(mapper.is_eager());
 
-        match done_recv.recv_timeout(std::time::Duration::from_secs(5)) {
-            Ok(result) => {
-                let mapper = result.unwrap();
-                assert!(mapper.is_eager());
-                drop(mapper);
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                panic!(
-                    "DEADLOCK: new_mapper() did not complete within 5 s. \
-                     The manager task is blocked awaiting a MapEager response \
-                     from a mapper thread that has not been spawned yet."
-                );
-            }
-            Err(e) => panic!("mapper thread died: {e}"),
-        }
-
+        drop(mapper);
+        drop(client);
         drop(mm);
         drop(manager_driver);
         manager_thread.join().unwrap();

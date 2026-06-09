@@ -46,7 +46,7 @@ pub struct DmaMapRequest<'a> {
     pub range: MemoryRange,
     /// Host virtual address of the mapping, provided when the target was
     /// registered with `needs_va = true`. When `None`, the implementation
-    /// should use `mappable` and `file_offset` directly (e.g., iommufd).
+    /// should use `mappable` and `file_offset` directly.
     pub host_va: Option<*const u8>,
     /// The backing object (fd or handle) for the mapping.
     pub mappable: &'a Mappable,
@@ -317,7 +317,7 @@ impl RegionManagerTask {
         while let Some(req) = req_recv.next().await {
             match req {
                 RegionRequest::AddMapping(rpc) => {
-                    rpc.handle(async |(id, params)| self.add_mapping(id, params).await)
+                    rpc.handle_failable(async |(id, params)| self.add_mapping(id, params).await)
                         .await
                 }
                 RegionRequest::RemoveMappings(rpc) => {
@@ -592,7 +592,7 @@ impl RegionManagerTask {
         &mut self,
         id: RegionId,
         params: RegionMappingParams,
-    ) -> Result<(), RemoteError> {
+    ) -> anyhow::Result<()> {
         let index = self.region_index(id);
         let region = &mut self.regions[index];
 
@@ -607,32 +607,35 @@ impl RegionManagerTask {
 
         if let Some(region_range) = region.active_range() {
             let range = range_within(region_range, params.range_in_region);
+            let writable = params.writable && region.map_params.unwrap().writable;
             self.inner
                 .mapping_manager
                 .add_mapping(MappingParams {
                     range,
                     mappable: params.mappable.clone(),
                     file_offset: params.file_offset,
-                    writable: params.writable,
+                    writable,
                     mapping_type: region.params.mapping_type,
                     numa_node: params.numa_node,
                 })
                 .await?;
 
-            for dma_mapper in &self.inner.dma_mappers {
+            for (dma_idx, dma_mapper) in self.inner.dma_mappers.iter().enumerate() {
                 if let Err(e) = dma_mapper.map_dma(DmaMapRequest {
                     range,
                     host_va: None,
                     mappable: &params.mappable,
                     file_offset: params.file_offset,
-                    writable: params.writable,
+                    writable,
                     mapping_type: region.params.mapping_type,
                 }) {
-                    tracing::warn!(
-                        error = &*e as &dyn std::error::Error,
-                        %range,
-                        "DMA mapper failed to map new sub-mapping"
-                    );
+                    // Roll back: unmap from DMA mappers that already
+                    // succeeded, then remove the VA mapping.
+                    for dm in &self.inner.dma_mappers[..dma_idx] {
+                        dm.unmap_dma(range);
+                    }
+                    self.inner.mapping_manager.remove_mappings(range).await;
+                    return Err(e);
                 }
             }
         }
@@ -728,7 +731,7 @@ impl RegionManagerTaskInner {
                 self.mapping_manager
                     .remove_mappings(region.params.range)
                     .await;
-                return Err(anyhow::Error::new(e)).context(format!(
+                return Err(e).context(format!(
                     "failed to map {} during region enable",
                     range_within(region.params.range, mapping.params.range_in_region),
                 ));
@@ -1349,6 +1352,35 @@ mod tests {
         fn unmap_dma(&self, range: MemoryRange) -> anyhow::Result<()> {
             self.inner.unmap_dma(range)
         }
+    }
+
+    #[async_test]
+    async fn test_add_mapping_dma_failure_propagates(spawn: impl Spawn) {
+        let mut t = DmaTestTask::new(&spawn);
+        let r = t.add_region(0x0..0x10000).await;
+
+        // Register a DMA mapper that fails immediately.
+        let target = Arc::new(FailAfterDmaTarget::new(0));
+        let _id = t.task.add_dma_mapper(target.clone(), false).await.unwrap();
+        target.take_events();
+
+        // Adding a sub-mapping to the active region should fail because
+        // the DMA mapper fails. The VA mapping should be rolled back.
+        let result = t
+            .task
+            .add_mapping(
+                r,
+                RegionMappingParams {
+                    range_in_region: MemoryRange::new(0x0..0x4000),
+                    mappable: t.mappable.clone(),
+                    file_offset: 0,
+                    writable: true,
+                    numa_node: None,
+                },
+            )
+            .await;
+
+        assert!(result.is_err(), "add_mapping should propagate DMA failure");
     }
 
     #[async_test]
