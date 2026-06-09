@@ -803,10 +803,10 @@ fn read_physical_bar_addresses(pci_id: &str) -> anyhow::Result<[u64; 6]> {
             .split_whitespace()
             .next()
             .with_context(|| format!("malformed resource line {i} in {path}"))?;
-        addresses[i] = u64::from_str_radix(start_str.strip_prefix("0x").unwrap_or(start_str), 16)
-            .with_context(|| {
-            format!("failed to parse BAR{i} address '{start_str}' in {path}")
-        })?;
+        addresses[i] = start_str
+            .strip_prefix("0x")
+            .and_then(|s| u64::from_str_radix(s, 16).ok())
+            .with_context(|| format!("failed to parse BAR{i} address '{start_str}' in {path}"))?;
     }
 
     Ok(addresses)

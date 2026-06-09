@@ -863,12 +863,9 @@ async fn vm_config_from_command_line(
             start_bus: rc_cli.start_bus,
             end_bus: rc_cli.end_bus,
             low_mmio: if let Some(base) = rc_cli.low_mmio_base {
-                let end = base
-                    .checked_add(low_mmio_size)
-                    .context("low_mmio_base + low_mmio size overflows")?;
                 PcieMmioRangeConfig::Fixed(
-                    memory_range::MemoryRange::try_new(base..end)
-                        .context("low_mmio_base is not page-aligned")?,
+                    memory_range::MemoryRange::try_new(base..base.wrapping_add(low_mmio_size))
+                        .context("invalid low MMIO range")?,
                 )
             } else {
                 PcieMmioRangeConfig::Dynamic {
@@ -876,12 +873,9 @@ async fn vm_config_from_command_line(
                 }
             },
             high_mmio: if let Some(base) = rc_cli.high_mmio_base {
-                let end = base
-                    .checked_add(high_mmio_size)
-                    .context("high_mmio_base + high_mmio size overflows")?;
                 PcieMmioRangeConfig::Fixed(
-                    memory_range::MemoryRange::try_new(base..end)
-                        .context("high_mmio_base is not page-aligned")?,
+                    memory_range::MemoryRange::try_new(base..base.wrapping_add(high_mmio_size))
+                        .context("invalid high MMIO range")?,
                 )
             } else {
                 PcieMmioRangeConfig::Dynamic {

@@ -332,8 +332,12 @@ fn assert_bar_in_aperture(
         end = bar_end,
     );
 }
-fn is_mem64_bar(bar: &crate::enumerate::DiscoveredBar) -> bool {
-    bar.is_64bit && bar.is_prefetchable
+fn bar_is_mem64(bar: &crate::enumerate::DiscoveredBar) -> bool {
+    if let Some(addr) = bar.pinned_address {
+        addr >= 0x1_0000_0000 && bar.is_64bit && bar.is_prefetchable
+    } else {
+        bar.is_64bit && bar.is_prefetchable
+    }
 }
 
 /// Bottom-up: compute the total aligned resource requirement for a list
@@ -346,16 +350,7 @@ fn compute_subtree_sizing(devices: &mut [DiscoveredDevice]) -> SubtreeSizing {
 
     for (i, dev) in devices.iter_mut().enumerate() {
         for bar in &dev.bars {
-            // For pinned BARs below 4 GB, treat them as mem32 regardless
-            // of encoding. Prefetchable vs. non-prefetchable is not a real
-            // distinction in virtualization, and placing a pinned BAR in the
-            // mem64 pool when its address is in the low MMIO range would
-            // create a bridge window spanning across apertures.
-            let is_mem64 = if let Some(addr) = bar.pinned_address {
-                addr >= 0x1_0000_0000 && is_mem64_bar(bar)
-            } else {
-                is_mem64_bar(bar)
-            };
+            let is_mem64 = bar_is_mem64(bar);
             demands.push(Demand::Bar {
                 dev_idx: i,
                 bar_index: bar.index,
@@ -376,7 +371,7 @@ fn compute_subtree_sizing(devices: &mut [DiscoveredDevice]) -> SubtreeSizing {
                     // VF BAR region base must be aligned to per-VF BAR size
                     // (each VF's BAR is at base + n * bar_size).
                     alignment: bar.size,
-                    is_mem64: is_mem64_bar(bar),
+                    is_mem64: bar.is_64bit && bar.is_prefetchable,
                 });
             }
         }
@@ -901,24 +896,35 @@ fn allocate_from_gaps(gaps: &mut Vec<(u64, u64)>, size: u64, alignment: u64) -> 
     Some(addr)
 }
 
+#[derive(Clone, Copy)]
+struct PinnedBar {
+    addr: u64,
+    size: u64,
+    bus: u8,
+    device: u8,
+    function: u8,
+    bar_index: u8,
+    is_mem64: bool,
+}
+
 /// Validate pinned BAR constraints: alignment, overlap, and aperture fit.
 fn validate_pinned_bars(
     devices: &[DiscoveredDevice],
     params: &AssignmentParams,
 ) -> Result<(), AssignmentError> {
-    let mut all_pinned: Vec<(u64, u64, u8, u8, u8, u8, bool)> = Vec::new();
+    let mut all_pinned = Vec::new();
     collect_pinned_bars(devices, &mut all_pinned);
 
     // Check natural alignment.
-    for &(addr, size, bus, device, function, bar_index, _) in &all_pinned {
-        if addr % size != 0 {
+    for p in &all_pinned {
+        if p.addr % p.size != 0 {
             return Err(AssignmentError::PinnedBarMisaligned {
-                bus,
-                device,
-                function,
-                bar_index,
-                address: addr,
-                required_alignment: size,
+                bus: p.bus,
+                device: p.device,
+                function: p.function,
+                bar_index: p.bar_index,
+                address: p.addr,
+                required_alignment: p.size,
             });
         }
     }
@@ -927,43 +933,43 @@ fn validate_pinned_bars(
     for is_mem64 in [false, true] {
         let mut pool: Vec<_> = all_pinned
             .iter()
-            .filter(|p| p.6 == is_mem64)
+            .filter(|p| p.is_mem64 == is_mem64)
             .copied()
             .collect();
-        pool.sort_by_key(|p| p.0);
-        for w in pool.windows(2) {
-            let first_end = w[0].0.saturating_add(w[0].1);
-            if first_end > w[1].0 {
+        pool.sort_by_key(|p| p.addr);
+        for [a, b] in pool.array_windows::<2>() {
+            let first_end = a.addr.saturating_add(a.size);
+            if first_end > b.addr {
                 return Err(AssignmentError::PinnedBarOverlap {
-                    first_address: w[0].0,
+                    first_address: a.addr,
                     first_end,
-                    second_address: w[1].0,
-                    second_end: w[1].0.saturating_add(w[1].1),
+                    second_address: b.addr,
+                    second_end: b.addr.saturating_add(b.size),
                 });
             }
         }
     }
 
     // Check aperture containment.
-    for &(addr, size, bus, device, function, bar_index, is_mem64) in &all_pinned {
-        let (aperture, aperture_name) = if is_mem64 && params.high_mmio.is_some() {
+    for p in &all_pinned {
+        let (aperture, aperture_name) = if p.is_mem64 && params.high_mmio.is_some() {
             (params.high_mmio, "high_mmio")
         } else {
             (params.low_mmio, "low_mmio")
         };
-        let bar_end = addr.saturating_add(size);
+        let bar_end = p.addr.saturating_add(p.size);
         let fits = aperture.is_some_and(|a| {
             let aperture_end = a.base.saturating_add(a.len);
-            addr >= a.base && bar_end <= aperture_end
+            p.addr >= a.base && bar_end <= aperture_end
         });
         if !fits {
             return Err(AssignmentError::PinnedBarOutOfAperture {
-                bus,
-                device,
-                function,
-                bar_index,
-                address: addr,
-                size,
+                bus: p.bus,
+                device: p.device,
+                function: p.function,
+                bar_index: p.bar_index,
+                address: p.addr,
+                size: p.size,
                 aperture: aperture_name,
             });
         }
@@ -973,25 +979,20 @@ fn validate_pinned_bars(
 }
 
 /// Recursively collect all pinned BARs from the device tree.
-/// Each entry: (address, size, bus, device, function, bar_index, is_mem64).
-fn collect_pinned_bars(
-    devices: &[DiscoveredDevice],
-    out: &mut Vec<(u64, u64, u8, u8, u8, u8, bool)>,
-) {
+fn collect_pinned_bars(devices: &[DiscoveredDevice], out: &mut Vec<PinnedBar>) {
     for dev in devices {
         for bar in &dev.bars {
             if let Some(addr) = bar.pinned_address {
-                // Pinned BARs below 4 GB are treated as mem32.
-                let is_mem64 = addr >= 0x1_0000_0000 && is_mem64_bar(bar);
-                out.push((
+                let is_mem64 = bar_is_mem64(bar);
+                out.push(PinnedBar {
                     addr,
-                    bar.size,
-                    dev.bus,
-                    dev.device,
-                    dev.function,
-                    bar.index,
+                    size: bar.size,
+                    bus: dev.bus,
+                    device: dev.device,
+                    function: dev.function,
+                    bar_index: bar.index,
                     is_mem64,
-                ));
+                });
             }
         }
         collect_pinned_bars(&dev.children, out);
