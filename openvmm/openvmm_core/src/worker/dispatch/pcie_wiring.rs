@@ -105,7 +105,7 @@ impl PcieMsiPlatform<'_> {
         // re-pushing on INVALIDATE_INTERRUPT_TABLE commands.
         #[cfg(guest_arch = "x86_64")]
         if let Some(shared) = &self.iommu {
-            signal_msi = signal_msi.map(|s| shared.create_signal_msi(s) as _);
+            signal_msi = signal_msi.map(|s| shared.wrap_signal_msi(s) as _);
             irqfd = None;
         }
 
@@ -166,15 +166,20 @@ pub(super) fn build_device_wiring(params: PcieDeviceWiringParams<'_>) -> PcieDev
     // availability.
     #[cfg(guest_arch = "aarch64")]
     if let Some(shared) = params.smmu {
-        let translating_gm =
-            shared.create_translating_memory(params.bus_range.clone(), 0, params.guest_memory);
+        let translator = shared.translator(0);
+        let translating_gm = iommu_common::TranslatingMemory::new_guest_memory(
+            "smmu-translating",
+            translator,
+            params.bus_range.clone(),
+            params.guest_memory.clone(),
+        );
         let smmu_msi = msi.signal_msi.map(|inner_msi| {
             Arc::new(smmu::SmmuSignalMsi::new(shared.clone(), 0, inner_msi))
                 as Arc<dyn pci_core::msi::SignalMsi>
         });
         let irqfd = msi
             .irqfd
-            .map(|fd| shared.create_irqfd(0, fd) as Arc<dyn vmcore::irqfd::IrqFd>);
+            .map(|fd| shared.wrap_irqfd(0, fd) as Arc<dyn vmcore::irqfd::IrqFd>);
         return PcieDeviceWiring {
             guest_memory: translating_gm,
             msi: PcieMsiRouting {
@@ -189,8 +194,13 @@ pub(super) fn build_device_wiring(params: PcieDeviceWiringParams<'_>) -> PcieDev
     // MSI interrupt remapping was already applied by wrap_msi().
     #[cfg(guest_arch = "x86_64")]
     if let Some(shared) = params.msi_platform.iommu {
-        let translating_gm =
-            shared.create_translating_memory(params.bus_range.clone(), params.guest_memory);
+        let translator = shared.translator();
+        let translating_gm = iommu_common::TranslatingMemory::new_guest_memory(
+            "amd-iommu-translating",
+            translator,
+            params.bus_range.clone(),
+            params.guest_memory.clone(),
+        );
         return PcieDeviceWiring {
             guest_memory: translating_gm,
             msi,

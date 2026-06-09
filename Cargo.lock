@@ -95,9 +95,11 @@ dependencies = [
  "chipset_device",
  "guestmem",
  "inspect",
+ "iommu_common",
  "open_enum",
  "parking_lot",
  "pci_core",
+ "thiserror 2.0.16",
  "tracelimit",
  "tracing",
  "vmcore",
@@ -3851,6 +3853,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "iommu_common"
+version = "0.0.0"
+dependencies = [
+ "guestmem",
+ "pci_core",
+ "thiserror 2.0.16",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5433,6 +5444,7 @@ dependencies = [
  "igvm_defs",
  "input_core",
  "inspect",
+ "iommu_common",
  "loader",
  "membacking",
  "memory_range",
@@ -7449,12 +7461,14 @@ dependencies = [
  "chipset_device",
  "guestmem",
  "inspect",
+ "iommu_common",
  "mesh",
  "open_enum",
  "pal_async",
  "pal_event",
  "parking_lot",
  "pci_core",
+ "thiserror 2.0.16",
  "tracelimit",
  "vmcore",
  "zerocopy",
