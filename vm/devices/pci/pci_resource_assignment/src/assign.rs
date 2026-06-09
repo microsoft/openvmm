@@ -18,7 +18,7 @@ const BRIDGE_WINDOW_ALIGN: u64 = 1 << 20;
 /// Sizing requirement for a subtree (bridge or root), computed during
 /// the bottom-up pass.
 #[derive(Debug, Clone)]
-struct SubtreeSizing {
+struct SubtreeLayout {
     /// Total aligned size needed in the mem32 (non-prefetchable) pool.
     mem32: u64,
     /// Total aligned size needed in the mem64 (prefetchable) pool.
@@ -28,21 +28,19 @@ struct SubtreeSizing {
     align32: u64,
     /// Required alignment for the mem64 pool.
     align64: u64,
-    /// Sorted demands for this level's devices, used by the assignment
-    /// pass to avoid recomputing them.
+    /// Sorted demands for this level's devices.
     demands: Vec<Demand>,
+    /// Offset within the pool for each demand (parallel to `demands`).
+    /// Always relative to the pool base (0 for unconstrained pools,
+    /// `constrained_base` for constrained pools). The final address
+    /// is `pool_base + offset`.
+    offsets: Vec<u64>,
     /// If pinned demands exist in the mem32 pool, the required base address
     /// for this subtree's window (align_down of the lowest pinned address).
     constrained_base32: Option<u64>,
     /// If pinned demands exist in the mem64 pool, the required base address
     /// for this subtree's window.
     constrained_base64: Option<u64>,
-    /// Pre-computed free gaps in the mem32 pool, covering the window
-    /// [constrained_base, constrained_base + align_up(mem, 1 MB)).
-    /// Empty when there are no pinned demands.
-    gaps32: Vec<(u64, u64)>,
-    /// Pre-computed free gaps in the mem64 pool.
-    gaps64: Vec<(u64, u64)>,
 }
 
 /// All bridge-specific state populated by the assignment phase.
@@ -53,7 +51,7 @@ struct SubtreeSizing {
 #[derive(Debug, Clone)]
 pub(crate) struct BridgeAssignment {
     /// Subtree sizing computed during the bottom-up pass.
-    sizing: SubtreeSizing,
+    layout: SubtreeLayout,
     /// Assigned non-prefetchable bridge window (base, limit).
     memory_window: Option<(u64, u64)>,
     /// Assigned prefetchable bridge window (base, limit).
@@ -61,9 +59,6 @@ pub(crate) struct BridgeAssignment {
 }
 
 /// A single resource demand at one level of the PCI tree.
-///
-/// Shared between the sizing pass (which sums sizes) and the assignment
-/// pass (which bump-allocates addresses).
 #[derive(Debug, Clone)]
 enum Demand {
     /// An endpoint BAR.
@@ -150,11 +145,12 @@ impl Demand {
 ///
 /// Uses hierarchical bottom-up/top-down allocation:
 ///
-/// 1. **Bottom-up sizing**: Each bridge computes the total aligned
-///    resource requirement of its subtree.
-/// 2. **Top-down assignment**: The host bridge carves its aperture among
-///    top-level devices/bridges. Each bridge subdivides its allocated
-///    range among children, largest-first.
+/// 1. **Bottom-up layout**: Each bridge computes the total aligned
+///    resource requirement of its subtree and allocates offsets for
+///    each demand within the subtree window.
+/// 2. **Top-down fixup**: Starting from the aperture base, each
+///    bridge's window base is resolved and added to the pre-computed
+///    offsets to produce final addresses.
 ///
 /// BARs are split into two pools:
 ///
@@ -169,19 +165,17 @@ pub fn assign_addresses(
     devices: &mut [DiscoveredDevice],
     params: &AssignmentParams,
 ) -> Result<(), AssignmentError> {
-    // Validate pinned BAR constraints before sizing, since the sizing
+    // Validate pinned BAR constraints before layout, since the layout
     // pass builds gap lists from pinned positions and assumes they are
     // valid (naturally aligned, non-overlapping, within apertures).
     validate_pinned_bars(devices, params)?;
 
-    // Step 1: Bottom-up — compute total resource requirements.
-    // This also stores per-bridge requirements on the DiscoveredDevice
-    // nodes so that the assignment pass can read them without recomputing.
-    let mut root_sizing = compute_subtree_sizing(devices);
+    // Step 1: Bottom-up — compute total resource requirements and
+    // allocate pool-local positions for each demand.
+    let root_sizing = compute_subtree_layout(devices);
 
-    // Step 2: Top-down — allocate from apertures and assign addresses.
-    // Track where mem32 ends so that mem64 can start after it when
-    // sharing the same aperture.
+    // Step 2: Top-down — determine aperture base addresses and apply
+    // the pre-computed placements to devices.
     let mut mem32_end: Option<u64> = None;
 
     if root_sizing.mem32 > 0 {
@@ -189,10 +183,7 @@ pub fn assign_addresses(
         // 32-bit, so the aperture must be below 4 GB. Do not fall back
         // to high_mmio — placing 32-bit BARs above 4 GB would silently
         // truncate addresses.
-        let base = allocate_pool(
-            devices,
-            &root_sizing.demands,
-            &mut root_sizing.gaps32,
+        let base = resolve_pool_base(
             root_sizing.constrained_base32,
             root_sizing.align32,
             root_sizing.mem32,
@@ -200,6 +191,13 @@ pub fn assign_addresses(
             false,
             None,
         )?;
+        apply_offsets(
+            devices,
+            &root_sizing.demands,
+            &root_sizing.offsets,
+            base,
+            false,
+        );
 
         mem32_end = Some(base + root_sizing.mem32);
     }
@@ -213,10 +211,7 @@ pub fn assign_addresses(
         } else {
             params.high_mmio
         };
-        allocate_pool(
-            devices,
-            &root_sizing.demands,
-            &mut root_sizing.gaps64,
+        let base = resolve_pool_base(
             root_sizing.constrained_base64,
             root_sizing.align64,
             root_sizing.mem64,
@@ -224,6 +219,13 @@ pub fn assign_addresses(
             true,
             after_mem32,
         )?;
+        apply_offsets(
+            devices,
+            &root_sizing.demands,
+            &root_sizing.offsets,
+            base,
+            true,
+        );
     }
 
     validate_assignments(devices, params);
@@ -235,6 +237,19 @@ fn validate_assignments(devices: &[DiscoveredDevice], params: &AssignmentParams)
     for dev in devices {
         for bar in &dev.bars {
             let address = bar.address.unwrap();
+            if let Some(pinned) = bar.pinned_address {
+                assert_eq!(
+                    address,
+                    pinned,
+                    "BAR {bus:02x}:{device:02x}.{func} index {idx} assigned {addr:#x} \
+                     but pinned to {pinned:#x}",
+                    bus = dev.bus,
+                    device = dev.device,
+                    func = dev.function,
+                    idx = bar.index,
+                    addr = address,
+                );
+            }
             assert_bar_in_aperture(address, bar.size, dev, bar.index, params);
         }
         if let Some(sriov) = &dev.sriov {
@@ -338,12 +353,12 @@ fn bar_is_mem64(bar: &crate::enumerate::DiscoveredBar) -> bool {
     }
 }
 
-/// Bottom-up: compute the total aligned resource requirement for a list
-/// of devices (which may be the root level or children behind a bridge).
+/// Bottom-up: compute the layout for a list of devices (which may be
+/// the root level or children behind a bridge).
 ///
-/// Also builds and stores the sorted demand list so that `assign_subtree`
-/// can reuse it without recomputing.
-fn compute_subtree_sizing(devices: &mut [DiscoveredDevice]) -> SubtreeSizing {
+/// Builds the sorted demand list, allocates pool-local offsets for each
+/// demand, and computes the total window size for each pool.
+fn compute_subtree_layout(devices: &mut [DiscoveredDevice]) -> SubtreeLayout {
     let mut demands: Vec<Demand> = Vec::new();
 
     for (i, dev) in devices.iter_mut().enumerate() {
@@ -375,7 +390,7 @@ fn compute_subtree_sizing(devices: &mut [DiscoveredDevice]) -> SubtreeSizing {
         }
 
         if dev.is_bridge {
-            let child_req = compute_subtree_sizing(&mut dev.children);
+            let child_req = compute_subtree_layout(&mut dev.children);
             if child_req.mem32 > 0 {
                 let size = align_up(child_req.mem32, BRIDGE_WINDOW_ALIGN);
                 demands.push(Demand::BridgeSubtree {
@@ -397,7 +412,7 @@ fn compute_subtree_sizing(devices: &mut [DiscoveredDevice]) -> SubtreeSizing {
                 });
             }
             dev.bridge_assignment = Some(BridgeAssignment {
-                sizing: child_req,
+                layout: child_req,
                 memory_window: None,
                 prefetchable_window: None,
             });
@@ -421,131 +436,110 @@ fn compute_subtree_sizing(devices: &mut [DiscoveredDevice]) -> SubtreeSizing {
         }
     }
 
-    // Size each pool: compute the pinned span, build gaps, trial-allocate
-    // dynamic demands, and extend the window for anything that didn't fit.
+    // Build gap lists for each pool and allocate all demands in a
+    // single pass. All placements are stored as offsets from the pool
+    // base (0 for unconstrained, constrained_base for constrained).
     let mut pool32 = PoolState::new(&mut pin32);
     let mut pool64 = PoolState::new(&mut pin64);
 
-    // Trial-allocate dynamic demands into gap clones to determine which
-    // fit in the pinned span and which extend the window.
-    let mut sizing_gaps32 = pool32.gaps.clone();
-    let mut sizing_gaps64 = pool64.gaps.clone();
-    for d in &demands {
-        if d.fixed_position().is_some() {
-            continue;
-        }
-        if d.is_mem64() {
-            pool64.align = pool64.align.max(d.alignment());
-            if allocate_from_gaps(&mut sizing_gaps64, d.size(), d.alignment()).is_none() {
-                pool64.extend_for_demand(d.size(), d.alignment());
-            }
+    let mut offsets = vec![0u64; demands.len()];
+    for (i, d) in demands.iter().enumerate() {
+        let pool = if d.is_mem64() {
+            &mut pool64
         } else {
-            pool32.align = pool32.align.max(d.alignment());
-            if allocate_from_gaps(&mut sizing_gaps32, d.size(), d.alignment()).is_none() {
-                pool32.extend_for_demand(d.size(), d.alignment());
-            }
-        }
+            &mut pool32
+        };
+        pool.align = pool.align.max(d.alignment());
+
+        let addr = if let Some((addr, _)) = d.fixed_position() {
+            addr
+        } else {
+            allocate_from_gaps(&mut pool.gaps, d.size(), d.alignment())
+                .expect("pool gap list has sentinel — allocation cannot fail")
+        };
+        offsets[i] = addr - pool.constrained_base.unwrap_or(0);
     }
 
-    // Extend gap lists with the tail region for demands that didn't fit.
-    pool32.extend_tail();
-    pool64.extend_tail();
+    // Derive pool sizes from the furthest allocation endpoint.
+    let mut mem32 = 0u64;
+    let mut mem64 = 0u64;
+    for (i, d) in demands.iter().enumerate() {
+        let endpoint = offsets[i] + d.size();
+        if d.is_mem64() {
+            mem64 = mem64.max(endpoint);
+        } else {
+            mem32 = mem32.max(endpoint);
+        }
+    }
+    if mem32 > 0 {
+        mem32 = align_up(mem32, BRIDGE_WINDOW_ALIGN);
+    }
+    if mem64 > 0 {
+        mem64 = align_up(mem64, BRIDGE_WINDOW_ALIGN);
+    }
 
-    SubtreeSizing {
-        mem32: pool32.mem,
-        mem64: pool64.mem,
+    SubtreeLayout {
+        mem32,
+        mem64,
         align32: pool32.align,
         align64: pool64.align,
         demands,
+        offsets,
         constrained_base32: pool32.constrained_base,
         constrained_base64: pool64.constrained_base,
-        gaps32: pool32.gaps,
-        gaps64: pool64.gaps,
     }
 }
 
-/// Per-pool sizing state produced by `size_pool`.
+/// Sentinel upper bound for gap lists. Large enough that any realistic
+/// allocation fits, small enough that `align_up(addr, align) + size`
+/// cannot overflow.
+const POOL_SENTINEL: u64 = 1u64 << 60;
+
+/// Per-pool state: gap list and alignment, built from pinned demands.
 struct PoolState {
-    /// Total window size needed (pinned span + dynamic overflow).
-    mem: u64,
     /// Required alignment (max of bridge granularity and largest demand).
     align: u64,
     /// If pinned demands exist, the required window base address.
     constrained_base: Option<u64>,
-    /// Pre-computed gap list covering the pinned span, for reuse by
-    /// `assign_subtree`. Empty when there are no pinned demands.
+    /// Free gap list for allocation.
     gaps: Vec<(u64, u64)>,
-    /// End of the pinned span, for extending gaps after sizing.
-    pinned_span_end: Option<u64>,
 }
 
 impl PoolState {
-    /// Compute the pinned span, gap list, and initial window size for one
-    /// pool (mem32 or mem64). `pins` is sorted in place.
+    /// Build the gap list for one pool. For constrained pools (pins
+    /// present), gaps cover spaces between pins plus a sentinel tail.
+    /// For unconstrained pools, a single `[0, SENTINEL)` gap.
     fn new(pins: &mut [(u64, u64)]) -> Self {
         pins.sort_by_key(|&(a, _)| a);
 
-        let (mem, constrained_base) = if !pins.is_empty() {
-            let min_addr = pins.iter().map(|(a, _)| *a).min().unwrap();
-            let max_end = pins.iter().map(|(a, s)| a + s).max().unwrap();
-            let base = align_down(min_addr, BRIDGE_WINDOW_ALIGN);
-            (max_end - base, Some(base))
-        } else {
-            (0, None)
-        };
+        if pins.is_empty() {
+            return Self {
+                align: BRIDGE_WINDOW_ALIGN,
+                constrained_base: None,
+                gaps: vec![(0, POOL_SENTINEL)],
+            };
+        }
 
-        let gaps = if let Some(base) = constrained_base {
-            build_gap_list(base, base + mem, pins)
-        } else {
-            Vec::new()
-        };
-
-        let pinned_span_end = constrained_base.map(|b| b + mem);
+        let min_addr = pins.iter().map(|(a, _)| *a).min().unwrap();
+        let max_end = pins.iter().map(|(a, s)| a + s).max().unwrap();
+        let base = align_down(min_addr, BRIDGE_WINDOW_ALIGN);
+        let mut gaps = build_gap_list(base, max_end, pins);
+        // Sentinel tail for dynamic demands that don't fit between pins.
+        gaps.push((max_end, POOL_SENTINEL));
 
         Self {
-            mem,
             align: BRIDGE_WINDOW_ALIGN,
-            constrained_base,
+            constrained_base: Some(base),
             gaps,
-            pinned_span_end,
-        }
-    }
-
-    /// Append a tail gap for dynamic demands that didn't fit in the
-    /// pinned-span gaps. Called after the sizing trial.
-    fn extend_tail(&mut self) {
-        if let Some(pin_end) = self.pinned_span_end {
-            let window_end = self.constrained_base.unwrap() + self.mem;
-            if pin_end < window_end {
-                self.gaps.push((pin_end, window_end));
-            }
-        }
-    }
-
-    /// Extend the window to fit a dynamic demand that didn't fit in
-    /// any existing gap. When `constrained_base` is set, alignment
-    /// padding must be computed using absolute addresses (base + mem)
-    /// rather than relative offsets, because the real allocator works
-    /// in absolute address space.
-    fn extend_for_demand(&mut self, size: u64, alignment: u64) {
-        if let Some(base) = self.constrained_base {
-            let abs_end = base + self.mem;
-            let aligned = align_up(abs_end, alignment);
-            self.mem = (aligned - base) + size;
-        } else {
-            self.mem = align_up(self.mem, alignment) + size;
         }
     }
 }
 
-/// Compute the base address for a pool, validate it fits in the aperture,
-/// populate gaps, and assign addresses to all demands in the pool.
+/// Determine the base address for a pool within an aperture, validating
+/// that the required size fits.
 ///
 /// Returns the effective base address on success.
-fn allocate_pool(
-    devices: &mut [DiscoveredDevice],
-    demands: &[Demand],
-    gaps: &mut Vec<(u64, u64)>,
+fn resolve_pool_base(
     constrained_base: Option<u64>,
     alignment: u64,
     required: u64,
@@ -581,41 +575,27 @@ fn allocate_pool(
         });
     }
 
-    if constrained_base.is_none() {
-        gaps.push((base, aperture.end()));
-    }
-    assign_subtree(devices, demands, gaps, is_mem64);
     Ok(base)
 }
 
-/// Top-down: assign addresses to devices within a subtree, carving from
-/// the given gap list. `alloc_64bit` selects which pool (mem32 or
-/// mem64) we are assigning.
+/// Top-down: apply pre-computed offsets to devices.
 ///
-/// Fixed-position demands (pinned BARs and constrained bridges) are placed
-/// at their predetermined addresses. Dynamic demands are placed into free
-/// gaps using a first-fit strategy.
-///
-/// `demands` is the pre-sorted demand list built by `compute_subtree_state`.
-fn assign_subtree(
+/// `base` is the pool's starting address (aperture-derived for the root,
+/// or the bridge window base for children). Each demand's final address
+/// is `base + offset`.
+fn apply_offsets(
     devices: &mut [DiscoveredDevice],
     demands: &[Demand],
-    gaps: &mut Vec<(u64, u64)>,
-    alloc_64bit: bool,
+    offsets: &[u64],
+    base: u64,
+    is_mem64: bool,
 ) {
-    for demand in demands {
-        if demand.is_mem64() != alloc_64bit {
+    for (demand, &offset) in demands.iter().zip(offsets) {
+        if demand.is_mem64() != is_mem64 {
             continue;
         }
 
-        // Fixed-position demands use their predetermined address.
-        // Dynamic demands are placed via the gap allocator.
-        let assign_addr = if let Some((addr, _)) = demand.fixed_position() {
-            addr
-        } else {
-            allocate_from_gaps(gaps, demand.size(), demand.alignment())
-                .expect("demand must fit (sizing pass guarantees sufficient space)")
-        };
+        let final_addr = base + offset;
 
         match *demand {
             Demand::Bar {
@@ -626,45 +606,33 @@ fn assign_subtree(
                     .iter_mut()
                     .find(|b| b.index == bar_index)
                     .expect("demand references a BAR that exists");
-                bar.address = Some(assign_addr);
+                bar.address = Some(final_addr);
             }
             Demand::BridgeSubtree { dev_idx, size, .. } => {
                 let dev = &mut devices[dev_idx];
-
-                // Set the bridge window to the carved-out range.
-                let window_base = assign_addr;
-                let window_limit = assign_addr + size - 1;
+                let window_base = final_addr;
+                let window_limit = final_addr + size - 1;
                 let ba = dev
                     .bridge_assignment
                     .as_mut()
-                    .expect("bridge_assignment must be populated by compute_subtree_sizing");
-                if alloc_64bit {
+                    .expect("bridge_assignment must be populated by compute_subtree_layout");
+                if is_mem64 {
                     ba.prefetchable_window = Some((window_base, window_limit));
                 } else {
                     ba.memory_window = Some((window_base, window_limit));
                 }
 
-                // Recurse into children with this bridge's carved-out range.
-                let sizing = &mut ba.sizing;
-                let has_pins = if alloc_64bit {
-                    sizing.constrained_base64.is_some()
-                } else {
-                    sizing.constrained_base32.is_some()
-                };
-                let (child_demands, child_gaps) = if alloc_64bit {
-                    (&sizing.demands, &mut sizing.gaps64)
-                } else {
-                    (&sizing.demands, &mut sizing.gaps32)
-                };
-                if !has_pins {
-                    child_gaps.push((window_base, window_limit + 1));
-                }
-                assign_subtree(&mut dev.children, child_demands, child_gaps, alloc_64bit);
+                apply_offsets(
+                    &mut dev.children,
+                    &ba.layout.demands,
+                    &ba.layout.offsets,
+                    window_base,
+                    is_mem64,
+                );
             }
             Demand::SriovVfBars {
                 dev_idx, bar_index, ..
             } => {
-                // Record the assigned base address on the VF BAR.
                 let sriov = devices[dev_idx]
                     .sriov
                     .as_mut()
@@ -674,7 +642,7 @@ fn assign_subtree(
                     .iter_mut()
                     .find(|b| b.index == bar_index)
                     .expect("demand references a VF BAR that exists");
-                vf_bar.address = Some(assign_addr);
+                vf_bar.address = Some(final_addr);
             }
         }
     }
