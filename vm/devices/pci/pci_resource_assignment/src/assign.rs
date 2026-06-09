@@ -206,8 +206,13 @@ pub fn assign_addresses(
 
     if root_sizing.mem64 > 0 {
         // If sharing the same aperture as mem32, start after mem32.
-        let after_mem32 = mem32_end.filter(|_| params.high_mmio.is_none());
+        let after_mem32 = mem32_end.filter(|_| params.high_mmio.is_empty());
 
+        let aperture = if params.high_mmio.is_empty() {
+            params.low_mmio
+        } else {
+            params.high_mmio
+        };
         allocate_pool(
             devices,
             &root_sizing.demands,
@@ -215,7 +220,7 @@ pub fn assign_addresses(
             root_sizing.constrained_base64,
             root_sizing.align64,
             root_sizing.mem64,
-            params.high_mmio.or(params.low_mmio),
+            aperture,
             true,
             after_mem32,
         )?;
@@ -245,9 +250,8 @@ fn validate_assignments(devices: &[DiscoveredDevice], params: &AssignmentParams)
             if let Some((base, limit)) = ba.memory_window {
                 let size = limit - base + 1;
                 assert!(
-                    params
-                        .low_mmio
-                        .is_some_and(|a| base >= a.base && base + size <= a.base + a.len),
+                    params.low_mmio.contains_addr(base)
+                        && params.low_mmio.contains_addr(base + size - 1),
                     "bridge {bus:02x}:{device:02x}.{func} memory window \
                      {base:#x}..={limit:#x} exceeds low_mmio aperture",
                     bus = dev.bus,
@@ -257,12 +261,10 @@ fn validate_assignments(devices: &[DiscoveredDevice], params: &AssignmentParams)
             }
             if let Some((base, limit)) = ba.prefetchable_window {
                 let size = limit - base + 1;
-                let in_low = params
-                    .low_mmio
-                    .is_some_and(|a| base >= a.base && base + size <= a.base + a.len);
-                let in_high = params
-                    .high_mmio
-                    .is_some_and(|a| base >= a.base && base + size <= a.base + a.len);
+                let in_low = params.low_mmio.contains_addr(base)
+                    && params.low_mmio.contains_addr(base + size - 1);
+                let in_high = params.high_mmio.contains_addr(base)
+                    && params.high_mmio.contains_addr(base + size - 1);
                 assert!(
                     in_low || in_high,
                     "bridge {bus:02x}:{device:02x}.{func} prefetchable window \
@@ -314,12 +316,8 @@ fn assert_bar_in_aperture(
     params: &AssignmentParams,
 ) {
     let bar_end = address + size;
-    let in_low = params
-        .low_mmio
-        .is_some_and(|a| address >= a.base && bar_end <= a.base + a.len);
-    let in_high = params
-        .high_mmio
-        .is_some_and(|a| address >= a.base && bar_end <= a.base + a.len);
+    let in_low = address >= params.low_mmio.start() && bar_end <= params.low_mmio.end();
+    let in_high = address >= params.high_mmio.start() && bar_end <= params.high_mmio.end();
     assert!(
         in_low || in_high,
         "BAR {bus:02x}:{device:02x}.{func} index {idx} at {addr:#x}..{end:#x} \
@@ -551,36 +549,30 @@ fn allocate_pool(
     constrained_base: Option<u64>,
     alignment: u64,
     required: u64,
-    aperture: Option<crate::MmioAperture>,
+    aperture: memory_range::MemoryRange,
     is_mem64: bool,
     after: Option<u64>,
 ) -> Result<u64, AssignmentError> {
     let aperture_name = if is_mem64 { "high_mmio" } else { "low_mmio" };
-    let aperture = aperture.ok_or(AssignmentError::MmioExhaustion {
-        required,
-        available: 0,
-        aperture: aperture_name,
-    })?;
     let base = if let Some(cbase) = constrained_base {
         cbase
     } else if let Some(end) = after {
         align_up(end, alignment)
     } else {
-        align_up(aperture.base, alignment)
+        align_up(aperture.start(), alignment)
     };
 
     // Bridge windows are 1 MB granular, so the constrained base
     // (align_down of the lowest pinned address) can precede the
     // aperture. Reject this rather than placing BARs outside it.
-    if base < aperture.base {
+    if base < aperture.start() {
         return Err(AssignmentError::MmioExhaustion {
             required,
-            available: aperture.len,
+            available: aperture.len(),
             aperture: aperture_name,
         });
     }
-    let aperture_end = aperture.base + aperture.len;
-    let available = aperture_end.saturating_sub(base);
+    let available = aperture.end().saturating_sub(base);
     if required > available {
         return Err(AssignmentError::MmioExhaustion {
             required,
@@ -590,7 +582,7 @@ fn allocate_pool(
     }
 
     if constrained_base.is_none() {
-        gaps.push((base, aperture_end));
+        gaps.push((base, aperture.end()));
     }
     assign_subtree(devices, demands, gaps, is_mem64);
     Ok(base)
@@ -952,16 +944,13 @@ fn validate_pinned_bars(
 
     // Check aperture containment.
     for p in &all_pinned {
-        let (aperture, aperture_name) = if p.is_mem64 && params.high_mmio.is_some() {
+        let (aperture, aperture_name) = if p.is_mem64 && !params.high_mmio.is_empty() {
             (params.high_mmio, "high_mmio")
         } else {
             (params.low_mmio, "low_mmio")
         };
         let bar_end = p.addr.saturating_add(p.size);
-        let fits = aperture.is_some_and(|a| {
-            let aperture_end = a.base.saturating_add(a.len);
-            p.addr >= a.base && bar_end <= aperture_end
-        });
+        let fits = p.addr >= aperture.start() && bar_end <= aperture.end();
         if !fits {
             return Err(AssignmentError::PinnedBarOutOfAperture {
                 bus: p.bus,

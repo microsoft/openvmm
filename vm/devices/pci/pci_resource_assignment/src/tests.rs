@@ -4,9 +4,9 @@
 #![cfg(test)]
 
 use crate::AssignmentParams;
-use crate::MmioAperture;
 use crate::PciConfigAccess;
 use crate::assign_pci_resources;
+use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -320,11 +320,8 @@ async fn single_endpoint_32bit_bar() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -344,11 +341,8 @@ async fn single_endpoint_64bit_bar() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: None,
-        high_mmio: Some(MmioAperture {
-            base: 0x1_0000_0000,
-            len: 0x1_0000_0000,
-        }),
+        low_mmio: MemoryRange::EMPTY,
+        high_mmio: MemoryRange::new(0x1_0000_0000..0x1_0000_0000 + 0x1_0000_0000),
         preserve_bars: false,
     };
 
@@ -372,11 +366,8 @@ async fn bridge_with_endpoint() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -409,11 +400,8 @@ async fn multiple_endpoints_sorted_by_size() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -441,11 +429,8 @@ async fn multi_function_device() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -478,14 +463,8 @@ async fn switch_with_multiple_endpoints() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: Some(MmioAperture {
-            base: 0x1_0000_0000,
-            len: 0x1_0000_0000,
-        }),
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::new(0x1_0000_0000..0x1_0000_0000 + 0x1_0000_0000),
         preserve_bars: false,
     };
 
@@ -529,8 +508,8 @@ async fn bus_exhaustion_error() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 0, // No room for secondary bus.
-        low_mmio: None,
-        high_mmio: None,
+        low_mmio: MemoryRange::EMPTY,
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -553,11 +532,8 @@ async fn no_devices_is_ok() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -577,11 +553,8 @@ async fn mmio_exhaustion_error() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x20000, // 128KB — not enough for both
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x20000), // 128KB — not enough for both
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -607,8 +580,8 @@ async fn no_aperture_error() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: None,
-        high_mmio: None,
+        low_mmio: MemoryRange::EMPTY,
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -640,11 +613,8 @@ async fn sriov_reserves_bus_numbers() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -682,11 +652,8 @@ async fn sriov_no_vfs_no_reservation() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -709,11 +676,8 @@ async fn bridge_prefetchable_window_programmed() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: None,
-        high_mmio: Some(MmioAperture {
-            base: 0x1_0000_0000,
-            len: 0x1_0000_0000,
-        }),
+        low_mmio: MemoryRange::EMPTY,
+        high_mmio: MemoryRange::new(0x1_0000_0000..0x1_0000_0000 + 0x1_0000_0000),
         preserve_bars: false,
     };
 
@@ -778,11 +742,8 @@ async fn sibling_bridge_windows_must_not_overlap() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -818,11 +779,8 @@ async fn large_bar_alignment_fits_in_bridge_window() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,  // 256 MB — not 1 GB aligned
-            len: 0x2_0000_0000, // 8 GB
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x2_0000_0000), // 8 GB (256 MB — not 1 GB aligned)
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -866,11 +824,8 @@ async fn alignment_first_sort_avoids_wasted_padding() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x500000, // 5 MB
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x500000), // 5 MB
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -904,11 +859,8 @@ async fn misaligned_aperture_does_not_overflow() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1020_0000, // 2 MB aligned, NOT 4 MB aligned
-            len: 0x400000,     // 4 MB — exactly the BAR size, but not enough after alignment
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1020_0000..0x1020_0000 + 0x400000), // 4 MB (2 MB aligned, NOT 4 MB aligned)
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -935,11 +887,8 @@ async fn alignment_exceeds_aperture_returns_error() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1020_0000, // 2 MB past a 16 MB boundary
-            len: 0x200000,     // 2 MB total
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1020_0000..0x1020_0000 + 0x200000), // 2 MB total (2 MB past a 16 MB boundary)
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -969,11 +918,8 @@ async fn sriov_bus_reservation_exceeding_end_bus_returns_error() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 1, // Only buses 0 and 1 allowed.
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -1003,11 +949,8 @@ async fn mem32_bar_must_not_be_placed_above_4gb() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: None,
-        high_mmio: Some(MmioAperture {
-            base: 0x1_0000_0000, // Above 4 GB
-            len: 0x1_0000_0000,
-        }),
+        low_mmio: MemoryRange::EMPTY,
+        high_mmio: MemoryRange::new(0x1_0000_0000..0x1_0000_0000 + 0x1_0000_0000), // Above 4 GB
         preserve_bars: false,
     };
 
@@ -1046,11 +989,8 @@ async fn shared_aperture_mem32_mem64_must_not_overlap() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1020_0000,
-            len: 0x0100_0000, // 16 MB — plenty of room
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1020_0000..0x1020_0000 + 0x0100_0000), // 16 MB — plenty of room
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -1100,11 +1040,8 @@ async fn bus_wrap_to_zero_must_return_exhaustion() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -1141,11 +1078,8 @@ async fn sriov_vf_bars_included_in_bridge_window() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -1201,11 +1135,8 @@ async fn sriov_non_power_of_two_vf_count() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -1243,14 +1174,8 @@ async fn sriov_vf_bars_64bit_prefetchable() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: Some(MmioAperture {
-            base: 0x1_0000_0000,
-            len: 0x1_0000_0000,
-        }),
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::new(0x1_0000_0000..0x1_0000_0000 + 0x1_0000_0000),
         preserve_bars: false,
     };
 
@@ -1319,14 +1244,8 @@ async fn sriov_mixed_vf_bar_types() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: Some(MmioAperture {
-            base: 0x1_0000_0000,
-            len: 0x1_0000_0000,
-        }),
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::new(0x1_0000_0000..0x1_0000_0000 + 0x1_0000_0000),
         preserve_bars: false,
     };
 
@@ -1382,11 +1301,8 @@ async fn sriov_top_level_pf_no_bridge() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -1435,11 +1351,8 @@ async fn sriov_multiple_pfs_behind_bridge() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -1512,11 +1425,8 @@ async fn sriov_vf_bars_cause_mmio_exhaustion() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x20_0000, // Only 2 MB — not enough for 16 MB of VF BARs
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x20_0000), // Only 2 MB — not enough for 16 MB of VF BARs
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -1543,11 +1453,8 @@ async fn single_pinned_bar() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -1581,11 +1488,8 @@ async fn two_pinned_bars_behind_switch() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -1630,11 +1534,8 @@ async fn mixed_pinned_and_dynamic_bars() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -1665,11 +1566,8 @@ async fn pinned_bar_misaligned_error() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -1698,11 +1596,8 @@ async fn pinned_bar_overlap_error() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -1725,11 +1620,8 @@ async fn pinned_bar_out_of_aperture_error() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000, // ends at 0x2000_0000
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000), // ends at 0x2000_0000
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -1759,14 +1651,8 @@ async fn pinned_bar_64bit_non_prefetchable_above_4gb_rejected() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: Some(MmioAperture {
-            base: 0x1_0000_0000,
-            len: 0x1_0000_0000,
-        }),
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::new(0x1_0000_0000..0x1_0000_0000 + 0x1_0000_0000),
         preserve_bars: true,
     };
 
@@ -1798,11 +1684,8 @@ async fn bridge_window_from_pinned_and_dynamic() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -1850,11 +1733,8 @@ async fn preserve_bars_no_pins_identical_to_dynamic() {
     let params_no_preserve = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -1877,11 +1757,8 @@ async fn preserve_bars_no_pins_identical_to_dynamic() {
     let params_preserve = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -1914,14 +1791,8 @@ async fn pinned_bar_64bit_prefetchable() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: Some(MmioAperture {
-            base: 0x3_8380_0000,
-            len: 0x0100_0000,
-        }),
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::new(0x3_8380_0000..0x3_8380_0000 + 0x0100_0000),
         preserve_bars: true,
     };
 
@@ -1966,14 +1837,8 @@ async fn pinned_bar_64bit_prefetchable_in_low_mmio() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: Some(MmioAperture {
-            base: 0x1_0000_0000,
-            len: 0x1_0000_0000,
-        }),
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::new(0x1_0000_0000..0x1_0000_0000 + 0x1_0000_0000),
         preserve_bars: true,
     };
 
@@ -2043,11 +1908,8 @@ async fn two_pinned_bars_same_bridge() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -2094,11 +1956,8 @@ async fn pinned_bar_with_large_alignment_dynamic() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -2147,11 +2006,8 @@ async fn pinned_sibling_bridge_windows_do_not_overlap() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -2194,11 +2050,8 @@ async fn preserve_bars_false_ignores_preprogrammed() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: false,
     };
 
@@ -2235,11 +2088,8 @@ async fn gap_allocator_uses_space_before_pinned_bar() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -2282,11 +2132,8 @@ async fn gap_allocator_uses_space_between_pinned_bars() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x1000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -2334,11 +2181,8 @@ async fn sizing_accounts_for_gap_before_pinned_bar() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1010_0000,
-            len: 0x10_0000, // 1 MB
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1010_0000..0x1010_0000 + 0x10_0000), // 1 MB
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -2385,11 +2229,8 @@ async fn sizing_accounts_for_gap_between_pinned_bars() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1020_0000,
-            len: 0x100_0000, // 16 MB
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1020_0000..0x1020_0000 + 0x100_0000), // 16 MB
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -2457,11 +2298,8 @@ async fn sizing_underestimate_constrained_base_misaligned() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1000_0000,
-            len: 0x4000_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x4000_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -2519,11 +2357,8 @@ async fn constrained_base_before_aperture_returns_error() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: Some(MmioAperture {
-            base: 0x1008_0000,
-            len: 0x100_0000,
-        }),
-        high_mmio: None,
+        low_mmio: MemoryRange::new(0x1008_0000..0x1008_0000 + 0x100_0000),
+        high_mmio: MemoryRange::EMPTY,
         preserve_bars: true,
     };
 
@@ -2554,11 +2389,8 @@ async fn pinned_bar_near_u64_max_no_overflow() {
     let params = AssignmentParams {
         start_bus: 0,
         end_bus: 255,
-        low_mmio: None,
-        high_mmio: Some(MmioAperture {
-            base: 0x1_0000_0000,
-            len: 0xFFFF_FFFE_0000_0000,
-        }),
+        low_mmio: MemoryRange::EMPTY,
+        high_mmio: MemoryRange::new(0x1_0000_0000..0x1_0000_0000 + 0xFFFF_FFFE_0000_0000),
         preserve_bars: true,
     };
 
