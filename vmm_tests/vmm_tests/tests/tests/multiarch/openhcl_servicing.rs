@@ -1419,6 +1419,7 @@ async fn servicing_keepalive_per_device_gate(
                         enable_tdisp_tests: false,
                     }
                     .into_resource(),
+                    vnode: None,
                 });
                 c.vpci_devices.push(VpciDeviceConfig {
                     vtl: DeviceVtl::Vtl2,
@@ -1440,6 +1441,7 @@ async fn servicing_keepalive_per_device_gate(
                         enable_tdisp_tests: false,
                     }
                     .into_resource(),
+                    vnode: None,
                 });
             })
         })
@@ -1578,6 +1580,7 @@ async fn create_keepalive_test_config_default(
                         enable_tdisp_tests: false,
                     }
                     .into_resource(),
+                    vnode: None,
                 })
             })
         })
@@ -1691,6 +1694,7 @@ async fn create_keepalive_test_config_custom(
                         enable_tdisp_tests: false,
                     }
                     .into_resource(),
+                    vnode: None,
                 })
             })
         })

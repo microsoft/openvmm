@@ -2860,6 +2860,7 @@ pub struct PcieRootComplexCli {
     pub high_mmio: u64,
     pub hdm: u64,
     pub hdm_window_restrictions: CfmwsWindowRestrictions,
+    pub vnode: Option<u32>,
 }
 
 impl FromStr for PcieRootComplexCli {
@@ -2885,6 +2886,7 @@ impl FromStr for PcieRootComplexCli {
         let mut high_mmio = DEFAULT_PCIE_CRS_HIGH_SIZE;
         let mut hdm = DEFAULT_PCIE_HDM_SIZE;
         let mut hdm_window_restrictions = DEFAULT_HDM_WINDOW_RESTRICTIONS;
+        let mut vnode = None;
         for opt in opts {
             let mut s = opt.split('=');
             let opt = s.next().context("expected option")?;
@@ -2925,6 +2927,11 @@ impl FromStr for PcieRootComplexCli {
                         parse_cxl_cfmws_window_restriction_u16_bitmask(mask_str)
                             .context("failed to parse HDM window restrictions bitmask")?;
                 }
+                "node" => {
+                    let node_str = s.next().context("expected NUMA node number")?;
+                    vnode =
+                        Some(u32::from_str(node_str).context("failed to parse NUMA node number")?);
+                }
                 opt => anyhow::bail!("unknown option: '{opt}'"),
             }
         }
@@ -2942,6 +2949,7 @@ impl FromStr for PcieRootComplexCli {
             high_mmio,
             hdm,
             hdm_window_restrictions,
+            vnode,
         })
     }
 }
@@ -4208,6 +4216,7 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
             }
         );
 
@@ -4222,6 +4231,7 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
             }
         );
 
@@ -4236,6 +4246,7 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
             }
         );
 
@@ -4250,6 +4261,7 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
             }
         );
 
@@ -4264,6 +4276,7 @@ mod tests {
                 high_mmio: 2 * ONE_GB,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
             }
         );
 
@@ -4278,6 +4291,7 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
             }
         );
 
@@ -4292,6 +4306,7 @@ mod tests {
                 high_mmio: 64 * ONE_GB,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
             }
         );
 
@@ -4306,6 +4321,7 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: 2 * ONE_GB,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: None,
             }
         );
 
@@ -4320,6 +4336,7 @@ mod tests {
                 high_mmio: DEFAULT_HIGH_MMIO,
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: CfmwsWindowRestrictions::try_from_bits(0x21).unwrap(),
+                vnode: None,
             }
         );
 
@@ -4340,6 +4357,22 @@ mod tests {
         assert!(PcieRootComplexCli::from_str("rc,hdm_window_restrictions=bad").is_err());
         assert!(PcieRootComplexCli::from_str("rc,hdm_window_restrictions").is_err());
         assert!(PcieRootComplexCli::from_str("rc,cxl").is_err());
+
+        // node option
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc9,node=1").unwrap(),
+            PcieRootComplexCli {
+                name: "rc9".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+                hdm: DEFAULT_HDM,
+                hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
+                vnode: Some(1),
+            }
+        );
     }
 
     #[test]

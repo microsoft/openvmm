@@ -230,6 +230,9 @@ complex name:
   4: fixed device configuration
   5: BI
   Bits 15:6 are reserved and rejected.
+- `node=<N>`: NUMA node affinity for this root complex. The guest sees
+  this via the ACPI `_PXM` method. When omitted, no `_PXM` is emitted
+  and the guest uses its default allocation policy.
 
 ### Root port and switch options
 

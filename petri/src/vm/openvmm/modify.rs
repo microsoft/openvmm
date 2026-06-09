@@ -104,6 +104,7 @@ impl PetriVmConfigOpenVmm {
                     }],
                 }
                 .into_resource(),
+                vnode: None,
             });
 
             vtl2_settings.dynamic.as_mut().unwrap().nic_devices.push(
@@ -286,6 +287,7 @@ impl PetriVmConfigOpenVmm {
                     }],
                 }
                 .into_resource(),
+                vnode: None,
             });
 
             vtl2_settings.dynamic.as_mut().unwrap().nic_devices.push(
@@ -393,6 +395,7 @@ impl PetriVmConfigOpenVmm {
                     cxl: None,
                     ports,
                     iommu: None,
+                    vnode: None,
                 });
             }
         }

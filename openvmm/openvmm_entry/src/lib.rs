@@ -793,6 +793,7 @@ async fn vm_config_from_command_line(
                     },
                     instance_id,
                     resource: handle.into_resource(),
+                    vnode: None,
                 })
             }),
     );
@@ -880,6 +881,7 @@ async fn vm_config_from_command_line(
                 .iter()
                 .any(|s| s == &rc_cli.name)
                 .then_some(openvmm_defs::config::PcieIommuConfig::AmdVi),
+            vnode: rc_cli.vnode,
         });
     }
 
@@ -1621,6 +1623,7 @@ async fn vm_config_from_command_line(
                 vtl: DeviceVtl::Vtl0,
                 instance_id: Guid::new_random(),
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
+                vnode: None,
             });
         }
     };

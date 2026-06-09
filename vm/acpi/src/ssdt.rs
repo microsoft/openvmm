@@ -40,6 +40,28 @@ pub struct Ssdt {
     pcie_ecam_ranges: Vec<MemoryRange>,
 }
 
+/// Parameters for adding a PCIe host bridge to the SSDT.
+pub struct PcieHostBridgeEntry {
+    /// Unique index of this host bridge.
+    pub index: u32,
+    /// PCIe segment number.
+    pub segment: u16,
+    /// Lowest valid bus number.
+    pub start_bus: u8,
+    /// Highest valid bus number.
+    pub end_bus: u8,
+    /// Memory range for ECAM configuration space access.
+    pub ecam_range: MemoryRange,
+    /// Memory range for low MMIO.
+    pub low_mmio: MemoryRange,
+    /// Memory range for high MMIO.
+    pub high_mmio: MemoryRange,
+    /// Whether this host bridge supports CXL.
+    pub cxl: bool,
+    /// NUMA proximity domain.
+    pub vnode: Option<u32>,
+}
+
 impl Ssdt {
     pub fn new() -> Self {
         Self {
@@ -115,17 +137,18 @@ impl Ssdt {
     ///     })
     /// }
     /// ```
-    pub fn add_pcie(
-        &mut self,
-        index: u32,
-        segment: u16,
-        start_bus: u8,
-        end_bus: u8,
-        ecam_range: MemoryRange,
-        low_mmio: MemoryRange,
-        high_mmio: MemoryRange,
-        cxl: bool,
-    ) {
+    pub fn add_pcie(&mut self, entry: PcieHostBridgeEntry) {
+        let PcieHostBridgeEntry {
+            index,
+            segment,
+            start_bus,
+            end_bus,
+            ecam_range,
+            low_mmio,
+            high_mmio,
+            cxl,
+            vnode,
+        } = entry;
         let mut pcie = Device::new(encode_pcie_name(index).as_slice());
         if cxl {
             // As recommended by the CXL specification, describe CXL host bridges with _HID "ACPI0016"
@@ -149,6 +172,9 @@ impl Ssdt {
         pcie.add_object(&NamedInteger::new(b"_SEG", segment.into()));
         pcie.add_object(&NamedInteger::new(b"_BBN", start_bus.into()));
         pcie.add_object(&NamedInteger::new(b"_CCA", 1));
+        if let Some(vnode) = vnode {
+            pcie.add_object(&NamedInteger::new(b"_PXM", vnode.into()));
+        }
 
         // _OSC method: negotiate native control with the guest OS.
         //
@@ -381,19 +407,24 @@ mod tests {
         verify_expected_bytes(&bytes[36..], &[8, b'_', b'S', b'0', b'_', 0x12, 4, 2, 0, 0]);
     }
 
+    fn test_pcie_entry(vnode: Option<u32>) -> PcieHostBridgeEntry {
+        PcieHostBridgeEntry {
+            index: 0,
+            segment: 0,
+            start_bus: 0,
+            end_bus: 255,
+            ecam_range: MemoryRange::new(0x1000_0000..0x2000_0000),
+            low_mmio: MemoryRange::new(0xdc00_0000..0xe000_0000),
+            high_mmio: MemoryRange::new(0x10_0000_0000..0x10_4000_0000),
+            cxl: false,
+            vnode,
+        }
+    }
+
     #[test]
     fn pcie_includes_cca() {
         let mut ssdt = Ssdt::new();
-        ssdt.add_pcie(
-            0,
-            0,
-            0,
-            255,
-            MemoryRange::new(0x1000_0000..0x2000_0000),
-            MemoryRange::new(0xdc00_0000..0xe000_0000),
-            MemoryRange::new(0x10_0000_0000..0x10_4000_0000),
-            false,
-        );
+        ssdt.add_pcie(test_pcie_entry(None));
 
         let bytes = ssdt.to_bytes();
         verify_header(&bytes);
@@ -401,6 +432,52 @@ mod tests {
             bytes
                 .windows(6)
                 .any(|window| window == [8, b'_', b'C', b'C', b'A', 1,])
+        );
+    }
+
+    #[test]
+    fn pcie_no_pxm_when_vnode_none() {
+        let mut ssdt = Ssdt::new();
+        ssdt.add_pcie(test_pcie_entry(None));
+
+        let bytes = ssdt.to_bytes();
+        verify_header(&bytes);
+        // _PXM should NOT be present when vnode is None.
+        assert!(
+            !bytes
+                .windows(4)
+                .any(|window| window == [b'_', b'P', b'X', b'M']),
+            "_PXM should not be emitted when vnode is None"
+        );
+    }
+
+    #[test]
+    fn pcie_includes_pxm() {
+        let mut ssdt = Ssdt::new();
+        ssdt.add_pcie(test_pcie_entry(Some(0)));
+
+        let bytes = ssdt.to_bytes();
+        verify_header(&bytes);
+        // _PXM with value 0
+        assert!(
+            bytes
+                .windows(6)
+                .any(|window| window == [8, b'_', b'P', b'X', b'M', 0,])
+        );
+    }
+
+    #[test]
+    fn pcie_pxm_nonzero_node() {
+        let mut ssdt = Ssdt::new();
+        ssdt.add_pcie(test_pcie_entry(Some(3)));
+
+        let bytes = ssdt.to_bytes();
+        verify_header(&bytes);
+        // _PXM with value 3: Name op (0x08) + "_PXM" + BytePrefix (0x0a) + 3
+        assert!(
+            bytes
+                .windows(7)
+                .any(|window| window == [8, b'_', b'P', b'X', b'M', 0x0a, 3,])
         );
     }
 }

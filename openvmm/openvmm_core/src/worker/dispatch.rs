@@ -164,6 +164,8 @@ use vmotherboard::options::BaseChipsetManifest;
 use vmotherboard::options::VmChipsetCapabilities;
 #[cfg(all(windows, feature = "virt_whp"))]
 use vpci::bus::VpciBus;
+#[cfg(all(windows, feature = "virt_whp"))]
+use vpci::bus::VpciBusConfig;
 use watchdog_core::platform::BaseWatchdogPlatform;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
@@ -2019,6 +2021,7 @@ impl InitializedVm {
                     low_mmio: ranges.low_mmio,
                     high_mmio: ranges.high_mmio,
                     cxl,
+                    vnode: rc.vnode,
                 });
 
                 pcie_root_complexes.push(root_complex.clone());
@@ -2484,8 +2487,16 @@ impl InitializedVm {
                             software_iommu: false,
                         },
                         vmbus.control(),
-                        dev_cfg.instance_id,
                         &chipset_builder,
+                        vmm_core::device_builder::VpciBusConfig {
+                            instance_id: dev_cfg.instance_id,
+                            vtom: None,
+                            vnode: dev_cfg
+                                .vnode
+                                .map(|v| u16::try_from(v))
+                                .transpose()
+                                .context("vpci device vnode exceeds 65535")?,
+                        },
                         |device_id| {
                             let hv_device = partition.new_virtual_device(
                                 match dev_cfg.vtl {
@@ -2500,7 +2511,6 @@ impl InitializedVm {
                                 hv_device.clone().interrupt_mapper(),
                             ))
                         },
-                        None,
                     )
                     .await?;
                 }
@@ -2540,12 +2550,15 @@ impl InitializedVm {
                         .try_add_async(async |services| {
                             VpciBus::new(
                                 &driver_source,
-                                instance_id,
+                                VpciBusConfig {
+                                    instance_id,
+                                    vtom: None,
+                                    vnode: None,
+                                },
                                 device,
                                 &mut services.register_mmio(),
                                 vmbus,
                                 crate::partition::VpciDevice::interrupt_mapper(hv_device),
-                                None,
                             )
                             .await
                         })

@@ -3419,8 +3419,12 @@ async fn new_underhill_vm(
                     software_iommu: false,
                 },
                 vmbus.control(),
-                instance_id,
                 &chipset_builder,
+                vpci::bus::VpciBusConfig {
+                    instance_id,
+                    vtom,
+                    vnode: None,
+                },
                 |device_id| {
                     let device = partition
                         .new_virtual_device()
@@ -3429,7 +3433,6 @@ async fn new_underhill_vm(
                     let device = Arc::new(device);
                     Ok((device.clone(), VpciInterruptMapper::new(device)))
                 },
-                vtom,
             )
             .await?;
         }

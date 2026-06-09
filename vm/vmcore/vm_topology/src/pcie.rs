@@ -34,4 +34,6 @@ pub struct PcieHostBridge {
     pub high_mmio: MemoryRange,
     /// CXL metadata when this host bridge supports CXL.
     pub cxl: Option<PcieHostBridgeCxlInfo>,
+    /// NUMA node affinity for this host bridge.
+    pub vnode: Option<u32>,
 }
