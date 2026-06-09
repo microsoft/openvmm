@@ -3028,23 +3028,31 @@ impl LoadedVmInner {
                 with_pit: self.chipset_capabilities.with_pit,
                 pm_base: PM_BASE,
                 acpi_irq: SYSTEM_IRQ_ACPI,
-                iommu: if !self.amd_iommu_acpi_configs.is_empty() {
-                    Some(vmm_core::acpi_builder::X86IommuAcpiConfig::AmdVi(
-                        vmm_core::acpi_builder::AmdIommuIvrsConfig {
-                            pa_size: amd_iommu::PA_SIZE,
-                            va_size: amd_iommu::VA_SIZE,
-                            iommus: self.amd_iommu_acpi_configs.clone(),
-                        },
-                    ))
-                } else if !self.intel_vtd_acpi_configs.is_empty() {
-                    Some(vmm_core::acpi_builder::X86IommuAcpiConfig::IntelVtd(
-                        vmm_core::acpi_builder::IntelVtdDmarConfig {
-                            host_address_width: 48,
-                            units: self.intel_vtd_acpi_configs.clone(),
-                        },
-                    ))
-                } else {
-                    None
+                iommu: {
+                    anyhow::ensure!(
+                        self.amd_iommu_acpi_configs.is_empty()
+                            || self.intel_vtd_acpi_configs.is_empty(),
+                        "AMD IOMMU and Intel VT-d cannot both be configured \
+                         (only one x86 IOMMU ACPI table type can be generated)"
+                    );
+                    if !self.amd_iommu_acpi_configs.is_empty() {
+                        Some(vmm_core::acpi_builder::X86IommuAcpiConfig::AmdVi(
+                            vmm_core::acpi_builder::AmdIommuIvrsConfig {
+                                pa_size: amd_iommu::PA_SIZE,
+                                va_size: amd_iommu::VA_SIZE,
+                                iommus: self.amd_iommu_acpi_configs.clone(),
+                            },
+                        ))
+                    } else if !self.intel_vtd_acpi_configs.is_empty() {
+                        Some(vmm_core::acpi_builder::X86IommuAcpiConfig::IntelVtd(
+                            vmm_core::acpi_builder::IntelVtdDmarConfig {
+                                host_address_width: 48,
+                                units: self.intel_vtd_acpi_configs.clone(),
+                            },
+                        ))
+                    } else {
+                        None
+                    }
                 },
             },
             #[cfg(guest_arch = "aarch64")]
