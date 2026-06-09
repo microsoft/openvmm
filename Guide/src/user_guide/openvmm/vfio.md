@@ -173,7 +173,7 @@ Normally, peer-to-peer (P2P) DMA between two passthrough devices works
 via ATS (Address Translation Services): each device translates DMA
 addresses through the IOMMU, so guest BAR placement doesn't matter.
 
-Some platforms — notably NVIDIA GH200 and GB300 — do not support ATS in
+Some platforms — notably NVIDIA GB200 and GB300 — do not support ATS in
 their root complex. On these machines, P2P DMA between devices (e.g., GPU
 and NIC) works by disabling ACS on the physical PCIe switch so that TLPs
 route directly between devices without going through the IOMMU. Since
