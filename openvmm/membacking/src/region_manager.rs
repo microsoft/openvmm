@@ -19,6 +19,7 @@ use inspect::InspectMut;
 use memory_range::MemoryRange;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
+use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
@@ -28,7 +29,7 @@ use thiserror::Error;
 use vmcore::local_only::LocalOnly;
 
 /// The type of memory backing a region or mapping.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, MeshPayload)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Inspect, MeshPayload)]
 pub enum MappingType {
     /// Guest RAM or similar shareable memory. IOMMU mapping failures are
     /// fatal. Exposed via `GuestMemorySharing` (vhost-user).
@@ -69,8 +70,8 @@ pub struct DmaMapRequest<'a> {
 /// including device BAR memory ([`MappingType::Device`] regions). The
 /// mapping type controls whether a region is exposed via
 /// `GuestMemorySharing` (for vhost-user) and whether IOMMU mapping
-/// failures are fatal; IOMMU consumers receive the full GPA→backing map
-/// regardless.
+/// failures are fatal; IOMMU consumers need the full GPA→backing map
+/// to program identity mappings for all guest-visible memory.
 ///
 /// Implementations must be `Send + Sync` because they are stored behind `Arc`
 /// in the region manager task.
@@ -82,7 +83,8 @@ pub trait DmaTarget: Send + Sync {
     /// backed and must not be unmapped for the duration of the resulting
     /// IOMMU mapping. The caller (the crate-internal `DmaMapper`) guarantees
     /// this by holding an [`Arc<VaMapper>`] whose mappings are established
-    /// eagerly by the mapping manager.
+    /// eagerly by the mapping manager. The IOMMU mapping will be torn down
+    /// (via `unmap_dma`) before the `VaMapper` releases the VA range.
     unsafe fn map_dma(&self, request: DmaMapRequest<'_>) -> anyhow::Result<()>;
 
     /// Remove IOMMU mappings within `range`.
@@ -261,9 +263,9 @@ struct RegionManagerTaskInner {
 enum RegionRequest {
     AddRegion(Rpc<RegionParams, Result<RegionId, AddRegionError>>),
     RemoveRegion(Rpc<RegionId, ()>),
-    MapRegion(Rpc<(RegionId, MapParams), Result<(), RemoteError>>),
+    MapRegion(FailableRpc<(RegionId, MapParams), ()>),
     UnmapRegion(Rpc<RegionId, ()>),
-    AddMapping(Rpc<(RegionId, RegionMappingParams), Result<(), RemoteError>>),
+    AddMapping(FailableRpc<(RegionId, RegionMappingParams), ()>),
     RemoveMappings(Rpc<(RegionId, MemoryRange), ()>),
     AddPartition(
         LocalOnly<Rpc<PartitionMapper, Result<(), crate::partition_mapper::PartitionMapperError>>>,
@@ -378,7 +380,7 @@ impl RegionManagerTask {
     ) -> anyhow::Result<DmaMapperId> {
         // Create a VaMapper if the target needs host VAs for IOMMU programming.
         let va_mapper = if needs_va {
-            let mapper = self.inner.mapping_manager.new_mapper().await?;
+            let mapper = self.inner.mapping_manager.new_mapper(true).await?;
             assert!(mapper.is_eager(), "DMA mapper requires an eager VaMapper");
             Some(mapper)
         } else {

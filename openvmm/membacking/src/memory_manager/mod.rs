@@ -550,7 +550,7 @@ impl GuestMemoryBuilder {
 
         let va_mapper = mapping_manager
             .client()
-            .new_mapper()
+            .new_mapper(true)
             .await
             .map_err(MemoryBuildError::VaMapper)?;
 
@@ -703,7 +703,7 @@ impl GuestMemoryClient {
     pub async fn guest_memory(&self) -> Result<GuestMemory, VaMapperError> {
         Ok(GuestMemory::new(
             "ram",
-            self.mapping_manager.new_lazy_mapper().await?,
+            self.mapping_manager.new_mapper(false).await?,
         ))
     }
 }
