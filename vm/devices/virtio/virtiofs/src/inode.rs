@@ -91,16 +91,21 @@ impl Volume {
     /// same underlying inode number reported from two different aggregate
     /// shares no longer collides under the single shared superblock.
     ///
-    /// Identity (returns `raw` unchanged) for single-root mounts (`ino_ns ==
-    /// 0`) and for volumes whose inode numbers aren't stable (FAT/exFAT
-    /// recycle them — the same gate used by [`VirtioFsInode::dedup_key`]).
+    /// Identity (returns `raw` unchanged) only for single-root mounts
+    /// (`ino_ns == 0`). Applied to *every* aggregate child regardless of
+    /// inode-number stability: FAT/exFAT report directory-entry-derived
+    /// inode numbers that systematically collide across freshly-formatted
+    /// volumes (e.g. both roots), so namespacing them is what prevents the
+    /// cross-share `(st_dev, st_ino)` aliasing under a single shared
+    /// superblock. (Note this is independent of
+    /// [`VirtioFsInode::dedup_key`], which is already keyed by volume id.)
     ///
     /// XOR-by-constant is a bijection, so distinct files *within* a share
-    /// keep distinct inode numbers (preserving hard-link identity); the
-    /// distinct per-share key removes the systematic cross-share collision
-    /// where two volumes report the same small inode number.
+    /// keep distinct inode numbers (preserving hard-link identity on stable
+    /// filesystems); it never introduces a within-share collision, so it is
+    /// safe even for volumes whose raw inode numbers aren't stable.
     pub fn namespaced_ino(&self, raw: lx::ino_t) -> lx::ino_t {
-        if self.ino_ns == 0 || !self.volume.supports_stable_file_id() {
+        if self.ino_ns == 0 {
             return raw;
         }
         raw ^ self.ino_ns.wrapping_mul(0x9E37_79B9_7F4A_7C15)
