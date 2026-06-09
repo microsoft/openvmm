@@ -147,11 +147,20 @@ pub fn open_pty() -> std::io::Result<(std::fs::File, std::fs::File)> {
         }
     }
 
+    // ptsname_r is missing from libc for macos, despite being present, and
+    // it's very hard to get improvements upstream. So, just define it here.
+    #[cfg(not(target_os = "macos"))]
+    use libc::ptsname_r;
+    #[cfg(target_os = "macos")]
+    unsafe extern "C" {
+        unsafe fn ptsname_r(fd: i32, buf: *mut std::ffi::c_char, buflen: usize) -> i32;
+    }
+
     // Get the secondary device name using ptsname_r (thread-safe).
     let mut name_buf = [0u8; 128];
     // SAFETY: ptsname_r writes into the provided buffer and null-terminates.
     let ret = unsafe {
-        libc::ptsname_r(
+        ptsname_r(
             primary.as_raw_fd(),
             name_buf.as_mut_ptr().cast(),
             name_buf.len(),
