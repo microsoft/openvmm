@@ -67,6 +67,9 @@ pub struct VirtioFsDeviceOptions {
     /// `max_write` (1 MiB by default), which the transport then fails to map,
     /// producing cascading I/O errors. Setting this to the transport's
     /// per-mapping limit clamps the negotiated `max_write` accordingly.
+    ///
+    /// Must be non-zero when `Some`; a zero limit is a misconfiguration and
+    /// will panic during device construction.
     pub max_dma_mapping_size: Option<u32>,
 }
 
@@ -185,7 +188,12 @@ impl VirtioFsDevice {
         // buffers it cannot map. The in-VMM path leaves this unset and keeps
         // the full default.
         let max_write = match options.max_dma_mapping_size {
-            Some(limit) => fuse::DEFAULT_MAX_WRITE.min(limit),
+            Some(limit) => {
+                // A zero per-mapping limit is a misconfiguration: it would
+                // negotiate a max_write of 0, producing an unusable device.
+                assert!(limit > 0, "max_dma_mapping_size must be non-zero");
+                fuse::DEFAULT_MAX_WRITE.min(limit)
+            }
             None => fuse::DEFAULT_MAX_WRITE,
         };
 
@@ -591,5 +599,19 @@ mod tests {
             },
         );
         assert_eq!(device.max_write, fuse::DEFAULT_MAX_WRITE);
+    }
+
+    #[async_test]
+    #[should_panic(expected = "max_dma_mapping_size must be non-zero")]
+    async fn with_options_rejects_zero_dma_mapping_size(driver: DefaultDriver) {
+        // A zero per-mapping limit is a misconfiguration and must be rejected
+        // early rather than producing a device with max_write of 0.
+        let _ = make_device_with_options(
+            &driver,
+            VirtioFsDeviceOptions {
+                max_dma_mapping_size: Some(0),
+                ..Default::default()
+            },
+        );
     }
 }
