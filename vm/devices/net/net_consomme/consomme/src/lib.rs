@@ -51,6 +51,7 @@ use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6ExtHeader;
+use smoltcp::wire::Ipv6ExtHeaderRepr;
 use smoltcp::wire::Ipv6Packet;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -595,8 +596,6 @@ struct Ipv6UpperLayerPayload<'a> {
     payload: &'a [u8],
 }
 
-const IPV6_EXT_HEADER_FIXED_LEN: usize = 2;
-
 impl IpAddresses {
     fn src_addr(&self) -> IpAddress {
         match self {
@@ -654,8 +653,9 @@ fn ipv6_upper_layer_payload(
         match next_header {
             IpProtocol::HopByHop | IpProtocol::Ipv6Route | IpProtocol::Ipv6Opts => {
                 let header = Ipv6ExtHeader::new_checked(payload)?;
-                next_header = header.next_header();
-                payload = &payload[IPV6_EXT_HEADER_FIXED_LEN + header.payload().len()..];
+                let header = Ipv6ExtHeaderRepr::parse(&header)?;
+                next_header = header.next_header;
+                payload = &payload[header.header_len() + header.data.len()..];
             }
             IpProtocol::Ipv6Frag => return Err(DropReason::FragmentedPacket),
             _ => {
