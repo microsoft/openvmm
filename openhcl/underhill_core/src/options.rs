@@ -503,8 +503,9 @@ impl Options {
                 })
                 .ok()
         });
-        let efi_diagnostics_rate_limit =
-            parse_env_number("HCL_EFI_DIAGNOSTICS_RATE_LIMIT")?.map(|x| x as u32);
+        let efi_diagnostics_rate_limit = parse_env_number("HCL_EFI_DIAGNOSTICS_RATE_LIMIT")?
+            .map(|x| u32::try_from(x).context("HCL_EFI_DIAGNOSTICS_RATE_LIMIT out of range"))
+            .transpose()?;
         let strict_encryption_policy = parse_env_bool_opt("HCL_STRICT_ENCRYPTION_POLICY");
         let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK");
         let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY");
