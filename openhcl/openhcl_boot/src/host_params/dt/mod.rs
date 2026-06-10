@@ -3,8 +3,6 @@
 
 //! Parse partition info using the IGVM device tree parameter.
 
-extern crate alloc;
-
 use super::PartitionInfo;
 use super::shim_params::ShimParams;
 use crate::cmdline::BootCommandLineOptions;
@@ -24,7 +22,6 @@ use crate::memory::AllocationPolicy;
 use crate::memory::AllocationType;
 use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
-use alloc::vec::Vec;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use bump_alloc::ALLOCATOR;
@@ -521,11 +518,7 @@ struct PartitionTopology {
 #[derive(Debug, PartialEq, Eq)]
 struct PersistedPartitionTopology {
     topology: PartitionTopology,
-    /// Sorted, deduped union of `cpus_with_outstanding_io` and
-    /// `cpus_with_mapped_interrupts_no_io` from the persisted saved state.
-    /// These CPUs need immediate kernel start on the restore path so the
-    /// kernel can deliver NVMe completion interrupts to them.
-    cpus_needing_kernel_start: Vec<u32>,
+    sidecar_excluded_cpus: &'static [u32],
 }
 
 // Calculate the default mmio size for VTL2 when not specified by the host.
@@ -778,33 +771,35 @@ fn topology_from_persisted_state(
         )
     };
 
-    let (parsed_protobuf, cpus_needing_kernel_start) = bump_alloc::with_global_alloc(|| {
-        log::info!("decoding protobuf of size {}", protobuf_raw.len());
-        let parsed: loader_defs::shim::save_restore::SavedState =
-            mesh_protobuf::decode(protobuf_raw).expect("failed to decode protobuf");
-        // Build the union of the two CPU sets while the bump allocator is
-        // still enabled.
-        log::info!(
-            "persisted state: cpus_with_mapped_interrupts_no_io={:?}, cpus_with_outstanding_io={:?}",
-            parsed.cpus_with_mapped_interrupts_no_io,
-            parsed.cpus_with_outstanding_io,
-        );
-        let mut cpus = Vec::with_capacity(
-            parsed.cpus_with_outstanding_io.len() + parsed.cpus_with_mapped_interrupts_no_io.len(),
-        );
-        cpus.extend(parsed.cpus_with_outstanding_io.iter().copied());
-        cpus.extend(parsed.cpus_with_mapped_interrupts_no_io.iter().copied());
-        cpus.sort_unstable();
-        cpus.dedup();
-        (parsed, cpus)
-    });
+    let parsed_protobuf: loader_defs::shim::save_restore::SavedState =
+        bump_alloc::with_global_alloc(|| {
+            log::info!("decoding protobuf of size {}", protobuf_raw.len());
+            mesh_protobuf::decode(protobuf_raw).expect("failed to decode protobuf")
+        });
 
     let loader_defs::shim::save_restore::SavedState {
         partition_memory,
         partition_mmio,
-        cpus_with_mapped_interrupts_no_io: _,
-        cpus_with_outstanding_io: _,
+        cpus_with_mapped_interrupts_no_io,
+        cpus_with_outstanding_io,
     } = parsed_protobuf;
+
+    log::info!(
+        "persisted state: cpus_with_mapped_interrupts_no_io={:?}, cpus_with_outstanding_io={:?}",
+        cpus_with_mapped_interrupts_no_io,
+        cpus_with_outstanding_io,
+    );
+
+    let mut sidecar_excluded_cpus = off_stack!(ArrayVec<u32, MAX_CPU_COUNT>, ArrayVec::new_const());
+    sidecar_excluded_cpus.clear();
+    sidecar_excluded_cpus.extend(cpus_with_outstanding_io.iter().copied());
+    // ArrayVec doesn't provide a dedup method, so we need to do it manually.
+    for c in cpus_with_mapped_interrupts_no_io.iter().copied() {
+        if !sidecar_excluded_cpus.contains(&c) {
+            sidecar_excluded_cpus.push(c);
+        }
+    }
+    sidecar_excluded_cpus.sort_unstable();
 
     // FUTURE: should memory allocation mode should persist in saved state and
     // verify the host did not change it?
@@ -945,7 +940,7 @@ fn topology_from_persisted_state(
             vtl2_mmio,
             memory_allocation_mode,
         },
-        cpus_needing_kernel_start,
+        sidecar_excluded_cpus: OffStackRef::leak(sidecar_excluded_cpus),
     })
 }
 
@@ -1048,12 +1043,12 @@ impl PartitionInfo {
                 topology_from_persisted_state(header, params, parsed, address_space)?;
             (
                 persisted_topology.topology,
-                persisted_topology.cpus_needing_kernel_start,
+                persisted_topology.sidecar_excluded_cpus,
             )
         } else {
             (
                 topology_from_host_dt(params, parsed, &options, address_space)?,
-                Vec::new(),
+                &[][..],
             )
         };
 
@@ -1105,7 +1100,7 @@ impl PartitionInfo {
             {
                 // Mark specific CPUs as kernel-started instead of sidecar-started.
                 sidecar_cpu_overrides.per_cpu_state_specified = true;
-                for &cpu_id in &sidecar_excluded_cpus {
+                for &cpu_id in sidecar_excluded_cpus {
                     sidecar_cpu_overrides.sidecar_starts_cpu[cpu_id as usize] = false;
                 }
                 log::info!(
