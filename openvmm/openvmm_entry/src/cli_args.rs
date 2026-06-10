@@ -1883,14 +1883,20 @@ pub struct VncCli {
     #[clap(long, value_name = "ADDRESS", default_value = "127.0.0.1")]
     pub vnc_listen: String,
 
-    /// Maximum concurrent VNC clients (~8MB memory per client for framebuffer buffers)
+    /// Maximum concurrent VNC clients (~8MB memory per client for framebuffer
+    /// buffers).
     #[clap(long, value_name = "COUNT", default_value = "16")]
-    pub vnc_max_clients: usize,
+    pub vnc_max_clients: std::num::NonZeroUsize,
 
     /// When the client limit is reached, disconnect the oldest client
     /// instead of rejecting the new connection
     #[clap(long)]
     pub vnc_evict_oldest: bool,
+
+    /// Dirty-tracking tile size in pixels: 4, 8, or 16. Smaller tiles send less
+    /// data for small changes but cost more per-tile overhead. Defaults to 8.
+    #[clap(long, value_name = "SIZE", default_value = "8", value_parser = parse_vnc_tile_size)]
+    pub vnc_tile_size: vnc_worker_defs::VncTileSize,
 }
 
 // <kind>[,ro]
@@ -2771,6 +2777,19 @@ fn parse_x2apic(s: &str) -> Result<X2ApicConfig, &'static str> {
         "off" => X2ApicConfig::Unsupported,
         "on" => X2ApicConfig::Enabled,
         _ => return Err("expected auto, supported, off, or on"),
+    };
+    Ok(r)
+}
+
+/// Parse `--vnc-tile-size`: a fixed dirty-tracking tile size (4, 8, or 16) or
+/// the `cycle` diagnostic.
+fn parse_vnc_tile_size(s: &str) -> Result<vnc_worker_defs::VncTileSize, &'static str> {
+    let r = match s {
+        "4" => vnc_worker_defs::VncTileSize::Tile4,
+        "8" => vnc_worker_defs::VncTileSize::Tile8,
+        "16" => vnc_worker_defs::VncTileSize::Tile16,
+        "cycle" => vnc_worker_defs::VncTileSize::Cycle,
+        _ => return Err("expected 4, 8, 16, or cycle"),
     };
     Ok(r)
 }

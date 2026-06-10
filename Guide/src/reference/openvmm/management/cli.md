@@ -146,6 +146,12 @@ as well as the generated CLI help (via `cargo run -- --help`).
   Each client uses ~8MB for framebuffer buffers.
 * `--vnc-evict-oldest`: When the client limit is reached, disconnect the oldest
   client instead of rejecting the new connection. Useful for admin takeover.
+* `--vnc-tile-size <SIZE>`: Dirty-tracking tile size in pixels: `4`, `8`, or
+  `16` (default: `8`). Smaller tiles send less data for small changes but cost
+  more per-tile overhead. A `cycle` diagnostic rotates the size every 30 seconds
+  and logs the bytes sent at each, for re-measuring the tradeoff. The per-size
+  measurements are in
+  [Dirty-tracking tile size](../../devices/vnc/tile-size.md).
 * `--virtio-9p`: Expose a virtio 9p file system. Uses the format `tag,root_path`, e.g. `myfs,C:\\`.
   The file system can be mounted in a Linux guest using `mount -t 9p  -o trans=virtio tag /mnt/point`.
   You can specify this argument multiple times to create multiple file systems.
