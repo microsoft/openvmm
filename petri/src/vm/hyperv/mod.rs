@@ -250,8 +250,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
 
             // Plumb the EFI diagnostics rate-limit override via the OpenHCL
-            // command line. Like the log level, this is currently only
-            // supported on OpenHCL-backed VMs.
+            // command line.
             if let Some(limit) = efi_diagnostics_rate_limit {
                 if !properties.is_openhcl {
                     anyhow::bail!(

@@ -975,9 +975,7 @@ impl PetriVmConfigSetupCore<'_> {
                 }
 
                 // Plumb the EFI diagnostics rate-limit override to the
-                // OpenHCL-side UEFI device via env var. The OpenVMM-side
-                // UEFI device (used when not in OpenHCL) already picks up
-                // the same value through `UefiManifest::new` above.
+                // OpenHCL-side UEFI device via env var.
                 if let Firmware::OpenhclUefi {
                     uefi_config:
                         UefiConfig {
