@@ -296,7 +296,7 @@ async fn boot_numa_complex_topology(
 /// that the guest sees the correct NUMA affinity on the PCIe device.
 ///
 /// Linux populates `/sys/bus/pci/devices/<BDF>/numa_node` from the ACPI
-/// `_PXM` method on the host bridge.
+/// `_PXM` object on the host bridge.
 #[openvmm_test(linux_direct_x64, linux_direct_aarch64)]
 async fn pcie_device_numa_affinity(
     config: PetriVmBuilder<OpenVmmPetriBackend>,

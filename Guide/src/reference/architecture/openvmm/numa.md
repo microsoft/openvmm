@@ -97,12 +97,12 @@ On Windows guests, it appears in Task Manager and via the
 
 PCIe root complexes and VPCI devices can optionally be assigned to a
 NUMA node so the guest OS sees correct device locality. When no node is
-specified, the ACPI `_PXM` method is omitted and the VPCI NUMA flag is
+specified, the ACPI `_PXM` object is omitted and the VPCI NUMA flag is
 not set — the guest treats the device as having no specific NUMA
 affinity and uses its default (current-node) allocation policy.
 
 For PCIe, each root complex can specify a `vnode` that is exposed via
-the ACPI `_PXM` method on the host bridge. Linux reads this to populate
+the ACPI `_PXM` object on the host bridge. Linux reads this to populate
 `/sys/bus/pci/devices/<BDF>/numa_node` for all devices under that root
 complex. Use `node=N` on `--pcie-root-complex`:
 

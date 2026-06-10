@@ -143,6 +143,7 @@ use vmgs_resources::GuestStateEncryptionPolicy;
 use vmgs_resources::VmgsResource;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
 use vmm_core::acpi_builder::SlitInfo;
+use vmm_core::device_builder::VpciBusConfig;
 use vmm_core::input_distributor::InputDistributor;
 use vmm_core::partition_unit::Halt;
 use vmm_core::partition_unit::PartitionUnit;
@@ -164,8 +165,6 @@ use vmotherboard::options::BaseChipsetManifest;
 use vmotherboard::options::VmChipsetCapabilities;
 #[cfg(all(windows, feature = "virt_whp"))]
 use vpci::bus::VpciBus;
-#[cfg(all(windows, feature = "virt_whp"))]
-use vpci::bus::VpciBusConfig;
 use watchdog_core::platform::BaseWatchdogPlatform;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
@@ -2488,12 +2487,12 @@ impl InitializedVm {
                         },
                         vmbus.control(),
                         &chipset_builder,
-                        vmm_core::device_builder::VpciBusConfig {
+                        VpciBusConfig {
                             instance_id: dev_cfg.instance_id,
                             vtom: None,
                             vnode: dev_cfg
                                 .vnode
-                                .map(|v| u16::try_from(v))
+                                .map(u16::try_from)
                                 .transpose()
                                 .context("vpci device vnode exceeds 65535")?,
                         },
