@@ -5277,12 +5277,11 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "cvm_tracing",
  "inspect",
  "mesh_protobuf",
+ "paste",
  "serde",
  "serde_json",
- "tracing",
 ]
 
 [[package]]

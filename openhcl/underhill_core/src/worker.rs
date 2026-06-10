@@ -1586,8 +1586,9 @@ async fn new_underhill_vm(
     // Aggressively halt the paravisor if the product policy refuses
     // this configuration. With `panic = "abort"`, panic! immediately
     // terminates the process — no further boot side effects occur.
-    if let Err(err) = openhcl_product_policy::cwcow::policy()
-        .validate_secure_boot_enabled(dps.general.secure_boot_enabled)
+    if let Err(err) = measured_vtl2_info
+        .measured_policy()
+        .cwcow(|p| p.validate_secure_boot_enabled(dps.general.secure_boot_enabled))
     {
         tracing::error!(
             CVM_ALLOWED,
@@ -3650,6 +3651,7 @@ async fn new_underhill_vm(
         get_client: get_client.clone(),
         device_platform_settings: dps,
         runtime_params,
+        measured_policy: measured_vtl2_info.measured_policy().clone(),
 
         _input_distributor: input_distributor,
 

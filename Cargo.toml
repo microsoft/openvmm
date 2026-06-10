@@ -15,7 +15,6 @@ members = [
   # openhcl
   "openhcl/ohcldiag-dev",
   "openhcl/openhcl_boot",
-  "openhcl/openhcl_product_policy",
   "openhcl/openvmm_hcl",
   "openhcl/sidecar",
   "openhcl/vmfirmwareigvm_dll",

@@ -95,11 +95,18 @@ pub struct MeasuredVtl2Info {
     #[inspect(with = "inspect_helpers::accepted_regions")]
     accepted_regions: Vec<MemoryRange>,
     pub vtom_offset_bit: Option<u8>,
+    /// Per-VM measured product policy. Built once during VTL2
+    /// config read and cloned into `LoadedVm`.
+    measured_policy: std::sync::Arc<openhcl_product_policy::MeasuredPolicy>,
 }
 
 impl MeasuredVtl2Info {
     pub fn accepted_regions(&self) -> &[MemoryRange] {
         &self.accepted_regions
+    }
+
+    pub fn measured_policy(&self) -> &std::sync::Arc<openhcl_product_policy::MeasuredPolicy> {
+        &self.measured_policy
     }
 }
 
@@ -413,11 +420,10 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         Vec::new()
     };
 
-    // The measured VTL2 config struct sits at the start of its
-    // region; any optional `ProductPolicy` payload is appended
-    // in-place immediately after the struct. Its byte length is
-    // stored in `product_policy_size`; a value of zero — including
-    // the all-zero trailing bytes of pre-feature IGVMs — means absent.
+    // The optional `ProductPolicy` payload is appended in-place
+    // immediately after `ParavisorMeasuredVtl2Config`. Its byte
+    // length lives in `product_policy_size`; 0 (including the
+    // all-zero trailing bytes of pre-feature IGVMs) means absent.
     let measured_config = mapping
         .read_plain::<ParavisorMeasuredVtl2Config>(
             (PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX * HV_PAGE_SIZE) as usize,
@@ -431,10 +437,9 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         if size == 0 {
             None
         } else {
-            // Defence-in-depth: refuse to read past the reserved
-            // region. The IGVM importer enforces this at build time;
-            // a non-conforming runtime image must hard-fail rather
-            // than silently truncating.
+            // Defence-in-depth: the IGVM importer caps this at build
+            // time; reject anything larger rather than reading past
+            // the reserved region.
             if size > PRODUCT_POLICY_MAX_SIZE_BYTES {
                 anyhow::bail!(
                     "product policy size {size} exceeds maximum {}",
@@ -473,13 +478,12 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         bootshim_log_dropped,
     };
 
-    if let Err(_) = openhcl_product_policy::init(product_policy) {
-        anyhow::bail!("conflicting product policy already installed");
-    }
-
     let measured_vtl2_info = MeasuredVtl2Info {
         accepted_regions,
         vtom_offset_bit,
+        measured_policy: std::sync::Arc::new(openhcl_product_policy::MeasuredPolicy::new(
+            product_policy,
+        )),
     };
 
     Ok((runtime_params, measured_vtl2_info))

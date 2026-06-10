@@ -188,6 +188,10 @@ pub(crate) struct LoadedVm {
         guest_emulation_transport::api::platform_settings::DevicePlatformSettings,
     pub runtime_params: crate::loader::vtl2_config::RuntimeParameters,
 
+    /// Per-VM measured product policy.
+    #[expect(dead_code, reason = "consumers added incrementally")]
+    pub measured_policy: Arc<openhcl_product_policy::MeasuredPolicy>,
+
     pub _input_distributor: SpawnedUnit<InputDistributor>,
 
     pub crash_notification_recv: mesh::Receiver<VtlCrash>,
