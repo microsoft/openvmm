@@ -2304,16 +2304,16 @@ impl InitializedVm {
             let (vtl2_vmbus, vtl2_request_send) = if let Some(vtl2_vmbus_cfg) = cfg.vtl2_vmbus {
                 let (server_request_send, server_request_recv) = mesh::channel();
                 let vtl2_hvsock_channel = HvsockRelayChannel::new();
+                let vtl2_max_version = vtl2_vmbus_cfg
+                    .vmbus_max_version
+                    .map(vmbus_core::MaxVersionInfo::new);
 
                 let vmbus_driver = driver_source.simple();
                 let vtl2_vmbus =
                     VmbusServer::builder(vmbus_driver.clone(), synic.clone(), gm.clone())
                         .vtl(Vtl::Vtl2)
-                        .max_version(
-                            vtl2_vmbus_cfg
-                                .vmbus_max_version
-                                .map(vmbus_core::MaxVersionInfo::new),
-                        )
+                        .max_version(vtl2_max_version)
+                        .max_restore_version(vtl2_max_version)
                         .hvsock_notify(Some(vtl2_hvsock_channel.server_half))
                         .external_requests(Some(server_request_recv))
                         .enable_mnf(true)
@@ -2343,16 +2343,16 @@ impl InitializedVm {
                 (None, None)
             };
 
+            let vmbus_max_version = vmbus_cfg
+                .vmbus_max_version
+                .map(vmbus_core::MaxVersionInfo::new);
             let vmbus_driver = driver_source.simple();
             let vmbus = VmbusServer::builder(vmbus_driver.clone(), synic.clone(), gm.clone())
                 .hvsock_notify(Some(hvsock_channel.server_half))
                 .external_server(vtl2_request_send)
                 .use_message_redirect(vmbus_cfg.vtl2_redirect)
-                .max_version(
-                    vmbus_cfg
-                        .vmbus_max_version
-                        .map(vmbus_core::MaxVersionInfo::new),
-                )
+                .max_version(vmbus_max_version)
+                .max_restore_version(vmbus_max_version)
                 .delay_max_version(matches!(cfg.load_mode, LoadMode::Uefi { .. }))
                 .enable_mnf(true)
                 .build()
