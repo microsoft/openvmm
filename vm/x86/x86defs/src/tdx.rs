@@ -150,6 +150,38 @@ pub struct TdgMemPageAcceptRcx {
 }
 
 #[bitfield(u64)]
+pub struct TdgMemPageReleaseRcx {
+    #[bits(3)]
+    pub level: TdgMemPageLevel,
+    #[bits(9)]
+    pub reserved: u64,
+    /// The page number for this accept call.
+    #[bits(40)]
+    pub gpa_page_number: u64,
+    #[bits(12)]
+    pub reserved2: u64,
+}
+
+#[bitfield(u64)]
+pub struct TdgMemPageReleaseRcxResult {
+    #[bits(3)]
+    pub level: TdgMemPageLevel,
+    #[bits(9)]
+    pub reserved: u64,
+    /// The page number for this accept call.
+    #[bits(40)]
+    pub gpa_page_number: u64,
+    #[bits(9)]
+    pub reserved2: u64,
+    #[bits(1)]
+    pub mmio: bool,
+    #[bits(1)]
+    pub pending: bool,
+    #[bits(1)]
+    pub reserved3: u8,
+}
+
+#[bitfield(u64)]
 pub struct TdgMemPageAttrGpaMappingReadRcxResult {
     #[bits(3)]
     pub level: TdgMemPageLevel,

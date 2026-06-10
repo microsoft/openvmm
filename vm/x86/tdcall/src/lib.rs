@@ -19,6 +19,8 @@ use x86defs::tdx::TdReport;
 use x86defs::tdx::TdVmCallR10Result;
 use x86defs::tdx::TdVmCallSubFunction;
 use x86defs::tdx::TdgMemPageAcceptRcx;
+use x86defs::tdx::TdgMemPageReleaseRcx;
+use x86defs::tdx::TdgMemPageReleaseRcxResult;
 use x86defs::tdx::TdgMemPageAttrGpaMappingReadRcxResult;
 use x86defs::tdx::TdgMemPageAttrWriteR8;
 use x86defs::tdx::TdgMemPageAttrWriteRcx;
@@ -327,6 +329,16 @@ pub fn tdcall_accept_pages(
         TdCallResultCode::SUCCESS => Ok(()),
         val => Err(val),
     }
+}
+
+/// Issue a TDG.MEM.PAGE.RELEASE call
+pub fn tdcall_release_page (
+    call: &mut impl Tdcall,
+    gpa_page_number: u64,
+    as_large_page: bool,
+) -> Result<(), TdCallResultCode> {
+
+
 }
 
 /// The result returned from [`tdcall_page_attr_rd`].
