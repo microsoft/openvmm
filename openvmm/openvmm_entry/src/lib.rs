@@ -1155,6 +1155,7 @@ async fn vm_config_from_command_line(
             custom_uefi_vars.clone(),
             opt.secure_boot,
             log_level,
+            None,
             nvram_storage,
             None,
         ));

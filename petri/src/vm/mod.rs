@@ -1394,6 +1394,23 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Sets the per-period rate-limit override for UEFI diagnostics emission.
+    ///
+    /// - Not called: use the built-in defaults.
+    /// - `0`: disable rate limiting entirely (emit every entry).
+    /// - `n > 0`: use `n` as the per-period limit.
+    ///
+    /// Intended for tests that need to deterministically observe every
+    /// diagnostics entry without losing entries to rate limiting.
+    pub fn with_efi_diagnostics_rate_limit(mut self, limit: u32) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("EFI diagnostics rate limit is only supported for UEFI firmware.")
+            .efi_diagnostics_rate_limit = Some(limit);
+        self
+    }
+
     /// Sets whether UEFI should always attempt a default boot.
     pub fn with_default_boot_always_attempt(mut self, enable: bool) -> Self {
         self.config
@@ -2258,6 +2275,15 @@ pub struct UefiConfig {
     pub enable_vpci_boot: bool,
     /// EFI diagnostics log level filter
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevel,
+    /// Optional per-period rate-limit override for EFI diagnostics emission.
+    ///
+    /// - `None`: use the built-in defaults.
+    /// - `Some(0)`: disable rate limiting entirely (emit every entry).
+    /// - `Some(n)`: use `n` as the per-period limit.
+    ///
+    /// Intended for tests that need to deterministically observe every
+    /// diagnostics entry.
+    pub efi_diagnostics_rate_limit: Option<u32>,
 }
 
 impl Default for UefiConfig {
@@ -2269,6 +2295,7 @@ impl Default for UefiConfig {
             default_boot_always_attempt: false,
             enable_vpci_boot: false,
             efi_diagnostics_log_level: EfiDiagnosticsLogLevel::Default,
+            efi_diagnostics_rate_limit: None,
         }
     }
 }
