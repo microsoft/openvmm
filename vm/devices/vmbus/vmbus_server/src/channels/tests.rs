@@ -754,7 +754,7 @@ fn test_restore_max_version_rejects_higher_version() {
 
     let mut env2 = TestEnv::new();
     env2.server
-        .set_compatibility_version(MaxVersionInfo::new(Version::Win10 as u32), false);
+        .set_restore_compatibility_version(MaxVersionInfo::new(Version::Win10 as u32));
 
     let err = env2.c().restore(state).unwrap_err();
     assert!(
@@ -774,13 +774,11 @@ fn test_restore_max_version_rejects_disallowed_feature_flags() {
     let state = env.server.save();
 
     let mut env2 = TestEnv::new();
-    env2.server.set_compatibility_version(
-        MaxVersionInfo {
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo {
             version: Version::Copper as u32,
             feature_flags: FeatureFlags::new().with_guest_specified_signal_parameters(true),
-        },
-        false,
-    );
+        });
 
     let err = env2.c().restore(state).unwrap_err();
     assert!(
@@ -806,7 +804,7 @@ fn test_restore_max_version_pre_copper() {
     let mut env2 = TestEnv::new();
     let offer_id2 = env2.offer(1);
     env2.server
-        .set_compatibility_version(MaxVersionInfo::new(Version::Win10Rs5 as u32), false);
+        .set_restore_compatibility_version(MaxVersionInfo::new(Version::Win10Rs5 as u32));
 
     env2.c().restore(state).unwrap();
     env2.c().restore_channel(offer_id2, false).unwrap();
@@ -825,13 +823,11 @@ fn test_restore_max_version_copper_with_feature_flags() {
 
     let mut env2 = TestEnv::new();
     let offer_id2 = env2.offer(1);
-    env2.server.set_compatibility_version(
-        MaxVersionInfo {
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo {
             version: Version::Copper as u32,
             feature_flags,
-        },
-        false,
-    );
+        });
 
     env2.c().restore(state).unwrap();
     env2.c().restore_channel(offer_id2, false).unwrap();
@@ -896,13 +892,11 @@ fn test_restore_max_version_reserved_channel_success() {
 
     let mut env2 = TestEnv::new();
     let offer_id1 = env2.offer(1);
-    env2.server.set_compatibility_version(
-        MaxVersionInfo {
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo {
             version: Version::Copper as u32,
             feature_flags,
-        },
-        false,
-    );
+        });
 
     env2.c().restore(state).unwrap();
     env2.c().restore_channel(offer_id1, true).unwrap();
@@ -926,7 +920,7 @@ fn test_restore_max_version_reserved_channel_rejects_higher_version() {
     let mut env2 = TestEnv::new();
     let _offer_id1 = env2.offer(1);
     env2.server
-        .set_compatibility_version(MaxVersionInfo::new(Version::Win10 as u32), false);
+        .set_restore_compatibility_version(MaxVersionInfo::new(Version::Win10 as u32));
 
     let err = env2.c().restore(state).unwrap_err();
     assert!(
@@ -953,13 +947,11 @@ fn test_restore_max_version_reserved_channel_rejects_disallowed_feature_flags() 
 
     let mut env2 = TestEnv::new();
     let _offer_id1 = env2.offer(1);
-    env2.server.set_compatibility_version(
-        MaxVersionInfo {
+    env2.server
+        .set_restore_compatibility_version(MaxVersionInfo {
             version: Version::Copper as u32,
             feature_flags: FeatureFlags::new().with_guest_specified_signal_parameters(true),
-        },
-        false,
-    );
+        });
 
     let err = env2.c().restore(state).unwrap_err();
     assert!(
