@@ -747,7 +747,7 @@ pub mod artifacts {
             VMGSTOOL_WIN_AARCH64,
             /// vmgstool linux aarch64 executable
             VMGSTOOL_LINUX_AARCH64,
-            /// vmgstool linux aarch64 executable
+            /// vmgstool macos aarch64 executable
             VMGSTOOL_MACOS_AARCH64,
             /// vmgstool-dev windows x86_64 executable
             VMGSTOOL_DEV_WIN_X64,
@@ -757,7 +757,7 @@ pub mod artifacts {
             VMGSTOOL_DEV_WIN_AARCH64,
             /// vmgstool-dev linux aarch64 executable
             VMGSTOOL_DEV_LINUX_AARCH64,
-            /// vmgstool-dev linux aarch64 executable
+            /// vmgstool-dev macos aarch64 executable
             VMGSTOOL_DEV_MACOS_AARCH64,
         }
 

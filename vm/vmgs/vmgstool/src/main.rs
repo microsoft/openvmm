@@ -12,7 +12,7 @@ crypto::ensure_single_backend!();
 // publish a new version (without the test_helpers feature).
 //
 // CI also builds a set of separate vmgstool-dev binaries with the test_helpers
-// feature enabled for use in integrations tests.
+// feature enabled for use in integration tests.
 
 mod storage_backend;
 #[cfg(feature = "test_helpers")]

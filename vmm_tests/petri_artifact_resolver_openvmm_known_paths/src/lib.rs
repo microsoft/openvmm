@@ -370,7 +370,14 @@ fn vmgstool_native_executable_path() -> anyhow::Result<PathBuf> {
 
 /// Path to the output location of the vmgstool-dev executable.
 fn vmgstool_dev_native_executable_path() -> anyhow::Result<PathBuf> {
-    get_output_executable_path("vmgstool-dev")
+    get_path(
+        "target/debug",
+        Path::new("vmgstool-dev").with_extension(EXE_EXTENSION),
+        MissingCommand::Custom {
+            description: "vmgstool-dev (Cargo build output must be renamed to match)",
+            cmd: "cargo build -p vmgstool --features encryption,test_helpers",
+        },
+    )
 }
 
 /// Path to the output location of the tpm_guest_tests executable.
