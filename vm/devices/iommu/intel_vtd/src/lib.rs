@@ -122,7 +122,7 @@ pub struct IntelVtdConfig {
 ///
 /// All fields are behind `RwLock<VtdState>` in [`VtdSharedState`].
 /// DMA translations take a read lock; MMIO writes take a write lock.
-#[derive(Debug, Default, inspect::Inspect)]
+#[derive(Debug, inspect::Inspect)]
 struct VtdState {
     // -- Global status (mirrors GCMD operations) --
     /// Global Status Register value.
@@ -191,6 +191,41 @@ struct VtdState {
     iotlb: IotlbReg,
 }
 
+impl VtdState {
+    fn new() -> Self {
+        Self {
+            // Per VT-d spec §10.4.10 and §10.4.21, FECTL.IM and IECTL.IM
+            // default to 1 (masked) at power-up reset. Without this, the
+            // IOMMU may deliver spurious MSIs with uninitialized FEADDR/IEADDR
+            // registers (address=0, data=0) during early initialization, which
+            // can inject vector 0 (#DE) into the guest and crash it.
+            fectl: FectlReg::new().with_im(true),
+            iectl: IectlReg::new().with_im(true),
+            gsts: GstsReg::new(),
+            rtaddr: RtaddrReg::new(),
+            latched_rtaddr: RtaddrReg::new(),
+            irta: IrtaReg::new(),
+            latched_irta: IrtaReg::new(),
+            ccmd: CcmdReg::new(),
+            fsts: FstsReg::new(),
+            fedata: 0,
+            feaddr: 0,
+            feuaddr: 0,
+            frcd_lo: FrcdLo::new(),
+            frcd_hi: FrcdHi::new(),
+            iqa: IqaReg::new(),
+            iqh: IqhReg::new(),
+            iqt: IqtReg::new(),
+            ics: IcsReg::new(),
+            iedata: 0,
+            ieaddr: 0,
+            ieuaddr: 0,
+            iva: 0,
+            iotlb: IotlbReg::new(),
+        }
+    }
+}
+
 // =============================================================================
 // Shared IOMMU State
 // =============================================================================
@@ -217,7 +252,7 @@ impl VtdSharedState {
     fn new(guest_memory: GuestMemory, signal_msi: Arc<dyn SignalMsi>) -> Self {
         Self {
             guest_memory,
-            state: RwLock::new(VtdState::default()),
+            state: RwLock::new(VtdState::new()),
             signal_msi,
         }
     }
@@ -1655,7 +1690,7 @@ impl vmcore::device_state::ChangeDeviceState for IntelVtdDevice {
 
     async fn reset(&mut self) {
         let mut state = self.shared.state.write();
-        *state = VtdState::default();
+        *state = VtdState::new();
     }
 }
 
