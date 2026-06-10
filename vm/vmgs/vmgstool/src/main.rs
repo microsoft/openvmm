@@ -9,7 +9,10 @@ crypto::ensure_single_backend!();
 
 // The version in this crate's Cargo.toml file should be updated using the
 // semver standard when changes are made, which triggers CI to automatically
-// publish a new version.
+// publish a new version (without the test_helpers feature).
+//
+// CI also builds a set of separate vmgstool-dev binaries with the test_helpers
+// feature enabled for use in integrations tests.
 
 mod storage_backend;
 #[cfg(feature = "test_helpers")]

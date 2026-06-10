@@ -132,7 +132,8 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == tmks::SIMPLE_TMK_X64 => simple_tmk_path(MachineArch::X86_64),
             _ if id == tmks::SIMPLE_TMK_AARCH64 => simple_tmk_path(MachineArch::Aarch64),
 
-            _ if id == VMGSTOOL_NATIVE => vmgstool_native_executable_path(),
+            _ if id == vmgstool::VMGSTOOL_NATIVE => vmgstool_native_executable_path(),
+            _ if id == vmgstool::VMGSTOOL_DEV_NATIVE => vmgstool_dev_native_executable_path(),
 
             _ if id == guest_tools::TPM_GUEST_TESTS_WINDOWS_X64 => {
                 tpm_guest_tests_windows_path(MachineArch::X86_64)
@@ -365,6 +366,11 @@ fn tmk_vmm_native_executable_path() -> anyhow::Result<PathBuf> {
 /// Path to the output location of the vmgstool executable.
 fn vmgstool_native_executable_path() -> anyhow::Result<PathBuf> {
     get_output_executable_path("vmgstool")
+}
+
+/// Path to the output location of the vmgstool-dev executable.
+fn vmgstool_dev_native_executable_path() -> anyhow::Result<PathBuf> {
+    get_output_executable_path("vmgstool-dev")
 }
 
 /// Path to the output location of the tpm_guest_tests executable.
