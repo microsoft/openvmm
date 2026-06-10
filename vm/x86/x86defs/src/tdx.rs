@@ -40,7 +40,7 @@ open_enum! {
         MEM_PAGE_ATTR_WR = 24,
         VP_ENTER = 25,
         VP_INVGLA = 27,
-        MEM_PAGE_RELASE = 30
+        MEM_PAGE_RELEASE = 30,
     }
 }
 

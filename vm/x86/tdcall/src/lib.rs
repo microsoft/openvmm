@@ -338,7 +338,8 @@ pub fn tdcall_release_page (
     as_large_page: bool,
 ) -> Result<(), TdCallResultCode> {
 
-
+    // RAZTODO: Implement
+    unimplemented!()
 }
 
 /// The result returned from [`tdcall_page_attr_rd`].
