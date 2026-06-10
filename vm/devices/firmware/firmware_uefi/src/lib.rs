@@ -124,8 +124,8 @@ pub struct UefiDevice {
     // Fixed configuration
     use_mmio: bool,
     command_set: UefiCommandSet,
-    /// Override for the per-period rate limit applied to diagnostics log
-    /// entries. See [`UefiConfig::diagnostics_rate_limit`].
+    /// Overrides the per-period rate limit applied to EfiDiagnostics
+    /// See [`UefiDevice::resolve_rate_limit`] for more information.
     diagnostics_rate_limit: Option<u32>,
 
     // Runtime glue
@@ -374,8 +374,6 @@ impl PollDevice for UefiDevice {
             // NOTE: Do not allow reprocessing diagnostics here.
             // UEFI programs the watchdog's configuration, so we should assume that
             // this path could trigger multiple times.
-            //
-            // Here, we emit diagnostics to tracing with INFO level and no limit
             let _ = self.process_diagnostics(
                 false,
                 service::diagnostics::DiagnosticsEmitter::Tracing {

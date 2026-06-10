@@ -296,9 +296,6 @@ pub struct Options {
     /// - Not set: use the built-in defaults.
     /// - `0`: disable rate limiting entirely (emit every entry).
     /// - `n > 0`: use `n` as the per-period limit.
-    ///
-    /// Intended for tests that need to deterministically observe every
-    /// diagnostics entry.
     pub efi_diagnostics_rate_limit: Option<u32>,
 
     /// (HCL_STRICT_ENCRYPTION_POLICY=1) Strict guest state encryption policy.

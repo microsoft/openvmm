@@ -159,15 +159,8 @@ pub struct UefiConfig {
     pub use_mmio: bool,
     pub command_set: UefiCommandSet,
     pub diagnostics_log_level: LogLevel,
-    /// Override for the per-period rate limit applied to diagnostics log
-    /// entries forwarded to host tracing.
-    ///
-    /// - `None`: use the built-in defaults.
-    /// - `Some(0)`: disable rate limiting entirely (emit every entry).
-    /// - `Some(n)`: use `n` as the per-period limit.
-    ///
-    /// Intended primarily for tests that need to deterministically observe
-    /// every diagnostics entry.
+    /// Overrides the per-period rate limit applied to EfiDiagnostics.
+    /// See [`UefiDevice::resolve_rate_limit`] for more information.
     pub diagnostics_rate_limit: Option<u32>,
 }
 

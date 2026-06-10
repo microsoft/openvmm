@@ -1399,9 +1399,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// - Not called: use the built-in defaults.
     /// - `0`: disable rate limiting entirely (emit every entry).
     /// - `n > 0`: use `n` as the per-period limit.
-    ///
-    /// Intended for tests that need to deterministically observe every
-    /// diagnostics entry without losing entries to rate limiting.
     pub fn with_efi_diagnostics_rate_limit(mut self, limit: u32) -> Self {
         self.config
             .firmware
@@ -2275,14 +2272,8 @@ pub struct UefiConfig {
     pub enable_vpci_boot: bool,
     /// EFI diagnostics log level filter
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevel,
-    /// Optional per-period rate-limit override for EFI diagnostics emission.
-    ///
-    /// - `None`: use the built-in defaults.
-    /// - `Some(0)`: disable rate limiting entirely (emit every entry).
-    /// - `Some(n)`: use `n` as the per-period limit.
-    ///
-    /// Intended for tests that need to deterministically observe every
-    /// diagnostics entry.
+    /// Per-period rate-limit override for EFI diagnostics emission.
+    /// See [`PetriVmBuilder::with_efi_diagnostics_rate_limit()`] for more information.
     pub efi_diagnostics_rate_limit: Option<u32>,
 }
 
