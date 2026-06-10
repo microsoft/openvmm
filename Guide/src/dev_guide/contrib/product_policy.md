@@ -17,9 +17,8 @@ At runtime, OpenHCL reads the struct, then reads the next
 typed [`ProductPolicy`] enum, or refuses to boot if the bytes are
 malformed.
 
-The first real product is **CWCOW** (Confidential Windows Container
-on Windows). The bundled `X64CvmCwcow` recipe + the two
-`openhcl-x64-cvm-cwcow-{dev,release}.json` manifests are the canonical
+The first real product is **Sivm**. The bundled `X64CvmSivm` recipe + the two
+`openhcl-x64-cvm-sivm-{dev,release}.json` manifests are the canonical
 end-to-end example.
 
 ## Architecture in one diagram
@@ -55,9 +54,9 @@ measured-region size limit.
 
 | Mesh tag | Manifest key / Rust variant | Body type |
 | --- | --- | --- |
-| `1` | `cwcow` / `ProductPolicy::Cwcow` | `CwcowPolicy` |
+| `1` | `sivm` / `ProductPolicy::Sivm` | `SivmPolicy` |
 
-`CwcowPolicy` currently contains:
+`SivmPolicy` currently contains:
 
 | Mesh tag | Manifest field / Rust field | Type |
 | --- | --- | --- |
@@ -79,7 +78,7 @@ Both the enum and body struct use
    wire format for an existing product.
 2. **Any non-trivial field encoding must be a *symmetric* serde
    adapter.** When a manifest field's JSON shape differs from its wire
-   byte shape (e.g. CWCOW's base64-encoded `custom_uefi_json`), use
+   byte shape (e.g. Sivm's base64-encoded `custom_uefi_json`), use
    `#[serde(with = "module_name")]` with a helper module that exposes
    matching `serialize` *and* `deserialize` functions. Never use
    one-directional `#[serde(deserialize_with = "…")]` alone — it
@@ -111,7 +110,7 @@ pub struct FooPolicy {
 
 /// 2. Add a variant to the wire enum with a fresh #[mesh(N)] tag.
 pub enum ProductPolicy {
-    #[mesh(1)] Cwcow(CwcowPolicy),
+    #[mesh(1)] Sivm(SivmPolicy),
     #[mesh(2)] Foo(FooPolicy),
 }
 ```
@@ -131,7 +130,7 @@ deserialized back without changing bytes.
 ### Custom field encoding (must be symmetric)
 
 When a manifest field's JSON shape differs from its wire byte shape —
-e.g. CWCOW embeds the custom UEFI JSON as a base64-encoded string —
+e.g. Sivm embeds the custom UEFI JSON as a base64-encoded string —
 attach a *symmetric* `#[serde(with = "…")]` adapter to the field. The
 helper module supplies matching `serialize` and `deserialize`
 functions so JSON round-trips are byte-stable:
@@ -231,14 +230,14 @@ attestation policy for each affected product.
 
 ## Required fields and build-time invariants
 
-CWCOW's manifest contract is intentionally strict: **every field of
-`CwcowPolicy` must appear in the manifest JSON**. None of the booleans
+Sivm's manifest contract is intentionally strict: **every field of
+`SivmPolicy` must appear in the manifest JSON**. None of the booleans
 have a serde default, and `custom_uefi_json` is now also mandatory (no
 `#[serde(default)]`). Omitting any field is a deserialization error,
 not a silent default.
 
 In addition, `encode_product_policy_bytes` panics at IGVM build time
-if `custom_uefi_json` is empty: the CWCOW product relies on the custom
+if `custom_uefi_json` is empty: the Sivm product relies on the custom
 UEFI JSON to lock down secure-boot variables and BCD integrity, so an
 empty payload would produce an attested-but-meaningless image. New
 products should enforce their own equivalent invariants in
@@ -259,7 +258,7 @@ If you want the new product reachable from `cargo xflowey build-igvm`:
   `flowey/flowey_lib_hvlite/src/artifact_openhcl_igvm_from_recipe.rs` and
   `flowey/flowey_lib_hvlite/src/_jobs/local_build_igvm.rs`.
 
-The bundled `X64CvmCwcow` recipe shows the complete CWCOW pipeline.
+The bundled `X64CvmSivm` recipe shows the complete Sivm pipeline.
 
 [`ParavisorMeasuredVtl2Config`]: https://openvmm.dev/rustdoc/openhcl_product_policy/struct.ParavisorMeasuredVtl2Config.html
 [`ProductPolicy`]: https://openvmm.dev/rustdoc/openhcl_product_policy/enum.ProductPolicy.html

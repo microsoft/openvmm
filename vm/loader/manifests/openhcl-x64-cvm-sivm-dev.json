@@ -8,23 +8,23 @@
                 "snp": {
                     "shared_gpa_boundary_bits": 46,
                     "policy": 196639,
-                    "enable_debug": false,
+                    "enable_debug": true,
                     "injection_type": "normal"
                 }
             },
             "image": {
                 "openhcl": {
-                    "command_line": "",
+                    "command_line": "OPENHCL_CONFIDENTIAL_DEBUG=1",
                     "memory_page_count": 163840,
                     "memory_page_base": 32768,
                     "uefi": true,
                     "product_policy": {
-                        "cwcow": {
+                        "sivm": {
                             "vmgs_read_only": true,
-                            "require_secure_boot": true,
-                            "require_secure_boot_vars": true,
-                            "require_bcd_integrity": true,
-                            "require_secure_avic": true,
+                            "require_secure_boot": false,
+                            "require_secure_boot_vars": false,
+                            "require_bcd_integrity": false,
+                            "require_secure_avic": false,
                             "custom_uefi_json": "ewogICJTZWN1cmVCb290RW5hYmxlIjogdHJ1ZSwKICAiU2V0dXBNb2RlIjogZmFsc2UsCiAgIkJvb3RDb25maWd1cmF0aW9uRGF0YUhhc2giOiAiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMCIKfQ=="
                         }
                     }
@@ -42,16 +42,43 @@
             },
             "image": {
                 "openhcl": {
-                    "command_line": "",
+                    "command_line": "OPENHCL_CONFIDENTIAL_DEBUG=1",
                     "memory_page_count": 163840,
                     "memory_page_base": 32768,
                     "uefi": true,
                     "product_policy": {
-                        "cwcow": {
+                        "sivm": {
                             "vmgs_read_only": true,
-                            "require_secure_boot": true,
-                            "require_secure_boot_vars": true,
-                            "require_bcd_integrity": true,
+                            "require_secure_boot": false,
+                            "require_secure_boot_vars": false,
+                            "require_bcd_integrity": false,
+                            "require_secure_avic": false,
+                            "custom_uefi_json": "ewogICJTZWN1cmVCb290RW5hYmxlIjogdHJ1ZSwKICAiU2V0dXBNb2RlIjogZmFsc2UsCiAgIkJvb3RDb25maWd1cmF0aW9uRGF0YUhhc2giOiAiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMCIKfQ=="
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "guest_svn": 1,
+            "max_vtl": 2,
+            "isolation_type": {
+                "vbs": {
+                    "enable_debug": true
+                }
+            },
+            "image": {
+                "openhcl": {
+                    "command_line": "OPENHCL_CONFIDENTIAL_DEBUG=1",
+                    "memory_page_count": 163840,
+                    "memory_page_base": 32768,
+                    "uefi": true,
+                    "product_policy": {
+                        "sivm": {
+                            "vmgs_read_only": true,
+                            "require_secure_boot": false,
+                            "require_secure_boot_vars": false,
+                            "require_bcd_integrity": false,
                             "require_secure_avic": false,
                             "custom_uefi_json": "ewogICJTZWN1cmVCb290RW5hYmxlIjogdHJ1ZSwKICAiU2V0dXBNb2RlIjogZmFsc2UsCiAgIkJvb3RDb25maWd1cmF0aW9uRGF0YUhhc2giOiAiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMCIKfQ=="
                         }

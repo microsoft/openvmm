@@ -374,14 +374,14 @@ mod test {
     }
 
     #[test]
-    fn openhcl_image_with_cwcow_product_policy_deserializes() {
+    fn openhcl_image_with_sivm_product_policy_deserializes() {
         let json = r#"{
             "openhcl": {
                 "command_line": "",
                 "memory_page_count": 10,
                 "uefi": true,
                 "product_policy": {
-                    "cwcow": {
+                    "sivm": {
                         "vmgs_read_only": true,
                         "require_secure_boot": true,
                         "require_secure_boot_vars": true,
@@ -398,7 +398,7 @@ mod test {
                 product_policy: Some(policy),
                 ..
             } => match policy {
-                ProductPolicy::Cwcow(p) => {
+                ProductPolicy::Sivm(p) => {
                     assert!(p.vmgs_read_only);
                     assert!(p.require_secure_boot);
                     assert!(p.require_secure_boot_vars);

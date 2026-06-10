@@ -14,7 +14,7 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-pub mod cwcow;
+pub mod sivm;
 
 use alloc::vec::Vec;
 
@@ -115,8 +115,8 @@ macro_rules! define_product_policy {
 define_product_policy! {
     package = "openhcl.product_policy";
 
-    /// Confidential Windows Container on Windows.
-    1 => Cwcow(cwcow::CwcowPolicy);
+    /// Sivm.
+    1 => Sivm(sivm::SivmPolicy);
 }
 
 // --- Codec ---
@@ -160,11 +160,11 @@ mod tests {
     extern crate alloc;
 
     use super::*;
-    use crate::cwcow::CwcowPolicy;
+    use crate::sivm::SivmPolicy;
     use alloc::vec;
 
-    fn sample_cwcow_policy() -> CwcowPolicy {
-        CwcowPolicy {
+    fn sample_sivm_policy() -> SivmPolicy {
+        SivmPolicy {
             vmgs_read_only: true,
             require_secure_boot: true,
             require_secure_boot_vars: true,
@@ -176,20 +176,20 @@ mod tests {
 
     #[test]
     fn product_policy_name_returns_variant_tag() {
-        assert_eq!(ProductPolicy::Cwcow(CwcowPolicy::default()).name(), "cwcow");
+        assert_eq!(ProductPolicy::Sivm(SivmPolicy::default()).name(), "sivm");
     }
 
     #[test]
-    fn encode_decode_round_trip_default_cwcow() {
-        let policy = ProductPolicy::Cwcow(CwcowPolicy::default());
+    fn encode_decode_round_trip_default_sivm() {
+        let policy = ProductPolicy::Sivm(SivmPolicy::default());
         let bytes = encode_product_policy(&policy);
         let decoded = decode_product_policy(&bytes).unwrap();
         assert_eq!(decoded, policy);
     }
 
     #[test]
-    fn encode_decode_round_trip_nontrivial_cwcow() {
-        let policy = ProductPolicy::Cwcow(sample_cwcow_policy());
+    fn encode_decode_round_trip_nontrivial_sivm() {
+        let policy = ProductPolicy::Sivm(sample_sivm_policy());
         let bytes = encode_product_policy(&policy);
         let decoded = decode_product_policy(&bytes).unwrap();
         assert_eq!(decoded, policy);
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_truncated() {
-        let policy = ProductPolicy::Cwcow(sample_cwcow_policy());
+        let policy = ProductPolicy::Sivm(sample_sivm_policy());
         let mut bytes = encode_product_policy(&policy);
         bytes.pop();
         assert!(matches!(
@@ -224,9 +224,9 @@ mod tests {
         }
 
         #[test]
-        fn deserialize_cwcow_full() {
+        fn deserialize_sivm_full() {
             let json = r#"{
-                "cwcow": {
+                "sivm": {
                     "vmgs_read_only": true,
                     "require_secure_boot": true,
                     "require_secure_boot_vars": true,
@@ -237,7 +237,7 @@ mod tests {
             }"#;
             let policy: ProductPolicy = from_json(json).unwrap();
             match policy {
-                ProductPolicy::Cwcow(p) => {
+                ProductPolicy::Sivm(p) => {
                     assert!(p.vmgs_read_only);
                     assert!(p.require_secure_boot);
                     assert!(p.require_secure_boot_vars);
@@ -249,9 +249,9 @@ mod tests {
         }
 
         #[test]
-        fn deserialize_cwcow_missing_custom_uefi_json_is_an_error() {
+        fn deserialize_sivm_missing_custom_uefi_json_is_an_error() {
             let json = r#"{
-                "cwcow": {
+                "sivm": {
                     "vmgs_read_only": false,
                     "require_secure_boot": true,
                     "require_secure_boot_vars": false,
@@ -268,12 +268,12 @@ mod tests {
         }
 
         #[test]
-        fn deserialize_cwcow_decodes_base64_custom_uefi_json() {
+        fn deserialize_sivm_decodes_base64_custom_uefi_json() {
             let payload = b"{\"uefi\": \"sample\"}";
             let b64 = "eyJ1ZWZpIjogInNhbXBsZSJ9";
             let json = alloc::format!(
                 r#"{{
-                    "cwcow": {{
+                    "sivm": {{
                         "vmgs_read_only": false,
                         "require_secure_boot": false,
                         "require_secure_boot_vars": false,
@@ -285,14 +285,14 @@ mod tests {
             );
             let policy: ProductPolicy = from_json(&json).unwrap();
             match policy {
-                ProductPolicy::Cwcow(p) => assert_eq!(p.custom_uefi_json, payload.to_vec()),
+                ProductPolicy::Sivm(p) => assert_eq!(p.custom_uefi_json, payload.to_vec()),
             }
         }
 
         #[test]
-        fn deserialize_cwcow_invalid_base64_is_an_error() {
+        fn deserialize_sivm_invalid_base64_is_an_error() {
             let json = r#"{
-                "cwcow": {
+                "sivm": {
                     "vmgs_read_only": false,
                     "require_secure_boot": false,
                     "require_secure_boot_vars": false,
@@ -307,7 +307,7 @@ mod tests {
 
         #[test]
         fn json_round_trip_is_byte_identical() {
-            let original = ProductPolicy::Cwcow(CwcowPolicy {
+            let original = ProductPolicy::Sivm(SivmPolicy {
                 vmgs_read_only: true,
                 require_secure_boot: true,
                 require_secure_boot_vars: true,
@@ -322,7 +322,7 @@ mod tests {
 
         #[test]
         fn serialize_emits_custom_uefi_json_as_base64_string() {
-            let policy = ProductPolicy::Cwcow(CwcowPolicy {
+            let policy = ProductPolicy::Sivm(SivmPolicy {
                 custom_uefi_json: alloc::vec![b'A', b'B', b'C'],
                 ..Default::default()
             });
@@ -342,7 +342,7 @@ mod tests {
         #[test]
         fn deserialize_rejects_unknown_field() {
             let err = from_json(
-                r#"{"cwcow":{
+                r#"{"sivm":{
                     "vmgs_read_only": false,
                     "require_secure_boot": false,
                     "require_secure_boot_vars": false,
@@ -356,7 +356,7 @@ mod tests {
 
         #[test]
         fn deserialize_rejects_pascal_case_variant() {
-            let err = from_json(r#"{"Cwcow":{}}"#);
+            let err = from_json(r#"{"Sivm":{}}"#);
             assert!(err.is_err(), "expected error, got: {err:?}");
         }
     }
@@ -365,45 +365,45 @@ mod tests {
     mod measured_policy_tests {
         use super::*;
 
-        fn measured(p: CwcowPolicy) -> MeasuredPolicy {
-            MeasuredPolicy::new(Some(ProductPolicy::Cwcow(p)))
+        fn measured(p: SivmPolicy) -> MeasuredPolicy {
+            MeasuredPolicy::new(Some(ProductPolicy::Sivm(p)))
         }
 
         #[test]
         fn no_policy_yields_ok_none() {
-            let r = MeasuredPolicy::new(None).cwcow(|p| p.validate_secure_boot_enabled(false));
+            let r = MeasuredPolicy::new(None).sivm(|p| p.validate_secure_boot_enabled(false));
             assert!(matches!(r, Ok(None)));
         }
 
         #[test]
         fn passing_validation_yields_ok_some_unit() {
-            let m = measured(CwcowPolicy {
+            let m = measured(SivmPolicy {
                 require_secure_boot: true,
                 ..Default::default()
             });
             assert!(matches!(
-                m.cwcow(|p| p.validate_secure_boot_enabled(true)),
+                m.sivm(|p| p.validate_secure_boot_enabled(true)),
                 Ok(Some(()))
             ));
         }
 
         #[test]
         fn failing_validation_yields_err() {
-            let m = measured(CwcowPolicy {
+            let m = measured(SivmPolicy {
                 require_secure_boot: true,
                 ..Default::default()
             });
-            assert!(m.cwcow(|p| p.validate_secure_boot_enabled(false)).is_err());
+            assert!(m.sivm(|p| p.validate_secure_boot_enabled(false)).is_err());
         }
 
         #[test]
         fn getter_via_ok_wrap() {
-            let m = measured(CwcowPolicy {
+            let m = measured(SivmPolicy {
                 custom_uefi_json: alloc::vec![b'h', b'i'],
                 ..Default::default()
             });
             let json: Option<Vec<u8>> = m
-                .cwcow(|p| Ok(p.custom_uefi_json.clone()))
+                .sivm(|p| Ok(p.custom_uefi_json.clone()))
                 .expect("no validation error");
             assert_eq!(json.as_deref(), Some(&b"hi"[..]));
         }

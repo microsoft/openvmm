@@ -86,9 +86,8 @@ pub enum OpenhclIgvmRecipe {
     X64TestLinuxDirectDevkern,
     X64Cvm,
     X64CvmDevkern,
-    /// X64 OpenHCL with CVM support and the CWCOW (Confidential Windows
-    /// Container on Windows) product policy enabled.
-    X64CvmCwcow,
+    /// X64 OpenHCL with CVM support and the Sivm product policy enabled.
+    X64CvmSivm,
     Aarch64,
     Aarch64Devkern,
 }
@@ -212,11 +211,11 @@ impl OpenhclIgvmRecipe {
                 with_sidecar: false,
                 max_trace_level,
             },
-            Self::X64CvmCwcow => OpenhclIgvmRecipeDetails {
+            Self::X64CvmSivm => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
-                    "openhcl-x64-cvm-cwcow-dev.json",
-                    "openhcl-x64-cvm-cwcow-release.json",
+                    "openhcl-x64-cvm-sivm-dev.json",
+                    "openhcl-x64-cvm-sivm-release.json",
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::Cvm,
                 openvmm_hcl_features: base_openvmm_hcl_features(),

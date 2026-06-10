@@ -129,10 +129,10 @@ fn encode_product_policy_bytes(policy: &ProductPolicy) -> Vec<u8> {
 /// [`ProductPolicy`]. Violations panic.
 fn validate_product_policy_for_build(policy: &ProductPolicy) {
     match policy {
-        ProductPolicy::Cwcow(cwcow) => {
+        ProductPolicy::Sivm(sivm) => {
             assert!(
-                !cwcow.custom_uefi_json.is_empty(),
-                "CWCOW product policy requires a non-empty custom_uefi_json"
+                !sivm.custom_uefi_json.is_empty(),
+                "Sivm product policy requires a non-empty custom_uefi_json"
             );
         }
     }
@@ -1550,8 +1550,8 @@ where
 #[cfg(test)]
 mod product_policy_tests {
     use super::*;
-    use openhcl_product_policy::cwcow::CwcowPolicy;
     use openhcl_product_policy::decode_product_policy;
+    use openhcl_product_policy::sivm::SivmPolicy;
     use zerocopy::FromBytes;
 
     // ---------------------------------------------------------------
@@ -1570,7 +1570,7 @@ mod product_policy_tests {
 
     #[test]
     fn encode_product_policy_bytes_round_trip() {
-        let policy = ProductPolicy::Cwcow(CwcowPolicy {
+        let policy = ProductPolicy::Sivm(SivmPolicy {
             vmgs_read_only: true,
             require_secure_boot: true,
             custom_uefi_json: vec![0xAA, 0xBB, 0xCC, 0xDD],
@@ -1584,7 +1584,7 @@ mod product_policy_tests {
     #[test]
     #[should_panic(expected = "non-empty custom_uefi_json")]
     fn encode_product_policy_bytes_panics_on_empty_custom_uefi_json() {
-        let policy = ProductPolicy::Cwcow(CwcowPolicy {
+        let policy = ProductPolicy::Sivm(SivmPolicy {
             vmgs_read_only: true,
             require_secure_boot: true,
             require_secure_boot_vars: true,
@@ -1599,7 +1599,7 @@ mod product_policy_tests {
     #[should_panic(expected = "exceeds the static measured-config-region budget")]
     fn encode_product_policy_bytes_panics_on_oversize() {
         let oversize_body = PRODUCT_POLICY_MAX_SIZE_BYTES + 1;
-        let policy = ProductPolicy::Cwcow(CwcowPolicy {
+        let policy = ProductPolicy::Sivm(SivmPolicy {
             custom_uefi_json: vec![0u8; oversize_body],
             ..Default::default()
         });
@@ -1627,7 +1627,7 @@ mod product_policy_tests {
     #[test]
     fn build_region_present_records_policy_size_in_struct() {
         let cfg = empty_config();
-        let policy = ProductPolicy::Cwcow(CwcowPolicy {
+        let policy = ProductPolicy::Sivm(SivmPolicy {
             require_secure_boot: true,
             custom_uefi_json: vec![1, 2, 3, 4],
             ..Default::default()

@@ -14,7 +14,7 @@ manifest = ["dep:serde", "dep:base64"]
 # Derive `inspect::Inspect` on the wire types.
 inspect = ["dep:inspect"]
 # Enables `MeasuredPolicy` and the anyhow-returning closure accessors
-# (e.g. `MeasuredPolicy::cwcow(...)`). Only OpenHCL runtime crates
+# (e.g. `MeasuredPolicy::sivm(...)`). Only OpenHCL runtime crates
 # enable this.
 std = ["dep:anyhow"]
 

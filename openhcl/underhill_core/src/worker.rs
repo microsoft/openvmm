@@ -1588,7 +1588,7 @@ async fn new_underhill_vm(
     // terminates the process — no further boot side effects occur.
     if let Err(err) = measured_vtl2_info
         .measured_policy()
-        .cwcow(|p| p.validate_secure_boot_enabled(dps.general.secure_boot_enabled))
+        .sivm(|p| p.validate_secure_boot_enabled(dps.general.secure_boot_enabled))
     {
         tracing::error!(
             CVM_ALLOWED,
