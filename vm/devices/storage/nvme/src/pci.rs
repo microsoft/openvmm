@@ -4,6 +4,7 @@
 //! The NVMe PCI device implementation.
 
 use crate::BAR0_LEN;
+use crate::DEVICE_ID;
 use crate::DOORBELL_STRIDE_BITS;
 use crate::IOCQES;
 use crate::IOSQES;
@@ -129,7 +130,7 @@ impl NvmeController {
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
                 vendor_id: VENDOR_ID,
-                device_id: 0x00a9,
+                device_id: DEVICE_ID,
                 revision_id: 0,
                 prog_if: ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
                 sub_class: Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY,

@@ -6,6 +6,7 @@
 use crate::common::CommonArch;
 use crate::run_cargo_build::BuildProfile;
 use flowey::node::prelude::*;
+use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
@@ -72,12 +73,20 @@ impl FlowNode for Node {
                 OpenhclBootBuildProfile::Release => BuildProfile::BootRelease,
             };
 
+            // Enable cvm_boot_log in debug builds to include TDX/SNP
+            // serial logging support.
+            let features = if matches!(profile, BuildProfile::BootDev) {
+                CargoFeatureSet::Specific(vec!["cvm_boot_log".into()])
+            } else {
+                CargoFeatureSet::None
+            };
+
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openhcl_boot".into(),
                 out_name: "openhcl_boot".into(),
                 crate_type: flowey_lib_common::run_cargo_build::CargoCrateType::Bin,
                 profile,
-                features: Default::default(),
+                features,
                 target,
                 no_split_dbg_info: false,
                 extra_env: Some(ReadVar::from_static(

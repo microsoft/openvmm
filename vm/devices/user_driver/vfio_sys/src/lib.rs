@@ -168,7 +168,13 @@ impl Container {
     /// `vaddr` must point to valid, backed memory for `size` bytes. The
     /// memory must not be unmapped while the IOMMU mapping is live (until
     /// a corresponding `unmap_dma` call).
-    pub unsafe fn map_dma(&self, iova: u64, vaddr: *const u8, size: u64) -> anyhow::Result<()> {
+    pub unsafe fn map_dma(
+        &self,
+        iova: u64,
+        vaddr: *const u8,
+        size: u64,
+        writable: bool,
+    ) -> anyhow::Result<()> {
         use vfio_bindings::bindings::vfio::VFIO_DMA_MAP_FLAG_READ;
         use vfio_bindings::bindings::vfio::VFIO_DMA_MAP_FLAG_WRITE;
 
@@ -180,9 +186,14 @@ impl Container {
             "VFIO DMA mapping requires page-aligned iova ({iova:#x}), vaddr ({vaddr:#x}), and size ({size:#x}), page size {page_size:#x}"
         );
 
+        let mut flags = VFIO_DMA_MAP_FLAG_READ;
+        if writable {
+            flags |= VFIO_DMA_MAP_FLAG_WRITE;
+        }
+
         let dma_map = vfio_bindings::bindings::vfio::vfio_iommu_type1_dma_map {
             argsz: size_of::<vfio_bindings::bindings::vfio::vfio_iommu_type1_dma_map>() as u32,
-            flags: VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE,
+            flags,
             vaddr,
             iova,
             size,

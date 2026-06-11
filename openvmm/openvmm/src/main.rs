@@ -9,6 +9,9 @@
 extern crate openvmm_hypervisors as _;
 extern crate openvmm_resources as _;
 
+#[cfg(not(test))]
+crypto::ensure_single_backend!();
+
 fn main() {
     openvmm_entry::openvmm_main()
 }

@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use consomme::ChecksumState;
 use consomme::Consomme;
 use consomme::ConsommeParams;
+pub use consomme::IpVersion;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -47,7 +48,7 @@ use thiserror::Error;
 /// Creates and binds a socket for the given protocol, address, and port.
 ///
 /// When `ip_addr` is `None`, binds to `0.0.0.0` (IPv4 only).
-pub fn create_bound_socket(
+pub(crate) fn create_bound_socket(
     protocol: &IpProtocol,
     ip_addr: Option<IpAddr>,
     port: u16,
@@ -57,17 +58,36 @@ pub fn create_bound_socket(
         Some(IpAddr::V6(ip)) => SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0)),
         None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
     };
-    let domain = match bind_addr {
-        SocketAddr::V4(_) => socket2::Domain::IPV4,
-        SocketAddr::V6(_) => socket2::Domain::IPV6,
+    let (domain, is_ipv6) = match bind_addr {
+        SocketAddr::V4(_) => (socket2::Domain::IPV4, false),
+        SocketAddr::V6(_) => (socket2::Domain::IPV6, true),
     };
     let (sock_type, sock_protocol) = match protocol {
         IpProtocol::Tcp => (socket2::Type::STREAM, socket2::Protocol::TCP),
         IpProtocol::Udp => (socket2::Type::DGRAM, socket2::Protocol::UDP),
     };
     let socket = socket2::Socket::new(domain, sock_type, Some(sock_protocol))?;
+    if is_ipv6 {
+        socket.set_only_v6(true)?;
+    }
     socket.bind(&bind_addr.into())?;
     Ok(socket)
+}
+
+fn socket_addr(socket: &socket2::Socket) -> Result<SocketAddr, consomme::BindError> {
+    socket
+        .local_addr()
+        .map_err(consomme::BindError::Io)?
+        .as_socket()
+        .ok_or_else(|| consomme::BindError::Io(std::io::Error::other("invalid socket address")))
+}
+
+fn socket_family(socket: &socket2::Socket) -> Result<IpVersion, consomme::BindError> {
+    let addr = socket_addr(socket)?;
+    Ok(match addr.ip() {
+        IpAddr::V4(_) => IpVersion::Ipv4,
+        IpAddr::V6(_) => IpVersion::Ipv6,
+    })
 }
 
 pub struct ConsommeEndpoint {
@@ -198,7 +218,7 @@ impl ConsommeControl {
                 HostPortConfig {
                     protocol: protocol.into(),
                     host_address: ip_addr.map(net_backend_resources::consomme::HostIpAddress::from),
-                    host_port,
+                    host_port: net_backend_resources::consomme::HostPort::Fixed(host_port),
                     guest_port,
                 },
             )
@@ -207,10 +227,11 @@ impl ConsommeControl {
             .map_err(ConsommeMessageError::Remote)
     }
 
-    /// Unbinds a port previously reserved with bind_port()
+    /// Unbinds a port and IP family previously reserved with bind_port().
     pub async fn unbind_port(
         &self,
         protocol: IpProtocol,
+        ip_addr: Option<IpAddr>,
         guest_port: u16,
     ) -> Result<(), ConsommeMessageError> {
         self.send
@@ -218,8 +239,8 @@ impl ConsommeControl {
                 |rpc| ConsommeMessage::PortRequest(ConsommeRequest::Unbind(rpc)),
                 HostPortConfig {
                     protocol: protocol.into(),
-                    host_address: None,
-                    host_port: 0,
+                    host_address: ip_addr.map(net_backend_resources::consomme::HostIpAddress::from),
+                    host_port: net_backend_resources::consomme::HostPort::Fixed(0),
                     guest_port,
                 },
             )
@@ -262,6 +283,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
                 rx_ready: VecDeque::new(),
                 tx_avail: VecDeque::new(),
                 tx_ready: VecDeque::new(),
+                tx_scratch: Vec::new(),
             },
             stats: Default::default(),
             driver: config.driver,
@@ -270,27 +292,41 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             std::mem::take(&mut queue.endpoint_state.as_mut().unwrap().port_forwards);
         let bind_result: Result<Vec<_>, _> = queue.with_consomme_no_pool(|c| {
             c.refresh_driver();
-            let mut bound: Vec<(IpProtocol, u16)> = Vec::new();
-            for fwd in &port_forwards {
+            let mut bound: Vec<(IpProtocol, IpVersion, u16)> = Vec::new();
+            for fwd in port_forwards {
                 let protocol: IpProtocol = fwd.protocol.clone().into();
                 let guest_port = fwd.guest_port;
                 let ip_addr = fwd.host_address.as_ref().map(|a| IpAddr::from(a.clone()));
-                let socket =
-                    create_bound_socket(&protocol, ip_addr, fwd.host_port).map_err(|e| {
-                        anyhow::anyhow!(e).context("failed to create socket for port forward")
-                    })?;
-                let result = match protocol {
-                    IpProtocol::Tcp => c.bind_tcp_port(socket, guest_port),
-                    IpProtocol::Udp => c.bind_udp_port(socket, guest_port),
+                let (bind_port, dynamic_sender) = match fwd.host_port {
+                    net_backend_resources::consomme::HostPort::Fixed(port) => (port, None),
+                    net_backend_resources::consomme::HostPort::Dynamic(sender) => (0, Some(sender)),
+                };
+                let socket = create_bound_socket(&protocol, ip_addr, bind_port).map_err(|e| {
+                    anyhow::anyhow!(e).context("failed to create socket for port forward")
+                })?;
+                if let Some(sender) = dynamic_sender {
+                    if let Ok(addr) = socket_addr(&socket) {
+                        sender.send(addr.port());
+                    }
+                }
+                let result = match socket_family(&socket) {
+                    Ok(family) => {
+                        let result = match protocol {
+                            IpProtocol::Tcp => c.bind_tcp_port(socket, guest_port),
+                            IpProtocol::Udp => c.bind_udp_port(socket, guest_port),
+                        };
+                        result.map(|()| (protocol, family, guest_port))
+                    }
+                    Err(err) => Err(err),
                 };
                 match result {
-                    Ok(()) => bound.push((protocol, guest_port)),
+                    Ok(bound_entry) => bound.push(bound_entry),
                     Err(err) => {
                         // Roll back successful binds before returning error.
-                        for (prev_protocol, prev_guest_port) in &bound {
-                            let _ = match prev_protocol {
-                                IpProtocol::Tcp => c.unbind_tcp_port(*prev_guest_port),
-                                IpProtocol::Udp => c.unbind_udp_port(*prev_guest_port),
+                        for (protocol, family, guest_port) in &bound {
+                            let _ = match protocol {
+                                IpProtocol::Tcp => c.unbind_tcp_port(*family, *guest_port),
+                                IpProtocol::Udp => c.unbind_udp_port(*family, *guest_port),
                             };
                         }
                         return Err(anyhow::anyhow!(err).context("failed to bind port"));
@@ -436,18 +472,33 @@ impl ConsommeQueue {
 /// Execute a port bind: create a socket and forward it to the consomme stack.
 fn execute_bind(
     consomme: &mut consomme::Access<'_, impl consomme::Client>,
-    cfg: &HostPortConfig,
+    cfg: HostPortConfig,
 ) -> anyhow::Result<()> {
+    use net_backend_resources::consomme::HostPort;
+
     if cfg.guest_port == 0 {
         anyhow::bail!("guest_port must be non-zero");
     }
-    if cfg.host_port == 0 {
-        anyhow::bail!("host_port must be non-zero (ephemeral port selection is not supported)");
-    }
+    let (bind_port, dynamic_sender) = match cfg.host_port {
+        HostPort::Fixed(port) => {
+            if port == 0 {
+                anyhow::bail!(
+                    "host_port must be non-zero for Fixed port (ephemeral port selection is not supported)"
+                );
+            }
+            (port, None)
+        }
+        HostPort::Dynamic(sender) => (0, Some(sender)),
+    };
     let protocol: IpProtocol = cfg.protocol.clone().into();
     let ip_addr = cfg.host_address.as_ref().map(|a| IpAddr::from(a.clone()));
-    let socket = create_bound_socket(&protocol, ip_addr, cfg.host_port)
+    let socket = create_bound_socket(&protocol, ip_addr, bind_port)
         .map_err(|e| anyhow::anyhow!(e).context("failed to create socket for port forward"))?;
+    if let Some(sender) = dynamic_sender {
+        let addr = socket_addr(&socket)
+            .map_err(|e| anyhow::anyhow!(e).context("failed to get bound address"))?;
+        sender.send(addr.port());
+    }
     let result = match protocol {
         IpProtocol::Tcp => consomme.bind_tcp_port(socket, cfg.guest_port),
         IpProtocol::Udp => consomme.bind_udp_port(socket, cfg.guest_port),
@@ -460,10 +511,16 @@ fn execute_unbind(
     consomme: &mut consomme::Access<'_, impl consomme::Client>,
     cfg: &HostPortConfig,
 ) -> anyhow::Result<()> {
+    use net_backend_resources::consomme::HostIpAddress;
+
     let protocol: IpProtocol = cfg.protocol.clone().into();
+    let family = match &cfg.host_address {
+        Some(HostIpAddress::Ipv4(_)) | None => IpVersion::Ipv4,
+        Some(HostIpAddress::Ipv6(_)) => IpVersion::Ipv6,
+    };
     let result = match protocol {
-        IpProtocol::Tcp => consomme.unbind_tcp_port(cfg.guest_port),
-        IpProtocol::Udp => consomme.unbind_udp_port(cfg.guest_port),
+        IpProtocol::Tcp => consomme.unbind_tcp_port(family, cfg.guest_port),
+        IpProtocol::Udp => consomme.unbind_udp_port(family, cfg.guest_port),
     };
     result.map_err(|e| anyhow::anyhow!(e).context("failed to unbind port"))
 }
@@ -477,12 +534,9 @@ fn process_port_request(
         ConsommeRequest::Bind(rpc) => {
             rpc.handle_failable_sync(
                 |cfg| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-                    execute_bind(consomme, &cfg)?;
-                    tracing::info!(
-                        host_port = cfg.host_port,
-                        guest_port = cfg.guest_port,
-                        "port forward bound"
-                    );
+                    let guest_port = cfg.guest_port;
+                    execute_bind(consomme, cfg)?;
+                    tracing::info!(guest_port, "port forward bound");
                     Ok(())
                 },
             );
@@ -509,6 +563,7 @@ fn process_message(
         ConsommeMessage::UpdateState(rpc) => {
             rpc.handle_sync(|f| {
                 f(consomme.get_mut().params_mut());
+                consomme.get_mut().clear_local_addr_map();
                 consomme.update_dns_nameservers()
             });
         }
@@ -536,7 +591,19 @@ impl net_backend::Queue for ConsommeQueue {
                     .then_some(meta.max_segment_size),
             };
 
-            let mut buf = vec![0; meta.len as usize];
+            // Reuse the scratch buffer to avoid per-packet heap allocation.
+            // TSO caps the assembled packet at 64 KiB; assert so a buggy
+            // upstream caller can't permanently inflate the scratch buffer
+            // (and thus the queue's steady-state memory) by feeding an
+            // oversized `meta.len`.
+            debug_assert!(
+                meta.len as usize <= 64 * 1024,
+                "tx packet len {} exceeds 64 KiB TSO bound",
+                meta.len
+            );
+            let mut buf = std::mem::take(&mut self.state.tx_scratch);
+            buf.clear();
+            buf.resize(meta.len as usize, 0);
             let gm = pool.guest_memory();
             let mut offset = 0;
             for segment in self.state.tx_avail.drain(..meta.segment_count as usize) {
@@ -569,6 +636,7 @@ impl net_backend::Queue for ConsommeQueue {
                     | consomme::DropReason::MalformedPacket => self.stats.tx_errors.increment(),
                 }
             }
+            self.state.tx_scratch = buf;
 
             self.state.tx_ready.push_back(tx_id);
         }
@@ -631,6 +699,9 @@ struct QueueState {
     rx_ready: VecDeque<RxId>,
     tx_avail: VecDeque<TxSegment>,
     tx_ready: VecDeque<TxId>,
+    /// Reusable scratch buffer for assembling outbound packets from guest memory.
+    /// The max TSO size is 64KB which limits the maximum size of the scratch buffer.
+    tx_scratch: Vec<u8>,
 }
 
 #[derive(Inspect, Default)]

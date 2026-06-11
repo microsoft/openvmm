@@ -68,7 +68,13 @@ impl HyperVVM {
             let mut ps_mod_file = std::fs::File::create_new(&ps_mod)?;
             ps_mod_file
                 .write_all(include_bytes!("hyperv.psm1"))
-                .context("failed to write hyperv helpers powershell module")?;
+                .context("failed to write hyperv powershell module")?;
+
+            let mut utilities_mod_file =
+                std::fs::File::create_new(temp_dir.path().join("utilities.psm1"))?;
+            utilities_mod_file
+                .write_all(include_bytes!("utilities.psm1"))
+                .context("failed to write hyperv utilities powershell module")?;
         }
 
         // Used to ignore `hvc restart` error on CVMs

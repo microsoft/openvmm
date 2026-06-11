@@ -1790,6 +1790,41 @@ fn test_mnf_channel() {
 }
 
 #[test]
+fn test_mnf_channel_open_with_interrupts_disabled() {
+    // A channel with MNF enabled, opened by the guest with interrupts disabled (via
+    // VP_INDEX_DISABLE_INTERRUPT as the target VP), should not have monitor info in its
+    // OpenParams.
+    let mut env = TestEnv::new();
+    let offer_id = env.offer_with_mnf(1);
+
+    env.connect(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    env.notifier.messages.clear();
+
+    env.c()
+        .handle_open_channel(&protocol::OpenChannel2 {
+            open_channel: protocol::OpenChannel {
+                channel_id: ChannelId(1),
+                open_id: 1,
+                ring_buffer_gpadl_id: GpadlId(1),
+                target_vp: protocol::VP_INDEX_DISABLE_INTERRUPT,
+                downstream_ring_buffer_page_offset: 0,
+                user_data: UserDefinedData::new_zeroed(),
+            },
+            ..FromZeros::new_zeroed()
+        })
+        .unwrap();
+
+    let (id, action) = env.recv.recv().unwrap();
+    assert_eq!(id, offer_id);
+    let Action::Open(op, ..) = action else {
+        panic!("unexpected action: {:?}", action);
+    };
+    assert_eq!(op.open_data.target_vp, None);
+    assert_eq!(op.monitor_info, None);
+}
+
+#[test]
 fn test_server_monitor_page() {
     // Guest pages provided, but overridden by server-allocated pages.
     test_server_monitor_page_helper(true);

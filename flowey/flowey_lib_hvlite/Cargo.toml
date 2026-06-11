@@ -10,8 +10,9 @@ rust-version.workspace = true
 flowey.workspace = true
 flowey_lib_common.workspace = true
 
-vmm_test_images = { workspace = true, features = ["serde"] }
+powershell_builder.workspace = true
 igvmfilegen_config.workspace = true
+vmm_test_images = { workspace = true, features = ["serde"] }
 
 anyhow.workspace = true
 crossterm = { workspace = true, features = ["events"] }
@@ -23,7 +24,6 @@ which.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 crossterm = { workspace = true, features = ["windows"] }
-powershell_builder.workspace = true
 
 [lints]
 workspace = true

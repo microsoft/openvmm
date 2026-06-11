@@ -24,12 +24,40 @@ use vm_topology::processor::x86::X86Topology;
 use x86defs::apic::APIC_BASE_ADDRESS;
 use zerocopy::IntoBytes;
 
+/// Configuration for the SMMUv3 ACPI IORT node.
+#[derive(Debug, Clone)]
+pub struct AcpiSmmuConfig {
+    /// Index of the root complex this SMMU covers (matches
+    /// `PcieHostBridge.index`). Used to route each RC's IORT ID mapping
+    /// to its specific SMMU node.
+    pub rc_index: u32,
+    /// PCIe segment number of the root complex this SMMU covers. Used as
+    /// the output_base in the SMMU→ITS ID mapping to produce globally
+    /// unique ITS device IDs: `(segment << 16) | BDF`.
+    pub segment: u16,
+    /// MMIO base address of the SMMU.
+    pub base: u64,
+    /// GIC SPI INTID for the event queue interrupt.
+    pub event_gsiv: u32,
+    /// GIC SPI INTID for the global error interrupt.
+    pub gerr_gsiv: u32,
+}
+
 /// Binary ACPI tables constructed by [`AcpiTablesBuilder`].
 pub struct BuiltAcpiTables {
     /// The RDSP. Assumed to be given a whole page.
     pub rdsp: Vec<u8>,
     /// The remaining tables pointed to by the RDSP.
     pub tables: Vec<u8>,
+}
+
+/// NUMA distance information for SLIT generation.
+pub struct SlitInfo {
+    /// Number of NUMA nodes (system localities).
+    pub num_nodes: usize,
+    /// Explicit distance entries (src, dst, distance).
+    /// Entries not specified default to 10 (self) or 20 (cross-node).
+    pub distances: Vec<(u32, u32, u8)>,
 }
 
 /// Builder to construct a set of [`BuiltAcpiTables`]
@@ -49,8 +77,44 @@ pub struct AcpiTablesBuilder<'a, T: AcpiTopology> {
     ///
     /// If and only if this has root complexes, then an MCFG will be generated.
     pub pcie_host_bridges: &'a Vec<PcieHostBridge>,
+    /// NUMA distance information for SLIT generation.
+    ///
+    /// If set, a SLIT table will be generated.
+    pub slit_info: Option<&'a SlitInfo>,
     /// Architecture-specific ACPI configuration.
     pub arch: AcpiArchConfig,
+}
+
+/// Configuration for AMD IOMMU ACPI table (IVRS) generation.
+#[derive(Clone, Debug)]
+pub struct AmdIommuAcpiConfig {
+    /// PCI DeviceID (BDF) of the IOMMU, encoded as `(bus << 8) | (dev << 3) | fn`.
+    pub device_id: u16,
+    /// Offset of the AMD IOMMU capability block in PCI config space.
+    pub capability_offset: u16,
+    /// MMIO base address of the IOMMU register region.
+    pub mmio_base: u64,
+    /// PCI segment group number (typically 0).
+    pub pci_segment: u16,
+    /// IOMMU feature reporting for the IVHD (should match MMIO ExtFeat register).
+    pub ivhd_features: u64,
+    /// Lowest bus number covered by this IOMMU.
+    pub start_bus: u8,
+    /// Highest bus number covered by this IOMMU.
+    pub end_bus: u8,
+}
+
+/// IVRS-level configuration for AMD IOMMU ACPI table generation.
+///
+/// Groups the IVRS header fields (PA/VA sizes) with the per-IOMMU configs.
+#[derive(Clone, Debug)]
+pub struct AmdIommuIvrsConfig {
+    /// Physical address size in bits (e.g. 48). Written to the IVRS IVinfo header.
+    pub pa_size: u8,
+    /// Virtual address size in bits (e.g. 48). Written to the IVRS IVinfo header.
+    pub va_size: u8,
+    /// Per-IOMMU configurations, one per root complex with an AMD IOMMU.
+    pub iommus: Vec<AmdIommuAcpiConfig>,
 }
 
 /// Architecture-specific ACPI configuration carried by [`AcpiTablesBuilder`].
@@ -69,6 +133,9 @@ pub enum AcpiArchConfig {
         pm_base: u16,
         /// ACPI IRQ number.
         acpi_irq: u32,
+        /// AMD IOMMU IVRS table configuration. If `Some`, an IVRS table is
+        /// generated with one IVHD block per IOMMU instance.
+        amd_iommu: Option<AmdIommuIvrsConfig>,
     },
     /// ARM64-specific settings (HW_REDUCED_ACPI FADT).
     Aarch64 {
@@ -77,6 +144,9 @@ pub enum AcpiArchConfig {
         hypervisor_vendor_identity: u64,
         /// Virtual timer PPI (GIC INTID).
         virt_timer_ppi: u32,
+        /// SMMUv3 instances. Each entry adds an SMMUv3 IORT node for the
+        /// specified PCI segment. Empty means no SMMU.
+        smmu: Vec<AcpiSmmuConfig>,
     },
 }
 
@@ -118,16 +188,17 @@ pub fn build_pcie_acpi_tables(
     let mut has_cedt_entries = false;
 
     for bridge in pcie_host_bridges {
-        ssdt.add_pcie(
-            bridge.index,
-            bridge.segment,
-            bridge.start_bus,
-            bridge.end_bus,
-            bridge.ecam_range,
-            bridge.low_mmio,
-            bridge.high_mmio,
-            bridge.cxl.is_some(),
-        );
+        ssdt.add_pcie(acpi::ssdt::PcieHostBridgeEntry {
+            index: bridge.index,
+            segment: bridge.segment,
+            start_bus: bridge.start_bus,
+            end_bus: bridge.end_bus,
+            ecam_range: bridge.ecam_range,
+            low_mmio: bridge.low_mmio,
+            high_mmio: bridge.high_mmio,
+            cxl: bridge.cxl.is_some(),
+            vnode: bridge.vnode,
+        });
 
         if let Some(cxl) = &bridge.cxl {
             if let Err(source) = cedt.add_cxl_host_bridge(
@@ -330,6 +401,36 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         ))
     }
 
+    fn build_slit_matrix(info: &SlitInfo) -> Vec<u8> {
+        let n = info.num_nodes;
+        let mut matrix = vec![0u8; n * n];
+        // Default: 10 for self, 20 for cross-node.
+        for i in 0..n {
+            for j in 0..n {
+                matrix[i * n + j] = if i == j { 10 } else { 20 };
+            }
+        }
+        // Apply explicit distances.
+        for &(src, dst, distance) in &info.distances {
+            matrix[src as usize * n + dst as usize] = distance;
+        }
+        matrix
+    }
+
+    fn with_slit<F, R>(&self, info: &SlitInfo, f: F) -> R
+    where
+        F: FnOnce(&acpi::builder::Table<'_>) -> R,
+    {
+        let matrix = Self::build_slit_matrix(info);
+        let header = acpi_spec::slit::SlitHeader::new(info.num_nodes as u64);
+        (f)(&acpi::builder::Table::new_dyn(
+            acpi_spec::slit::SLIT_REVISION,
+            None,
+            &header,
+            &[matrix.as_slice()],
+        ))
+    }
+
     fn with_madt<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&acpi::builder::Table<'_>) -> R,
@@ -442,13 +543,17 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
         let its_id = T::iort_its_id(self.processor_topology);
         let has_its = its_id.is_some();
+        let smmu_configs: &[AcpiSmmuConfig] = match &self.arch {
+            AcpiArchConfig::Aarch64 { smmu, .. } => smmu.as_slice(),
+            _ => &[],
+        };
         let its_node_count: u32 = if has_its { 1 } else { 0 };
-        let node_count = its_node_count + self.pcie_host_bridges.len() as u32;
-        let mapping_count: u32 = if has_its { 1 } else { 0 };
+        let smmu_node_count = smmu_configs.len() as u32;
+        let node_count = its_node_count + smmu_node_count + self.pcie_host_bridges.len() as u32;
 
         let mut iort_extra: Vec<u8> = Vec::new();
 
-        // ITS Group node comes first so root complexes can reference it.
+        // ITS Group node comes first so other nodes can reference it.
         // The ITS Group node offset (from table start) is IORT_NODE_OFFSET.
         let its_group_offset = iort::IORT_NODE_OFFSET;
         if let Some(id) = its_id {
@@ -457,21 +562,113 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             iort_extra.extend_from_slice(&id.to_ne_bytes());
         }
 
-        for bridge in self.pcie_host_bridges {
-            let rc = iort::IortPciRootComplex::new(bridge.index, bridge.segment, mapping_count);
-            iort_extra.extend_from_slice(rc.as_bytes());
+        // SMMUv3 nodes come after ITS Group (if present).
+        // Build a map from RC index → SMMU node offset for RC routing.
+        let mut smmu_rc_offsets: Vec<(u32, u32)> = Vec::new();
+        for cfg in smmu_configs {
+            let smmu_node_offset = iort::IORT_NODE_OFFSET + iort_extra.len() as u32;
+            smmu_rc_offsets.push((cfg.rc_index, smmu_node_offset));
 
             if has_its {
-                // Single ID mapping: full RID range → ITS Group node.
-                // output_base uses (segment << 16) so device IDs in the
-                // ITS namespace are unique across PCI segments.
+                // The SMMUv3 node needs two ID mappings when ITS is present:
+                //
+                // [0] Range mapping: translates PCI device stream IDs through
+                //     the SMMU to the ITS. Used by iort_node_map_id() during
+                //     RC → SMMUv3 → ITS traversal for PCI MSI domain discovery.
+                //
+                // [1] Single mapping: identifies the ITS group for the SMMU's
+                //     own MSI domain lookup. Referenced by
+                //     device_id_mapping_index. Linux's iort_set_device_domain()
+                //     requires IORT_ID_SINGLE_MAPPING flag on this entry.
+                //
+                // Both mappings are needed even though the SMMU uses wired SPIs
+                // (IDR0.MSI=0, GSIVs populated) for its own interrupts. The
+                // device_id_mapping is required for Linux's IORT MSI domain
+                // resolution infrastructure, which is independent of the
+                // SMMU's actual interrupt delivery mechanism.
+                let smmu = iort::IortSmmuV3::new_with_device_id_mapping(
+                    cfg.rc_index,
+                    cfg.base,
+                    2,
+                    cfg.event_gsiv,
+                    cfg.gerr_gsiv,
+                    1, // device_id_mapping_index → mapping [1]
+                );
+                iort_extra.extend_from_slice(smmu.as_bytes());
+
+                // Mapping [0]: range mapping for PCI device stream IDs.
+                // The output_base applies the segment offset so the ITS
+                // receives globally unique device IDs: (segment << 16) | BDF.
+                // Stream IDs within this SMMU are plain BDFs (0-based).
                 iort_extra.extend_from_slice(
                     iort::IortIdMapping::new(
-                        0,                             // input_base
-                        0xFFFF, // id_count (full 16-bit BDF range, minus 1 per IORT spec)
-                        (bridge.segment as u32) << 16, // output_base
-                        its_group_offset, // output_reference
-                        0,      // flags
+                        0,                          // input_base
+                        0xFFFF,                     // id_count (16-bit BDF range)
+                        (cfg.segment as u32) << 16, // output_base
+                        its_group_offset,           // output_reference → ITS group
+                        0,                          // flags
+                    )
+                    .as_bytes(),
+                );
+
+                // Mapping [1]: single mapping for the SMMU's MSI domain.
+                iort_extra.extend_from_slice(
+                    iort::IortIdMapping::new(
+                        0,                            // input_base (unused)
+                        0,                            // id_count (unused)
+                        0,                            // output_base (device ID)
+                        its_group_offset,             // output_reference → ITS group
+                        iort::IORT_ID_SINGLE_MAPPING, // flags
+                    )
+                    .as_bytes(),
+                );
+            } else {
+                let smmu =
+                    iort::IortSmmuV3::new(cfg.rc_index, cfg.base, 0, cfg.event_gsiv, cfg.gerr_gsiv);
+                iort_extra.extend_from_slice(smmu.as_bytes());
+            }
+        }
+
+        for bridge in self.pcie_host_bridges {
+            // Determine the target node for this RC's ID mapping:
+            // - If this RC has an SMMU, route to the SMMU node.
+            // - Otherwise, if an ITS is present, route directly to the ITS.
+            // - Otherwise, no mapping (mapping_count = 0).
+            let smmu_offset = smmu_rc_offsets
+                .iter()
+                .find(|(idx, _)| *idx == bridge.index)
+                .map(|(_, off)| *off);
+
+            let (rc_mapping_count, rc_target_offset, rc_has_smmu) = if let Some(off) = smmu_offset {
+                (1, off, true)
+            } else if has_its {
+                (1, its_group_offset, false)
+            } else {
+                (0, 0, false)
+            };
+
+            let rc = iort::IortPciRootComplex::new(bridge.index, bridge.segment, rc_mapping_count);
+            iort_extra.extend_from_slice(rc.as_bytes());
+
+            if rc_mapping_count > 0 {
+                // When the RC has an SMMU, output_base is 0 because stream
+                // IDs are plain BDFs within the per-RC SMMU. The segment
+                // offset is applied in the SMMU→ITS mapping instead.
+                // When the RC goes directly to the ITS, output_base embeds
+                // the segment for globally unique ITS device IDs.
+                let output_base = if rc_has_smmu {
+                    0
+                } else {
+                    (bridge.segment as u32) << 16
+                };
+
+                iort_extra.extend_from_slice(
+                    iort::IortIdMapping::new(
+                        0,                // input_base
+                        0xFFFF,           // id_count (full 16-bit BDF range)
+                        output_base,      // output_base
+                        rc_target_offset, // output_reference
+                        0,                // flags
                     )
                     .as_bytes(),
                 );
@@ -488,6 +685,57 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
     fn should_build_iort(&self) -> bool {
         T::needs_iort(self.processor_topology) && !self.pcie_host_bridges.is_empty()
+    }
+
+    fn with_ivrs<F, R>(&self, ivrs_config: &AmdIommuIvrsConfig, f: F) -> R
+    where
+        F: FnOnce(&acpi::builder::Table<'_>) -> R,
+    {
+        use acpi_spec::ivrs;
+
+        let mut ivrs_extra: Vec<u8> = Vec::new();
+
+        for config in &ivrs_config.iommus {
+            // Use a device range entry to cover the bus range owned by this
+            // root complex's IOMMU (IVHD_DEV_RANGE_START + IVHD_DEV_RANGE_END).
+            // This correctly supports multiple IOMMUs within a single PCI
+            // segment, each covering its own bus range.
+            let dev_entries_size = 2 * size_of::<ivrs::IvhdDeviceEntry4>();
+            let ivhd_total = size_of::<ivrs::IvhdType40>() + dev_entries_size;
+
+            // Type 40h is the "mixed format" IVHD (§5.2.2.3) — same layout
+            // as type 11h but supports both BDF and ACPI HID device entries.
+            // We use it as the superset format; our entries are all BDF-based.
+            let ivhd = ivrs::IvhdType40::new(
+                config.device_id,
+                config.capability_offset,
+                config.mmio_base,
+                config.pci_segment,
+                config.ivhd_features,
+            )
+            .with_length(ivhd_total as u16)
+            .with_flags(0); // no HT tunnel, coherent, etc.
+
+            ivrs_extra.extend_from_slice(ivhd.as_bytes());
+
+            let start_bdf = (config.start_bus as u16) << 8;
+            let end_bdf = ((config.end_bus as u16) << 8) | 0xFF;
+            ivrs_extra
+                .extend_from_slice(ivrs::IvhdDeviceEntry4::range_start(start_bdf, 0).as_bytes());
+            ivrs_extra.extend_from_slice(ivrs::IvhdDeviceEntry4::range_end(end_bdf).as_bytes());
+        }
+
+        let iv_info = ivrs::IvInfo::new()
+            .with_efr_sup(true)
+            .with_pa_size(ivrs_config.pa_size)
+            .with_va_size(ivrs_config.va_size);
+
+        (f)(&acpi::builder::Table::new_dyn(
+            ivrs::IVRS_REVISION,
+            None,
+            &ivrs::Ivrs::new(u32::from(iv_info)),
+            &[ivrs_extra.as_slice()],
+        ))
     }
 
     fn with_pptt<F, R>(&self, f: F) -> R
@@ -636,7 +884,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
     /// Returns tables that should be loaded at the supplied gpa.
     pub fn build_acpi_tables<F>(&self, gpa: u64, add_devices_to_dsdt: F) -> BuiltAcpiTables
     where
-        F: FnOnce(&MemoryLayout, &mut dsdt::Dsdt),
+        F: FnOnce(&mut dsdt::Dsdt),
     {
         let mut dsdt_data = dsdt::Dsdt::new();
         // Name(\_S0, Package(2){0, 0})
@@ -650,7 +898,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             &dsdt::Package(vec![0, 0]),
         ));
         // Add any chipset devices.
-        add_devices_to_dsdt(self.mem_layout, &mut dsdt_data);
+        add_devices_to_dsdt(&mut dsdt_data);
         // Add processor devices:
         // Device(P###) { Name(_HID, "ACPI0007") Name(_UID, #) Method(_STA, 0) { Return(0xF) } }
         for proc_index in 1..self.processor_topology.vp_count() + 1 {
@@ -821,6 +1069,9 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
         self.with_madt(|t| b.append(t));
         self.with_srat(|t| b.append(t));
+        if let Some(info) = self.slit_info {
+            self.with_slit(info, |t| b.append(t));
+        }
         if !self.pcie_host_bridges.is_empty() {
             self.with_mcfg(|t| b.append(t));
 
@@ -838,6 +1089,14 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
         if self.cache_topology.is_some() {
             self.with_pptt(|t| b.append(t));
+        }
+
+        if let AcpiArchConfig::X86 {
+            amd_iommu: Some(ivrs_config),
+            ..
+        } = &self.arch
+        {
+            self.with_ivrs(ivrs_config, |t| b.append(t));
         }
 
         if matches!(self.arch, AcpiArchConfig::Aarch64 { .. }) {
@@ -861,6 +1120,13 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         self.with_srat(|t| t.to_vec(&OEM_INFO))
     }
 
+    /// Helper method to construct a SLIT without constructing the rest of
+    /// the ACPI tables. Returns `None` if no SLIT info is configured.
+    pub fn build_slit(&self) -> Option<Vec<u8>> {
+        self.slit_info
+            .map(|info| self.with_slit(info, |t| t.to_vec(&OEM_INFO)))
+    }
+
     /// Helper method to construct a MCFG without constructing the rest of the
     /// ACPI tables.
     pub fn build_mcfg(&self) -> Vec<u8> {
@@ -872,6 +1138,19 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
     pub fn build_iort(&self) -> Option<Vec<u8>> {
         self.should_build_iort()
             .then(|| self.with_iort(|t| t.to_vec(&OEM_INFO)))
+    }
+
+    /// Helper method to construct an IVRS without constructing the rest of the
+    /// ACPI tables. Returns `None` if AMD IOMMU is not configured.
+    pub fn build_ivrs(&self) -> Option<Vec<u8>> {
+        if let AcpiArchConfig::X86 {
+            amd_iommu: Some(ivrs_config),
+            ..
+        } = &self.arch
+        {
+            return Some(self.with_ivrs(ivrs_config, |t| t.to_vec(&OEM_INFO)));
+        }
+        None
     }
 
     /// Helper method to construct a PPTT without constructing the rest of the
@@ -942,6 +1221,7 @@ mod test {
             mem_layout,
             cache_topology: None,
             pcie_host_bridges,
+            slit_info: None,
             arch: AcpiArchConfig::X86 {
                 with_ioapic: true,
                 with_pic: false,
@@ -949,6 +1229,7 @@ mod test {
                 with_psp: false,
                 pm_base: 1234,
                 acpi_irq: 2,
+                amd_iommu: None,
             },
         }
     }
@@ -1009,6 +1290,7 @@ mod test {
                 low_mmio: MemoryRange::new(0..0),
                 high_mmio: MemoryRange::new(0..0),
                 cxl: None,
+                vnode: None,
             },
             PcieHostBridge {
                 index: 1,
@@ -1019,6 +1301,7 @@ mod test {
                 low_mmio: MemoryRange::new(0..0),
                 high_mmio: MemoryRange::new(0..0),
                 cxl: None,
+                vnode: None,
             },
         ];
 
@@ -1078,9 +1361,11 @@ mod test {
             mem_layout,
             cache_topology: None,
             pcie_host_bridges,
+            slit_info: None,
             arch: AcpiArchConfig::Aarch64 {
                 hypervisor_vendor_identity: 0,
                 virt_timer_ppi: 20,
+                smmu: vec![],
             },
         }
     }
@@ -1114,6 +1399,7 @@ mod test {
                 low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
                 high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
                 cxl: None,
+                vnode: None,
             },
             PcieHostBridge {
                 index: 7,
@@ -1124,6 +1410,7 @@ mod test {
                 low_mmio: MemoryRange::new(0xe0000000..0xe4000000),
                 high_mmio: MemoryRange::new(0x1040000000..0x1080000000),
                 cxl: None,
+                vnode: None,
             },
         ];
         let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
@@ -1183,11 +1470,12 @@ mod test {
             low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
             high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
             cxl: None,
+            vnode: None,
         }];
         let builder = new_builder(&mem, &topology, &pcie_host_bridges);
         assert!(builder.build_iort().is_none());
 
-        let tables = builder.build_acpi_tables(0x100000, |_, _| {});
+        let tables = builder.build_acpi_tables(0x100000, |_| {});
         assert!(!contains_signature(&tables.tables, b"IORT"));
     }
 
@@ -1213,12 +1501,47 @@ mod test {
             low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
             high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
             cxl: None,
+            vnode: None,
         }];
         let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
 
-        let tables = builder.build_acpi_tables(0x100000, |_, _| {});
+        let tables = builder.build_acpi_tables(0x100000, |_| {});
         assert!(contains_signature(&tables.tables, b"MCFG"));
         assert!(contains_signature(&tables.tables, b"IORT"));
+    }
+
+    fn new_aarch64_builder_with_smmu<'a>(
+        mem_layout: &'a MemoryLayout,
+        processor_topology: &'a ProcessorTopology<Aarch64Topology>,
+        pcie_host_bridges: &'a Vec<PcieHostBridge>,
+        smmu_base: u64,
+    ) -> AcpiTablesBuilder<'a, Aarch64Topology> {
+        AcpiTablesBuilder {
+            processor_topology,
+            mem_layout,
+            cache_topology: None,
+            pcie_host_bridges,
+            slit_info: None,
+            arch: AcpiArchConfig::Aarch64 {
+                hypervisor_vendor_identity: 0,
+                virt_timer_ppi: 20,
+                smmu: vec![AcpiSmmuConfig {
+                    rc_index: 0,
+                    segment: 0,
+                    base: smmu_base,
+                    event_gsiv: 35,
+                    gerr_gsiv: 36,
+                }],
+            },
+        }
+    }
+
+    fn u64_at(data: &[u8], offset: usize) -> u64 {
+        u64::from_ne_bytes(data[offset..offset + 8].try_into().unwrap())
+    }
+
+    fn u16_at(data: &[u8], offset: usize) -> u16 {
+        u16::from_ne_bytes(data[offset..offset + 2].try_into().unwrap())
     }
 
     #[test]
@@ -1238,10 +1561,461 @@ mod test {
                 hdm_range: MemoryRange::new(0x1000000000..0x1040000000),
                 hdm_window_restrictions: Default::default(),
             }),
+            vnode: None,
         }];
         let builder = new_builder(&mem, &topology, &pcie_host_bridges);
 
-        let tables = builder.build_acpi_tables(0x100000, |_, _| {});
+        let tables = builder.build_acpi_tables(0x100000, |_| {});
         assert!(contains_signature(&tables.tables, b"CEDT"));
+    }
+
+    #[test]
+    fn test_iort_with_smmu_and_its() {
+        use acpi_spec::iort;
+
+        let mem = new_mem();
+        let topology = new_aarch64_its_topology();
+        let smmu_base: u64 = 0xEFFA_0000;
+        let pcie_host_bridges = vec![PcieHostBridge {
+            index: 0,
+            segment: 0,
+            start_bus: 0,
+            end_bus: 255,
+            ecam_range: MemoryRange::new(0..256 * 256 * 4096),
+            low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
+            high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+            cxl: None,
+            vnode: None,
+        }];
+        let builder = new_aarch64_builder_with_smmu(&mem, &topology, &pcie_host_bridges, smmu_base);
+
+        let data = builder.build_iort().unwrap();
+
+        // IORT header
+        assert_eq!(&data[0..4], b"IORT");
+        assert_eq!(u32_at(&data, 4) as usize, data.len());
+        assert_eq!(checksum(&data), 0);
+
+        // 3 nodes: ITS Group + SMMUv3 + 1 RC
+        assert_eq!(u32_at(&data, 36), 3);
+
+        // First node: ITS Group at IORT_NODE_OFFSET
+        let its_node = iort::IORT_NODE_OFFSET as usize;
+        assert_eq!(data[its_node], iort::IORT_NODE_TYPE_ITS_GROUP);
+        let its_group_size = 24usize; // 20-byte struct + 4-byte ITS ID
+
+        // Second node: SMMUv3
+        let smmu_node = its_node + its_group_size;
+        assert_eq!(data[smmu_node], iort::IORT_NODE_TYPE_SMMUV3);
+        // base_address at offset 16 from node start
+        assert_eq!(u64_at(&data, smmu_node + 16), smmu_base);
+        // flags: COHACC | DEVICEID_VALID (has ITS mappings)
+        assert_eq!(
+            u32_at(&data, smmu_node + 24),
+            iort::IORT_SMMUV3_FLAG_COHACC | iort::IORT_SMMUV3_FLAG_DEVICEID_VALID
+        );
+        // model: 0 (generic)
+        assert_eq!(u32_at(&data, smmu_node + 36), 0);
+        // mapping_count = 2 (range + single for MSI domain)
+        assert_eq!(u32_at(&data, smmu_node + 8), 2);
+        // device_id_mapping_index = 1
+        assert_eq!(u32_at(&data, smmu_node + 64), 1);
+        // SMMU mapping [0]: range mapping for PCI device stream IDs
+        let smmu_node_len = u16_at(&data, smmu_node + 1) as usize;
+        let smmu_mapping_0 = smmu_node + 68; // IortSmmuV3 is 68 bytes
+        assert_eq!(u32_at(&data, smmu_mapping_0 + 12), iort::IORT_NODE_OFFSET); // → ITS group
+        assert_eq!(u32_at(&data, smmu_mapping_0 + 16), 0); // flags: no SINGLE_MAPPING
+        // SMMU mapping [1]: single mapping for SMMU's own MSI domain
+        let smmu_mapping_1 = smmu_mapping_0 + 20; // IortIdMapping is 20 bytes
+        assert_eq!(u32_at(&data, smmu_mapping_1 + 12), iort::IORT_NODE_OFFSET); // → ITS group
+        assert_eq!(
+            u32_at(&data, smmu_mapping_1 + 16),
+            iort::IORT_ID_SINGLE_MAPPING
+        ); // flags
+
+        // Third node: Root Complex
+        let rc_node = smmu_node + smmu_node_len;
+        assert_eq!(data[rc_node], iort::IORT_NODE_TYPE_PCI_ROOT_COMPLEX);
+        assert_eq!(u32_at(&data, rc_node + 8), 1); // mapping_count
+        // RC → SMMUv3 mapping
+        let rc_mapping = rc_node + 36;
+        assert_eq!(u32_at(&data, rc_mapping), 0); // input_base
+        assert_eq!(u32_at(&data, rc_mapping + 4), 0xFFFF); // id_count
+        assert_eq!(u32_at(&data, rc_mapping + 8), 0); // output_base (0: has SMMU)
+        assert_eq!(u32_at(&data, rc_mapping + 12), smmu_node as u32); // → SMMUv3
+    }
+
+    #[test]
+    fn test_iort_with_smmu_multi_rc() {
+        use acpi_spec::iort;
+
+        let mem = new_mem();
+        let topology = new_aarch64_its_topology();
+        let smmu_base: u64 = 0xEFFA_0000;
+        let pcie_host_bridges = vec![
+            PcieHostBridge {
+                index: 0,
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                ecam_range: MemoryRange::new(0..256 * 256 * 4096),
+                low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
+                high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+                cxl: None,
+                vnode: None,
+            },
+            PcieHostBridge {
+                index: 1,
+                segment: 2,
+                start_bus: 0,
+                end_bus: 63,
+                ecam_range: MemoryRange::new(5 * GB..5 * GB + 64 * 256 * 4096),
+                low_mmio: MemoryRange::new(0xe0000000..0xe4000000),
+                high_mmio: MemoryRange::new(0x1040000000..0x1080000000),
+                cxl: None,
+                vnode: None,
+            },
+        ];
+        let builder = new_aarch64_builder_with_smmu(&mem, &topology, &pcie_host_bridges, smmu_base);
+
+        let data = builder.build_iort().unwrap();
+
+        // 4 nodes: ITS + SMMUv3 + 2 RCs
+        assert_eq!(u32_at(&data, 36), 4);
+        assert_eq!(checksum(&data), 0);
+
+        // ITS Group
+        let its_node = iort::IORT_NODE_OFFSET as usize;
+        let its_group_size = 24usize;
+
+        // SMMUv3 node
+        let smmu_node = its_node + its_group_size;
+        assert_eq!(data[smmu_node], iort::IORT_NODE_TYPE_SMMUV3);
+        let smmu_node_len = u16_at(&data, smmu_node + 1) as usize;
+
+        // RC 0: segment 0 → SMMUv3
+        let rc0 = smmu_node + smmu_node_len;
+        assert_eq!(data[rc0], iort::IORT_NODE_TYPE_PCI_ROOT_COMPLEX);
+        let rc0_mapping = rc0 + 36;
+        assert_eq!(u32_at(&data, rc0_mapping + 8), 0); // output_base (0: has SMMU)
+        assert_eq!(u32_at(&data, rc0_mapping + 12), smmu_node as u32); // → SMMUv3
+
+        // RC 1: segment 2 → ITS directly (only segment 0 uses SMMU)
+        let rc0_len = u16_at(&data, rc0 + 1) as usize;
+        let rc1 = rc0 + rc0_len;
+        assert_eq!(data[rc1], iort::IORT_NODE_TYPE_PCI_ROOT_COMPLEX);
+        let rc1_mapping = rc1 + 36;
+        assert_eq!(u32_at(&data, rc1_mapping + 8), 2 << 16); // output_base seg 2
+        assert_eq!(u32_at(&data, rc1_mapping + 12), its_node as u32); // → ITS group
+    }
+
+    #[test]
+    fn test_iort_without_smmu_unchanged() {
+        // Verify the no-SMMU case still produces RC→ITS directly (regression).
+        use acpi_spec::iort;
+
+        let mem = new_mem();
+        let topology = new_aarch64_its_topology();
+        let pcie_host_bridges = vec![PcieHostBridge {
+            index: 0,
+            segment: 0,
+            start_bus: 0,
+            end_bus: 255,
+            ecam_range: MemoryRange::new(0..256 * 256 * 4096),
+            low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
+            high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+            cxl: None,
+            vnode: None,
+        }];
+        let builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
+
+        let data = builder.build_iort().unwrap();
+
+        // 2 nodes: ITS Group + RC (no SMMUv3)
+        assert_eq!(u32_at(&data, 36), 2);
+
+        // RC mapping points directly to ITS group
+        let its_node = iort::IORT_NODE_OFFSET as usize;
+        let rc_node = its_node + 24; // ITS group = 24 bytes
+        assert_eq!(data[rc_node], iort::IORT_NODE_TYPE_PCI_ROOT_COMPLEX);
+        let rc_mapping = rc_node + 36;
+        assert_eq!(u32_at(&data, rc_mapping + 12), iort::IORT_NODE_OFFSET); // → ITS group
+    }
+
+    #[test]
+    fn test_iort_smmuv3_node_fields() {
+        use acpi_spec::iort;
+
+        let mem = new_mem();
+        let topology = new_aarch64_its_topology();
+        let smmu_base: u64 = 0xEFFA_0000;
+        let pcie_host_bridges = vec![PcieHostBridge {
+            index: 0,
+            segment: 0,
+            start_bus: 0,
+            end_bus: 255,
+            ecam_range: MemoryRange::new(0..256 * 256 * 4096),
+            low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
+            high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+            cxl: None,
+            vnode: None,
+        }];
+        let builder = new_aarch64_builder_with_smmu(&mem, &topology, &pcie_host_bridges, smmu_base);
+
+        let data = builder.build_iort().unwrap();
+
+        let smmu_node = iort::IORT_NODE_OFFSET as usize + 24; // after ITS group
+        // Node type
+        assert_eq!(data[smmu_node], iort::IORT_NODE_TYPE_SMMUV3);
+        // Revision
+        assert_eq!(data[smmu_node + 3], iort::IORT_SMMUV3_REVISION);
+        // Base address
+        assert_eq!(u64_at(&data, smmu_node + 16), smmu_base);
+        // Flags: COHACC | DEVICEID_VALID
+        assert_eq!(
+            u32_at(&data, smmu_node + 24),
+            iort::IORT_SMMUV3_FLAG_COHACC | iort::IORT_SMMUV3_FLAG_DEVICEID_VALID
+        );
+        // Reserved
+        assert_eq!(u32_at(&data, smmu_node + 28), 0);
+        // VATOS address = 0
+        assert_eq!(u64_at(&data, smmu_node + 32), 0);
+        // Model = 0 (generic)
+        assert_eq!(
+            u32_at(&data, smmu_node + 40),
+            iort::IORT_SMMUV3_MODEL_GENERIC
+        );
+        // GSIVs: wired SPIs for event and gerror
+        assert_eq!(u32_at(&data, smmu_node + 44), 35); // event_gsiv
+        assert_eq!(u32_at(&data, smmu_node + 48), 0); // pri_gsiv
+        assert_eq!(u32_at(&data, smmu_node + 52), 36); // gerr_gsiv
+        assert_eq!(u32_at(&data, smmu_node + 56), 0); // sync_gsiv
+    }
+
+    fn set_amd_iommu(
+        builder: &mut AcpiTablesBuilder<'_, X86Topology>,
+        configs: Vec<AmdIommuAcpiConfig>,
+    ) {
+        if let AcpiArchConfig::X86 { amd_iommu, .. } = &mut builder.arch {
+            *amd_iommu = Some(AmdIommuIvrsConfig {
+                pa_size: 48,
+                va_size: 48,
+                iommus: configs,
+            });
+        } else {
+            panic!("expected X86 arch config");
+        }
+    }
+
+    #[test]
+    fn test_ivrs_basic() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_amd_iommu(
+            &mut builder,
+            vec![AmdIommuAcpiConfig {
+                device_id: 0x0000, // bus 0, dev 0, fn 0
+                capability_offset: 0x40,
+                mmio_base: 0xFD00_0000,
+                pci_segment: 0,
+                ivhd_features: 0xC0,
+                start_bus: 0,
+                end_bus: 255,
+            }],
+        );
+
+        let ivrs = builder.build_ivrs().unwrap();
+
+        // Verify IVRS signature in the first 4 bytes of the table
+        assert_eq!(&ivrs[0..4], b"IVRS");
+        // Verify checksum
+        assert_eq!(checksum(&ivrs), 0);
+
+        // After the 36-byte ACPI header and 12-byte IVRS header (offset 48),
+        // the IVHD type 40h block starts.
+        let ivhd_offset = 48;
+        assert_eq!(ivrs[ivhd_offset], 0x40); // IVHD type 40h
+
+        // IOMMU DeviceID at offset +4 (u16)
+        let dev_id = u16::from_ne_bytes(ivrs[ivhd_offset + 4..ivhd_offset + 6].try_into().unwrap());
+        assert_eq!(dev_id, 0x0000);
+
+        // Capability offset at offset +6 (u16)
+        let cap_offset =
+            u16::from_ne_bytes(ivrs[ivhd_offset + 6..ivhd_offset + 8].try_into().unwrap());
+        assert_eq!(cap_offset, 0x40);
+
+        // MMIO base at offset +8 (u64)
+        let mmio_base =
+            u64::from_ne_bytes(ivrs[ivhd_offset + 8..ivhd_offset + 16].try_into().unwrap());
+        assert_eq!(mmio_base, 0xFD00_0000);
+
+        // EFR at offset +24 (u64) in the type 40h extended fields
+        let efr = u64::from_ne_bytes(ivrs[ivhd_offset + 24..ivhd_offset + 32].try_into().unwrap());
+        assert_eq!(efr, 0xC0); // IASup + GASup
+
+        // Device entries follow the IVHD type 40h header (40 bytes).
+        // We emit a range_start + range_end pair.
+        let dev_entry_offset = ivhd_offset + 40;
+        assert_eq!(ivrs[dev_entry_offset], 0x03); // range_start entry
+        assert_eq!(ivrs[dev_entry_offset + 4], 0x04); // range_end entry
+    }
+
+    #[test]
+    fn test_ivrs_not_generated_when_disabled() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let builder = new_builder(&mem, &topology, &pcie);
+
+        // amd_iommu is empty by default
+        assert!(builder.build_ivrs().is_none());
+
+        let tables = builder.build_acpi_tables(0x100000, |_| {});
+        assert!(!contains_signature(&tables.tables, b"IVRS"));
+    }
+
+    #[test]
+    fn test_ivrs_in_acpi_tables() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_amd_iommu(
+            &mut builder,
+            vec![AmdIommuAcpiConfig {
+                device_id: 0x0000,
+                capability_offset: 0x40,
+                mmio_base: 0xFD00_0000,
+                pci_segment: 0,
+                ivhd_features: 0xC0,
+                start_bus: 0,
+                end_bus: 255,
+            }],
+        );
+
+        let tables = builder.build_acpi_tables(0x100000, |_| {});
+        assert!(contains_signature(&tables.tables, b"IVRS"));
+    }
+
+    #[test]
+    fn test_ivrs_iommu_fields() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_amd_iommu(
+            &mut builder,
+            vec![AmdIommuAcpiConfig {
+                device_id: 0x1234,
+                capability_offset: 0x80,
+                mmio_base: 0xFE00_0000,
+                pci_segment: 1,
+                ivhd_features: 0xC0,
+                start_bus: 0,
+                end_bus: 255,
+            }],
+        );
+
+        let ivrs = builder.build_ivrs().unwrap();
+
+        let ivhd_offset = 48;
+        // DeviceID
+        let dev_id = u16::from_ne_bytes(ivrs[ivhd_offset + 4..ivhd_offset + 6].try_into().unwrap());
+        assert_eq!(dev_id, 0x1234);
+
+        // Capability offset
+        let cap_offset =
+            u16::from_ne_bytes(ivrs[ivhd_offset + 6..ivhd_offset + 8].try_into().unwrap());
+        assert_eq!(cap_offset, 0x80);
+
+        // MMIO base
+        let mmio_base =
+            u64::from_ne_bytes(ivrs[ivhd_offset + 8..ivhd_offset + 16].try_into().unwrap());
+        assert_eq!(mmio_base, 0xFE00_0000);
+
+        // PCI segment at offset +16 (u16)
+        let pci_seg =
+            u16::from_ne_bytes(ivrs[ivhd_offset + 16..ivhd_offset + 18].try_into().unwrap());
+        assert_eq!(pci_seg, 1);
+    }
+
+    #[test]
+    fn test_ivrs_multiple_iommus() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(4).unwrap();
+        let pcie = vec![];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        set_amd_iommu(
+            &mut builder,
+            vec![
+                AmdIommuAcpiConfig {
+                    device_id: 0x0000,
+                    capability_offset: 0x40,
+                    mmio_base: 0xFD00_0000,
+                    pci_segment: 0,
+                    ivhd_features: 0xC0,
+                    start_bus: 0,
+                    end_bus: 127,
+                },
+                AmdIommuAcpiConfig {
+                    device_id: 0x0000,
+                    capability_offset: 0x40,
+                    mmio_base: 0xFD00_4000,
+                    pci_segment: 1,
+                    ivhd_features: 0xC0,
+                    start_bus: 0,
+                    end_bus: 255,
+                },
+            ],
+        );
+
+        let ivrs = builder.build_ivrs().unwrap();
+
+        // Verify IVRS signature
+        assert_eq!(&ivrs[0..4], b"IVRS");
+        assert_eq!(checksum(&ivrs), 0);
+
+        // First IVHD block at offset 48 (after 36-byte ACPI header + 12-byte IVRS header)
+        let ivhd0_offset = 48;
+        assert_eq!(ivrs[ivhd0_offset], 0x40); // IVHD type 40h
+
+        // Read first IVHD length to find second IVHD
+        let ivhd0_len =
+            u16::from_ne_bytes(ivrs[ivhd0_offset + 2..ivhd0_offset + 4].try_into().unwrap());
+
+        // First IOMMU: segment 0, MMIO 0xFD00_0000
+        let mmio0 = u64::from_ne_bytes(
+            ivrs[ivhd0_offset + 8..ivhd0_offset + 16]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(mmio0, 0xFD00_0000);
+        let seg0 = u16::from_ne_bytes(
+            ivrs[ivhd0_offset + 16..ivhd0_offset + 18]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(seg0, 0);
+
+        // Second IVHD block follows the first
+        let ivhd1_offset = ivhd0_offset + ivhd0_len as usize;
+        assert_eq!(ivrs[ivhd1_offset], 0x40); // IVHD type 40h
+
+        // Second IOMMU: segment 1, MMIO 0xFD00_4000
+        let mmio1 = u64::from_ne_bytes(
+            ivrs[ivhd1_offset + 8..ivhd1_offset + 16]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(mmio1, 0xFD00_4000);
+        let seg1 = u16::from_ne_bytes(
+            ivrs[ivhd1_offset + 16..ivhd1_offset + 18]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(seg1, 1);
     }
 }

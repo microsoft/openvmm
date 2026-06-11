@@ -143,6 +143,12 @@ impl AsRef<VpInfo> for Aarch64VpInfo {
     }
 }
 
+impl AsMut<VpInfo> for Aarch64VpInfo {
+    fn as_mut(&mut self) -> &mut VpInfo {
+        &mut self.base
+    }
+}
+
 impl TopologyBuilder<Aarch64Topology> {
     /// Returns a builder for creating an aarch64 processor topology.
     pub fn new_aarch64(platform: Aarch64PlatformConfig) -> Self {

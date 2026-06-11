@@ -13,6 +13,7 @@ pub mod interest;
 pub mod io_uring;
 pub mod local;
 pub mod pipe;
+pub mod process;
 pub mod socket;
 pub mod timer;
 pub mod wait;
@@ -37,6 +38,7 @@ pub mod windows {
     pub use super::sys::overlapped;
     pub use super::sys::pipe;
     pub use super::sys::tp::TpPool;
+    pub use crate::process::PolledProcess;
 }
 
 /// Unix-specific async functionality.

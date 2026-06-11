@@ -73,27 +73,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "aes"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66bd29a732b644c0431c6140f370d097879203d79b80c94a6747ba0872adaef8"
-dependencies = [
- "cipher",
- "cpubits",
- "cpufeatures",
-]
-
-[[package]]
-name = "aes-kw"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40e4645e6ea320665abf87e13821f9a37ab204b34bcb18e34e7d1dcf2366516e"
-dependencies = [
- "aes",
- "const-oid",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -107,6 +86,25 @@ name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+
+[[package]]
+name = "amd_iommu"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "chipset_device",
+ "guestmem",
+ "inspect",
+ "iommu_common",
+ "open_enum",
+ "parking_lot",
+ "pci_core",
+ "thiserror 2.0.16",
+ "tracelimit",
+ "tracing",
+ "vmcore",
+ "zerocopy",
+]
 
 [[package]]
 name = "anes"
@@ -611,6 +609,7 @@ dependencies = [
  "inspect",
  "mesh",
  "tdisp",
+ "vmcore",
 ]
 
 [[package]]
@@ -706,6 +705,7 @@ dependencies = [
  "arbitrary",
  "inspect",
  "local_clock",
+ "memory_range",
  "mesh",
  "vm_resource",
 ]
@@ -752,16 +752,6 @@ checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
 dependencies = [
  "ciborium-io",
  "half",
-]
-
-[[package]]
-name = "cipher"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e34d8227fe1ba289043aeb13792056ff80fd6de1a9f49137a5f499de8e8c78ea"
-dependencies = [
- "crypto-common",
- "inout",
 ]
 
 [[package]]
@@ -878,6 +868,7 @@ name = "console_relay"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "crossterm",
  "futures",
  "getrandom 0.4.2",
  "pal_async",
@@ -1085,7 +1076,6 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 name = "crypto"
 version = "0.0.0"
 dependencies = [
- "aes-kw",
  "anyhow",
  "cms",
  "der",
@@ -1385,7 +1375,6 @@ dependencies = [
  "hvdef",
  "inspect",
  "inspect_proto",
- "libc",
  "mesh",
  "mesh_rpc",
  "net_packet_capture",
@@ -1395,6 +1384,7 @@ dependencies = [
  "profiler_worker",
  "safe_intrinsics",
  "socket2",
+ "term",
  "tracing",
  "underhill_confidentiality",
  "unix_socket",
@@ -2050,13 +2040,17 @@ dependencies = [
  "async-trait",
  "bitfield-struct 0.11.0",
  "chipset_device",
+ "chipset_device_resources",
+ "chipset_resources",
  "crypto",
  "der",
  "firmware_uefi_custom_vars",
+ "firmware_uefi_resources",
  "generation_id",
  "getrandom 0.4.2",
  "guestmem",
  "guid",
+ "hcl_compat_uefi_nvram_storage",
  "inspect",
  "jiff",
  "local_clock",
@@ -2071,7 +2065,9 @@ dependencies = [
  "uefi_nvram_specvars",
  "uefi_nvram_storage",
  "uefi_specs",
+ "vm_resource",
  "vmcore",
+ "vmm_core",
  "watchdog_core",
  "wchar",
  "zerocopy",
@@ -2085,6 +2081,21 @@ dependencies = [
  "mesh_protobuf",
  "thiserror 2.0.16",
  "uefi_specs",
+]
+
+[[package]]
+name = "firmware_uefi_resources"
+version = "0.0.0"
+dependencies = [
+ "chipset_resources",
+ "firmware_uefi_custom_vars",
+ "hcl_compat_uefi_nvram_resources",
+ "inspect",
+ "mesh",
+ "mesh_protobuf",
+ "uefi_specs",
+ "vm_resource",
+ "watchdog_core",
 ]
 
 [[package]]
@@ -2496,11 +2507,13 @@ dependencies = [
  "arbitrary",
  "crypto",
  "firmware_uefi",
+ "firmware_uefi_resources",
  "guestmem",
  "guid",
  "libfuzzer-sys",
  "ucs2 0.0.0",
  "uefi_nvram_specvars",
+ "uefi_specs",
  "xtask_fuzz",
  "zerocopy",
 ]
@@ -3147,6 +3160,7 @@ dependencies = [
 name = "hcl"
 version = "0.0.0"
 dependencies = [
+ "aarch64defs",
  "anyhow",
  "arrayvec",
  "bitfield-struct 0.11.0",
@@ -3177,6 +3191,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hcl_compat_uefi_nvram_resources"
+version = "0.0.0"
+dependencies = [
+ "inspect",
+ "mesh_protobuf",
+]
+
+[[package]]
 name = "hcl_compat_uefi_nvram_storage"
 version = "0.0.0"
 dependencies = [
@@ -3184,6 +3206,7 @@ dependencies = [
  "async-trait",
  "cvm_tracing",
  "guid",
+ "hcl_compat_uefi_nvram_resources",
  "inspect",
  "open_enum",
  "pal_async",
@@ -3309,6 +3332,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 name = "hv1_emulator"
 version = "0.0.0"
 dependencies = [
+ "aarch64defs",
  "build_rs_guest_arch",
  "guestmem",
  "hv1_structs",
@@ -3745,15 +3769,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "inout"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4250ce6452e92010fdf7268ccc5d14faa80bb12fc741938534c58f16804e03c7"
-dependencies = [
- "hybrid-array",
-]
-
-[[package]]
 name = "input_core"
 version = "0.0.0"
 dependencies = [
@@ -3836,6 +3851,15 @@ dependencies = [
  "bitflags 2.9.3",
  "cfg-if",
  "libc",
+]
+
+[[package]]
+name = "iommu_common"
+version = "0.0.0"
+dependencies = [
+ "guestmem",
+ "pci_core",
+ "thiserror 2.0.16",
 ]
 
 [[package]]
@@ -4631,7 +4655,7 @@ dependencies = [
 [[package]]
 name = "ms-tpm-20-ref"
 version = "0.1.0"
-source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?branch=main#5b8ca3b5b423859da441f51ec8b1610708ed53c2"
+source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?rev=5b8ca3b5b423859da441f51ec8b1610708ed53c2#5b8ca3b5b423859da441f51ec8b1610708ed53c2"
 dependencies = [
  "cc",
  "once_cell",
@@ -5137,6 +5161,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_dyn_complete",
+ "crossterm",
  "ctrlc",
  "diag_client",
  "fs-err",
@@ -5209,6 +5234,7 @@ dependencies = [
  "mesh",
  "open_enum",
  "serde",
+ "serde_helpers",
  "serde_json",
  "x86defs",
  "zerocopy",
@@ -5220,6 +5246,7 @@ version = "0.0.0"
 dependencies = [
  "aarch64defs",
  "arrayvec",
+ "bitfield-struct 0.11.0",
  "cfg-if",
  "crc32fast",
  "fdt",
@@ -5277,9 +5304,9 @@ dependencies = [
 
 [[package]]
 name = "openssl"
-version = "0.10.79"
+version = "0.10.80"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf0b434746ee2832f4f0baf10137e1cabb18cbe6912c69e2e33263c45250f542"
+checksum = "a45fa2aa886c42762255da344f0a0d313e254066c46aad76f300c3d3da62d967"
 dependencies = [
  "bitflags 2.9.3",
  "cfg-if",
@@ -5317,9 +5344,9 @@ dependencies = [
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.115"
+version = "0.9.116"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "158fe5b292746440aa6e7a7e690e55aeb72d41505e2804c23c6973ad0e9c9781"
+checksum = "f28a22dc7140cda5f096e5e7724a6962ca81a7f8bfd2979f9b18c11af56318c4"
 dependencies = [
  "cc",
  "libc",
@@ -5368,6 +5395,7 @@ dependencies = [
 name = "openvmm"
 version = "0.0.0"
 dependencies = [
+ "crypto",
  "embed-resource",
  "openvmm_entry",
  "openvmm_hypervisors",
@@ -5380,6 +5408,7 @@ version = "0.0.0"
 dependencies = [
  "aarch64defs",
  "acpi",
+ "amd_iommu",
  "anyhow",
  "async-trait",
  "build_rs_guest_arch",
@@ -5397,8 +5426,8 @@ dependencies = [
  "disk_backend",
  "fdt",
  "firmware_pcat",
- "firmware_uefi",
  "firmware_uefi_custom_vars",
+ "firmware_uefi_resources",
  "floppy",
  "floppy_resources",
  "framebuffer",
@@ -5408,7 +5437,6 @@ dependencies = [
  "getrandom 0.4.2",
  "guestmem",
  "guid",
- "hcl_compat_uefi_nvram_storage",
  "hvdef",
  "hyperv_dump",
  "hypervisor_resources",
@@ -5418,8 +5446,8 @@ dependencies = [
  "igvm_defs",
  "input_core",
  "inspect",
+ "iommu_common",
  "loader",
- "local_clock",
  "membacking",
  "memory_range",
  "mesh",
@@ -5431,18 +5459,20 @@ dependencies = [
  "pal_async",
  "pci_bus",
  "pci_core",
+ "pci_resource_assignment",
  "pci_resources",
  "pcie",
  "range_map_vec",
  "scsi_core",
  "scsidisk",
  "serial_16550_resources",
+ "smmu",
  "sparse_mmap",
  "state_unit",
  "storvsp",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
- "uefi_nvram_storage",
  "uefi_specs",
  "vfio_assigned_device",
  "vfio_assigned_device_resources",
@@ -5508,6 +5538,7 @@ dependencies = [
  "clap",
  "clap_dyn_complete",
  "console_relay",
+ "crossterm",
  "crypto",
  "cxl_spec",
  "debug_worker_defs",
@@ -5516,6 +5547,7 @@ dependencies = [
  "disk_backend_resources",
  "disk_crypt_resources",
  "firmware_uefi_custom_vars",
+ "firmware_uefi_resources",
  "floppy_resources",
  "framebuffer",
  "fs-err",
@@ -5554,6 +5586,7 @@ dependencies = [
  "serial_core",
  "serial_socket",
  "shell-words",
+ "socket2",
  "sparse_mmap",
  "storvsp_resources",
  "tempfile",
@@ -5594,6 +5627,8 @@ dependencies = [
 name = "openvmm_hcl"
 version = "0.0.0"
 dependencies = [
+ "crypto",
+ "openssl_crypto_only",
  "openvmm_hcl_resources",
  "tracing",
  "underhill_entry",
@@ -5609,6 +5644,7 @@ dependencies = [
  "chipset_resources",
  "debug_worker",
  "disk_striped",
+ "firmware_uefi",
  "guest_watchdog",
  "hyperv_ic",
  "mesh_worker",
@@ -5694,6 +5730,7 @@ dependencies = [
  "disk_vhdmp",
  "disklayer_ram",
  "disklayer_sqlite",
+ "firmware_uefi",
  "gdma",
  "guest_crash_device",
  "guest_emulation_device",
@@ -6020,6 +6057,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pci_resource_assignment"
+version = "0.0.0"
+dependencies = [
+ "pal_async",
+ "parking_lot",
+ "pci_core",
+ "thiserror 2.0.16",
+ "tracing",
+]
+
+[[package]]
 name = "pci_resources"
 version = "0.0.0"
 dependencies = [
@@ -6046,6 +6094,7 @@ dependencies = [
  "parking_lot",
  "pci_bus",
  "pci_core",
+ "thiserror 2.0.16",
  "tracelimit",
  "tracing",
  "vmcore",
@@ -6109,6 +6158,7 @@ dependencies = [
  "disk_vhd1",
  "disk_vhdmp",
  "fatfs",
+ "firmware_uefi_resources",
  "flate2",
  "framebuffer",
  "fs-err",
@@ -6177,6 +6227,7 @@ dependencies = [
  "vmm_core_defs",
  "vmotherboard",
  "vmsocket",
+ "vmswitch",
  "vtl2_settings_proto",
  "windows-version",
  "x86defs",
@@ -6283,10 +6334,12 @@ dependencies = [
  "libc",
  "mesh",
  "mesh_remote",
+ "pal",
  "pal_async",
  "parking_lot",
  "pipette_protocol",
  "socket2",
+ "term",
  "tracing",
  "tracing-subscriber",
  "unicycle",
@@ -6307,6 +6360,7 @@ dependencies = [
  "mesh_remote",
  "pal_async",
  "pipette_protocol",
+ "term",
  "tracing",
  "typed-path",
  "xshell-macros",
@@ -6416,6 +6470,7 @@ name = "prep_steps"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "gptman",
  "guid",
  "openvmm_defs",
  "openvmm_helpers",
@@ -6424,6 +6479,7 @@ dependencies = [
  "petri_artifact_resolver_openvmm_known_paths",
  "petri_artifacts_common",
  "petri_artifacts_vmm_test",
+ "pipette_protocol",
  "scsidisk_resources",
  "storvsp_resources",
  "tracing",
@@ -7403,6 +7459,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
+name = "smmu"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "bitfield-struct 0.11.0",
+ "chipset_device",
+ "guestmem",
+ "inspect",
+ "iommu_common",
+ "mesh",
+ "open_enum",
+ "pal_async",
+ "pal_event",
+ "parking_lot",
+ "pci_core",
+ "thiserror 2.0.16",
+ "tracelimit",
+ "vmcore",
+ "zerocopy",
+]
+
+[[package]]
 name = "smoltcp"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7651,7 +7729,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 [[package]]
 name = "symcrypt"
 version = "0.6.0"
-source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#050dc7e0e3741e226d0de250b36c15e51524e815"
+source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#2d83888206139cb8cc522ea3617a1870674ac8a0"
 dependencies = [
  "libc",
  "symcrypt-sys",
@@ -7660,7 +7738,7 @@ dependencies = [
 [[package]]
 name = "symcrypt-sys"
 version = "0.4.0"
-source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#050dc7e0e3741e226d0de250b36c15e51524e815"
+source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#2d83888206139cb8cc522ea3617a1870674ac8a0"
 dependencies = [
  "libc",
 ]
@@ -7789,9 +7867,7 @@ dependencies = [
 name = "term"
 version = "0.0.0"
 dependencies = [
- "crossterm",
  "libc",
- "thiserror 2.0.16",
  "windows-sys 0.61.0",
 ]
 
@@ -7810,12 +7886,12 @@ name = "test_igvm_agent_lib"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "crypto",
  "get_resources",
+ "getrandom 0.4.2",
  "inspect",
  "openhcl_attestation_protocol",
- "rsa",
  "serde_json",
- "sha2",
  "thiserror 2.0.16",
  "tracing",
  "zerocopy",
@@ -7972,6 +8048,7 @@ dependencies = [
  "guestmem",
  "hvdef",
  "loader",
+ "memory_range",
  "mesh",
  "object 0.37.3",
  "page_table",
@@ -7982,6 +8059,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing_helpers",
  "underhill_mem",
+ "user_driver",
  "virt",
  "virt_hvf",
  "virt_kvm",
@@ -8402,6 +8480,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "framebuffer",
  "futures",
  "guestmem",
  "guid",
@@ -8409,6 +8488,7 @@ dependencies = [
  "inspect",
  "mesh",
  "pal_async",
+ "sparse_mmap",
  "static_assertions",
  "task_control",
  "test_with_tracing",
@@ -8431,6 +8511,7 @@ name = "uidevices_resources"
 version = "0.0.0"
 dependencies = [
  "mesh",
+ "video_core",
  "vm_resource",
 ]
 
@@ -8450,6 +8531,7 @@ dependencies = [
  "guest_emulation_device",
  "guest_emulation_transport",
  "guid",
+ "hex",
  "mesh",
  "openhcl_attestation_protocol",
  "pal_async",
@@ -8504,7 +8586,6 @@ dependencies = [
  "chipset_legacy",
  "chipset_resources",
  "closeable_mutex",
- "crypto",
  "cvm_tracing",
  "debug_ptr",
  "debug_worker_defs",
@@ -8516,8 +8597,8 @@ dependencies = [
  "disk_get_vmgs",
  "disk_nvme",
  "firmware_pcat",
- "firmware_uefi",
  "firmware_uefi_custom_vars",
+ "firmware_uefi_resources",
  "framebuffer",
  "fs-err",
  "futures",
@@ -8530,7 +8611,6 @@ dependencies = [
  "guestmem",
  "guid",
  "hcl",
- "hcl_compat_uefi_nvram_storage",
  "hvdef",
  "hyperv_ic_guest",
  "hyperv_ic_resources",
@@ -8599,7 +8679,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing_helpers",
- "uefi_nvram_storage",
  "uevent",
  "uidevices_resources",
  "underhill_attestation",
@@ -8685,7 +8764,6 @@ dependencies = [
  "dhat",
  "fast_memcpy",
  "mimalloc",
- "openssl_crypto_only",
  "underhill_core",
  "underhill_crash",
  "underhill_dump",
@@ -8711,6 +8789,7 @@ dependencies = [
 name = "underhill_mem"
 version = "0.0.0"
 dependencies = [
+ "aarch64defs",
  "anyhow",
  "build_rs_guest_arch",
  "cvm_tracing",
@@ -8916,6 +8995,7 @@ dependencies = [
  "pal_async",
  "pci_core",
  "pci_resources",
+ "test_with_tracing",
  "tracelimit",
  "tracing",
  "vfio-bindings",
@@ -9615,6 +9695,9 @@ name = "vm_manifest_builder"
 version = "0.0.0"
 dependencies = [
  "chipset_resources",
+ "firmware_uefi_custom_vars",
+ "firmware_uefi_resources",
+ "getrandom 0.4.2",
  "input_core",
  "mesh",
  "missing_dev_resources",
@@ -10092,7 +10175,7 @@ dependencies = [
 
 [[package]]
 name = "vmgstool"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -10228,6 +10311,7 @@ dependencies = [
  "anyhow",
  "disk_backend_resources",
  "disk_vhd1",
+ "fs-err",
  "futures",
  "get_resources",
  "guid",
@@ -10285,7 +10369,6 @@ dependencies = [
  "closeable_mutex",
  "cvm_tracing",
  "firmware_pcat",
- "firmware_uefi",
  "floppy",
  "floppy_pcat_stub",
  "framebuffer",
@@ -10295,7 +10378,6 @@ dependencies = [
  "ide",
  "inspect",
  "inspect_counters",
- "local_clock",
  "mesh",
  "missing_dev",
  "pal_async",
@@ -10308,12 +10390,10 @@ dependencies = [
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
- "uefi_nvram_storage",
  "vga",
  "vga_proxy",
  "vm_resource",
  "vmcore",
- "watchdog_core",
 ]
 
 [[package]]
@@ -10339,6 +10419,7 @@ dependencies = [
  "pal",
  "pal_async",
  "pal_event",
+ "serde_json",
  "thiserror 2.0.16",
  "tracing",
  "widestring",
@@ -10350,11 +10431,17 @@ dependencies = [
 name = "vnc"
 version = "0.0.0"
 dependencies = [
+ "async-channel",
+ "bitvec",
  "flate2",
  "futures",
  "pal_async",
+ "parking_lot",
  "socket2",
  "thiserror 2.0.16",
+ "tracelimit",
+ "tracing",
+ "video_core",
  "zerocopy",
 ]
 
@@ -10363,6 +10450,7 @@ name = "vnc_worker"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "framebuffer",
  "futures",
  "input_core",
@@ -10370,9 +10458,13 @@ dependencies = [
  "mesh",
  "mesh_worker",
  "pal_async",
+ "parking_lot",
  "socket2",
+ "sparse_mmap",
  "tracing",
  "tracing_helpers",
+ "unicycle",
+ "video_core",
  "vmsocket",
  "vnc",
  "vnc_worker_defs",
@@ -10386,6 +10478,7 @@ dependencies = [
  "input_core",
  "mesh",
  "mesh_worker",
+ "video_core",
  "vmsocket",
 ]
 

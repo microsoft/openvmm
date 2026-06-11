@@ -142,8 +142,7 @@ impl SimpleFlowNode for Node {
                 let repo_path = rt.read(repo_path);
 
                 // guest_test_uefi is uefi-only, and is handled separately below
-                // crypto is handled separately in order to deal with its non-additive features
-                let mut exclude = vec!["guest_test_uefi".into(), "crypto".into()];
+                let mut exclude = vec!["guest_test_uefi".into()];
 
                 // packages depending on libfuzzer-sys are currently x86 only
                 if !(matches!(target.architecture, target_lexicon::Architecture::X86_64)
@@ -205,12 +204,12 @@ impl SimpleFlowNode for Node {
         })];
 
         // crypto has non-additive features, we need to ensure full coverage of different backends.
-        // Always test the 'native' no-feature backends.
+        // Always test the 'native' backends.
         reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
             in_folder: openvmm_repo_path.clone(),
             package: CargoPackage::Crate("crypto".into()),
             profile: profile.clone(),
-            features: CargoFeatureSet::None,
+            features: CargoFeatureSet::Specific(vec!["native".into()]),
             target: target.clone(),
             extra_env: None,
             exclude: ReadVar::from_static(None),

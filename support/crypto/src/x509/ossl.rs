@@ -58,6 +58,30 @@ impl X509CertificateInner {
             .map_err(|e| err(e, "encoding certificate as DER"))
     }
 
+    pub fn issuer_dn(&self) -> Result<String, X509Error> {
+        let mut parts = Vec::new();
+        for entry in self.0.issuer_name().entries() {
+            let oid = entry.object().to_string();
+            let value = entry
+                .data()
+                .as_utf8()
+                .map_err(|e| err(e, "decoding issuer name entry"))?
+                .to_string();
+            parts.push(format!("{oid}={value}"));
+        }
+        Ok(parts.join(","))
+    }
+
+    pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
+        let bn = self
+            .0
+            .serial_number()
+            .to_bn()
+            .map_err(|e| err(e, "converting serial number"))?;
+        Ok(bn.to_vec())
+    }
+
+    #[cfg(any(test, feature = "test_helpers"))]
     pub fn build_self_signed(
         key: &crate::rsa::RsaKeyPair,
         country: &str,
@@ -86,5 +110,21 @@ impl X509CertificateInner {
         builder.set_not_after(&not_after)?;
         builder.sign(&key.0.0, openssl::hash::MessageDigest::sha256())?;
         Ok(X509CertificateInner(builder.build()))
+    }
+
+    pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
+        let sn = self
+            .0
+            .subject_name()
+            .entries_by_nid(openssl::nid::Nid::COMMONNAME)
+            .next();
+        match sn {
+            None => Ok(None),
+            Some(sn) => sn
+                .data()
+                .as_utf8()
+                .map(|u| Some(u.to_string()))
+                .map_err(|e| err(e, "decoding subject name")),
+        }
     }
 }

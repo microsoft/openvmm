@@ -96,14 +96,19 @@ The [Running OpenHCL with OpenVMM](../../../user_guide/openhcl/run/openvmm.md) p
 --net uh:consomme --vmbus-redirect
 
 # Offer NVMe into VTL2 and expose storvsp-backed SCSI to VTL0
---disk mem:1G,uh-nvme --vmbus-redirect
+--nvme-pci id=nvme0,vpci,vtl2 \
+  --openhcl-controller id=relay0,type=scsi \
+  --disk mem:1G,on=nvme0,relay=relay0 --vmbus-redirect
 ```
 
 These examples show three separate decisions:
 
 1. `--vmbus-redirect` enables the host-offer relay substrate.
-2. `uh:*` or `uh-nvme` determines what the Root offers into VTL2.
-3. The resulting guest-visible device family is still chosen by VTL2-owned device logic, not by the existence of relay alone.
+2. Named controllers (`--vmbus-scsi`, `--nvme-pci`,
+   `--openhcl-controller`) determine what the Root offers into VTL2
+   and what OpenHCL exposes to VTL0.
+3. The resulting guest-visible device family is still chosen by VTL2-owned
+   device logic, not by the existence of relay alone.
 
 ```admonish note title="How VPCI relay differs from the general VMBus relay path"
 VPCI-capable devices still arrive as VMBus offers, which is why VPCI relay depends on VMBus relay being active at all. But once OpenHCL identifies those offers, it does not hand them to the generic `HostVmbusTransport` path. Instead, it routes them into `VpciRelay`, which handles the extra PCI-visible semantics such as allowed-device filtering and MMIO space. In other words, VPCI relay starts from VMBus offers but does different work after that handoff point.

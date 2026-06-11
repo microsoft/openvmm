@@ -1448,7 +1448,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
             GuestVsmState::NotGuestEnabled => (),
             GuestVsmState::Enabled { vtl1: _ } => {
                 // VTL 1 cannot be already enabled
-                return Err(HvError::VtlAlreadyEnabled);
+                return Err(HvError::InvalidVtlState);
             }
         }
 
@@ -1576,6 +1576,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
                 hv_vp_context
             }
             virt::IsolationType::Tdx => hvdef::hypercall::InitialVpContextX64::new_zeroed(),
+            virt::IsolationType::Cca => return Err(HvError::FeatureUnavailable),
         };
 
         // Tell the hypervisor to enable VTL 1, and register any needed state

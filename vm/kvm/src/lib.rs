@@ -35,6 +35,8 @@ mod ioctl {
     ioctl_write_int_bad!(kvm_get_vcpu_mmap_size, request_code_none!(KVMIO, 0x04));
     #[cfg(target_arch = "x86_64")]
     ioctl_readwrite!(kvm_get_supported_cpuid, KVMIO, 0x05, kvm_cpuid2);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_readwrite!(kvm_get_supported_hv_cpuid, KVMIO, 0xc1, kvm_cpuid2);
     ioctl_write_int_bad!(kvm_create_vcpu, request_code_none!(KVMIO, 0x41));
     ioctl_write_ptr!(
         kvm_set_user_memory_region,
@@ -248,6 +250,28 @@ impl Kvm {
         // SAFETY: We have allocated an array for the ioctl to write to and correctly specified its size in nent.
         unsafe {
             ioctl::kvm_get_supported_cpuid(self.as_fd().as_raw_fd(), &mut supported_cpuid.cpuid)
+                .map_err(Error::GetSupportedCpuid)?;
+        }
+
+        Ok(supported_cpuid.entries[..supported_cpuid.cpuid.nent as usize].to_vec())
+    }
+
+    /// Returns the Hyper-V CPUID values that KVM supports for guest
+    /// enlightenments, including nested virtualization features.
+    #[cfg(target_arch = "x86_64")]
+    pub fn supported_hv_cpuid(&self) -> Result<Vec<kvm_cpuid_entry2>> {
+        const MAX_CPUID_ENTRIES: usize = 256;
+        let mut supported_cpuid = Cpuid {
+            cpuid: kvm_cpuid2 {
+                nent: MAX_CPUID_ENTRIES as u32,
+                ..Default::default()
+            },
+            entries: [Default::default(); MAX_CPUID_ENTRIES],
+        };
+
+        // SAFETY: We have allocated an array for the ioctl to write to and correctly specified its size in nent.
+        unsafe {
+            ioctl::kvm_get_supported_hv_cpuid(self.as_fd().as_raw_fd(), &mut supported_cpuid.cpuid)
                 .map_err(Error::GetSupportedCpuid)?;
         }
 

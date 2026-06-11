@@ -7,6 +7,7 @@ mod deferred;
 pub mod register;
 
 pub mod aarch64;
+pub mod cca;
 pub mod snp;
 pub mod tdx;
 pub mod x64;
@@ -15,6 +16,8 @@ use self::deferred::DeferredActionSlots;
 use self::ioctls::*;
 use crate::GuestVtl;
 use crate::ioctl::deferred::DeferredAction;
+use crate::ioctl::register::GetRegError;
+use crate::ioctl::register::SetRegError;
 use crate::mapped_page::MappedPage;
 use crate::protocol;
 use crate::protocol::EnterModes;
@@ -130,6 +133,11 @@ pub enum Error {
     MapRedirectedDeviceInterrupt(#[source] nix::Error),
     #[error("failed to restore partition time")]
     RestorePartitionTime(#[source] nix::Error),
+    // TODO: added for CCA for now. could separate into own enum
+    #[error("failed to set registers using set_vp_registers hypercall")]
+    SetRegisters(#[source] SetRegError),
+    #[error("Invalid register value")]
+    InvalidRegisterValue,
 }
 
 /// Error for IOCTL errors specifically.
@@ -204,6 +212,8 @@ pub enum ApplyVtlProtectionsError {
         permissions: x86defs::tdx::TdgMemPageGpaAttr,
         vtl: HvInputVtl,
     },
+    #[error("cca failed when protecting pages {range} with permissions for vtl {vtl:?}")]
+    Cca { range: MemoryRange, vtl: HvInputVtl },
     #[error("no valid protections for vtl {0:?}")]
     InvalidVtl(Vtl),
 }
@@ -330,6 +340,7 @@ enum HvcallRepInput<'a, T> {
 }
 
 pub(crate) mod ioctls {
+    use super::cca;
     use crate::protocol;
     use hvdef::hypercall::HvRegisterAssoc;
     use nix::ioctl_none;
@@ -361,6 +372,10 @@ pub(crate) mod ioctls {
     const MSHV_KICKCPUS: u16 = 0x38;
     const MSHV_MAP_REDIRECTED_DEVICE_INTERRUPT: u16 = 0x39;
     const MSHV_VTL_SECURE_AVIC_VTL0_PFN: u16 = 0x40;
+    const MSHV_VTL_REALM_CONFIG: u16 = 0x41;
+    const MSHV_VTL_RSI_SYSREG_READ: u16 = 0x42;
+    const MSHV_VTL_RSI_SYSREG_WRITE: u16 = 0x43;
+    const MSHV_VTL_RSI_SET_MEM_PERM: u16 = 0x44;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -577,6 +592,44 @@ pub(crate) mod ioctls {
     );
 
     ioctl_read!(mshv_create_vtl, MSHV_IOCTL, MSHV_CREATE_VTL, u8);
+
+    // CCA: Gets the RSI Realm Config value from the kernel
+    ioctl_read!(
+        hcl_realm_config,
+        MSHV_IOCTL,
+        MSHV_VTL_REALM_CONFIG,
+        cca::mshv_realm_config
+    );
+
+    // CCA: Write the value of a system register
+    ioctl_write_ptr!(
+        hcl_rsi_sysreg_write,
+        MSHV_IOCTL,
+        MSHV_VTL_RSI_SYSREG_WRITE,
+        cca::mshv_rsi_sysreg_rw
+    );
+
+    // CCA: Read the value of a system register
+    ioctl_readwrite!(
+        hcl_rsi_sysreg_read,
+        MSHV_IOCTL,
+        MSHV_VTL_RSI_SYSREG_READ,
+        cca::mshv_rsi_sysreg_rw
+    );
+
+    // CCA: Assign the address described by `mshv_rsi_set_mem_perm`
+    // to a plane.
+    // Note: This is a simplification of the memory access configuration.
+    // The kernel driver does some stuff under the hood, making two RSI calls
+    // as part of this ioctl: RSI_MEM_SET_PERM_VALUE and RSI_MEM_SET_PERM_INDEX.
+    // Will need to decide how to design this interface and who maps the
+    // memory of a plane to the RSI calls needed to set it up.
+    ioctl_write_ptr!(
+        hcl_rsi_set_mem_perm,
+        MSHV_IOCTL,
+        MSHV_VTL_RSI_SET_MEM_PERM,
+        cca::mshv_rsi_set_mem_perm
+    );
 
     #[repr(C)]
     pub struct mshv_invlpgb {
@@ -1359,6 +1412,8 @@ pub enum IsolationType {
     Snp,
     /// Intel TDX.
     Tdx,
+    /// ARM CCA.
+    Cca,
 }
 
 impl IsolationType {
@@ -1369,7 +1424,7 @@ impl IsolationType {
 
     /// Returns whether the isolation type is hardware-backed.
     pub fn is_hardware_isolated(&self) -> bool {
-        matches!(self, Self::Snp | Self::Tdx)
+        matches!(self, Self::Snp | Self::Tdx | Self::Cca)
     }
 }
 
@@ -1409,6 +1464,9 @@ enum BackingState {
     Tdx {
         vtl0_apic_page: MappedPage<VmxApicPage>,
         vtl1_apic_page: MemoryBlock,
+    },
+    Cca {
+        plane_run: MemoryBlock,
     },
 }
 
@@ -1483,6 +1541,12 @@ impl HclVp {
                 vtl0_apic_page: MappedPage::new(fd, MSHV_APIC_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
                 vtl1_apic_page: private_dma_client
+                    .ok_or(Error::MissingPrivateMemory)?
+                    .allocate_dma_buffer(HV_PAGE_SIZE as usize)
+                    .map_err(Error::AllocVp)?,
+            },
+            IsolationType::Cca => BackingState::Cca {
+                plane_run: private_dma_client
                     .ok_or(Error::MissingPrivateMemory)?
                     .allocate_dma_buffer(HV_PAGE_SIZE as usize)
                     .map_err(Error::AllocVp)?,
@@ -1747,10 +1811,22 @@ impl Hcl {
         //
         // FUTURE: the kernel driver should probably tell us this, especially
         // since the kernel ABI is different for different isolation types.
-        let supported_isolation = if cfg!(guest_arch = "x86_64") {
+        let validate_isolation = |supported_isolation| {
+            if isolation != supported_isolation {
+                Err(Error::MismatchedIsolation {
+                    supported: supported_isolation,
+                    requested: isolation,
+                })
+            } else {
+                Ok(())
+            }
+        };
+
+        #[cfg(guest_arch = "x86_64")]
+        {
             // xtask-fmt allow-target-arch cpu-intrinsic
             #[cfg(target_arch = "x86_64")]
-            {
+            let supported_isolation = {
                 let result = safe_intrinsics::cpuid(
                     hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION,
                     0,
@@ -1762,21 +1838,12 @@ impl Hcl {
                     3 => IsolationType::Tdx,
                     ty => panic!("unknown isolation type {ty:#x}"),
                 }
-            }
+            };
             // xtask-fmt allow-target-arch cpu-intrinsic
             #[cfg(not(target_arch = "x86_64"))]
-            {
-                unreachable!()
-            }
-        } else {
-            IsolationType::None
-        };
+            let supported_isolation = unreachable!();
 
-        if isolation != supported_isolation {
-            return Err(Error::MismatchedIsolation {
-                supported: supported_isolation,
-                requested: isolation,
-            });
+            validate_isolation(supported_isolation)?;
         }
 
         let supports_vtl_ret_action = mshv_fd.check_extension(HCL_CAP_VTL_RETURN_ACTION)?;
@@ -1792,6 +1859,31 @@ impl Hcl {
         );
 
         let vtl_fd = mshv_fd.create_vtl()?;
+
+        #[cfg(guest_arch = "aarch64")]
+        {
+            let supported_isolation = match isolation {
+                IsolationType::Cca => {
+                    // Realm-visible ID registers can be sanitized, so use the
+                    // HCL/RMM path to validate that CCA is actually available.
+                    if vtl_fd.get_realm_config().is_ok() {
+                        IsolationType::Cca
+                    } else {
+                        IsolationType::None
+                    }
+                }
+                _ => IsolationType::None,
+            };
+
+            validate_isolation(supported_isolation)?;
+        }
+
+        #[cfg(not(any(guest_arch = "x86_64", guest_arch = "aarch64")))]
+        {
+            let supported_isolation = IsolationType::None;
+
+            validate_isolation(supported_isolation)?;
+        }
 
         // Open the hypercall pseudo-device
         let mshv_hvcall = MshvHvcall::new()?;

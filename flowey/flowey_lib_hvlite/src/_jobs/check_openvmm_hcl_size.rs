@@ -126,8 +126,7 @@ impl SimpleFlowNode for Node {
                     if let Some(dbg) = built_openvmm_hcl.dbg {
                         fs_err::copy(dbg, path.join("openvmm_hcl.dbg"))?;
                     }
-                    Ok(path
-                        .absolute()?
+                    Ok(std::path::absolute(path)?
                         .into_os_string()
                         .into_string()
                         .ok()

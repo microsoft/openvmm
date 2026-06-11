@@ -7,7 +7,7 @@
 
 use arbitrary::Arbitrary;
 use firmware_uefi::service::diagnostics::DiagnosticsServices;
-use firmware_uefi::service::diagnostics::LogLevel;
+use firmware_uefi_resources::LogLevel;
 use guestmem::GuestMemory;
 use xtask_fuzz::fuzz_target;
 

@@ -251,7 +251,6 @@ flowey_request! {
         pub custom_target: Option<CommonTriple>,
         /// Additional features to enable on top of the recipe's defaults.
         pub extra_features: BTreeSet<OpenvmmHclFeature>,
-        /// Patch the manifest to set secure_avic to disabled for SNP configs.
         pub disable_secure_avic: bool,
 
         pub built_openvmm_hcl: WriteVar<crate::build_openvmm_hcl::OpenvmmHclOutput>,
@@ -310,6 +309,12 @@ impl SimpleFlowNode for Node {
         } = recipe.recipe_details(release_cfg);
 
         openvmm_hcl_features.extend(extra_features);
+
+        if disable_secure_avic {
+            openvmm_hcl_features.insert(OpenvmmHclFeature::LocalOnlyCustom(
+                "disable_secure_avic".into(),
+            ));
+        }
 
         let OpenhclIgvmRecipeDetailsLocalOnly {
             openvmm_hcl_no_strip,

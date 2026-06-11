@@ -20,7 +20,9 @@ use gdma_defs::DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG;
 use gdma_defs::DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION;
 use gdma_defs::DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT;
 use gdma_defs::DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE;
+use gdma_defs::DRIVER_CAP_FLAG_1_VTL2_SELECTIVE_REVOKE_SUB_ON_RESET_EQE;
 use gdma_defs::EqeDataReconfig;
+use gdma_defs::EqeVfReset;
 use gdma_defs::EstablishHwc;
 use gdma_defs::GDMA_EQE_COMPLETION;
 use gdma_defs::GDMA_EQE_HWC_INIT_DATA;
@@ -40,6 +42,8 @@ use gdma_defs::GdmaCreateQueueResp;
 use gdma_defs::GdmaDestroyDmaRegionReq;
 use gdma_defs::GdmaDevId;
 use gdma_defs::GdmaDisableQueueReq;
+#[cfg(test)]
+use gdma_defs::GdmaGenerateResetEventReq;
 use gdma_defs::GdmaGenerateTestEventReq;
 use gdma_defs::GdmaListDevicesResp;
 use gdma_defs::GdmaMsgHdr;
@@ -163,7 +167,9 @@ pub struct GdmaDriver<T: DeviceBacking> {
     hwc_failure: bool,
     db_id: u32,
     state_saved: bool,
-    reset_request_pending: bool,
+    // The option will be set if there is a pending VF reset event. The
+    // option value indicates whether to remove the subordinate VF or not.
+    reset_request_pending: Option<bool>,
 }
 
 const EQ_PAGE: usize = 0;
@@ -212,7 +218,7 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
     fn drop(&mut self) {
         tracing::info!(?self.state_saved, ?self.hwc_failure, ?self.reset_request_pending, "dropping gdma driver");
 
-        if self.reset_request_pending {
+        if self.reset_request_pending.is_some() {
             return;
         }
 
@@ -498,7 +504,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_failure: false,
             state_saved: false,
             db_id,
-            reset_request_pending: false,
+            reset_request_pending: None,
         };
 
         this.push_rqe();
@@ -528,7 +534,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             anyhow::bail!("cannot save/restore after HWC failure");
         }
 
-        if self.reset_request_pending {
+        if self.reset_request_pending.is_some() {
             anyhow::bail!("cannot save/restore with HWC reset request pending");
         }
 
@@ -677,7 +683,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_failure: false,
             state_saved: false,
             db_id: db_id as u32,
-            reset_request_pending: false,
+            reset_request_pending: None,
         };
 
         this.eq.arm();
@@ -693,7 +699,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         ms_elapsed: u32,
     ) {
         // Don't report timeout once HWC reset request is pending, SoC will not respond.
-        if self.reset_request_pending {
+        if self.reset_request_pending.is_some() {
             return;
         }
         // Perform initial check for ownership, failing without wait if device
@@ -790,7 +796,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         self.link_toggle.drain(..).collect()
     }
 
-    pub fn get_reset_request_pending(&self) -> bool {
+    pub fn get_reset_request_pending(&self) -> Option<bool> {
         self.reset_request_pending
     }
 
@@ -846,7 +852,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         dev_id: GdmaDevId,
         req: Req,
     ) -> anyhow::Result<(Resp, u32)> {
-        if self.reset_request_pending {
+        if self.reset_request_pending.is_some() {
             anyhow::bail!("HWC reset request pending");
         }
         if self.hwc_failure {
@@ -1040,9 +1046,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     }
                 }
                 GDMA_EQE_HWC_RESET_REQUEST => {
-                    // No data is supplied for HWC reset request events.
-                    tracing::info!("HWC reset request event");
-                    self.reset_request_pending = true;
+                    let data = EqeVfReset::read_from_prefix(&eqe.data[..]).unwrap().0;
+                    let revoke_vtl0_vf = data.revoke_vtl0_vf();
+                    tracing::info!(revoke_vtl0_vf, "HWC VF reset request");
+                    self.reset_request_pending = Some(revoke_vtl0_vf);
                 }
                 ty => tracing::error!(ty, "unknown eq event"),
             }
@@ -1236,12 +1243,14 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     #[cfg(test)]
     #[tracing::instrument(skip(self), level = "debug", err)]
-    pub async fn generate_reset_request_eqe(&mut self) -> anyhow::Result<()> {
+    pub async fn generate_reset_request_eqe(&mut self, revoke_vtl0_vf: bool) -> anyhow::Result<()> {
+        let reset = EqeVfReset::new().with_revoke_vtl0_vf(revoke_vtl0_vf);
         self.request::<_, ()>(
             GdmaRequestType::GDMA_GENERATE_RESET_REQUEST_EQE.0,
             HWC_DEV_ID,
-            GdmaGenerateTestEventReq {
+            GdmaGenerateResetEventReq {
                 queue_index: self.eq.id(),
+                data: reset,
             },
         )
         .await?;
@@ -1259,7 +1268,8 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 | DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE
                 | DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG
                 | DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION
-                | DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE,
+                | DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE
+                | DRIVER_CAP_FLAG_1_VTL2_SELECTIVE_REVOKE_SUB_ON_RESET_EQE,
             os_type: gdma_defs::OS_TYPE_OHCL,
             os_ver_major: ver.major(),
             os_ver_minor: ver.minor(),

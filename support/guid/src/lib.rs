@@ -97,8 +97,18 @@ impl Guid {
         }
     }
 
-    /// Helper used by `from_str_private`, `from_str`, and `TryFrom<&[u8]>`.
-    const fn parse(value: &[u8]) -> Result<Self, ParseError> {
+    /// Return a new GUID from a byte slice in mixed-endian format.
+    pub fn from_slice(bytes: &[u8; 16]) -> Self {
+        Guid {
+            data1: u32::from_le_bytes(<[u8; 4]>::try_from(&bytes[0..4]).unwrap()),
+            data2: u16::from_le_bytes(<[u8; 2]>::try_from(&bytes[4..6]).unwrap()),
+            data3: u16::from_le_bytes(<[u8; 2]>::try_from(&bytes[6..8]).unwrap()),
+            data4: <[u8; 8]>::try_from(&bytes[8..16]).unwrap(),
+        }
+    }
+
+    /// Return a new GUID from its string representation as UTF-8 bytes.
+    pub const fn parse(value: &[u8]) -> Result<Self, ParseError> {
         // Slicing is not possible in const fn, so use an index offset.
         let offset = if value.len() == 38 {
             if value[0] != b'{' || value[37] != b'}' {
@@ -363,5 +373,16 @@ mod tests {
         assert_eq!(guid, TEST_GUID);
         const TEST_BRACED_GUID: Guid = guid!("{cf127acc-c960-41e4-9b1e-513e8a89147d}");
         assert_eq!(guid, TEST_BRACED_GUID);
+    }
+
+    #[test]
+    fn test_from_slice() {
+        let bytes = [
+            0x3, 0x2, 0x1, 0x0, 0x5, 0x4, 0x7, 0x6, 0x8, 0x9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf,
+        ];
+        let guid = Guid::from_slice(&bytes);
+
+        const TEST_GUID: Guid = guid!("00010203-0405-0607-0809-0a0b0c0d0e0f");
+        assert_eq!(guid, TEST_GUID);
     }
 }

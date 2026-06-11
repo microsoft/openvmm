@@ -4,6 +4,7 @@
 //! RSA implementation using OpenSSL.
 
 use super::RsaError;
+use super::RsaPublicKeyComponents;
 use crate::HashAlgorithm;
 
 fn err(err: openssl::error::ErrorStack, op: &'static str) -> RsaError {
@@ -29,6 +30,7 @@ impl RsaKeyPairInner {
         Ok(Self(pkey))
     }
 
+    #[cfg(any(test, feature = "test_helpers"))]
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
         self.0
             .private_key_to_pkcs8()
@@ -63,6 +65,26 @@ impl RsaKeyPairInner {
         signer
             .set_rsa_padding(openssl::rsa::Padding::PKCS1)
             .map_err(|e| err(e, "setting RSA padding"))?;
+        signer.update(data).map_err(|e| err(e, "signer update"))?;
+        signer.sign_to_vec().map_err(|e| err(e, "signer sign"))
+    }
+
+    pub fn pss_sign(
+        &self,
+        data: &[u8],
+        hash_algorithm: HashAlgorithm,
+    ) -> Result<Vec<u8>, RsaError> {
+        let mut signer = openssl::sign::Signer::new(hash_algorithm.into(), &self.0)
+            .map_err(|e| err(e, "creating signer"))?;
+        signer
+            .set_rsa_padding(openssl::rsa::Padding::PKCS1_PSS)
+            .map_err(|e| err(e, "setting RSA padding"))?;
+        signer
+            .set_rsa_mgf1_md(hash_algorithm.into())
+            .map_err(|e| err(e, "setting MGF1 hash"))?;
+        signer
+            .set_rsa_pss_saltlen(openssl::sign::RsaPssSaltlen::DIGEST_LENGTH)
+            .map_err(|e| err(e, "setting PSS salt length"))?;
         signer.update(data).map_err(|e| err(e, "signer update"))?;
         signer.sign_to_vec().map_err(|e| err(e, "signer sign"))
     }
@@ -125,18 +147,42 @@ impl RsaPublicKeyInner {
             .map_err(|e| err(e, "verifier verify"))
     }
 
+    pub fn pss_verify(
+        &self,
+        message: &[u8],
+        signature: &[u8],
+        hash_algorithm: HashAlgorithm,
+    ) -> Result<bool, RsaError> {
+        let mut verifier = openssl::sign::Verifier::new(hash_algorithm.into(), &self.0)
+            .map_err(|e| err(e, "creating verifier"))?;
+        verifier
+            .set_rsa_padding(openssl::rsa::Padding::PKCS1_PSS)
+            .map_err(|e| err(e, "setting RSA padding"))?;
+        verifier
+            .set_rsa_mgf1_md(hash_algorithm.into())
+            .map_err(|e| err(e, "setting MGF1 hash"))?;
+        verifier
+            .set_rsa_pss_saltlen(openssl::sign::RsaPssSaltlen::DIGEST_LENGTH)
+            .map_err(|e| err(e, "setting PSS salt length"))?;
+        verifier
+            .update(message)
+            .map_err(|e| err(e, "verifier update"))?;
+        verifier
+            .verify(signature)
+            .map_err(|e| err(e, "verifier verify"))
+    }
+
     pub fn modulus_size(&self) -> usize {
         // TODO: This should use EVP_PKEY_get_params but the openssl crate doesn't expose it
         self.0.rsa().unwrap().size() as usize
     }
 
-    pub fn modulus(&self) -> Vec<u8> {
+    pub fn to_components(&self) -> RsaPublicKeyComponents {
         // TODO: This should use EVP_PKEY_get_params but the openssl crate doesn't expose it
-        self.0.rsa().unwrap().n().to_vec()
-    }
-
-    pub fn public_exponent(&self) -> Vec<u8> {
-        // TODO: This should use EVP_PKEY_get_params but the openssl crate doesn't expose it
-        self.0.rsa().unwrap().e().to_vec()
+        let rsa = self.0.rsa().unwrap();
+        RsaPublicKeyComponents {
+            modulus: rsa.n().to_vec(),
+            public_exponent: rsa.e().to_vec(),
+        }
     }
 }

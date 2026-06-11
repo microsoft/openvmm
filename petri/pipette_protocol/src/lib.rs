@@ -13,8 +13,8 @@ use mesh::pipe::WritePipe;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 
-/// The port used for the pipette connection over AF_VSOCK.
-pub const PIPETTE_VSOCK_PORT: u32 = 0x1337;
+/// The port used for the pipette connection (AF_VSOCK or TCP).
+pub const PIPETTE_PORT: u32 = 0x1337;
 
 /// The bootstrap message sent from the agent to the host.
 #[derive(MeshPayload)]
@@ -76,6 +76,15 @@ pub struct ExecuteRequest {
     pub clear_env: bool,
     /// If set, chroot into this directory before exec (Linux only).
     pub chroot: Option<String>,
+    /// If true, allocate a PTY for the process. Stdin, stdout, and stderr
+    /// will all be connected to the PTY secondary. The primary side is
+    /// piped back through the stdout pipe. This enables terminal features
+    /// like signal propagation (Ctrl-C) and line editing.
+    pub allocate_pty: bool,
+    /// If true, redirect stderr to the stdout pipe. The stderr pipe
+    /// (if any) will receive no data. This is useful when callers want
+    /// interleaved stdout+stderr without needing a PTY.
+    pub combine_stderr: bool,
 }
 
 impl std::fmt::Debug for ExecuteRequest {
@@ -90,6 +99,8 @@ impl std::fmt::Debug for ExecuteRequest {
             .field("env", &self.env)
             .field("clear_env", &self.clear_env)
             .field("chroot", &self.chroot)
+            .field("allocate_pty", &self.allocate_pty)
+            .field("combine_stderr", &self.combine_stderr)
             .finish()
     }
 }

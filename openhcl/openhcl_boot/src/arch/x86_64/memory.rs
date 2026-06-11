@@ -87,7 +87,7 @@ pub fn setup_vtl2_memory(
         IsolationType::Snp | IsolationType::Tdx => Some(init_local_map(
             loader_defs::paravisor::PARAVISOR_LOCAL_MAP_VA,
         )),
-        IsolationType::None | IsolationType::Vbs => None,
+        _ => None,
     };
 
     // Make sure imported regions are in increasing order.

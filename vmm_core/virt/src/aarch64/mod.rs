@@ -6,7 +6,9 @@ pub mod gic_v2m;
 pub mod vm;
 pub mod vp;
 
+use crate::IsolationType;
 use crate::state::StateElement;
+use aarch64defs::Vendor;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
 use thiserror::Error;
@@ -32,8 +34,12 @@ impl Aarch64InitialRegs {
 
 #[derive(Debug, Inspect)]
 pub struct Aarch64PartitionCapabilities {
+    /// Isolation type for the partition.
+    pub isolation: IsolationType,
     /// Whether the processor supports aarch32 execution at EL0.
     pub supports_aarch32_el0: bool,
+    #[inspect(display)]
+    pub vendor: Vendor,
 }
 
 #[derive(Error, Debug)]
