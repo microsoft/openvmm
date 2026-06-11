@@ -1143,7 +1143,10 @@ impl HclNetworkVFManagerWorker {
                     }
                 }
                 NextWorkItem::ManaDeviceRemoved { surprise_remove } => {
-                    assert!(!self.is_shutdown_active);
+                    if self.is_shutdown_active {
+                        tracing::warn!(vtl2_vfid, "MANA device removal during shutdown");
+                        continue;
+                    }
                     tracing::info!("VTL2 VF being removed");
                     *self.guest_state.vtl0_vfid.lock().await = None;
                     // Revoke the VTL0 VF even for surprise remove of VTL2 device to keep
