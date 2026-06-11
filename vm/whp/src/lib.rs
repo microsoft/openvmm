@@ -169,7 +169,10 @@ impl WHvError {
     pub const WHV_E_UNKNOWN_CAPABILITY: Self =
         Self(NonZeroI32::new(api::WHV_E_UNKNOWN_CAPABILITY).unwrap());
 
-    const WHV_E_INSUFFICIENT_BUFFER: Self =
+    pub const WHV_E_UNKNOWN_PROPERTY: Self =
+        Self(NonZeroI32::new(api::WHV_E_UNKNOWN_PROPERTY).unwrap());
+
+    pub const WHV_E_INSUFFICIENT_BUFFER: Self =
         Self(NonZeroI32::new(api::WHV_E_INSUFFICIENT_BUFFER).unwrap());
 
     const ERROR_BAD_PATHNAME: Self = Self(NonZeroI32::new(ERROR_BAD_PATHNAME as i32).unwrap());
@@ -219,6 +222,7 @@ pub enum PartitionProperty<'a> {
     #[cfg(target_arch = "x86_64")]
     ExceptionExitBitmap(u64),
     SeparateSecurityDomain(bool),
+    NestedVirtualization(bool),
     #[cfg(target_arch = "x86_64")]
     X64MsrExitBitmap(abi::WHV_X64_MSR_EXIT_BITMAP),
     PrimaryNumaNode(u16),
@@ -382,6 +386,10 @@ impl Partition {
             PartitionProperty::SeparateSecurityDomain(val) => {
                 abi_bool = (*val).into();
                 set(partition_prop::SeparateSecurityDomain, &abi_bool)
+            }
+            PartitionProperty::NestedVirtualization(val) => {
+                abi_bool = (*val).into();
+                set(partition_prop::NestedVirtualization, &abi_bool)
             }
             #[cfg(target_arch = "x86_64")]
             PartitionProperty::X64MsrExitBitmap(val) => set(partition_prop::X64MsrExitBitmap, val),

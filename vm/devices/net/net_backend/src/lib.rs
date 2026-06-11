@@ -188,6 +188,12 @@ pub trait BackendQueueStats {
     fn tx_errors(&self) -> Counter;
     fn rx_packets(&self) -> Counter;
     fn tx_packets(&self) -> Counter;
+    fn tx_vlan_packets(&self) -> Counter {
+        Counter::new()
+    }
+    fn rx_vlan_packets(&self) -> Counter {
+        Counter::new()
+    }
 }
 
 /// A single TX/RX data path for sending and receiving network packets.
@@ -281,6 +287,26 @@ pub trait BufferAccess {
     }
 }
 
+pub const ETHERNET_HEADER_LEN: u32 = 14;
+pub const ETHERNET_VLAN_HEADER_LEN: u32 = 18;
+
+pub const IPV4_MIN_HEADER_LEN: u16 = 20;
+pub const IPV6_MIN_HEADER_LEN: u16 = 40;
+
+#[bitfield(u16)]
+pub struct VlanMetadata {
+    /// Priority for 802.1Q.
+    #[bits(3)]
+    pub priority: u8,
+    /// In pretty much every circumstance this is false. When
+    /// it is used, setting DEI will inform switches/routing infra
+    /// that this can be dropped before higher priority traffic.
+    pub drop_eligible_indicator: bool,
+    /// The 802.1Q ID for this transmission.
+    #[bits(12)]
+    pub vlan_id: u16,
+}
+
 /// A receive buffer ID.
 #[derive(Debug, Copy, Clone)]
 #[repr(transparent)]
@@ -319,6 +345,10 @@ pub struct RxMetadata {
     /// If non-zero, this is a GSO/LRO packet and this value is the MSS
     /// (maximum segment size) that should be advertised to the guest.
     pub gso_size: u16,
+    /// Information about 802.1Q VLAN tagging. When a vlan is in use, this structure
+    /// is populated. Only applies when traffic is being received over an L2 connection,
+    /// so L3-only or above traffic will not use this option.
+    pub vlan: Option<VlanMetadata>,
 }
 
 impl Default for RxMetadata {
@@ -334,6 +364,7 @@ impl Default for RxMetadata {
             l3_len: 0,
             l4_len: 0,
             gso_size: 0,
+            vlan: None,
         }
     }
 }
@@ -412,10 +443,17 @@ pub struct TxMetadata {
     /// The length of the TCP header. Only guaranteed to be set if various
     /// offload flags are set.
     pub l4_len: u8,
+    /// The offset into the buffer where the L4 header begins (TCP or UDP). Only
+    /// expected to be set if offload (checksum and/or segmentation) flags are set.
+    pub transport_header_offset: u16,
     /// The maximum segment size, used for segmentation offload (TSO or USO).
     /// Only guaranteed to be set if [`TxFlags::offload_tcp_segmentation`] or
     /// [`TxFlags::offload_udp_segmentation`] is set.
     pub max_segment_size: u16,
+    /// Information about 802.1Q VLAN tagging. When a vlan is in use, this structure
+    /// is populated. Only applies when traffic is being sent over an L2 connection,
+    /// so L3-only or above traffic will not use this option.
+    pub vlan: Option<VlanMetadata>,
 }
 
 /// Flags affecting transmit behavior.
@@ -460,7 +498,9 @@ impl Default for TxMetadata {
             l2_len: 0,
             l3_len: 0,
             l4_len: 0,
+            transport_header_offset: 0,
             max_segment_size: 0,
+            vlan: None,
         }
     }
 }

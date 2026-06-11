@@ -23,10 +23,13 @@ pub use igvm_attest::Error as IgvmAttestError;
 pub use igvm_attest::IgvmAttestRequestHelper;
 pub use igvm_attest::ak_cert::parse_response as parse_ak_cert_response;
 
+use crate::jwt::JwtError;
+use crate::jwt::JwtHelper;
 use ::vmgs::EncryptionAlgorithm;
 use ::vmgs::GspType;
 use ::vmgs::Vmgs;
 use crypto::rsa::RsaKeyPair;
+use crypto::sha_256::sha_256;
 use cvm_tracing::CVM_ALLOWED;
 use get_protocol::dps_json::GuestStateEncryptionPolicy;
 use guest_emulation_transport::GuestEmulationTransportClient;
@@ -40,6 +43,7 @@ use key_protector::GetKeysFromKeyProtectorError;
 use key_protector::KeyProtectorExt as _;
 use mesh::MeshPayload;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::VmgsProvisioner;
 use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
 use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
@@ -47,6 +51,8 @@ use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::SecurityProfile;
 use pal_async::local::LocalDriver;
 use secure_key_release::VmgsEncryptionKeys;
+use serde::Deserialize;
+use serde::Serialize;
 use static_assertions::const_assert_eq;
 use std::fmt::Debug;
 use tee_call::TeeCall;
@@ -79,6 +85,8 @@ enum AttestationErrorInner {
     UnlockVmgsDataStore(#[source] UnlockVmgsDataStoreError),
     #[error("failed to read guest secret key from vmgs")]
     ReadGuestSecretKey(#[source] vmgs::ReadFromVmgsError),
+    #[error("failed to verify VMGS provenance")]
+    Provenance(#[source] ProvenanceError),
 }
 
 #[derive(Debug, Error)]
@@ -112,22 +120,22 @@ enum GetDerivedKeysError {
     #[error("failed to get derived key by id")]
     GetDerivedKeyById(#[source] GetDerivedKeysByIdError),
     #[error("failed to derive an ingress key")]
-    DeriveIngressKey(#[source] crypto::kdf::KdfError),
+    DeriveIngressKey(#[source] crypto::kbkdf::KbkdfError),
     #[error("failed to derive an egress key")]
-    DeriveEgressKey(#[source] crypto::kdf::KdfError),
+    DeriveEgressKey(#[source] crypto::kbkdf::KbkdfError),
 }
 
 #[derive(Debug, Error)]
 enum GetDerivedKeysByIdError {
     #[error("failed to derive an egress key based on current vm bios guid")]
-    DeriveEgressKeyUsingCurrentVmId(#[source] crypto::kdf::KdfError),
+    DeriveEgressKeyUsingCurrentVmId(#[source] crypto::kbkdf::KbkdfError),
     #[error("invalid derived egress key size {key_size}, expected {expected_size}")]
     InvalidDerivedEgressKeySize {
         key_size: usize,
         expected_size: usize,
     },
     #[error("failed to derive an ingress key based on key protector Id from vmgs")]
-    DeriveIngressKeyUsingKeyProtectorId(#[source] crypto::kdf::KdfError),
+    DeriveIngressKeyUsingKeyProtectorId(#[source] crypto::kbkdf::KbkdfError),
     #[error("invalid derived egress key size {key_size}, expected {expected_size}")]
     InvalidDerivedIngressKeySize {
         key_size: usize,
@@ -159,6 +167,32 @@ enum PersistAllKeyProtectorsError {
     WriteKeyProtectorById(#[source] vmgs::WriteToVmgsError),
 }
 
+#[derive(Debug, Error)]
+enum ProvenanceError {
+    #[error("failed to decode provenance doc")]
+    DecodeProvenanceDoc(#[source] JwtError),
+    #[error("failed to verify JWT signature")]
+    VerifySignature(#[source] JwtError),
+    #[error("invalid signature")]
+    InvalidSignature,
+    #[error("missing leaf certificate subject common name")]
+    MissingLeafCertSubjectName,
+    #[error("invalid root certificate")]
+    InvalidRootCert,
+    #[error("failed to convert VMGSID data")]
+    InvalidVmgsidData(#[source] std::str::Utf8Error),
+    #[error("failed to parse VMGSID seed data")]
+    ParseVmgsidSeedData,
+    #[error("failed to decode VMGSID seed data")]
+    DecodeVmgsidData(#[source] hex::FromHexError),
+    #[error("X509 certificate error")]
+    X509Error(#[source] crypto::x509::X509Error),
+    #[error("SP800-108 KDF error")]
+    KdfError(#[source] crypto::kbkdf::KbkdfError),
+    #[error("failed to parse VMGSID")]
+    ParseVmgsid(#[source] guid::ParseError),
+}
+
 // Operation types for provisioning telemetry.
 #[derive(Debug)]
 enum LogOpType {
@@ -175,8 +209,8 @@ fn derive_key(
     key: &[u8],
     context: &[u8],
     label: &[u8],
-) -> Result<[u8; AES_GCM_KEY_LENGTH], crypto::kdf::KdfError> {
-    let output = crypto::kdf::kbkdf_hmac_sha256(key, context, label, AES_GCM_KEY_LENGTH)?;
+) -> Result<[u8; AES_GCM_KEY_LENGTH], crypto::kbkdf::KbkdfError> {
+    let output = crypto::kbkdf::kbkdf_hmac_sha256(key, context, label, AES_GCM_KEY_LENGTH)?;
     Ok(output.try_into().unwrap())
 }
 
@@ -246,6 +280,8 @@ pub enum AttestationType {
     Tdx,
     /// Use the VBS TEE for attestation.
     Vbs,
+    /// Use the CCA TEE for attestation,
+    Cca,
     /// Use trusted host-based attestation.
     Host,
 }
@@ -284,10 +320,25 @@ async fn try_unlock_vmgs(
         Ok(VmgsEncryptionKeys::default())
     };
 
-    let retry = match skr_response {
+    let retry = match &skr_response {
         Ok(_) => false,
-        Err((_, r)) => r,
+        Err((_, r)) => *r,
     };
+
+    let skip_hw_unsealing = matches!(
+        &skr_response,
+        Err((
+            secure_key_release::RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
+                igvm_attest::key_release::KeyReleaseError::ParseHeader(
+                    igvm_attest::Error::Attestation {
+                        skip_hw_unsealing_signal: true,
+                        ..
+                    },
+                ),
+            ),
+            _,
+        ))
+    );
 
     let VmgsEncryptionKeys {
         ingress_rsa_kek,
@@ -350,6 +401,7 @@ async fn try_unlock_vmgs(
         tcb_version,
         guest_state_encryption_policy,
         strict_encryption_policy,
+        skip_hw_unsealing,
     )
     .await
     .map_err(|e| {
@@ -587,7 +639,7 @@ async fn unlock_vmgs_data_store(
         return Ok(());
     };
 
-    if !constant_time_eq::constant_time_eq(&new_ingress_key, &new_egress_key) {
+    if !constant_time_eq::constant_time_eq_32(&new_ingress_key, &new_egress_key) {
         tracing::trace!(CVM_ALLOWED, "EgressKey is different than IngressKey");
         new_key = true;
     }
@@ -691,6 +743,7 @@ async fn get_derived_keys(
     tcb_version: Option<u64>,
     guest_state_encryption_policy: GuestStateEncryptionPolicy,
     strict_encryption_policy: bool,
+    skip_hw_unsealing: bool,
 ) -> Result<DerivedKeyResult, GetDerivedKeysError> {
     tracing::info!(
         CVM_ALLOWED,
@@ -911,7 +964,36 @@ async fn get_derived_keys(
                 }
             });
 
-            (hardware_key_protector, hardware_derived_keys)
+            // When the IGVM agent signals skip_hw_unsealing, set both
+            // hardware_key_protector and hardware_derived_keys to None
+            // so the code falls through to the scheme-specific error below.
+            // When hardware sealing keys were actually available, additionally
+            // emit a warning and a host event that make the skip visible.
+            if skip_hw_unsealing {
+                if hardware_key_protector.is_some() && hardware_derived_keys.is_some() {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        "Skipping hardware unsealing of VMGS DEK as signaled by IGVM agent"
+                    );
+                    get.event_log_fatal(
+                        guest_emulation_transport::api::EventLogId::DEK_HARDWARE_UNSEALING_SKIPPED,
+                    )
+                    .await;
+
+                    (None, None)
+                } else {
+                    tracing::info!(
+                        CVM_ALLOWED,
+                        hardware_key_protector = hardware_key_protector.is_some(),
+                        hardware_derived_keys = hardware_derived_keys.is_some(),
+                        "skip_hw_unsealing signaled but hardware key data not available, \
+                         falling through to scheme-specific error"
+                    );
+                    (None, None)
+                }
+            } else {
+                (hardware_key_protector, hardware_derived_keys)
+            }
         } else {
             (None, None)
         };
@@ -940,12 +1022,12 @@ async fn get_derived_keys(
             });
         } else {
             if no_kek && found_dek {
-                Err(GetDerivedKeysError::GetIngressKeyFromKpFailed)?
+                return Err(GetDerivedKeysError::GetIngressKeyFromKpFailed);
             } else if no_gsp && requires_gsp {
-                Err(GetDerivedKeysError::GetIngressKeyFromKGspFailed)?
+                return Err(GetDerivedKeysError::GetIngressKeyFromKGspFailed);
             } else {
                 // no_gsp_by_id && requires_gsp_by_id
-                Err(GetDerivedKeysError::GetIngressKeyFromKGspByIdFailed)?
+                return Err(GetDerivedKeysError::GetIngressKeyFromKGspByIdFailed);
             }
         }
     }
@@ -1361,6 +1443,99 @@ async fn persist_all_key_protectors(
     Ok(())
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct ProvenanceJwtBody {
+    #[serde(rename = "VMGSID")]
+    pub vmgsid: String,
+}
+
+/// Read the VMGS provenance doc and produce runtime claims
+pub fn get_provenance_claims(prov_file: &[u8]) -> Result<VmgsProvisioner, Error> {
+    let jwt = JwtHelper::<ProvenanceJwtBody>::from(prov_file)
+        .map_err(ProvenanceError::DecodeProvenanceDoc)
+        .map_err(AttestationErrorInner::Provenance)?;
+    let valid = jwt
+        .verify_signature()
+        .map_err(ProvenanceError::VerifySignature)
+        .map_err(AttestationErrorInner::Provenance)?;
+
+    if !valid {
+        return Err(Error(AttestationErrorInner::Provenance(
+            ProvenanceError::InvalidSignature,
+        )));
+    }
+
+    let cert_chain = jwt
+        .cert_chain()
+        .map_err(ProvenanceError::DecodeProvenanceDoc)
+        .map_err(AttestationErrorInner::Provenance)?;
+    let leaf = &cert_chain[0];
+
+    let sn = leaf
+        .subject_common_name()
+        .map_err(ProvenanceError::X509Error)
+        .map_err(AttestationErrorInner::Provenance)?
+        .ok_or(AttestationErrorInner::Provenance(
+            ProvenanceError::MissingLeafCertSubjectName,
+        ))?;
+
+    let root = cert_chain.last().ok_or(AttestationErrorInner::Provenance(
+        ProvenanceError::InvalidRootCert,
+    ))?;
+    let digest = sha_256(
+        &(root
+            .to_der()
+            .map_err(ProvenanceError::X509Error)
+            .map_err(AttestationErrorInner::Provenance)?),
+    );
+    let signer = format!("did:x509:0:sha256:{}:subject:{}", hex::encode(digest), sn);
+    let vmgsid = jwt.jwt.body.vmgsid;
+
+    Ok(VmgsProvisioner {
+        id: Guid::parse(vmgsid.as_bytes())
+            .map_err(ProvenanceError::ParseVmgsid)
+            .map_err(AttestationErrorInner::Provenance)?,
+        signer,
+    })
+}
+
+/// Derive the expected VMGSID from the encrypted seed data.
+pub fn derive_vmgsid(seed_file: &[u8]) -> Result<Guid, Error> {
+    let seed_file_str = str::from_utf8(seed_file)
+        .map_err(ProvenanceError::InvalidVmgsidData)
+        .map_err(AttestationErrorInner::Provenance)?;
+
+    // The seed file has four fields separated by commas, but the fourth field
+    // is just the length of the first field. Ignore any fields beyond the first
+    // three (so the provisioning service can change the format later without
+    // breaking anything).
+    let parts = seed_file_str
+        .split(',')
+        .map(|s| s.trim())
+        .collect::<Vec<&str>>();
+    if parts.len() < 3 {
+        Err(AttestationErrorInner::Provenance(
+            ProvenanceError::ParseVmgsidSeedData,
+        ))?;
+    }
+
+    let seed = hex::decode(parts[0])
+        .map_err(ProvenanceError::DecodeVmgsidData)
+        .map_err(AttestationErrorInner::Provenance)?;
+    let label = hex::decode(parts[1])
+        .map_err(ProvenanceError::DecodeVmgsidData)
+        .map_err(AttestationErrorInner::Provenance)?;
+    let context = hex::decode(parts[2])
+        .map_err(ProvenanceError::DecodeVmgsidData)
+        .map_err(AttestationErrorInner::Provenance)?;
+
+    let key = crypto::kbkdf::kbkdf_hmac_sha256(&seed, &context, &label, 32)
+        .map_err(ProvenanceError::KdfError)
+        .map_err(AttestationErrorInner::Provenance)?;
+
+    Ok(Guid::from_slice(&key[0..16].try_into().unwrap()))
+}
+
 /// Module that implements the mock [`TeeCall`] for testing purposes
 #[cfg(test)]
 pub mod test_utils {
@@ -1610,20 +1785,6 @@ mod tests {
                 None,
             )
             .await
-        }
-    }
-
-    fn new_attestation_vm_config() -> AttestationVmConfig {
-        AttestationVmConfig {
-            current_time: None,
-            root_cert_thumbprint: String::new(),
-            console_enabled: false,
-            interactive_console_enabled: false,
-            secure_boot: false,
-            tpm_enabled: true,
-            tpm_persisted: true,
-            filtered_vpci_devices_allowed: false,
-            vm_unique_id: String::new(),
         }
     }
 
@@ -2300,7 +2461,7 @@ mod tests {
         let get_pair = new_test_get(driver, false, None).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = new_attestation_vm_config();
+        let att_cfg = Default::default();
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
         assert!(!vmgs.encrypted());
@@ -2339,7 +2500,7 @@ mod tests {
         let get_pair = new_test_get(driver, true, None).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = new_attestation_vm_config();
+        let att_cfg = Default::default();
         let tee = MockTeeCall::new(0x1234);
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
@@ -2425,7 +2586,7 @@ mod tests {
         let get_pair = new_test_get(driver, true, Some(plan)).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = new_attestation_vm_config();
+        let att_cfg = Default::default();
         let tee = MockTeeCall::new(0x1234);
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
@@ -2505,7 +2666,7 @@ mod tests {
         let get_pair = new_test_get(driver, true, Some(plan)).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = new_attestation_vm_config();
+        let att_cfg = Default::default();
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
         assert!(!vmgs.encrypted());
@@ -2572,6 +2733,90 @@ mod tests {
     }
 
     #[async_test]
+    async fn init_sec_secure_key_release_skip_hw_unsealing(driver: DefaultDriver) {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        // IGVM attest is required
+        // KEY_RELEASE succeeds on first boot, fails with skip_hw_unsealing on second boot.
+        // WRAPPED_KEY is not in the plan, so it falls back to default (success) every time.
+        let mut plan = IgvmAgentTestPlan::default();
+        plan.insert(
+            IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+            VecDeque::from([
+                IgvmAgentAction::RespondSuccess,
+                IgvmAgentAction::RespondFailureSkipHwUnsealing,
+            ]),
+        );
+
+        let get_pair = new_test_get(driver, true, Some(plan)).await;
+
+        let bios_guid = Guid::new_random();
+        let att_cfg = Default::default();
+
+        // Ensure VMGS is not encrypted and agent data is empty before the call
+        assert!(!vmgs.encrypted());
+
+        // Obtain a LocalDriver briefly, then run the async flow under the pool executor
+        let tee = MockTeeCall::new(0x1234);
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        let res = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver.clone(),
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+
+        // VMGS is now encrypted and HWKP is updated.
+        assert!(vmgs.encrypted());
+        assert!(!hardware_key_protector_is_empty(&mut vmgs).await);
+        // Agent data should be the same as `key_reference` in the WRAPPED_KEY response.
+        let key_reference = serde_json::json!({
+            "key_info": {
+                "host": "name"
+            },
+            "attestation_info": {
+                "host": "attestation_name"
+            }
+        });
+        let key_reference = serde_json::to_string(&key_reference).unwrap();
+        let key_reference = key_reference.as_bytes();
+        let mut expected_agent_data = [0u8; AGENT_DATA_MAX_SIZE];
+        expected_agent_data[..key_reference.len()].copy_from_slice(key_reference);
+        assert_eq!(res.agent_data.unwrap(), expected_agent_data.to_vec());
+        // Secure key should be None without pre-provisioning
+        assert!(res.guest_secret_key.is_none());
+
+        // Second call: KEY_RELEASE fails with skip_hw_unsealing signal.
+        // The skip_hw_unsealing signal causes the hardware unsealing fallback to be
+        // skipped, so VMGS unlock should fail.
+        // NOTE: The test relies on the test GED to return failing KEY_RELEASE response
+        // with retry recommendation as false so the retry loop terminates immediately.
+        // Otherwise, the test will get stuck on timer.sleep() as the driver is not
+        // progressed.
+        let result = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver,
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    #[async_test]
     async fn init_sec_secure_key_release_no_hw_sealing_backup(driver: DefaultDriver) {
         let mut vmgs = new_formatted_vmgs().await;
 
@@ -2598,7 +2843,7 @@ mod tests {
         let get_pair = new_test_get(driver, true, Some(plan)).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = new_attestation_vm_config();
+        let att_cfg = Default::default();
         // Without hardware sealing support
         let tee = MockTeeCallNoGetDerivedKey {};
 
@@ -2657,5 +2902,38 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_provenance_claims() {
+        // Test JWT: not a valid credential or secret for anything.
+        const PROVENANCE_DOC: &str = include_str!("../test_data/valid_jwt");
+        let doc = PROVENANCE_DOC.trim().strip_prefix("placeholder_").unwrap();
+        let claims = get_provenance_claims(doc.as_bytes()).unwrap();
+        assert_eq!(
+            claims.id,
+            guid::guid!("03020100-0504-0706-0809-0a0b0c0d0e0f")
+        );
+        assert_eq!(
+            claims.signer,
+            "did:x509:0:sha256:ea76599d86897382aa519ff2bc0fa6b9c15d60da2ebe53e72139cd317b0797ed:subject:fican.cvmprovisioningservice.core.azure-test.net"
+        );
+    }
+
+    #[test]
+    fn test_derive_vmgsid() {
+        const SEED_DOC_1: &str = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F,4C6162656C5F435053,436F6E746578745F564D4753,32";
+        const SEED_DOC_2: &str = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F,4C6162656C5F435053,436F6E746578745F564D4753";
+        const SEED_DOC_3: &str = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F,4C6162656C5F435053,436F6E746578745F564D4753,32,ABCDEF";
+        const GUID: Guid = guid::guid!("b0587f2d-11e6-9f66-1af4-8b4a619147c8");
+
+        let vmgsid1 = derive_vmgsid(SEED_DOC_1.as_bytes()).unwrap();
+        assert_eq!(vmgsid1, GUID);
+
+        let vmgsid2 = derive_vmgsid(SEED_DOC_2.as_bytes()).unwrap();
+        assert_eq!(vmgsid2, GUID);
+
+        let vmgsid3 = derive_vmgsid(SEED_DOC_3.as_bytes()).unwrap();
+        assert_eq!(vmgsid3, GUID);
     }
 }

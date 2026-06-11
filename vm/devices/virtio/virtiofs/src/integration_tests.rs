@@ -284,6 +284,8 @@ impl TestHarness {
             minor: FUSE_KERNEL_MINOR_VERSION,
             max_readahead: 0,
             flags: 0,
+            flags2: 0,
+            unused: [0; 11],
         };
 
         let resp_size = OUT_HEADER_SIZE + size_of::<fuse_init_out>() as u32;
@@ -485,5 +487,49 @@ async fn lookup_nonexistent_returns_enoent(driver: DefaultDriver) {
     assert_eq!(
         out_header.error, -2,
         "LOOKUP should return ENOENT for missing file"
+    );
+}
+
+/// When the kernel advertises FUSE_INIT_EXT and FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2,
+/// VirtioFs::init should request that flag and the INIT response should include
+/// it in flags2.
+#[async_test]
+async fn init_negotiates_direct_io_allow_mmap(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable().await;
+
+    // Send FUSE_INIT with FUSE_INIT_EXT set in flags and
+    // FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 advertised in flags2.
+    let init_args = fuse_init_in {
+        major: FUSE_KERNEL_VERSION,
+        minor: FUSE_KERNEL_MINOR_VERSION,
+        max_readahead: 131072,
+        flags: FUSE_INIT_EXT,
+        flags2: FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2,
+        unused: [0; 11],
+    };
+
+    let resp_size = OUT_HEADER_SIZE + size_of::<fuse_init_out>() as u32;
+    let (unique, resp_gpa) =
+        harness.post_fuse_request(0, FUSE_INIT, 0, init_args.as_bytes(), resp_size);
+
+    let (_used_id, used_len) = harness.wait_for_used().await;
+    assert!(used_len > 0, "FUSE_INIT response should not be empty");
+
+    let out_header = harness.read_out_header(resp_gpa);
+    assert_eq!(out_header.unique, unique);
+    assert_eq!(out_header.error, 0, "FUSE_INIT failed");
+
+    let init_out: fuse_init_out = harness.read_response(resp_gpa);
+    assert_eq!(init_out.major, FUSE_KERNEL_VERSION);
+    assert_ne!(
+        init_out.flags & FUSE_INIT_EXT,
+        0,
+        "response should include FUSE_INIT_EXT in flags"
+    );
+    assert_ne!(
+        init_out.flags2 & FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2,
+        0,
+        "VirtioFs should request FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 when kernel advertises it"
     );
 }

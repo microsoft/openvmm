@@ -347,8 +347,8 @@ impl DrainAfterRestore {
 struct QueueHandlerLoop<A: AerHandler, D: DeviceBacking> {
     queue_handler: QueueHandler<A>,
     registers: Arc<DeviceRegisters<D>>,
-    recv_req: Option<mesh::Receiver<Req>>,
-    recv_cmd: Option<mesh::Receiver<Cmd>>,
+    recv_req: mesh::Receiver<Req>,
+    recv_cmd: mesh::Receiver<Cmd>,
     interrupt: DeviceInterrupt,
 }
 
@@ -362,8 +362,8 @@ impl<A: AerHandler, D: DeviceBacking> AsyncRun<()> for QueueHandlerLoop<A, D> {
             self.queue_handler
                 .run(
                     &self.registers,
-                    self.recv_req.take().unwrap(),
-                    self.recv_cmd.take().unwrap(),
+                    &mut self.recv_req,
+                    &mut self.recv_cmd,
                     &mut self.interrupt,
                 )
                 .await;
@@ -523,8 +523,8 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
         let mut task = TaskControl::new(QueueHandlerLoop {
             queue_handler,
             registers,
-            recv_req: Some(recv_req),
-            recv_cmd: Some(recv_cmd),
+            recv_req,
+            recv_cmd,
             interrupt,
         });
         task.insert(spawner, "nvme-queue", ());
@@ -1162,8 +1162,8 @@ impl<A: AerHandler> QueueHandler<A> {
     async fn run(
         &mut self,
         registers: &DeviceRegisters<impl DeviceBacking>,
-        mut recv_req: mesh::Receiver<Req>,
-        mut recv_cmd: mesh::Receiver<Cmd>,
+        recv_req: &mut mesh::Receiver<Req>,
+        recv_cmd: &mut mesh::Receiver<Cmd>,
         interrupt: &mut DeviceInterrupt,
     ) {
         if matches!(

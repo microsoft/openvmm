@@ -7,7 +7,6 @@
 
 /// Artifact declarations
 pub mod artifacts {
-    use petri_artifacts_common::tags::IsVmgsTool;
     use petri_artifacts_core::declare_artifacts;
 
     macro_rules! openvmm_native {
@@ -71,6 +70,16 @@ pub mod artifacts {
         }
     }
 
+    /// Virtio-win driver artifacts from openvmm-deps.
+    pub mod virtio_win {
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// Extracted virtio-win driver package (all OS versions and architectures).
+            VIRTIO_WIN_DRIVERS,
+        }
+    }
+
     /// Host-side tools used by the VMM tests.
     pub mod host_tools {
         use petri_artifacts_core::declare_artifacts;
@@ -115,6 +124,13 @@ pub mod artifacts {
             "aarch64"
         );
 
+        /// Test linux direct bzImage kernel (from OpenVMM deps) for x86_64
+        // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
+        #[cfg(target_arch = "x86_64")]
+        pub const LINUX_DIRECT_TEST_BZIMAGE_NATIVE: petri_artifacts_core::ArtifactHandle<
+            LINUX_DIRECT_TEST_BZIMAGE_X64,
+        > = petri_artifacts_core::ArtifactHandle::new();
+
         declare_artifacts! {
             /// Test linux direct kernel (from OpenVMM deps)
             LINUX_DIRECT_TEST_KERNEL_X64,
@@ -124,6 +140,8 @@ pub mod artifacts {
             LINUX_DIRECT_TEST_KERNEL_AARCH64,
             /// Test linux direct initrd (from OpenVMM deps)
             LINUX_DIRECT_TEST_INITRD_AARCH64,
+            /// Test linux direct bzImage kernel (from OpenVMM deps)
+            LINUX_DIRECT_TEST_BZIMAGE_X64,
             /// PCAT firmware DLL
             PCAT_FIRMWARE_X64,
             /// SVGA firmware DLL
@@ -148,6 +166,10 @@ pub mod artifacts {
 
         impl IsLoadable for LINUX_DIRECT_TEST_INITRD_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
+        }
+
+        impl IsLoadable for LINUX_DIRECT_TEST_BZIMAGE_X64 {
+            const ARCH: MachineArch = MachineArch::X86_64;
         }
 
         impl IsLoadable for PCAT_FIRMWARE_X64 {
@@ -273,6 +295,11 @@ pub mod artifacts {
         }
     }
 
+    /// Azure storage account where test VHDs, ISOs, and VMGS files are stored
+    pub const STORAGE_ACCOUNT: &str = "hvlitetestvhds";
+    /// Azure container where test VHDs, ISOs, and VMGS files are stored
+    pub const CONTAINER: &str = "vhds";
+
     /// Test VHD artifacts
     pub mod test_vhd {
         use crate::tags::IsHostedOnHvliteAzureBlobStore;
@@ -283,6 +310,7 @@ pub mod artifacts {
         use petri_artifacts_common::tags::MachineArch;
         use petri_artifacts_common::tags::OsFlavor;
         use petri_artifacts_core::declare_artifacts;
+        use petri_artifacts_core::declare_blob_artifacts;
 
         declare_artifacts! {
             /// guest_test_uefi.img, built for x86_64 from the in-tree `guest_test_uefi` codebase.
@@ -305,7 +333,7 @@ pub mod artifacts {
         // built just-in-time, using the code that is present in-tree, under
         // `guest_test_uefi`.
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Generation 1 windows test image
             GEN1_WINDOWS_DATA_CENTER_CORE2022_X64
         }
@@ -322,7 +350,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Gen1WindowsDataCenterCore2022X64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Generation 2 windows test image
             GEN2_WINDOWS_DATA_CENTER_CORE2022_X64
         }
@@ -339,7 +367,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Gen2WindowsDataCenterCore2022X64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Generation 2 windows test image
             GEN2_WINDOWS_DATA_CENTER_CORE2025_X64
         }
@@ -363,7 +391,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Gen2WindowsDataCenterCore2025X64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// FreeBSD 13.2
             FREE_BSD_13_2_X64
         }
@@ -386,7 +414,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "FreeBsd13_2X64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Ubuntu 24.04 Server X64
             UBUNTU_2404_SERVER_X64
         }
@@ -408,7 +436,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Ubuntu2404ServerX64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Ubuntu 25.04 Server X64
             UBUNTU_2504_SERVER_X64
         }
@@ -430,7 +458,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Ubuntu2504ServerX64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Alpine Linux 3.23.2 x64 UEFI nocloud cloud-init
             /// NOTE: The image on the alpine website is qcow2 and must be converted to a fixed vhd.
             ALPINE_3_23_X64
@@ -453,7 +481,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Alpine323X64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Alpine Linux 3.23.2 aarch64 UEFI nocloud cloud-init
             /// NOTE: The image on the alpine website is qcow2 and must be converted to a fixed vhd.
             ALPINE_3_23_AARCH64
@@ -476,7 +504,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Alpine323Aarch64Vhd";
         }
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// Ubuntu 24.04 Server Aarch64
             UBUNTU_2404_SERVER_AARCH64
         }
@@ -498,6 +526,7 @@ pub mod artifacts {
             const DOWNLOAD_NAME: &'static str = "Ubuntu2404ServerAarch64Vhd";
         }
 
+        // blob disk does not support VHDX files
         declare_artifacts! {
             /// Windows 11 Enterprise ARM64 24H2
             WINDOWS_11_ENTERPRISE_AARCH64
@@ -537,6 +566,17 @@ pub mod artifacts {
                 GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::quirks()
             }
         }
+
+        declare_artifacts! {
+            /// Generation 2 Windows test image, prepped for no-vmbus testing
+            /// with NetKVM driver and TCP pipette transport pre-configured.
+            GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED
+        }
+
+        impl IsTestVhd for GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED {
+            const OS_FLAVOR: OsFlavor = GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::OS_FLAVOR;
+            const ARCH: MachineArch = GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::ARCH;
+        }
     }
 
     /// Test ISO artifacts
@@ -547,9 +587,9 @@ pub mod artifacts {
         use petri_artifacts_common::tags::IsTestIso;
         use petri_artifacts_common::tags::MachineArch;
         use petri_artifacts_common::tags::OsFlavor;
-        use petri_artifacts_core::declare_artifacts;
+        use petri_artifacts_core::declare_blob_artifacts;
 
-        declare_artifacts! {
+        declare_blob_artifacts! {
             /// FreeBSD 13.2
             FREE_BSD_13_2_X64
         }
@@ -579,6 +619,8 @@ pub mod artifacts {
         use petri_artifacts_common::tags::IsTestVmgs;
         use petri_artifacts_core::declare_artifacts;
 
+        // These could support blob disk in some cases, but Petri doesn't support
+        // remote VMGS files and they are small, so just disable it for now.
         declare_artifacts! {
             /// VMGS file containing a UEFI boot entry
             ///
@@ -653,43 +695,83 @@ pub mod artifacts {
         }
     }
 
-    macro_rules! vmgstool_native {
-        ($id_ty:ty, $os:literal, $arch:literal) => {
-            /// vmgstool "native" executable (i.e:
-            /// [`VMGSTOOL_WIN_X64`](const@VMGSTOOL_WIN_X64) when compiled on windows x86_64,
-            /// [`VMGSTOOL_LINUX_AARCH64`](const@VMGSTOOL_LINUX_AARCH64) when compiled on linux aarch64,
-            /// etc...)
-            // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
-            #[cfg(all(target_os = $os, target_arch = $arch))]
-            pub const VMGSTOOL_NATIVE: petri_artifacts_core::ArtifactHandle<$id_ty> =
-                petri_artifacts_core::ArtifactHandle::new();
-        };
+    /// VmgsTool artifacts
+    pub mod vmgstool {
+        use petri_artifacts_common::tags::IsVmgsTool;
+        use petri_artifacts_core::declare_artifacts;
+
+        macro_rules! vmgstool_native {
+            ($id_ty:ty, $os:literal, $arch:literal) => {
+                /// vmgstool "native" executable (i.e:
+                /// [`VMGSTOOL_WIN_X64`](const@VMGSTOOL_WIN_X64) when compiled on windows x86_64,
+                /// [`VMGSTOOL_LINUX_AARCH64`](const@VMGSTOOL_LINUX_AARCH64) when compiled on linux aarch64,
+                /// etc...)
+                // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
+                #[cfg(all(target_os = $os, target_arch = $arch))]
+                pub const VMGSTOOL_NATIVE: petri_artifacts_core::ArtifactHandle<$id_ty> =
+                    petri_artifacts_core::ArtifactHandle::new();
+            };
+        }
+
+        vmgstool_native!(VMGSTOOL_WIN_X64, "windows", "x86_64");
+        vmgstool_native!(VMGSTOOL_LINUX_X64, "linux", "x86_64");
+        vmgstool_native!(VMGSTOOL_WIN_AARCH64, "windows", "aarch64");
+        vmgstool_native!(VMGSTOOL_LINUX_AARCH64, "linux", "aarch64");
+        vmgstool_native!(VMGSTOOL_MACOS_AARCH64, "macos", "aarch64");
+
+        macro_rules! vmgstool_dev_native {
+            ($id_ty:ty, $os:literal, $arch:literal) => {
+                /// vmgstool-dev "native" executable (i.e:
+                /// [`VMGSTOOL_DEV_WIN_X64`](const@VMGSTOOL_DEV_WIN_X64) when compiled on windows x86_64,
+                /// [`VMGSTOOL_DEV_LINUX_AARCH64`](const@VMGSTOOL_DEV_LINUX_AARCH64) when compiled on linux aarch64,
+                /// etc...)
+                // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
+                #[cfg(all(target_os = $os, target_arch = $arch))]
+                pub const VMGSTOOL_DEV_NATIVE: petri_artifacts_core::ArtifactHandle<$id_ty> =
+                    petri_artifacts_core::ArtifactHandle::new();
+            };
+        }
+
+        vmgstool_dev_native!(VMGSTOOL_DEV_WIN_X64, "windows", "x86_64");
+        vmgstool_dev_native!(VMGSTOOL_DEV_LINUX_X64, "linux", "x86_64");
+        vmgstool_dev_native!(VMGSTOOL_DEV_WIN_AARCH64, "windows", "aarch64");
+        vmgstool_dev_native!(VMGSTOOL_DEV_LINUX_AARCH64, "linux", "aarch64");
+        vmgstool_dev_native!(VMGSTOOL_DEV_MACOS_AARCH64, "macos", "aarch64");
+
+        declare_artifacts! {
+            /// vmgstool windows x86_64 executable
+            VMGSTOOL_WIN_X64,
+            /// vmgstool linux x86_64 executable
+            VMGSTOOL_LINUX_X64,
+            /// vmgstool windows aarch64 executable
+            VMGSTOOL_WIN_AARCH64,
+            /// vmgstool linux aarch64 executable
+            VMGSTOOL_LINUX_AARCH64,
+            /// vmgstool macos aarch64 executable
+            VMGSTOOL_MACOS_AARCH64,
+            /// vmgstool-dev windows x86_64 executable
+            VMGSTOOL_DEV_WIN_X64,
+            /// vmgstool-dev linux x86_64 executable
+            VMGSTOOL_DEV_LINUX_X64,
+            /// vmgstool-dev windows aarch64 executable
+            VMGSTOOL_DEV_WIN_AARCH64,
+            /// vmgstool-dev linux aarch64 executable
+            VMGSTOOL_DEV_LINUX_AARCH64,
+            /// vmgstool-dev macos aarch64 executable
+            VMGSTOOL_DEV_MACOS_AARCH64,
+        }
+
+        impl IsVmgsTool for VMGSTOOL_WIN_X64 {}
+        impl IsVmgsTool for VMGSTOOL_LINUX_X64 {}
+        impl IsVmgsTool for VMGSTOOL_WIN_AARCH64 {}
+        impl IsVmgsTool for VMGSTOOL_LINUX_AARCH64 {}
+        impl IsVmgsTool for VMGSTOOL_MACOS_AARCH64 {}
+        impl IsVmgsTool for VMGSTOOL_DEV_WIN_X64 {}
+        impl IsVmgsTool for VMGSTOOL_DEV_LINUX_X64 {}
+        impl IsVmgsTool for VMGSTOOL_DEV_WIN_AARCH64 {}
+        impl IsVmgsTool for VMGSTOOL_DEV_LINUX_AARCH64 {}
+        impl IsVmgsTool for VMGSTOOL_DEV_MACOS_AARCH64 {}
     }
-
-    vmgstool_native!(VMGSTOOL_WIN_X64, "windows", "x86_64");
-    vmgstool_native!(VMGSTOOL_LINUX_X64, "linux", "x86_64");
-    vmgstool_native!(VMGSTOOL_WIN_AARCH64, "windows", "aarch64");
-    vmgstool_native!(VMGSTOOL_LINUX_AARCH64, "linux", "aarch64");
-    vmgstool_native!(VMGSTOOL_MACOS_AARCH64, "macos", "aarch64");
-
-    declare_artifacts! {
-        /// vmgstool windows x86_64 executable
-        VMGSTOOL_WIN_X64,
-        /// vmgstool linux x86_64 executable
-        VMGSTOOL_LINUX_X64,
-        /// vmgstool windows aarch64 executable
-        VMGSTOOL_WIN_AARCH64,
-        /// vmgstool linux aarch64 executable
-        VMGSTOOL_LINUX_AARCH64,
-        /// vmgstool linux aarch64 executable
-        VMGSTOOL_MACOS_AARCH64,
-    }
-
-    impl IsVmgsTool for VMGSTOOL_WIN_X64 {}
-    impl IsVmgsTool for VMGSTOOL_LINUX_X64 {}
-    impl IsVmgsTool for VMGSTOOL_WIN_AARCH64 {}
-    impl IsVmgsTool for VMGSTOOL_LINUX_AARCH64 {}
-    impl IsVmgsTool for VMGSTOOL_MACOS_AARCH64 {}
 }
 
 /// Artifact tag trait declarations

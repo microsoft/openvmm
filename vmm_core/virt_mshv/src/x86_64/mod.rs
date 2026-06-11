@@ -214,6 +214,7 @@ impl MshvProtoPartition<'_> {
             xsaves_state_bv_broken: false,
             dr6_tsx_broken: false,
             nxe_forced_on: false,
+            nested_virt: false,
         })
     }
 
@@ -439,8 +440,8 @@ impl Hv1 for MshvPartition {
         Some(self)
     }
 
-    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
-        self.synic_ports.clone()
+    fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
+        Ok(self.synic_ports.clone())
     }
 }
 
@@ -479,7 +480,7 @@ impl MshvPartitionInner {
 }
 
 impl SignalMsi for MshvPartitionInner {
-    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         self.request_msi(MsiRequest { address, data });
     }
 }

@@ -187,6 +187,7 @@ impl PciConfigSpace for MissingDev {
                 type0_sub_system_id: 0,
             },
             vec![],
+            vec![],
             pci_core::cfg_space_emu::DeviceBars::new(),
         )
         .read_u32(offset, value)

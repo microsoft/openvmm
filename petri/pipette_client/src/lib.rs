@@ -9,7 +9,7 @@ pub mod process;
 mod send;
 pub mod shell;
 
-pub use pipette_protocol::PIPETTE_VSOCK_PORT;
+pub use pipette_protocol::PIPETTE_PORT;
 
 use crate::send::PipetteSender;
 use anyhow::Context;

@@ -1272,7 +1272,8 @@ impl OpenParams {
             },
             connection_id,
             event_flag,
-            monitor_info,
+            // Only include monitor info if the request has interrupts enabled.
+            monitor_info: request.target_vp.and(monitor_info),
             flags: request.flags.with_unused(0),
             reserved_target,
             channel_id: info.channel_id,
@@ -2059,6 +2060,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         &mut self.inner.assigned_channels,
                         &mut self.inner.assigned_monitors,
                         None,
+                        false,
                     ) {
                         self.inner.channels.remove(offer_id);
                     }
@@ -2446,10 +2448,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         assert!(version >= Version::Copper || feature_flags == FeatureFlags::new());
         if feature_flags.into_bits() != request.feature_flags {
-            tracelimit::warn_ratelimited!(
+            // This is a common occurrence, especially with the difference between flags that may
+            // be supported by Hyper-V, OpenVMM, and OpenHCL, so this does not need to be a warning.
+            tracelimit::info_ratelimited!(
                 supported = feature_flags.into_bits(),
                 requested = request.feature_flags,
-                "Guest requested unsupported feature flags."
+                "guest requested unsupported feature flags."
             );
         }
 
@@ -2544,6 +2548,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
                     None,
+                    vm_reset,
                 )
         });
 
@@ -3198,6 +3203,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         assigned_channels: &mut AssignedChannels,
         assigned_monitors: &mut AssignedMonitors,
         info: Option<&ConnectionInfo>,
+        vm_reset: bool,
     ) -> bool {
         tracelimit::info_ratelimited!(?offer_id, key = %channel.offer.key(), "client released channel");
         // Release any GPADLs that remain for this channel.
@@ -3255,7 +3261,28 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 true
             }
             ChannelState::Opening { .. } => {
-                channel.state = ChannelState::OpeningClientRelease;
+                // Normally we transition to `OpeningClientRelease` and wait
+                // for the device to deliver an `open_complete`, then close
+                // the channel. During a VM reset, however, channel device
+                // tasks may already be stopped (state-unit reset stops them
+                // in reverse-dependency order, before the vmbus unit), in
+                // which case the in-flight `Action::Open` has been pended
+                // in the device task's stopped-state queue and will never
+                // be answered. Waiting would deadlock the vmbus reset,
+                // which in turn blocks the channel-unit reset that would
+                // drain the queue.
+                //
+                // Force-release directly to `ClientReleased` in that case.
+                // The device has not opened the channel yet, so there is
+                // no resource to tear down. Any late `Action::Open`
+                // response that does arrive (for a still-running device
+                // that races us) is caught by the `invalid open complete`
+                // branch of `open_complete` and ignored.
+                if vm_reset {
+                    channel.state = ChannelState::ClientReleased;
+                } else {
+                    channel.state = ChannelState::OpeningClientRelease;
+                }
                 false
             }
             ChannelState::Open { .. } => {
@@ -3306,6 +3333,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
                     self.inner.state.get_connected_info(),
+                    false,
                 ) {
                     self.inner.channels.remove(offer_id);
                 }

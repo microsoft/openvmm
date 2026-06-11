@@ -10,7 +10,6 @@
 #![expect(clippy::undocumented_unsafe_blocks)]
 
 mod arch;
-#[cfg(guest_arch = "x86_64")]
 mod gsi;
 
 pub use arch::Kvm;
@@ -61,6 +60,12 @@ pub enum KvmError {
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
     #[cfg(guest_arch = "x86_64")]
+    #[error("nested virtualization was requested but the host does not support it")]
+    NestedVirtUnsupported,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("unsupported CPU vendor")]
+    UnsupportedCpuVendor,
+    #[cfg(guest_arch = "x86_64")]
     #[error("failed to compute topology cpuid")]
     TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
@@ -84,11 +89,11 @@ struct KvmMemoryRangeState {
 pub struct KvmPartition {
     #[inspect(flatten)]
     inner: Arc<KvmPartitionInner>,
-    #[inspect(skip)]
-    synic_ports: Arc<virt::synic::SynicPorts<KvmPartitionInner>>,
     #[cfg(guest_arch = "x86_64")]
     #[inspect(skip)]
-    irqfd_state: Arc<dyn virt::irqfd::IrqFd>,
+    synic_ports: Arc<virt::synic::SynicPorts<KvmPartitionInner>>,
+    #[inspect(skip)]
+    irqfd_state: Arc<gsi::KvmIrqFdState>,
 }
 
 #[derive(Inspect)]
@@ -100,7 +105,6 @@ struct KvmPartitionInner {
     gm: GuestMemory,
     #[inspect(skip)]
     vps: Vec<KvmVpInner>,
-    #[cfg(guest_arch = "x86_64")]
     #[inspect(skip)]
     gsi_routing: Mutex<gsi::GsiRouting>,
     caps: virt::PartitionCapabilities,
@@ -109,16 +113,25 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     cpuid: virt::CpuidLeafSet,
 
+    #[cfg(guest_arch = "x86_64")]
+    reserved_vps_per_socket: u32,
+
     /// The GIC device fd, kept alive for the VM lifetime.
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
     _gic_device: kvm::Device,
+    /// The ITS device fd, kept alive for the VM lifetime.
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
-    gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
+    _its_device: Option<kvm::Device>,
+    /// MSI controller configuration (v2m, ITS, or none).
+    #[cfg(guest_arch = "aarch64")]
+    #[inspect(skip)]
+    gic_msi: vm_topology::processor::aarch64::GicMsiController,
     /// Total configured GIC interrupt count (SGIs + PPIs + SPIs).
     #[cfg(guest_arch = "aarch64")]
     gic_nr_irqs: u32,
+    #[cfg(guest_arch = "x86_64")]
     synic_ports: virt::synic::SynicPortMap,
 }
 
@@ -139,7 +152,6 @@ enum KvmRunVpError {
     ExtintInterrupt(#[source] kvm::Error),
 }
 
-#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 pub struct KvmProcessorBinder {
     partition: Arc<KvmPartitionInner>,
     vpindex: VpIndex,

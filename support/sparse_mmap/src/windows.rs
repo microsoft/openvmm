@@ -39,6 +39,7 @@ use windows_sys::Win32::System::Memory;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const PAGE_SIZE: usize = 4096;
+const ALLOCATION_GRANULARITY: usize = 0x10000;
 
 pub(crate) fn page_size() -> usize {
     PAGE_SIZE
@@ -70,9 +71,16 @@ unsafe fn virtual_alloc(
     size: usize,
     allocation_type: u32,
     page_protection: u32,
-    extended_parameters: *mut Memory::MEM_EXTENDED_PARAMETER,
-    parameter_count: u32,
+    extended_parameters: &mut [Memory::MEM_EXTENDED_PARAMETER],
 ) -> Result<*mut c_void, Error> {
+    let (params_ptr, params_count) = if extended_parameters.is_empty() {
+        (null_mut(), 0)
+    } else {
+        (
+            extended_parameters.as_mut_ptr(),
+            extended_parameters.len() as u32,
+        )
+    };
     let address = unsafe {
         VirtualAlloc2(
             process.handle(),
@@ -80,8 +88,8 @@ unsafe fn virtual_alloc(
             size,
             allocation_type,
             page_protection,
-            extended_parameters,
-            parameter_count,
+            params_ptr,
+            params_count,
         )
     };
     if address.is_null() {
@@ -110,7 +118,16 @@ unsafe fn map_view_of_file(
     view_size: usize,
     allocation_type: u32,
     page_protection: u32,
+    extended_parameters: &mut [Memory::MEM_EXTENDED_PARAMETER],
 ) -> Result<*mut c_void, Error> {
+    let (params_ptr, params_count) = if extended_parameters.is_empty() {
+        (null_mut(), 0)
+    } else {
+        (
+            extended_parameters.as_mut_ptr(),
+            extended_parameters.len() as u32,
+        )
+    };
     let address = unsafe {
         MapViewOfFile3(
             file_mapping,
@@ -120,8 +137,8 @@ unsafe fn map_view_of_file(
             view_size,
             allocation_type,
             page_protection,
-            null_mut(),
-            0,
+            params_ptr,
+            params_count,
         )
     }
     .Value;
@@ -129,6 +146,20 @@ unsafe fn map_view_of_file(
         return Err(Error::last_os_error());
     }
     Ok(address)
+}
+
+/// Returns a NUMA node `MEM_EXTENDED_PARAMETER`, if a node is specified.
+///
+/// See <https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-mem_extended_parameter>
+fn numa_extended_param(numa_node: Option<u32>) -> Option<Memory::MEM_EXTENDED_PARAMETER> {
+    let node = numa_node?;
+    let mut param = Memory::MEM_EXTENDED_PARAMETER::default();
+    // The `_bitfield` layout is: Type in the low 8 bits, Reserved in the
+    // upper 56 bits. windows-rs 0.62 does not expose typed accessors for
+    // this bitfield struct, so we set it directly.
+    param.Anonymous1._bitfield = Memory::MemExtendedParameterNumaNode as u64 & 0xff;
+    param.Anonymous2.ULong = node;
+    Some(param)
 }
 
 unsafe fn unmap_view_of_file(
@@ -293,6 +324,26 @@ impl SparseMapping {
         Self::new_inner(None, None, len)
     }
 
+    /// Reserves a sparse mapping range with at least the requested alignment.
+    ///
+    /// Windows virtual address reservations are aligned to the system
+    /// allocation granularity.
+    pub fn new_with_minimum_alignment(len: usize, minimum_alignment: usize) -> Result<Self, Error> {
+        if !minimum_alignment.is_power_of_two() {
+            return Err(Error::new(
+                io::ErrorKind::InvalidInput,
+                "alignment must be a power of two",
+            ));
+        }
+        if minimum_alignment > ALLOCATION_GRANULARITY {
+            return Err(Error::new(
+                io::ErrorKind::Unsupported,
+                "sparse mapping alignment greater than the Windows allocation granularity is not supported",
+            ));
+        }
+        Self::new(len)
+    }
+
     /// Reserves a sparse mapping range with the given address and size in a
     /// remote process.
     pub fn new_remote(
@@ -318,8 +369,7 @@ impl SparseMapping {
                 len,
                 MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
                 PAGE_NOACCESS,
-                null_mut(),
-                0,
+                &mut [],
             )?;
             Ok(Self {
                 address,
@@ -367,12 +417,23 @@ impl SparseMapping {
     /// Allocates private, writable memory at the given offset within the
     /// mapping.
     pub fn alloc(&self, offset: usize, len: usize) -> Result<(), Error> {
-        self.virtual_alloc(offset, len, PAGE_READWRITE)
+        self.virtual_alloc(offset, len, PAGE_READWRITE, None)
+    }
+
+    /// Allocates private, writable memory at the given offset, optionally
+    /// bound to a specific host NUMA node.
+    pub fn alloc_numa(
+        &self,
+        offset: usize,
+        len: usize,
+        numa_node: Option<u32>,
+    ) -> Result<(), Error> {
+        self.virtual_alloc(offset, len, PAGE_READWRITE, numa_node)
     }
 
     /// Maps read-only zero pages at the given offset within the mapping.
     pub fn map_zero(&self, offset: usize, len: usize) -> Result<(), Error> {
-        self.virtual_alloc(offset, len, PAGE_READONLY)
+        self.virtual_alloc(offset, len, PAGE_READONLY, None)
     }
 
     fn validate_offset_len(&self, offset: usize, len: usize) -> io::Result<usize> {
@@ -429,17 +490,23 @@ impl SparseMapping {
     }
 
     /// Allocates private memory at the given offset with memory protection
-    /// `protect`.
-    pub fn virtual_alloc(&self, offset: usize, len: usize, protect: u32) -> Result<(), Error> {
+    /// `protect`, optionally bound to a specific host NUMA node.
+    pub fn virtual_alloc(
+        &self,
+        offset: usize,
+        len: usize,
+        protect: u32,
+        numa_node: Option<u32>,
+    ) -> Result<(), Error> {
         self.map(offset, len, |addr| unsafe {
+            let mut param = numa_extended_param(numa_node);
             virtual_alloc(
                 self.process.as_ref(),
                 addr,
                 len,
                 MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER,
                 protect,
-                null_mut(),
-                0,
+                param.as_mut_slice(),
             )?;
             Ok(MappingInfo::Anonymous)
         })
@@ -459,10 +526,44 @@ impl SparseMapping {
         } else {
             PAGE_READONLY
         };
-        self.map_view_of_file(offset, len, file_mapping.as_handle(), file_offset, protect)
+        self.map_view_of_file(
+            offset,
+            len,
+            file_mapping.as_handle(),
+            file_offset,
+            protect,
+            None,
+        )
     }
 
-    /// Maps a portion of a file mapping at `offset` with protection `protect`.
+    /// Maps a portion of a file mapping at `offset`, optionally bound to a
+    /// specific host NUMA node.
+    pub fn map_file_numa(
+        &self,
+        offset: usize,
+        len: usize,
+        file_mapping: impl AsHandle,
+        file_offset: u64,
+        writable: bool,
+        numa_node: Option<u32>,
+    ) -> Result<(), Error> {
+        let protect = if writable {
+            PAGE_READWRITE
+        } else {
+            PAGE_READONLY
+        };
+        self.map_view_of_file(
+            offset,
+            len,
+            file_mapping.as_handle(),
+            file_offset,
+            protect,
+            numa_node,
+        )
+    }
+
+    /// Maps a portion of a file mapping at `offset` with protection `protect`,
+    /// optionally bound to a specific host NUMA node.
     pub fn map_view_of_file(
         &self,
         offset: usize,
@@ -470,6 +571,7 @@ impl SparseMapping {
         file_mapping: impl AsHandle,
         file_offset: u64,
         protect: u32,
+        numa_node: Option<u32>,
     ) -> Result<(), Error> {
         assert_ne!(len, 0);
         self.map(offset, len, |addr| unsafe {
@@ -484,6 +586,7 @@ impl SparseMapping {
                 p => panic!("unknown protection {:#x}", p),
             };
             let section = file_mapping.as_handle().duplicate(false, Some(access))?;
+            let mut param = numa_extended_param(numa_node);
             map_view_of_file(
                 self.process.as_ref(),
                 file_mapping.as_handle().as_raw_handle(),
@@ -492,6 +595,7 @@ impl SparseMapping {
                 len,
                 MEM_REPLACE_PLACEHOLDER,
                 protect,
+                param.as_mut_slice(),
             )?;
             Ok(MappingInfo::Section {
                 handle: section,
@@ -549,6 +653,7 @@ impl SparseMapping {
                             len,
                             MEM_REPLACE_PLACEHOLDER,
                             *protection,
+                            &mut [],
                         )
                         .expect("remap failed");
                     }
@@ -573,6 +678,7 @@ impl SparseMapping {
                             len,
                             MEM_REPLACE_PLACEHOLDER,
                             *protection,
+                            &mut [],
                         )
                         .expect("remap failed");
                     }
@@ -687,8 +793,7 @@ impl SparseMapping {
                 len,
                 MEM_COMMIT,
                 PAGE_READWRITE,
-                null_mut(),
-                0,
+                &mut [],
             )?;
         }
         Ok(())
@@ -737,6 +842,18 @@ pub fn alloc_shared_memory(size: usize, _name: &str) -> io::Result<OwnedHandle> 
     }
 }
 
+/// Allocates a hugetlb mappable shared memory object of `size` bytes.
+pub fn alloc_shared_memory_hugetlb(
+    _size: usize,
+    _name: &str,
+    _hugepage_size: Option<usize>,
+) -> io::Result<OwnedHandle> {
+    Err(Error::new(
+        io::ErrorKind::Unsupported,
+        "hugetlb shared memory is only supported on Linux",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::SparseMapping;
@@ -751,7 +868,7 @@ mod tests {
         let shmem = alloc_shared_memory(0x100000, "test").unwrap();
         let sparse = SparseMapping::new(0x100000).unwrap();
         sparse
-            .map_view_of_file(0, 0x100000, &shmem, 0, PAGE_READWRITE)
+            .map_view_of_file(0, 0x100000, &shmem, 0, PAGE_READWRITE, None)
             .unwrap();
         let data: &mut [u32] =
             unsafe { std::slice::from_raw_parts_mut(sparse.as_ptr().cast(), sparse.len() / 4) };

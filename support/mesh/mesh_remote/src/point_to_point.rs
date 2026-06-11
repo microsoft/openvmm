@@ -110,7 +110,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
 enum TaskError {
     #[error("cancelled")]
     Cancelled(#[from] CancelReason),
-    #[error("failed to change addresses")]
+    #[error("failed to exchange addresses")]
     Exchange(#[source] io::Error),
     #[error("failed to send data")]
     Send(#[source] io::Error),

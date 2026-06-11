@@ -14,7 +14,6 @@ cfg_if::cfg_if! {
         pub mod snp;
         pub mod tdx;
 
-        use crate::TlbFlushLockAccess;
         use crate::VtlCrash;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
@@ -28,8 +27,12 @@ cfg_if::cfg_if! {
         use virt::vp::AccessVpState;
         use zerocopy::IntoBytes;
     } else if #[cfg(guest_arch = "aarch64")] {
+        pub mod cca;
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
+        use virt_support_aarch64emu::translate::TranslationRegisters;
+        use hvdef::HvRegisterCrInterceptControl;
+        use hv1_emulator::synic::ProcessorSynic;
     } else {
         compile_error!("unsupported guest architecture");
     }
@@ -40,6 +43,7 @@ use super::UhPartitionInner;
 use super::UhVpInner;
 use crate::ExitActivity;
 use crate::GuestVtl;
+use crate::TlbFlushLockAccess;
 use crate::WakeReason;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
@@ -117,7 +121,7 @@ pub struct UhProcessor<'a, T: Backing> {
     // together by the compiler.
     #[inspect(skip)]
     runner: ProcessorRunner<'a, T::HclBacking<'a>>,
-    #[inspect(mut)]
+    #[inspect(mut, safe)]
     backing: T,
 }
 
@@ -157,6 +161,7 @@ impl VtlsTlbLocked {
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
 pub(crate) struct LapicState {
+    #[inspect(safe)]
     lapic: LocalApic,
     activity: MpState,
     nmi_pending: bool,
@@ -415,7 +420,7 @@ impl InterceptMessageType {
 }
 
 /// Trait for processor backings that have hardware isolation support.
-#[cfg(guest_arch = "x86_64")]
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 pub(crate) trait HardwareIsolatedBacking: Backing {
     /// Gets CVM specific VP state.
     fn cvm_state(&self) -> &crate::UhCvmVpState;

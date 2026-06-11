@@ -8,9 +8,7 @@
 use arbitrary::Arbitrary;
 use crypto::pkcs7::Pkcs7SignedData;
 use crypto::rsa::RsaKeyPair;
-use crypto::x509::X509Builder;
 use crypto::x509::X509Certificate;
-use firmware_uefi::platform::nvram::EFI_TIME;
 use firmware_uefi::service::nvram::spec_services::ParsedAuthVar;
 use firmware_uefi::service::nvram::spec_services::auth_var_crypto;
 use guid::Guid;
@@ -18,6 +16,7 @@ use std::borrow::Cow;
 use ucs2::Ucs2LeVec;
 use uefi_nvram_specvars::signature_list::SignatureData;
 use uefi_nvram_specvars::signature_list::SignatureList;
+use uefi_specs::uefi::time::EFI_TIME;
 use xtask_fuzz::fuzz_target;
 use zerocopy::FromBytes;
 
@@ -183,20 +182,16 @@ fn test_pkey() -> RsaKeyPair {
     RsaKeyPair::generate(1024).unwrap()
 }
 
-fn test_x509(pkey: &RsaKeyPair) -> X509Certificate {
-    let mut builder = X509Builder::new().unwrap();
-    builder
-        .set_subject_and_issuer_name(
-            "US",
-            "Washington",
-            "Redmond",
-            "Example Organization",
-            "example.com",
-        )
-        .unwrap();
-    builder.set_pubkey_from_rsa_key_pair(pkey).unwrap();
-    builder.set_validity_days(365).unwrap();
-    builder.sign_and_build(pkey).unwrap()
+fn test_x509(key: &RsaKeyPair) -> X509Certificate {
+    X509Certificate::build_self_signed(
+        key,
+        "US",
+        "Washington",
+        "Redmond",
+        "Example Organization",
+        "example.com",
+    )
+    .unwrap()
 }
 
 fn test_pkcs7_data(input: &[u8]) -> Vec<u8> {

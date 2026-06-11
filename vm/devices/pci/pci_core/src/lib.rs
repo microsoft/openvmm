@@ -11,6 +11,7 @@
 pub mod test_helpers;
 
 pub mod bar_mapping;
+pub mod bus_range;
 pub mod capabilities;
 pub mod cfg_space_emu;
 pub mod chipset_device_ext;

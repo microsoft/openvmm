@@ -13,7 +13,7 @@ cfg-if.workspace = true
 clap = { workspace = true, features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
-guid.workspace = true
+guid = { workspace = true, features = ["mesh"] }
 parking_lot.workspace = true
 test_igvm_agent_lib.workspace = true
 tracing.workspace = true

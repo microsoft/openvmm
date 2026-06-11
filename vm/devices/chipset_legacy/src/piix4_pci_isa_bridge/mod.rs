@@ -92,6 +92,7 @@ impl PciIsaBridge {
                 type0_sub_system_id: 0,
             },
             Vec::new(),
+            Vec::new(),
             DeviceBars::new(),
         )
         .with_multi_function_bit(true);

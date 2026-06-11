@@ -5,6 +5,7 @@ use self::bnic_defs::CQE_RX_TRUNCATED;
 use self::bnic_defs::CQE_TX_GDMA_ERR;
 use self::bnic_defs::CQE_TX_OKAY;
 use self::bnic_defs::MANA_CQE_COMPLETION;
+use self::bnic_defs::MANA_LONG_PKT_FMT;
 use self::bnic_defs::ManaCommandCode;
 use self::bnic_defs::ManaCqeHeader;
 use self::bnic_defs::ManaQueryVportCfgReq;
@@ -137,6 +138,11 @@ impl BufferAccess for GuestBuffers {
                 RxChecksumState::Bad => flags.set_rx_udp_csum_fail(true),
                 RxChecksumState::ValidatedButWrong => {}
             },
+        }
+
+        if let Some(vlan) = &metadata.vlan {
+            flags.set_rx_vlantag_present(true);
+            flags.set_rx_vlan_id(vlan.vlan_id() as u32);
         }
 
         let packet = &mut self.rx_packets[id.0 as usize];
@@ -548,6 +554,21 @@ impl TxRxTask {
 
         let sge0 = sqe.sgl().first().context("no sgl")?;
         let total_len: usize = sqe.sgl().iter().map(|sge| sge.size as usize).sum();
+        let (l2_len, vlan) =
+            if oob.s_oob.pkt_fmt() == MANA_LONG_PKT_FMT && oob.l_oob.inject_vlan_pri_tag() {
+                (
+                    net_backend::ETHERNET_VLAN_HEADER_LEN,
+                    Some(
+                        net_backend::VlanMetadata::new()
+                            .with_priority(oob.l_oob.pcp())
+                            .with_drop_eligible_indicator(oob.l_oob.dei())
+                            .with_vlan_id(oob.l_oob.vlan_id()),
+                    ),
+                )
+            } else {
+                (net_backend::ETHERNET_HEADER_LEN, None)
+            };
+
         let mut meta = TxMetadata {
             id: TxId(0),
             segment_count: sqe.sgl().len().try_into().unwrap(),
@@ -558,10 +579,12 @@ impl TxRxTask {
                 .with_offload_udp_checksum(oob.s_oob.comp_udp_csum())
                 .with_is_ipv4(oob.s_oob.is_outer_ipv4())
                 .with_is_ipv6(oob.s_oob.is_outer_ipv6() && !oob.s_oob.is_outer_ipv4()),
-            l2_len: 14,
-            l3_len: oob.s_oob.trans_off().clamp(14, 255) - 14,
+            l2_len: l2_len as u8,
+            l3_len: oob.s_oob.trans_off().clamp(l2_len as u16, 255) - l2_len as u16,
             l4_len: 0,
+            transport_header_offset: oob.s_oob.trans_off(),
             max_segment_size: 0,
+            vlan,
         };
 
         if sqe.header.params.client_oob_in_sgl() {

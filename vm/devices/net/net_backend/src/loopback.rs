@@ -18,6 +18,7 @@ use crate::TxError;
 use crate::TxId;
 use crate::TxSegment;
 use crate::linearize;
+use crate::next_packet;
 use crate::packet_count;
 use async_trait::async_trait;
 use inspect::InspectMut;
@@ -114,6 +115,8 @@ impl Queue for LoopbackQueue {
         tracing::debug!(count = packet_count(segments), "tx_avail");
         let mut sent = 0;
         while !segments.is_empty() && !self.rx_avail.is_empty() {
+            let (meta, _, _) = next_packet(segments);
+            let vlan = meta.vlan;
             let before = segments.len();
             let packet = linearize(pool, &mut segments)?;
             sent += before - segments.len();
@@ -123,6 +126,7 @@ impl Queue for LoopbackQueue {
                 &RxMetadata {
                     offset: 0,
                     len: packet.len(),
+                    vlan,
                     ..Default::default()
                 },
                 &packet,

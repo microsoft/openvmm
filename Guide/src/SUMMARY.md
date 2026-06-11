@@ -11,6 +11,7 @@
   - [VFIO Device Assignment](./user_guide/openvmm/vfio.md)
   - [Troubleshooting](./user_guide/openvmm/troubleshooting.md)
   - [Snapshots](./user_guide/openvmm/snapshots.md)
+  - [VM Memory Dumps](./user_guide/openvmm/vm_memory_dumps.md)
   - [Next Steps](./user_guide/openvmm/next_steps.md)
 - [OpenHCL](./user_guide/openhcl.md)
   - [Running OpenHCL](./user_guide/openhcl/run.md)
@@ -65,6 +66,7 @@
   - [Code Review Process](./dev_guide/contrib/code_review.md)
   - [Guide Updates](./dev_guide/contrib/guide.md)
   - [Style Guide](./dev_guide/contrib/style_guide.md)
+  - [Crypto Backends](./dev_guide/contrib/crypto_backends.md)
 
 # Reference
 
@@ -127,6 +129,8 @@
     - [Consomme](./reference/backends/consomme.md)
 - [Architecture](./reference/architecture.md)
   - [OpenVMM Architecture](./reference/architecture/openvmm.md)
+    - [Memory Layout](./reference/architecture/openvmm/memory-layout.md)
+    - [NUMA Topology](./reference/architecture/openvmm/numa.md)
     - [mesh](./reference/architecture/openvmm/mesh.md)
       - [Using mesh](./reference/architecture/openvmm/mesh/usage.md)
       - [How mesh works](./reference/architecture/openvmm/mesh/internals.md)

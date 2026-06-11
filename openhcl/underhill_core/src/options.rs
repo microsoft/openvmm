@@ -84,6 +84,26 @@ impl FromStr for GuestStateEncryptionPolicyCli {
     }
 }
 
+#[derive(Clone, Copy, Debug, MeshPayload)]
+pub enum EfiDiagnosticsLogLevelCli {
+    Default,
+    Info,
+    Full,
+}
+
+impl FromStr for EfiDiagnosticsLogLevelCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<EfiDiagnosticsLogLevelCli, anyhow::Error> {
+        match s {
+            "DEFAULT" | "0" => Ok(EfiDiagnosticsLogLevelCli::Default),
+            "INFO" | "1" => Ok(EfiDiagnosticsLogLevelCli::Info),
+            "FULL" | "2" => Ok(EfiDiagnosticsLogLevelCli::Full),
+            _ => Err(anyhow::anyhow!("Invalid EFI diagnostics log level: {}", s)),
+        }
+    }
+}
+
 #[derive(Clone, Debug, MeshPayload, Inspect, InspectMut)]
 pub enum KeepAliveConfig {
     EnabledHostAndPrivatePoolPresent,
@@ -263,6 +283,20 @@ pub struct Options {
     /// (HCL_GUEST_STATE_ENCRYPTION_POLICY=\<GuestStateEncryptionPolicyCli\>)
     /// Specify which guest state encryption policy to use.
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+
+    /// (HCL_EFI_DIAGNOSTICS_LOG_LEVEL=\<EfiDiagnosticsLogLevelCli\>)
+    /// Specify the EFI diagnostics log level filter (DEFAULT, INFO, or FULL).
+    /// Overrides the value in DPS when set.
+    pub efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
+
+    /// (HCL_EFI_DIAGNOSTICS_RATE_LIMIT=\<number\>)
+    /// Override the per-period rate limit applied to EFI diagnostics log
+    /// entries forwarded to host tracing.
+    ///
+    /// - Not set: use the built-in defaults.
+    /// - `0`: disable rate limiting entirely (emit every entry).
+    /// - `n > 0`: use `n` as the per-period limit.
+    pub efi_diagnostics_rate_limit: Option<u32>,
 
     /// (HCL_STRICT_ENCRYPTION_POLICY=1) Strict guest state encryption policy.
     pub strict_encryption_policy: Option<bool>,
@@ -458,6 +492,17 @@ impl Options {
                     })
                     .ok()
             });
+        let efi_diagnostics_log_level = read_env("HCL_EFI_DIAGNOSTICS_LOG_LEVEL").and_then(|x| {
+            x.to_string_lossy()
+                .parse::<EfiDiagnosticsLogLevelCli>()
+                .map_err(|e| {
+                    tracing::warn!("failed to parse HCL_EFI_DIAGNOSTICS_LOG_LEVEL: {:#}", e)
+                })
+                .ok()
+        });
+        let efi_diagnostics_rate_limit = parse_env_number("HCL_EFI_DIAGNOSTICS_RATE_LIMIT")?
+            .map(|x| u32::try_from(x).context("HCL_EFI_DIAGNOSTICS_RATE_LIMIT out of range"))
+            .transpose()?;
         let strict_encryption_policy = parse_env_bool_opt("HCL_STRICT_ENCRYPTION_POLICY");
         let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK");
         let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY");
@@ -526,6 +571,8 @@ impl Options {
             default_boot_always_attempt,
             guest_state_lifetime,
             guest_state_encryption_policy,
+            efi_diagnostics_log_level,
+            efi_diagnostics_rate_limit,
             strict_encryption_policy,
             attempt_ak_cert_callback,
             enable_vpci_relay,

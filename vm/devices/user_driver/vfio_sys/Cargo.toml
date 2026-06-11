@@ -15,6 +15,7 @@ headervec.workspace = true
 bitfield-struct.workspace = true
 libc.workspace = true
 nix = { workspace = true, features = ["ioctl"] }
+tracelimit.workspace = true
 tracing.workspace = true
 vfio-bindings.workspace = true
 

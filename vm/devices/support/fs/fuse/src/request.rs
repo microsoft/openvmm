@@ -7,6 +7,7 @@ mod macros;
 use crate::protocol::*;
 use std::io;
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
@@ -36,6 +37,8 @@ fuse_operations! {
     FUSE_LISTXATTR ListXAttr arg:fuse_getxattr_in;
     FUSE_REMOVEXATTR RemoveXAttr name:str;
     FUSE_FLUSH Flush arg:fuse_flush_in;
+    // Note: FUSE_INIT parsing is handled specially in read_operation() for
+    // backward compatibility, but the variant must still be declared here.
     FUSE_INIT Init arg:fuse_init_in;
     FUSE_OPENDIR OpenDir arg:fuse_open_in;
     FUSE_READDIR ReadDir arg:fuse_read_in;
@@ -127,7 +130,7 @@ impl Request {
         );
     }
 
-    fn read_operation(header: &fuse_in_header, reader: impl RequestReader) -> FuseOperation {
+    fn read_operation(header: &fuse_in_header, mut reader: impl RequestReader) -> FuseOperation {
         if header.len as usize > reader.remaining_len() + size_of_val(header) {
             tracing::error!(
                 opcode = header.opcode,
@@ -137,6 +140,35 @@ impl Request {
                 "Invalid message length",
             );
             return FuseOperation::Invalid;
+        }
+
+        // FUSE_INIT requires special handling: the kernel may send either the
+        // legacy 16-byte payload or the extended 64-byte payload (when
+        // FUSE_INIT_EXT is supported). Read whatever is available and
+        // zero-fill the rest so that flags2 defaults to 0 for old kernels.
+        if header.opcode == FUSE_INIT {
+            let payload_len = (header.len as usize) - size_of::<fuse_in_header>();
+            let available = payload_len.min(size_of::<fuse_init_in>());
+            if available < FUSE_COMPAT_INIT_IN_SIZE as usize {
+                tracing::error!(
+                    opcode = header.opcode,
+                    unique = header.unique,
+                    len = available,
+                    "FUSE_INIT payload too small",
+                );
+                return FuseOperation::Invalid;
+            }
+            let mut init = fuse_init_in::new_zeroed();
+            if let Err(e) = reader.read_exact(&mut init.as_mut_bytes()[..available]) {
+                tracing::error!(
+                    opcode = header.opcode,
+                    unique = header.unique,
+                    error = &e as &dyn std::error::Error,
+                    "Failed to read FUSE_INIT payload",
+                );
+                return FuseOperation::Invalid;
+            }
+            return FuseOperation::Init { arg: init };
         }
 
         match FuseOperation::read(header.opcode, reader) {
@@ -239,6 +271,66 @@ pub(crate) mod tests {
             assert_eq!(arg.minor, 27);
             assert_eq!(arg.max_readahead, 131072);
             assert_eq!(arg.flags, 0x3FFFFB);
+            assert_eq!(arg.flags2, 0);
+        } else {
+            panic!("Incorrect operation {:?}", request.operation);
+        }
+    }
+
+    #[test]
+    fn parse_init_too_small_payload_is_invalid() {
+        // Build a FUSE_INIT request with only 8 bytes of payload (less than
+        // the required 16-byte legacy minimum).
+        let header = fuse_in_header {
+            len: (size_of::<fuse_in_header>() + 8) as u32,
+            opcode: FUSE_INIT,
+            unique: 1,
+            nodeid: 0,
+            uid: 0,
+            gid: 0,
+            pid: 0,
+            padding: 0,
+        };
+        let mut data = Vec::new();
+        data.extend_from_slice(header.as_bytes());
+        data.extend_from_slice(&[7, 0, 0, 0, 27, 0, 0, 0]); // only major + minor
+        let request = Request::new(data.as_slice()).unwrap();
+        assert!(matches!(request.operation, FuseOperation::Invalid));
+    }
+
+    #[test]
+    fn parse_init_extended_preserves_flags2() {
+        // Build a full 64-byte extended FUSE_INIT payload with FUSE_INIT_EXT
+        // set in flags and a non-zero flags2.
+        let init_in = fuse_init_in {
+            major: 7,
+            minor: 39,
+            max_readahead: 131072,
+            flags: FUSE_INIT_EXT,
+            flags2: FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2,
+            unused: [0; 11],
+        };
+        let header = fuse_in_header {
+            len: (size_of::<fuse_in_header>() + size_of::<fuse_init_in>()) as u32,
+            opcode: FUSE_INIT,
+            unique: 1,
+            nodeid: 0,
+            uid: 0,
+            gid: 0,
+            pid: 0,
+            padding: 0,
+        };
+        let mut data = Vec::new();
+        data.extend_from_slice(header.as_bytes());
+        data.extend_from_slice(init_in.as_bytes());
+        let request = Request::new(data.as_slice()).unwrap();
+        check_header(&request, 1, FUSE_INIT, 0);
+        if let FuseOperation::Init { arg } = request.operation {
+            assert_eq!(arg.major, 7);
+            assert_eq!(arg.minor, 39);
+            assert_eq!(arg.max_readahead, 131072);
+            assert_eq!(arg.flags, FUSE_INIT_EXT);
+            assert_eq!(arg.flags2, FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2);
         } else {
             panic!("Incorrect operation {:?}", request.operation);
         }

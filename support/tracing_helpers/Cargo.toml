@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["json"] }
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

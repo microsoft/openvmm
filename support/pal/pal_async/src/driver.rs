@@ -12,6 +12,10 @@ use crate::fd::FdReadyDriver;
 use crate::fd::PollFdReady;
 #[cfg(target_os = "linux")]
 use crate::io_uring::IoUringDriver;
+#[cfg(target_os = "macos")]
+use crate::process::macos::PollProcessWait;
+#[cfg(target_os = "macos")]
+use crate::process::macos::ProcessWaitDriver;
 use crate::socket::PollSocketReady;
 use crate::socket::SocketReadyDriver;
 #[cfg(windows)]
@@ -63,6 +67,10 @@ pub trait Driver: 'static + Send + Sync {
     /// [`MAXIMUM_WAIT_READ_SIZE`](super::wait::MAXIMUM_WAIT_READ_SIZE) bytes.
     #[cfg(unix)]
     fn new_dyn_wait(&self, fd: RawFd, read_size: usize) -> io::Result<PollImpl<dyn PollWait>>;
+
+    /// Creates a new process wait from a process ID.
+    #[cfg(target_os = "macos")]
+    fn new_dyn_process_wait(&self, pid: i32) -> io::Result<PollImpl<dyn PollProcessWait>>;
 
     /// Creates a new overlapped file handler.
     ///
@@ -130,10 +138,17 @@ pub trait Driver: 'static + Send + Sync {
     ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<i32>> + Send + '_>>;
 }
 
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(target_os = "macos")]
 impl<T> Driver for T
 where
-    T: 'static + Send + Sync + FdReadyDriver + TimerDriver + SocketReadyDriver + WaitDriver,
+    T: 'static
+        + Send
+        + Sync
+        + FdReadyDriver
+        + TimerDriver
+        + SocketReadyDriver
+        + WaitDriver
+        + ProcessWaitDriver,
 {
     fn new_dyn_timer(&self) -> PollImpl<dyn PollTimer> {
         smallbox::smallbox!(self.new_timer())
@@ -149,6 +164,10 @@ where
 
     fn new_dyn_wait(&self, fd: RawFd, read_size: usize) -> io::Result<PollImpl<dyn PollWait>> {
         Ok(smallbox::smallbox!(self.new_wait(fd, read_size)?))
+    }
+
+    fn new_dyn_process_wait(&self, pid: i32) -> io::Result<PollImpl<dyn PollProcessWait>> {
+        Ok(smallbox::smallbox!(self.new_process_wait_pid(pid)?))
     }
 }
 
@@ -251,6 +270,11 @@ impl Driver for Box<dyn Driver> {
         self.as_ref().new_dyn_wait(fd, read_size)
     }
 
+    #[cfg(target_os = "macos")]
+    fn new_dyn_process_wait(&self, pid: i32) -> io::Result<PollImpl<dyn PollProcessWait>> {
+        self.as_ref().new_dyn_process_wait(pid)
+    }
+
     #[cfg(target_os = "linux")]
     fn io_uring_probe(&self, opcode: u8) -> bool {
         self.as_ref().io_uring_probe(opcode)
@@ -305,6 +329,11 @@ impl Driver for Arc<dyn Driver> {
 
     fn new_dyn_wait(&self, fd: RawFd, read_size: usize) -> io::Result<PollImpl<dyn PollWait>> {
         self.as_ref().new_dyn_wait(fd, read_size)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn new_dyn_process_wait(&self, pid: i32) -> io::Result<PollImpl<dyn PollProcessWait>> {
+        self.as_ref().new_dyn_process_wait(pid)
     }
 
     #[cfg(target_os = "linux")]

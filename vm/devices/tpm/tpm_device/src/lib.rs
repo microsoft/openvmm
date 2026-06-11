@@ -44,8 +44,6 @@ use logger::TpmLogEvent;
 use logger::TpmLogger;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
 use parking_lot::Mutex;
-use sha2::Digest;
-use sha2::Sha256;
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
@@ -664,10 +662,10 @@ impl Tpm {
                 })?;
 
             // Log a hash of the AKPub for auditing purposes.
-            let mut ak_pub_hasher = Sha256::new();
-            ak_pub_hasher.update(ak_pub.exponent);
-            ak_pub_hasher.update(ak_pub.modulus);
-            self.ak_pub_hash = ak_pub_hasher.finalize().into();
+            let mut ak_pub_hasher = crypto::sha_256::Sha256::new();
+            ak_pub_hasher.update(&ak_pub.exponent);
+            ak_pub_hasher.update(&ak_pub.modulus);
+            self.ak_pub_hash = ak_pub_hasher.finish();
 
             tracing::info!(
                 CVM_ALLOWED,

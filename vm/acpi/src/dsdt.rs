@@ -233,8 +233,12 @@ impl Dsdt {
         vmod.add_object(&NamedString::new(b"_HID", b"ACPI0004"));
         vmod.add_object(&NamedInteger::new(b"_UID", 0));
         let mut vmod_crs = CurrentResourceSettings::new();
-        vmod_crs.add_resource(&QwordMemory::new(low.start(), low.end() - low.start()));
-        vmod_crs.add_resource(&QwordMemory::new(high.start(), high.end() - high.start()));
+        if !low.is_empty() {
+            vmod_crs.add_resource(&QwordMemory::new(low.start(), low.len()));
+        }
+        if !high.is_empty() {
+            vmod_crs.add_resource(&QwordMemory::new(high.start(), high.len()));
+        }
         vmod.add_object(&vmod_crs);
         self.add_object(&vmod);
     }
@@ -292,8 +296,10 @@ impl Dsdt {
         let mut crs = CurrentResourceSettings::new();
         crs.add_resource(&BusNumber::new(0, 1));
         crs.add_resource(&IoPort::new(0xcf8, 0xcf8, 8));
-        crs.add_resource(&QwordMemory::new(low.start(), low.end() - low.start()));
-        crs.add_resource(&QwordMemory::new(high.start(), high.end() - high.start()));
+        crs.add_resource(&QwordMemory::new(low.start(), low.len()));
+        if !high.is_empty() {
+            crs.add_resource(&QwordMemory::new(high.start(), high.len()));
+        }
         pci0.add_object(&crs);
         self.add_object(&pci0);
     }

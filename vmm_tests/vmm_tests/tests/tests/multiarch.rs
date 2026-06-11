@@ -5,6 +5,7 @@
 
 use anyhow::Context;
 use futures::StreamExt;
+use petri::EfiDiagnosticsLogLevel;
 use petri::MemoryConfig;
 use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
@@ -22,16 +23,22 @@ use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
 
+/// Test for the Windows DirectIO (`-net dio`) network backend.
+mod dio_nic;
 /// Tests for Hyper-V integration components.
 mod ic;
 // Memory Validation tests.
 mod memstat;
+/// NUMA topology tests.
+mod numa;
 /// Servicing tests.
 mod openhcl_servicing;
 /// PCIe emulation tests.
 mod pcie;
 /// Tests involving TPM functionality
 mod tpm;
+/// Tests for VLAN (802.1Q) support on virtual NICs.
+mod vlan;
 /// Tests of vmbus relay functionality.
 mod vmbus_relay;
 /// Tests involving VMGS functionality
@@ -90,6 +97,37 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
     Ok(())
 }
 
+/// Basic boot test using virtio vsock instead of vmbus hvsocket.
+/// N.B. Because this requires kernel support, it's only done for Linux direct boot since the test
+///      kernel is guaranteed to include it.
+#[vmm_test(openvmm_linux_direct_x64, openvmm_linux_direct_aarch64)]
+async fn boot_virtio_vsock(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_virtio_vsock()
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .run()
+        .await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot Linux direct with VMBus entirely disabled.
+///
+/// Virtio-vsock provides the pipette transport. No VMBus server, no VMBus
+/// storage controllers, and no VMBus MMIO gaps in the memory layout.
+#[vmm_test(openvmm_linux_direct_x64, openvmm_linux_direct_aarch64)]
+async fn boot_no_vmbus(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .run()
+        .await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Boot with private anonymous memory instead of shared memory sections.
 #[openvmm_test(
     linux_direct_x64,
@@ -99,9 +137,41 @@ async fn boot_private_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
     let (vm, agent) = config
         .modify_backend(|b| {
             b.with_custom_config(|c| {
-                c.memory.private_memory = true;
+                for node in &mut c.numa.nodes {
+                    if let Some(mem) = &mut node.mem {
+                        mem.private_memory = true;
+                    }
+                }
             })
         })
+        .run()
+        .await?;
+
+    agent.ping().await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Boot Linux with guest memory backed by explicit 2 MiB hugetlb pages.
+#[cfg(target_os = "linux")]
+#[openvmm_test(linux_direct_x64)]
+#[openvmm_test(linux_direct_aarch64)]
+async fn hugetlb_memory_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    const RAM_BYTES: u64 = 1024 * 1024 * 1024;
+
+    let required_pages = RAM_BYTES / petri::openvmm::HUGETLB_2MB_PAGE_SIZE;
+    if !petri::openvmm::ensure_2mb_hugetlb_pages(required_pages)? {
+        return Ok(());
+    }
+
+    let (vm, agent) = config
+        .with_memory(MemoryConfig {
+            startup_bytes: RAM_BYTES,
+            ..Default::default()
+        })
+        .modify_backend(|b| b.with_hugepages(Some(petri::openvmm::HUGETLB_2MB_PAGE_SIZE)))
         .run()
         .await?;
 
@@ -452,6 +522,48 @@ async fn efi_diagnostics_no_boot<T: PetriVmmBackend>(
     anyhow::bail!("Did not find expected message in kmsg");
 }
 
+/// Test EFI diagnostics with INFO-level logging enabled
+/// TODO:
+///  - change hyperv tests to use WMI instead of env_cfg once
+///    CI runners support it
+#[vmm_test_with(noagent(
+    openvmm_openhcl_uefi_x64(none),
+    hyperv_openhcl_uefi_x64(none),
+    hyperv_openhcl_uefi_aarch64(none)
+))]
+async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let vm = config
+        .with_uefi_frontpage(true)
+        .with_efi_diagnostics_log_level(EfiDiagnosticsLogLevel::Info)
+        .with_efi_diagnostics_rate_limit(0)
+        .run_without_agent()
+        .await?;
+
+    // The last INFO-level entry emitted by the Hyper-V UEFI firmware right
+    // before it hands control to `firmware_uefi::service::diagnostics` to
+    // collect entries. It only appears in the trace stream when:
+    //   1. The diagnostics log level is INFO
+    //   2. Rate limiting is disabled — UEFI emits ~1000 INFO entries in a
+    //      single burst, and this is one of the very last; with the default
+    //      rate limit it gets dropped.
+    const MARKER: &str = "Signaling BIOS device to collect EFI diagnostics";
+
+    let mut kmsg = vm.kmsg().await?;
+
+    while let Some(data) = kmsg.next().await {
+        let data = data.context("reading kmsg")?;
+        let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
+        let raw = msg.message.as_raw();
+        if raw.contains(MARKER) {
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!("Did not find expected INFO-level UEFI diagnostics entry ({MARKER:?}) in kmsg");
+}
+
 /// Boot our guest-test UEFI image, which will run some tests,
 /// and then purposefully triple fault itself via an expiring
 /// watchdog timer.
@@ -469,11 +581,16 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     // No boot event check, UEFI watchdog gets fired before ExitBootServices
     let halt_reason = vm.wait_for_teardown().await?;
     tracing::debug!("vm halt reason: {halt_reason:?}");
+    let check_reason = |expected| {
+        if halt_reason.reason != expected {
+            anyhow::bail!("Expected {expected:?}, got {halt_reason:?}");
+        }
+        Ok(())
+    };
     match arch {
-        MachineArch::X86_64 => assert!(matches!(halt_reason, PetriHaltReason::TripleFault)),
-        MachineArch::Aarch64 => assert!(matches!(halt_reason, PetriHaltReason::Reset)),
+        MachineArch::X86_64 => check_reason(PetriHaltReason::TripleFault),
+        MachineArch::Aarch64 => check_reason(PetriHaltReason::Reset),
     }
-    Ok(())
 }
 
 /// Test that unauthenticated deletion of PK and KEK is rejected by the firmware.

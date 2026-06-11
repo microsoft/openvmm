@@ -30,6 +30,7 @@ use crate::requirements::can_run_test_with_context;
 use crate::tracing::try_init_tracing;
 use anyhow::Context as _;
 use petri_artifacts_core::ArtifactResolver;
+use petri_artifacts_core::RemoteAccess;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use test_macro_support::TESTS;
@@ -39,7 +40,15 @@ use test_macro_support::TESTS;
 macro_rules! test {
     ($f:ident, $req:expr) => {
         $crate::multitest!(vec![
-            $crate::SimpleTest::new(stringify!($f), $req, $f, None, false).into()
+            $crate::SimpleTest::new(
+                stringify!($f),
+                $req,
+                $f,
+                None,
+                false,
+                ::petri::RemoteAccess::LocalOnly
+            )
+            .into()
         ]);
     };
 }
@@ -49,7 +58,15 @@ macro_rules! test {
 macro_rules! unstable_test {
     ($f:ident, $req:expr) => {
         $crate::multitest!(vec![
-            $crate::SimpleTest::new(stringify!($f), $req, $f, None, true).into()
+            $crate::SimpleTest::new(
+                stringify!($f),
+                $req,
+                $f,
+                None,
+                true,
+                ::petri::RemoteAccess::LocalOnly
+            )
+            .into()
         ]);
     };
 }
@@ -99,8 +116,11 @@ impl Test {
             tests.into_iter().filter_map(move |test| {
                 let mut artifact_requirements = test.0.artifact_requirements()?;
                 // All tests require the log directory.
-                artifact_requirements
-                    .require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
+                artifact_requirements.require(
+                    petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY,
+                    RemoteAccess::LocalOnly,
+                    false,
+                );
                 Some(Self {
                     module,
                     artifact_requirements,
@@ -214,7 +234,7 @@ pub trait RunTest: Send {
     /// Returns `None` if this test makes no sense for this host environment
     /// (e.g., an x86_64 test on an aarch64 host) and should be left out of the
     /// test list.
-    fn resolve(&self, resolver: &ArtifactResolver<'_>) -> Option<Self::Artifacts>;
+    fn resolve(&self, resolver: ArtifactResolver<'_>) -> Option<Self::Artifacts>;
     /// Runs the test, which has been assigned `name`, with the given
     /// `artifacts`.
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()>;
@@ -239,13 +259,13 @@ impl<T: RunTest> DynRunTest for T {
 
     fn artifact_requirements(&self) -> Option<TestArtifactRequirements> {
         let mut requirements = TestArtifactRequirements::new();
-        self.resolve(&ArtifactResolver::collector(&mut requirements))?;
+        self.resolve(ArtifactResolver::collector(&mut requirements))?;
         Some(requirements)
     }
 
     fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()> {
         let artifacts = self
-            .resolve(&ArtifactResolver::resolver(artifacts))
+            .resolve(ArtifactResolver::resolver(artifacts))
             .context("test should have been skipped")?;
         self.run(params, artifacts)
     }
@@ -303,6 +323,7 @@ pub struct SimpleTest<A, F> {
     /// Optional test requirements
     pub host_requirements: Option<TestCaseRequirements>,
     unstable: bool,
+    remote_policy: RemoteAccess,
 }
 
 impl<A, AR, F, E> SimpleTest<A, F>
@@ -319,6 +340,7 @@ where
         run: F,
         host_requirements: Option<TestCaseRequirements>,
         unstable: bool,
+        remote_policy: RemoteAccess,
     ) -> Self {
         SimpleTest {
             leaf_name,
@@ -326,6 +348,7 @@ where
             run,
             host_requirements,
             unstable,
+            remote_policy,
         }
     }
 }
@@ -342,8 +365,9 @@ where
         self.leaf_name
     }
 
-    fn resolve(&self, resolver: &ArtifactResolver<'_>) -> Option<Self::Artifacts> {
-        (self.resolve)(resolver)
+    fn resolve(&self, mut resolver: ArtifactResolver<'_>) -> Option<Self::Artifacts> {
+        resolver.set_remote_policy(self.remote_policy);
+        (self.resolve)(&resolver)
     }
 
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()> {
@@ -378,15 +402,6 @@ struct Options {
     tests_from_stdin: bool,
     #[clap(flatten)]
     inner: libtest_mimic::Arguments,
-}
-
-/// JSON output format for `--list-required-artifacts`.
-#[derive(serde::Serialize)]
-struct ArtifactListOutput {
-    /// List of unique required artifact IDs across all matching tests.
-    required: Vec<String>,
-    /// List of unique optional artifact IDs across all matching tests.
-    optional: Vec<String>,
 }
 
 /// Entry point for test binaries.
@@ -430,19 +445,18 @@ pub fn test_main(
 
             if matches {
                 for artifact in test.artifact_requirements.required_artifacts() {
-                    required_set.insert(format!("{artifact:?}"));
+                    required_set.insert(artifact.global_unique_id());
                 }
                 for artifact in test.artifact_requirements.optional_artifacts() {
-                    optional_set.insert(format!("{artifact:?}"));
+                    optional_set.insert(artifact.global_unique_id());
                 }
             }
         }
 
         // Remove from optional any artifacts that are required
-        let optional_set: BTreeSet<String> =
-            optional_set.difference(&required_set).cloned().collect();
+        let optional_set: BTreeSet<_> = optional_set.difference(&required_set).cloned().collect();
 
-        let output = ArtifactListOutput {
+        let output = petri_artifacts_core::ArtifactListOutput {
             required: required_set.into_iter().collect(),
             optional: optional_set.into_iter().collect(),
         };

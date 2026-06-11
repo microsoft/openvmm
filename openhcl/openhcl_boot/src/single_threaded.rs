@@ -61,7 +61,30 @@ impl<'a, T> OffStackRef<'a, T> {
 struct BorrowRef<'a>(&'a Cell<bool>);
 
 impl<'a> BorrowRef<'a> {
+    // It is UB to use `off_stack` in a multi-threaded environment, which can
+    // happen depending on how unittests are run. To help catch this, we check
+    // that only the first thread to call `off_stack` matches all subsequent
+    // usage.
+    #[cfg(test)]
+    #[track_caller]
+    fn assert_single_threaded() {
+        static OFF_STACK_THREAD_ID: std::sync::OnceLock<std::thread::ThreadId> =
+            std::sync::OnceLock::new();
+
+        let current_thread = std::thread::current().id();
+        let off_stack_thread = OFF_STACK_THREAD_ID.get_or_init(|| current_thread);
+        if *off_stack_thread != current_thread {
+            panic!(
+                "off_stack! used from multiple test threads; run openhcl_boot \
+                tests with nextest or specify only a single test"
+            );
+        }
+    }
+
     fn try_new(used: &'a Cell<bool>) -> Option<Self> {
+        #[cfg(test)]
+        Self::assert_single_threaded();
+
         if used.replace(true) {
             None
         } else {
@@ -102,6 +125,14 @@ impl<T> DerefMut for OffStackRef<'_, T> {
 /// create multiple mutable references to the same global variable.
 ///
 /// This only works in a single-threaded environment.
+///
+/// Note that when `off_stack` is used in a function that can be called multiple
+/// times, the caller must not assume the value is initialized with the value
+/// specified in the macro. For example, if `off_stack!(ArrayVec<u8>,
+/// ArrayVec::new_const())` is used in a function, the caller must not assume
+/// that the value is an empty vector, since the function could have been called
+/// before and left stale values, due to this being a wrapper around a global
+/// variable.
 macro_rules! off_stack {
     ($ty:ty, $val:expr) => {{
         use core::cell::Cell;
@@ -117,3 +148,24 @@ macro_rules! off_stack {
     }};
 }
 pub(crate) use off_stack;
+
+#[cfg(test)]
+mod tests {
+    fn borrow_a() -> super::OffStackRef<'static, u32> {
+        off_stack!(u32, 0)
+    }
+
+    #[test]
+    fn off_stack_panics_when_used_by_two_threads() {
+        let _value = borrow_a();
+
+        let result = std::thread::Builder::new()
+            .spawn(|| {
+                let _other = borrow_a();
+            })
+            .unwrap()
+            .join();
+
+        assert!(result.is_err());
+    }
+}

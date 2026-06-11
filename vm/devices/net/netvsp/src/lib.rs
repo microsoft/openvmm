@@ -158,7 +158,8 @@ enum CoordinatorMessage {
     Update(CoordinatorMessageUpdateType),
     /// Restart endpoints and resume processing. This will also attempt to set VF and data path state to match current
     /// expectations.
-    Restart,
+    /// Identifies the channel that requested the restart. 0 = primary; >0 = sub-channel
+    Restart { channel_idx: u16 },
     /// Start a timer.
     StartTimer(Instant),
 }
@@ -202,7 +203,7 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
                 worker.channel.can_use_ring_size_opt,
             );
 
-            if let WorkerState::Ready(state) = &worker.state {
+            if let Some(state) = worker.state.ready() {
                 resp.field(
                     "outstanding_tx_packets",
                     state.state.pending_tx_packets.len() - state.state.free_tx_packets.len(),
@@ -238,18 +239,16 @@ enum WorkerState {
 
 impl WorkerState {
     fn ready(&self) -> Option<&ReadyState> {
-        if let Self::Ready(state) = self {
-            Some(state)
-        } else {
-            None
+        match self {
+            Self::Ready(state) | Self::WaitingForCoordinator(Some(state)) => Some(state),
+            _ => None,
         }
     }
 
     fn ready_mut(&mut self) -> Option<&mut ReadyState> {
-        if let Self::Ready(state) = self {
-            Some(state)
-        } else {
-            None
+        match self {
+            Self::Ready(state) | Self::WaitingForCoordinator(Some(state)) => Some(state),
+            _ => None,
         }
     }
 }
@@ -397,23 +396,57 @@ impl RxBufferRange {
     }
 }
 
+#[derive(Debug, Error)]
+enum RxBufferConfigError {
+    #[error("queue_count must be at least 1")]
+    ZeroQueueCount,
+    #[error("buffer_count must be >= RX_RESERVED_CONTROL_BUFFERS")]
+    InsufficientBuffers,
+    #[error("buffers_per_queue must not be 0")]
+    ZeroBuffersPerQueue,
+}
+
 struct RxBufferRanges {
     buffers_per_queue: u32,
     buffer_id_send: Vec<mpsc::UnboundedSender<u32>>,
 }
 
 impl RxBufferRanges {
-    fn new(buffer_count: u32, queue_count: u32) -> (Self, Vec<mpsc::UnboundedReceiver<u32>>) {
+    /// Validates that the given parameters produce a valid RX buffer configuration.
+    fn validate_params(buffer_count: u32, queue_count: u32) -> Result<u32, WorkerError> {
+        if queue_count == 0 {
+            return Err(WorkerError::InvalidRxBufferConfig(
+                RxBufferConfigError::ZeroQueueCount,
+            ));
+        }
+        if buffer_count < RX_RESERVED_CONTROL_BUFFERS {
+            return Err(WorkerError::InvalidRxBufferConfig(
+                RxBufferConfigError::InsufficientBuffers,
+            ));
+        }
         let buffers_per_queue = (buffer_count - RX_RESERVED_CONTROL_BUFFERS) / queue_count;
+        if buffers_per_queue == 0 {
+            return Err(WorkerError::InvalidRxBufferConfig(
+                RxBufferConfigError::ZeroBuffersPerQueue,
+            ));
+        }
+        Ok(buffers_per_queue)
+    }
+
+    fn new(
+        buffer_count: u32,
+        queue_count: u32,
+    ) -> Result<(Self, Vec<mpsc::UnboundedReceiver<u32>>), WorkerError> {
+        let buffers_per_queue = Self::validate_params(buffer_count, queue_count)?;
         #[expect(clippy::disallowed_methods)] // TODO
         let (send, recv): (Vec<_>, Vec<_>) = (0..queue_count).map(|_| mpsc::unbounded()).unzip();
-        (
+        Ok((
             Self {
                 buffers_per_queue,
                 buffer_id_send: send,
             },
             recv,
-        )
+        ))
     }
 }
 
@@ -512,6 +545,8 @@ struct QueueStats {
     tx_packets: Counter,
     tx_lso_packets: Counter,
     tx_checksum_packets: Counter,
+    tx_vlan_packets: Counter,
+    rx_vlan_packets: Counter,
     tx_invalid_lso_packets: Counter,
     tx_packets_per_wake: Histogram<10>,
     rx_packets_per_wake: Histogram<10>,
@@ -656,6 +691,9 @@ struct PrimaryChannelState {
     tx_spread_sent: bool,
     guest_link_up: bool,
     pending_link_action: PendingLinkAction,
+    /// The serial number sent in the most recent VF association message, so
+    /// that the matching disassociation message uses the same serial number.
+    advertised_vf_serial_number: Option<u32>,
 }
 
 impl Inspect for PrimaryChannelState {
@@ -862,6 +900,7 @@ impl PrimaryChannelState {
             tx_spread_sent: false,
             guest_link_up: true,
             pending_link_action: PendingLinkAction::Default,
+            advertised_vf_serial_number: None,
         }
     }
 
@@ -870,6 +909,7 @@ impl PrimaryChannelState {
         rndis_state: &saved_state::RndisState,
         offload_config: &saved_state::OffloadConfig,
         pending_offload_change: bool,
+        advertised_vf_serial_number: Option<u32>,
         num_queues: u16,
         indirection_table_size: u16,
         rx_bufs: &RxBuffers,
@@ -971,6 +1011,7 @@ impl PrimaryChannelState {
             tx_spread_sent,
             guest_link_up: !guest_link_down,
             pending_link_action,
+            advertised_vf_serial_number,
         })
     }
 }
@@ -1658,6 +1699,7 @@ impl Nic {
                         guest_link_down,
                         pending_link_action,
                         packet_filter,
+                        advertised_vf_serial_number,
                     } = ready;
 
                     // If saved state does not have a packet filter set, default to directed, multicast, and broadcast.
@@ -1715,6 +1757,7 @@ impl Nic {
                                 &rndis_state,
                                 &offload_config,
                                 pending_offload_change,
+                                advertised_vf_serial_number,
                                 channels.len() as u16,
                                 self.adapter.indirection_table_size,
                                 &active.rx_bufs,
@@ -1945,6 +1988,7 @@ impl Nic {
                         guest_link_down: !primary.guest_link_up,
                         pending_link_action,
                         packet_filter: Some(worker_0_packet_filter),
+                        advertised_vf_serial_number: primary.advertised_vf_serial_number,
                     })
                 }
                 WorkerState::WaitingForCoordinator(None) => {
@@ -1988,8 +2032,8 @@ enum WorkerError {
     MissingTransactionId,
     #[error("invalid gpadl")]
     InvalidGpadl(#[source] guestmem::InvalidGpn),
-    #[error("gpadl error")]
-    GpadlError(#[source] GuestMemoryError),
+    #[error("guest buffers error")]
+    GuestBuffers(#[source] buffers::GuestBuffersError),
     #[error("gpa direct error")]
     GpaDirectError(#[source] GuestMemoryError),
     #[error("endpoint")]
@@ -2014,6 +2058,8 @@ enum WorkerError {
     EndpointRequiresQueueRestart(#[source] anyhow::Error),
     #[error("Failed to send message to coordinator")]
     CoordinatorMessageSendFailed(#[source] TrySendError<CoordinatorMessage>),
+    #[error("invalid rx buffer configuration: {0}")]
+    InvalidRxBufferConfig(#[source] RxBufferConfigError),
 }
 
 impl From<task_control::Cancelled> for WorkerError {
@@ -2549,23 +2595,7 @@ impl<T: RingMem> NetChannel<T> {
                             .set_offload_ip_header_checksum(n.is_ipv4() && n.ip_header_checksum());
                         metadata.flags.set_is_ipv4(n.is_ipv4());
                         metadata.flags.set_is_ipv6(n.is_ipv6() && !n.is_ipv4());
-                        metadata.l2_len = ETHERNET_HEADER_LEN as u8;
-                        if metadata.flags.offload_tcp_checksum()
-                            || metadata.flags.offload_udp_checksum()
-                        {
-                            metadata.l3_len = if n.tcp_header_offset() >= metadata.l2_len as u16 {
-                                n.tcp_header_offset() - metadata.l2_len as u16
-                            } else if n.is_ipv4() {
-                                let mut reader = data.clone().reader(mem);
-                                reader.skip(metadata.l2_len as usize)?;
-                                let mut b = 0;
-                                reader.read(std::slice::from_mut(&mut b))?;
-                                (b as u16 >> 4) * 4
-                            } else {
-                                // Hope there are no extensions.
-                                40
-                            };
-                        }
+                        metadata.transport_header_offset = n.tcp_header_offset();
                     }
                     rndisprot::PPI_LSO => {
                         let n: rndisprot::TcpLsoInfo = d.reader(mem).read_plain()?;
@@ -2575,37 +2605,80 @@ impl<T: RingMem> NetChannel<T> {
                         metadata.flags.set_offload_ip_header_checksum(n.is_ipv4());
                         metadata.flags.set_is_ipv4(n.is_ipv4());
                         metadata.flags.set_is_ipv6(n.is_ipv6() && !n.is_ipv4());
-                        metadata.l2_len = ETHERNET_HEADER_LEN as u8;
-                        if n.tcp_header_offset() < metadata.l2_len as u16 {
-                            return Err(WorkerError::InvalidTcpHeaderOffset(n.tcp_header_offset()));
-                        }
-                        metadata.l3_len = n.tcp_header_offset() - metadata.l2_len as u16;
-                        // Offset of `Data Offset` field in the TCP header (byte 12)
-                        const TCP_DOFF_BYTE_OFFSET: u32 = 12;
-                        let tcp_hdr_doff_offset =
-                            u32::from(n.tcp_header_offset()) + TCP_DOFF_BYTE_OFFSET;
-                        // Validate TCP header Data Offset 4 bit nibble within the packet data bounds.
-                        if tcp_hdr_doff_offset >= request.data_length {
-                            return Err(WorkerError::InvalidTcpHeaderOffset(n.tcp_header_offset()));
-                        }
-                        metadata.l4_len = {
-                            let mut reader = data.clone().reader(mem);
-                            reader.skip(tcp_hdr_doff_offset as usize)?;
-                            let mut b = 0;
-                            reader.read(std::slice::from_mut(&mut b))?;
-                            (b >> 4) * 4
-                        };
                         metadata.max_segment_size = n.mss() as u16;
+                        metadata.transport_header_offset = n.tcp_header_offset();
+                    }
+                    rndisprot::PPI_VLAN => {
+                        let n: rndisprot::EthVlanInfo = d.reader(mem).read_plain()?;
 
-                        if request.data_length >= rndisprot::LSO_MAX_OFFLOAD_SIZE {
-                            // Not strictly enforced.
-                            stats.tx_invalid_lso_packets.increment();
-                        }
+                        metadata.vlan = Some(n.into());
                     }
                     _ => {}
                 }
                 ppi = rest;
             }
+
+            // The frame data always has a 14-byte Ethernet header; when
+            // VLAN is present it arrives out-of-band in the PPI (not inline
+            // in the frame), so l2_len is unconditionally 14. If the guest
+            // does present a different ethernet header length, then the checksum
+            // will fail and the send won't work, but that's really on the guest.
+            metadata.l2_len = net_backend::ETHERNET_HEADER_LEN as u8;
+
+            if metadata.flags.offload_tcp_checksum() || metadata.flags.offload_udp_checksum() {
+                // We can determine header length from other means, and presume there's
+                // no additional data. If there is, the packet will fail checksums but that's
+                // on the guest for not providing a specific length. This matches extant behavior.
+                metadata.l3_len = if metadata.transport_header_offset == 0 {
+                    if metadata.flags.is_ipv4() {
+                        net_backend::IPV4_MIN_HEADER_LEN
+                    } else if metadata.flags.is_ipv6() {
+                        net_backend::IPV6_MIN_HEADER_LEN
+                    } else {
+                        unreachable!("this packet is neither v4 nor v6?");
+                    }
+                } else if (metadata.transport_header_offset < metadata.l2_len as u16)
+                    || (metadata.flags.is_ipv4()
+                        && metadata.transport_header_offset
+                            < (metadata.l2_len as u16 + net_backend::IPV4_MIN_HEADER_LEN))
+                    || (metadata.flags.is_ipv6()
+                        && metadata.transport_header_offset
+                            < (metadata.l2_len as u16 + net_backend::IPV6_MIN_HEADER_LEN))
+                    || (metadata.transport_header_offset as u32 >= request.data_length)
+                {
+                    return Err(WorkerError::InvalidTcpHeaderOffset(
+                        metadata.transport_header_offset,
+                    ));
+                } else {
+                    metadata.transport_header_offset - metadata.l2_len as u16
+                }
+            }
+
+            if metadata.flags.offload_tcp_segmentation() {
+                const TCP_DOFF_BYTE_OFFSET: u32 = 12;
+                let tcp_hdr_doff_offset =
+                    u32::from(metadata.transport_header_offset) + TCP_DOFF_BYTE_OFFSET;
+                // Validate TCP header Data Offset 4 bit nibble within the packet data bounds.
+                if tcp_hdr_doff_offset >= request.data_length {
+                    return Err(WorkerError::InvalidTcpHeaderOffset(
+                        metadata.transport_header_offset,
+                    ));
+                }
+                metadata.l4_len = {
+                    let mut reader = data.clone().reader(mem);
+                    reader.skip(tcp_hdr_doff_offset as usize)?;
+                    let mut b = 0;
+                    reader.read(std::slice::from_mut(&mut b))?;
+                    (b >> 4) * 4
+                };
+
+                if request.data_length >= rndisprot::LSO_MAX_OFFLOAD_SIZE {
+                    // Not strictly enforced.
+                    stats.tx_invalid_lso_packets.increment();
+                }
+            }
+
+            // Issue #3453: USO support is not present. (https://github.com/microsoft/openvmm/issues/3453)
         }
 
         let start = segments.len();
@@ -2627,6 +2700,9 @@ impl<T: RingMem> NetChannel<T> {
         if metadata.flags.offload_tcp_segmentation() {
             stats.tx_lso_packets.increment();
         }
+        if metadata.vlan.is_some() {
+            stats.tx_vlan_packets.increment();
+        }
 
         segments[start].ty = net_backend::TxSegmentType::Head(metadata);
 
@@ -2635,26 +2711,32 @@ impl<T: RingMem> NetChannel<T> {
 
     /// Notify the adapter that the guest VF state has changed and it may
     /// need to send a message to the guest.
+    /// Pass `vfid: Some(id)` to advertise VF availability; if an association
+    /// message is queued successfully, its serial number is stored in
+    /// `primary.advertised_vf_serial_number`.
+    /// Pass `vfid: None` to send a disassociation; the stored serial number
+    /// from the most recent association is reused.
     fn guest_vf_is_available(
         &mut self,
-        guest_vf_id: Option<u32>,
+        primary: &mut PrimaryChannelState,
+        vfid: Option<u32>,
         version: Version,
         config: NdisConfig,
     ) -> Result<bool, WorkerError> {
-        let serial_number = guest_vf_id.map(|vfid| self.adapter.get_guest_vf_serial_number(vfid));
+        let (serial_number, available) = if let Some(vfid) = vfid {
+            (self.adapter.get_guest_vf_serial_number(vfid), true)
+        } else {
+            (primary.advertised_vf_serial_number.unwrap_or(0), false)
+        };
         if version >= Version::V4 && config.capabilities.sriov() {
-            tracing::info!(
-                available = serial_number.is_some(),
-                serial_number,
-                "sending VF association message"
-            );
+            tracing::info!(available, serial_number, "sending VF association message");
             // N.B. MIN_CONTROL_RING_SIZE reserves room to send this packet.
             let message = {
                 self.message(
                     protocol::MESSAGE4_TYPE_SEND_VF_ASSOCIATION,
                     protocol::Message4SendVfAssociation {
-                        vf_allocated: if serial_number.is_some() { 1 } else { 0 },
-                        serial_number: serial_number.unwrap_or(0),
+                        vf_allocated: if available { 1 } else { 0 },
+                        serial_number,
                     },
                 )
             };
@@ -2674,10 +2756,17 @@ impl<T: RingMem> NetChannel<T> {
                     }
                     queue::TryWriteError::Queue(err) => WorkerError::Queue(err),
                 })?;
+
+            // Update the advertised VF serial number once the message has been successfully queued.
+            if available {
+                primary.advertised_vf_serial_number = Some(serial_number);
+            } else {
+                primary.advertised_vf_serial_number = None;
+            }
             Ok(true)
         } else {
             tracing::info!(
-                available = serial_number.is_some(),
+                available,
                 serial_number,
                 major = version.major(),
                 minor = version.minor(),
@@ -2775,6 +2864,8 @@ impl<T: RingMem> NetChannel<T> {
                 error = &err as &dyn std::error::Error,
                 "Failed to notify guest that data path is now synthetic"
             );
+        } else {
+            tracing::info!("Switched data path to synthetic")
         }
     }
 
@@ -2792,7 +2883,12 @@ impl<T: RingMem> NetChannel<T> {
         if let PrimaryChannelGuestVfState::Available { vfid } = primary.guest_vf_state {
             // Notify guest that a VF capability has recently arrived.
             if primary.rndis_state == RndisState::Operational {
-                if self.guest_vf_is_available(Some(vfid), buffers.version, buffers.ndis_config)? {
+                if self.guest_vf_is_available(
+                    primary,
+                    Some(vfid),
+                    buffers.version,
+                    buffers.ndis_config,
+                )? {
                     primary.guest_vf_state = PrimaryChannelGuestVfState::AvailableAdvertised;
                     return Ok(Some(CoordinatorMessage::Update(
                         CoordinatorMessageUpdateType {
@@ -2813,7 +2909,12 @@ impl<T: RingMem> NetChannel<T> {
                 PrimaryChannelGuestVfState::UnavailableFromAvailable => {
                     // Notify guest that the VF is unavailable. It has already been surprise removed.
                     if primary.rndis_state == RndisState::Operational {
-                        self.guest_vf_is_available(None, buffers.version, buffers.ndis_config)?;
+                        self.guest_vf_is_available(
+                            primary,
+                            None,
+                            buffers.version,
+                            buffers.ndis_config,
+                        )?;
                     }
                     PrimaryChannelGuestVfState::Unavailable
                 }
@@ -2928,6 +3029,7 @@ impl<T: RingMem> NetChannel<T> {
                 self.send_rndis_control_message(buffers, id, message_length)?;
                 if let PrimaryChannelGuestVfState::Available { vfid } = primary.guest_vf_state {
                     if self.guest_vf_is_available(
+                        primary,
                         Some(vfid),
                         buffers.version,
                         buffers.ndis_config,
@@ -2996,7 +3098,7 @@ impl<T: RingMem> NetChannel<T> {
                         // Restart the endpoint if the OID changed some critical
                         // endpoint property.
                         if restart_endpoint {
-                            self.restart = Some(CoordinatorMessage::Restart);
+                            self.restart = Some(CoordinatorMessage::Restart { channel_idx: 0 });
                         }
                         if let Some(filter) = packet_filter {
                             if self.packet_filter != filter {
@@ -3198,7 +3300,7 @@ impl<T: RingMem> NetChannel<T> {
                 guest_vf_state: guest_vf,
                 filter_state: packet_filter,
             }));
-        } else if let Some(CoordinatorMessage::Restart) = self.restart {
+        } else if let Some(CoordinatorMessage::Restart { .. }) = self.restart {
             // If a restart message is pending, do nothing.
             // A restart will try to switch the data path based on primary.guest_vf_state.
             // A restart will apply packet filter changes.
@@ -3265,8 +3367,6 @@ impl OidError {
 const DEFAULT_MTU: u32 = 1514;
 const MIN_MTU: u32 = DEFAULT_MTU;
 const MAX_MTU: u32 = 9216;
-
-const ETHERNET_HEADER_LEN: u32 = 14;
 
 impl Adapter {
     fn get_guest_vf_serial_number(&self, vfid: u32) -> u32 {
@@ -3387,7 +3487,7 @@ impl Adapter {
             rndisprot::Oid::OID_GEN_MAXIMUM_LOOKAHEAD
             | rndisprot::Oid::OID_GEN_CURRENT_LOOKAHEAD
             | rndisprot::Oid::OID_GEN_MAXIMUM_FRAME_SIZE => {
-                let len: u32 = buffers.ndis_config.mtu - ETHERNET_HEADER_LEN;
+                let len: u32 = buffers.ndis_config.mtu - net_backend::ETHERNET_HEADER_LEN;
                 writer.write(len.as_bytes())?;
             }
             rndisprot::Oid::OID_GEN_MAXIMUM_TOTAL_SIZE
@@ -3419,7 +3519,9 @@ impl Adapter {
             rndisprot::Oid::OID_GEN_MAC_OPTIONS => {
                 let options: u32 = rndisprot::MAC_OPTION_COPY_LOOKAHEAD_DATA
                     | rndisprot::MAC_OPTION_TRANSFERS_NOT_PEND
-                    | rndisprot::MAC_OPTION_NO_LOOPBACK;
+                    | rndisprot::MAC_OPTION_NO_LOOPBACK
+                    | rndisprot::MAC_OPTION_8021P_PRIORITY
+                    | rndisprot::MAC_OPTION_8021Q_VLAN;
                 writer.write(options.as_bytes())?;
             }
             rndisprot::Oid::OID_GEN_MEDIA_CONNECT_STATUS => {
@@ -3486,10 +3588,10 @@ impl Adapter {
                         },
                         ipv4_enabled: rndisprot::NDIS_OFFLOAD_SUPPORTED,
                         ipv4_encapsulation_type: rndisprot::NDIS_ENCAPSULATION_IEEE_802_3,
-                        ipv4_header_size: ETHERNET_HEADER_LEN,
+                        ipv4_header_size: net_backend::ETHERNET_HEADER_LEN,
                         ipv6_enabled: rndisprot::NDIS_OFFLOAD_SUPPORTED,
                         ipv6_encapsulation_type: rndisprot::NDIS_ENCAPSULATION_IEEE_802_3,
-                        ipv6_header_size: ETHERNET_HEADER_LEN,
+                        ipv6_header_size: net_backend::ETHERNET_HEADER_LEN,
                     }
                     .as_bytes()[..rndisprot::NDIS_SIZEOF_OFFLOAD_ENCAPSULATION_REVISION_1],
                 )?;
@@ -3597,7 +3699,7 @@ impl Adapter {
         if params.hash_secret_key_size != 40 {
             return Err(OidError::InvalidInput("hash_secret_key_size"));
         }
-        if params.indirection_table_size % 4 != 0 {
+        if params.indirection_table_size % 4 != 0 || params.indirection_table_size == 0 {
             return Err(OidError::InvalidInput("indirection_table_size"));
         }
         let indirection_table_size =
@@ -3719,13 +3821,13 @@ impl Adapter {
         )?;
         if encap.ipv4_enabled == rndisprot::NDIS_OFFLOAD_SET_ON
             && (encap.ipv4_encapsulation_type != rndisprot::NDIS_ENCAPSULATION_IEEE_802_3
-                || encap.ipv4_header_size != ETHERNET_HEADER_LEN)
+                || encap.ipv4_header_size != net_backend::ETHERNET_HEADER_LEN)
         {
             return Err(OidError::NotSupported("ipv4 encap"));
         }
         if encap.ipv6_enabled == rndisprot::NDIS_OFFLOAD_SET_ON
             && (encap.ipv6_encapsulation_type != rndisprot::NDIS_ENCAPSULATION_IEEE_802_3
-                || encap.ipv6_header_size != ETHERNET_HEADER_LEN)
+                || encap.ipv6_header_size != net_backend::ETHERNET_HEADER_LEN)
         {
             return Err(OidError::NotSupported("ipv6 encap"));
         }
@@ -3984,30 +4086,12 @@ impl Coordinator {
         state: &mut CoordinatorState,
     ) -> Result<(), task_control::Cancelled> {
         loop {
+            // `self.restart` is set in a prior iteration when:
+            // `CoordinatorMessage::Restart` from Primary or sub-channel worker.
+            // `EndpointAction::RestartRequired`.
+            // Or in `insert_coordinator` when Restoring from saved state.
             if self.restart {
-                stop.until_stopped(self.stop_workers()).await?;
-                // The queue restart operation is not restartable, so do not
-                // poll on `stop` here.
-                if let Err(err) = self
-                    .restart_queues(state)
-                    .instrument(tracing::info_span!("netvsp_restart_queues"))
-                    .await
-                {
-                    tracing::error!(
-                        error = &err as &dyn std::error::Error,
-                        "failed to restart queues"
-                    );
-                }
-                if let Some(primary) = self.primary_mut() {
-                    primary.is_data_path_switched =
-                        state.endpoint.get_data_path_to_guest_vf().await.ok();
-                    tracing::info!(
-                        is_data_path_switched = primary.is_data_path_switched,
-                        "Query data path state"
-                    );
-                }
-                self.restore_guest_vf_state(state).await;
-                self.restart = false;
+                self.restart_worker_queues(stop, state).await?;
             }
 
             // Ensure that all workers except the primary are started. The
@@ -4102,6 +4186,10 @@ impl Coordinator {
             match message {
                 Message::Internal(msg) => {
                     self.handle_coordinator_message(msg, state).await;
+                    // If a restart message has been queued, handle it now
+                    // to ensure worker queues are restarted prior to
+                    // `worker.start()` in the next loop.
+                    self.handle_queued_coordinator_messages(state).await;
                 }
                 Message::UpdateFromVf(rpc) => {
                     rpc.handle(async |_| {
@@ -4110,7 +4198,7 @@ impl Coordinator {
                     .await;
                 }
                 Message::OfferVfDevice => {
-                    self.workers[0].stop().await;
+                    self.stop_primary_worker().await;
                     if let Some(primary) = self.primary_mut() {
                         if matches!(
                             primary.guest_vf_state,
@@ -4123,11 +4211,12 @@ impl Coordinator {
                     state.pending_vf_state = CoordinatorStatePendingVfState::Pending;
                 }
                 Message::PendingVfStateComplete => {
+                    // Worker state unchanged, no worker needs to be stopped.
                     state.pending_vf_state = CoordinatorStatePendingVfState::Ready;
                 }
                 Message::TimerExpired => {
                     // Kick the worker as requested.
-                    self.workers[0].stop().await;
+                    self.stop_primary_worker().await;
                     if let Some(primary) = self.primary_mut() {
                         if let PendingLinkAction::Delay(up) = primary.pending_link_action {
                             primary.pending_link_action = PendingLinkAction::Active(up);
@@ -4135,23 +4224,8 @@ impl Coordinator {
                     }
                     self.sleep_deadline = None;
                 }
-                Message::UpdateFromEndpoint(EndpointAction::RestartRequired) => self.restart = true,
-                Message::UpdateFromEndpoint(EndpointAction::LinkStatusNotify(connect)) => {
-                    self.workers[0].stop().await;
-
-                    // These are the only link state transitions that are tracked.
-                    // 1. up -> down or down -> up
-                    // 2. up -> down -> up or down -> up -> down.
-                    // All other state transitions are coalesced into one of the above cases.
-                    // For example, up -> down -> up -> down is treated as up -> down.
-                    // N.B - Always queue up the incoming state to minimize the effects of loss
-                    //       of any notifications (for example, during vtl2 servicing).
-                    if let Some(primary) = self.primary_mut() {
-                        primary.pending_link_action = PendingLinkAction::Active(connect);
-                    }
-
-                    // If there is any existing sleep timer running, cancel it out.
-                    self.sleep_deadline = None;
+                Message::UpdateFromEndpoint(endpoint_action) => {
+                    self.handle_endpoint_action(endpoint_action).await;
                 }
                 Message::ChannelDisconnected => {
                     break;
@@ -4161,12 +4235,101 @@ impl Coordinator {
         Ok(())
     }
 
+    async fn handle_endpoint_action(&mut self, action: EndpointAction) {
+        match action {
+            EndpointAction::RestartRequired => self.restart = true,
+            EndpointAction::LinkStatusNotify(connect) => {
+                self.stop_primary_worker().await;
+                // These are the only link state transitions that are tracked.
+                // 1. up -> down or down -> up
+                // 2. up -> down -> up or down -> up -> down.
+                // All other state transitions are coalesced into one of the above cases.
+                // For example, up -> down -> up -> down is treated as up -> down.
+                // N.B - Always queue up the incoming state to minimize the effects of loss
+                //       of any notifications (for example, during vtl2 servicing).
+                if let Some(primary) = self.primary_mut() {
+                    primary.pending_link_action = PendingLinkAction::Active(connect);
+                }
+
+                // If there is any existing sleep timer running, cancel it out.
+                self.sleep_deadline = None;
+            }
+        }
+    }
+
+    /// Called from the [`Self::process`] loop when either `CoordinatorMessage::Restart`
+    /// or `EndpointAction::RestartRequired` is observed.
+    async fn restart_worker_queues(
+        &mut self,
+        stop: &mut StopTask<'_>,
+        state: &mut CoordinatorState,
+    ) -> Result<(), task_control::Cancelled> {
+        stop.until_stopped(self.stop_workers()).await?;
+
+        // All workers are stopped and cannot push new messages.
+        // Drain any messages that arrived prior to or during the stop.
+        // Coalesce restart messages. Handle non-restart Primary messages.
+        self.handle_queued_coordinator_messages(state).await;
+
+        // Best-effort attempt to coalesce any `RestartRequired` endpoint
+        // action into this restart operation.
+        while let Some(action) = state.endpoint.wait_for_endpoint_action().now_or_never() {
+            self.handle_endpoint_action(action).await;
+        }
+
+        // The queue restart operation is not restartable; do not poll on stop here.
+        if let Err(err) = self
+            .restart_queues(state)
+            .instrument(tracing::info_span!("netvsp_restart_queues"))
+            .await
+        {
+            tracing::error!(
+                error = &err as &dyn std::error::Error,
+                "failed to restart queues"
+            );
+        }
+        if let Some(primary) = self.primary_mut() {
+            primary.is_data_path_switched = state.endpoint.get_data_path_to_guest_vf().await.ok();
+            tracing::info!(
+                is_data_path_switched = primary.is_data_path_switched,
+                "Query data path state"
+            );
+        }
+        self.restore_guest_vf_state(state).await;
+        self.restart = false;
+        Ok(())
+    }
+
+    async fn handle_queued_coordinator_messages(&mut self, state: &mut CoordinatorState) {
+        while let Ok(Some(msg)) = self.recv.try_next() {
+            self.handle_coordinator_message(msg, state).await;
+        }
+    }
+
     async fn handle_coordinator_message(
         &mut self,
         msg: CoordinatorMessage,
         state: &mut CoordinatorState,
     ) {
-        self.workers[0].stop().await;
+        match msg {
+            CoordinatorMessage::Restart { channel_idx } if channel_idx != 0 => {
+                tracelimit::event_ratelimited!(
+                    tracing::Level::DEBUG,
+                    channel_idx,
+                    "sub-channel triggered restart"
+                );
+                self.restart = true;
+            }
+            _ => self.handle_primary_message(msg, state).await,
+        }
+    }
+
+    async fn handle_primary_message(
+        &mut self,
+        msg: CoordinatorMessage,
+        state: &mut CoordinatorState,
+    ) {
+        self.stop_primary_worker().await;
         if let Some(worker) = self.workers[0].state_mut() {
             if matches!(worker.state, WorkerState::WaitingForCoordinator(_)) {
                 let WorkerState::WaitingForCoordinator(Some(ready)) =
@@ -4202,7 +4365,10 @@ impl Coordinator {
             CoordinatorMessage::StartTimer(deadline) => {
                 self.sleep_deadline = Some(deadline);
             }
-            CoordinatorMessage::Restart => self.restart = true,
+            CoordinatorMessage::Restart { channel_idx } => {
+                assert_eq!(channel_idx, 0);
+                self.restart = true;
+            }
         }
     }
 
@@ -4210,6 +4376,10 @@ impl Coordinator {
         for worker in &mut self.workers {
             worker.stop().await;
         }
+    }
+
+    async fn stop_primary_worker(&mut self) {
+        self.workers[0].stop().await;
     }
 
     async fn restore_guest_vf_state(&mut self, c_state: &mut CoordinatorState) {
@@ -4431,6 +4601,57 @@ impl Coordinator {
     }
 
     async fn restart_queues(&mut self, c_state: &mut CoordinatorState) -> Result<(), WorkerError> {
+        // Pre-compute the active queue count and validate the rx buffer configuration
+        // before continuing with the queue restart work in this function.
+        // Invalid configurations are returned to the caller as errors.
+        let (num_queues, active_queues, active_queue_count) = if let Some(state) = self.workers[0]
+            .state()
+            .and_then(|worker| worker.state.ready())
+        {
+            let num_queues = state.state.primary.as_ref().unwrap().requested_num_queues;
+            let mut active_queues = Vec::new();
+            let active_queue_count = if let Some(rss_state) =
+                state.state.primary.as_ref().unwrap().rss_state.as_ref()
+            {
+                active_queues.clone_from(&rss_state.indirection_table);
+                active_queues.sort();
+                active_queues.dedup();
+                active_queues = active_queues
+                    .into_iter()
+                    .filter(|&index| index < num_queues)
+                    .collect::<Vec<_>>();
+                if !active_queues.is_empty() {
+                    active_queues.len() as u16
+                } else {
+                    tracelimit::warn_ratelimited!(
+                        num_queues,
+                        indirection_table_len = rss_state.indirection_table.len(),
+                        "RSS indirection table has no entries within the valid queue range, falling back to num_queues",
+                    );
+                    num_queues
+                }
+            } else {
+                num_queues
+            };
+
+            RxBufferRanges::validate_params(
+                state.buffers.recv_buffer.count,
+                active_queue_count.into(),
+            )?;
+
+            GuestBuffers::validate_config(
+                &state.buffers.recv_buffer.gpadl,
+                state.buffers.recv_buffer.sub_allocation_size,
+                state.buffers.ndis_config.mtu,
+            )
+            .map_err(WorkerError::GuestBuffers)?;
+
+            (num_queues, active_queues, active_queue_count)
+        } else {
+            // No ready state; restart_queues will return Ok(()).
+            (0, Vec::new(), 0)
+        };
+
         // Drop all the queues and stop the endpoint. Collect the worker drivers to pass to the queues.
         let drivers = self
             .workers
@@ -4464,31 +4685,9 @@ impl Coordinator {
         // Save the channel buffers for use in the subchannel workers.
         self.buffers = Some(state.buffers.clone());
 
-        let num_queues = state.state.primary.as_ref().unwrap().requested_num_queues;
-        let mut active_queues = Vec::new();
-        let active_queue_count =
-            if let Some(rss_state) = state.state.primary.as_ref().unwrap().rss_state.as_ref() {
-                // Active queue count is computed as the number of unique entries in the indirection table
-                active_queues.clone_from(&rss_state.indirection_table);
-                active_queues.sort();
-                active_queues.dedup();
-                active_queues = active_queues
-                    .into_iter()
-                    .filter(|&index| index < num_queues)
-                    .collect::<Vec<_>>();
-                if !active_queues.is_empty() {
-                    active_queues.len() as u16
-                } else {
-                    tracelimit::warn_ratelimited!("Invalid RSS indirection table");
-                    num_queues
-                }
-            } else {
-                num_queues
-            };
-
         // Distribute the rx buffers to only the active queues.
         let (ranges, mut remote_buffer_id_recvs) =
-            RxBufferRanges::new(state.buffers.recv_buffer.count, active_queue_count.into());
+            RxBufferRanges::new(state.buffers.recv_buffer.count, active_queue_count.into())?;
         let ranges = Arc::new(ranges);
 
         let mut queues = Vec::new();
@@ -4504,7 +4703,7 @@ impl Coordinator {
                     buffers.recv_buffer.sub_allocation_size,
                     buffers.ndis_config.mtu,
                 )
-                .map_err(WorkerError::GpadlError)?,
+                .map_err(WorkerError::GuestBuffers)?,
             );
 
             // Get the list of free rx buffers from each task, then partition
@@ -4657,7 +4856,7 @@ impl Coordinator {
     }
 
     async fn update_guest_vf_state(&mut self, c_state: &mut CoordinatorState) {
-        self.workers[0].stop().await;
+        self.stop_primary_worker().await;
         self.restore_guest_vf_state(c_state).await;
     }
 }
@@ -4710,7 +4909,16 @@ impl<T: RingMem + 'static> Worker<T> {
                     };
 
                     // Wake up the coordinator task to start the queues.
-                    let _ = self.coordinator_send.try_send(CoordinatorMessage::Restart);
+                    if let Err(err) = self
+                        .coordinator_send
+                        .try_send(CoordinatorMessage::Restart { channel_idx: 0 })
+                    {
+                        tracelimit::error_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            channel_idx = self.channel_idx,
+                            "failed to send restart message to coordinator"
+                        );
+                    }
 
                     tracelimit::info_ratelimited!("network initialized");
                     self.state = WorkerState::WaitingForCoordinator(Some(state));
@@ -4750,23 +4958,30 @@ impl<T: RingMem + 'static> Worker<T> {
                         Err(WorkerError::EndpointRequiresQueueRestart(err)) => {
                             tracelimit::warn_ratelimited!(
                                 err = err.as_ref() as &dyn std::error::Error,
+                                channel_idx = self.channel_idx,
                                 "Endpoint requires queues to restart",
                             );
-                            CoordinatorMessage::Restart
+                            CoordinatorMessage::Restart {
+                                channel_idx: self.channel_idx,
+                            }
                         }
                         Err(err) => return Err(err),
                     };
 
-                    let WorkerState::Ready(ready) = std::mem::replace(
-                        &mut self.state,
-                        WorkerState::WaitingForCoordinator(None),
-                    ) else {
-                        unreachable!("must be running in ready state")
-                    };
-                    let _ = std::mem::replace(
-                        &mut self.state,
-                        WorkerState::WaitingForCoordinator(Some(ready)),
-                    );
+                    // Only the Primary channel transitions to `WaitingForCoordinator`.
+                    // Sub-channels stay in `Ready(_)`.
+                    if self.channel_idx == 0 {
+                        let WorkerState::Ready(ready) = std::mem::replace(
+                            &mut self.state,
+                            WorkerState::WaitingForCoordinator(None),
+                        ) else {
+                            unreachable!("must be running in ready state")
+                        };
+                        let _ = std::mem::replace(
+                            &mut self.state,
+                            WorkerState::WaitingForCoordinator(Some(ready)),
+                        );
+                    }
                     self.coordinator_send
                         .try_send(msg)
                         .map_err(WorkerError::CoordinatorMessageSendFailed)?;
@@ -5285,11 +5500,13 @@ impl<T: 'static + RingMem> NetChannel<T> {
         let n = epqueue
             .rx_poll(pool, &mut data.rx_ready)
             .map_err(WorkerError::Endpoint)?;
+
         if n == 0 {
             return Ok(false);
         }
 
         state.stats.rx_packets_per_wake.add_sample(n as u64);
+        state.stats.rx_vlan_packets.add(pool.take_rx_vlan_count());
 
         if self.packet_filter == rndisprot::NDIS_PACKET_TYPE_NONE {
             tracing::trace!(
@@ -5504,8 +5721,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     // the subchannels plus the primary channel must fit within the max_queues value,
                     // which means subchannels + 1 ≤ max_queues, so the subchannel count must be
                     // strictly less than max_queues.
+                    let num_queues = request.num_sub_channels + 1;
                     let status = if request.operation == protocol::SubchannelOperation::ALLOCATE
                         && request.num_sub_channels < self.adapter.max_queues.into()
+                        && RxBufferRanges::validate_params(buffers.recv_buffer.count, num_queues)
+                            .is_ok()
                     {
                         subchannel_count = request.num_sub_channels;
                         protocol::Status::SUCCESS
@@ -5514,6 +5734,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             operation = ?request.operation,
                             request_sub_channels = request.num_sub_channels,
                             max_supported_sub_channels = self.adapter.max_queues - 1,
+                            recv_buffer_count = buffers.recv_buffer.count,
                             "Subchannel request failed: either operation is not supported or requested more subchannels than supported"
                         );
                         protocol::Status::FAILURE
@@ -5535,7 +5756,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         let primary = state.primary.as_mut().unwrap();
                         primary.requested_num_queues = subchannel_count as u16 + 1;
                         primary.tx_spread_sent = false;
-                        self.restart = Some(CoordinatorMessage::Restart);
+                        self.restart = Some(CoordinatorMessage::Restart { channel_idx: 0 });
                     }
                 }
                 PacketData::RevokeReceiveBuffer(protocol::Message1RevokeReceiveBuffer { id })

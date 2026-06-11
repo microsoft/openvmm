@@ -59,11 +59,8 @@ impl MsiController {
 }
 
 impl SignalMsi for MsiController {
-    fn signal_msi(&self, rid: u32, address: u64, _data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, _data: u32) {
         let index = address as usize;
-        if rid != 0 {
-            return;
-        }
         if let Some(event) = self.events.get(index) {
             tracing::debug!(index, "signaling interrupt");
             event.signal_uncached();

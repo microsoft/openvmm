@@ -114,24 +114,39 @@ pub struct LocalApic {
     needs_offload_reeval: bool,
     scan_irr: bool,
 
+    #[inspect(safe)]
     stats: Stats,
 }
 
 #[derive(Inspect, Default)]
 struct Stats {
+    #[inspect(safe)]
     eoi: Counter,
+    #[inspect(safe)]
     eoi_level: Counter,
+    #[inspect(safe)]
     spurious_eoi: Counter,
+    #[inspect(safe)]
     lazy_eoi: Counter,
+    #[inspect(safe)]
     interrupt: Counter,
+    #[inspect(safe)]
     nmi: Counter,
+    #[inspect(safe)]
     extint: Counter,
+    #[inspect(safe)]
     init: Counter,
+    #[inspect(safe)]
     sipi: Counter,
+    #[inspect(safe)]
     self_ipi: Counter,
+    #[inspect(safe)]
     broadcast_ipi: Counter,
+    #[inspect(safe)]
     other_ipi: Counter,
+    #[inspect(safe)]
     offload_push: Counter,
+    #[inspect(safe)]
     offload_pull: Counter,
 }
 

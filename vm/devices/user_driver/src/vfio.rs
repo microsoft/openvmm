@@ -16,6 +16,7 @@ use futures::FutureExt;
 use futures_concurrency::future::Race;
 use inspect::Inspect;
 use inspect_counters::SharedCounter;
+use nix::errno::Errno;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::wait::PolledWait;
@@ -123,22 +124,58 @@ impl VfioDevice {
         tracing::info!(pci_id, keepalive, "device arrived");
         vfio_sys::print_relevant_params();
 
+        let driver = driver_source.simple();
+        let retry = vfio_sys::VfioRetry::new(&driver, pci_id);
+
+        let is_not_found = |e: &anyhow::Error| {
+            e.chain().any(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::NotFound)
+            })
+        };
+        let is_enodev = |e: &anyhow::Error| {
+            e.chain().any(|cause| {
+                cause
+                    .downcast_ref::<Errno>()
+                    .is_some_and(|e| *e == Errno::ENODEV)
+            })
+        };
+
         let container = vfio_sys::Container::new()?;
-        let group_id = vfio_sys::Group::find_group_for_device(&path)?;
-        let group = vfio_sys::Group::open_noiommu(group_id)?;
+        let group_id = retry
+            .retry(
+                || vfio_sys::Group::find_group_for_device(&path),
+                &is_not_found,
+                "find_group_for_device",
+            )
+            .await?;
+        let group = retry
+            .retry(
+                || vfio_sys::Group::open_noiommu(group_id),
+                &is_not_found,
+                "open_noiommu",
+            )
+            .await?;
         group.set_container(&container)?;
         if !group.status()?.viable() {
             anyhow::bail!("group is not viable");
         }
 
-        let driver = driver_source.simple();
         container.set_iommu(IommuType::NoIommu)?;
         if keepalive {
-            // Prevent physical hardware interaction when restoring.
-            group.set_keep_alive(pci_id, &driver).await?;
+            retry
+                .retry(
+                    || group.set_keep_alive(pci_id),
+                    &is_enodev,
+                    "set_keep_alive",
+                )
+                .await?;
         }
         tracing::debug!(pci_id, "about to open device");
-        let device = group.open_device(pci_id, &driver).await?;
+        let device = retry
+            .retry(|| group.open_device(pci_id), &is_enodev, "open_device")
+            .await?;
         let msix_info = device.irq_info(vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX)?;
         if msix_info.flags.noresize() {
             anyhow::bail!("unsupported: kernel does not support dynamic msix allocation");

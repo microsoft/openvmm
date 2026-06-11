@@ -707,12 +707,20 @@ impl ReadyState {
                 device_count: 1,
                 device: [],
             };
+            let (flags, numa_node) = if let Some(vnode) = dev.vnode {
+                (
+                    protocol::DeviceDescription2Flags::new().with_numa_affinity_specified(true),
+                    vnode,
+                )
+            } else {
+                (protocol::DeviceDescription2Flags::new(), 0)
+            };
             let device = protocol::DeviceDescription2 {
                 pnp_id,
                 slot: SlotNumber::new(),
                 serial_num: dev.serial_num,
-                flags: 0,
-                numa_node: 0,
+                flags,
+                numa_node,
                 rsvd: 0,
             };
 
@@ -1221,6 +1229,8 @@ pub struct VpciChannel {
     hardware_ids: HardwareIds,
     #[inspect(hex, iter_by_index)]
     bar_masks: [u32; 6],
+    /// NUMA node affinity reported to the guest in `DeviceDescription2`.
+    vnode: Option<u16>,
 
     // The underlying device.
     #[inspect(skip)]
@@ -1335,6 +1345,7 @@ impl VpciChannel {
         instance_id: Guid,
         config_space: VpciConfigSpace,
         msi_mapper: VpciInterruptMapper,
+        vnode: Option<u16>,
     ) -> Result<Self, NotPciDevice> {
         let (hardware_ids, bar_masks);
         {
@@ -1351,6 +1362,7 @@ impl VpciChannel {
             serial_num: instance_id.data1, // Use FIOV precedent of serial number from first block of GUID
             hardware_ids,
             bar_masks,
+            vnode,
             device: device.clone(),
             bars_set: false,
             interrupts: Vec::new(),
@@ -1453,6 +1465,7 @@ mod tests {
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
+    use pci_core::bus_range::AssignedBusRange;
     use pci_core::cfg_space_emu::BarMemoryKind;
     use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
     use pci_core::cfg_space_emu::DeviceBars;
@@ -1539,6 +1552,7 @@ mod tests {
             serial_num: 0x1234,
             hardware_ids,
             bar_masks,
+            vnode: None,
             device,
             bars_set: false,
             interrupts: Vec::new(),
@@ -1703,7 +1717,7 @@ mod tests {
             assert_eq!(device.pnp_id.sub_vendor_id, self.config.type0_sub_vendor_id);
             assert_eq!(device.pnp_id.sub_system_id, self.config.type0_sub_system_id);
             assert_eq!(device.slot, SlotNumber::new());
-            assert_eq!(device.flags, 0,);
+            assert_eq!(device.flags, protocol::DeviceDescription2Flags::new());
             assert_eq!(device.numa_node, 0);
             assert_eq!(device.rsvd, 0);
         }
@@ -1890,7 +1904,12 @@ mod tests {
         };
 
         let pci = Arc::new(CloseableMutex::new(NullDevice {
-            config_space: ConfigSpaceType0Emulator::new(pci_config, Vec::new(), DeviceBars::new()),
+            config_space: ConfigSpaceType0Emulator::new(
+                pci_config,
+                Vec::new(),
+                Vec::new(),
+                DeviceBars::new(),
+            ),
         }));
         let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
         let base_address = 0x140000000;
@@ -1911,7 +1930,12 @@ mod tests {
             type0_sub_system_id: 0x1,
         };
         let pci = Arc::new(CloseableMutex::new(NullDevice {
-            config_space: ConfigSpaceType0Emulator::new(pci_config, Vec::new(), DeviceBars::new()),
+            config_space: ConfigSpaceType0Emulator::new(
+                pci_config,
+                Vec::new(),
+                Vec::new(),
+                DeviceBars::new(),
+            ),
         }));
         let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
         guest_driver.protocol_version = protocol::ProtocolVersion(0x00020000);
@@ -1921,7 +1945,7 @@ mod tests {
 
     #[async_test]
     async fn verify_simple_capability(driver: DefaultDriver) {
-        let msi_conn = MsiConnection::new();
+        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
         let pci_config = HardwareIds {
             vendor_id: 0x123,
             device_id: 0x789,
@@ -1942,6 +1966,7 @@ mod tests {
             config_space: ConfigSpaceType0Emulator::new(
                 pci_config,
                 vec![Box::new(msix_capability)],
+                Vec::new(),
                 DeviceBars::new(),
             ),
         }));
@@ -1967,6 +1992,7 @@ mod tests {
         let pci = Arc::new(CloseableMutex::new(NullDevice {
             config_space: ConfigSpaceType0Emulator::new(
                 pci_config,
+                Vec::new(),
                 Vec::new(),
                 DeviceBars::new().bar0(0x1000, BarMemoryKind::Dummy),
             ),
@@ -2038,6 +2064,7 @@ mod tests {
                         type0_sub_vendor_id: 0x456,
                         type0_sub_system_id: 0x1,
                     },
+                    Vec::new(),
                     Vec::new(),
                     DeviceBars::new()
                         .bar0(
@@ -2272,7 +2299,12 @@ mod tests {
         };
 
         let pci = Arc::new(CloseableMutex::new(NullDevice {
-            config_space: ConfigSpaceType0Emulator::new(pci_config, Vec::new(), DeviceBars::new()),
+            config_space: ConfigSpaceType0Emulator::new(
+                pci_config,
+                Vec::new(),
+                Vec::new(),
+                DeviceBars::new(),
+            ),
         }));
         let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
         let base_address = 0x1000000;

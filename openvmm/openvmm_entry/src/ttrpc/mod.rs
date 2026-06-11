@@ -7,6 +7,8 @@
 
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
+use crate::serial_io::connect_serial;
+use crate::vm_controller::GuestPowerActions;
 use crate::vm_controller::InspectTarget;
 use crate::vm_controller::VmController;
 use crate::vm_controller::VmControllerEvent;
@@ -32,14 +34,16 @@ use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use netvsp_resources::NetvspHandle;
 use openvmm_defs::config::Config;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::NumaNode;
+use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
+use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
@@ -64,6 +68,8 @@ use virtio_resources::VirtioPciDeviceHandle;
 use vm_manifest_builder::VmManifestBuilder;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
+use vm_resource::kind::SerialBackendHandle;
+use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 
 #[derive(mesh::MeshPayload)]
@@ -531,18 +537,21 @@ impl VmService {
             let pc = ports
                 .get_mut(port.port as usize)
                 .context("invalid serial port")?;
-            *pc = Some(bind_serial(port.socket_path.as_ref()).with_context(|| {
-                format!("failed to bind to serial socket: {}", port.socket_path)
+            let (serial_fn, action) = open_socket_backend(port.connect);
+            *pc = Some(serial_fn(port.socket_path.as_ref()).with_context(|| {
+                format!("failed to {} serial socket: {}", action, port.socket_path)
             })?);
         }
 
-        let chipset = VmManifestBuilder::new(
+        let chipset_builder = VmManifestBuilder::new(
             vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
             vm_manifest_builder::MachineArch::X86_64,
         )
-        .with_serial(ports)
-        .build()
-        .context("failed to build vm configuration")?;
+        .with_serial(ports);
+        let layout_config = chipset_builder.layout_config();
+        let chipset = chipset_builder
+            .build()
+            .context("failed to build vm configuration")?;
 
         // Extract memory and processor counts for the VmController.
         let config_mem_size = req_config
@@ -567,15 +576,20 @@ impl VmService {
             pcie_devices: vec![],
             pcie_switches: vec![],
             vpci_devices: vec![],
-            memory: MemoryConfig {
-                mem_size: config_mem_size,
-                mmio_gaps: DEFAULT_MMIO_GAPS_X86.into(),
-                pci_ecam_gaps: vec![],
-                pci_mmio_gaps: vec![],
-                prefetch_memory: false,
-                private_memory: false,
-                transparent_hugepages: false,
-                numa_mem_sizes: None,
+            numa: NumaTopology {
+                nodes: vec![NumaNode {
+                    mem: Some(MemoryConfig {
+                        mem_size: config_mem_size,
+                        prefetch_memory: false,
+                        private_memory: false,
+                        transparent_hugepages: false,
+                        hugepages: false,
+                        hugepage_size: None,
+                        host_numa_node: None,
+                    }),
+                    vps: VpAssignment::FromTopology,
+                }],
+                distances: vec![],
             },
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {
@@ -607,8 +621,9 @@ impl VmService {
             debugger_rpc: None,
             chipset_devices: chipset.chipset_devices,
             pci_chipset_devices: chipset.pci_chipset_devices,
+            isa_dma_controller: chipset.isa_dma_controller,
             chipset_capabilities: chipset.capabilities,
-            generation_id_recv: None,
+            layout: layout_config,
             rtc_delta_milliseconds: 0,
             automatic_guest_reset: true,
             efi_diagnostics_log_level: Default::default(),
@@ -657,9 +672,35 @@ impl VmService {
                         vtl: DeviceVtl::Vtl0,
                         instance_id: Guid::new_random(),
                         resource: VirtioPciDeviceHandle(resource).into_resource(),
+                        vnode: None,
                     });
                 } else {
-                    config.virtio_devices.push((VirtioBus::Pci, resource));
+                    config.virtio_devices.push((VirtioBus::Mmio, resource));
+                }
+            }
+
+            if let Some(virtio_console) = devices_config.virtio_console {
+                if !virtio_console.socket_path.is_empty() {
+                    let (serial_fn, action) = open_socket_backend(virtio_console.connect);
+                    let backend =
+                        serial_fn(virtio_console.socket_path.as_ref()).with_context(|| {
+                            format!(
+                                "failed to {} virtio console socket: {}",
+                                action, virtio_console.socket_path
+                            )
+                        })?;
+                    let resource: Resource<VirtioDeviceHandle> =
+                        virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
+                    if cfg!(windows) || cfg!(target_os = "macos") {
+                        config.vpci_devices.push(VpciDeviceConfig {
+                            vtl: DeviceVtl::Vtl0,
+                            instance_id: Guid::new_random(),
+                            resource: VirtioPciDeviceHandle(resource).into_resource(),
+                            vnode: None,
+                        });
+                    } else {
+                        config.virtio_devices.push((VirtioBus::Mmio, resource));
+                    }
                 }
             }
         }
@@ -719,6 +760,10 @@ impl VmService {
             memory,
             processors,
             log_file: None,
+            // The ttrpc/grpc server never exits on a guest power event; it uses
+            // the historical defaults (none of which is Exit), so the
+            // ExitRequested event handled below is unreachable here.
+            guest_power_actions: GuestPowerActions::default(),
         };
 
         // Spawn the controller task.
@@ -770,6 +815,12 @@ impl VmService {
                 if let Some((_, response)) = self.wait_vm_response.take() {
                     response.send(Ok(()));
                 }
+            }
+            VmControllerEvent::ExitRequested { code } => {
+                // The server leaves the guest power actions at their defaults
+                // (none is `exit`), so this should not occur in ttrpc/grpc mode;
+                // log rather than exiting the server out from under its clients.
+                tracing::warn!(code, "unexpected exit request in server mode");
             }
             VmControllerEvent::WorkerStopped { error } => {
                 if let Some(err) = &error {
@@ -853,19 +904,25 @@ impl VmService {
     }
 }
 
-// On platforms without NIC backends (e.g., macOS), every match arm diverges.
-#[cfg_attr(
-    not(any(windows, target_os = "linux")),
-    expect(
-        unreachable_code,
-        unused_variables,
-        reason = "no NIC backends available on this platform"
-    )
-)]
+/// Returns the appropriate serial backend open function and a human-readable
+/// action verb for error messages, based on whether we should connect to an
+/// existing socket or bind a new listener.
+fn open_socket_backend(
+    connect: bool,
+) -> (
+    fn(&std::path::Path) -> std::io::Result<Resource<SerialBackendHandle>>,
+    &'static str,
+) {
+    if connect {
+        (connect_serial, "connect to")
+    } else {
+        (bind_serial, "bind")
+    }
+}
+
 fn parse_nic_config(
     nic: vmservice::NicConfig,
 ) -> anyhow::Result<(DeviceVtl, Resource<VmbusDeviceHandleKind>)> {
-    #[cfg(any(windows, target_os = "linux"))]
     use self::vmservice::nic_config::Backend;
 
     let endpoint = match nic.backend.context("missing backend")? {
@@ -891,6 +948,15 @@ fn parse_nic_config(
                 .with_context(|| format!("failed to open TAP device '{}'", tap.name))?;
             net_backend_resources::tap::TapHandle { fd }.into_resource()
         }
+        Backend::Consomme(consomme) => net_backend_resources::consomme::ConsommeHandle {
+            cidr: if consomme.cidr.is_empty() {
+                None
+            } else {
+                Some(consomme.cidr)
+            },
+            ports: Vec::new(),
+        }
+        .into_resource(),
         _ => anyhow::bail!("unsupported backend"),
     };
     let cfg = NetvspHandle {

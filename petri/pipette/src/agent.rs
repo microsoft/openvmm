@@ -4,6 +4,8 @@
 //! The main pipette agent, which is run when the process starts.
 
 use anyhow::Context;
+use futures::AsyncRead;
+use futures::AsyncWrite;
 use futures::future::FutureExt;
 use futures_concurrency::future::Race;
 use mesh_remote::PointToPointMesh;
@@ -21,6 +23,15 @@ use unicycle::FuturesUnordered;
 use vmsocket::VmAddress;
 use vmsocket::VmSocket;
 
+/// The transport used by the pipette agent to communicate with the host.
+#[derive(Clone, Copy, Debug)]
+pub enum Transport {
+    /// Hyper-V sockets or virtio-vsock (the default).
+    Vsock,
+    /// TCP over a network interface (e.g. virtio-net + consomme).
+    Tcp,
+}
+
 pub struct Agent {
     driver: DefaultDriver,
     mesh: PointToPointMesh,
@@ -33,14 +44,28 @@ pub struct Agent {
 pub struct DiagnosticSender(mesh::Sender<DiagnosticFile>);
 
 impl Agent {
-    pub async fn new(driver: DefaultDriver) -> anyhow::Result<Self> {
-        let socket = (connect_client(&driver), connect_server(&driver))
-            .race()
-            .await;
+    pub async fn new(driver: DefaultDriver, transport: Transport) -> anyhow::Result<Self> {
+        match transport {
+            Transport::Vsock => {
+                let socket = (connect_client(&driver), connect_server(&driver))
+                    .race()
+                    .await;
+                Self::from_conn(driver, socket)
+            }
+            Transport::Tcp => {
+                let socket = connect_server_tcp(&driver).await?;
+                Self::from_conn(driver, socket)
+            }
+        }
+    }
 
+    fn from_conn(
+        driver: DefaultDriver,
+        conn: impl 'static + AsyncRead + AsyncWrite + Send + Unpin,
+    ) -> anyhow::Result<Self> {
         eprintln!("Pipette handshaking with host");
         let (bootstrap_send, bootstrap_recv) = mesh::oneshot::<PipetteBootstrap>();
-        let mesh = PointToPointMesh::new(&driver, socket, bootstrap_recv.into());
+        let mesh = PointToPointMesh::new(&driver, conn, bootstrap_recv.into());
 
         let (request_send, request_recv) = mesh::channel();
         let (diag_file_send, diag_file_recv) = mesh::channel();
@@ -92,7 +117,7 @@ impl Agent {
 async fn connect_server(driver: &DefaultDriver) -> PolledSocket<Socket> {
     let server_core = async || {
         let mut socket = VmSocket::new()?;
-        socket.bind(VmAddress::vsock_any(pipette_protocol::PIPETTE_VSOCK_PORT))?;
+        socket.bind(VmAddress::vsock_any(pipette_protocol::PIPETTE_PORT))?;
         let mut socket =
             PolledSocket::new(driver, socket.into()).context("failed to create polled socket")?;
         socket.listen(1)?;
@@ -125,7 +150,7 @@ async fn connect_client(driver: &DefaultDriver) -> PolledSocket<Socket> {
             .context("failed to create polled client socket")?
             .convert();
         socket
-            .connect(&VmAddress::vsock_host(pipette_protocol::PIPETTE_VSOCK_PORT).into())
+            .connect(&VmAddress::vsock_host(pipette_protocol::PIPETTE_PORT).into())
             .await
             .context("failed to connect")
             .map(|()| socket)
@@ -142,6 +167,28 @@ async fn connect_client(driver: &DefaultDriver) -> PolledSocket<Socket> {
     }
 }
 
+/// Listen for an incoming TCP connection from the host on the pipette TCP port.
+async fn connect_server_tcp(
+    driver: &DefaultDriver,
+) -> anyhow::Result<PolledSocket<std::net::TcpStream>> {
+    let listener = std::net::TcpListener::bind(("0.0.0.0", pipette_protocol::PIPETTE_PORT as u16))
+        .context("failed to bind TCP listener")?;
+    listener
+        .set_nonblocking(true)
+        .context("failed to set nonblocking")?;
+    let mut listener =
+        PolledSocket::new(driver, listener).context("failed to create polled TCP listener")?;
+    let (stream, addr) = listener
+        .accept()
+        .await
+        .context("failed to accept TCP connection")?;
+    stream
+        .set_nodelay(true)
+        .context("failed to set TCP_NODELAY")?;
+    eprintln!("Pipette accepted TCP connection from {addr}");
+    PolledSocket::new(driver, stream).context("failed to create polled TCP stream")
+}
+
 async fn handle_request(
     driver: &DefaultDriver,
     req: PipetteRequest,
@@ -151,7 +198,9 @@ async fn handle_request(
         PipetteRequest::Ping(rpc) => rpc.handle_sync(|()| {
             tracing::info!("ping");
         }),
-        PipetteRequest::Execute(rpc) => rpc.handle_failable_sync(crate::execute::handle_execute),
+        PipetteRequest::Execute(rpc) => {
+            rpc.handle_failable_sync(|req| crate::execute::handle_execute(driver, req))
+        }
         PipetteRequest::Shutdown(rpc) => {
             rpc.handle_sync(|request| {
                 tracing::info!(shutdown_type = ?request.shutdown_type, "shutdown request");

@@ -5,7 +5,7 @@ use inspect::Inspect;
 use mesh_channel_core::Receiver;
 use mesh_channel_core::Sender;
 use smoltcp::wire::EthernetAddress;
-use smoltcp::wire::IpAddress;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -37,10 +37,8 @@ pub enum DnsTransport {
 
 #[derive(Debug, Clone)]
 pub struct DnsFlow {
-    pub src_addr: IpAddress,
-    pub dst_addr: IpAddress,
-    pub src_port: u16,
-    pub dst_port: u16,
+    pub src: SocketAddr,
+    pub dst: SocketAddr,
     pub gateway_mac: EthernetAddress,
     pub client_mac: EthernetAddress,
     // Used by the glibc and Windows DNS backends. The musl resolver
@@ -70,7 +68,7 @@ pub struct DnsResponse {
 /// TCP 2-byte length prefix).  Transport framing is the responsibility of the
 /// caller (see [`dns_tcp::DnsTcpHandler`]).
 pub(crate) trait DnsBackend: Send + Sync {
-    fn query(&self, request: &DnsRequest<'_>, response_sender: Sender<DnsResponse>);
+    fn query(&self, request: &DnsRequest<'_>, response_sender: Sender<DnsResponse>, query_id: u64);
 }
 
 #[derive(Inspect)]
@@ -85,6 +83,7 @@ pub struct DnsResolver<B: DnsBackend = PlatformDnsBackend> {
     udp_receiver: Receiver<DnsResponse>,
     pending_requests: usize,
     max_pending_requests: usize,
+    next_query_id: u64,
 }
 
 /// Default maximum number of pending DNS requests.
@@ -105,6 +104,7 @@ impl DnsResolver {
             udp_receiver,
             pending_requests: 0,
             max_pending_requests,
+            next_query_id: 0,
         })
     }
 
@@ -122,6 +122,7 @@ impl DnsResolver {
             udp_receiver,
             pending_requests: 0,
             max_pending_requests,
+            next_query_id: 0,
         })
     }
 }
@@ -138,8 +139,10 @@ impl<B: DnsBackend> DnsResolver<B> {
         response_sender: Sender<DnsResponse>,
     ) -> bool {
         if self.pending_requests < self.max_pending_requests {
+            let query_id = self.next_query_id;
+            self.next_query_id += 1;
             self.pending_requests += 1;
-            self.backend.query(request, response_sender);
+            self.backend.query(request, response_sender, query_id);
             true
         } else {
             tracelimit::warn_ratelimited!(
@@ -222,6 +225,7 @@ impl<B: DnsBackend> DnsResolver<B> {
             udp_receiver,
             pending_requests: 0,
             max_pending_requests: DEFAULT_MAX_PENDING_DNS_REQUESTS,
+            next_query_id: 0,
         }
     }
 }
@@ -229,6 +233,8 @@ impl<B: DnsBackend> DnsResolver<B> {
 /// Internal DNS request structure used by backend implementations.
 #[derive(Debug)]
 pub(crate) struct DnsRequestInternal {
+    #[cfg_attr(not(target_os = "windows"), expect(dead_code))]
+    pub query_id: u64,
     pub flow: DnsFlow,
     pub query: Vec<u8>,
     pub response_sender: Sender<DnsResponse>,

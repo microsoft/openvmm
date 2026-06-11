@@ -613,6 +613,7 @@ fn parse_vnet_hdr(hdr: &VirtioNetHdr, frame: &[u8]) -> RxMetadata {
         l2_len,
         l3_len,
         l4_len,
+        vlan: None,
     }
 }
 

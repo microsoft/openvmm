@@ -8,10 +8,9 @@
 use flowey::node::prelude::*;
 use std::collections::BTreeSet;
 use std::io::IsTerminal;
+use vmm_test_images::CONTAINER;
 use vmm_test_images::KnownTestArtifacts;
-
-const STORAGE_ACCOUNT: &str = "hvlitetestvhds";
-const CONTAINER: &str = "vhds";
+use vmm_test_images::STORAGE_ACCOUNT;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CustomDiskPolicy {

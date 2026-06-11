@@ -37,6 +37,7 @@ struct ResolvedConfig {
     extra_deps: Vec<Path>,
     unstable: bool,
     requires_vpci: bool,
+    requires_host_vendor: Option<HostVendor>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -45,8 +46,19 @@ enum Vmm {
     HyperV,
 }
 
+/// Host CPU vendor that a test can be restricted to via macro overrides.
+///
+/// When set, the test is marked ignored at runtime on hosts whose vendor
+/// does not match (e.g. an `amd`-gated test is skipped on Intel hosts).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HostVendor {
+    Amd,
+    Intel,
+}
+
 enum Firmware {
     LinuxDirect,
+    LinuxDirectBzImage,
     Pcat(PcatGuest),
     Uefi(UefiGuest),
     OpenhclLinuxDirect,
@@ -92,6 +104,7 @@ struct ArgsWithOverrides {
     unstable: bool,
     with_vtl0_pipette: bool,
     requires_vpci: bool,
+    requires_host_vendor: Option<HostVendor>,
 }
 
 struct ResolvedArgs {
@@ -124,6 +137,7 @@ impl ResolvedConfig {
 
         let firmware_prefix = match &self.firmware {
             Firmware::LinuxDirect => "linux",
+            Firmware::LinuxDirectBzImage => "linux_bzimage",
             Firmware::Pcat(_) => "pcat",
             Firmware::Uefi(_) => "uefi",
             Firmware::OpenhclLinuxDirect => "openhcl_linux",
@@ -132,13 +146,16 @@ impl ResolvedConfig {
         };
 
         let guest_prefix = match &self.firmware {
-            Firmware::LinuxDirect | Firmware::OpenhclLinuxDirect => None,
+            Firmware::LinuxDirect | Firmware::LinuxDirectBzImage | Firmware::OpenhclLinuxDirect => {
+                None
+            }
             Firmware::Pcat(guest) | Firmware::OpenhclPcat(guest) => Some(guest.name_prefix()),
             Firmware::Uefi(guest) | Firmware::OpenhclUefi(_, guest) => guest.name_prefix(),
         };
 
         let options_prefix = match &self.firmware {
             Firmware::LinuxDirect
+            | Firmware::LinuxDirectBzImage
             | Firmware::Pcat(_)
             | Firmware::Uefi(_)
             | Firmware::OpenhclLinuxDirect
@@ -174,11 +191,11 @@ impl ToTokens for PcatGuest {
         tokens.extend(match self {
             PcatGuest::Vhd(known_vhd) => {
                 let vhd = known_vhd.image_artifact.clone();
-                quote!(::petri::PcatGuest::Vhd(petri::BootImageConfig::from_vhd(resolver.require_source(#vhd, remote_access))))
+                quote!(::petri::PcatGuest::Vhd(petri::BootImageConfig::from_vhd(resolver.require_source(#vhd, ::petri::RemoteAccess::Allow))))
             }
             PcatGuest::Iso(known_iso) => {
                 let iso = known_iso.image_artifact.clone();
-                quote!(::petri::PcatGuest::Iso(petri::BootImageConfig::from_iso(resolver.require_source(#iso, remote_access))))
+                quote!(::petri::PcatGuest::Iso(petri::BootImageConfig::from_iso(resolver.require_source(#iso, ::petri::RemoteAccess::Allow))))
             }
         });
     }
@@ -199,7 +216,7 @@ impl ToTokens for UefiGuest {
         tokens.extend(match self {
             UefiGuest::Vhd(known_vhd) => {
                 let v = known_vhd.image_artifact.clone();
-                quote!(::petri::UefiGuest::Vhd(petri::BootImageConfig::from_vhd(resolver.require_source(#v, remote_access))))
+                quote!(::petri::UefiGuest::Vhd(petri::BootImageConfig::from_vhd(resolver.require_source(#v, ::petri::RemoteAccess::Allow))))
             }
             UefiGuest::GuestTestUefi(arch) => {
                 let arch_tokens = arch_to_tokens(*arch);
@@ -221,6 +238,9 @@ impl ToTokens for FirmwareAndArch {
         tokens.extend(match &self.firmware {
             Firmware::LinuxDirect => {
                 quote!(::petri::Firmware::linux_direct(resolver, #arch))
+            }
+            Firmware::LinuxDirectBzImage => {
+                quote!(::petri::Firmware::linux_direct_bzimage(resolver))
             }
             Firmware::Pcat(guest) => {
                 quote!(::petri::Firmware::pcat(resolver, #guest))
@@ -251,6 +271,7 @@ impl Parse for ArgsWithOverrides {
         let mut with_vtl0_pipette = None;
         let mut vmm = None;
         let mut requires_vpci = None;
+        let mut requires_host_vendor = None;
 
         let word = input.parse::<Ident>()?;
         let conflict_err = || Err::<Self, Error>(Error::new(word.span(), "conflicting override"));
@@ -273,6 +294,18 @@ impl Parse for ArgsWithOverrides {
                         return conflict_err();
                     }
                     requires_vpci = Some(true);
+                }
+                "amd" => {
+                    if requires_host_vendor.is_some() {
+                        return conflict_err();
+                    }
+                    requires_host_vendor = Some(HostVendor::Amd);
+                }
+                "intel" => {
+                    if requires_host_vendor.is_some() {
+                        return conflict_err();
+                    }
+                    requires_host_vendor = Some(HostVendor::Intel);
                 }
                 "hyperv" => {
                     if vmm.is_some() {
@@ -304,6 +337,7 @@ impl Parse for ArgsWithOverrides {
             with_vtl0_pipette,
             unstable,
             requires_vpci,
+            requires_host_vendor,
         })
     }
 }
@@ -316,6 +350,7 @@ impl ArgsWithOverrides {
             unstable,
             with_vtl0_pipette,
             requires_vpci,
+            requires_host_vendor,
         } = self;
 
         let mut resolved_configs = Vec::new();
@@ -337,6 +372,7 @@ impl ArgsWithOverrides {
                 extra_deps: config.extra_deps,
                 unstable: config.unstable || unstable,
                 requires_vpci,
+                requires_host_vendor,
             });
         }
 
@@ -398,6 +434,7 @@ impl Parse for Config {
 
         let (arch, firmware) = match remainder {
             "linux_direct_x64" => (MachineArch::X86_64, Firmware::LinuxDirect),
+            "linux_direct_bzimage_x64" => (MachineArch::X86_64, Firmware::LinuxDirectBzImage),
             "linux_direct_aarch64" => (MachineArch::Aarch64, Firmware::LinuxDirect),
             "openhcl_linux_direct_x64" => (MachineArch::X86_64, Firmware::OpenhclLinuxDirect),
             "pcat_x64" => (
@@ -551,6 +588,15 @@ fn parse_vhd(input: ParseStream<'_>, generation: Generation) -> syn::Result<Imag
                 ::petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED
             )),
         },
+        "windows_datacenter_core_2022_x64_no_vmbus_prepped" => match generation {
+            Generation::Gen1 => Err(Error::new(
+                word.span(),
+                "Windows Server 2022 no-vmbus prepped is not available for PCAT",
+            )),
+            Generation::Gen2 => Ok(image_info!(
+                ::petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED
+            )),
+        },
         "ubuntu_2404_server_x64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64
         )),
@@ -682,6 +728,7 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 ///
 /// Valid configuration options are:
 /// - `{vmm}_linux_direct_{arch}`: Our provided Linux direct image
+/// - `{vmm}_linux_direct_bzimage_x64`: Our provided Linux direct bzImage (compressed kernel, x86_64 only)
 /// - `{vmm}_openhcl_linux_direct_{arch}`: Our provided Linux direct image with OpenHCL
 /// - `{vmm}_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration
 /// - `{vmm}_uefi_{arch}(<UEFI guest>)`: A Gen 2 configuration
@@ -713,6 +760,8 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `windows_datacenter_core_2025_x64`: Windows Server Datacenter Core 2025 from the Azure Marketplace
 /// - `windows_datacenter_core_2025_x64_prepped`: Windows Server Datacenter Core 2025 from the Azure Marketplace,
 ///   pre-prepped with the pipette guest agent configured.
+/// - `windows_datacenter_core_2022_x64_no_vmbus_prepped`: Windows Server Datacenter Core 2022,
+///   pre-prepped with NetKVM driver and TCP pipette transport for no-vmbus testing.
 /// - `freebsd_13_2_x64`: FreeBSD 13.2 from the FreeBSD Project
 ///
 /// Valid aarch64 VHD options are:
@@ -742,6 +791,7 @@ pub fn vmm_test(
         unstable: false,
         with_vtl0_pipette: true,
         requires_vpci: false,
+        requires_host_vendor: None,
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -753,6 +803,10 @@ pub fn vmm_test(
 /// to all tests, separated by underscores:
 /// - unstable: all variants of this test are unstable
 /// - noagent: don't use pipette in vtl0 for this test
+/// - vpci: this test requires a hypervisor backend that supports VPCI
+///   (virtual PCI) device emulation
+/// - amd: this test only runs on AMD-vendor hosts (skipped otherwise)
+/// - intel: this test only runs on Intel-vendor hosts (skipped otherwise)
 /// - hyperv: use hyperv as the vmm
 /// - openvmm: use openvmm as the vmm
 ///
@@ -782,6 +836,7 @@ pub fn openvmm_test(
         unstable: false,
         with_vtl0_pipette: true,
         requires_vpci: false,
+        requires_host_vendor: None,
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -802,6 +857,7 @@ pub fn openvmm_test_no_agent(
         unstable: false,
         with_vtl0_pipette: false,
         requires_vpci: false,
+        requires_host_vendor: None,
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -833,7 +889,12 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
         let name = format!("{}_{original_name}", config.name_prefix());
 
         // Build requirements based on the configuration and resolved VMM
-        let requirements = build_requirements(&config.firmware, config.vmm, config.requires_vpci);
+        let requirements = build_requirements(
+            &config.firmware,
+            config.vmm,
+            config.requires_vpci,
+            config.requires_host_vendor,
+        );
 
         // Now move the values for the FirmwareAndArch and extra_deps
         let extra_deps = config.extra_deps;
@@ -870,7 +931,6 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
             ::petri::SimpleTest::new(
                 #name,
                 |resolver| {
-                    let remote_access = #remote_access;
                     let firmware = #firmware;
                     let arch = #arch;
                     let extra_deps = (#(resolver.require(#extra_deps),)*);
@@ -885,6 +945,7 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
                 },
                 Some(#requirements),
                 #unstable,
+                #remote_access,
             ).into(),
         };
 
@@ -898,7 +959,12 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
 }
 
 // Helper to build requirements TokenStream for firmware and resolved VMM
-fn build_requirements(firmware: &Firmware, resolved_vmm: Vmm, requires_vpci: bool) -> TokenStream {
+fn build_requirements(
+    firmware: &Firmware,
+    resolved_vmm: Vmm,
+    requires_vpci: bool,
+    requires_host_vendor: Option<HostVendor>,
+) -> TokenStream {
     let mut requirement_expr: TokenStream = quote!(::petri::requirements::TestRequirement::Any);
     let mut is_vbs = false;
     // Add isolation requirement if specified
@@ -940,6 +1006,16 @@ fn build_requirements(firmware: &Firmware, resolved_vmm: Vmm, requires_vpci: boo
     if requires_vpci {
         requirement_expr =
             quote!(#requirement_expr.and(::petri::requirements::TestRequirement::VpciSupport));
+    }
+
+    if let Some(vendor) = requires_host_vendor {
+        let vendor_tokens = match vendor {
+            HostVendor::Amd => quote!(::petri::requirements::Vendor::Amd),
+            HostVendor::Intel => quote!(::petri::requirements::Vendor::Intel),
+        };
+        requirement_expr = quote!(#requirement_expr.and(
+            ::petri::requirements::TestRequirement::Vendor(#vendor_tokens)
+        ));
     }
 
     quote!(

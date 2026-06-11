@@ -121,7 +121,13 @@ impl VirtioTransportCore {
             })
             .collect::<std::io::Result<Vec<_>>>()?;
 
-        let device_feature = traits.device_features.with_version_1(true);
+        // Always turn on version 1 (we don't support legacy devices) and
+        // access_platform (if the device is behind an IOMMU, DMAs will be
+        // translated).
+        let device_feature = traits
+            .device_features
+            .with_version_1(true)
+            .with_access_platform(true);
         let supports_save_restore = device.supports_save_restore();
 
         let (sender, receiver) = mesh::channel();

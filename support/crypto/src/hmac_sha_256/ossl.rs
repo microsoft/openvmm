@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! HMAC-SHA-256 implementation using OpenSSL.
+
 use super::HmacSha256Error;
 
 fn err(err: openssl::error::ErrorStack, op: &'static str) -> HmacSha256Error {

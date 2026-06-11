@@ -23,6 +23,7 @@ tmk_tests.workspace = true
 
 petri_artifacts_common.workspace = true
 petri.workspace = true
+inspect.workspace = true
 
 get_resources.workspace = true
 openvmm_defs.workspace = true
@@ -49,6 +50,7 @@ unix_socket.workspace = true
 vmgs_resources.workspace = true
 
 anyhow.workspace = true
+fs-err.workspace = true
 futures.workspace = true
 jiff.workspace = true
 tracing.workspace = true

@@ -92,6 +92,16 @@ message DevicesConfig {
     // housed.
     repeated WindowsPCIDevice windows_device = 4;
     repeated VirtioFSConfig virtiofs_config = 5;
+    VirtioConsoleConfig virtio_console = 6;
+}
+
+message VirtioConsoleConfig {
+    // Path to a named pipe or Unix domain socket for the console backend.
+    string socket_path = 1;
+    // When true, connect to an existing pipe/socket at socket_path as a client
+    // instead of creating a new server listener. Used when the host has already
+    // created the socket/pipe.
+    bool connect = 2;
 }
 
 message VMConfig {
@@ -119,6 +129,9 @@ message SerialConfig {
         uint32 port = 1;
         // Uds to relay serial console output to.
         string socket_path = 2;
+        // When true, connect to an existing pipe/socket as a client instead of
+        // creating a new server listener.
+        bool connect = 3;
     }
     repeated Config ports = 3;
 }
@@ -224,6 +237,7 @@ message NICConfig {
         string legacy_port_id = 2; // legacy, GUID, Windows only
         DioBackend dio = 6;
         TapBackend tap = 7;
+        ConsommeBackend consomme = 8;
     }
 }
 
@@ -234,6 +248,12 @@ message DioBackend {
 
 message TapBackend {
     string name = 1;
+}
+
+message ConsommeBackend {
+    // Optional CIDR for the guest network (e.g. "10.0.0.0/24").
+    // If empty, a default is used.
+    string cidr = 1;
 }
 
 message WindowsPCIDevice {

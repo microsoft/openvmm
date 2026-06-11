@@ -258,7 +258,7 @@ impl VirtioPciDevice {
                 .map_err(io::Error::other)?;
         }
 
-        let mut config_space = ConfigSpaceType0Emulator::new(hardware_ids, caps, bars);
+        let mut config_space = ConfigSpaceType0Emulator::new(hardware_ids, caps, Vec::new(), bars);
         let interrupt_kind = match interrupt_model {
             PciInterruptModel::Msix(_) => InterruptKind::Msix(msix.unwrap()),
             PciInterruptModel::IntX(pin, line) => {

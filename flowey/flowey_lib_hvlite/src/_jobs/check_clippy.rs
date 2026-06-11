@@ -142,8 +142,7 @@ impl SimpleFlowNode for Node {
                 let repo_path = rt.read(repo_path);
 
                 // guest_test_uefi is uefi-only, and is handled separately below
-                // crypto is handled separately in order to deal with its non-additive features
-                let mut exclude = vec!["guest_test_uefi".into(), "crypto".into()];
+                let mut exclude = vec!["guest_test_uefi".into()];
 
                 // packages depending on libfuzzer-sys are currently x86 only
                 if !(matches!(target.architecture, target_lexicon::Architecture::X86_64)
@@ -175,8 +174,12 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        // On windows & mac, we can't build with all features, as many crates
-        // require openSSL for crypto, which isn't supported in CI yet.
+        // On Windows & Mac we can't build with all features since the TPM
+        // requires OpenSSL for crypto, which isn't supported in CI on those
+        // platforms today.
+        //
+        // We don't add the CI feature here, as it's used purely to exclude
+        // tests that can't run in CI. We still want those tests to be linted.
         let features = if matches!(
             target.operating_system,
             target_lexicon::OperatingSystem::Windows | target_lexicon::OperatingSystem::Darwin(_)
@@ -201,12 +204,27 @@ impl SimpleFlowNode for Node {
         })];
 
         // crypto has non-additive features, we need to ensure full coverage of different backends.
-        // Always test the 'native' no-feature backends.
+        // Always test the 'native' backends.
         reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
             in_folder: openvmm_repo_path.clone(),
             package: CargoPackage::Crate("crypto".into()),
             profile: profile.clone(),
-            features: CargoFeatureSet::None,
+            features: CargoFeatureSet::Specific(vec!["native".into()]),
+            target: target.clone(),
+            extra_env: None,
+            exclude: ReadVar::from_static(None),
+            keep_going: true,
+            all_targets: true,
+            pre_build_deps: pre_build_deps.clone(),
+            done: v,
+        }));
+
+        // Always test the pure rust backend.
+        reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
+            in_folder: openvmm_repo_path.clone(),
+            package: CargoPackage::Crate("crypto".into()),
+            profile: profile.clone(),
+            features: CargoFeatureSet::Specific(vec!["rust".into()]),
             target: target.clone(),
             extra_env: None,
             exclude: ReadVar::from_static(None),

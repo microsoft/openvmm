@@ -105,8 +105,6 @@ impl FlowNode for Node {
                     "vmm_tests",
                     // Skip guest_test_uefi, as it's a no_std UEFI crate
                     "guest_test_uefi",
-                    // Skip crypto, handle it separately due to its non-additive features
-                    "crypto",
                     // Exclude various proc_macro crates, since they don't compile successfully
                     // under --test with panic=abort targets.
                     // https://github.com/rust-lang/cargo/issues/4336 is tracking this.
@@ -167,11 +165,11 @@ impl FlowNode for Node {
                 );
             }
 
-            // On windows, we can't run with all features, as many crates
-            // require openSSL for crypto, which isn't supported yet.
+            // On Windows we can't run with all features since the TPM requires
+            // OpenSSL for crypto, which isn't supported in Windows CI today.
             //
-            // Adding the the "ci" feature is also used to skip certain tests
-            // that fail in CI.
+            // Adding the "ci" feature is also used to skip certain tests that
+            // fail in CI.
             let features = if matches!(
                 target.operating_system,
                 target_lexicon::OperatingSystem::Windows
@@ -198,17 +196,22 @@ impl FlowNode for Node {
                 extra_env: injected_env,
             };
 
-            // The first run is the main workspace run with --all-features.
+            // The first run is the main workspace run with the base features.
             let mut runs: Vec<(String, NextestBuildParams)> =
                 vec![("unit-tests".into(), base_build_params.clone())];
 
             // crypto has non-additive features, so it gets its own runs to
             // ensure full coverage of different backends. Always test the
-            // 'native' no-feature backend. On linux additionally test the
-            // openssl & symcrypt backends and --all-features (we could test
-            // openssl on non-linux targets too, but setting up builds for
-            // them is a pain).
-            let mut crypto_feature_sets = vec![("none", CargoFeatureSet::None)];
+            // native and pure-rust backends. On linux additionally test
+            // the openssl & symcrypt backends and --all-features fallback.
+            // We could test openssl on non-linux targets too, but setting up
+            // builds for them is a pain. We could test Symcrypt on non-musl
+            // linux targets too, but we don't currently have a prebuilt
+            // library for them.
+            let mut crypto_feature_sets = vec![
+                ("native", CargoFeatureSet::Specific(vec!["native".into()])),
+                ("rust", CargoFeatureSet::Specific(vec!["rust".into()])),
+            ];
             if matches!(
                 target.operating_system,
                 target_lexicon::OperatingSystem::Linux

@@ -24,6 +24,7 @@ use nvme_spec::Command;
 use nvme_spec::Completion;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use pci_core::bus_range::AssignedBusRange;
 use pci_core::msi::MsiConnection;
 use pci_core::test_helpers::TestPciInterruptController;
 use user_driver::backoff::Backoff;
@@ -40,7 +41,7 @@ fn instantiate_controller(
 ) -> NvmeFaultController {
     let mut mmio_reg = TestNvmeMmioRegistration {};
     let vm_task_driver = &VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let msi_conn = MsiConnection::new();
+    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
     let controller = NvmeFaultController::new(
         vm_task_driver,
         gm.clone(),
