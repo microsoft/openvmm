@@ -1,11 +1,12 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-# Incubator profile: AArch64 with PCIe (SMMUv3, KVM)
+# Incubator profile: AArch64 with PCIe (SMMUv3, nested virtualization)
 #
-# Provides an emulated ARM platform with KVM, SMMUv3, and PCIe
-# topology for testing IOMMU, device assignment, and PCIe device
-# emulation in OpenVMM/OpenHCL.
+# Provides an emulated ARM platform with EL2 nested-virtualization
+# support (so the guest can run KVM), SMMUv3, and a PCIe topology for
+# testing IOMMU, device assignment, and PCIe device emulation in
+# OpenVMM/OpenHCL.
 
 [incubator]
 type = "qemu-tcg"
