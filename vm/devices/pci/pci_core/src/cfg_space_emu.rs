@@ -737,7 +737,10 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                     *value = result;
                     CommonHeaderResult::Handled
                 } else {
-                    *value = 0xffffffff;
+                    // An all-zero extended capability header (capability ID 0)
+                    // terminates the list. All-ones would be misread as a
+                    // capability with a next pointer of 0xfff.
+                    *value = 0;
                     CommonHeaderResult::Handled
                 }
             } else {
@@ -2372,13 +2375,14 @@ mod tests {
             CommonHeaderResult::Failed(IoError::InvalidRegister)
         ));
 
-        // Test reading extended capabilities - PCIe device should return 0xffffffff
+        // A PCIe device with no extended capabilities returns an all-zero
+        // header, terminating the list.
         let mut value = 0;
         assert!(matches!(
             common_emu_pcie.read_extended_capabilities(EXT_CAP_START, &mut value),
             CommonHeaderResult::Handled
         ));
-        assert_eq!(value, 0xffffffff);
+        assert_eq!(value, 0);
 
         // Test writing extended capabilities - non-PCIe device should return error
         assert!(matches!(
