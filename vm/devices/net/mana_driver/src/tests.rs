@@ -270,11 +270,11 @@ async fn test_gdma_reconfig_vf(driver: DefaultDriver) {
 #[async_test]
 async fn test_gdma_reset_request_with_revoke(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let mut msi_set = MsiInterruptSet::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_conn.target(),
+        &mut msi_set,
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(NullEndpoint::new()),
@@ -282,7 +282,7 @@ async fn test_gdma_reset_request_with_revoke(driver: DefaultDriver) {
         &mut ExternallyManagedMmioIntercepts,
     );
     let dma_client = mem.dma_client();
-    let device = EmulatedDevice::new(device, msi_conn, dma_client);
+    let device = EmulatedDevice::new(device, msi_set, dma_client);
     let dma_client = device.dma_client();
     let buffer = dma_client.allocate_dma_buffer(6 * PAGE_SIZE).unwrap();
 
