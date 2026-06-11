@@ -48,13 +48,14 @@ open_enum! {
 open_enum! {
     /// TDX Global Metadata Field Identifiers that are passed into
     /// the TDG.SYS.RD tdcall in rdx.
-    pub enum TdgSydRdFieldId: u64 {
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum TdgSysRdFieldId: u64 {
         TDX_FEATURES0 = 0x0A00000300000008,
     }
 }
 
 #[bitfield(u64)]
-pub struct TdFeatures {
+pub struct TdFeatures0 {
     migration: bool,
     preserving_updates: bool,
     service_td: bool,
@@ -119,6 +120,11 @@ pub struct TdFeatures {
     features_enabled: bool,
     reserved: bool,
     features1_valid: bool,
+}
+
+pub enum TdgSysRdResult {
+    Features0(TdFeatures0),
+    Unknown(u64),
 }
 
 /// Level used in various TDG.MEM.PAGE calls for GPA_MAPPING types.
