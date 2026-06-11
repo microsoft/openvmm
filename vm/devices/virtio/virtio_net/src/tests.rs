@@ -1830,6 +1830,7 @@ async fn rx_gso_ipv4_header_fields(driver: DefaultDriver) {
         l3_len: 20,
         l4_len: 20,
         gso_size: 1460,
+        vlan: None,
     };
     handle.inject_rx_packet_with_metadata(&payload, &metadata);
 
@@ -1885,6 +1886,7 @@ async fn rx_gso_ipv6_header_fields(driver: DefaultDriver) {
         l3_len: 40,
         l4_len: 20,
         gso_size: 1440,
+        vlan: None,
     };
     handle.inject_rx_packet_with_metadata(&payload, &metadata);
 
@@ -1931,6 +1933,7 @@ async fn rx_gso_without_guest_feature_falls_back(driver: DefaultDriver) {
         l3_len: 20,
         l4_len: 20,
         gso_size: 1460,
+        vlan: None,
     };
     handle.inject_rx_packet_with_metadata(&payload, &metadata);
 
