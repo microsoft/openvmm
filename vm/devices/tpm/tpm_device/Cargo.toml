@@ -42,7 +42,7 @@ zerocopy.workspace = true
 base64.workspace = true
 
 [target.'cfg(not(target_env = "musl"))'.dependencies]
-ms-tpm-20-ref = { optional = true, workspace = true, features = ["vendored"] }
+ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl", "vendored"] }
 
 [lints]
 workspace = true

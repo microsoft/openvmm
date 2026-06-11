@@ -7,8 +7,7 @@ rust-version.workspace = true
 edition.workspace = true
 
 [features]
-# Use this feature to enable tests that pulls in the `ms-tpm-20-ref`
-# with dependency on openssl.
+# Use this feature to enable tests that pulls in `ms-tpm-20-ref`.
 test_tpm = ["ms-tpm-20-ref"]
 
 [dependencies]
@@ -23,7 +22,7 @@ tracing.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(not(target_env = "musl"))'.dependencies]
-ms-tpm-20-ref = { optional = true, workspace = true, features = ["vendored"] }
+ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl", "vendored"] }
 
 [dev-dependencies]
 getrandom.workspace = true
