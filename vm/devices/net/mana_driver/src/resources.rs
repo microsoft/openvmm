@@ -63,7 +63,7 @@ impl ResourceArena {
     }
 
     pub(crate) async fn destroy<T: DeviceBacking>(mut self, gdma: &mut GdmaDriver<T>) {
-        let skip_hwc = gdma.get_reset_request_pending();
+        let skip_hwc = gdma.get_reset_request_pending().is_some();
         if skip_hwc {
             tracing::info!(
                 count = self.resources.len(),
