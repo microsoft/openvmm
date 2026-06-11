@@ -9,10 +9,10 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
+crossterm = { workspace = true, features = ["windows"] }
 futures.workspace = true
 futures-concurrency.workspace = true
 initrd_cpio.workspace = true
-libc.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 pipette_client.workspace = true

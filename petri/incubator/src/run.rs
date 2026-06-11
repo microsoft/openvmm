@@ -3,9 +3,6 @@
 
 //! Top-level API to run a command inside an incubator.
 
-// UNSAFETY: Required for termios raw mode (tcgetattr, tcsetattr, cfmakeraw).
-#![expect(unsafe_code)]
-
 use crate::profile::DeviceConfig;
 use crate::profile::IncubatorBackend;
 use crate::profile::IncubatorProfile;
@@ -156,22 +153,16 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
         // Relay serial output to the log file in a spawned task.
         // Sends a signal when pipette's "PIPETTE READY" marker appears.
         let (ready_tx, ready_rx) = mesh::oneshot::<()>();
-        let serial_pipe = PolledPipe::new(
-            &driver,
-            std::fs::File::from(std::os::unix::io::OwnedFd::from(qemu_stdout)),
-        )
-        .context("failed to create polled pipe for serial output")?;
+        let serial_pipe = PolledPipe::new(&driver, child_pipe_to_file(qemu_stdout))
+            .context("failed to create polled pipe for serial output")?;
         let serial_log_path = serial_log.clone();
         let relay_task = driver.spawn("serial-relay", async move {
             relay_serial_output(serial_pipe, &serial_log_path, ready_tx).await;
         });
 
         // Capture QEMU stderr for diagnostics.
-        let stderr_pipe = PolledPipe::new(
-            &driver,
-            std::fs::File::from(std::os::unix::io::OwnedFd::from(qemu_stderr)),
-        )
-        .context("failed to create polled pipe for stderr")?;
+        let stderr_pipe = PolledPipe::new(&driver, child_pipe_to_file(qemu_stderr))
+            .context("failed to create polled pipe for stderr")?;
         let stderr_task = driver.spawn("qemu-stderr", async move {
             let mut buf = Vec::new();
             let mut pipe = stderr_pipe;
@@ -276,7 +267,6 @@ async fn run_via_pipette(
 
     // Put the host terminal into raw mode so that Ctrl-C, etc.
     // flow through to the guest PTY instead of being handled locally.
-    #[cfg(unix)]
     let raw_guard = if use_pty {
         Some(RawModeGuard::enter().context("failed to enter raw mode")?)
     } else {
@@ -293,7 +283,6 @@ async fn run_via_pipette(
     .await;
 
     // Restore terminal before printing anything.
-    #[cfg(unix)]
     drop(raw_guard);
 
     let status = result?;
@@ -425,6 +414,19 @@ fn pick_free_port() -> anyhow::Result<u16> {
     Ok(port)
 }
 
+/// Convert a child process's stdout/stderr pipe into a [`std::fs::File`] so it
+/// can be wrapped in a [`PolledPipe`]. The owned-handle type differs by
+/// platform, but the conversion is otherwise identical.
+#[cfg(unix)]
+fn child_pipe_to_file(pipe: impl Into<std::os::unix::io::OwnedFd>) -> std::fs::File {
+    std::fs::File::from(pipe.into())
+}
+
+#[cfg(windows)]
+fn child_pipe_to_file(pipe: impl Into<std::os::windows::io::OwnedHandle>) -> std::fs::File {
+    std::fs::File::from(pipe.into())
+}
+
 /// Set up VFIO devices inside the incubator.
 ///
 /// Each extra device in the profile sits behind its own PCIe root port
@@ -533,45 +535,22 @@ async fn setup_vfio_devices(
     Ok(env)
 }
 
-/// RAII guard that puts stdin into raw mode and restores it on drop.
-#[cfg(unix)]
-struct RawModeGuard {
-    original: libc::termios,
-}
+/// RAII guard that puts the terminal into raw mode and restores it on drop,
+/// so that Ctrl-C and similar control sequences flow through to the guest PTY
+/// instead of being interpreted by the host terminal.
+struct RawModeGuard;
 
-#[cfg(unix)]
 impl RawModeGuard {
     fn enter() -> anyhow::Result<Self> {
-        use std::mem::MaybeUninit;
-        use std::os::fd::AsRawFd;
-
-        let fd = std::io::stdin().as_raw_fd();
-        let mut original = MaybeUninit::zeroed();
-        // SAFETY: tcgetattr writes to the provided pointer.
-        if unsafe { libc::tcgetattr(fd, original.as_mut_ptr()) } != 0 {
-            anyhow::bail!("tcgetattr failed: {}", std::io::Error::last_os_error());
-        }
-        // SAFETY: tcgetattr succeeded, so original is initialized.
-        let original = unsafe { original.assume_init() };
-
-        let mut raw = original;
-        // SAFETY: cfmakeraw modifies the termios struct in place.
-        unsafe { libc::cfmakeraw(&mut raw) };
-        // SAFETY: tcsetattr applies the termios settings.
-        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
-            anyhow::bail!("tcsetattr failed: {}", std::io::Error::last_os_error());
-        }
-
-        Ok(Self { original })
+        crossterm::terminal::enable_raw_mode().context("failed to enable raw mode")?;
+        Ok(Self)
     }
 }
 
-#[cfg(unix)]
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
-        use std::os::fd::AsRawFd;
-        let fd = std::io::stdin().as_raw_fd();
-        // SAFETY: restoring the original termios settings.
-        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &self.original) };
+        if let Err(e) = crossterm::terminal::disable_raw_mode() {
+            tracing::warn!(error = %e, "failed to restore terminal mode");
+        }
     }
 }

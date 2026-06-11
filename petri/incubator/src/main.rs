@@ -3,6 +3,8 @@
 
 //! Standalone CLI for testing the incubator launcher.
 
+#![forbid(unsafe_code)]
+
 use clap::Parser;
 
 /// Standalone CLI for testing the incubator launcher.

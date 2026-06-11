@@ -13,6 +13,8 @@
 //! This crate is backend-agnostic: profiles define the platform requirements,
 //! and incubator backends (currently QEMU TCG) satisfy them.
 
+#![forbid(unsafe_code)]
+
 mod profile;
 mod qemu;
 mod run;

@@ -3763,10 +3763,10 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "crossterm",
  "futures",
  "futures-concurrency",
  "initrd_cpio",
- "libc",
  "mesh",
  "pal_async",
  "pipette_client",
