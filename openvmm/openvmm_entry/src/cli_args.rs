@@ -4487,6 +4487,9 @@ mod tests {
                 hdm: DEFAULT_HDM,
                 hdm_window_restrictions: DEFAULT_HDM_WINDOW_RESTRICTIONS,
                 vnode: Some(1),
+                low_mmio_base: None,
+                high_mmio_base: None,
+                preserve_bars: false,
             }
         );
     }
