@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Overlay page management for synthetic registers backed by guest pages.
+
 use crate::VtlProtectAccess;
 use guestmem::LockedPages;
 use guestmem::Page;
@@ -10,12 +12,15 @@ use safeatomic::AtomicSliceOps;
 use std::ops::Deref;
 use std::sync::atomic::AtomicU8;
 
-pub(crate) struct LockedPage {
+/// A single guest page locked into memory, tracked by its GPN.
+pub struct LockedPage {
     page: LockedPages,
+    /// The guest page number that backs this locked page.
     pub gpn: u64,
 }
 
 impl LockedPage {
+    /// Creates a new locked page from a single-page [`LockedPages`] and its GPN.
     pub fn new(gpn: u64, page: LockedPages) -> Self {
         assert!(page.pages().len() == 1);
         Self { page, gpn }
@@ -30,16 +35,24 @@ impl Deref for LockedPage {
     }
 }
 
+/// A page that is either backed by a local (VMM-owned) buffer when no guest
+/// page is mapped, or by a locked guest page when mapped. The logical page
+/// contents follow the overlay: remapping or unmapping copies the current
+/// contents to the new backing, matching hypervisor overlay semantics.
 #[derive(Inspect)]
 #[inspect(external_tag)]
-pub(crate) enum OverlayPage {
+pub enum OverlayPage {
+    /// Backed by a VMM-owned buffer; no guest page is currently mapped.
     Local(#[inspect(skip)] Box<Page>),
+    /// Backed by a locked guest page.
     Mapped(#[inspect(skip)] LockedPage),
 }
 
 // FUTURE: Technically we should restore the prior contents of a mapped location when we
 // remap/unmap it, but we don't know of any scenario that actually requires this.
 impl OverlayPage {
+    /// Maps the overlay to `new_gpn`, copying the current overlay contents into
+    /// the newly mapped guest page and releasing any previously mapped page.
     pub fn remap(
         &mut self,
         new_gpn: u64,
@@ -59,6 +72,8 @@ impl OverlayPage {
         Ok(())
     }
 
+    /// Unmaps the overlay, copying the current contents back into a
+    /// VMM-owned buffer and releasing the previously mapped guest page.
     pub fn unmap(&mut self, prot_access: &mut dyn VtlProtectAccess) {
         let new_page = Box::new(std::array::from_fn(|_| AtomicU8::new(0)));
         new_page.atomic_write_obj(&self.atomic_read_obj::<[u8; 4096]>());
@@ -72,6 +87,16 @@ impl OverlayPage {
         if let Self::Mapped(page) = self {
             prot_access.unlock_overlay_page(page.gpn).unwrap();
         }
+    }
+
+    /// Reads the full 4096-byte logical contents of the overlay page.
+    pub fn save_page(&self) -> [u8; 4096] {
+        self.atomic_read_obj()
+    }
+
+    /// Writes the full 4096-byte logical contents of the overlay page.
+    pub fn restore_page(&self, data: &[u8; 4096]) {
+        self.atomic_write_obj(data);
     }
 }
 
