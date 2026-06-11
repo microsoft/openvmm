@@ -2280,7 +2280,7 @@ pub struct UefiConfig {
     pub default_boot_always_attempt: bool,
     /// Enable vPCI boot (for NVMe)
     pub enable_vpci_boot: bool,
-    /// Force UEFI to bounce-buffer all DMA traffic in its IOMMU layer.
+    /// Force UEFI to bounce-buffer all DMA traffic
     pub force_dma_bounce: bool,
     /// EFI diagnostics log level filter
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevel,
