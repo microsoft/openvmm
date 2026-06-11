@@ -226,6 +226,7 @@ impl PetriVmConfigOpenVmm {
                 host_port: net_backend_resources::consomme::HostPort::Dynamic(port_send),
                 guest_port: pipette_client::PIPETTE_PORT as u16,
             }],
+            recv: None,
         }
         .into_resource();
         self.config.pcie_devices.push(PcieDeviceConfig {

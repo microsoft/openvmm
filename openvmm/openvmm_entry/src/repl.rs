@@ -36,6 +36,7 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use net_backend_resources::consomme::ConsommeRequest;
+use net_backend_resources::consomme::HostPort;
 use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
 use nvme_resources::NamespaceDefinition;
@@ -1526,7 +1527,7 @@ pub(crate) async fn run_repl(
                     let cfg = HostPortConfig {
                         protocol: protocol.to_host_port_protocol(),
                         host_address: None,
-                        host_port,
+                        host_port: HostPort::Fixed(host_port),
                         guest_port,
                     };
                     rpc.call_failable(ConsommeRequest::Bind, cfg).await?;
@@ -1550,7 +1551,7 @@ pub(crate) async fn run_repl(
                     let cfg = HostPortConfig {
                         protocol: protocol.to_host_port_protocol(),
                         host_address: None,
-                        host_port: 0,
+                        host_port: HostPort::Fixed(0),
                         guest_port,
                     };
                     rpc.call_failable(ConsommeRequest::Unbind, cfg).await?;

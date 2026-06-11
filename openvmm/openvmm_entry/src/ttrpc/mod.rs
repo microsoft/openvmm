@@ -33,6 +33,7 @@ use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use net_backend_resources::consomme::ConsommeRequest;
+use net_backend_resources::consomme::HostPort;
 use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
 use netvsp_resources::NetvspHandle;
@@ -943,10 +944,11 @@ impl VmService {
                             let cfg = HostPortConfig {
                                 protocol,
                                 host_address: None,
-                                host_port: port
-                                    .host_port
-                                    .try_into()
-                                    .context("host port out of range")?,
+                                host_port: HostPort::Fixed(
+                                    port.host_port
+                                        .try_into()
+                                        .context("host port out of range")?,
+                                ),
                                 guest_port: port
                                     .guest_port
                                     .try_into()
@@ -982,10 +984,11 @@ impl VmService {
                             let cfg = HostPortConfig {
                                 protocol,
                                 host_address: None,
-                                host_port: port
-                                    .host_port
-                                    .try_into()
-                                    .context("host port out of range")?,
+                                host_port: HostPort::Fixed(
+                                    port.host_port
+                                        .try_into()
+                                        .context("host port out of range")?,
+                                ),
                                 guest_port: port
                                     .guest_port
                                     .try_into()
