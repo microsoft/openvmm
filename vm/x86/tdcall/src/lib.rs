@@ -19,13 +19,13 @@ use x86defs::tdx::TdReport;
 use x86defs::tdx::TdVmCallR10Result;
 use x86defs::tdx::TdVmCallSubFunction;
 use x86defs::tdx::TdgMemPageAcceptRcx;
-use x86defs::tdx::TdgMemPageReleaseRcx;
-use x86defs::tdx::TdgMemPageReleaseRcxResult;
 use x86defs::tdx::TdgMemPageAttrGpaMappingReadRcxResult;
 use x86defs::tdx::TdgMemPageAttrWriteR8;
 use x86defs::tdx::TdgMemPageAttrWriteRcx;
 use x86defs::tdx::TdgMemPageGpaAttr;
 use x86defs::tdx::TdgMemPageLevel;
+use x86defs::tdx::TdgMemPageReleaseRcx;
+use x86defs::tdx::TdgMemPageReleaseRcxResult;
 use x86defs::tdx::TdxExtendedFieldCode;
 use x86defs::tdx::TdxGlaListInfo;
 
@@ -331,15 +331,90 @@ pub fn tdcall_accept_pages(
     }
 }
 
+/// The error information returned from [`tdcall_release_page`].
+#[derive(Debug, Error)]
+pub enum TdgPageReleaseError {
+    /// Unknown error type.
+    #[error("unknown error: {0:?}")]
+    Unknown(TdCallResultCode),
+    /// Page not allocated to TD's GPA Space
+    #[error("page is not allocated to GPA space: {0:?}")]
+    NotAllocated(TdCallResultCode),
+    /// Page is in an invalid entry state
+    #[error("page has invalid state [pending: {pending:?}, mmio: {mmio:?}]: {result:?}")]
+    EntryStateInvalid {
+        /// Associated TDX Result Code
+        result: TdCallResultCode,
+        /// Page is in PENDING state
+        pending: bool,
+        /// Page is MMIO
+        mmio: bool,
+    },
+    /// Size mismatch
+    #[error("page size mismatch. Expected size {1:?}: {0:?}")]
+    PageSizeMismatch(TdCallResultCode, TdgMemPageLevel),
+    /// Invalid operand
+    #[error("invalid operand: {0:?}")]
+    Invalid(TdCallResultCode),
+    /// Busy Operand
+    #[error("operand busy: {0:?}")]
+    Busy(TdCallResultCode),
+}
+
 /// Issue a TDG.MEM.PAGE.RELEASE call
-pub fn tdcall_release_page (
+pub fn tdcall_release_page(
     call: &mut impl Tdcall,
     gpa_page_number: u64,
     as_large_page: bool,
-) -> Result<(), TdCallResultCode> {
+) -> Result<(), TdgPageReleaseError> {
+    #[cfg(feature = "tracing")]
+    tracing::trace!(gpa_page_number, as_large_page, "tdcall_release_page");
 
-    // RAZTODO: Implement
-    unimplemented!()
+    let rcx = TdgMemPageReleaseRcx::new()
+        .with_gpa_page_number(gpa_page_number)
+        .with_level(if as_large_page {
+            TdgMemPageLevel::Size2Mb
+        } else {
+            TdgMemPageLevel::Size4k
+        });
+
+    let input = TdcallInput {
+        leaf: TdCallLeaf::MEM_PAGE_RELEASE,
+        rcx: rcx.into(),
+        rdx: 0,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    let result_code = output.rax.code();
+    let result_info = TdgMemPageReleaseRcxResult::from(output.rcx);
+
+    match result_code {
+        TdCallResultCode::SUCCESS => Ok(()),
+        TdCallResultCode::EPT_ENTRY_FREE => Err(TdgPageReleaseError::NotAllocated(result_code)),
+        TdCallResultCode::EPT_ENTRY_STATE_INCORRECT => {
+            Err(TdgPageReleaseError::EntryStateInvalid {
+                result: result_code,
+                pending: result_info.pending(),
+                mmio: result_info.mmio(),
+            })
+        }
+        TdCallResultCode::PAGE_SIZE_MISMATCH => Err(TdgPageReleaseError::PageSizeMismatch(
+            result_code,
+            result_info.level(),
+        )),
+        TdCallResultCode::OPERAND_INVALID => Err(TdgPageReleaseError::Invalid(result_code)),
+        TdCallResultCode::OPERAND_BUSY => Err(TdgPageReleaseError::Busy(result_code)),
+        val => Err(TdgPageReleaseError::Unknown(val)),
+    }
 }
 
 /// The result returned from [`tdcall_page_attr_rd`].
