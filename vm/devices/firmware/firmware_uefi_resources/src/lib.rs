@@ -159,8 +159,6 @@ pub struct UefiConfig {
     pub use_mmio: bool,
     pub command_set: UefiCommandSet,
     pub diagnostics_log_level: LogLevel,
-    /// Overrides the per-period rate limit applied to EfiDiagnostics.
-    /// See [`UefiDevice::resolve_rate_limit`] for more information.
     pub diagnostics_rate_limit: Option<u32>,
 }
 
