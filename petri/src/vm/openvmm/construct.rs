@@ -824,7 +824,13 @@ impl PetriVmConfigSetupCore<'_> {
         Ok(match (self.arch, &self.firmware) {
             (arch, Firmware::LinuxDirect { kernel, initrd }) => {
                 let console = match arch {
-                    MachineArch::X86_64 => "console=ttyS0",
+                    // `earlycon=uart8250,io,0x3f8` registers an early console on
+                    // COM1 (ttyS0) before `console_init`, so traces emitted from
+                    // early boot (e.g. `mm_core_init` / `amd_iommu_detect`) are
+                    // flushed immediately rather than only buffered. The port
+                    // must be explicit: the guest has no SPCR ACPI table, so a
+                    // bare `earlycon` has nothing to autodetect on x86.
+                    MachineArch::X86_64 => "console=ttyS0 earlycon=uart8250,io,0x3f8",
                     MachineArch::Aarch64 => "console=ttyAMA0 earlycon",
                 };
                 let kernel = File::open(kernel.clone())

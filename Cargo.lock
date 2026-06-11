@@ -3928,6 +3928,7 @@ name = "iommu_common"
 version = "0.0.0"
 dependencies = [
  "guestmem",
+ "parking_lot",
  "pci_core",
  "thiserror 2.0.16",
 ]
@@ -5585,6 +5586,7 @@ dependencies = [
  "openvmm_pcat_locator",
  "pal",
  "pal_async",
+ "parking_lot",
  "pci_bus",
  "pci_core",
  "pci_resource_assignment",

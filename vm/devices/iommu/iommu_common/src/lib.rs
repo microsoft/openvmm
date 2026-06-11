@@ -1,12 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Shared IOMMU DMA translation infrastructure.
+//! Shared IOMMU infrastructure for DMA translation and interrupt remapping.
 //!
-//! This crate provides a generic [`TranslatingMemory`] implementation of
-//! [`GuestMemoryAccess`](guestmem::GuestMemoryAccess) that translates IOVAs
-//! to GPAs via an [`IommuTranslator`] before delegating to an inner
-//! [`GuestMemory`].
+//! This crate provides:
+//!
+//! - A generic [`TranslatingMemory`] implementation of
+//!   [`GuestMemoryAccess`](guestmem::GuestMemoryAccess) that translates IOVAs
+//!   to GPAs via an [`IommuTranslator`] before delegating to an inner
+//!   [`GuestMemory`].
+//!
+//! - An [`InterruptRemapper`] trait and [`InterruptRemapRegistry`] for routing
+//!   pre-registered interrupt routes (IOAPIC, IrqFd) through an IOMMU's
+//!   interrupt remapping table, with invalidation support.
 //!
 //! Both the ARM SMMUv3 and AMD IOMMU implementations use this crate to avoid
 //! duplicating the per-page-boundary splitting, lock-across-translate-and-access
@@ -17,8 +23,11 @@
 
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryBackingError;
+use parking_lot::Mutex;
 use pci_core::bus_range::AssignedBusRange;
 use std::ptr::NonNull;
+use std::sync::Arc;
+use std::sync::Weak;
 
 /// Trait for IOMMU translation backends.
 ///
@@ -452,5 +461,109 @@ mod tests {
         let mut buf = [0u8; 1];
         gm.read_at(0x40, &mut buf).unwrap();
         assert_eq!(buf, [0x11]);
+    }
+}
+
+// =============================================================================
+// Interrupt Remapping Infrastructure
+// =============================================================================
+
+/// Trait for IOMMU interrupt remapping backends.
+///
+/// Each IOMMU implementation (AMD IOMMU, SMMU, etc.) provides a type that
+/// implements this trait. Consumers use it both for on-demand MSI translation
+/// and for registering pre-cached routes that need retranslation on IOMMU
+/// invalidation commands.
+///
+/// When the IOMMU is disabled or interrupt remapping is not enabled,
+/// [`remap_msi`](InterruptRemapper::remap_msi) should return the input
+/// values unchanged (passthrough).
+///
+/// On remapping faults, the implementation is responsible for queuing any
+/// IOMMU-specific fault events internally before returning `None`.
+pub trait InterruptRemapper: Send + Sync {
+    /// Translate an MSI address/data pair for a device.
+    ///
+    /// Returns `Some((address, data))` with the translated values, or `None`
+    /// if the MSI should be masked (remapping fault or abort).
+    fn remap_msi(&self, device_id: u16, address: u64, data: u32) -> Option<(u64, u32)>;
+
+    /// Register a route for invalidation callbacks.
+    ///
+    /// When the IOMMU processes an `INVALIDATE_INTERRUPT_TABLE` command
+    /// matching this route's device ID, it will call
+    /// [`RetranslateInterrupts::retranslate`] so the route can re-translate
+    /// its cached MSI parameters.
+    fn register_route(&self, route: &Arc<dyn RetranslateInterrupts>);
+
+    /// Unregister a route. Dead (dropped) routes are also cleaned up
+    /// lazily during invalidation.
+    fn unregister_route(&self, route: &Arc<dyn RetranslateInterrupts>);
+}
+
+/// Trait for pre-registered interrupt routes that can be retranslated on
+/// IOMMU invalidation.
+///
+/// Routes that cache translated MSI parameters (e.g., IOAPIC routes
+/// registered with KVM, or IrqFd routes) implement this trait so the
+/// IOMMU can ask them to retranslate when the guest issues an
+/// `INVALIDATE_INTERRUPT_TABLE` command.
+pub trait RetranslateInterrupts: Send + Sync {
+    /// The device ID (BDF) this route is associated with.
+    fn device_id(&self) -> u16;
+
+    /// Re-translate all cached routes and re-push any that changed to
+    /// the hypervisor.
+    fn retranslate(&self);
+}
+
+/// Shared infrastructure for managing registered interrupt routes.
+///
+/// IOMMU implementations embed this struct and delegate
+/// `register_route`/`unregister_route` to it. On invalidation commands,
+/// call [`invalidate`](RetranslateInterruptsList::invalidate) to retranslate
+/// matching routes.
+///
+/// Routes are stored as `Weak` references and cleaned up lazily.
+pub struct RetranslateInterruptsList {
+    routes: Mutex<Vec<Weak<dyn RetranslateInterrupts>>>,
+}
+
+impl RetranslateInterruptsList {
+    /// Create an empty route list.
+    pub fn new() -> Self {
+        Self {
+            routes: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Register a route for invalidation callbacks.
+    pub fn register(&self, route: &Arc<dyn RetranslateInterrupts>) {
+        let mut routes = self.routes.lock();
+        routes.push(Arc::downgrade(route));
+    }
+
+    /// Unregister a route. Removes all dead weak references as well.
+    pub fn unregister(&self, route: &Arc<dyn RetranslateInterrupts>) {
+        let mut routes = self.routes.lock();
+        routes.retain(|w| w.upgrade().is_some_and(|r| !Arc::ptr_eq(&r, route)));
+    }
+
+    /// Invalidate routes for a specific device, or all routes if
+    /// `device_id` is `None`.
+    ///
+    /// For each matching route, calls `retranslate` with the provided
+    /// remapper. Dead references are cleaned up lazily.
+    pub fn invalidate(&self, device_id: Option<u16>) {
+        let mut routes = self.routes.lock();
+        routes.retain(|weak| {
+            let Some(route) = weak.upgrade() else {
+                return false; // dead, remove
+            };
+            if device_id.is_none() || device_id == Some(route.device_id()) {
+                route.retranslate();
+            }
+            true
+        });
     }
 }

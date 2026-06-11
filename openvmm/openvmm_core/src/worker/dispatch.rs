@@ -5,6 +5,7 @@ mod amd_iommu_wiring;
 mod dump;
 mod ecam_config_access;
 mod intel_vtd_wiring;
+mod ioapic_iommu_wiring;
 mod pcie_wiring;
 mod smmu_wiring;
 
@@ -793,6 +794,11 @@ struct LoadedVmInner {
     /// Instantiated IOMMU devices (ACPI configs + per-RC shared state),
     /// keyed by IOMMU type. `IommuDevices::None` when no IOMMU is configured.
     iommu_devices: IommuDevices,
+    /// IOAPIC PCIe Requester ID for the IVRS DEV_SPECIAL(IOAPIC) entry,
+    /// when AMD IOMMU interrupt remapping is active. Threaded into the IVRS
+    /// ACPI config at firmware-load time.
+    #[cfg(guest_arch = "x86_64")]
+    ioapic_iommu_rid: Option<u16>,
     pcie_host_bridges: Vec<PcieHostBridge>,
     pcie_root_complexes: Vec<Arc<closeable_mutex::CloseableMutex<GenericPcieRootComplex>>>,
     /// Sources for SRAT generic-initiator entries, one per
@@ -1478,9 +1484,15 @@ impl InitializedVm {
 
         resolver.add_resolver(vmm_core::platform_resolvers::HaltResolver(halt_vps.clone()));
         #[cfg(guest_arch = "x86_64")]
-        resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
-            partition.clone().ioapic_routing(),
-        ));
+        let ioapic_routing_slot = {
+            let slot = ioapic_iommu_wiring::SwappableIoApicRouting::new(
+                partition.clone().ioapic_routing(),
+            );
+            resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
+                slot.clone(),
+            ));
+            slot
+        };
         resolver.add_resolver(emuplat::i440bx_host_pci_bridge::AdjustGpaRangeResolver(
             memory_manager.ram_visibility_control(),
         ));
@@ -2063,16 +2075,29 @@ impl InitializedVm {
                 // reserve device 0 for the IOMMU RCiEP and start root
                 // ports at device 1.
                 #[cfg(guest_arch = "x86_64")]
-                let root_port_start_device: u8 = match &resolved_iommu {
+                let amd_iommu_on_rc = matches!(
+                    &resolved_iommu,
                     ResolvedIommu::AmdVi(resources)
-                        if resources.iter().any(|r| r.rc_idx == rc_idx) =>
-                    {
-                        1
-                    }
-                    _ => 0,
-                };
+                        if resources.iter().any(|r| r.rc_idx == rc_idx)
+                );
+                #[cfg(guest_arch = "x86_64")]
+                let root_port_start_device: u8 = if amd_iommu_on_rc { 1 } else { 0 };
                 #[cfg(not(guest_arch = "x86_64"))]
                 let root_port_start_device: u8 = 0;
+
+                // On the segment-0 root complex covered by the AMD IOMMU, the
+                // phantom southbridge IOAPIC occupies a fixed devfn whose
+                // device number must not be assigned to a root port. Reserve
+                // that device number so that an overly large port count is
+                // rejected rather than silently shadowing the IOAPIC entry.
+                #[cfg(guest_arch = "x86_64")]
+                let reserved_device_numbers: u32 = if rc.segment == 0 && amd_iommu_on_rc {
+                    1u32 << (ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN >> 3)
+                } else {
+                    0
+                };
+                #[cfg(not(guest_arch = "x86_64"))]
+                let reserved_device_numbers: u32 = 0;
 
                 let root_complex =
                     chipset_builder
@@ -2090,6 +2115,7 @@ impl InitializedVm {
                                 &msi_conn.msi_target(rc_bus_range, 0),
                             )
                             .first_port_device_number(root_port_start_device)
+                            .reserved_device_numbers(reserved_device_numbers)
                             .chbcr_range(chbcr_range)
                             .build()
                         })?;
@@ -2380,6 +2406,38 @@ impl InitializedVm {
         let iommu_devices = match resolved_iommu {
             ResolvedIommu::Smmu(_) => IommuDevices::Smmu(smmu_devices),
             ResolvedIommu::None => IommuDevices::None,
+        };
+
+        // Set up IOAPIC routing. When an AMD IOMMU is present, wrap the
+        // hypervisor's IoApicRouting through the IOMMU's interrupt
+        // remapping table so that IOAPIC-sourced interrupts are
+        // translated via the guest's IRTEs and invalidation commands
+        // trigger retranslation.
+        #[cfg(guest_arch = "x86_64")]
+        let ioapic_iommu_rid: Option<u16> = if let IommuDevices::AmdVi(amd_devices) = &iommu_devices
+        {
+            if let (Some(first_iommu), Some(iommu_acpi)) = (
+                amd_devices.shared_states.iter().flatten().next(),
+                amd_devices.acpi_configs.first(),
+            ) {
+                // The IOAPIC RID. Linux expects the southbridge IOAPIC
+                // at 00:14.0 and disables interrupt remapping if this
+                // RID is not present in the IVRS.
+                let ioapic_rid = (iommu_acpi.start_bus as u16) << 8
+                    | ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN as u16;
+
+                let wrapped = ioapic_iommu_wiring::IommuIoApicRouting::new(
+                    partition.clone().ioapic_routing(),
+                    ioapic_rid,
+                    first_iommu.clone() as Arc<dyn iommu_common::InterruptRemapper>,
+                );
+                ioapic_routing_slot.swap(wrapped);
+                Some(ioapic_rid)
+            } else {
+                None
+            }
+        } else {
+            None
         };
 
         // Wire deferred root complex and switch MSI connections now that
@@ -2970,6 +3028,8 @@ impl InitializedVm {
                 automatic_guest_reset: cfg.automatic_guest_reset,
                 chipset: chipset.chipset.clone(),
                 iommu_devices,
+                #[cfg(guest_arch = "x86_64")]
+                ioapic_iommu_rid,
                 pcie_host_bridges,
                 pcie_root_complexes,
                 generic_initiator_sources,
@@ -3061,6 +3121,7 @@ impl LoadedVmInner {
                                 pa_size: amd_iommu::PA_SIZE,
                                 va_size: amd_iommu::VA_SIZE,
                                 iommus: devices.acpi_configs.clone(),
+                                ioapic_rid: self.ioapic_iommu_rid,
                             },
                         ))
                     }

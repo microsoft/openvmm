@@ -139,6 +139,13 @@ pub struct AmdIommuIvrsConfig {
     pub va_size: u8,
     /// Per-IOMMU configurations, one per root complex with an AMD IOMMU.
     pub iommus: Vec<AmdIommuAcpiConfig>,
+    /// IOAPIC PCIe Requester ID (RID) for the IVRS DEV_SPECIAL(IOAPIC)
+    /// entry.
+    ///
+    /// When set, a special device entry is added to the first IOMMU's IVHD
+    /// block so the guest can locate the IOAPIC's DTE/IRTE context for
+    /// interrupt remapping.
+    pub ioapic_rid: Option<u16>,
 }
 
 /// Configuration for a single Intel VT-d remapping unit in the DMAR table.
@@ -784,12 +791,23 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
         let mut ivrs_extra: Vec<u8> = Vec::new();
 
-        for config in &ivrs_config.iommus {
+        for (idx, config) in ivrs_config.iommus.iter().enumerate() {
             // Use a device range entry to cover the bus range owned by this
             // root complex's IOMMU (IVHD_DEV_RANGE_START + IVHD_DEV_RANGE_END).
             // This correctly supports multiple IOMMUs within a single PCI
             // segment, each covering its own bus range.
-            let dev_entries_size = 2 * size_of::<ivrs::IvhdDeviceEntry4>();
+            let mut dev_entries_size = 2 * size_of::<ivrs::IvhdDeviceEntry4>();
+
+            // Add IOAPIC special device entry to the first IOMMU's IVHD.
+            let ioapic_special = if idx == 0 {
+                ivrs_config.ioapic_rid.map(|ioapic_rid| {
+                    dev_entries_size += size_of::<ivrs::IvhdSpecialDeviceEntry8>();
+                    ivrs::IvhdSpecialDeviceEntry8::ioapic(ioapic_rid, 0)
+                })
+            } else {
+                None
+            };
+
             let ivhd_total = size_of::<ivrs::IvhdType40>() + dev_entries_size;
 
             // Type 40h is the "mixed format" IVHD (§5.2.2.3) — same layout
@@ -812,6 +830,10 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             ivrs_extra
                 .extend_from_slice(ivrs::IvhdDeviceEntry4::range_start(start_bdf, 0).as_bytes());
             ivrs_extra.extend_from_slice(ivrs::IvhdDeviceEntry4::range_end(end_bdf).as_bytes());
+
+            if let Some(entry) = &ioapic_special {
+                ivrs_extra.extend_from_slice(entry.as_bytes());
+            }
         }
 
         let iv_info = ivrs::IvInfo::new()
@@ -1993,6 +2015,7 @@ mod test {
                 pa_size: 48,
                 va_size: 48,
                 iommus: configs,
+                ioapic_rid: None,
             }));
         } else {
             panic!("expected X86 arch config");

@@ -53,6 +53,14 @@ pub enum InvalidRootComplexError {
     /// A root port's devfn could not be assigned.
     #[error(transparent)]
     Devfn(#[from] crate::PortDevfnError),
+    /// A root port was assigned to a device number reserved for another use.
+    #[error("root port {port_index} would be placed at reserved device number {device:#x}")]
+    ReservedDeviceCollision {
+        /// Index of the root port that collided.
+        port_index: usize,
+        /// The reserved device number it would have occupied.
+        device: u8,
+    },
 }
 
 /// A generic PCI Express root complex emulator.
@@ -72,6 +80,8 @@ pub struct GenericPcieRootComplex {
     /// (device << 3 | function).
     #[inspect(with = "|x| inspect::iter_by_key(x.iter().map(|(k, v)| (k, v)))")]
     devices: Vec<(u8, BusDevice)>,
+    /// Bitmask of reserved root-bus device numbers (bit N => device N).
+    reserved_device_numbers: u32,
 }
 
 /// A device occupying a slot on the root complex bus.
@@ -162,7 +172,13 @@ pub struct GenericPcieRootComplexBuilder<'a> {
     ecam_range: MemoryRange,
     root_ports: Option<(Vec<GenericPciePortDefinition>, &'a MsiTarget)>,
     first_port_device_number: u8,
+    reserved_device_numbers: u32,
     chbcr_range: Option<MemoryRange>,
+}
+
+fn device_number_is_reserved(reserved_device_numbers: u32, device: u8) -> bool {
+    let bit = 1u32 << device;
+    reserved_device_numbers & bit != 0
 }
 
 impl<'a> GenericPcieRootComplexBuilder<'a> {
@@ -190,6 +206,17 @@ impl<'a> GenericPcieRootComplexBuilder<'a> {
         self
     }
 
+    /// Reserve root-bus device numbers via a bitmask.
+    ///
+    /// Root ports and RCiEPs are assigned into device/function slots; any
+    /// device number whose bit is set here is treated as occupied by another entity
+    /// (e.g. a phantom IOAPIC), and a configuration that would place a root
+    /// port on it is rejected at [`build`](Self::build) time.
+    pub fn reserved_device_numbers(mut self, mask: u32) -> Self {
+        self.reserved_device_numbers = mask;
+        self
+    }
+
     /// Set the CHBCR (Component Register BAR) MMIO range for CXL mode.
     ///
     /// When set, CXL component registers are allocated and a CHBCR MMIO
@@ -210,6 +237,7 @@ impl<'a> GenericPcieRootComplexBuilder<'a> {
             ecam_range,
             root_ports,
             first_port_device_number,
+            reserved_device_numbers,
             chbcr_range,
         } = self;
 
@@ -252,6 +280,13 @@ impl<'a> GenericPcieRootComplexBuilder<'a> {
             let placements = crate::assign_port_devfns(&ports, first_port_device_number)?;
 
             for (i, (definition, placement)) in ports.into_iter().zip(placements).enumerate() {
+                let device = placement.devfn >> crate::BDF_DEVICE_SHIFT;
+                if device_number_is_reserved(reserved_device_numbers, device) {
+                    return Err(InvalidRootComplexError::ReservedDeviceCollision {
+                        port_index: i,
+                        device,
+                    });
+                }
                 let hotplug_slot_number = if definition.hotplug {
                     Some(i as u32 + 1)
                 } else {
@@ -288,6 +323,7 @@ impl<'a> GenericPcieRootComplexBuilder<'a> {
             chbcr,
             cxl_component_registers,
             devices,
+            reserved_device_numbers,
         })
     }
 }
@@ -311,6 +347,7 @@ impl GenericPcieRootComplex {
             ecam_range,
             root_ports: None,
             first_port_device_number: 0,
+            reserved_device_numbers: 0,
             chbcr_range: None,
         }
     }
@@ -432,6 +469,11 @@ impl GenericPcieRootComplex {
         name: impl Into<Arc<str>>,
         dev: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Arc<str>> {
+        let device = devfn >> crate::BDF_DEVICE_SHIFT;
+        if device_number_is_reserved(self.reserved_device_numbers, device) {
+            return Err(format!("reserved device number {device:#x}").into());
+        }
+
         let name = name.into();
         match self.devices.binary_search_by_key(&devfn, |(d, _)| *d) {
             Ok(i) => {
@@ -1859,6 +1901,23 @@ mod tests {
             .add_rciep(0, "rciep-second", Box::new(rciep2))
             .expect_err("should fail: devfn already has an RCiEP");
         assert_eq!(err.as_ref(), "rciep-first");
+    }
+
+    #[test]
+    fn test_rciep_collision_with_reserved_device_number() {
+        // Reserve device 0 and verify RCiEP insertion at devfn 0 is rejected.
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(0, 0));
+        let mut rc = GenericPcieRootComplex::builder(&mut register_mmio, 0..=0u8, ecam)
+            .reserved_device_numbers(1 << 0)
+            .build()
+            .unwrap();
+
+        let rciep = TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
+        let err = rc
+            .add_rciep(0, "rciep-reserved", Box::new(rciep))
+            .expect_err("should fail: device 0 is reserved");
+        assert_eq!(err.as_ref(), "reserved device number 0x0");
     }
 
     #[test]
