@@ -6,7 +6,7 @@
 //!
 //! An incubator is the place a test "culture" runs. Today the only backend is
 //! an emulated VM (e.g., QEMU TCG), booted with a given hardware profile, with
-//! artifacts shared in via virtio-fs and a command run inside it. In the
+//! artifacts shared in via virtio-9p and a command run inside it. In the
 //! future other backends (e.g., a remote machine) can satisfy the same
 //! profile. Console output streams to the host in real time.
 //!

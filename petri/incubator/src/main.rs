@@ -44,12 +44,14 @@ fn main() -> anyhow::Result<()> {
 
     let profile = incubator::IncubatorProfile::from_file(std::path::Path::new(&args.profile))?;
 
-    let kernel = args
-        .kernel
-        .unwrap_or_else(|| find_aarch64_kernel().expect("could not find aarch64 kernel"));
-    let initrd = args
-        .initrd
-        .unwrap_or_else(|| find_aarch64_initrd().expect("could not find aarch64 initrd"));
+    let kernel = match args.kernel {
+        Some(kernel) => kernel,
+        None => kernel_or_initrd_from_env("AARCH64_OPENVMM_LINUX_DIRECT_KERNEL")?,
+    };
+    let initrd = match args.initrd {
+        Some(initrd) => initrd,
+        None => kernel_or_initrd_from_env("AARCH64_OPENVMM_LINUX_DIRECT_INITRD")?,
+    };
 
     eprintln!("Profile: {}", args.profile);
     eprintln!("Kernel:  {}", kernel.display());
@@ -78,62 +80,18 @@ fn main() -> anyhow::Result<()> {
     std::process::exit(output.exit_code.unwrap_or(1));
 }
 
-/// Search for an aarch64 kernel in the openvmm deps directory.
-fn find_aarch64_kernel() -> Option<std::path::PathBuf> {
-    find_in_deps("Image", "aarch64")
-}
-
-/// Search for an aarch64 initrd in the openvmm deps directory.
-fn find_aarch64_initrd() -> Option<std::path::PathBuf> {
-    find_in_deps("initrd", "aarch64")
-}
-
-fn find_in_deps(filename: &str, arch_filter: &str) -> Option<std::path::PathBuf> {
-    // Walk up to find the repo root (look for Cargo.toml with [workspace])
-    let mut dir = std::env::current_dir().ok()?;
-    loop {
-        let cargo_toml = dir.join("Cargo.toml");
-        if cargo_toml.exists() {
-            if let Ok(contents) = std::fs::read_to_string(&cargo_toml) {
-                if contents.contains("[workspace]") {
-                    break;
-                }
-            }
-        }
-        if !dir.pop() {
-            return None;
-        }
-    }
-
-    // Search flowey-persist for the file
-    let persist_dir = dir.join("flowey-persist");
-    if !persist_dir.exists() {
-        return None;
-    }
-
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-    collect_files(&persist_dir, filename, arch_filter, &mut candidates);
-    candidates.sort();
-    candidates.pop() // latest by lexicographic order
-}
-
-fn collect_files(
-    dir: &std::path::Path,
-    filename: &str,
-    arch_filter: &str,
-    results: &mut Vec<std::path::PathBuf>,
-) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files(&path, filename, arch_filter, results);
-        } else if path.file_name().is_some_and(|n| n == filename) {
-            if path.to_string_lossy().contains(arch_filter) {
-                results.push(path);
-            }
-        }
+/// Resolve a kernel or initrd path from an environment variable.
+///
+/// These variables are set by the repo's `.cargo/config.toml` (e.g.
+/// `AARCH64_OPENVMM_LINUX_DIRECT_KERNEL`) so that `cargo run` picks up the
+/// sample kernel/initrd packaged alongside openvmm-deps. If the variable is
+/// not set, fail with a hint to pass the path explicitly.
+fn kernel_or_initrd_from_env(var: &str) -> anyhow::Result<std::path::PathBuf> {
+    match std::env::var_os(var) {
+        Some(value) if !value.is_empty() => Ok(std::path::PathBuf::from(value)),
+        _ => anyhow::bail!(
+            "{var} is not set (normally provided by .cargo/config.toml); \
+             pass --kernel/--initrd explicitly or run via cargo from the repo"
+        ),
     }
 }

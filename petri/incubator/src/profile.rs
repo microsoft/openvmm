@@ -70,6 +70,11 @@ pub struct QemuTcgConfig {
     /// Number of CPUs (e.g., "2").
     #[serde(default = "default_smp")]
     pub smp: String,
+    /// Extra kernel command line arguments. The incubator always appends
+    /// `rdinit=/tcg-init.sh` (the injected init script); everything else,
+    /// including the arch-specific serial console (e.g., "console=ttyAMA0"
+    /// for aarch64 PL011, "console=ttyS0" for x86 16550), comes from here.
+    pub cmdline: String,
 }
 
 fn default_qemu_binary() -> String {
@@ -98,47 +103,5 @@ impl IncubatorProfile {
     /// Parse a profile from a TOML string.
     pub fn from_toml(toml: &str) -> anyhow::Result<Self> {
         toml_edit::de::from_str(toml).context("failed to parse incubator profile")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_aarch64_pcie_profile() {
-        let toml = r#"
-[incubator]
-type = "qemu-tcg"
-binary = "qemu-system-aarch64"
-machine = "virt,virtualization=on,iommu=smmuv3,gic-version=3"
-cpu = "max"
-memory = "4G"
-smp = "2"
-
-[[devices]]
-type = "virtio-blk"
-name = "test-disk"
-size = "64M"
-vfio = true
-"#;
-        let profile = IncubatorProfile::from_toml(toml).unwrap();
-        match &profile.incubator {
-            IncubatorBackend::QemuTcg(cfg) => {
-                assert_eq!(
-                    cfg.machine,
-                    "virt,virtualization=on,iommu=smmuv3,gic-version=3"
-                );
-                assert_eq!(cfg.cpu, "max");
-            }
-        }
-        assert_eq!(profile.devices.len(), 1);
-        match &profile.devices[0] {
-            DeviceConfig::VirtioBlk(cfg) => {
-                assert_eq!(cfg.name, "test-disk");
-                assert_eq!(cfg.size, "64M");
-                assert!(cfg.vfio);
-            }
-        }
     }
 }

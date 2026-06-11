@@ -36,7 +36,8 @@ pub struct IncubatorConfig {
     pub share_dir: PathBuf,
     /// The command to run inside the VM: program followed by arguments.
     pub guest_command: Vec<String>,
-    /// Timeout for the entire run (boot + command + shutdown).
+    /// Timeout for the VM to boot and pipette to become ready. Once pipette
+    /// is connected, the guest command itself runs without a timeout.
     pub timeout: Duration,
     /// If set, override the QEMU binary path specified in the profile.
     pub qemu_binary_override: Option<PathBuf>,
@@ -64,9 +65,9 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
     let host_port = pick_free_port().context("failed to find a free port")?;
 
     // --- build the init script ---
-    // Sets up the environment, mounts virtio-fs, brings up networking,
-    // and launches pipette in TCP mode. Pipette then waits for the host
-    // to connect and send commands.
+    // Sets up the environment, mounts the virtio-9p share, brings up
+    // networking, and launches pipette in TCP mode. Pipette then waits for
+    // the host to connect and send commands.
 
     // QEMU user-mode networking defaults: guest is 10.0.2.15/24, gateway 10.0.2.2,
     // DNS forwarder at 10.0.2.3.
@@ -121,7 +122,7 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
         qemu_config
     };
 
-    let kernel_cmdline = "console=ttyAMA0 rdinit=/tcg-init.sh";
+    let kernel_cmdline = format!("{} rdinit=/tcg-init.sh", qemu_config.cmdline);
 
     let mut cmd = qemu::build_qemu_command(
         qemu_config,
@@ -130,7 +131,7 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
         &patched_initrd_path,
         &config.share_dir,
         host_port,
-        kernel_cmdline,
+        &kernel_cmdline,
     );
 
     // QEMU runs in the background. Serial console goes to a pipe;
@@ -236,7 +237,7 @@ async fn run_via_pipette(
         .context("failed to connect to pipette")?;
 
     let output_dir = config.share_dir.join("test_results");
-    std::fs::create_dir_all(&output_dir).ok();
+    std::fs::create_dir_all(&output_dir).context("failed to create test results dir")?;
 
     let client = pipette_client::PipetteClient::new(&driver, conn, &output_dir)
         .await
@@ -456,38 +457,44 @@ async fn setup_vfio_devices(
 
     tracing::info!("setting up {} VFIO device(s)", vfio_devices.len());
 
-    let sh = client.unix_shell();
-
     for (device_index, cfg) in &vfio_devices {
         let addr = qemu::EXTRA_DEVICE_ADDR_BASE + device_index;
 
-        // The root port BDF is deterministic: 0000:00:{addr:02x}.0
-        // Find the first child device on the secondary bus behind it.
+        // The root port for this device is deterministically at
+        // 0000:00:{addr:02x}.0 (see `qemu::build_qemu_command`). Read its
+        // secondary bus number from sysfs; the assigned device sits at
+        // slot 0, function 0 of that bus.
         let rp_bdf = format!("0000:00:{addr:02x}.0");
-        let bdf = sh
-            .cmd("sh")
-            .arg("-c")
-            .arg(format!(
-                concat!(
-                    "bridge=/sys/bus/pci/devices/{rp}; ",
-                    "if [ ! -d \"$bridge/pci_bus\" ]; then echo NOTFOUND; exit 0; fi; ",
-                    "bus=$(ls $bridge/pci_bus/ | head -1); ",
-                    "child=$(ls -d /sys/bus/pci/devices/$bus:* 2>/dev/null | head -1); ",
-                    "if [ -n \"$child\" ]; then basename $child; else echo NOTFOUND; fi",
-                ),
-                rp = rp_bdf,
-            ))
-            .read()
-            .await?;
-
-        let bdf = bdf.trim().to_string();
-        if bdf == "NOTFOUND" || bdf.is_empty() {
-            anyhow::bail!(
-                "could not find child device behind root port at addr {} for device '{}'",
-                addr,
+        let secondary_bus_path = format!("/sys/bus/pci/devices/{rp_bdf}/secondary_bus_number");
+        let secondary_bus_raw = client
+            .read_file(&secondary_bus_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to read secondary bus number for device '{}' (root port {rp_bdf})",
+                    cfg.name
+                )
+            })?;
+        // sysfs reports the secondary bus number in decimal.
+        let secondary_bus_str = String::from_utf8_lossy(&secondary_bus_raw);
+        let secondary_bus: u8 = secondary_bus_str.trim().parse().with_context(|| {
+            format!(
+                "unexpected secondary bus number {secondary_bus_str:?} for device '{}'",
                 cfg.name
-            );
-        }
+            )
+        })?;
+        let bdf = format!("0000:{secondary_bus:02x}:00.0");
+
+        // Confirm the child device actually exists before trying to rebind it.
+        client
+            .read_file(format!("/sys/bus/pci/devices/{bdf}/vendor"))
+            .await
+            .with_context(|| {
+                format!(
+                    "no device found behind root port {rp_bdf} (expected {bdf}) for device '{}'",
+                    cfg.name
+                )
+            })?;
 
         tracing::info!(name = %cfg.name, %bdf, %addr, "binding device to vfio-pci");
 
