@@ -577,7 +577,7 @@ async fn uefi_force_dma_bounce<T: PetriVmmBackend>(
         .with_uefi_force_dma_bounce(true)
         .with_efi_diagnostics_log_level(EfiDiagnosticsLogLevel::Info)
         .with_efi_diagnostics_rate_limit(0)
-        .with_openhcl_command_line("log_buf_len=512K") // allows for more INFO logs to show
+        .with_openhcl_command_line("log_buf_len=1M") // allows for more INFO logs to show
         .run()
         .await?;
 
