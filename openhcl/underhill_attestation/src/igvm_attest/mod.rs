@@ -72,6 +72,8 @@ pub enum ReportType {
     Snp,
     /// TDX report
     Tdx,
+    /// CCA report
+    Cca,
     /// Trusted VM report
     Tvm,
 }
@@ -83,6 +85,7 @@ impl ReportType {
             Self::Vbs => IgvmAttestReportType::VBS_VM_REPORT,
             Self::Snp => IgvmAttestReportType::SNP_VM_REPORT,
             Self::Tdx => IgvmAttestReportType::TDX_VM_REPORT,
+            Self::Cca => IgvmAttestReportType::CCA_VM_REPORT,
             Self::Tvm => IgvmAttestReportType::TVM_REPORT,
         }
     }
@@ -115,6 +118,7 @@ impl IgvmAttestRequestHelper {
         let report_type = match tee_type {
             TeeType::Snp => ReportType::Snp,
             TeeType::Tdx => ReportType::Tdx,
+            TeeType::Cca => ReportType::Cca,
             TeeType::Vbs => ReportType::Vbs,
         };
 
@@ -151,6 +155,7 @@ impl IgvmAttestRequestHelper {
         let report_type = match tee_type {
             Some(TeeType::Snp) => ReportType::Snp,
             Some(TeeType::Tdx) => ReportType::Tdx,
+            Some(TeeType::Cca) => ReportType::Cca,
             Some(TeeType::Vbs) => ReportType::Vbs,
             None => ReportType::Tvm,
         };
@@ -330,6 +335,7 @@ fn get_report_size(report_type: &ReportType) -> usize {
         ReportType::Snp => openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE,
         ReportType::Tdx => openhcl_attestation_protocol::igvm_attest::get::TDX_VM_REPORT_SIZE,
         ReportType::Tvm => openhcl_attestation_protocol::igvm_attest::get::TVM_REPORT_SIZE,
+        ReportType::Cca => todo!(),
     }
 }
 
@@ -503,6 +509,7 @@ mod tests {
             tpm_persisted: false,
             filtered_vpci_devices_allowed: true,
             vm_unique_id: String::new(),
+            vmgs_provisioner: None,
         };
         let result = serde_json::to_string(&attestation_vm_config);
         assert!(result.is_ok());
@@ -525,6 +532,7 @@ mod tests {
             tpm_persisted: false,
             filtered_vpci_devices_allowed: true,
             vm_unique_id: String::new(),
+            vmgs_provisioner: None,
         };
         let attestation_vm_config =
             attestation_vm_config_with_time(&attestation_vm_config, 1691103220);

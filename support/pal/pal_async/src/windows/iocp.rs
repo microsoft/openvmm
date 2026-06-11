@@ -614,4 +614,9 @@ mod tests {
     fn overlapped_file_works() {
         IocpPool::run_with(executor_tests::windows::overlapped_file_tests)
     }
+
+    #[test]
+    fn process_works() {
+        IocpPool::run_with(executor_tests::process_tests)
+    }
 }

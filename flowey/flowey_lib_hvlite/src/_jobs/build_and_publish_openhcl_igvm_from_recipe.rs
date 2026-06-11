@@ -82,6 +82,7 @@ impl SimpleFlowNode for Node {
                 release_cfg: *release_cfg,
                 recipe: recipe.clone(),
                 extra_features: extra_features.clone(),
+                disable_secure_avic: false,
                 built_openvmm_hcl,
                 built_openhcl_boot,
                 built_openhcl_igvm,

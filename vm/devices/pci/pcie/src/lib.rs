@@ -8,6 +8,9 @@
 pub mod its;
 pub(crate) mod port;
 pub use port::PciePortSettings;
+pub use port::PortBarDefinition;
+pub use port::PortBarSubregionDefinition;
+pub use port::PortBarSubregionKind;
 pub mod root;
 pub mod switch;
 

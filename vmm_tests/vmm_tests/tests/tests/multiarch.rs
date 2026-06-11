@@ -23,10 +23,14 @@ use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
 
+/// Test for the Windows DirectIO (`-net dio`) network backend.
+mod dio_nic;
 /// Tests for Hyper-V integration components.
 mod ic;
 // Memory Validation tests.
 mod memstat;
+/// NUMA topology tests.
+mod numa;
 /// Servicing tests.
 mod openhcl_servicing;
 /// PCIe emulation tests.
@@ -108,6 +112,22 @@ async fn boot_virtio_vsock(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     Ok(())
 }
 
+/// Boot Linux direct with VMBus entirely disabled.
+///
+/// Virtio-vsock provides the pipette transport. No VMBus server, no VMBus
+/// storage controllers, and no VMBus MMIO gaps in the memory layout.
+#[vmm_test(openvmm_linux_direct_x64, openvmm_linux_direct_aarch64)]
+async fn boot_no_vmbus(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .run()
+        .await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Boot with private anonymous memory instead of shared memory sections.
 #[openvmm_test(
     linux_direct_x64,
@@ -117,7 +137,11 @@ async fn boot_private_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
     let (vm, agent) = config
         .modify_backend(|b| {
             b.with_custom_config(|c| {
-                c.memory.private_memory = true;
+                for node in &mut c.numa.nodes {
+                    if let Some(mem) = &mut node.mem {
+                        mem.private_memory = true;
+                    }
+                }
             })
         })
         .run()
@@ -553,11 +577,16 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     // No boot event check, UEFI watchdog gets fired before ExitBootServices
     let halt_reason = vm.wait_for_teardown().await?;
     tracing::debug!("vm halt reason: {halt_reason:?}");
+    let check_reason = |expected| {
+        if halt_reason.reason != expected {
+            anyhow::bail!("Expected {expected:?}, got {halt_reason:?}");
+        }
+        Ok(())
+    };
     match arch {
-        MachineArch::X86_64 => assert!(matches!(halt_reason, PetriHaltReason::TripleFault)),
-        MachineArch::Aarch64 => assert!(matches!(halt_reason, PetriHaltReason::Reset)),
+        MachineArch::X86_64 => check_reason(PetriHaltReason::TripleFault),
+        MachineArch::Aarch64 => check_reason(PetriHaltReason::Reset),
     }
-    Ok(())
 }
 
 /// Test that unauthenticated deletion of PK and KEK is rejected by the firmware.

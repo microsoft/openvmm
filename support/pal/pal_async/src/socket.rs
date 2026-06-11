@@ -294,6 +294,24 @@ impl PolledSocket<UnixStream> {
     }
 }
 
+impl PolledSocket<std::net::TcpStream> {
+    /// Creates a new connected TCP stream socket.
+    pub async fn connect_tcp(
+        driver: &(impl ?Sized + Driver),
+        addr: std::net::SocketAddr,
+    ) -> io::Result<Self> {
+        let domain = match addr {
+            std::net::SocketAddr::V4(_) => socket2::Domain::IPV4,
+            std::net::SocketAddr::V6(_) => socket2::Domain::IPV6,
+        };
+        let socket =
+            socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+        let mut socket = PolledSocket::new(driver, socket)?;
+        socket.connect(&addr.into()).await?;
+        Ok(socket.convert())
+    }
+}
+
 impl<T: AsSockRef + Read> AsyncRead for PolledSocket<T> {
     fn poll_read(
         mut self: Pin<&mut Self>,

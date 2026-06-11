@@ -26,6 +26,45 @@ mod trace;
 mod winsvc;
 
 #[cfg(any(target_os = "linux", windows))]
+struct Args {
+    #[cfg(windows)]
+    service: bool,
+    transport: agent::Transport,
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn parse_args() -> anyhow::Result<Args> {
+    use anyhow::Context;
+
+    #[cfg(windows)]
+    let mut service = false;
+    let mut transport = agent::Transport::Vsock;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            #[cfg(windows)]
+            "--service" => service = true,
+            "--transport" => {
+                let val = args
+                    .next()
+                    .context("--transport requires a value (tcp or vsock)")?;
+                match val.as_str() {
+                    "tcp" => transport = agent::Transport::Tcp,
+                    "vsock" => transport = agent::Transport::Vsock,
+                    other => anyhow::bail!("unknown transport {other:?}, expected tcp or vsock"),
+                }
+            }
+            other => anyhow::bail!("unknown argument {other:?}"),
+        }
+    }
+    Ok(Args {
+        #[cfg(windows)]
+        service,
+        transport,
+    })
+}
+
+#[cfg(any(target_os = "linux", windows))]
 fn main() -> anyhow::Result<()> {
     eprintln!("Pipette starting up");
 
@@ -42,14 +81,18 @@ fn main() -> anyhow::Result<()> {
         init::init_as_pid1()?;
     }
 
+    let args = parse_args()?;
+
     #[cfg(windows)]
-    if std::env::args().nth(1).as_deref() == Some("--service") {
-        return winsvc::start_service();
+    if args.service {
+        return winsvc::start_service(args.transport);
     }
+
+    let transport = args.transport;
 
     pal_async::DefaultPool::run_with(async |driver| {
         loop {
-            let agent = agent::Agent::new(driver.clone()).await?;
+            let agent = agent::Agent::new(driver.clone(), transport).await?;
             agent.run().await?;
             eprintln!("Pipette disconnected, reconnecting...");
         }

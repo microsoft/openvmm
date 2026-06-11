@@ -106,32 +106,48 @@ pub enum CreateBusError {
     Offer(#[source] anyhow::Error),
 }
 
+/// Configuration for a VPCI bus instance.
+pub struct VpciBusConfig {
+    /// The VPCI device instance ID.
+    pub instance_id: Guid,
+    /// VTOM value for isolated VMs, if applicable.
+    pub vtom: Option<u64>,
+    /// NUMA node affinity reported to the guest.
+    pub vnode: Option<u16>,
+}
+
 impl VpciBusDevice {
     /// Returns a new VPCI bus device, along with the vmbus channel used for bus
     /// communications.
     pub fn new(
-        instance_id: Guid,
+        config: VpciBusConfig,
         device: Arc<CloseableMutex<dyn ChipsetDevice>>,
         register_mmio: &mut dyn RegisterMmioIntercept,
         msi_controller: VpciInterruptMapper,
-        vtom: Option<u64>,
     ) -> Result<(Self, VpciChannel), NotPciDevice> {
+        let instance_id = config.instance_id;
         let config_space = VpciConfigSpace::new(
             register_mmio.new_io_region(&format!("vpci-{instance_id}-config"), 2 * HV_PAGE_SIZE),
-            vtom.map(|vtom| VpciConfigSpaceVtom {
+            config.vtom.map(|vtom| VpciConfigSpaceVtom {
                 vtom,
                 control_mmio: register_mmio
                     .new_io_region(&format!("vpci-{instance_id}-config-vtom"), 2 * HV_PAGE_SIZE),
             }),
         );
         let config_space_offset = config_space.offset().clone();
-        let channel = VpciChannel::new(&device, instance_id, config_space, msi_controller)?;
+        let channel = VpciChannel::new(
+            &device,
+            instance_id,
+            config_space,
+            msi_controller,
+            config.vnode,
+        )?;
 
         let this = Self {
             device,
             config_space_offset,
             current_slot: SlotNumber::from(0),
-            vtom,
+            vtom: config.vtom,
             pending_actions: Vec::new(),
             waker: Waker::noop().clone(),
         };
@@ -149,19 +165,17 @@ impl VpciBus {
     /// Creates a new VPCI bus.
     pub async fn new(
         driver_source: &VmTaskDriverSource,
-        instance_id: Guid,
+        config: VpciBusConfig,
         device: Arc<CloseableMutex<dyn ChipsetDevice>>,
         register_mmio: &mut dyn RegisterMmioIntercept,
         vmbus: &dyn vmbus_channel::bus::ParentBus,
         msi_controller: VpciInterruptMapper,
-        vtom: Option<u64>,
     ) -> Result<Self, CreateBusError> {
         let (bus, channel) = VpciBusDevice::new(
-            instance_id,
+            config,
             device.clone(),
             register_mmio,
             msi_controller.clone(),
-            vtom,
         )
         .map_err(CreateBusError::NotPci)?;
         let channel = offer_simple_device(driver_source, vmbus, channel)
@@ -564,11 +578,14 @@ mod tests {
             Arc::new(CloseableMutex::new(DeferWriteDevice::new()));
 
         let (bus, _channel) = VpciBusDevice::new(
-            Guid::new_random(),
+            VpciBusConfig {
+                instance_id: Guid::new_random(),
+                vtom: None,
+                vnode: None,
+            },
             device.clone(),
             &mut ExternallyManagedMmioIntercepts,
             VpciInterruptMapper::new(msi_controller),
-            None,
         )
         .unwrap();
 

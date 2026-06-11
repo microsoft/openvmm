@@ -4,6 +4,7 @@
 mod hvc;
 pub mod powershell;
 pub mod vm;
+
 use vmsocket::VmAddress;
 use vmsocket::VmSocket;
 
@@ -15,7 +16,7 @@ use crate::ModifyFn;
 use crate::NoPetriVmInspector;
 use crate::OpenHclServicingFlags;
 use crate::OpenvmmLogConfig;
-use crate::PetriHaltReason;
+use crate::PetriHaltReasonDetail;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmRuntime;
@@ -48,6 +49,7 @@ use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
+pub use powershell::request_physical_nvme;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::io::Write;
@@ -398,6 +400,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             com_3: supports_com3,
             imc_hiv,
             management_vtl_settings,
+
             ..HyperVNewCustomVMArgs::from_config(&config, &properties)?
         };
 
@@ -478,7 +481,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         self.vm.remove().await
     }
 
-    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
+    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReasonDetail> {
         self.vm.wait_for_halt(allow_reset).await
     }
 
@@ -503,9 +506,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                 .context("failed to create polled client socket")?
                 .convert();
             socket
-                .connect(
-                    &VmAddress::hyperv_vsock(*vm.vmid(), pipette_client::PIPETTE_VSOCK_PORT).into(),
-                )
+                .connect(&VmAddress::hyperv_vsock(*vm.vmid(), pipette_client::PIPETTE_PORT).into())
                 .await
                 .context("failed to connect")
                 .map(|()| socket)

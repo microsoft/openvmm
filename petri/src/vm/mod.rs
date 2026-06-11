@@ -182,6 +182,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     prebuilt_initrd: Option<PathBuf>,
     // Use virtio vsock instead of VMBus-based hvsocket for guest communication.
     use_virtio_vsock: bool,
+    // Disable VMBus entirely (no vmbus server, no vmbus storage controllers).
+    no_vmbus: bool,
 }
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
@@ -203,6 +205,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("enable_screenshots", &self.enable_screenshots)
             .field("prebuilt_initrd", &self.prebuilt_initrd)
             .field("use_virtio_vsock", &self.use_virtio_vsock)
+            .field("no_vmbus", &self.no_vmbus)
             .finish()
     }
 }
@@ -230,6 +233,8 @@ pub struct PetriVmConfig {
     pub vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
     /// PCIe NVMe drives.
     pub pcie_nvme_drives: Vec<PcieNvmeDrive>,
+    /// Physical NVMe devices to attach
+    pub physical_nvme_devices: HashMap<Guid, PhysicalNvmeDevice>,
 }
 
 /// PCIe NVMe drive configuration.
@@ -241,6 +246,18 @@ pub struct PcieNvmeDrive {
     pub nsid: u32,
     /// The drive to attach.
     pub drive: Drive,
+}
+
+/// Physical NVMe device to assign to a VM.
+/// Only used in closed-source HyperV tests
+#[derive(Debug, Clone)]
+pub struct PhysicalNvmeDevice {
+    /// The VTL to assign the physical NVMe device to.
+    pub target_vtl: Vtl,
+    /// NVMe namespace ID.
+    pub nsid: u32,
+    /// Namespace size in MiB
+    pub namespace_size_mib: u64,
 }
 
 /// Static properties about the VM for convenience during contruction and
@@ -272,6 +289,8 @@ pub struct PetriVmProperties {
     pub has_agent_disk: bool,
     /// Use virtio vsock instead of VMBus-based hvsocket
     pub use_virtio_vsock: bool,
+    /// VMBus is entirely disabled
+    pub no_vmbus: bool,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -361,6 +380,11 @@ pub(crate) const PETRI_NVME_BOOT_VTL0_CONTROLLER: Guid =
 pub(crate) const PETRI_NVME_BOOT_VTL2_CONTROLLER: Guid =
     guid::guid!("92bc8346-718b-449a-8751-edbf3dcd27e4");
 
+/// PCIe root port used by Petri for the agent/cidata disk (no-vmbus mode)
+pub(crate) const PETRI_PCIE_NVME_AGENT_PORT: &str = "s0rc0rp1";
+/// NVMe namespace ID used by Petri for the agent/cidata disk (no-vmbus mode)
+pub(crate) const PETRI_PCIE_NVME_AGENT_NSID: u32 = 1;
+
 /// A constructed Petri VM
 pub struct PetriVm<T: PetriVmmBackend> {
     resources: PetriVmResources,
@@ -372,7 +396,6 @@ pub struct PetriVm<T: PetriVmmBackend> {
     guest_quirks: GuestQuirksInner,
     vmm_quirks: VmmQuirks,
     expected_boot_event: Option<FirmwareEvent>,
-    uses_pipette_as_init: bool,
 
     config: PetriVmRuntimeConfig,
 }
@@ -416,6 +439,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
                 pcie_nvme_drives: Vec::new(),
+                physical_nvme_devices: HashMap::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -438,6 +462,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_screenshots: true,
             prebuilt_initrd: None,
             use_virtio_vsock: false,
+            no_vmbus: false,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
@@ -490,6 +515,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
                 pcie_nvme_drives: Vec::new(),
+                physical_nvme_devices: HashMap::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -512,6 +538,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_screenshots: true,
             prebuilt_initrd: None,
             use_virtio_vsock: false,
+            no_vmbus: false,
         })
     }
 
@@ -622,6 +649,22 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Disable VMBus entirely.
+    ///
+    /// This removes all VMBus storage controllers. For Linux guests,
+    /// virtio-vsock is used for pipette communication. For Windows guests,
+    /// the caller must also configure TCP pipette transport via
+    /// `modify_backend(|b| b.with_tcp_pipette_nic())`. The guest must boot
+    /// from a non-VMBus device (e.g. PCIe NVMe).
+    pub fn with_no_vmbus(mut self) -> Self {
+        self.no_vmbus = true;
+        if self.config.firmware.os_flavor() != OsFlavor::Windows {
+            self.use_virtio_vsock = true;
+        }
+        self.config.vmbus_storage_controllers.clear();
+        self
+    }
+
     fn add_petri_scsi_controllers(self) -> Self {
         let builder = self.add_vmbus_storage_controller(
             &PETRI_SCSI_VTL0_CONTROLLER,
@@ -726,6 +769,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             return self;
         };
 
+        // When VMBus is disabled, route the agent disk through PCIe NVMe
+        // instead of VMBus SCSI.
+        if self.no_vmbus {
+            self.config.pcie_nvme_drives.push(PcieNvmeDrive {
+                port_name: PETRI_PCIE_NVME_AGENT_PORT.into(),
+                nsid: PETRI_PCIE_NVME_AGENT_NSID,
+                drive: Drive::new(
+                    Some(Disk::Temporary(Arc::new(agent_disk.into_temp_path()))),
+                    false,
+                ),
+            });
+            return self;
+        }
+
         // Ensure the storage controller exists (minimal mode doesn't
         // add controllers upfront).
         if !self
@@ -753,6 +810,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     fn add_boot_disk(mut self) -> Self {
         if self.boot_device_type.requires_vtl2() && !self.is_openhcl() {
             panic!("boot device type {:?} requires vtl2", self.boot_device_type);
+        }
+
+        if self.no_vmbus && self.boot_device_type.requires_vmbus() {
+            panic!(
+                "boot device type {:?} requires vmbus, but vmbus is disabled; \
+                 use with_boot_device_type(BootDeviceType::PcieNvme) or similar",
+                self.boot_device_type
+            );
         }
 
         if self.boot_device_type.requires_vpci_boot() {
@@ -898,6 +963,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             prebuilt_initrd: self.prebuilt_initrd.clone(),
             has_agent_disk: self.has_agent_disk(),
             use_virtio_vsock: self.use_virtio_vsock,
+            no_vmbus: self.no_vmbus,
         }
     }
 
@@ -959,7 +1025,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
         let arch = self.config.arch;
         let expect_reset = self.expect_reset();
-        let uses_pipette_as_init = self.uses_pipette_as_init();
         let properties = self.properties();
 
         let (mut runtime, config) = self
@@ -985,7 +1050,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             guest_quirks: self.guest_quirks,
             vmm_quirks: self.vmm_quirks,
             expected_boot_event: self.expected_boot_event,
-            uses_pipette_as_init,
 
             config,
         };
@@ -1528,6 +1592,19 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Add a physical NVMe device to the VM
+    pub fn add_physical_nvme_device(mut self, vsid: Guid, device: PhysicalNvmeDevice) -> Self {
+        if self
+            .config
+            .physical_nvme_devices
+            .insert(vsid, device)
+            .is_some()
+        {
+            panic!("physical NVMe device {vsid} already existed");
+        }
+        self
+    }
+
     /// Get VM's guest OS flavor
     pub fn os_flavor(&self) -> OsFlavor {
         self.config.firmware.os_flavor()
@@ -1579,7 +1656,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     }
 
     /// Wait for the VM to halt, returning the reason for the halt.
-    pub async fn wait_for_halt(&mut self) -> anyhow::Result<PetriHaltReason> {
+    pub async fn wait_for_halt(&mut self) -> anyhow::Result<PetriHaltReasonDetail> {
         tracing::info!("Waiting for VM to halt...");
         let halt_reason = self.runtime.wait_for_halt(false).await?;
         tracing::info!("VM halted: {halt_reason:?}. Cancelling watchdogs...");
@@ -1590,7 +1667,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Wait for the VM to cleanly shutdown.
     pub async fn wait_for_clean_shutdown(&mut self) -> anyhow::Result<()> {
         let halt_reason = self.wait_for_halt().await?;
-        if halt_reason != PetriHaltReason::PowerOff {
+        if halt_reason.reason != PetriHaltReason::PowerOff {
             anyhow::bail!("Expected PowerOff, got {halt_reason:?}");
         }
         tracing::info!("VM was cleanly powered off and torn down.");
@@ -1599,7 +1676,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
 
     /// Wait for the VM to halt, returning the reason for the halt,
     /// and tear down the VM.
-    pub async fn wait_for_teardown(mut self) -> anyhow::Result<PetriHaltReason> {
+    pub async fn wait_for_teardown(mut self) -> anyhow::Result<PetriHaltReasonDetail> {
         let halt_reason = self.wait_for_halt().await?;
         self.teardown().await?;
         Ok(halt_reason)
@@ -1627,7 +1704,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     async fn wait_for_reset_core(&mut self) -> anyhow::Result<()> {
         tracing::info!("Waiting for VM to reset...");
         let halt_reason = self.runtime.wait_for_halt(true).await?;
-        if halt_reason != PetriHaltReason::Reset {
+        if halt_reason.reason != PetriHaltReason::Reset {
             anyhow::bail!("Expected reset, got {halt_reason:?}");
         }
         tracing::info!("VM reset.");
@@ -1714,11 +1791,9 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         // TODO: remove this once the bug is fixed, since it shouldn't be
         // necessary and a guest could in theory support pipette and not the IC
         //
-        // Skip when pipette runs as PID 1 init — the shutdown IC may not
-        // be present (e.g., minimal mode).
-        if !self.uses_pipette_as_init {
-            self.runtime.wait_for_enlightened_shutdown_ready().await?;
-        }
+        // This is a no-op when the shutdown IC is not configured (e.g.,
+        // no VMBus or minimal mode).
+        self.runtime.wait_for_enlightened_shutdown_ready().await?;
         self.runtime.wait_for_agent(false).await
     }
 
@@ -1967,7 +2042,7 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     async fn teardown(self) -> anyhow::Result<()>;
     /// Wait for the VM to halt, returning the reason for the halt. The VM
     /// should automatically restart the VM on reset if `allow_reset` is true.
-    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason>;
+    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReasonDetail>;
     /// Wait for a connection from a pipette agent
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>;
     /// Get an OpenHCL diagnostics handler for the VM
@@ -2441,6 +2516,20 @@ impl BootDeviceType {
             self,
             BootDeviceType::Nvme | BootDeviceType::NvmeViaScsi | BootDeviceType::NvmeViaNvme
         )
+    }
+
+    fn requires_vmbus(&self) -> bool {
+        match self {
+            BootDeviceType::None | BootDeviceType::Ide | BootDeviceType::PcieNvme => false,
+            BootDeviceType::IdeViaScsi
+            | BootDeviceType::IdeViaNvme
+            | BootDeviceType::Scsi
+            | BootDeviceType::ScsiViaScsi
+            | BootDeviceType::ScsiViaNvme
+            | BootDeviceType::Nvme
+            | BootDeviceType::NvmeViaScsi
+            | BootDeviceType::NvmeViaNvme => true,
+        }
     }
 }
 
@@ -3130,6 +3219,25 @@ pub enum PetriHaltReason {
     TripleFault,
     /// The vm halted for some other reason
     Other,
+}
+
+impl PetriHaltReason {
+    /// Construct a halt reason with detailed debug info
+    pub fn with_detail(self, detail: String) -> PetriHaltReasonDetail {
+        PetriHaltReasonDetail {
+            reason: self,
+            detail,
+        }
+    }
+}
+
+/// The reason that the VM halted, with optional addition debug details
+#[derive(Debug, Clone)]
+pub struct PetriHaltReasonDetail {
+    /// The reason for the halt
+    pub reason: PetriHaltReason,
+    /// More details about the halt
+    pub detail: String,
 }
 
 fn append_cmdline(cmd: &mut Option<String>, add_cmd: impl AsRef<str>) {

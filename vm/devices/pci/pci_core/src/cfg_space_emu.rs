@@ -350,13 +350,13 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
 
     /// Reset the common header state
     pub fn reset(&mut self) {
-        tracing::info!("ConfigSpaceCommonHeaderEmulator: resetting state");
+        tracing::debug!("ConfigSpaceCommonHeaderEmulator: resetting state");
         self.state = ConfigSpaceCommonHeaderEmulatorState::new();
 
-        tracing::info!("ConfigSpaceCommonHeaderEmulator: syncing command register after reset");
+        tracing::debug!("ConfigSpaceCommonHeaderEmulator: syncing command register after reset");
         self.sync_command_register(self.state.command);
 
-        tracing::info!(
+        tracing::debug!(
             "ConfigSpaceCommonHeaderEmulator: resetting {} capabilities",
             self.capabilities.len()
         );
@@ -364,7 +364,7 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
             cap.reset();
         }
 
-        tracing::info!(
+        tracing::debug!(
             "ConfigSpaceCommonHeaderEmulator: resetting {} extended capabilities",
             self.extended_capabilities.len()
         );
@@ -373,10 +373,10 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
         }
 
         if let Some(intx) = &mut self.intx_interrupt {
-            tracing::info!("ConfigSpaceCommonHeaderEmulator: resetting interrupt level");
+            tracing::debug!("ConfigSpaceCommonHeaderEmulator: resetting interrupt level");
             intx.set_level(false);
         }
-        tracing::info!("ConfigSpaceCommonHeaderEmulator: reset completed");
+        tracing::debug!("ConfigSpaceCommonHeaderEmulator: reset completed");
     }
 
     /// Get hardware IDs
@@ -449,7 +449,7 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
 
     /// Sync command register changes by updating both interrupt and MMIO state
     pub fn sync_command_register(&mut self, command: cfg_space::Command) {
-        tracing::info!(
+        tracing::debug!(
             "ConfigSpaceCommonHeaderEmulator: syncing command register - intx_disable={}, mmio_enabled={}",
             command.intx_disable(),
             command.mmio_enabled()
@@ -460,7 +460,7 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
 
     /// Update interrupt disable setting
     pub fn update_intx_disable(&mut self, disabled: bool) {
-        tracing::info!(
+        tracing::debug!(
             "ConfigSpaceCommonHeaderEmulator: updating intx_disable={}",
             disabled
         );
@@ -471,7 +471,7 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
 
     /// Update MMIO enabled setting and handle BAR mapping
     pub fn update_mmio_enabled(&mut self, enabled: bool) {
-        tracing::info!(
+        tracing::debug!(
             "ConfigSpaceCommonHeaderEmulator: updating mmio_enabled={}",
             enabled
         );
@@ -1208,11 +1208,26 @@ impl ConfigSpaceType1Emulator {
         capabilities: Vec<Box<dyn PciCapability>>,
         extended_capabilities: Vec<Box<dyn PciExtendedCapability>>,
     ) -> Self {
-        let common = ConfigSpaceCommonHeaderEmulator::new(
+        Self::new_with_bars(
             hardware_ids,
             capabilities,
             extended_capabilities,
             DeviceBars::new(),
+        )
+    }
+
+    /// Create a new [`ConfigSpaceType1Emulator`] with caller-specified BARs.
+    pub fn new_with_bars(
+        hardware_ids: HardwareIds,
+        capabilities: Vec<Box<dyn PciCapability>>,
+        extended_capabilities: Vec<Box<dyn PciExtendedCapability>>,
+        bars: DeviceBars,
+    ) -> Self {
+        let common = ConfigSpaceCommonHeaderEmulator::new(
+            hardware_ids,
+            capabilities,
+            extended_capabilities,
+            bars,
         );
 
         Self {
@@ -1444,6 +1459,16 @@ impl ConfigSpaceType1Emulator {
     /// Get the list of PCI capabilities (mutable).
     pub fn capabilities_mut(&mut self) -> &mut [Box<dyn PciCapability>] {
         self.common.capabilities_mut()
+    }
+
+    /// Finds a BAR + offset by address.
+    pub fn find_bar(&self, address: u64) -> Option<(u8, u64)> {
+        self.common.find_bar(address)
+    }
+
+    /// Gets the active base address for a specific BAR index, if mapped.
+    pub fn bar_address(&self, bar: u8) -> Option<u64> {
+        self.common.bar_address(bar)
     }
 }
 

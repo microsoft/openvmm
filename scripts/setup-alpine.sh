@@ -20,7 +20,7 @@ OUTDIR="${1:-./alpine-direct-boot}"
 # --- Check required tools ---
 
 missing=()
-for tool in curl qemu-img python3 mkfs.vfat mcopy; do
+for tool in curl qemu-img mkfs.vfat mcopy; do
     if ! command -v "$tool" &>/dev/null; then
         missing+=("$tool")
     fi
@@ -30,8 +30,8 @@ if [ ${#missing[@]} -gt 0 ]; then
     echo "ERROR: Missing required tools: ${missing[*]}" >&2
     echo "" >&2
     echo "Install them with your package manager, e.g.:" >&2
-    echo "  sudo apt install curl qemu-utils python3 dosfstools mtools" >&2
-    echo "  sudo dnf install curl qemu-img python3 dosfstools mtools" >&2
+    echo "  sudo apt install curl qemu-utils dosfstools mtools" >&2
+    echo "  sudo dnf install curl qemu-img dosfstools mtools" >&2
     exit 1
 fi
 
@@ -75,32 +75,7 @@ trap - EXIT
 sudo chown "$(id -u):$(id -g)" vmlinuz-virt initramfs-virt
 chmod 644 vmlinuz-virt initramfs-virt
 
-# --- Step 4: Extract ELF kernel from bzImage ---
-# OpenVMM's direct boot loader requires an uncompressed ELF kernel (vmlinux),
-# not a compressed bzImage.
-
-echo "Extracting ELF kernel from bzImage..."
-python3 -c "
-import zlib
-data = open('vmlinuz-virt', 'rb').read()
-i = 0
-while i < len(data) - 1:
-    if data[i:i+2] == b'\x1f\x8b':
-        try:
-            d = zlib.decompressobj(16 + zlib.MAX_WBITS)
-            elf = d.decompress(data[i:])
-            if elf[:4] == b'\x7fELF':
-                open('vmlinux-virt', 'wb').write(elf)
-                print(f'  Extracted ELF kernel ({len(elf)} bytes) from offset {hex(i)}')
-                break
-        except Exception:
-            pass
-    i += 1
-else:
-    raise SystemExit('ERROR: no embedded ELF kernel found in vmlinuz-virt')
-"
-
-# --- Step 5: Create cloud-init data disk ---
+# --- Step 4: Create cloud-init data disk ---
 # The Alpine cloud image ships with all accounts locked. This creates a small
 # FAT disk with cloud-init config that sets the root password on first boot.
 
@@ -132,7 +107,7 @@ tee README <<EOF
 Alpine Linux direct boot setup for OpenVMM
 
 Files in ${ABSDIR}:
-  vmlinux-virt   - Uncompressed ELF kernel
+  vmlinuz-virt   - Compressed kernel (bzImage)
   initramfs-virt - Initial ramdisk
   disk.raw       - Root disk image (raw)
   cidata.img     - Cloud-init data disk (sets root password)
@@ -140,7 +115,7 @@ Files in ${ABSDIR}:
 To boot with OpenVMM (from the openvmm repo root):
 
   cargo run -p openvmm -- \\
-    -k ${ABSDIR}/vmlinux-virt \\
+    -k ${ABSDIR}/vmlinuz-virt \\
     -r ${ABSDIR}/initramfs-virt \\
     --pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255,low_mmio=4M,high_mmio=1G \\
     --pcie-root-port rc0:disk \\

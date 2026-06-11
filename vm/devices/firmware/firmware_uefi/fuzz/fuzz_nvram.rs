@@ -9,7 +9,6 @@ use arbitrary::Arbitrary;
 use crypto::pkcs7::Pkcs7SignedData;
 use crypto::rsa::RsaKeyPair;
 use crypto::x509::X509Certificate;
-use firmware_uefi::platform::nvram::EFI_TIME;
 use firmware_uefi::service::nvram::spec_services::ParsedAuthVar;
 use firmware_uefi::service::nvram::spec_services::auth_var_crypto;
 use guid::Guid;
@@ -17,6 +16,7 @@ use std::borrow::Cow;
 use ucs2::Ucs2LeVec;
 use uefi_nvram_specvars::signature_list::SignatureData;
 use uefi_nvram_specvars::signature_list::SignatureList;
+use uefi_specs::uefi::time::EFI_TIME;
 use xtask_fuzz::fuzz_target;
 use zerocopy::FromBytes;
 

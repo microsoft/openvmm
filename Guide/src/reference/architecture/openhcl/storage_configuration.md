@@ -199,10 +199,10 @@ These rules are useful when debugging configuration failures because they tell y
 
 The [Running OpenHCL with OpenVMM](../../../user_guide/openhcl/run/openvmm.md) page shows where OpenVMM consumes this model. In code, `openvmm_entry::storage_builder` makes the two-axis split visible:
 
-1. `add_underhill()` chooses a **source** backing device family and a **target** guest-visible controller family separately.
+1. `add_relay()` chooses a **source** backing device family and a **target** guest-visible controller family separately.
 2. It derives `sub_device_path` from the source child it created in VTL2.
 3. It emits `Lun` objects whose `physical_devices` point back to that source.
-4. `build_underhill()` groups those `Lun`s under guest-visible `StorageController`s for SCSI or NVMe.
+4. `build_openhcl_settings()` groups those `Lun`s under guest-visible `StorageController`s for SCSI or NVMe.
 
 Read the configuration model as a description of the guest-visible tree plus a separate description of the backing tree under each child.
 

@@ -23,6 +23,7 @@ base64.workspace = true
 base64-serde.workspace = true
 constant_time_eq.workspace = true
 getrandom.workspace = true
+hex.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 static_assertions.workspace = true
@@ -30,6 +31,7 @@ thiserror.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+crypto = { workspace = true, features = ["test_helpers"] }
 disklayer_ram.workspace = true
 disk_backend.workspace = true
 vmgs = { workspace = true, features = ["encryption", "test_helpers"] }

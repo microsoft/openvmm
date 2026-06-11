@@ -251,6 +251,7 @@ flowey_request! {
         pub custom_target: Option<CommonTriple>,
         /// Additional features to enable on top of the recipe's defaults.
         pub extra_features: BTreeSet<OpenvmmHclFeature>,
+        pub disable_secure_avic: bool,
 
         pub built_openvmm_hcl: WriteVar<crate::build_openvmm_hcl::OpenvmmHclOutput>,
         pub built_openhcl_boot: WriteVar<crate::build_openhcl_boot::OpenhclBootOutput>,
@@ -287,6 +288,7 @@ impl SimpleFlowNode for Node {
             recipe,
             custom_target,
             extra_features,
+            disable_secure_avic,
             built_openvmm_hcl,
             built_openhcl_boot,
             built_openhcl_igvm,
@@ -307,6 +309,12 @@ impl SimpleFlowNode for Node {
         } = recipe.recipe_details(release_cfg);
 
         openvmm_hcl_features.extend(extra_features);
+
+        if disable_secure_avic {
+            openvmm_hcl_features.insert(OpenvmmHclFeature::LocalOnlyCustom(
+                "disable_secure_avic".into(),
+            ));
+        }
 
         let OpenhclIgvmRecipeDetailsLocalOnly {
             openvmm_hcl_no_strip,
@@ -629,6 +637,7 @@ impl SimpleFlowNode for Node {
             igvmfilegen,
             manifest,
             resources,
+            disable_secure_avic,
             igvm: built_openhcl_igvm,
         });
 

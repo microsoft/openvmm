@@ -137,8 +137,10 @@ pub fn change_page_visibility(range: MemoryRange, host_visible: bool) {
 }
 
 /// Tdcall based io port access.
+#[cfg(feature = "cvm_boot_log")]
 pub struct TdxIoAccess;
 
+#[cfg(feature = "cvm_boot_log")]
 impl minimal_rt::arch::IoAccess for TdxIoAccess {
     unsafe fn inb(&self, port: u16) -> u8 {
         tdcall::tdcall_io_in(&mut TdcallInstruction, port, 1).unwrap() as u8

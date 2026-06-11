@@ -33,6 +33,7 @@ pub struct Customizations {
     pub custom_sidecar: Option<PathBuf>,
     pub custom_vtl0_kernel: Option<PathBuf>,
     pub custom_extra_rootfs: Vec<PathBuf>,
+    pub disable_secure_avic: bool,
     pub override_arch: Option<CommonArch>,
     pub override_kernel_pkg: Option<OpenhclKernelPackage>,
     pub override_manifest: Option<PathBuf>,
@@ -94,6 +95,7 @@ impl SimpleFlowNode for Node {
             override_kernel_pkg,
             override_openvmm_hcl_feature,
             override_max_trace_level,
+            disable_secure_avic,
             with_debuginfo,
             with_mi_secure,
             with_perf_tools,
@@ -108,14 +110,19 @@ impl SimpleFlowNode for Node {
             )
         }
 
+        if disable_secure_avic && (release_cfg || release) {
+            anyhow::bail!("--disable-secure-avic cannot be used with release builds.");
+        }
+
         let build_profile = if release {
             OpenvmmHclBuildProfile::OpenvmmHclShip
         } else {
             OpenvmmHclBuildProfile::Debug
         };
-        let mut recipe_details = base_recipe.recipe_details(release_cfg);
 
-        {
+        let recipe_details = {
+            let mut recipe_details = base_recipe.recipe_details(release_cfg);
+
             let OpenhclIgvmRecipeDetails {
                 local_only,
                 igvm_manifest,
@@ -136,9 +143,6 @@ impl SimpleFlowNode for Node {
             if with_sidecar || custom_sidecar.is_some() {
                 *with_sidecar_details = true;
             }
-
-            // Debug configurations include --interactive by default, for busybox, gdbserver, and perf.
-            *with_interactive = !release_cfg || with_perf_tools;
 
             assert!(local_only.is_none());
             *local_only = Some(OpenhclIgvmRecipeDetailsLocalOnly {
@@ -198,7 +202,21 @@ impl SimpleFlowNode for Node {
             if let Some(p) = custom_vtl0_kernel {
                 *vtl0_kernel_type = Some(Vtl0KernelType::LocalOnlyCustom(p.absolute()?))
             }
-        }
+
+            // Debug configurations already include --interactive by default
+            // on x86 for busybox, gdbserver, and perf (aarch64 is currently
+            // broken and always disabled by default to allow the shell to
+            // work with ohcldiag-dev. see #1234).
+            *with_interactive |= with_perf_tools;
+
+            if *with_interactive && target.common_arch()? == CommonArch::Aarch64 {
+                log::warn!(
+                    "Please note that using perf tools on ARM currently breaks ohcldiag-dev shell"
+                );
+            }
+
+            recipe_details
+        };
 
         let build_label = if let Some(label) = build_label {
             label
@@ -235,6 +253,7 @@ impl SimpleFlowNode for Node {
             recipe: OpenhclIgvmRecipe::LocalOnlyCustom(recipe_details),
             custom_target: None,
             extra_features: BTreeSet::new(),
+            disable_secure_avic,
             built_openvmm_hcl: write_built_openvmm_hcl,
             built_openhcl_boot: write_built_openhcl_boot,
             built_openhcl_igvm: write_built_openhcl_igvm,

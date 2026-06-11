@@ -21,13 +21,10 @@ use std::collections::BTreeSet;
 
 /// Which Linux test kernel version to fetch from the openvmm-deps GitHub
 /// release.
-///
-/// The `openvmm-deps` release currently only ships the 6.1 kernel; additional
-/// kernel lines (e.g. 6.6, 6.12) are intended to be added as purely additive
-/// follow-ups, both upstream and as new variants of this enum.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LinuxTestKernelVersion {
     Linux6_1,
+    Linux6_18,
 }
 
 impl LinuxTestKernelVersion {
@@ -36,6 +33,7 @@ impl LinuxTestKernelVersion {
     pub fn artifact_tag(self) -> &'static str {
         match self {
             Self::Linux6_1 => "6.1",
+            Self::Linux6_18 => "6.18",
         }
     }
 }
@@ -73,7 +71,7 @@ impl OpenvmmTestKernelFile {
 /// The default Linux test kernel version. Call sites that don't otherwise care
 /// which kernel they're using should pass this.
 pub const DEFAULT_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion =
-    LinuxTestKernelVersion::Linux6_1;
+    LinuxTestKernelVersion::Linux6_18;
 
 flowey_config! {
     /// Config for the resolve_openvmm_test_linux_kernel node.
