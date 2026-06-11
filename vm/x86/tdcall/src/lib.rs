@@ -417,6 +417,45 @@ pub fn tdcall_release_page(
     }
 }
 
+/// Releases memory from `range` using [`tdcall_release_page`].
+pub fn release_memory_range(
+    call: &mut impl Tdcall,
+    range: MemoryRange,
+) -> Result<(), TdgPageReleaseError> {
+    #[cfg(feature = "tracing")]
+    tracing::trace!(%range, "release_memory_range");
+
+    let mut range = range;
+    while !range.is_empty() {
+        // Attempt to release in large page chunks, if possible.
+        if range.start().is_multiple_of(x86defs::X64_LARGE_PAGE_SIZE)
+            && range.len() >= x86defs::X64_LARGE_PAGE_SIZE
+        {
+            if let Err(e) = tdcall_release_page(call, range.start_4k_gpn(), true) {
+                match e {
+                    // If result is a page size mismatch, and the expected page size is 4K,
+                    // fallthrough to releasing 4k size pages instead.
+                    TdgPageReleaseError::PageSizeMismatch(_, level) => {
+                        if level != TdgMemPageLevel::Size4k {
+                            return Err(e);
+                        }
+                    }
+                    val => return Err(val),
+                }
+            } else {
+                range = MemoryRange::new(range.start() + x86defs::X64_LARGE_PAGE_SIZE..range.end());
+                continue;
+            }
+        }
+
+        // Release in 4k size pages.
+        tdcall_release_page(call, range.start_4k_gpn(), false)?;
+        range = MemoryRange::new(range.start() + HV_PAGE_SIZE..range.end());
+    }
+
+    Ok(())
+}
+
 /// The result returned from [`tdcall_page_attr_rd`].
 #[derive(Debug)]
 pub struct TdgPageAttrRdResult {
