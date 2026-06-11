@@ -303,7 +303,7 @@ struct HclNetworkVFManagerWorker {
     #[inspect(skip)]
     dma_clients: VfioDmaClients,
     #[inspect(skip)]
-    vf_reconfig_receiver: Option<mesh::Receiver<()>>,
+    vf_reset_request_receiver: Option<mesh::Receiver<()>>,
 }
 
 impl HclNetworkVFManagerWorker {
@@ -350,7 +350,7 @@ impl HclNetworkVFManagerWorker {
                 vtl2_pci_id,
                 dma_mode,
                 dma_clients,
-                vf_reconfig_receiver: None,
+                vf_reset_request_receiver: None,
             },
             tx_to_worker,
         )
@@ -625,8 +625,8 @@ impl HclNetworkVFManagerWorker {
         .await
         {
             Ok(mut device) => {
-                // Subscribe to VF reconfigure events before starting notification task
-                self.vf_reconfig_receiver = Some(device.subscribe_vf_reconfig().await);
+                // Subscribe to HWC reset request events before starting notification task
+                self.vf_reset_request_receiver = Some(device.subscribe_vf_reset_request().await);
                 // Resubscribe to notifications from the MANA device.
                 device.start_notification_task(&self.driver_source).await;
 
@@ -718,8 +718,8 @@ impl HclNetworkVFManagerWorker {
                     }
                 });
 
-                let vf_reconfig = self
-                    .vf_reconfig_receiver
+                let vf_reset_request = self
+                    .vf_reset_request_receiver
                     .as_mut()
                     .unwrap()
                     .map(|()| NextWorkItem::VfReconfig);
@@ -741,7 +741,7 @@ impl HclNetworkVFManagerWorker {
                     next_message,
                     device_change,
                     device_arrival,
-                    vf_reconfig,
+                    vf_reset_request,
                     vf_restart_tick,
                 )
                     .merge()
@@ -1276,8 +1276,8 @@ impl HclNetworkVFManager {
         // Now that the endpoints are connected, start the device notification task that will
         // listen for and relay endpoint actions.
         let device = worker.mana_device.as_mut().unwrap();
-        // Subscribe to VF reconfig events before starting notification task
-        worker.vf_reconfig_receiver = Some(device.subscribe_vf_reconfig().await);
+        // Subscribe to HWC reset request events before starting notification task
+        worker.vf_reset_request_receiver = Some(device.subscribe_vf_reset_request().await);
         device.start_notification_task(driver_source).await;
         let endpoints = endpoints
             .into_iter()
