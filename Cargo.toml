@@ -47,6 +47,7 @@ members = [
   "guest_test_uefi",
   "petri/pipette",
   # tools
+  "petri/incubator",
   "petri/make_imc_hive",
   "petri/petri-tool",
   "vm/devices/get/test_igvm_agent_rpc_server",
@@ -99,6 +100,7 @@ vmm_test_images = { path = "vmm_tests/vmm_test_images" }
 vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
 
 petri = { path = "petri" }
+initrd_cpio = { path = "petri/initrd_cpio" }
 petri_artifacts_common = { path = "petri/petri_artifacts_common" }
 petri_artifacts_core = { path = "petri/petri_artifacts_core" }
 

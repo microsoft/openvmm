@@ -1,0 +1,21 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# Incubator profile: AArch64 with PCIe (SMMUv3, KVM)
+#
+# Provides an emulated ARM platform with KVM, SMMUv3, and PCIe
+# topology for testing IOMMU, device assignment, and PCIe device
+# emulation in OpenVMM/OpenHCL.
+
+[incubator]
+type = "qemu-tcg"
+machine = "virt,virtualization=on,iommu=smmuv3,gic-version=3"
+cpu = "max"
+memory = "4G"
+smp = "2"
+
+[[devices]]
+type = "virtio-blk"
+name = "test-disk"
+size = "64M"
+vfio = true

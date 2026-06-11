@@ -592,7 +592,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         })?;
 
         let merged_gz =
-            crate::cpio::inject_into_initrd(&initrd_gz, "pipette", &pipette_data, 0o100755)
+            initrd_cpio::inject_into_initrd(&initrd_gz, "pipette", &pipette_data, 0o100755)
                 .context("failed to inject pipette into initrd")?;
 
         let mut tmp = tempfile::NamedTempFile::new()

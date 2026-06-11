@@ -3758,6 +3758,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "incubator"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures",
+ "futures-concurrency",
+ "initrd_cpio",
+ "libc",
+ "mesh",
+ "pal_async",
+ "pipette_client",
+ "serde",
+ "toml_edit",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3766,6 +3785,14 @@ dependencies = [
  "equivalent",
  "hashbrown",
  "serde",
+]
+
+[[package]]
+name = "initrd_cpio"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "flate2",
 ]
 
 [[package]]
@@ -6159,7 +6186,6 @@ dependencies = [
  "disk_vhdmp",
  "fatfs",
  "firmware_uefi_resources",
- "flate2",
  "framebuffer",
  "fs-err",
  "fscommon",
@@ -6174,6 +6200,7 @@ dependencies = [
  "hyperv_secure_boot_templates",
  "ide_resources",
  "image",
+ "initrd_cpio",
  "inspect",
  "jiff",
  "kmsg",

@@ -283,7 +283,7 @@ async fn replay_logs(log: mesh::pipe::ReadPipe) {
     let mut lines = BufReader::new(log).lines();
     while let Some(line) = lines.next().await {
         match line {
-            Ok(line) => tracing::info!(target: "pipette", "{}", line),
+            Ok(line) => tracing::debug!(target: "pipette", "{}", line),
             Err(err) => {
                 tracing::error!(
                     error = &err as &dyn std::error::Error,
