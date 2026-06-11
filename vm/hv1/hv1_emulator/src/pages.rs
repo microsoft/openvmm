@@ -51,6 +51,36 @@ pub enum OverlayPage {
 // FUTURE: Technically we should restore the prior contents of a mapped location when we
 // remap/unmap it, but we don't know of any scenario that actually requires this.
 impl OverlayPage {
+    /// Synchronizes the overlay's mapping to the desired state.
+    ///
+    /// When `enabled` is true, maps the overlay at `gpn`, remapping if the
+    /// overlay is currently mapped at a different GPN and doing nothing if it
+    /// is already mapped there. When `enabled` is false, unmaps the overlay if
+    /// it is currently mapped.
+    ///
+    /// This encapsulates the common "remap on enable/move, unmap on disable"
+    /// flow shared by the synthetic registers that are backed by an overlay
+    /// page, using the overlay's own mapped GPN as the source of truth.
+    pub fn sync(
+        &mut self,
+        enabled: bool,
+        gpn: u64,
+        prot_access: &mut dyn VtlProtectAccess,
+    ) -> Result<(), hvdef::HvError> {
+        let mapped_gpn = match self {
+            OverlayPage::Mapped(page) => Some(page.gpn),
+            OverlayPage::Local(_) => None,
+        };
+        if enabled {
+            if mapped_gpn != Some(gpn) {
+                self.remap(gpn, prot_access)?;
+            }
+        } else if mapped_gpn.is_some() {
+            self.unmap(prot_access);
+        }
+        Ok(())
+    }
+
     /// Maps the overlay to `new_gpn`, copying the current overlay contents into
     /// the newly mapped guest page and releasing any previously mapped page.
     pub fn remap(

@@ -935,22 +935,12 @@ impl KvmProcessor<'_> {
 /// would treat as an occupied message slot and refuse to deliver into.
 fn sync_synic_overlay(overlay: &mut OverlayPage, reg: HvSynicSimpSiefp, gm: &GuestMemory) {
     let mut prot = KvmNoVtlProtections(gm);
-    let mapped_gpn = match overlay {
-        OverlayPage::Mapped(page) => Some(page.gpn),
-        OverlayPage::Local(_) => None,
-    };
-    if reg.enabled() {
-        if mapped_gpn != Some(reg.base_gpn()) {
-            if let Err(err) = overlay.remap(reg.base_gpn(), &mut prot) {
-                tracelimit::warn_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    gpn = reg.base_gpn(),
-                    "failed to map synic overlay page"
-                );
-            }
-        }
-    } else if mapped_gpn.is_some() {
-        overlay.unmap(&mut prot);
+    if let Err(err) = overlay.sync(reg.enabled(), reg.base_gpn(), &mut prot) {
+        tracelimit::warn_ratelimited!(
+            error = &err as &dyn std::error::Error,
+            gpn = reg.base_gpn(),
+            "failed to map synic overlay page"
+        );
     }
 }
 
