@@ -16,7 +16,9 @@ use std::sync::Arc;
 use virt::irqcon::IoApicRouting;
 use virt::irqcon::MsiRequest;
 
-/// Number of IOAPIC redirection table entries.
+/// Number of IOAPIC redirection table entries. Must match
+/// `chipset_resources::ioapic::IOAPIC_NUM_ENTRIES`, which bounds the `irq`
+/// values the IOAPIC device passes to [`IoApicRouting`].
 const NUM_ENTRIES: usize = 24;
 
 /// Device/function (devfn) used as the IOAPIC requestor ID (RID) for
@@ -53,8 +55,17 @@ struct IoApicRoutingInner {
 struct IoApicRoutingState {
     /// Remapping state; `None` while in passthrough mode.
     remap: Option<RemapState>,
-    /// Raw (pre-remapping) MSI requests from the IOAPIC, indexed by IRQ.
-    raw_routes: [Option<MsiRequest>; NUM_ENTRIES],
+    /// Per-IRQ route state.
+    routes: [Route; NUM_ENTRIES],
+}
+
+#[derive(Copy, Clone, Default)]
+struct Route {
+    /// Raw (pre-remapping) MSI request from the IOAPIC.
+    raw: Option<MsiRequest>,
+    /// Last translated route programmed into `hv_routing`. Used to skip
+    /// redundant `set_irq_route` calls on retranslation.
+    programmed: Option<MsiRequest>,
 }
 
 struct RemapState {
@@ -73,7 +84,7 @@ impl IoApicRoutingConnection {
                 hv_routing,
                 state: Mutex::new(IoApicRoutingState {
                     remap: None,
-                    raw_routes: [None; NUM_ENTRIES],
+                    routes: [Route::default(); NUM_ENTRIES],
                 }),
             }),
         }
@@ -88,44 +99,46 @@ impl IoApicRoutingConnection {
     ///
     /// Panics if called more than once.
     pub fn connect_remapper(&self, rid: u16, remapper: Arc<dyn InterruptRemapper>) {
-        {
-            let mut state = self.inner.state.lock();
-            assert!(
-                state.remap.is_none(),
-                "IOAPIC remapper connected more than once"
-            );
-            state.remap = Some(RemapState {
-                rid,
-                remapper: remapper.clone(),
-            });
-            self.inner.set_all_routes(&state);
-        }
-        // Register outside the lock: `register_route` may synchronously invoke
-        // `retranslate`, which acquires the same lock.
+        // Register before recording the remapper so an invalidation racing
+        // this can't be missed (it retranslates as a harmless passthrough
+        // until `remap` is set). Register outside the state lock: `invalidate`
+        // takes the route-list lock then the state lock, so the reverse order
+        // here would deadlock.
         remapper.register_route(&(self.inner.clone() as Arc<dyn RetranslateInterrupts>));
+        let mut state = self.inner.state.lock();
+        assert!(
+            state.remap.is_none(),
+            "IOAPIC remapper connected more than once"
+        );
+        state.remap = Some(RemapState { rid, remapper });
+        self.inner.set_all_routes(&mut state);
     }
 }
 
 impl IoApicRoutingInner {
-    /// Translate `raw` through the remapper (if any) and program it into
-    /// `hv_routing`.
-    fn set_route(&self, state: &IoApicRoutingState, irq: u8, raw: Option<MsiRequest>) {
+    /// Translate the cached raw route for `irq` through the remapper (if any)
+    /// and program it into `hv_routing`, skipping the call if unchanged.
+    fn set_route(&self, state: &mut IoApicRoutingState, irq: u8) {
+        let route = &mut state.routes[irq as usize];
         let translated = match &state.remap {
-            Some(remap) => raw.and_then(|r| {
+            Some(remap) => route.raw.and_then(|r| {
                 remap
                     .remapper
                     .remap_msi(remap.rid, r.address, r.data)
                     .map(|(address, data)| MsiRequest { address, data })
             }),
-            None => raw,
+            None => route.raw,
         };
-        self.hv_routing.set_irq_route(irq, translated);
+        if route.programmed != translated {
+            route.programmed = translated;
+            self.hv_routing.set_irq_route(irq, translated);
+        }
     }
 
     /// Re-translate and re-program all cached routes.
-    fn set_all_routes(&self, state: &IoApicRoutingState) {
-        for (irq, raw) in state.raw_routes.iter().enumerate() {
-            self.set_route(state, irq as u8, *raw);
+    fn set_all_routes(&self, state: &mut IoApicRoutingState) {
+        for irq in 0..NUM_ENTRIES {
+            self.set_route(state, irq as u8);
         }
     }
 }
@@ -134,10 +147,8 @@ impl IoApicRouting for IoApicRoutingInner {
     fn set_irq_route(&self, irq: u8, request: Option<MsiRequest>) {
         // Hold the lock across translate to serialize with retranslate().
         let mut state = self.state.lock();
-        if let Some(slot) = state.raw_routes.get_mut(irq as usize) {
-            *slot = request;
-        }
-        self.set_route(&state, irq, request);
+        state.routes[irq as usize].raw = request;
+        self.set_route(&mut state, irq);
     }
 
     fn assert_irq(&self, irq: u8) {
@@ -156,7 +167,7 @@ impl RetranslateInterrupts for IoApicRoutingInner {
     }
 
     fn retranslate(&self) {
-        let state = self.state.lock();
-        self.set_all_routes(&state);
+        let mut state = self.state.lock();
+        self.set_all_routes(&mut state);
     }
 }
