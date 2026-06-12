@@ -60,6 +60,9 @@ pub struct PcieHostBridgeEntry {
     pub cxl: bool,
     /// NUMA proximity domain.
     pub vnode: Option<u32>,
+    /// When true, emit a `_DSM` method instructing the OS to preserve
+    /// firmware-assigned BAR values. Used for P2P DMA with GPA = HPA.
+    pub preserve_bars: bool,
 }
 
 impl Ssdt {
@@ -148,6 +151,7 @@ impl Ssdt {
             high_mmio,
             cxl,
             vnode,
+            preserve_bars,
         } = entry;
         let mut pcie = Device::new(encode_pcie_name(index).as_slice());
         if cxl {
@@ -307,6 +311,77 @@ impl Ssdt {
 
         pcie.add_object(&osc_method);
 
+        // _DSM: Device Specific Method for preserving firmware BAR assignments.
+        //
+        // UUID {E5C937D0-3553-4D7A-9117-EA4D19C3434D} is the PCI/PCIe host
+        // bridge _DSM defined in the PCI Firmware Specification §4.6.
+        //
+        // Function 0: returns a buffer with supported function bitmask
+        // Function 5: returns 0 to indicate firmware-assigned BAR values
+        //             should be preserved by the OS
+        //
+        // When preserve_bars is false, no _DSM is emitted and the guest
+        // OS is free to reprogram BARs.
+        if preserve_bars {
+            let mut dsm_method = Method::new(b"_DSM");
+            dsm_method.set_arg_count(4);
+
+            let dsm_uuid = guid::guid!("E5C937D0-3553-4D7A-9117-EA4D19C3434D");
+            let dsm_uuid_buffer = Buffer(dsm_uuid.as_bytes()).to_bytes();
+
+            // If (LEqual(Arg0, UUID))
+            let uuid_match = LEqualOp {
+                left: encode_arg(0),
+                right: dsm_uuid_buffer,
+            };
+
+            // Function 0: return supported function bitmask (bits 0 and 5).
+            // Bit 0 = Function 0 supported, Bit 5 = Function 5 supported.
+            let fn0_match = LEqualOp {
+                left: encode_arg(2),
+                right: encode_integer(0),
+            };
+            let fn0_return = ReturnOp {
+                result: Buffer(&[0x21u8]).to_bytes(),
+            };
+            let fn0_if = IfOp {
+                predicate: fn0_match.to_bytes(),
+                body: fn0_return.to_bytes(),
+            };
+
+            // Function 5: return 0 (preserve firmware BAR assignments).
+            let fn5_match = LEqualOp {
+                left: encode_arg(2),
+                right: encode_integer(5),
+            };
+            let fn5_return = ReturnOp {
+                result: encode_integer(0),
+            };
+            let fn5_if = IfOp {
+                predicate: fn5_match.to_bytes(),
+                body: fn5_return.to_bytes(),
+            };
+
+            let uuid_if = IfOp {
+                predicate: uuid_match.to_bytes(),
+                body: {
+                    let mut body = Vec::new();
+                    fn0_if.append_to_vec(&mut body);
+                    fn5_if.append_to_vec(&mut body);
+                    body
+                },
+            };
+
+            dsm_method.add_operation(&uuid_if);
+
+            // Unrecognized UUID or function: return empty buffer.
+            dsm_method.add_operation(&ReturnOp {
+                result: Buffer(&[] as &[u8]).to_bytes(),
+            });
+
+            pcie.add_object(&dsm_method);
+        }
+
         let mut crs = CurrentResourceSettings::new();
         crs.add_resource(&BusNumber::new(
             start_bus.into(),
@@ -418,7 +493,16 @@ mod tests {
             high_mmio: MemoryRange::new(0x10_0000_0000..0x10_4000_0000),
             cxl: false,
             vnode,
+            preserve_bars: false,
         }
+    }
+
+    fn contains_name(bytes: &[u8], name: &[u8; 4]) -> bool {
+        bytes.windows(4).any(|w| w == name)
+    }
+
+    fn contains_bytes(bytes: &[u8], needle: &[u8]) -> bool {
+        bytes.windows(needle.len()).any(|w| w == needle)
     }
 
     #[test]
@@ -479,5 +563,48 @@ mod tests {
                 .windows(7)
                 .any(|window| window == [8, b'_', b'P', b'X', b'M', 0x0a, 3,])
         );
+    }
+
+    #[test]
+    fn pcie_dsm_present_when_preserve_bars() {
+        let mut ssdt = Ssdt::new();
+        ssdt.add_pcie(PcieHostBridgeEntry {
+            preserve_bars: true,
+            ..test_pcie_entry(None)
+        });
+
+        let bytes = ssdt.to_bytes();
+        verify_header(&bytes);
+
+        // _DSM method name must be present.
+        assert!(contains_name(&bytes, b"_DSM"));
+
+        // The PCI firmware _DSM UUID must appear in mixed-endian form
+        // (GUID wire format).
+        let uuid = guid::guid!("E5C937D0-3553-4D7A-9117-EA4D19C3434D");
+        assert!(contains_bytes(&bytes, uuid.as_bytes()));
+
+        // The supported-functions bitmask byte (0x21 = bits 0+5) must
+        // appear somewhere in the buffer encoding.
+        assert!(contains_bytes(&bytes, &[0x21]));
+    }
+
+    #[test]
+    fn pcie_dsm_absent_without_preserve_bars() {
+        let mut ssdt = Ssdt::new();
+        ssdt.add_pcie(PcieHostBridgeEntry {
+            preserve_bars: false,
+            ..test_pcie_entry(None)
+        });
+
+        let bytes = ssdt.to_bytes();
+        verify_header(&bytes);
+
+        // _DSM must NOT be present.
+        assert!(!contains_name(&bytes, b"_DSM"));
+
+        // The PCI firmware _DSM UUID must NOT appear.
+        let uuid = guid::guid!("E5C937D0-3553-4D7A-9117-EA4D19C3434D");
+        assert!(!contains_bytes(&bytes, uuid.as_bytes()));
     }
 }
