@@ -329,6 +329,9 @@ impl Queue for TapQueue {
                 if meta.flags.offload_ip_header_checksum() && meta.flags.is_ipv4() {
                     fixup_ipv4_header_checksum(&mut packet, meta.l2_len as usize);
                 }
+                if meta.flags.offload_tcp_segmentation() && meta.flags.is_ipv6() {
+                    fixup_ipv6_payload_length(&mut packet, meta.l2_len as usize);
+                }
 
                 let bufs = [
                     std::io::IoSlice::new(hdr_bytes),
@@ -401,6 +404,8 @@ fn fixup_ipv4_header_checksum(packet: &mut [u8], l2_len: usize) {
     if packet.len() < l2_len + ihl_bytes {
         return;
     }
+    let ip_total_len = u16::try_from(packet.len() - l2_len).unwrap_or(0);
+    packet[l2_len + 2..l2_len + 4].copy_from_slice(&ip_total_len.to_be_bytes());
     let ip_hdr = &mut packet[l2_len..l2_len + ihl_bytes];
     // Zero the checksum field (bytes 10-11) before computing.
     ip_hdr[10] = 0;
@@ -422,6 +427,30 @@ fn fixup_ipv4_header_checksum(packet: &mut [u8], l2_len: usize) {
     let [hi, lo] = checksum.to_be_bytes();
     packet[l2_len + 10] = hi;
     packet[l2_len + 11] = lo;
+}
+
+/// Set the IPv6 payload-length field for segmentation-offload frames.
+///
+/// NDIS/netvsp LSO guests zero the IPv6 payload-length field, expecting the
+/// offload engine to fill it (the same convention under which IPv4 guests zero
+/// the total-length and header checksum -- see [`fixup_ipv4_header_checksum`]).
+/// IPv6 has no header checksum, so there is nothing to piggyback on; set the
+/// field directly. Without it the kernel TAP GSO engine sees a zero-length IPv6
+/// datagram and drops the super-frame instead of segmenting it, collapsing TX.
+fn fixup_ipv6_payload_length(packet: &mut [u8], l2_len: usize) {
+    // IPv6 fixed header is 40 bytes; the payload-length field (bytes 4-5)
+    // covers everything after it.
+    const IPV6_HEADER_LEN: usize = 40;
+    if packet.len() < l2_len + IPV6_HEADER_LEN {
+        return;
+    }
+    if packet[l2_len] >> 4 != 6 {
+        return;
+    }
+    // An oversize super-frame whose payload does not fit the 16-bit field
+    // falls back to zero (the IPv6 jumbogram convention).
+    let payload_len = u16::try_from(packet.len() - l2_len - IPV6_HEADER_LEN).unwrap_or(0);
+    packet[l2_len + 4..l2_len + 6].copy_from_slice(&payload_len.to_be_bytes());
 }
 
 /// Build a `VirtioNetHdr` from transmit metadata for the TAP device.
