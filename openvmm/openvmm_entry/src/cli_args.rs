@@ -1026,7 +1026,7 @@ options:
     /// Enable Intel VT-d IOMMU emulation on specified root complexes.
     /// Repeat for each root complex that should have an IOMMU, e.g.:
     ///   --intel-vtd rc0 --intel-vtd rc1
-    /// Mutually exclusive with --amd-iommu on the same root complex.
+    /// Mutually exclusive with --amd-iommu within the same VM.
     /// Requires --pcie-root-complex.
     #[cfg(guest_arch = "x86_64")]
     #[clap(long)]
