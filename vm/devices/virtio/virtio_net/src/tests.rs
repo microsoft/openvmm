@@ -1809,8 +1809,7 @@ fn features_guest_tso() -> NetworkFeaturesBank0 {
 #[async_test]
 async fn rx_gso_ipv4_header_fields(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
-    let features =
-        VirtioDeviceFeatures::new().with_bank(0, features_guest_tso().into_bits());
+    let features = VirtioDeviceFeatures::new().with_bank(0, features_guest_tso().into_bits());
     let mut handle = harness.enable_and_get_handle_with_features(features).await;
 
     let buffer_size: u32 = 65535;
@@ -1857,7 +1856,10 @@ async fn rx_gso_ipv4_header_fields(driver: DefaultDriver) {
     assert_eq!(hdr.hdr_len, 54, "hdr_len should be total header length");
     // csum_start = l2_len + l3_len = 14 + 20 = 34
     assert_eq!(hdr.csum_start, 34, "csum_start should point to TCP header");
-    assert_eq!(hdr.csum_offset, 16, "csum_offset should be TCP checksum field");
+    assert_eq!(
+        hdr.csum_offset, 16,
+        "csum_offset should be TCP checksum field"
+    );
 }
 
 /// RX GSO packet with IPv6 (guest_tso6): verify TCPv6 gso_type and header
@@ -1865,8 +1867,7 @@ async fn rx_gso_ipv4_header_fields(driver: DefaultDriver) {
 #[async_test]
 async fn rx_gso_ipv6_header_fields(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
-    let features =
-        VirtioDeviceFeatures::new().with_bank(0, features_guest_tso().into_bits());
+    let features = VirtioDeviceFeatures::new().with_bank(0, features_guest_tso().into_bits());
     let mut handle = harness.enable_and_get_handle_with_features(features).await;
 
     let buffer_size: u32 = 65535;
@@ -1945,7 +1946,10 @@ async fn rx_gso_without_guest_feature_falls_back(driver: DefaultDriver) {
     let gso = VirtioNetHeaderGso::from(hdr.gso_type);
 
     // Without guest TSO, GSO should not be emitted.
-    assert!(!flags.needs_csum(), "NEEDS_CSUM should not be set without guest TSO");
+    assert!(
+        !flags.needs_csum(),
+        "NEEDS_CSUM should not be set without guest TSO"
+    );
     assert_eq!(
         gso.protocol(),
         VirtioNetHeaderGsoProtocol::NONE,
